@@ -1,0 +1,72 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: studio
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-studio}
+      POSTGRES_DB: studio
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - '5432:5432'
+
+  principal:
+    build:
+      context: ..
+      dockerfile: services/api-principal/Dockerfile
+    ports:
+      - '8080:8080'
+    environment:
+      DATABASE_URL: postgres://studio:${POSTGRES_PASSWORD:-studio}@db/studio
+      STUDIO_PASSWORD: ${STUDIO_PASSWORD:-changeme}
+      STUDIO_MASTER_KEY: ${STUDIO_MASTER_KEY:-changeme}
+      MANAGER_URL: http://manager:8081
+    depends_on:
+      - db
+      - manager
+
+  manager:
+    build:
+      context: ..
+      dockerfile: services/manager/Dockerfile
+    ports:
+      - '8081:8081'
+    environment:
+      DATABASE_URL: postgres://studio:${POSTGRES_PASSWORD:-studio}@db/studio
+      MANAGER_TOKEN: ${MANAGER_TOKEN:-changeme}
+    depends_on:
+      - db
+
+  orchestrator-local:
+    build:
+      context: ..
+      dockerfile: services/orchestrator/Dockerfile
+    ports:
+      - '8082:8082'
+    environment:
+      MANAGER_URL: http://manager:8081
+      EXEC_MODE: docker
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - datasets:/data/datasets
+      - models:/data/models
+      - outputs:/data/outputs
+    depends_on:
+      - manager
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+    ports:
+      - '3000:3000'
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8080
+    depends_on:
+      - principal
+
+volumes:
+  pgdata:
+  datasets:
+  models:
+  outputs:

@@ -1,0 +1,10 @@
+{
+  "name": "web",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "node -e 'require(\"http\").createServer((_, res) => res.end(\"Studio Web Placeholder\")).listen(3000)'",
+    "build": "echo 'frontend Next.js entra em slice posterior (docs/frontend.md)'",
+    "start": "npm run dev"
+  }
+}

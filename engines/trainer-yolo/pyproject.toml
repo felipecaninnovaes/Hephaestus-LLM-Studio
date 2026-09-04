@@ -1,0 +1,9 @@
+[project]
+name = "hephaestus-trainer-yolo"
+version = "0.1.0"
+description = "Motor de treino YOLO (placeholder — treino real entra em slice posterior)"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.uv]
+package = true

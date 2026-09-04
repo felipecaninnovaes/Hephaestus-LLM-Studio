@@ -1,2 +1,14 @@
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
+
+# Rust / Node / Next / Python / env
+target/
+node_modules/
+.next/
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+.env
+.env.local
+dist/

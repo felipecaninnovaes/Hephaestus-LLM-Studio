@@ -1,0 +1,7 @@
+# Integração CPU-only: mesmo stack do compose.yaml, com engine-mock no lugar
+# dos trainers GPU. Uso: docker compose -f compose.yaml -f compose.integ.yaml up --abort-on-container-exit
+services:
+  orchestrator-local:
+    environment:
+      EXEC_MODE: subprocess
+      ENGINE_MOCK: '1'

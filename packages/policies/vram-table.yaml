@@ -1,0 +1,11 @@
+defaults:
+  headroom_gb: 2
+  measure_margin: 1.25
+  default_train_gb: 16
+entries:
+  - { engine: difusao, model: flux2-klein-9b-8bit, mode: infer, vram_min_gb: 16 }
+  - { engine: difusao, model: flux2-klein-9b, mode: train, vram_min_gb: 28 }
+  - { engine: difusao, model: sdxl-1.0, mode: train, vram_min_gb: 20 }
+  - { engine: yolo, model: yolo11n, mode: train, vram_min_gb: 6 }
+  - { engine: yolo, model: yolo11m, mode: train, vram_min_gb: 10 }
+  - { engine: clip, model: ViT-B-32, mode: train, vram_min_gb: 10 }

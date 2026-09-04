@@ -1,0 +1,5 @@
+pre-commit:
+  commands:
+    commitlint:
+      run: npx --no-install commitlint --edit {staged_files}
+      stage_fixed: false

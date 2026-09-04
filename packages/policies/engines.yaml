@@ -1,0 +1,6 @@
+engines:
+  - { engine: yolo, image: 'hephaestus/trainer-yolo:local' }
+  - { engine: difusao, image: 'hephaestus/trainer-difusao:local' }
+  - { engine: clip, image: 'hephaestus/trainer-clip:local' }
+# Base: estável mais recente testado no build; registrar cuda/torch validados aqui.
+toolchain: { cuda: TBD, torch: TBD, validated_at: null }

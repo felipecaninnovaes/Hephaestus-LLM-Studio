@@ -1,3 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
-docker compose -f infra/compose.yaml up --build
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+docker compose -f "$ROOT_DIR/infra/compose.yaml" up --build

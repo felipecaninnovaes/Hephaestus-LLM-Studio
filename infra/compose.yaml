@@ -11,7 +11,9 @@ services:
       - '5432:5432'
 
   principal:
-    build: ../services/api-principal
+    build:
+      context: ..
+      dockerfile: services/api-principal/Dockerfile
     ports:
       - '8080:8080'
     environment:
@@ -24,7 +26,9 @@ services:
       - manager
 
   manager:
-    build: ../services/manager
+    build:
+      context: ..
+      dockerfile: services/manager/Dockerfile
     ports:
       - '8081:8081'
     environment:
@@ -34,7 +38,9 @@ services:
       - db
 
   orchestrator-local:
-    build: ../services/orchestrator
+    build:
+      context: ..
+      dockerfile: services/orchestrator/Dockerfile
     ports:
       - '8082:8082'
     environment:
@@ -49,7 +55,9 @@ services:
       - manager
 
   web:
-    build: ../apps/web
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
     ports:
       - '3000:3000'
     environment:

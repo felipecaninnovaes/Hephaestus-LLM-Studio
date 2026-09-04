@@ -24,7 +24,7 @@ Conventions for every implementation task in this monorepo. Follow without being
 
 ## Verification (always run before committing)
 
-- Rust: `cargo check --manifest-path services/<svc>/Cargo.toml`
+- Rust: `cargo check --workspace` (workspace raiz, lock único em `Cargo.lock`)
 - Compose: `docker compose -f infra/compose.yaml -f infra/compose.integ.yaml config -q`
 - JS: `node --check` on changed configs; `npm run build` in `apps/web` when UI changes.
 - Never claim "done" without executing the relevant check.

@@ -164,13 +164,15 @@ interface BBox { id: number; classId: number; label: string; x: number; y: numbe
 4. Correção manual: validação ou galeria → editor BBox → Salvar → re-treino.
 5. Backup: Exportar (`.zip + dataset.yaml + anotações + captions.jsonl`) / Importar (mesmo pacote).
 
-## 10. Contratos que o front vai exigir do Rust (para não mockar depois)
+## 10. Contratos que o front vai exigir do Rust (alinhado com backend.md §9)
 
-- `GET/POST /api/datasets`, `GET/DELETE /api/datasets/:id`, `POST /api/datasets/:id/upload` (multipart, progresso), `GET /api/datasets/:id/images?limit&offset`, `PUT .../images/:imageId/boxes|caption`.
-- `POST /api/datasets/:id/export` → `.zip`; `POST /api/datasets/import` ← `.zip/.json/.yaml`.
-- `GET /api/environments`, `POST /api/environments/select`, `POST /api/environments/connect`.
-- `POST /api/jobs/{yolo|difusao|clip|autolabel|autotracker}` com JSON de hiperparams (o Rust gera o YAML de config); `GET /api/jobs/:id`, `POST /api/jobs/:id/{pause|abort}`, `GET /api/jobs/:id/metrics`, `WS /ws/jobs/:id/logs` e `WS /ws/telemetry`.
-- `POST /api/models/upload` (`.pt/.safetensors/.onnx`), `POST /api/preview/{autolabel|autotracker|generate|search}` para os sandboxes.
+- Datasets: `GET/POST /api/datasets`, `GET/DELETE /api/datasets/:id`, `POST /:id/upload` (200 MB), `GET /:id/images?limit&offset`, `PUT .../images/:img/{boxes,caption}`, `POST /:id/export`, `POST /datasets/import`, `POST /:id/package`.
+- Ambientes (alias UI de orquestradores): `GET /api/environments` (= `GET /api/orchestrators`), `POST /environments/select|connect` (= adopt/enable).
+- Jobs: `POST /api/jobs/{yolo|difusao|clip|autolabel|autotracker|playground}`, `GET /:id`, `POST /:id/{pause,abort,resume}`, `GET /:id/{metrics,samples,artifacts}`, `WS /ws/jobs/:id/logs?since_seq=` + `WS /ws/telemetry`.
+- Runners/playground: `POST /runners/{engine}/up`, `POST /runners/:id/{kill,infer}`, `GET /runners` — infer via `POST /:id/infer`, 409 se preemptado.
+- Models: `GET /api/models` (dropdowns) + `POST /models/{upload,download}`.
+- Preview/sandbox: `POST /api/preview/{autolabel|autotracker|generate|search}` (efêmero, sem fila).
+- Settings: chaves `hf_token, civitai_key, openai_key, anthropic_key, vllm_endpoint` (mascaradas no GET).
 
 ## 11. Estrutura de pastas sugerida (Next.js)
 

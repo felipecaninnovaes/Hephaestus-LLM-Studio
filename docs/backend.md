@@ -3,6 +3,11 @@
 > Origem: `IDEIA.md` + `docs/frontend.md` + decisões da revisão (auth single-user, SQLite só transporte, playground multi-motor, preempção de runner por VRAM, Postgres no principal, manager local).
 > Componentes: **backend principal (Rust + Postgres)** → **manager local (Rust)** → **orquestrador(es) (Rust)** → **motores (Python)**. Tudo em Docker, execução local ou VPS/RunPod.
 
+## 0. Escopo e base (resposta à revisão)
+
+- **Nome vs. escopo:** `Hephaestus-LLM-Studio` é legado; o escopo implementado é **visão computacional/multimodal** (YOLO, Difusão LoRA, OpenCLIP). LLM textual (SFT/DPO/vLLM) é futuro, não entra no MVP.
+- **Base presente no repo:** `IDEIA.md`, `arquitetura_studio_modular.png` e `ai-vision-training-studio.html` (verificado em disco). Conteúdo da IDEIA incorporado aqui + `frontend.md`.
+
 ## 1. Topologia e responsabilidades
 
 ```
@@ -22,6 +27,11 @@
 - Manager mora no ambiente local, **dono da fila central e da política VRAM**; sincroniza ambientes e despacha jobs conforme capacidade reportada.
 - Orquestrador (local ou remoto) é **stateless e executor**: valida md5, faz build do dataset, sobe trainers/runners, reporta VRAM/logs e devolve artefatos. Sem Postgres próprio, só workspace efêmero + volumes de cache.
 - Python só treina/infere e devolve artefatos + métricas + samples.
+- **Principal↔Manager (interno):** HTTP em rede docker (`manager:8081`), auth por segredo pré-compartilhado (`MANAGER_TOKEN`, `Authorization: Bearer`); front nunca fala com o manager direto.
+- **Postgres compartilhado:** um único Postgres do stack local; principal é dono de `datasets/images/auth/settings`, manager é dono de `jobs/runners/orchestrators/queue`. Sem transações cruzadas via API — cada um escreve só nas suas tabelas.
+- **Resiliência:** fila e reservas de VRAM são **reconstruídas do Postgres** no boot do manager (`jobs` em `queued/dispatched/preparing` voltam a `queued` com `queue_reason=recovered`); nada crítico só em memória.
+- **Direção de rede (NAT): outbound-first.** Modelo primário é **reverso**: orquestrador remoto abre WS persistente com o manager (`/orch/channel`, Bearer `heph_o_*` + pin) e recebe despachos por ele; artefatos voltam via `POST` do orquestrador para o manager/principal. Conexão inbound direta (manager→pod) é opcional, só quando há IP:porta alcançável.
+- **Buffer de logs:** orquestrador mantém ring 2000 linhas em disco por job; principal cacheia últimas 1000; WS aceita `?since_seq=` para retomar após oscilação.
 
 ## 2. Auth (decisão: single-user local)
 
@@ -38,7 +48,8 @@
 ## 4. Jobs, trainers sob demanda e cache
 
 - Tipos: `yolo_train | difusao_train | clip_train | autolabel | autotracker | download_model | playground`.
-- Ciclo: `queued → dispatched → preparing(env+dataset) → running → paused? → done|failed|cancelled`, com `POST /api/jobs/:id/{pause,abort}`. **Fila central no manager** (posição + motivo `waiting_vram|waiting_slot` visíveis no front); orquestrador só executa o que recebe e reporta `vram_used/total` + heartbeat.
+- Ciclo: `queued → dispatched → preparing(env+dataset) → running → paused? → done|failed|cancelled`, com `POST /api/jobs/:id/{pause,abort}` + `POST /api/jobs/:id/resume`. **Fila central no manager** (posição + motivo `waiting_vram|waiting_slot` visíveis no front); orquestrador só executa o que recebe e reporta `vram_used/total` + heartbeat.
+- **Pause = checkpoint + libera VRAM** (não `docker pause`): `pause` pede `save_checkpoint`, derruba o trainer e mantém `last.ckpt`; `resume` recria do checkpoint. Sem checkpoint do engine, pause é recusado (`409 checkpoint_unsupported`) e só `abort` vale.
 - Orquestrador sobe **um container `trainer-<engine>-<jobid>` por job** a partir de imagens por engine (isola deps: ultralytics vs. diffusers/kohya vs. open_clip). Ao destruir o container, **cache persiste fora**: volumes `models/`, `datasets-cache/`, `outputs/` mapeados no host/remoto.
 - **Imagens (decisão): uma por engine** (yolo, difusão, clip, autolabel/tracker, runner), **base no estável mais recente testado** (não pinar no 12.4/2.4.1 do protótipo; registrar a versão validada em `engines.yaml`), **build local no compose** (sem registry externo por enquanto; tags `hephaestus/trainer-<engine>:local`).
 - Paralelismo por VRAM, não fixo: com folga (ex. RunPod 80 GB) roda 2+ trainers e enfileira o resto (FIFO + cancel manual). Fila visível no front com posição e motivo (`waiting_vram`).
@@ -70,7 +81,8 @@
 - Medição: `nvidia-smi` 2s no orquestrador + `torch.cuda.max_memory_allocated` reportado pelo motor no fim do warmup; manager aplica `medido * 1.25` e sugere atualizar o yaml (`POST /api/settings/vram-table/propose`).
 - Regra: se `livre >= min` → sobe em paralelo; senão treino entra em `queued(waiting_vram)` e, se o bloqueio for um runner, o runner é drenado/morto primeiro. **Treino nunca é morto por falta de VRAM, só enfileirado.**
 - Config por ambiente (via manager): `max_parallel_trainers` (teto, padrão 2; efetivo = `min(teto, floor((vram_total - headroom) / vram_min_do_job))`), `vram_headroom_gb`, `runner_idle_ttl_s`, `vram-table` por modelo.
-- **Preempção (decisão):** runner idle → mata direto + toast com motivo; runner com inferência ativa → modal "Treino X precisa de N GB. Matar runner?" com countdown 30s (expirar = mata). Log de auditoria `runner_preempted {by_job}`.
+- **Preempção (decisão):** runner idle → mata direto + toast com motivo; runner com inferência ativa → modal "Treino X precisa de N GB. Matar runner?" com countdown 30s (expirar = mata). Log de auditoria `runner_preempted {by_job}`. **Sem usuário (expirado/madrugada):** mata ao expirar, a inferência em voo retorna `409 runner_preempted {job_id}` e o playground mostra toast + estado vazio (sem corromper resposta parcial).
+- **Multi-GPU (MVP): 1 job = 1 GPU** (`CUDA_VISIBLE_DEVICES=gpu_index` escolhido pelo orquestrador; `gpus:[{index, vram_total, vram_used}]`, sem DDP). DDP/Accelerate multi-GPU para um único treino fica fora do MVP.
 
 ## 7. Samples por ciclo (health visual do treino)
 
@@ -95,20 +107,23 @@
 
 ```
 auth:     POST /api/auth/login, GET /api/auth/me, POST /api/auth/logout
-settings: PUT/GET /api/settings/keys, GET /api/settings/vram-policy
+settings: PUT/GET /api/settings/keys {hf_token, civitai_key, openai_key, anthropic_key, vllm_endpoint}, GET /api/settings/vram-policy
 datasets: GET/POST /api/datasets, GET/DELETE /api/datasets/:id
           POST /api/datasets/:id/upload (200MB), GET /api/datasets/:id/images
           PUT  /api/datasets/:id/images/:img/{boxes,caption}
           POST /api/datasets/:id/export, POST /api/datasets/import
-          POST /api/datasets/:id/package (gera zip sqlite+manifest+md5 p/ orquestrador)
-models:   POST /api/models/upload, POST /api/models/download
+          POST /api/datasets/:id/package (gera zip manifest+md5 p/ orquestrador)
+models:   GET /api/models (lista pesos em disco/banco p/ dropdowns), POST /api/models/upload, POST /api/models/download
+preview:  POST /api/preview/{autolabel,autotracker,generate,search} (job efêmero ou runner quente, sem fila de treino)
 jobs:     POST /api/jobs/{yolo,difusao,clip,autolabel,autotracker,playground}
-          GET /api/jobs/:id, POST /api/jobs/:id/{pause,abort}, GET /api/jobs/queue
+          GET /api/jobs/:id, POST /api/jobs/:id/{pause,abort,resume}, GET /api/jobs/queue
           GET /api/jobs/:id/metrics, GET /api/jobs/:id/samples, GET /api/jobs/:id/artifacts
 runners:  POST /api/runners/{difusao,yolo,clip}/up, POST /api/runners/:id/kill, GET /api/runners
+          POST /api/runners/:id/infer {prompt|image|query} (inferência interativa; 409 se preemptado)
 orchestrators (via manager): GET /api/orchestrators, POST /api/orchestrators/adopt {endpoint,key},
           POST /api/orchestrators/:id/{enable,disable,remove}, GET /api/orchestrators/:id/health
-ws:       /ws/jobs/:id/logs, /ws/telemetry
+          # alias UI: /api/environments* responde o mesmo que /api/orchestrators* (front usa "Ambientes")
+ws:       /ws/jobs/:id/logs?since_seq=, /ws/telemetry
 ```
 
 ## 10. Schema Postgres (só local — principal/manager)
@@ -124,10 +139,12 @@ datasets(id UUID PK, slug TEXT UNIQUE, title TEXT, category TEXT,          -- di
   images_count INT DEFAULT 0, labeled_count INT DEFAULT 0, created_at TIMESTAMPTZ);
 classes(id UUID PK, dataset_id UUID FK, name TEXT, idx INT, color TEXT, UNIQUE(dataset_id, name));
 images(id UUID PK, dataset_id UUID FK, filename TEXT, path TEXT, w INT, h INT,
-  md5 TEXT, bytes BIGINT, created_at TIMESTAMPTZ, UNIQUE(dataset_id, filename));
+  md5 TEXT, bytes BIGINT, split TEXT DEFAULT 'train', created_at TIMESTAMPTZ, UNIQUE(dataset_id, filename));
 boxes(id UUID PK, image_id UUID FK, class_id UUID FK,
-  x FLOAT, y FLOAT, w FLOAT, h FLOAT, conf FLOAT NULL, origin TEXT);      -- manual|autotracker
+  x FLOAT, y FLOAT, w FLOAT, h FLOAT, conf FLOAT NULL, origin TEXT, track_id INT NULL);
 captions(image_id UUID PK FK, text TEXT, origin TEXT, model TEXT, updated_at TIMESTAMPTZ);
+videos(id UUID PK, dataset_id UUID FK, filename TEXT, path TEXT, fps FLOAT, frames INT, md5 TEXT);
+dataset_versions(id UUID PK, dataset_id UUID FK, manifest JSONB, created_at TIMESTAMPTZ);
 models(id UUID PK, engine TEXT, name TEXT, path TEXT, source TEXT,         -- hf|civitai|upload
   url TEXT NULL, hash TEXT NULL, bytes BIGINT, created_at TIMESTAMPTZ);
 jobs(id UUID PK, kind TEXT, dataset_id UUID NULL FK, engine TEXT, model TEXT, mode TEXT,
@@ -142,6 +159,9 @@ runners(id UUID PK, engine TEXT, model TEXT, orchestrator_id UUID FK,
 
 - Índices: `images(dataset_id)`, `boxes(image_id)`, `jobs(status)`, `job_artifacts(job_id)`.
 - Regra: contadores do dataset via trigger/view a partir de `images/boxes/captions`; chaves externas com `ON DELETE CASCADE` de dataset→filhos.
+- **Split:** coluna `images.split (train|val)`; padrão 80/20 estratificado no package com override manual na galeria (seletor train/val por imagem).
+- **Consistência disco×banco:** Postgres é a verdade; `PUT boxes/caption` atualiza o banco e materializa o `.txt` em disco com debounce (~2s). O package sempre gera do banco.
+- **Snapshot:** ao despachar job, congela `dataset_versions{manifest}` e o zip aponta para a versão; edição posterior não afeta treino em voo (trava lógica por versão, não por dataset).
 
 ## 11. Schemas, retenção e setup inicial
 
@@ -152,4 +172,5 @@ runners(id UUID PK, engine TEXT, model TEXT, orchestrator_id UUID FK,
   - clip: `{backbone, embed_dim, loss, lr, warmup, batch, epochs}`.
 - `engines.yaml`: `{engine, image, cuda, torch, validated_at}` — ex. `trainer-difusao: hephaestus/trainer-difusao:local`.
 - Retenção: samples últimos 5 ciclos ou 500 MB/job; logs 10 MB + 30 dias; artifacts guarda `best + last`, resto com GC manual (`DELETE /api/jobs/:id/artifacts?keep=best,last`).
-- Setup: `STUDIO_PASSWORD` no primeiro boot (hash Argon2 em `users`); chaves HF/Civitai cifradas app-level com `STUDIO_MASTER_KEY` (nunca em log); `compose.yaml` sobe `db (postgres:16) + principal (:8080) + manager + orquestrador-local (socket docker)` com volumes `pgdata, datasets, models, outputs`.
+- Setup: `STUDIO_PASSWORD` no primeiro boot (hash Argon2 em `users`); troca via CLI `studio reset-password` (sem expor rota); chaves cifradas app-level com `STUDIO_MASTER_KEY` (nunca em log); `compose.yaml` sobe `db (postgres:16) + principal (:8080) + manager + orquestrador-local (socket docker) + web (next)` com volumes `pgdata, datasets, models, outputs`.
+- **Execução sem DinD (RunPod padrão):** orquestrador opera em 2 modos — `docker` (socket disponível) ou `subprocess` (venv/python direto no mesmo host). Pods sem socket usam modo subprocess; template com DinD é opcional, não requisito.

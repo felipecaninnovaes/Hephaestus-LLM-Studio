@@ -18,7 +18,17 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-05 (fim de sessão; retomada = ler esta seção + "Próximo passo")
+## Estado atual — 2026-09-05 (fim de sessão da 3b; retomada = ler esta seção + "Próximo passo")
+
+- **Fatia 3b LANDED na branch `feat/datasets-storage` (3b.0–3b.7:
+  `f6c6ff5`..`393163c`) + docs sincronizados (3b.8, working tree desta sessão, sem
+  commit — o coordenador commiteia). Branch à frente de `main`; merge = decisão do
+  usuário. Entregue: migration 0003 + `StoragePort`/`MockStorage`/`S3Storage` + 6 rotas
+  (upload, images, detail, `/data`, boxes, caption) + sweep pós-commit + `source`
+  derivado + `classes{id}`; spec 0.3.0; revisões 3b.3/3b.6 feitas. Dívida 3b QUITADA
+  (ver "Dívidas"); sobraram: logging server-side (fatia nomeada), gate `sub` órfão,
+  `cargo fmt`. A/B 3b.6 registrado no bullet do experimento (placar 3b.3 empate 2×2;
+  swap = decisão do usuário).
 
 - **Spike 3b.0 EXECUTADO e PASSOU (7/7).** Rodado no ramo **descartável**
   `spike/storage-seaweedfs` (commit `09a517d`, **NÃO mergeado** — o ramo só existe para guardar a
@@ -80,6 +90,10 @@ ser interrompido no meio de uma.
   (gate de segredos × `!.env.example` do gitignore — comprovado por matriz de 4 casos
   antes do fix); o titular ainda cruzou com a ADR-0003 (`.env.example` é entregável
   prometido da 3b.4)   — 1 ponto pro flash por enquanto.
+  *Marco 3b.6*: titular CONDICIONAL com **1 falso positivo** (emenda vista só no trunk —
+  o diff do marco não continha o fix) e 2 únicos; sombra PASSA com 2 únicos e 0 falsos.
+  Vereditos divergentes, listas convergentes. Placar 3b.3: empate 2×2. Critério de swap
+  ao fim da 3b é **decisão do USUÁRIO — apresentar, não decidir**.
 - **Esforço de razonamento fixado por agente** (`variant:` na frontmatter, validado
   no provider): `high` em hephaestus/architect/reviewer (+ sombra max), `medium` em
   fixer e ui-designer, `low` nos implementadores e explore. Hipótese a medir na 3b:
@@ -133,55 +147,52 @@ não o que foi aprovado).
 
 ## Dívidas registradas que as próximas fatias precisam honrar
 
-- **3b (upload/imagens)** — **revisada pela ADR-0003 (proposta)**: morrem o volume
-  `datasets`/`DATASETS_DIR` no principal e o "cleanup de `<DATASETS_DIR>/<slug>`" (viram
-  sweep de prefixo `datasets/<id>/` no bucket, pós-commit); **permanece** o
-  `DefaultBodyLimit` **dedicado** de 200 MB em `POST /:id/upload` com envelope de erro
-  (não herdar os 2 MiB do axum — ADR-0002 T10, quitado na letra); `images.path` vira
-  `object_key`; migration `0003` com `images/boxes/captions/videos` + **contadores
-  recalculados por função única** (nunca `+=`) — o invariante
-  `labeled_count <= images_count` saiu do `CHECK` porque CHECK não é deferrável e o
-  `DELETE FROM images` de imagem rotulada passa por estado intermediário (T2); status
-  `needs_labeling → in_progress → ready` passa a ser derivado por trigger; export/import/
-  package sobem para **3e** (backup interim = console + `mc mirror`); bloco `--datasets`
-  no `scripts/e2e-smoke.sh`.
+- **3b (upload/imagens) — QUITADA 2026-09-05** (`feat/datasets-storage`:
+  `f6c6ff5` migration 0003, `656a474` porta/mock/AppState, `c012be5` upload+lista,
+  `a21345b` fix livelock/413/filename, `507637e` S3+compose+runner, `94fc0db`
+  detail+`/data`, `8451fa0` boxes+caption, `3b6b46e` fix TTL/sweep, `393163c` sweep+
+  `source`+classes com `id`; docs sincronizados no 3b.8). Entregue: bucket S3/SeaweedFS
+  como blob canônico (volume `datasets`/`DATASETS_DIR` do principal mortos; sweep de
+  prefixo `datasets/<id>/` pós-commit best-effort), `DefaultBodyLimit` dedicado
+  (total 200 MiB + 8 MiB + teto por arquivo 200 MiB, envelope — ADR-0002 T10),
+  `images.object_key` + `sha256`/`media_type`, `videos` sem rota de escrita,
+  `heph_refresh_dataset_counters` (nunca `+=`, status derivado), `source` derivado
+  `s3://{bucket}/datasets/{id}/`, `classes` como `{id,name,idx,color}` (gap classId,
+  3b.7). O que SOBROU para as fatias seguintes: export/import/package → **3e**
+  (backup interim = console + `mc mirror`); bloco `--datasets` no
+  `scripts/e2e-smoke.sh` (se ainda não coberto); UI `/datasets` (3c) e
+  galeria/anotação (3d). Verificado: lista, `GET /:id` e `POST` preenchem `classes`
+  com `{id,name,idx,color}` (`handlers.rs:80,237,277`).
 - **Jobs (fatia 4)** — `jobs.dataset_id UUID NULL REFERENCES datasets(id)
   ON DELETE SET NULL` + snapshot `dataset_versions` (nunca `RESTRICT`) — ADR-0002 T4.
 - **3d** — derivar `autoTracked` de `boxes.origin='autotracker'` (T7); hoje é
   constante `false`.
 - **Hardening (sem fatia marcada)** — gate aceita `sub` órfão: cookie assinado com
   segredo antigo sobrevive a reset de `users` e passa a ler/deletar datasets (T8;
-  mitigação = `SELECT EXISTS` no gate ou rotacionar segredo no reset). Erro de
-  banco hoje vira 500 **sem log nenhum** — antes da fatia de jobs adicionar log
-  server-side (nunca no response). `cargo fmt -p api-principal` tem 10 hunks
-  violando padrão, **todos pré-existentes** (Fatia 2); nenhum CI de fmt — decisão
-  de quando formatar é do usuário.
+  mitigação = `SELECT EXISTS` no gate ou rotacionar segredo no reset). `cargo fmt
+  -p api-principal` segue violando padrão (hunks pré-existentes da Fatia 2 +
+  acréscimo da 3b); nenhum CI de fmt — decisão de quando formatar é do usuário.
+- **Logging server-side (fatia nomeada, sem número)** — revisores 3b.3/3b.6: `Err(_)
+  => internal()` engole detalhes (banco vira 500 mudo, sem log nenhum) e o `map_err`
+  do SDK descarta `code()`; sweep do DELETE usa `eprintln` como mínimo honesto até
+  a fatia chegar. Escopo: log server-side (nunca no response) antes/depois da fatia
+  de jobs.
 
-## Plano em andamento — PRÓXIMO PASSO EXATO: fatia `3b.1` (código de produção)
+## Plano em andamento — PRÓXIMO PASSO EXATO: merge da `feat/datasets-storage` → 3c
 
-**Spike 3b.0 FEITO (7/7, ver "Estado atual"). Nada de código de produção foi escrito ainda.** A
-sequência:
+**3b.0–3b.8 FEITOS 2026-09-05 (ver "Estado atual").** A sequência:
 
 1. ~~`spike/storage-seaweedfs`~~ ✅ **CONCLUÍDO 2026-09-05** (ramo `spike/storage-seaweedfs`,
-   commit `09a517d`, matriz em `spike/STORAGE-SPIKE.md`, **não fundido**). Nenhum critério falhou;
-   D3/D4 intactas. **Antes da 3b.4, ler a seção "Resultados do spike 3b.0" da ADR-0003** — corrige
-   o compose de rascunho da ADR (identidade `-s3.config` JSON, bucket auto-cria, `-ip.bind`,
-   API real do SDK) e levanta o risco R10 (build `aws-lc-sys` no `rust:slim`).
-2. **3b.1..3b.7** = abrir `feat/datasets-storage` de `main` atualizada, na ordem da tabela "Plano
-   de commits da 3b" da ADR-0003 (migration 0003 + gatilhos → porta/mock/AppState → upload
-   + `GET images` → S3Storage + compose + runner → leitura/detail/`/data` → boxes/caption →
-   sweep do DELETE + `source` derivado). Roteiro de verificação por commit na ADR.
-   **Decomposição de delegação:** 3b.1 migration+triggers e 3b.2..3b.7 handlers/S3 =
-   `@rust-dev` com especificação completa (ADR-0003 + achados do spike); decisões de schema/
-   boundary (0003, `StoragePort`) já estão presas na ADR, não re-abrir.
-3. **3b.8** = `@docs-sync` aplicando **exatamente** a lista "O que fica falso nos docs" do
-   fim da ADR-0003 + banner na ADR-0002 (T3/Consequências; T10 e D6 da 0002 **continuam
-   válidos**).
-4. `@reviewer` ao fim de 3b.3 e de 3b.6 (não no fim da fatia inteira).
-5. Depois: **3c UI `/datasets`** (lista) → **3d galeria+annotate** → **3e export/import**
-   → **4 jobs/package/materialização** (onde o orquestrador ganha cliente S3 com credencial
-   escopada por prefixo e onde a dívida T4 da ADR-0002 — `jobs.dataset_id ON DELETE SET
-   NULL` + `dataset_versions` — precisa ser honrada no nascedouro).
+   commit `09a517d`, matriz em `spike/STORAGE-SPIKE.md`, **não fundido**).
+2. ~~**3b.1..3b.7**~~ ✅ **CONCLUÍDOS** em `feat/datasets-storage` (`f6c6ff5`..`393163c`);
+   `@reviewer` ao fim de 3b.3 e 3b.6 (ver A/B no "Estado atual").
+3. ~~**3b.8**~~ ✅ **CONCLUÍDO nesta sessão** (`@docs-sync`: deltas da ADR-0003 aplicados em
+   `backend.md`/`frontend.md` + banner na ADR-0002 + ADR-0003 marcada IMPLEMENTADA).
+4. Depois (decisão do usuário): **merge da branch** → **3c UI `/datasets`** (lista) →
+   **3d galeria+annotate** → **3e export/import** → **4 jobs/package/materialização**
+   (onde o orquestrador ganha cliente S3 com credencial escopada por prefixo e onde a
+   dívida T4 da ADR-0002 — `jobs.dataset_id ON DELETE SET NULL` + `dataset_versions` —
+   precisa ser honrada no nascedouro).
 
 Cada fatia: branch `feat/<slice>` de `main` atualizada, commit `type(scope):
 subject`, verificação do coordenador (`cargo check --workspace`, `cargo test -p
@@ -197,12 +208,12 @@ autorizou a landing direto no tronco).
 - [x] ADR-0003 aceita, D0 = SeaweedFS.
 - [x] Spike `spike/storage-seaweedfs` rodado (7/7 PASS, commit `09a517d`, **não fundido**);
       achados appêndados na ADR-0003 → "Resultados do spike 3b.0".
-- [ ] **Abrir `feat/datasets-storage` da `main` e rodar 3b.1 (migration 0003 + gatilhos) →
-      3b.7** com `@rust-dev`; `@reviewer` ao fim de 3b.3 e 3b.6; **3b.8** `@docs-sync`. Antes da
-      3b.4, ler os achados do spike (compose real + risco R10 `aws-lc-sys`).
-- [ ] Pendências antigas que continuam valendo, sem fatia marcada: CLI
-      `studio reset-password` (ADR-0001 T4), `cargo fmt -p api-principal` (10 hunks
-      fora de padrão, todos da Fatia 2), logging server-side em erro de banco
-      (hoje vira 500 mudo), gate aceitar `sub` órfão (ADR-0002 T8).
+- [x] **3b.7** ✅ (sweep + `source` derivado + classes com `id`, `393163c`) e **3b.8** ✅
+      (docs sincronizados nesta sessão).
+- [ ] Próximo passo = **merge da `feat/datasets-storage`** (decisão do usuário) → 3c.
+- [ ] Pendências que continuam valendo, sem fatia marcada: CLI
+      `studio reset-password` (ADR-0001 T4), `cargo fmt -p api-principal` segue,
+      logging server-side (fatia nomeada — revisores 3b.3/3b.6), gate `sub` órfão
+      (ADR-0002 T8).
       ~~`lefthook install`~~ ✅ quitado em `chore/agent-team` (gate ativo: hooks
       instalados + commitlint real + deny de commit nos subagentes).

@@ -12,8 +12,8 @@
 
 ```
 [Next.js] ──HTTP/WS──> [backend principal Rust :8080 + Postgres]
-  auth single-user · datasets (metadados no Postgres, blobs em disco) ·
-  uploads 200MB · configs JSON/YAML · jobs API · chaves HF/Civitai
+   auth single-user · datasets (metadados no Postgres, blobs canônicos no bucket S3/SeaweedFS — ADR-0003 D1) ·
+   uploads 200MB · configs JSON/YAML · jobs API · chaves HF/Civitai
         ──HTTP──> [manager local]
           inventário de orquestradores · regras/VRAM policy · sync de ambientes ·
           roteamento de jobs (local vs remoto) · adopção (auto local / por chave remota)
@@ -23,7 +23,7 @@
                       ──exec──> [trainer-yolo | trainer-difusao | trainer-clip | runner-* (Python)]
 ```
 
-- Principal nunca toca GPU pesada; dono da verdade (Postgres + arquivos canônicos) e única superfície do front.
+- Principal nunca toca GPU pesada; dono da verdade (Postgres como verdade relacional + bucket S3 como verdade binária, com as linhas de `images` como índice — ADR-0003 D1) e única superfície do front. Disco local no principal é só efêmero (spool de upload em tempfile).
 - Manager mora no ambiente local, **dono da fila central e da política VRAM**; sincroniza ambientes e despacha jobs conforme capacidade reportada.
 - Orquestrador (local ou remoto) é **stateless e executor**: valida md5, faz build do dataset, sobe trainers/runners, reporta VRAM/logs e devolve artefatos. Sem Postgres próprio, só workspace efêmero + volumes de cache.
 - Python só treina/infere e devolve artefatos + métricas + samples.
@@ -46,8 +46,8 @@
 
 ## 3. Dataset e banco — Postgres canônico, SQLite só no orquestrador
 
-- **Postgres (principal + web):** metadados (`datasets, images, annotations, captions, classes, jobs, runners, orchestrators, settings/keys ref`). Blobs canônicos em disco no formato por engine: YOLO `images/ + labels/*.txt + data.yaml`, Difusão `img + .txt/.json + captions.jsonl`, CLIP `pares .parquet/.jsonl`.
-- **Chunks (decisão): 8 MB** (faixa configurável 4–16 MB). Protocolo: `POST package/init {md5_zip, bytes, chunks}` → `PUT package/:id/chunk/:i` (md5 por chunk, retry individual, 4 em paralelo) → `POST package/:id/complete` (verifica md5 fim-a-fim, só então build). Local via volume dispensa chunking; remoto sempre chunkado com resume por `chunk_bitmap`.
+- **Postgres (principal + web):** metadados (`datasets, images, boxes, captions, classes, videos, jobs, runners, orchestrators, settings/keys ref`). Só mídia vira objeto no bucket; anotação é linha no banco (`boxes`, `captions` — ADR-0003 D6). Os formatos por engine (YOLO `images/ + labels/*.txt + data.yaml`, Difusão `img + .txt/.json + captions.jsonl`, CLIP `pares .parquet/.jsonl`) **não são canônicos**: são artefatos de build materializados no tempdir do orquestrador a partir do Postgres e mortos no `finally` (ADR-0003 D1/D6).
+- **Chunks (decisão): 8 MB** (faixa configurável 4–16 MB) **só no transporte principal→orquestrador REMOTO** (ADR-0003 D9: `POST package/init {md5_zip, bytes, chunks}` → `PUT package/:id/chunk/:i` → `POST package/:id/complete`; projeto da fatia 3e/4, ainda não implementado). Entre principal e bucket local não há chunk nenhum: upload é multipart com spool em tempfile + `put_object` de length exato.
 - **Build no orquestrador:** ele pode materializar um `build.sqlite` **interno/temporário** ou montar direto via `JSON/YAML` — o que for melhor por engine — e então **reconstrói a árvore exata do motor** (`labels/*.txt`, `data.yaml` com paths remapeados). Python nunca lê SQLite do transporte; SQLite é detalhe interno e descartável do orquestrador.
 
 ## 4. Jobs, trainers sob demanda e cache
@@ -115,10 +115,13 @@ auth:     POST /api/auth/login, GET /api/auth/me, POST /api/auth/logout  → imp
 health:   GET /health → {status, service, auth: ready|setup_required}  → implementado (campo `auth` novo, ADR-0001 D3)
 settings: PUT/GET /api/settings/keys {hfToken, civitaiKey, openaiKey, anthropicKey, vllmEndpoint}, GET /api/settings/vram-policy
 datasets: GET/POST /api/datasets, GET/DELETE /api/datasets/:id  → implementado (Fatia 3a; ADR-0002/openapi)
-          POST /api/datasets/:id/upload (200MB), GET /api/datasets/:id/images
-          PUT  /api/datasets/:id/images/:img/{boxes,caption}
-          POST /api/datasets/:id/export, POST /api/datasets/import
-          POST /api/datasets/:id/package (gera zip manifest+md5 p/ orquestrador)
+           POST /api/datasets/:id/upload, GET /api/datasets/:id/images,
+           GET  /api/datasets/:id/images/:imageId, GET /api/datasets/:id/images/:imageId/data,
+           PUT  /api/datasets/:id/images/:imageId/boxes, PUT /api/datasets/:id/images/:imageId/caption
+             → implementado (Fatia 3b; ADR-0003/openapi 0.3.0)
+           POST /api/datasets/:id/export, POST /api/datasets/import
+           POST /api/datasets/:id/package (gera zip manifest+md5 p/ orquestrador)
+             → adiados para a fatia 3e (ADR-0003 D9; backup interim = console + `mc mirror`)
 models:   GET /api/models (lista pesos em disco/banco p/ dropdowns), POST /api/models/upload, POST /api/models/download
 preview:  POST /api/preview/{autolabel,autotracker,generate,search} (job efêmero ou runner quente, sem fila de treino)
 jobs:     POST /api/jobs/{yolo,difusao,clip,autolabel,autotracker,playground}
@@ -134,6 +137,17 @@ ws:       /ws/jobs/:id/logs?since_seq=, /ws/telemetry
 
 - Nota Fatia 2 (D9): `/api/auth/me` valida o próprio cookie (isento do gate por prefixo, §2); `route_layer` plugado na Fatia 3a (ADR-0002 D9) — fallback fail-closed (sem sessão → 401 mesmo em rota inexistente; com sessão → 404 sem body, fora da OpenAPI).
 - Nota Fatia 3a (ADR-0002 D1, casing): TODAS as chaves de body/query/response de `/api/*` são camelCase (o teste `json_property_names_are_camel_case` rejeita o resto). **Os nomes listados no §9 são colunas (§10) ou campos de transporte, não chaves JSON** — ex.: settings `{hfToken, …}` no wire vs colunas `hf_token` em `settings`; datasets `sizeBytes/imagesCount/lastModified` no wire vs colunas `size_bytes/images_count/updated_at`. A rota `PUT/GET /api/settings/keys` ainda **não está implementada**; as colunas de `settings` permanecem snake_case.
+- Nota Fatia 3b (ADR-0003, spec 0.3.0 — shapes reais em `services/api-principal/src/datasets/models.rs`, tabela de rotas ≡ `PROTECTED_ROUTES` em `src/auth/routes.rs`):
+  ```
+  POST /api/datasets/:id/upload                  200 400 401 404 503
+  GET  /api/datasets/:id/images                  200 400 401 404
+  GET  /api/datasets/:id/images/:imageId         200 401 404
+  GET  /api/datasets/:id/images/:imageId/data    200 401 404 503
+  PUT  /api/datasets/:id/images/:imageId/boxes   200 400 401 404
+  PUT  /api/datasets/:id/images/:imageId/caption 200 400 401 404
+  ```
+  `POST /:id/upload` (multipart campo `files`): resposta por item `{imageId,filename,status,reason,bytes,width,height}`, `status ∈ stored|duplicate|rejected|failed`, `reason ∈ duplicate_filename|unsupported_media|too_large|storage_error` (`src/datasets/handlers.rs::MAX_FILE_BYTES` = 200 MiB por arquivo; corpo TOTAL limitado por `UPLOAD_BODY_LIMIT_BYTES` = 200 MiB + 8 MiB de envelope em `src/auth/routes.rs`, excesso → 413 `invalid_request` no envelope; lote todo indecodível → 400; bucket fora → 503 `storage_unavailable`). `filename` do wire = nome canônico server-side (stem sanitizado + extensão do sniff por magic bytes), nunca o nome do form. `GET /:id/images?limit&offset&split&labeled` → `ImagePage{items,total,limit,offset}` (`limit` default 50, máx 200, `offset` default 0; `split=train|val`, `labeled=true|false`, inválido → 400; `labeled` respeita a taxonomia do trigger: `yolo_txt` ⇒ boxes, demais ⇒ captions). `GET` detail → `ImageDetail` flat (= `Image` + `boxes[]` + `caption|null`); `url` por imagem é híbrida D3: com `S3_PUBLIC_ENDPOINT_URL` → presigned GET (TTL `S3_URL_TTL_SECS`, default 3600), sem ela → `/api/datasets/:id/images/:imageId/data`. `GET /data` existe **incondicionalmente** (proxy do objeto, `Cache-Control: private, max-age=31536000, immutable`; objeto ausente ⇒ 404, bucket fora ⇒ 503). `PUT boxes` = substituição total transacional (`DELETE` + `INSERT` com `RETURNING` numa transação; erro ⇒ rollback + 500): corpo `{boxes:[{classId,x,y,w,h,conf?,origin?,trackId?}]}` (cap 1000, `x/y/w/h` e `conf` em `0..=1`, `origin ∈ manual|autotracker|import` default `manual`, `classId` tem de pertencer ao dataset senão 400 seco); `PUT caption` = upsert de statement único com `RETURNING` (`{text,origin?,model?}`, `text` 1..8000 chars, `model` ≤ 255 chars). `id`/`imageId` não-UUID → 404 `not_found` (ADR-0002 D8 replicado); erro novo `storage_unavailable` (503, ADR-0003 D10); wire camelCase, `deny_unknown_fields` nos inputs.
+- Nota Fatia 3b — storage/env (código: `src/main.rs::load_storage`, `infra/compose.yaml`): `STORAGE_BACKEND=mock|s3` (default `mock` nos testes, `s3` no compose); modo `s3` exige `S3_ENDPOINT_URL` + `S3_ACCESS_KEY` + `S3_SECRET_KEY` (fail-fast no boot sem ecoar valor); `S3_BUCKET` (default `heph-data`), `S3_PUBLIC_ENDPOINT_URL` (default `http://localhost:8333`; ausente ⇒ `url` vira fallback `/data`), `S3_URL_TTL_SECS` (default 3600, validado no boot em `1..=604800`, máx SigV4 de 7 dias). `Dataset.source` no wire **permanece** (contrato não quebra) mas é derivado server-side (`src/datasets/models.rs::derived_source`): `s3://{bucket}/datasets/{id}/` quando `images_count > 0`, `null` em dataset vazio. `Dataset.classes` é objeto completo `{id,name,idx,color}` (o `id` alimenta o `classId` do PUT boxes — gap fechado na 3b.7).
 
 ## 10. Schema Postgres (só local — principal/manager)
 
@@ -145,8 +159,12 @@ orchestrators(id UUID PK, name TEXT, endpoint TEXT UNIQUE, kind TEXT,     -- loc
   fingerprint TEXT, token_hash TEXT, gpus JSONB, vram_total_gb INT,
   status TEXT, last_heartbeat TIMESTAMPTZ);
 datasets(id UUID PK, slug TEXT UNIQUE, title TEXT, category TEXT,          -- difusao|openclip|yolo
-  type TEXT, task TEXT, format TEXT, status TEXT, source TEXT, size_bytes BIGINT,
+  type TEXT, task TEXT, format TEXT, status TEXT, size_bytes BIGINT,
   images_count INT DEFAULT 0, labeled_count INT DEFAULT 0, created_at TIMESTAMPTZ);
+  -- IMPLEMENTADO (Fatia 3b; `migrations/0003_images.sql`): a coluna `source` SAIU do banco
+  -- (`ALTER TABLE datasets DROP COLUMN source` — era "caminho em disco", conceito morto,
+  -- ADR-0003 D5); no wire `Dataset.source` permanece como derivado server-side
+  -- (`s3://{bucket}/datasets/{id}/` quando images_count > 0, null enquanto vazio).
   -- IMPLEMENTADO (Fatia 3a; ADR-0002/openapi): colunas NOT NULL/DEFAULT conforme `0002_datasets.sql`;
   -- CHECKs de domínio em category/type/task/format/status (valores do §10 à letra) + CHECKs
   -- size_bytes/images_count/labeled_count >= 0; o invariante `labeled_count <= images_count`
@@ -157,12 +175,25 @@ classes(id UUID PK, dataset_id UUID FK, name TEXT, idx INT, color TEXT, UNIQUE(d
   -- IMPLEMENTADO (Fatia 3a; ADR-0002/openapi): name CHECK ^[A-Za-z0-9_]{1,64}$, idx CHECK >= 0,
   -- color CHECK ^#[0-9a-f]{6}$ (paleta §3 front), UNIQUE(dataset_id, name) + UNIQUE(dataset_id, idx),
   -- FK ON DELETE CASCADE; índice classes(dataset_id, idx).
-images(id UUID PK, dataset_id UUID FK, filename TEXT, path TEXT, w INT, h INT,
-  md5 TEXT, bytes BIGINT, split TEXT DEFAULT 'train', created_at TIMESTAMPTZ, UNIQUE(dataset_id, filename));
-boxes(id UUID PK, image_id UUID FK, class_id UUID FK,
-  x FLOAT, y FLOAT, w FLOAT, h FLOAT, conf FLOAT NULL, origin TEXT, track_id INT NULL);
-captions(image_id UUID PK FK, text TEXT, origin TEXT, model TEXT, updated_at TIMESTAMPTZ);
-videos(id UUID PK, dataset_id UUID FK, filename TEXT, path TEXT, fps FLOAT, frames INT, md5 TEXT);
+images(id UUID PK, dataset_id UUID FK CASCADE, filename TEXT CHECK 1..255, object_key TEXT UNIQUE,
+  bytes BIGINT CHECK >= 0, width INT CHECK > 0, height INT CHECK > 0,
+  md5 TEXT CHECK ^[0-9a-f]{32}$, sha256 TEXT CHECK ^[0-9a-f]{64}$,
+  media_type TEXT CHECK jpeg|png|webp, split TEXT DEFAULT 'train' CHECK train|val,
+  created_at TIMESTAMPTZ, UNIQUE(dataset_id, filename));
+  -- IMPLEMENTADO (Fatia 3b; `migrations/0003_images.sql` à letra): `object_key` no lugar de
+  -- `path` (chave legível `datasets/{dataset_id}/images/{image_id}/{filename_sanitizado}`);
+  -- +`sha256`/`media_type`; índices `images(dataset_id)` e `images(dataset_id, split)`.
+boxes(id UUID PK, image_id UUID FK CASCADE, class_id UUID FK CASCADE,
+  x/y/w/h DOUBLE CHECK 0..1, conf DOUBLE NULL, origin TEXT CHECK manual|autotracker|import,
+  track_id INT NULL);
+  -- ÍNDICES: `boxes(image_id)`, `boxes(class_id)`.
+captions(image_id UUID PK FK CASCADE, text TEXT CHECK 1..8000, origin TEXT CHECK manual|autotracker|import,
+  model TEXT NULL, updated_at TIMESTAMPTZ + trigger tg_set_updated_at da 0002);
+videos(id UUID PK, dataset_id UUID FK CASCADE, filename TEXT CHECK 1..255, object_key TEXT UNIQUE,
+  fps DOUBLE NULL, frames INT NULL CHECK >= 0, md5 TEXT CHECK ^[0-9a-f]{32}$,
+  bytes BIGINT CHECK >= 0, created_at TIMESTAMPTZ, UNIQUE(dataset_id, filename));
+  -- IMPLEMENTADO (Fatia 3b): idem objeto, índice `videos(dataset_id)`; SEM rota de escrita
+  -- na 3b (nasce agora porque DDL é estático e a FK CASCADE vem junto das irmãs — ADR-0003 D5).
 dataset_versions(id UUID PK, dataset_id UUID FK, manifest JSONB, created_at TIMESTAMPTZ);
 models(id UUID PK, engine TEXT, name TEXT, path TEXT, source TEXT,         -- hf|civitai|upload
   url TEXT NULL, hash TEXT NULL, bytes BIGINT, created_at TIMESTAMPTZ);
@@ -176,21 +207,21 @@ runners(id UUID PK, engine TEXT, model TEXT, orchestrator_id UUID FK,
   status TEXT, vram_gb INT, last_used TIMESTAMPTZ);
 ```
 
-- Índices: `images(dataset_id)`, `boxes(image_id)`, `jobs(status)`, `job_artifacts(job_id)`.
+- Índices: `images(dataset_id)`, `images(dataset_id, split)`, `boxes(image_id)`, `boxes(class_id)`, `videos(dataset_id)`, `classes(dataset_id, idx)`, `jobs(status)`, `job_artifacts(job_id)`.
 - Nota (ADR-0002 D1, casing — resolvido; era ADR-0001 T3 "a definir antes da Fatia 3"): wire camelCase em `/api/*` (`userId`, `sizeBytes`, `lastModified`, settings `hfToken`…); colunas SQL snake_case; valores de enum, `Error.code` e artefatos de transporte (`manifest.json`, `config.yaml`, SQLite do orquestrador) snake_case.
-- Regra: contadores do dataset via trigger/view a partir de `images/boxes/captions`; chaves externas com `ON DELETE CASCADE` de dataset→filhos. **Ordem (Fatia 3b):** os contadores têm de ser recalculados por uma única função (ou `CONSTRAINT TRIGGER ... DEFERRABLE INITIALLY DEFERRED`) porque `DELETE FROM images` de uma imagem rotulada passa por estado intermediário em que `labeled_count > images_count` — por isso esse invariante não virou `CHECK` na 3a (ADR-0002 T2).
+- Regra: contadores do dataset recalculados por função única `heph_refresh_dataset_counters(uuid)` — IMPLEMENTADO (Fatia 3b; `migrations/0003_images.sql`, fecha ADR-0002 T2): recalcula `images_count`/`labeled_count`/`size_bytes` e deriva `status` (`needs_labeling`/`in_progress`/`ready`) a partir das tabelas-fato, nunca `+=` (drift impossível; `UPDATE` com guarda `IS DISTINCT FROM` evita churn de `updated_at`); disparada por triggers `AFTER INSERT OR UPDATE OR DELETE` em `images`, `videos` e `boxes`/`captions` (via lookup de `dataset_id`); a ordem trigger-usuário × cascata-RJ do `DELETE FROM images` deixa de importar (o último disparo vê o estado final); `labeled` = imagem com ≥1 box (format `yolo_txt`) **ou** linha em `captions` (demais formats) — taxonomia R9; `size_bytes` soma `images` + `videos`. Chaves externas com `ON DELETE CASCADE` de dataset→filhos. O invariante `labeled_count <= images_count` continua sem `CHECK` (não deferrável) — é obrigação do trigger.
 - **Split:** coluna `images.split (train|val)`; padrão 80/20 estratificado no package com override manual na galeria (seletor train/val por imagem).
-- **Consistência disco×banco:** Postgres é a verdade; `PUT boxes/caption` atualiza o banco e materializa o `.txt` em disco com debounce (~2s). O package sempre gera do banco.
+- **Consistência bucket×banco (ADR-0003 D1/D6/D7):** Postgres é a verdade relacional, o bucket é a verdade binária (linhas de `images` como índice). `PUT boxes/caption` atualiza SÓ o banco — a materialização do `.txt` com debounce (~2s) MORREU (não há mais o que materializar; `data.yaml`/`labels/*.txt`/`captions.jsonl`/`.parquet` nascem no tempdir do orquestrador a partir do Postgres). Ordem de escrita objeto→linha→compensação: PUT do objeto → `INSERT ... ON CONFLICT (dataset_id, filename) DO NOTHING` (sem linha ⇒ `duplicate` + DELETE best-effort do objeto); `DELETE /api/datasets/:id` commita o banco primeiro (CASCADE) e depois varre o prefixo `datasets/{id}/` (`ListObjectsV2` paginado + `DeleteObjects` de 1000) best-effort — falha do sweep loga (`eprintln`) e não transforma o 204 em erro. O package sempre gera do banco.
 - **Snapshot:** ao despachar job, congela `dataset_versions{manifest}` e o zip aponta para a versão; edição posterior não afeta treino em voo (trava lógica por versão, não por dataset).
 
 ## 11. Schemas, retenção e setup inicial
 
-- `manifest.json` (transporte): `{dataset_id, slug, category, engine, files:[{path, md5, bytes}], md5_zip, bytes, chunks, created_at}`.
+- `manifest.json` (transporte — PROJETO para 3e/4, ainda não implementado; ADR-0003 D9): `{dataset_id, slug, category, engine, files:[{key,filename,md5,bytes}], md5_zip, bytes, chunks, created_at}` (`files[].path` → `{key,filename,md5,bytes}`; snake_case, orquestrador recebe o manifest com `key` quando ganhar cliente S3).
 - `config.yaml` por job: comum `{job_id, engine, model, mode, dataset_path, output_path, seed}` + específico:
   - yolo: `{model, epochs, batch, imgsz, lr0, optimizer, augment:{mosaic, mixup_flip}}`;
   - difusao: `{base_model, trigger_word, rank, alpha, optimizer, steps, lr, cfg}`;
   - clip: `{backbone, embed_dim, loss, lr, warmup, batch, epochs}`.
 - `engines.yaml`: `{engine, image, cuda, torch, validated_at}` — ex. `trainer-difusao: hephaestus/trainer-difusao:local`.
 - Retenção: samples últimos 5 ciclos ou 500 MB/job; logs 10 MB + 30 dias; artifacts guarda `best + last`, resto com GC manual (`DELETE /api/jobs/:id/artifacts?keep=best,last`).
-- Setup: `STUDIO_PASSWORD` no primeiro boot (hash Argon2 em `users`); troca via CLI `studio reset-password` (sem expor rota); chaves cifradas app-level com `STUDIO_MASTER_KEY` (nunca em log); `compose.yaml` sobe `db (postgres:16) + principal (:8080) + manager + orquestrador-local (socket docker) + web (next)` com volumes `pgdata, datasets, models, outputs`.
+- Setup: `STUDIO_PASSWORD` no primeiro boot (hash Argon2 em `users`); troca via CLI `studio reset-password` (sem expor rota); chaves cifradas app-level com `STUDIO_MASTER_KEY` (nunca em log); `infra/compose.yaml` sobe `db (postgres:16) + principal (:8080) + manager + orquestrador-local (socket docker) + web (next) + seaweedfs (:8333 S3, :9333 master UI)` com volumes `pgdata, seaweed_data, datasets, models, outputs`. Serviço novo `seaweedfs` (`chrislusf/seaweedfs:4.45_full` pinado, `server -s3 -ip.bind=0.0.0.0 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json`, identidade em `infra/seaweedfs-s3.json`, bind loopback `127.0.0.1:8333:8333` + `127.0.0.1:9333:9333`, healthcheck por `wget` com `403 = no ar`); principal com `STORAGE_BACKEND=s3`, `S3_ENDPOINT_URL=http://seaweedfs:8333`, `S3_BUCKET=heph-data`, `S3_PUBLIC_ENDPOINT_URL=http://localhost:8333`, `S3_URL_TTL_SECS=3600`. O volume `datasets` do orquestrador-local SOBREVIVE (para `models`/`outputs`/cache de build); o volume `datasets` do principal morreu (blobs no bucket).
 - **Execução sem DinD (RunPod padrão):** orquestrador opera em 2 modos — `docker` (socket disponível) ou `subprocess` (venv/python direto no mesmo host). Pods sem socket usam modo subprocess; template com DinD é opcional, não requisito.

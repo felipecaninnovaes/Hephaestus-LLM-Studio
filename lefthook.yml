@@ -13,7 +13,11 @@ pre-commit:
       run: bash scripts/check-staged-size.sh
     segredos:
       run: |
-        bad=$(git diff --cached --name-only | grep -E '(^|/)\.env(\.|$)|(^|/)target/|node_modules/|\.git/' || true)
+        # Whitelist estreita: só .env.example (template, sem segredo) é exceção,
+        # porque o .gitignore o re-permite; .env.template/.env.dist ficam bloqueados.
+        bad=$(git diff --cached --name-only \
+          | grep -E '(^|/)\.env(\.|$)|(^|/)target/|node_modules/|\.git/' \
+          | { grep -vE '(^|/)\.env\.example$' || true; })
         if [ -n "$bad" ]; then
           echo "LEFTHOOK: arquivos proibidos no staging:"; echo "$bad"; exit 1
         fi

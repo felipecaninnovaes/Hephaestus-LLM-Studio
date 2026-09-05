@@ -764,9 +764,8 @@ components:
         source:
           type: [string, "null"]
           description: >
-            Caminho canônico em disco sob `DATASETS_DIR`, atribuído pelo servidor
-            no primeiro upload (3b). Sempre `null` na 3a; a UI mostra "—". Nunca é
-            input do cliente (path-traversal).
+            Valor derivado `s3://<bucket>/datasets/<id>/` quando há imagens,
+            `null` em dataset vazio (referência ADR-0003 D5).
         sizeBytes:
           type: integer
           format: int64
@@ -776,8 +775,8 @@ components:
         labeledCount: { type: integer, minimum: 0 }
         classes:
           type: array
-          items: { type: string }
-          description: Nomes ordenados por `classes.idx` (os chips do card, §5.1).
+          items: { $ref: "#/components/schemas/Class" }
+          description: "nomes no create request; objeto completo na resposta (3b.7 — classId exposto p/ PUT boxes)."
         autoTracked:
           type: boolean
           default: false
@@ -790,6 +789,18 @@ components:
           type: string
           format: date-time
           description: "`datasets.updated_at` (RFC 3339), não string relativa; a UI formata 'há 12 minutos'."
+
+    Class:
+      type: object
+      required: [id, name, idx, color]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        idx: { type: integer, minimum: 0 }
+        color:
+          type: string
+          pattern: '^#[0-9a-f]{6}$'
+          description: Cor da paleta do design system por `idx % 6`.
 
     UploadItem:
       type: object

@@ -130,7 +130,16 @@ async fn create_read_delete_flow() {
     assert_eq!(created["sizeBytes"], 0);
     assert_eq!(created["imagesCount"], 0);
     assert_eq!(created["labeledCount"], 0);
-    assert_eq!(created["classes"], serde_json::json!(["solda_fria", "curto_circuito"]));
+    let class_names: Vec<&str> = created["classes"]
+        .as_array()
+        .expect("classes array")
+        .iter()
+        .map(|c| c["name"].as_str().expect("class name"))
+        .collect();
+    assert_eq!(class_names, vec!["solda_fria", "curto_circuito"]);
+    assert_eq!(created["classes"][0]["idx"], 0);
+    assert_eq!(created["classes"][0]["color"], "#10b981");
+    assert!(created["classes"][0]["id"].is_string());
     assert_eq!(created["autoTracked"], false);
     assert!(created["createdAt"].is_string());
     assert!(created["lastModified"].is_string());
@@ -303,10 +312,14 @@ async fn classes_idx_and_colors() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        json(&body)[0]["classes"],
-        serde_json::json!(["gato", "cao", "passaro"])
-    );
+    let list = json(&body);
+    let names: Vec<&str> = list[0]["classes"]
+        .as_array()
+        .expect("classes array")
+        .iter()
+        .map(|c| c["name"].as_str().expect("class name"))
+        .collect();
+    assert_eq!(names, vec!["gato", "cao", "passaro"]);
 }
 
 #[tokio::test]
@@ -1453,9 +1466,16 @@ async fn t0003_put_boxes_fluxo_status() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
-    let ds = json(&body)["id"].as_str().expect("id").to_string();
+    let created = json(&body);
+    let ds = created["id"].as_str().expect("id").to_string();
     let ds_id: uuid::Uuid = ds.parse().expect("uuid");
-    let class_id = class_id_of(&st.pool, ds_id).await;
+    // Gap 3b.7 fechado end-to-end: classId sai do wire e alimenta o PUT boxes.
+    let class_id: uuid::Uuid = created["classes"][0]["id"]
+        .as_str()
+        .expect("classes[0].id")
+        .parse()
+        .expect("uuid");
+    assert_eq!(class_id, class_id_of(&st.pool, ds_id).await);
 
     let img1 = insert_image(&st.pool, ds_id, "b1.jpg", 100).await;
     let img2 = insert_image(&st.pool, ds_id, "b2.jpg", 50).await;
@@ -1738,6 +1758,107 @@ async fn t0003_put_boxes_wires_camel() {
     let raw = String::from_utf8(body).expect("utf8");
     assert!(raw.contains("updatedAt"), "{raw}");
     assert!(!raw.contains("updated_at"), "snake_case no wire: {raw}");
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0003_delete_sweep_registrado() {
+    // D7 commit→sweep: dataset + 1 imagem no mock, DELETE ⇒ 204 e ops contém
+    // `DELETE_PREFIX datasets/{id}/`; `source` derivado prova a Parte B.
+    let _guard = SERIAL.lock().await;
+    let mut st = state().await;
+    let mock = std::sync::Arc::new(api_principal::storage::MockStorage::new());
+    st.storage = mock.clone();
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Sweep Rt", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds = json(&body)["id"].as_str().expect("id").to_string();
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+
+    let img = insert_image(&st.pool, ds_id, "s.png", 70).await;
+    let key: String = sqlx::query_scalar("SELECT object_key FROM images WHERE id = $1")
+        .bind(img)
+        .fetch_one(&st.pool)
+        .await
+        .expect("object_key");
+    mock.put_bytes(&key, vec![1, 2, 3]).await;
+
+    // Parte B ao vivo no banco: com imagem, `source` deriva `s3://…`.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri(format!("/api/datasets/{ds}"))
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let source = json(&body)["source"].as_str().expect("source").to_string();
+    assert!(source.starts_with("s3://"), "{source}");
+    assert!(source.contains(&ds), "{source}");
+
+    let (status, _, _) = call(
+        app.clone(),
+        Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/datasets/{ds}"))
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let ops = mock.ops();
+    assert!(
+        ops.contains(&format!("DELETE_PREFIX datasets/{ds_id}/")),
+        "sweep ausente: {ops:?}"
+    );
+    assert!(
+        mock.snapshot().iter().all(|(k, _)| !k.starts_with(&format!("datasets/{ds_id}/"))),
+        "objeto órfão sob o prefixo: {:?}",
+        mock.snapshot()
+    );
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0003_delete_sweep_falho_ainda_204() {
+    // D7: sweep falho NÃO vira erro — DELETE com backend morto ainda é 204.
+    let _guard = SERIAL.lock().await;
+    let mut st = state().await;
+    st.storage =
+        std::sync::Arc::new(api_principal::storage::MockStorage::failing());
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Sweep Morto", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds = json(&body)["id"].as_str().expect("id").to_string();
+
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/datasets/{ds}"))
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(body.is_empty());
 }
 
 #[tokio::test]

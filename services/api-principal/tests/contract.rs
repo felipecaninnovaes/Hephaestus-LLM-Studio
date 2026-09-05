@@ -701,7 +701,7 @@ fn dataset_response_keys_match_openapi() {
     // o set de chaves que `DatasetResponse` produz tem que ser o declarado em
     // `components.schemas.Dataset` (pega drift D1, ex.: renomear
     // `last_modified` sem atualizar a spec).
-    use api_principal::datasets::models::{DatasetResponse, DatasetRow};
+    use api_principal::datasets::models::{DatasetClassResponse, DatasetResponse, DatasetRow};
     use chrono::{DateTime, Utc};
     let row = DatasetRow {
         id: uuid::Uuid::nil(),
@@ -719,7 +719,12 @@ fn dataset_response_keys_match_openapi() {
         updated_at: DateTime::<Utc>::UNIX_EPOCH,
     };
     let mut resp = DatasetResponse::from(row);
-    resp.classes = vec!["a".to_string()];
+    resp.classes = vec![DatasetClassResponse {
+        id: uuid::Uuid::nil().to_string(),
+        name: "a".to_string(),
+        idx: 0,
+        color: "#10b981".to_string(),
+    }];
     let value = serde_json::to_value(&resp).expect("serializar DatasetResponse");
     let got: BTreeSet<String> = value
         .as_object()

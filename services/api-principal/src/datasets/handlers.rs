@@ -30,10 +30,10 @@ use md5::Digest as Md5Digest;
 use sha2::Digest as Sha256Digest;
 
 use super::models::{
-    color_for, derive, normalize_classes, parse_id, slugify, validate_boxes,
-    validate_caption, BoxResponse, CaptionResponse, CreateDatasetRequest, DatasetResponse,
-    DatasetRow, DatasetType, ImageDetailResponse, ImagePage, ImageResponse, ImageRow,
-    PutBoxesRequest, PutBoxesResponse, PutCaptionRequest, UploadItem, UploadResult,
+    color_for, derive, derived_source, normalize_classes, parse_id, slugify, validate_boxes,
+    validate_caption, BoxResponse, CaptionResponse, CreateDatasetRequest, DatasetClassResponse,
+    DatasetResponse, DatasetRow, DatasetType, ImageDetailResponse, ImagePage, ImageResponse,
+    ImageRow, PutBoxesRequest, PutBoxesResponse, PutCaptionRequest, UploadItem, UploadResult,
 };
 use crate::{
     error::{
@@ -64,26 +64,31 @@ pub async fn list(State(state): State<AppState>) -> Response {
         Ok(r) => r,
         Err(_) => return internal(),
     };
-    let class_rows: Vec<(Uuid, String)> =
-        match sqlx::query_as("SELECT dataset_id, name FROM classes ORDER BY dataset_id, idx")
+    let class_rows: Vec<(Uuid, Uuid, String, i32, String)> =
+        match sqlx::query_as("SELECT dataset_id, id, name, idx, color FROM classes ORDER BY dataset_id, idx")
             .fetch_all(&state.pool)
             .await
         {
             Ok(r) => r,
             Err(_) => return internal(),
         };
-    let mut by_dataset: HashMap<Uuid, Vec<String>> = HashMap::new();
-    for (dataset_id, name) in class_rows {
-        by_dataset.entry(dataset_id).or_default().push(name);
+    let mut by_dataset: HashMap<Uuid, Vec<DatasetClassResponse>> = HashMap::new();
+    for (dataset_id, id, name, idx, color) in class_rows {
+        by_dataset
+            .entry(dataset_id)
+            .or_default()
+            .push(DatasetClassResponse::from((id, name, idx, color)));
     }
     let out: Vec<DatasetResponse> = rows
         .into_iter()
         .map(|row| {
             let id = row.id;
+            let images_count = row.images_count;
             let mut resp = DatasetResponse::from(row);
-            if let Some(names) = by_dataset.remove(&id) {
-                resp.classes = names;
+            if let Some(classes) = by_dataset.remove(&id) {
+                resp.classes = classes;
             }
+            resp.source = derived_source(&state.storage_config.bucket, id, images_count);
             resp
         })
         .collect();
@@ -215,8 +220,23 @@ pub async fn create(
     if tx.commit().await.is_err() {
         return internal();
     }
+    let ds_id = row.id;
+    let images_count = row.images_count;
     let mut resp = DatasetResponse::from(row);
-    resp.classes = classes;
+    let created_classes: Vec<(Uuid, String, i32, String)> =
+        match sqlx::query_as("SELECT id, name, idx, color FROM classes WHERE dataset_id = $1 ORDER BY idx")
+            .bind(ds_id)
+            .fetch_all(&state.pool)
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => return internal(),
+        };
+    resp.classes = created_classes
+        .into_iter()
+        .map(DatasetClassResponse::from)
+        .collect();
+    resp.source = derived_source(&state.storage_config.bucket, ds_id, images_count);
     (StatusCode::CREATED, Json(resp)).into_response()
 }
 
@@ -240,8 +260,8 @@ pub async fn get_one(State(state): State<AppState>, Path(id): Path<String>) -> R
         Some(r) => r,
         None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
     };
-    let classes: Vec<String> = match sqlx::query_scalar::<_, String>(
-        "SELECT name FROM classes WHERE dataset_id = $1 ORDER BY idx",
+    let class_rows: Vec<(Uuid, String, i32, String)> = match sqlx::query_as(
+        "SELECT id, name, idx, color FROM classes WHERE dataset_id = $1 ORDER BY idx",
     )
     .bind(id)
     .fetch_all(&state.pool)
@@ -250,12 +270,23 @@ pub async fn get_one(State(state): State<AppState>, Path(id): Path<String>) -> R
         Ok(r) => r,
         Err(_) => return internal(),
     };
+    let images_count = row.images_count;
     let mut resp = DatasetResponse::from(row);
-    resp.classes = classes;
+    resp.classes = class_rows
+        .into_iter()
+        .map(DatasetClassResponse::from)
+        .collect();
+    resp.source = derived_source(&state.storage_config.bucket, id, images_count);
     (StatusCode::OK, Json(resp)).into_response()
 }
 
-/// DELETE /api/datasets/:id — remove dataset (CASCADE leva as classes); 204 sem corpo.
+/// DELETE /api/datasets/:id — remove dataset (CASCADE leva classes/images/
+/// boxes/captions/videos); 204 sem corpo.
+///
+/// Ordem commit→sweep (ADR-0003 D7): o banco commita primeiro; depois o handler
+/// varre o prefixo `datasets/{id}/` no storage best-effort. Estado bom = nenhum
+/// objeto sob o prefixo; órfão sob prefixo deletado é o aceitável (R5) — falha
+/// da varredura NÃO transforma o 204 em erro.
 pub async fn delete(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let id = match parse_id(&id) {
         Some(v) => v,
@@ -272,6 +303,14 @@ pub async fn delete(State(state): State<AppState>, Path(id): Path<String>) -> Re
         };
     if gone.is_none() {
         return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND);
+    }
+    let prefix = format!("datasets/{id}/");
+    if let Err(e) = state.storage.delete_prefix(&prefix).await {
+        // D7: falha da varredura NÃO transforma o 204 em erro — o prefixo fica
+        // reapável por script. Sem framework de log ainda (dívida nomeada em
+        // docs/coordenacao.md), o eprintln é o mínimo honesto. `e` é Display
+        // ESTÁTICO (nunca endpoint/credencial).
+        eprintln!("aviso: sweep do prefixo {prefix} falhou ({e}) — dataset deletado, objetos reapáveis");
     }
     StatusCode::NO_CONTENT.into_response()
 }

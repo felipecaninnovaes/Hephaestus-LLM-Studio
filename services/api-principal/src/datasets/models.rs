@@ -152,6 +152,40 @@ pub struct DatasetRow {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Classe no wire (3b.7): objeto completo `{id, name, idx, color}` camelCase —
+/// a resposta é canônica (nomes só no create request); o `id` alimenta o PUT
+/// boxes (`classId`).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DatasetClassResponse {
+    pub id: String,
+    pub name: String,
+    pub idx: i32,
+    pub color: String,
+}
+
+impl From<(Uuid, String, i32, String)> for DatasetClassResponse {
+    fn from(row: (Uuid, String, i32, String)) -> Self {
+        Self {
+            id: row.0.to_string(),
+            name: row.1,
+            idx: row.2,
+            color: row.3,
+        }
+    }
+}
+
+/// `source` derivado no wire (ADR-0003 D5): `Some(s3://{bucket}/datasets/{id}/)`
+/// quando há imagens, `None` em dataset vazio. O bucket no valor é CONFIG
+/// (`StorageConfig`), não dado — a coluna morreu na migration 0003.
+pub fn derived_source(bucket: &str, dataset_id: Uuid, images_count: i32) -> Option<String> {
+    if images_count > 0 {
+        Some(format!("s3://{bucket}/datasets/{dataset_id}/"))
+    } else {
+        None
+    }
+}
+
 /// Ponto único de conversão snake_case (coluna) → camelCase (wire), política
 /// ADR-0002 D1 — proibido `AS "camelCase"` em SQL ou `rename` individual.
 #[derive(serde::Serialize)]
@@ -173,7 +207,7 @@ pub struct DatasetResponse {
     pub created_at: DateTime<Utc>,
     /// Coluna `updated_at` exposta como `lastModified` (contrato `Dataset`).
     pub last_modified: DateTime<Utc>,
-    pub classes: Vec<String>,
+    pub classes: Vec<DatasetClassResponse>,
     pub auto_tracked: bool,
 }
 

@@ -1421,6 +1421,325 @@ async fn t0003_list_e_detail_url_presinada() {
     assert!(detail_url.starts_with("mock://heph-test/"), "{detail_url}");
 }
 
+fn put_json(cookie: &str, method: &str, uri: String, body: serde_json::Value) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(http::header::CONTENT_TYPE, "application/json")
+        .header(http::header::COOKIE, cookie)
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+async fn class_id_of(pool: &sqlx::PgPool, dataset_id: uuid::Uuid) -> uuid::Uuid {
+    sqlx::query_scalar("SELECT id FROM classes WHERE dataset_id = $1 LIMIT 1")
+        .bind(dataset_id)
+        .fetch_one(pool)
+        .await
+        .expect("class id")
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0003_put_boxes_fluxo_status() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Boxes Rt", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds = json(&body)["id"].as_str().expect("id").to_string();
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+    let class_id = class_id_of(&st.pool, ds_id).await;
+
+    let img1 = insert_image(&st.pool, ds_id, "b1.jpg", 100).await;
+    let img2 = insert_image(&st.pool, ds_id, "b2.jpg", 50).await;
+
+    // PUT 1 box (conf 0.9, trackId 7; origin ausente ⇒ "manual").
+    let (status, _, body) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/images/{img1}/boxes"),
+            serde_json::json!({"boxes": [{"classId": class_id, "x": 0.5, "y": 0.5, "w": 0.2, "h": 0.2, "conf": 0.9, "trackId": 7}]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let resp = json(&body);
+    let boxes = resp["boxes"].as_array().expect("boxes");
+    assert_eq!(boxes.len(), 1);
+    assert!(boxes[0]["id"].is_string());
+    assert_eq!(boxes[0]["classId"], class_id.to_string());
+    assert_eq!(boxes[0]["origin"], "manual");
+    assert_eq!(boxes[0]["conf"], 0.9);
+    assert_eq!(boxes[0]["trackId"], 7);
+    assert_eq!(
+        counters_of(&st.pool, ds_id).await,
+        (2, 1, 150, "in_progress".to_string())
+    );
+
+    // Substituição total: PUT com 2 boxes ⇒ GET detail tem len 2.
+    let (status, _, body) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/images/{img1}/boxes"),
+            serde_json::json!({"boxes": [
+                {"classId": class_id, "x": 0.1, "y": 0.1, "w": 0.3, "h": 0.3},
+                {"classId": class_id, "x": 0.6, "y": 0.6, "w": 0.2, "h": 0.2, "origin": "import"}
+            ]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json(&body)["boxes"].as_array().expect("boxes").len(), 2);
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri(format!("/api/datasets/{ds}/images/{img1}"))
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json(&body)["boxes"].as_array().expect("boxes").len(), 2);
+
+    // Segunda imagem rotulada ⇒ ready (2,2).
+    let (status, _, _) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/images/{img2}/boxes"),
+            serde_json::json!({"boxes": [{"classId": class_id, "x": 0.5, "y": 0.5, "w": 0.2, "h": 0.2}]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        counters_of(&st.pool, ds_id).await,
+        (2, 2, 150, "ready".to_string())
+    );
+
+    // Classe inexistente ⇒ 400 (sem vazar nada).
+    let ghost = uuid::Uuid::new_v4();
+    let (status, _, body) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/images/{img1}/boxes"),
+            serde_json::json!({"boxes": [{"classId": ghost, "x": 0.5, "y": 0.5, "w": 0.2, "h": 0.2}]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+
+    // Classe de OUTRO dataset ⇒ 400 seco (não vaza existência).
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Boxes Outro", &serde_json::json!(["b"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds2 = json(&body)["id"].as_str().expect("id").to_string();
+    let ds2_id: uuid::Uuid = ds2.parse().expect("uuid");
+    let other_class = class_id_of(&st.pool, ds2_id).await;
+    let (status, _, body) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/images/{img1}/boxes"),
+            serde_json::json!({"boxes": [{"classId": other_class, "x": 0.5, "y": 0.5, "w": 0.2, "h": 0.2}]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+
+    // Imagem de outro dataset ⇒ 404 (escopo, não 400).
+    let (status, _, body) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds2}/images/{img1}/boxes"),
+            serde_json::json!({"boxes": [{"classId": other_class, "x": 0.5, "y": 0.5, "w": 0.2, "h": 0.2}]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json(&body)["code"], "not_found");
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0003_put_caption() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    // format captions (R9): caption rotula, box não.
+    let ds_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO datasets (id, slug, title, category, type, task, format, status) \
+         VALUES ($1,'cap-put','Cap Put','difusao','difusao_lora','caption','captions','needs_labeling')",
+    )
+    .bind(ds_id)
+    .execute(&st.pool)
+    .await
+    .expect("insert dataset captions");
+    let ds = ds_id.to_string();
+    let img = insert_image(&st.pool, ds_id, "cap.jpg", 80).await;
+
+    // Text vazio ⇒ 400 SEM linha.
+    let (status, _, body) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/images/{img}/caption"),
+            serde_json::json!({"text": ""}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM captions WHERE image_id = $1")
+        .bind(img)
+        .fetch_one(&st.pool)
+        .await
+        .expect("count captions");
+    assert_eq!(n, 0);
+
+    // PUT "um gato" ⇒ 200 com updatedAt.
+    let (status, _, body) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/images/{img}/caption"),
+            serde_json::json!({"text": "um gato"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let first = json(&body);
+    assert_eq!(first["text"], "um gato");
+    assert_eq!(first["origin"], "manual");
+    assert!(first["updatedAt"].is_string());
+    let updated1 = first["updatedAt"].as_str().expect("updatedAt").to_string();
+
+    // Upsert: texto novo, updated_at >= anterior, continua 1 linha.
+    let (status, _, body) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/images/{img}/caption"),
+            serde_json::json!({"text": "um gato preto", "origin": "import"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let second = json(&body);
+    assert_eq!(second["text"], "um gato preto");
+    assert_eq!(second["origin"], "import");
+    let updated2 = second["updatedAt"].as_str().expect("updatedAt").to_string();
+    assert!(updated2 >= updated1, "{updated2} < {updated1}");
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM captions WHERE image_id = $1")
+        .bind(img)
+        .fetch_one(&st.pool)
+        .await
+        .expect("count captions");
+    assert_eq!(n, 1);
+
+    // Contadores: caption rotula format captions ⇒ ready.
+    assert_eq!(
+        counters_of(&st.pool, ds_id).await,
+        (1, 1, 80, "ready".to_string())
+    );
+
+    // GET detail mostra o caption novo.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri(format!("/api/datasets/{ds}/images/{img}"))
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json(&body)["caption"]["text"], "um gato preto");
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0003_put_boxes_wires_camel() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Wires Camel", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds = json(&body)["id"].as_str().expect("id").to_string();
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+    let class_id = class_id_of(&st.pool, ds_id).await;
+    let img = insert_image(&st.pool, ds_id, "wire.jpg", 10).await;
+
+    let (status, _, body) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/images/{img}/boxes"),
+            serde_json::json!({"boxes": [{"classId": class_id, "x": 0.5, "y": 0.5, "w": 0.2, "h": 0.2, "trackId": 7}]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let raw = String::from_utf8(body).expect("utf8");
+    assert!(raw.contains("classId"), "{raw}");
+    assert!(raw.contains("trackId"), "{raw}");
+    assert!(!raw.contains("class_id"), "snake_case no wire: {raw}");
+    assert!(!raw.contains("track_id"), "snake_case no wire: {raw}");
+
+    let (status, _, body) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/images/{img}/caption"),
+            serde_json::json!({"text": "fios"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let raw = String::from_utf8(body).expect("utf8");
+    assert!(raw.contains("updatedAt"), "{raw}");
+    assert!(!raw.contains("updated_at"), "snake_case no wire: {raw}");
+}
+
 #[tokio::test]
 #[ignore = "requer Postgres (bash scripts/test-db.sh)"]
 async fn unauthenticated_is_401_even_with_db() {

@@ -350,6 +350,111 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/datasets/{id}/images/{imageId}/boxes:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK do dataset. Valor que não parseia como UUID responde 404 `not_found`
+          (não 400, padrão D8 replicado).
+      - name: imageId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK da imagem. Valor que não parseia como UUID responde 404 `not_found`
+          (não 400, padrão D8 replicado). Escopada ao dataset: imagem de outro
+          dataset responde 404.
+    put:
+      operationId: putBoxes
+      tags: [datasets]
+      summary: Substitui as boxes da imagem (anotação de detecção)
+      description: |
+        Substituição total das `boxes` da imagem (Fatia 3b.6, ADR-0003 D6):
+        apaga todas e insere as enviadas (ids novos). Máx 1000 boxes por request
+        (anti-DoS). `origin` ausente vira `manual`. Classes precisam pertencer ao
+        dataset (classe de outro dataset ⇒ 400 sem vazar existência). Sem chamada
+        de storage (sem 503). Resposta canônica com os mesmos uuids inseridos.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PutBoxesRequest" }
+      responses:
+        "200":
+          description: Boxes substituídas (`PutBoxesResponse`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PutBoxesResponse" }
+        "400":
+          description: "Body inválido (parse, `deny_unknown_fields`, validação 0..1/`conf`/`origin`, lista > 1000, classe fora do dataset; `code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Dataset/imagem inexistente, id/imageId não-UUID ou imagem de outro dataset (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/datasets/{id}/images/{imageId}/caption:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK do dataset. Valor que não parseia como UUID responde 404 `not_found`
+          (não 400, padrão D8 replicado).
+      - name: imageId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK da imagem. Valor que não parseia como UUID responde 404 `not_found`
+          (não 400, padrão D8 replicado). Escopada ao dataset: imagem de outro
+          dataset responde 404.
+    put:
+      operationId: putCaption
+      tags: [datasets]
+      summary: Insere ou atualiza a legenda da imagem (upsert)
+      description: |
+        Upsert do `caption` da imagem (Fatia 3b.6, ADR-0003 D6, PK = image_id):
+        `text` vazio ⇒ 400 (a linha não nasce; imagem segue `unlabeled`).
+        `origin` ausente vira `manual`. Sem chamada de storage (sem 503).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PutCaptionRequest" }
+      responses:
+        "200":
+          description: Legenda gravada (`Caption`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Caption" }
+        "400":
+          description: "Body inválido (parse, `deny_unknown_fields`, `text` fora de 1..8000 chars, `origin` fora do domínio; `code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Dataset/imagem inexistente, id/imageId não-UUID ou imagem de outro dataset (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /api/datasets/{id}/images:
     parameters:
       - name: id
@@ -797,6 +902,71 @@ components:
           type: [string, "null"]
           description: Modelo gerador (só em origem autotracker).
         updatedAt: { type: string, format: date-time }
+
+    PutBoxesRequest:
+      type: object
+      required: [boxes]
+      additionalProperties: false
+      description: "Substituição total das boxes (máx 1000, anti-DoS)."
+      properties:
+        boxes:
+          type: array
+          maxItems: 1000
+          items:
+            type: object
+            required: [classId, x, y, w, h]
+            additionalProperties: false
+            properties:
+              classId:
+                type: string
+                format: uuid
+                description: PK em `classes` (precisa pertencer ao dataset).
+              x: { type: number, minimum: 0, maximum: 1 }
+              y: { type: number, minimum: 0, maximum: 1 }
+              w: { type: number, minimum: 0, maximum: 1 }
+              h: { type: number, minimum: 0, maximum: 1 }
+              conf:
+                type: [number, "null"]
+                minimum: 0
+                maximum: 1
+                description: Confiança (null em anotação manual/importada).
+              origin:
+                type: string
+                enum: [manual, autotracker, import]
+                default: manual
+                description: Origem da anotação (ausente vira `manual`).
+              trackId:
+                type: [integer, "null"]
+                description: Id de track (só em origem autotracker com tracking).
+
+    PutBoxesResponse:
+      type: object
+      required: [boxes]
+      description: "Boxes após a substituição (ids novos, eco do banco)."
+      properties:
+        boxes:
+          type: array
+          items: { $ref: "#/components/schemas/Box" }
+
+    PutCaptionRequest:
+      type: object
+      required: [text]
+      additionalProperties: false
+      description: "Upsert da legenda (PK = image_id)."
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 8000
+          description: Texto da legenda (vazio ⇒ 400, a linha não nasce).
+        origin:
+          type: string
+          enum: [manual, autotracker, import]
+          default: manual
+          description: Origem da legenda (ausente vira `manual`).
+        model:
+          type: [string, "null"]
+          description: Modelo gerador (só em origem autotracker).
 
     ImageDetail:
       type: object

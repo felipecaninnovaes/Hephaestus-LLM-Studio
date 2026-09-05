@@ -382,6 +382,108 @@ impl From<(ImageRow, Vec<BoxResponse>, Option<CaptionResponse>, String)>
     }
 }
 
+/// Box de entrada do PUT (3b.6, ADR-0003 D6). `deny_unknown_fields` segue a
+/// casa (`CreateDatasetRequest`): chave estranha ⇒ 400 `invalid_request`.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InputBox {
+    pub class_id: Uuid,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    #[serde(default)]
+    pub conf: Option<f64>,
+    #[serde(default)]
+    pub origin: Option<String>,
+    #[serde(default)]
+    pub track_id: Option<i32>,
+}
+
+/// Corpo do `PUT .../boxes`: substituição total (max 1000, anti-DoS; YOLO
+/// raramente passa de centenas).
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PutBoxesRequest {
+    pub boxes: Vec<InputBox>,
+}
+
+/// Resposta canônica do PUT boxes (ids novos, eco do banco).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PutBoxesResponse {
+    pub boxes: Vec<BoxResponse>,
+}
+
+/// Corpo do `PUT .../caption` (upsert; `deny_unknown_fields` como a casa).
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PutCaptionRequest {
+    pub text: String,
+    #[serde(default)]
+    pub origin: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// Box validada e normalizada: `(class_id, x, y, w, h, conf, origin, track_id)`
+/// com `origin` já resolvida para o default `"manual"`.
+pub type ValidatedBox = (Uuid, f64, f64, f64, f64, Option<f64>, String, Option<i32>);
+
+/// Origens aceitas (CHECK do banco à letra).
+pub fn is_valid_origin(s: &str) -> bool {
+    matches!(s, "manual" | "autotracker" | "import")
+}
+
+/// Validação pura do PUT boxes (sem banco, unit-testável): len ≤ 1000;
+/// cada `x/y/w/h` em `0..=1`; `conf` presente ⇒ `0..=1`; `origin`
+/// ausente ⇒ `"manual"`, presente ⇒ uma das 3. `Err(())` ⇒ o handler
+/// responde 400 `invalid_request` (sem detalhe).
+pub fn validate_boxes(req: &PutBoxesRequest) -> Result<Vec<ValidatedBox>, ()> {
+    if req.boxes.len() > 1000 {
+        return Err(());
+    }
+    let mut out = Vec::with_capacity(req.boxes.len());
+    for b in &req.boxes {
+        for v in [b.x, b.y, b.w, b.h] {
+            if !(0.0..=1.0).contains(&v) {
+                return Err(());
+            }
+        }
+        if let Some(c) = b.conf {
+            if !(0.0..=1.0).contains(&c) {
+                return Err(());
+            }
+        }
+        let origin = match &b.origin {
+            None => "manual".to_string(),
+            Some(s) if is_valid_origin(s) => s.clone(),
+            Some(_) => return Err(()),
+        };
+        out.push((b.class_id, b.x, b.y, b.w, b.h, b.conf, origin, b.track_id));
+    }
+    Ok(out)
+}
+
+/// Validação pura do PUT caption: `text` com 1..=8000 chars (contagem em
+/// chars, igual ao CHECK) e `origin` com o mesmo domínio/default das boxes.
+/// `Err(())` ⇒ 400. `caption ''` nunca nasce como linha (vira `unlabeled`).
+pub fn validate_caption(
+    text: &str,
+    origin: Option<&str>,
+) -> Result<(String, String), ()> {
+    let n = text.chars().count();
+    if !(1..=8000).contains(&n) {
+        return Err(());
+    }
+    let origin = match origin {
+        None => "manual".to_string(),
+        Some(s) if is_valid_origin(s) => s.to_string(),
+        Some(_) => return Err(()),
+    };
+    Ok((text.to_string(), origin))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,5 +572,85 @@ mod tests {
         assert_eq!(parse_id(&id.to_string()), Some(id));
         assert_eq!(parse_id("nao-e-uuid"), None);
         assert!(parse_id(&id.to_string().to_uppercase()).is_some());
+    }
+
+    fn req_boxes(json: &str) -> PutBoxesRequest {
+        serde_json::from_str(json).expect("body de teste válido")
+    }
+
+    #[test]
+    fn validate_boxes_ok_com_defaults() {
+        let id = Uuid::new_v4();
+        let req = req_boxes(&format!(
+            r#"{{"boxes":[{{"classId":"{id}","x":0.5,"y":0.5,"w":0.2,"h":0.2,"conf":0.9,"trackId":7}}]}}"#
+        ));
+        let out = validate_boxes(&req).expect("ok");
+        assert_eq!(
+            out,
+            vec![(id, 0.5, 0.5, 0.2, 0.2, Some(0.9), "manual".to_string(), Some(7))]
+        );
+    }
+
+    #[test]
+    fn validate_boxes_x_fora() {
+        let id = Uuid::new_v4();
+        let req = req_boxes(&format!(
+            r#"{{"boxes":[{{"classId":"{id}","x":1.0001,"y":0,"w":0,"h":0}}]}}"#
+        ));
+        assert_eq!(validate_boxes(&req), Err(()));
+    }
+
+    #[test]
+    fn validate_boxes_conf_negativa() {
+        let id = Uuid::new_v4();
+        let req = req_boxes(&format!(
+            r#"{{"boxes":[{{"classId":"{id}","x":0,"y":0,"w":0,"h":0,"conf":-0.1}}]}}"#
+        ));
+        assert_eq!(validate_boxes(&req), Err(()));
+    }
+
+    #[test]
+    fn validate_boxes_origin_invalida() {
+        let id = Uuid::new_v4();
+        let req = req_boxes(&format!(
+            r#"{{"boxes":[{{"classId":"{id}","x":0,"y":0,"w":0,"h":0,"origin":"hack"}}]}}"#
+        ));
+        assert_eq!(validate_boxes(&req), Err(()));
+    }
+
+    #[test]
+    fn validate_boxes_limite_1000() {
+        let id = Uuid::new_v4();
+        let one = format!(r#"{{"classId":"{id}","x":0,"y":0,"w":0,"h":0}}"#);
+        let req: PutBoxesRequest =
+            serde_json::from_str(&format!(r#"{{"boxes":[{}]}}"#, vec![one.as_str(); 1001].join(",")))
+                .expect("1001 boxes parseia");
+        assert_eq!(validate_boxes(&req), Err(()));
+        let ok: PutBoxesRequest =
+            serde_json::from_str(&format!(r#"{{"boxes":[{}]}}"#, vec![one.as_str(); 1000].join(",")))
+                .expect("1000 boxes parseia");
+        assert_eq!(validate_boxes(&ok).expect("1000 passa").len(), 1000);
+    }
+
+    #[test]
+    fn validate_boxes_vazia_ok() {
+        let req = req_boxes(r#"{"boxes":[]}"#);
+        assert_eq!(validate_boxes(&req).expect("vazia passa"), vec![]);
+    }
+
+    #[test]
+    fn validate_boxes_deny_unknown() {
+        let bad: Result<PutBoxesRequest, _> =
+            serde_json::from_str(r#"{"boxes":[],"extra":1}"#);
+        assert!(bad.is_err(), "deny_unknown_fields da casa");
+    }
+
+    #[test]
+    fn validate_caption_regras() {
+        assert!(validate_caption("", None).is_err());
+        assert!(validate_caption("um gato", None).expect("ok").1 == "manual");
+        assert!(validate_caption("x", Some("hack")).is_err());
+        assert!(validate_caption(&"a".repeat(8000), Some("import")).is_ok());
+        assert!(validate_caption(&"a".repeat(8001), None).is_err());
     }
 }

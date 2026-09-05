@@ -517,6 +517,103 @@ async fn detail_and_data_reject_non_uuid_before_anything() {
     }
 }
 
+#[tokio::test]
+async fn put_boxes_and_caption_reject_without_db() {
+    // Validades (c) testáveis sem DB: pool `connect_lazy` nunca é tocado
+    // porque parse-uuid (a), parse de body (b) e validação pura (c) vêm
+    // antes de qualquer query. Happy-path fica para datasets_db (precisa banco).
+    let app = routes::build(setup_state());
+    let (token, _) = session::issue_jwt(uuid::Uuid::new_v4(), &SETUP_SECRET);
+    let cookie = format!("heph_session={token}");
+    let ds = "00000000-0000-0000-0000-000000000000";
+    let img = "11111111-1111-1111-1111-111111111111";
+    let class = "22222222-2222-2222-2222-222222222222";
+
+    // PUT boxes com x fora de 0..=1 ⇒ 400 (validação pura).
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/api/datasets/{ds}/images/{img}/boxes"))
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::from(format!(
+                r#"{{"boxes":[{{"classId":"{class}","x":1.5,"y":0,"w":0,"h":0}}]}}"#
+            )))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+
+    // PUT boxes com chave desconhecida ⇒ 400 (deny_unknown_fields da casa).
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/api/datasets/{ds}/images/{img}/boxes"))
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::from(r#"{"boxes":[],"extra":1}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+
+    // PUT caption com text vazio ⇒ 400 (a linha não nasce).
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/api/datasets/{ds}/images/{img}/caption"))
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::from(r#"{"text":""}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+
+    // PUT caption sem text ⇒ 400 (required).
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/api/datasets/{ds}/images/{img}/caption"))
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::from(r#"{"origin":"manual"}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+
+    // imageId não-uuid + body válido ⇒ 404 ((a) antes de (b)).
+    for uri in [
+        format!("/api/datasets/{ds}/images/nao-e-uuid/boxes"),
+        format!("/api/datasets/{ds}/images/nao-e-uuid/caption"),
+    ] {
+        let (status, _, body) = call(
+            app.clone(),
+            Request::builder()
+                .method("PUT")
+                .uri(uri.clone())
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header(http::header::COOKIE, cookie.clone())
+                .body(Body::from(format!(
+                    r#"{{"boxes":[{{"classId":"{class}","x":0.5,"y":0.5,"w":0.2,"h":0.2}}]}}"#
+                )))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
+        assert_eq!(json(&body)["code"], "not_found", "{uri}");
+    }
+}
+
 #[test]
 fn json_property_names_are_camel_case() {
     // Enforcement D1: todo nome de propriedade e de parâmetro na spec é

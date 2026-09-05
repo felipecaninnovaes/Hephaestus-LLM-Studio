@@ -30,9 +30,10 @@ use md5::Digest as Md5Digest;
 use sha2::Digest as Sha256Digest;
 
 use super::models::{
-    color_for, derive, normalize_classes, parse_id, slugify, BoxResponse, CaptionResponse,
-    CreateDatasetRequest, DatasetResponse, DatasetRow, DatasetType, ImageDetailResponse,
-    ImagePage, ImageResponse, ImageRow, UploadItem, UploadResult,
+    color_for, derive, normalize_classes, parse_id, slugify, validate_boxes,
+    validate_caption, BoxResponse, CaptionResponse, CreateDatasetRequest, DatasetResponse,
+    DatasetRow, DatasetType, ImageDetailResponse, ImagePage, ImageResponse, ImageRow,
+    PutBoxesRequest, PutBoxesResponse, PutCaptionRequest, UploadItem, UploadResult,
 };
 use crate::{
     error::{
@@ -839,4 +840,257 @@ pub async fn get_data(
         bytes,
     )
         .into_response()
+}
+
+/// Body JSON no envelope (cópia do `create`): o rejection padrão do axum
+/// seria 413/400 `text/plain` fora do envelope D6; aqui excesso de limite
+/// vira 413 `invalid_request` e qualquer outro erro de buffer ou parse vira
+/// 400 `invalid_request`.
+fn parse_json_body<T>(body: Result<Bytes, BytesRejection>) -> Result<T, Response>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let body = match body {
+        Ok(b) => b,
+        Err(BytesRejection::FailedToBufferBody(FailedToBufferBody::LengthLimitError(_))) => {
+            return Err(err(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "invalid_request",
+                MSG_INVALID_REQUEST,
+            ));
+        }
+        Err(_) => {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                MSG_INVALID_REQUEST,
+            ));
+        }
+    };
+    match serde_json::from_slice(&body) {
+        Ok(v) => Ok(v),
+        Err(_) => Err(err(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            MSG_INVALID_REQUEST,
+        )),
+    }
+}
+
+/// PUT /api/datasets/:id/images/:imageId/boxes — substituição total (3b.6).
+///
+/// Ordem LEI: (a) parse ds/image uuid ⇒ não ⇒ 404; (b) body no envelope ⇒
+/// 413/400; (c) validação pura ⇒ 400; (d) imagem escopada ao dataset ⇒
+/// 404; (e) classes do dataset (`count` sobre ids dedup; classe de outro
+/// dataset NÃO vaza existência — 400 seco); (f) transação DELETE + INSERT
+/// com RETURNING (erro ⇒ rollback + 500); (g) 200 canônico.
+/// Os triggers de contagem disparam por linha — recálculo idempotente.
+pub async fn put_boxes(
+    State(state): State<AppState>,
+    Path((id, image_id)): Path<(String, String)>,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    // (a) uuid antes de tudo (nunca 400 — ADR-0002 D8).
+    let ds_id: Uuid = match parse_id(&id) {
+        Some(v) => v,
+        None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
+    };
+    let img_id: Uuid = match parse_id(&image_id) {
+        Some(v) => v,
+        None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
+    };
+    // (b) body no envelope.
+    let req: PutBoxesRequest = match parse_json_body(body) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    // (c) validação pura (sem DB).
+    let valid = match validate_boxes(&req) {
+        Ok(v) => v,
+        Err(_) => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                MSG_INVALID_REQUEST,
+            );
+        }
+    };
+    // (d) imagem existe ESCOPADA ao dataset.
+    let exists: bool =
+        match sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM images WHERE id = $1 AND dataset_id = $2)")
+            .bind(img_id)
+            .bind(ds_id)
+            .fetch_one(&state.pool)
+            .await
+        {
+            Ok(v) => v,
+            Err(_) => return internal(),
+        };
+    if !exists {
+        return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND);
+    }
+    // (e) todas as classes pertencem ao dataset (dedup antes do count).
+    if !valid.is_empty() {
+        let mut distinct: Vec<Uuid> = valid.iter().map(|b| b.0).collect();
+        distinct.sort();
+        distinct.dedup();
+        let n: i64 = match sqlx::query_scalar(
+            "SELECT count(*) FROM classes WHERE dataset_id = $1 AND id = ANY($2)",
+        )
+        .bind(ds_id)
+        .bind(&distinct)
+        .fetch_one(&state.pool)
+        .await
+        {
+            Ok(v) => v,
+            Err(_) => return internal(),
+        };
+        if n != distinct.len() as i64 {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                MSG_INVALID_REQUEST,
+            );
+        }
+    }
+    // (f) transação: DELETE total + INSERT em massa com RETURNING.
+    let mut tx = match state.pool.begin().await {
+        Ok(t) => t,
+        Err(_) => return internal(),
+    };
+    if sqlx::query("DELETE FROM boxes WHERE image_id = $1")
+        .bind(img_id)
+        .execute(&mut *tx)
+        .await
+        .is_err()
+    {
+        return internal();
+    }
+    type BoxTuple = (Uuid, Uuid, f64, f64, f64, f64, Option<f64>, String, Option<i32>);
+    let rows: Vec<BoxTuple> = if valid.is_empty() {
+        Vec::new()
+    } else {
+        let class_ids: Vec<Uuid> = valid.iter().map(|b| b.0).collect();
+        let xs: Vec<f64> = valid.iter().map(|b| b.1).collect();
+        let ys: Vec<f64> = valid.iter().map(|b| b.2).collect();
+        let ws: Vec<f64> = valid.iter().map(|b| b.3).collect();
+        let hs: Vec<f64> = valid.iter().map(|b| b.4).collect();
+        let confs: Vec<Option<f64>> = valid.iter().map(|b| b.5).collect();
+        let origins: Vec<String> = valid.iter().map(|b| b.6.clone()).collect();
+        let tracks: Vec<Option<i32>> = valid.iter().map(|b| b.7).collect();
+        match sqlx::query_as(
+            "INSERT INTO boxes (image_id, class_id, x, y, w, h, conf, origin, track_id) \
+             SELECT $1, t.class_id, t.x, t.y, t.w, t.h, t.conf, t.origin, t.track_id \
+             FROM unnest($2::uuid[], $3::float8[], $4::float8[], $5::float8[], $6::float8[], $7::float8[], $8::text[], $9::int[]) \
+             AS t(class_id, x, y, w, h, conf, origin, track_id) \
+             RETURNING id, class_id, x, y, w, h, conf, origin, track_id",
+        )
+        .bind(img_id)
+        .bind(&class_ids)
+        .bind(&xs)
+        .bind(&ys)
+        .bind(&ws)
+        .bind(&hs)
+        .bind(&confs)
+        .bind(&origins)
+        .bind(&tracks)
+        .fetch_all(&mut *tx)
+        .await
+        {
+            Ok(r) => r,
+            Err(_) => return internal(),
+        }
+    };
+    if tx.commit().await.is_err() {
+        return internal();
+    }
+    // (g) 200 canônico (ordem de inserção; client ordena por id p/ estabilidade).
+    let resp = PutBoxesResponse {
+        boxes: rows.into_iter().map(BoxResponse::from).collect(),
+    };
+    (StatusCode::OK, Json(resp)).into_response()
+}
+
+/// PUT /api/datasets/:id/images/:imageId/caption — upsert (3b.6).
+///
+/// Mesma espinha do PUT boxes: (a) uuid ⇒ 404; (b) body no envelope ⇒
+/// 413/400; (c) `text` 1..=8000 chars + `origin` no domínio ⇒ 400 ANTES do
+/// banco (`''` nunca nasce como linha); (d) imagem escopada ⇒ 404;
+/// (e) n/a (sem classes); (f) upsert + releitura; (g) 200.
+pub async fn put_caption(
+    State(state): State<AppState>,
+    Path((id, image_id)): Path<(String, String)>,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    // (a) uuid antes de tudo.
+    let ds_id: Uuid = match parse_id(&id) {
+        Some(v) => v,
+        None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
+    };
+    let img_id: Uuid = match parse_id(&image_id) {
+        Some(v) => v,
+        None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
+    };
+    // (b) body no envelope.
+    let req: PutCaptionRequest = match parse_json_body(body) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    // (c) validação pura (text vazio ⇒ 400, a linha não nasce).
+    let (text, origin) = match validate_caption(&req.text, req.origin.as_deref()) {
+        Ok(v) => v,
+        Err(_) => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                MSG_INVALID_REQUEST,
+            );
+        }
+    };
+    // (d) imagem existe ESCOPADA ao dataset.
+    let exists: bool =
+        match sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM images WHERE id = $1 AND dataset_id = $2)")
+            .bind(img_id)
+            .bind(ds_id)
+            .fetch_one(&state.pool)
+            .await
+        {
+            Ok(v) => v,
+            Err(_) => return internal(),
+        };
+    if !exists {
+        return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND);
+    }
+    // (f) upsert + releitura (o trigger bumpa `updated_at` no UPDATE).
+    if sqlx::query(
+        "INSERT INTO captions (image_id, text, origin, model) VALUES ($1,$2,$3,$4) \
+         ON CONFLICT (image_id) DO UPDATE SET text = EXCLUDED.text, origin = EXCLUDED.origin, model = EXCLUDED.model",
+    )
+    .bind(img_id)
+    .bind(&text)
+    .bind(&origin)
+    .bind(req.model.clone())
+    .execute(&state.pool)
+    .await
+    .is_err()
+    {
+        return internal();
+    }
+    type CaptionTuple = (String, String, Option<String>, chrono::DateTime<chrono::Utc>);
+    let row: Option<CaptionTuple> = match sqlx::query_as(
+        "SELECT text, origin, model, updated_at FROM captions WHERE image_id = $1",
+    )
+    .bind(img_id)
+    .fetch_optional(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return internal(),
+    };
+    let row = match row {
+        Some(r) => r,
+        None => return internal(),
+    };
+    // (g) 200 canônico (struct da 3b.5, reaproveitada).
+    (StatusCode::OK, Json(CaptionResponse::from(row))).into_response()
 }

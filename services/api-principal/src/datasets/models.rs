@@ -145,12 +145,45 @@ pub struct DatasetRow {
     pub task: String,
     pub format: String,
     pub status: String,
-    pub source: Option<String>,
     pub size_bytes: i64,
     pub images_count: i32,
     pub labeled_count: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// Classe no wire (3b.7): objeto completo `{id, name, idx, color}` camelCase —
+/// a resposta é canônica (nomes só no create request); o `id` alimenta o PUT
+/// boxes (`classId`).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DatasetClassResponse {
+    pub id: String,
+    pub name: String,
+    pub idx: i32,
+    pub color: String,
+}
+
+impl From<(Uuid, String, i32, String)> for DatasetClassResponse {
+    fn from(row: (Uuid, String, i32, String)) -> Self {
+        Self {
+            id: row.0.to_string(),
+            name: row.1,
+            idx: row.2,
+            color: row.3,
+        }
+    }
+}
+
+/// `source` derivado no wire (ADR-0003 D5): `Some(s3://{bucket}/datasets/{id}/)`
+/// quando há imagens, `None` em dataset vazio. O bucket no valor é CONFIG
+/// (`StorageConfig`), não dado — a coluna morreu na migration 0003.
+pub fn derived_source(bucket: &str, dataset_id: Uuid, images_count: i32) -> Option<String> {
+    if images_count > 0 {
+        Some(format!("s3://{bucket}/datasets/{dataset_id}/"))
+    } else {
+        None
+    }
 }
 
 /// Ponto único de conversão snake_case (coluna) → camelCase (wire), política
@@ -166,6 +199,7 @@ pub struct DatasetResponse {
     pub task: String,
     pub format: String,
     pub status: String,
+    /// Coluna removida pela migration 0003 (ADR-0003 D5); no wire permanece, `null` até a derivação `s3://…` da 3b.7.
     pub source: Option<String>,
     pub size_bytes: i64,
     pub images_count: i32,
@@ -173,7 +207,7 @@ pub struct DatasetResponse {
     pub created_at: DateTime<Utc>,
     /// Coluna `updated_at` exposta como `lastModified` (contrato `Dataset`).
     pub last_modified: DateTime<Utc>,
-    pub classes: Vec<String>,
+    pub classes: Vec<DatasetClassResponse>,
     pub auto_tracked: bool,
 }
 
@@ -188,7 +222,7 @@ impl From<DatasetRow> for DatasetResponse {
             task: row.task,
             format: row.format,
             status: row.status,
-            source: row.source,
+            source: None,
             size_bytes: row.size_bytes,
             images_count: row.images_count,
             labeled_count: row.labeled_count,
@@ -198,6 +232,297 @@ impl From<DatasetRow> for DatasetResponse {
             auto_tracked: false,
         }
     }
+}
+
+/// Item por arquivo do upload (ADR-0003 D2: status por item).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadItem {
+    /// None em rejected.
+    pub image_id: Option<String>,
+    /// Nome canônico server-side (stem sanitizado + extensão do sniff),
+    /// não o nome enviado no form.
+    pub filename: String,
+    /// "stored"|"duplicate"|"rejected"|"failed".
+    pub status: String,
+    /// "duplicate_filename"|"unsupported_media"|"too_large"|"storage_error".
+    pub reason: Option<String>,
+    pub bytes: Option<i64>,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadResult {
+    pub items: Vec<UploadItem>,
+}
+
+/// Linha de `images` (construída à mão no handler; md5/sha256 ficam no
+/// banco, fora do wire e fora desta struct).
+pub struct ImageRow {
+    pub id: Uuid,
+    pub filename: String,
+    pub object_key: String,
+    pub bytes: i64,
+    pub width: i32,
+    pub height: i32,
+    pub media_type: String,
+    pub split: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Ponto único de conversão para o wire (ADR-0002 D1);
+/// `url` é computada no handler. md5/sha256 ficam no banco,
+/// fora do wire 3b.3.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageResponse {
+    pub id: String,
+    pub filename: String,
+    pub object_key: String,
+    pub bytes: i64,
+    pub width: i32,
+    pub height: i32,
+    pub media_type: String,
+    pub split: String,
+    pub url: String,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<ImageRow> for ImageResponse {
+    fn from(row: ImageRow) -> Self {
+        Self {
+            id: row.id.to_string(),
+            filename: row.filename,
+            object_key: row.object_key,
+            bytes: row.bytes,
+            width: row.width,
+            height: row.height,
+            media_type: row.media_type,
+            split: row.split,
+            url: String::new(),
+            created_at: row.created_at,
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImagePage {
+    pub items: Vec<ImageResponse>,
+    pub total: i64,
+    pub limit: i64,
+    pub offset: i64,
+}
+
+/// Item de `boxes` no wire (3b.5, ADR-0003 D6). Linhas chegam como tupla
+/// `query_as` no handler (estilo da casa: `ImageRow` também não usa
+/// `FromRow`); o ponto único de conversão é o `From` abaixo.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoxResponse {
+    pub id: String,
+    pub class_id: String,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    pub conf: Option<f64>,
+    pub origin: String,
+    pub track_id: Option<i32>,
+}
+
+impl From<(Uuid, Uuid, f64, f64, f64, f64, Option<f64>, String, Option<i32>)> for BoxResponse {
+    fn from(
+        row: (Uuid, Uuid, f64, f64, f64, f64, Option<f64>, String, Option<i32>),
+    ) -> Self {
+        Self {
+            id: row.0.to_string(),
+            class_id: row.1.to_string(),
+            x: row.2,
+            y: row.3,
+            w: row.4,
+            h: row.5,
+            conf: row.6,
+            origin: row.7,
+            track_id: row.8,
+        }
+    }
+}
+
+/// Linha de `captions` no wire (PK = image_id, no máximo uma por imagem).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptionResponse {
+    pub text: String,
+    pub origin: String,
+    pub model: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<(String, String, Option<String>, DateTime<Utc>)> for CaptionResponse {
+    fn from(row: (String, String, Option<String>, DateTime<Utc>)) -> Self {
+        Self {
+            text: row.0,
+            origin: row.1,
+            model: row.2,
+            updated_at: row.3,
+        }
+    }
+}
+
+/// Detalhe da imagem (3b.5, ADR-0003 delta): struct FLAT — repete todos os
+/// campos de `Image` mais `boxes` + `caption`, sem envelope aninhado.
+/// Floats ecoam o banco (6 decimais é assunto do PUT da 3b.6).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageDetailResponse {
+    pub id: String,
+    pub filename: String,
+    pub object_key: String,
+    pub bytes: i64,
+    pub width: i32,
+    pub height: i32,
+    pub media_type: String,
+    pub split: String,
+    pub url: String,
+    pub created_at: DateTime<Utc>,
+    pub boxes: Vec<BoxResponse>,
+    pub caption: Option<CaptionResponse>,
+}
+
+impl From<(ImageRow, Vec<BoxResponse>, Option<CaptionResponse>, String)>
+    for ImageDetailResponse
+{
+    fn from(
+        parts: (ImageRow, Vec<BoxResponse>, Option<CaptionResponse>, String),
+    ) -> Self {
+        let (row, boxes, caption, url) = parts;
+        Self {
+            id: row.id.to_string(),
+            filename: row.filename,
+            object_key: row.object_key,
+            bytes: row.bytes,
+            width: row.width,
+            height: row.height,
+            media_type: row.media_type,
+            split: row.split,
+            url,
+            created_at: row.created_at,
+            boxes,
+            caption,
+        }
+    }
+}
+
+/// Box de entrada do PUT (3b.6, ADR-0003 D6). `deny_unknown_fields` segue a
+/// casa (`CreateDatasetRequest`): chave estranha ⇒ 400 `invalid_request`.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InputBox {
+    pub class_id: Uuid,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    #[serde(default)]
+    pub conf: Option<f64>,
+    #[serde(default)]
+    pub origin: Option<String>,
+    #[serde(default)]
+    pub track_id: Option<i32>,
+}
+
+/// Corpo do `PUT .../boxes`: substituição total (max 1000, anti-DoS; YOLO
+/// raramente passa de centenas).
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PutBoxesRequest {
+    pub boxes: Vec<InputBox>,
+}
+
+/// Resposta canônica do PUT boxes (ids novos, eco do banco).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PutBoxesResponse {
+    pub boxes: Vec<BoxResponse>,
+}
+
+/// Corpo do `PUT .../caption` (upsert; `deny_unknown_fields` como a casa).
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PutCaptionRequest {
+    pub text: String,
+    #[serde(default)]
+    pub origin: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// Box validada e normalizada: `(class_id, x, y, w, h, conf, origin, track_id)`
+/// com `origin` já resolvida para o default `"manual"`.
+pub type ValidatedBox = (Uuid, f64, f64, f64, f64, Option<f64>, String, Option<i32>);
+
+/// Origens aceitas (CHECK do banco à letra).
+pub fn is_valid_origin(s: &str) -> bool {
+    matches!(s, "manual" | "autotracker" | "import")
+}
+
+/// Validação pura do PUT boxes (sem banco, unit-testável): len ≤ 1000;
+/// cada `x/y/w/h` em `0..=1`; `conf` presente ⇒ `0..=1`; `origin`
+/// ausente ⇒ `"manual"`, presente ⇒ uma das 3. `Err(())` ⇒ o handler
+/// responde 400 `invalid_request` (sem detalhe).
+pub fn validate_boxes(req: &PutBoxesRequest) -> Result<Vec<ValidatedBox>, ()> {
+    if req.boxes.len() > 1000 {
+        return Err(());
+    }
+    let mut out = Vec::with_capacity(req.boxes.len());
+    for b in &req.boxes {
+        for v in [b.x, b.y, b.w, b.h] {
+            if !(0.0..=1.0).contains(&v) {
+                return Err(());
+            }
+        }
+        if let Some(c) = b.conf {
+            if !(0.0..=1.0).contains(&c) {
+                return Err(());
+            }
+        }
+        let origin = match &b.origin {
+            None => "manual".to_string(),
+            Some(s) if is_valid_origin(s) => s.clone(),
+            Some(_) => return Err(()),
+        };
+        out.push((b.class_id, b.x, b.y, b.w, b.h, b.conf, origin, b.track_id));
+    }
+    Ok(out)
+}
+
+/// Validação pura do PUT caption: `text` com 1..=8000 chars (contagem em
+/// chars, igual ao CHECK) e `origin` com o mesmo domínio/default das boxes.
+/// `Err(())` ⇒ 400. `caption ''` nunca nasce como linha (vira `unlabeled`).
+pub fn validate_caption(
+    text: &str,
+    origin: Option<&str>,
+    model: Option<&str>,
+) -> Result<(String, String, Option<String>), ()> {
+    let n = text.chars().count();
+    if !(1..=8000).contains(&n) {
+        return Err(());
+    }
+    let origin = match origin {
+        None => "manual".to_string(),
+        Some(s) if is_valid_origin(s) => s.to_string(),
+        Some(_) => return Err(()),
+    };
+    // Revisão 3b.6: `model` entra no banco para sempre — teto de 255 chars
+    // (a rota só tem o backstop de 2 MiB do body-limit; single-user, mas o
+    // custo de errar é uma linha).
+    if model.is_some_and(|m| m.chars().count() > 255) {
+        return Err(());
+    }
+    Ok((text.to_string(), origin, model.map(str::to_string)))
 }
 
 #[cfg(test)]
@@ -288,5 +613,88 @@ mod tests {
         assert_eq!(parse_id(&id.to_string()), Some(id));
         assert_eq!(parse_id("nao-e-uuid"), None);
         assert!(parse_id(&id.to_string().to_uppercase()).is_some());
+    }
+
+    fn req_boxes(json: &str) -> PutBoxesRequest {
+        serde_json::from_str(json).expect("body de teste válido")
+    }
+
+    #[test]
+    fn validate_boxes_ok_com_defaults() {
+        let id = Uuid::new_v4();
+        let req = req_boxes(&format!(
+            r#"{{"boxes":[{{"classId":"{id}","x":0.5,"y":0.5,"w":0.2,"h":0.2,"conf":0.9,"trackId":7}}]}}"#
+        ));
+        let out = validate_boxes(&req).expect("ok");
+        assert_eq!(
+            out,
+            vec![(id, 0.5, 0.5, 0.2, 0.2, Some(0.9), "manual".to_string(), Some(7))]
+        );
+    }
+
+    #[test]
+    fn validate_boxes_x_fora() {
+        let id = Uuid::new_v4();
+        let req = req_boxes(&format!(
+            r#"{{"boxes":[{{"classId":"{id}","x":1.0001,"y":0,"w":0,"h":0}}]}}"#
+        ));
+        assert_eq!(validate_boxes(&req), Err(()));
+    }
+
+    #[test]
+    fn validate_boxes_conf_negativa() {
+        let id = Uuid::new_v4();
+        let req = req_boxes(&format!(
+            r#"{{"boxes":[{{"classId":"{id}","x":0,"y":0,"w":0,"h":0,"conf":-0.1}}]}}"#
+        ));
+        assert_eq!(validate_boxes(&req), Err(()));
+    }
+
+    #[test]
+    fn validate_boxes_origin_invalida() {
+        let id = Uuid::new_v4();
+        let req = req_boxes(&format!(
+            r#"{{"boxes":[{{"classId":"{id}","x":0,"y":0,"w":0,"h":0,"origin":"hack"}}]}}"#
+        ));
+        assert_eq!(validate_boxes(&req), Err(()));
+    }
+
+    #[test]
+    fn validate_boxes_limite_1000() {
+        let id = Uuid::new_v4();
+        let one = format!(r#"{{"classId":"{id}","x":0,"y":0,"w":0,"h":0}}"#);
+        let req: PutBoxesRequest =
+            serde_json::from_str(&format!(r#"{{"boxes":[{}]}}"#, vec![one.as_str(); 1001].join(",")))
+                .expect("1001 boxes parseia");
+        assert_eq!(validate_boxes(&req), Err(()));
+        let ok: PutBoxesRequest =
+            serde_json::from_str(&format!(r#"{{"boxes":[{}]}}"#, vec![one.as_str(); 1000].join(",")))
+                .expect("1000 boxes parseia");
+        assert_eq!(validate_boxes(&ok).expect("1000 passa").len(), 1000);
+    }
+
+    #[test]
+    fn validate_boxes_vazia_ok() {
+        let req = req_boxes(r#"{"boxes":[]}"#);
+        assert_eq!(validate_boxes(&req).expect("vazia passa"), vec![]);
+    }
+
+    #[test]
+    fn validate_boxes_deny_unknown() {
+        let bad: Result<PutBoxesRequest, _> =
+            serde_json::from_str(r#"{"boxes":[],"extra":1}"#);
+        assert!(bad.is_err(), "deny_unknown_fields da casa");
+    }
+
+    #[test]
+    fn validate_caption_regras() {
+        assert!(validate_caption("", None, None).is_err());
+        assert!(validate_caption("um gato", None, None).expect("ok").1 == "manual");
+        assert!(validate_caption("x", Some("hack"), None).is_err());
+        assert!(validate_caption(&"a".repeat(8000), Some("import"), None).is_ok());
+        assert!(validate_caption(&"a".repeat(8001), None, None).is_err());
+        // modelo com teto (revisão 3b.6): 255 chars ok, 256 -> 400.
+        assert!(validate_caption("x", None, Some(&"m".repeat(255))).is_ok());
+        assert!(validate_caption("x", None, Some(&"m".repeat(256))).is_err());
     }
 }

@@ -33,7 +33,7 @@ O front-end nunca executa treino, nunca decide onde treinar, nunca manipula arqu
 | Estado | Local, mockado (`INITIAL_DATASETS`, `setInterval` de 3s simulando epoch) | Server state via React Query / SWR + client state via Zustand; jobs reais via polling/WS |
 | Gráficos | SVG estático com paths hardcoded (`lossGrad`, `mapGrad`, `clipGrad`) | Recharts/ECharts ou SVG próprio alimentado por `/api/jobs/:id/metrics` |
 | Canvas BBox | `div`s absolutas simulando caixas | Canvas real (Fabric/Konva ou `<canvas>` próprio) com coordenadas normalizadas 0-1 |
-| Upload | Botões que só disparam `showToast` | `multipart/form-data` → backend Rust, com progresso resumível |
+| Upload | Botões que só disparam `showToast` | `multipart/form-data` → backend Rust, com resultado POR ITEM (`stored/duplicate/rejected/failed` + `reason`; sem resume na 3b — ADR-0003 D2) |
 | Logs | Array de strings com `slice(-50)` | Stream WebSocket `Rust Core → Orquestrador → Motor Python` |
 | i18n/a11y | pt-BR hardcoded, bom ponto de partida a11y | Manter padrão + extrair strings |
 
@@ -86,7 +86,7 @@ Exigência da IDEIA: lista/grade → clique abre galeria → só na galeria Auto
 - Header "Gerenciador de Datasets" + toggle grade/lista (`viewMode`), Importar (Backup), Novo Dataset.
 - Filtros: busca por nome/classe/formato + pills `Todos/Difusão/OpenCLIP/YOLO` com contadores.
 - Card grade: ícone, `title`, `type`, tiles Imagens / % Rotuladas (`labeledCount/imagesCount`), chips de classes, rodapé `size · lastModified`, tag `AutoTracker` se aplicável, CTA "Treinar →" (roteia via `trainTabFor(ds)`).
-- Lista: tabela Nome / Formato-Tarefa / Imagens / Progresso / Origem Storage (`source`: `/mnt/datasets/pcb`, `/workspace/drones`, `/opt/datasets`...) / Ações.
+- Lista: tabela Nome / Formato-Tarefa / Imagens / Progresso / Origem Storage (`source` derivado: `null` em dataset vazio, `s3://{bucket}/datasets/{id}/` com imagens — ADR-0003 D5) / Ações.
 - Estado vazio com "Limpar Filtros". Clique na linha/card → `setOpenDatasetId`. Botão direito → context menu.
 - Mock inicial (5 datasets, cobrir os 3 formatos): `inspecao-pcb-defeitos-v2` (yolo, ready), `drones-veiculos-urbanos-4k` (yolo, in_progress), `cyberpunk-character-lora` (difusao), `seguranca-epi-industrial` (yolo, needs_labeling), `embeddings-marcas-produtos-clip` (openclip).
 
@@ -147,7 +147,7 @@ type DatasetStatus = 'ready' | 'in_progress' | 'needs_labeling';
 interface Dataset {
   id: string; title: string; // slug kebab-case
   category: DatasetCategory; type: string; task: string;
-  imagesCount: number; labeledCount: number; classes: string[];
+  imagesCount: number; labeledCount: number; classes: {id: string; name: string; idx: number; color: string}[]; // objeto desde a 3b.7 (gap do classId fechado: PUT boxes usa classes[].id como classId)
   format: string; status: DatasetStatus; lastModified: string;
   size: string; autoTracked: boolean; source: string;
 }
@@ -156,7 +156,8 @@ interface Dataset {
 // size → o servidor devolve sizeBytes: number e a UI formata em lib/format.ts;
 // lastModified = RFC 3339 (datasets.updated_at), não string relativa;
 // type no wire é um dos 4 códigos de máquina (yolo_bbox|yolo_seg|difusao_lora|clip_image_text),
-// o rótulo pt-BR é da UI; source pode ser null (sempre null na 3a);
+// o rótulo pt-BR é da UI; source é derivado (null em vazio, `s3://{bucket}/datasets/{id}/`
+// com imagens — ADR-0003 D5); classes é objeto {id,name,idx,color} desde a 3b.7;
 // autoTracked é constante false até a 3d (fonte real: boxes.origin='autotracker').
 interface BBox { id: number; classId: number; label: string; x: number; y: number; w: number; h: number; color: string; }
 // trainTabFor(ds): difusao→/difusao, openclip→/openclip, yolo→/yolo
@@ -177,7 +178,7 @@ interface BBox { id: number; classId: number; label: string; x: number; y: numbe
   - Rota `/login`: form de senha; erros ramificados por `code` em pt-BR (`invalid_credentials` → "Senha incorreta.", `setup_required` → "Servidor em modo setup — defina STUDIO_PASSWORD.", `invalid_request` → "Envie a senha.", default → "Falha inesperada."); sucesso → `/` (`router.replace` + `refresh`); já logado (`GET /me` ok) → volta a `/`.
   - Gate de sessão via `proxy.ts`: `/login` passa direto (decide por si via `/me`); sem cookie `heph_session` → redirect `/login`; com cookie → passa, validade decidida pelo servidor via `/me` (`/` redireciona a `/login` se `/me` não-ok; logout → `POST /logout` + volta a `/login`). `/api/*` fora do matcher — envelope 401 do backend repassado intacto.
   - Resolução T5: front chama `/api/*` relativo (`credentials: "same-origin"`, sem CORS); rewrite Next → `API_INTERNAL_URL` (dev `http://localhost:8080`, compose `http://principal:8080`). `NEXT_PUBLIC_API_URL` ficou como resíduo de build (só `ARG` no Dockerfile; runtime usa o proxy `/api`).
-- Datasets: `GET/POST /api/datasets`, `GET/DELETE /api/datasets/:id` — IMPLEMENTADO (Fatia 3a — contrato `packages/contracts/openapi.yaml`, ADR-0002). Upload/imagens/boxes/caption/export/import/package seguem pendentes (3b+): `POST /:id/upload` (200 MB), `GET /:id/images?limit&offset`, `PUT .../images/:img/{boxes,caption}`, `POST /:id/export`, `POST /datasets/import`, `POST /:id/package`.
+- Datasets: `GET/POST /api/datasets`, `GET/DELETE /api/datasets/:id` — IMPLEMENTADO (Fatia 3a — contrato `packages/contracts/openapi.yaml`, ADR-0002). Upload/imagens/boxes/caption — IMPLEMENTADO (Fatia 3b — spec 0.3.0, contrato que a 3c/3d implementa; as rotas de UI que os consomem ainda NÃO existem — `/datasets` é a 3c): `POST /:id/upload` (multipart `files`; corpo total 200 MiB + 8 MiB envelope → 413; teto por arquivo 200 MiB → item `rejected/too_large`; resposta `{items:[{imageId,filename,status,reason,bytes,width,height}]}` camelCase), `GET /:id/images?limit(=50, máx 200)&offset(=0)&split(train|val)&labeled(bool)` → `{items,total,limit,offset}`, `GET /:id/images/:imageId` (Image flat + `boxes[]` + `caption|null`), `GET /:id/images/:imageId/data` (proxy incondicional, `Cache-Control: private, max-age=31536000, immutable`), `PUT .../images/:imageId/boxes` (`{boxes:[{classId,x,y,w,h,conf?,origin?,trackId?}]}` cap 1000, domínio 0..1), `PUT .../images/:imageId/caption` (upsert `{text:1..8000,origin?,model?≤255}`). Export/import/package seguem pendentes (3e): `POST /:id/export`, `POST /datasets/import`, `POST /:id/package`.
 - Ambientes (alias UI de orquestradores): `GET /api/environments` (= `GET /api/orchestrators`), `POST /environments/select|connect` (= adopt/enable).
 - Jobs: `POST /api/jobs/{yolo|difusao|clip|autolabel|autotracker|playground}`, `GET /:id`, `POST /:id/{pause,abort,resume}`, `GET /:id/{metrics,samples,artifacts}`, `WS /ws/jobs/:id/logs?since_seq=` + `WS /ws/telemetry`.
 - Runners/playground: `POST /runners/{engine}/up`, `POST /runners/:id/{kill,infer}`, `GET /runners` — infer via `POST /:id/infer`, 409 se preemptado.
@@ -213,5 +214,5 @@ Cada workspace segue o grid do protótipo: `painel config 320–384px + área fl
 - **Playground (nova aba, mesmo design):** runner sob demanda para os 3 motores — Difusão (gerar imagem), YOLO (inferência imagem/vídeo), CLIP (busca semântica). Orquestrador sobe o runner, mantém ativo até faltar VRAM ou usuário clicar "Matar runner". Card de status com VRAM usada + botão kill + aviso de preempção.
 - **Samples por ciclo:** em cada treino (YOLO/Difusão/CLIP) exibir N previews geradas por época/steps com métrica + imagem — é o "health visual". Exige `GET /api/jobs/:id/samples?cycle=N` e grade na direita dos workspaces.
 - **Downloads de modelos:** settings com campos HF token + Civitai key (env como fallback) + input de URL. Front só coleta e exibe progresso; download real é do orquestrador.
-- **Limites:** upload avulso imagem/vídeo 200 MB (validação no front + 413 do Rust). Envio de dataset p/ orquestrador sem limite, com md5 + fragmentação quando remoto — front mostra barra de empacotamento → envio → verificação.
-- **Pré-condições 3b/3d (ADR-0002 T3/T4/T7):** DELETE ganha cleanup de `<DATASETS_DIR>/<slug>` (delete-after-commit); `jobs.dataset_id ON DELETE SET NULL` + snapshot `dataset_versions` (nunca `RESTRICT`); derivar `autoTracked` de `boxes.origin='autotracker'` — detalhe no ADR.
+- **Limites:** upload avulso imagem/vídeo 200 MB por arquivo (validação no front + item `rejected/too_large` e 413 do Rust no corpo total). Envio de dataset p/ orquestrador sem limite, com md5 + fragmentação quando remoto — front mostra barra de empacotamento → envio → verificação.
+- **Pré-condições 3b/3d (ADR-0002 T3/T4/T7):** 3b ENTREGOU storage+imagens+anotação (upload/imagens/boxes/caption + `source` derivado + sweep de prefixo); export/import/package → 3e. DELETE ganhou sweep de prefixo `datasets/{id}/` pós-commit reapável best-effort (não mais cleanup de `<DATASETS_DIR>/<slug>` — disco morreu, ADR-0003 D7); `jobs.dataset_id ON DELETE SET NULL` + snapshot `dataset_versions` (nunca `RESTRICT`); derivar `autoTracked` de `boxes.origin='autotracker'` — detalhe no ADR.

@@ -8,11 +8,11 @@
 //! com sessão válida → 404 sem body).
 
 use axum::{
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{HeaderMap, StatusCode},
     middleware,
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
     Json,
 };
 use serde_json::{json, Value};
@@ -30,6 +30,12 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
     ("POST", "/api/datasets", &[201, 400, 401, 409]),
     ("GET", "/api/datasets/:id", &[200, 401, 404]),
     ("DELETE", "/api/datasets/:id", &[204, 401, 404]),
+    ("POST", "/api/datasets/:id/upload", &[200, 400, 401, 404, 503]),
+    ("GET", "/api/datasets/:id/images", &[200, 400, 401, 404]),
+    ("GET", "/api/datasets/:id/images/:imageId", &[200, 401, 404]),
+    ("GET", "/api/datasets/:id/images/:imageId/data", &[200, 401, 404, 503]),
+    ("PUT", "/api/datasets/:id/images/:imageId/boxes", &[200, 400, 401, 404]),
+    ("PUT", "/api/datasets/:id/images/:imageId/caption", &[200, 400, 401, 404]),
 ];
 
 /// Rotas públicas (sem gate): `/health` + `/api/auth/*`.
@@ -39,6 +45,11 @@ pub const PUBLIC_ROUTES: &[(&str, &str, &[u16])] = &[
     ("GET", "/api/auth/me", &[200, 401]),
     ("POST", "/api/auth/logout", &[204]),
 ];
+
+/// Limite do CORPO TOTAL do lote: 200 MiB de arquivos + 8 MiB de folga p/
+/// envelope multipart (D2). NÃO é por field (axum embrulha a stream toda —
+/// descoberta da revisão 3b.3).
+pub const UPLOAD_BODY_LIMIT_BYTES: usize = 200 * 1024 * 1024 + 8 * 1024 * 1024;
 
 /// Contrato total (inventário D8): união REAL de `PUBLIC_ROUTES` +
 /// `PROTECTED_ROUTES`. É função justamente para não existir alias esquecido —
@@ -87,6 +98,31 @@ pub fn build(state: AppState) -> axum::Router {
         .route(
             "/api/datasets/:id",
             get(datasets::handlers::get_one).delete(datasets::handlers::delete),
+        )
+        .route(
+            "/api/datasets/:id/upload",
+            post(datasets::handlers::upload)
+                .layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT_BYTES)),
+        )
+        .route(
+            "/api/datasets/:id/images",
+            get(datasets::handlers::list_images),
+        )
+        .route(
+            "/api/datasets/:id/images/:imageId",
+            get(datasets::handlers::get_image),
+        )
+        .route(
+            "/api/datasets/:id/images/:imageId/data",
+            get(datasets::handlers::get_data),
+        )
+        .route(
+            "/api/datasets/:id/images/:imageId/boxes",
+            put(datasets::handlers::put_boxes),
+        )
+        .route(
+            "/api/datasets/:id/images/:imageId/caption",
+            put(datasets::handlers::put_caption),
         )
         // route_layer DEPOIS dos .route(): aplicado a um router vazio o axum 0.7 panic
         // no boot (path_router.rs, `routes.is_empty()`). Só cobre as rotas deste

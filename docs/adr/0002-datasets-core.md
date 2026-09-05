@@ -1,5 +1,12 @@
 # ADR-0002 — Datasets núcleo (Fatia 3a)
 
+> **Banner pós-3b (2026-09-05):** T3/Consequências — `DATASETS_DIR`/volume de disco no
+> principal foram **substituídos pelo bucket S3 da ADR-0003** (migration `0003_images.sql`:
+> `ALTER TABLE datasets DROP COLUMN source`; DELETE agora varre o prefixo
+> `datasets/{id}/` pós-commit, best-effort). **T10 e D6 CONTINUAM válidos** (limite dedicado
+> de 200 MB + envelope quitado na 3b.3: corpo total 200 MiB + 8 MiB + teto por arquivo
+> 200 MiB). Corpo abaixo preservado como registro da 3a — não reescrevê-lo.
+
 - **Status:** Aceito
 - **Data:** 2026-09-05
 - **Componentes:** `services/api-principal` (`src/datasets/`, `src/state.rs`, `src/error.rs`, `src/auth/routes.rs`), Postgres (`db`), `packages/contracts`

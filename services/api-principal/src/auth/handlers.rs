@@ -251,6 +251,12 @@ mod tests {
             jwt_secret: [0x42; 32],
             secure_cookie: false,
             setup_required: true,
+            storage: std::sync::Arc::new(crate::storage::MockStorage::new()),
+            storage_config: crate::storage::StorageConfig {
+                bucket: "heph-test".into(),
+                public_endpoint: None,
+                url_ttl_secs: 60,
+            },
         };
         let resp = login(
             axum::extract::State(state),

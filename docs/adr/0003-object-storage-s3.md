@@ -1,12 +1,14 @@
 # ADR-0003 — Storage de objetos S3 como blob canônico (Fatia 3b)
 
-- **Status:** ACEITA pelo usuário em 2026-09-04 (direção + D0 = **SeaweedFS**). **Spike 3b.0
-  executado em 2026-09-05: 7/7 critérios PASS** (ver "Resultados do spike 3b.0" abaixo) — D4
-  (crate) e D3 (presigned) confirmadas, sem inversão; R2/R3 desriscados. **Nenhum doc de
-  `backend.md`/`frontend.md` foi alterado ainda** — a lista de linhas que ficam falsas está no
-  fim desta ADR e só deve ser aplicada pelo `@docs-sync` quando a 3b landar (para os docs não
-  descreverem o que ainda não existe).
-- **Data:** 2026-09-04
+- **Status:** IMPLEMENTADA na branch `feat/datasets-storage` (3b.0–3b.7:
+  `f6c6ff5`, `656a474`, `c012be5`, `a21345b`, `507637e`, `94fc0db`, `8451fa0`,
+  `3b6b46e`, `393163c`), landagem em **2026-09-05**. Direção + D0 = **SeaweedFS**
+  aceitas pelo usuário em 2026-09-04. **Spike 3b.0 executado em 2026-09-05: 7/7
+  critérios PASS** (ver "Resultados do spike 3b.0" abaixo) — D4 (crate) e D3
+  (presigned) confirmadas, sem inversão; R2/R3 desriscados. Os deltas de
+  `backend.md`/`frontend.md` da lista ao fim desta ADR foram aplicados no commit 3b.8
+  (docs agora descrevem o que existe).
+- **Data:** 2026-09-04 (aceite); implementação 2026-09-05
 - **Anexa/substitui parcial:** `docs/backend.md` §1/:15, §1/:26, §3/:49, §3/:50, §10/:148,
   §10/:160-161, §10/:165, §10/:183, §10/:188, §11/:195; `docs/adr/0002-datasets-core.md`
   T3 e o `DATASETS_DIR` das Consequências.
@@ -245,6 +247,24 @@ split,url}`, `ImageDetail`(=Image+`boxes[]`+`caption`), `Box`, `PutBoxesRequest/
 `PutCaptionRequest`, `CaptionResponse`. `limit` default 50, máx 200; filtros `split`
 (`train|val`) e `labeled`. Wire camelCase (ADR-0002 D1, guardado por teste); `id`/
 `imageId` não-UUID → 404 `not_found` (ADR-0002 D8 replicado).
+
+## Emendas da vida real (3b.0–3b.7, já no código — 2026-09-05)
+
+- **Tabela de rotas:** `GET /:id/images` declara **400** (`PROTECTED_ROUTES` em
+  `src/auth/routes.rs`: `&[200, 400, 401, 404]` — query `limit/offset/split/labeled`
+  inválida responde 400 no envelope; o rascunho do contrato previa só 200/401/404).
+- **Limites de corpo:** teto **TOTAL 200 MiB + 8 MiB** de envelope
+  (`UPLOAD_BODY_LIMIT_BYTES` em `src/auth/routes.rs`) **e** teto **POR ARQUIVO 200 MiB**
+  no spool (`MAX_FILE_BYTES` em `src/datasets/handlers.rs`; ao exceder, drena a stream
+  até EOF e marca o item `rejected/too_large`).
+- **NOVO — `Dataset.classes` expõe `id`** (gap do classId, 3b.7 `393163c`):
+  `DatasetClassResponse{id,name,idx,color}`; a resposta de classes é canônica e o `id`
+  alimenta o `classId` do PUT boxes.
+- **NOVO — TTL de presign validado no boot** (`src/main.rs::load_storage`):
+  `S3_URL_TTL_SECS` em `1..=604800` (máx SigV4 de 7 dias), fail-fast fora do range.
+- **NOVO — sweep do DELETE é best-effort com `eprintln`** até a fatia de logging
+  (`src/datasets/handlers.rs::delete`): falha do `delete_prefix` loga e não transforma
+  o 204 em erro; prefixo fica reapável.
 
 ## Migration `0003_images.sql` (contorno)
 

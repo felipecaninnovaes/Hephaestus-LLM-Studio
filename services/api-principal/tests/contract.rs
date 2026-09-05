@@ -38,6 +38,12 @@ fn setup_state() -> AppState {
         jwt_secret: SETUP_SECRET,
         secure_cookie: false,
         setup_required: true,
+        storage: std::sync::Arc::new(api_principal::storage::MockStorage::new()),
+        storage_config: api_principal::storage::StorageConfig {
+            bucket: "heph-test".into(),
+            public_endpoint: None,
+            url_ttl_secs: 60,
+        },
     }
 }
 
@@ -333,7 +339,8 @@ fn security_class_matches_openapi() {
 
 #[tokio::test]
 async fn protected_routes_fail_closed() {
-    // Cinto: toda rota protegida sem cookie → 401 unauthorized (vazio hoje).
+    // Cinto: toda rota protegida sem cookie → 401 unauthorized (o loop
+    // cobre as rotas protegidas declaradas em PROTECTED_ROUTES).
     let app = routes::build(setup_state());
     for (method, path, _) in routes::PROTECTED_ROUTES {
         let (status, _, body) = call(
@@ -432,6 +439,203 @@ async fn datasets_probe_without_db() {
     assert_eq!(json(&body)["code"], "unauthorized");
 }
 
+#[tokio::test]
+async fn images_and_upload_reject_non_uuid_before_anything() {
+    // 404-AR ANTES de ler fields/query: o parse do id é o passo 1 dos dois
+    // handlers (multipart válido com field dummy; sem isto o extractor do
+    // axum devolveria 400 de content-type antes do handler).
+    let app = routes::build(setup_state());
+    let (token, _) = session::issue_jwt(uuid::Uuid::new_v4(), &SETUP_SECRET);
+    let cookie = format!("heph_session={token}");
+
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri("/api/datasets/nao-e-uuid/images")
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json(&body)["code"], "not_found");
+
+    let boundary = "heph-test-boundary";
+    let multipart_body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"files\"; filename=\"dummy.png\"\r\nContent-Type: image/png\r\n\r\nxxx\r\n--{boundary}--\r\n"
+    );
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/api/datasets/nao-e-uuid/upload")
+            .header(
+                http::header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::from(multipart_body))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json(&body)["code"], "not_found");
+}
+
+#[tokio::test]
+async fn detail_and_data_reject_non_uuid_before_anything() {
+    // 404 ANTES de qualquer query/SQL: o parse de id+imageId é o passo 1
+    // dos dois handlers (pool `connect_lazy` nunca é tocado — body vazio).
+    let app = routes::build(setup_state());
+    let (token, _) = session::issue_jwt(uuid::Uuid::new_v4(), &SETUP_SECRET);
+    let cookie = format!("heph_session={token}");
+
+    for uri in [
+        "/api/datasets/nao-e-uuid/images/00000000-0000-0000-0000-000000000000".to_string(),
+        format!(
+            "/api/datasets/00000000-0000-0000-0000-000000000000/images/nao-e-uuid"
+        ),
+        "/api/datasets/nao-e-uuid/images/00000000-0000-0000-0000-000000000000/data"
+            .to_string(),
+        format!(
+            "/api/datasets/00000000-0000-0000-0000-000000000000/images/nao-e-uuid/data"
+        ),
+    ] {
+        let (status, _, body) = call(
+            app.clone(),
+            Request::builder()
+                .method("GET")
+                .uri(uri.clone())
+                .header(http::header::COOKIE, cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
+        assert_eq!(json(&body)["code"], "not_found", "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn put_boxes_and_caption_reject_without_db() {
+    // Validades (c) testáveis sem DB: pool `connect_lazy` nunca é tocado
+    // porque parse-uuid (a), parse de body (b) e validação pura (c) vêm
+    // antes de qualquer query. Happy-path fica para datasets_db (precisa banco).
+    let app = routes::build(setup_state());
+    let (token, _) = session::issue_jwt(uuid::Uuid::new_v4(), &SETUP_SECRET);
+    let cookie = format!("heph_session={token}");
+    let ds = "00000000-0000-0000-0000-000000000000";
+    let img = "11111111-1111-1111-1111-111111111111";
+    let class = "22222222-2222-2222-2222-222222222222";
+
+    // PUT boxes com x fora de 0..=1 ⇒ 400 (validação pura).
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/api/datasets/{ds}/images/{img}/boxes"))
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::from(format!(
+                r#"{{"boxes":[{{"classId":"{class}","x":1.5,"y":0,"w":0,"h":0}}]}}"#
+            )))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+
+    // PUT boxes com chave desconhecida ⇒ 400 (deny_unknown_fields da casa).
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/api/datasets/{ds}/images/{img}/boxes"))
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::from(r#"{"boxes":[],"extra":1}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+
+    // PUT caption com text vazio ⇒ 400 (a linha não nasce).
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/api/datasets/{ds}/images/{img}/caption"))
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::from(r#"{"text":""}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+
+    // PUT caption sem text ⇒ 400 (required).
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/api/datasets/{ds}/images/{img}/caption"))
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::from(r#"{"origin":"manual"}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+
+    // imageId não-uuid + body válido ⇒ 404 ((a) antes de (b)).
+    for uri in [
+        format!("/api/datasets/{ds}/images/nao-e-uuid/boxes"),
+        format!("/api/datasets/{ds}/images/nao-e-uuid/caption"),
+    ] {
+        let (status, _, body) = call(
+            app.clone(),
+            Request::builder()
+                .method("PUT")
+                .uri(uri.clone())
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header(http::header::COOKIE, cookie.clone())
+                .body(Body::from(format!(
+                    r#"{{"boxes":[{{"classId":"{class}","x":0.5,"y":0.5,"w":0.2,"h":0.2}}]}}"#
+                )))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
+        assert_eq!(json(&body)["code"], "not_found", "{uri}");
+    }
+
+    // Corpo > 2 MiB (DefaultBodyLimit global herdado das rotas JSON) ⇒ 413 no
+    // envelope, nunca text-plain do axum (revisão 3b.6 F5; padrão create).
+    let huge = format!(r#"{{"text":"{}"}}"#, "a".repeat(2 * 1024 * 1024 + 64));
+    for uri in [
+        format!("/api/datasets/{ds}/images/{img}/caption"),
+        format!("/api/datasets/{ds}/images/{img}/boxes"),
+    ] {
+        let (status, _, body) = call(
+            app.clone(),
+            Request::builder()
+                .method("PUT")
+                .uri(uri.clone())
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header(http::header::COOKIE, cookie.clone())
+                .body(Body::from(huge.clone()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{uri}");
+        assert_eq!(json(&body)["code"], "invalid_request", "{uri}");
+    }
+}
+
 #[test]
 fn json_property_names_are_camel_case() {
     // Enforcement D1: todo nome de propriedade e de parâmetro na spec é
@@ -497,7 +701,7 @@ fn dataset_response_keys_match_openapi() {
     // o set de chaves que `DatasetResponse` produz tem que ser o declarado em
     // `components.schemas.Dataset` (pega drift D1, ex.: renomear
     // `last_modified` sem atualizar a spec).
-    use api_principal::datasets::models::{DatasetResponse, DatasetRow};
+    use api_principal::datasets::models::{DatasetClassResponse, DatasetResponse, DatasetRow};
     use chrono::{DateTime, Utc};
     let row = DatasetRow {
         id: uuid::Uuid::nil(),
@@ -508,7 +712,6 @@ fn dataset_response_keys_match_openapi() {
         task: "detect_track".to_string(),
         format: "yolo_txt".to_string(),
         status: "needs_labeling".to_string(),
-        source: None,
         size_bytes: 0,
         images_count: 0,
         labeled_count: 0,
@@ -516,7 +719,12 @@ fn dataset_response_keys_match_openapi() {
         updated_at: DateTime::<Utc>::UNIX_EPOCH,
     };
     let mut resp = DatasetResponse::from(row);
-    resp.classes = vec!["a".to_string()];
+    resp.classes = vec![DatasetClassResponse {
+        id: uuid::Uuid::nil().to_string(),
+        name: "a".to_string(),
+        idx: 0,
+        color: "#10b981".to_string(),
+    }];
     let value = serde_json::to_value(&resp).expect("serializar DatasetResponse");
     let got: BTreeSet<String> = value
         .as_object()

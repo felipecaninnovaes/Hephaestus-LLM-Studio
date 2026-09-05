@@ -18,11 +18,22 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-05 (fim de sessão; retomada = ler esta seção + "Próximo passo")
+## Estado atual — 2026-09-05 (fim de sessão da 3b; retomada = ler esta seção + "Próximo passo")
+
+- **Fatia 3b LANDED na branch `feat/datasets-storage` (3b.0–3b.7:
+  `f6c6ff5`..`393163c`) + docs sincronizados (3b.8, working tree desta sessão, sem
+  commit — o coordenador commiteia). Branch à frente de `main`; merge = decisão do
+  usuário. Entregue: migration 0003 + `StoragePort`/`MockStorage`/`S3Storage` + 6 rotas
+  (upload, images, detail, `/data`, boxes, caption) + sweep pós-commit + `source`
+  derivado + `classes{id}`; spec 0.3.0; revisões 3b.3/3b.6 feitas. Dívida 3b QUITADA
+  (ver "Dívidas"); sobraram: logging server-side (fatia nomeada), gate `sub` órfão,
+  `cargo fmt`. A/B 3b.6 registrado no bullet do experimento — **encerrado pelo usuário:
+  sem swap; `@reviewer` é o despacho único, max só como escalada** (`a343a7c` em
+  `chore/reviewer-escalacao`).
 
 - **Spike 3b.0 EXECUTADO e PASSOU (7/7).** Rodado no ramo **descartável**
-  `spike/storage-seaweedfs` (commit `09a517d`, **NÃO mergeado** — o ramo só existe para guardar a
-  matriz `spike/STORAGE-SPIKE.md` e os harnesses). Consequência: **D4 (crate) e D3 (presigned)
+  `spike/storage-seaweedfs` (commit `09a517d`; **fundido pelo usuário em `main` (`52da6f9`)**
+  — matriz `spike/STORAGE-SPIKE.md` e harnesses vivem no tronco). Consequência: **D4 (crate) e D3 (presigned)
   ficam aprovadas, sem inversão**; R2 e R3 desriscados no ferro. Os achados que **corrigem o
   rascunho da ADR** (identidade via `-s3.config` JSON e não env vars; bucket auto-cria sem
   init-container; healthcheck exige `-ip.bind=0.0.0.0`; nomes reais da API do SDK; novo risco R10
@@ -71,29 +82,46 @@ ser interrompido no meio de uma.
   atualização em tempo real, spikes = coordenador com loop de build em script único
   — lição do 3b.0). Anti-exemplo registrado na skill: `1c1f72f` (3.219 linhas em 1
   commit) que virou a cirurgia de reword da 3a.
-- **Experimento A/B de revisor (3b)**: `@reviewer-max` (qwen3.8-max, `variant: high`,
-  corpo idêntico ao titular) despacha no MESMO diff que o `@reviewer` nos marcos
-  3b.3 e 3b.6; compara-se achados reais e falsos positivos; critério de swap ao fim
-  da 3b. Nota operacional: agente novo só entra na lista de subagentes após reinício
-  de sessão (dispatcher de reserva durante a 3b: `opencode run --auto --agent
-  reviewer-max`). *Dia 1 (smoke em `86fb0eb`)*: ambos BLOQUEIA no mesmo defeito real
-  (gate de segredos × `!.env.example` do gitignore — comprovado por matriz de 4 casos
-   antes do fix); o titular ainda cruzou com a ADR-0003 (`.env.example` é entregável
-   prometido da 3b.4)   — 1 ponto pro flash por enquanto. *Marco 3b.3 (difícil, teste real)*:
-   ambos **BLOQUEIA** pelo MESMO crítico comprovado por sonda própria (livelock multipart pós-
-   `LengthLimit` — axum embrulha corpo todo, multer nunca fuseja; os dois citaram a fonte e
-   reproduziram), **zero falso positivo nos dois lados**. Titular achou a mais: duplicate falso
-   por stem sem extensão (F4) e a janela de boot mock (F6, decisão do coordenador); sombra achou
-   a mais: doc de `sanitize_filename` mentindo + branch morto (F7) e o staleness latente do
-   `COALESCE(NEW,OLD)` em UPDATE de reparentização (registro: inofensivo até existir rota de
-   UPDATE de `image_id`/`dataset_id`). Contagem de achados únicos: 2 titular × 2 sombra —
-   **empate técnico no marco**; hipótese "medium no fixer reduz escaladas" segue em teste.
+- **Experimento A/B de revisor (3b) — ENCERRADO pelo usuário em 2026-09-05** (custo de
+  tokens; decisão registrada ao fim da fatia). `@reviewer-max` (qwen3.8-max, `variant: high`,
+  corpo idêntico ao titular) despachou no MESMO diff que o `@reviewer` nos marcos
+  3b.3 e 3b.6. **Veredito do usuário: sem swap — `@reviewer` (flash/high) é o despacho
+  único de marco; `@reviewer-max` fica no time como ESCALADA** (só quando o titular não
+  resolver, travar no mesmo ponto, ou risco alto pedir auditoria independente — charter
+  reescrito em `a343a7c`/`chore/reviewer-escalacao`). *Dia 1 (smoke em `86fb0eb`)*: ambos
+  BLOQUEIA no mesmo defeito real (gate de segredos × `!.env.example` do gitignore —
+  comprovado por matriz de 4 casos antes do fix); o titular ainda cruzou com a ADR-0003
+  (`.env.example` é entregável prometido da 3b.4) — 1 ponto pro flash. *Marco 3b.3
+  (difícil, teste real)*: ambos **BLOQUEIA** pelo MESMO crítico comprovado por sonda
+  própria (livelock multipart pós-`LengthLimit` — axum embrulha corpo todo, multer nunca
+  fuseja; os dois citaram a fonte e reproduziram), **zero falso positivo nos dois lados**.
+  Titular achou a mais: duplicate falso por stem sem extensão (F4) e a janela de boot mock
+  (F6, decisão do coordenador); sombra achou a mais: doc de `sanitize_filename` mentindo +
+  branch morto (F7) e o staleness latente do `COALESCE(NEW,OLD)` em UPDATE de
+  reparentização (registro: inofensivo até existir rota de UPDATE de `image_id`/`dataset_id`).
+  Contagem: 2 titular × 2 sombra — empate técnico. *Marco 3b.6*: titular CONDICIONAL com
+  **1 falso positivo** (emenda vista só no trunk — o diff do marco não continha o fix) e 2
+  únicos (erros por-chave do `delete_prefix`, TTL não wired no compose); sombra PASSA com 2
+  únicos (órfão `infra_pgdata` no runner, upsert com `RETURNING`) e 0 falsos. **Placar
+  final: 3b.3 empate 2×2; 3b.6 2×2 com vantagem da sombra só em falsos positivos.**
+  Conclusão operacional: achados convergentes nos dois marcos — **o segundo despacho nunca
+  mudou um desfecho que o titular + coordenador não tivessem alcançado; o duplo despacho
+  não se paga.** Hipótese "medium no fixer reduz escaladas" segue válida (é outra linha do
+  experimento, sem custo de modelo caro).
 - **Esforço de razonamento fixado por agente** (`variant:` na frontmatter, validado
-  no provider): `high` em hephaestus/architect/reviewer (+ sombra max), `medium` em
-  fixer e ui-designer, `low` nos implementadores e explore. Hipótese a medir na 3b:
-  `fixer` com medium deve reduzir escaladas ao coordenador; se `low` em implementador
-  degradar obediência à spec, subir para medium é uma linha. Vale a partir da
-  próxima sessão (config de agente não retroage em sessão viva).
+  no provider): **coordenador `@hephaestus` sobe para qwen3.8-max/`medium`** (decisão do
+  usuário 2026-09-05, informed pelo A/B: o loop redundante de decisão em flash/high custou
+  mais que o differential do modelo — max decide certo com cadeia menor); `high` em
+  architect/reviewer; escalada `@reviewer-max` só quando o titular travar; `medium` em
+  fixer e ui-designer; `low` nos implementadores e explore. **Novo @visao**
+  (flash/`low`, permissões edit/bash/web negadas): proxy de visão do coordenador —
+  transcreve screenshots/PNGs de forma fática quando o usuário anexa imagem; NÃO audita
+  tela (isso segue sendo do `@ui-designer` com DevTools: DOM+computed styles+edição, que
+  "descrever pixels" não substitui). Fallbacks de uma linha: se max/medium mostrar
+  verbosidade ou loop novo no coordenador, testar `low`, e rebaixar para flash/high é o
+  último passo; a medição natural é a sessão da 3c. Hipótese "medium no fixer reduz
+  escaladas" segue válida. Vale a partir da próxima sessão (config não retroage em sessão
+  viva; em `chore/reviewer-escalacao` `bc4d5db`).
 
 ## Storage da 3b — decisão TOMADA (2026-09-04): bucket S3/SeaweedFS
 
@@ -141,65 +169,52 @@ não o que foi aprovado).
 
 ## Dívidas registradas que as próximas fatias precisam honrar
 
-- **3b (upload/imagens)** — **revisada pela ADR-0003 (proposta)**: morrem o volume
-  `datasets`/`DATASETS_DIR` no principal e o "cleanup de `<DATASETS_DIR>/<slug>`" (viram
-  sweep de prefixo `datasets/<id>/` no bucket, pós-commit); **permanece** o
-  `DefaultBodyLimit` **dedicado** de 200 MB em `POST /:id/upload` com envelope de erro
-  (não herdar os 2 MiB do axum — ADR-0002 T10, quitado na letra); `images.path` vira
-  `object_key`; migration `0003` com `images/boxes/captions/videos` + **contadores
-  recalculados por função única** (nunca `+=`) — o invariante
-  `labeled_count <= images_count` saiu do `CHECK` porque CHECK não é deferrável e o
-  `DELETE FROM images` de imagem rotulada passa por estado intermediário (T2); status
-  `needs_labeling → in_progress → ready` passa a ser derivado por trigger; export/import/
-  package sobem para **3e** (backup interim = console + `mc mirror`); bloco `--datasets`
-  no `scripts/e2e-smoke.sh`.
+- **3b (upload/imagens) — QUITADA 2026-09-05** (`feat/datasets-storage`:
+  `f6c6ff5` migration 0003, `656a474` porta/mock/AppState, `c012be5` upload+lista,
+  `a21345b` fix livelock/413/filename, `507637e` S3+compose+runner, `94fc0db`
+  detail+`/data`, `8451fa0` boxes+caption, `3b6b46e` fix TTL/sweep, `393163c` sweep+
+  `source`+classes com `id`; docs sincronizados no 3b.8). Entregue: bucket S3/SeaweedFS
+  como blob canônico (volume `datasets`/`DATASETS_DIR` do principal mortos; sweep de
+  prefixo `datasets/<id>/` pós-commit best-effort), `DefaultBodyLimit` dedicado
+  (total 200 MiB + 8 MiB + teto por arquivo 200 MiB, envelope — ADR-0002 T10),
+  `images.object_key` + `sha256`/`media_type`, `videos` sem rota de escrita,
+  `heph_refresh_dataset_counters` (nunca `+=`, status derivado), `source` derivado
+  `s3://{bucket}/datasets/{id}/`, `classes` como `{id,name,idx,color}` (gap classId,
+  3b.7). O que SOBROU para as fatias seguintes: export/import/package → **3e**
+  (backup interim = console + `mc mirror`); bloco `--datasets` no
+  `scripts/e2e-smoke.sh` (se ainda não coberto); UI `/datasets` (3c) e
+  galeria/anotação (3d). Verificado: lista, `GET /:id` e `POST` preenchem `classes`
+  com `{id,name,idx,color}` (`handlers.rs:80,237,277`).
 - **Jobs (fatia 4)** — `jobs.dataset_id UUID NULL REFERENCES datasets(id)
   ON DELETE SET NULL` + snapshot `dataset_versions` (nunca `RESTRICT`) — ADR-0002 T4.
 - **3d** — derivar `autoTracked` de `boxes.origin='autotracker'` (T7); hoje é
   constante `false`.
 - **Hardening (sem fatia marcada)** — gate aceita `sub` órfão: cookie assinado com
   segredo antigo sobrevive a reset de `users` e passa a ler/deletar datasets (T8;
-  mitigação = `SELECT EXISTS` no gate ou rotacionar segredo no reset). Erro de
-  banco hoje vira 500 **sem log nenhum** — antes da fatia de jobs adicionar log
-  server-side (nunca no response). `cargo fmt -p api-principal` tem 10 hunks
-  violando padrão, **todos pré-existentes** (Fatia 2); nenhum CI de fmt — decisão
-  de quando formatar é do usuário.
+  mitigação = `SELECT EXISTS` no gate ou rotacionar segredo no reset). `cargo fmt
+  -p api-principal` segue violando padrão (hunks pré-existentes da Fatia 2 +
+  acréscimo da 3b); nenhum CI de fmt — decisão de quando formatar é do usuário.
+- **Logging server-side (fatia nomeada, sem número)** — revisores 3b.3/3b.6: `Err(_)
+  => internal()` engole detalhes (banco vira 500 mudo, sem log nenhum) e o `map_err`
+  do SDK descarta `code()`; sweep do DELETE usa `eprintln` como mínimo honesto até
+  a fatia chegar. Escopo: log server-side (nunca no response) antes/depois da fatia
+  de jobs.
 
-## Plano em andamento — PRÓXIMO PASSO EXATO: fatia `3b.4` (S3Storage + compose)
+## Plano em andamento — PRÓXIMO PASSO EXATO: merge da `feat/datasets-storage` → 3c
 
-**Spike 3b.0 FEITO (7/7). 3b.1+3b.2+3b.3 FECHADAS 2026-09-05** em `feat/datasets-storage`
-(aberta de `main` `52da6f9`): `f6c6ff5` migration 0003+gatilhos; `656a474` StoragePort+Mock+
-AppState+boot; `c012be5` upload+lista; `a21345b` **ronda do marco 3b.3** (dois revisores no
-MESMO diff deram o MESMO veredito BLOQUEIA no achado crítico — livelock multipart: no axum
-0.7.9 o DefaultBodyLimit embrulha o corpo TODO e o multer nunca fuseja; corrigido com 413 no
-envelope + break/return, teto real POR ARQUIVO no spool, margem de envelope 8 MiB, INSERT-erro
-⇒ compensação+500 à letra da D7, filename canônico com extensão do sniff, mock `failing()` +
-3 testes de 503). Estado pós-fix: **44 units + 8 contract + 16 db** verdes; OpenAPI 0.3.0 com
-as 2 primeiras rotas do delta. Emenda da tabela de rotas da ADR-0003 landing direto no tronco
-(400 em `GET /images` + nota do corpo-total/margem). Verificação:
+**3b.0–3b.8 FEITOS 2026-09-05 (ver "Estado atual").** A sequência:
 
 1. ~~`spike/storage-seaweedfs`~~ ✅ **CONCLUÍDO 2026-09-05** (ramo `spike/storage-seaweedfs`,
-   commit `09a517d`, matriz em `spike/STORAGE-SPIKE.md`; **fundido pelo usuário em `main`
-   (`52da6f9`)** — os harnesses `examples/storage_spike*.rs` e a matriz vivem no tronco).
-   Nenhum critério falhou;
-   D3/D4 intactas. **Antes da 3b.4, ler a seção "Resultados do spike 3b.0" da ADR-0003** — corrige
-   o compose de rascunho da ADR (identidade `-s3.config` JSON, bucket auto-cria, `-ip.bind`,
-   API real do SDK) e levanta o risco R10 (build `aws-lc-sys` no `rust:slim`).
-2. **3b.1..3b.7** = abrir `feat/datasets-storage` de `main` atualizada, na ordem da tabela "Plano
-   de commits da 3b" da ADR-0003 (migration 0003 + gatilhos → porta/mock/AppState → upload
-   + `GET images` → S3Storage + compose + runner → leitura/detail/`/data` → boxes/caption →
-   sweep do DELETE + `source` derivado). Roteiro de verificação por commit na ADR.
-   **Decomposição de delegação:** 3b.1 migration+triggers e 3b.2..3b.7 handlers/S3 =
-   `@rust-dev` com especificação completa (ADR-0003 + achados do spike); decisões de schema/
-   boundary (0003, `StoragePort`) já estão presas na ADR, não re-abrir.
-3. **3b.8** = `@docs-sync` aplicando **exatamente** a lista "O que fica falso nos docs" do
-   fim da ADR-0003 + banner na ADR-0002 (T3/Consequências; T10 e D6 da 0002 **continuam
-   válidos**).
-4. `@reviewer` ao fim de 3b.3 e de 3b.6 (não no fim da fatia inteira).
-5. Depois: **3c UI `/datasets`** (lista) → **3d galeria+annotate** → **3e export/import**
-   → **4 jobs/package/materialização** (onde o orquestrador ganha cliente S3 com credencial
-   escopada por prefixo e onde a dívida T4 da ADR-0002 — `jobs.dataset_id ON DELETE SET
-   NULL` + `dataset_versions` — precisa ser honrada no nascedouro).
+   commit `09a517d`, matriz em `spike/STORAGE-SPIKE.md`; **fundido pelo usuário em `main` (`52da6f9`)** — harnesses e matriz vivem no tronco).
+2. ~~**3b.1..3b.7**~~ ✅ **CONCLUÍDOS** em `feat/datasets-storage` (`f6c6ff5`..`393163c`);
+   `@reviewer` ao fim de 3b.3 e 3b.6 (ver A/B no "Estado atual").
+3. ~~**3b.8**~~ ✅ **CONCLUÍDO nesta sessão** (`@docs-sync`: deltas da ADR-0003 aplicados em
+   `backend.md`/`frontend.md` + banner na ADR-0002 + ADR-0003 marcada IMPLEMENTADA).
+4. Depois (decisão do usuário): **merge da branch** → **3c UI `/datasets`** (lista) →
+   **3d galeria+annotate** → **3e export/import** → **4 jobs/package/materialização**
+   (onde o orquestrador ganha cliente S3 com credencial escopada por prefixo e onde a
+   dívida T4 da ADR-0002 — `jobs.dataset_id ON DELETE SET NULL` + `dataset_versions` —
+   precisa ser honrada no nascedouro).
 
 Cada fatia: branch `feat/<slice>` de `main` atualizada, commit `type(scope):
 subject`, verificação do coordenador (`cargo check --workspace`, `cargo test -p
@@ -213,18 +228,14 @@ autorizou a landing direto no tronco).
 
 - [x] Fatia 3a mergeada em `main` pelo usuário (`e724436`) e branches de fatia apagadas.
 - [x] ADR-0003 aceita, D0 = SeaweedFS.
-- [x] Spike `spike/storage-seaweedfs` rodado (7/7 PASS, commit `09a517d`, **não fundido**);
-      achados appêndados na ADR-0003 → "Resultados do spike 3b.0".
-- [x] `feat/datasets-storage` aberta da `main`; **3b.1 ✅ `f6c6ff5`, 3b.2 ✅ `656a474`,
-      3b.3 ✅ `c012be5` + ronda `a21345b`** (revisão A/B no marco: ambos BLOQUEIA no mesmo
-      crítico, corrigido e provado — ver "Experimento A/B").
-- [ ] **3b.4 (S3Storage + compose + `.env.example` + runner) → 3b.7** com `@rust-dev`;
-      `@reviewer`+`@reviewer-max` no marco 3b.6; **3b.8** `@docs-sync`. **Ler os achados do
-      spike na ADR-0003 antes de codar** (identidade `-s3.config` JSON, bucket auto-cria,
-      `-ip.bind=0.0.0.0`, nomes reais da API do SDK, risco R10 `aws-lc-sys` no `rust:slim`).
-- [ ] Pendências antigas que continuam valendo, sem fatia marcada: CLI
-      `studio reset-password` (ADR-0001 T4), `cargo fmt -p api-principal` (10 hunks
-      fora de padrão, todos da Fatia 2), logging server-side em erro de banco
-      (hoje vira 500 mudo), gate aceitar `sub` órfão (ADR-0002 T8).
+- [x] Spike `spike/storage-seaweedfs` rodado (7/7 PASS, commit `09a517d`; **fundido pelo
+      usuário em `main` `52da6f9`**); achados appêndados na ADR-0003 → "Resultados do spike 3b.0".
+- [x] **3b.7** ✅ (sweep + `source` derivado + classes com `id`, `393163c`) e **3b.8** ✅
+      (docs sincronizados nesta sessão).
+- [ ] Próximo passo = **merge da `feat/datasets-storage`** (decisão do usuário) → 3c.
+- [ ] Pendências que continuam valendo, sem fatia marcada: CLI
+      `studio reset-password` (ADR-0001 T4), `cargo fmt -p api-principal` segue,
+      logging server-side (fatia nomeada — revisores 3b.3/3b.6), gate `sub` órfão
+      (ADR-0002 T8).
       ~~`lefthook install`~~ ✅ quitado em `chore/agent-team` (gate ativo: hooks
       instalados + commitlint real + deny de commit nos subagentes).

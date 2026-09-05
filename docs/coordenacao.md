@@ -27,12 +27,14 @@ ser interrompido no meio de uma.
   rascunho da ADR** (identidade via `-s3.config` JSON e não env vars; bucket auto-cria sem
   init-container; healthcheck exige `-ip.bind=0.0.0.0`; nomes reais da API do SDK; novo risco R10
   = build do `aws-lc-sys` no `rust:slim`) estão appêndados na **ADR-0003**, seção "Resultados do
-  spike 3b.0" — **ler antes de codar a 3b.4**. `main` está limpa, em dia com origin.
+  spike 3b.0" — **ler antes de codar a 3b.4**. `main` limpa de worktree; **1 commit à
+  frente do `origin/main`** (`f4d1551`), push pendente = decisão do usuário.
 - **Branch de trabalho: `main`.** `feat/datasets-core` foi **mergeada pelo usuário**
   (`e724436 Merge branch 'feat/datasets-core'`) e as branches de fatia foram apagadas,
   incluindo a de segurança `backup/pre-reword-3a` (confirmado antes de apagar: árvores de
   código byte-idênticas aos commits que entraram; o único resíduo era o hash pré-reword de
-  um commit cujo conteúdo é o mesmo). `main` == `origin/main`, nada pendente de push.
+  um commit cujo conteúdo é o mesmo). Situação de push: ver bullet acima (`main` à frente
+  do origin em `f4d1551`).
 - Roadmap `docs/repo-estrutura.md` §Ordem: Slice 1 ✅, Slice 2 ✅, **Slice 3a ✅ (no
   tronco)**, 3b é o próximo passo.
 - **Slice 3a no tronco**: `GET/POST /api/datasets` + `GET/DELETE /api/datasets/:id` com

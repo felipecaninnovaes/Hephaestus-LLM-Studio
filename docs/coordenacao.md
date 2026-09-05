@@ -109,11 +109,19 @@ ser interrompido no meio de uma.
   não se paga.** Hipótese "medium no fixer reduz escaladas" segue válida (é outra linha do
   experimento, sem custo de modelo caro).
 - **Esforço de razonamento fixado por agente** (`variant:` na frontmatter, validado
-  no provider): `high` em hephaestus/architect/reviewer (+ escalada max), `medium` em
-  fixer e ui-designer, `low` nos implementadores e explore. Hipótese a medir na 3b:
-  `fixer` com medium deve reduzir escaladas ao coordenador; se `low` em implementador
-  degradar obediência à spec, subir para medium é uma linha. Vale a partir da
-  próxima sessão (config de agente não retroage em sessão viva).
+  no provider): **coordenador `@hephaestus` sobe para qwen3.8-max/`medium`** (decisão do
+  usuário 2026-09-05, informed pelo A/B: o loop redundante de decisão em flash/high custou
+  mais que o differential do modelo — max decide certo com cadeia menor); `high` em
+  architect/reviewer; escalada `@reviewer-max` só quando o titular travar; `medium` em
+  fixer e ui-designer; `low` nos implementadores e explore. **Novo @visao**
+  (flash/`low`, permissões edit/bash/web negadas): proxy de visão do coordenador —
+  transcreve screenshots/PNGs de forma fática quando o usuário anexa imagem; NÃO audita
+  tela (isso segue sendo do `@ui-designer` com DevTools: DOM+computed styles+edição, que
+  "descrever pixels" não substitui). Fallbacks de uma linha: se max/medium mostrar
+  verbosidade ou loop novo no coordenador, testar `low`, e rebaixar para flash/high é o
+  último passo; a medição natural é a sessão da 3c. Hipótese "medium no fixer reduz
+  escaladas" segue válida. Vale a partir da próxima sessão (config não retroage em sessão
+  viva; em `chore/reviewer-escalacao` `bc4d5db`).
 
 ## Storage da 3b — decisão TOMADA (2026-09-04): bucket S3/SeaweedFS
 

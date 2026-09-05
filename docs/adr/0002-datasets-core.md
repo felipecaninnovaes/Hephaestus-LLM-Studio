@@ -149,9 +149,13 @@ código shipped sem ganho e estouraria o teto de 400 linhas da fatia.
   `size_bytes/images_count/labeled_count`, regex de `classes.name`/`color`). §10 foi editado
   nesta fatia marcando "ADR-0002".
 - **T2 — contadores sem `images`.** `images_count = 0 ∧ labeled_count = 0 ∧ size_bytes = 0` é
-  **teorema** da 3a (nenhum caminho de escrita), não estimativa; o
-  `CHECK (labeled_count <= images_count)` pré-compromete a semântica do "% Rotuladas" do §5.1
-  para o trigger da 3b.
+  **teorema** da 3a (nenhum caminho de escrita), não estimativa. A revisão derrubou a ideia de
+  pré-comprometer `% Rotuladas` (`labeled_count <= images_count`) com `CHECK`: `CHECK` não é
+  deferrável no Postgres e o `DELETE FROM images` de uma imagem rotulada passa por estado
+  intermediário (trigger de `images` vs. cascata de `boxes`, ordem de RI vs. usuário) que o
+  violaria. O CHECK foi **removido** do `0002` (ficou só `>= 0`); o invariante passa a ser
+  obrigação declarada do trigger da 3b (função única de recálculo ou `CONSTRAINT TRIGGER
+  DEFERRABLE`). Registrado em `backend.md` §10 "Regra".
 - **T3 — `DELETE` da 3a não apaga disco.** Em 3a não há artefato; **pré-condição de aceite da
   3b** é `datasets::handlers::delete` ganhar cleanup de `<DATASETS_DIR>/<slug>`
   (delete-after-commit, nunca apagar disco antes do commit) — senão o DELETE passa a vazar GBs.
@@ -174,10 +178,15 @@ código shipped sem ganho e estouraria o teto de 400 linhas da fatia.
 - **T9 — normalização `{id}`↔`:id` é ponto cego do teste.** A spec declara **somente** `{...}`
   e o teste assere isso (`inventory_matches_openapi` rejeita `:` na spec); a normalização
   acontece só no lado da comparação.
-- **T10 — `DefaultBodyLimit` do axum (2 MiB).** Body com centenas de classes viraria 413
-  **sem envelope**; o cap explícito de 200 classes (`maxItems` + validação) evita isso, e o
-  `POST /:id/upload` da 3b **não** pode herdar este limite (precisa de body_limit dedicado
-  de 200 MB).
+- **T10 — `DefaultBodyLimit` do axum (2 MiB) e o 413.** A premissa original ("o cap de 200
+  classes evita o 413 sem envelope") foi **derrubada na revisão**: o extractor de body estoura o
+  limite antes de qualquer validação, então junk > 2 MiB daria 413 `text/plain` do axum, fora do
+  envelope D6 e fora dos status declarados. Resolução aplicada: `create` recebe
+  `Result<Bytes, BytesRejection>` e mapeia `LengthLimitError` → 413 `invalid_request` **no
+  envelope**; o `413` entra na convenção global da spec (ao lado de 500/405), não por operação.
+  O cap de 200 classes continua valendo como `maxItems` da spec sobre o **input** (DC1). O
+  `POST /:id/upload` da 3b **não** pode herdar este limite: precisa de `DefaultBodyLimit`
+  dedicado de 200 MB repetindo o mesmo padrão de envelope.
 
 ## Plano de fatia (para despachar; cada passo é um commit < 400 linhas)
 
@@ -186,21 +195,28 @@ código shipped sem ganho e estouraria o teto de 400 linhas da fatia.
 | 3a.2 | `b5d3c33` `feat(datasets): migration 0002 + estado e modelos puros` | `migrations/0002_datasets.sql` (D2/D4) + `src/state.rs` + `src/error.rs` + `src/datasets/models.rs` (D1/D3/D5/D8) | `cargo test -p api-principal` (units de slug/derive/classes); `sqlx migrate run` aplica |
 | 3a.3 | `1e5cbe6` `feat(datasets): rotas CRUD núcleo + gate require_auth plugado` | `src/datasets/handlers.rs` (D6/D8/D10) + `src/auth/routes.rs` (D9) + `openapi.yaml` 0.2.0 (D11) + `tests/contract.rs` (D1/D6/D9) | `cargo test -p api-principal` verde; remover rota do código quebra o contrato |
 | 3a.4 | `test(datasets): integração postgres gateada por --ignored` (pendente) | fluxo create→list→get→delete, 409 de slug, cores/idx, cascade, trigger `updated_at`, campo extra → 400 | `cargo test -p api-principal -- --ignored` verde com `db` do compose |
-| 3a.5 | *(este commit)* `docs(adr): ADR-0002 datasets núcleo + política de casing` | este ADR + anotações em `backend.md`/`frontend.md` + T3/D9 da 0001 riscados | docs espelham código/OpenAPI; nenhum `.rs` tocado |
+| 3a.5 | `83c266e` `fix(datasets): alinhamento a contrato nos pontos da revisao` | DC1 cap de input, DC2 413 no envelope, DC3 walker camelCase recursivo, DF1 remove o CHECK, DF4b keys serializadas ≡ spec, N1/N3/N2 | `cargo test -p api-principal` (7 contract) verde; migration reaplicada em banco limpo |
+| 3a.6 | *(este commit)* `docs(adr): ADR-0002 datasets núcleo + política de casing` | este ADR + anotações em `backend.md`/`frontend.md` + T3/D9 da 0001 riscados | docs espelham código/OpenAPI; nenhum `.rs` tocado |
 
-**Definition of Done da Fatia 3a:** `cargo test -p api-principal` (27 units + 6 contract) e boot
+**Definition of Done da Fatia 3a:** `cargo test -p api-principal` (27 units + 7 contract) e boot
 com Postgres (migração + ausência de panic de `route_layer`) verdes; nenhuma tabela além de
-`datasets`/`classes` tocada; diff de cada commit < 400 linhas; sem mudança em
-manager/orchestrator/engines.
+`datasets`/`classes` tocada; sem mudança em manager/orchestrator/engines. **Nota de tamanho de
+commit:** o teto de ~400 linhas mede **código de produção**, não o total do commit. `1e5cbe6` tem
+657 insertions porque ~269 são o YAML de contrato (`packages/contracts/openapi.yaml`) e 139 são
+testes mecânicos de contrato — partir rotas+gate de contrato+teste deixaria
+`inventory_matches_openapi` vermelho no commit intermediário e quebraria o bisect (o teste é
+justamente o cinto que amarra os dois). Conta como exceção deliberada, registrada aqui.
 
 ## Riscos e o que testar
 
-- **Coberto sem banco (6 tests em `tests/contract.rs` + 27 units):** inventário spec≡router;
+- **Coberto sem banco (7 tests em `tests/contract.rs` + 27 units):** inventário spec≡router;
   classe pública/protegida da spec ≡ `PUBLIC_/PROTECTED_ROUTES`; fail-closed das 4 rotas sem
   cookie (401); probes autenticados sem banco (`GET :id` não-UUID → 404 com corpo; `POST {}`
   → 400; `POST` com `"status":"ready"` → 400; `type` fora do enum → 400); invariante camelCase
-  de todos os schemas; `GET /api/nada` sem cookie → 401 vs com cookie → 404 sem corpo;
-  units de `slugify`/`derive`/`normalize_classes`/`parse_id`/`color_for`.
+  por walk recursivo da YAML (propriedades aninhadas + `parameters[].name`); chaves
+  serializadas de `DatasetResponse` ≡ `Dataset.properties` da spec;
+  `GET /api/nada` sem cookie → 401 vs com cookie → 404 sem corpo;
+  units de `slugify`/`derive`/`normalize_classes` (cap de input, não de output)/`parse_id`/`color_for`.
 - **Depende do banco (3a.4, `--ignored`):** fluxo create→list→get→delete; 409 de slug duplicado;
   `classes` ordenadas por `idx` com cores da paleta (`idx % 6`); cascade `datasets→classes` no
   DELETE; trigger `updated_at` (update move `lastModified`, create não); campo extra → 400;

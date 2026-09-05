@@ -149,7 +149,8 @@ datasets(id UUID PK, slug TEXT UNIQUE, title TEXT, category TEXT,          -- di
   images_count INT DEFAULT 0, labeled_count INT DEFAULT 0, created_at TIMESTAMPTZ);
   -- IMPLEMENTADO (Fatia 3a; ADR-0002/openapi): colunas NOT NULL/DEFAULT conforme `0002_datasets.sql`;
   -- CHECKs de domínio em category/type/task/format/status (valores do §10 à letra) + CHECKs
-  -- size_bytes/images_count/labeled_count >= 0 e CHECK (labeled_count <= images_count);
+  -- size_bytes/images_count/labeled_count >= 0; o invariante `labeled_count <= images_count`
+  -- NÃO é CHECK (não deferrável) e sim obrigação do trigger da 3b (ver §10 "Regra" abaixo);
   -- adição ADR-0002 D4: updated_at TIMESTAMPTZ NOT NULL DEFAULT now() + trigger
   -- tg_set_updated_at (BEFORE UPDATE), exposto no wire como lastModified.
 classes(id UUID PK, dataset_id UUID FK, name TEXT, idx INT, color TEXT, UNIQUE(dataset_id, name));
@@ -177,7 +178,7 @@ runners(id UUID PK, engine TEXT, model TEXT, orchestrator_id UUID FK,
 
 - Índices: `images(dataset_id)`, `boxes(image_id)`, `jobs(status)`, `job_artifacts(job_id)`.
 - Nota (ADR-0002 D1, casing — resolvido; era ADR-0001 T3 "a definir antes da Fatia 3"): wire camelCase em `/api/*` (`userId`, `sizeBytes`, `lastModified`, settings `hfToken`…); colunas SQL snake_case; valores de enum, `Error.code` e artefatos de transporte (`manifest.json`, `config.yaml`, SQLite do orquestrador) snake_case.
-- Regra: contadores do dataset via trigger/view a partir de `images/boxes/captions`; chaves externas com `ON DELETE CASCADE` de dataset→filhos.
+- Regra: contadores do dataset via trigger/view a partir de `images/boxes/captions`; chaves externas com `ON DELETE CASCADE` de dataset→filhos. **Ordem (Fatia 3b):** os contadores têm de ser recalculados por uma única função (ou `CONSTRAINT TRIGGER ... DEFERRABLE INITIALLY DEFERRED`) porque `DELETE FROM images` de uma imagem rotulada passa por estado intermediário em que `labeled_count > images_count` — por isso esse invariante não virou `CHECK` na 3a (ADR-0002 T2).
 - **Split:** coluna `images.split (train|val)`; padrão 80/20 estratificado no package com override manual na galeria (seletor train/val por imagem).
 - **Consistência disco×banco:** Postgres é a verdade; `PUT boxes/caption` atualiza o banco e materializa o `.txt` em disco com debounce (~2s). O package sempre gera do banco.
 - **Snapshot:** ao despachar job, congela `dataset_versions{manifest}` e o zip aponta para a versão; edição posterior não afeta treino em voo (trava lógica por versão, não por dataset).

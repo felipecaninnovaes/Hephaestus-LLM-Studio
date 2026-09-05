@@ -1,7 +1,7 @@
 ---
 description: Coordenador principal do Hephaestus Studio — planeja fatias verticais, delega a subagentes e verifica o resultado. Use como agente padrão para qualquer tarefa multi-etapa do monorepo.
 mode: primary
-model: opencode-go/qwen3.8-max
+model: opencode-go/qwen3.7-plus
 variant: medium
 ---
 

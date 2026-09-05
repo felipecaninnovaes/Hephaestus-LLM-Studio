@@ -182,3 +182,19 @@ button:disabled {
     scroll-behavior: auto !important;
   }
 }
+
+/* Toast do studio (fatia 3c.1): entrada suave, fiel ao `studio-toast` do protótipo */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-toast-in {
+  animation: toast-in 0.25s ease-out;
+}

@@ -9,8 +9,9 @@ info:
     Decisões (hash, segredo JWT, TTL, bootstrap, erros, rate-limit): `docs/adr/0001-auth-single-user.md`.
     Demais grupos do §9 (settings, jobs, ...) entram NESTE mesmo arquivo nas
     fatias respectivas — o contrato não faz fork.
-    Convenção global: todo endpoint pode responder `500` (`code: internal`) e `405`
-    (método não declarado na path) mesmo onde não listado.
+    Convenção global: todo endpoint pode responder `500` (`code: internal`), `405`
+    (método não declarado na path) e `413` (`code: invalid_request`, corpo acima
+    do limite — sempre no envelope) mesmo onde não listado.
     Convenção global de casing (ADR-0002 D1): TODAS as chaves de body/query/response
     em `/api/*` são camelCase (os nomes de coluna SQL que aparecem no backend.md §10
     chegam ao wire camelCase: `imagesCount`, `sizeBytes`, `lastModified`). Valores de

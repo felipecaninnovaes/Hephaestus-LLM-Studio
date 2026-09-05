@@ -434,25 +434,117 @@ async fn datasets_probe_without_db() {
 
 #[test]
 fn json_property_names_are_camel_case() {
-    // Enforcement D1: toda propriedade de schema é camelCase (`^[a-z][A-Za-z0-9]*$`).
-    let text = std::fs::read_to_string(openapi_path()).expect("ler openapi.yaml");
-    let yaml: serde_yaml::Value = serde_yaml::from_str(&text).expect("parse openapi.yaml");
-    let schemas = yaml["components"]["schemas"]
-        .as_mapping()
-        .expect("components.schemas");
-    for (schema, def) in schemas {
-        let schema = schema.as_str().expect("schema string");
-        let Some(props) = def.get("properties").and_then(|v| v.as_mapping()) else {
-            continue;
-        };
-        for prop in props.keys() {
-            let prop = prop.as_str().expect("property string");
-            let mut chars = prop.chars();
-            let ok = chars
-                .next()
-                .is_some_and(|c| c.is_ascii_lowercase())
-                && chars.all(|c| c.is_ascii_alphanumeric());
-            assert!(ok, "D1: {schema}.{prop} não é camelCase");
+    // Enforcement D1: todo nome de propriedade e de parâmetro na spec é
+    // camelCase (`^[a-z][A-Za-z0-9]*$`). Walk recursivo no YAML inteiro:
+    // cobre `properties` aninhados (`items.properties`, etc.) e `parameters`
+    // (ex.: `limit`/`offset` da 3b), não só `components.schemas[*].properties`.
+    fn is_camel(name: &str) -> bool {
+        let mut chars = name.chars();
+        chars.next().is_some_and(|c| c.is_ascii_lowercase())
+            && chars.all(|c| c.is_ascii_alphanumeric())
+    }
+    fn walk_camel_case(v: &serde_yaml::Value, ruim: &mut Vec<String>) {
+        match v {
+            serde_yaml::Value::Mapping(map) => {
+                if let Some(props) = map.get("properties") {
+                    if let Some(props) = props.as_mapping() {
+                        for prop in props.keys() {
+                            if let Some(name) = prop.as_str() {
+                                if !is_camel(name) {
+                                    ruim.push(name.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(params) = map.get("parameters") {
+                    if let Some(params) = params.as_sequence() {
+                        for p in params {
+                            let Some(item) = p.as_mapping() else {
+                                continue;
+                            };
+                            let Some(name) = item.get("name").and_then(|v| v.as_str()) else {
+                                continue;
+                            };
+                            if !is_camel(name) {
+                                ruim.push(name.to_string());
+                            }
+                        }
+                    }
+                }
+                for (_, child) in map {
+                    walk_camel_case(child, ruim);
+                }
+            }
+            serde_yaml::Value::Sequence(seq) => {
+                for child in seq {
+                    walk_camel_case(child, ruim);
+                }
+            }
+            _ => {}
         }
     }
+    let text = std::fs::read_to_string(openapi_path()).expect("ler openapi.yaml");
+    let yaml: serde_yaml::Value = serde_yaml::from_str(&text).expect("parse openapi.yaml");
+    let mut ruim = Vec::new();
+    walk_camel_case(&yaml, &mut ruim);
+    assert!(ruim.is_empty(), "D1: nomes fora de camelCase: {ruim:?}");
+}
+
+#[test]
+fn dataset_response_keys_match_openapi() {
+    // O inventário só cruza statuses; este teste trava o SHAPE serializado:
+    // o set de chaves que `DatasetResponse` produz tem que ser o declarado em
+    // `components.schemas.Dataset` (pega drift D1, ex.: renomear
+    // `last_modified` sem atualizar a spec).
+    use api_principal::datasets::models::{DatasetResponse, DatasetRow};
+    use chrono::{DateTime, Utc};
+    let row = DatasetRow {
+        id: uuid::Uuid::nil(),
+        slug: "s".to_string(),
+        title: "t".to_string(),
+        category: "yolo".to_string(),
+        r#type: "yolo_bbox".to_string(),
+        task: "detect_track".to_string(),
+        format: "yolo_txt".to_string(),
+        status: "needs_labeling".to_string(),
+        source: None,
+        size_bytes: 0,
+        images_count: 0,
+        labeled_count: 0,
+        created_at: DateTime::<Utc>::UNIX_EPOCH,
+        updated_at: DateTime::<Utc>::UNIX_EPOCH,
+    };
+    let mut resp = DatasetResponse::from(row);
+    resp.classes = vec!["a".to_string()];
+    let value = serde_json::to_value(&resp).expect("serializar DatasetResponse");
+    let got: BTreeSet<String> = value
+        .as_object()
+        .expect("DatasetResponse serializa como objeto")
+        .keys()
+        .cloned()
+        .collect();
+    let text = std::fs::read_to_string(openapi_path()).expect("ler openapi.yaml");
+    let yaml: serde_yaml::Value = serde_yaml::from_str(&text).expect("parse openapi.yaml");
+    let props = yaml["components"]["schemas"]["Dataset"]["properties"]
+        .as_mapping()
+        .expect("Dataset.properties");
+    let spec: BTreeSet<String> = props
+        .keys()
+        .map(|k| k.as_str().expect("property string").to_string())
+        .collect();
+    let required: BTreeSet<String> = yaml["components"]["schemas"]["Dataset"]["required"]
+        .as_sequence()
+        .expect("Dataset.required")
+        .iter()
+        .map(|v| v.as_str().expect("required string").to_string())
+        .collect();
+    assert_eq!(
+        got, spec,
+        "chaves serializadas ≠ Dataset.properties: {got:?} vs {spec:?}"
+    );
+    assert!(
+        required.is_subset(&got),
+        "required fora do objeto serializado: {required:?} vs {got:?}"
+    );
 }

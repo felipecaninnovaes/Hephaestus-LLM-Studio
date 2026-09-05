@@ -80,8 +80,14 @@ async fn gate_fallback(State(state): State<AppState>, headers: HeaderMap) -> Res
 /// Monta o router: rotas públicas + sub-router protegido + fallback D9.
 pub fn build(state: AppState) -> axum::Router {
     let protected = axum::Router::new()
-        .route("/api/datasets", get(datasets::handlers::list).post(datasets::handlers::create))
-        .route("/api/datasets/:id", get(datasets::handlers::get_one).delete(datasets::handlers::delete))
+        .route(
+            "/api/datasets",
+            get(datasets::handlers::list).post(datasets::handlers::create),
+        )
+        .route(
+            "/api/datasets/:id",
+            get(datasets::handlers::get_one).delete(datasets::handlers::delete),
+        )
         // route_layer DEPOIS dos .route(): aplicado a um router vazio o axum 0.7 panic
         // no boot (path_router.rs, `routes.is_empty()`). Só cobre as rotas deste
         // sub-router — /health e /api/auth/* seguem fora do gate, e o .fallback()

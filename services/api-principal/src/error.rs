@@ -27,3 +27,5 @@ pub const MSG_NOT_FOUND: &str = "dataset not found";
 pub const MSG_SLUG_CONFLICT: &str = "dataset slug already exists";
 /// 400 genérico de corpo/query inválido.
 pub const MSG_INVALID_REQUEST: &str = "invalid request";
+/// 401 de sessão ausente/inválida (valor no contrato da Fatia 2, imutável).
+pub const MSG_UNAUTHORIZED: &str = "unauthorized";

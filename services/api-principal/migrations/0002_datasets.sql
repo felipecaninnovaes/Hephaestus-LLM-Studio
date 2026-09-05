@@ -18,7 +18,7 @@ CREATE TABLE datasets (
     source        TEXT    NULL,
     size_bytes    BIGINT  NOT NULL DEFAULT 0 CHECK (size_bytes >= 0),
     images_count  INT     NOT NULL DEFAULT 0 CHECK (images_count >= 0),
-    labeled_count INT     NOT NULL DEFAULT 0 CHECK (labeled_count >= 0 AND labeled_count <= images_count),
+    labeled_count INT     NOT NULL DEFAULT 0 CHECK (labeled_count >= 0),
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -26,8 +26,14 @@ CREATE TABLE datasets (
 -- Sem índice extra em datasets: a 3a lê a coleção inteira e o UNIQUE(slug) já
 -- gera índice; o §10 só nomeia índices para images/boxes/jobs.
 -- size_bytes/images_count/labeled_count NÃO têm caminho de escrita na 3a:
--- 0 é teorema, não estimativa (ADR-0002 T2). Os CHECKs pré-comprometem a
--- semântica do trigger que nasce na 3b junto de `images`.
+-- 0 é teorema, não estimativa (ADR-0002 T2). O invariante `% Rotuladas`
+-- (`labeled_count <= images_count`) é OBRIGAÇÃO do trigger da 3b — garantido
+-- por uma única função de recálculo dos dois contadores ou por
+-- `CONSTRAINT TRIGGER ... DEFERRABLE INITIALLY DEFERRED`, NUNCA por CHECK:
+-- o `DELETE FROM images` de uma imagem rotulada passa por estado
+-- intermediário (trigger que baixa `images_count` vs. cascata que baixa
+-- `labeled_count`, ordem de triggers de RI vs. de usuário) que violaria o
+-- CHECK, e CHECK não é deferrável no Postgres (ADR-0002 T2).
 
 -- Trigger genérico de updated_at (plpgsql puro, sem extensão nova) — será
 -- reaproveitado por captions/images nas fatias seguintes.

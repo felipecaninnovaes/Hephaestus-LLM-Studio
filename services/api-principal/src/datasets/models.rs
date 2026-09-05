@@ -93,10 +93,15 @@ pub enum InvalidClass {
     TooMany,
 }
 
-/// Trim + valida + deduplica (1ª ocorrência, case-sensitive). Cap de 200 para
-/// o body nunca encostar o `DefaultBodyLimit` do axum (413 sem envelope).
+/// Trim + valida + deduplica (1ª ocorrência, case-sensitive). O cap de 200 é
+/// o `maxItems` da spec sobre o array ENVIADO (antes do dedupe): com o
+/// `DefaultBodyLimit` do axum em 2 MiB o body nunca encosta o limite mesmo
+/// com 200 nomes no tamanho máximo (413 sem envelope continua impossível).
 pub fn normalize_classes(raw: &[String]) -> Result<Vec<String>, InvalidClass> {
-    let mut out: Vec<String> = Vec::with_capacity(raw.len().min(200));
+    if raw.len() > 200 {
+        return Err(InvalidClass::TooMany);
+    }
+    let mut out: Vec<String> = Vec::with_capacity(raw.len());
     for name in raw {
         let trimmed = name.trim().to_string();
         if trimmed.is_empty()
@@ -110,9 +115,6 @@ pub fn normalize_classes(raw: &[String]) -> Result<Vec<String>, InvalidClass> {
         if !out.contains(&trimmed) {
             out.push(trimmed);
         }
-    }
-    if out.len() > 200 {
-        return Err(InvalidClass::TooMany);
     }
     Ok(out)
 }
@@ -263,6 +265,12 @@ mod tests {
         );
         let many: Vec<String> = (0..201).map(|i| format!("c{i}")).collect();
         assert_eq!(normalize_classes(&many), Err(InvalidClass::TooMany));
+        // 250 nomes que deduplicam para <= 200: o cap é sobre o INPUT
+        // (maxItems da spec), então continua TooMany.
+        let mut dup250: Vec<String> = (0..125).map(|i| format!("c{i}")).collect();
+        dup250.extend((0..125).map(|i| format!("c{i}")));
+        assert_eq!(dup250.len(), 250);
+        assert_eq!(normalize_classes(&dup250), Err(InvalidClass::TooMany));
         let ok200: Vec<String> = (0..200).map(|i| format!("c{i}")).collect();
         assert_eq!(normalize_classes(&ok200).unwrap().len(), 200);
     }

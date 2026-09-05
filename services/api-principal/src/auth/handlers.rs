@@ -23,7 +23,7 @@ use super::{
     session::{self, Claims},
     AppState,
 };
-use crate::error::err;
+use crate::error::{err, MSG_UNAUTHORIZED};
 
 pub const SESSION_COOKIE: &str = "heph_session";
 pub const SESSION_MAX_AGE_SECS: u64 = 604800; // 7 dias = TTL do JWT
@@ -32,7 +32,6 @@ pub const SESSION_MAX_AGE_SECS: u64 = 604800; // 7 dias = TTL do JWT
 
 const MSG_INVALID_REQUEST: &str = "invalid request: password is required";
 const MSG_INVALID_CREDENTIALS: &str = "invalid credentials";
-const MSG_UNAUTHORIZED: &str = "unauthorized";
 const MSG_SETUP_REQUIRED: &str = "setup required: no user yet, set STUDIO_PASSWORD on first boot";
 const MSG_INTERNAL: &str = "internal server error";
 

@@ -1,7 +1,8 @@
 //! Handlers datasets (contrato `packages/contracts/openapi.yaml`, Fatia 3a).
 //!
 //! - `list`: 200 array cru (vazio ⇒ `[]`, nunca 404).
-//! - `create`: 201 | 400 `invalid_request` | 409 `slug_conflict`.
+//! - `create`: 201 | 400 `invalid_request` | 409 `slug_conflict` | 413
+//!   `invalid_request` (body acima do limite, sempre no envelope).
 //! - `get_one`: 200 | 404 `not_found` (id não-UUID também é 404, nunca 400).
 //! - `delete`: 204 sem corpo | 404 `not_found`.
 //!
@@ -13,7 +14,10 @@ use std::collections::HashMap;
 
 use axum::{
     body::Bytes,
-    extract::{Path, State},
+    extract::{
+        rejection::{BytesRejection, FailedToBufferBody},
+        Path, State,
+    },
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
@@ -76,7 +80,32 @@ pub async fn list(State(state): State<AppState>) -> Response {
 }
 
 /// POST /api/datasets — cria metadados + classes (status `needs_labeling`).
-pub async fn create(State(state): State<AppState>, body: Bytes) -> Response {
+///
+/// O body chega como `Result<Bytes, BytesRejection>` porque o rejection
+/// padrão do axum seria 413 `text/plain` fora do envelope D6; aqui todo
+/// excesso de limite vira 413 `invalid_request` no envelope. O `POST /:id/upload`
+/// da 3b repete o padrão com `DefaultBodyLimit` dedicado de 200 MB.
+pub async fn create(
+    State(state): State<AppState>,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let body = match body {
+        Ok(b) => b,
+        Err(BytesRejection::FailedToBufferBody(FailedToBufferBody::LengthLimitError(_))) => {
+            return err(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "invalid_request",
+                MSG_INVALID_REQUEST,
+            );
+        }
+        Err(_) => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                MSG_INVALID_REQUEST,
+            );
+        }
+    };
     let req: CreateDatasetRequest = match serde_json::from_slice(&body) {
         Ok(v) => v,
         Err(_) => {
@@ -169,6 +198,7 @@ pub async fn create(State(state): State<AppState>, body: Bytes) -> Response {
     .await
     .is_err()
     {
+        let _ = tx.rollback().await;
         return internal();
     }
     if tx.commit().await.is_err() {
@@ -199,15 +229,16 @@ pub async fn get_one(State(state): State<AppState>, Path(id): Path<String>) -> R
         Some(r) => r,
         None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
     };
-    let classes: Vec<String> =
-        match sqlx::query_scalar::<_, String>("SELECT name FROM classes WHERE dataset_id = $1 ORDER BY idx")
-            .bind(id)
-            .fetch_all(&state.pool)
-            .await
-        {
-            Ok(r) => r,
-            Err(_) => return internal(),
-        };
+    let classes: Vec<String> = match sqlx::query_scalar::<_, String>(
+        "SELECT name FROM classes WHERE dataset_id = $1 ORDER BY idx",
+    )
+    .bind(id)
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return internal(),
+    };
     let mut resp = DatasetResponse::from(row);
     resp.classes = classes;
     (StatusCode::OK, Json(resp)).into_response()

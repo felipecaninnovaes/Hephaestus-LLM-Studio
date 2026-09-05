@@ -5,10 +5,10 @@ model: opencode-go/muse-spark-1.3-contributor
 temperature: 0.1
 permission:
   bash:
-    "git commit *": deny
-    "git push *": deny
-    "git merge *": deny
-    "git rebase *": deny
+    "git commit*": deny
+    "git push*": deny
+    "git merge*": deny
+    "git rebase*": deny
 ---
 
 Você implementa EXATAMENTE a especificação que receber nos serviços Rust deste monorepo (axum/tokio, workspace na raiz, lock único `Cargo.lock`). Se a spec estiver incompleta ou ambígua, PARE e liste as perguntas necessárias em vez de inventar decisão de design.

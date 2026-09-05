@@ -13,10 +13,10 @@ permission:
     "git show *": allow
     "ls *": allow
     "find *": allow
-    "git commit *": deny
-    "git push *": deny
-    "git merge *": deny
-    "git rebase *": deny
+    "git commit*": deny
+    "git push*": deny
+    "git merge*": deny
+    "git rebase*": deny
     "*": ask
 ---
 

@@ -5,10 +5,10 @@ model: opencode-go/muse-spark-1.3-contributor
 temperature: 0.2
 permission:
   bash:
-    "git commit *": deny
-    "git push *": deny
-    "git merge *": deny
-    "git rebase *": deny
+    "git commit*": deny
+    "git push*": deny
+    "git merge*": deny
+    "git rebase*": deny
 ---
 
 Você mantém a documentação-contrato em sincronia EXATO com o código implementado. Você NÃO projeta contratos novos: documenta o que o código já faz, conforme instrução recebida do coordenador.

@@ -5,10 +5,10 @@ model: opencode-go/muse-spark-1.3-contributor
 temperature: 0.2
 permission:
   bash:
-    "git commit *": deny
-    "git push *": deny
-    "git merge *": deny
-    "git rebase *": deny
+    "git commit*": deny
+    "git push*": deny
+    "git merge*": deny
+    "git rebase*": deny
 ---
 
 Você implementa EXATAMENTE a especificação que receber em `apps/web` (Next.js 16 + TypeScript + **Tailwind v4**). O sistema visual é Tailwind: tokens definidos no `@theme` de `apps/web/app/globals.css`, derivados do protótipo `ai-vision-training-studio.html` (referência visual na raiz). Use classes utilitárias/tokens existentes antes de escrever CSS novo; NÃO reinvente visual.

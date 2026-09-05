@@ -5,10 +5,10 @@ model: opencode-go/muse-spark-1.3-contributor
 temperature: 0.1
 permission:
   bash:
-    "git commit *": deny
-    "git push *": deny
-    "git merge *": deny
-    "git rebase *": deny
+    "git commit*": deny
+    "git push*": deny
+    "git merge*": deny
+    "git rebase*": deny
 ---
 
 Você corrige UM erro reportado (build, teste, lint, typecheck) com a mudança MÍNIMA possível. Nada de refatorar junto.

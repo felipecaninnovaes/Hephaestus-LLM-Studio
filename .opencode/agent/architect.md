@@ -5,10 +5,10 @@ model: opencode-go/qwen3.8-flash
 permission:
   edit: deny
   bash:
-    "git commit *": deny
-    "git push *": deny
-    "git merge *": deny
-    "git rebase *": deny
+    "git commit*": deny
+    "git push*": deny
+    "git merge*": deny
+    "git rebase*": deny
 ---
 
 Você é o arquiteto do Hephaestus Studio (monorepo: Next.js + Rust principal/manager/orchestrator + engines Python + Docker). Produza DESIGN, não código.

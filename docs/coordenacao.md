@@ -27,8 +27,9 @@ ser interrompido no meio de uma.
   (upload, images, detail, `/data`, boxes, caption) + sweep pós-commit + `source`
   derivado + `classes{id}`; spec 0.3.0; revisões 3b.3/3b.6 feitas. Dívida 3b QUITADA
   (ver "Dívidas"); sobraram: logging server-side (fatia nomeada), gate `sub` órfão,
-  `cargo fmt`. A/B 3b.6 registrado no bullet do experimento (placar 3b.3 empate 2×2;
-  swap = decisão do usuário).
+  `cargo fmt`. A/B 3b.6 registrado no bullet do experimento — **encerrado pelo usuário:
+  sem swap; `@reviewer` é o despacho único, max só como escalada** (`a343a7c` em
+  `chore/reviewer-escalacao`).
 
 - **Spike 3b.0 EXECUTADO e PASSOU (7/7).** Rodado no ramo **descartável**
   `spike/storage-seaweedfs` (commit `09a517d`; **fundido pelo usuário em `main` (`52da6f9`)**
@@ -81,31 +82,34 @@ ser interrompido no meio de uma.
   atualização em tempo real, spikes = coordenador com loop de build em script único
   — lição do 3b.0). Anti-exemplo registrado na skill: `1c1f72f` (3.219 linhas em 1
   commit) que virou a cirurgia de reword da 3a.
-- **Experimento A/B de revisor (3b)**: `@reviewer-max` (qwen3.8-max, `variant: high`,
-  corpo idêntico ao titular) despacha no MESMO diff que o `@reviewer` nos marcos
-  3b.3 e 3b.6; compara-se achados reais e falsos positivos; critério de swap ao fim
-  da 3b. Nota operacional: agente novo só entra na lista de subagentes após reinício
-  de sessão (dispatcher de reserva durante a 3b: `opencode run --auto --agent
-  reviewer-max`). *Dia 1 (smoke em `86fb0eb`)*: ambos BLOQUEIA no mesmo defeito real
-  (gate de segredos × `!.env.example` do gitignore — comprovado por matriz de 4 casos
-  antes do fix); o titular ainda cruzou com a ADR-0003 (`.env.example` é entregável
-  prometido da 3b.4)   — 1 ponto pro flash por enquanto. *Marco 3b.3 (difícil, teste real)*:
-  ambos **BLOQUEIA** pelo MESMO crítico comprovado por sonda própria (livelock multipart pós-
-  `LengthLimit` — axum embrulha corpo todo, multer nunca fuseja; os dois citaram a fonte e
-  reproduziram), **zero falso positivo nos dois lados**. Titular achou a mais: duplicate falso
-  por stem sem extensão (F4) e a janela de boot mock (F6, decisão do coordenador); sombra achou
-  a mais: doc de `sanitize_filename` mentindo + branch morto (F7) e o staleness latente do
-  `COALESCE(NEW,OLD)` em UPDATE de reparentização (registro: inofensivo até existir rota de
-  UPDATE de `image_id`/`dataset_id`). Contagem de achados únicos: 2 titular × 2 sombra —
-  **empate técnico no marco**. *Marco 3b.6*: titular CONDICIONAL com **1 falso positivo**
-  (emenda vista só no trunk — o diff do marco não continha o fix) e 2 únicos (erros por-chave
-  do `delete_prefix`, TTL não wired no compose); sombra PASSA com 2 únicos (órfão
-  `infra_pgdata` no runner, upsert com `RETURNING`) e 0 falsos. Vereditos divergentes, listas
-  convergentes. **Placar: 3b.3 empate 2×2; 3b.6 2×2 com vantagem da sombra em falsos
-  positivos.** Critério de swap ao fim da 3b é **decisão do USUÁRIO — apresentar, não
-  decidir**; hipótese "medium no fixer reduz escaladas" segue em teste.
+- **Experimento A/B de revisor (3b) — ENCERRADO pelo usuário em 2026-09-05** (custo de
+  tokens; decisão registrada ao fim da fatia). `@reviewer-max` (qwen3.8-max, `variant: high`,
+  corpo idêntico ao titular) despachou no MESMO diff que o `@reviewer` nos marcos
+  3b.3 e 3b.6. **Veredito do usuário: sem swap — `@reviewer` (flash/high) é o despacho
+  único de marco; `@reviewer-max` fica no time como ESCALADA** (só quando o titular não
+  resolver, travar no mesmo ponto, ou risco alto pedir auditoria independente — charter
+  reescrito em `a343a7c`/`chore/reviewer-escalacao`). *Dia 1 (smoke em `86fb0eb`)*: ambos
+  BLOQUEIA no mesmo defeito real (gate de segredos × `!.env.example` do gitignore —
+  comprovado por matriz de 4 casos antes do fix); o titular ainda cruzou com a ADR-0003
+  (`.env.example` é entregável prometido da 3b.4) — 1 ponto pro flash. *Marco 3b.3
+  (difícil, teste real)*: ambos **BLOQUEIA** pelo MESMO crítico comprovado por sonda
+  própria (livelock multipart pós-`LengthLimit` — axum embrulha corpo todo, multer nunca
+  fuseja; os dois citaram a fonte e reproduziram), **zero falso positivo nos dois lados**.
+  Titular achou a mais: duplicate falso por stem sem extensão (F4) e a janela de boot mock
+  (F6, decisão do coordenador); sombra achou a mais: doc de `sanitize_filename` mentindo +
+  branch morto (F7) e o staleness latente do `COALESCE(NEW,OLD)` em UPDATE de
+  reparentização (registro: inofensivo até existir rota de UPDATE de `image_id`/`dataset_id`).
+  Contagem: 2 titular × 2 sombra — empate técnico. *Marco 3b.6*: titular CONDICIONAL com
+  **1 falso positivo** (emenda vista só no trunk — o diff do marco não continha o fix) e 2
+  únicos (erros por-chave do `delete_prefix`, TTL não wired no compose); sombra PASSA com 2
+  únicos (órfão `infra_pgdata` no runner, upsert com `RETURNING`) e 0 falsos. **Placar
+  final: 3b.3 empate 2×2; 3b.6 2×2 com vantagem da sombra só em falsos positivos.**
+  Conclusão operacional: achados convergentes nos dois marcos — **o segundo despacho nunca
+  mudou um desfecho que o titular + coordenador não tivessem alcançado; o duplo despacho
+  não se paga.** Hipótese "medium no fixer reduz escaladas" segue válida (é outra linha do
+  experimento, sem custo de modelo caro).
 - **Esforço de razonamento fixado por agente** (`variant:` na frontmatter, validado
-  no provider): `high` em hephaestus/architect/reviewer (+ sombra max), `medium` em
+  no provider): `high` em hephaestus/architect/reviewer (+ escalada max), `medium` em
   fixer e ui-designer, `low` nos implementadores e explore. Hipótese a medir na 3b:
   `fixer` com medium deve reduzir escaladas ao coordenador; se `low` em implementador
   degradar obediência à spec, subir para medium é uma linha. Vale a partir da

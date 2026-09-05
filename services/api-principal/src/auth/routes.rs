@@ -3,12 +3,14 @@
 //! com `packages/contracts/openapi.yaml`, ignorando `x-reserved: true`).
 //!
 //! Montagem D9: `/health` + `/api/auth/*` públicos (sem gate); sub-router
-//! protegido com `require_auth` via `.route_layer()`; `.fallback()` no router
-//! raiz (sem cookie válido → 401 `unauthorized`; com sessão válida → 404 sem body).
+//! protegido com `require_auth` via `.route_layer()` (datasets desde a 3a);
+//! `.fallback()` no router raiz (sem cookie válido → 401 `unauthorized`;
+//! com sessão válida → 404 sem body).
 
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
+    middleware,
     response::{IntoResponse, Response},
     routing::{get, post},
     Json,
@@ -16,11 +18,19 @@ use axum::{
 use serde_json::{json, Value};
 
 use super::{gate, handlers, AppState};
+use crate::datasets;
 
 /// `(método, path, status_codes)` — espelho exato do contrato (sem `x-reserved`).
 /// Toda rota de negócio nova entra AQUI, montada no sub-router `protected`
 /// com o gate — esquecer = contrato vermelho.
-pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[];
+/// Path no estilo axum 0.7 (`:id`); a OpenAPI declara `{id}` e o teste de
+/// contrato normaliza um lado para comparar.
+pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
+    ("GET", "/api/datasets", &[200, 401]),
+    ("POST", "/api/datasets", &[201, 400, 401, 409]),
+    ("GET", "/api/datasets/:id", &[200, 401, 404]),
+    ("DELETE", "/api/datasets/:id", &[204, 401, 404]),
+];
 
 /// Rotas públicas (sem gate): `/health` + `/api/auth/*`.
 pub const PUBLIC_ROUTES: &[(&str, &str, &[u16])] = &[
@@ -69,14 +79,14 @@ async fn gate_fallback(State(state): State<AppState>, headers: HeaderMap) -> Res
 
 /// Monta o router: rotas públicas + sub-router protegido + fallback D9.
 pub fn build(state: AppState) -> axum::Router {
-    // Será povoado com as rotas de negócio nas fatias 3+ (datasets/jobs/settings).
-    let protected = axum::Router::new();
-    // DIVERGÊNCIA vs ADR-0001 D9 (letra): o `route_layer(require_auth)` no
-    // sub-router vazio causa panic no boot no axum 0.7 ("route_layer before any
-    // routes is a no-op") — por isso o gate (`gate::require_auth` via
-    // `middleware::from_fn_with_state`) só é plugado junto da 1ª rota de
-    // negócio (fatia 3+). O fail-closed p/ caminho desconhecido vale desde já
-    // via `gate_fallback` (401 sem cookie).
+    let protected = axum::Router::new()
+        .route("/api/datasets", get(datasets::handlers::list).post(datasets::handlers::create))
+        .route("/api/datasets/:id", get(datasets::handlers::get_one).delete(datasets::handlers::delete))
+        // route_layer DEPOIS dos .route(): aplicado a um router vazio o axum 0.7 panic
+        // no boot (path_router.rs, `routes.is_empty()`). Só cobre as rotas deste
+        // sub-router — /health e /api/auth/* seguem fora do gate, e o .fallback()
+        // da raiz permanece cobrindo caminho NÃO roteado (D9).
+        .route_layer(middleware::from_fn_with_state(state.clone(), gate::require_auth));
     axum::Router::new()
         .route("/health", get(health))
         .route("/api/auth/login", post(handlers::login))

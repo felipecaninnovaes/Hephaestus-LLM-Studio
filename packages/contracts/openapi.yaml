@@ -1,16 +1,24 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.1.0
+  version: 0.2.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
-    Fatia 2 — escopo deste arquivo: auth single-user (`/api/auth/*`) + `/health`.
+    Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
     Fonte funcional: `docs/backend.md` §2 (comportamento) e §9 (paths exatos).
     Decisões (hash, segredo JWT, TTL, bootstrap, erros, rate-limit): `docs/adr/0001-auth-single-user.md`.
-    Demais grupos do §9 (settings, datasets, jobs, ...) entram NESTE mesmo arquivo nas
+    Demais grupos do §9 (settings, jobs, ...) entram NESTE mesmo arquivo nas
     fatias respectivas — o contrato não faz fork.
     Convenção global: todo endpoint pode responder `500` (`code: internal`) e `405`
     (método não declarado na path) mesmo onde não listado.
+    Convenção global de casing (ADR-0002 D1): TODAS as chaves de body/query/response
+    em `/api/*` são camelCase (os nomes de coluna SQL que aparecem no backend.md §10
+    chegam ao wire camelCase: `imagesCount`, `sizeBytes`, `lastModified`). Valores de
+    enum, `Error.code` e nomes de coluna SQL permanecem snake_case. Artefatos de
+    transporte (manifest.json, config.yaml, SQLite do orquestrador) são snake_case —
+    a fronteira HTTP não contamina o transporte.
+    A OpenAPI declara paths com `{param}`; o axum 0.7 usa `:param` e o teste de
+    contrato normaliza um lado (outros estilos de path na spec = vermelho).
   license: { name: Proprietary }
 
 servers:
@@ -25,6 +33,8 @@ tags:
     description: Autenticação single-user (exatamente 1 linha na tabela `users`; sem RBAC).
   - name: health
     description: Liveness do serviço — pública por decisão do §2 (isenta do middleware de auth).
+  - name: datasets
+    description: Metadados de dataset no Postgres; blobs em disco e imagens a partir da Fatia 3b.
 
 # Proteção padrão: rotas exigem o cookie de sessão.
 # Endpoints públicos declaram `security: []` explicitamente (inclusive /api/auth/me,
@@ -144,6 +154,142 @@ paths:
               description: "heph_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"
               schema: { type: string }
 
+  /api/datasets:
+    get:
+      operationId: listDatasets
+      tags: [datasets]
+      summary: Lista todos os datasets (metadados)
+      description: |
+        Sem paginação na Fatia 3a: devolve a coleção inteira ordenada por
+        `updated_at` DESC (mais recente primeiro), porque a UI filtra/busca e
+        calcula os contadores das pills no cliente (frontend.md §5.1).
+        `limit`/`offset` entram como query params aditivos quando houver
+        paginação real — sem quebra de contrato.
+        `imagesCount`/`labeledCount`/`sizeBytes` são mantidos por trigger a
+        partir de images/boxes/captions (backend.md §10) só a partir da 3b; na 3a
+        não existe caminho de escrita, logo 0 para qualquer dataset — invariante
+        observável (ADR-0002 T2), não estimativa.
+      responses:
+        "200":
+          description: Lista de datasets (array cru, sem envelope).
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Dataset" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    post:
+      operationId: createDataset
+      tags: [datasets]
+      summary: Cria dataset vazio (metadados + classes)
+      description: |
+        Cria o registro com `status: "needs_labeling"` (frontend.md §4.3) e
+        contadores zerados. O servidor é dono de `slug` (normalizado de
+        `title`), `category`, `task`, `format`, `status` e da ordem/cor das
+        classes — nenhum desses campos é aceito no body (input-trust; chaves
+        desconhecidas = 400).
+        A dropzone do modal NÃO pertence a esta rota: enviar imagens é
+        `POST /api/datasets/:id/upload` (Fatia 3b).
+        Idempotência: não há — dois POSTs iguais criam dois datasets, exceto
+        quando o `slug` resultante colide (409).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateDatasetRequest" }
+      responses:
+        "201":
+          description: Dataset criado (corpo = `Dataset` completo, já derivado).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Dataset" }
+        "400":
+          description: >
+            Body ausente/malformado, campo desconhecido, `title` vazio ou que não
+            produz slug, `type` fora do enum, classe fora do charset ou > 200
+            classes (`code: invalid_request`). `message` é estático por code: a UI
+            valida os campos no cliente e não depende de detalhe do servidor.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: >
+            Slug já existe (`code: slug_conflict`) — `INSERT ... ON CONFLICT (slug)
+            DO NOTHING` não retornou linha. Não há auto-sufixo: o nome é exibido na
+            UI e será nome de diretório em disco (3b), então colisão é mostrada ao
+            usuário em vez de disfarçada (ADR-0002 D5).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/datasets/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK do dataset. Valor que não parseia como UUID responde 404 `not_found`
+          (não 400): a distinção não vaza informação útil e mantém o inventário de
+          status fechado (ADR-0002 D8).
+    get:
+      operationId: getDataset
+      tags: [datasets]
+      summary: Detalhe de um dataset (metadados)
+      description: |
+        Mesmo shape de item da lista — a galeria (frontend.md §5.2) precisa de
+        `type · N imagens · size · source`, e nenhuma imagem chega aqui
+        (imagens são `GET /api/datasets/:id/images`, Fatia 3b).
+      responses:
+        "200":
+          description: Dataset encontrado.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Dataset" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Dataset inexistente ou id não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      operationId: deleteDataset
+      tags: [datasets]
+      summary: Remove dataset e filhos
+      description: |
+        `DELETE FROM datasets WHERE id=$1 RETURNING id`; a linha some e as FKs
+        `ON DELETE CASCADE` (backend.md §10) removem `classes` (3a) e, a partir da
+        3b, images/boxes/captions/videos. Na 3a ainda não existe artefato em disco
+        para o dataset (nenhum upload), portanto o handler não toca o filesystem —
+        o cleanup de disco é obrigação da 3b (ADR-0002 T3). Sem confirmação no
+        contrato: o modal de exclusão é UI.
+      responses:
+        "204":
+          description: Removido (sem corpo).
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Dataset inexistente ou id não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
 components:
   securitySchemes:
     sessionCookie:
@@ -186,8 +332,8 @@ components:
       properties:
         code:
           type: string
-          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, internal]
-          description: Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`.
+          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, internal]
+          description: "Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`; o cliente DEVE ter ramo default: o enum cresce por fatia (aditivo na 0.2.0: `not_found`, `slug_conflict`)."
         message:
           type: string
           description: Humano-curto, ESTÁTICO por code; nunca contém hash, token, segredo ou existência de usuário.
@@ -207,3 +353,116 @@ components:
           type: string
           enum: [ready, setup_required]
           description: "Estado do bootstrap single-user (ADR-0001 D3): ready = usuário existe; setup_required = aguardando STUDIO_PASSWORD no primeiro boot."
+
+    CreateDatasetRequest:
+      type: object
+      required: [title, type]
+      additionalProperties: false
+      description: >
+        Espelha o modal `create-dataset-modal` (frontend.md §4.3): nome, tipo de
+        modelo/tarefa e classes CSV. O front faz o split do CSV; o wire é array de
+        nomes. A dropzone do modal NÃO pertence a esta rota (upload é a 3b).
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 96
+          description: >
+            Nome humano. O servidor deriva `slug` (minúsculas, sem acentos via
+            mapa Latin-1 explícito, runs de não-`[a-z0-9]` viram `-`, sem `-` nas
+            pontas, 96 máx); resultado vazio ⇒ 400.
+        type:
+          type: string
+          enum: [yolo_bbox, yolo_seg, difusao_lora, clip_image_text]
+          description: >
+            As 4 options do modal (frontend.md §4.3). Código de máquina estável;
+            o rótulo pt-BR é exclusividade da UI. `category`, `task` e `format`
+            são derivados daqui pelo servidor — nunca enviados pelo cliente.
+        classes:
+          type: array
+          maxItems: 200
+          default: []
+          items: { type: string, pattern: '^[A-Za-z0-9_][A-Za-z0-9_]{0,63}$' }
+          description: >
+            Nomes de classe na ordem escolhida → `classes.idx` 0-based (convenção
+            YOLO). O servidor faz trim e deduplica preservando a primeira
+            ocorrência; `color` vem da paleta do design system por `idx % 6`.
+            Restrição idêntica ao CHECK do banco: os nomes precisam sobreviver a
+            `data.yaml` e a `labels/*.txt`.
+
+    Dataset:
+      type: object
+      required:
+        - id
+        - slug
+        - title
+        - category
+        - type
+        - task
+        - format
+        - status
+        - sizeBytes
+        - imagesCount
+        - labeledCount
+        - classes
+        - autoTracked
+        - createdAt
+        - lastModified
+      properties:
+        id: { type: string, format: uuid }
+        slug:
+          type: string
+          pattern: '^[a-z0-9]+(-[a-z0-9]+)*$'
+          maxLength: 96
+          description: Identificador kebab-case gerado pelo servidor; UNIQUE no banco.
+        title:
+          type: string
+          description: Nome humano como enviado no create (frontend.md §8 usa `title`; o card exibe `slug`).
+        category:
+          type: string
+          enum: [difusao, openclip, yolo]
+          description: Derivada de `type` (backend.md §10).
+        type:
+          type: string
+          enum: [yolo_bbox, yolo_seg, difusao_lora, clip_image_text]
+        task:
+          type: string
+          enum: [detect_track, segment, caption, embedding]
+          description: Derivada de `type` (tabela server-side em `datasets::models::derive`).
+        format:
+          type: string
+          enum: [yolo_txt, captions, pairs]
+          description: Formato canônico em disco por engine (backend.md §3); derivado de `category`.
+        status:
+          type: string
+          enum: [ready, in_progress, needs_labeling]
+          description: "`needs_labeling` no create (frontend.md §4.3); transições por trigger de contadores nas fatias 3b/3c."
+        source:
+          type: [string, "null"]
+          description: >
+            Caminho canônico em disco sob `DATASETS_DIR`, atribuído pelo servidor
+            no primeiro upload (3b). Sempre `null` na 3a; a UI mostra "—". Nunca é
+            input do cliente (path-traversal).
+        sizeBytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Bytes agregados de `images`; 0 na 3a. A UI formata ("1.4 GB") em `lib/format.ts`.
+        imagesCount: { type: integer, minimum: 0 }
+        labeledCount: { type: integer, minimum: 0 }
+        classes:
+          type: array
+          items: { type: string }
+          description: Nomes ordenados por `classes.idx` (os chips do card, §5.1).
+        autoTracked:
+          type: boolean
+          default: false
+          description: >
+            Constante `false` na 3a. Fonte real (3d): existe `boxes.origin =
+            'autotracker'` no dataset. Mantida no shape de frontend.md §8 para a
+            UI não quebrar quando passar a ser derivada (ADR-0002 T7).
+        createdAt: { type: string, format: date-time }
+        lastModified:
+          type: string
+          format: date-time
+          description: "`datasets.updated_at` (RFC 3339), não string relativa; a UI formata 'há 12 minutos'."

@@ -62,6 +62,24 @@ fn json(body: &[u8]) -> serde_json::Value {
     serde_json::from_slice(body).expect("corpo JSON das sondas")
 }
 
+/// OpenAPI `{param}` → axum 0.7 / matchit `:param` (comparamos paths, não estilos).
+fn to_axum_path(p: &str) -> String {
+    let mut out = String::with_capacity(p.len());
+    for c in p.chars() {
+        match c {
+            '{' => out.push(':'),
+            '}' => {}
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Path de `PROTECTED_ROUTES` com `:id` → URI sondável (UUID nil).
+fn probe_uri(path: &str) -> String {
+    path.replace(":id", "00000000-0000-0000-0000-000000000000")
+}
+
 #[test]
 fn inventory_matches_openapi() {
     let text = std::fs::read_to_string(openapi_path()).expect("ler openapi.yaml");
@@ -74,8 +92,16 @@ fn inventory_matches_openapi() {
         .get("paths")
         .and_then(|v| v.as_mapping())
         .expect("openapi.paths");
+    // T9: a spec declara SOMENTE `{...}` — `:` na spec faria a normalização
+    // virar no-op silencioso e o codegen quebraria.
+    assert!(
+        !paths
+            .keys()
+            .any(|p| p.as_str().expect("path string").contains(':')),
+        "spec com `:` em path: a OpenAPI declara somente `{{...}}`"
+    );
     for (path, item) in paths {
-        let path = path.as_str().expect("path string");
+        let path = to_axum_path(path.as_str().expect("path string"));
         let item = item.as_mapping().expect("path-item mapping");
         for (method, op) in item {
             let method = method.as_str().expect("method string").to_uppercase();
@@ -279,7 +305,7 @@ fn security_class_matches_openapi() {
     let mut spec_public = BTreeSet::new();
     let mut spec_protected = BTreeSet::new();
     for (path, item) in paths {
-        let path = path.as_str().expect("path string").to_string();
+        let path = to_axum_path(path.as_str().expect("path string"));
         for m in methods {
             let Some(op) = item.get(m) else { continue };
             let key = (path.clone(), m.to_uppercase());
@@ -314,12 +340,119 @@ async fn protected_routes_fail_closed() {
             app.clone(),
             Request::builder()
                 .method(*method)
-                .uri(*path)
+                .uri(probe_uri(path))
                 .body(Body::empty())
                 .unwrap(),
         )
         .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {path}");
         assert_eq!(json(&body)["code"], "unauthorized", "{method} {path}");
+    }
+}
+
+#[tokio::test]
+async fn datasets_probe_without_db() {
+    // Gate + handlers + envelope sem banco: o pool é `connect_lazy` e todos os
+    // caminhos abaixo falham antes de qualquer query.
+    let app = routes::build(setup_state());
+    let (token, _) = session::issue_jwt(uuid::Uuid::new_v4(), &SETUP_SECRET);
+    let cookie = format!("heph_session={token}");
+
+    // 1. GET id não-UUID com cookie → 404 COM corpo (rota roteada; o 404 do
+    // gate_fallback é sem corpo).
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri("/api/datasets/nao-e-uuid")
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json(&body)["code"], "not_found");
+
+    // 2. POST body {} → 400 invalid_request.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/api/datasets")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::from("{}"))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+
+    // 3. POST com chave desconhecida → 400 (input-trust, deny_unknown_fields).
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/api/datasets")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::from(r#"{"title":"x","type":"yolo_bbox","status":"ready"}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+
+    // 4. POST com type fora do enum → 400.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/api/datasets")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::from(r#"{"title":"x","type":"tipo_inexistente"}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+
+    // 5. GET sem cookie → 401 (gate ativo na rota, não só no fallback).
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri("/api/datasets")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(json(&body)["code"], "unauthorized");
+}
+
+#[test]
+fn json_property_names_are_camel_case() {
+    // Enforcement D1: toda propriedade de schema é camelCase (`^[a-z][A-Za-z0-9]*$`).
+    let text = std::fs::read_to_string(openapi_path()).expect("ler openapi.yaml");
+    let yaml: serde_yaml::Value = serde_yaml::from_str(&text).expect("parse openapi.yaml");
+    let schemas = yaml["components"]["schemas"]
+        .as_mapping()
+        .expect("components.schemas");
+    for (schema, def) in schemas {
+        let schema = schema.as_str().expect("schema string");
+        let Some(props) = def.get("properties").and_then(|v| v.as_mapping()) else {
+            continue;
+        };
+        for prop in props.keys() {
+            let prop = prop.as_str().expect("property string");
+            let mut chars = prop.chars();
+            let ok = chars
+                .next()
+                .is_some_and(|c| c.is_ascii_lowercase())
+                && chars.all(|c| c.is_ascii_alphanumeric());
+            assert!(ok, "D1: {schema}.{prop} não é camelCase");
+        }
     }
 }

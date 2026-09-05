@@ -1037,7 +1037,7 @@ pub async fn put_caption(
         Err(resp) => return resp,
     };
     // (c) validação pura (text vazio ⇒ 400, a linha não nasce).
-    let (text, origin) = match validate_caption(&req.text, req.origin.as_deref()) {
+    let (text, origin, model) = match validate_caption(&req.text, req.origin.as_deref(), req.model.as_deref()) {
         Ok(v) => v,
         Err(_) => {
             return err(
@@ -1061,26 +1061,19 @@ pub async fn put_caption(
     if !exists {
         return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND);
     }
-    // (f) upsert + releitura (o trigger bumpa `updated_at` no UPDATE).
-    if sqlx::query(
+    // (f) upsert de statement ÚNICO com RETURNING (revisão 3b.6): releitura
+    // separada poderia ecoar linha de writer concorrente; o RETURNING já vem
+    // com o `updated_at` do trigger `tg_set_updated_at` aplicado.
+    type CaptionTuple = (String, String, Option<String>, chrono::DateTime<chrono::Utc>);
+    let row: Option<CaptionTuple> = match sqlx::query_as(
         "INSERT INTO captions (image_id, text, origin, model) VALUES ($1,$2,$3,$4) \
-         ON CONFLICT (image_id) DO UPDATE SET text = EXCLUDED.text, origin = EXCLUDED.origin, model = EXCLUDED.model",
+         ON CONFLICT (image_id) DO UPDATE SET text = EXCLUDED.text, origin = EXCLUDED.origin, model = EXCLUDED.model \
+         RETURNING text, origin, model, updated_at",
     )
     .bind(img_id)
     .bind(&text)
     .bind(&origin)
-    .bind(req.model.clone())
-    .execute(&state.pool)
-    .await
-    .is_err()
-    {
-        return internal();
-    }
-    type CaptionTuple = (String, String, Option<String>, chrono::DateTime<chrono::Utc>);
-    let row: Option<CaptionTuple> = match sqlx::query_as(
-        "SELECT text, origin, model, updated_at FROM captions WHERE image_id = $1",
-    )
-    .bind(img_id)
+    .bind(model)
     .fetch_optional(&state.pool)
     .await
     {

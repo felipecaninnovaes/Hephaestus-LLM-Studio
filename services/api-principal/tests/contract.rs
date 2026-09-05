@@ -612,6 +612,28 @@ async fn put_boxes_and_caption_reject_without_db() {
         assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
         assert_eq!(json(&body)["code"], "not_found", "{uri}");
     }
+
+    // Corpo > 2 MiB (DefaultBodyLimit global herdado das rotas JSON) ⇒ 413 no
+    // envelope, nunca text-plain do axum (revisão 3b.6 F5; padrão create).
+    let huge = format!(r#"{{"text":"{}"}}"#, "a".repeat(2 * 1024 * 1024 + 64));
+    for uri in [
+        format!("/api/datasets/{ds}/images/{img}/caption"),
+        format!("/api/datasets/{ds}/images/{img}/boxes"),
+    ] {
+        let (status, _, body) = call(
+            app.clone(),
+            Request::builder()
+                .method("PUT")
+                .uri(uri.clone())
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header(http::header::COOKIE, cookie.clone())
+                .body(Body::from(huge.clone()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{uri}");
+        assert_eq!(json(&body)["code"], "invalid_request", "{uri}");
+    }
 }
 
 #[test]

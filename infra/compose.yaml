@@ -22,11 +22,12 @@ services:
       STUDIO_MASTER_KEY: ${STUDIO_MASTER_KEY:-changeme}
       MANAGER_URL: http://manager:8081
       STORAGE_BACKEND: ${STORAGE_BACKEND:-s3}
-      S3_ENDPOINT_URL: http://seaweedfs:8333
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://seaweedfs:8333}
       S3_BUCKET: ${S3_BUCKET:-heph-data}
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-heph}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-heph-local-dev}
       S3_PUBLIC_ENDPOINT_URL: ${S3_PUBLIC_ENDPOINT_URL:-http://localhost:8333}
+      S3_URL_TTL_SECS: ${S3_URL_TTL_SECS:-3600}
     depends_on:
       db:
         condition: service_started

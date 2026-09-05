@@ -92,9 +92,11 @@ impl StoragePort for S3Storage {
         let body = ByteStream::from_path(path)
             .await
             .map_err(|_| StorageError::Unavailable("storage unavailable".into()))?;
+        // D2/C2: o length é INVARIANTE, não otimização — stat que falha aborta
+        // o PUT (nunca enviar length 0 com corpo de N bytes; revisão 3b.6 F2).
         let len = std::fs::metadata(path)
             .map(|m| m.len() as i64)
-            .unwrap_or(0);
+            .map_err(|_| StorageError::Unavailable("storage unavailable".into()))?;
         self.client
             .put_object()
             .bucket(&self.bucket)
@@ -194,6 +196,7 @@ impl StoragePort for S3Storage {
         if keys.is_empty() {
             return Ok(0);
         }
+        let mut removed: u32 = 0;
         for chunk in keys.chunks(1000) {
             let objs: Vec<_> = chunk
                 .iter()
@@ -204,21 +207,26 @@ impl StoragePort for S3Storage {
                 })
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|_| StorageError::Unavailable("storage unavailable".into()))?;
-            self.client
+            // Revisão 3b.6: SEM quiet(true) — quiet suprime `deleted`, e a
+            // contagem precisa ser de chaves CONFIRMADAS deletadas; erros por-
+            // chave de um 200 parcial ficam de fora (log completo: varredura
+            // da 3b.7 junto da dívida de logging).
+            let resp = self
+                .client
                 .delete_objects()
                 .bucket(&self.bucket)
                 .delete(
                     aws_sdk_s3::types::Delete::builder()
                         .set_objects(Some(objs))
-                        .quiet(true)
                         .build()
                         .map_err(|_| StorageError::Unavailable("storage unavailable".into()))?,
                 )
                 .send()
                 .await
                 .map_err(|_| StorageError::Unavailable("storage unavailable".into()))?;
+            removed += resp.deleted().len() as u32;
         }
-        Ok(keys.len() as u32)
+        Ok(removed)
     }
 }
 

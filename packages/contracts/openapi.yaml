@@ -887,7 +887,7 @@ components:
           enum: [manual, autotracker, import]
         trackId:
           type: [integer, "null"]
-          description: Id de track (só em origem autotracker com tracking).
+          description: Id de track (convenção — preenchido só em origem autotracker com tracking; API não impõe).
 
     Caption:
       type: object
@@ -900,7 +900,7 @@ components:
           enum: [manual, autotracker, import]
         model:
           type: [string, "null"]
-          description: Modelo gerador (só em origem autotracker).
+          description: Modelo gerador (convenção — preenchido em origem autotracker; teto de 255 chars ⇒ 400).
         updatedAt: { type: string, format: date-time }
 
     PutBoxesRequest:
@@ -937,7 +937,7 @@ components:
                 description: Origem da anotação (ausente vira `manual`).
               trackId:
                 type: [integer, "null"]
-                description: Id de track (só em origem autotracker com tracking).
+                description: Id de track (convenção — preenchido só em origem autotracker com tracking; API não impõe).
 
     PutBoxesResponse:
       type: object
@@ -966,7 +966,7 @@ components:
           description: Origem da legenda (ausente vira `manual`).
         model:
           type: [string, "null"]
-          description: Modelo gerador (só em origem autotracker).
+          description: Modelo gerador (convenção — preenchido em origem autotracker; teto de 255 chars ⇒ 400).
 
     ImageDetail:
       type: object

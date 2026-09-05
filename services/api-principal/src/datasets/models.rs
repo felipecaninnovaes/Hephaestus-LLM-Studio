@@ -471,7 +471,8 @@ pub fn validate_boxes(req: &PutBoxesRequest) -> Result<Vec<ValidatedBox>, ()> {
 pub fn validate_caption(
     text: &str,
     origin: Option<&str>,
-) -> Result<(String, String), ()> {
+    model: Option<&str>,
+) -> Result<(String, String, Option<String>), ()> {
     let n = text.chars().count();
     if !(1..=8000).contains(&n) {
         return Err(());
@@ -481,7 +482,13 @@ pub fn validate_caption(
         Some(s) if is_valid_origin(s) => s.to_string(),
         Some(_) => return Err(()),
     };
-    Ok((text.to_string(), origin))
+    // Revisão 3b.6: `model` entra no banco para sempre — teto de 255 chars
+    // (a rota só tem o backstop de 2 MiB do body-limit; single-user, mas o
+    // custo de errar é uma linha).
+    if model.is_some_and(|m| m.chars().count() > 255) {
+        return Err(());
+    }
+    Ok((text.to_string(), origin, model.map(str::to_string)))
 }
 
 #[cfg(test)]
@@ -647,10 +654,13 @@ mod tests {
 
     #[test]
     fn validate_caption_regras() {
-        assert!(validate_caption("", None).is_err());
-        assert!(validate_caption("um gato", None).expect("ok").1 == "manual");
-        assert!(validate_caption("x", Some("hack")).is_err());
-        assert!(validate_caption(&"a".repeat(8000), Some("import")).is_ok());
-        assert!(validate_caption(&"a".repeat(8001), None).is_err());
+        assert!(validate_caption("", None, None).is_err());
+        assert!(validate_caption("um gato", None, None).expect("ok").1 == "manual");
+        assert!(validate_caption("x", Some("hack"), None).is_err());
+        assert!(validate_caption(&"a".repeat(8000), Some("import"), None).is_ok());
+        assert!(validate_caption(&"a".repeat(8001), None, None).is_err());
+        // modelo com teto (revisão 3b.6): 255 chars ok, 256 -> 400.
+        assert!(validate_caption("x", None, Some(&"m".repeat(255))).is_ok());
+        assert!(validate_caption("x", None, Some(&"m".repeat(256))).is_err());
     }
 }

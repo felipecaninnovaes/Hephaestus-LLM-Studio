@@ -2,6 +2,7 @@
 description: Sincronizador de docs do Hephaestus — mantém docs/backend.md §9/§10, docs/frontend.md §10 e packages/contracts espelhando o código implementado. Edição mecânica guiada por código.
 mode: subagent
 model: opencode-go/muse-spark-1.3-contributor
+variant: low
 temperature: 0.2
 permission:
   bash:

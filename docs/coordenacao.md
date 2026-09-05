@@ -79,7 +79,13 @@ ser interrompido no meio de uma.
   reviewer-max`). *Dia 1 (smoke em `86fb0eb`)*: ambos BLOQUEIA no mesmo defeito real
   (gate de segredos × `!.env.example` do gitignore — comprovado por matriz de 4 casos
   antes do fix); o titular ainda cruzou com a ADR-0003 (`.env.example` é entregável
-  prometido da 3b.4) — 1 ponto pro flash por enquanto.
+  prometido da 3b.4)   — 1 ponto pro flash por enquanto.
+- **Esforço de razonamento fixado por agente** (`variant:` na frontmatter, validado
+  no provider): `high` em hephaestus/architect/reviewer (+ sombra max), `medium` em
+  fixer e ui-designer, `low` nos implementadores e explore. Hipótese a medir na 3b:
+  `fixer` com medium deve reduzir escaladas ao coordenador; se `low` em implementador
+  degradar obediência à spec, subir para medium é uma linha. Vale a partir da
+  próxima sessão (config de agente não retroage em sessão viva).
 
 ## Storage da 3b — decisão TOMADA (2026-09-04): bucket S3/SeaweedFS
 

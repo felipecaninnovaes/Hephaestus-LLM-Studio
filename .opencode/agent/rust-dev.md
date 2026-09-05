@@ -2,6 +2,7 @@
 description: Implementador Rust do Hephaestus — executa tarefas mecânicas e bem especificadas nos serviços api-principal (:8080), manager (:8081) e orchestrator. Receba especificação completa, não decida arquitetura.
 mode: subagent
 model: opencode-go/muse-spark-1.3-contributor
+variant: low
 temperature: 0.1
 permission:
   bash:

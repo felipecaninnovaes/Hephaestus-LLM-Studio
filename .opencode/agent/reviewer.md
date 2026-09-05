@@ -2,6 +2,7 @@
 description: Revisor de código do Hephaestus — audita diffs de fatias contra contratos, boundaries, convenções de commit e segurança antes do fechamento. Use antes de declarar qualquer slice pronta.
 mode: subagent
 model: opencode-go/qwen3.8-flash
+variant: high
 permission:
   edit: deny
   bash:

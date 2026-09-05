@@ -2,6 +2,7 @@
 description: Arquiteto de software do Hephaestus — projeta contratos de API, schema Postgres, fatias verticais e decisões de boundary entre serviços. Use antes de implementar mudanças estruturais.
 mode: subagent
 model: opencode-go/qwen3.8-flash
+variant: high
 permission:
   edit: deny
   bash:

@@ -2,6 +2,7 @@
 description: Corretor de erros do Hephaestus — recebe erro de build/teste/lint, encontra a causa imediata e aplica a correção mínima. Não muda comportamento além do necessário.
 mode: subagent
 model: opencode-go/muse-spark-1.3-contributor
+variant: medium
 temperature: 0.1
 permission:
   bash:

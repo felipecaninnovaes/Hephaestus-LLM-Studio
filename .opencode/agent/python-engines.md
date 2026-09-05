@@ -2,6 +2,7 @@
 description: Implementador Python do Hephaestus — executa especificações mecânicas nos engines trainers/runners (trainer-yolo, trainer-difusao, trainer-clip) com uv. Não decide arquitetura.
 mode: subagent
 model: opencode-go/muse-spark-1.3-contributor
+variant: low
 temperature: 0.1
 permission:
   bash:

@@ -166,6 +166,10 @@ interface BBox { id: number; classId: number; label: string; x: number; y: numbe
 
 ## 10. Contratos que o front vai exigir do Rust (alinhado com backend.md §9)
 
+- Auth (IMPLEMENTADO Fatia 2 — `app/login/page.tsx`, `proxy.ts`, `next.config.ts`; contrato `packages/contracts/openapi.yaml`, `docs/adr/0001-auth-single-user.md`): `POST /api/auth/login`, `GET /api/auth/me`, `POST /api/auth/logout` + `GET /health` (`auth: ready|setup_required`).
+  - Rota `/login`: form de senha; erros ramificados por `code` em pt-BR (`invalid_credentials` → "Senha incorreta.", `setup_required` → "Servidor em modo setup — defina STUDIO_PASSWORD.", `invalid_request` → "Envie a senha.", default → "Falha inesperada."); sucesso → `/` (`router.replace` + `refresh`); já logado (`GET /me` ok) → volta a `/`.
+  - Gate de sessão via `proxy.ts`: `/login` passa direto (decide por si via `/me`); sem cookie `heph_session` → redirect `/login`; com cookie → passa, validade decidida pelo servidor via `/me` (`/` redireciona a `/login` se `/me` não-ok; logout → `POST /logout` + volta a `/login`). `/api/*` fora do matcher — envelope 401 do backend repassado intacto.
+  - Resolução T5: front chama `/api/*` relativo (`credentials: "same-origin"`, sem CORS); rewrite Next → `API_INTERNAL_URL` (dev `http://localhost:8080`, compose `http://principal:8080`). `NEXT_PUBLIC_API_URL` ficou como resíduo de build (só `ARG` no Dockerfile; runtime usa o proxy `/api`).
 - Datasets: `GET/POST /api/datasets`, `GET/DELETE /api/datasets/:id`, `POST /:id/upload` (200 MB), `GET /:id/images?limit&offset`, `PUT .../images/:img/{boxes,caption}`, `POST /:id/export`, `POST /datasets/import`, `POST /:id/package`.
 - Ambientes (alias UI de orquestradores): `GET /api/environments` (= `GET /api/orchestrators`), `POST /environments/select|connect` (= adopt/enable).
 - Jobs: `POST /api/jobs/{yolo|difusao|clip|autolabel|autotracker|playground}`, `GET /:id`, `POST /:id/{pause,abort,resume}`, `GET /:id/{metrics,samples,artifacts}`, `WS /ws/jobs/:id/logs?since_seq=` + `WS /ws/telemetry`.

@@ -33,11 +33,16 @@
 - **Direção de rede (NAT): outbound-first.** Modelo primário é **reverso**: orquestrador remoto abre WS persistente com o manager (`/orch/channel`, Bearer `heph_o_*` + pin) e recebe despachos por ele; artefatos voltam via `POST` do orquestrador para o manager/principal. Conexão inbound direta (manager→pod) é opcional, só quando há IP:porta alcançável.
 - **Buffer de logs:** orquestrador mantém ring 2000 linhas em disco por job; principal cacheia últimas 1000; WS aceita `?since_seq=` para retomar após oscilação.
 
-## 2. Auth (decisão: single-user local)
+## 2. Auth (decisão: single-user local) — IMPLEMENTADO (Fatia 2)
+
+> Implementado: contrato em `packages/contracts/openapi.yaml`, decisões em `docs/adr/0001-auth-single-user.md` (D1–D9). O que segue espelha o código; o ADR é a referência de rationale.
 
 - `POST /api/auth/login {password}` → JWT HttpOnly + `GET /api/auth/me` + `POST /api/auth/logout`. Middleware Rust em tudo exceto `/api/auth/*` e `/health`.
-- Tela `/login` no front (fora do protótipo). Sem RBAC por enquanto; senha via env `STUDIO_PASSWORD` no primeiro boot.
+- Tela `/login` no front (fora do protótipo) → implementada na Fatia 2 (ver `frontend.md` §10). Sem RBAC por enquanto; senha via env `STUDIO_PASSWORD` no primeiro boot.
 - Chaves HF/Civitai: `PUT /api/settings/keys {hf_token, civitai_key}` (máscara no GET), fallback para env. Front nunca loga valores.
+- Firmado (código): cookie `heph_session` `HttpOnly; SameSite=Lax; Path=/; Max-Age=604800` (7d; `Secure` só via env `SECURE_COOKIE=true`); hash Argon2id (`Params::default()`); JWT HS256 TTL 7d sem refresh (`iss/sub/iat/exp/jti`, leeway 30s); segredo de 32 B em tabela `auth_state` (override `AUTH_SECRET` hex 64 chars); bootstrap `STUDIO_PASSWORD` só no 1º boot (depois ignorado); modo setup fail-closed (`/health` 200 `auth:"setup_required"`, login 503 `setup_required`, protegidas 401); envelope de erro `{code,message}`; sem rate-limit na v1 (429 reservado `x-reserved`).
+- `/api/auth/me` está fora do gate por prefixo (`/api/auth/*` isento, letra do §2) e **auto-valida o próprio cookie** no handler — é o gate daquela rota, não brecha (D9).
+- `route_layer(require_auth)` **adiado p/ Fatia 3** (axum 0.7 dá panic com `route_layer` em router vazio, ver `routes.rs`); fail-closed desde já via `.fallback()` — sem cookie válido → 401 `unauthorized` (mesmo em rota inexistente); com sessão válida → 404 sem body (fora do envelope e da OpenAPI) — D9.
 
 ## 3. Dataset e banco — Postgres canônico, SQLite só no orquestrador
 
@@ -106,7 +111,8 @@
 ## 9. API mínima a implementar (principal expõe, orquestrador executa)
 
 ```
-auth:     POST /api/auth/login, GET /api/auth/me, POST /api/auth/logout
+auth:     POST /api/auth/login, GET /api/auth/me, POST /api/auth/logout  → implementado (ADR-0001/openapi)
+health:   GET /health → {status, service, auth: ready|setup_required}  → implementado (campo `auth` novo, ADR-0001 D3)
 settings: PUT/GET /api/settings/keys {hf_token, civitai_key, openai_key, anthropic_key, vllm_endpoint}, GET /api/settings/vram-policy
 datasets: GET/POST /api/datasets, GET/DELETE /api/datasets/:id
           POST /api/datasets/:id/upload (200MB), GET /api/datasets/:id/images
@@ -126,10 +132,13 @@ orchestrators (via manager): GET /api/orchestrators, POST /api/orchestrators/ado
 ws:       /ws/jobs/:id/logs?since_seq=, /ws/telemetry
 ```
 
+- Nota Fatia 2 (D9): `/api/auth/me` valida o próprio cookie (isento do gate por prefixo, §2); `route_layer` adiado p/ Fatia 3 — fallback fail-closed (sem sessão → 401 mesmo em rota inexistente; com sessão → 404 sem body, fora da OpenAPI).
+
 ## 10. Schema Postgres (só local — principal/manager)
 
 ```sql
 users(id UUID PK, password_hash TEXT NOT NULL, created_at TIMESTAMPTZ);  -- single-user; 1 linha
+auth_state(id SMALLINT PK CHECK(id=1), jwt_secret BYTEA CHECK(octet_length=32), created_at TIMESTAMPTZ);  -- segredo HS256, linha única (ADR-0001 D2/D4; resolve T1)
 settings(key TEXT PK, value_enc TEXT, updated_at TIMESTAMPTZ);            -- hf_token, civitai_key (cifrado app-level), vram-table ref
 orchestrators(id UUID PK, name TEXT, endpoint TEXT UNIQUE, kind TEXT,     -- local|remoto
   fingerprint TEXT, token_hash TEXT, gpus JSONB, vram_total_gb INT,
@@ -158,6 +167,7 @@ runners(id UUID PK, engine TEXT, model TEXT, orchestrator_id UUID FK,
 ```
 
 - Índices: `images(dataset_id)`, `boxes(image_id)`, `jobs(status)`, `job_artifacts(job_id)`.
+- Nota (ADR-0001 T3, casing): domínio auth trafega em camelCase (`userId`, `loggedAt`); demais bodies do §9 usam snake_case (ex. settings `hf_token`). Política global de casing a definir antes da Fatia 3.
 - Regra: contadores do dataset via trigger/view a partir de `images/boxes/captions`; chaves externas com `ON DELETE CASCADE` de dataset→filhos.
 - **Split:** coluna `images.split (train|val)`; padrão 80/20 estratificado no package com override manual na galeria (seletor train/val por imagem).
 - **Consistência disco×banco:** Postgres é a verdade; `PUT boxes/caption` atualiza o banco e materializa o `.txt` em disco com debounce (~2s). O package sempre gera do banco.

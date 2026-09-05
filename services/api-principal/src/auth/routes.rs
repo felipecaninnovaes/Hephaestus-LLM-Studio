@@ -42,6 +42,11 @@ pub const PUBLIC_ROUTES: &[(&str, &str, &[u16])] = &[
     ("POST", "/api/auth/logout", &[204]),
 ];
 
+/// Limite do CORPO TOTAL do lote: 200 MiB de arquivos + 8 MiB de folga p/
+/// envelope multipart (D2). NÃO é por field (axum embrulha a stream toda —
+/// descoberta da revisão 3b.3).
+pub const UPLOAD_BODY_LIMIT_BYTES: usize = 200 * 1024 * 1024 + 8 * 1024 * 1024;
+
 /// Contrato total (inventário D8): união REAL de `PUBLIC_ROUTES` +
 /// `PROTECTED_ROUTES`. É função justamente para não existir alias esquecido —
 /// rotas novas entram só nas duas listas-fonte e aparecem aqui sozinhas.
@@ -90,13 +95,10 @@ pub fn build(state: AppState) -> axum::Router {
             "/api/datasets/:id",
             get(datasets::handlers::get_one).delete(datasets::handlers::delete),
         )
-        // 200 MiB POR FIELD: o multipart aplica o `DefaultBodyLimit` por field;
-        // a margem do envelope multipart fica no buffer do próprio multipart,
-        // não no limite.
         .route(
             "/api/datasets/:id/upload",
             post(datasets::handlers::upload)
-                .layer(DefaultBodyLimit::max(200 * 1024 * 1024)),
+                .layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT_BYTES)),
         )
         .route(
             "/api/datasets/:id/images",

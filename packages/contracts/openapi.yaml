@@ -602,7 +602,7 @@ components:
           description: PK da linha em `images`; null em `rejected`.
         filename:
           type: string
-          description: Nome sanitizado canônico (chave D5 sem a extensão do form).
+          description: Nome canônico (stem sanitizado + extensão do sniff).
         status:
           type: string
           enum: [stored, duplicate, rejected, failed]

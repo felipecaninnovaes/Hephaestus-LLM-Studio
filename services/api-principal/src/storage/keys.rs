@@ -6,10 +6,10 @@
 
 use uuid::Uuid;
 
-/// Sanitiza nome de arquivo não confiável: remove a extensão aparente,
-/// troca todo char fora de `[A-Za-z0-9._-]` (inclui `/ \ NUL, Unicode e
-/// espaço) por `-`, colapsa runs de `-`/`.` em um `-`, tira `.`/`-` das
-/// pontas, trunca em 64 chars; vazio ⇒ `"img"`.
+/// Sanitiza nome de arquivo não confiável (stem, sem extensão): remove a
+/// extensão aparente, preserva só `[A-Za-z0-9_]` (todo o resto — inclui
+/// `/ \ NUL, Unicode, espaço, `.` e `-` — vira `-`), colapsa runs de `-`
+/// em um `-`, tira `-` das pontas, trunca em 64 chars; vazio ⇒ `"img"`.
 pub fn sanitize_filename(raw: &str) -> String {
     // Remove a extensão aparente (o `.jpg` do form é decorativo).
     let base = match raw.rsplit_once('.') {
@@ -24,11 +24,12 @@ pub fn sanitize_filename(raw: &str) -> String {
             tmp.push('-');
         }
     }
-    // Colapsa runs de `-`/`.` em um `-` e tira das pontas; trunca em 64.
+    // Colapsa runs de `-` em um só e tira das pontas; trunca em 64
+    // (`tmp` nunca contém `.`: tudo fora de `[A-Za-z0-9_]` já virou `-`).
     let mut out = String::with_capacity(tmp.len());
     let mut prev_dash = false;
     for c in tmp.chars() {
-        if c == '-' || c == '.' {
+        if c == '-' {
             if !prev_dash { out.push('-'); prev_dash = true; }
         } else {
             out.push(c);
@@ -44,15 +45,21 @@ pub fn sanitize_filename(raw: &str) -> String {
     stem
 }
 
-/// Chave legível do objeto (D5): IDs imutáveis; `media_ext` vem do sniff.
+/// Nome canônico server-side: stem sanitizado + extensão do sniff
+/// (nunca a do form). `a.png` + `a.jpg` de conteúdos distintos ⇒
+/// canônicos distintos (sem duplicate falso).
+pub fn canonical_filename(raw: &str, media: crate::storage::sniff::MediaType) -> String {
+    format!("{}.{}", sanitize_filename(raw), media.extension())
+}
+
+/// Chave legível do objeto (D5): IDs imutáveis; `canonical` já é o
+/// `canonical_filename` (formato final `datasets/{ds}/images/{img}/{stem}.{ext}`).
 pub fn image_object_key(
     dataset_id: Uuid,
     image_id: Uuid,
-    filename: &str,
-    media_ext: &str,
+    canonical: &str,
 ) -> String {
-    let stem = sanitize_filename(filename);
-    format!("datasets/{dataset_id}/images/{image_id}/{stem}.{media_ext}")
+    format!("datasets/{dataset_id}/images/{image_id}/{canonical}")
 }
 
 #[cfg(test)]
@@ -83,12 +90,32 @@ mod tests {
     #[test]
     fn sniff_vence_nome() {
         let (ds, img) = (Uuid::nil(), Uuid::nil());
-        assert_eq!(image_object_key(ds, img, "foto.png", "jpg"), format!("datasets/{ds}/images/{img}/foto.jpg"));
+        let canonical = canonical_filename("foto.png", crate::storage::sniff::MediaType::Jpeg);
+        assert_eq!(canonical, "foto.jpg");
+        assert_eq!(image_object_key(ds, img, &canonical), format!("datasets/{ds}/images/{img}/foto.jpg"));
     }
 
     #[test]
     fn chave_formato_exato() {
         let (ds, img) = (Uuid::nil(), Uuid::nil());
-        assert_eq!(image_object_key(ds, img, "a.png", "png"), format!("datasets/{ds}/images/{img}/a.png"));
+        let canonical = canonical_filename("a.png", crate::storage::sniff::MediaType::Png);
+        assert_eq!(image_object_key(ds, img, &canonical), format!("datasets/{ds}/images/{img}/a.png"));
+    }
+
+    #[test]
+    fn extensoes_distintas_nao_colidem() {
+        let a_png = canonical_filename("a.png", crate::storage::sniff::MediaType::Png);
+        let a_jpg = canonical_filename("a.jpg", crate::storage::sniff::MediaType::Jpeg);
+        assert_eq!(a_png, "a.png");
+        assert_eq!(a_jpg, "a.jpg");
+        assert_ne!(a_png, a_jpg);
+    }
+
+    #[test]
+    fn traversal_nao_vaza_para_sufixo() {
+        let c = canonical_filename("../../etc/passwd.jpg", crate::storage::sniff::MediaType::Png);
+        assert_eq!(c, "etc-passwd.png");
+        assert!(!c.contains('/'));
+        assert!(!c.contains('\\'));
     }
 }

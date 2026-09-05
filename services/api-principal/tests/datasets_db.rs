@@ -674,11 +674,13 @@ async fn t0003_delete_dataset_cascade() {
     .execute(&st.pool)
     .await
     .expect("insert box");
+    let vid = uuid::Uuid::new_v4();
     sqlx::query(
         "INSERT INTO videos (dataset_id, filename, object_key, md5, bytes) \
-         VALUES ($1,'v.mp4','datasets/v.mp4','d41d8cd98f00b204e9800998ecf8427e',33)",
+         VALUES ($1,'v.mp4',$2,'d41d8cd98f00b204e9800998ecf8427e',33)",
     )
     .bind(ds)
+    .bind(format!("datasets/{ds}/videos/{vid}/v.mp4"))
     .execute(&st.pool)
     .await
     .expect("insert video");
@@ -772,6 +774,22 @@ fn post_upload(cookie: &str, dataset_id: &str, boundary: &str, body: Vec<u8>) ->
         .unwrap()
 }
 
+/// JPEG 1×1 gerado em tempo de teste (encode via `image`, sempre válido).
+fn jpeg_1x1() -> Vec<u8> {
+    let img = image::RgbImage::from_pixel(1, 1, image::Rgb([255, 0, 0]));
+    let mut buf = Vec::new();
+    let mut enc = image::codecs::jpeg::JpegEncoder::new(&mut buf);
+    enc.encode(
+        img.as_raw(),
+        img.width(),
+        img.height(),
+        image::ExtendedColorType::Rgb8,
+    )
+    .expect("encode jpeg 1x1");
+    assert!(buf.len() >= 3 && buf[0] == 0xFF && buf[1] == 0xD8 && buf[2] == 0xFF);
+    buf
+}
+
 /// PNG 1×1 (70 bytes reais do `base64 -d` da constante da spec —
 /// a spec diz 67, mas a string decodifica para 70; vale o real).
 fn png_1x1() -> Vec<u8> {
@@ -820,9 +838,11 @@ async fn t0003_upload_stored_duplicate_rejected() {
     let items = json(&body)["items"].clone();
     assert_eq!(items.as_array().expect("items").len(), 2);
     assert_eq!(items[0]["status"], "stored");
+    assert_eq!(items[0]["filename"], "a.png");
     assert_eq!(items[1]["status"], "duplicate");
     assert_eq!(items[1]["reason"], "duplicate_filename");
     assert_eq!(items[1]["imageId"], items[0]["imageId"]);
+    assert_eq!(items[1]["filename"], "a.png");
     assert_eq!(items[0]["bytes"], 70);
     assert_eq!(items[0]["width"], 1);
     assert_eq!(items[0]["height"], 1);
@@ -882,6 +902,19 @@ async fn t0003_upload_stored_duplicate_rejected() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(json(&body)["code"], "invalid_request");
+
+    // F4 end-to-end: conteúdo JPEG com nome `.png` ⇒ stored com canônico `.jpg`.
+    let jpeg = jpeg_1x1();
+    let (status, _, body) = call(
+        app.clone(),
+        post_upload(&cookie, &ds2, boundary, multipart_body(boundary, &[("foto.png", &jpeg)])),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let items = json(&body)["items"].clone();
+    assert_eq!(items.as_array().expect("items").len(), 1);
+    assert_eq!(items[0]["status"], "stored");
+    assert_eq!(items[0]["filename"], "foto.jpg");
 
     // Box na imagem ⇒ gatilho end-to-end pela rota de verdade.
     let class_id: uuid::Uuid =
@@ -1030,6 +1063,101 @@ async fn t0003_list_images_filtros() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(json(&body)["code"], "not_found");
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0003_upload_storage_unavailable_503() {
+    let _guard = SERIAL.lock().await;
+    let mut st = state().await;
+    st.storage = std::sync::Arc::new(api_principal::storage::MockStorage::failing());
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Bucket Morto", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds = json(&body)["id"].as_str().expect("id").to_string();
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+    let boundary = "heph-failing-boundary";
+    let (status, _, body) = call(
+        app.clone(),
+        post_upload(&cookie, &ds, boundary, multipart_body(boundary, &[("a.png", &png_1x1())])),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(json(&body)["code"], "storage_unavailable");
+    // PUT falhou ANTES do INSERT: nenhuma linha órfã.
+    assert_eq!(
+        counters_of(&st.pool, ds_id).await,
+        (0, 0, 0, "needs_labeling".to_string())
+    );
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0003_list_presign_503() {
+    let _guard = SERIAL.lock().await;
+    let mut st = state().await;
+    st.storage = std::sync::Arc::new(api_principal::storage::MockStorage::failing());
+    st.storage_config.public_endpoint = Some("http://localhost:8333".to_string());
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Presign Morto", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds = json(&body)["id"].as_str().expect("id").to_string();
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+    let _ = insert_image(&st.pool, ds_id, "p.jpg", 10).await;
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri(format!("/api/datasets/{ds}/images"))
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(json(&body)["code"], "storage_unavailable");
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0003_upload_malformed_400() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Malformado", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds = json(&body)["id"].as_str().expect("id").to_string();
+    // Content-type declara boundary X mas o corpo é lixo que nunca fecha o
+    // boundary: o ramo next_field-Err não-413 dá `break` com items vazios ⇒
+    // 400 invalid_request (e nunca hang).
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/datasets/{ds}/upload"))
+            .header(http::header::CONTENT_TYPE, "multipart/form-data; boundary=X")
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::from("lixo-que-nunca-fecha-boundary"))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
 }
 
 #[tokio::test]

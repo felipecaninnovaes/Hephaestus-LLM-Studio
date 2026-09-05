@@ -17,6 +17,7 @@ pub struct MockStorage {
     url_ttl_secs: u64,
     objects: RwLock<HashMap<String, Vec<u8>>>,
     ops: RwLock<Vec<String>>,
+    failing: std::sync::atomic::AtomicBool,
 }
 
 impl MockStorage {
@@ -31,7 +32,21 @@ impl MockStorage {
             url_ttl_secs,
             objects: RwLock::new(HashMap::new()),
             ops: RwLock::new(Vec::new()),
+            failing: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Simula bucket morto — testes dos ramos 503 sem rede: todos os
+    /// métodos da porta retornam `Err(StorageError::Unavailable("injected"))`
+    /// e nenhuma op é gravada.
+    pub fn failing() -> Self {
+        let m = Self::with_config("heph-test".to_string(), 60);
+        m.failing.store(true, std::sync::atomic::Ordering::SeqCst);
+        m
+    }
+
+    fn is_failing(&self) -> bool {
+        self.failing.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// `key→bytes` ordenado por key (para asserções de teste).
@@ -84,6 +99,9 @@ impl Default for MockStorage {
 #[async_trait::async_trait]
 impl StoragePort for MockStorage {
     async fn put(&self, key: &str, path: &Path) -> Result<(), StorageError> {
+        if self.is_failing() {
+            return Err(StorageError::Unavailable("injected".to_string()));
+        }
         let data = tokio::fs::read(path)
             .await
             .map_err(|_| StorageError::Unavailable("storage unavailable".to_string()))?;
@@ -99,6 +117,9 @@ impl StoragePort for MockStorage {
     }
 
     async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError> {
+        if self.is_failing() {
+            return Err(StorageError::Unavailable("injected".to_string()));
+        }
         let data = {
             let objects = self.objects.read().await;
             objects.get(key).cloned()
@@ -111,6 +132,9 @@ impl StoragePort for MockStorage {
     }
 
     async fn presign_get(&self, key: &str) -> Result<String, StorageError> {
+        if self.is_failing() {
+            return Err(StorageError::Unavailable("injected".to_string()));
+        }
         Ok(format!(
             "mock://{}/{key}?ttl={}",
             self.bucket, self.url_ttl_secs
@@ -118,6 +142,9 @@ impl StoragePort for MockStorage {
     }
 
     async fn delete(&self, key: &str) -> Result<(), StorageError> {
+        if self.is_failing() {
+            return Err(StorageError::Unavailable("injected".to_string()));
+        }
         {
             let mut objects = self.objects.write().await;
             objects.remove(key);
@@ -130,6 +157,9 @@ impl StoragePort for MockStorage {
     }
 
     async fn delete_prefix(&self, prefix: &str) -> Result<u32, StorageError> {
+        if self.is_failing() {
+            return Err(StorageError::Unavailable("injected".to_string()));
+        }
         {
             let mut ops = self.ops.write().await;
             ops.push(format!("DELETE_PREFIX {prefix}"));

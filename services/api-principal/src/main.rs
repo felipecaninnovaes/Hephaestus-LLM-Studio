@@ -17,6 +17,7 @@ fn load_storage() -> Result<(Arc<dyn StoragePort>, StorageConfig), String> {
     let backend = std::env::var("STORAGE_BACKEND").unwrap_or_else(|_| "mock".to_string());
     match backend.as_str() {
         "mock" => {
+            eprintln!("aviso: STORAGE_BACKEND=mock — uploads NÃO sobrevivem a restart (objeto vive só na RAM; S3Storage chega na 3b.4)");
             let bucket = std::env::var("S3_BUCKET").unwrap_or_else(|_| "heph-data".to_string());
             let public_endpoint = std::env::var("S3_PUBLIC_ENDPOINT_URL")
                 .ok()

@@ -31,6 +31,7 @@ impl MediaType {
     }
 
     /// Content-Type canônico.
+    // consumidor: proxy /data da 3b.5
     pub fn content_type(&self) -> &'static str {
         match self {
             Self::Jpeg => "image/jpeg",

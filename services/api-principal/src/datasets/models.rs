@@ -206,7 +206,8 @@ impl From<DatasetRow> for DatasetResponse {
 pub struct UploadItem {
     /// None em rejected.
     pub image_id: Option<String>,
-    /// O sanitizado canônico.
+    /// Nome canônico server-side (stem sanitizado + extensão do sniff),
+    /// não o nome enviado no form.
     pub filename: String,
     /// "stored"|"duplicate"|"rejected"|"failed".
     pub status: String,
@@ -223,10 +224,8 @@ pub struct UploadResult {
     pub items: Vec<UploadItem>,
 }
 
-/// Linha de `images` (FROM row; cols SQL em ordem:
-/// id, filename, object_key, bytes, width, height, md5, sha256,
-/// media_type, split, created_at).
-#[derive(sqlx::FromRow)]
+/// Linha de `images` (construída à mão no handler; md5/sha256 ficam no
+/// banco, fora do wire e fora desta struct).
 pub struct ImageRow {
     pub id: Uuid,
     pub filename: String,
@@ -234,8 +233,6 @@ pub struct ImageRow {
     pub bytes: i64,
     pub width: i32,
     pub height: i32,
-    pub md5: String,
-    pub sha256: String,
     pub media_type: String,
     pub split: String,
     pub created_at: DateTime<Utc>,

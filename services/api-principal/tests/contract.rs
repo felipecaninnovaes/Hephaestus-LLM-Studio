@@ -339,7 +339,8 @@ fn security_class_matches_openapi() {
 
 #[tokio::test]
 async fn protected_routes_fail_closed() {
-    // Cinto: toda rota protegida sem cookie → 401 unauthorized (vazio hoje).
+    // Cinto: toda rota protegida sem cookie → 401 unauthorized (o loop
+    // cobre as rotas protegidas declaradas em PROTECTED_ROUTES).
     let app = routes::build(setup_state());
     for (method, path, _) in routes::PROTECTED_ROUTES {
         let (status, _, body) = call(

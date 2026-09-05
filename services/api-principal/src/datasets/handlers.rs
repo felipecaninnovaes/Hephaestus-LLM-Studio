@@ -275,8 +275,12 @@ pub async fn delete(State(state): State<AppState>, Path(id): Path<String>) -> Re
     StatusCode::NO_CONTENT.into_response()
 }
 
-/// As 11 colunas de `images` na ordem do `ImageRow`.
-const ICOLS: &str = "id, filename, object_key, bytes, width, height, md5, sha256, media_type, split, created_at";
+/// As 9 colunas de `images` (sem md5/sha256: ficam no banco, fora do wire).
+const ICOLS: &str = "id, filename, object_key, bytes, width, height, media_type, split, created_at";
+
+/// Limite por-arquivo, D2/D10 reason too_large: ao exceder, o handler para
+/// de escrever no disco mas drena a stream até EOF e marca rejected/too_large.
+pub const MAX_FILE_BYTES: i64 = 200 * 1024 * 1024;
 
 fn stored_item(image_id: Uuid, filename: String, bytes: i64, width: i32, height: i32) -> UploadItem {
     UploadItem { image_id: Some(image_id.to_string()), filename, status: "stored".to_string(), reason: None, bytes: Some(bytes), width: Some(width), height: Some(height) }
@@ -295,7 +299,7 @@ fn failed_item(filename: String) -> UploadItem {
 }
 
 /// Erro opaco do axum: `LengthLimitError` no debug (estouro do
-/// `DefaultBodyLimit` POR FIELD) ⇒ `too_large`; o resto é `storage_error`.
+/// `DefaultBodyLimit` do CORPO TOTAL) ⇒ 413; o resto é stream morto.
 fn is_too_large(err: &axum::extract::multipart::MultipartError) -> bool {
     format!("{err:?}").contains("LengthLimit")
 }
@@ -307,6 +311,16 @@ fn is_too_large(err: &axum::extract::multipart::MultipartError) -> bool {
 /// `duplicate` o objeto recém-enviado é deletado best-effort. PUT que falha
 /// interrompe tudo com 503 `storage_unavailable` (D10): itens já committed
 /// do lote permanecem, sem rollback de banco.
+///
+/// Erro de stream (`next_field`/`chunk`): no axum 0.7.9 o `DefaultBodyLimit`
+/// embrulha o corpo inteiro e o multer nunca fuseja — após o primeiro `Err`,
+/// `next_field()` retorna `Err` para sempre. Por isso nunca há `continue`
+/// pós-`Err`: `LengthLimitError` ⇒ `return` 413 no envelope (itens já
+/// committed do lote permanecem); outro erro ⇒ `break` (lote parcial
+/// responde com o que existe; vazio ⇒ o 400 do passo 9).
+/// Erro duro de banco no INSERT/SELECT ⇒ `return` 500 (lote abortado; itens
+/// anteriores committed). `UploadItem.filename` = nome canônico server-side
+/// (stem sanitizado + extensão do sniff), não o do form.
 pub async fn upload(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -335,11 +349,15 @@ pub async fn upload(
         let field = match multipart.next_field().await {
             Ok(Some(f)) => f,
             Ok(None) => break,
-            Err(_) => {
-                // Estouro do limite POR FIELD: o `next_field` subsequente
-                // descarta o resto do field; segue o lote.
-                items.push(rejected_item("unknown".to_string(), "too_large"));
-                continue;
+            Err(e) => {
+                if is_too_large(&e) {
+                    return err(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "invalid_request",
+                        MSG_INVALID_REQUEST,
+                    );
+                }
+                break;
             }
         };
         let raw_name = match field.file_name() {
@@ -361,26 +379,50 @@ pub async fn upload(
             Ok(f) => f,
             Err(_) => { items.push(failed_item(filename)); continue; }
         };
-        // `too_large` = estourou o limite POR FIELD; outro erro = `failed`.
-        // `next_field` pós-erro descarta o resto (ver relatório 3b.3).
+        // Spool com teto por-arquivo (MAX_FILE_BYTES): ao exceder, para de
+        // escrever mas drena `field.chunk()` até EOF sem acumular em RAM
+        // (só soma `n`) e finaliza rejected/too_large. Erro de chunk:
+        // `LengthLimitError` ⇒ return 413 (backstop do lote); outro erro ⇒
+        // failed + break (stream morto, não dá pra seguir o lote).
         let mut spool: Result<(), &'static str> = Ok(());
         {
             use tokio::io::AsyncWriteExt;
             let mut field = field;
+            let mut total: i64 = 0;
+            let mut over = false;
             loop {
                 match field.chunk().await {
                     Ok(Some(bytes)) => {
-                        if out.write_all(&bytes).await.is_err() { spool = Err("storage_error"); break; }
+                        total += bytes.len() as i64;
+                        if total > MAX_FILE_BYTES {
+                            over = true;
+                            continue;
+                        }
+                        if out.write_all(&bytes).await.is_err() { spool = Err("io"); break; }
                     }
                     Ok(None) => break,
-                    Err(e) => { spool = Err(if is_too_large(&e) { "too_large" } else { "storage_error" }); break; }
+                    Err(e) => {
+                        if is_too_large(&e) {
+                            return err(
+                                StatusCode::PAYLOAD_TOO_LARGE,
+                                "invalid_request",
+                                MSG_INVALID_REQUEST,
+                            );
+                        }
+                        spool = Err("dead");
+                        break;
+                    }
                 }
             }
             let _ = out.flush().await;
+            if over {
+                spool = Err("too_large");
+            }
         }
         match spool {
             Ok(()) => {}
             Err("too_large") => { items.push(rejected_item(filename, "too_large")); continue; }
+            Err("dead") => { items.push(failed_item(filename)); break; }
             Err(_) => { items.push(failed_item(filename)); continue; }
         }
 
@@ -448,8 +490,11 @@ pub async fn upload(
         };
 
         // 7. PUT antes do INSERT (D7: chave conhecida antes do objeto).
+        // Nome canônico único (stem sanitizado + extensão do sniff) vai para
+        // a key E para o INSERT; items stored/duplicate reportam o canônico.
+        let canonical = keys::canonical_filename(&raw_name, media);
         let image_id = Uuid::new_v4();
-        let key = keys::image_object_key(ds_id, image_id, &raw_name, media.extension());
+        let key = keys::image_object_key(ds_id, image_id, &canonical);
         if state.storage.put(&key, &tmp_path).await.is_err() {
             return err(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -466,7 +511,7 @@ pub async fn upload(
         )
         .bind(image_id)
         .bind(ds_id)
-        .bind(&filename)
+        .bind(&canonical)
         .bind(&key)
         .bind(bytes)
         .bind(width)
@@ -480,24 +525,23 @@ pub async fn upload(
             Ok(v) => v,
             Err(_) => {
                 let _ = state.storage.delete(&key).await;
-                items.push(failed_item(filename));
-                continue;
+                return internal();
             }
         };
         match inserted {
-            Some(id) => items.push(stored_item(id, filename, bytes, width, height)),
+            Some(id) => items.push(stored_item(id, canonical, bytes, width, height)),
             None => {
                 // Compensação D7 best-effort (falha do delete: ignora).
                 let _ = state.storage.delete(&key).await;
-                let existing: Option<Uuid> = sqlx::query_scalar("SELECT id FROM images WHERE dataset_id = $1 AND filename = $2")
+                let existing: Result<Option<Uuid>, _> = sqlx::query_scalar("SELECT id FROM images WHERE dataset_id = $1 AND filename = $2")
                     .bind(ds_id)
-                    .bind(&filename)
+                    .bind(&canonical)
                     .fetch_optional(&state.pool)
-                    .await
-                    .unwrap_or(None);
+                    .await;
                 match existing {
-                    Some(id) => items.push(duplicate_item(id, filename)),
-                    None => items.push(failed_item(filename)),
+                    Ok(Some(id)) => items.push(duplicate_item(id, canonical)),
+                    Ok(None) => items.push(failed_item(canonical)),
+                    Err(_) => return internal(),
                 }
             }
         }
@@ -597,14 +641,14 @@ pub async fn list_images(
     qb.push(" OFFSET ");
     qb.push_bind(offset);
 
-    type ImgTuple = (Uuid, String, String, i64, i32, i32, String, String, String, String, chrono::DateTime<chrono::Utc>, i64);
+    type ImgTuple = (Uuid, String, String, i64, i32, i32, String, String, chrono::DateTime<chrono::Utc>, i64);
     let rows: Vec<ImgTuple> = match qb.build_query_as().fetch_all(&state.pool).await {
         Ok(r) => r,
         Err(_) => return internal(),
     };
-    let total: i64 = rows.first().map(|r| r.11).unwrap_or(0);
+    let total: i64 = rows.first().map(|r| r.9).unwrap_or(0);
     let mut out: Vec<ImageResponse> = Vec::with_capacity(rows.len());
-    for (img_id, filename, object_key, bytes, width, height, _md5, _sha256, media_type, split, created_at, _total) in rows {
+    for (img_id, filename, object_key, bytes, width, height, media_type, split, created_at, _total) in rows {
         // D3: presigned com endpoint público (falha ⇒ 503 no request);
         // sem ele, fallback incondicional p/ a rota /data da 3b.5.
         let url = if state.storage_config.public_endpoint.is_some() {
@@ -617,7 +661,7 @@ pub async fn list_images(
         };
         let mut resp = ImageResponse::from(ImageRow {
             id: img_id, filename, object_key, bytes, width, height,
-            md5: String::new(), sha256: String::new(), media_type, split, created_at,
+            media_type, split, created_at,
         });
         resp.url = url;
         out.push(resp);

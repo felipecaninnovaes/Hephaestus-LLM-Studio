@@ -2,7 +2,13 @@ import Link from "next/link";
 import { formatPercent, formatRelativeTime } from "@/lib/format";
 import { TYPE_LABELS, type Dataset } from "@/types/studio";
 
-export default function DatasetTable({ datasets }: { datasets: Dataset[] }) {
+export default function DatasetTable({
+  datasets,
+  onContextMenu,
+}: {
+  datasets: Dataset[];
+  onContextMenu?: (dataset: Dataset, x: number, y: number) => void;
+}) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-xs">
@@ -22,6 +28,14 @@ export default function DatasetTable({ datasets }: { datasets: Dataset[] }) {
             return (
               <tr
                 key={d.id}
+                onContextMenu={
+                  onContextMenu
+                    ? (e) => {
+                        e.preventDefault();
+                        onContextMenu(d, e.clientX, e.clientY);
+                      }
+                    : undefined
+                }
                 className="border-t border-zinc-800/80 transition-colors hover:bg-zinc-800/40"
               >
                 <td className="px-3 py-2.5">

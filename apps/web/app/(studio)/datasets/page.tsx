@@ -4,14 +4,20 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import DatasetCard from "@/components/studio/DatasetCard";
 import DatasetTable from "@/components/studio/DatasetTable";
+import ConfirmDialog from "@/components/studio/ConfirmDialog";
+import CreateDatasetModal from "@/components/studio/CreateDatasetModal";
+import DatasetMenu from "@/components/studio/DatasetMenu";
+import { showToast } from "@/components/studio/Toast";
 import {
   IconDatabase,
+  IconDownload,
   IconGrid,
   IconList,
+  IconPlus,
   IconSearch,
 } from "@/components/icons";
 import { ApiError } from "@/lib/api";
-import { listDatasets } from "@/lib/datasets";
+import { deleteDataset, listDatasets } from "@/lib/datasets";
 import type { Dataset, DatasetCategory } from "@/types/studio";
 
 type ViewMode = "grid" | "list";
@@ -43,6 +49,10 @@ export default function DatasetsPage() {
   const [viewMode, setViewMode] = useState<ViewMode>("grid");
   const [query, setQuery] = useState("");
   const [pill, setPill] = useState<Pill>("all");
+  const [createOpen, setCreateOpen] = useState(false);
+  const [deleting, setDeleting] = useState<Dataset | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [menu, setMenu] = useState<{ dataset: Dataset; x: number; y: number } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -99,6 +109,36 @@ export default function DatasetsPage() {
     setPill("all");
   }
 
+  function handleContextMenu(dataset: Dataset, x: number, y: number) {
+    setMenu({ dataset, x, y });
+  }
+
+  async function confirmDelete() {
+    if (!deleting) return;
+    const target = deleting;
+    setDeleteBusy(true);
+    try {
+      await deleteDataset(target.id);
+      setDatasets((prev) => prev.filter((d) => d.id !== target.id));
+      showToast("Dataset excluído.", "success");
+      setDeleting(null);
+    } catch (err) {
+      if (err instanceof ApiError && (err.code === "unauthorized" || err.status === 401)) {
+        router.replace("/login");
+        return;
+      }
+      if (err instanceof ApiError && err.code === "not_found") {
+        setDatasets((prev) => prev.filter((d) => d.id !== target.id));
+        showToast("Dataset já não existe.", "info");
+        setDeleting(null);
+        return;
+      }
+      showToast("Falha ao excluir dataset.", "error");
+    } finally {
+      setDeleteBusy(false);
+    }
+  }
+
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-6">
       <div className="flex items-center justify-between gap-3">
@@ -110,7 +150,25 @@ export default function DatasetsPage() {
             {datasets.length} datasets
           </span>
         </div>
-        <div className="flex items-center gap-1 rounded-full border border-zinc-800 bg-zinc-900/60 p-1">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            disabled
+            title="Import chega na fatia 3e"
+            className="flex items-center gap-1.5 rounded-xl border border-zinc-700/80 bg-zinc-900/60 px-3 py-2 text-xs font-medium text-zinc-400 opacity-60"
+          >
+            <IconDownload className="h-4 w-4" />
+            Importar
+          </button>
+          <button
+            type="button"
+            onClick={() => setCreateOpen(true)}
+            className="flex items-center gap-1.5 rounded-xl bg-emerald-500 px-3 py-2 text-xs font-semibold text-zinc-950 shadow-lg shadow-emerald-500/20"
+          >
+            <IconPlus className="h-4 w-4" />
+            Novo Dataset
+          </button>
+          <div className="flex items-center gap-1 rounded-full border border-zinc-800 bg-zinc-900/60 p-1">
           <button
             type="button"
             aria-pressed={viewMode === "grid"}
@@ -129,6 +187,7 @@ export default function DatasetsPage() {
           >
             <IconList className="h-4 w-4" />
           </button>
+          </div>
         </div>
       </div>
 
@@ -204,13 +263,50 @@ export default function DatasetsPage() {
       ) : viewMode === "grid" ? (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
           {filtered.map((d) => (
-            <DatasetCard key={d.id} dataset={d} />
+            <DatasetCard key={d.id} dataset={d} onContextMenu={handleContextMenu} />
           ))}
         </div>
       ) : (
         <div className="glass-card rounded-2xl p-2 sm:p-3">
-          <DatasetTable datasets={filtered} />
+          <DatasetTable datasets={filtered} onContextMenu={handleContextMenu} />
         </div>
+      )}
+
+      <CreateDatasetModal
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onCreated={(created) =>
+          setDatasets((prev) => [created, ...prev.filter((d) => d.id !== created.id)])
+        }
+      />
+      <ConfirmDialog
+        open={deleting !== null}
+        title="Excluir dataset"
+        body={
+          deleting ? (
+            <p>
+              Excluir <strong className="text-zinc-100">{deleting.title}</strong>{" "}
+              (<span className="font-mono">{deleting.slug}</span>)? As imagens do
+              dataset serão removidas do storage. Essa ação não pode ser desfeita.
+            </p>
+          ) : null
+        }
+        confirmLabel="Excluir"
+        danger
+        busy={deleteBusy}
+        onConfirm={confirmDelete}
+        onClose={() => {
+          if (!deleteBusy) setDeleting(null);
+        }}
+      />
+      {menu && (
+        <DatasetMenu
+          dataset={menu.dataset}
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          onDelete={(d) => setDeleting(d)}
+        />
       )}
     </div>
   );

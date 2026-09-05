@@ -21,12 +21,26 @@ function CategoryIcon({ category }: { category: Dataset["category"] }) {
   return <IconLayers className="w-4 h-4 text-sky-400" />;
 }
 
-export default function DatasetCard({ dataset }: { dataset: Dataset }) {
+export default function DatasetCard({
+  dataset,
+  onContextMenu,
+}: {
+  dataset: Dataset;
+  onContextMenu?: (dataset: Dataset, x: number, y: number) => void;
+}) {
   const visibleClasses = dataset.classes.slice(0, 4);
   const extra = dataset.classes.length - visibleClasses.length;
   return (
     <Link
       href={`/datasets/${dataset.id}`}
+      onContextMenu={
+        onContextMenu
+          ? (e) => {
+              e.preventDefault();
+              onContextMenu(dataset, e.clientX, e.clientY);
+            }
+          : undefined
+      }
       className="glass-card rounded-2xl p-4 flex flex-col gap-3 transition-colors hover:border-zinc-500/40"
     >
       <div className="flex items-start justify-between gap-2">

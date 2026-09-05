@@ -14,6 +14,11 @@ interface ErrorEnvelope {
   message?: string;
 }
 
+/** RequestInit com body que também aceita objeto plain (serializado como JSON). */
+export interface ApiInit extends Omit<RequestInit, "body"> {
+  body?: BodyInit | object | null;
+}
+
 function isPlainJsonBody(body: unknown): boolean {
   if (body == null) return false;
   if (typeof body === "string") return false;
@@ -26,7 +31,7 @@ function isPlainJsonBody(body: unknown): boolean {
   return typeof body === "object";
 }
 
-export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+export async function apiFetch<T>(path: string, init?: ApiInit): Promise<T> {
   const headers = new Headers(init?.headers);
   let body = init?.body;
   if (isPlainJsonBody(body)) {

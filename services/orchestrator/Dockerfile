@@ -1,4 +1,4 @@
-FROM rust:1.82-slim AS build
+FROM rust:1.97.1-slim AS build
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY services/api-principal/Cargo.toml ./services/api-principal/

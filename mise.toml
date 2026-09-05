@@ -1,0 +1,8 @@
+# Ferramentas do monorepo — versão do Rust que o workspace precisa.
+# Contexto: dependências transitivas (base64ct 1.8.x, via argon2/sqlx) exigem
+# cargo com suporte a manifest edition2024 (rust >= 1.85); pino em 1.97.1, a
+# versão validada neste repo, espelhada nos Dockerfiles (FROM rust:1.97.1-slim)
+# e coerente com "Rust stable" de docs/repo-estrutura.md.
+# Uso: `mise install` na raiz; `cargo`/`rustc` ficam no PATH do shell do mise.
+[tools]
+rust = "1.97.1"

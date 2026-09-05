@@ -148,6 +148,7 @@ ao pé da letra (T2).
 
 Implementação: `route_layer` adiado p/ fatia 3 (axum 0.7.9 panic em router vazio, ver `routes.rs`);
 fail-closed garantido pelo fallback; `PROTECTED_ROUTES` é o cinto estrutural.
+→ cumprido na Fatia 3a (ADR-0002 D9: `route_layer` depois dos `.route()` no sub-router `protected`).
 
 ## Consequências
 
@@ -187,6 +188,7 @@ fail-closed garantido pelo fallback; `PROTECTED_ROUTES` é o cinto estrutural.
 - **T3 — casing.** `LoginRequest`/`MeResponse` em camelCase (`userId`, `loggedAt`) conforme
   contrato; §9 usa snake_case nos bodies de settings (`hf_token`…). Definir a política
   global de casing **antes** da Fatia 3 (datasets) e registrar em `backend.md`.
+  → resolvido em ADR-0002 D1 (camelCase global no wire; colunas SQL e transporte seguem snake_case).
 - **T4 — `studio reset-password` não existe.** §11 o cita; sem ele a senha fica gravada na
   primeira definição. Aceito para v1 (single-user local); fatia CLI própria depois —
   não entra aqui para não estourar os <400 linhas.

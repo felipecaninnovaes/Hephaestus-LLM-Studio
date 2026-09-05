@@ -6,11 +6,11 @@ use axum::{
     extract::{Request, State},
     http::StatusCode,
     middleware::Next,
-    response::{IntoResponse, Response},
-    Json,
+    response::Response,
 };
 
 use super::{handlers, session, AppState};
+use crate::error::{err, MSG_UNAUTHORIZED};
 
 /// Identidade injetada no request pelo gate (lida via `Extension<AuthUser>`).
 #[derive(Clone, Debug)]
@@ -21,11 +21,7 @@ pub struct AuthUser {
 
 /// Envelope 401 do gate (D6: `{code, message}` estáticos, sem vazar causa).
 pub fn unauthorized() -> Response {
-    (
-        StatusCode::UNAUTHORIZED,
-        Json(serde_json::json!({ "code": "unauthorized", "message": "unauthorized" })),
-    )
-        .into_response()
+    err(StatusCode::UNAUTHORIZED, "unauthorized", MSG_UNAUTHORIZED)
 }
 
 /// Parse puro do cookie de sessão (sem HTTP; testável sem tower/axum serve).

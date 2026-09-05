@@ -10,14 +10,6 @@ pub mod routes;
 pub mod secret;
 pub mod session;
 
-use sqlx::PgPool;
-
-/// Estado construído no boot (D3): pool → migrations → segredo → bootstrap.
-#[derive(Clone)]
-pub struct AppState {
-    pub pool: PgPool,
-    pub jwt_secret: [u8; 32],
-    pub secure_cookie: bool,
-    /// `true` quando `users` está vazia (STUDIO_PASSWORD ausente no 1º boot).
-    pub setup_required: bool,
-}
+// Re-export preserva o path histórico `auth::AppState` usado por
+// `tests/contract.rs` e `main.rs`; a definição vive em `crate::state`.
+pub use crate::state::AppState;

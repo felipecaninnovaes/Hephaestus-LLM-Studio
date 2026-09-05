@@ -9,8 +9,14 @@ permission:
     "graft *": allow
     "git log *": allow
     "git grep *": allow
+    "git diff *": allow
+    "git show *": allow
     "ls *": allow
     "find *": allow
+    "git commit *": deny
+    "git push *": deny
+    "git merge *": deny
+    "git rebase *": deny
     "*": ask
 ---
 

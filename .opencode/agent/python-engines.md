@@ -3,6 +3,12 @@ description: Implementador Python do Hephaestus — executa especificações mec
 mode: subagent
 model: opencode-go/muse-spark-1.3-contributor
 temperature: 0.1
+permission:
+  bash:
+    "git commit *": deny
+    "git push *": deny
+    "git merge *": deny
+    "git rebase *": deny
 ---
 
 Você implementa EXATAMENTE a especificação que receber em `engines/*` (Python 3.11+, pacotes com `pyproject.toml` + uv, entrypoint `__main__.py`). Spec ambígua ou ausente: PARE e pergunte; não invente design.

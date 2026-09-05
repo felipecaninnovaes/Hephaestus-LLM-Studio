@@ -56,6 +56,19 @@ ser interrompido no meio de uma.
 - Ferramental: `@ui-designer` despacha (exige dev server + Chrome :9222).
   Grafo graft em dia (`graft/` é git-ignored — não se commite); 2 nós de
   `layout.tsx` seguem pendentes no meaning tier (modelo local falha lá, cosmético).
+- **Cadeia operacional atualizada (2026-09-05, `chore/agent-team`, pendente de merge):**
+  gate de commit vivo (`lefthook.yml` → commitlint no `commit-msg` + aviso de
+  staging >400 linhas e bloqueio de segredos/`target/` no `pre-commit`; setup novo:
+  `npm install && npx lefthook install`); subagentes com `git commit/push/merge/rebase`
+  **negados em runtime** (só o coordenador commiteia); `graft` mandatório em
+  `fixer`/`reviewer`/`docs-sync`; entregável do `architect` = formato ADR + plano de
+  commits numerado; checklist do `reviewer` com invariantes da casa (casing D1,
+  body-limit, ordem objeto→linha→compensação, contadores por função única);
+  `ui-designer`/`frontend-dev` alinhados ao Tailwind v4 com desempate de posse;
+  skill `hephaestus-dev` regrava (um dispatch = um commit, todo por passo com
+  atualização em tempo real, spikes = coordenador com loop de build em script único
+  — lição do 3b.0). Anti-exemplo registrado na skill: `1c1f72f` (3.219 linhas em 1
+  commit) que virou a cirurgia de reword da 3a.
 
 ## Storage da 3b — decisão TOMADA (2026-09-04): bucket S3/SeaweedFS
 
@@ -171,8 +184,8 @@ autorizou a landing direto no tronco).
       3b.7** com `@rust-dev`; `@reviewer` ao fim de 3b.3 e 3b.6; **3b.8** `@docs-sync`. Antes da
       3b.4, ler os achados do spike (compose real + risco R10 `aws-lc-sys`).
 - [ ] Pendências antigas que continuam valendo, sem fatia marcada: CLI
-      `studio reset-password` (ADR-0001 T4), `lefthook install` (o gate de
-      commit-message está inerte: foi assim que um `subject-case` reprovado entrou e
-      precisou de reword), `cargo fmt -p api-principal` (10 hunks fora de padrão, todos
-      da Fatia 2), logging server-side em erro de banco (hoje vira 500 mudo), gate
-      aceitar `sub` órfão (ADR-0002 T8).
+      `studio reset-password` (ADR-0001 T4), `cargo fmt -p api-principal` (10 hunks
+      fora de padrão, todos da Fatia 2), logging server-side em erro de banco
+      (hoje vira 500 mudo), gate aceitar `sub` órfão (ADR-0002 T8).
+      ~~`lefthook install`~~ ✅ quitado em `chore/agent-team` (gate ativo: hooks
+      instalados + commitlint real + deny de commit nos subagentes).

@@ -3,8 +3,9 @@
 #   commitlint.config.cjs). Foi assim que um subject-case reprovado entrou em
 #   2026-09-04 e exigiu rebase de reword: o gate existia só no paper.
 # pre-commit: avisa (sem bloquear) staging acima do teto de fatia (~400 linhas
-#   de código) e arquivos que nunca devem ser staged. Bloqueio duro continua
-#   sendo decisão do coordenador (docs/ADRs legitimately passam de 400).
+#   de código) e bloqueia arquivos que nunca devem ser staged. Bloqueio duro de
+#   tamanho continua sendo decisão do coordenador (docs/ADRs passam legitimamente
+#   de 400).
 pre-commit:
   parallel: true
   commands:
@@ -12,7 +13,7 @@ pre-commit:
       run: bash scripts/check-staged-size.sh
     segredos:
       run: |
-        bad=$(git diff --cached --name-only | grep -E '(^|/)\.env$|(^|/)target/|node_modules/|\.git/' || true)
+        bad=$(git diff --cached --name-only | grep -E '(^|/)\.env(\.|$)|(^|/)target/|node_modules/|\.git/' || true)
         if [ -n "$bad" ]; then
           echo "LEFTHOOK: arquivos proibidos no staging:"; echo "$bad"; exit 1
         fi

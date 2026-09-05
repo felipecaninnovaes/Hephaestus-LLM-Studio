@@ -11,7 +11,7 @@ num=$(git diff --cached --numstat --no-color HEAD 2>/dev/null || true)
 [ -z "$num" ] && exit 0
 
 lines=$(printf '%s\n' "$num" \
-  | grep -vE '(^|[[:space:]])([^[:space:]]*/)?(target/|node_modules/|package-lock\.json|Cargo\.lock|graft/)' \
+  | { grep -vE '(^|[[:space:]])([^[:space:]]*/)?(target/|node_modules/|package-lock\.json|Cargo\.lock|graft/)' || true; } \
   | awk '{a+=$1; d+=$2} END {print a+d}')
 lines=${lines:-0}
 

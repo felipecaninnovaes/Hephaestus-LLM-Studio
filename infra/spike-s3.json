@@ -1,0 +1,14 @@
+{
+  "identities": [
+    {
+      "name": "heph-admin",
+      "credentials": [
+        {
+          "accessKey": "heph",
+          "secretKey": "heph-local-dev"
+        }
+      ],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging", "UserManagement"]
+    }
+  ]
+}

@@ -18,7 +18,14 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-05 (fim de sessão da 3b; retomada = ler esta seção + "Próximo passo")
+## Estado atual — 2026-09-05 (sessão 2: 3b mergeada, 3c revisada; retomada = ler esta seção + "Próximo passo")
+
+- **Fatia 3b MERGEADA no tronco pelo usuário** (`04b8987 Merge branch 'feat/datasets-storage'`) — storage S3/SeaweedFS fechado, spec 0.3.0.
+- **Fatia 3c (UI `/datasets`) NO TRONCO via `1f182ed`** — 3 commits (`cf2b978` fundação do shell: tipos, api lib, format, icons, Topbar/TabsBar/Toast; `f8bca9e` lista grade+tabela com filtros e empty states; `ce29fa4` criar/excluir com modal, confirmação, menu de contexto e toasts). O mesmo merge trouxe `d6e4e1d` (troca de modelos dos agentes — config puro, conferido pelo coordenador).
+- **Revisão da 3c: CONDICIONAL** (`@reviewer`, despacho único): contrato/casing/fetch 1:1 com openapi 0.3.0, zero críticos. Condições F1–F6 (link de galeria → 404; só 1 das 6 abas do shell, sem badge; code `"validation"` morto fora do enum; coluna Ações ausente na tabela; `trainTabFor` dead export; tag AutoTracker ausente). **Emenda implementada via `@frontend-dev` e verificada pelo coordenador** (build web limpo com rota `ƒ /datasets/[id]`; greps `validation`/`trainTabFor` zerados) em **branch `fix/web-3c-review`** (`f7889b2` fix(web) + `41739c2` chore gitignore) — **aguardando merge do usuário**. F7 (sem teste de UI) não bloqueia = backlog §12 do frontend.md.
+- **`main` está 5 commits à frente de `origin/main`** e `fix/web-3c-review` soma 2 — push/merge = decisão do usuário.
+
+### Histórico das sessões anteriores (contexto)
 
 - **Fatia 3b LANDED na branch `feat/datasets-storage` (3b.0–3b.7:
   `f6c6ff5`..`393163c`) + docs sincronizados (3b.8, working tree desta sessão, sem
@@ -200,9 +207,9 @@ não o que foi aprovado).
   a fatia chegar. Escopo: log server-side (nunca no response) antes/depois da fatia
   de jobs.
 
-## Plano em andamento — PRÓXIMO PASSO EXATO: merge da `feat/datasets-storage` → 3c
+## Plano em andamento — PRÓXIMO PASSO EXATO: merge `fix/web-3c-review` (usuário) → 3d
 
-**3b.0–3b.8 FEITOS 2026-09-05 (ver "Estado atual").** A sequência:
+**3b.0–3b.8 FEITOS e MERGEADOS (`04b8987`); 3c FEITA, REVISADA e EMENDADA (ver "Estado atual").** A sequência:
 
 1. ~~`spike/storage-seaweedfs`~~ ✅ **CONCLUÍDO 2026-09-05** (ramo `spike/storage-seaweedfs`,
    commit `09a517d`, matriz em `spike/STORAGE-SPIKE.md`; **fundido pelo usuário em `main` (`52da6f9`)** — harnesses e matriz vivem no tronco).
@@ -210,8 +217,11 @@ não o que foi aprovado).
    `@reviewer` ao fim de 3b.3 e 3b.6 (ver A/B no "Estado atual").
 3. ~~**3b.8**~~ ✅ **CONCLUÍDO nesta sessão** (`@docs-sync`: deltas da ADR-0003 aplicados em
    `backend.md`/`frontend.md` + banner na ADR-0002 + ADR-0003 marcada IMPLEMENTADA).
-4. Depois (decisão do usuário): **merge da branch** → **3c UI `/datasets`** (lista) →
-   **3d galeria+annotate** → **3e export/import** → **4 jobs/package/materialização**
+4. ~~3c UI `/datasets`~~ ✅ **NO TRONCO** (`1f182ed`, 3 commits) + revisão CONDICIONAL
+   fechada com emenda em **`fix/web-3c-review`** (`f7889b2`, `41739c2`). Próximo:
+   **usuário mergeia `fix/web-3c-review`** → **3d galeria `/datasets/[id]` + editor
+   BBox** (o placeholder honesto criado pela emenda é substituído pelo conteúdo real;
+   upload UI entra aqui) → **3e export/import** → **4 jobs/package/materialização**
    (onde o orquestrador ganha cliente S3 com credencial escopada por prefixo e onde a
    dívida T4 da ADR-0002 — `jobs.dataset_id ON DELETE SET NULL` + `dataset_versions` —
    precisa ser honrada no nascedouro).
@@ -232,10 +242,14 @@ autorizou a landing direto no tronco).
       usuário em `main` `52da6f9`**); achados appêndados na ADR-0003 → "Resultados do spike 3b.0".
 - [x] **3b.7** ✅ (sweep + `source` derivado + classes com `id`, `393163c`) e **3b.8** ✅
       (docs sincronizados nesta sessão).
-- [ ] Próximo passo = **merge da `feat/datasets-storage`** (decisão do usuário) → 3c.
+- [x] **3b mergeada** (`04b8987`); **3c no tronco** (`1f182ed`), revisada (CONDICIONAL,
+      F1–F6) e emendada em `fix/web-3c-review` — build web limpo, greps zerados.
+- [ ] Próximo passo = **merge da `fix/web-3c-review`** (`f7889b2`, `41739c2`; decisão do
+      usuário) → **3d**.
 - [ ] Pendências que continuam valendo, sem fatia marcada: CLI
       `studio reset-password` (ADR-0001 T4), `cargo fmt -p api-principal` segue,
       logging server-side (fatia nomeada — revisores 3b.3/3b.6), gate `sub` órfão
-      (ADR-0002 T8).
+      (ADR-0002 T8), testes de UI (backlog §12 — cobrir criar→listar→excluir quando
+      o e2e for ampliado).
       ~~`lefthook install`~~ ✅ quitado em `chore/agent-team` (gate ativo: hooks
       instalados + commitlint real + deny de commit nos subagentes).

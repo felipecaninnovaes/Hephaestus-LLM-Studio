@@ -1,5 +1,27 @@
+# Gate de commit da casa — instalar com `npm install && npx lefthook install`.
+# commit-msg: commitlint (type(scope): subject, escopo obrigatório, tipos da
+#   commitlint.config.cjs). Foi assim que um subject-case reprovado entrou em
+#   2026-09-04 e exigiu rebase de reword: o gate existia só no paper.
+# pre-commit: avisa (sem bloquear) staging acima do teto de fatia (~400 linhas
+#   de código) e bloqueia arquivos que nunca devem ser staged. Bloqueio duro de
+#   tamanho continua sendo decisão do coordenador (docs/ADRs passam legitimamente
+#   de 400).
+pre-commit:
+  parallel: true
+  commands:
+    fatia-tamanho:
+      run: bash scripts/check-staged-size.sh
+    segredos:
+      run: |
+        # Whitelist estreita: só .env.example (template, sem segredo) é exceção,
+        # porque o .gitignore o re-permite; .env.template/.env.dist ficam bloqueados.
+        bad=$(git diff --cached --name-only \
+          | grep -E '(^|/)\.env(\.|$)|(^|/)target/|node_modules/|\.git/' \
+          | { grep -vE '(^|/)\.env\.example$' || true; })
+        if [ -n "$bad" ]; then
+          echo "LEFTHOOK: arquivos proibidos no staging:"; echo "$bad"; exit 1
+        fi
 commit-msg:
   commands:
     commitlint:
-      run: npx --no-install commitlint --edit {1}
-      stage_fixed: false
+      run: npx --no-install commitlint --edit "{1}"

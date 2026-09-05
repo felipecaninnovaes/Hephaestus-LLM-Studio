@@ -2,6 +2,7 @@
 description: Mapeador do monorepo — localiza arquivos, símbolos e fluxos de código e devolve mapa com file:line. Somente leitura, barato e rápido.
 mode: subagent
 model: opencode-go/muse-spark-1.3-contributor
+variant: low
 temperature: 0.2
 permission:
   edit: deny
@@ -9,8 +10,14 @@ permission:
     "graft *": allow
     "git log *": allow
     "git grep *": allow
+    "git diff *": allow
+    "git show *": allow
     "ls *": allow
     "find *": allow
+    "git commit*": deny
+    "git push*": deny
+    "git merge*": deny
+    "git rebase*": deny
     "*": ask
 ---
 

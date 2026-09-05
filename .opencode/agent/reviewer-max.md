@@ -1,7 +1,7 @@
 ---
-description: Revisor de código do Hephaestus — audita diffs de fatias contra contratos, boundaries, convenções de commit e segurança antes do fechamento. Use antes de declarar qualquer slice pronta.
+description: Revisor de código SOMBRA da 3b (experimento A/B de modelo) — mesmo charter do @reviewer titular em qwen3.8-max com esforço alto. NÃO despachar por fora do experimento (marcos 3b.3/3b.6 registrados em docs/coordenacao.md); o titular continua sendo @reviewer.
 mode: subagent
-model: opencode-go/qwen3.8-flash
+model: opencode-go/qwen3.8-max
 variant: high
 permission:
   edit: deny

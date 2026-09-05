@@ -1,8 +1,8 @@
 ---
 description: Revisor de código de ESCALADA do Hephaestus — mesmo charter do @reviewer titular, em qwen3.8-max com esforço alto. Regra de despacho (decisão do usuário, 2026-09-05): NÃO é par do fluxo padrão — usar somente quando o @reviewer titular não conseguir resolver, ficar preso/oscilar no mesmo ponto, ou o coordenador julgar que o risco (schema, boundary, segurança) exige segunda auditoria independente. O fluxo padrão de marco continua 1 despacho a @reviewer.
 mode: subagent
-model: opencode-go/qwen3.8-max
-variant: high
+model: opencode-go/glm-5.3-flash
+variant: max
 permission:
   edit: deny
   bash:

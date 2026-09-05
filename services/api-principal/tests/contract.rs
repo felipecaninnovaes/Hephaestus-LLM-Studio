@@ -483,6 +483,40 @@ async fn images_and_upload_reject_non_uuid_before_anything() {
     assert_eq!(json(&body)["code"], "not_found");
 }
 
+#[tokio::test]
+async fn detail_and_data_reject_non_uuid_before_anything() {
+    // 404 ANTES de qualquer query/SQL: o parse de id+imageId é o passo 1
+    // dos dois handlers (pool `connect_lazy` nunca é tocado — body vazio).
+    let app = routes::build(setup_state());
+    let (token, _) = session::issue_jwt(uuid::Uuid::new_v4(), &SETUP_SECRET);
+    let cookie = format!("heph_session={token}");
+
+    for uri in [
+        "/api/datasets/nao-e-uuid/images/00000000-0000-0000-0000-000000000000".to_string(),
+        format!(
+            "/api/datasets/00000000-0000-0000-0000-000000000000/images/nao-e-uuid"
+        ),
+        "/api/datasets/nao-e-uuid/images/00000000-0000-0000-0000-000000000000/data"
+            .to_string(),
+        format!(
+            "/api/datasets/00000000-0000-0000-0000-000000000000/images/nao-e-uuid/data"
+        ),
+    ] {
+        let (status, _, body) = call(
+            app.clone(),
+            Request::builder()
+                .method("GET")
+                .uri(uri.clone())
+                .header(http::header::COOKIE, cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
+        assert_eq!(json(&body)["code"], "not_found", "{uri}");
+    }
+}
+
 #[test]
 fn json_property_names_are_camel_case() {
     // Enforcement D1: todo nome de propriedade e de parâmetro na spec é

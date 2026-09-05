@@ -30,9 +30,9 @@ use md5::Digest as Md5Digest;
 use sha2::Digest as Sha256Digest;
 
 use super::models::{
-    color_for, derive, normalize_classes, parse_id, slugify, CreateDatasetRequest,
-    DatasetResponse, DatasetRow, DatasetType, ImagePage, ImageResponse, ImageRow,
-    UploadItem, UploadResult,
+    color_for, derive, normalize_classes, parse_id, slugify, BoxResponse, CaptionResponse,
+    CreateDatasetRequest, DatasetResponse, DatasetRow, DatasetType, ImageDetailResponse,
+    ImagePage, ImageResponse, ImageRow, UploadItem, UploadResult,
 };
 use crate::{
     error::{
@@ -40,7 +40,7 @@ use crate::{
         MSG_STORAGE_UNAVAILABLE,
     },
     state::AppState,
-    storage::{keys, sniff},
+    storage::{keys, sniff::{self, MediaType}, StorageError},
 };
 
 const MSG_INTERNAL: &str = "internal server error";
@@ -566,11 +566,34 @@ pub struct ImageQuery {
     offset: Option<String>,
 }
 
+/// URL híbrida D3 (3b.5): com `public_endpoint` configurado é presigned
+/// (assinatura local, sem rede); sem ele, fallback incondicional para a
+/// rota `/data`. `Err` = resposta 503 `storage_unavailable` já montada.
+async fn image_url(
+    state: &AppState,
+    object_key: &str,
+    ds_id: Uuid,
+    img_id: Uuid,
+) -> Result<String, Response> {
+    if state.storage_config.public_endpoint.is_some() {
+        match state.storage.presign_get(object_key).await {
+            Ok(u) => Ok(u),
+            Err(_) => Err(err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "storage_unavailable",
+                MSG_STORAGE_UNAVAILABLE,
+            )),
+        }
+    } else {
+        Ok(format!("/api/datasets/{ds_id}/images/{img_id}/data"))
+    }
+}
+
 /// GET /api/datasets/:id/images — página de imagens com filtros.
 ///
-/// `url` por imagem: com `public_endpoint` configurado é presigned D3
+/// `url` por imagem via `image_url` (D3): presigned com endpoint público
 /// (falha ⇒ 503 no request inteiro); sem ele, fallback incondicional
-/// `GET …/images/:imageId/data` (a rota `/data` chega na 3b.5, D3).
+/// `GET …/images/:imageId/data` (sempre disponível).
 pub async fn list_images(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -649,15 +672,9 @@ pub async fn list_images(
     let total: i64 = rows.first().map(|r| r.9).unwrap_or(0);
     let mut out: Vec<ImageResponse> = Vec::with_capacity(rows.len());
     for (img_id, filename, object_key, bytes, width, height, media_type, split, created_at, _total) in rows {
-        // D3: presigned com endpoint público (falha ⇒ 503 no request);
-        // sem ele, fallback incondicional p/ a rota /data da 3b.5.
-        let url = if state.storage_config.public_endpoint.is_some() {
-            match state.storage.presign_get(&object_key).await {
-                Ok(u) => u,
-                Err(_) => return err(StatusCode::SERVICE_UNAVAILABLE, "storage_unavailable", MSG_STORAGE_UNAVAILABLE),
-            }
-        } else {
-            format!("/api/datasets/{ds_id}/images/{img_id}/data")
+        let url = match image_url(&state, &object_key, ds_id, img_id).await {
+            Ok(u) => u,
+            Err(resp) => return resp,
         };
         let mut resp = ImageResponse::from(ImageRow {
             id: img_id, filename, object_key, bytes, width, height,
@@ -674,6 +691,152 @@ pub async fn list_images(
             limit,
             offset,
         }),
+    )
+        .into_response()
+}
+
+/// GET /api/datasets/:id/images/:imageId — detalhe (Image + boxes + caption).
+///
+/// A query da imagem já escopa por `dataset_id` (sem `SELECT EXISTS`
+/// separado): linha ausente ⇒ 404. `presign_get` é assinatura local (sem
+/// rede), por isso este handler não declara 503. Erro de banco em qualquer
+/// step ⇒ `internal()`.
+pub async fn get_image(
+    State(state): State<AppState>,
+    Path((id, image_id)): Path<(String, String)>,
+) -> Response {
+    let ds_id: Uuid = match parse_id(&id) {
+        Some(v) => v,
+        None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
+    };
+    let img_id: Uuid = match parse_id(&image_id) {
+        Some(v) => v,
+        None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
+    };
+    type ImgTuple = (Uuid, String, String, i64, i32, i32, String, String, chrono::DateTime<chrono::Utc>);
+    let row: Option<ImgTuple> = match sqlx::query_as(&format!(
+        "SELECT {ICOLS} FROM images WHERE id = $1 AND dataset_id = $2"
+    ))
+    .bind(img_id)
+    .bind(ds_id)
+    .fetch_optional(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return internal(),
+    };
+    let (img_id, filename, object_key, bytes, width, height, media_type, split, created_at) =
+        match row {
+            Some(r) => r,
+            None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
+        };
+    type BoxTuple = (Uuid, Uuid, f64, f64, f64, f64, Option<f64>, String, Option<i32>);
+    let box_rows: Vec<BoxTuple> = match sqlx::query_as(
+        "SELECT id, class_id, x, y, w, h, conf, origin, track_id FROM boxes WHERE image_id = $1 ORDER BY id",
+    )
+    .bind(img_id)
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return internal(),
+    };
+    type CaptionTuple = (String, String, Option<String>, chrono::DateTime<chrono::Utc>);
+    let caption_row: Option<CaptionTuple> = match sqlx::query_as(
+        "SELECT text, origin, model, updated_at FROM captions WHERE image_id = $1",
+    )
+    .bind(img_id)
+    .fetch_optional(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return internal(),
+    };
+    let url = match image_url(&state, &object_key, ds_id, img_id).await {
+        Ok(u) => u,
+        Err(resp) => return resp,
+    };
+    let detail = ImageDetailResponse::from((
+        ImageRow {
+            id: img_id,
+            filename,
+            object_key,
+            bytes,
+            width,
+            height,
+            media_type,
+            split,
+            created_at,
+        },
+        box_rows.into_iter().map(BoxResponse::from).collect(),
+        caption_row.map(CaptionResponse::from),
+        url,
+    ));
+    (StatusCode::OK, Json(detail)).into_response()
+}
+
+/// GET /api/datasets/:id/images/:imageId/data — proxy do objeto (fallback
+/// incondicional da D3, funciona SEM flag pública).
+///
+/// Linha sem objeto no storage é estado proibido pela D7, mas a rota
+/// responde honesto: `NotFound` ⇒ 404, `Unavailable` ⇒ 503.
+pub async fn get_data(
+    State(state): State<AppState>,
+    Path((id, image_id)): Path<(String, String)>,
+) -> Response {
+    let ds_id: Uuid = match parse_id(&id) {
+        Some(v) => v,
+        None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
+    };
+    let img_id: Uuid = match parse_id(&image_id) {
+        Some(v) => v,
+        None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
+    };
+    let row: Option<(String, String)> = match sqlx::query_as(
+        "SELECT object_key, media_type FROM images WHERE id = $1 AND dataset_id = $2",
+    )
+    .bind(img_id)
+    .bind(ds_id)
+    .fetch_optional(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return internal(),
+    };
+    let (object_key, media_type) = match row {
+        Some(r) => r,
+        None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
+    };
+    let bytes = match state.storage.get(&object_key).await {
+        Ok(b) => b,
+        Err(StorageError::NotFound) => {
+            return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND);
+        }
+        Err(StorageError::Unavailable(_)) => {
+            return err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "storage_unavailable",
+                MSG_STORAGE_UNAVAILABLE,
+            );
+        }
+    };
+    // Colunas CHECK limitam a jpeg|png|webp; o fallback é defesa.
+    let content_type: &str = match media_type.as_str() {
+        "jpeg" => MediaType::Jpeg.content_type(),
+        "png" => MediaType::Png.content_type(),
+        "webp" => MediaType::WebP.content_type(),
+        _ => "application/octet-stream",
+    };
+    (
+        StatusCode::OK,
+        [
+            (axum::http::header::CONTENT_TYPE, content_type),
+            (
+                axum::http::header::CACHE_CONTROL,
+                "private, max-age=31536000, immutable",
+            ),
+        ],
+        bytes,
     )
         .into_response()
 }

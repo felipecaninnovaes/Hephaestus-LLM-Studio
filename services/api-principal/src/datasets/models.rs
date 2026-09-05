@@ -282,6 +282,106 @@ pub struct ImagePage {
     pub offset: i64,
 }
 
+/// Item de `boxes` no wire (3b.5, ADR-0003 D6). Linhas chegam como tupla
+/// `query_as` no handler (estilo da casa: `ImageRow` também não usa
+/// `FromRow`); o ponto único de conversão é o `From` abaixo.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoxResponse {
+    pub id: String,
+    pub class_id: String,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    pub conf: Option<f64>,
+    pub origin: String,
+    pub track_id: Option<i32>,
+}
+
+impl From<(Uuid, Uuid, f64, f64, f64, f64, Option<f64>, String, Option<i32>)> for BoxResponse {
+    fn from(
+        row: (Uuid, Uuid, f64, f64, f64, f64, Option<f64>, String, Option<i32>),
+    ) -> Self {
+        Self {
+            id: row.0.to_string(),
+            class_id: row.1.to_string(),
+            x: row.2,
+            y: row.3,
+            w: row.4,
+            h: row.5,
+            conf: row.6,
+            origin: row.7,
+            track_id: row.8,
+        }
+    }
+}
+
+/// Linha de `captions` no wire (PK = image_id, no máximo uma por imagem).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptionResponse {
+    pub text: String,
+    pub origin: String,
+    pub model: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl From<(String, String, Option<String>, DateTime<Utc>)> for CaptionResponse {
+    fn from(row: (String, String, Option<String>, DateTime<Utc>)) -> Self {
+        Self {
+            text: row.0,
+            origin: row.1,
+            model: row.2,
+            updated_at: row.3,
+        }
+    }
+}
+
+/// Detalhe da imagem (3b.5, ADR-0003 delta): struct FLAT — repete todos os
+/// campos de `Image` mais `boxes` + `caption`, sem envelope aninhado.
+/// Floats ecoam o banco (6 decimais é assunto do PUT da 3b.6).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageDetailResponse {
+    pub id: String,
+    pub filename: String,
+    pub object_key: String,
+    pub bytes: i64,
+    pub width: i32,
+    pub height: i32,
+    pub media_type: String,
+    pub split: String,
+    pub url: String,
+    pub created_at: DateTime<Utc>,
+    pub boxes: Vec<BoxResponse>,
+    pub caption: Option<CaptionResponse>,
+}
+
+impl From<(ImageRow, Vec<BoxResponse>, Option<CaptionResponse>, String)>
+    for ImageDetailResponse
+{
+    fn from(
+        parts: (ImageRow, Vec<BoxResponse>, Option<CaptionResponse>, String),
+    ) -> Self {
+        let (row, boxes, caption, url) = parts;
+        Self {
+            id: row.id.to_string(),
+            filename: row.filename,
+            object_key: row.object_key,
+            bytes: row.bytes,
+            width: row.width,
+            height: row.height,
+            media_type: row.media_type,
+            split: row.split,
+            url,
+            created_at: row.created_at,
+            boxes,
+            caption,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

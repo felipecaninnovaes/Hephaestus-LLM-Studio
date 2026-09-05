@@ -414,6 +414,101 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/datasets/{id}/images/{imageId}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK do dataset. Valor que não parseia como UUID responde 404 `not_found`
+          (não 400): a distinção não vaza informação útil e mantém o inventário de
+          status fechado (ADR-0002 D8).
+      - name: imageId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK da imagem. Valor que não parseia como UUID responde 404 `not_found`
+          (não 400, padrão D8 replicado). Escopada ao dataset: imagem de outro
+          dataset responde 404.
+    get:
+      operationId: getImage
+      tags: [datasets]
+      summary: Detalhe de uma imagem (Image + boxes + caption)
+      description: |
+        Image completa com `boxes` (ordem determinística por id) e `caption`
+        (nullable, no máximo uma por imagem). `url` segue a regra híbrida D3
+        (presigned com endpoint público, senão fallback `/data`). Floats de
+        boxes ecoam o banco (Fatia 3b.5, ADR-0003).
+      responses:
+        "200":
+          description: Imagem encontrada.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImageDetail" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Dataset/imagem inexistente, id/imageId não-UUID ou imagem de outro dataset (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/datasets/{id}/images/{imageId}/data:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK do dataset. Valor que não parseia como UUID responde 404 `not_found`
+          (não 400, padrão D8 replicado).
+      - name: imageId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK da imagem. Valor que não parseia como UUID responde 404 `not_found`
+          (não 400, padrão D8 replicado).
+    get:
+      operationId: getImageData
+      tags: [datasets]
+      summary: Bytes do objeto (proxy, fallback incondicional da D3)
+      description: |
+        Proxy do objeto no storage (Fatia 3b.5, ADR-0003 D3): funciona SEM flag
+        pública. `content-type` vem do `media_type` da linha; `cache-control:
+        private, max-age=31536000, immutable` (chave imutável por image_id, D5).
+        Linha sem objeto = 404 honesto; backend fora = 503.
+      responses:
+        "200":
+          description: Bytes da imagem.
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+            image/png:
+              schema: { type: string, format: binary }
+            image/webp:
+              schema: { type: string, format: binary }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Dataset/imagem inexistente, id/imageId não-UUID ou objeto ausente no storage (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Backend de objetos indisponível (`code: storage_unavailable`, ADR-0003 D10)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
 components:
   securitySchemes:
     sessionCookie:
@@ -667,3 +762,72 @@ components:
           description: Total com os filtros, sem o LIMIT.
         limit: { type: integer }
         offset: { type: integer }
+
+    Box:
+      type: object
+      required: [id, classId, x, y, w, h, origin]
+      description: "Anotação de detecção (ADR-0003 D6; x/y/w/h centro+dimensões normalizados 0..1)."
+      properties:
+        id: { type: string, format: uuid }
+        classId: { type: string, format: uuid }
+        x: { type: number, minimum: 0, maximum: 1 }
+        y: { type: number, minimum: 0, maximum: 1 }
+        w: { type: number, minimum: 0, maximum: 1 }
+        h: { type: number, minimum: 0, maximum: 1 }
+        conf:
+          type: [number, "null"]
+          description: Confiança (null em anotação manual/importada).
+        origin:
+          type: string
+          enum: [manual, autotracker, import]
+        trackId:
+          type: [integer, "null"]
+          description: Id de track (só em origem autotracker com tracking).
+
+    Caption:
+      type: object
+      required: [text, origin, updatedAt]
+      description: "Legenda da imagem (no máximo uma por imagem, PK = image_id)."
+      properties:
+        text: { type: string, minLength: 1, maxLength: 8000 }
+        origin:
+          type: string
+          enum: [manual, autotracker, import]
+        model:
+          type: [string, "null"]
+          description: Modelo gerador (só em origem autotracker).
+        updatedAt: { type: string, format: date-time }
+
+    ImageDetail:
+      type: object
+      required: [id, filename, objectKey, bytes, width, height, mediaType, split, url, createdAt, boxes, caption]
+      description: "Image + boxes + caption (ADR-0003 delta; flat, sem aninhamento)."
+      properties:
+        id: { type: string, format: uuid }
+        filename: { type: string }
+        objectKey:
+          type: string
+          description: Chave legível `datasets/{dataset_id}/images/{image_id}/{nome}` (D5).
+        bytes: { type: integer, format: int64, minimum: 0 }
+        width: { type: integer, minimum: 1 }
+        height: { type: integer, minimum: 1 }
+        mediaType:
+          type: string
+          enum: [jpeg, png, webp]
+          description: Canônico do conteúdo via sniff, não do form (D2/D5).
+        split:
+          type: string
+          enum: [train, val]
+        url:
+          type: string
+          description: Presigned no endpoint público (D3) ou fallback `/data` da 3b.5.
+        createdAt: { type: string, format: date-time }
+        boxes:
+          type: array
+          items: { $ref: "#/components/schemas/Box" }
+          description: Anotações da imagem (ordem determinística por id).
+        caption:
+          description: Legenda da imagem (null quando ausente).
+          anyOf:
+            - $ref: "#/components/schemas/Caption"
+            - type: "null"

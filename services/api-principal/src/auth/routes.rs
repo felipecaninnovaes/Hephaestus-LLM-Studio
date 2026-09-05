@@ -32,6 +32,8 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
     ("DELETE", "/api/datasets/:id", &[204, 401, 404]),
     ("POST", "/api/datasets/:id/upload", &[200, 400, 401, 404, 503]),
     ("GET", "/api/datasets/:id/images", &[200, 400, 401, 404]),
+    ("GET", "/api/datasets/:id/images/:imageId", &[200, 401, 404]),
+    ("GET", "/api/datasets/:id/images/:imageId/data", &[200, 401, 404, 503]),
 ];
 
 /// Rotas públicas (sem gate): `/health` + `/api/auth/*`.
@@ -103,6 +105,14 @@ pub fn build(state: AppState) -> axum::Router {
         .route(
             "/api/datasets/:id/images",
             get(datasets::handlers::list_images),
+        )
+        .route(
+            "/api/datasets/:id/images/:imageId",
+            get(datasets::handlers::get_image),
+        )
+        .route(
+            "/api/datasets/:id/images/:imageId/data",
+            get(datasets::handlers::get_data),
         )
         // route_layer DEPOIS dos .route(): aplicado a um router vazio o axum 0.7 panic
         // no boot (path_router.rs, `routes.is_empty()`). Só cobre as rotas deste

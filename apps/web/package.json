@@ -3,8 +3,19 @@
   "private": true,
   "version": "0.1.0",
   "scripts": {
-    "dev": "node -e 'require(\"http\").createServer((_, res) => res.end(\"Studio Web Placeholder\")).listen(3000)'",
-    "build": "echo 'frontend Next.js entra em slice posterior (docs/frontend.md)'",
-    "start": "npm run dev"
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000"
+  },
+  "dependencies": {
+    "next": "16.3.4",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.0.7",
+    "@types/react-dom": "^19.0.3",
+    "typescript": "^5.7.2"
   }
 }

@@ -71,6 +71,15 @@ ser interrompido no meio de uma.
   atualização em tempo real, spikes = coordenador com loop de build em script único
   — lição do 3b.0). Anti-exemplo registrado na skill: `1c1f72f` (3.219 linhas em 1
   commit) que virou a cirurgia de reword da 3a.
+- **Experimento A/B de revisor (3b)**: `@reviewer-max` (qwen3.8-max, `variant: high`,
+  corpo idêntico ao titular) despacha no MESMO diff que o `@reviewer` nos marcos
+  3b.3 e 3b.6; compara-se achados reais e falsos positivos; critério de swap ao fim
+  da 3b. Nota operacional: agente novo só entra na lista de subagentes após reinício
+  de sessão (dispatcher de reserva durante a 3b: `opencode run --auto --agent
+  reviewer-max`). *Dia 1 (smoke em `86fb0eb`)*: ambos BLOQUEIA no mesmo defeito real
+  (gate de segredos × `!.env.example` do gitignore — comprovado por matriz de 4 casos
+  antes do fix); o titular ainda cruzou com a ADR-0003 (`.env.example` é entregável
+  prometido da 3b.4) — 1 ponto pro flash por enquanto.
 
 ## Storage da 3b — decisão TOMADA (2026-09-04): bucket S3/SeaweedFS
 

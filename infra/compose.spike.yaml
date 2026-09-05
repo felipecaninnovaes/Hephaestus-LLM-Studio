@@ -1,0 +1,31 @@
+# SPIKE 3b.0 (descartável, NÃO mergear) — sobe só o SeaweedFS para a matriz de critérios.
+# Flags/env verificados EMPIRICAMENTE contra a imagem pinnada (ver spike/STORAGE-SPIKE.md):
+#   -s3.port            : flag real do weed server
+#   -ip.bind=0.0.0.0    : NECESSÁRIO — sem isso o weed escuta só no IP da interface (172.x),
+#                         não no loopback, e o healthcheck "localhost:8333" falha (spike achou isso).
+#                         O bind EXTERNO continua garantido pelo mapeamento 127.0.0.1: abaixo.
+#   -s3.config=<json>   : ÚNICO caminho de identidade. O rascunho da ADR usava env
+#                         S3_ACCESS_KEY / S3_SECRET_KEY / S3_BUCKET_CREATE_OPTIONS — NENHUMA
+#                         existe no SeaweedFS. Credenciais = arquivo JSON com identities[].credentials.
+#                         Sem isso, TODO request → 403 AccessDenied (spike confirmou).
+#   -s3.autoCreateBucket: default TRUE → bucket nasce no 1º PUT de identidade com ação Admin.
+#   wget/curl           : presentes na imagem 4.45_full (healthcheck viável).
+# Bind loopback (R1 local-first): browser dev alcança localhost:8333, LAN nunca toca o bucket.
+services:
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.45_full   # PIN explícito ≥ correção do #6884 (presigned-via-proxy); nunca :latest/:dev
+    command: "server -s3 -ip.bind=0.0.0.0 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json -dir=/data -master.volumeSizeLimitMB=1024"
+    ports:
+      - '127.0.0.1:8333:8333'              # S3 API
+      - '127.0.0.1:9333:9333'              # master UI (inspeção humana)
+    volumes:
+      - seaweed_spike:/data
+      - ./spike-s3.json:/etc/seaweedfs/s3.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8333/ || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  seaweed_spike:

@@ -42,7 +42,7 @@
 - Chaves HF/Civitai: `PUT /api/settings/keys {hf_token, civitai_key}` (máscara no GET), fallback para env. Front nunca loga valores.
 - Firmado (código): cookie `heph_session` `HttpOnly; SameSite=Lax; Path=/; Max-Age=604800` (7d; `Secure` só via env `SECURE_COOKIE=true`); hash Argon2id (`Params::default()`); JWT HS256 TTL 7d sem refresh (`iss/sub/iat/exp/jti`, leeway 30s); segredo de 32 B em tabela `auth_state` (override `AUTH_SECRET` hex 64 chars); bootstrap `STUDIO_PASSWORD` só no 1º boot (depois ignorado); modo setup fail-closed (`/health` 200 `auth:"setup_required"`, login 503 `setup_required`, protegidas 401); envelope de erro `{code,message}`; sem rate-limit na v1 (429 reservado `x-reserved`).
 - `/api/auth/me` está fora do gate por prefixo (`/api/auth/*` isento, letra do §2) e **auto-valida o próprio cookie** no handler — é o gate daquela rota, não brecha (D9).
-- `route_layer(require_auth)` **adiado p/ Fatia 3** (axum 0.7 dá panic com `route_layer` em router vazio, ver `routes.rs`); fail-closed desde já via `.fallback()` — sem cookie válido → 401 `unauthorized` (mesmo em rota inexistente); com sessão válida → 404 sem body (fora do envelope e da OpenAPI) — D9.
+- `route_layer(require_auth)` **plugado na Fatia 3a** (ADR-0002 D9; quita a divergência D9 anotada em `auth/routes.rs`): sub-router `protected` com `route_layer` depois dos `.route()`; `.fallback(gate_fallback)` da raiz cobre só caminho **não roteado**. Coexistem dois 404: rota roteada + id inexistente → 404 `not_found` **com** envelope (handler); caminho não roteado + sessão válida → 404 **sem body** (fora do envelope e da OpenAPI).
 
 ## 3. Dataset e banco — Postgres canônico, SQLite só no orquestrador
 
@@ -113,8 +113,8 @@
 ```
 auth:     POST /api/auth/login, GET /api/auth/me, POST /api/auth/logout  → implementado (ADR-0001/openapi)
 health:   GET /health → {status, service, auth: ready|setup_required}  → implementado (campo `auth` novo, ADR-0001 D3)
-settings: PUT/GET /api/settings/keys {hf_token, civitai_key, openai_key, anthropic_key, vllm_endpoint}, GET /api/settings/vram-policy
-datasets: GET/POST /api/datasets, GET/DELETE /api/datasets/:id
+settings: PUT/GET /api/settings/keys {hfToken, civitaiKey, openaiKey, anthropicKey, vllmEndpoint}, GET /api/settings/vram-policy
+datasets: GET/POST /api/datasets, GET/DELETE /api/datasets/:id  → implementado (Fatia 3a; ADR-0002/openapi)
           POST /api/datasets/:id/upload (200MB), GET /api/datasets/:id/images
           PUT  /api/datasets/:id/images/:img/{boxes,caption}
           POST /api/datasets/:id/export, POST /api/datasets/import
@@ -132,7 +132,8 @@ orchestrators (via manager): GET /api/orchestrators, POST /api/orchestrators/ado
 ws:       /ws/jobs/:id/logs?since_seq=, /ws/telemetry
 ```
 
-- Nota Fatia 2 (D9): `/api/auth/me` valida o próprio cookie (isento do gate por prefixo, §2); `route_layer` adiado p/ Fatia 3 — fallback fail-closed (sem sessão → 401 mesmo em rota inexistente; com sessão → 404 sem body, fora da OpenAPI).
+- Nota Fatia 2 (D9): `/api/auth/me` valida o próprio cookie (isento do gate por prefixo, §2); `route_layer` plugado na Fatia 3a (ADR-0002 D9) — fallback fail-closed (sem sessão → 401 mesmo em rota inexistente; com sessão → 404 sem body, fora da OpenAPI).
+- Nota Fatia 3a (ADR-0002 D1, casing): TODAS as chaves de body/query/response de `/api/*` são camelCase (o teste `json_property_names_are_camel_case` rejeita o resto). **Os nomes listados no §9 são colunas (§10) ou campos de transporte, não chaves JSON** — ex.: settings `{hfToken, …}` no wire vs colunas `hf_token` em `settings`; datasets `sizeBytes/imagesCount/lastModified` no wire vs colunas `size_bytes/images_count/updated_at`. A rota `PUT/GET /api/settings/keys` ainda **não está implementada**; as colunas de `settings` permanecem snake_case.
 
 ## 10. Schema Postgres (só local — principal/manager)
 
@@ -146,7 +147,15 @@ orchestrators(id UUID PK, name TEXT, endpoint TEXT UNIQUE, kind TEXT,     -- loc
 datasets(id UUID PK, slug TEXT UNIQUE, title TEXT, category TEXT,          -- difusao|openclip|yolo
   type TEXT, task TEXT, format TEXT, status TEXT, source TEXT, size_bytes BIGINT,
   images_count INT DEFAULT 0, labeled_count INT DEFAULT 0, created_at TIMESTAMPTZ);
+  -- IMPLEMENTADO (Fatia 3a; ADR-0002/openapi): colunas NOT NULL/DEFAULT conforme `0002_datasets.sql`;
+  -- CHECKs de domínio em category/type/task/format/status (valores do §10 à letra) + CHECKs
+  -- size_bytes/images_count/labeled_count >= 0 e CHECK (labeled_count <= images_count);
+  -- adição ADR-0002 D4: updated_at TIMESTAMPTZ NOT NULL DEFAULT now() + trigger
+  -- tg_set_updated_at (BEFORE UPDATE), exposto no wire como lastModified.
 classes(id UUID PK, dataset_id UUID FK, name TEXT, idx INT, color TEXT, UNIQUE(dataset_id, name));
+  -- IMPLEMENTADO (Fatia 3a; ADR-0002/openapi): name CHECK ^[A-Za-z0-9_]{1,64}$, idx CHECK >= 0,
+  -- color CHECK ^#[0-9a-f]{6}$ (paleta §3 front), UNIQUE(dataset_id, name) + UNIQUE(dataset_id, idx),
+  -- FK ON DELETE CASCADE; índice classes(dataset_id, idx).
 images(id UUID PK, dataset_id UUID FK, filename TEXT, path TEXT, w INT, h INT,
   md5 TEXT, bytes BIGINT, split TEXT DEFAULT 'train', created_at TIMESTAMPTZ, UNIQUE(dataset_id, filename));
 boxes(id UUID PK, image_id UUID FK, class_id UUID FK,
@@ -167,7 +176,7 @@ runners(id UUID PK, engine TEXT, model TEXT, orchestrator_id UUID FK,
 ```
 
 - Índices: `images(dataset_id)`, `boxes(image_id)`, `jobs(status)`, `job_artifacts(job_id)`.
-- Nota (ADR-0001 T3, casing): domínio auth trafega em camelCase (`userId`, `loggedAt`); demais bodies do §9 usam snake_case (ex. settings `hf_token`). Política global de casing a definir antes da Fatia 3.
+- Nota (ADR-0002 D1, casing — resolvido; era ADR-0001 T3 "a definir antes da Fatia 3"): wire camelCase em `/api/*` (`userId`, `sizeBytes`, `lastModified`, settings `hfToken`…); colunas SQL snake_case; valores de enum, `Error.code` e artefatos de transporte (`manifest.json`, `config.yaml`, SQLite do orquestrador) snake_case.
 - Regra: contadores do dataset via trigger/view a partir de `images/boxes/captions`; chaves externas com `ON DELETE CASCADE` de dataset→filhos.
 - **Split:** coluna `images.split (train|val)`; padrão 80/20 estratificado no package com override manual na galeria (seletor train/val por imagem).
 - **Consistência disco×banco:** Postgres é a verdade; `PUT boxes/caption` atualiza o banco e materializa o `.txt` em disco com debounce (~2s). O package sempre gera do banco.

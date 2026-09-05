@@ -151,6 +151,13 @@ interface Dataset {
   format: string; status: DatasetStatus; lastModified: string;
   size: string; autoTracked: boolean; source: string;
 }
+// ALINHADO ao contrato real (Fatia 3a — packages/contracts/openapi.yaml, ADR-0002;
+// wire camelCase global): slug entra no shape (gerado pelo servidor, UNIQUE);
+// size → o servidor devolve sizeBytes: number e a UI formata em lib/format.ts;
+// lastModified = RFC 3339 (datasets.updated_at), não string relativa;
+// type no wire é um dos 4 códigos de máquina (yolo_bbox|yolo_seg|difusao_lora|clip_image_text),
+// o rótulo pt-BR é da UI; source pode ser null (sempre null na 3a);
+// autoTracked é constante false até a 3d (fonte real: boxes.origin='autotracker').
 interface BBox { id: number; classId: number; label: string; x: number; y: number; w: number; h: number; color: string; }
 // trainTabFor(ds): difusao→/difusao, openclip→/openclip, yolo→/yolo
 // selectDatasetValue(cats): filtra por categoria, fallback 1º compatível
@@ -170,13 +177,13 @@ interface BBox { id: number; classId: number; label: string; x: number; y: numbe
   - Rota `/login`: form de senha; erros ramificados por `code` em pt-BR (`invalid_credentials` → "Senha incorreta.", `setup_required` → "Servidor em modo setup — defina STUDIO_PASSWORD.", `invalid_request` → "Envie a senha.", default → "Falha inesperada."); sucesso → `/` (`router.replace` + `refresh`); já logado (`GET /me` ok) → volta a `/`.
   - Gate de sessão via `proxy.ts`: `/login` passa direto (decide por si via `/me`); sem cookie `heph_session` → redirect `/login`; com cookie → passa, validade decidida pelo servidor via `/me` (`/` redireciona a `/login` se `/me` não-ok; logout → `POST /logout` + volta a `/login`). `/api/*` fora do matcher — envelope 401 do backend repassado intacto.
   - Resolução T5: front chama `/api/*` relativo (`credentials: "same-origin"`, sem CORS); rewrite Next → `API_INTERNAL_URL` (dev `http://localhost:8080`, compose `http://principal:8080`). `NEXT_PUBLIC_API_URL` ficou como resíduo de build (só `ARG` no Dockerfile; runtime usa o proxy `/api`).
-- Datasets: `GET/POST /api/datasets`, `GET/DELETE /api/datasets/:id`, `POST /:id/upload` (200 MB), `GET /:id/images?limit&offset`, `PUT .../images/:img/{boxes,caption}`, `POST /:id/export`, `POST /datasets/import`, `POST /:id/package`.
+- Datasets: `GET/POST /api/datasets`, `GET/DELETE /api/datasets/:id` — IMPLEMENTADO (Fatia 3a — contrato `packages/contracts/openapi.yaml`, ADR-0002). Upload/imagens/boxes/caption/export/import/package seguem pendentes (3b+): `POST /:id/upload` (200 MB), `GET /:id/images?limit&offset`, `PUT .../images/:img/{boxes,caption}`, `POST /:id/export`, `POST /datasets/import`, `POST /:id/package`.
 - Ambientes (alias UI de orquestradores): `GET /api/environments` (= `GET /api/orchestrators`), `POST /environments/select|connect` (= adopt/enable).
 - Jobs: `POST /api/jobs/{yolo|difusao|clip|autolabel|autotracker|playground}`, `GET /:id`, `POST /:id/{pause,abort,resume}`, `GET /:id/{metrics,samples,artifacts}`, `WS /ws/jobs/:id/logs?since_seq=` + `WS /ws/telemetry`.
 - Runners/playground: `POST /runners/{engine}/up`, `POST /runners/:id/{kill,infer}`, `GET /runners` — infer via `POST /:id/infer`, 409 se preemptado.
 - Models: `GET /api/models` (dropdowns) + `POST /models/{upload,download}`.
 - Preview/sandbox: `POST /api/preview/{autolabel|autotracker|generate|search}` (efêmero, sem fila).
-- Settings: chaves `hf_token, civitai_key, openai_key, anthropic_key, vllm_endpoint` (mascaradas no GET).
+- Settings: chaves `hfToken, civitaiKey, openaiKey, anthropicKey, vllmEndpoint` no wire (camelCase global, ADR-0002 D1; colunas `settings` seguem snake_case) — rota ainda **não implementada** (mascaradas no GET quando chegar).
 
 ## 11. Estrutura de pastas sugerida (Next.js)
 
@@ -207,3 +214,4 @@ Cada workspace segue o grid do protótipo: `painel config 320–384px + área fl
 - **Samples por ciclo:** em cada treino (YOLO/Difusão/CLIP) exibir N previews geradas por época/steps com métrica + imagem — é o "health visual". Exige `GET /api/jobs/:id/samples?cycle=N` e grade na direita dos workspaces.
 - **Downloads de modelos:** settings com campos HF token + Civitai key (env como fallback) + input de URL. Front só coleta e exibe progresso; download real é do orquestrador.
 - **Limites:** upload avulso imagem/vídeo 200 MB (validação no front + 413 do Rust). Envio de dataset p/ orquestrador sem limite, com md5 + fragmentação quando remoto — front mostra barra de empacotamento → envio → verificação.
+- **Pré-condições 3b/3d (ADR-0002 T3/T4/T7):** DELETE ganha cleanup de `<DATASETS_DIR>/<slug>` (delete-after-commit); `jobs.dataset_id ON DELETE SET NULL` + snapshot `dataset_versions` (nunca `RESTRICT`); derivar `autoTracked` de `boxes.origin='autotracker'` — detalhe no ADR.

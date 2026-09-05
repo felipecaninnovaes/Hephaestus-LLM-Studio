@@ -71,38 +71,41 @@ export default function LoginPage() {
   return (
     <main className="studio-shell">
       <section
-        className="glass-card"
+        className="glass-card w-[min(24rem,100%)] rounded-2xl px-8 py-8 text-left"
         aria-labelledby="login-title"
-        style={{ padding: "2rem", width: "min(24rem, 100%)" }}
       >
         <span className="studio-badge">Hephaestus Studio</span>
-        <h1 id="login-title" style={{ margin: "1rem 0 0.25rem" }}>
+        <h1 id="login-title" className="mt-4 mb-1 text-lg font-semibold text-zinc-100">
           Entrar
         </h1>
-        <p style={{ margin: "0 0 1.5rem" }}>
+        <p className="mb-6 text-xs text-zinc-400">
           Acesso single-user deste studio local.
         </p>
-        <form
-          onSubmit={onSubmit}
-          style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}
-        >
-          <label htmlFor="password" style={{ textAlign: "left" }}>
-            Senha
-          </label>
-          <input
-            id="password"
-            name="password"
-            type="password"
-            autoComplete="current-password"
-            required
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            disabled={submitting}
-          />
-          <p role="status" aria-live="polite" style={{ margin: 0, minHeight: "1.25rem" }}>
+        <form onSubmit={onSubmit} className="flex flex-col gap-4">
+          <div>
+            <label htmlFor="password" className="mb-1 block text-xs font-medium text-zinc-300">
+              Senha
+            </label>
+            <input
+              id="password"
+              name="password"
+              type="password"
+              autoComplete="current-password"
+              required
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              disabled={submitting}
+              className="w-full rounded-lg border border-zinc-700/80 bg-zinc-900 px-3 py-2 font-mono text-xs text-zinc-200 disabled:opacity-55"
+            />
+          </div>
+          <p role="status" aria-live="polite" className="m-0 min-h-5 text-[11px] font-mono text-rose-400">
             {error}
           </p>
-          <button type="submit" disabled={submitting}>
+          <button
+            type="submit"
+            disabled={submitting}
+            className="w-full rounded-xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-zinc-950 shadow-lg shadow-emerald-500/20 transition-all hover:bg-emerald-400 active:scale-[0.98] disabled:opacity-55"
+          >
             {submitting ? "Entrando…" : "Entrar"}
           </button>
         </form>

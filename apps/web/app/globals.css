@@ -1,5 +1,9 @@
+@import "tailwindcss";
+
 /* Design tokens extraídos de ai-vision-training-studio.html (<style>, linhas 38-47)
-   + tailwind.config inline (brand/emerald, fontes). Tema dark-only. */
+   + tailwind.config inline (brand/emerald, fontes). Tema dark-only.
+   Tailwind v4 real (docs/frontend.md §2): paleta zinc/emerald do protótipo
+   vem on-board; daqui só tokens de marca + classes glass/utilitárias próprias. */
 
 :root {
   --bg: oklch(13.5% 0.012 260);

@@ -18,8 +18,16 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-04 (fim de sessão; retomada = ler esta seção + "Próximo passo")
+## Estado atual — 2026-09-05 (fim de sessão; retomada = ler esta seção + "Próximo passo")
 
+- **Spike 3b.0 EXECUTADO e PASSOU (7/7).** Rodado no ramo **descartável**
+  `spike/storage-seaweedfs` (commit `09a517d`, **NÃO mergeado** — o ramo só existe para guardar a
+  matriz `spike/STORAGE-SPIKE.md` e os harnesses). Consequência: **D4 (crate) e D3 (presigned)
+  ficam aprovadas, sem inversão**; R2 e R3 desriscados no ferro. Os achados que **corrigem o
+  rascunho da ADR** (identidade via `-s3.config` JSON e não env vars; bucket auto-cria sem
+  init-container; healthcheck exige `-ip.bind=0.0.0.0`; nomes reais da API do SDK; novo risco R10
+  = build do `aws-lc-sys` no `rust:slim`) estão appêndados na **ADR-0003**, seção "Resultados do
+  spike 3b.0" — **ler antes de codar a 3b.4**. `main` está limpa, em dia com origin.
 - **Branch de trabalho: `main`.** `feat/datasets-core` foi **mergeada pelo usuário**
   (`e724436 Merge branch 'feat/datasets-core'`) e as branches de fatia foram apagadas,
   incluindo a de segurança `backup/pre-reword-3a` (confirmado antes de apagar: árvores de
@@ -119,23 +127,23 @@ não o que foi aprovado).
   violando padrão, **todos pré-existentes** (Fatia 2); nenhum CI de fmt — decisão
   de quando formatar é do usuário.
 
-## Plano em andamento — PRÓXIMO PASSO EXATO: spike `3b.0`
+## Plano em andamento — PRÓXIMO PASSO EXATO: fatia `3b.1` (código de produção)
 
-**Nada de código de produção antes do spike.** A sequência, com o que cada passo exige:
+**Spike 3b.0 FEITO (7/7, ver "Estado atual"). Nada de código de produção foi escrito ainda.** A
+sequência:
 
-1. **`spike/storage-seaweedfs`** de `main` atualizada (ramo descartável, ~150 linhas):
-   os **7 critérios binários** estão listados na seção "Spike obrigatório" da ADR-0003,
-   com rascunho do serviço no compose (porta **8333**, bucket pré-criado, bind
-   `127.0.0.1`, pin `:4.44_full` — **nomes de flag/env NÃO verificados item a item; é
-   isso que o spike vem checar**). O spike responde duas perguntas em aberto: (a) o
-   default de checksum do **SDK Rust** cai na trilha `STREAMING-*`? (critério 2) e (b)
-   presigned GET funciona no browser contra o SeaweedFS sem proxy? (critério 4). Saída:
-   commit no ramo do spike com a matriz de resultados; se 2/3/5 falharem → inverte D4
-   (crate) e registra; se 4 falhar → proxy vira default absoluto. **Não mergear o spike.**
-2. **3b.1..3b.7** = `feat/datasets-storage` de `main` atualizada, na ordem da tabela "Plano
+1. ~~`spike/storage-seaweedfs`~~ ✅ **CONCLUÍDO 2026-09-05** (ramo `spike/storage-seaweedfs`,
+   commit `09a517d`, matriz em `spike/STORAGE-SPIKE.md`, **não fundido**). Nenhum critério falhou;
+   D3/D4 intactas. **Antes da 3b.4, ler a seção "Resultados do spike 3b.0" da ADR-0003** — corrige
+   o compose de rascunho da ADR (identidade `-s3.config` JSON, bucket auto-cria, `-ip.bind`,
+   API real do SDK) e levanta o risco R10 (build `aws-lc-sys` no `rust:slim`).
+2. **3b.1..3b.7** = abrir `feat/datasets-storage` de `main` atualizada, na ordem da tabela "Plano
    de commits da 3b" da ADR-0003 (migration 0003 + gatilhos → porta/mock/AppState → upload
    + `GET images` → S3Storage + compose + runner → leitura/detail/`/data` → boxes/caption →
    sweep do DELETE + `source` derivado). Roteiro de verificação por commit na ADR.
+   **Decomposição de delegação:** 3b.1 migration+triggers e 3b.2..3b.7 handlers/S3 =
+   `@rust-dev` com especificação completa (ADR-0003 + achados do spike); decisões de schema/
+   boundary (0003, `StoragePort`) já estão presas na ADR, não re-abrir.
 3. **3b.8** = `@docs-sync` aplicando **exatamente** a lista "O que fica falso nos docs" do
    fim da ADR-0003 + banner na ADR-0002 (T3/Consequências; T10 e D6 da 0002 **continuam
    válidos**).
@@ -157,8 +165,11 @@ autorizou a landing direto no tronco).
 
 - [x] Fatia 3a mergeada em `main` pelo usuário (`e724436`) e branches de fatia apagadas.
 - [x] ADR-0003 aceita, D0 = SeaweedFS.
-- [ ] Rodar o spike `spike/storage-seaweedfs` (7 critérios da ADR-0003) — **primeiro
-      ato da próxima sessão**, antes de qualquer código de produção da 3b.
+- [x] Spike `spike/storage-seaweedfs` rodado (7/7 PASS, commit `09a517d`, **não fundido**);
+      achados appêndados na ADR-0003 → "Resultados do spike 3b.0".
+- [ ] **Abrir `feat/datasets-storage` da `main` e rodar 3b.1 (migration 0003 + gatilhos) →
+      3b.7** com `@rust-dev`; `@reviewer` ao fim de 3b.3 e 3b.6; **3b.8** `@docs-sync`. Antes da
+      3b.4, ler os achados do spike (compose real + risco R10 `aws-lc-sys`).
 - [ ] Pendências antigas que continuam valendo, sem fatia marcada: CLI
       `studio reset-password` (ADR-0001 T4), `lefthook install` (o gate de
       commit-message está inerte: foi assim que um `subject-case` reprovado entrou e

@@ -1,11 +1,11 @@
 # ADR-0003 — Storage de objetos S3 como blob canônico (Fatia 3b)
 
-- **Status:** ACEITA pelo usuário em 2026-09-04 (direção + D0 = **SeaweedFS**).
-  Pendente apenas o **spike 3b.0** para os critérios empíricos 2 e 4 (trilha de checksum
-  do SDK Rust e presigned no browser). **Nenhum doc de `backend.md`/`frontend.md` foi
-  alterado ainda** — a lista de linhas que ficam falsas está no fim desta ADR e só deve
-  ser aplicada pelo `@docs-sync` quando a 3b landar (para os docs não descreverem o que
-  ainda não existe).
+- **Status:** ACEITA pelo usuário em 2026-09-04 (direção + D0 = **SeaweedFS**). **Spike 3b.0
+  executado em 2026-09-05: 7/7 critérios PASS** (ver "Resultados do spike 3b.0" abaixo) — D4
+  (crate) e D3 (presigned) confirmadas, sem inversão; R2/R3 desriscados. **Nenhum doc de
+  `backend.md`/`frontend.md` foi alterado ainda** — a lista de linhas que ficam falsas está no
+  fim desta ADR e só deve ser aplicada pelo `@docs-sync` quando a 3b landar (para os docs não
+  descreverem o que ainda não existe).
 - **Data:** 2026-09-04
 - **Anexa/substitui parcial:** `docs/backend.md` §1/:15, §1/:26, §3/:49, §3/:50, §10/:148,
   §10/:160-161, §10/:165, §10/:183, §10/:188, §11/:195; `docs/adr/0002-datasets-core.md`
@@ -325,6 +325,58 @@ Falha em 2/3/5 → troca de crate atrás da mesma porta (D4 invertida, registrad
 4 → modo proxy vira default absoluto e a flag passa a ser opt-in futuro (D2 intacta);
 falha em 6 → re-particionar paths; falha em 7 → timeout/retry da porta. Se tudo passar, o
 spike morre e os testes viram o núcleo de `tests/storage_s3.rs` da 3b.4.
+
+## Resultados do spike 3b.0 (executado 2026-09-05 — **7/7 PASS**)
+
+Rodado no ramo descartável `spike/storage-seaweedfs` (NÃO mergeado; a matriz completa com a
+evidência de tcpdump/CDP está em `spike/STORAGE-SPIKE.md` naquele ramo). Ambiente: imagem
+**`chrislusf/seaweedfs:4.45_full`** (pin subiu de 4.44→4.45; ≥ correção do #6884),
+**`aws-sdk-s3 1.145.0`** sem `aws-config`, cargo/rustc 1.97.1. **Consequência: D4 (crate) e
+D3 (leitura híbrida por presigned) ficam como aprovadas — nenhum critério forçou inversão.**
+
+- **C2/R2 desriscado no wire:** com `RequestChecksumCalculation::WhenRequired`, o PUT de 1 KiB
+  **e o de 512 MiB** saíram com `content-length` exato e `x-amz-content-sha256` = SHA real do
+  payload; tcpdump no loopback mostrou **zero** `aws-chunked`/`STREAMING-*`/`transfer-encoding:
+  chunked`. A premissa NÃO-CHECKED do SDK Rust virou fato.
+- **C3:** round-trip byte-idêntico (sha256) + `head_object.content_length` batendo.
+- **C4/R3 desriscado:** `<img src>` de página em `http://localhost:3000` para o presigned em
+  `http://localhost:8333` carregou num Chrome real sem proxy: request `:8333` = `200 image/png`,
+  `naturalWidth>0`, **zero** erros de console/`loadingFailed`; `curl -f` do host = 200
+  byte-idêntico. Cross-origin sem CORS (img sem `crossOrigin`). **Proxy não precisa ser default.**
+- **C5:** 1500 objetos sob prefixo → `list_objects_v2` em 2 páginas, `delete_objects` em **2**
+  chamadas (≤3). **C6:** as 6 rotas novas coexistem com as 4 core no matchit sem panic; `/…/data`
+  roteia ao handler (não ao fallback bodyless). **C7:** servidor morto → `put_object` falha em
+  ~2.5 ms (`RetryConfig::disabled()` + `TimeoutConfig` 5 s), mapeável a `StorageError::Unavailable`.
+
+**Achados que corrigem o rascunho do compose da seção "Spike obrigatório"** (para a 3b.4 não
+recair neles):
+
+1. **Identidade é arquivo JSON, não env.** `S3_ACCESS_KEY`/`S3_SECRET_KEY`/
+   `S3_BUCKET_CREATE_OPTIONS` do rascunho **não existem** no SeaweedFS → `403 AccessDenied` em
+   tudo. O caminho real é a flag **`-s3.config=<path>`** com
+   `{"identities":[{"name":..,"credentials":[{"accessKey":..,"secretKey":..}],
+   "actions":["Admin","Read","Write","List","Tagging","UserManagement"]}]}`. O aviso de boot
+   `no signing key found for STS` é **irrelevante** (não usamos STS).
+2. **Bucket auto-cria no 1º PUT** de identidade com ação `Admin` (`-s3.autoCreateBucket` default
+   `true`) → **sem init-container** (mais forte que o D0 previa). Basta o `heph-data` existir via
+   primeiro PUT, ou criar de forma idempotente no runner.
+3. **Healthcheck exige `-ip.bind=0.0.0.0`.** Default do `weed` amarra o S3 só ao IP da interface
+   (não ao loopback), então `wget localhost:8333` do healthcheck falha mesmo servindo 200 do host.
+   Adotar `-ip.bind=0.0.0.0` + healthcheck em `127.0.0.1`; bind externo local-first vem do
+   mapeamento `127.0.0.1:8333:8333` (R1 preservado).
+4. **API do SDK sem `aws-config` (nomes reais p/ a 3b.4):** `Credentials::new(ak,sk,None,None,..)`
+   (não `from_keys`, que é feature-gated) vai direto em `.credentials_provider` (Credentials já
+   implementa `ProvideCredentials`; não há `StaticCredentialsProvider`). `RetryConfig`/
+   `TimeoutConfig` vêm de `aws_smithy_types`; o setter é `.timeout_config(..)` (não
+   `runtime_config`). Presign é `get_object()….presigned(PresigningConfig::expires_in(d)?)` →
+   `.uri()` (não `client.presigner()`). Outputs do SDK têm campos privados → usar getters
+   (`content_length()`, `contents()`, `next_continuation_token()`).
+5. **Novo risco R10 — build do `aws-lc-sys` no Docker:** `aws-sdk-s3` → `rustls 0.23` → provedor
+   default `aws-lc-rs` → **`aws-lc-sys`**, cuja `build.rs` compila C/asm (lento: rebuild isolado
+   >10 min no host; buildou cc-only **sem** cmake aqui). O `Dockerfile` usa `rust:1.97.1-slim`:
+   **confirmar na 3b.4** o link nesse image; se pedir cmake/nasm, `apt-get install -y cmake make`
+   no estágio `build` (ou fixar provedor `ring` nas features do SDK). Registrar p/ não virar
+   surpresa de build.
 
 ## Riscos
 

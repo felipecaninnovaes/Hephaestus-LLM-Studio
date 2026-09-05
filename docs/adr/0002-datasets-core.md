@@ -194,8 +194,8 @@ código shipped sem ganho e estouraria o teto de 400 linhas da fatia.
 |---|---|---|---|
 | 3a.2 | `b5d3c33` `feat(datasets): migration 0002 + estado e modelos puros` | `migrations/0002_datasets.sql` (D2/D4) + `src/state.rs` + `src/error.rs` + `src/datasets/models.rs` (D1/D3/D5/D8) | `cargo test -p api-principal` (units de slug/derive/classes); `sqlx migrate run` aplica |
 | 3a.3 | `1e5cbe6` `feat(datasets): rotas CRUD núcleo + gate require_auth plugado` | `src/datasets/handlers.rs` (D6/D8/D10) + `src/auth/routes.rs` (D9) + `openapi.yaml` 0.2.0 (D11) + `tests/contract.rs` (D1/D6/D9) | `cargo test -p api-principal` verde; remover rota do código quebra o contrato |
-| 3a.4 | `38f8591` `test(datasets): integração postgres gateada por --ignored + runner` | `tests/datasets_db.rs` (7 testes pelas rotas HTTP sobre Postgres) + `scripts/test-db.sh` (sobe `db`, poll `pg_isready`, derrube só o que criou) | `bash scripts/test-db.sh` → 7 passed |
-| 3a.5 | `83c266e` `fix(datasets): alinhamento a contrato nos pontos da revisao` | DC1 cap de input, DC2 413 no envelope, DC3 walker camelCase recursivo, DF1 remove o CHECK, DF4b keys serializadas ≡ spec, N1/N3/N2 | `cargo test -p api-principal` (7 contract) verde; migration reaplicada em banco limpo |
+| 3a.4 | `369e880` `test(datasets): integração postgres gateada por --ignored + runner` | `tests/datasets_db.rs` (7 testes pelas rotas HTTP sobre Postgres) + `scripts/test-db.sh` (sobe `db`, poll `pg_isready`, derrube só o que criou) | `bash scripts/test-db.sh` → 7 passed |
+| 3a.5 | `37ebcca` `fix(datasets): alinhamento a contrato nos pontos da revisao` | DC1 cap de input, DC2 413 no envelope, DC3 walker camelCase recursivo, DF1 remove o CHECK, DF4b keys serializadas ≡ spec, N1/N3/N2 | `cargo test -p api-principal` (7 contract) verde; migration reaplicada em banco limpo |
 | 3a.6 | *(este commit)* `docs(adr): ADR-0002 datasets núcleo + política de casing` | este ADR + anotações em `backend.md`/`frontend.md` + T3/D9 da 0001 riscados | docs espelham código/OpenAPI; nenhum `.rs` tocado |
 
 **Definition of Done da Fatia 3a:** `cargo test -p api-principal` (27 units + 7 contract) e boot
@@ -217,7 +217,7 @@ justamente o cinto que amarra os dois). Conta como exceção deliberada, registr
   serializadas de `DatasetResponse` ≡ `Dataset.properties` da spec;
   `GET /api/nada` sem cookie → 401 vs com cookie → 404 sem corpo;
   units de `slugify`/`derive`/`normalize_classes` (cap de input, não de output)/`parse_id`/`color_for`.
-- **Coberto com banco (`38f8591`, `--ignored`, runner `scripts/test-db.sh`):** fluxo
+- **Coberto com banco (`369e880`, `--ignored`, runner `scripts/test-db.sh`):** fluxo
   create→list→get→delete; 409 de slug duplicado sem linha pela metade; `classes` ordenadas por
   `idx` com cores da paleta (`idx % 6`); cascade `datasets→classes` no DELETE; trigger
   `updated_at` (update move `lastModified`, `created_at` fica); campo extra / `type` inválido /

@@ -78,8 +78,16 @@ ser interrompido no meio de uma.
   de sessão (dispatcher de reserva durante a 3b: `opencode run --auto --agent
   reviewer-max`). *Dia 1 (smoke em `86fb0eb`)*: ambos BLOQUEIA no mesmo defeito real
   (gate de segredos × `!.env.example` do gitignore — comprovado por matriz de 4 casos
-  antes do fix); o titular ainda cruzou com a ADR-0003 (`.env.example` é entregável
-  prometido da 3b.4)   — 1 ponto pro flash por enquanto.
+   antes do fix); o titular ainda cruzou com a ADR-0003 (`.env.example` é entregável
+   prometido da 3b.4)   — 1 ponto pro flash por enquanto. *Marco 3b.3 (difícil, teste real)*:
+   ambos **BLOQUEIA** pelo MESMO crítico comprovado por sonda própria (livelock multipart pós-
+   `LengthLimit` — axum embrulha corpo todo, multer nunca fuseja; os dois citaram a fonte e
+   reproduziram), **zero falso positivo nos dois lados**. Titular achou a mais: duplicate falso
+   por stem sem extensão (F4) e a janela de boot mock (F6, decisão do coordenador); sombra achou
+   a mais: doc de `sanitize_filename` mentindo + branch morto (F7) e o staleness latente do
+   `COALESCE(NEW,OLD)` em UPDATE de reparentização (registro: inofensivo até existir rota de
+   UPDATE de `image_id`/`dataset_id`). Contagem de achados únicos: 2 titular × 2 sombra —
+   **empate técnico no marco**; hipótese "medium no fixer reduz escaladas" segue em teste.
 - **Esforço de razonamento fixado por agente** (`variant:` na frontmatter, validado
   no provider): `high` em hephaestus/architect/reviewer (+ sombra max), `medium` em
   fixer e ui-designer, `low` nos implementadores e explore. Hipótese a medir na 3b:
@@ -157,19 +165,23 @@ não o que foi aprovado).
   violando padrão, **todos pré-existentes** (Fatia 2); nenhum CI de fmt — decisão
   de quando formatar é do usuário.
 
-## Plano em andamento — PRÓXIMO PASSO EXATO: fatia `3b.2` (porta StoragePort + mock + AppState)
+## Plano em andamento — PRÓXIMO PASSO EXATO: fatia `3b.4` (S3Storage + compose)
 
-**Spike 3b.0 FEITO (7/7). 3b.1 FECHADA 2026-09-05** — branch `feat/datasets-storage` aberta de
-`main` (`52da6f9`), commit `f6c6ff5` (migration `0003_images.sql`: DROP de `datasets.source`,
-tabelas images/boxes/captions/videos, recalculador único `heph_refresh_dataset_counters()` com
-gatilhos AFTER nas 4 tabelas-fato, guarda `IS DISTINCT FROM` contra churn de `updated_at`; delta
-Rust mínimo do `source` — `COLS`/`DatasetRow` perdem a coluna, `DatasetResponse.source` permanece
-no wire sempre `null` até 3b.7). Verificação: 27 units + 7 contract + **11/11 `test-db.sh`** verdes
-(4 testes novos, incl. o cenário exato da T2 — DELETE de imagem rotulada sem erro nem estado
-intermediário). A sequência:
+**Spike 3b.0 FEITO (7/7). 3b.1+3b.2+3b.3 FECHADAS 2026-09-05** em `feat/datasets-storage`
+(aberta de `main` `52da6f9`): `f6c6ff5` migration 0003+gatilhos; `656a474` StoragePort+Mock+
+AppState+boot; `c012be5` upload+lista; `a21345b` **ronda do marco 3b.3** (dois revisores no
+MESMO diff deram o MESMO veredito BLOQUEIA no achado crítico — livelock multipart: no axum
+0.7.9 o DefaultBodyLimit embrulha o corpo TODO e o multer nunca fuseja; corrigido com 413 no
+envelope + break/return, teto real POR ARQUIVO no spool, margem de envelope 8 MiB, INSERT-erro
+⇒ compensação+500 à letra da D7, filename canônico com extensão do sniff, mock `failing()` +
+3 testes de 503). Estado pós-fix: **44 units + 8 contract + 16 db** verdes; OpenAPI 0.3.0 com
+as 2 primeiras rotas do delta. Emenda da tabela de rotas da ADR-0003 landing direto no tronco
+(400 em `GET /images` + nota do corpo-total/margem). Verificação:
 
 1. ~~`spike/storage-seaweedfs`~~ ✅ **CONCLUÍDO 2026-09-05** (ramo `spike/storage-seaweedfs`,
-   commit `09a517d`, matriz em `spike/STORAGE-SPIKE.md`, **não fundido**). Nenhum critério falhou;
+   commit `09a517d`, matriz em `spike/STORAGE-SPIKE.md`; **fundido pelo usuário em `main`
+   (`52da6f9`)** — os harnesses `examples/storage_spike*.rs` e a matriz vivem no tronco).
+   Nenhum critério falhou;
    D3/D4 intactas. **Antes da 3b.4, ler a seção "Resultados do spike 3b.0" da ADR-0003** — corrige
    o compose de rascunho da ADR (identidade `-s3.config` JSON, bucket auto-cria, `-ip.bind`,
    API real do SDK) e levanta o risco R10 (build `aws-lc-sys` no `rust:slim`).
@@ -203,9 +215,13 @@ autorizou a landing direto no tronco).
 - [x] ADR-0003 aceita, D0 = SeaweedFS.
 - [x] Spike `spike/storage-seaweedfs` rodado (7/7 PASS, commit `09a517d`, **não fundido**);
       achados appêndados na ADR-0003 → "Resultados do spike 3b.0".
-- [ ] **Abrir `feat/datasets-storage` da `main` e rodar 3b.1 (migration 0003 + gatilhos) →
-      3b.7** com `@rust-dev`; `@reviewer` ao fim de 3b.3 e 3b.6; **3b.8** `@docs-sync`. Antes da
-      3b.4, ler os achados do spike (compose real + risco R10 `aws-lc-sys`).
+- [x] `feat/datasets-storage` aberta da `main`; **3b.1 ✅ `f6c6ff5`, 3b.2 ✅ `656a474`,
+      3b.3 ✅ `c012be5` + ronda `a21345b`** (revisão A/B no marco: ambos BLOQUEIA no mesmo
+      crítico, corrigido e provado — ver "Experimento A/B").
+- [ ] **3b.4 (S3Storage + compose + `.env.example` + runner) → 3b.7** com `@rust-dev`;
+      `@reviewer`+`@reviewer-max` no marco 3b.6; **3b.8** `@docs-sync`. **Ler os achados do
+      spike na ADR-0003 antes de codar** (identidade `-s3.config` JSON, bucket auto-cria,
+      `-ip.bind=0.0.0.0`, nomes reais da API do SDK, risco R10 `aws-lc-sys` no `rust:slim`).
 - [ ] Pendências antigas que continuam valendo, sem fatia marcada: CLI
       `studio reset-password` (ADR-0001 T4), `cargo fmt -p api-principal` (10 hunks
       fora de padrão, todos da Fatia 2), logging server-side em erro de banco

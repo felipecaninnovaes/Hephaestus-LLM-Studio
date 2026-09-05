@@ -157,10 +157,16 @@ não o que foi aprovado).
   violando padrão, **todos pré-existentes** (Fatia 2); nenhum CI de fmt — decisão
   de quando formatar é do usuário.
 
-## Plano em andamento — PRÓXIMO PASSO EXATO: fatia `3b.1` (código de produção)
+## Plano em andamento — PRÓXIMO PASSO EXATO: fatia `3b.2` (porta StoragePort + mock + AppState)
 
-**Spike 3b.0 FEITO (7/7, ver "Estado atual"). Nada de código de produção foi escrito ainda.** A
-sequência:
+**Spike 3b.0 FEITO (7/7). 3b.1 FECHADA 2026-09-05** — branch `feat/datasets-storage` aberta de
+`main` (`52da6f9`), commit `f6c6ff5` (migration `0003_images.sql`: DROP de `datasets.source`,
+tabelas images/boxes/captions/videos, recalculador único `heph_refresh_dataset_counters()` com
+gatilhos AFTER nas 4 tabelas-fato, guarda `IS DISTINCT FROM` contra churn de `updated_at`; delta
+Rust mínimo do `source` — `COLS`/`DatasetRow` perdem a coluna, `DatasetResponse.source` permanece
+no wire sempre `null` até 3b.7). Verificação: 27 units + 7 contract + **11/11 `test-db.sh`** verdes
+(4 testes novos, incl. o cenário exato da T2 — DELETE de imagem rotulada sem erro nem estado
+intermediário). A sequência:
 
 1. ~~`spike/storage-seaweedfs`~~ ✅ **CONCLUÍDO 2026-09-05** (ramo `spike/storage-seaweedfs`,
    commit `09a517d`, matriz em `spike/STORAGE-SPIKE.md`, **não fundido**). Nenhum critério falhou;

@@ -1,7 +1,7 @@
 ---
 description: Designer de UI do Hephaestus — audita e corrige as telas de apps/web contra o HTML de referência usando Chrome DevTools MCP (screenshots, computed styles), sem tocar em lógica nem contratos.
 mode: subagent
-model: opencode-go/qwen3.8-flash
+model: opencode-go/qwen3.7-plus
 variant: medium
 temperature: 0.3
 permission:

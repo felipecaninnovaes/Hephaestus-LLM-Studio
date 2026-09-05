@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>OmniVision Studio — AI Training & Annotation Suite</title>
+  <title>Hephaestus LLM Studio — AI Training & Annotation Suite</title>
   
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -104,6 +104,30 @@
       box-shadow: 0 30px 80px -12px rgba(0, 0, 0, 0.9),
                   0 0 0 1px rgba(255, 255, 255, 0.06),
                   inset 0 1px 0 rgba(255, 255, 255, 0.2);
+    }
+
+    /* Shell e Badge do Studio / Login */
+    .studio-shell {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 1rem;
+      padding: 2rem 1rem;
+      text-align: center;
+    }
+
+    .studio-badge {
+      font-family: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, monospace;
+      font-size: 0.6875rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.35);
+      border-radius: 999px;
+      padding: 0.25rem 0.75rem;
+      display: inline-block;
     }
 
     /* Scrollbars discretos e ergonômicos */
@@ -212,7 +236,9 @@
       Refresh: () => <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>,
       FileText: () => <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>,
       Eye: () => <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>,
-      Activity: () => <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      Activity: () => <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>,
+      Lock: () => <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>,
+      LogOut: () => <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.7" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
     };
 
     // Dados Iniciais de Datasets (organizados por categoria da proposta: difusão | openclip | yolo)
@@ -299,7 +325,106 @@
       }
     ];
 
+    // Componente da Tela de Login (Single-User Auth — Alinhado a apps/web/app/login/page.tsx e docs/DESIGN.md)
+    function LoginPage({ onLogin }) {
+      const [password, setPassword] = useState('');
+      const [error, setError] = useState(null);
+      const [submitting, setSubmitting] = useState(false);
+
+      const handleSubmit = (e) => {
+        e.preventDefault();
+        if (!password) {
+          setError('Envie a senha.');
+          return;
+        }
+        setSubmitting(true);
+        setError(null);
+        setTimeout(() => {
+          if (password.toLowerCase() === 'errada' || password.toLowerCase() === 'error') {
+            setError('Senha incorreta.');
+            setSubmitting(false);
+          } else {
+            setSubmitting(false);
+            onLogin();
+          }
+        }, 350);
+      };
+
+      return (
+        <main className="studio-shell bg-[#090c12] relative overflow-hidden flex-1 select-none">
+          {/* Luz óptica zenital decorativa de fundo */}
+          <div className="absolute w-[500px] h-[500px] bg-emerald-500/10 rounded-full blur-[120px] pointer-events-none -top-24 -left-24"></div>
+          <div className="absolute w-[400px] h-[400px] bg-cyan-500/5 rounded-full blur-[100px] pointer-events-none -bottom-20 -right-20"></div>
+
+          <section
+            className="glass-card w-[min(24rem,100%)] rounded-2xl px-8 py-8 text-left relative z-10 border border-white/10 shadow-2xl"
+            aria-labelledby="login-title"
+          >
+            <div className="flex items-center justify-between">
+              <span className="studio-badge">Hephaestus Studio</span>
+              <span className="text-[10px] font-mono text-zinc-500">v1.3</span>
+            </div>
+
+            <h1 id="login-title" className="mt-4 mb-1 text-lg font-semibold text-zinc-100 flex items-center gap-2">
+              <Icons.Lock />
+              <span>Entrar</span>
+            </h1>
+            <p className="mb-6 text-xs text-zinc-400">
+              Acesso single-user deste studio local.
+            </p>
+
+            <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+              <div>
+                <label htmlFor="login-password" className="mb-1.5 block text-xs font-medium text-zinc-300">
+                  Senha
+                </label>
+                <input
+                  id="login-password"
+                  name="password"
+                  type="password"
+                  autoComplete="current-password"
+                  required
+                  placeholder="Digite sua senha…"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  disabled={submitting}
+                  autoFocus
+                  className="w-full rounded-lg border border-zinc-700/80 bg-zinc-900 px-3 py-2 font-mono text-xs text-zinc-200 placeholder:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 disabled:opacity-55"
+                />
+              </div>
+
+              <div role="status" aria-live="polite" className="min-h-5 text-[11px] font-mono text-rose-400">
+                {error}
+              </div>
+
+              <button
+                type="submit"
+                disabled={submitting}
+                className="w-full rounded-xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-zinc-950 shadow-lg shadow-emerald-500/20 transition-all hover:bg-emerald-400 active:scale-[0.98] disabled:opacity-55 cursor-pointer"
+              >
+                {submitting ? "Entrando…" : "Entrar"}
+              </button>
+            </form>
+
+            <div className="mt-6 pt-4 border-t border-white/5 flex items-center justify-between text-[11px] text-zinc-500 font-mono">
+              <span>Single-User Mode</span>
+              <button
+                type="button"
+                onClick={() => { setPassword('studio'); onLogin(); }}
+                className="text-emerald-400/80 hover:text-emerald-300 underline underline-offset-2 transition-colors cursor-pointer"
+              >
+                Entrar como Demo →
+              </button>
+            </div>
+          </section>
+        </main>
+      );
+    }
+
     function App() {
+      // Estado de Autenticação (Fatia 2 — docs/adr/0001-auth-single-user.md)
+      const [isAuthenticated, setIsAuthenticated] = useState(false);
+
       // Abas do Studio — estrutura da proposta:
       // Módulos de treino (1 aba por tipo de modelo): 'difusao' | 'openclip' | 'yolo'
       // Ferramentas de preparo de dados: 'autolabel' | 'autotracker'
@@ -411,6 +536,48 @@
       const [envDropdownOpen, setEnvDropdownOpen] = useState(false);
       const [activeEnv, setActiveEnv] = useState('Docker Local (RTX 4090)');
       const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
+
+      // Estado do Playground (Runner Interativo sob Demanda — docs/backend.md §6/§9)
+      const [playgroundEngine, setPlaygroundEngine] = useState('difusao'); // 'difusao' | 'yolo' | 'openclip'
+      const [runnerStatus, setRunnerStatus] = useState('idle'); // 'idle' | 'running' | 'stopped'
+      const [runnerVramUsed, setRunnerVramUsed] = useState(14.2);
+      const [playgroundPrompt, setPlaygroundPrompt] = useState('industrial printed circuit board micro-soldering macro photo, high-precision electronic inspection, 8k resolution');
+      const [playgroundYoloSample, setPlaygroundYoloSample] = useState('pcb'); // 'pcb' | 'drone'
+      const [playgroundClipQuery, setPlaygroundClipQuery] = useState('trilha de cobre com curto-circuito visivel');
+      const [playgroundSteps, setPlaygroundSteps] = useState(24);
+      const [playgroundCfg, setPlaygroundCfg] = useState(4.0);
+      const [isPlaygroundInferring, setIsPlaygroundInferring] = useState(false);
+      const [playgroundInferenceTime, setPlaygroundInferenceTime] = useState('2.84s');
+      const [playgroundHistory, setPlaygroundHistory] = useState([
+        { id: 1, engine: 'difusao', prompt: 'pcb inspection macro solda fria', time: 'Há 5m', latency: '2.84s' },
+        { id: 2, engine: 'yolo', prompt: 'pcb-board-macro.jpg (4 boxes)', time: 'Há 12m', latency: '210ms' },
+        { id: 3, engine: 'openclip', prompt: 'rotulo adulterado (top-4)', time: 'Há 18m', latency: '42ms' }
+      ]);
+
+      const handleRunPlaygroundInfer = () => {
+        if (runnerStatus === 'stopped') {
+          showToast('Iniciando runner sob demanda...', 'info');
+          setRunnerStatus('idle');
+          return;
+        }
+        setIsPlaygroundInferring(true);
+        setRunnerStatus('running');
+        showToast(`POST /runners/${playgroundEngine}/infer disparado`, 'info');
+        setTimeout(() => {
+          setIsPlaygroundInferring(false);
+          setRunnerStatus('idle');
+          if (playgroundEngine === 'difusao') {
+            setPlaygroundInferenceTime('2.78s');
+            showToast('Inferência de difusão concluída com sucesso! (1024x1024)', 'success');
+          } else if (playgroundEngine === 'yolo') {
+            setPlaygroundInferenceTime('198ms');
+            showToast('Inferência YOLO concluída: 3 defeitos detectados com conf > 0.65', 'success');
+          } else {
+            setPlaygroundInferenceTime('38ms');
+            showToast('Busca semântica OpenCLIP concluída: top-4 imagens ranqueadas', 'success');
+          }
+        }, 1200);
+      };
 
       // Loop do Treinamento YOLO
       useEffect(() => {
@@ -582,6 +749,30 @@
         );
       };
 
+      if (!isAuthenticated) {
+        return (
+          <div className="min-h-screen flex flex-col bg-[#090c12] text-zinc-100 selection:bg-emerald-500/30">
+            <LoginPage 
+              onLogin={() => {
+                setIsAuthenticated(true);
+                showToast('Autenticado com sucesso no Hephaestus Studio!', 'success');
+              }} 
+            />
+            {toast && (
+              <div 
+                data-od-id="studio-toast"
+                role="status"
+                aria-live="polite"
+                className="fixed bottom-5 right-5 z-50 rounded-xl glass-menu px-4 py-3 text-xs text-white flex items-center space-x-2.5 shadow-2xl border border-white/10 animate-fade-in max-w-[calc(100vw-2.5rem)]"
+              >
+                <span className={`w-2 h-2 rounded-full shrink-0 ${toast.type === 'success' ? 'bg-emerald-400' : toast.type === 'error' ? 'bg-rose-400' : 'bg-cyan-400'}`}></span>
+                <span>{toast.message}</span>
+              </div>
+            )}
+          </div>
+        );
+      }
+
       return (
         <div className="min-h-screen flex flex-col bg-[#090c12] text-zinc-100 selection:bg-emerald-500/30">
           
@@ -594,8 +785,8 @@
                 </div>
                 <div>
                   <div className="flex items-center space-x-2">
-                    <h1 className="sr-only font-semibold text-sm tracking-tight text-white">OmniVision Studio — treino e anotação de modelos de visão computacional</h1>
-                    <span aria-hidden="true" className="font-semibold text-sm tracking-tight text-white">OmniVision</span>
+                    <h1 className="sr-only font-semibold text-sm tracking-tight text-white">Hephaestus LLM Studio — treino e anotação de modelos de visão computacional</h1>
+                    <span aria-hidden="true" className="font-semibold text-sm tracking-tight text-white">Hephaestus</span>
                     <span className="text-[10px] font-mono tracking-caps uppercase px-1.5 py-0.5 rounded bg-zinc-800/90 text-zinc-300 border border-zinc-700/80">Studio v1.3</span>
                   </div>
                 </div>
@@ -700,6 +891,19 @@
               >
                 <Icons.MoreVertical />
               </button>
+
+              <button 
+                onClick={() => {
+                  setIsAuthenticated(false);
+                  showToast('Sessão encerrada (retornou à tela de login).', 'info');
+                }}
+                className="flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-rose-950/40 border border-zinc-800 hover:border-rose-500/40 text-zinc-400 hover:text-rose-300 transition-colors text-xs font-mono"
+                title="Sair / Tela de Login"
+                aria-label="Sair / Tela de Login"
+              >
+                <Icons.LogOut />
+                <span className="hidden sm:inline">Sair</span>
+              </button>
             </div>
           </header>
 
@@ -725,6 +929,12 @@
               <span className="text-[9px] font-mono tracking-caps uppercase text-zinc-400 px-2 hidden lg:block">Dados</span>
               {[
                 { id: 'datasets', label: 'Datasets', icon: Icons.Database, badge: `${datasets.length}` }
+              ].map(renderTabButton)}
+
+              <div className="h-5 w-px bg-zinc-800 mx-1.5"></div>
+              <span className="text-[9px] font-mono tracking-caps uppercase text-zinc-400 px-2 hidden lg:block">Execução</span>
+              {[
+                { id: 'playground', label: 'Playground', icon: Icons.Zap, badge: 'Runner' }
               ].map(renderTabButton)}
             </div>
 
@@ -2639,6 +2849,516 @@
               </div>
             )}
 
+            {/* =========================================================
+                MÓDULO DE EXECUÇÃO — PLAYGROUND MULTI-MOTOR SOB DEMANDA
+                Difusão (Gerar) · YOLO (Detectar) · OpenCLIP (Buscar)
+                docs/frontend.md §13 + docs/backend.md §6/§9
+               ========================================================= */}
+            {activeTab === 'playground' && (
+              <div data-od-id="playground-workspace" className="flex-1 flex flex-col md:flex-row overflow-y-auto md:overflow-hidden">
+                
+                {/* COLUNA ESQUERDA: CONTROLE DO RUNNER & HIPERPARÂMETROS (384px fixo) */}
+                <div className="w-full md:w-96 border-r border-zinc-800/80 bg-zinc-950/40 p-5 overflow-y-auto flex flex-col justify-between space-y-6 shrink-0">
+                  <div className="space-y-5">
+                    
+                    <div>
+                      <div className="flex items-center space-x-2">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+                        <h2 className="font-semibold text-sm text-white">Playground Multi-Motor</h2>
+                      </div>
+                      <p className="text-xs text-zinc-400 mt-1">Runner efêmero sob demanda para inferência interativa e validação rápida.</p>
+                    </div>
+
+                    {/* SELETOR DE MOTOR DE INFERÊNCIA */}
+                    <div>
+                      <label className="text-[11px] font-mono tracking-caps uppercase text-zinc-400 block mb-2">Motor de Inferência</label>
+                      <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-zinc-900/90 border border-zinc-800">
+                        {[
+                          { id: 'difusao', label: 'Difusão', icon: Icons.Sparkles },
+                          { id: 'yolo', label: 'YOLO', icon: Icons.Target },
+                          { id: 'openclip', label: 'CLIP', icon: Icons.Layers }
+                        ].map((eng) => (
+                          <button
+                            key={eng.id}
+                            type="button"
+                            onClick={() => setPlaygroundEngine(eng.id)}
+                            className={`px-2.5 py-2 rounded-lg text-xs font-medium flex items-center justify-center space-x-1.5 transition-all ${
+                              playgroundEngine === eng.id
+                                ? 'bg-zinc-800 text-white shadow-sm border border-zinc-700/70'
+                                : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40'
+                            }`}
+                          >
+                            <eng.icon />
+                            <span>{eng.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* CARD DO CICLO DE VIDA DO RUNNER & GESTÃO DE VRAM */}
+                    <div className="p-4 rounded-xl glass-card space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-2">
+                          <span className={`w-2 h-2 rounded-full ${
+                            runnerStatus === 'running'
+                              ? 'bg-amber-400 animate-ping'
+                              : runnerStatus === 'idle'
+                              ? 'bg-emerald-400 animate-pulse'
+                              : 'bg-zinc-600'
+                          }`}></span>
+                          <span className="text-xs font-semibold text-zinc-200">
+                            {runnerStatus === 'running' ? 'Runner Ocupado' : runnerStatus === 'idle' ? 'Runner Ativo (Idle)' : 'Runner Parado'}
+                          </span>
+                        </div>
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-300">
+                          {runnerStatus === 'stopped' ? '0.0 / 24 GB' : `${runnerVramUsed} / 24 GB`}
+                        </span>
+                      </div>
+
+                      {/* Barra de VRAM do Runner */}
+                      <div>
+                        <div className="flex justify-between text-[10px] font-mono text-zinc-400 mb-1">
+                          <span>VRAM Alocada</span>
+                          <span className="text-zinc-300">{runnerStatus === 'stopped' ? '0%' : '59%'}</span>
+                        </div>
+                        <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                          <div 
+                            className={`h-full rounded-full transition-all duration-500 ${
+                              runnerStatus === 'stopped' ? 'w-0' : 'w-[59%] bg-emerald-400'
+                            }`}
+                          ></div>
+                        </div>
+                      </div>
+
+                      {/* Ações do Runner & Preempção */}
+                      <div className="pt-2 flex items-center justify-between gap-2">
+                        {runnerStatus !== 'stopped' ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRunnerStatus('stopped');
+                              showToast('Runner encerrado. VRAM liberada para a fila de treinos.', 'info');
+                            }}
+                            className="flex-1 px-3 py-1.5 rounded-lg border border-rose-500/40 bg-rose-950/20 hover:bg-rose-950/40 text-rose-300 text-xs font-medium transition-colors flex items-center justify-center space-x-1.5 cursor-pointer"
+                          >
+                            <Icons.Stop />
+                            <span>Matar Runner</span>
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRunnerStatus('idle');
+                              showToast('Runner inicializado sob demanda.', 'success');
+                            }}
+                            className="flex-1 px-3 py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-950/20 hover:bg-emerald-950/40 text-emerald-300 text-xs font-medium transition-colors flex items-center justify-center space-x-1.5 cursor-pointer"
+                          >
+                            <Icons.Play />
+                            <span>Subir Runner</span>
+                          </button>
+                        )}
+                        <span className="text-[10px] font-mono text-zinc-500 max-w-[140px] leading-tight text-right">
+                          Preempção automática se treino iniciar
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* PARÂMETROS DINÂMICOS CONFORME O MOTOR SELECIONADO */}
+                    {playgroundEngine === 'difusao' && (
+                      <div className="space-y-4">
+                        <div>
+                          <label className="text-[11px] font-mono tracking-caps uppercase text-zinc-400 block mb-1.5">Modelo Base</label>
+                          <select className="w-full px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-800 text-xs text-zinc-200 font-mono focus:border-emerald-500 focus:outline-none">
+                            <option>Flux.1-dev (12B · fp8)</option>
+                            <option>SDXL 1.0 (Base)</option>
+                            <option>Stable Diffusion 1.5</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="text-[11px] font-mono tracking-caps uppercase text-zinc-400 block mb-1.5">LoRA / Pesos Adaptados</label>
+                          <select className="w-full px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-800 text-xs text-zinc-200 font-mono focus:border-emerald-500 focus:outline-none">
+                            <option>cyberpunk_v1.safetensors (Rank 16)</option>
+                            <option>pcb_solda_fria_v2.safetensors</option>
+                            <option>Nenhum (Pesos originais)</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="text-[11px] font-mono tracking-caps uppercase text-zinc-400 block mb-1.5">Prompt de Geração</label>
+                          <textarea
+                            rows={3}
+                            value={playgroundPrompt}
+                            onChange={(e) => setPlaygroundPrompt(e.target.value)}
+                            className="w-full px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-800 text-xs text-zinc-200 font-mono resize-none focus:border-emerald-500 focus:outline-none"
+                          />
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <div className="flex justify-between text-[11px] font-mono text-zinc-400 mb-1">
+                              <span>Steps</span>
+                              <span className="text-zinc-200">{playgroundSteps}</span>
+                            </div>
+                            <input
+                              type="range"
+                              min="10"
+                              max="50"
+                              value={playgroundSteps}
+                              onChange={(e) => setPlaygroundSteps(Number(e.target.value))}
+                              className="w-full accent-emerald-500 h-1.5 bg-zinc-800 rounded-lg cursor-pointer"
+                            />
+                          </div>
+                          <div>
+                            <div className="flex justify-between text-[11px] font-mono text-zinc-400 mb-1">
+                              <span>CFG Scale</span>
+                              <span className="text-zinc-200">{playgroundCfg.toFixed(1)}</span>
+                            </div>
+                            <input
+                              type="range"
+                              min="1.0"
+                              max="12.0"
+                              step="0.5"
+                              value={playgroundCfg}
+                              onChange={(e) => setPlaygroundCfg(Number(e.target.value))}
+                              className="w-full accent-emerald-500 h-1.5 bg-zinc-800 rounded-lg cursor-pointer"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {playgroundEngine === 'yolo' && (
+                      <div className="space-y-4">
+                        <div>
+                          <label className="text-[11px] font-mono tracking-caps uppercase text-zinc-400 block mb-1.5">Modelo YOLO</label>
+                          <select className="w-full px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-800 text-xs text-zinc-200 font-mono focus:border-emerald-500 focus:outline-none">
+                            <option>yolo11m.pt (Checkpoint PCB v2)</option>
+                            <option>yolo11x.pt (Zero-shot)</option>
+                            <option>yolo11n.pt (Ultra-rápido)</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="text-[11px] font-mono tracking-caps uppercase text-zinc-400 block mb-1.5">Amostra de Teste</label>
+                          <div className="grid grid-cols-2 gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setPlaygroundYoloSample('pcb')}
+                              className={`p-2 rounded-lg border text-left text-xs font-mono transition-colors ${
+                                playgroundYoloSample === 'pcb'
+                                  ? 'border-emerald-500 bg-emerald-500/10 text-emerald-300'
+                                  : 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200'
+                              }`}
+                            >
+                              pcb-board.jpg
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setPlaygroundYoloSample('drone')}
+                              className={`p-2 rounded-lg border text-left text-xs font-mono transition-colors ${
+                                playgroundYoloSample === 'drone'
+                                  ? 'border-emerald-500 bg-emerald-500/10 text-emerald-300'
+                                  : 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200'
+                              }`}
+                            >
+                              drone-traffic.jpg
+                            </button>
+                          </div>
+                        </div>
+                        <div>
+                          <div className="flex justify-between text-[11px] font-mono text-zinc-400 mb-1">
+                            <span>Confidence Threshold</span>
+                            <span className="text-emerald-400 font-semibold">{confidenceThreshold}</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0.10"
+                            max="0.95"
+                            step="0.05"
+                            value={confidenceThreshold}
+                            onChange={(e) => setConfidenceThreshold(Number(e.target.value))}
+                            className="w-full accent-emerald-500 h-1.5 bg-zinc-800 rounded-lg cursor-pointer"
+                          />
+                        </div>
+                        <div className="p-3 rounded-lg bg-zinc-900/60 border border-zinc-800/80 text-[11px] text-zinc-400 space-y-1 font-mono">
+                          <div className="flex justify-between"><span>Classes carregadas:</span><span className="text-zinc-200">4 classes</span></div>
+                          <div className="flex justify-between"><span>Resolução de entrada:</span><span className="text-zinc-200">640x640</span></div>
+                        </div>
+                      </div>
+                    )}
+
+                    {playgroundEngine === 'openclip' && (
+                      <div className="space-y-4">
+                        <div>
+                          <label className="text-[11px] font-mono tracking-caps uppercase text-zinc-400 block mb-1.5">Modelo Backbone</label>
+                          <select className="w-full px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-800 text-xs text-zinc-200 font-mono focus:border-emerald-500 focus:outline-none">
+                            <option>ViT-B-32 (laion2b · 512-dim)</option>
+                            <option>ViT-L-14 (openai · 768-dim)</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="text-[11px] font-mono tracking-caps uppercase text-zinc-400 block mb-1.5">Query de Busca Semântica</label>
+                          <input
+                            type="text"
+                            value={playgroundClipQuery}
+                            onChange={(e) => setPlaygroundClipQuery(e.target.value)}
+                            className="w-full px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-800 text-xs text-zinc-200 font-mono focus:border-emerald-500 focus:outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[11px] font-mono tracking-caps uppercase text-zinc-400 block mb-1.5">Dataset Alvo do Índice</label>
+                          <select className="w-full px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-800 text-xs text-zinc-200 font-mono focus:border-emerald-500 focus:outline-none">
+                            <option>inspecao-pcb-defeitos-v2 (2.840 imagens)</option>
+                            <option>drones-veiculos-urbanos-4k (1.420 imagens)</option>
+                          </select>
+                        </div>
+                      </div>
+                    )}
+
+                  </div>
+
+                  {/* THE ONE CTA RULE: ÚNICO BOTÃO PRIMÁRIO ESMERALDA */}
+                  <div className="pt-4 border-t border-white/10">
+                    <button
+                      type="button"
+                      disabled={isPlaygroundInferring}
+                      onClick={handleRunPlaygroundInfer}
+                      className="w-full bg-emerald-500 hover:bg-emerald-400 active:scale-[0.98] text-zinc-950 font-semibold py-3 px-4 rounded-xl shadow-lg shadow-emerald-500/20 flex items-center justify-center space-x-2 transition-all cursor-pointer disabled:opacity-55"
+                    >
+                      {isPlaygroundInferring ? (
+                        <>
+                          <div className="w-4 h-4 border-2 border-zinc-950 border-t-transparent rounded-full animate-spin"></div>
+                          <span>Processando na GPU…</span>
+                        </>
+                      ) : (
+                        <>
+                          <Icons.Zap />
+                          <span>
+                            {playgroundEngine === 'difusao'
+                              ? 'Gerar Imagem (Inferência)'
+                              : playgroundEngine === 'yolo'
+                              ? 'Detectar Objetos (Inferência)'
+                              : 'Buscar Semelhantes (Embedding)'}
+                          </span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                {/* COLUNA DIREITA: RESULTADOS VISUAIS & TELEMETRIA DO RUNNER */}
+                <div className="flex-1 p-5 overflow-y-auto space-y-5 flex flex-col">
+                  
+                  {/* FAIXA SUPERIOR DE TELEMETRIA DA INFERÊNCIA */}
+                  <div className="flex items-center justify-between flex-wrap gap-3 pb-3 border-b border-zinc-800/80">
+                    <div className="flex items-center space-x-3 text-xs font-mono">
+                      <span className="text-zinc-400">Latência do Motor:</span>
+                      <span className="text-emerald-400 font-semibold">{playgroundInferenceTime}</span>
+                      <div className="w-px h-3 bg-zinc-800"></div>
+                      <span className="text-zinc-400">VRAM Pico:</span>
+                      <span className="text-cyan-400 font-semibold">{runnerStatus === 'stopped' ? '0.0 GB' : '15.4 GB'}</span>
+                      <div className="w-px h-3 bg-zinc-800"></div>
+                      <span className="text-zinc-400">Backend:</span>
+                      <span className="text-zinc-200">Rust Core → uv Python</span>
+                    </div>
+
+                    <div className="flex items-center space-x-2 text-xs font-mono">
+                      <span className="text-[10px] px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-400">
+                        endpoint: /api/runners/{playgroundEngine}/infer
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* VISUALIZAÇÃO INTERATIVA CONFORME O MOTOR ATIVO */}
+                  {playgroundEngine === 'difusao' && (
+                    <div className="space-y-4 flex-1 flex flex-col">
+                      <div className="flex-1 rounded-2xl glass-card p-4 flex flex-col items-center justify-center relative overflow-hidden min-h-[360px] border border-white/10">
+                        {/* Imagem gerada em destaque */}
+                        <div className="relative rounded-xl overflow-hidden shadow-2xl border border-zinc-800 max-h-[420px] group">
+                          <img
+                            src="https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=1000&q=80"
+                            alt="Preview de Inferência Difusão"
+                            className="max-h-[380px] w-auto object-cover rounded-lg"
+                          />
+                          <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity p-4 flex flex-col justify-end">
+                            <p className="text-xs text-zinc-200 font-mono line-clamp-2">{playgroundPrompt}</p>
+                            <div className="flex items-center justify-between text-[10px] text-zinc-400 font-mono mt-2">
+                              <span>1024x1024 · 24 steps · CFG 4.0</span>
+                              <span>Seed: 42</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Toolbar flutuante da imagem */}
+                        <div className="mt-4 flex items-center space-x-3">
+                          <button
+                            type="button"
+                            onClick={() => showToast('Imagem enviada para download (PNG)', 'success')}
+                            className="px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs font-medium text-zinc-200 transition-colors flex items-center space-x-1.5 cursor-pointer"
+                          >
+                            <Icons.Download />
+                            <span>Baixar PNG</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => showToast('Amostra adicionada ao dataset de treino', 'info')}
+                            className="px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs font-medium text-zinc-200 transition-colors flex items-center space-x-1.5 cursor-pointer"
+                          >
+                            <Icons.Plus />
+                            <span>Salvar na Galeria</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Histórico Recente de Gerações */}
+                      <div className="p-4 rounded-xl glass-card">
+                        <span className="text-xs font-semibold text-zinc-300 block mb-3 font-mono">Gerações Anteriores nesta Sessão</span>
+                        <div className="grid grid-cols-3 gap-3">
+                          {playgroundHistory.map((item) => (
+                            <div key={item.id} className="p-2.5 rounded-lg bg-zinc-900/80 border border-zinc-800/80 text-left font-mono text-[11px] space-y-1">
+                              <div className="flex justify-between text-zinc-400 text-[10px]">
+                                <span className="uppercase text-emerald-400">{item.engine}</span>
+                                <span>{item.latency}</span>
+                              </div>
+                              <p className="text-zinc-200 truncate">{item.prompt}</p>
+                              <span className="text-[10px] text-zinc-500 block">{item.time}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {playgroundEngine === 'yolo' && (
+                    <div className="space-y-4 flex-1 flex flex-col">
+                      {/* Canvas de Detecção YOLO com Bounding Boxes */}
+                      <div className="flex-1 rounded-2xl glass-card p-4 flex flex-col items-center justify-center relative min-h-[360px] border border-white/10">
+                        <div className="relative rounded-xl overflow-hidden border border-zinc-800 max-h-[380px]">
+                          <img
+                            src={playgroundYoloSample === 'pcb' 
+                              ? "https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=1000&q=80"
+                              : "https://images.unsplash.com/photo-1508614589041-895b88991e3e?auto=format&fit=crop&w=1000&q=80"
+                            }
+                            alt="YOLO Detection Preview"
+                            className="max-h-[360px] w-auto object-cover rounded-lg"
+                          />
+                          {/* Caixas delimitadoras de detecção YOLO */}
+                          <div className="absolute top-[28%] left-[34%] w-[26%] h-[24%] border-2 border-emerald-400 rounded-sm pointer-events-none shadow-sm shadow-emerald-500/20">
+                            <span className="absolute -top-5 left-0 bg-emerald-500 text-zinc-950 font-mono text-[10px] px-1.5 py-0.5 rounded font-bold">
+                              solda_fria: 0.96
+                            </span>
+                          </div>
+                          <div className="absolute top-[52%] left-[62%] w-[22%] h-[28%] border-2 border-amber-400 rounded-sm pointer-events-none shadow-sm shadow-amber-500/20">
+                            <span className="absolute -top-5 left-0 bg-amber-400 text-zinc-950 font-mono text-[10px] px-1.5 py-0.5 rounded font-bold">
+                              curto_circuito: 0.88
+                            </span>
+                          </div>
+                          <div className="absolute top-[65%] left-[18%] w-[20%] h-[20%] border-2 border-cyan-400 rounded-sm pointer-events-none shadow-sm shadow-cyan-500/20">
+                            <span className="absolute -top-5 left-0 bg-cyan-400 text-zinc-950 font-mono text-[10px] px-1.5 py-0.5 rounded font-bold">
+                              trilha_rompida: 0.91
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 flex items-center space-x-4 text-xs font-mono text-zinc-400">
+                          <span className="flex items-center space-x-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-emerald-400"></span><span>solda_fria (1)</span></span>
+                          <span className="flex items-center space-x-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-amber-400"></span><span>curto_circuito (1)</span></span>
+                          <span className="flex items-center space-x-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-cyan-400"></span><span>trilha_rompida (1)</span></span>
+                        </div>
+                      </div>
+
+                      {/* Tabela de Detecções */}
+                      <div className="p-4 rounded-xl glass-card">
+                        <span className="text-xs font-semibold text-zinc-300 block mb-2 font-mono">Detecções Normalizadas (YOLO Coordinates)</span>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left font-mono text-[11px] text-zinc-300">
+                            <thead className="text-[10px] uppercase tracking-caps text-zinc-500 border-b border-white/5">
+                              <tr>
+                                <th className="pb-1.5">Classe</th>
+                                <th className="pb-1.5">Confiança</th>
+                                <th className="pb-1.5">X (Center)</th>
+                                <th className="pb-1.5">Y (Center)</th>
+                                <th className="pb-1.5">Width</th>
+                                <th className="pb-1.5">Height</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-white/5">
+                              <tr>
+                                <td className="py-1.5 text-emerald-400 font-bold">solda_fria</td>
+                                <td className="py-1.5">0.96</td>
+                                <td className="py-1.5">0.4700</td>
+                                <td className="py-1.5">0.4000</td>
+                                <td className="py-1.5">0.2600</td>
+                                <td className="py-1.5">0.2400</td>
+                              </tr>
+                              <tr>
+                                <td className="py-1.5 text-amber-400 font-bold">curto_circuito</td>
+                                <td className="py-1.5">0.88</td>
+                                <td className="py-1.5">0.7300</td>
+                                <td className="py-1.5">0.6600</td>
+                                <td className="py-1.5">0.2200</td>
+                                <td className="py-1.5">0.2800</td>
+                              </tr>
+                              <tr>
+                                <td className="py-1.5 text-cyan-400 font-bold">trilha_rompida</td>
+                                <td className="py-1.5">0.91</td>
+                                <td className="py-1.5">0.2800</td>
+                                <td className="py-1.5">0.7500</td>
+                                <td className="py-1.5">0.2000</td>
+                                <td className="py-1.5">0.2000</td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {playgroundEngine === 'openclip' && (
+                    <div className="space-y-4 flex-1 flex flex-col">
+                      <div className="p-4 rounded-xl glass-card">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs font-semibold text-zinc-300 font-mono">Resultados de Similaridade de Cosseno</span>
+                          <span className="text-[10px] font-mono text-emerald-400">Embedding: 512-dim (FP16)</span>
+                        </div>
+                        <p className="text-xs text-zinc-400 font-mono">Query: "{playgroundClipQuery}"</p>
+                      </div>
+
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 flex-1">
+                        {[
+                          { score: '94.2%', label: 'img_0042.jpg', img: 'https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=400&q=80' },
+                          { score: '88.7%', label: 'img_0109.jpg', img: 'https://images.unsplash.com/photo-1550751827-4bd374c3f58b?auto=format&fit=crop&w=400&q=80' },
+                          { score: '82.1%', label: 'img_0451.jpg', img: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?auto=format&fit=crop&w=400&q=80' },
+                          { score: '76.4%', label: 'img_0882.jpg', img: 'https://images.unsplash.com/photo-1508614589041-895b88991e3e?auto=format&fit=crop&w=400&q=80' }
+                        ].map((card, idx) => (
+                          <div key={idx} className="rounded-xl glass-card overflow-hidden border border-zinc-800 p-2 text-left space-y-2 group hover:border-emerald-500/50 transition-colors">
+                            <div className="relative aspect-video rounded-lg overflow-hidden">
+                              <img src={card.img} alt={card.label} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                              <span className="absolute top-1.5 right-1.5 bg-emerald-500 text-zinc-950 font-mono text-[10px] font-bold px-1.5 py-0.5 rounded shadow">
+                                {card.score}
+                              </span>
+                            </div>
+                            <div className="flex justify-between items-center text-[11px] font-mono">
+                              <span className="text-zinc-300 truncate">{card.label}</span>
+                              <span className="text-[10px] text-zinc-500">#{idx + 1}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* STREAM DE EVENTOS DO RUNNER EM TEMPO REAL */}
+                  <div className="p-4 rounded-xl bg-zinc-950/80 border border-zinc-800 font-mono text-[11px] text-zinc-400 space-y-1">
+                    <div className="flex justify-between text-zinc-500 text-[10px] uppercase tracking-caps mb-1">
+                      <span>Stream de Eventos / Log do Runner</span>
+                      <span className="text-emerald-400">WebSocket /ws/telemetry OK</span>
+                    </div>
+                    <p className="text-zinc-300">[runner-{playgroundEngine}] POST /api/runners/{playgroundEngine}/infer: 200 OK ({playgroundInferenceTime})</p>
+                    <p className="text-zinc-500">[memory-manager] VRAM Headroom: 9.8 GB livre · Nenhuma preempção necessária</p>
+                  </div>
+
+                </div>
+              </div>
+            )}
+
           </main>
 
           {/* =========================================================
@@ -2879,6 +3599,17 @@
                   >
                     <Icons.Refresh />
                     <span>Reiniciar Runtime Rust/Python</span>
+                  </button>
+                  <button 
+                    onClick={() => { 
+                      setIsAuthenticated(false);
+                      setContextMenu(prev => ({ ...prev, visible: false })); 
+                      showToast('Sessão encerrada (retornou à tela de login).', 'info');
+                    }}
+                    className="w-full text-left px-3 py-2 rounded-xl hover:bg-rose-500/10 text-rose-300 flex items-center space-x-2 transition-colors border-t border-white/5 mt-1"
+                  >
+                    <Icons.LogOut />
+                    <span>Encerrar Sessão (Logout)</span>
                   </button>
                 </>
               )}

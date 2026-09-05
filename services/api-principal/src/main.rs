@@ -3,39 +3,54 @@
 //! modo `ready`/`setup_required` → router de `auth::routes::build` (D9).
 
 use api_principal::auth::{password, routes, secret, AppState};
-use api_principal::storage::{MockStorage, StorageConfig, StoragePort};
+use api_principal::storage::{MockStorage, S3Storage, StorageConfig, StoragePort};
 use sqlx::PgPool;
 use std::sync::Arc;
 
 /// Boot do storage (ADR-0003 D8).
 ///
 /// `STORAGE_BACKEND` (default `"mock"`): `"mock"` monta `MockStorage`;
-/// `"s3"` ainda exige o `S3Storage` da 3b.4. Em 3b.2 nem lê
-/// `S3_ACCESS_KEY`/`S3_SECRET_KEY` — a impl s3 vai validar presença
-/// fail-fast na 3b.4. Mensagens estáticas, sem credencial.
+/// `"s3"` monta o `S3Storage` da 3b.4 (env `S3_*`, fail-fast sem ecoar
+/// credencial). Mensagens estáticas, sem credencial.
 fn load_storage() -> Result<(Arc<dyn StoragePort>, StorageConfig), String> {
+    let bucket = std::env::var("S3_BUCKET").unwrap_or_else(|_| "heph-data".to_string());
+    let public_endpoint = std::env::var("S3_PUBLIC_ENDPOINT_URL")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let url_ttl_secs = std::env::var("S3_URL_TTL_SECS")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.parse::<u64>().map_err(|_| "storage: S3_URL_TTL_SECS inválido"))
+        .transpose()?
+        .unwrap_or(3600);
+    let config = StorageConfig {
+        bucket,
+        public_endpoint,
+        url_ttl_secs,
+    };
     let backend = std::env::var("STORAGE_BACKEND").unwrap_or_else(|_| "mock".to_string());
     match backend.as_str() {
         "mock" => {
-            eprintln!("aviso: STORAGE_BACKEND=mock — uploads NÃO sobrevivem a restart (objeto vive só na RAM; S3Storage chega na 3b.4)");
-            let bucket = std::env::var("S3_BUCKET").unwrap_or_else(|_| "heph-data".to_string());
-            let public_endpoint = std::env::var("S3_PUBLIC_ENDPOINT_URL")
-                .ok()
-                .filter(|s| !s.is_empty());
-            let url_ttl_secs = std::env::var("S3_URL_TTL_SECS")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .map(|s| s.parse::<u64>().map_err(|_| "storage: S3_URL_TTL_SECS inválido"))
-                .transpose()?
-                .unwrap_or(3600);
-            let config = StorageConfig {
-                bucket,
-                public_endpoint,
-                url_ttl_secs,
-            };
+            eprintln!("aviso: STORAGE_BACKEND=mock — uploads NÃO sobrevivem a restart (objeto vive só na RAM; S3Storage disponível via STORAGE_BACKEND=s3 (3b.4))");
             Ok((Arc::new(MockStorage::new()), config))
         }
-        "s3" => Err("STORAGE_BACKEND=s3 requer S3Storage (3b.4); use STORAGE_BACKEND=mock".to_string()),
+        "s3" => {
+            // Fail-fast sem ecoar VALOR: só o nome da var na mensagem.
+            let endpoint_url = std::env::var("S3_ENDPOINT_URL")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .ok_or("S3_ENDPOINT_URL is not set (required for STORAGE_BACKEND=s3)")?;
+            let access_key = std::env::var("S3_ACCESS_KEY")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .ok_or("S3_ACCESS_KEY is not set (required for STORAGE_BACKEND=s3)")?;
+            let secret_key = std::env::var("S3_SECRET_KEY")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .ok_or("S3_SECRET_KEY is not set (required for STORAGE_BACKEND=s3)")?;
+            let storage = S3Storage::new(&config, &endpoint_url, &access_key, &secret_key)?;
+            Ok((Arc::new(storage), config))
+        }
         _ => Err("STORAGE_BACKEND desconhecido".to_string()),
     }
 }

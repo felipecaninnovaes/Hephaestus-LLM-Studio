@@ -3,7 +3,9 @@
 pub mod keys;
 pub mod mock;
 pub mod port;
+pub mod s3;
 pub mod sniff;
 
 pub use mock::MockStorage;
 pub use port::{StorageConfig, StorageError, StoragePort};
+pub use s3::S3Storage;

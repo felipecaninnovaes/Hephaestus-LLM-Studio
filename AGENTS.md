@@ -39,3 +39,10 @@ re-read whole files.
 After big code changes, refresh the graph with `graft build` (deterministic,
 no API key, $0).
 <!-- graft:end -->
+
+## Estado de coordenação (persistência entre sessões)
+
+O contexto da conversa do coordenador é volátil. O plano em andamento, o que já
+foi fechado e os próximos passos em ordem vivem em **`docs/coordenacao.md`** —
+ler no início de toda sessão de trabalho e atualizar ao abrir/fechar fatias ou
+ao ser interrompido. Regras de fluxo de coordenação na skill `hephaestus-dev`.

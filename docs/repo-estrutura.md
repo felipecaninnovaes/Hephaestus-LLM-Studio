@@ -14,7 +14,7 @@ packages/contracts/          # OpenAPI + tipos gerados (fonte: backend.md §9)
 packages/policies/           # vram-table.yaml, engines.yaml
 infra/{compose.yaml,compose.integ.yaml,Dockerfiles}/
 docs/{frontend.md,backend.md,repo-estrutura.md}
-scripts/{dev.sh,reset-password.sh,e2e-smoke.sh}
+scripts/{dev.sh,reset-password.sh,e2e-smoke.sh,test-db.sh}
 ```
 
 ## Regras

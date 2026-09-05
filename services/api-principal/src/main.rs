@@ -1,22 +1,9 @@
 //! api-principal — boot D3 (ADR-0001):
 //! pool via `DATABASE_URL` → migrations → segredo → bootstrap de usuário →
-//! modo `ready`/`setup_required` → rotas de auth (gate e inventário vêm na 2B).
+//! modo `ready`/`setup_required` → router de `auth::routes::build` (D9).
 
-use api_principal::auth::{handlers, password, secret, AppState};
-use axum::extract::State;
-use axum::routing::{get, post};
-use axum::{Json, Router};
-use serde_json::{json, Value};
+use api_principal::auth::{password, routes, secret, AppState};
 use sqlx::PgPool;
-
-async fn health(State(state): State<AppState>) -> Json<Value> {
-    let auth = if state.setup_required {
-        "setup_required"
-    } else {
-        "ready"
-    };
-    Json(json!({ "status": "ok", "service": "api-principal", "auth": auth }))
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -66,12 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         setup_required,
     };
 
-    let app = Router::new()
-        .route("/health", get(health))
-        .route("/api/auth/login", post(handlers::login))
-        .route("/api/auth/me", get(handlers::me))
-        .route("/api/auth/logout", post(handlers::logout))
-        .with_state(state);
+    let app = routes::build(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")
         .await

@@ -1,10 +1,12 @@
-//! Auth single-user (ADR-0001, Fatia 2A): boot D3 + segmentos de credencial.
+//! Auth single-user (ADR-0001, Fatias 2A + 2B).
 //!
-//! `AppState` é o estado compartilhado do boot D3 (pool, segredo, flags).
-//! Gate/middleware e inventário declarativo (D9/D8) entram na 2B.
+//! `AppState` é o estado compartilhado do boot D3. `gate`/`routes` (D9/D8)
+//! vivem aqui desde a 2B; handlers + helpers vieram da 2A.
 
+pub mod gate;
 pub mod handlers;
 pub mod password;
+pub mod routes;
 pub mod secret;
 pub mod session;
 

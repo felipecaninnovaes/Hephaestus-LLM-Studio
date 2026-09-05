@@ -146,6 +146,9 @@ Além disso `/api/auth/me` fica fora do `require_auth` (gate por prefixo, §2) e
 próprio cookie no handler** — não é brecha: é o gate daquela rota, e mantém §2 verdadeiro
 ao pé da letra (T2).
 
+Implementação: `route_layer` adiado p/ fatia 3 (axum 0.7.9 panic em router vazio, ver `routes.rs`);
+fail-closed garantido pelo fallback; `PROTECTED_ROUTES` é o cinto estrutural.
+
 ## Consequências
 
 - **Novas dependências (Cargo.toml do api-principal), versões fixas:**

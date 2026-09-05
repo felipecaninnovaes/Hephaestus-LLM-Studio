@@ -1,0 +1,209 @@
+openapi: 3.1.0
+info:
+  title: Hephaestus Studio API
+  version: 0.1.0
+  summary: Contrato público do backend principal (api-principal :8080)
+  description: |
+    Fatia 2 — escopo deste arquivo: auth single-user (`/api/auth/*`) + `/health`.
+    Fonte funcional: `docs/backend.md` §2 (comportamento) e §9 (paths exatos).
+    Decisões (hash, segredo JWT, TTL, bootstrap, erros, rate-limit): `docs/adr/0001-auth-single-user.md`.
+    Demais grupos do §9 (settings, datasets, jobs, ...) entram NESTE mesmo arquivo nas
+    fatias respectivas — o contrato não faz fork.
+    Convenção global: todo endpoint pode responder `500` (`code: internal`) e `405`
+    (método não declarado na path) mesmo onde não listado.
+  license: { name: Proprietary }
+
+servers:
+  - url: http://localhost:8080
+    description: >
+      compose local (infra/compose.yaml porta 8080). Dev não tem TLS: o cookie de
+      sessão é emitido SEM `Secure`; sob TLS (deploy remoto) `SECURE_COOKIE=true`
+      adiciona `Secure` ao Set-Cookie.
+
+tags:
+  - name: auth
+    description: Autenticação single-user (exatamente 1 linha na tabela `users`; sem RBAC).
+  - name: health
+    description: Liveness do serviço — pública por decisão do §2 (isenta do middleware de auth).
+
+# Proteção padrão: rotas exigem o cookie de sessão.
+# Endpoints públicos declaram `security: []` explicitamente (inclusive /api/auth/me,
+# que valida o cookie internamente — ver a descrição do operationId getMe).
+security:
+  - sessionCookie: []
+
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      tags: [health]
+      summary: Liveness do api-principal
+      description: |
+        Sempre 200 enquanto o processo vive — inclusive em "modo setup" (tabela `users`
+        vazia e `STUDIO_PASSWORD` ausente), sinalizado por `auth: "setup_required"`.
+        O gate de auth é fail-closed nesse estado: toda rota protegida responde 401 e
+        `POST /api/auth/login` responde 503. Nunca exige credencial (uso: healthcheck do compose).
+      security: []
+      responses:
+        "200":
+          description: Serviço vivo (não requer autenticação).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthResponse" }
+
+  /api/auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Autentica a instância single-user e emite o cookie de sessão
+      description: |
+        Compara `password` em texto puro (só loopback local) contra o hash Argon2id
+        único em `users.password_hash`. Sucesso emite a sessão como cookie e repete
+        o corpo de `MeResponse` (o front não precisa chamar `/me` logo após o login).
+        401 é genérico por design: não distingue "usuário inexistente" de "senha errada".
+        Rate-limit: NENHUM na v1 (ADR-0001 D7 — risco aceito, loopback); o 429 abaixo
+        está reservado (`x-reserved: true`, ignorado pelo teste de contrato) para uma
+        futura versão exposta em LAN, sem quebra de contrato.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: Credencial válida — sessão iniciada (TTL 7 dias, sem refresh na v1).
+          headers:
+            Set-Cookie:
+              required: true
+              description: >
+                heph_session=<jwt>; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800
+                (`; Secure` adicionado apenas sob TLS via SECURE_COOKIE=true).
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MeResponse" }
+        "400":
+          description: "Body ausente/malformado ou sem `password` (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Credencial inválida (`code: invalid_credentials`). Genérico por design: não distingue usuário inexistente de senha errada."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: "Reservado — NÃO implementado na v1 (sem rate-limit em loopback; ADR-0001 D7)."
+          x-reserved: true
+        "503":
+          description: "Modo setup — `users` vazio e `STUDIO_PASSWORD` ausente (`code: setup_required`). Indisponibilidade, não erro de credencial."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/auth/me:
+    get:
+      operationId: getMe
+      tags: [auth]
+      summary: Identidade da sessão corrente
+      description: |
+        Nota de implementação (§2): o middleware global isenta TODO `/api/auth/*`,
+        então este endpoint valida o cookie internamente — sem cookie válido/expirado
+        responde 401 (`code: unauthorized`). Não é uma exceção de segurança: a
+        auto-validação é o gate desta rota.
+        `loggedAt` = claim `iat` do JWT (momento do login), não `users.created_at`.
+      security: []
+      responses:
+        "200":
+          description: Sessão válida.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MeResponse" }
+        "401":
+          description: "Cookie ausente, expirado ou inválido (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/auth/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      summary: Encerra a sessão (limpeza do cookie)
+      description: |
+        Idempotente e insensível a credencial: sempre 204, havendo sessão válida ou não,
+        emitindo o cookie expirado (Max-Age=0). O JWT stateless permanece assinado e
+        válido até `exp` — sem blacklist na v1 (risco aceito, ADR-0001 D5; sessão local).
+      security: []
+      responses:
+        "204":
+          description: Sessão encerrada; cookie ordenado a limpar.
+          headers:
+            Set-Cookie:
+              description: "heph_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"
+              schema: { type: string }
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: heph_session
+      description: >
+        JWT HS256 (jsonwebtoken 9; claims iss/sub/iat/exp/jti, TTL 7d, ADR-0001 D2).
+        Somente o api-principal emite e valida; front nunca lê o valor (HttpOnly).
+        Todas as rotas fora do domínio auth exigem este cookie via middleware de auth
+        (backend.md §2), com `/health` e `/api/auth/*` isentos do gate.
+
+  schemas:
+    LoginRequest:
+      type: object
+      required: [password]
+      additionalProperties: false
+      properties:
+        password:
+          type: string
+          format: password
+          description: Senha em texto puro transportada apenas em loopback local; nunca logada pelo servidor.
+
+    MeResponse:
+      type: object
+      required: [userId, loggedAt]
+      properties:
+        userId:
+          type: string
+          format: uuid
+          description: PK da linha única de `users` (ADR-0001 D2; gen_random_uuid(), nativo PG13+).
+        loggedAt:
+          type: string
+          format: date-time
+          description: Momento de emissão da sessão (claim `iat` do JWT), RFC 3339.
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, internal]
+          description: Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`.
+        message:
+          type: string
+          description: Humano-curto, ESTÁTICO por code; nunca contém hash, token, segredo ou existência de usuário.
+
+    HealthResponse:
+      type: object
+      required: [status, service, auth]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+          description: Liveness do processo.
+        service:
+          type: string
+          description: 'Nome do serviço (ex.: api-principal).'
+        auth:
+          type: string
+          enum: [ready, setup_required]
+          description: "Estado do bootstrap single-user (ADR-0001 D3): ready = usuário existe; setup_required = aguardando STUDIO_PASSWORD no primeiro boot."

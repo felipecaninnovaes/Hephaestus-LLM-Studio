@@ -7,3 +7,16 @@ edition = "2021"
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "migrate", "macros"] }
+argon2 = "0.5"
+rand_core = { version = "0.6", features = ["getrandom"] }
+jsonwebtoken = "9"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+tower = { version = "0.4", features = ["util"] }
+http = "1"
+http-body-util = "0.1"
+serde_yaml = "0.9"

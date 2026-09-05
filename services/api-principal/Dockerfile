@@ -1,15 +1,18 @@
-FROM rust:1.82-slim AS build
+FROM rust:1.97.1-slim AS build
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY services/api-principal/Cargo.toml ./services/api-principal/
 COPY services/manager/Cargo.toml ./services/manager/
 COPY services/orchestrator/Cargo.toml ./services/orchestrator/
+# migrate! roda em build-time: migrations ANTES do primeiro cargo build.
+COPY services/api-principal/migrations ./services/api-principal/migrations/
 RUN mkdir -p services/api-principal/src services/manager/src services/orchestrator/src \
   && echo "fn main() {}" > services/api-principal/src/main.rs \
   && echo "fn main() {}" > services/manager/src/main.rs \
   && echo "fn main() {}" > services/orchestrator/src/main.rs \
   && cargo build --release -p api-principal \
   && rm -rf services/*/src
+# O rm acima apaga só */src: migrations/ segue intacta p/ a fase real (migrate! embutido).
 COPY services/api-principal/src ./services/api-principal/src
 # Workspace exige target em todos os membros: recria dummies (só api-principal compila via -p).
 RUN mkdir -p services/manager/src services/orchestrator/src \

@@ -7,3 +7,4 @@ pub mod auth;
 pub mod datasets;
 pub mod error;
 pub mod state;
+pub mod storage;

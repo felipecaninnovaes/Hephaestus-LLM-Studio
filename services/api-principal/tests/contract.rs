@@ -38,6 +38,12 @@ fn setup_state() -> AppState {
         jwt_secret: SETUP_SECRET,
         secure_cookie: false,
         setup_required: true,
+        storage: std::sync::Arc::new(api_principal::storage::MockStorage::new()),
+        storage_config: api_principal::storage::StorageConfig {
+            bucket: "heph-test".into(),
+            public_endpoint: None,
+            url_ttl_secs: 60,
+        },
     }
 }
 

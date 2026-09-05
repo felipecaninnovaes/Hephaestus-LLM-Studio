@@ -22,6 +22,7 @@ name = "api-principal"
 version = "0.1.0"
 dependencies = [
  "argon2",
+ "async-trait",
  "aws-credential-types",
  "aws-sdk-s3",
  "aws-smithy-runtime-api",

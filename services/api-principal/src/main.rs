@@ -3,7 +3,41 @@
 //! modo `ready`/`setup_required` → router de `auth::routes::build` (D9).
 
 use api_principal::auth::{password, routes, secret, AppState};
+use api_principal::storage::{MockStorage, StorageConfig, StoragePort};
 use sqlx::PgPool;
+use std::sync::Arc;
+
+/// Boot do storage (ADR-0003 D8).
+///
+/// `STORAGE_BACKEND` (default `"mock"`): `"mock"` monta `MockStorage`;
+/// `"s3"` ainda exige o `S3Storage` da 3b.4. Em 3b.2 nem lê
+/// `S3_ACCESS_KEY`/`S3_SECRET_KEY` — a impl s3 vai validar presença
+/// fail-fast na 3b.4. Mensagens estáticas, sem credencial.
+fn load_storage() -> Result<(Arc<dyn StoragePort>, StorageConfig), String> {
+    let backend = std::env::var("STORAGE_BACKEND").unwrap_or_else(|_| "mock".to_string());
+    match backend.as_str() {
+        "mock" => {
+            let bucket = std::env::var("S3_BUCKET").unwrap_or_else(|_| "heph-data".to_string());
+            let public_endpoint = std::env::var("S3_PUBLIC_ENDPOINT_URL")
+                .ok()
+                .filter(|s| !s.is_empty());
+            let url_ttl_secs = std::env::var("S3_URL_TTL_SECS")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.parse::<u64>().map_err(|_| "storage: S3_URL_TTL_SECS inválido"))
+                .transpose()?
+                .unwrap_or(3600);
+            let config = StorageConfig {
+                bucket,
+                public_endpoint,
+                url_ttl_secs,
+            };
+            Ok((Arc::new(MockStorage::new()), config))
+        }
+        "s3" => Err("STORAGE_BACKEND=s3 requer S3Storage (3b.4); use STORAGE_BACKEND=mock".to_string()),
+        _ => Err("STORAGE_BACKEND desconhecido".to_string()),
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -46,11 +80,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|v| v == "true")
         .unwrap_or(false);
 
+    let (storage, storage_config) =
+        load_storage().map_err(|e| format!("storage: {e}"))?;
+
     let state = AppState {
         pool,
         jwt_secret,
         secure_cookie,
         setup_required,
+        storage,
+        storage_config,
     };
 
     let app = routes::build(state);

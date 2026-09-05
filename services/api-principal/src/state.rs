@@ -14,4 +14,6 @@ pub struct AppState {
     pub secure_cookie: bool,
     /// `true` quando `users` está vazia (STUDIO_PASSWORD ausente no 1º boot).
     pub setup_required: bool,
+    pub storage: std::sync::Arc<dyn crate::storage::StoragePort>,
+    pub storage_config: crate::storage::StorageConfig,
 }

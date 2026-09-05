@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { IconMoreVertical } from "@/components/icons";
 import { formatPercent, formatRelativeTime } from "@/lib/format";
 import { TYPE_LABELS, type Dataset } from "@/types/studio";
 
@@ -20,6 +21,7 @@ export default function DatasetTable({
             <th className="px-3 py-2 font-medium">Progresso</th>
             <th className="px-3 py-2 font-medium">Origem Storage</th>
             <th className="px-3 py-2 font-medium">Modificado</th>
+            <th className="px-3 py-2 font-medium">Ações</th>
           </tr>
         </thead>
         <tbody>
@@ -88,6 +90,21 @@ export default function DatasetTable({
                   <Link href={`/datasets/${d.id}`} className="block">
                     {formatRelativeTime(d.lastModified)}
                   </Link>
+                </td>
+                <td className="px-3 py-2.5">
+                  <button
+                    type="button"
+                    aria-label={`Ações do dataset ${d.title}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (!onContextMenu) return;
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      onContextMenu(d, rect.left, rect.bottom);
+                    }}
+                    className="rounded-lg p-1.5 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+                  >
+                    <IconMoreVertical className="h-4 w-4" />
+                  </button>
                 </td>
               </tr>
             );

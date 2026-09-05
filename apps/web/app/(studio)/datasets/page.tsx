@@ -34,7 +34,7 @@ function errorMessage(code: string): string {
   switch (code) {
     case "not_found":
       return "Datasets não encontrados.";
-    case "validation":
+    case "invalid_request":
       return "Requisição inválida ao carregar datasets.";
     default:
       return "Falha ao carregar datasets.";

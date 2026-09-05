@@ -36,7 +36,7 @@ use crate::{
 const MSG_INTERNAL: &str = "internal server error";
 
 /// As 13 colunas de `datasets` (ordem do `DatasetRow`).
-const COLS: &str = "id, slug, title, category, type, task, format, status, source, size_bytes, images_count, labeled_count, created_at, updated_at";
+const COLS: &str = "id, slug, title, category, type, task, format, status, size_bytes, images_count, labeled_count, created_at, updated_at";
 
 fn internal() -> Response {
     err(StatusCode::INTERNAL_SERVER_ERROR, "internal", MSG_INTERNAL)

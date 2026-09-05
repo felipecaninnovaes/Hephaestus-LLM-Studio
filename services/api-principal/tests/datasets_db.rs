@@ -468,6 +468,275 @@ async fn rejects_unknown_and_bad_body() {
     assert_eq!(n, 0);
 }
 
+async fn counters_of(
+    pool: &sqlx::PgPool,
+    id: uuid::Uuid,
+) -> (i32, i32, i64, String) {
+    sqlx::query_as::<_, (i32, i32, i64, String)>(
+        "SELECT images_count, labeled_count, size_bytes, status FROM datasets WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .expect("contadores do dataset")
+}
+
+async fn insert_image(
+    pool: &sqlx::PgPool,
+    dataset_id: uuid::Uuid,
+    filename: &str,
+    bytes: i64,
+) -> uuid::Uuid {
+    let img = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO images (id, dataset_id, filename, object_key, bytes, width, height, md5, sha256, media_type) \
+         VALUES ($1,$2,$3,$4,$5,640,480,'d41d8cd98f00b204e9800998ecf8427e','e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855','jpeg')",
+    )
+    .bind(img)
+    .bind(dataset_id)
+    .bind(filename)
+    .bind(format!("datasets/{dataset_id}/images/{img}/{filename}"))
+    .bind(bytes)
+    .execute(pool)
+    .await
+    .expect("insert image");
+    img
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0003_coluna_source_drops() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let n: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM information_schema.columns WHERE table_name = 'datasets' AND column_name = 'source'",
+    )
+    .fetch_one(&st.pool)
+    .await
+    .expect("information_schema");
+    assert_eq!(n, 0, "datasets.source ainda existe");
+    let t: String = sqlx::query_scalar(
+        "SELECT to_regclass('public.videos')::text",
+    )
+    .fetch_one(&st.pool)
+    .await
+    .expect("to_regclass videos");
+    assert_eq!(t, "videos");
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0003_gatilho_contadores_status_yolo() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Yolo Trig", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds: uuid::Uuid = json(&body)["id"]
+        .as_str()
+        .expect("id")
+        .parse()
+        .expect("uuid");
+    let class_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM classes WHERE dataset_id = $1 LIMIT 1")
+            .bind(ds)
+            .fetch_one(&st.pool)
+            .await
+            .expect("class id");
+
+    let img1 = insert_image(&st.pool, ds, "a.jpg", 100).await;
+    assert_eq!(counters_of(&st.pool, ds).await, (1, 0, 100, "needs_labeling".to_string()));
+
+    sqlx::query(
+        "INSERT INTO boxes (image_id, class_id, x, y, w, h, origin) VALUES ($1,$2,0.5,0.5,0.2,0.2,'manual')",
+    )
+    .bind(img1)
+    .bind(class_id)
+    .execute(&st.pool)
+    .await
+    .expect("insert box");
+    assert_eq!(counters_of(&st.pool, ds).await, (1, 1, 100, "ready".to_string()));
+
+    let _img2 = insert_image(&st.pool, ds, "b.jpg", 50).await;
+    assert_eq!(counters_of(&st.pool, ds).await, (2, 1, 150, "in_progress".to_string()));
+
+    // Cenário exato da T2: delete da imagem rotulada não pode errar nem
+    // deixar estado intermediário persistido.
+    sqlx::query("DELETE FROM images WHERE id = $1")
+        .bind(img1)
+        .execute(&st.pool)
+        .await
+        .expect("delete imagem rotulada");
+    assert_eq!(counters_of(&st.pool, ds).await, (1, 0, 50, "needs_labeling".to_string()));
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0003_gatilho_caption_format_captions() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    // format importa: captions só rotula dataset de format captions (R9).
+    let ds = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO datasets (id, slug, title, category, type, task, format, status) \
+         VALUES ($1,'cap-trig','Cap Trig','difusao','difusao_lora','caption','captions','needs_labeling')",
+    )
+    .bind(ds)
+    .execute(&st.pool)
+    .await
+    .expect("insert dataset captions");
+    let class_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO classes (id, dataset_id, name, idx, color) VALUES ($1,$2,'a',0,'#10b981')",
+    )
+    .bind(class_id)
+    .bind(ds)
+    .execute(&st.pool)
+    .await
+    .expect("insert class");
+
+    let img = insert_image(&st.pool, ds, "c.jpg", 80).await;
+    assert_eq!(counters_of(&st.pool, ds).await, (1, 0, 80, "needs_labeling".to_string()));
+
+    sqlx::query("INSERT INTO captions (image_id, text, origin) VALUES ($1,'um gato','manual')")
+        .bind(img)
+        .execute(&st.pool)
+        .await
+        .expect("insert caption");
+    assert_eq!(counters_of(&st.pool, ds).await, (1, 1, 80, "ready".to_string()));
+
+    // Box NÃO conta para format captions (R9 espelhado).
+    sqlx::query(
+        "INSERT INTO boxes (image_id, class_id, x, y, w, h, origin) VALUES ($1,$2,0.5,0.5,0.2,0.2,'manual')",
+    )
+    .bind(img)
+    .bind(class_id)
+    .execute(&st.pool)
+    .await
+    .expect("insert box");
+    assert_eq!(counters_of(&st.pool, ds).await, (1, 1, 80, "ready".to_string()));
+
+    // CHECK: caption com text vazio é erro; imagem segue rotulada pela anterior.
+    let img2 = insert_image(&st.pool, ds, "d.jpg", 10).await;
+    let bad = sqlx::query("INSERT INTO captions (image_id, text, origin) VALUES ($1,'','manual')")
+        .bind(img2)
+        .execute(&st.pool)
+        .await;
+    assert!(bad.is_err(), "caption vazio deveria violar o CHECK");
+    assert_eq!(counters_of(&st.pool, ds).await, (2, 1, 90, "in_progress".to_string()));
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0003_delete_dataset_cascade() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let ds = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO datasets (id, slug, title, category, type, task, format, status) \
+         VALUES ($1,'cascata-3b','Cascata 3b','difusao','difusao_lora','caption','captions','needs_labeling')",
+    )
+    .bind(ds)
+    .execute(&st.pool)
+    .await
+    .expect("insert dataset");
+    let class_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO classes (id, dataset_id, name, idx, color) VALUES ($1,$2,'a',0,'#10b981')",
+    )
+    .bind(class_id)
+    .bind(ds)
+    .execute(&st.pool)
+    .await
+    .expect("insert class");
+    let img = insert_image(&st.pool, ds, "e.jpg", 70).await;
+    sqlx::query("INSERT INTO captions (image_id, text, origin) VALUES ($1,'legenda','manual')")
+        .bind(img)
+        .execute(&st.pool)
+        .await
+        .expect("insert caption");
+    sqlx::query(
+        "INSERT INTO boxes (image_id, class_id, x, y, w, h, origin) VALUES ($1,$2,0.5,0.5,0.2,0.2,'manual')",
+    )
+    .bind(img)
+    .bind(class_id)
+    .execute(&st.pool)
+    .await
+    .expect("insert box");
+    sqlx::query(
+        "INSERT INTO videos (dataset_id, filename, object_key, md5, bytes) \
+         VALUES ($1,'v.mp4','datasets/v.mp4','d41d8cd98f00b204e9800998ecf8427e',33)",
+    )
+    .bind(ds)
+    .execute(&st.pool)
+    .await
+    .expect("insert video");
+
+    // updated_at NÃO muda quando um refresh não altera nada: duas chamadas
+    // diretas seguidas, a segunda não bumba updated_at.
+    sqlx::query("SELECT heph_refresh_dataset_counters($1)")
+        .bind(ds)
+        .execute(&st.pool)
+        .await
+        .expect("refresh 1");
+    let updated1: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT updated_at FROM datasets WHERE id = $1")
+            .bind(ds)
+            .fetch_one(&st.pool)
+            .await
+            .expect("updated_at 1");
+    sqlx::query("SELECT pg_sleep(0.05)").execute(&st.pool).await.expect("pg_sleep");
+    sqlx::query("SELECT heph_refresh_dataset_counters($1)")
+        .bind(ds)
+        .execute(&st.pool)
+        .await
+        .expect("refresh 2");
+    let updated2: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT updated_at FROM datasets WHERE id = $1")
+            .bind(ds)
+            .fetch_one(&st.pool)
+            .await
+            .expect("updated_at 2");
+    assert_eq!(updated1, updated2, "refresh sem mudança bumpou updated_at");
+
+    sqlx::query("DELETE FROM datasets WHERE id = $1")
+        .bind(ds)
+        .execute(&st.pool)
+        .await
+        .expect("delete dataset");
+    // As linhas-filhas morrem com o pai: contar via subselect que sobrevive.
+    let ni: i64 = sqlx::query_scalar("SELECT count(*) FROM images WHERE dataset_id = $1")
+        .bind(ds)
+        .fetch_one(&st.pool)
+        .await
+        .expect("count images");
+    let nb: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM boxes b JOIN images i ON i.id = b.image_id WHERE i.dataset_id = $1",
+    )
+    .bind(ds)
+    .fetch_one(&st.pool)
+    .await
+    .expect("count boxes");
+    let nc: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM captions c JOIN images i ON i.id = c.image_id WHERE i.dataset_id = $1",
+    )
+    .bind(ds)
+    .fetch_one(&st.pool)
+    .await
+    .expect("count captions");
+    let nv: i64 = sqlx::query_scalar("SELECT count(*) FROM videos WHERE dataset_id = $1")
+        .bind(ds)
+        .fetch_one(&st.pool)
+        .await
+        .expect("count videos");
+    assert_eq!((ni, nb, nc, nv), (0, 0, 0, 0));
+}
+
 #[tokio::test]
 #[ignore = "requer Postgres (bash scripts/test-db.sh)"]
 async fn unauthenticated_is_401_even_with_db() {

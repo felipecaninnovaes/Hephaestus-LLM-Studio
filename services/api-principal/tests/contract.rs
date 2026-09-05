@@ -508,7 +508,6 @@ fn dataset_response_keys_match_openapi() {
         task: "detect_track".to_string(),
         format: "yolo_txt".to_string(),
         status: "needs_labeling".to_string(),
-        source: None,
         size_bytes: 0,
         images_count: 0,
         labeled_count: 0,

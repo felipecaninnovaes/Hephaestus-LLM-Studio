@@ -200,6 +200,91 @@ impl From<DatasetRow> for DatasetResponse {
     }
 }
 
+/// Item por arquivo do upload (ADR-0003 D2: status por item).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadItem {
+    /// None em rejected.
+    pub image_id: Option<String>,
+    /// O sanitizado canônico.
+    pub filename: String,
+    /// "stored"|"duplicate"|"rejected"|"failed".
+    pub status: String,
+    /// "duplicate_filename"|"unsupported_media"|"too_large"|"storage_error".
+    pub reason: Option<String>,
+    pub bytes: Option<i64>,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadResult {
+    pub items: Vec<UploadItem>,
+}
+
+/// Linha de `images` (FROM row; cols SQL em ordem:
+/// id, filename, object_key, bytes, width, height, md5, sha256,
+/// media_type, split, created_at).
+#[derive(sqlx::FromRow)]
+pub struct ImageRow {
+    pub id: Uuid,
+    pub filename: String,
+    pub object_key: String,
+    pub bytes: i64,
+    pub width: i32,
+    pub height: i32,
+    pub md5: String,
+    pub sha256: String,
+    pub media_type: String,
+    pub split: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Ponto único de conversão para o wire (ADR-0002 D1);
+/// `url` é computada no handler. md5/sha256 ficam no banco,
+/// fora do wire 3b.3.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageResponse {
+    pub id: String,
+    pub filename: String,
+    pub object_key: String,
+    pub bytes: i64,
+    pub width: i32,
+    pub height: i32,
+    pub media_type: String,
+    pub split: String,
+    pub url: String,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<ImageRow> for ImageResponse {
+    fn from(row: ImageRow) -> Self {
+        Self {
+            id: row.id.to_string(),
+            filename: row.filename,
+            object_key: row.object_key,
+            bytes: row.bytes,
+            width: row.width,
+            height: row.height,
+            media_type: row.media_type,
+            split: row.split,
+            url: String::new(),
+            created_at: row.created_at,
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImagePage {
+    pub items: Vec<ImageResponse>,
+    pub total: i64,
+    pub limit: i64,
+    pub offset: i64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

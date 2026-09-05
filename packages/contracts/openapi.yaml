@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.2.0
+  version: 0.3.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -291,6 +291,129 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/datasets/{id}/upload:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK do dataset. Valor que não parseia como UUID responde 404 `not_found`
+          (não 400): a distinção não vaza informação útil e mantém o inventário de
+          status fechado (ADR-0002 D8).
+    post:
+      operationId: uploadImages
+      tags: [datasets]
+      summary: Envia lote de imagens (multipart, spool+sniff+hash)
+      description: |
+        Lote `multipart/form-data` com fields `files` (Fatia 3b.3, ADR-0003 D2/D7).
+        Cada arquivo faz spool em tempfile (disco só efêmero, D1), sniff do
+        `media_type` pelo conteúdo (nunca pelo nome, D2/D5), hash md5+sha256 em
+        streaming e PUT objeto→linha→compensação (D7). Resposta 200 por item:
+        `stored` | `duplicate` | `rejected` | `failed`. Lote sem nenhum arquivo
+        ou com todos os itens `rejected/unsupported_media` responde 400; backend
+        de objetos fora responde 503 (`code: storage_unavailable`, D10).
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                files:
+                  type: array
+                  items: { type: string, format: binary }
+      responses:
+        "200":
+          description: Lote processado (status por item em `UploadResult`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UploadResult" }
+        "400":
+          description: "Lote sem nenhum arquivo ou lote inteiro indecodável (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Dataset inexistente ou id não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Backend de objetos indisponível (`code: storage_unavailable`, ADR-0003 D10)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/datasets/{id}/images:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK do dataset. Valor que não parseia como UUID responde 404 `not_found`
+          (não 400): a distinção não vaza informação útil e mantém o inventário de
+          status fechado (ADR-0002 D8).
+    get:
+      operationId: listImages
+      tags: [datasets]
+      summary: Página de imagens do dataset
+      description: |
+        Página ordenada por `createdAt` DESC com filtros `split`/`labeled`
+        (Fatia 3b.3, ADR-0003). `labeled` usa a taxonomia R9 do trigger da
+        migration 0003 (`yolo_txt` ⇒ boxes, demais ⇒ captions). `url` por imagem:
+        presigned assinado no endpoint público quando `S3_PUBLIC_ENDPOINT_URL`
+        configurado, senão fallback `GET …/images/:imageId/data` (D3; a rota
+        `/data` chega na 3b.5).
+      parameters:
+        - name: split
+          in: query
+          required: false
+          schema: { type: string, enum: [train, val] }
+          description: Filtra pelo split (`train` default na escrita).
+        - name: labeled
+          in: query
+          required: false
+          schema: { type: string, enum: ["true", "false"] }
+          description: Filtra por rotulada/não-rotulada (case-insensitivo).
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+          description: Tamanho da página (default 50, máx 200).
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, minimum: 0, default: 0 }
+          description: Deslocamento da página (default 0).
+      responses:
+        "200":
+          description: Página de imagens (`ImagePage`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImagePage" }
+        "400":
+          description: "Query inválida (`split`/`labeled`/`limit`/`offset` fora do domínio; `code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Dataset inexistente ou id não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
 components:
   securitySchemes:
     sessionCookie:
@@ -333,8 +456,8 @@ components:
       properties:
         code:
           type: string
-          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, internal]
-          description: "Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`; o cliente DEVE ter ramo default: o enum cresce por fatia (aditivo na 0.2.0: `not_found`, `slug_conflict`)."
+          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, storage_unavailable, internal]
+          description: "Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`; o cliente DEVE ter ramo default: o enum cresce por fatia (aditivo na 0.2.0: `not_found`, `slug_conflict`; na 0.3.0: `storage_unavailable`, ADR-0003 D10)."
         message:
           type: string
           description: Humano-curto, ESTÁTICO por code; nunca contém hash, token, segredo ou existência de usuário.
@@ -467,3 +590,80 @@ components:
           type: string
           format: date-time
           description: "`datasets.updated_at` (RFC 3339), não string relativa; a UI formata 'há 12 minutos'."
+
+    UploadItem:
+      type: object
+      required: [filename, status]
+      description: "Status por arquivo do lote (ADR-0003 D2)."
+      properties:
+        imageId:
+          type: [string, "null"]
+          format: uuid
+          description: PK da linha em `images`; null em `rejected`.
+        filename:
+          type: string
+          description: Nome sanitizado canônico (chave D5 sem a extensão do form).
+        status:
+          type: string
+          enum: [stored, duplicate, rejected, failed]
+          description: Resultado por item (200 mesmo com `rejected`/`failed` individuais).
+        reason:
+          type: [string, "null"]
+          enum: [duplicate_filename, unsupported_media, too_large, storage_error, null]
+          description: Motivo do não-`stored` (null quando `stored`).
+        bytes:
+          type: [integer, "null"]
+          description: Tamanho real do spool (só em `stored`).
+        width:
+          type: [integer, "null"]
+          description: Largura decodificada (só em `stored`).
+        height:
+          type: [integer, "null"]
+          description: Altura decodificada (só em `stored`).
+
+    UploadResult:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/UploadItem" }
+
+    Image:
+      type: object
+      required: [id, filename, objectKey, bytes, width, height, mediaType, split, url, createdAt]
+      description: "Imagem indexada (ADR-0003 D2/D5; md5/sha256 ficam no banco, fora do wire)."
+      properties:
+        id: { type: string, format: uuid }
+        filename: { type: string }
+        objectKey:
+          type: string
+          description: Chave legível `datasets/{dataset_id}/images/{image_id}/{nome}` (D5).
+        bytes: { type: integer, format: int64, minimum: 0 }
+        width: { type: integer, minimum: 1 }
+        height: { type: integer, minimum: 1 }
+        mediaType:
+          type: string
+          enum: [jpeg, png, webp]
+          description: Canônico do conteúdo via sniff, não do form (D2/D5).
+        split:
+          type: string
+          enum: [train, val]
+        url:
+          type: string
+          description: Presigned no endpoint público (D3) ou fallback `/data` da 3b.5.
+        createdAt: { type: string, format: date-time }
+
+    ImagePage:
+      type: object
+      required: [items, total, limit, offset]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Image" }
+        total:
+          type: integer
+          minimum: 0
+          description: Total com os filtros, sem o LIMIT.
+        limit: { type: integer }
+        offset: { type: integer }

@@ -16,7 +16,7 @@ use axum::{
     body::Bytes,
     extract::{
         rejection::{BytesRejection, FailedToBufferBody},
-        Path, State,
+        Multipart, Path, Query, State,
     },
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -24,13 +24,23 @@ use axum::{
 };
 use uuid::Uuid;
 
+// `md-5 0.10` (digest 0.10) e `sha2 0.11` (digest 0.11) expõem traits
+// `Digest` distintos: imports com alias, um por hasher.
+use md5::Digest as Md5Digest;
+use sha2::Digest as Sha256Digest;
+
 use super::models::{
     color_for, derive, normalize_classes, parse_id, slugify, CreateDatasetRequest,
-    DatasetResponse, DatasetRow, DatasetType,
+    DatasetResponse, DatasetRow, DatasetType, ImagePage, ImageResponse, ImageRow,
+    UploadItem, UploadResult,
 };
 use crate::{
-    error::{err, MSG_INVALID_REQUEST, MSG_NOT_FOUND, MSG_SLUG_CONFLICT},
+    error::{
+        err, MSG_INVALID_REQUEST, MSG_NOT_FOUND, MSG_SLUG_CONFLICT,
+        MSG_STORAGE_UNAVAILABLE,
+    },
     state::AppState,
+    storage::{keys, sniff},
 };
 
 const MSG_INTERNAL: &str = "internal server error";
@@ -263,4 +273,363 @@ pub async fn delete(State(state): State<AppState>, Path(id): Path<String>) -> Re
         return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND);
     }
     StatusCode::NO_CONTENT.into_response()
+}
+
+/// As 11 colunas de `images` na ordem do `ImageRow`.
+const ICOLS: &str = "id, filename, object_key, bytes, width, height, md5, sha256, media_type, split, created_at";
+
+fn stored_item(image_id: Uuid, filename: String, bytes: i64, width: i32, height: i32) -> UploadItem {
+    UploadItem { image_id: Some(image_id.to_string()), filename, status: "stored".to_string(), reason: None, bytes: Some(bytes), width: Some(width), height: Some(height) }
+}
+
+fn duplicate_item(image_id: Uuid, filename: String) -> UploadItem {
+    UploadItem { image_id: Some(image_id.to_string()), filename, status: "duplicate".to_string(), reason: Some("duplicate_filename".to_string()), bytes: None, width: None, height: None }
+}
+
+fn rejected_item(filename: String, reason: &'static str) -> UploadItem {
+    UploadItem { image_id: None, filename, status: "rejected".to_string(), reason: Some(reason.to_string()), bytes: None, width: None, height: None }
+}
+
+fn failed_item(filename: String) -> UploadItem {
+    UploadItem { image_id: None, filename, status: "failed".to_string(), reason: Some("storage_error".to_string()), bytes: None, width: None, height: None }
+}
+
+/// Erro opaco do axum: `LengthLimitError` no debug (estouro do
+/// `DefaultBodyLimit` POR FIELD) ⇒ `too_large`; o resto é `storage_error`.
+fn is_too_large(err: &axum::extract::multipart::MultipartError) -> bool {
+    format!("{err:?}").contains("LengthLimit")
+}
+
+/// POST /api/datasets/:id/upload — lote multipart `files` (spool+sniff+hash, D7).
+///
+/// Disco só efêmero (D1): cada arquivo faz spool num `tempfile` apagado no
+/// drop. Ordem objeto→linha→compensação (D7): o PUT precede o INSERT; em
+/// `duplicate` o objeto recém-enviado é deletado best-effort. PUT que falha
+/// interrompe tudo com 503 `storage_unavailable` (D10): itens já committed
+/// do lote permanecem, sem rollback de banco.
+pub async fn upload(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    mut multipart: Multipart,
+) -> Response {
+    // 1. Dataset existe? (id não-UUID ⇒ mesmo 404, padrão 3a).
+    let ds_id: Uuid = match parse_id(&id) {
+        Some(v) => v,
+        None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
+    };
+    let exists: bool = match sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM datasets WHERE id = $1)")
+        .bind(ds_id)
+        .fetch_one(&state.pool)
+        .await
+    {
+        Ok(v) => v,
+        Err(_) => return internal(),
+    };
+    if !exists {
+        return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND);
+    }
+
+    let mut items: Vec<UploadItem> = Vec::new();
+    // 2. Loop de fields.
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(f)) => f,
+            Ok(None) => break,
+            Err(_) => {
+                // Estouro do limite POR FIELD: o `next_field` subsequente
+                // descarta o resto do field; segue o lote.
+                items.push(rejected_item("unknown".to_string(), "too_large"));
+                continue;
+            }
+        };
+        let raw_name = match field.file_name() {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        if field.name() != Some("files") {
+            continue;
+        }
+        let filename = keys::sanitize_filename(&raw_name);
+
+        // 3. Spool em tempfile (stream chunk → write_all até EOF).
+        let tmp = match tempfile::NamedTempFile::new() {
+            Ok(t) => t,
+            Err(_) => { items.push(failed_item(filename)); continue; }
+        };
+        let tmp_path = tmp.path().to_path_buf();
+        let mut out = match tokio::fs::File::create(&tmp_path).await {
+            Ok(f) => f,
+            Err(_) => { items.push(failed_item(filename)); continue; }
+        };
+        // `too_large` = estourou o limite POR FIELD; outro erro = `failed`.
+        // `next_field` pós-erro descarta o resto (ver relatório 3b.3).
+        let mut spool: Result<(), &'static str> = Ok(());
+        {
+            use tokio::io::AsyncWriteExt;
+            let mut field = field;
+            loop {
+                match field.chunk().await {
+                    Ok(Some(bytes)) => {
+                        if out.write_all(&bytes).await.is_err() { spool = Err("storage_error"); break; }
+                    }
+                    Ok(None) => break,
+                    Err(e) => { spool = Err(if is_too_large(&e) { "too_large" } else { "storage_error" }); break; }
+                }
+            }
+            let _ = out.flush().await;
+        }
+        match spool {
+            Ok(()) => {}
+            Err("too_large") => { items.push(rejected_item(filename, "too_large")); continue; }
+            Err(_) => { items.push(failed_item(filename)); continue; }
+        }
+
+        // 4. Sniff dos 12 primeiros bytes (canônico = conteúdo, D2/D5).
+        let head: Vec<u8> = {
+            use tokio::io::AsyncReadExt;
+            let mut f = match tokio::fs::File::open(&tmp_path).await {
+                Ok(f) => f,
+                Err(_) => { items.push(failed_item(filename)); continue; }
+            };
+            let mut buf = [0u8; 12];
+            let mut n = 0usize;
+            while n < 12 {
+                match f.read(&mut buf[n..]).await {
+                    Ok(0) => break,
+                    Ok(k) => n += k,
+                    Err(_) => break,
+                }
+            }
+            buf[..n].to_vec()
+        };
+        let media = match sniff::sniff(&head) {
+            Some(m) => m,
+            None => { items.push(rejected_item(filename, "unsupported_media")); continue; }
+        };
+
+        // 5. Dimensões (`BufReader`: `ImageReader::new` exige `BufRead`;
+        // `with_guessed_format` no image 0.25 retorna `Result` — desvios da
+        // cadeia da spec, só adaptadores). Falha de decode ⇒ unsupported_media.
+        let (width, height) = match std::fs::File::open(&tmp_path) {
+            Ok(f) => match image::ImageReader::new(std::io::BufReader::new(f)).with_guessed_format() {
+                Ok(r) => match r.into_dimensions() {
+                    Ok((w, h)) => (w as i32, h as i32),
+                    Err(_) => { items.push(rejected_item(filename, "unsupported_media")); continue; }
+                },
+                Err(_) => { items.push(rejected_item(filename, "unsupported_media")); continue; }
+            },
+            Err(_) => { items.push(failed_item(filename)); continue; }
+        };
+
+        // 6. Hash em streaming (blocos de 1 MiB) + tamanho real do spool.
+        let hashed: Option<(String, String, i64)> = {
+            use tokio::io::AsyncReadExt;
+            let mut f = match tokio::fs::File::open(&tmp_path).await {
+                Ok(f) => f,
+                Err(_) => { items.push(failed_item(filename)); continue; }
+            };
+            let mut md5 = md5::Md5::new();
+            let mut sha = sha2::Sha256::new();
+            let mut buf = vec![0u8; 1024 * 1024];
+            let mut total: i64 = 0;
+            let mut ok = true;
+            loop {
+                match f.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(k) => { Md5Digest::update(&mut md5, &buf[..k]); Sha256Digest::update(&mut sha, &buf[..k]); total += k as i64; }
+                    Err(_) => { ok = false; break; }
+                }
+            }
+            if !ok { None } else { Some((hex::encode(Md5Digest::finalize(md5)), hex::encode(Sha256Digest::finalize(sha)), total)) }
+        };
+        let (md5hex, shahex, bytes) = match hashed {
+            Some(v) => v,
+            None => { items.push(failed_item(filename)); continue; }
+        };
+
+        // 7. PUT antes do INSERT (D7: chave conhecida antes do objeto).
+        let image_id = Uuid::new_v4();
+        let key = keys::image_object_key(ds_id, image_id, &raw_name, media.extension());
+        if state.storage.put(&key, &tmp_path).await.is_err() {
+            return err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "storage_unavailable",
+                MSG_STORAGE_UNAVAILABLE,
+            );
+        }
+
+        // 8. INSERT com ON CONFLICT DO NOTHING (reenvio ⇒ duplicate).
+        let inserted: Option<Uuid> = match sqlx::query_scalar::<_, Uuid>(
+            "INSERT INTO images (id, dataset_id, filename, object_key, bytes, width, height, md5, sha256, media_type) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) \
+             ON CONFLICT (dataset_id, filename) DO NOTHING RETURNING id",
+        )
+        .bind(image_id)
+        .bind(ds_id)
+        .bind(&filename)
+        .bind(&key)
+        .bind(bytes)
+        .bind(width)
+        .bind(height)
+        .bind(&md5hex)
+        .bind(&shahex)
+        .bind(media.as_db())
+        .fetch_optional(&state.pool)
+        .await
+        {
+            Ok(v) => v,
+            Err(_) => {
+                let _ = state.storage.delete(&key).await;
+                items.push(failed_item(filename));
+                continue;
+            }
+        };
+        match inserted {
+            Some(id) => items.push(stored_item(id, filename, bytes, width, height)),
+            None => {
+                // Compensação D7 best-effort (falha do delete: ignora).
+                let _ = state.storage.delete(&key).await;
+                let existing: Option<Uuid> = sqlx::query_scalar("SELECT id FROM images WHERE dataset_id = $1 AND filename = $2")
+                    .bind(ds_id)
+                    .bind(&filename)
+                    .fetch_optional(&state.pool)
+                    .await
+                    .unwrap_or(None);
+                match existing {
+                    Some(id) => items.push(duplicate_item(id, filename)),
+                    None => items.push(failed_item(filename)),
+                }
+            }
+        }
+        // `tmp` morre aqui: drop apaga o spool (D1, disco só efêmero).
+    }
+
+    // 9. Códigos do lote: vazio ⇒ 400; todo-rejected/unsupported ⇒ 400;
+    // senão 200 mesmo com `rejected`/`failed` individuais.
+    if items.is_empty()
+        || items.iter().all(|i| i.status == "rejected" && i.reason.as_deref() == Some("unsupported_media"))
+    {
+        return err(StatusCode::BAD_REQUEST, "invalid_request", MSG_INVALID_REQUEST);
+    }
+    (StatusCode::OK, Json(UploadResult { items })).into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub struct ImageQuery {
+    split: Option<String>,
+    labeled: Option<String>,
+    limit: Option<String>,
+    offset: Option<String>,
+}
+
+/// GET /api/datasets/:id/images — página de imagens com filtros.
+///
+/// `url` por imagem: com `public_endpoint` configurado é presigned D3
+/// (falha ⇒ 503 no request inteiro); sem ele, fallback incondicional
+/// `GET …/images/:imageId/data` (a rota `/data` chega na 3b.5, D3).
+pub async fn list_images(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(q): Query<ImageQuery>,
+) -> Response {
+    let ds_id: Uuid = match parse_id(&id) {
+        Some(v) => v,
+        None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
+    };
+    // Parse manual p/ 400 no envelope (nada tipado no extractor).
+    let bad = || err(StatusCode::BAD_REQUEST, "invalid_request", MSG_INVALID_REQUEST);
+    let split: Option<String> = match q.split {
+        None => None,
+        Some(s) if s == "train" || s == "val" => Some(s),
+        Some(_) => return bad(),
+    };
+    let labeled: Option<bool> = match q.labeled {
+        None => None,
+        Some(s) if s.eq_ignore_ascii_case("true") => Some(true),
+        Some(s) if s.eq_ignore_ascii_case("false") => Some(false),
+        Some(_) => return bad(),
+    };
+    let limit: i64 = match q.limit.map(|s| s.parse::<i64>()) {
+        None => 50,
+        Some(Ok(v)) if (1..=200).contains(&v) => v,
+        _ => return bad(),
+    };
+    let offset: i64 = match q.offset.map(|s| s.parse::<i64>()) {
+        None => 0,
+        Some(Ok(v)) if v >= 0 => v,
+        _ => return bad(),
+    };
+
+    // Formato do dataset (R9 como no trigger da 0003) + existência (404).
+    let format: Option<String> = match sqlx::query_scalar("SELECT format FROM datasets WHERE id = $1")
+        .bind(ds_id)
+        .fetch_optional(&state.pool)
+        .await
+    {
+        Ok(v) => v,
+        Err(_) => return internal(),
+    };
+    let format = match format {
+        Some(f) => f,
+        None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
+    };
+
+    let mut qb = sqlx::QueryBuilder::new(format!(
+        "SELECT {ICOLS}, count(*) OVER() AS total__ FROM images i WHERE i.dataset_id = "
+    ));
+    qb.push_bind(ds_id);
+    if let Some(s) = split {
+        qb.push(" AND i.split = ");
+        qb.push_bind(s);
+    }
+    if let Some(lab) = labeled {
+        // Taxonomia R9 do trigger da 0003: yolo_txt ⇒ boxes, demais ⇒ captions.
+        let table = if format == "yolo_txt" { "boxes b" } else { "captions c" };
+        let col = if format == "yolo_txt" { "b.image_id" } else { "c.image_id" };
+        qb.push(if lab { " AND EXISTS (SELECT 1 FROM " } else { " AND NOT EXISTS (SELECT 1 FROM " });
+        qb.push(table);
+        qb.push(" WHERE ");
+        qb.push(col);
+        qb.push(" = i.id)");
+    }
+    qb.push(" ORDER BY i.created_at DESC, i.id DESC LIMIT ");
+    qb.push_bind(limit);
+    qb.push(" OFFSET ");
+    qb.push_bind(offset);
+
+    type ImgTuple = (Uuid, String, String, i64, i32, i32, String, String, String, String, chrono::DateTime<chrono::Utc>, i64);
+    let rows: Vec<ImgTuple> = match qb.build_query_as().fetch_all(&state.pool).await {
+        Ok(r) => r,
+        Err(_) => return internal(),
+    };
+    let total: i64 = rows.first().map(|r| r.11).unwrap_or(0);
+    let mut out: Vec<ImageResponse> = Vec::with_capacity(rows.len());
+    for (img_id, filename, object_key, bytes, width, height, _md5, _sha256, media_type, split, created_at, _total) in rows {
+        // D3: presigned com endpoint público (falha ⇒ 503 no request);
+        // sem ele, fallback incondicional p/ a rota /data da 3b.5.
+        let url = if state.storage_config.public_endpoint.is_some() {
+            match state.storage.presign_get(&object_key).await {
+                Ok(u) => u,
+                Err(_) => return err(StatusCode::SERVICE_UNAVAILABLE, "storage_unavailable", MSG_STORAGE_UNAVAILABLE),
+            }
+        } else {
+            format!("/api/datasets/{ds_id}/images/{img_id}/data")
+        };
+        let mut resp = ImageResponse::from(ImageRow {
+            id: img_id, filename, object_key, bytes, width, height,
+            md5: String::new(), sha256: String::new(), media_type, split, created_at,
+        });
+        resp.url = url;
+        out.push(resp);
+    }
+    (
+        StatusCode::OK,
+        Json(ImagePage {
+            items: out,
+            total,
+            limit,
+            offset,
+        }),
+    )
+        .into_response()
 }

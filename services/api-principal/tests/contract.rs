@@ -438,6 +438,50 @@ async fn datasets_probe_without_db() {
     assert_eq!(json(&body)["code"], "unauthorized");
 }
 
+#[tokio::test]
+async fn images_and_upload_reject_non_uuid_before_anything() {
+    // 404-AR ANTES de ler fields/query: o parse do id é o passo 1 dos dois
+    // handlers (multipart válido com field dummy; sem isto o extractor do
+    // axum devolveria 400 de content-type antes do handler).
+    let app = routes::build(setup_state());
+    let (token, _) = session::issue_jwt(uuid::Uuid::new_v4(), &SETUP_SECRET);
+    let cookie = format!("heph_session={token}");
+
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri("/api/datasets/nao-e-uuid/images")
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json(&body)["code"], "not_found");
+
+    let boundary = "heph-test-boundary";
+    let multipart_body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"files\"; filename=\"dummy.png\"\r\nContent-Type: image/png\r\n\r\nxxx\r\n--{boundary}--\r\n"
+    );
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/api/datasets/nao-e-uuid/upload")
+            .header(
+                http::header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::from(multipart_body))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json(&body)["code"], "not_found");
+}
+
 #[test]
 fn json_property_names_are_camel_case() {
     // Enforcement D1: todo nome de propriedade e de parâmetro na spec é

@@ -743,6 +743,295 @@ async fn t0003_delete_dataset_cascade() {
     assert_eq!((ni, nb, nc, nv), (0, 0, 0, 0));
 }
 
+fn multipart_body(boundary: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut body = Vec::new();
+    for (name, data) in files {
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"files\"; filename=\"{name}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(data);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    body
+}
+
+fn post_upload(cookie: &str, dataset_id: &str, boundary: &str, body: Vec<u8>) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(format!("/api/datasets/{dataset_id}/upload"))
+        .header(
+            http::header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .header(http::header::COOKIE, cookie)
+        .body(Body::from(body))
+        .unwrap()
+}
+
+/// PNG 1×1 (70 bytes reais do `base64 -d` da constante da spec —
+/// a spec diz 67, mas a string decodifica para 70; vale o real).
+fn png_1x1() -> Vec<u8> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+        .expect("png 1x1")
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0003_upload_stored_duplicate_rejected() {
+    let _guard = SERIAL.lock().await;
+    let mut st = state().await;
+    // Mock explícito (AppState é do teste).
+    let mock = std::sync::Arc::new(api_principal::storage::MockStorage::new());
+    st.storage = mock.clone();
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+    let png = png_1x1();
+    assert_eq!(png.len(), 70);
+
+    // Dataset yolo_txt via API.
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Upload Rt", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds = json(&body)["id"].as_str().expect("id").to_string();
+
+    // Lote com 2 fields de MESMO filename+conteúdo (reenvio no lote):
+    // 1º stored, 2º duplicate com o MESMO imageId.
+    let boundary = "heph-upload-boundary";
+    let (status, _, body) = call(
+        app.clone(),
+        post_upload(
+            &cookie,
+            &ds,
+            boundary,
+            multipart_body(boundary, &[("a.png", &png), ("a.png", &png)]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let items = json(&body)["items"].clone();
+    assert_eq!(items.as_array().expect("items").len(), 2);
+    assert_eq!(items[0]["status"], "stored");
+    assert_eq!(items[1]["status"], "duplicate");
+    assert_eq!(items[1]["reason"], "duplicate_filename");
+    assert_eq!(items[1]["imageId"], items[0]["imageId"]);
+    assert_eq!(items[0]["bytes"], 70);
+    assert_eq!(items[0]["width"], 1);
+    assert_eq!(items[0]["height"], 1);
+    let image_id: uuid::Uuid = items[0]["imageId"]
+        .as_str()
+        .expect("imageId")
+        .parse()
+        .expect("uuid");
+
+    // Compensação D7: PUT do duplicate seguido de DELETE da MESMA key.
+    let ops = mock.ops();
+    let dup_pair = ops.windows(2).any(|w| {
+        w[0].starts_with("PUT ")
+            && w[1] == w[0].replacen("PUT ", "DELETE ", 1)
+            && w[0].ends_with("/a.png")
+    });
+    assert!(dup_pair, "PUT+DELETE da mesma key ausente: {ops:?}");
+
+    // Gatilho: 1 imagem, 0 rotuladas, 70 bytes, needs_labeling.
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+    assert_eq!(
+        counters_of(&st.pool, ds_id).await,
+        (1, 0, 70, "needs_labeling".to_string())
+    );
+
+    // Rejeitados NÃO tocam contadores: dataset separado para não poluir o
+    // principal (lote misto ⇒ 200 com item rejected; lote só-rejeitado ⇒ 400).
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Upload Rej", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds2 = json(&body)["id"].as_str().expect("id").to_string();
+    let (status, _, body) = call(
+        app.clone(),
+        post_upload(
+            &cookie,
+            &ds2,
+            boundary,
+            multipart_body(boundary, &[("d.png", &png), ("x.png", b"GIF89a-nao")]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let items = json(&body)["items"].clone();
+    assert_eq!(items.as_array().expect("items").len(), 2);
+    assert_eq!(items[0]["status"], "stored");
+    assert_eq!(items[1]["status"], "rejected");
+    assert_eq!(items[1]["reason"], "unsupported_media");
+    assert!(items[1]["imageId"].is_null());
+
+    let (status, _, body) = call(
+        app.clone(),
+        post_upload(&cookie, &ds2, boundary, multipart_body(boundary, &[("x.png", b"GIF89a-nao")])),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+
+    // Box na imagem ⇒ gatilho end-to-end pela rota de verdade.
+    let class_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM classes WHERE dataset_id = $1 LIMIT 1")
+            .bind(ds_id)
+            .fetch_one(&st.pool)
+            .await
+            .expect("class id");
+    sqlx::query(
+        "INSERT INTO boxes (image_id, class_id, x, y, w, h, origin) VALUES ($1,$2,0.5,0.5,0.2,0.2,'manual')",
+    )
+    .bind(image_id)
+    .bind(class_id)
+    .execute(&st.pool)
+    .await
+    .expect("insert box");
+    assert_eq!(
+        counters_of(&st.pool, ds_id).await,
+        (1, 1, 70, "ready".to_string())
+    );
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0003_list_images_filtros() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Lista Img", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds = json(&body)["id"].as_str().expect("id").to_string();
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+
+    let img1 = insert_image(&st.pool, ds_id, "l1.jpg", 10).await;
+    let img2 = insert_image(&st.pool, ds_id, "l2.jpg", 20).await;
+    let _img3 = insert_image(&st.pool, ds_id, "l3.jpg", 30).await;
+    sqlx::query("UPDATE images SET split = 'val' WHERE id = $1")
+        .bind(img2)
+        .execute(&st.pool)
+        .await
+        .expect("split val");
+    let class_id: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM classes WHERE dataset_id = $1 LIMIT 1")
+            .bind(ds_id)
+            .fetch_one(&st.pool)
+            .await
+            .expect("class id");
+    sqlx::query(
+        "INSERT INTO boxes (image_id, class_id, x, y, w, h, origin) VALUES ($1,$2,0.5,0.5,0.2,0.2,'manual')",
+    )
+    .bind(img1)
+    .bind(class_id)
+    .execute(&st.pool)
+    .await
+    .expect("insert box");
+
+    // Sem filtros: total 3, limit 50, ordem created_at DESC, url fallback.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri(format!("/api/datasets/{ds}/images"))
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let page = json(&body);
+    assert_eq!(page["total"], 3);
+    assert_eq!(page["limit"], 50);
+    assert_eq!(page["offset"], 0);
+    let items = page["items"].as_array().expect("items");
+    assert_eq!(items.len(), 3);
+    let c0 = items[0]["createdAt"].as_str().expect("createdAt");
+    let c1 = items[1]["createdAt"].as_str().expect("createdAt");
+    let c2 = items[2]["createdAt"].as_str().expect("createdAt");
+    assert!(c0 >= c1 && c1 >= c2, "ordem created_at DESC");
+    let url = items[0]["url"].as_str().expect("url");
+    assert!(url.starts_with("/api/datasets/"), "{url}");
+    assert!(items[0].get("objectKey").is_some());
+    assert!(items[0].get("object_key").is_none(), "snake_case no wire");
+    assert!(items[0].get("mediaType").is_some());
+
+    // ?split=val ⇒ total 1.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri(format!("/api/datasets/{ds}/images?split=val"))
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json(&body)["total"], 1);
+
+    // ?labeled=true ⇒ total 1 (format yolo_txt ⇒ box).
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri(format!("/api/datasets/{ds}/images?labeled=true"))
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json(&body)["total"], 1);
+
+    // ?limit=0 ⇒ 400; ?split=test ⇒ 400; id não-UUID ⇒ 404.
+    for uri in [
+        format!("/api/datasets/{ds}/images?limit=0"),
+        format!("/api/datasets/{ds}/images?split=test"),
+    ] {
+        let (status, _, body) = call(
+            app.clone(),
+            Request::builder()
+                .method("GET")
+                .uri(uri)
+                .header(http::header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json(&body)["code"], "invalid_request");
+    }
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri("/api/datasets/nao-e-uuid/images")
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json(&body)["code"], "not_found");
+}
+
 #[tokio::test]
 #[ignore = "requer Postgres (bash scripts/test-db.sh)"]
 async fn unauthenticated_is_401_even_with_db() {

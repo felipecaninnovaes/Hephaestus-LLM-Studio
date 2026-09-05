@@ -29,3 +29,5 @@ pub const MSG_SLUG_CONFLICT: &str = "dataset slug already exists";
 pub const MSG_INVALID_REQUEST: &str = "invalid request";
 /// 401 de sessão ausente/inválida (valor no contrato da Fatia 2, imutável).
 pub const MSG_UNAUTHORIZED: &str = "unauthorized";
+/// 503 de backend de objetos indisponível (ADR-0003 D10).
+pub const MSG_STORAGE_UNAVAILABLE: &str = "storage unavailable";

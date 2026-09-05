@@ -8,7 +8,7 @@
 //! com sessão válida → 404 sem body).
 
 use axum::{
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{HeaderMap, StatusCode},
     middleware,
     response::{IntoResponse, Response},
@@ -30,6 +30,8 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
     ("POST", "/api/datasets", &[201, 400, 401, 409]),
     ("GET", "/api/datasets/:id", &[200, 401, 404]),
     ("DELETE", "/api/datasets/:id", &[204, 401, 404]),
+    ("POST", "/api/datasets/:id/upload", &[200, 400, 401, 404, 503]),
+    ("GET", "/api/datasets/:id/images", &[200, 400, 401, 404]),
 ];
 
 /// Rotas públicas (sem gate): `/health` + `/api/auth/*`.
@@ -87,6 +89,18 @@ pub fn build(state: AppState) -> axum::Router {
         .route(
             "/api/datasets/:id",
             get(datasets::handlers::get_one).delete(datasets::handlers::delete),
+        )
+        // 200 MiB POR FIELD: o multipart aplica o `DefaultBodyLimit` por field;
+        // a margem do envelope multipart fica no buffer do próprio multipart,
+        // não no limite.
+        .route(
+            "/api/datasets/:id/upload",
+            post(datasets::handlers::upload)
+                .layer(DefaultBodyLimit::max(200 * 1024 * 1024)),
+        )
+        .route(
+            "/api/datasets/:id/images",
+            get(datasets::handlers::list_images),
         )
         // route_layer DEPOIS dos .route(): aplicado a um router vazio o axum 0.7 panic
         // no boot (path_router.rs, `routes.is_empty()`). Só cobre as rotas deste

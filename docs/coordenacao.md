@@ -14,49 +14,76 @@ ser interrompido no meio de uma.
 4. Fontes de verdade para a fatia: `IDEIA.md`, `docs/backend.md` §9/§10,
    `docs/frontend.md` §10, `docs/repo-estrutura.md` (ordem de fatias).
 
-## Estado atual — 2026-06/09-04
+## Estado atual — 2026-09-04
 
-- Branch: `main`. **4 commits à frente de `origin/main` — push pendente**
-  (merge `feat/auth-single-user`, `feat/design-tailwind`: tailwind real nas
-  telas, agente `ui-designer`, skill+MCP `chrome-devtools`).
-- Roadmap `docs/repo-estrutura.md` §Ordem: Slice 1 (health/smoke) ✅, Slice 2
-  (auth single-user) ✅, **Slice 3+ (datasets → package → jobs mock → UI) —
-  PRÓXIMA**.
-- Fatias de suporte fora de ordem já fechadas: bootstrap web + design
-  tailwind/protótipo (`/` e `/login` na linha do HTML de referência).
-- `apps/web` só tem rotas `/` e `/login`; `/datasets` etc. ainda não existem
-  (especificadas em `docs/frontend.md` §5 e §10, protótipo
-  `ai-vision-training-studio.html`).
-- `api-principal`: rotas de negócio vazias de propósito (`auth/routes.rs`
-  `build()` — gate plugado junto da 1ª rota de negócio na Slice 3+).
-- Ferramental: `@ui-designer` despachável (audita telas vs protótipo com
-  Chrome DevTools MCP; exige dev server + Chrome :9222, nunca committa).
-  Grafo graft: em dia, meaning tier 98% (2 nós de `layout.tsx` pendentes —
-  modelo local falha nesse arquivo, cosmético).
+- Branch de trabalho: **`feat/datasets-core`** (Slice 3a) — 7 commits, pronta para
+  revisão/merge do usuário. **Não foi feita push nem merge** (pedir explicitamente).
+- `main` local: **5 commits à frente de `origin/main`** — push pendente de pedido.
+- Roadmap `docs/repo-estrutura.md` §Ordem: Slice 1 ✅, Slice 2 ✅, **Slice 3a ✅
+  (aguarda merge)**, 3b/3c/3d no backlog.
+- **Fatia 3a fechou**: `GET/POST /api/datasets` + `GET/DELETE /api/datasets/:id` com
+  migration `0002` (`datasets`+`classes`), primeira rota de negócio → gate
+  `route_layer(require_auth)` plugado (dívida do ADR-0001 D9 quitada), OpenAPI
+  0.2.0, ADR-0002 escrita. Verificação: `cargo check --workspace` limpo,
+  `cargo test -p api-principal` = 27 units + 7 contract verdes sem banco,
+  `bash scripts/test-db.sh` = 7 integration verdes com Postgres do compose,
+  `compose -f compose.yaml -f compose.integ.yaml config -q` OK.
+- **Decisão estrutural nova (ADR-0002 D1)**: casing no wire é **camelCase em
+  `/api/*` inteiro**; colunas SQL, valores de enum, `Error.code` e artefatos de
+  transporte (`manifest.json`, `config.yaml`, SQLite) ficam **snake_case**.
+  Enforcement por teste (`json_property_names_are_camel_case`, walk recursivo).
+  Isso altera o que os docs de settings exemplificavam → `hf_token` virou
+  `hfToken` no wire em `backend.md` §9 e `frontend.md` §10 (rota ainda não
+  existe). Não regrida isso por acaso.
+- `apps/web` continua com só `/` e `/login`; `/datasets` (3c) ainda não existe.
+- Ferramental: `@ui-designer` despacha (exige dev server + Chrome :9222).
+  Grafo graft em dia (`graft/` é git-ignored — não se commite); 2 nós de
+  `layout.tsx` seguem pendentes no meaning tier (modelo local falha lá, cosmético).
 
-## Plano em andamento — Slice 3: datasets (backlog, nada aberto)
+## Dívidas registradas que as próximas fatias precisam honrar
 
-Decomposição em fatias verticais (< ~400 linhas cada), na ordem:
+- **3b (upload/imagens)** — pré-condições de aceite: volume `datasets` +
+  `DATASETS_DIR` no serviço `principal` (hoje só o orquestrador monta) e campo
+  `storage_dir` no `AppState`; `POST /:id/upload` com `DefaultBodyLimit` **dedicado**
+  de 200 MB repetindo o envelope de erro (não herdar os 2 MiB do axum); `source`
+  preenchido e **cleanup de `<DATASETS_DIR>/<slug>` no DELETE, delete-after-commit**
+  (ADR-0002 T3); migration `0003` com `images/boxes/captions` + **triggers de
+  contadores recalculando os dois numa função só ou `CONSTRAINT TRIGGER DEFERRABLE`**
+  — o invariante `labeled_count <= images_count` saiu do `CHECK` justamente porque
+  CHECK não é deferrável (T2); status `needs_labeling → in_progress → ready` passa a
+  ser derivado; bloco `--datasets` no `scripts/e2e-smoke.sh`.
+- **Jobs (fatia 4)** — `jobs.dataset_id UUID NULL REFERENCES datasets(id)
+  ON DELETE SET NULL` + snapshot `dataset_versions` (nunca `RESTRICT`) — ADR-0002 T4.
+- **3d** — derivar `autoTracked` de `boxes.origin='autotracker'` (T7); hoje é
+  constante `false`.
+- **Hardening (sem fatia marcada)** — gate aceita `sub` órfão: cookie assinado com
+  segredo antigo sobrevive a reset de `users` e passa a ler/deletar datasets (T8;
+  mitigação = `SELECT EXISTS` no gate ou rotacionar segredo no reset). Erro de
+  banco hoje vira 500 **sem log nenhum** — antes da fatia de jobs adicionar log
+  server-side (nunca no response). `cargo fmt -p api-principal` tem 10 hunks
+  violando padrão, **todos pré-existentes** (Fatia 2); nenhum CI de fmt — decisão
+  de quando formatar é do usuário.
 
-1. **3a — datasets backend núcleo**: conferir contrato `docs/backend.md` §9/§10
-   (tabela `datasets`, rotas `GET/POST /api/datasets`, `GET/DELETE /:id`) →
-   `@architect` valida contra schema atual → migration `0002_datasets` →
-   endpoints em `api-principal` (+ primeira rota de negócio: plugar
-   `gate::require_auth` no `protected` router) → teste contract → `@reviewer`.
-2. **3b — upload/imagens (storage)**: `POST /:id/upload`,
-   `GET /:id/images`, paths do storage local → migration das imagens →
-   endpoints → testes.
-3. **3c — UI `/datasets` (lista)**: `@frontend-dev` implementa vs protótipo
-   (mock inicial dos 5 datasets de `docs/frontend.md` §5.1 até 3a fechar de
-   verdade) → `@ui-designer` audita screenshot-vs-screenshot → `@reviewer`.
-4. **3d — `/datasets/[id]` galeria + annotate**: maior; abrir sub-fatias ao
-   chegar (drag/resize de boxes, autosave `PUT .../boxes`).
+## Plano em andamento — próximo passo: Slice 3b (upload/imagens/storage)
 
-Cada fatia: branch `feat/datasets-*` de `main` atualizada, commit
-`type(scope): subject`, verificação do coordenador (`cargo check --workspace`,
-`npm run build --workspace=web`, compose config), sem push/merge sem pedido.
+1. **3b — storage + imagens**: contrato de `POST /:id/upload` (multipart 200 MB) e
+   `GET /:id/images?limit&offset` → `@architect` (envolve boundary de disco + novo
+   env `DATASETS_DIR`, logo é decisão de arquitetura) → migration `0003` →
+   endpoints + triggers → testes (contract + `--ignored`) → `@reviewer`.
+2. **3c — UI `/datasets` (lista)**: `@frontend-dev` vs protótipo (mock dos 5
+   datasets de `frontend.md` §5.1 até a API fechar) → `@ui-designer` audita
+   screenshot-vs-screenshot → `@reviewer`.
+3. **3d — `/datasets/[id]` galeria + annotate**: maior; abrir sub-fatias ao chegar.
+
+Cada fatia: branch `feat/<slice>` de `main` atualizada, commit `type(scope):
+subject`, verificação do coordenador (`cargo check --workspace`, `cargo test -p
+api-principal`, `bash scripts/test-db.sh` quando houver teste de banco, `npm run
+build --workspace=web` quando houver UI, `compose config -q`), sem push/merge sem
+pedido.
 
 ## Fecho
 
-- [ ] Push dos 4 commits de `main` — aguardando pedido do usuário.
-- [ ] Abrir 3a quando o usuário der o go.
+- [ ] Merge de `feat/datasets-core` em `main` — aguardando revisão do usuário.
+- [ ] Push dos 5 commits de `main` + dos commits da branch — aguardando pedido.
+- [ ] Abrir 3b (`@architect` primeiro: `DATASETS_DIR` cruza para o serviço
+      `principal` no compose).

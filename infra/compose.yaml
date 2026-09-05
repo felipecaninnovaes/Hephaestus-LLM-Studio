@@ -61,7 +61,9 @@ services:
     ports:
       - '3000:3000'
     environment:
+      # resíduo 1.5 — runtime usa proxy /api (ADR-0001 T5); consumida só no ARG do build
       NEXT_PUBLIC_API_URL: http://localhost:8080
+      API_INTERNAL_URL: http://principal:8080
     depends_on:
       - principal
 

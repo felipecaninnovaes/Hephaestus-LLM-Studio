@@ -40,18 +40,46 @@ ser interrompido no meio de uma.
   Grafo graft em dia (`graft/` é git-ignored — não se commite); 2 nós de
   `layout.tsx` seguem pendentes no meaning tier (modelo local falha lá, cosmético).
 
+## Decisão em aberto — storage da 3b (bloqueia abrir a fatia)
+
+O usuário propôs usar **MinIO** (como ele já opera no VisionLens,
+`/home/felipecn/DEV/VisionLens`) para imagens canônicas e manter labels/coordenadas no
+banco. Direção **aprovada em princípio por mim** e desenhada pelo `@architect` em
+**`docs/adr/0003-object-storage-s3.md` (status PROPOSTO)**: bucket S3 = blob canônico,
+Postgres = verdade relacional, upload **via principal com spool+PUT de length exato**,
+leitura com presigned quando alcançável + fallback `/data`, `StoragePort` + mock.
+
+**MinIO está descartado por evidência** (não por gosto): o repo `minio/minio` foi
+arquivado pelo dono em **25/04/2026** ("NO LONGER MAINTAINED", distribuição só de fonte),
+e a GHSA-9c4q-hq6p-c237 (bypass de assinatura na trilha `STREAMING-*-TRAILER`) não tem
+patch no OSS. Também não dá para streamar corpo de tamanho desconhecido — é a trilha das
+issues abertas #21611/#21303 (esta última é o SDK Rust com `ByteStream::from_path`).
+
+**Pendente do usuário: escolher o servidor S3 da D0.** Recomendação do coordenador:
+**SeaweedFS** (Apache-2.0, desde 2012, escolhido pelo Kubeflow no lugar do MinIO, bucket
+pré-criado no boot → mata o init-container), **Garage** como plano B (binário único +
+TOML, mas AGPL e sem console rico), **RustFS descartado como default** (pré-1.0).
+Qualquer um dos três é config atrás da `StoragePort`, não mudança de código.
+
+Depois da escolha: **spike `3b.0`** (7 critérios binários na ADR; o critério 4 — presigned
+GET funcionando no browser — é o que decide D0 na prática) e então 3b.1..3b.8.
+Nenhum doc de `backend.md`/`frontend.md` foi alterado ainda: a lista de linhas que ficam
+falsas está no fim da ADR-0003, pronta para o `@docs-sync` quando a decisão for aceita.
+
 ## Dívidas registradas que as próximas fatias precisam honrar
 
-- **3b (upload/imagens)** — pré-condições de aceite: volume `datasets` +
-  `DATASETS_DIR` no serviço `principal` (hoje só o orquestrador monta) e campo
-  `storage_dir` no `AppState`; `POST /:id/upload` com `DefaultBodyLimit` **dedicado**
-  de 200 MB repetindo o envelope de erro (não herdar os 2 MiB do axum); `source`
-  preenchido e **cleanup de `<DATASETS_DIR>/<slug>` no DELETE, delete-after-commit**
-  (ADR-0002 T3); migration `0003` com `images/boxes/captions` + **triggers de
-  contadores recalculando os dois numa função só ou `CONSTRAINT TRIGGER DEFERRABLE`**
-  — o invariante `labeled_count <= images_count` saiu do `CHECK` justamente porque
-  CHECK não é deferrável (T2); status `needs_labeling → in_progress → ready` passa a
-  ser derivado; bloco `--datasets` no `scripts/e2e-smoke.sh`.
+- **3b (upload/imagens)** — **revisada pela ADR-0003 (proposta)**: morrem o volume
+  `datasets`/`DATASETS_DIR` no principal e o "cleanup de `<DATASETS_DIR>/<slug>`" (viram
+  sweep de prefixo `datasets/<id>/` no bucket, pós-commit); **permanece** o
+  `DefaultBodyLimit` **dedicado** de 200 MB em `POST /:id/upload` com envelope de erro
+  (não herdar os 2 MiB do axum — ADR-0002 T10, quitado na letra); `images.path` vira
+  `object_key`; migration `0003` com `images/boxes/captions/videos` + **contadores
+  recalculados por função única** (nunca `+=`) — o invariante
+  `labeled_count <= images_count` saiu do `CHECK` porque CHECK não é deferrável e o
+  `DELETE FROM images` de imagem rotulada passa por estado intermediário (T2); status
+  `needs_labeling → in_progress → ready` passa a ser derivado por trigger; export/import/
+  package sobem para **3e** (backup interim = console + `mc mirror`); bloco `--datasets`
+  no `scripts/e2e-smoke.sh`.
 - **Jobs (fatia 4)** — `jobs.dataset_id UUID NULL REFERENCES datasets(id)
   ON DELETE SET NULL` + snapshot `dataset_versions` (nunca `RESTRICT`) — ADR-0002 T4.
 - **3d** — derivar `autoTracked` de `boxes.origin='autotracker'` (T7); hoje é
@@ -64,16 +92,18 @@ ser interrompido no meio de uma.
   violando padrão, **todos pré-existentes** (Fatia 2); nenhum CI de fmt — decisão
   de quando formatar é do usuário.
 
-## Plano em andamento — próximo passo: Slice 3b (upload/imagens/storage)
+## Plano em andamento — próximo passo: fechar a D0 e rodar o spike `3b.0`
 
-1. **3b — storage + imagens**: contrato de `POST /:id/upload` (multipart 200 MB) e
-   `GET /:id/images?limit&offset` → `@architect` (envolve boundary de disco + novo
-   env `DATASETS_DIR`, logo é decisão de arquitetura) → migration `0003` →
-   endpoints + triggers → testes (contract + `--ignored`) → `@reviewer`.
+1. **3b — storage + imagens** (ADR-0003 PROPOSTA, `@architect` já rodou): escolha do
+   servidor S3 (D0) → spike `3b.0` com 7 critérios binários → `feat/datasets-storage` com
+   3b.1..3b.8 (migration 0003 → porta+mock → upload → S3+compose → leitura → boxes/caption
+   → sweep do DELETE → docs-sync). `@reviewer` ao fim de 3b.3 e 3b.6.
 2. **3c — UI `/datasets` (lista)**: `@frontend-dev` vs protótipo (mock dos 5
    datasets de `frontend.md` §5.1 até a API fechar) → `@ui-designer` audita
    screenshot-vs-screenshot → `@reviewer`.
 3. **3d — `/datasets/[id]` galeria + annotate**: maior; abrir sub-fatias ao chegar.
+4. **3e — export/import/package** (subiu de 3b pela ADR-0003 D9; é onde o requisito
+   "usuário obtém os arquivos para backup" vira produto, não `mc mirror`).
 
 Cada fatia: branch `feat/<slice>` de `main` atualizada, commit `type(scope):
 subject`, verificação do coordenador (`cargo check --workspace`, `cargo test -p

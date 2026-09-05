@@ -1,8 +1,11 @@
 # ADR-0003 — Storage de objetos S3 como blob canônico (Fatia 3b)
 
-- **Status:** PROPOSTO — aguarda escolha do servidor S3 padrão (§D0) e aprovação do
-  usuário. Nenhum código escrito; nenhuma linha de `backend.md`/`frontend.md` alterada
-  ainda. Se rejeitado, este arquivo morre aqui sem custar migração.
+- **Status:** ACEITA pelo usuário em 2026-09-04 (direção + D0 = **SeaweedFS**).
+  Pendente apenas o **spike 3b.0** para os critérios empíricos 2 e 4 (trilha de checksum
+  do SDK Rust e presigned no browser). **Nenhum doc de `backend.md`/`frontend.md` foi
+  alterado ainda** — a lista de linhas que ficam falsas está no fim desta ADR e só deve
+  ser aplicada pelo `@docs-sync` quando a 3b landar (para os docs não descreverem o que
+  ainda não existe).
 - **Data:** 2026-09-04
 - **Anexa/substitui parcial:** `docs/backend.md` §1/:15, §1/:26, §3/:49, §3/:50, §10/:148,
   §10/:160-161, §10/:165, §10/:183, §10/:188, §11/:195; `docs/adr/0002-datasets-core.md`
@@ -57,25 +60,41 @@ bucket** (`handlers/s3_notification.py` + `workers/event_consumer_worker.py` + c
 
 ## Decisões
 
-### D0 — Servidor S3 padrão: **em aberto** (decisão do usuário)
+### D0 — Servidor S3 padrão: **SeaweedFS** (decisão do usuário, 2026-09-04)
 
-O que não está em discussão: falamos **S3 API por uma porta** (`StoragePort`, D8), então a
-escolha do servidor é config, não código. O que está:
+Escolhido **SeaweedFS**; **Garage** registrado como plano B; **RustFS descartado como
+default** (pré-1.0: `1.0.0-rc.3` em ago/2026, sem 1.0 estável, guardando a única cópia das
+imagens de treino do usuário); **MinIO descartado por evidência** (arquivado + CVE sem
+patch no OSS — contexto acima). O que não estava em discussão e continua sendo o ponto
+que torna a escolha barata: falamos **S3 API por uma porta** (`StoragePort`, D8), então o
+servidor é config, não código, e a troca posterior é um swap de endpoint+credenciais — não
+um refactor.
 
-| | SeaweedFS | Garage | RustFS |
-|---|---|---|---|
-| Licença | Apache-2.0 | AGPL-3.0 | Apache-2.0 |
-| Maturidade | alta (2012, Kubeflow) | média (2020, core S3) | **pré-1.0** |
-| Ops local | master+volume+filer (1 cmd `weed server -s3`) | 1 binário + TOML | 1 binário, igual MinIO |
-| Bucket no boot | **pré-criado** (mata o init-container) | precisa criar | precisa criar |
-| Console p/ backup | sim | web UI limitada | sim (9001) |
-| Presigned/multipart | a **verificar no spike** | suportado | suportado |
+Por que SeaweedFS ganhou: licença **Apache-2.0** (sem AGPL, e o produto é proprietário),
+maturidade (desde 2012; backend default que o **Kubeflow Pipelines** adotou no lugar do
+MinIO), e detalhe operacional decisivo: `weed server -s3` sobe endpoint em `:8333` **com o
+bucket já pré-criado e credenciais**, o que elimina o init-container `minio-init-bucket`
+que a proposta original tinha. `aws-sdk-s3` fala com ele sem mudança de código.
 
-Recomendação do coordenador: **SeaweedFS** (maturidade manda quando o bucket é a única
-cópia das imagens do usuário; bucket pré-criado simplifica o compose; Apache-2.0) com
-critério de presigned validado no spike; **Garage** como plano B se a simplicidade de um
-binário pesar mais; **RustFS descartado para o default** (pré-1.0 guardando o dado mais
-valioso do produto). **MinIO descartado** por evidência, não por gosto.
+Fatos a honrar no spike (fontem **CHECKED** hoje, https://github.com/seaweedfs/seaweedfs):
+
+- Presigned **SigV4 é suportado**: `weed/s3api/s3api_auth.go` define
+  `isRequestPresignedSignatureV4` (`X-Amz-Credential` na query) → `authTypePresigned`.
+- **Histórico de dor exatamente no nosso critério 4**: issue **#6761** — presigned s3v4
+  passou a falhar com `SignatureDoesNotMatch` **atrás de reverse proxy HTTPS→HTTP**, por
+  causa de `weed/s3api/auth_signature_v4.go:734` usar o scheme da requisição em vez de
+  `X-Forwarded-Proto` (o host assinado virava `host:443`); relatado como resolvido pelo
+  PR **#6884** (comentário de `chrislusf` fechando a issue em 2025-05-30). Consequência
+  para nós: em dev/compose **não há proxy** (`localhost:8333` direto), logo o cenário não
+  se aplica; mas **pin por versão explícita ≥ a correção** (nunca `:latest`/`:dev`), e ao
+  ligar um TLS proxy remoto o critério 4 precisa ser reexecutado. O mesmo mecanismo de
+  "host entra na assinatura" é a razão de ser do `S3_PUBLIC_ENDPOINT_URL` da D3 — a
+  lição do VisionLens vale para os dois servidores.
+- CORS: o filer/S3 API lê `cors.allowed_origins.values` (default `*`) e responde
+  `OPTIONS` — ou seja, se um dia o browser precisar de CORS para ler pixels, é config.
+- Porta S3 = **8333** (não 9000). Toda a documentação/env da 3b deve usar 8333; o
+  `S3_PUBLIC_ENDPOINT_URL` de dev vira `http://localhost:8333`.
+
 
 ### D1 — Bucket é o único armazém de blobs canônicos; disco local só efêmero
 
@@ -252,23 +271,55 @@ formats), respeitando a taxonomia D3/0002; guarda `IS DISTINCT FROM` evita churn
 
 ## Spike obrigatório antes de código (`3b.0`, ~150 linhas descartáveis)
 
-Time-box meio dia, branch `spike/storage-minio`→`spike/storage-s3`, contra **o servidor
-escolhido na D0**. Critérios binários:
+Time-box meio dia, branch **`spike/storage-seaweedfs`** de `main` atualizada (a 3a já está
+no tronco), contra **SeaweedFS** (D0 decidida). Critérios binários:
 
 1. `cargo check --workspace` verde com `aws-sdk-s3` sem `aws-config` (wall-clock
    registrado, sem threshold).
-2. PUT de 1 KiB **e 512 MiB** ok, e o trace do servidor não mostra nenhuma requisição
+2. PUT de 1 KiB **e 512 MiB** ok, e o log/trace do servidor não mostra nenhuma requisição
    `STREAMING-*`/`aws-chunked`. Se falhar mesmo com `WhenRequired` → fallback:
-   `UNSIGNED-PAYLOAD` explícito, ou trocar de crate.
+   `UNSIGNED-PAYLOAD` explícito, ou trocar de crate (D4 invertida, registrado).
 3. Round-trip byte-idêntico (sha256) e `head_object.bytes` igual.
-4. **Presigned GET funciona no browser** (`<img>` em página de `localhost:3000`, sem erro
-   de console) e `curl -f` do host = 200. ← este é o critério que decide D0 entre
-   SeaweedFS e Garage.
+4. **Presigned GET funciona no browser**: `<img src>` de página em `http://localhost:3000`
+   apontando para `http://localhost:8333/...` **sem erro de console no Chrome**, e
+   `curl -f` do host = 200. Rodar **sem proxy** (é o caso dev) e anotar que o cenário
+   HTTPS→HTTP atrás de reverse proxy tem histórico de `SignatureDoesNotMatch` no
+   SeaweedFS (#6761, corrigido pelo #6884) → pin de versão ≥ a correção é obrigatório.
 5. 1500 objetos sob um prefixo: `list_objects_v2` paginado + `delete_objects` limpa em
    ≤3 chamadas.
 6. Boot com as 6 rotas novas em axum 0.7.9/matchit sem panic; sonda autenticada em
    `/…/data` rota para o handler (404 com envelope, não o 404 bodyless do fallback).
-7. Servidor morto → `StorageError::Unavailable` em ≤5 s → handler 503.
+7. Servidor morto (`docker compose stop seaweedfs`) → `put_object` mapeado a
+   `StorageError::Unavailable` em ≤5 s (timeout configurado) → handler responderia 503.
+
+Rascunho do serviço a montar no spike (porta **8333**, bucket pré-criado, bind loopback):
+
+```yaml
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.44_full   # PIN explícito ≥ correção do #6884; nunca :latest/:dev
+    command: "server -s3 -s3.port=8333 -dir=/data -master.volumeSizeLimitMB=1024"
+    environment:
+      S3_BUCKET_CREATE_OPTIONS: heph-data  # pré-cria o bucket no boot
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-heph}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-heph-local-dev}
+    ports:
+      - '127.0.0.1:8333:8333'              # S3 API (browser dev alcança via localhost)
+      - '127.0.0.1:9333:9333'              # master UI (opcional, p/ inspeção humana)
+    volumes:
+      - seaweed_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8333/ || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+```
+
+**Verificar os nomes exatos de flag/env no spike** (`-s3.port`, `S3_BUCKET_CREATE_OPTIONS`,
+endpoint de health, se `weed` tem `wget` na imagem) — isto é rascunho do coordenador a
+partir de docs de terceiros, **NÃO-CHECKED item a item**; o spike existe justamente para
+transformar isso em fato. Se alguma flag não existir, o substituto é um init-container
+`weed shell`/`curl` criando o bucket (o caminho que o MinIO exigia).
+
 
 Falha em 2/3/5 → troca de crate atrás da mesma porta (D4 invertida, registrado); falha em
 4 → modo proxy vira default absoluto e a flag passa a ser opt-in futuro (D2 intacta);
@@ -277,11 +328,14 @@ spike morre e os testes viram o núcleo de `tests/storage_s3.rs` da 3b.4.
 
 ## Riscos
 
-- **R1 — servidor arquivado/não corrigido:** MinIO fora por evidência (arquivo + CVE sem
-  patch no OSS). Em qualquer escolha da D0: **bind loopback no compose**
-  (`127.0.0.1:9000:9000`/`:9001`) — local-first significa browser na mesma máquina, o
-  presigned `localhost` continua funcionando e uma LAN nunca toca o bucket — e **pin por
-  digest**, nunca `:latest`.
+- **R1 — servidor sem manutenção:** MinIO fora por evidência (arquivado 25/04/2026 + CVE
+  sem patch no OSS). Para o SeaweedFS escolhido, o risco simétrico é o outro extremo: o
+  projeto **lança ~36 releases por ano** (4.43 e 4.44 com um dia de diferença em ago/2026),
+  então é rapidíssimo a corrigir e ao mesmo tempo alvo móvel → **pin de versão explícita**
+  (`:4.44_full`, nunca `:latest`/`:dev`), ler o changelog antes de subir, e **bind loopback
+  no compose** (`127.0.0.1:8333:8333`, `127.0.0.1:9333:9333`) — local-first significa
+  browser na mesma máquina, o presigned `localhost` continua funcionando, e uma LAN nunca
+  toca no bucket.
 - **R2 — default de checksum do SDK entra na trilha trailer:** mitigado por
   `WhenRequired` (D4) e provado pelo critério 2 do spike. O comportamento do **SDK Rust**
   não foi verificado em doc oficial: **NÃO-CHECKED**, por isso é critério de spike e não
@@ -302,13 +356,16 @@ spike morre e os testes viram o núcleo de `tests/storage_s3.rs` da 3b.4.
 - **R9 — `labeled` depender de `format`** (dataset `yolo_txt` com caption solto conta como
   não-rotulado): intencional, comentado no DDL, coberto por teste.
 
-## O que fica falso nos docs quando isto for aprovado (lista para o `@docs-sync`)
+## O que fica falso nos docs quando a 3b landar (lista pronta para o `@docs-sync`)
+
+**Não aplicar agora** — os docs têm de descrever o que existe, não o que foi aprovado. Esta
+lista entra no commit `3b.8`.
 
 `backend.md` :15 (blobs em disco → bucket), :26 (verdade canônica), :49 (formatos por
 engine deixam de ser canônicos → artefatos de build), :50 (chunking só no transporte
 remoto), :148 (`source` sai do banco), :160-161 (`images.path`→`object_key`, +sha256/
 media_type), :165 (`videos` idem), :183 (materialização com debounce morre), :188
-(`manifest.files[].path` → `{key,filename,md5,bytes}`), :195 (volumes: `minio_data`, sem
+(`manifest.files[].path` → `{key,filename,md5,bytes}`), :195 (volumes: `seaweed_data`, sem
 `datasets` no orquestrador, serviço novo). `frontend.md` :36 (progresso resumível →
 por item), :89 (exemplos de `source`), :159 (null → derivado), :180 (3b entrega o quê;
 export→3e), :217 (cleanup de diretório → sweep de prefixo). `adr/0002` :136 e T3

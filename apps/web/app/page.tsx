@@ -22,12 +22,23 @@ export default function Home() {
     router.refresh();
   }
 
-  if (checking) return <main className="studio-shell"><p>Verificando sessão…</p></main>;
+  if (checking)
+    return (
+      <main className="studio-shell">
+        <p className="font-mono text-xs text-zinc-400">Verificando sessão…</p>
+      </main>
+    );
   return (
     <main className="studio-shell">
       <span className="studio-badge">Sessão ativa</span>
-      <h1>Hephaestus LLM Studio</h1>
-      <button type="button" onClick={logout} disabled={leaving}>
+      <h1 className="text-zinc-100">Hephaestus LLM Studio</h1>
+      <p>As telas do studio chegam nas próximas fatias.</p>
+      <button
+        type="button"
+        onClick={logout}
+        disabled={leaving}
+        className="rounded-lg border border-zinc-700/80 bg-zinc-900/60 px-4 py-2 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800 disabled:opacity-55"
+      >
         {leaving ? "Saindo…" : "Sair"}
       </button>
     </main>

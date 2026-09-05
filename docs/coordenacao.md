@@ -31,8 +31,8 @@ ser interrompido no meio de uma.
   swap = decisão do usuário).
 
 - **Spike 3b.0 EXECUTADO e PASSOU (7/7).** Rodado no ramo **descartável**
-  `spike/storage-seaweedfs` (commit `09a517d`, **NÃO mergeado** — o ramo só existe para guardar a
-  matriz `spike/STORAGE-SPIKE.md` e os harnesses). Consequência: **D4 (crate) e D3 (presigned)
+  `spike/storage-seaweedfs` (commit `09a517d`; **fundido pelo usuário em `main` (`52da6f9`)**
+  — matriz `spike/STORAGE-SPIKE.md` e harnesses vivem no tronco). Consequência: **D4 (crate) e D3 (presigned)
   ficam aprovadas, sem inversão**; R2 e R3 desriscados no ferro. Os achados que **corrigem o
   rascunho da ADR** (identidade via `-s3.config` JSON e não env vars; bucket auto-cria sem
   init-container; healthcheck exige `-ip.bind=0.0.0.0`; nomes reais da API do SDK; novo risco R10
@@ -89,11 +89,21 @@ ser interrompido no meio de uma.
   reviewer-max`). *Dia 1 (smoke em `86fb0eb`)*: ambos BLOQUEIA no mesmo defeito real
   (gate de segredos × `!.env.example` do gitignore — comprovado por matriz de 4 casos
   antes do fix); o titular ainda cruzou com a ADR-0003 (`.env.example` é entregável
-  prometido da 3b.4)   — 1 ponto pro flash por enquanto.
-  *Marco 3b.6*: titular CONDICIONAL com **1 falso positivo** (emenda vista só no trunk —
-  o diff do marco não continha o fix) e 2 únicos; sombra PASSA com 2 únicos e 0 falsos.
-  Vereditos divergentes, listas convergentes. Placar 3b.3: empate 2×2. Critério de swap
-  ao fim da 3b é **decisão do USUÁRIO — apresentar, não decidir**.
+  prometido da 3b.4)   — 1 ponto pro flash por enquanto. *Marco 3b.3 (difícil, teste real)*:
+  ambos **BLOQUEIA** pelo MESMO crítico comprovado por sonda própria (livelock multipart pós-
+  `LengthLimit` — axum embrulha corpo todo, multer nunca fuseja; os dois citaram a fonte e
+  reproduziram), **zero falso positivo nos dois lados**. Titular achou a mais: duplicate falso
+  por stem sem extensão (F4) e a janela de boot mock (F6, decisão do coordenador); sombra achou
+  a mais: doc de `sanitize_filename` mentindo + branch morto (F7) e o staleness latente do
+  `COALESCE(NEW,OLD)` em UPDATE de reparentização (registro: inofensivo até existir rota de
+  UPDATE de `image_id`/`dataset_id`). Contagem de achados únicos: 2 titular × 2 sombra —
+  **empate técnico no marco**. *Marco 3b.6*: titular CONDICIONAL com **1 falso positivo**
+  (emenda vista só no trunk — o diff do marco não continha o fix) e 2 únicos (erros por-chave
+  do `delete_prefix`, TTL não wired no compose); sombra PASSA com 2 únicos (órfão
+  `infra_pgdata` no runner, upsert com `RETURNING`) e 0 falsos. Vereditos divergentes, listas
+  convergentes. **Placar: 3b.3 empate 2×2; 3b.6 2×2 com vantagem da sombra em falsos
+  positivos.** Critério de swap ao fim da 3b é **decisão do USUÁRIO — apresentar, não
+  decidir**; hipótese "medium no fixer reduz escaladas" segue em teste.
 - **Esforço de razonamento fixado por agente** (`variant:` na frontmatter, validado
   no provider): `high` em hephaestus/architect/reviewer (+ sombra max), `medium` em
   fixer e ui-designer, `low` nos implementadores e explore. Hipótese a medir na 3b:
@@ -183,7 +193,7 @@ não o que foi aprovado).
 **3b.0–3b.8 FEITOS 2026-09-05 (ver "Estado atual").** A sequência:
 
 1. ~~`spike/storage-seaweedfs`~~ ✅ **CONCLUÍDO 2026-09-05** (ramo `spike/storage-seaweedfs`,
-   commit `09a517d`, matriz em `spike/STORAGE-SPIKE.md`, **não fundido**).
+   commit `09a517d`, matriz em `spike/STORAGE-SPIKE.md`; **fundido pelo usuário em `main` (`52da6f9`)** — harnesses e matriz vivem no tronco).
 2. ~~**3b.1..3b.7**~~ ✅ **CONCLUÍDOS** em `feat/datasets-storage` (`f6c6ff5`..`393163c`);
    `@reviewer` ao fim de 3b.3 e 3b.6 (ver A/B no "Estado atual").
 3. ~~**3b.8**~~ ✅ **CONCLUÍDO nesta sessão** (`@docs-sync`: deltas da ADR-0003 aplicados em
@@ -206,8 +216,8 @@ autorizou a landing direto no tronco).
 
 - [x] Fatia 3a mergeada em `main` pelo usuário (`e724436`) e branches de fatia apagadas.
 - [x] ADR-0003 aceita, D0 = SeaweedFS.
-- [x] Spike `spike/storage-seaweedfs` rodado (7/7 PASS, commit `09a517d`, **não fundido**);
-      achados appêndados na ADR-0003 → "Resultados do spike 3b.0".
+- [x] Spike `spike/storage-seaweedfs` rodado (7/7 PASS, commit `09a517d`; **fundido pelo
+      usuário em `main` `52da6f9`**); achados appêndados na ADR-0003 → "Resultados do spike 3b.0".
 - [x] **3b.7** ✅ (sweep + `source` derivado + classes com `id`, `393163c`) e **3b.8** ✅
       (docs sincronizados nesta sessão).
 - [ ] Próximo passo = **merge da `feat/datasets-storage`** (decisão do usuário) → 3c.

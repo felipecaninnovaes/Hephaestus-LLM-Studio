@@ -226,12 +226,20 @@ seguem na convenção global, como hoje):
 
 ```
 POST /api/datasets/:id/upload                  200 400 401 404 503
-GET  /api/datasets/:id/images                  200 401 404
+GET  /api/datasets/:id/images                  200 400 401 404
 GET  /api/datasets/:id/images/:imageId         200 401 404
 GET  /api/datasets/:id/images/:imageId/data    200 401 503 404
 PUT  /api/datasets/:id/images/:imageId/boxes   200 400 401 404
 PUT  /api/datasets/:id/images/:imageId/caption 200 400 401 404
 ```
+
+> **Emenda 2026-09-05 (revisão 3b.3)**: `GET /:id/images` ganhou `400` do ferro —
+> validação dos filtros `split|labeled|limit|offset` fora do domínio merece envelope
+> `invalid_request` (mesma família da linha upload). Código e OpenAPI já batiam; a
+> tabela é que ficou para trás. Também da revisão: o `DefaultBodyLimit` da D2 é do
+> **corpo total do lote** (axum 0.7.9 embrulha a stream inteira — não existe limite
+> por field), com teto **por arquivo de 200 MiB contabilizado no spool** (reason
+> `too_large` por item) e margem de envelope multipart de 8 MiB no limite do request.
 
 Schemas novos: `UploadResult{items[]}`, `UploadItem{imageId,filename,status,reason,bytes,
 width,height}`, `ImagePage{items,total,limit,offset}`, `Image{...,objectKey,mediaType,

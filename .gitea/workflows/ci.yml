@@ -1,0 +1,77 @@
+# CI — Gitea Actions (act_runner, label ubuntu-latest)
+#
+# Desenho v1 (ADR sem arquivo; registrado em docs/coordenacao.md sessão 4):
+# - ZERO ações externas além de actions/checkout@v4 (que o próprio gitea
+#   resolve) — todos os steps são `run:` puros. Imagens pinadas por digest,
+#   mesmas do compose/Dockerfiles (uma fonte de verdade).
+# - UMA job Rust com `services:` postgres: fmt + check + testes sem banco +
+#   testes de banco --ignored, tudo na mesma compilação (economia de CI).
+# - Sem cache de cargo/npm no v1 (adicionaria action externa); custo aceito.
+# - Testes de storage (storage_s3, --ignored) ficam LOCAIS via
+#   scripts/test-storage.sh — exigem SeaweedFS, não cobertos aqui.
+#
+# Notas de gotcha do act_runner (se o primeiro run falhar, olhe aqui):
+# 1. actions/checkout@v4 é action JS — o act_runner injeta o node empacotado
+#    nele no container; em imagens slim isso normalmente funciona. Se falhar
+#    com "node: not found", trocar o checkout por:
+#      - run: apt-get update && apt-get install -y --no-install-recommends git
+#      - run: git clone "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" . && git checkout "$GITHUB_SHA"
+# 2. A resolução de `actions/checkout` depende de [actions] na config do Gitea
+#    (URL default github.com ou mirror). Se o Gitea não alcançar, é preciso
+#    espelhar o action ou usar o fallback manual acima.
+name: CI
+
+on:
+  push:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    container:
+      image: rust:1.97.1-slim@sha256:8e8cf8f7fd54a2d23d5a743b3a03f56e26b6c774276c33fa0595111704ebb15c
+    services:
+      postgres:
+        image: postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
+        env:
+          POSTGRES_USER: studio
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: studio
+        options: >-
+          --health-cmd "pg_isready -U studio -d studio"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: fmt (padrão rustfmt, workspace inteiro)
+        run: cargo fmt --all --check
+      - name: check (workspace, sem banco — regra ADR-0002 D10)
+        run: cargo check --workspace
+      - name: test — units + contract (sem banco)
+        run: cargo test -p api-principal
+      - name: test — integração de banco (--ignored, migrações no setup do teste)
+        env:
+          DATABASE_URL: postgres://studio:test@postgres:5432/studio
+        run: cargo test -p api-principal --test datasets_db -- --ignored
+
+  web:
+    runs-on: ubuntu-latest
+    container:
+      image: node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0
+    steps:
+      - uses: actions/checkout@v4
+      - name: install (lockfile da raiz, workspaces)
+        run: npm ci
+      - name: build
+        run: npm run build --workspace=web
+
+  compose:
+    runs-on: ubuntu-latest
+    container:
+      image: docker:29-cli@sha256:eccaacfeed644c7de222ff047483568cb988dde95476fbaaf10ea2d04921bb66
+    steps:
+      - uses: actions/checkout@v4
+      - name: valida compose (parse puro, sem daemon)
+        run: docker compose -f infra/compose.yaml -f infra/compose.integ.yaml config -q
+      - name: valida compose do spike
+        run: docker compose -f infra/compose.spike.yaml config -q

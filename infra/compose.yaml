@@ -51,8 +51,12 @@ services:
       - ./seaweedfs-s3.json:/etc/seaweedfs/s3.json:ro
     healthcheck:
       # S3 responde 403 AccessDenied em `/` anônimo (identidade exige SigV4) —
-      # wget sai 8 (erro HTTP do servidor) = API no ar; 4 (falha de rede) = fora.
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8333/ 2>/dev/null || test $? -eq 8"]
+      # qualquer RESPOSTA HTTP = API no ar. Portável GNU/BusyBox wget (a tag
+      # 4.45_full é mutável: pull de 2026-09-05 trocou o wget por BusyBox, que
+      # sai 1 em 403 — GNU sai 8; o probe antigo travava unhealthy). `wget -S`
+      # imprime a linha HTTP/1.1 de qualquer código; falha de rede (recusada/
+      # timeout) não gera resposta HTTP = fora.
+      test: ["CMD-SHELL", "wget -q -S -O /dev/null http://localhost:8333/ 2>&1 | grep -q HTTP/1.1"]
       interval: 5s
       timeout: 5s
       retries: 12

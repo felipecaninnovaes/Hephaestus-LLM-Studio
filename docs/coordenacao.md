@@ -26,7 +26,7 @@ ser interrompido no meio de uma.
   3. **Causa-raiz** — charters de `@frontend-dev`/`@ui-designer` agora apontam `docs/design-system.md` como fonte de ESTILO (paleta FECHADA, regras nomeadas: One CTA/Monospace Truth/Refractive Edge/Class Palette Integrity; cores fora da paleta proibidas) e o protótipo como fonte de LAYOUT. É o mecanismo anti-improviso para os implementadores low.
 - **Fixes de ambiente (desbloqueio do dev; branch `fix/infra-env` `c09569a`)**: healthcheck do SeaweedFS dependia de GNU wget (exit 8 em 403); a tag **mutável** `4.45_full` trocou o wget para BusyBox (exit 1) → container unhealthy permanente → novo probe portável (aceita QUALQUER resposta HTTP: `wget -S … | grep -q HTTP/1.1`). Runtime do principal `bookworm`(glibc 2.36) → `trixie-slim` (builder rust:slim é trixie/2.41; `aws-lc-sys` exige GLIBC_2.38 — **R10 da ADR-0003 materializado por tag mutável**). **Lição: tags de imagem mutáveis quebram builds verificados; recomendação PENDENTE ao usuário: fixar digests no compose/Dockerfiles.**
 - **Review da `fix/web-design-alignment`: APROVA** — 1 menor corrigido (v2 duplicado removido) e 1 menor REFUTADO com prova empírica: botão "Treinar" disabled — a regra global `button:disabled` do globals.css JÁ aplica opacity .55 + not-allowed (getComputedStyle confirmado) e o hit-test resolve no próprio botão (sem click-through ao Link) — falso positivo duplo do reviewer, registrado como lição (provar antes de corrigir).
-- **Branches aguardando MERGE do usuário (ordem importa)**: 1º **`fix/web-3c-review`** (emenda da 3c, sessão anterior) → 2º **`fix/web-design-alignment`** (`9f91019`, `1ae84d0`, `c881b21`, `1a00b22`) — CONFLITA com a emenda em 3 arquivos (DatasetCard/TabsBar/CreateDatasetModal); coordenador resolve na hora (decisões visuais: `text-white` sem underline, `max-w-lg` valem sobre as versões novas) → 3º **`fix/infra-env`** (`c09569a`) → 4º **`chore/agent-design-ref`** (`fc32a84`, `96b1c36`). `main` 2 à frente do origin.
+- **Branches aguardando MERGE do usuário (ordem importa)**: ~~todas~~ **MERGEADAS em 2026-09-05**: `fix/web-3c-review` (`0554d3f`, pelo usuário), `fix/web-design-alignment` (`a19d835` — conflito em TabsBar resolvido pelo coordenador: 6 abas da emenda + decisão visual da auditoria na aba ativa `text-white` sem underline; DatasetCard/Modal auto-mergeados, tag AutoTracker preservada, `max-w-lg` combinado), `fix/infra-env` (`fdfaff6`), `chore/agent-design-ref` (`11ebdfb`). **Verificação pós-merge**: build web verde (rota `ƒ /datasets/[id]` viva), compose config OK, smoke visual no Chrome: 6 abas + badge de contagem, aba ativa `rgb(255,255,255)` sem underline, card p-5/16px com Refractive Edge provado (borda topo `0.13` vs laterais `0.07`), botão Treinar com affordance global (opacity .55 + not-allowed). Branches de fatia ainda não apagadas — decisão do usuário. `main` ~6 à frente do origin (push pendente).
 - **Nota docs**: `docs/frontend.md` linha 3 ainda descreve o protótipo como "~2910 linhas" — o do tronco é a regeneração (3641, com LoginPage); sincronizar no próximo docs-sync.
 - **Ambiente de dev de pé** (não desligado): compose (db, seaweedfs healthy, manager, principal :8080 — senha dev `changeme`), dev server Next :3000, Chrome :9222 (flatpak).
 
@@ -219,15 +219,10 @@ não o que foi aprovado).
   a fatia chegar. Escopo: log server-side (nunca no response) antes/depois da fatia
   de jobs.
 
-## Plano em andamento — PRÓXIMO PASSO EXATO: 4 merges do usuário (ordem: 3c-review → design-alignment → infra-env → agent-design-ref) → 3d
+## Plano em andamento — PRÓXIMO PASSO EXATO: fatia 3d (galeria `/datasets/[id]` + editor BBox)
 
-**Merges pendentes (todos autorizados a existir, merge = decisão do usuário; ordem importa — ver "Estado atual" sessão 3):**
-1. `fix/web-3c-review` (emenda da 3c — `f7889b2`, `41739c2`);
-2. `fix/web-design-alignment` (alinhamento visual + iconografia + design system mesclado — `9f91019`, `1ae84d0`, `c881b21`, `1a00b22`; conflitos em 3 arquivos com a emenda 3c → coordenador resolve na hora);
-3. `fix/infra-env` (`c09569a` — healthcheck seaweedfs portável + runtime trixie-slim);
-4. `chore/agent-design-ref` (`fc32a84`, `96b1c36` — charters com design system como fonte de estilo).
-
-Depois dos merges: **3d galeria `/datasets/[id]` + editor BBox** (o placeholder honesto criado pela emenda é substituído pelo conteúdo real; upload UI entra aqui) → **3e export/import** → **4 jobs/package/materialização** (onde o orquestrador ganha cliente S3 com credencial escopada por prefixo e onde a dívida T4 da ADR-0002 — `jobs.dataset_id ON DELETE SET NULL` + `dataset_versions` — precisa ser honrada no nascedouro). Recomendação pendente de decisão do usuário: fixar digests das imagens no compose/Dockerfiles (lição das tags mutáveis seaweedfs/rust desta sessão).
+**Todos os merges da sessão 3 fechados no tronco (ver "Estado atual"). Sequência daqui:**
+**3d galeria `/datasets/[id]` + editor BBox** (o placeholder honesto criado pela emenda é substituído pelo conteúdo real; upload UI entra aqui; `autoTracked` derivado de `boxes.origin='autotracker'` — dívida T7) → **3e export/import** → **4 jobs/package/materialização** (orquestrador ganha cliente S3 com credencial escopada por prefixo; dívida T4 da ADR-0002 — `jobs.dataset_id ON DELETE SET NULL` + `dataset_versions` — honrada no nascedouro).
 
 **3b.0–3b.8 FEITOS e MERGEADOS (`04b8987`); 3c FEITA, REVISADA e EMENDADA (ver "Estado atual").** A sequência:
 
@@ -264,7 +259,7 @@ autorizou a landing direto no tronco).
       (docs sincronizados nesta sessão).
 - [x] **3b mergeada** (`04b8987`); **3c no tronco** (`1f182ed`), revisada (CONDICIONAL,
       F1–F6) e emendada em `fix/web-3c-review` — build web limpo, greps zerados.
-- [ ] Próximo passo = **4 merges do usuário na ordem registrada** (3c-review → design-alignment → infra-env → agent-design-ref; conflitos dos 3 arquivos resolvidos pelo coordenador) → **3d**.
+- [x] Próximo passo = ~~4 merges~~ ✅ **MERGEADOS** (3c-review pelo usuário `0554d3f`; design-alignment `a19d835` com conflito de TabsBar resolvido; infra-env `fdfaff6`; agent-design-ref `11ebdfb`) → **3d é a próxima fatia**.
 - [ ] Pendências que continuam valendo, sem fatia marcada: CLI
       `studio reset-password` (ADR-0001 T4), `cargo fmt -p api-principal` segue,
       logging server-side (fatia nomeada — revisores 3b.3/3b.6), gate `sub` órfão

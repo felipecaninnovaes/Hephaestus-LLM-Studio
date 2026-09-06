@@ -7,6 +7,7 @@ import {
   IconDatabase,
   IconDownload,
   IconFolder,
+  IconLayers,
   IconPlay,
   IconPlus,
   IconSparkles,
@@ -16,7 +17,8 @@ import { ApiError } from "@/lib/api";
 import { getDataset } from "@/lib/datasets";
 import { listImages, uploadImages } from "@/lib/images";
 import { formatBytes } from "@/lib/format";
-import type { Dataset, ImageItem } from "@/types/studio";
+import type { Dataset, ImageItem, StudioClass } from "@/types/studio";
+import ClassesModal from "@/components/studio/ClassesModal";
 
 const PAGE_LIMIT = 50;
 
@@ -34,6 +36,7 @@ export default function DatasetGalleryPage() {
   const [uploading, setUploading] = useState(false);
   const [uploadCount, setUploadCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [classesOpen, setClassesOpen] = useState(false);
 
   const load = useCallback(
     async (id: string) => {
@@ -145,6 +148,17 @@ export default function DatasetGalleryPage() {
     }
   }
 
+  async function handleClassesSaved(classes: StudioClass[]) {
+    setDataset((prev) => (prev ? { ...prev, classes } : prev));
+    if (!datasetId) return;
+    try {
+      const fresh = await getDataset(datasetId);
+      setDataset(fresh);
+    } catch {
+      // Mantém a atualização otimista — o reload falhou em silêncio.
+    }
+  }
+
   if (loading) {
     return (
       <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-6">
@@ -215,6 +229,15 @@ export default function DatasetGalleryPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setClassesOpen(true)}
+            title="Renomear, reordenar, criar ou remover classes"
+            className="flex items-center space-x-1.5 rounded-lg border border-zinc-700/80 bg-zinc-900 px-3 py-2 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800"
+          >
+            <IconLayers className="h-4 w-4" />
+            <span>Classes</span>
+          </button>
           <button
             type="button"
             disabled
@@ -354,6 +377,15 @@ export default function DatasetGalleryPage() {
         className="hidden"
         onChange={(e) => handleFiles(e.target.files)}
       />
+
+      {classesOpen && (
+        <ClassesModal
+          datasetId={datasetId as string}
+          datasetClasses={dataset.classes}
+          onClose={() => setClassesOpen(false)}
+          onSaved={handleClassesSaved}
+        />
+      )}
     </div>
   );
 }

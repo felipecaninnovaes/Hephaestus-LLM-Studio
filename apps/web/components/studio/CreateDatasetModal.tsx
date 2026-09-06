@@ -4,12 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { IconPlus, IconX } from "@/components/icons";
 import { ApiError } from "@/lib/api";
+import { CLASS_RE, MAX_CLASSES } from "@/lib/classes";
 import { createDataset } from "@/lib/datasets";
 import { TYPE_LABELS, type Dataset, type DatasetType } from "@/types/studio";
 import { showToast } from "./Toast";
-
-const CLASS_RE = /^[A-Za-z0-9_][A-Za-z0-9_]{0,63}$/;
-const MAX_CLASSES = 200;
 const TYPES = Object.keys(TYPE_LABELS) as DatasetType[];
 
 export function slugPreview(title: string): string {

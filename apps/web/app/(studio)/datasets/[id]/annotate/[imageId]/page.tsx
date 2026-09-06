@@ -19,7 +19,9 @@ import type {
   BoxInput,
   Dataset,
   ImageDetail,
+  StudioClass,
 } from "@/types/studio";
+import ClassesModal from "@/components/studio/ClassesModal";
 
 type ToolId = "bbox" | "select" | "pan";
 
@@ -56,6 +58,7 @@ export default function AnnotateImagePage() {
   const [saving, setSaving] = useState(false);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [draft, setDraft] = useState<BBoxData | null>(null);
+  const [classesOpen, setClassesOpen] = useState(false);
 
   const frameRef = useRef<HTMLDivElement | null>(null);
   const boxesRef = useRef<BBoxData[]>([]);
@@ -366,6 +369,28 @@ export default function AnnotateImagePage() {
 
   const selectedClassIdRef = useRef(selectedClassId);
   selectedClassIdRef.current = selectedClassId;
+  const classesOpenRef = useRef(classesOpen);
+  classesOpenRef.current = classesOpen;
+
+  async function handleClassesSaved(classes: StudioClass[]) {
+    const ordered = [...classes].sort((a, b) => a.idx - b.idx);
+    setDataset((prev) => (prev ? { ...prev, classes } : prev));
+    setSelectedClassId((prev) =>
+      ordered.some((c) => c.id === prev) ? prev : (ordered[0]?.id ?? ""),
+    );
+    try {
+      const fresh = await getDataset(id);
+      setDataset(fresh);
+      const freshOrdered = [...fresh.classes].sort((a, b) => a.idx - b.idx);
+      setSelectedClassId((prev) =>
+        freshOrdered.some((c) => c.id === prev)
+          ? prev
+          : (freshOrdered[0]?.id ?? ""),
+      );
+    } catch {
+      // Mantém a atualização otimista — o reload falhou em silêncio.
+    }
+  }
 
   function onFrameMouseDown(e: React.MouseEvent) {
     e.preventDefault();
@@ -411,6 +436,7 @@ export default function AnnotateImagePage() {
   // 5. Atalhos de teclado.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      if (classesOpenRef.current) return;
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
@@ -571,9 +597,17 @@ export default function AnnotateImagePage() {
             </div>
           ) : (
             <p className="text-xs text-zinc-400">
-              Este dataset ainda não tem classes — crie-as no painel de criação.
+              Este dataset ainda não tem classes — use &quot;Gerenciar
+              classes&quot; para criar.
             </p>
           )}
+          <button
+            type="button"
+            onClick={() => setClassesOpen(true)}
+            className="mt-2 w-full rounded-xl border border-zinc-700/80 bg-zinc-900 px-3 py-2 text-xs font-medium text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-white"
+          >
+            Gerenciar classes
+          </button>
         </div>
 
         <div className="border-t border-zinc-800 pt-4 font-mono text-xs text-zinc-400">
@@ -739,6 +773,15 @@ export default function AnnotateImagePage() {
             })()}
         </div>
       </div>
+
+      {classesOpen && (
+        <ClassesModal
+          datasetId={id as string}
+          datasetClasses={dataset.classes}
+          onClose={() => setClassesOpen(false)}
+          onSaved={handleClassesSaved}
+        />
+      )}
     </div>
   );
 }

@@ -30,6 +30,7 @@ export interface Dataset {
   labeledCount: number;
   classes: StudioClass[];
   autoTracked: boolean;
+  trashCount: number;
   createdAt: string;
   lastModified: string;
 }
@@ -146,5 +147,14 @@ export interface BoxInput {
 
 export interface PutBoxesResponse {
   boxes: BBoxData[];
+}
+
+export interface PutClassInput {
+  id?: string;
+  name: string;
+}
+
+export interface PutClassesResponse {
+  classes: StudioClass[];
 }
 

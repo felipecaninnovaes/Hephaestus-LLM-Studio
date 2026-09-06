@@ -36,7 +36,7 @@ pub struct StorageConfig {
     pub url_ttl_secs: u64,
 }
 
-/// Porta de storage (D8): 5 métodos.
+/// Porta de storage (D8): 6 métodos.
 #[async_trait::async_trait]
 pub trait StoragePort: Send + Sync {
     /// D2/spool: o handler grava tempfile e faz PUT com content-length exato;
@@ -51,6 +51,9 @@ pub trait StoragePort: Send + Sync {
     /// Compensação D7 (objeto→linha→compensação); best-effort: falha loga,
     /// não estoura 500.
     async fn delete(&self, key: &str) -> Result<(), StorageError>;
+    /// Cópia server-side (3g.2, restore com rename): `from_key → to_key` no
+    /// mesmo bucket. Falha ⇒ o handler responde 503 sem escrever nada.
+    async fn copy_object(&self, from_key: &str, to_key: &str) -> Result<(), StorageError>;
     /// Sweep pós-commit do DELETE dataset (D7), paginado 1000 por lote na
     /// impl real; retorna contagem de objetos removidos.
     async fn delete_prefix(&self, prefix: &str) -> Result<u32, StorageError>;

@@ -18,6 +18,20 @@ use aws_smithy_types::timeout::TimeoutConfig;
 
 use super::port::{StorageConfig, StorageError, StoragePort};
 
+/// Percent-encode de key p/ `copy_source` (sem crate nova): preserva
+/// `A-Za-z0-9-_.~/`, encoda o resto byte a byte (`%XX` maiúsculo).
+fn encode_key(key: &str) -> String {
+    let mut out = String::with_capacity(key.len());
+    for b in key.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~' | b'/') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
 fn build_client(endpoint_url: &str, access_key: &str, secret_key: &str) -> Client {
     let creds = Credentials::new(access_key, secret_key, None, None, "heph-s3");
     let conf = aws_sdk_s3::config::Builder::new()
@@ -228,6 +242,22 @@ impl StoragePort for S3Storage {
         }
         Ok(removed)
     }
+
+    async fn copy_object(&self, from_key: &str, to_key: &str) -> Result<(), StorageError> {
+        // Gotcha do SDK: `copy_source` é `{bucket}/{key}` com a key
+        // URL-encoded (barras preservadas); sem encode, keys com caracteres
+        // especiais falham com erro opaco do servidor.
+        let source = format!("{}/{}", self.bucket, encode_key(from_key));
+        self.client
+            .copy_object()
+            .bucket(&self.bucket)
+            .key(to_key)
+            .copy_source(source)
+            .send()
+            .await
+            .map_err(|_| StorageError::Unavailable("storage unavailable".into()))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -261,5 +291,14 @@ mod tests {
     fn presigning_config_acima_do_max_sigv4_erro_sem_crash() {
         // SigV4 limita presigned a 7 dias — 8 dias deve Err, não crash.
         assert!(PresigningConfig::expires_in(Duration::from_secs(8 * 24 * 3600)).is_err());
+    }
+
+    #[test]
+    fn encode_key_preserva_barra_e_reservados() {
+        assert_eq!(
+            encode_key("datasets/a/images/b/foto.jpg"),
+            "datasets/a/images/b/foto.jpg"
+        );
+        assert_eq!(encode_key("a b/c+d.png"), "a%20b/c%2Bd.png");
     }
 }

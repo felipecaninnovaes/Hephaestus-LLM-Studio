@@ -511,6 +511,89 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/datasets/{id}/images/{imageId}/restore:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK do dataset. Valor que não parseia como UUID responde 404 `not_found`
+          (não 400, padrão D8 replicado).
+      - name: imageId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK da imagem. Valor que não parseia como UUID responde 404 `not_found`
+          (não 400, padrão D8 replicado). Escopada ao dataset: imagem de outro
+          dataset responde 404.
+    post:
+      operationId: restoreImage
+      tags: [datasets]
+      summary: Restaura imagem da lixeira (com rename se houver conflito)
+      description: |
+        Tira a imagem da lixeira (Fatia 3g.2, ADR-0005 D4): sem conflito de
+        filename ativo ⇒ 204; com conflito ⇒ cópia server-side para key nova
+        (mesmo imageId, filename `{stem}_restaurado{ext}` com desambiguação
+        numérica) ⇒ 200 `{filename}`. Imagem ativa (não-deletada) ⇒ 404.
+        Falha da cópia ⇒ 503 sem escrever nada.
+      responses:
+        "200":
+          description: Restaurada com rename (`RestoreImageResponse` com o filename novo).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RestoreImageResponse" }
+        "204":
+          description: Restaurada sem conflito (sem corpo).
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Dataset/imagem inexistente, id/imageId não-UUID, imagem ativa (fora da lixeira) ou de outro dataset (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Cópia do objeto falhou (`code: storage_unavailable`, ADR-0003 D10); a linha continua na lixeira."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/datasets/{id}/trash:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK do dataset. Valor que não parseia como UUID responde 404 `not_found`
+          (não 400, padrão D8 replicado).
+    delete:
+      operationId: deleteTrash
+      tags: [datasets]
+      summary: Purga permanente da lixeira do dataset
+      description: |
+        Apaga DEFINITIVAMENTE as imagens soft-deleted do dataset (Fatia 3g.2,
+        ADR-0005 D4): DELETE com RETURNING (CASCADE em boxes/captions, trigger
+        recalcula contadores) + sweep `delete_prefix` por imagem best-effort
+        (falha loga, nunca vira erro). Lixeira vazia ⇒ 204 (idempotente).
+      responses:
+        "204":
+          description: Lixeira purgada (sem corpo; vazia também é 204).
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Dataset inexistente ou id não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/datasets/{id}/images:
     parameters:
       - name: id
@@ -526,7 +609,7 @@ paths:
       tags: [datasets]
       summary: Página de imagens do dataset
       description: |
-        Página ordenada por `createdAt` DESC com filtros `split`/`labeled`
+        Página ordenada por `createdAt` DESC com filtros `split`/`labeled`/`deleted`
         (Fatia 3b.3, ADR-0003). `labeled` usa a taxonomia R9 do trigger da
         migration 0003 (`yolo_txt` ⇒ boxes, demais ⇒ captions). `url` por imagem:
         presigned assinado no endpoint público quando `S3_PUBLIC_ENDPOINT_URL`
@@ -543,6 +626,11 @@ paths:
           required: false
           schema: { type: string, enum: ["true", "false"] }
           description: Filtra por rotulada/não-rotulada (case-insensitivo).
+        - name: deleted
+          in: query
+          required: false
+          schema: { type: string, enum: ["true", "false"] }
+          description: "Lixeira (3g.2, case-insensitivo, default false). `true` lista só soft-deleted (`total` conta o escopo)."
         - name: limit
           in: query
           required: false
@@ -560,7 +648,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ImagePage" }
         "400":
-          description: "Query inválida (`split`/`labeled`/`limit`/`offset` fora do domínio; `code: invalid_request`)."
+          description: "Query inválida (`split`/`labeled`/`deleted`/`limit`/`offset` fora do domínio; `code: invalid_request`)."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -615,6 +703,28 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "404":
           description: "Dataset/imagem inexistente, id/imageId não-UUID ou imagem de outro dataset (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      operationId: deleteImage
+      tags: [datasets]
+      summary: Move a imagem para a lixeira (soft delete)
+      description: |
+        Soft delete da imagem (Fatia 3g.2, ADR-0005 D4): marca `deleted_at`
+        (sai da listagem default, some dos contadores) sem tocar o objeto no
+        bucket — restaurável via `POST …/restore`. Inexistente, já na lixeira
+        ou de outro dataset ⇒ 404.
+      responses:
+        "204":
+          description: Imagem na lixeira (sem corpo).
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Dataset/imagem inexistente, id/imageId não-UUID, imagem já na lixeira ou de outro dataset (`code: not_found`)."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1069,6 +1179,16 @@ components:
         classes:
           type: array
           items: { $ref: "#/components/schemas/Class" }
+
+    RestoreImageResponse:
+      type: object
+      required: [filename]
+      additionalProperties: false
+      description: "Restore com rename: o filename novo (único entre as ativas)."
+      properties:
+        filename:
+          type: string
+          description: Filename novo da linha restaurada (`{stem}_restaurado{ext}`).
 
     ImageDetail:
       type: object

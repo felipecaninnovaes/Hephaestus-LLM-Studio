@@ -323,6 +323,225 @@ pub async fn delete(State(state): State<AppState>, Path(id): Path<String>) -> Re
     StatusCode::NO_CONTENT.into_response()
 }
 
+/// DELETE /api/datasets/:id/images/:imageId — soft delete (3g.2, ADR-0005 D4).
+///
+/// 204 sem corpo, SEM sweep (objeto intocado — restaurável via lixeira).
+/// Inexistente, já na lixeira, de outro dataset ou UUID inválido ⇒ 404 (D8).
+/// O trigger `images_refresh_counters` (0005) recalcula os contadores.
+pub async fn delete_image(
+    State(state): State<AppState>,
+    Path((id, image_id)): Path<(String, String)>,
+) -> Response {
+    let ds_id: Uuid = match parse_id(&id) {
+        Some(v) => v,
+        None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
+    };
+    let img_id: Uuid = match parse_id(&image_id) {
+        Some(v) => v,
+        None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
+    };
+    let gone: Option<Uuid> = match sqlx::query_scalar(
+        "UPDATE images SET deleted_at = now() WHERE id = $1 AND dataset_id = $2 AND deleted_at IS NULL RETURNING id",
+    )
+    .bind(img_id)
+    .bind(ds_id)
+    .fetch_optional(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return internal(),
+    };
+    if gone.is_none() {
+        return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND);
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// Resposta do restore COM rename: o filename novo (200, wire camelCase).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreImageResponse {
+    pub filename: String,
+}
+
+/// Separa stem/ext na ÚLTIMA extensão (`foto.jpg` ⇒ (`foto`, `jpg`)).
+fn split_stem_ext(filename: &str) -> (&str, &str) {
+    match filename.rfind('.') {
+        Some(i) if i > 0 => (&filename[..i], &filename[i + 1..]),
+        _ => (filename, ""),
+    }
+}
+
+/// Filename livre p/ restore com conflito (`{stem}_restaurado{ext}`,
+/// desambiguando `_restaurado_2`, `_restaurado_3`… contra os nomes ATIVOS).
+fn restore_candidate(filename: &str, active: &[String]) -> String {
+    let (stem, ext) = split_stem_ext(filename);
+    let dot_ext = if ext.is_empty() {
+        String::new()
+    } else {
+        format!(".{ext}")
+    };
+    let mut candidate = format!("{stem}_restaurado{dot_ext}");
+    let mut n = 2;
+    while active.contains(&candidate) {
+        candidate = format!("{stem}_restaurado_{n}{dot_ext}");
+        n += 1;
+    }
+    candidate
+}
+
+/// POST /api/datasets/:id/images/:imageId/restore — tira da lixeira (3g.2).
+///
+/// (a) linha soft-deleted escopada ⇒ None ⇒ 404 (inclui imagem ATIVA);
+/// (b) sem conflito de filename ativo ⇒ `deleted_at = NULL` ⇒ 204;
+/// (c) com conflito ⇒ rename + `copy_object` p/ key nova (mesmo imageId) +
+/// UPDATE ⇒ 200 `{filename}`; copy falha ⇒ 503 (nada escrito); UPDATE
+/// pós-copy falha ⇒ `delete(key_nova)` best-effort + 500. Em sucesso COM
+/// rename, `delete(key_antiga)` best-effort pós-commit (eprintln, nunca erro).
+pub async fn restore_image(
+    State(state): State<AppState>,
+    Path((id, image_id)): Path<(String, String)>,
+) -> Response {
+    let ds_id: Uuid = match parse_id(&id) {
+        Some(v) => v,
+        None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
+    };
+    let img_id: Uuid = match parse_id(&image_id) {
+        Some(v) => v,
+        None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
+    };
+    // (a) só soft-deleted escopada ao dataset é restaurável.
+    let row: Option<(String, String)> = match sqlx::query_as(
+        "SELECT filename, object_key FROM images WHERE id = $1 AND dataset_id = $2 AND deleted_at IS NOT NULL",
+    )
+    .bind(img_id)
+    .bind(ds_id)
+    .fetch_optional(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return internal(),
+    };
+    let (filename, object_key) = match row {
+        Some(r) => r,
+        None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
+    };
+    // Nomes ativos do dataset (UNIQUE parcial só sobre ativas).
+    let active: Vec<String> = match sqlx::query_scalar(
+        "SELECT filename FROM images WHERE dataset_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(ds_id)
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return internal(),
+    };
+    // (b) sem conflito: só tira da lixeira.
+    if !active.contains(&filename) {
+        let back: Option<Uuid> = match sqlx::query_scalar(
+            "UPDATE images SET deleted_at = NULL WHERE id = $1 AND dataset_id = $2 AND deleted_at IS NOT NULL RETURNING id",
+        )
+        .bind(img_id)
+        .bind(ds_id)
+        .fetch_optional(&state.pool)
+        .await
+        {
+            Ok(r) => r,
+            Err(_) => return internal(),
+        };
+        if back.is_none() {
+            return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND);
+        }
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    // (c) com conflito: rename + cópia server-side + UPDATE.
+    let new_filename = restore_candidate(&filename, &active);
+    let new_key = format!("datasets/{ds_id}/images/{img_id}/{new_filename}");
+    if state
+        .storage
+        .copy_object(&object_key, &new_key)
+        .await
+        .is_err()
+    {
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "storage_unavailable",
+            MSG_STORAGE_UNAVAILABLE,
+        );
+    }
+    let ok: Result<_, _> = sqlx::query(
+        "UPDATE images SET filename = $1, object_key = $2, deleted_at = NULL WHERE id = $3 AND dataset_id = $4",
+    )
+    .bind(&new_filename)
+    .bind(&new_key)
+    .bind(img_id)
+    .bind(ds_id)
+    .execute(&state.pool)
+    .await;
+    if ok.is_err() {
+        // Compensação: a cópia ficou órfã — remove best-effort.
+        let _ = state.storage.delete(&new_key).await;
+        return internal();
+    }
+    // Pós-commit: a key antiga sai best-effort (D7 — falha loga, nunca erro).
+    if let Err(e) = state.storage.delete(&object_key).await {
+        eprintln!(
+            "aviso: delete da key antiga {object_key} falhou ({e}) — objeto reapável"
+        );
+    }
+    (
+        StatusCode::OK,
+        Json(RestoreImageResponse {
+            filename: new_filename,
+        }),
+    )
+        .into_response()
+}
+
+/// DELETE /api/datasets/:id/trash — purga permanente da lixeira (3g.2).
+///
+/// (a) dataset inválido/inexistente ⇒ 404 (D8); (b) DELETE das soft-deleted
+/// com RETURNING (CASCADE em boxes/captions + trigger recalcula — statement
+/// ÚNICO, atômico); (c+d) `delete_prefix` por imagem best-effort (falha loga,
+/// nunca vira erro); (e) 204 sempre (lixeira vazia ⇒ idempotente).
+pub async fn delete_trash(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let ds_id: Uuid = match parse_id(&id) {
+        Some(v) => v,
+        None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
+    };
+    let exists: bool = match sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM datasets WHERE id = $1)")
+        .bind(ds_id)
+        .fetch_one(&state.pool)
+        .await
+    {
+        Ok(v) => v,
+        Err(_) => return internal(),
+    };
+    if !exists {
+        return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND);
+    }
+    let purged: Vec<Uuid> = match sqlx::query_scalar(
+        "DELETE FROM images WHERE dataset_id = $1 AND deleted_at IS NOT NULL RETURNING id",
+    )
+    .bind(ds_id)
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return internal(),
+    };
+    for img_id in &purged {
+        let prefix = format!("datasets/{ds_id}/images/{img_id}/");
+        if let Err(e) = state.storage.delete_prefix(&prefix).await {
+            eprintln!(
+                "aviso: sweep da lixeira {prefix} falhou ({e}) — objetos reapáveis"
+            );
+        }
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
 /// As 9 colunas de `images` (sem md5/sha256: ficam no banco, fora do wire).
 const ICOLS: &str = "id, filename, object_key, bytes, width, height, media_type, split, created_at";
 
@@ -715,6 +934,7 @@ pub struct ImageQuery {
     labeled: Option<String>,
     limit: Option<String>,
     offset: Option<String>,
+    deleted: Option<String>,
 }
 
 /// URL híbrida D3 (3b.5): com `public_endpoint` configurado é presigned
@@ -773,6 +993,15 @@ pub async fn list_images(
         Some(s) if s.eq_ignore_ascii_case("false") => Some(false),
         Some(_) => return bad(),
     };
+    // Lixeira (3g.2): `deleted=true` lista só soft-deleted; default `false`
+    // filtra `deleted_at IS NULL` (comportamento de sempre, agora explícito).
+    // Parse igual ao `labeled` — inválido ⇒ 400 no envelope.
+    let deleted: bool = match q.deleted {
+        None => false,
+        Some(s) if s.eq_ignore_ascii_case("true") => true,
+        Some(s) if s.eq_ignore_ascii_case("false") => false,
+        Some(_) => return bad(),
+    };
     let limit: i64 = match q.limit.map(|s| s.parse::<i64>()) {
         None => 50,
         Some(Ok(v)) if (1..=200).contains(&v) => v,
@@ -803,6 +1032,11 @@ pub async fn list_images(
         "SELECT {ICOLS}, count(*) OVER() AS total__ FROM images i WHERE i.dataset_id = "
     ));
     qb.push_bind(ds_id);
+    qb.push(if deleted {
+        " AND i.deleted_at IS NOT NULL"
+    } else {
+        " AND i.deleted_at IS NULL"
+    });
     if let Some(s) = split {
         qb.push(" AND i.split = ");
         qb.push_bind(s);

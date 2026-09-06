@@ -2399,3 +2399,424 @@ async fn t0003_put_classes_erros_404_400() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(json(&body)["code"], "invalid_request");
 }
+
+fn bare_req(cookie: &str, method: &str, uri: String) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(http::header::COOKIE, cookie)
+        .body(Body::empty())
+        .unwrap()
+}
+
+async fn insert_labeled_image(
+    pool: &sqlx::PgPool,
+    ds: uuid::Uuid,
+    class_id: uuid::Uuid,
+    filename: &str,
+    bytes: i64,
+) -> uuid::Uuid {
+    let img = insert_image(pool, ds, filename, bytes).await;
+    sqlx::query(
+        "INSERT INTO boxes (image_id, class_id, x, y, w, h, origin) VALUES ($1,$2,0.5,0.5,0.2,0.2,'manual')",
+    )
+    .bind(img)
+    .bind(class_id)
+    .execute(pool)
+    .await
+    .expect("insert box");
+    img
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0003_trash_soft_delete_e_lista() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Lixeira A", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let created = json(&body);
+    let ds = created["id"].as_str().expect("id").to_string();
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+    let class_id: uuid::Uuid = created["classes"][0]["id"]
+        .as_str()
+        .expect("classes[0].id")
+        .parse()
+        .expect("uuid");
+
+    let img = insert_labeled_image(&st.pool, ds_id, class_id, "a.jpg", 100).await;
+
+    // (a) soft delete → 204, sem corpo.
+    let (status, _, body) = call(
+        app.clone(),
+        bare_req(&cookie, "DELETE", format!("/api/datasets/{ds}/images/{img}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(body.is_empty());
+
+    // Sai do list default, aparece em ?deleted=true; contadores zeram.
+    let (status, _, body) = call(
+        app.clone(),
+        bare_req(&cookie, "GET", format!("/api/datasets/{ds}/images")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json(&body)["total"], 0);
+    let (status, _, body) = call(
+        app.clone(),
+        bare_req(&cookie, "GET", format!("/api/datasets/{ds}/images?deleted=true")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let trash = json(&body);
+    assert_eq!(trash["total"], 1);
+    assert_eq!(trash["items"].as_array().expect("items").len(), 1);
+    assert_eq!(
+        counters_of(&st.pool, ds_id).await,
+        (0, 0, 0, "needs_labeling".to_string())
+    );
+
+    // DELETE de novo → 404 (já na lixeira).
+    let (status, _, body) = call(
+        app.clone(),
+        bare_req(&cookie, "DELETE", format!("/api/datasets/{ds}/images/{img}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json(&body)["code"], "not_found");
+
+    // Restore de ATIVA → 404.
+    let img2 = insert_image(&st.pool, ds_id, "b.jpg", 50).await;
+    let (status, _, body) = call(
+        app.clone(),
+        bare_req(&cookie, "POST", format!("/api/datasets/{ds}/images/{img2}/restore")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json(&body)["code"], "not_found");
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0003_trash_restore_sem_conflito() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Lixeira B", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let created = json(&body);
+    let ds = created["id"].as_str().expect("id").to_string();
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+    let class_id: uuid::Uuid = created["classes"][0]["id"]
+        .as_str()
+        .expect("classes[0].id")
+        .parse()
+        .expect("uuid");
+
+    let img = insert_labeled_image(&st.pool, ds_id, class_id, "a.jpg", 100).await;
+    let (status, _, _) = call(
+        app.clone(),
+        bare_req(&cookie, "DELETE", format!("/api/datasets/{ds}/images/{img}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // (b) restore sem conflito → 204; volta ao list; contadores voltam.
+    let (status, _, body) = call(
+        app.clone(),
+        bare_req(&cookie, "POST", format!("/api/datasets/{ds}/images/{img}/restore")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(body.is_empty());
+    let (status, _, body) = call(
+        app.clone(),
+        bare_req(&cookie, "GET", format!("/api/datasets/{ds}/images")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json(&body)["total"], 1);
+    assert_eq!(
+        counters_of(&st.pool, ds_id).await,
+        (1, 1, 100, "ready".to_string())
+    );
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0003_trash_restore_com_conflito() {
+    let _guard = SERIAL.lock().await;
+    let mut st = state().await;
+    let mock = std::sync::Arc::new(api_principal::storage::MockStorage::new());
+    st.storage = mock.clone();
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Lixeira C", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let created = json(&body);
+    let ds = created["id"].as_str().expect("id").to_string();
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+    let class_id: uuid::Uuid = created["classes"][0]["id"]
+        .as_str()
+        .expect("classes[0].id")
+        .parse()
+        .expect("uuid");
+
+    // Original rotulada + objeto real no mock; vai para a lixeira.
+    let img = insert_labeled_image(&st.pool, ds_id, class_id, "foto.jpg", 100).await;
+    let old_key = format!("datasets/{ds_id}/images/{img}/foto.jpg");
+    mock.put_bytes(&old_key, vec![7; 10]).await;
+    let (status, _, _) = call(
+        app.clone(),
+        bare_req(&cookie, "DELETE", format!("/api/datasets/{ds}/images/{img}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // Re-ocupa o filename (nova linha ATIVA — UNIQUE parcial permite).
+    let _img2 = insert_image(&st.pool, ds_id, "foto.jpg", 50).await;
+
+    // (c) restore com conflito → 200 com filename `_restaurado`.
+    let (status, _, body) = call(
+        app.clone(),
+        bare_req(&cookie, "POST", format!("/api/datasets/{ds}/images/{img}/restore")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json(&body)["filename"], "foto_restaurado.jpg");
+
+    // Mock registra COPY com as keys corretas; linha aponta p/ key nova.
+    let new_key = format!("datasets/{ds_id}/images/{img}/foto_restaurado.jpg");
+    assert!(mock.ops().contains(&format!("COPY {old_key} {new_key}")));
+    let key_db: String = sqlx::query_scalar("SELECT object_key FROM images WHERE id = $1")
+        .bind(img)
+        .fetch_one(&st.pool)
+        .await
+        .expect("object_key");
+    assert_eq!(key_db, new_key);
+    let name_db: String = sqlx::query_scalar("SELECT filename FROM images WHERE id = $1")
+        .bind(img)
+        .fetch_one(&st.pool)
+        .await
+        .expect("filename");
+    assert_eq!(name_db, "foto_restaurado.jpg");
+    // Key antiga deletada no mock (best-effort pós-commit).
+    assert!(mock.ops().contains(&format!("DELETE {old_key}")));
+    let keys: Vec<String> = mock.snapshot().into_iter().map(|(k, _)| k).collect();
+    assert!(keys.contains(&new_key));
+    assert!(!keys.contains(&old_key));
+    // Restaurada volta a contar (boxes intactas): 2 imagens, 1 rotulada.
+    assert_eq!(
+        counters_of(&st.pool, ds_id).await,
+        (2, 1, 150, "in_progress".to_string())
+    );
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0003_trash_restore_503_sem_parcial() {
+    let _guard = SERIAL.lock().await;
+    let mut st = state().await;
+    let (status, _, body) = call(
+        routes::build(st.clone()),
+        post_create("Lixeira D", &serde_json::json!(["a"]), &authed_cookie()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let created = json(&body);
+    let ds = created["id"].as_str().expect("id").to_string();
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+    let class_id: uuid::Uuid = created["classes"][0]["id"]
+        .as_str()
+        .expect("classes[0].id")
+        .parse()
+        .expect("uuid");
+
+    let img = insert_labeled_image(&st.pool, ds_id, class_id, "x.jpg", 100).await;
+    let cookie = authed_cookie();
+    let app_ok = routes::build(st.clone());
+    let (status, _, _) = call(
+        app_ok.clone(),
+        bare_req(&cookie, "DELETE", format!("/api/datasets/{ds}/images/{img}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    // Conflito ativo para forçar o caminho do copy_object.
+    let _img2 = insert_image(&st.pool, ds_id, "x.jpg", 50).await;
+
+    // (d) storage morto ⇒ 503 e a linha CONTINUA na lixeira.
+    st.storage = std::sync::Arc::new(api_principal::storage::MockStorage::failing());
+    let app = routes::build(st.clone());
+    let (status, _, body) = call(
+        app.clone(),
+        bare_req(&cookie, "POST", format!("/api/datasets/{ds}/images/{img}/restore")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(json(&body)["code"], "storage_unavailable");
+    let still_trash: bool =
+        sqlx::query_scalar("SELECT deleted_at IS NOT NULL FROM images WHERE id = $1")
+            .bind(img)
+            .fetch_one(&st.pool)
+            .await
+            .expect("deleted_at");
+    assert!(still_trash, "nada parcial: linha continua na lixeira");
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0003_trash_purge_idempotente() {
+    let _guard = SERIAL.lock().await;
+    let mut st = state().await;
+    let mock = std::sync::Arc::new(api_principal::storage::MockStorage::new());
+    st.storage = mock.clone();
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Lixeira E", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let created = json(&body);
+    let ds = created["id"].as_str().expect("id").to_string();
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+    let class_id: uuid::Uuid = created["classes"][0]["id"]
+        .as_str()
+        .expect("classes[0].id")
+        .parse()
+        .expect("uuid");
+
+    // 1 ativa + 2 na lixeira (uma rotulada — CASCADE sai nos contadores).
+    let keep = insert_image(&st.pool, ds_id, "keep.jpg", 10).await;
+    let t1 = insert_labeled_image(&st.pool, ds_id, class_id, "t1.jpg", 100).await;
+    let t2 = insert_image(&st.pool, ds_id, "t2.jpg", 50).await;
+    for img in [t1, t2] {
+        let (status, _, _) = call(
+            app.clone(),
+            bare_req(&cookie, "DELETE", format!("/api/datasets/{ds}/images/{img}")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+
+    // (e) purge → 204; lixeira some, ativa fica; sweep por imagem.
+    let (status, _, body) = call(
+        app.clone(),
+        bare_req(&cookie, "DELETE", format!("/api/datasets/{ds}/trash")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(body.is_empty());
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM images WHERE dataset_id = $1")
+        .bind(ds_id)
+        .fetch_one(&st.pool)
+        .await
+        .expect("count images");
+    assert_eq!(n, 1);
+    let kept: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM images WHERE id = $1)")
+        .bind(keep)
+        .fetch_one(&st.pool)
+        .await
+        .expect("ativa permanece");
+    assert!(kept);
+    assert!(mock
+        .ops()
+        .contains(&format!("DELETE_PREFIX datasets/{ds_id}/images/{t1}/")));
+    assert!(mock
+        .ops()
+        .contains(&format!("DELETE_PREFIX datasets/{ds_id}/images/{t2}/")));
+    assert_eq!(
+        counters_of(&st.pool, ds_id).await,
+        (1, 0, 10, "needs_labeling".to_string())
+    );
+
+    // Purge de novo (vazio) → 204 idempotente.
+    let (status, _, _) = call(
+        app.clone(),
+        bare_req(&cookie, "DELETE", format!("/api/datasets/{ds}/trash")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0003_trash_query_invalida_e_404s() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Lixeira F", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let created = json(&body);
+    let ds = created["id"].as_str().expect("id").to_string();
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+    let img = insert_image(&st.pool, ds_id, "q.jpg", 10).await;
+
+    // (f) deleted=banana → 400.
+    let (status, _, body) = call(
+        app.clone(),
+        bare_req(&cookie, "GET", format!("/api/datasets/{ds}/images?deleted=banana")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+
+    // (g) imageId não-UUID (soft delete e restore) → 404.
+    for (method, uri) in [
+        ("DELETE", format!("/api/datasets/{ds}/images/nao-e-uuid")),
+        ("POST", format!("/api/datasets/{ds}/images/nao-e-uuid/restore")),
+    ] {
+        let (status, _, body) = call(app.clone(), bare_req(&cookie, method, uri.clone())).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
+        assert_eq!(json(&body)["code"], "not_found", "{uri}");
+    }
+
+    // Imagem de OUTRO dataset (soft delete e restore) → 404.
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Lixeira G", &serde_json::json!(["b"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds2 = json(&body)["id"].as_str().expect("id").to_string();
+    for (method, uri) in [
+        ("DELETE", format!("/api/datasets/{ds2}/images/{img}")),
+        ("POST", format!("/api/datasets/{ds2}/images/{img}/restore")),
+    ] {
+        let (status, _, body) = call(app.clone(), bare_req(&cookie, method, uri.clone())).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
+        assert_eq!(json(&body)["code"], "not_found", "{uri}");
+    }
+
+    // Trash com dataset inexistente → 404.
+    let ghost = uuid::Uuid::new_v4();
+    let (status, _, body) = call(
+        app.clone(),
+        bare_req(&cookie, "DELETE", format!("/api/datasets/{ghost}/trash")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json(&body)["code"], "not_found");
+}

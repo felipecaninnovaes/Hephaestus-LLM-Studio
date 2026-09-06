@@ -61,7 +61,7 @@ impl MockStorage {
     }
 
     /// Log de operações (`PUT <key>` / `GET <key>` / `DELETE <key>` /
-    /// `DELETE_PREFIX <prefix>`).
+    /// `COPY <from> <to>` / `DELETE_PREFIX <prefix>`).
     pub fn ops(&self) -> Vec<String> {
         self.ops.try_read().expect("mock ops lock").clone()
     }
@@ -176,6 +176,29 @@ impl StoragePort for MockStorage {
             }
         }
         Ok(removed)
+    }
+
+    async fn copy_object(&self, from_key: &str, to_key: &str) -> Result<(), StorageError> {
+        if self.is_failing() {
+            return Err(StorageError::Unavailable("injected".to_string()));
+        }
+        let data = {
+            let objects = self.objects.read().await;
+            objects.get(from_key).cloned()
+        };
+        let data = match data {
+            Some(d) => d,
+            None => return Err(StorageError::NotFound),
+        };
+        {
+            let mut objects = self.objects.write().await;
+            objects.insert(to_key.to_string(), data);
+        }
+        {
+            let mut ops = self.ops.write().await;
+            ops.push(format!("COPY {from_key} {to_key}"));
+        }
+        Ok(())
     }
 }
 

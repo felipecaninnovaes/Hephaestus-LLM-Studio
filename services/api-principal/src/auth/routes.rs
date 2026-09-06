@@ -12,7 +12,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     middleware,
     response::{IntoResponse, Response},
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
     Json,
 };
 use serde_json::{json, Value};
@@ -57,6 +57,17 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
         "/api/datasets/:id/classes",
         &[200, 400, 401, 404, 409],
     ),
+    (
+        "DELETE",
+        "/api/datasets/:id/images/:imageId",
+        &[204, 401, 404],
+    ),
+    (
+        "POST",
+        "/api/datasets/:id/images/:imageId/restore",
+        &[200, 204, 401, 404, 503],
+    ),
+    ("DELETE", "/api/datasets/:id/trash", &[204, 401, 404]),
 ];
 
 /// Rotas públicas (sem gate): `/health` + `/api/auth/*`.
@@ -147,6 +158,18 @@ pub fn build(state: AppState) -> axum::Router {
         .route(
             "/api/datasets/:id/classes",
             put(datasets::handlers::put_classes),
+        )
+        .route(
+            "/api/datasets/:id/images/:imageId",
+            delete(datasets::handlers::delete_image),
+        )
+        .route(
+            "/api/datasets/:id/images/:imageId/restore",
+            post(datasets::handlers::restore_image),
+        )
+        .route(
+            "/api/datasets/:id/trash",
+            delete(datasets::handlers::delete_trash),
         )
         // route_layer DEPOIS dos .route(): aplicado a um router vazio o axum 0.7 panic
         // no boot (path_router.rs, `routes.is_empty()`). Só cobre as rotas deste

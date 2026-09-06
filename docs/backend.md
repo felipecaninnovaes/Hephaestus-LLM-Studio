@@ -118,7 +118,11 @@ datasets: GET/POST /api/datasets, GET/DELETE /api/datasets/:id  → implementado
            POST /api/datasets/:id/upload, GET /api/datasets/:id/images,
            GET  /api/datasets/:id/images/:imageId, GET /api/datasets/:id/images/:imageId/data,
            PUT  /api/datasets/:id/images/:imageId/boxes, PUT /api/datasets/:id/images/:imageId/caption
-             → implementado (Fatia 3b; ADR-0003/openapi 0.3.0)
+              → implementado (Fatia 3b; ADR-0003/openapi 0.3.0)
+           PUT  /api/datasets/:id/classes,
+           DELETE /api/datasets/:id/images/:imageId, POST /api/datasets/:id/images/:imageId/restore,
+           DELETE /api/datasets/:id/trash
+              → implementado (Fatia 3g; ADR-0005/openapi 0.4.0)
            POST /api/datasets/:id/export, POST /api/datasets/import
            POST /api/datasets/:id/package (gera zip manifest+md5 p/ orquestrador)
              → adiados para a fatia 3e (ADR-0003 D9; backup interim = console + `mc mirror`)
@@ -139,15 +143,21 @@ ws:       /ws/jobs/:id/logs?since_seq=, /ws/telemetry
 - Nota Fatia 3a (ADR-0002 D1, casing): TODAS as chaves de body/query/response de `/api/*` são camelCase (o teste `json_property_names_are_camel_case` rejeita o resto). **Os nomes listados no §9 são colunas (§10) ou campos de transporte, não chaves JSON** — ex.: settings `{hfToken, …}` no wire vs colunas `hf_token` em `settings`; datasets `sizeBytes/imagesCount/lastModified` no wire vs colunas `size_bytes/images_count/updated_at`. A rota `PUT/GET /api/settings/keys` ainda **não está implementada**; as colunas de `settings` permanecem snake_case.
 - Nota Fatia 3b (ADR-0003, spec 0.3.0 — shapes reais em `services/api-principal/src/datasets/models.rs`, tabela de rotas ≡ `PROTECTED_ROUTES` em `src/auth/routes.rs`):
   ```
-  POST /api/datasets/:id/upload                  200 400 401 404 503
-  GET  /api/datasets/:id/images                  200 400 401 404
-  GET  /api/datasets/:id/images/:imageId         200 401 404
-  GET  /api/datasets/:id/images/:imageId/data    200 401 404 503
-  PUT  /api/datasets/:id/images/:imageId/boxes   200 400 401 404
-  PUT  /api/datasets/:id/images/:imageId/caption 200 400 401 404
-  ```
-  `POST /:id/upload` (multipart campo `files`): resposta por item `{imageId,filename,status,reason,bytes,width,height}`, `status ∈ stored|duplicate|rejected|failed`, `reason ∈ duplicate_filename|unsupported_media|too_large|storage_error` (`src/datasets/handlers.rs::MAX_FILE_BYTES` = 200 MiB por arquivo; corpo TOTAL limitado por `UPLOAD_BODY_LIMIT_BYTES` = 200 MiB + 8 MiB de envelope em `src/auth/routes.rs`, excesso → 413 `invalid_request` no envelope; lote todo indecodível → 400; bucket fora → 503 `storage_unavailable`). `filename` do wire = nome canônico server-side (stem sanitizado + extensão do sniff por magic bytes), nunca o nome do form. `GET /:id/images?limit&offset&split&labeled` → `ImagePage{items,total,limit,offset}` (`limit` default 50, máx 200, `offset` default 0; `split=train|val`, `labeled=true|false`, inválido → 400; `labeled` respeita a taxonomia do trigger: `yolo_txt` ⇒ boxes, demais ⇒ captions). `GET` detail → `ImageDetail` flat (= `Image` + `boxes[]` + `caption|null`); `url` por imagem é híbrida D3: com `S3_PUBLIC_ENDPOINT_URL` → presigned GET (TTL `S3_URL_TTL_SECS`, default 3600), sem ela → `/api/datasets/:id/images/:imageId/data`. `GET /data` existe **incondicionalmente** (proxy do objeto, `Cache-Control: private, max-age=31536000, immutable`; objeto ausente ⇒ 404, bucket fora ⇒ 503). `PUT boxes` = substituição total transacional (`DELETE` + `INSERT` com `RETURNING` numa transação; erro ⇒ rollback + 500): corpo `{boxes:[{classId,x,y,w,h,conf?,origin?,trackId?}]}` (cap 1000, `x/y/w/h` e `conf` em `0..=1`, `origin ∈ manual|autotracker|import` default `manual`, `classId` tem de pertencer ao dataset senão 400 seco); `PUT caption` = upsert de statement único com `RETURNING` (`{text,origin?,model?}`, `text` 1..8000 chars, `model` ≤ 255 chars). `id`/`imageId` não-UUID → 404 `not_found` (ADR-0002 D8 replicado); erro novo `storage_unavailable` (503, ADR-0003 D10); wire camelCase, `deny_unknown_fields` nos inputs.
+   POST /api/datasets/:id/upload                  200 400 401 404 503
+   GET  /api/datasets/:id/images                  200 400 401 404
+   GET  /api/datasets/:id/images/:imageId         200 401 404
+   GET  /api/datasets/:id/images/:imageId/data    200 401 404 503
+   PUT  /api/datasets/:id/images/:imageId/boxes   200 400 401 404
+   PUT  /api/datasets/:id/images/:imageId/caption 200 400 401 404
+   PUT  /api/datasets/:id/classes                 200 400 401 404 409
+   DELETE /api/datasets/:id/images/:imageId       204 401 404
+   POST /api/datasets/:id/images/:imageId/restore 200 204 401 404 503
+   DELETE /api/datasets/:id/trash                 204 401 404
+   ```
+  `POST /:id/upload` (multipart campo `files`): resposta por item `{imageId,filename,status,reason,bytes,width,height}`, `status ∈ stored|duplicate|rejected|failed`, `reason ∈ duplicate_filename|unsupported_media|too_large|storage_error` (`src/datasets/handlers.rs::MAX_FILE_BYTES` = 200 MiB por arquivo; corpo TOTAL limitado por `UPLOAD_BODY_LIMIT_BYTES` = 200 MiB + 8 MiB de envelope em `src/auth/routes.rs`, excesso → 413 `invalid_request` no envelope; lote todo indecodível → 400; bucket fora → 503 `storage_unavailable`). `filename` do wire = nome canônico server-side (stem sanitizado + extensão do sniff por magic bytes), nunca o nome do form. `GET /:id/images?limit&offset&split&labeled&deleted` → `ImagePage{items,total,limit,offset}` (`limit` default 50, máx 200, `offset` default 0; `split=train|val`, `labeled=true|false`, inválido → 400; `labeled` respeita a taxonomia do trigger: `yolo_txt` ⇒ boxes, demais ⇒ captions; `deleted=true|false` (default false — `true` lista a lixeira). `GET` detail → `ImageDetail` flat (= `Image` + `boxes[]` + `caption|null`); `url` por imagem é híbrida D3: com `S3_PUBLIC_ENDPOINT_URL` → presigned GET (TTL `S3_URL_TTL_SECS`, default 3600), sem ela → `/api/datasets/:id/images/:imageId/data`. `GET /data` existe **incondicionalmente** (proxy do objeto, `Cache-Control: private, max-age=31536000, immutable`; objeto ausente ⇒ 404, bucket fora ⇒ 503). `PUT boxes` = substituição total transacional (`DELETE` + `INSERT` com `RETURNING` numa transação; erro ⇒ rollback + 500): corpo `{boxes:[{classId,x,y,w,h,conf?,origin?,trackId?}]}` (cap 1000, `x/y/w/h` e `conf` em `0..=1`, `origin ∈ manual|autotracker|import` default `manual`, `classId` tem de pertencer ao dataset senão 400 seco); `PUT caption` = upsert de statement único com `RETURNING` (`{text,origin?,model?}`, `text` 1..8000 chars, `model` ≤ 255 chars). `id`/`imageId` não-UUID → 404 `not_found` (ADR-0002 D8 replicado); erro novo `storage_unavailable` (503, ADR-0003 D10); wire camelCase, `deny_unknown_fields` nos inputs.
 - Nota Fatia 3b — storage/env (código: `src/main.rs::load_storage`, `infra/compose.yaml`): `STORAGE_BACKEND=mock|s3` (default `mock` nos testes, `s3` no compose); modo `s3` exige `S3_ENDPOINT_URL` + `S3_ACCESS_KEY` + `S3_SECRET_KEY` (fail-fast no boot sem ecoar valor); `S3_BUCKET` (default `heph-data`), `S3_PUBLIC_ENDPOINT_URL` (default `http://localhost:8333`; ausente ⇒ `url` vira fallback `/data`), `S3_URL_TTL_SECS` (default 3600, validado no boot em `1..=604800`, máx SigV4 de 7 dias). `Dataset.source` no wire **permanece** (contrato não quebra) mas é derivado server-side (`src/datasets/models.rs::derived_source`): `s3://{bucket}/datasets/{id}/` quando `images_count > 0`, `null` em dataset vazio. `Dataset.classes` é objeto completo `{id,name,idx,color}` (o `id` alimenta o `classId` do PUT boxes — gap fechado na 3b.7).
+- Nota Fatia 3g (ADR-0005, spec 0.4.0 — shapes reais em `services/api-principal/src/datasets/models.rs`, tabela de rotas ≡ `PROTECTED_ROUTES` em `src/auth/routes.rs`):
+  `PUT /:id/classes` = substituição total com reconciliação por id (`{classes:[{id?,name}]}`): id presente = rename preservando id (caixas intocadas); ausente = cria; ordem do array = idx 0..n-1; cor rederivada da paleta server-side (nunca do cliente); validação pura em `models.rs` (regex única reutilizada, ≤200, nomes/ids únicos, dedupe silencioso proibido); remoção de classe com caixas ⇒ 409 `classes_in_use` (guard ANTES de qualquer delete — o CASCADE do FK regeneraria ids e orfanaria as caixas); dance de `UNIQUE(name/idx)` em 2 fases na transação (tmp via `id.simple()` por causa do CHECK de name, `idx+1000000`). Lixeira: `DELETE /:id/images/:imageId` = soft delete (204, sem sweep, objeto intocado; 404 se inexistente/já deletada/UUID inválido); `POST /:id/images/:imageId/restore` (204 sem conflito; conflito de filename → rename `{stem}_restaurado{ext}` com desambiguação + `copy_object` server-side + delete da key antiga best-effort pós-commit → 200 `{filename}`; copy falha → 503 `storage_unavailable`, nada parcial); `DELETE /:id/trash` = purge REAL (CASCADE + sweep best-effort por prefixo de imagem pós-commit, 204 idempotente); `GET /:id/images?deleted=true` lista a lixeira; `Dataset.trashCount` derivado (badge). O parágrafo "PUT boxes … classId tem de pertencer ao dataset senão 400 seco" continua verdadeiro.
 
 ## 10. Schema Postgres (só local — principal/manager)
 
@@ -183,6 +193,12 @@ images(id UUID PK, dataset_id UUID FK CASCADE, filename TEXT CHECK 1..255, objec
   -- IMPLEMENTADO (Fatia 3b; `migrations/0003_images.sql` à letra): `object_key` no lugar de
   -- `path` (chave legível `datasets/{dataset_id}/images/{image_id}/{filename_sanitizado}`);
   -- +`sha256`/`media_type`; índices `images(dataset_id)` e `images(dataset_id, split)`.
+  -- IMPLEMENTADO (Fatia 3g; `migrations/0005_image_soft_delete.sql`): `deleted_at TIMESTAMPTZ NULL`
+  -- (soft delete — linha some das queries, objeto intocado); unique parcial
+  -- `(dataset_id, filename) WHERE deleted_at IS NULL` (re-upload de filename na lixeira
+  -- nasce linha nova); índice parcial da lixeira `(dataset_id) WHERE deleted_at IS NOT NULL`;
+  -- `heph_refresh_dataset_counters` filtra `deleted_at IS NULL` (trigger AFTER UPDATE
+  -- recalcula de graça no soft delete/restore).
 boxes(id UUID PK, image_id UUID FK CASCADE, class_id UUID FK CASCADE,
   x/y/w/h DOUBLE CHECK 0..1, conf DOUBLE NULL, origin TEXT CHECK manual|autotracker|import,
   track_id INT NULL);
@@ -207,7 +223,7 @@ runners(id UUID PK, engine TEXT, model TEXT, orchestrator_id UUID FK,
   status TEXT, vram_gb INT, last_used TIMESTAMPTZ);
 ```
 
-- Índices: `images(dataset_id)`, `images(dataset_id, split)`, `boxes(image_id)`, `boxes(class_id)`, `videos(dataset_id)`, `classes(dataset_id, idx)`, `jobs(status)`, `job_artifacts(job_id)`.
+- Índices: `images(dataset_id)`, `images(dataset_id, split)`, `images(dataset_id, filename) parcial ativa + images(dataset_id) parcial lixeira (0005)`, `boxes(image_id)`, `boxes(class_id)`, `videos(dataset_id)`, `classes(dataset_id, idx)`, `jobs(status)`, `job_artifacts(job_id)`.
 - Nota (ADR-0002 D1, casing — resolvido; era ADR-0001 T3 "a definir antes da Fatia 3"): wire camelCase em `/api/*` (`userId`, `sizeBytes`, `lastModified`, settings `hfToken`…); colunas SQL snake_case; valores de enum, `Error.code` e artefatos de transporte (`manifest.json`, `config.yaml`, SQLite do orquestrador) snake_case.
 - Regra: contadores do dataset recalculados por função única `heph_refresh_dataset_counters(uuid)` — IMPLEMENTADO (Fatia 3b; `migrations/0003_images.sql`, fecha ADR-0002 T2): recalcula `images_count`/`labeled_count`/`size_bytes` e deriva `status` (`needs_labeling`/`in_progress`/`ready`) a partir das tabelas-fato, nunca `+=` (drift impossível; `UPDATE` com guarda `IS DISTINCT FROM` evita churn de `updated_at`); disparada por triggers `AFTER INSERT OR UPDATE OR DELETE` em `images`, `videos` e `boxes`/`captions` (via lookup de `dataset_id`); a ordem trigger-usuário × cascata-RJ do `DELETE FROM images` deixa de importar (o último disparo vê o estado final); `labeled` = imagem com ≥1 box (format `yolo_txt`) **ou** linha em `captions` (demais formats) — taxonomia R9; `size_bytes` soma `images` + `videos`. Chaves externas com `ON DELETE CASCADE` de dataset→filhos. O invariante `labeled_count <= images_count` continua sem `CHECK` (não deferrável) — é obrigação do trigger.
 - **Split:** coluna `images.split (train|val)`; padrão 80/20 estratificado no package com override manual na galeria (seletor train/val por imagem).

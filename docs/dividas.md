@@ -29,6 +29,10 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
 
 **Backend**
 
+- **GC automático da lixeira (TTL) — ABERTA 2026-09-06** (fatia futura, fora da
+  3g por D9 da ADR-0005): hoje só purge manual via UI (`DELETE /:id/trash`);
+  `images.deleted_at` já dá o dado (idade do soft delete); falta TTL +
+  purge agendado (job/cron que DELETE físico + sweep das vencidas).
 - **Ordem estável de `boxes` entre saves (nota menor da 3d)** — o PUT boxes é
   `DELETE`+`INSERT` com `RETURNING`: os ids nascem novos a cada save e
   `GET detail` não garante ordem (visto no smoke 3d: `[autotracker, manual]`
@@ -75,9 +79,10 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
 
 - **Testes de UI** (backlog §12 do `frontend.md`) — cobrir
   criar→listar→excluir quando o e2e for ampliado.
-- **Sincronizar `docs/frontend.md` linha 3** — ainda descreve o protótipo como
+- ~~**Sincronizar `docs/frontend.md` linha 3** — ainda descreve o protótipo como
   "~2910 linhas"; o do tronco é a regeneração OpenDesign (3641 linhas, com
-  LoginPage).
+  LoginPage).~~ **QUITADA 2026-09-06** (commit 3g.6 docs-sync: linha 3 agora
+  diz "3641 linhas", conferido com `wc -l ai-vision-training-studio.html`).
 
 ## Quitadas
 

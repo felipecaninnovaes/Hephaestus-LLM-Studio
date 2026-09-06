@@ -1,6 +1,6 @@
 # Hephaestus LLM Studio — Documentação do Front-end
 
-> Fonte: `ai-vision-training-studio.html` (protótipo single-file ~2910 linhas, marca "OmniVision Studio v1.3") + `IDEIA.md` + `arquitetura_studio_modular.png`.
+> Fonte: `ai-vision-training-studio.html` (protótipo single-file 3641 linhas, marca "OmniVision Studio v1.3") + `IDEIA.md` + `arquitetura_studio_modular.png`.
 > Status: **protótipo validado visualmente, não reutilizar como código final**. Alvo real: **Next.js + TypeScript**.
 > Idioma da UI no protótipo: pt-BR.
 
@@ -97,12 +97,14 @@ Exigência da IDEIA: lista/grade → clique abre galeria → só na galeria Auto
 - Faixa resumo: `N amostras · X rotuladas por AutoTracker|AutoLabel · Formato · Backup: exportar/importar mantém JSON/YAML + anotações`.
 - Se `imagesCount === 0`: empty state "Galeria vazia" + "Enviar amostras" (upload Rust).
 - Grade: até 8 thumbs mockadas (`img_0001.jpg`...), overlay BBox para `category==='yolo'`, selo `caption.txt` para difusão/CLIP, tile dashed "Adicionar imagens / vídeo". Clique: yolo → abre editor BBox; demais → toast "Revisão de caption no AutoLabel".
+- Gestão de classes e amostras — IMPLEMENTADO (Fatia 3g): botão "Classes" abre o `ClassesModal` (renomear/adicionar/remover; 409 mantém o modal aberto com estado); hover por thumb mostra trash (soft delete → toast com **Desfazer**); pills `Ativas | Lixeira (n)` (`n` = `Dataset.trashCount`); na lixeira cada item tem `Restaurar` (conflito de filename → servidor renomeia `_restaurado` e devolve `{filename}`) e o botão `Esvaziar` (= única exclusão permanente, com `ConfirmDialog`, chama `DELETE /:id/trash`).
 
 ### 5.3 Editor BBox (`gallery-bbox-editor`)
 
 - Sidebar 288px: voltar, ferramentas (`bbox B`, `select V`, `pan H`), classes do dataset (`solda_fria` emerald, `curto_circuito` amber, `componente_ausente` rose, `trilha_rompida` cyan + atalho `[1-4]`), painel "Coordenadas YOLO (Norm.)" X/Y/W/H, "Salvar Anotações".
 - Canvas central com toolbar flutuante (zoom 50–250%, Reset 100%), moldura 600×450 escalada por `canvasZoom`, caixas selecionáveis com anel `ring-white/50` + alça `se-resize`.
 - No real: implementar drag/resize de verdade, snap, validação `0≤x,y,w,h≤1`, atalhos B/V/H/Delete, autosave debounced → `PUT /api/datasets/:id/images/:imageId/boxes`.
+- Gerenciar classes no editor — IMPLEMENTADO (Fatia 3g): botão "Gerenciar classes" abre o mesmo `ClassesModal` da galeria (copy nova: renomear preserva caixas; remover classe com caixas é bloqueado com 409); o editor NÃO tem exclusão de imagem (um lugar só destrói: a galeria).
 
 ## 6. Módulos de treino (1 aba por categoria)
 
@@ -150,6 +152,7 @@ interface Dataset {
   imagesCount: number; labeledCount: number; classes: {id: string; name: string; idx: number; color: string}[]; // objeto desde a 3b.7 (gap do classId fechado: PUT boxes usa classes[].id como classId)
   format: string; status: DatasetStatus; lastModified: string;
   size: string; autoTracked: boolean; source: string;
+  trashCount: number; // lixeira restaurável desde a 3g (ADR-0005)
 }
 // ALINHADO ao contrato real (Fatia 3a — packages/contracts/openapi.yaml, ADR-0002;
 // wire camelCase global): slug entra no shape (gerado pelo servidor, UNIQUE);
@@ -160,6 +163,8 @@ interface Dataset {
 // com imagens — ADR-0003 D5); classes é objeto {id,name,idx,color} desde a 3b.7;
 // autoTracked deriva do banco desde a 3d: EXISTS sobre `boxes.origin='autotracker'`
 // (dívida T7 do ADR-0002 quitada — não é mais constante).
+// trashCount deriva do banco desde a 3g (ADR-0005): COUNT de images com deleted_at
+// NOT NULL (badge da pill Lixeira; refreshDataset relê via getDataset).
 interface BBox { id: number; classId: number; label: string; x: number; y: number; w: number; h: number; color: string; }
 // trainTabFor(ds): difusao→/difusao, openclip→/openclip, yolo→/yolo
 // selectDatasetValue(cats): filtra por categoria, fallback 1º compatível
@@ -186,6 +191,7 @@ interface BBox { id: number; classId: number; label: string; x: number; y: numbe
 - Models: `GET /api/models` (dropdowns) + `POST /models/{upload,download}`.
 - Preview/sandbox: `POST /api/preview/{autolabel|autotracker|generate|search}` (efêmero, sem fila).
 - Settings: chaves `hfToken, civitaiKey, openaiKey, anthropicKey, vllmEndpoint` no wire (camelCase global, ADR-0002 D1; colunas `settings` seguem snake_case) — rota ainda **não implementada** (mascaradas no GET quando chegar).
+- Classes e lixeira — IMPLEMENTADO (Fatia 3g, spec 0.4.0, ADR-0005): `putClasses(datasetId, classes)` (`lib/classes.ts` → `PUT /:id/classes`, reconciliação por id, 409 `classes_in_use` mantém o modal aberto); `softDeleteImage` (`DELETE /:id/images/:imageId` → 204, sem sweep) / `restoreImage` (`POST .../restore` → 204 sem conflito | 200 `{filename}` com rename `_restaurado`) / `purgeTrash` (`DELETE /:id/trash` → 204) (`lib/images.ts`; listagem da lixeira via `listImages(id, {deleted:true})`); `Toast.action` (`{label, onClick}`, toast com ação vive 6s — usado pelo Desfazer).
 
 ## 11. Estrutura de pastas sugerida (Next.js)
 

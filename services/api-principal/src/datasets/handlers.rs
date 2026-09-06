@@ -646,7 +646,7 @@ pub async fn upload(
         let inserted: Option<Uuid> = match sqlx::query_scalar::<_, Uuid>(
             "INSERT INTO images (id, dataset_id, filename, object_key, bytes, width, height, md5, sha256, media_type) \
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) \
-             ON CONFLICT (dataset_id, filename) DO NOTHING RETURNING id",
+             ON CONFLICT (dataset_id, filename) WHERE deleted_at IS NULL DO NOTHING RETURNING id",
         )
         .bind(image_id)
         .bind(ds_id)
@@ -673,7 +673,7 @@ pub async fn upload(
                 // Compensação D7 best-effort (falha do delete: ignora).
                 let _ = state.storage.delete(&key).await;
                 let existing: Result<Option<Uuid>, _> = sqlx::query_scalar(
-                    "SELECT id FROM images WHERE dataset_id = $1 AND filename = $2",
+                    "SELECT id FROM images WHERE dataset_id = $1 AND filename = $2 AND deleted_at IS NULL",
                 )
                 .bind(ds_id)
                 .bind(&canonical)

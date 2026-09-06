@@ -2030,3 +2030,110 @@ async fn auto_tracked_derives_from_box_origin() {
     assert_eq!(by_id(ds_b)["autoTracked"], false);
     assert_eq!(by_id(ds_c)["autoTracked"], false);
 }
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0005_image_soft_delete() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Lixeira", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds_id: uuid::Uuid = json(&body)["id"]
+        .as_str()
+        .expect("id")
+        .parse()
+        .expect("uuid");
+    let ds = ds_id.to_string();
+    let class_id = class_id_of(&st.pool, ds_id).await;
+
+    let img1 = insert_image(&st.pool, ds_id, "a.jpg", 100).await;
+    sqlx::query(
+        "INSERT INTO boxes (image_id, class_id, x, y, w, h, origin) VALUES ($1,$2,0.5,0.5,0.2,0.2,'manual')",
+    )
+    .bind(img1)
+    .bind(class_id)
+    .execute(&st.pool)
+    .await
+    .expect("insert box");
+    assert_eq!(
+        counters_of(&st.pool, ds_id).await,
+        (1, 1, 100, "ready".to_string())
+    );
+
+    // (b) soft delete: contadores zeram, status volta, source derivado vira null.
+    sqlx::query("UPDATE images SET deleted_at = now() WHERE id = $1")
+        .bind(img1)
+        .execute(&st.pool)
+        .await
+        .expect("soft delete");
+    assert_eq!(
+        counters_of(&st.pool, ds_id).await,
+        (0, 0, 0, "needs_labeling".to_string())
+    );
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri(format!("/api/datasets/{ds}"))
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(json(&body)["source"].is_null());
+
+    // (c) restore: contadores voltam.
+    sqlx::query("UPDATE images SET deleted_at = NULL WHERE id = $1")
+        .bind(img1)
+        .execute(&st.pool)
+        .await
+        .expect("restore");
+    assert_eq!(
+        counters_of(&st.pool, ds_id).await,
+        (1, 1, 100, "ready".to_string())
+    );
+
+    // (d) unique parcial: filename na lixeira libera reinsert ativo.
+    sqlx::query("UPDATE images SET deleted_at = now() WHERE id = $1")
+        .bind(img1)
+        .execute(&st.pool)
+        .await
+        .expect("soft delete 2");
+    let img2 = insert_image(&st.pool, ds_id, "a.jpg", 50).await;
+    assert_eq!(
+        counters_of(&st.pool, ds_id).await,
+        (1, 0, 50, "needs_labeling".to_string())
+    );
+
+    // Duplicada entre duas ATIVAS continua violando.
+    let dup = sqlx::query(
+        "INSERT INTO images (id, dataset_id, filename, object_key, bytes, width, height, md5, sha256, media_type) \
+         VALUES ($1,$2,'a.jpg',$3,10,640,480,'d41d8cd98f00b204e9800998ecf8427e','e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855','jpeg')",
+    )
+    .bind(uuid::Uuid::new_v4())
+    .bind(ds_id)
+    .bind(format!("datasets/{ds_id}/images/{}/a.jpg", uuid::Uuid::new_v4()))
+    .execute(&st.pool)
+    .await;
+    assert!(dup.is_err(), "duplicada ativa deveria violar o índice parcial");
+
+    // Limpeza: a linha re-inserida sai para não poluir outros testes.
+    sqlx::query("DELETE FROM images WHERE id = $1")
+        .bind(img2)
+        .execute(&st.pool)
+        .await
+        .expect("cleanup img2");
+    sqlx::query("DELETE FROM images WHERE id = $1")
+        .bind(img1)
+        .execute(&st.pool)
+        .await
+        .expect("cleanup img1");
+}

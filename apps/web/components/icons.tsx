@@ -186,6 +186,14 @@ export function IconLock(props: IconProps) {
   );
 }
 
+export function IconPlay(props: IconProps) {
+  return (
+    <Base {...props}>
+      <polygon points="5 3 19 12 5 21 5 3" />
+    </Base>
+  );
+}
+
 export function IconLogOut(props: IconProps) {
   return (
     <Base {...props}>

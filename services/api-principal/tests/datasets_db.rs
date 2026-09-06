@@ -2124,7 +2124,10 @@ async fn t0005_image_soft_delete() {
     .bind(format!("datasets/{ds_id}/images/{}/a.jpg", uuid::Uuid::new_v4()))
     .execute(&st.pool)
     .await;
-    assert!(dup.is_err(), "duplicada ativa deveria violar o índice parcial");
+    assert!(
+        dup.is_err(),
+        "duplicada ativa deveria violar o índice parcial"
+    );
 
     // Limpeza: a linha re-inserida sai para não poluir outros testes.
     sqlx::query("DELETE FROM images WHERE id = $1")
@@ -2562,7 +2565,11 @@ async fn t0003_trash_soft_delete_e_lista() {
     // (a) soft delete → 204, sem corpo.
     let (status, _, body) = call(
         app.clone(),
-        bare_req(&cookie, "DELETE", format!("/api/datasets/{ds}/images/{img}")),
+        bare_req(
+            &cookie,
+            "DELETE",
+            format!("/api/datasets/{ds}/images/{img}"),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
@@ -2578,7 +2585,11 @@ async fn t0003_trash_soft_delete_e_lista() {
     assert_eq!(json(&body)["total"], 0);
     let (status, _, body) = call(
         app.clone(),
-        bare_req(&cookie, "GET", format!("/api/datasets/{ds}/images?deleted=true")),
+        bare_req(
+            &cookie,
+            "GET",
+            format!("/api/datasets/{ds}/images?deleted=true"),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -2593,7 +2604,11 @@ async fn t0003_trash_soft_delete_e_lista() {
     // DELETE de novo → 404 (já na lixeira).
     let (status, _, body) = call(
         app.clone(),
-        bare_req(&cookie, "DELETE", format!("/api/datasets/{ds}/images/{img}")),
+        bare_req(
+            &cookie,
+            "DELETE",
+            format!("/api/datasets/{ds}/images/{img}"),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -2603,7 +2618,11 @@ async fn t0003_trash_soft_delete_e_lista() {
     let img2 = insert_image(&st.pool, ds_id, "b.jpg", 50).await;
     let (status, _, body) = call(
         app.clone(),
-        bare_req(&cookie, "POST", format!("/api/datasets/{ds}/images/{img2}/restore")),
+        bare_req(
+            &cookie,
+            "POST",
+            format!("/api/datasets/{ds}/images/{img2}/restore"),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -2635,7 +2654,11 @@ async fn t0003_trash_restore_sem_conflito() {
     let img = insert_labeled_image(&st.pool, ds_id, class_id, "a.jpg", 100).await;
     let (status, _, _) = call(
         app.clone(),
-        bare_req(&cookie, "DELETE", format!("/api/datasets/{ds}/images/{img}")),
+        bare_req(
+            &cookie,
+            "DELETE",
+            format!("/api/datasets/{ds}/images/{img}"),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
@@ -2643,7 +2666,11 @@ async fn t0003_trash_restore_sem_conflito() {
     // (b) restore sem conflito → 204; volta ao list; contadores voltam.
     let (status, _, body) = call(
         app.clone(),
-        bare_req(&cookie, "POST", format!("/api/datasets/{ds}/images/{img}/restore")),
+        bare_req(
+            &cookie,
+            "POST",
+            format!("/api/datasets/{ds}/images/{img}/restore"),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
@@ -2691,7 +2718,11 @@ async fn t0003_trash_restore_com_conflito() {
     mock.put_bytes(&old_key, vec![7; 10]).await;
     let (status, _, _) = call(
         app.clone(),
-        bare_req(&cookie, "DELETE", format!("/api/datasets/{ds}/images/{img}")),
+        bare_req(
+            &cookie,
+            "DELETE",
+            format!("/api/datasets/{ds}/images/{img}"),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
@@ -2702,7 +2733,11 @@ async fn t0003_trash_restore_com_conflito() {
     // (c) restore com conflito → 200 com filename `_restaurado`.
     let (status, _, body) = call(
         app.clone(),
-        bare_req(&cookie, "POST", format!("/api/datasets/{ds}/images/{img}/restore")),
+        bare_req(
+            &cookie,
+            "POST",
+            format!("/api/datasets/{ds}/images/{img}/restore"),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -2760,7 +2795,11 @@ async fn t0003_trash_restore_503_sem_parcial() {
     let app_ok = routes::build(st.clone());
     let (status, _, _) = call(
         app_ok.clone(),
-        bare_req(&cookie, "DELETE", format!("/api/datasets/{ds}/images/{img}")),
+        bare_req(
+            &cookie,
+            "DELETE",
+            format!("/api/datasets/{ds}/images/{img}"),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
@@ -2772,7 +2811,11 @@ async fn t0003_trash_restore_503_sem_parcial() {
     let app = routes::build(st.clone());
     let (status, _, body) = call(
         app.clone(),
-        bare_req(&cookie, "POST", format!("/api/datasets/{ds}/images/{img}/restore")),
+        bare_req(
+            &cookie,
+            "POST",
+            format!("/api/datasets/{ds}/images/{img}/restore"),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
@@ -2817,7 +2860,11 @@ async fn t0003_trash_purge_idempotente() {
     for img in [t1, t2] {
         let (status, _, _) = call(
             app.clone(),
-            bare_req(&cookie, "DELETE", format!("/api/datasets/{ds}/images/{img}")),
+            bare_req(
+                &cookie,
+                "DELETE",
+                format!("/api/datasets/{ds}/images/{img}"),
+            ),
         )
         .await;
         assert_eq!(status, StatusCode::NO_CONTENT);
@@ -2884,7 +2931,11 @@ async fn t0003_trash_query_invalida_e_404s() {
     // (f) deleted=banana → 400.
     let (status, _, body) = call(
         app.clone(),
-        bare_req(&cookie, "GET", format!("/api/datasets/{ds}/images?deleted=banana")),
+        bare_req(
+            &cookie,
+            "GET",
+            format!("/api/datasets/{ds}/images?deleted=banana"),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -2893,7 +2944,10 @@ async fn t0003_trash_query_invalida_e_404s() {
     // (g) imageId não-UUID (soft delete e restore) → 404.
     for (method, uri) in [
         ("DELETE", format!("/api/datasets/{ds}/images/nao-e-uuid")),
-        ("POST", format!("/api/datasets/{ds}/images/nao-e-uuid/restore")),
+        (
+            "POST",
+            format!("/api/datasets/{ds}/images/nao-e-uuid/restore"),
+        ),
     ] {
         let (status, _, body) = call(app.clone(), bare_req(&cookie, method, uri.clone())).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
@@ -2975,7 +3029,11 @@ async fn t0003_trash_invisivel_e_trash_count() {
     // Soft delete da img1.
     let (status, _, _) = call(
         app.clone(),
-        bare_req(&cookie, "DELETE", format!("/api/datasets/{ds}/images/{img1}")),
+        bare_req(
+            &cookie,
+            "DELETE",
+            format!("/api/datasets/{ds}/images/{img1}"),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
@@ -2992,7 +3050,11 @@ async fn t0003_trash_invisivel_e_trash_count() {
     // (b) /data da deletada → 404.
     let (status, _, body) = call(
         app.clone(),
-        bare_req(&cookie, "GET", format!("/api/datasets/{ds}/images/{img1}/data")),
+        bare_req(
+            &cookie,
+            "GET",
+            format!("/api/datasets/{ds}/images/{img1}/data"),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -3057,7 +3119,11 @@ async fn t0003_trash_invisivel_e_trash_count() {
     // (g) restore → trashCount=0 e detail volta a 200.
     let (status, _, _) = call(
         app.clone(),
-        bare_req(&cookie, "POST", format!("/api/datasets/{ds}/images/{img1}/restore")),
+        bare_req(
+            &cookie,
+            "POST",
+            format!("/api/datasets/{ds}/images/{img1}/restore"),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);

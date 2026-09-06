@@ -486,9 +486,7 @@ pub async fn restore_image(
     }
     // Pós-commit: a key antiga sai best-effort (D7 — falha loga, nunca erro).
     if let Err(e) = state.storage.delete(&object_key).await {
-        eprintln!(
-            "aviso: delete da key antiga {object_key} falhou ({e}) — objeto reapável"
-        );
+        eprintln!("aviso: delete da key antiga {object_key} falhou ({e}) — objeto reapável");
     }
     (
         StatusCode::OK,
@@ -510,14 +508,15 @@ pub async fn delete_trash(State(state): State<AppState>, Path(id): Path<String>)
         Some(v) => v,
         None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
     };
-    let exists: bool = match sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM datasets WHERE id = $1)")
-        .bind(ds_id)
-        .fetch_one(&state.pool)
-        .await
-    {
-        Ok(v) => v,
-        Err(_) => return internal(),
-    };
+    let exists: bool =
+        match sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM datasets WHERE id = $1)")
+            .bind(ds_id)
+            .fetch_one(&state.pool)
+            .await
+        {
+            Ok(v) => v,
+            Err(_) => return internal(),
+        };
     if !exists {
         return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND);
     }
@@ -534,9 +533,7 @@ pub async fn delete_trash(State(state): State<AppState>, Path(id): Path<String>)
     for img_id in &purged {
         let prefix = format!("datasets/{ds_id}/images/{img_id}/");
         if let Err(e) = state.storage.delete_prefix(&prefix).await {
-            eprintln!(
-                "aviso: sweep da lixeira {prefix} falhou ({e}) — objetos reapáveis"
-            );
+            eprintln!("aviso: sweep da lixeira {prefix} falhou ({e}) — objetos reapáveis");
         }
     }
     StatusCode::NO_CONTENT.into_response()
@@ -1591,28 +1588,28 @@ pub async fn put_classes(
         Err(resp) => return resp,
     };
     // (c) dataset existe escopado ao id.
-    let exists: bool = match sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM datasets WHERE id = $1)")
-        .bind(ds_id)
-        .fetch_one(&state.pool)
-        .await
-    {
-        Ok(v) => v,
-        Err(_) => return internal(),
-    };
+    let exists: bool =
+        match sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM datasets WHERE id = $1)")
+            .bind(ds_id)
+            .fetch_one(&state.pool)
+            .await
+        {
+            Ok(v) => v,
+            Err(_) => return internal(),
+        };
     if !exists {
         return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND);
     }
     // Classes atuais do dataset (ids para o plano).
-    let existing: Vec<Uuid> = match sqlx::query_scalar(
-        "SELECT id FROM classes WHERE dataset_id = $1",
-    )
-    .bind(ds_id)
-    .fetch_all(&state.pool)
-    .await
-    {
-        Ok(v) => v,
-        Err(_) => return internal(),
-    };
+    let existing: Vec<Uuid> =
+        match sqlx::query_scalar("SELECT id FROM classes WHERE dataset_id = $1")
+            .bind(ds_id)
+            .fetch_all(&state.pool)
+            .await
+        {
+            Ok(v) => v,
+            Err(_) => return internal(),
+        };
     // (d) validação pura + reconciliação (id estranho ⇒ 400 seco).
     let plan = match plan_classes(&existing, &req) {
         Ok(p) => p,
@@ -1632,22 +1629,17 @@ pub async fn put_classes(
         Err(_) => return internal(),
     };
     if !plan.remove.is_empty() {
-        let hit: bool = match sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM boxes WHERE class_id = ANY($1))",
-        )
-        .bind(&plan.remove)
-        .fetch_one(&mut *tx)
-        .await
-        {
-            Ok(v) => v,
-            Err(_) => return internal(),
-        };
+        let hit: bool =
+            match sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM boxes WHERE class_id = ANY($1))")
+                .bind(&plan.remove)
+                .fetch_one(&mut *tx)
+                .await
+            {
+                Ok(v) => v,
+                Err(_) => return internal(),
+            };
         if hit {
-            return err(
-                StatusCode::CONFLICT,
-                "classes_in_use",
-                MSG_CLASSES_IN_USE,
-            );
+            return err(StatusCode::CONFLICT, "classes_in_use", MSG_CLASSES_IN_USE);
         }
     }
     // Fase 1: mantidos para nome/idx temporários (fora de qualquer colisão).
@@ -1701,16 +1693,14 @@ pub async fn put_classes(
     // INSERT das novas (id pelo default do banco).
     for (name, final_idx) in &plan.create {
         let color = color_for(*final_idx);
-        if sqlx::query(
-            "INSERT INTO classes (dataset_id, name, idx, color) VALUES ($1, $2, $3, $4)",
-        )
-        .bind(ds_id)
-        .bind(name)
-        .bind(*final_idx as i32)
-        .bind(color)
-        .execute(&mut *tx)
-        .await
-        .is_err()
+        if sqlx::query("INSERT INTO classes (dataset_id, name, idx, color) VALUES ($1, $2, $3, $4)")
+            .bind(ds_id)
+            .bind(name)
+            .bind(*final_idx as i32)
+            .bind(color)
+            .execute(&mut *tx)
+            .await
+            .is_err()
         {
             return internal();
         }

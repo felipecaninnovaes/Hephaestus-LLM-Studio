@@ -876,9 +876,7 @@ mod tests {
     #[test]
     fn put_classes_id_outro_dataset_erro() {
         let ghost = Uuid::new_v4();
-        let req = req_classes(&format!(
-            r#"{{"classes":[{{"id":"{ghost}","name":"a"}}]}}"#
-        ));
+        let req = req_classes(&format!(r#"{{"classes":[{{"id":"{ghost}","name":"a"}}]}}"#));
         assert!(plan_classes(&[], &req).is_err());
     }
 
@@ -890,18 +888,14 @@ mod tests {
             r#"{{"classes":[{{"id":"{keep_id}","name":"novo_nome"}},{{"name":"nova_classe"}}]}}"#
         ));
         let plan = plan_classes(&[keep_id, gone_id], &req).expect("plano válido");
-        assert_eq!(
-            plan.keep,
-            vec![(keep_id, "novo_nome".to_string(), 0)]
-        );
+        assert_eq!(plan.keep, vec![(keep_id, "novo_nome".to_string(), 0)]);
         assert_eq!(plan.create, vec![("nova_classe".to_string(), 1)]);
         assert_eq!(plan.remove, vec![gone_id]);
     }
 
     #[test]
     fn put_classes_deny_unknown() {
-        let bad: Result<PutClassesRequest, _> =
-            serde_json::from_str(r#"{"classes":[],"extra":1}"#);
+        let bad: Result<PutClassesRequest, _> = serde_json::from_str(r#"{"classes":[],"extra":1}"#);
         assert!(bad.is_err(), "deny_unknown_fields da casa");
     }
 }

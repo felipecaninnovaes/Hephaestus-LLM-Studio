@@ -47,10 +47,7 @@ fn setup_state() -> AppState {
     }
 }
 
-async fn call(
-    app: axum::Router,
-    req: Request<Body>,
-) -> (StatusCode, http::HeaderMap, Vec<u8>) {
+async fn call(app: axum::Router, req: Request<Body>) -> (StatusCode, http::HeaderMap, Vec<u8>) {
     let resp = app.oneshot(req).await.expect("oneshot");
     let status = resp.status();
     let headers = resp.headers().clone();
@@ -140,7 +137,10 @@ fn inventory_matches_openapi() {
         }
     }
 
-    assert_eq!(code, spec, "deriva contrato vs router (D8): routes_all ≠ openapi.yaml");
+    assert_eq!(
+        code, spec,
+        "deriva contrato vs router (D8): routes_all ≠ openapi.yaml"
+    );
 
     // HealthResponse do inventário bate com o `/health` atual (campo `auth` novo).
     let health = &yaml["components"]["schemas"]["HealthResponse"];
@@ -403,7 +403,9 @@ async fn datasets_probe_without_db() {
             .uri("/api/datasets")
             .header(http::header::CONTENT_TYPE, "application/json")
             .header(http::header::COOKIE, cookie.clone())
-            .body(Body::from(r#"{"title":"x","type":"yolo_bbox","status":"ready"}"#))
+            .body(Body::from(
+                r#"{"title":"x","type":"yolo_bbox","status":"ready"}"#,
+            ))
             .unwrap(),
     )
     .await;
@@ -493,14 +495,9 @@ async fn detail_and_data_reject_non_uuid_before_anything() {
 
     for uri in [
         "/api/datasets/nao-e-uuid/images/00000000-0000-0000-0000-000000000000".to_string(),
-        format!(
-            "/api/datasets/00000000-0000-0000-0000-000000000000/images/nao-e-uuid"
-        ),
-        "/api/datasets/nao-e-uuid/images/00000000-0000-0000-0000-000000000000/data"
-            .to_string(),
-        format!(
-            "/api/datasets/00000000-0000-0000-0000-000000000000/images/nao-e-uuid/data"
-        ),
+        format!("/api/datasets/00000000-0000-0000-0000-000000000000/images/nao-e-uuid"),
+        "/api/datasets/nao-e-uuid/images/00000000-0000-0000-0000-000000000000/data".to_string(),
+        format!("/api/datasets/00000000-0000-0000-0000-000000000000/images/nao-e-uuid/data"),
     ] {
         let (status, _, body) = call(
             app.clone(),

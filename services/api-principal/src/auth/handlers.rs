@@ -134,11 +134,7 @@ pub async fn login(state: axum::extract::State<AppState>, body: Bytes) -> Respon
         {
             Ok(r) => r,
             Err(_) => {
-                return err(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    MSG_INTERNAL,
-                );
+                return err(StatusCode::INTERNAL_SERVER_ERROR, "internal", MSG_INTERNAL);
             }
         };
     let (user_id, phc) = match row {
@@ -170,9 +166,7 @@ pub async fn login(state: axum::extract::State<AppState>, body: Bytes) -> Respon
 
 /// GET /api/auth/me — valida o próprio cookie (gate desta rota, D9).
 pub async fn me(state: axum::extract::State<AppState>, headers: HeaderMap) -> Response {
-    let cookie = headers
-        .get(header::COOKIE)
-        .and_then(|v| v.to_str().ok());
+    let cookie = headers.get(header::COOKIE).and_then(|v| v.to_str().ok());
     let token = match extract_session_cookie(cookie) {
         Some(t) => t,
         None => return err(StatusCode::UNAUTHORIZED, "unauthorized", MSG_UNAUTHORIZED),

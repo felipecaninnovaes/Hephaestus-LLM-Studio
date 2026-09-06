@@ -19,7 +19,10 @@ async fn not_found_envelope() -> Response {
 fn build_spike_router() -> axum::Router {
     axum::Router::new()
         // --- 4 rotas core já existentes (3a) ---
-        .route("/api/datasets", get(|| async { "LIST" }).post(|| async { "CREATE" }))
+        .route(
+            "/api/datasets",
+            get(|| async { "LIST" }).post(|| async { "CREATE" }),
+        )
         .route(
             "/api/datasets/:id",
             get(|| async { "GET_DS" }).delete(|| async { "DELETE_DS" }),
@@ -27,7 +30,10 @@ fn build_spike_router() -> axum::Router {
         // --- 6 rotas novas da 3b ---
         .route("/api/datasets/:id/upload", post(|| async { "UPLOAD" }))
         .route("/api/datasets/:id/images", get(|| async { "IMAGES_LIST" }))
-        .route("/api/datasets/:id/images/:imageId", get(|| async { not_found_envelope().await }))
+        .route(
+            "/api/datasets/:id/images/:imageId",
+            get(|| async { not_found_envelope().await }),
+        )
         .route(
             "/api/datasets/:id/images/:imageId/data",
             get(|| async { "IMAGE_DATA" }),
@@ -77,7 +83,10 @@ async fn main() {
     for (m, uri, want) in cases {
         let (status, body) = probe(&app, m, uri).await;
         let ok = status == 200 && body == *want;
-        println!("[C6] {m} {uri} → {status} \"{body}\" (queria {want}) {}", if ok { "OK" } else { "FAIL" });
+        println!(
+            "[C6] {m} {uri} → {status} \"{body}\" (queria {want}) {}",
+            if ok { "OK" } else { "FAIL" }
+        );
         if ok {
             pass += 1;
         }

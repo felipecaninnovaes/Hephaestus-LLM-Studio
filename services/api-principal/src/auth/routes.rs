@@ -30,12 +30,28 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
     ("POST", "/api/datasets", &[201, 400, 401, 409]),
     ("GET", "/api/datasets/:id", &[200, 401, 404]),
     ("DELETE", "/api/datasets/:id", &[204, 401, 404]),
-    ("POST", "/api/datasets/:id/upload", &[200, 400, 401, 404, 503]),
+    (
+        "POST",
+        "/api/datasets/:id/upload",
+        &[200, 400, 401, 404, 503],
+    ),
     ("GET", "/api/datasets/:id/images", &[200, 400, 401, 404]),
     ("GET", "/api/datasets/:id/images/:imageId", &[200, 401, 404]),
-    ("GET", "/api/datasets/:id/images/:imageId/data", &[200, 401, 404, 503]),
-    ("PUT", "/api/datasets/:id/images/:imageId/boxes", &[200, 400, 401, 404]),
-    ("PUT", "/api/datasets/:id/images/:imageId/caption", &[200, 400, 401, 404]),
+    (
+        "GET",
+        "/api/datasets/:id/images/:imageId/data",
+        &[200, 401, 404, 503],
+    ),
+    (
+        "PUT",
+        "/api/datasets/:id/images/:imageId/boxes",
+        &[200, 400, 401, 404],
+    ),
+    (
+        "PUT",
+        "/api/datasets/:id/images/:imageId/caption",
+        &[200, 400, 401, 404],
+    ),
 ];
 
 /// Rotas públicas (sem gate): `/health` + `/api/auth/*`.
@@ -101,8 +117,7 @@ pub fn build(state: AppState) -> axum::Router {
         )
         .route(
             "/api/datasets/:id/upload",
-            post(datasets::handlers::upload)
-                .layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT_BYTES)),
+            post(datasets::handlers::upload).layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT_BYTES)),
         )
         .route(
             "/api/datasets/:id/images",
@@ -128,7 +143,10 @@ pub fn build(state: AppState) -> axum::Router {
         // no boot (path_router.rs, `routes.is_empty()`). Só cobre as rotas deste
         // sub-router — /health e /api/auth/* seguem fora do gate, e o .fallback()
         // da raiz permanece cobrindo caminho NÃO roteado (D9).
-        .route_layer(middleware::from_fn_with_state(state.clone(), gate::require_auth));
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            gate::require_auth,
+        ));
     axum::Router::new()
         .route("/health", get(health))
         .route("/api/auth/login", post(handlers::login))

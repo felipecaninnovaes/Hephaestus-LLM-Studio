@@ -36,12 +36,13 @@ use super::models::{
     ImageRow, PutBoxesRequest, PutBoxesResponse, PutCaptionRequest, UploadItem, UploadResult,
 };
 use crate::{
-    error::{
-        err, MSG_INVALID_REQUEST, MSG_NOT_FOUND, MSG_SLUG_CONFLICT,
-        MSG_STORAGE_UNAVAILABLE,
-    },
+    error::{err, MSG_INVALID_REQUEST, MSG_NOT_FOUND, MSG_SLUG_CONFLICT, MSG_STORAGE_UNAVAILABLE},
     state::AppState,
-    storage::{keys, sniff::{self, MediaType}, StorageError},
+    storage::{
+        keys,
+        sniff::{self, MediaType},
+        StorageError,
+    },
 };
 
 const MSG_INTERNAL: &str = "internal server error";
@@ -64,14 +65,15 @@ pub async fn list(State(state): State<AppState>) -> Response {
         Ok(r) => r,
         Err(_) => return internal(),
     };
-    let class_rows: Vec<(Uuid, Uuid, String, i32, String)> =
-        match sqlx::query_as("SELECT dataset_id, id, name, idx, color FROM classes ORDER BY dataset_id, idx")
-            .fetch_all(&state.pool)
-            .await
-        {
-            Ok(r) => r,
-            Err(_) => return internal(),
-        };
+    let class_rows: Vec<(Uuid, Uuid, String, i32, String)> = match sqlx::query_as(
+        "SELECT dataset_id, id, name, idx, color FROM classes ORDER BY dataset_id, idx",
+    )
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return internal(),
+    };
     let mut by_dataset: HashMap<Uuid, Vec<DatasetClassResponse>> = HashMap::new();
     for (dataset_id, id, name, idx, color) in class_rows {
         by_dataset
@@ -190,11 +192,7 @@ pub async fn create(
         Some(r) => r,
         None => {
             let _ = tx.rollback().await;
-            return err(
-                StatusCode::CONFLICT,
-                "slug_conflict",
-                MSG_SLUG_CONFLICT,
-            );
+            return err(StatusCode::CONFLICT, "slug_conflict", MSG_SLUG_CONFLICT);
         }
     };
     let idxs: Vec<i32> = (0..classes.len()).map(|i| i as i32).collect();
@@ -223,15 +221,16 @@ pub async fn create(
     let ds_id = row.id;
     let images_count = row.images_count;
     let mut resp = DatasetResponse::from(row);
-    let created_classes: Vec<(Uuid, String, i32, String)> =
-        match sqlx::query_as("SELECT id, name, idx, color FROM classes WHERE dataset_id = $1 ORDER BY idx")
-            .bind(ds_id)
-            .fetch_all(&state.pool)
-            .await
-        {
-            Ok(r) => r,
-            Err(_) => return internal(),
-        };
+    let created_classes: Vec<(Uuid, String, i32, String)> = match sqlx::query_as(
+        "SELECT id, name, idx, color FROM classes WHERE dataset_id = $1 ORDER BY idx",
+    )
+    .bind(ds_id)
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return internal(),
+    };
     resp.classes = created_classes
         .into_iter()
         .map(DatasetClassResponse::from)
@@ -310,7 +309,9 @@ pub async fn delete(State(state): State<AppState>, Path(id): Path<String>) -> Re
         // reapável por script. Sem framework de log ainda (dívida nomeada em
         // docs/coordenacao.md), o eprintln é o mínimo honesto. `e` é Display
         // ESTÁTICO (nunca endpoint/credencial).
-        eprintln!("aviso: sweep do prefixo {prefix} falhou ({e}) — dataset deletado, objetos reapáveis");
+        eprintln!(
+            "aviso: sweep do prefixo {prefix} falhou ({e}) — dataset deletado, objetos reapáveis"
+        );
     }
     StatusCode::NO_CONTENT.into_response()
 }
@@ -322,20 +323,58 @@ const ICOLS: &str = "id, filename, object_key, bytes, width, height, media_type,
 /// de escrever no disco mas drena a stream até EOF e marca rejected/too_large.
 pub const MAX_FILE_BYTES: i64 = 200 * 1024 * 1024;
 
-fn stored_item(image_id: Uuid, filename: String, bytes: i64, width: i32, height: i32) -> UploadItem {
-    UploadItem { image_id: Some(image_id.to_string()), filename, status: "stored".to_string(), reason: None, bytes: Some(bytes), width: Some(width), height: Some(height) }
+fn stored_item(
+    image_id: Uuid,
+    filename: String,
+    bytes: i64,
+    width: i32,
+    height: i32,
+) -> UploadItem {
+    UploadItem {
+        image_id: Some(image_id.to_string()),
+        filename,
+        status: "stored".to_string(),
+        reason: None,
+        bytes: Some(bytes),
+        width: Some(width),
+        height: Some(height),
+    }
 }
 
 fn duplicate_item(image_id: Uuid, filename: String) -> UploadItem {
-    UploadItem { image_id: Some(image_id.to_string()), filename, status: "duplicate".to_string(), reason: Some("duplicate_filename".to_string()), bytes: None, width: None, height: None }
+    UploadItem {
+        image_id: Some(image_id.to_string()),
+        filename,
+        status: "duplicate".to_string(),
+        reason: Some("duplicate_filename".to_string()),
+        bytes: None,
+        width: None,
+        height: None,
+    }
 }
 
 fn rejected_item(filename: String, reason: &'static str) -> UploadItem {
-    UploadItem { image_id: None, filename, status: "rejected".to_string(), reason: Some(reason.to_string()), bytes: None, width: None, height: None }
+    UploadItem {
+        image_id: None,
+        filename,
+        status: "rejected".to_string(),
+        reason: Some(reason.to_string()),
+        bytes: None,
+        width: None,
+        height: None,
+    }
 }
 
 fn failed_item(filename: String) -> UploadItem {
-    UploadItem { image_id: None, filename, status: "failed".to_string(), reason: Some("storage_error".to_string()), bytes: None, width: None, height: None }
+    UploadItem {
+        image_id: None,
+        filename,
+        status: "failed".to_string(),
+        reason: Some("storage_error".to_string()),
+        bytes: None,
+        width: None,
+        height: None,
+    }
 }
 
 /// Erro opaco do axum: `LengthLimitError` no debug (estouro do
@@ -371,14 +410,15 @@ pub async fn upload(
         Some(v) => v,
         None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
     };
-    let exists: bool = match sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM datasets WHERE id = $1)")
-        .bind(ds_id)
-        .fetch_one(&state.pool)
-        .await
-    {
-        Ok(v) => v,
-        Err(_) => return internal(),
-    };
+    let exists: bool =
+        match sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM datasets WHERE id = $1)")
+            .bind(ds_id)
+            .fetch_one(&state.pool)
+            .await
+        {
+            Ok(v) => v,
+            Err(_) => return internal(),
+        };
     if !exists {
         return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND);
     }
@@ -412,12 +452,18 @@ pub async fn upload(
         // 3. Spool em tempfile (stream chunk → write_all até EOF).
         let tmp = match tempfile::NamedTempFile::new() {
             Ok(t) => t,
-            Err(_) => { items.push(failed_item(filename)); continue; }
+            Err(_) => {
+                items.push(failed_item(filename));
+                continue;
+            }
         };
         let tmp_path = tmp.path().to_path_buf();
         let mut out = match tokio::fs::File::create(&tmp_path).await {
             Ok(f) => f,
-            Err(_) => { items.push(failed_item(filename)); continue; }
+            Err(_) => {
+                items.push(failed_item(filename));
+                continue;
+            }
         };
         // Spool com teto por-arquivo (MAX_FILE_BYTES): ao exceder, para de
         // escrever mas drena `field.chunk()` até EOF sem acumular em RAM
@@ -438,7 +484,10 @@ pub async fn upload(
                             over = true;
                             continue;
                         }
-                        if out.write_all(&bytes).await.is_err() { spool = Err("io"); break; }
+                        if out.write_all(&bytes).await.is_err() {
+                            spool = Err("io");
+                            break;
+                        }
                     }
                     Ok(None) => break,
                     Err(e) => {
@@ -461,9 +510,18 @@ pub async fn upload(
         }
         match spool {
             Ok(()) => {}
-            Err("too_large") => { items.push(rejected_item(filename, "too_large")); continue; }
-            Err("dead") => { items.push(failed_item(filename)); break; }
-            Err(_) => { items.push(failed_item(filename)); continue; }
+            Err("too_large") => {
+                items.push(rejected_item(filename, "too_large"));
+                continue;
+            }
+            Err("dead") => {
+                items.push(failed_item(filename));
+                break;
+            }
+            Err(_) => {
+                items.push(failed_item(filename));
+                continue;
+            }
         }
 
         // 4. Sniff dos 12 primeiros bytes (canônico = conteúdo, D2/D5).
@@ -471,7 +529,10 @@ pub async fn upload(
             use tokio::io::AsyncReadExt;
             let mut f = match tokio::fs::File::open(&tmp_path).await {
                 Ok(f) => f,
-                Err(_) => { items.push(failed_item(filename)); continue; }
+                Err(_) => {
+                    items.push(failed_item(filename));
+                    continue;
+                }
             };
             let mut buf = [0u8; 12];
             let mut n = 0usize;
@@ -486,21 +547,35 @@ pub async fn upload(
         };
         let media = match sniff::sniff(&head) {
             Some(m) => m,
-            None => { items.push(rejected_item(filename, "unsupported_media")); continue; }
+            None => {
+                items.push(rejected_item(filename, "unsupported_media"));
+                continue;
+            }
         };
 
         // 5. Dimensões (`BufReader`: `ImageReader::new` exige `BufRead`;
         // `with_guessed_format` no image 0.25 retorna `Result` — desvios da
         // cadeia da spec, só adaptadores). Falha de decode ⇒ unsupported_media.
         let (width, height) = match std::fs::File::open(&tmp_path) {
-            Ok(f) => match image::ImageReader::new(std::io::BufReader::new(f)).with_guessed_format() {
-                Ok(r) => match r.into_dimensions() {
-                    Ok((w, h)) => (w as i32, h as i32),
-                    Err(_) => { items.push(rejected_item(filename, "unsupported_media")); continue; }
-                },
-                Err(_) => { items.push(rejected_item(filename, "unsupported_media")); continue; }
-            },
-            Err(_) => { items.push(failed_item(filename)); continue; }
+            Ok(f) => {
+                match image::ImageReader::new(std::io::BufReader::new(f)).with_guessed_format() {
+                    Ok(r) => match r.into_dimensions() {
+                        Ok((w, h)) => (w as i32, h as i32),
+                        Err(_) => {
+                            items.push(rejected_item(filename, "unsupported_media"));
+                            continue;
+                        }
+                    },
+                    Err(_) => {
+                        items.push(rejected_item(filename, "unsupported_media"));
+                        continue;
+                    }
+                }
+            }
+            Err(_) => {
+                items.push(failed_item(filename));
+                continue;
+            }
         };
 
         // 6. Hash em streaming (blocos de 1 MiB) + tamanho real do spool.
@@ -508,7 +583,10 @@ pub async fn upload(
             use tokio::io::AsyncReadExt;
             let mut f = match tokio::fs::File::open(&tmp_path).await {
                 Ok(f) => f,
-                Err(_) => { items.push(failed_item(filename)); continue; }
+                Err(_) => {
+                    items.push(failed_item(filename));
+                    continue;
+                }
             };
             let mut md5 = md5::Md5::new();
             let mut sha = sha2::Sha256::new();
@@ -518,15 +596,33 @@ pub async fn upload(
             loop {
                 match f.read(&mut buf).await {
                     Ok(0) => break,
-                    Ok(k) => { Md5Digest::update(&mut md5, &buf[..k]); Sha256Digest::update(&mut sha, &buf[..k]); total += k as i64; }
-                    Err(_) => { ok = false; break; }
+                    Ok(k) => {
+                        Md5Digest::update(&mut md5, &buf[..k]);
+                        Sha256Digest::update(&mut sha, &buf[..k]);
+                        total += k as i64;
+                    }
+                    Err(_) => {
+                        ok = false;
+                        break;
+                    }
                 }
             }
-            if !ok { None } else { Some((hex::encode(Md5Digest::finalize(md5)), hex::encode(Sha256Digest::finalize(sha)), total)) }
+            if !ok {
+                None
+            } else {
+                Some((
+                    hex::encode(Md5Digest::finalize(md5)),
+                    hex::encode(Sha256Digest::finalize(sha)),
+                    total,
+                ))
+            }
         };
         let (md5hex, shahex, bytes) = match hashed {
             Some(v) => v,
-            None => { items.push(failed_item(filename)); continue; }
+            None => {
+                items.push(failed_item(filename));
+                continue;
+            }
         };
 
         // 7. PUT antes do INSERT (D7: chave conhecida antes do objeto).
@@ -573,11 +669,13 @@ pub async fn upload(
             None => {
                 // Compensação D7 best-effort (falha do delete: ignora).
                 let _ = state.storage.delete(&key).await;
-                let existing: Result<Option<Uuid>, _> = sqlx::query_scalar("SELECT id FROM images WHERE dataset_id = $1 AND filename = $2")
-                    .bind(ds_id)
-                    .bind(&canonical)
-                    .fetch_optional(&state.pool)
-                    .await;
+                let existing: Result<Option<Uuid>, _> = sqlx::query_scalar(
+                    "SELECT id FROM images WHERE dataset_id = $1 AND filename = $2",
+                )
+                .bind(ds_id)
+                .bind(&canonical)
+                .fetch_optional(&state.pool)
+                .await;
                 match existing {
                     Ok(Some(id)) => items.push(duplicate_item(id, canonical)),
                     Ok(None) => items.push(failed_item(canonical)),
@@ -591,9 +689,15 @@ pub async fn upload(
     // 9. Códigos do lote: vazio ⇒ 400; todo-rejected/unsupported ⇒ 400;
     // senão 200 mesmo com `rejected`/`failed` individuais.
     if items.is_empty()
-        || items.iter().all(|i| i.status == "rejected" && i.reason.as_deref() == Some("unsupported_media"))
+        || items
+            .iter()
+            .all(|i| i.status == "rejected" && i.reason.as_deref() == Some("unsupported_media"))
     {
-        return err(StatusCode::BAD_REQUEST, "invalid_request", MSG_INVALID_REQUEST);
+        return err(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            MSG_INVALID_REQUEST,
+        );
     }
     (StatusCode::OK, Json(UploadResult { items })).into_response()
 }
@@ -644,7 +748,13 @@ pub async fn list_images(
         None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
     };
     // Parse manual p/ 400 no envelope (nada tipado no extractor).
-    let bad = || err(StatusCode::BAD_REQUEST, "invalid_request", MSG_INVALID_REQUEST);
+    let bad = || {
+        err(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            MSG_INVALID_REQUEST,
+        )
+    };
     let split: Option<String> = match q.split {
         None => None,
         Some(s) if s == "train" || s == "val" => Some(s),
@@ -668,14 +778,15 @@ pub async fn list_images(
     };
 
     // Formato do dataset (R9 como no trigger da 0003) + existência (404).
-    let format: Option<String> = match sqlx::query_scalar("SELECT format FROM datasets WHERE id = $1")
-        .bind(ds_id)
-        .fetch_optional(&state.pool)
-        .await
-    {
-        Ok(v) => v,
-        Err(_) => return internal(),
-    };
+    let format: Option<String> =
+        match sqlx::query_scalar("SELECT format FROM datasets WHERE id = $1")
+            .bind(ds_id)
+            .fetch_optional(&state.pool)
+            .await
+        {
+            Ok(v) => v,
+            Err(_) => return internal(),
+        };
     let format = match format {
         Some(f) => f,
         None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
@@ -691,9 +802,21 @@ pub async fn list_images(
     }
     if let Some(lab) = labeled {
         // Taxonomia R9 do trigger da 0003: yolo_txt ⇒ boxes, demais ⇒ captions.
-        let table = if format == "yolo_txt" { "boxes b" } else { "captions c" };
-        let col = if format == "yolo_txt" { "b.image_id" } else { "c.image_id" };
-        qb.push(if lab { " AND EXISTS (SELECT 1 FROM " } else { " AND NOT EXISTS (SELECT 1 FROM " });
+        let table = if format == "yolo_txt" {
+            "boxes b"
+        } else {
+            "captions c"
+        };
+        let col = if format == "yolo_txt" {
+            "b.image_id"
+        } else {
+            "c.image_id"
+        };
+        qb.push(if lab {
+            " AND EXISTS (SELECT 1 FROM "
+        } else {
+            " AND NOT EXISTS (SELECT 1 FROM "
+        });
         qb.push(table);
         qb.push(" WHERE ");
         qb.push(col);
@@ -704,21 +827,51 @@ pub async fn list_images(
     qb.push(" OFFSET ");
     qb.push_bind(offset);
 
-    type ImgTuple = (Uuid, String, String, i64, i32, i32, String, String, chrono::DateTime<chrono::Utc>, i64);
+    type ImgTuple = (
+        Uuid,
+        String,
+        String,
+        i64,
+        i32,
+        i32,
+        String,
+        String,
+        chrono::DateTime<chrono::Utc>,
+        i64,
+    );
     let rows: Vec<ImgTuple> = match qb.build_query_as().fetch_all(&state.pool).await {
         Ok(r) => r,
         Err(_) => return internal(),
     };
     let total: i64 = rows.first().map(|r| r.9).unwrap_or(0);
     let mut out: Vec<ImageResponse> = Vec::with_capacity(rows.len());
-    for (img_id, filename, object_key, bytes, width, height, media_type, split, created_at, _total) in rows {
+    for (
+        img_id,
+        filename,
+        object_key,
+        bytes,
+        width,
+        height,
+        media_type,
+        split,
+        created_at,
+        _total,
+    ) in rows
+    {
         let url = match image_url(&state, &object_key, ds_id, img_id).await {
             Ok(u) => u,
             Err(resp) => return resp,
         };
         let mut resp = ImageResponse::from(ImageRow {
-            id: img_id, filename, object_key, bytes, width, height,
-            media_type, split, created_at,
+            id: img_id,
+            filename,
+            object_key,
+            bytes,
+            width,
+            height,
+            media_type,
+            split,
+            created_at,
         });
         resp.url = url;
         out.push(resp);
@@ -753,7 +906,17 @@ pub async fn get_image(
         Some(v) => v,
         None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
     };
-    type ImgTuple = (Uuid, String, String, i64, i32, i32, String, String, chrono::DateTime<chrono::Utc>);
+    type ImgTuple = (
+        Uuid,
+        String,
+        String,
+        i64,
+        i32,
+        i32,
+        String,
+        String,
+        chrono::DateTime<chrono::Utc>,
+    );
     let row: Option<ImgTuple> = match sqlx::query_as(&format!(
         "SELECT {ICOLS} FROM images WHERE id = $1 AND dataset_id = $2"
     ))
@@ -770,7 +933,17 @@ pub async fn get_image(
             Some(r) => r,
             None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
         };
-    type BoxTuple = (Uuid, Uuid, f64, f64, f64, f64, Option<f64>, String, Option<i32>);
+    type BoxTuple = (
+        Uuid,
+        Uuid,
+        f64,
+        f64,
+        f64,
+        f64,
+        Option<f64>,
+        String,
+        Option<i32>,
+    );
     let box_rows: Vec<BoxTuple> = match sqlx::query_as(
         "SELECT id, class_id, x, y, w, h, conf, origin, track_id FROM boxes WHERE image_id = $1 ORDER BY id",
     )
@@ -781,7 +954,12 @@ pub async fn get_image(
         Ok(r) => r,
         Err(_) => return internal(),
     };
-    type CaptionTuple = (String, String, Option<String>, chrono::DateTime<chrono::Utc>);
+    type CaptionTuple = (
+        String,
+        String,
+        Option<String>,
+        chrono::DateTime<chrono::Utc>,
+    );
     let caption_row: Option<CaptionTuple> = match sqlx::query_as(
         "SELECT text, origin, model, updated_at FROM captions WHERE image_id = $1",
     )
@@ -955,16 +1133,17 @@ pub async fn put_boxes(
         }
     };
     // (d) imagem existe ESCOPADA ao dataset.
-    let exists: bool =
-        match sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM images WHERE id = $1 AND dataset_id = $2)")
-            .bind(img_id)
-            .bind(ds_id)
-            .fetch_one(&state.pool)
-            .await
-        {
-            Ok(v) => v,
-            Err(_) => return internal(),
-        };
+    let exists: bool = match sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM images WHERE id = $1 AND dataset_id = $2)",
+    )
+    .bind(img_id)
+    .bind(ds_id)
+    .fetch_one(&state.pool)
+    .await
+    {
+        Ok(v) => v,
+        Err(_) => return internal(),
+    };
     if !exists {
         return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND);
     }
@@ -1005,7 +1184,17 @@ pub async fn put_boxes(
     {
         return internal();
     }
-    type BoxTuple = (Uuid, Uuid, f64, f64, f64, f64, Option<f64>, String, Option<i32>);
+    type BoxTuple = (
+        Uuid,
+        Uuid,
+        f64,
+        f64,
+        f64,
+        f64,
+        Option<f64>,
+        String,
+        Option<i32>,
+    );
     let rows: Vec<BoxTuple> = if valid.is_empty() {
         Vec::new()
     } else {
@@ -1076,34 +1265,41 @@ pub async fn put_caption(
         Err(resp) => return resp,
     };
     // (c) validação pura (text vazio ⇒ 400, a linha não nasce).
-    let (text, origin, model) = match validate_caption(&req.text, req.origin.as_deref(), req.model.as_deref()) {
-        Ok(v) => v,
-        Err(_) => {
-            return err(
-                StatusCode::BAD_REQUEST,
-                "invalid_request",
-                MSG_INVALID_REQUEST,
-            );
-        }
-    };
-    // (d) imagem existe ESCOPADA ao dataset.
-    let exists: bool =
-        match sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM images WHERE id = $1 AND dataset_id = $2)")
-            .bind(img_id)
-            .bind(ds_id)
-            .fetch_one(&state.pool)
-            .await
-        {
+    let (text, origin, model) =
+        match validate_caption(&req.text, req.origin.as_deref(), req.model.as_deref()) {
             Ok(v) => v,
-            Err(_) => return internal(),
+            Err(_) => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    MSG_INVALID_REQUEST,
+                );
+            }
         };
+    // (d) imagem existe ESCOPADA ao dataset.
+    let exists: bool = match sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM images WHERE id = $1 AND dataset_id = $2)",
+    )
+    .bind(img_id)
+    .bind(ds_id)
+    .fetch_one(&state.pool)
+    .await
+    {
+        Ok(v) => v,
+        Err(_) => return internal(),
+    };
     if !exists {
         return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND);
     }
     // (f) upsert de statement ÚNICO com RETURNING (revisão 3b.6): releitura
     // separada poderia ecoar linha de writer concorrente; o RETURNING já vem
     // com o `updated_at` do trigger `tg_set_updated_at` aplicado.
-    type CaptionTuple = (String, String, Option<String>, chrono::DateTime<chrono::Utc>);
+    type CaptionTuple = (
+        String,
+        String,
+        Option<String>,
+        chrono::DateTime<chrono::Utc>,
+    );
     let row: Option<CaptionTuple> = match sqlx::query_as(
         "INSERT INTO captions (image_id, text, origin, model) VALUES ($1,$2,$3,$4) \
          ON CONFLICT (image_id) DO UPDATE SET text = EXCLUDED.text, origin = EXCLUDED.origin, model = EXCLUDED.model \

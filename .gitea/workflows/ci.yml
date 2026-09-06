@@ -13,10 +13,15 @@
 # - Testes de storage (storage_s3, --ignored) ficam LOCAIS via
 #   scripts/test-storage.sh — exigem SeaweedFS, não cobertos aqui.
 #
-# Conquistas do primeiro run (2026-09-06): digest pin puxa ✓, healthcheck do
-# service postgres passa ✓, download de action ✓. Único gaps: node ausente.
-#
-# Se um dia trocar o clone por actions/checkout de novo,precisará de um
+# Conquistas do run 2 (2026-09-06): checkout manual + token auth ✓ (job
+# compose PASSOU — clone, checkout do SHA e config dos dois composes);
+# digest pin puxa ✓; healthcheck do service postgres ✓.
+# Round 2, dois gaps de ferramental (prova nos logs via API):
+#   - rust: 'cargo-fmt is not installed' → rust:slim não inclui rustfmt
+#     (fix: rustup component add rustfmt);
+#   - web: 'git: command not found' → node:20-slim é debian-slim puro, SEM
+#     scm (fix: apt-get install git igual ao job rust).
+# Se um dia trocar o clone por actions/checkout de novo, precisará de um
 # container com node+git ou de runner com injeção de node.
 name: CI
 
@@ -45,6 +50,8 @@ jobs:
     steps:
       - name: git (rust:slim não tem git nem ca-certificates)
         run: apt-get update -qq && apt-get install -y -qq --no-install-recommends git ca-certificates
+      - name: rustfmt (componente não vem no rust:slim — perfil mínimo do rustup)
+        run: rustup component add rustfmt
       - name: checkout manual (clone completo — repo pequeno)
         run: |
           git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$HEPH_TOKEN" | base64 -w0)" clone "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" .
@@ -67,7 +74,10 @@ jobs:
     env:
       HEPH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      # node:20-slim é baseado em buildpack-deps scm-slim: JÁ TEM git.
+      # ERRATA (run 2, 2026-09-06): node:20-slim NÃO tem git (base debian-slim
+      # puro, não scm-slim — quem tem git é o node:20 completo).
+      - name: git
+        run: apt-get update -qq && apt-get install -y -qq --no-install-recommends git ca-certificates
       - name: checkout manual
         run: |
           git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$HEPH_TOKEN" | base64 -w0)" clone "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" .

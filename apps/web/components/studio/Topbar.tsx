@@ -33,10 +33,7 @@ export default function Topbar() {
             <span className="font-semibold text-sm tracking-tight text-white">
               Hephaestus Studio
             </span>
-            <span
-              className="studio-badge"
-              style={{ fontSize: "0.625rem", padding: "0.125rem 0.5rem" }}
-            >
+            <span className="studio-badge text-[10px] py-0.5 px-2">
               v0.3
             </span>
           </div>

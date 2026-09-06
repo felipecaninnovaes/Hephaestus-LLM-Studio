@@ -14,11 +14,12 @@ const STATUS_STYLES: Record<Dataset["status"], string> = {
 };
 
 function CategoryIcon({ category }: { category: Dataset["category"] }) {
+  // Ref: v1 usa text-zinc-300 para todos os ícones de categoria (sem cores de classe)
   if (category === "yolo")
-    return <IconTarget className="w-4 h-4 text-emerald-400" />;
+    return <IconTarget className="w-4 h-4 text-zinc-300" />;
   if (category === "difusao")
-    return <IconSparkles className="w-4 h-4 text-violet-400" />;
-  return <IconLayers className="w-4 h-4 text-sky-400" />;
+    return <IconSparkles className="w-4 h-4 text-zinc-300" />;
+  return <IconLayers className="w-4 h-4 text-zinc-300" />;
 }
 
 export default function DatasetCard({
@@ -41,10 +42,10 @@ export default function DatasetCard({
             }
           : undefined
       }
-      className="glass-card rounded-2xl p-4 flex flex-col gap-3 transition-colors hover:border-zinc-500/40"
+      className="glass-card rounded-2xl p-5 flex flex-col justify-between gap-3 transition-all hover:border-zinc-600 cursor-pointer group"
     >
       <div className="flex items-start justify-between gap-2">
-        <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-zinc-800/80">
+        <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-zinc-900/90 border border-zinc-700/80 text-zinc-300 group-hover:text-emerald-400 transition-colors">
           <CategoryIcon category={dataset.category} />
         </span>
         <span
@@ -62,57 +63,57 @@ export default function DatasetCard({
         </p>
       </div>
       <div className="grid grid-cols-2 gap-2">
-        <div className="rounded-lg bg-zinc-900/60 px-2.5 py-2">
+        <div className="p-2.5 rounded-xl bg-zinc-900/80 border border-zinc-800/60">
           <p className="tracking-caps text-[10px] uppercase text-zinc-500">
             Imagens
           </p>
-          <p className="font-mono text-sm text-zinc-100">
-            {dataset.imagesCount}
+          <p className="font-mono text-sm font-bold text-zinc-200">
+            {dataset.imagesCount.toLocaleString()}
           </p>
         </div>
-        <div className="rounded-lg bg-zinc-900/60 px-2.5 py-2">
+        <div className="p-2.5 rounded-xl bg-zinc-900/80 border border-zinc-800/60">
           <p className="tracking-caps text-[10px] uppercase text-zinc-500">
-            Rotulado
+            Rotuladas
           </p>
-          <p className="font-mono text-sm text-zinc-100">
+          <p className="font-mono text-sm font-bold text-emerald-400">
             {formatPercent(dataset.labeledCount, dataset.imagesCount)}
           </p>
         </div>
       </div>
       {dataset.classes.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
-          {visibleClasses.map((c) => (
-            <span
-              key={c.id}
-              className="inline-flex items-center gap-1.5 rounded-full bg-zinc-900/60 px-2 py-0.5 text-[11px] text-zinc-300"
-            >
+        <div className="mt-3">
+          <span className="text-[10px] text-zinc-400 block mb-1 font-mono uppercase tracking-caps">
+            Classes ({dataset.classes.length}):
+          </span>
+          <div className="flex flex-wrap gap-1">
+            {visibleClasses.map((c) => (
               <span
-                className="h-2 w-2 rounded-full"
-                style={{ background: c.color }}
-              />
-              {c.name}
-            </span>
-          ))}
-          {extra > 0 && (
-            <span className="rounded-full bg-zinc-900/60 px-2 py-0.5 font-mono text-[11px] text-zinc-400">
-              +{extra}
-            </span>
-          )}
+                key={c.id}
+                className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-900 text-zinc-300 border border-zinc-800"
+              >
+                {c.name}
+              </span>
+            ))}
+            {extra > 0 && (
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-900 text-zinc-400 border border-zinc-800">
+                +{extra}
+              </span>
+            )}
+          </div>
         </div>
       )}
-      <div className="mt-auto flex items-center justify-between gap-2 pt-1">
-        <p className="truncate font-mono text-[11px] text-zinc-500">
-          {formatBytes(dataset.sizeBytes)} ·{" "}
-          {formatRelativeTime(dataset.lastModified)}
-        </p>
+      <div className="mt-5 pt-3 border-t border-zinc-800/80 flex items-center justify-between text-[11px] text-zinc-400 font-mono">
+        <span>
+          {formatBytes(dataset.sizeBytes)} · {formatRelativeTime(dataset.lastModified)}
+        </span>
         <button
           type="button"
           disabled
           title="Treino chega na fatia 4"
           onClick={(e) => e.preventDefault()}
-          className="shrink-0 rounded-lg border border-zinc-700/80 bg-zinc-900/60 px-3 py-1.5 text-xs font-medium text-zinc-300"
+          className="text-emerald-400 hover:text-emerald-300 font-medium"
         >
-          Treinar
+          Treinar →
         </button>
       </div>
     </Link>

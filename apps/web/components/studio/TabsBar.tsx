@@ -41,7 +41,7 @@ export default function TabsBar() {
               aria-selected={isActive}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center space-x-2 transition-all whitespace-nowrap shrink-0 ${
                 isActive
-                  ? "bg-zinc-800/90 text-zinc-100 border border-zinc-700/80 shadow-sm underline decoration-emerald-400 decoration-2 underline-offset-4"
+                  ? "bg-zinc-800/90 text-white border border-zinc-700/80 shadow-sm"
                   : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/60"
               }`}
             >

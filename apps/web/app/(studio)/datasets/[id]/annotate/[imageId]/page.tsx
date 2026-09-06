@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { showToast } from "@/components/studio/Toast";
 import {
@@ -53,6 +53,26 @@ export default function AnnotateImagePage() {
   const [zoom, setZoom] = useState(100);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [draft, setDraft] = useState<BBoxData | null>(null);
+
+  const frameRef = useRef<HTMLDivElement | null>(null);
+  const boxesRef = useRef<BBoxData[]>([]);
+  boxesRef.current = boxes;
+  const dirtyRef = useRef(false);
+  dirtyRef.current = dirty;
+  const savingRef = useRef(false);
+  savingRef.current = saving;
+  const classesRef = useRef<Dataset["classes"]>([]);
+  const selectedBoxIdRef = useRef<string | null>(null);
+  selectedBoxIdRef.current = selectedBoxId;
+  const activeToolRef = useRef<ToolId>("bbox");
+  activeToolRef.current = activeTool;
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const drawRef = useRef<{ startX: number; startY: number } | null>(null);
+  const moveRef = useRef<{ id: string; offX: number; offY: number } | null>(null);
+  const resizeRef = useRef<{ id: string } | null>(null);
+  const panRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -124,14 +144,19 @@ export default function AnnotateImagePage() {
   }, [detail, frameWidth, zoom]);
 
   async function handleSave() {
-    if (saving) return;
-    if (boxes.length > 1000) {
+    if (savingRef.current) return;
+    const current = boxesRef.current;
+    if (current.length > 1000) {
       showToast("Máximo de 1000 caixas.", "error");
       return;
     }
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = null;
+    }
     setSaving(true);
     try {
-      const payload: BoxInput[] = boxes.map((b) => {
+      const payload: BoxInput[] = current.map((b) => {
         const base: BoxInput = {
           classId: b.classId,
           x: clamp01(b.x),
@@ -163,6 +188,259 @@ export default function AnnotateImagePage() {
       setSaving(false);
     }
   }
+
+  const requestSave = useCallback(() => {
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(() => {
+      saveTimeoutRef.current = null;
+      void handleSaveRef.current();
+    }, 800);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleSaveRef = useRef(handleSave);
+  handleSaveRef.current = handleSave;
+
+  useEffect(() => {
+    classesRef.current = classes;
+  }, [classes]);
+
+  // 1. Conversão px↔norm (rect recalculado a cada evento — imune ao zoom).
+  const toNorm = useCallback((clientX: number, clientY: number) => {
+    const el = frameRef.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    return {
+      x: clamp01((clientX - rect.left) / rect.width),
+      y: clamp01((clientY - rect.top) / rect.height),
+      mw: rect.width,
+      mh: rect.height,
+    };
+  }, []);
+
+  // 2/3/4. Movimento global (desenho, mover, resize, pan) via window.
+  useEffect(() => {
+    function onMove(e: MouseEvent) {
+      const frame = frameRef.current;
+      if (!frame) return;
+      const rect = frame.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const nx = clamp01((e.clientX - rect.left) / rect.width);
+      const ny = clamp01((e.clientY - rect.top) / rect.height);
+
+      if (drawRef.current) {
+        const { startX, startY } = drawRef.current;
+        setDraft({
+          id: "__draft__",
+          classId: "",
+          x: Math.min(startX, nx),
+          y: Math.min(startY, ny),
+          w: Math.abs(nx - startX),
+          h: Math.abs(ny - startY),
+          conf: null,
+          origin: "",
+          trackId: null,
+        });
+        return;
+      }
+      if (moveRef.current) {
+        const { id: bid, offX, offY } = moveRef.current;
+        setBoxes((prev) =>
+          prev.map((b) =>
+            b.id === bid
+              ? { ...b, x: clamp01(nx - offX), y: clamp01(ny - offY) }
+              : b,
+          ),
+        );
+        return;
+      }
+      if (resizeRef.current) {
+        const { id: bid } = resizeRef.current;
+        setBoxes((prev) =>
+          prev.map((b) => {
+            if (b.id !== bid) return b;
+            const minW = 2 / rect.width;
+            const minH = 2 / rect.height;
+            const rawW = nx - b.x;
+            const rawH = ny - b.y;
+            const w = Math.min(1 - b.x, rawW < minW ? minW : clamp01(rawW));
+            const h = Math.min(1 - b.y, rawH < minH ? minH : clamp01(rawH));
+            return { ...b, w, h };
+          }),
+        );
+        return;
+      }
+      if (panRef.current) {
+        const p = panRef.current;
+        setPan((prev) => {
+          const limX = 2 * rect.width;
+          const limY = 2 * rect.height;
+          const cx = Math.min(limX, Math.max(-limX, p.ox + (e.clientX - p.sx)));
+          const cy = Math.min(limY, Math.max(-limY, p.oy + (e.clientY - p.sy)));
+          return prev.x === cx && prev.y === cy ? prev : { x: cx, y: cy };
+        });
+      }
+    }
+    function onUp(e: MouseEvent) {
+      const frame = frameRef.current;
+      if (drawRef.current && frame) {
+        const rect = frame.getBoundingClientRect();
+        const { startX, startY } = drawRef.current;
+        drawRef.current = null;
+        const nx = clamp01((e.clientX - rect.left) / rect.width);
+        const ny = clamp01((e.clientY - rect.top) / rect.height);
+        const x = Math.min(startX, nx);
+        const y = Math.min(startY, ny);
+        const w = Math.abs(nx - startX);
+        const h = Math.abs(ny - startY);
+        setDraft(null);
+        if (w * rect.width < 2 || h * rect.height < 2) return; // descarta rascunho mínimo
+        const activeCls = classesRef.current.find(
+          (c) => c.id === selectedClassIdRef.current,
+        );
+        const classId =
+          activeCls?.id ?? classesRef.current[0]?.id ?? "";
+        if (!classId) return;
+        const nid = crypto.randomUUID();
+        setBoxes((prev) => [
+          ...prev,
+          { id: nid, classId, x, y, w, h, conf: null, origin: "", trackId: null },
+        ]);
+        setSelectedBoxId(nid);
+        setDirty(true);
+        requestSave();
+        return;
+      }
+      if (moveRef.current) {
+        moveRef.current = null;
+        setDirty(true);
+        requestSave();
+        return;
+      }
+      if (resizeRef.current) {
+        resizeRef.current = null;
+        setDirty(true);
+        requestSave();
+      }
+      if (panRef.current) panRef.current = null; // pan não seleciona nem suja
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestSave]);
+
+  const selectedClassIdRef = useRef(selectedClassId);
+  selectedClassIdRef.current = selectedClassId;
+
+  function onFrameMouseDown(e: React.MouseEvent) {
+    e.preventDefault();
+    const tool = activeToolRef.current;
+    if (tool === "pan") {
+      panRef.current = { sx: e.clientX, sy: e.clientY, ox: pan.x, oy: pan.y };
+      return;
+    }
+    if (tool === "bbox") {
+      const p = toNorm(e.clientX, e.clientY);
+      if (!p) return;
+      drawRef.current = { startX: p.x, startY: p.y };
+    }
+    // tool select sobre vazio: desseleciona (via onClick do frame)
+  }
+
+  function onBoxMouseDown(e: React.MouseEvent, box: BBoxData) {
+    e.stopPropagation();
+    e.preventDefault();
+    setSelectedBoxId(box.id);
+    if (activeToolRef.current !== "select") return; // bbox: só seleciona
+    const p = toNorm(e.clientX, e.clientY);
+    if (!p) return;
+    moveRef.current = { id: box.id, offX: p.x - box.x, offY: p.y - box.y };
+  }
+
+  function onResizeMouseDown(e: React.MouseEvent, box: BBoxData) {
+    e.stopPropagation();
+    e.preventDefault();
+    setSelectedBoxId(box.id);
+    resizeRef.current = { id: box.id };
+  }
+
+  // 5. Atalhos de teclado.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+      const k = e.key;
+      if (k === "b" || k === "B") {
+        setActiveTool("bbox");
+        return;
+      }
+      if (k === "v" || k === "V") {
+        setActiveTool("select");
+        return;
+      }
+      if (k === "h" || k === "H") {
+        setActiveTool("pan");
+        return;
+      }
+      if (k === "Escape") {
+        if (drawRef.current) {
+          drawRef.current = null;
+          setDraft(null);
+        } else {
+          setSelectedBoxId(null);
+        }
+        return;
+      }
+      if (k === "Delete" || k === "Backspace") {
+        const sel = selectedBoxIdRef.current;
+        if (!sel) return;
+        e.preventDefault();
+        setBoxes((prev) => prev.filter((b) => b.id !== sel));
+        setSelectedBoxId(null);
+        setDirty(true);
+        requestSave();
+        return;
+      }
+      if (/^Digit[1-9]$/.test(e.code)) {
+        const idx = Number(e.code.slice(5)) - 1;
+        const cls = classesRef.current[idx];
+        if (!cls) return;
+        setSelectedClassId(cls.id);
+        const sel = selectedBoxIdRef.current;
+        if (sel) {
+          setBoxes((prev) =>
+            prev.map((b) => (b.id === sel ? { ...b, classId: cls.id } : b)),
+          );
+          setDirty(true);
+          requestSave();
+        }
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [requestSave]);
+
+  // 6b. Proteção de saída (beforeunload só avisa; PUT não acontece no unload).
+  useEffect(() => {
+    function onBeforeUnload(e: BeforeUnloadEvent) {
+      if (!dirtyRef.current) return;
+      e.preventDefault();
+    }
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    };
+  }, []);
 
   if (loading || !dataset || !detail) {
     return (
@@ -334,9 +612,23 @@ export default function AnnotateImagePage() {
         </div>
 
         <div
-          className="relative flex items-center justify-center overflow-hidden rounded-2xl border-2 border-zinc-700/80 bg-zinc-900/90 shadow-2xl transition-transform duration-200"
-          style={{ width: `${frameWidth}px`, height: `${frameHeight}px` }}
-          onClick={() => setSelectedBoxId(null)}
+          ref={frameRef}
+          className={`relative flex items-center justify-center overflow-hidden rounded-2xl border-2 border-zinc-700/80 bg-zinc-900/90 shadow-2xl transition-transform duration-200 ${
+            activeTool === "pan"
+              ? "cursor-grab active:cursor-grabbing"
+              : activeTool === "bbox"
+                ? "cursor-crosshair"
+                : ""
+          }`}
+          style={{
+            width: `${frameWidth}px`,
+            height: `${frameHeight}px`,
+            transform: `translate(${pan.x}px, ${pan.y}px)`,
+          }}
+          onMouseDown={onFrameMouseDown}
+          onClick={() => {
+            if (activeTool !== "pan") setSelectedBoxId(null);
+          }}
         >
           <div className="absolute inset-0 bg-[radial-gradient(#ffffff_1px,transparent_1px)] opacity-20 [background-size:18px_18px]"></div>
           <img
@@ -354,6 +646,7 @@ export default function AnnotateImagePage() {
             return (
               <div
                 key={box.id}
+                onMouseDown={(e) => onBoxMouseDown(e, box)}
                 onClick={(e) => {
                   e.stopPropagation();
                   setSelectedBoxId(box.id);
@@ -371,14 +664,40 @@ export default function AnnotateImagePage() {
                 }}
               >
                 <span
-                  className="absolute -top-5 left-0 rounded px-1.5 py-0.5 font-mono text-[10px] font-bold"
+                  className="pointer-events-none absolute -top-5 left-0 rounded px-1.5 py-0.5 font-mono text-[10px] font-bold"
                   style={{ background: color, color: "#09090b" }}
                 >
                   {name} #{i}
                 </span>
+                {isSelected && (
+                  <span
+                    onMouseDown={(e) => onResizeMouseDown(e, box)}
+                    onClick={(e) => e.stopPropagation()}
+                    className="absolute -right-1.5 -bottom-1.5 h-3 w-3 cursor-se-resize rounded-full"
+                    style={{ background: "#ffffff", borderColor: color, borderWidth: 1, borderStyle: "solid" }}
+                  />
+                )}
               </div>
             );
           })}
+          {draft &&
+            (() => {
+              const cls = classById.get(selectedClassId);
+              const color = cls?.color ?? "#71717a";
+              return (
+                <div
+                  className="pointer-events-none absolute rounded border-2"
+                  style={{
+                    left: `${draft.x * 100}%`,
+                    top: `${draft.y * 100}%`,
+                    width: `${draft.w * 100}%`,
+                    height: `${draft.h * 100}%`,
+                    borderColor: color,
+                    background: color + "26",
+                  }}
+                />
+              );
+            })()}
         </div>
       </div>
     </div>

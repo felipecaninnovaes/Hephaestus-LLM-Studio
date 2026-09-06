@@ -13,7 +13,7 @@
 # Bind loopback (R1 local-first): browser dev alcança localhost:8333, LAN nunca toca o bucket.
 services:
   seaweedfs:
-    image: chrislusf/seaweedfs:4.45_full   # PIN explícito ≥ correção do #6884 (presigned-via-proxy); nunca :latest/:dev
+    image: chrislusf/seaweedfs:4.45_full@sha256:04851d83f42aad1ae898d1b190e2140fd1cef1015bc1a1b783282fefcf65e03b   # PIN explícito ≥ correção do #6884 (presigned-via-proxy); nunca :latest/:dev
     command: "server -s3 -ip.bind=0.0.0.0 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json -dir=/data -master.volumeSizeLimitMB=1024"
     ports:
       - '127.0.0.1:8333:8333'              # S3 API

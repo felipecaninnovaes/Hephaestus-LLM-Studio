@@ -29,8 +29,7 @@ ser interrompido no meio de uma.
      (despacho `@rust-dev`; dívida QUITADA em `dividas.md`; aguardando merge). Nota
      nova registrada: manager/orchestrator ainda em `bookworm-slim` — migrar para
      `trixie-slim` quando o orquestrador ganhar cliente S3 (fatia 4, R10).
-  3. **CI = Gitea Actions (CORREÇÃO — registro anterior errado dizia "descartado")**:
-     o usuário se auto-hospeda em `git.felipecncloud.com` (origin) e estava
+  3. **CI = Gitea Actions (CORREÇÃO — registro anterior errado dizia "descartado")**:     o usuário se auto-hospeda em `git.felipecncloud.com` (origin) e estava
      configurando o **gitea-runner** quando perguntei; workflows em `.gitea/workflows/`
      (formato GitHub-compatível do act_runner). Desenho v1 acordado verbalmente (sem
      arquivo ainda): job rust (`cargo fmt --all --check`, `cargo check --workspace`,
@@ -46,6 +45,26 @@ ser interrompido no meio de uma.
      `python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea` (3f.3).
      Pendências para escrever o `ci.yml`: label do runner (`runs-on:`) e se ele alcança
      o Docker Hub (senão, mirar via registry do Gitea).
+     **Estado da iteração de CI (2026-09-06, monitorada pela API de Actions com token
+     read-only do usuário em `~/.config/hep-ci/token` — FORA do repo)**: run 1
+     (`079eb88`) provou digests ✓ + healthcheck do service ✓ + download de action ✓ e
+     derrubou `actions/checkout` (act_runner v3.3.2 NÃO injeta node em actions JS —
+     exit 127 em imagens sem node). Fix (`22c6f76`, mergeado): checkout manual
+     `git clone` + token automático via header basic `x-access-token` (esquema do
+     actions/checkout). Run 2 (`d05d7b9`): job `compose` VERDE de ponta a ponta
+     (prova do caminho inteiro); `rust` falhou por `rustfmt` ausente no
+     `rust:1.97.1-slim` (perfil mínimo do rustup) e `web` por git ausente no
+     `node:20-slim` (base debian-slim puro, NÃO scm-slim — errata do coordenador).
+     Fix no run 3: `chore/ci-round3` (`c224ca6`) — `rustup component add rustfmt` +
+     `apt-get install git` no web. **Regra de processo (pedida pelo usuário, vale
+     para sempre): NUNCA mergear na main para testar CI — o workflow dispara em
+     `on: push` de QUALQUER branch; pusha a branch, acompanha via API, mergeia só
+     quando verde. Main deve estar sempre verde. Recomendação ao usuário: ativar
+     branch protection em `main` (Settings → Branch → Enable Status Check exigindo
+     `rust`/`web`/`compose`) para o gate virar mecânico.** Acesso do coordenador à
+     API: `GET /api/v1/repos/Felipe/Hephaestus-LLM-Studio/actions/runs` e
+     `…/actions/jobs/{id}/logs` (o endpoint `…/tasks/{id}` individual não existe no
+     1.27.1 — usar o `jobs` do run).
   4. **Push do tronco: feito pelo usuário** (após o merge do infra-agent; o ADR-0004
      e o pin-digests/housekeeping ainda não estão no origin).
   5. **`cargo fmt`: APROVADO e FEITO** — commit `8947fec` em `chore/housekeeping`

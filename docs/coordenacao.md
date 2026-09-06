@@ -18,7 +18,19 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-05 (sessão 2: 3b mergeada, 3c revisada; retomada = ler esta seção + "Próximo passo")
+## Estado atual — 2026-09-05 (sessão 3: alinhamento de design + fixes de ambiente)
+
+- **Problema reportado pelo usuário**: implementadores frontend desviando do estilo de layout (impeccable/OpenDesign como referência; troca de modelo do dev + protótipo regenerado com login no OpenDesign como teste). Fechado em 3 frentes:
+  1. **Referência formal** — `docs/design-system.md` MESCLADO (base OpenDesign: frontmatter YAML navegável + Do's/Don'ts + regras nomeadas; seções exclusivas da versão impeccable reincorporadas: iconografia, anatomia de componentes, a11y, avaliação crítica; token Runtime Python `#eab308` recuperado com prova v1:864). **Descoberta do reviewer**: o `ai-vision-training-studio.html` do tronco JÁ É a regeneração OpenDesign (3641 linhas, `LoginPage` ~329) desde o merge `chore/opendesign` (`39a1410`) — o `ai-vision-training-studio-v2.html` que o coordenador importou do OpenDesign era byte-idêntico e foi REMOVIDO (`1a00b22`); referência única = protótipo da raiz.
+  2. **Auditoria+correção visual** (`@ui-designer` qwen3.7-plus, Chrome flatpak :9222 + skill chrome-mcp): `/login` (blobs de luz zenital, meta v1.3, placeholder, autoFocus, focus ring emerald, footer "Single-User Mode" SEM botão demo — instrumentação rejeitada); DatasetCard (violet/sky → `text-zinc-300` PROVADO contra v1:1528; p-5; tiles com borda; chips estilo v1; "Treinar →" text-link); TabsBar (aba ativa `text-white` sem underline); Topbar (inline style → classes; superfície `zinc-950/80` MEDIDA E PROVADA igual à v1 — suspeita inicial do coordenador era falsa); modal `max-w-lg`. Pendências fechadas via `@frontend-dev`: `IconLock` (padrão Base, paths do protótipo) + ícones no DatasetMenu (adaptações declaradas: Eye→IconLayers, Play→IconTarget). **Smoke do login com senha dev `changeme`: 4/4 PASS** (autoFocus; POST 200 + cookie; redirect; 401 → "Senha incorreta."; regression redirect; console limpo).
+  3. **Causa-raiz** — charters de `@frontend-dev`/`@ui-designer` agora apontam `docs/design-system.md` como fonte de ESTILO (paleta FECHADA, regras nomeadas: One CTA/Monospace Truth/Refractive Edge/Class Palette Integrity; cores fora da paleta proibidas) e o protótipo como fonte de LAYOUT. É o mecanismo anti-improviso para os implementadores low.
+- **Fixes de ambiente (desbloqueio do dev; branch `fix/infra-env` `c09569a`)**: healthcheck do SeaweedFS dependia de GNU wget (exit 8 em 403); a tag **mutável** `4.45_full` trocou o wget para BusyBox (exit 1) → container unhealthy permanente → novo probe portável (aceita QUALQUER resposta HTTP: `wget -S … | grep -q HTTP/1.1`). Runtime do principal `bookworm`(glibc 2.36) → `trixie-slim` (builder rust:slim é trixie/2.41; `aws-lc-sys` exige GLIBC_2.38 — **R10 da ADR-0003 materializado por tag mutável**). **Lição: tags de imagem mutáveis quebram builds verificados; recomendação PENDENTE ao usuário: fixar digests no compose/Dockerfiles.**
+- **Review da `fix/web-design-alignment`: APROVA** — 1 menor corrigido (v2 duplicado removido) e 1 menor REFUTADO com prova empírica: botão "Treinar" disabled — a regra global `button:disabled` do globals.css JÁ aplica opacity .55 + not-allowed (getComputedStyle confirmado) e o hit-test resolve no próprio botão (sem click-through ao Link) — falso positivo duplo do reviewer, registrado como lição (provar antes de corrigir).
+- **Branches aguardando MERGE do usuário (ordem importa)**: 1º **`fix/web-3c-review`** (emenda da 3c, sessão anterior) → 2º **`fix/web-design-alignment`** (`9f91019`, `1ae84d0`, `c881b21`, `1a00b22`) — CONFLITA com a emenda em 3 arquivos (DatasetCard/TabsBar/CreateDatasetModal); coordenador resolve na hora (decisões visuais: `text-white` sem underline, `max-w-lg` valem sobre as versões novas) → 3º **`fix/infra-env`** (`c09569a`) → 4º **`chore/agent-design-ref`** (`fc32a84`, `96b1c36`). `main` 2 à frente do origin.
+- **Nota docs**: `docs/frontend.md` linha 3 ainda descreve o protótipo como "~2910 linhas" — o do tronco é a regeneração (3641, com LoginPage); sincronizar no próximo docs-sync.
+- **Ambiente de dev de pé** (não desligado): compose (db, seaweedfs healthy, manager, principal :8080 — senha dev `changeme`), dev server Next :3000, Chrome :9222 (flatpak).
+
+### Sessão 2 — 3b mergeada, 3c revisada e emendada (contexto)
 
 - **Fatia 3b MERGEADA no tronco pelo usuário** (`04b8987 Merge branch 'feat/datasets-storage'`) — storage S3/SeaweedFS fechado, spec 0.3.0.
 - **Fatia 3c (UI `/datasets`) NO TRONCO via `1f182ed`** — 3 commits (`cf2b978` fundação do shell: tipos, api lib, format, icons, Topbar/TabsBar/Toast; `f8bca9e` lista grade+tabela com filtros e empty states; `ce29fa4` criar/excluir com modal, confirmação, menu de contexto e toasts). O mesmo merge trouxe `d6e4e1d` (troca de modelos dos agentes — config puro, conferido pelo coordenador).
@@ -207,7 +219,15 @@ não o que foi aprovado).
   a fatia chegar. Escopo: log server-side (nunca no response) antes/depois da fatia
   de jobs.
 
-## Plano em andamento — PRÓXIMO PASSO EXATO: merge `fix/web-3c-review` (usuário) → 3d
+## Plano em andamento — PRÓXIMO PASSO EXATO: 4 merges do usuário (ordem: 3c-review → design-alignment → infra-env → agent-design-ref) → 3d
+
+**Merges pendentes (todos autorizados a existir, merge = decisão do usuário; ordem importa — ver "Estado atual" sessão 3):**
+1. `fix/web-3c-review` (emenda da 3c — `f7889b2`, `41739c2`);
+2. `fix/web-design-alignment` (alinhamento visual + iconografia + design system mesclado — `9f91019`, `1ae84d0`, `c881b21`, `1a00b22`; conflitos em 3 arquivos com a emenda 3c → coordenador resolve na hora);
+3. `fix/infra-env` (`c09569a` — healthcheck seaweedfs portável + runtime trixie-slim);
+4. `chore/agent-design-ref` (`fc32a84`, `96b1c36` — charters com design system como fonte de estilo).
+
+Depois dos merges: **3d galeria `/datasets/[id]` + editor BBox** (o placeholder honesto criado pela emenda é substituído pelo conteúdo real; upload UI entra aqui) → **3e export/import** → **4 jobs/package/materialização** (onde o orquestrador ganha cliente S3 com credencial escopada por prefixo e onde a dívida T4 da ADR-0002 — `jobs.dataset_id ON DELETE SET NULL` + `dataset_versions` — precisa ser honrada no nascedouro). Recomendação pendente de decisão do usuário: fixar digests das imagens no compose/Dockerfiles (lição das tags mutáveis seaweedfs/rust desta sessão).
 
 **3b.0–3b.8 FEITOS e MERGEADOS (`04b8987`); 3c FEITA, REVISADA e EMENDADA (ver "Estado atual").** A sequência:
 
@@ -244,12 +264,13 @@ autorizou a landing direto no tronco).
       (docs sincronizados nesta sessão).
 - [x] **3b mergeada** (`04b8987`); **3c no tronco** (`1f182ed`), revisada (CONDICIONAL,
       F1–F6) e emendada em `fix/web-3c-review` — build web limpo, greps zerados.
-- [ ] Próximo passo = **merge da `fix/web-3c-review`** (`f7889b2`, `41739c2`; decisão do
-      usuário) → **3d**.
+- [ ] Próximo passo = **4 merges do usuário na ordem registrada** (3c-review → design-alignment → infra-env → agent-design-ref; conflitos dos 3 arquivos resolvidos pelo coordenador) → **3d**.
 - [ ] Pendências que continuam valendo, sem fatia marcada: CLI
       `studio reset-password` (ADR-0001 T4), `cargo fmt -p api-principal` segue,
       logging server-side (fatia nomeada — revisores 3b.3/3b.6), gate `sub` órfão
       (ADR-0002 T8), testes de UI (backlog §12 — cobrir criar→listar→excluir quando
-      o e2e for ampliado).
+      o e2e for ampliado), **fixar digests de imagem no compose/Dockerfiles** (lição
+      das tags mutáveis — decisão do usuário), sincronizar `docs/frontend.md` linha 3
+      (protótipo agora é a regeneração de 3641 linhas).
       ~~`lefthook install`~~ ✅ quitado em `chore/agent-team` (gate ativo: hooks
       instalados + commitlint real + deny de commit nos subagentes).

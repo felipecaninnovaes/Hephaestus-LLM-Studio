@@ -29,9 +29,23 @@ ser interrompido no meio de uma.
      (despacho `@rust-dev`; dívida QUITADA em `dividas.md`; aguardando merge). Nota
      nova registrada: manager/orchestrator ainda em `bookworm-slim` — migrar para
      `trixie-slim` quando o orquestrador ganhar cliente S3 (fatia 4, R10).
-  3. **CI no GitHub: DESCARTADO pelo usuário** ("não uso o github") — sem pipeline
-     externo; verificação continua local (lefthook + checks do coordenador). Não
-     reabrir sem pedido.
+  3. **CI = Gitea Actions (CORREÇÃO — registro anterior errado dizia "descartado")**:
+     o usuário se auto-hospeda em `git.felipecncloud.com` (origin) e estava
+     configurando o **gitea-runner** quando perguntei; workflows em `.gitea/workflows/`
+     (formato GitHub-compatível do act_runner). Desenho v1 acordado verbalmente (sem
+     arquivo ainda): job rust (`cargo fmt --all --check`, `cargo check --workspace`,
+     `cargo test -p api-principal` — sem banco), job web (`npm ci` + build), job compose
+     (`config -q` — não precisa de daemon). V2: testes de db com `services: postgres`;
+     storage tests só com docker-in-docker (adiar); engines Python entram no CI na 3f.3.
+     **Imagens + digests para o runner mirar (resolvidos 2026-09-05, registry oficial;
+     digests preservam-se ao copiar para o registry do Gitea)**:
+     `rust:1.97.1-slim@sha256:8e8cf8f7fd54a2d23d5a743b3a03f56e26b6c774276c33fa0595111704ebb15c`,
+     `node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0`,
+     `docker:29-cli@sha256:eccaacfeed644c7de222ff047483568cb988dde95476fbaaf10ea2d04921bb66` (29 = major do docker do host 29.7.2),
+     `postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94` (v2),
+     `python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea` (3f.3).
+     Pendências para escrever o `ci.yml`: label do runner (`runs-on:`) e se ele alcança
+     o Docker Hub (senão, mirar via registry do Gitea).
   4. **Push do tronco: feito pelo usuário** (após o merge do infra-agent; o ADR-0004
      e o pin-digests/housekeeping ainda não estão no origin).
   5. **`cargo fmt`: APROVADO e FEITO** — commit `8947fec` em `chore/housekeeping`

@@ -1570,10 +1570,10 @@ pub async fn put_caption(
 /// Ordem LEI: (a) uuid do dataset ⇒ não ⇒ 404; (b) body no envelope ⇒
 /// 413/400; (c) dataset existe ⇒ não ⇒ 404; (d) validação pura + plano
 /// (`plan_classes` sobre as classes atuais: id de outro dataset ⇒ 400 seco);
-/// (e) guard de órfãos ANTES de qualquer DELETE — box apontando para classe
-/// que seria removida ⇒ 409 `classes_in_use` sem escrever nada; (f) transação
-/// ÚNICA em 2 fases (dance do UNIQUE: tmp `__tmp_<simple>`, idx+1000000;
-/// finais name/idx/color; DELETE das removidas; INSERT das novas);
+/// (e+f) transação ÚNICA: guard de órfãos DENTRO dela (primeira instrução)
+/// ⇒ 409 `classes_in_use` sem escrever nada; fase 1 (tmp `__tmp_<simple>`,
+/// idx+1000000); DELETE das removidas (libera os slots de idx); fase 2
+/// (name/idx/color finais); INSERT das novas;
 /// (g) 200 canônico (releitura ordenada por idx).
 pub async fn put_classes(
     State(state): State<AppState>,
@@ -1624,14 +1624,19 @@ pub async fn put_classes(
             );
         }
     };
-    // (e) guard de órfãos ANTES de qualquer escrita: o CASCADE de
-    // `boxes.class_id` apagaria anotações silenciosamente.
+    // (e+f) transação ÚNICA: o guard de órfãos roda DENTRO dela, como
+    // primeira instrução — 409 aborta antes de qualquer write (TOCTOU
+    // fechado; o CASCADE de `boxes.class_id` nunca apaga anotação).
+    let mut tx = match state.pool.begin().await {
+        Ok(t) => t,
+        Err(_) => return internal(),
+    };
     if !plan.remove.is_empty() {
         let hit: bool = match sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM boxes WHERE class_id = ANY($1))",
         )
         .bind(&plan.remove)
-        .fetch_one(&state.pool)
+        .fetch_one(&mut *tx)
         .await
         {
             Ok(v) => v,
@@ -1645,11 +1650,6 @@ pub async fn put_classes(
             );
         }
     }
-    // (f) transação ÚNICA.
-    let mut tx = match state.pool.begin().await {
-        Ok(t) => t,
-        Err(_) => return internal(),
-    };
     // Fase 1: mantidos para nome/idx temporários (fora de qualquer colisão).
     for (cid, _, final_idx) in &plan.keep {
         let tmp_name = format!("__tmp_{}", cid.simple());
@@ -1659,6 +1659,20 @@ pub async fn put_classes(
             .bind(tmp_idx)
             .bind(cid)
             .bind(ds_id)
+            .execute(&mut *tx)
+            .await
+            .is_err()
+        {
+            return internal();
+        }
+    }
+    // DELETE das removidas ANTES da fase 2: com as removidas fora, os
+    // slots de idx ficam livres e a renumeração 0..n-1 não colide com o
+    // UNIQUE(dataset_id, idx) (remover idx menor + manter idx maior ⇒ 500).
+    if !plan.remove.is_empty() {
+        if sqlx::query("DELETE FROM classes WHERE dataset_id = $1 AND id = ANY($2)")
+            .bind(ds_id)
+            .bind(&plan.remove)
             .execute(&mut *tx)
             .await
             .is_err()
@@ -1680,18 +1694,6 @@ pub async fn put_classes(
         .execute(&mut *tx)
         .await
         .is_err()
-        {
-            return internal();
-        }
-    }
-    // DELETE das removidas (o CASCADE nunca dispara graças ao guard).
-    if !plan.remove.is_empty() {
-        if sqlx::query("DELETE FROM classes WHERE dataset_id = $1 AND id = ANY($2)")
-            .bind(ds_id)
-            .bind(&plan.remove)
-            .execute(&mut *tx)
-            .await
-            .is_err()
         {
             return internal();
         }

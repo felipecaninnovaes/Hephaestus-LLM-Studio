@@ -2401,6 +2401,112 @@ async fn t0003_put_classes_erros_404_400() {
     assert_eq!(json(&body)["code"], "invalid_request");
 }
 
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0003_put_classes_remove_primeira_e_meio() {
+    // Regressão do review: DELETE das removidas roda ANTES da fase 2, senão
+    // renumerar um mantido para um idx ainda ocupado volta 500 (UNIQUE idx).
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+    let (status, _, body) = call(
+        app.clone(),
+        post_create(
+            "Classes Colisao",
+            &serde_json::json!(["primeira", "segunda", "terceira"]),
+            &cookie,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let created = json(&body);
+    let ds = created["id"].as_str().expect("id").to_string();
+    let ids: Vec<String> = created["classes"]
+        .as_array()
+        .expect("classes")
+        .iter()
+        .map(|c| c["id"].as_str().expect("id").to_string())
+        .collect();
+    assert_eq!(ids.len(), 3);
+
+    // (a) probe do reviewer: remover a 1ª (idx 0) mantendo a 2ª → 200, idx 0.
+    let (status, _, body) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/classes"),
+            serde_json::json!({"classes": [{"id": ids[1], "name": "segunda"}]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let classes = json(&body)["classes"].as_array().expect("classes").clone();
+    assert_eq!(classes.len(), 1);
+    assert_eq!(classes[0]["id"], ids[1]);
+    assert_eq!(classes[0]["idx"], 0);
+
+    // (b) 3 classes de novo, remover a do MEIO → 200 com idx 0,1.
+    let (status, _, body) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/classes"),
+            serde_json::json!({"classes": [
+                {"id": ids[1], "name": "segunda"},
+                {"name": "nova_a"},
+                {"name": "nova_b"},
+            ]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let classes = json(&body)["classes"].as_array().expect("classes").clone();
+    assert_eq!(classes.len(), 3);
+    let cur: Vec<String> = classes
+        .iter()
+        .map(|c| c["id"].as_str().expect("id").to_string())
+        .collect();
+    let (status, _, body) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/classes"),
+            serde_json::json!({"classes": [
+                {"id": cur[0], "name": "segunda"},
+                {"id": cur[2], "name": "nova_b"},
+            ]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let classes = json(&body)["classes"].as_array().expect("classes").clone();
+    assert_eq!(classes.len(), 2);
+    assert_eq!(classes[0]["id"], cur[0]);
+    assert_eq!(classes[0]["idx"], 0);
+    assert_eq!(classes[1]["id"], cur[2]);
+    assert_eq!(classes[1]["idx"], 1);
+
+    // (c) remover a última continua 200 (caso já coberto, sem regressão).
+    let (status, _, body) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/classes"),
+            serde_json::json!({"classes": [{"id": cur[0], "name": "segunda"}]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let classes = json(&body)["classes"].as_array().expect("classes").clone();
+    assert_eq!(classes.len(), 1);
+    assert_eq!(classes[0]["idx"], 0);
+}
+
 fn bare_req(cookie: &str, method: &str, uri: String) -> Request<Body> {
     Request::builder()
         .method(method)

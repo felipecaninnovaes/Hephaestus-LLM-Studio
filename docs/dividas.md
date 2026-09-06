@@ -24,8 +24,6 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
   DELETE SET NULL` + snapshot `dataset_versions` (nunca `RESTRICT`) —
   ADR-0002 T4. Nessa mesma fatia o orquestrador ganha cliente S3 com
   credencial escopada por prefixo.
-- **T7 — `autoTracked` derivado (fatia 3d — galeria + editor BBox)**: derivar
-  de `boxes.origin='autotracker'`; hoje é constante `false`.
 
 ### Sem fatia marcada
 
@@ -73,6 +71,13 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
   LoginPage).
 
 ## Quitadas
+
+- **T7 — `autoTracked` derivado — QUITADA 2026-09-06** (`61dc75b` em
+  `feat/datasets-gallery`, 3d.1): campo do wire `Dataset` agora deriva de
+  `EXISTS(boxes.origin='autotracker')` nas 3 queries de `handlers.rs`
+  (`DatasetRow.auto_tracked` + teste de integração com 3 casos: autotracker→
+  true, manual→false, vazio→false). Sem mudança de contrato (campo já existia; 
+  descrição do openapi atualizada).
 
 - **3b (upload/imagens) — QUITADA 2026-09-05** (`feat/datasets-storage`,
   `f6c6ff5`..`393163c`; docs no 3b.8). Entregue: bucket S3/SeaweedFS como blob

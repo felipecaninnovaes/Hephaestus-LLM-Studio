@@ -781,9 +781,9 @@ components:
           type: boolean
           default: false
           description: >
-            Constante `false` na 3a. Fonte real (3d): existe `boxes.origin =
-            'autotracker'` no dataset. Mantida no shape de frontend.md §8 para a
-            UI não quebrar quando passar a ser derivada (ADR-0002 T7).
+            Derivado do banco desde a 3d (dívida T7 do ADR-0002 quitada):
+            `EXISTS` sobre `boxes.origin = 'autotracker'` das imagens do
+            dataset; era constante `false` na 3a/3b.
         createdAt: { type: string, format: date-time }
         lastModified:
           type: string

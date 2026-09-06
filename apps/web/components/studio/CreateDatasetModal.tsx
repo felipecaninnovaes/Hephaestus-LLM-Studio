@@ -135,7 +135,7 @@ export default function CreateDatasetModal({ open, onClose, onCreated }: Props) 
         role="dialog"
         aria-modal="true"
         aria-labelledby="create-dataset-title"
-        className="glass-modal relative w-full max-w-md rounded-2xl p-6 text-zinc-100 shadow-2xl"
+        className="glass-modal relative w-full max-w-lg rounded-2xl p-6 text-zinc-100 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-white/10 pb-4">

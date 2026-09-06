@@ -100,7 +100,7 @@ export default function TabsBar() {
           aria-selected={datasetsActive}
           className={`flex shrink-0 items-center space-x-2 rounded-lg px-3 py-1.5 text-xs font-medium whitespace-nowrap transition-all ${
             datasetsActive
-              ? "border border-zinc-700/80 bg-zinc-800/90 text-zinc-100 shadow-sm underline decoration-emerald-400 decoration-2 underline-offset-4"
+              ? "border border-zinc-700/80 bg-zinc-800/90 text-white shadow-sm"
               : "text-zinc-400 hover:bg-zinc-900/60 hover:text-zinc-200"
           }`}
         >

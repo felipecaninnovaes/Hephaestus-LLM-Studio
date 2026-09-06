@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.3.0
+  version: 0.4.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -894,6 +894,7 @@ components:
         - sizeBytes
         - imagesCount
         - labeledCount
+        - trashCount
         - classes
         - autoTracked
         - createdAt
@@ -939,6 +940,10 @@ components:
           description: Bytes agregados de `images`; 0 na 3a. A UI formata ("1.4 GB") em `lib/format.ts`.
         imagesCount: { type: integer, minimum: 0 }
         labeledCount: { type: integer, minimum: 0 }
+        trashCount:
+          type: integer
+          minimum: 0
+          description: "Imagens na lixeira do dataset (derivado 3g.3, ADR-0005 D11; aditivo na 0.4.0)."
         classes:
           type: array
           items: { $ref: "#/components/schemas/Class" }

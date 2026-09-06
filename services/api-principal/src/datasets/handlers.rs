@@ -61,8 +61,8 @@ fn internal() -> Response {
 /// GET /api/datasets — coleção inteira por `updated_at` DESC (sem paginação na 3a).
 pub async fn list(State(state): State<AppState>) -> Response {
     let rows: Vec<DatasetRow> = match sqlx::query_as::<_, DatasetRow>(&format!(
-        // Derivado, não coluna (dívida T7): true se alguma box com origin='autotracker' em qualquer imagem do dataset.
-        "SELECT {COLS}, EXISTS(SELECT 1 FROM images i JOIN boxes b ON b.image_id = i.id WHERE i.dataset_id = datasets.id AND b.origin = 'autotracker') AS auto_tracked FROM datasets ORDER BY updated_at DESC, id"
+        // Derivado, não coluna (dívida T7): true se alguma box com origin='autotracker' em imagem ATIVA do dataset (lixeira não conta, 3g.3).
+        "SELECT {COLS}, EXISTS(SELECT 1 FROM images i JOIN boxes b ON b.image_id = i.id WHERE i.dataset_id = datasets.id AND i.deleted_at IS NULL AND b.origin = 'autotracker') AS auto_tracked, (SELECT count(*)::int FROM images i WHERE i.dataset_id = datasets.id AND i.deleted_at IS NOT NULL) AS trash_count FROM datasets ORDER BY updated_at DESC, id"
     ))
     .fetch_all(&state.pool)
     .await
@@ -177,10 +177,10 @@ pub async fn create(
         Err(_) => return internal(),
     };
     let row: Option<DatasetRow> = match sqlx::query_as::<_, DatasetRow>(&format!(
-        // Derivado, não coluna (dívida T7): true se alguma box com origin='autotracker' em qualquer imagem do dataset.
+        // Derivado, não coluna (dívida T7): true se alguma box com origin='autotracker' em imagem ATIVA do dataset (lixeira não conta, 3g.3).
         "INSERT INTO datasets (slug, title, category, type, task, format, status) \
          VALUES ($1,$2,$3,$4,$5,$6,'needs_labeling') \
-         ON CONFLICT (slug) DO NOTHING RETURNING {COLS}, EXISTS(SELECT 1 FROM images i JOIN boxes b ON b.image_id = i.id WHERE i.dataset_id = datasets.id AND b.origin = 'autotracker') AS auto_tracked"
+         ON CONFLICT (slug) DO NOTHING RETURNING {COLS}, EXISTS(SELECT 1 FROM images i JOIN boxes b ON b.image_id = i.id WHERE i.dataset_id = datasets.id AND i.deleted_at IS NULL AND b.origin = 'autotracker') AS auto_tracked, (SELECT count(*)::int FROM images i WHERE i.dataset_id = datasets.id AND i.deleted_at IS NOT NULL) AS trash_count"
     ))
     .bind(&slug)
     .bind(&req.title)
@@ -252,8 +252,8 @@ pub async fn get_one(State(state): State<AppState>, Path(id): Path<String>) -> R
         None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
     };
     let row: Option<DatasetRow> = match sqlx::query_as::<_, DatasetRow>(&format!(
-        // Derivado, não coluna (dívida T7): true se alguma box com origin='autotracker' em qualquer imagem do dataset.
-        "SELECT {COLS}, EXISTS(SELECT 1 FROM images i JOIN boxes b ON b.image_id = i.id WHERE i.dataset_id = datasets.id AND b.origin = 'autotracker') AS auto_tracked FROM datasets WHERE id = $1"
+        // Derivado, não coluna (dívida T7): true se alguma box com origin='autotracker' em imagem ATIVA do dataset (lixeira não conta, 3g.3).
+        "SELECT {COLS}, EXISTS(SELECT 1 FROM images i JOIN boxes b ON b.image_id = i.id WHERE i.dataset_id = datasets.id AND i.deleted_at IS NULL AND b.origin = 'autotracker') AS auto_tracked, (SELECT count(*)::int FROM images i WHERE i.dataset_id = datasets.id AND i.deleted_at IS NOT NULL) AS trash_count FROM datasets WHERE id = $1"
     ))
     .bind(id)
     .fetch_optional(&state.pool)
@@ -1159,7 +1159,7 @@ pub async fn get_image(
         chrono::DateTime<chrono::Utc>,
     );
     let row: Option<ImgTuple> = match sqlx::query_as(&format!(
-        "SELECT {ICOLS} FROM images WHERE id = $1 AND dataset_id = $2"
+        "SELECT {ICOLS} FROM images WHERE id = $1 AND dataset_id = $2 AND deleted_at IS NULL"
     ))
     .bind(img_id)
     .bind(ds_id)
@@ -1252,7 +1252,7 @@ pub async fn get_data(
         None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
     };
     let row: Option<(String, String)> = match sqlx::query_as(
-        "SELECT object_key, media_type FROM images WHERE id = $1 AND dataset_id = $2",
+        "SELECT object_key, media_type FROM images WHERE id = $1 AND dataset_id = $2 AND deleted_at IS NULL",
     )
     .bind(img_id)
     .bind(ds_id)
@@ -1375,7 +1375,7 @@ pub async fn put_boxes(
     };
     // (d) imagem existe ESCOPADA ao dataset.
     let exists: bool = match sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM images WHERE id = $1 AND dataset_id = $2)",
+        "SELECT EXISTS(SELECT 1 FROM images WHERE id = $1 AND dataset_id = $2 AND deleted_at IS NULL)",
     )
     .bind(img_id)
     .bind(ds_id)
@@ -1519,7 +1519,7 @@ pub async fn put_caption(
         };
     // (d) imagem existe ESCOPADA ao dataset.
     let exists: bool = match sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM images WHERE id = $1 AND dataset_id = $2)",
+        "SELECT EXISTS(SELECT 1 FROM images WHERE id = $1 AND dataset_id = $2 AND deleted_at IS NULL)",
     )
     .bind(img_id)
     .bind(ds_id)

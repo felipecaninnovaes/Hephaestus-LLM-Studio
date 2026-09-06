@@ -156,6 +156,8 @@ pub struct DatasetRow {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub auto_tracked: bool,
+    /// Derivado (D11): conta `images` com `deleted_at IS NOT NULL` do dataset.
+    pub trash_count: i32,
 }
 
 /// Classe no wire (3b.7): objeto completo `{id, name, idx, color}` camelCase —
@@ -215,6 +217,7 @@ pub struct DatasetResponse {
     pub last_modified: DateTime<Utc>,
     pub classes: Vec<DatasetClassResponse>,
     pub auto_tracked: bool,
+    pub trash_count: i32,
 }
 
 impl From<DatasetRow> for DatasetResponse {
@@ -236,6 +239,7 @@ impl From<DatasetRow> for DatasetResponse {
             last_modified: row.updated_at,
             classes: Vec::new(),
             auto_tracked: row.auto_tracked,
+            trash_count: row.trash_count,
         }
     }
 }

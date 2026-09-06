@@ -62,6 +62,7 @@ POST /api/datasets/{id}/search/index               202 401 404
 - `POST /search/by-image` `{imageId, k?, threshold?}` — `imageId` de uma imagem **do dataset** (a UI: clique na imagem → "buscar similares"); `threshold` opcional filtra score (o "80% do dedup" da D6). Upload de imagem arbitrária para buscar = v2 (mesmo transporte do indexador, só falta a rota).
 - `GET /search/status` → `SearchStatus{status: not_indexed|indexing|ready|stale, imagesCount, indexedCount, model, dim}`. Derivação: 0 embeddings → `not_indexed`; `0 < indexed < images` → `indexing`; igual → `ready`; `stale` reservado (v1 nunca emite — existe para a futura troca de modelo; o front DEVE ter ramo default).
 - `POST /search/index` → 202 sempre `{status: indexing|not_indexed}` (dataset sem imagens não trabalha; advisory lock serializa segundos disparos). Erros novos no enum `Error.code`: **`index_not_ready` (409)** — busca em dataset sem embeddings do modelo ativo; **`embedding_unavailable` (503)** — embedder inalcançável (família do `storage_unavailable`, ADR-0003 D10). Wire camelCase (guardado por teste, ADR-0002 D1); `id`/`imageId` não-UUID → 404 (D8 replicado); 413/405/500 seguem a convenção global.
+- **Nota de delta (3g.3):** a fatia 3g (ADR-0005, lixeira + `trashCount`) landou antes da 3f e tomou a spec **0.4.0** — a 3f recalibra para **0.5.0** (regra "versão = ordem de landing"; zero consumidores externos). Os demais números/deltas desta ADR não mudam.
 
 ### D6 — Dedup: **fora desta fatia**; `threshold` do by-image já cobre 80%
 

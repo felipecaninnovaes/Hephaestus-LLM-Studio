@@ -145,6 +145,7 @@ async fn create_read_delete_flow() {
         "images_count",
         "labeled_count",
         "auto_tracked",
+        "trash_count",
         "last_modified",
         "created_at",
     ] {
@@ -2819,4 +2820,160 @@ async fn t0003_trash_query_invalida_e_404s() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(json(&body)["code"], "not_found");
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0003_trash_invisivel_e_trash_count() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Lixeira H", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let created = json(&body);
+    let ds = created["id"].as_str().expect("id").to_string();
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+    let class_id: uuid::Uuid = created["classes"][0]["id"]
+        .as_str()
+        .expect("classes[0].id")
+        .parse()
+        .expect("uuid");
+
+    // img1 com a ÚNICA box autotracker; img2 com box manual.
+    let img1 = insert_image(&st.pool, ds_id, "h1.jpg", 100).await;
+    sqlx::query(
+        "INSERT INTO boxes (image_id, class_id, x, y, w, h, origin) VALUES ($1,$2,0.5,0.5,0.2,0.2,'autotracker')",
+    )
+    .bind(img1)
+    .bind(class_id)
+    .execute(&st.pool)
+    .await
+    .expect("insert box autotracker");
+    let img2 = insert_labeled_image(&st.pool, ds_id, class_id, "h2.jpg", 50).await;
+
+    // Sanidade pré-delete: autoTracked true, trashCount 0.
+    let (status, _, body) = call(
+        app.clone(),
+        bare_req(&cookie, "GET", format!("/api/datasets/{ds}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json(&body)["autoTracked"], true);
+    assert_eq!(json(&body)["trashCount"], 0);
+
+    // Soft delete da img1.
+    let (status, _, _) = call(
+        app.clone(),
+        bare_req(&cookie, "DELETE", format!("/api/datasets/{ds}/images/{img1}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // (a) detail da deletada → 404.
+    let (status, _, body) = call(
+        app.clone(),
+        bare_req(&cookie, "GET", format!("/api/datasets/{ds}/images/{img1}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json(&body)["code"], "not_found");
+
+    // (b) /data da deletada → 404.
+    let (status, _, body) = call(
+        app.clone(),
+        bare_req(&cookie, "GET", format!("/api/datasets/{ds}/images/{img1}/data")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json(&body)["code"], "not_found");
+
+    // (c) PUT boxes na deletada → 404 (body válido passa da validação pura).
+    let (status, _, body) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/images/{img1}/boxes"),
+            serde_json::json!({"boxes": [{"classId": class_id, "x": 0.5, "y": 0.5, "w": 0.2, "h": 0.2}]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json(&body)["code"], "not_found");
+
+    // (d) PUT caption na deletada → 404.
+    let (status, _, body) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/images/{img1}/caption"),
+            serde_json::json!({"text": "uma legenda"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json(&body)["code"], "not_found");
+
+    // (e) list/get_one: trashCount=1, imagesCount=1.
+    let (status, _, body) = call(
+        app.clone(),
+        bare_req(&cookie, "GET", format!("/api/datasets/{ds}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let one = json(&body);
+    assert_eq!(one["trashCount"], 1);
+    assert_eq!(one["imagesCount"], 1);
+    // (f) autoTracked NÃO fica true por causa da imagem deletada.
+    assert_eq!(one["autoTracked"], false);
+    let (status, _, body) = call(
+        app.clone(),
+        bare_req(&cookie, "GET", "/api/datasets".to_string()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let item = json(&body)
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|d| d["id"] == ds)
+        .expect("dataset na lista")
+        .clone();
+    assert_eq!(item["trashCount"], 1);
+    assert_eq!(item["autoTracked"], false);
+
+    // (g) restore → trashCount=0 e detail volta a 200.
+    let (status, _, _) = call(
+        app.clone(),
+        bare_req(&cookie, "POST", format!("/api/datasets/{ds}/images/{img1}/restore")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _, body) = call(
+        app.clone(),
+        bare_req(&cookie, "GET", format!("/api/datasets/{ds}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json(&body)["trashCount"], 0);
+    assert_eq!(json(&body)["autoTracked"], true);
+    let (status, _, _) = call(
+        app.clone(),
+        bare_req(&cookie, "GET", format!("/api/datasets/{ds}/images/{img1}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    // img2 segue intacta o tempo todo.
+    let (status, _, _) = call(
+        app.clone(),
+        bare_req(&cookie, "GET", format!("/api/datasets/{ds}/images/{img2}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
 }

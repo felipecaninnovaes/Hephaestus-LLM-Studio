@@ -69,6 +69,7 @@ export default function AnnotateImagePage() {
   const activeToolRef = useRef<ToolId>("bbox");
   activeToolRef.current = activeTool;
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mutationCountRef = useRef(0);
   const drawRef = useRef<{ startX: number; startY: number } | null>(null);
   const moveRef = useRef<{ id: string; offX: number; offY: number } | null>(null);
   const resizeRef = useRef<{ id: string } | null>(null);
@@ -144,8 +145,17 @@ export default function AnnotateImagePage() {
   }, [detail, frameWidth, zoom]);
 
   async function handleSave() {
-    if (savingRef.current) return;
+    if (savingRef.current) {
+      // PUT em voo: reagenda o debounced em vez de descartar o save.
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = setTimeout(() => {
+        saveTimeoutRef.current = null;
+        void handleSaveRef.current();
+      }, 400);
+      return;
+    }
     const current = boxesRef.current;
+    const snapshotCounter = mutationCountRef.current;
     if (current.length > 1000) {
       showToast("Máximo de 1000 caixas.", "error");
       return;
@@ -172,9 +182,24 @@ export default function AnnotateImagePage() {
         return base;
       });
       const res = await putBoxes(id, imageId, payload);
+      if (mutationCountRef.current !== snapshotCounter) {
+        // Edição durante o PUT: preserva a UI atual, mantém dirty e reagenda.
+        setDirty(true);
+        if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+        saveTimeoutRef.current = setTimeout(() => {
+          saveTimeoutRef.current = null;
+          void handleSaveRef.current();
+        }, 400);
+        return;
+      }
+      // O PUT é DELETE+INSERT: os ids do backend NASCEM NOVOS a cada save.
+      // Reassocia a caixa selecionada ao id novo por índice de payload
+      // (payload[i] ↔ res.boxes[i] — mesmo PUT, mesma ordem), senão
+      // qualquer caixa selecionada perderia a seleção pós-autosave.
+      const idxSel = current.findIndex((b) => b.id === selectedBoxIdRef.current);
       setBoxes(res.boxes.map((b) => ({ ...b })));
-      setSelectedBoxId((prev) =>
-        prev && res.boxes.some((b) => b.id === prev) ? prev : null,
+      setSelectedBoxId(
+        idxSel >= 0 && res.boxes[idxSel] ? res.boxes[idxSel].id : null,
       );
       setDirty(false);
       showToast("Anotações salvas.", "success");
@@ -204,6 +229,10 @@ export default function AnnotateImagePage() {
   useEffect(() => {
     classesRef.current = classes;
   }, [classes]);
+
+  useEffect(() => {
+    mutationCountRef.current += 1;
+  }, [boxes]);
 
   // 1. Conversão px↔norm (rect recalculado a cada evento — imune ao zoom).
   const toNorm = useCallback((clientX: number, clientY: number) => {
@@ -581,7 +610,7 @@ export default function AnnotateImagePage() {
 
       {/* Canvas de Edição */}
       <div className="relative flex min-h-0 flex-1 flex-col items-center justify-center overflow-auto bg-[#0b0f17] p-6">
-        <div className="glass-panel absolute top-4 left-6 z-20 flex items-center space-x-2 rounded-xl border border-zinc-800 bg-zinc-900/90 px-3 py-1.5 font-mono text-xs">
+        <div className="glass-menu absolute top-4 left-6 z-20 flex items-center space-x-2 rounded-xl border border-zinc-800 bg-zinc-900/90 px-3 py-1.5 font-mono text-xs">
           <button
             type="button"
             onClick={() => setZoom((z) => Math.max(50, z - 25))}
@@ -627,7 +656,7 @@ export default function AnnotateImagePage() {
           }}
           onMouseDown={onFrameMouseDown}
           onClick={() => {
-            if (activeTool !== "pan") setSelectedBoxId(null);
+            if (activeTool === "select") setSelectedBoxId(null);
           }}
         >
           <div className="absolute inset-0 bg-[radial-gradient(#ffffff_1px,transparent_1px)] opacity-20 [background-size:18px_18px]"></div>

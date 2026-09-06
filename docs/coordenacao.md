@@ -19,7 +19,17 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-05 (sessão 4: ADR-0004 busca semântica aprovada)
+## Estado atual — 2026-09-06 (sessão 5: fatia 3d — galeria `/datasets/[id]` + editor BBox)
+
+- **Branch aberta: `feat/datasets-gallery`** (de `main` `69cdd47`; CI verde na main, run 3 confirmado success via API de Actions). Plano de commits: **3d.1** backend T7 (`autoTracked` derivado de `boxes.origin='autotracker'` via `EXISTS` no SQL — `DatasetRow`+`COLS`+queries em `models.rs`/`handlers.rs`; campo JÁ existe no wire, sem mudança de contrato; subquery no `RETURNING` do INSERT é válida — dataset novo não tem imagens → false) → **3d.2** galeria (types/api lib client, página real substitui placeholder, upload multipart `files` com toasts por `status`/`reason`, grade de thumbs `<img src={item.url}>` h-36, chip `split`, load-more, botões AutoLabel/AutoTracker/Exportar/Treinar no layout do protótipo ~L1659-1791 — AutoLabel/AutoTracker/Exportar **disabled com `title` de fatia futura**, Treinar segue padrão do DatasetCard) → **3d.3** editor BBox rota `annotate/[imageId]` (sidebar w-72 protótipo ~L2264-2351: ferramentas B/V/H, classes com cor hex inline do backend, coordenadas norm. 6 casas, Salvar → PUT boxes payload total `{boxes:[{classId,x,y,w,h}]}`) → **3d.4** interações (desenhar/mover/resize alça se-resize/clamp 0..1/atalhos B,V,H,[1-9],Delete,Esc/zoom toolbar 50-250/autosave debounced ~800ms + beforeunload) → **3d.5** docs-sync (frontend.md L152/L161) → review → verificação final.
+- **Decisões de desenho da 3d (coordenador, sem ADR — sem novo contrato, sem schema)**:
+  - `ImageResponse` NÃO tem `labeled` no wire (confirmado em models.rs:280-291): tile NÃO mostra selo por-imagem de rotulada (evita N+1); filtro `labeled` entra como chip de listagem usando o query param que a API já suporta; contagem rotulada vem do `Dataset.labeledCount` na faixa resumo.
+  - Editor BBox só para `category==='yolo'` (§5.2); clique em tile difusão/clip → toast honesto. `PUT caption` NÃO ganha client na 3d (YAGNI).
+  - Moldura do canvas: base 600px de largura, altura derivada do aspect ratio real (`width/height` do backend), não 600×450 fixo do mock.
+  - Caixa usa `style` inline com `class.color` hex (paleta FECHADA não tem as classes tailwind do protótipo; dot/borda/chip via hex + alpha `26`).
+- **Ambiente de pé reconfirmado**: db/seaweedfs(healthy)/manager/principal + dev server :3000 (login 200).
+
+### Sessão 4 — ADR-0004 busca semântica + CI (contexto)
 
 - **Contratação do `@infra-dev` (2026-09-05, pedido do usuário)** — dono mecânico de infra: `infra/` (compose), Dockerfiles, `scripts/` de verificação, CI quando spec pedir, `.env.example`. **Não decide arquitetura** (ADR vem do fluxo normal); migrations seguem com `@rust-dev`; não toca código de negócio. Permissões negadas: commits/push/merge/rebase (padrão) + `compose down`/`prune`/`rm` de volume/network/container (proteção do ambiente de dev de pé — a lição do `fix/infra-env` virou política). `variant: medium` (decisão do coordenador: blast radius de ambiente inteiro + falha silenciosa — mesmo rationale do `@fixer`; usuário pode rebaixar para `low`). **Efetivo na próxima sessão** (config não retroage em sessão viva — roster do Task tool é fixado no boot). Gap que motivou: sem CI (`.github/workflows` não existe), dívida de digests pendente, e a 3f adiciona trabalho de infra (imagem pgvector, serviço embedder). Charter em `.opencode/agent/infra-dev.md`.
 - **Decisões de gestão do usuário (2026-09-05, fechamento da sessão 4)**:

@@ -86,7 +86,7 @@ components:
 
 # Design System: Hephaestus LLM Studio
 
-> **Referências canônicas:** `ai-vision-training-studio.html` (protótipo v1 — referência primária de layout), `ai-vision-training-studio-v2.html` (protótipo v2 — referência canônica da tela /login), `apps/web/app/globals.css` (tokens vivos), `docs/frontend.md` (contratos §10).
+> **Referência canônica única:** `ai-vision-training-studio.html` (protótipo regenerado via OpenDesign, 3641 linhas — referência primária de layout de TODAS as telas, incluindo a `LoginPage` canônica em ~linha 329), `apps/web/app/globals.css` (tokens vivos), `docs/frontend.md` (contratos §10).
 >
 > **Fonte de verdade de ESTILO para @frontend-dev e @ui-designer.**
 
@@ -115,7 +115,7 @@ Paleta dark-only profunda fundamentada em OKLCH com equivalente hexadecimal, pri
 ### Secondary
 - **Verde Sucesso / Ativo** (`#34d399`): Barras de progresso de treino, classe 1 de anotação (`solda_fria`) e confirmações de status semântico.
 - **Âmbar Pausa / Alerta** (`#f59e0b`): Ação de pausar treino, avisos de threshold e classe 2 de anotação (`curto_circuito`).
-- **Amarelo Runtime Python** (`#eab308` / `yellow-400`): Ponto de status do Motor PyTorch na telemetria (protótipos v1/v2 linha 864).
+- **Amarelo Runtime Python** (`#eab308` / `yellow-400`): Ponto de status do Motor PyTorch na telemetria (protótipo linha 864).
 - **Rosa Perigo / Abortar** (`#ef4444`): Ação de abortar ou deletar dataset, curvas de Loss e classe 3 de anotação (`componente_ausente`).
 - **Ciano Telemetria** (`#06b6d4`): Latência do Rust Core, selos AutoTracker e classe 4 de anotação (`trilha_rompida`).
 

@@ -22,6 +22,26 @@ ser interrompido no meio de uma.
 ## Estado atual — 2026-09-05 (sessão 4: ADR-0004 busca semântica aprovada)
 
 - **Contratação do `@infra-dev` (2026-09-05, pedido do usuário)** — dono mecânico de infra: `infra/` (compose), Dockerfiles, `scripts/` de verificação, CI quando spec pedir, `.env.example`. **Não decide arquitetura** (ADR vem do fluxo normal); migrations seguem com `@rust-dev`; não toca código de negócio. Permissões negadas: commits/push/merge/rebase (padrão) + `compose down`/`prune`/`rm` de volume/network/container (proteção do ambiente de dev de pé — a lição do `fix/infra-env` virou política). `variant: medium` (decisão do coordenador: blast radius de ambiente inteiro + falha silenciosa — mesmo rationale do `@fixer`; usuário pode rebaixar para `low`). **Efetivo na próxima sessão** (config não retroage em sessão viva — roster do Task tool é fixado no boot). Gap que motivou: sem CI (`.github/workflows` não existe), dívida de digests pendente, e a 3f adiciona trabalho de infra (imagem pgvector, serviço embedder). Charter em `.opencode/agent/infra-dev.md`.
+- **Decisões de gestão do usuário (2026-09-05, fechamento da sessão 4)**:
+  1. `chore/infra-agent` MERGEADA pelo usuário (`662fb4d`) — `@infra-dev` efetivo na
+     próxima sessão.
+  2. **Digests: APROVADO e FEITO** — commit `4b8c7e4` em `chore/pin-digests`
+     (despacho `@rust-dev`; dívida QUITADA em `dividas.md`; aguardando merge). Nota
+     nova registrada: manager/orchestrator ainda em `bookworm-slim` — migrar para
+     `trixie-slim` quando o orquestrador ganhar cliente S3 (fatia 4, R10).
+  3. **CI no GitHub: DESCARTADO pelo usuário** ("não uso o github") — sem pipeline
+     externo; verificação continua local (lefthook + checks do coordenador). Não
+     reabrir sem pedido.
+  4. **Push do tronco: feito pelo usuário** (após o merge do infra-agent; o ADR-0004
+     e o pin-digests/housekeeping ainda não estão no origin).
+  5. **`cargo fmt`: APROVADO e FEITO** — commit `8947fec` em `chore/housekeeping`
+     (`cargo fmt --all`, 14 arquivos; `cargo check --workspace` + `cargo test -p
+     api-principal` verdes; dívida do fmt quitada com o merge). Lição operacional:
+     o type-enum do commitlint é `[feat, fix, docs, refactor, test, chore]` — `style`
+     NÃO existe; usar `chore(fmt)`.
+  6. **3d na próxima sessão**: usuário abrirá sessão nova e fará levantamento leve
+     se a 3f afeta o que a 3d vai fazer (resposta: a 3f não muda o desenho da 3d —
+     só consome a galeria que ela cria; ver ADR-0004 D0).
 - **ADR-0004 ACEITA pelo usuário (2026-09-05): busca semântica sobre datasets com embeddings OpenCLIP = fatia 3f**, especificação completa em **`docs/adr/0004-semantic-search.md`** (D0–D8, migration `0004`, spike `3f.0` com 5 critérios binários, plano de commits 3f.0–3f.7). Resumo das decisões: pgvector no Postgres existente (compose troca `postgres:16` → `pgvector/pgvector:pg16` com digest pinado — spike prova upgrade sem dump/restore, R1); embedder = `trainer-clip` em modo `serve` como serviço compose (fora do orquestrador até a fatia 4 — exceção consciente à topologia, com caminho de unificação); indexação assíncrona SEM fila (estado derivado `indexedCount` vs `imagesCount` + advisory lock — não depende da fatia 4); 4 rotas novas, spec 0.4.0, erros novos `index_not_ready` (409) e `embedding_unavailable` (503); EmbeddingPort com `MockEmbedder` default (`EMBEDDING_BACKEND=mock`). Dedup e AutoLabel assistido fora de escopo v1 (schema não fecha portas). **Nada implementado** — docs de contrato só mudam no commit 3f.7 (lista de linhas que ficam falsas está no fim da ADR).
 - **Sequência do roadmap atualizada**: 3d → **3f** → 3e → 4. A 3f depende apenas da 3d (a busca mora na galeria); 3f.1–3f.5 são disjuntos de 3e/4 e podem ser despachados em paralelo ao fim da 3d; só 3f.6 (UI) espera a galeria.
 

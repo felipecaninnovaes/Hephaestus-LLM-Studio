@@ -53,11 +53,16 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
 
 **Infra / ambiente**
 
-- **Fixar digests de imagem no compose/Dockerfiles** (decisão do usuário) —
-  lição materializada em `fix/infra-env` (`c09569a`): a tag mutável
-  `4.45_full` do SeaweedFS trocou o wget e deixou o container unhealthy
-  permanente; runtime `bookworm`→`trixie-slim` por GLIBC_2.38 (`aws-lc-sys`,
-  R10 da ADR-0003). Tags mutáveis quebram builds verificados.
+- ~~**Fixar digests de imagem no compose/Dockerfiles**~~ **QUITADA 2026-09-05**
+  (decisão do usuário; commit `4b8c7e4` em `chore/pin-digests` — aguardando merge;
+  despacho `@rust-dev` com digests resolvidos no registry pelo coordenador; 11/11
+  referências pinadas, `compose config -q` verde nos dois arquivos). Padrão
+  `tag@sha256:` mantém a tag legível e o digest como trava.
+- **Nota para a fatia 4 (nova)**: `manager`/`orchestrator` rodam runtime
+  `debian:bookworm-slim` (GLIBC 2.36) — quando o orquestrador ganhar cliente S3
+  (aws-lc-sys, GLIBC_2.38), migrar para `trixie-slim` como o principal (R10 da
+  ADR-0003). Os 3 Dockerfiles Rust seguem compartilhando o digest do builder
+  `rust:1.97.1-slim`.
 
 **Frontend**
 

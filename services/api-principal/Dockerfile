@@ -20,7 +20,10 @@ RUN mkdir -p services/manager/src services/orchestrator/src \
   && echo "fn main() {}" > services/orchestrator/src/main.rs \
   && touch services/api-principal/src/main.rs && cargo build --release -p api-principal
 
-FROM debian:bookworm-slim
+# Runtime = MESMA base do builder (trixie, glibc 2.41): aws-lc-sys puxa
+# símbolos GLIBC_2.38+ e quebra no bookworm (2.36) — lição 2026-09-05,
+# risco R10 da ADR-0003 materializado por tag mutável do rust:slim.
+FROM debian:trixie-slim
 WORKDIR /app
 COPY --from=build /app/target/release/api-principal /app/api-principal
 EXPOSE 8080

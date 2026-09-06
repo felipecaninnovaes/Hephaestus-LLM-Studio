@@ -214,6 +214,29 @@ export default function DatasetGalleryPage() {
     }
   }
 
+  // 404 = estado stale (outra aba moveu/restaurado, ou purga concorrente):
+  // reconcilia a UI com o servidor em vez de deixar a lista mentindo.
+  async function reconcileList(id: string) {
+    try {
+      const [page, trashPage, fresh] = await Promise.all([
+        listImages(id, {
+          limit: PAGE_LIMIT,
+          offset: 0,
+          deleted: view === "trash",
+        }),
+        listImages(id, { limit: 1, offset: 0, deleted: true }),
+        getDataset(id),
+      ]);
+      setItems(page.items);
+      setTotal(page.total);
+      setTrashTotal(trashPage.total);
+      setDataset(fresh);
+      if (view === "trash" && trashPage.total === 0) setView("ativas");
+    } catch {
+      // Reconciliação best-effort — mantém o estado atual se falhar.
+    }
+  }
+
   async function confirmSoftDelete() {
     if (!deleting || !datasetId) return;
     const target = deleting;
@@ -235,6 +258,15 @@ export default function DatasetGalleryPage() {
         (err.code === "unauthorized" || err.status === 401)
       ) {
         router.replace("/login");
+        return;
+      }
+      if (err instanceof ApiError && err.status === 404) {
+        setDeleting(null);
+        await reconcileList(datasetId);
+        showToast(
+          "A lista foi atualizada — a imagem já não está neste estado.",
+          "info",
+        );
         return;
       }
       const message =
@@ -269,6 +301,14 @@ export default function DatasetGalleryPage() {
         (err.code === "unauthorized" || err.status === 401)
       ) {
         router.replace("/login");
+        return;
+      }
+      if (err instanceof ApiError && err.status === 404) {
+        await reconcileList(datasetId);
+        showToast(
+          "A lista foi atualizada — a imagem já não está neste estado.",
+          "info",
+        );
         return;
       }
       showToast("Falha ao restaurar imagem.", "error");
@@ -308,6 +348,14 @@ export default function DatasetGalleryPage() {
         (err.code === "unauthorized" || err.status === 401)
       ) {
         router.replace("/login");
+        return;
+      }
+      if (err instanceof ApiError && err.status === 404) {
+        await reconcileList(datasetId);
+        showToast(
+          "A lista foi atualizada — a imagem já não está neste estado.",
+          "info",
+        );
         return;
       }
       showToast("Falha ao restaurar imagem.", "error");

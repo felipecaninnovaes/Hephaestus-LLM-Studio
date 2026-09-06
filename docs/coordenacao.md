@@ -19,7 +19,12 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-05 (sessão 3: alinhamento de design + fixes de ambiente)
+## Estado atual — 2026-09-05 (sessão 4: ADR-0004 busca semântica aprovada)
+
+- **ADR-0004 ACEITA pelo usuário (2026-09-05): busca semântica sobre datasets com embeddings OpenCLIP = fatia 3f**, especificação completa em **`docs/adr/0004-semantic-search.md`** (D0–D8, migration `0004`, spike `3f.0` com 5 critérios binários, plano de commits 3f.0–3f.7). Resumo das decisões: pgvector no Postgres existente (compose troca `postgres:16` → `pgvector/pgvector:pg16` com digest pinado — spike prova upgrade sem dump/restore, R1); embedder = `trainer-clip` em modo `serve` como serviço compose (fora do orquestrador até a fatia 4 — exceção consciente à topologia, com caminho de unificação); indexação assíncrona SEM fila (estado derivado `indexedCount` vs `imagesCount` + advisory lock — não depende da fatia 4); 4 rotas novas, spec 0.4.0, erros novos `index_not_ready` (409) e `embedding_unavailable` (503); EmbeddingPort com `MockEmbedder` default (`EMBEDDING_BACKEND=mock`). Dedup e AutoLabel assistido fora de escopo v1 (schema não fecha portas). **Nada implementado** — docs de contrato só mudam no commit 3f.7 (lista de linhas que ficam falsas está no fim da ADR).
+- **Sequência do roadmap atualizada**: 3d → **3f** → 3e → 4. A 3f depende apenas da 3d (a busca mora na galeria); 3f.1–3f.5 são disjuntos de 3e/4 e podem ser despachados em paralelo ao fim da 3d; só 3f.6 (UI) espera a galeria.
+
+### Sessão 3 — alinhamento de design + fixes de ambiente (contexto)
 
 - **Problema reportado pelo usuário**: implementadores frontend desviando do estilo de layout (impeccable/OpenDesign como referência; troca de modelo do dev + protótipo regenerado com login no OpenDesign como teste). Fechado em 3 frentes:
   1. **Referência formal** — `docs/design-system.md` MESCLADO (base OpenDesign: frontmatter YAML navegável + Do's/Don'ts + regras nomeadas; seções exclusivas da versão impeccable reincorporadas: iconografia, anatomia de componentes, a11y, avaliação crítica; token Runtime Python `#eab308` recuperado com prova v1:864). **Descoberta do reviewer**: o `ai-vision-training-studio.html` do tronco JÁ É a regeneração OpenDesign (3641 linhas, `LoginPage` ~329) desde o merge `chore/opendesign` (`39a1410`) — o `ai-vision-training-studio-v2.html` que o coordenador importou do OpenDesign era byte-idêntico e foi REMOVIDO (`1a00b22`); referência única = protótipo da raiz.
@@ -204,8 +209,8 @@ nascedouro.
 
 ## Plano em andamento — PRÓXIMO PASSO EXATO: fatia 3d (galeria `/datasets/[id]` + editor BBox)
 
-**Todos os merges da sessão 3 fechados no tronco (ver "Estado atual"). Sequência daqui:**
-**3d galeria `/datasets/[id]` + editor BBox** (o placeholder honesto criado pela emenda é substituído pelo conteúdo real; upload UI entra aqui; `autoTracked` derivado de `boxes.origin='autotracker'` — dívida T7) → **3e export/import** → **4 jobs/package/materialização** (orquestrador ganha cliente S3 com credencial escopada por prefixo; dívida T4 da ADR-0002 — `jobs.dataset_id ON DELETE SET NULL` + `dataset_versions` — honrada no nascedouro).
+**Todos os merges da sessão 3 fechados no tronco (ver "Estado atual"). Sequência daqui (atualizada pela ADR-0004):**
+**3d galeria `/datasets/[id]` + editor BBox** (o placeholder honesto criado pela emenda é substituído pelo conteúdo real; upload UI entra aqui; `autoTracked` derivado de `boxes.origin='autotracker'` — dívida T7) → **3f busca semântica (ADR-0004)** → **3e export/import** → **4 jobs/package/materialização** (orquestrador ganha cliente S3 com credencial escopada por prefixo e absorve o embedder como runner-CLIP — mesma interface HTTP da 3f; dívida T4 da ADR-0002 — `jobs.dataset_id ON DELETE SET NULL` + `dataset_versions` — honrada no nascedouro).
 
 **3b.0–3b.8 FEITOS e MERGEADOS (`04b8987`); 3c FEITA, REVISADA e EMENDADA (ver "Estado atual").** A sequência:
 

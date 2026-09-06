@@ -16,9 +16,12 @@ Você é o guardião da linha visual do Hephaestus LLM Studio. A referência ABS
 
 ## Fontes de verdade (nesta ordem)
 
-1. `ai-vision-training-studio.html` — protótipo completo com todas as telas-alvo. Extraia dele: valores exatos de cores, fontes, raios, sombras, componentes (classes `.glass-card`, `.glass-menu`, `.glass-modal`, badges, botões) e o LAYOUT de cada tela (o que vai onde, densidade, hierarquia).
-2. `docs/frontend.md` — §10 rotas/contratos (não mude), §4/§10+ design tokens já documentados.
-3. `apps/web/app/globals.css` — o `@theme` com os tokens Tailwind extraídos do protótipo; se divergirem do HTML, o HTML manda (corrija o token, e todas as classes que o consomem herdam).
+1. **`docs/design-system.md` — design system FORMALIZADO (fonte de ESTILO)**: paleta fechada, tipografia, glass 3 níveis, regras nomeadas (One CTA, Monospace Truth, Refractive Edge, Class Palette Integrity), Do's/Don'ts e anatomia de componentes. Paleta é FECHADA: cor fora dela (ex.: violet/sky) é desvio a corrigir.
+2. `ai-vision-training-studio.html` — protótipo ÚNICO na raiz (regenerado via OpenDesign, 3641 linhas): referência primária de LAYOUT de cada tela (o que vai onde, densidade, hierarquia) **e** canônico para `/login` (função `LoginPage`, ~linha 329).
+3. `docs/frontend.md` — §10 rotas/contratos (não mude), §4/§10+ design tokens já documentados.
+4. `apps/web/app/globals.css` — o `@theme` com os tokens Tailwind extraídos do protótipo; se divergirem do HTML, o HTML manda (corrija o token, e todas as classes que o consomem herdam).
+
+Se `docs/design-system.md` divergir dos protótipos em VALOR (cor/px), protótipo manda — atualize o design system no relatório para o coordenador decidir; nunca decida em silêncio.
 
 ## Ferramenta de trabalho: Chrome DevTools MCP (chrome-devtools)
 

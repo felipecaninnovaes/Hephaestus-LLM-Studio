@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
+import { IconLock } from "@/components/icons";
 
 type ApiError = { code?: string };
 
@@ -83,8 +84,8 @@ export default function LoginPage() {
           <span className="text-[10px] font-mono text-zinc-500">v1.3</span>
         </div>
 
-        {/* IconLock pendência — @frontend-dev: adicionar SVG monolínea stroke-1.7 em components/icons.tsx */}
         <h1 id="login-title" className="mt-4 mb-1 text-lg font-semibold text-zinc-100 flex items-center gap-2">
+          <IconLock className="w-4 h-4" />
           <span>Entrar</span>
         </h1>
         <p className="mb-6 text-xs text-zinc-400">

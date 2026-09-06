@@ -3,6 +3,12 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Dataset } from "@/types/studio";
+import {
+  IconDownload,
+  IconLayers,
+  IconTarget,
+  IconTrash,
+} from "@/components/icons";
 
 interface Props {
   dataset: Dataset;
@@ -62,8 +68,9 @@ export default function DatasetMenu({ dataset, x, y, onClose, onDelete }: Props)
             onClose();
             router.push(`/datasets/${dataset.id}`);
           }}
-          className="flex w-full items-center space-x-2 rounded-xl px-3 py-2 text-left text-zinc-200 transition-colors hover:bg-emerald-500/20 hover:text-emerald-300"
+          className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-zinc-200 transition-colors hover:bg-emerald-500/20 hover:text-emerald-300"
         >
+          <IconLayers className="w-3.5 h-3.5 shrink-0" />
           <span>Abrir galeria</span>
         </button>
         <button
@@ -71,8 +78,9 @@ export default function DatasetMenu({ dataset, x, y, onClose, onDelete }: Props)
           role="menuitem"
           disabled
           title="Treino chega na fatia 4"
-          className="flex w-full cursor-not-allowed items-center space-x-2 rounded-xl px-3 py-2 text-left text-zinc-500"
+          className="flex w-full cursor-not-allowed items-center gap-2 rounded-xl px-3 py-2 text-left text-zinc-500"
         >
+          <IconTarget className="w-3.5 h-3.5 shrink-0" />
           <span>Treinar neste dataset</span>
         </button>
         <button
@@ -80,8 +88,9 @@ export default function DatasetMenu({ dataset, x, y, onClose, onDelete }: Props)
           role="menuitem"
           disabled
           title="Export chega na fatia 3e"
-          className="flex w-full cursor-not-allowed items-center space-x-2 rounded-xl px-3 py-2 text-left text-zinc-500"
+          className="flex w-full cursor-not-allowed items-center gap-2 rounded-xl px-3 py-2 text-left text-zinc-500"
         >
+          <IconDownload className="w-3.5 h-3.5 shrink-0" />
           <span>Exportar</span>
         </button>
         <div className="my-1 h-px bg-white/10" />
@@ -92,8 +101,9 @@ export default function DatasetMenu({ dataset, x, y, onClose, onDelete }: Props)
             onClose();
             onDelete(dataset);
           }}
-          className="flex w-full items-center space-x-2 rounded-xl px-3 py-2 text-left text-rose-300 transition-colors hover:bg-rose-500/20 hover:text-rose-200"
+          className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-rose-300 transition-colors hover:bg-rose-500/20 hover:text-rose-200"
         >
+          <IconTrash className="w-3.5 h-3.5 shrink-0" />
           <span>Excluir</span>
         </button>
       </div>

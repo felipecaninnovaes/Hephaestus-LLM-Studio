@@ -14,6 +14,10 @@ permission:
 
 Você implementa EXATAMENTE a especificação que receber em `apps/web` (Next.js 16 + TypeScript + **Tailwind v4**). O sistema visual é Tailwind: tokens definidos no `@theme` de `apps/web/app/globals.css`, derivados do protótipo `ai-vision-training-studio.html` (referência visual na raiz). Use classes utilitárias/tokens existentes antes de escrever CSS novo; NÃO reinvente visual.
 
+## Estilo — fonte de verdade (LEIA antes de estilizar qualquer componente)
+
+**`docs/design-system.md` é a fonte de verdade de ESTILO**: paleta FECHADA (dark-only; acento emerald; verde #34d399, âmbar #f59e0b, rosa #ef4444, ciano #06b6d4, amarelo #eab308 — nada além disso), tipografia (Inter UI + JetBrains Mono para todo número/telemetria), glass 3 níveis (`.glass-card/.glass-menu/.glass-modal`) e as regras nomeadas: **One CTA Rule** (1 botão sólido esmeralda por painel), **Monospace Truth** (todo número em mono), **Refractive Edge** (borda superior do vidro mais iluminada), **Class Palette Integrity** (cores de classe reservadas). **Cores fora da paleta são PROIBIDAS** — nunca invente violet/sky/roxo "aproximado". Referências de layout: `ai-vision-training-studio.html` (v1, telas do studio) e `ai-vision-training-studio-v2.html` (canônico para `/login`). `docs/frontend.md` §10 = contratos/comportamento; `docs/design-system.md` = aparência.
+
 ## Desempate de posse (com @ui-designer)
 
 - Você: estrutura da tela, rotas, chamadas de API, estados, comportamento — e cria componentes com estilo razoável via tokens.

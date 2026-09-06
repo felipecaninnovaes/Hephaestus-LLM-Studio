@@ -194,6 +194,39 @@ export function IconPlay(props: IconProps) {
   );
 }
 
+export function IconBoxSelect(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M5 3H3v2" />
+      <path d="M19 3h2v2" />
+      <path d="M5 21H3v-2" />
+      <path d="M19 21h2v-2" />
+      <rect x="7" y="7" width="10" height="10" rx="1" />
+    </Base>
+  );
+}
+
+export function IconZoomIn(props: IconProps) {
+  return (
+    <Base {...props}>
+      <circle cx="11" cy="11" r="8" />
+      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+      <line x1="11" y1="8" x2="11" y2="14" />
+      <line x1="8" y1="11" x2="14" y2="11" />
+    </Base>
+  );
+}
+
+export function IconZoomOut(props: IconProps) {
+  return (
+    <Base {...props}>
+      <circle cx="11" cy="11" r="8" />
+      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+      <line x1="8" y1="11" x2="14" y2="11" />
+    </Base>
+  );
+}
+
 export function IconLogOut(props: IconProps) {
   return (
     <Base {...props}>

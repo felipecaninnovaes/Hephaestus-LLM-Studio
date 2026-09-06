@@ -139,6 +139,9 @@ export interface BoxInput {
   y: number;
   w: number;
   h: number;
+  conf?: number | null;
+  origin?: string;
+  trackId?: number | null;
 }
 
 export interface PutBoxesResponse {

@@ -30,13 +30,17 @@ use md5::Digest as Md5Digest;
 use sha2::Digest as Sha256Digest;
 
 use super::models::{
-    color_for, derive, derived_source, normalize_classes, parse_id, slugify, validate_boxes,
-    validate_caption, BoxResponse, CaptionResponse, CreateDatasetRequest, DatasetClassResponse,
-    DatasetResponse, DatasetRow, DatasetType, ImageDetailResponse, ImagePage, ImageResponse,
-    ImageRow, PutBoxesRequest, PutBoxesResponse, PutCaptionRequest, UploadItem, UploadResult,
+    color_for, derive, derived_source, normalize_classes, parse_id, plan_classes, slugify,
+    validate_boxes, validate_caption, BoxResponse, CaptionResponse, CreateDatasetRequest,
+    DatasetClassResponse, DatasetResponse, DatasetRow, DatasetType, ImageDetailResponse, ImagePage,
+    ImageResponse, ImageRow, PutBoxesRequest, PutBoxesResponse, PutCaptionRequest,
+    PutClassesRequest, PutClassesResponse, UploadItem, UploadResult,
 };
 use crate::{
-    error::{err, MSG_INVALID_REQUEST, MSG_NOT_FOUND, MSG_SLUG_CONFLICT, MSG_STORAGE_UNAVAILABLE},
+    error::{
+        err, MSG_CLASSES_IN_USE, MSG_INVALID_REQUEST, MSG_NOT_FOUND, MSG_SLUG_CONFLICT,
+        MSG_STORAGE_UNAVAILABLE,
+    },
     state::AppState,
     storage::{
         keys,
@@ -1324,4 +1328,173 @@ pub async fn put_caption(
     };
     // (g) 200 canônico (struct da 3b.5, reaproveitada).
     (StatusCode::OK, Json(CaptionResponse::from(row))).into_response()
+}
+
+/// PUT /api/datasets/:id/classes — substituição total com reconciliação por
+/// id (3g.1, ADR-0005 D2/D3).
+///
+/// Ordem LEI: (a) uuid do dataset ⇒ não ⇒ 404; (b) body no envelope ⇒
+/// 413/400; (c) dataset existe ⇒ não ⇒ 404; (d) validação pura + plano
+/// (`plan_classes` sobre as classes atuais: id de outro dataset ⇒ 400 seco);
+/// (e) guard de órfãos ANTES de qualquer DELETE — box apontando para classe
+/// que seria removida ⇒ 409 `classes_in_use` sem escrever nada; (f) transação
+/// ÚNICA em 2 fases (dance do UNIQUE: tmp `__tmp_<simple>`, idx+1000000;
+/// finais name/idx/color; DELETE das removidas; INSERT das novas);
+/// (g) 200 canônico (releitura ordenada por idx).
+pub async fn put_classes(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    // (a) uuid antes de tudo (nunca 400 — ADR-0002 D8).
+    let ds_id: Uuid = match parse_id(&id) {
+        Some(v) => v,
+        None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
+    };
+    // (b) body no envelope.
+    let req: PutClassesRequest = match parse_json_body(body) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    // (c) dataset existe escopado ao id.
+    let exists: bool = match sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM datasets WHERE id = $1)")
+        .bind(ds_id)
+        .fetch_one(&state.pool)
+        .await
+    {
+        Ok(v) => v,
+        Err(_) => return internal(),
+    };
+    if !exists {
+        return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND);
+    }
+    // Classes atuais do dataset (ids para o plano).
+    let existing: Vec<Uuid> = match sqlx::query_scalar(
+        "SELECT id FROM classes WHERE dataset_id = $1",
+    )
+    .bind(ds_id)
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(v) => v,
+        Err(_) => return internal(),
+    };
+    // (d) validação pura + reconciliação (id estranho ⇒ 400 seco).
+    let plan = match plan_classes(&existing, &req) {
+        Ok(p) => p,
+        Err(_) => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                MSG_INVALID_REQUEST,
+            );
+        }
+    };
+    // (e) guard de órfãos ANTES de qualquer escrita: o CASCADE de
+    // `boxes.class_id` apagaria anotações silenciosamente.
+    if !plan.remove.is_empty() {
+        let hit: bool = match sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM boxes WHERE class_id = ANY($1))",
+        )
+        .bind(&plan.remove)
+        .fetch_one(&state.pool)
+        .await
+        {
+            Ok(v) => v,
+            Err(_) => return internal(),
+        };
+        if hit {
+            return err(
+                StatusCode::CONFLICT,
+                "classes_in_use",
+                MSG_CLASSES_IN_USE,
+            );
+        }
+    }
+    // (f) transação ÚNICA.
+    let mut tx = match state.pool.begin().await {
+        Ok(t) => t,
+        Err(_) => return internal(),
+    };
+    // Fase 1: mantidos para nome/idx temporários (fora de qualquer colisão).
+    for (cid, _, final_idx) in &plan.keep {
+        let tmp_name = format!("__tmp_{}", cid.simple());
+        let tmp_idx = *final_idx as i32 + 1_000_000;
+        if sqlx::query("UPDATE classes SET name = $1, idx = $2 WHERE id = $3 AND dataset_id = $4")
+            .bind(&tmp_name)
+            .bind(tmp_idx)
+            .bind(cid)
+            .bind(ds_id)
+            .execute(&mut *tx)
+            .await
+            .is_err()
+        {
+            return internal();
+        }
+    }
+    // Fase 2: mantidos para name/idx/color finais (ordem do array).
+    for (cid, name, final_idx) in &plan.keep {
+        let color = color_for(*final_idx);
+        if sqlx::query(
+            "UPDATE classes SET name = $1, idx = $2, color = $3 WHERE id = $4 AND dataset_id = $5",
+        )
+        .bind(name)
+        .bind(*final_idx as i32)
+        .bind(color)
+        .bind(cid)
+        .bind(ds_id)
+        .execute(&mut *tx)
+        .await
+        .is_err()
+        {
+            return internal();
+        }
+    }
+    // DELETE das removidas (o CASCADE nunca dispara graças ao guard).
+    if !plan.remove.is_empty() {
+        if sqlx::query("DELETE FROM classes WHERE dataset_id = $1 AND id = ANY($2)")
+            .bind(ds_id)
+            .bind(&plan.remove)
+            .execute(&mut *tx)
+            .await
+            .is_err()
+        {
+            return internal();
+        }
+    }
+    // INSERT das novas (id pelo default do banco).
+    for (name, final_idx) in &plan.create {
+        let color = color_for(*final_idx);
+        if sqlx::query(
+            "INSERT INTO classes (dataset_id, name, idx, color) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(ds_id)
+        .bind(name)
+        .bind(*final_idx as i32)
+        .bind(color)
+        .execute(&mut *tx)
+        .await
+        .is_err()
+        {
+            return internal();
+        }
+    }
+    if tx.commit().await.is_err() {
+        return internal();
+    }
+    // (g) 200 canônico (releitura ordenada por idx, mesmo shape de Dataset.classes).
+    let rows: Vec<(Uuid, String, i32, String)> = match sqlx::query_as(
+        "SELECT id, name, idx, color FROM classes WHERE dataset_id = $1 ORDER BY idx",
+    )
+    .bind(ds_id)
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return internal(),
+    };
+    let resp = PutClassesResponse {
+        classes: rows.into_iter().map(DatasetClassResponse::from).collect(),
+    };
+    (StatusCode::OK, Json(resp)).into_response()
 }

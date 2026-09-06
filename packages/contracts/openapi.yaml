@@ -455,6 +455,62 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+
+  /api/datasets/{id}/classes:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK do dataset. Valor que não parseia como UUID responde 404 `not_found`
+          (não 400, padrão D8 replicado).
+    put:
+      operationId: putClasses
+      tags: [datasets]
+      summary: Substitui as classes do dataset (reconciliação por id)
+      description: |
+        Substituição total das `classes` do dataset (Fatia 3g.1, ADR-0005 D2/D3)
+        com reconciliação por id: item com `id` renomeia preservando o id (as
+        boxes que apontam para ele não são tocadas); item sem `id` cria nova;
+        classe existente ausente do request é removida — mas remoção de classe
+        em uso por anotações responde 409 e não escreve nada (a transação
+        inteira aborta). A ordem do array vira `idx` 0..n-1 e `color` é
+        rederivada da paleta por `idx % 6` (nunca vem do cliente). Máx 200
+        classes por request. `id` de classe de outro dataset ⇒ 400 sem vazar
+        existência. Sem chamada de storage (sem 503).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PutClassesRequest" }
+      responses:
+        "200":
+          description: Classes substituídas (`PutClassesResponse`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PutClassesResponse" }
+        "400":
+          description: "Body inválido (parse, `deny_unknown_fields`, lista > 200, nome fora da regex `^[A-Za-z0-9_][A-Za-z0-9_]{0,63}$`, nome/id duplicado, `id` fora do dataset; `code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Dataset inexistente ou id não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "Classe que seria removida está em uso por anotações (`code: classes_in_use`); nada foi escrito."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/datasets/{id}/images:
     parameters:
       - name: id
@@ -656,8 +712,8 @@ components:
       properties:
         code:
           type: string
-          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, storage_unavailable, internal]
-          description: "Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`; o cliente DEVE ter ramo default: o enum cresce por fatia (aditivo na 0.2.0: `not_found`, `slug_conflict`; na 0.3.0: `storage_unavailable`, ADR-0003 D10)."
+          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, storage_unavailable, classes_in_use, internal]
+          description: "Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`; o cliente DEVE ter ramo default: o enum cresce por fatia (aditivo na 0.2.0: `not_found`, `slug_conflict`; na 0.3.0: `storage_unavailable`, ADR-0003 D10; na 0.3.0, fatia 3g.1: `classes_in_use`)."
         message:
           type: string
           description: Humano-curto, ESTÁTICO por code; nunca contém hash, token, segredo ou existência de usuário.
@@ -978,6 +1034,41 @@ components:
         model:
           type: [string, "null"]
           description: Modelo gerador (convenção — preenchido em origem autotracker; teto de 255 chars ⇒ 400).
+
+    PutClassesItem:
+      type: object
+      required: [name]
+      additionalProperties: false
+      description: "Item da substituição total: com `id` renomeia preservando o id; sem `id` cria nova."
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: PK em `classes` (precisa pertencer ao dataset; ausente ⇒ criar).
+        name:
+          type: string
+          pattern: '^[A-Za-z0-9_][A-Za-z0-9_]{0,63}$'
+          description: Nome da classe (trim server-side; mesma regra do create).
+
+    PutClassesRequest:
+      type: object
+      required: [classes]
+      additionalProperties: false
+      description: "Substituição total das classes (máx 200; nomes e ids únicos, sem dedupe silencioso)."
+      properties:
+        classes:
+          type: array
+          maxItems: 200
+          items: { $ref: "#/components/schemas/PutClassesItem" }
+
+    PutClassesResponse:
+      type: object
+      required: [classes]
+      description: "Classes após a substituição (ordem do request, `idx` 0..n-1, cores rederivadas)."
+      properties:
+        classes:
+          type: array
+          items: { $ref: "#/components/schemas/Class" }
 
     ImageDetail:
       type: object

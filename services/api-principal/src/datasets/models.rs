@@ -93,6 +93,16 @@ pub enum InvalidClass {
     TooMany,
 }
 
+/// Nome de classe já aparado é válido se 1..=64 chars ASCII `[A-Za-z0-9_]`
+/// (espelha o CHECK `name ~ '^[A-Za-z0-9_][A-Za-z0-9_]{0,63}$'` da 0002).
+/// Regra única da casa — `normalize_classes` e o PUT classes reutilizam.
+pub fn is_valid_class_name(trimmed: &str) -> bool {
+    !trimmed.is_empty()
+        && trimmed.len() <= 64
+        && trimmed
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
 /// Trim + valida + deduplica (1ª ocorrência, case-sensitive). O cap de 200 é
 /// o `maxItems` da spec sobre o array ENVIADO (antes do dedupe): com o
 /// `DefaultBodyLimit` do axum em 2 MiB o body nunca encosta o limite mesmo
@@ -104,12 +114,7 @@ pub fn normalize_classes(raw: &[String]) -> Result<Vec<String>, InvalidClass> {
     let mut out: Vec<String> = Vec::with_capacity(raw.len());
     for name in raw {
         let trimmed = name.trim().to_string();
-        if trimmed.is_empty()
-            || trimmed.len() > 64
-            || !trimmed
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_')
-        {
+        if !is_valid_class_name(&trimmed) {
             return Err(InvalidClass::InvalidName);
         }
         if !out.contains(&trimmed) {
@@ -544,6 +549,93 @@ pub fn validate_caption(
     Ok((text.to_string(), origin, model.map(str::to_string)))
 }
 
+/// Item do `PUT /api/datasets/:id/classes` (3g.1): `id` ausente ⇒ criar;
+/// presente ⇒ renomear preservando o id. `Uuid` no deserialize já rejeita
+/// não-UUID com erro de parse (vira 400 no handler via `parse_json_body`).
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PutClassesItem {
+    #[serde(default)]
+    pub id: Option<Uuid>,
+    pub name: String,
+}
+
+/// Corpo do `PUT /api/datasets/:id/classes`: substituição total (max 200).
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PutClassesRequest {
+    pub classes: Vec<PutClassesItem>,
+}
+
+/// Resposta canônica do PUT classes (mesmo shape de `Dataset.classes`).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PutClassesResponse {
+    pub classes: Vec<DatasetClassResponse>,
+}
+
+/// Plano de reconciliação por id (ADR-0005 D2/D3): `keep` carrega o idx
+/// FINAL (posição no array do request) para a renumeração 0..n-1.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ClassPlan {
+    pub keep: Vec<(Uuid, String, usize)>,
+    pub create: Vec<(String, usize)>,
+    pub remove: Vec<Uuid>,
+}
+
+/// Validação pura + reconciliação do PUT classes (sem banco, unit-testável):
+/// (1) array ≤ 200; (2) names válidos pela MESMA regra do create
+/// (`is_valid_class_name`, sobre o nome aparado); (3) names únicos —
+/// duplicado é erro, sem dedupe silencioso; (4) ids únicos; (5) id presente
+/// ⇒ deve pertencer ao dataset (`existing`). `Err(())` ⇒ 400
+/// `invalid_request` (inclui id de outro dataset — não vaza existência).
+pub fn plan_classes(existing: &[Uuid], req: &PutClassesRequest) -> Result<ClassPlan, ()> {
+    if req.classes.len() > 200 {
+        return Err(());
+    }
+    let mut names: Vec<String> = Vec::with_capacity(req.classes.len());
+    for item in &req.classes {
+        let trimmed = item.name.trim().to_string();
+        if !is_valid_class_name(&trimmed) {
+            return Err(());
+        }
+        if names.contains(&trimmed) {
+            return Err(());
+        }
+        names.push(trimmed);
+    }
+    let mut seen_ids: Vec<Uuid> = Vec::new();
+    for item in &req.classes {
+        if let Some(id) = item.id {
+            if seen_ids.contains(&id) {
+                return Err(());
+            }
+            seen_ids.push(id);
+            if !existing.contains(&id) {
+                return Err(());
+            }
+        }
+    }
+    let mut keep = Vec::new();
+    let mut create = Vec::new();
+    for (idx, (item, name)) in req.classes.iter().zip(names.iter()).enumerate() {
+        match item.id {
+            Some(id) => keep.push((id, name.clone(), idx)),
+            None => create.push((name.clone(), idx)),
+        }
+    }
+    let remove: Vec<Uuid> = existing
+        .iter()
+        .filter(|id| !seen_ids.contains(id))
+        .copied()
+        .collect();
+    Ok(ClassPlan {
+        keep,
+        create,
+        remove,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -730,5 +822,82 @@ mod tests {
         // modelo com teto (revisão 3b.6): 255 chars ok, 256 -> 400.
         assert!(validate_caption("x", None, Some(&"m".repeat(255))).is_ok());
         assert!(validate_caption("x", None, Some(&"m".repeat(256))).is_err());
+    }
+
+    fn req_classes(json: &str) -> PutClassesRequest {
+        serde_json::from_str(json).expect("body de teste válido")
+    }
+
+    #[test]
+    fn put_classes_nome_invalido() {
+        let req = req_classes(r#"{"classes":[{"name":"solda-fria"}]}"#);
+        assert!(plan_classes(&[], &req).is_err());
+        let req = req_classes(r#"{"classes":[{"name":""}]}"#);
+        assert!(plan_classes(&[], &req).is_err());
+    }
+
+    #[test]
+    fn put_classes_limite_200() {
+        let one = r#"{"name":"c"}"#.to_string();
+        let req: PutClassesRequest = serde_json::from_str(&format!(
+            r#"{{"classes":[{}]}}"#,
+            vec![one.as_str(); 201].join(",")
+        ))
+        .expect("201 parseia");
+        assert!(plan_classes(&[], &req).is_err());
+    }
+
+    #[test]
+    fn put_classes_nome_duplicado_erro() {
+        let req = req_classes(r#"{"classes":[{"name":"a"},{"name":"a"}]}"#);
+        assert!(plan_classes(&[], &req).is_err());
+    }
+
+    #[test]
+    fn put_classes_id_duplicado_erro() {
+        let id = Uuid::new_v4();
+        let req = req_classes(&format!(
+            r#"{{"classes":[{{"id":"{id}","name":"a"}},{{"id":"{id}","name":"b"}}]}}"#
+        ));
+        assert!(plan_classes(&[id], &req).is_err());
+    }
+
+    #[test]
+    fn put_classes_id_nao_uuid_erro() {
+        let bad: Result<PutClassesRequest, _> =
+            serde_json::from_str(r#"{"classes":[{"id":"nao-e-uuid","name":"a"}]}"#);
+        assert!(bad.is_err(), "id não-UUID rejeita no parse");
+    }
+
+    #[test]
+    fn put_classes_id_outro_dataset_erro() {
+        let ghost = Uuid::new_v4();
+        let req = req_classes(&format!(
+            r#"{{"classes":[{{"id":"{ghost}","name":"a"}}]}}"#
+        ));
+        assert!(plan_classes(&[], &req).is_err());
+    }
+
+    #[test]
+    fn put_classes_plano_reconciliacao() {
+        let keep_id = Uuid::new_v4();
+        let gone_id = Uuid::new_v4();
+        let req = req_classes(&format!(
+            r#"{{"classes":[{{"id":"{keep_id}","name":"novo_nome"}},{{"name":"nova_classe"}}]}}"#
+        ));
+        let plan = plan_classes(&[keep_id, gone_id], &req).expect("plano válido");
+        assert_eq!(
+            plan.keep,
+            vec![(keep_id, "novo_nome".to_string(), 0)]
+        );
+        assert_eq!(plan.create, vec![("nova_classe".to_string(), 1)]);
+        assert_eq!(plan.remove, vec![gone_id]);
+    }
+
+    #[test]
+    fn put_classes_deny_unknown() {
+        let bad: Result<PutClassesRequest, _> =
+            serde_json::from_str(r#"{"classes":[],"extra":1}"#);
+        assert!(bad.is_err(), "deny_unknown_fields da casa");
     }
 }

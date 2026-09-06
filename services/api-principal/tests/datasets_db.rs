@@ -2137,3 +2137,265 @@ async fn t0005_image_soft_delete() {
         .await
         .expect("cleanup img1");
 }
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0003_put_classes_rename_reordena_adiciona() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+    let (status, _, body) = call(
+        app.clone(),
+        post_create(
+            "Classes Rename",
+            &serde_json::json!(["solda_fria", "curto"]),
+            &cookie,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let created = json(&body);
+    let ds = created["id"].as_str().expect("id").to_string();
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+    let class_a: uuid::Uuid = created["classes"][0]["id"]
+        .as_str()
+        .expect("classes[0].id")
+        .parse()
+        .expect("uuid");
+    let class_b: uuid::Uuid = created["classes"][1]["id"]
+        .as_str()
+        .expect("classes[1].id")
+        .parse()
+        .expect("uuid");
+
+    // Caixa apontando para class_a antes do rename.
+    let img = insert_image(&st.pool, ds_id, "r.jpg", 100).await;
+    sqlx::query(
+        "INSERT INTO boxes (image_id, class_id, x, y, w, h, origin) VALUES ($1,$2,0.5,0.5,0.2,0.2,'manual')",
+    )
+    .bind(img)
+    .bind(class_a)
+    .execute(&st.pool)
+    .await
+    .expect("insert box");
+
+    // (a) rename preserva id + (b) reordena (idx 0..n-1) + (c) adiciona nova.
+    let (status, _, body) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/classes"),
+            serde_json::json!({"classes": [
+                {"id": class_b, "name": "curto_novo"},
+                {"id": class_a, "name": "solda_renomeada"},
+                {"name": "nova_classe"}
+            ]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let resp = json(&body);
+    let classes = resp["classes"].as_array().expect("classes");
+    assert_eq!(classes.len(), 3);
+    assert_eq!(classes[0]["id"], class_b.to_string());
+    assert_eq!(classes[0]["name"], "curto_novo");
+    assert_eq!(classes[0]["idx"], 0);
+    assert_eq!(classes[0]["color"], "#10b981");
+    assert_eq!(classes[1]["id"], class_a.to_string());
+    assert_eq!(classes[1]["name"], "solda_renomeada");
+    assert_eq!(classes[1]["idx"], 1);
+    assert_eq!(classes[1]["color"], "#f59e0b");
+    assert!(classes[2]["id"].is_string());
+    assert_eq!(classes[2]["name"], "nova_classe");
+    assert_eq!(classes[2]["idx"], 2);
+    assert_eq!(classes[2]["color"], "#f43f5e");
+
+    // A caixa continua apontando para o mesmo classId e segue funcionando.
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM boxes WHERE class_id = $1")
+        .bind(class_a)
+        .fetch_one(&st.pool)
+        .await
+        .expect("count boxes");
+    assert_eq!(n, 1);
+    let (status, _, _) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/images/{img}/boxes"),
+            serde_json::json!({"boxes": [{"classId": class_a, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2}]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0003_put_classes_guard_409_e_remove_livre() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+    let (status, _, body) = call(
+        app.clone(),
+        post_create(
+            "Classes Guard",
+            &serde_json::json!(["em_uso", "livre"]),
+            &cookie,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let created = json(&body);
+    let ds = created["id"].as_str().expect("id").to_string();
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+    let used: uuid::Uuid = created["classes"][0]["id"]
+        .as_str()
+        .expect("classes[0].id")
+        .parse()
+        .expect("uuid");
+    let free: uuid::Uuid = created["classes"][1]["id"]
+        .as_str()
+        .expect("classes[1].id")
+        .parse()
+        .expect("uuid");
+
+    let img = insert_image(&st.pool, ds_id, "g.jpg", 100).await;
+    sqlx::query(
+        "INSERT INTO boxes (image_id, class_id, x, y, w, h, origin) VALUES ($1,$2,0.5,0.5,0.2,0.2,'manual')",
+    )
+    .bind(img)
+    .bind(used)
+    .execute(&st.pool)
+    .await
+    .expect("insert box");
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM boxes")
+        .fetch_one(&st.pool)
+        .await
+        .expect("count boxes");
+
+    // (d) remover classe EM USO → 409 e caixas intactas.
+    let (status, _, body) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/classes"),
+            serde_json::json!({"classes": [{"id": free, "name": "livre"}]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(json(&body)["code"], "classes_in_use");
+    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM boxes")
+        .fetch_one(&st.pool)
+        .await
+        .expect("count boxes");
+    assert_eq!(before, after);
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM classes WHERE dataset_id = $1")
+        .bind(ds_id)
+        .fetch_one(&st.pool)
+        .await
+        .expect("count classes");
+    assert_eq!(n, 2, "409 não escreve nada");
+
+    // (e) remover classe livre → 200 e classe some.
+    let (status, _, body) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/classes"),
+            serde_json::json!({"classes": [{"id": used, "name": "em_uso"}]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let classes = json(&body)["classes"].as_array().expect("classes").clone();
+    assert_eq!(classes.len(), 1);
+    assert_eq!(classes[0]["id"], used.to_string());
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0003_put_classes_erros_404_400() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Classes Erros", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let created = json(&body);
+    let ds = created["id"].as_str().expect("id").to_string();
+
+    // (f) dataset inexistente → 404 (e path não-UUID → 404).
+    let ghost = uuid::Uuid::new_v4();
+    let (status, _, body) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ghost}/classes"),
+            serde_json::json!({"classes": [{"name": "x"}]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json(&body)["code"], "not_found");
+    let (status, _, _) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            "/api/datasets/nao-e-uuid/classes".to_string(),
+            serde_json::json!({"classes": [{"name": "x"}]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // (g) id de classe de OUTRO dataset → 400.
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Classes Outro", &serde_json::json!(["b"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let other = json(&body)["classes"][0]["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+    let (status, _, body) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/classes"),
+            serde_json::json!({"classes": [{"id": other, "name": "b"}]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+
+    // (h) nome duplicado → 400.
+    let (status, _, body) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/classes"),
+            serde_json::json!({"classes": [{"name": "dup"}, {"name": "dup"}]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+}

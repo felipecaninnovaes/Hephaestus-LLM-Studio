@@ -31,3 +31,5 @@ pub const MSG_INVALID_REQUEST: &str = "invalid request";
 pub const MSG_UNAUTHORIZED: &str = "unauthorized";
 /// 503 de backend de objetos indisponível (ADR-0003 D10).
 pub const MSG_STORAGE_UNAVAILABLE: &str = "storage unavailable";
+/// 409 de remoção de classe em uso por anotações (fatia 3g.1).
+pub const MSG_CLASSES_IN_USE: &str = "class in use by annotations";

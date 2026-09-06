@@ -12,6 +12,7 @@ export interface ListImagesOpts {
   offset?: number;
   split?: string;
   labeled?: boolean;
+  deleted?: boolean;
 }
 
 export function listImages(
@@ -23,6 +24,7 @@ export function listImages(
   if (opts?.offset !== undefined) params.set("offset", String(opts.offset));
   if (opts?.split !== undefined) params.set("split", opts.split);
   if (opts?.labeled !== undefined) params.set("labeled", String(opts.labeled));
+  if (opts?.deleted !== undefined) params.set("deleted", String(opts.deleted));
   const qs = params.toString();
   return apiFetch<ImagePage>(
     `/api/datasets/${datasetId}/images${qs ? `?${qs}` : ""}`,
@@ -59,4 +61,34 @@ export function putBoxes(
     `/api/datasets/${datasetId}/images/${imageId}/boxes`,
     { method: "PUT", body: { boxes } },
   );
+}
+
+export function softDeleteImage(
+  datasetId: string,
+  imageId: string,
+): Promise<void> {
+  return apiFetch<void>(`/api/datasets/${datasetId}/images/${imageId}`, {
+    method: "DELETE",
+  });
+}
+
+export interface RestoreImageResult {
+  filename?: string;
+}
+
+export function restoreImage(
+  datasetId: string,
+  imageId: string,
+): Promise<RestoreImageResult> {
+  // 204 (sem conflito) não tem corpo — o apiFetch resolve `undefined`.
+  return apiFetch<RestoreImageResult>(
+    `/api/datasets/${datasetId}/images/${imageId}/restore`,
+    { method: "POST" },
+  ).then((res) => res ?? {});
+}
+
+export function purgeTrash(datasetId: string): Promise<void> {
+  return apiFetch<void>(`/api/datasets/${datasetId}/trash`, {
+    method: "DELETE",
+  });
 }

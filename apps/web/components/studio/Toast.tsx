@@ -4,14 +4,21 @@ import { useSyncExternalStore } from "react";
 
 export type ToastType = "success" | "error" | "info";
 
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 interface ToastItem {
   id: number;
   message: string;
   type: ToastType;
+  action?: ToastAction;
 }
 
 const MAX_VISIBLE = 3;
 const DISMISS_MS = 3600;
+const DISMISS_ACTION_MS = 6000;
 
 let toasts: ToastItem[] = [];
 let seq = 0;
@@ -35,14 +42,20 @@ function getSnapshot(): ToastItem[] {
 export function showToast(
   message: string,
   type: ToastType = "info",
+  action?: ToastAction,
 ): void {
   const id = ++seq;
-  toasts = [...toasts, { id, message, type }].slice(-MAX_VISIBLE);
+  toasts = [...toasts, { id, message, type, action }].slice(-MAX_VISIBLE);
   emit();
   setTimeout(() => {
     toasts = toasts.filter((toast) => toast.id !== id);
     emit();
-  }, DISMISS_MS);
+  }, action ? DISMISS_ACTION_MS : DISMISS_MS);
+}
+
+export function dismissToast(id: number): void {
+  toasts = toasts.filter((toast) => toast.id !== id);
+  emit();
 }
 
 const DOT_BY_TYPE: Record<ToastType, string> = {
@@ -68,6 +81,18 @@ export function ToastHost() {
             className={`w-2 h-2 rounded-full shrink-0 ${DOT_BY_TYPE[toast.type]}`}
           ></span>
           <span>{toast.message}</span>
+          {toast.action && (
+            <button
+              type="button"
+              onClick={() => {
+                dismissToast(toast.id);
+                toast.action?.onClick();
+              }}
+              className="shrink-0 font-medium text-emerald-300 underline decoration-emerald-400/50 underline-offset-2 transition-colors hover:text-emerald-200"
+            >
+              {toast.action.label}
+            </button>
+          )}
         </div>
       ))}
     </div>

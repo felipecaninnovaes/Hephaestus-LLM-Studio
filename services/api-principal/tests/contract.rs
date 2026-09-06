@@ -714,6 +714,7 @@ fn dataset_response_keys_match_openapi() {
         labeled_count: 0,
         created_at: DateTime::<Utc>::UNIX_EPOCH,
         updated_at: DateTime::<Utc>::UNIX_EPOCH,
+        auto_tracked: false,
     };
     let mut resp = DatasetResponse::from(row);
     resp.classes = vec![DatasetClassResponse {

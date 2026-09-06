@@ -57,7 +57,8 @@ fn internal() -> Response {
 /// GET /api/datasets — coleção inteira por `updated_at` DESC (sem paginação na 3a).
 pub async fn list(State(state): State<AppState>) -> Response {
     let rows: Vec<DatasetRow> = match sqlx::query_as::<_, DatasetRow>(&format!(
-        "SELECT {COLS} FROM datasets ORDER BY updated_at DESC, id"
+        // Derivado, não coluna (dívida T7): true se alguma box com origin='autotracker' em qualquer imagem do dataset.
+        "SELECT {COLS}, EXISTS(SELECT 1 FROM images i JOIN boxes b ON b.image_id = i.id WHERE i.dataset_id = datasets.id AND b.origin = 'autotracker') AS auto_tracked FROM datasets ORDER BY updated_at DESC, id"
     ))
     .fetch_all(&state.pool)
     .await
@@ -172,9 +173,10 @@ pub async fn create(
         Err(_) => return internal(),
     };
     let row: Option<DatasetRow> = match sqlx::query_as::<_, DatasetRow>(&format!(
+        // Derivado, não coluna (dívida T7): true se alguma box com origin='autotracker' em qualquer imagem do dataset.
         "INSERT INTO datasets (slug, title, category, type, task, format, status) \
          VALUES ($1,$2,$3,$4,$5,$6,'needs_labeling') \
-         ON CONFLICT (slug) DO NOTHING RETURNING {COLS}"
+         ON CONFLICT (slug) DO NOTHING RETURNING {COLS}, EXISTS(SELECT 1 FROM images i JOIN boxes b ON b.image_id = i.id WHERE i.dataset_id = datasets.id AND b.origin = 'autotracker') AS auto_tracked"
     ))
     .bind(&slug)
     .bind(&req.title)
@@ -246,7 +248,8 @@ pub async fn get_one(State(state): State<AppState>, Path(id): Path<String>) -> R
         None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
     };
     let row: Option<DatasetRow> = match sqlx::query_as::<_, DatasetRow>(&format!(
-        "SELECT {COLS} FROM datasets WHERE id = $1"
+        // Derivado, não coluna (dívida T7): true se alguma box com origin='autotracker' em qualquer imagem do dataset.
+        "SELECT {COLS}, EXISTS(SELECT 1 FROM images i JOIN boxes b ON b.image_id = i.id WHERE i.dataset_id = datasets.id AND b.origin = 'autotracker') AS auto_tracked FROM datasets WHERE id = $1"
     ))
     .bind(id)
     .fetch_optional(&state.pool)

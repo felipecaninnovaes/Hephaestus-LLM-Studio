@@ -59,3 +59,92 @@ export const STATUS_LABELS: Record<DatasetStatus, string> = {
   needs_labeling: "Aguardando rotulagem",
 };
 
+export interface ImageItem {
+  id: string;
+  filename: string;
+  objectKey: string;
+  bytes: number;
+  width: number;
+  height: number;
+  mediaType: string;
+  split: string;
+  url: string;
+  createdAt: string;
+}
+
+export interface ImagePage {
+  items: ImageItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface BBoxData {
+  id: string;
+  classId: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  conf: number | null;
+  origin: string;
+  trackId: number | null;
+}
+
+export interface CaptionData {
+  text: string;
+  origin: string;
+  model: string | null;
+  updatedAt: string;
+}
+
+export interface ImageDetail {
+  id: string;
+  datasetId?: string;
+  filename: string;
+  objectKey: string;
+  bytes: number;
+  width: number;
+  height: number;
+  mediaType: string;
+  split: string;
+  url: string;
+  createdAt: string;
+  boxes: BBoxData[];
+  caption: CaptionData | null;
+}
+
+export type UploadResultStatus = "stored" | "duplicate" | "rejected" | "failed";
+
+export type UploadResultReason =
+  | "duplicate_filename"
+  | "unsupported_media"
+  | "too_large"
+  | "storage_error"
+  | null;
+
+export interface UploadResultItem {
+  imageId: string | null;
+  filename: string;
+  status: UploadResultStatus;
+  reason: UploadResultReason;
+  bytes: number | null;
+  width: number | null;
+  height: number | null;
+}
+
+export interface BoxInput {
+  classId: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  conf?: number | null;
+  origin?: string;
+  trackId?: number | null;
+}
+
+export interface PutBoxesResponse {
+  boxes: BBoxData[];
+}
+

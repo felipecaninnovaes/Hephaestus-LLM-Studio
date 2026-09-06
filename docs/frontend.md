@@ -158,7 +158,8 @@ interface Dataset {
 // type no wire é um dos 4 códigos de máquina (yolo_bbox|yolo_seg|difusao_lora|clip_image_text),
 // o rótulo pt-BR é da UI; source é derivado (null em vazio, `s3://{bucket}/datasets/{id}/`
 // com imagens — ADR-0003 D5); classes é objeto {id,name,idx,color} desde a 3b.7;
-// autoTracked é constante false até a 3d (fonte real: boxes.origin='autotracker').
+// autoTracked deriva do banco desde a 3d: EXISTS sobre `boxes.origin='autotracker'`
+// (dívida T7 do ADR-0002 quitada — não é mais constante).
 interface BBox { id: number; classId: number; label: string; x: number; y: number; w: number; h: number; color: string; }
 // trainTabFor(ds): difusao→/difusao, openclip→/openclip, yolo→/yolo
 // selectDatasetValue(cats): filtra por categoria, fallback 1º compatível

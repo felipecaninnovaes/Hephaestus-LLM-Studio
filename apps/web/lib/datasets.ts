@@ -12,6 +12,10 @@ export function createDataset(req: CreateDatasetRequest): Promise<Dataset> {
   });
 }
 
+export function getDataset(id: string): Promise<Dataset> {
+  return apiFetch<Dataset>(`/api/datasets/${id}`);
+}
+
 export function deleteDataset(id: string): Promise<void> {
   return apiFetch<void>(`/api/datasets/${id}`, { method: "DELETE" });
 }

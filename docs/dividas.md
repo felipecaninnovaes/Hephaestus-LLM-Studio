@@ -24,13 +24,20 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
   DELETE SET NULL` + snapshot `dataset_versions` (nunca `RESTRICT`) —
   ADR-0002 T4. Nessa mesma fatia o orquestrador ganha cliente S3 com
   credencial escopada por prefixo.
-- **T7 — `autoTracked` derivado (fatia 3d — galeria + editor BBox)**: derivar
-  de `boxes.origin='autotracker'`; hoje é constante `false`.
 
 ### Sem fatia marcada
 
 **Backend**
 
+- **Ordem estável de `boxes` entre saves (nota menor da 3d)** — o PUT boxes é
+  `DELETE`+`INSERT` com `RETURNING`: os ids nascem novos a cada save e
+  `GET detail` não garante ordem (visto no smoke 3d: `[autotracker, manual]`
+  no PUT, `[manual, autotracker]` no GET seguinte). A UI correlaciona
+  seleção por índice de payload pós-save (correto), mas os chips `#N` no
+  canvas podem reordenar entre loads. Correção real = coluna de ordenação/
+  `ORDER BY` determinístico no backend — só valerá a pena quando o
+  autotracker consertar caixas existentes (fatia 4), hoje os efeitos são
+  cosméticos.
 - **Logging server-side (fatia nomeada, sem número)** — revisores 3b.3/3b.6:
   `Err(_) => internal()` engole detalhes (banco vira 500 mudo, sem log nenhum)
   e o `map_err` do SDK descarta `code()`; sweep do DELETE usa `eprintln` como
@@ -73,6 +80,13 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
   LoginPage).
 
 ## Quitadas
+
+- **T7 — `autoTracked` derivado — QUITADA 2026-09-06** (`61dc75b` em
+  `feat/datasets-gallery`, 3d.1): campo do wire `Dataset` agora deriva de
+  `EXISTS(boxes.origin='autotracker')` nas 3 queries de `handlers.rs`
+  (`DatasetRow.auto_tracked` + teste de integração com 3 casos: autotracker→
+  true, manual→false, vazio→false). Sem mudança de contrato (campo já existia; 
+  descrição do openapi atualizada).
 
 - **3b (upload/imagens) — QUITADA 2026-09-05** (`feat/datasets-storage`,
   `f6c6ff5`..`393163c`; docs no 3b.8). Entregue: bucket S3/SeaweedFS como blob

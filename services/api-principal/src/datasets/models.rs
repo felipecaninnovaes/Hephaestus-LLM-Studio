@@ -150,6 +150,7 @@ pub struct DatasetRow {
     pub labeled_count: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub auto_tracked: bool,
 }
 
 /// Classe no wire (3b.7): objeto completo `{id, name, idx, color}` camelCase —
@@ -229,7 +230,7 @@ impl From<DatasetRow> for DatasetResponse {
             created_at: row.created_at,
             last_modified: row.updated_at,
             classes: Vec::new(),
-            auto_tracked: false,
+            auto_tracked: row.auto_tracked,
         }
     }
 }

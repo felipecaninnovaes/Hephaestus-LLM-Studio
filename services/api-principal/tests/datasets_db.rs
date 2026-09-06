@@ -1930,3 +1930,103 @@ async fn unauthenticated_is_401_even_with_db() {
         assert_eq!(json(&body)["code"], "unauthorized", "{method} {uri}");
     }
 }
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn auto_tracked_derives_from_box_origin() {
+    // autoTracked derivado (dívida T7): true só com box origin='autotracker'.
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    async fn dataset_id_of(
+        app: &axum::Router,
+        cookie: &str,
+        title: &str,
+    ) -> (axum::Router, uuid::Uuid) {
+        let (status, _, body) = call(
+            app.clone(),
+            post_create(title, &serde_json::json!(["a"]), cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        // Recém-criado não tem imagens ⇒ autoTracked false.
+        assert_eq!(json(&body)["autoTracked"], false);
+        let id: uuid::Uuid = json(&body)["id"]
+            .as_str()
+            .expect("id")
+            .parse()
+            .expect("uuid");
+        (app.clone(), id)
+    }
+
+    let (app2, ds_a) = dataset_id_of(&app, &cookie, "Auto A").await;
+    let (app2, ds_b) = dataset_id_of(&app2, &cookie, "Auto B").await;
+    let (app2, ds_c) = dataset_id_of(&app2, &cookie, "Auto C").await;
+    let app = app2;
+
+    let img_a = insert_image(&st.pool, ds_a, "a.jpg", 10).await;
+    let class_a = class_id_of(&st.pool, ds_a).await;
+    sqlx::query(
+        "INSERT INTO boxes (image_id, class_id, x, y, w, h, origin) VALUES ($1,$2,0.5,0.5,0.2,0.2,'autotracker')",
+    )
+    .bind(img_a)
+    .bind(class_a)
+    .execute(&st.pool)
+    .await
+    .expect("insert box autotracker");
+
+    let img_b = insert_image(&st.pool, ds_b, "b.jpg", 10).await;
+    let class_b = class_id_of(&st.pool, ds_b).await;
+    sqlx::query(
+        "INSERT INTO boxes (image_id, class_id, x, y, w, h, origin) VALUES ($1,$2,0.5,0.5,0.2,0.2,'manual')",
+    )
+    .bind(img_b)
+    .bind(class_b)
+    .execute(&st.pool)
+    .await
+    .expect("insert box manual");
+
+    // GET /api/datasets/:id por dataset.
+    for (ds, expected) in [(ds_a, true), (ds_b, false), (ds_c, false)] {
+        let (status, _, body) = call(
+            app.clone(),
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/datasets/{ds}"))
+                .header(http::header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{ds}");
+        assert_eq!(json(&body)["autoTracked"], expected, "{ds}");
+    }
+
+    // GET /api/datasets lista os três com os mesmos valores.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri("/api/datasets")
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let list = json(&body);
+    let items = list.as_array().expect("array");
+    assert_eq!(items.len(), 3);
+    let by_id = |id: uuid::Uuid| {
+        items
+            .iter()
+            .find(|d| d["id"] == id.to_string())
+            .unwrap_or_else(|| panic!("dataset {id} ausente na lista"))
+            .clone()
+    };
+    assert_eq!(by_id(ds_a)["autoTracked"], true);
+    assert_eq!(by_id(ds_b)["autoTracked"], false);
+    assert_eq!(by_id(ds_c)["autoTracked"], false);
+}

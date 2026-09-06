@@ -54,10 +54,8 @@ impl MockStorage {
         // Sync (chamável fora de `.await`): `try_read` nunca cruza await nem
         // mantém lock entre awaits externos; operações são curtas.
         let objects = self.objects.try_read().expect("mock objects lock");
-        let mut out: Vec<(String, usize)> = objects
-            .iter()
-            .map(|(k, v)| (k.clone(), v.len()))
-            .collect();
+        let mut out: Vec<(String, usize)> =
+            objects.iter().map(|(k, v)| (k.clone(), v.len())).collect();
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
     }

@@ -333,9 +333,31 @@ pub struct BoxResponse {
     pub track_id: Option<i32>,
 }
 
-impl From<(Uuid, Uuid, f64, f64, f64, f64, Option<f64>, String, Option<i32>)> for BoxResponse {
+impl
+    From<(
+        Uuid,
+        Uuid,
+        f64,
+        f64,
+        f64,
+        f64,
+        Option<f64>,
+        String,
+        Option<i32>,
+    )> for BoxResponse
+{
     fn from(
-        row: (Uuid, Uuid, f64, f64, f64, f64, Option<f64>, String, Option<i32>),
+        row: (
+            Uuid,
+            Uuid,
+            f64,
+            f64,
+            f64,
+            f64,
+            Option<f64>,
+            String,
+            Option<i32>,
+        ),
     ) -> Self {
         Self {
             id: row.0.to_string(),
@@ -392,12 +414,8 @@ pub struct ImageDetailResponse {
     pub caption: Option<CaptionResponse>,
 }
 
-impl From<(ImageRow, Vec<BoxResponse>, Option<CaptionResponse>, String)>
-    for ImageDetailResponse
-{
-    fn from(
-        parts: (ImageRow, Vec<BoxResponse>, Option<CaptionResponse>, String),
-    ) -> Self {
+impl From<(ImageRow, Vec<BoxResponse>, Option<CaptionResponse>, String)> for ImageDetailResponse {
+    fn from(parts: (ImageRow, Vec<BoxResponse>, Option<CaptionResponse>, String)) -> Self {
         let (row, boxes, caption, url) = parts;
         Self {
             id: row.id.to_string(),
@@ -565,7 +583,10 @@ mod tests {
             derive(DatasetType::YoloBbox),
             ("yolo", "detect_track", "yolo_txt")
         );
-        assert_eq!(derive(DatasetType::YoloSeg), ("yolo", "segment", "yolo_txt"));
+        assert_eq!(
+            derive(DatasetType::YoloSeg),
+            ("yolo", "segment", "yolo_txt")
+        );
         assert_eq!(
             derive(DatasetType::DifusaoLora),
             ("difusao", "caption", "captions")
@@ -628,7 +649,16 @@ mod tests {
         let out = validate_boxes(&req).expect("ok");
         assert_eq!(
             out,
-            vec![(id, 0.5, 0.5, 0.2, 0.2, Some(0.9), "manual".to_string(), Some(7))]
+            vec![(
+                id,
+                0.5,
+                0.5,
+                0.2,
+                0.2,
+                Some(0.9),
+                "manual".to_string(),
+                Some(7)
+            )]
         );
     }
 
@@ -663,13 +693,17 @@ mod tests {
     fn validate_boxes_limite_1000() {
         let id = Uuid::new_v4();
         let one = format!(r#"{{"classId":"{id}","x":0,"y":0,"w":0,"h":0}}"#);
-        let req: PutBoxesRequest =
-            serde_json::from_str(&format!(r#"{{"boxes":[{}]}}"#, vec![one.as_str(); 1001].join(",")))
-                .expect("1001 boxes parseia");
+        let req: PutBoxesRequest = serde_json::from_str(&format!(
+            r#"{{"boxes":[{}]}}"#,
+            vec![one.as_str(); 1001].join(",")
+        ))
+        .expect("1001 boxes parseia");
         assert_eq!(validate_boxes(&req), Err(()));
-        let ok: PutBoxesRequest =
-            serde_json::from_str(&format!(r#"{{"boxes":[{}]}}"#, vec![one.as_str(); 1000].join(",")))
-                .expect("1000 boxes parseia");
+        let ok: PutBoxesRequest = serde_json::from_str(&format!(
+            r#"{{"boxes":[{}]}}"#,
+            vec![one.as_str(); 1000].join(",")
+        ))
+        .expect("1000 boxes parseia");
         assert_eq!(validate_boxes(&ok).expect("1000 passa").len(), 1000);
     }
 
@@ -681,8 +715,7 @@ mod tests {
 
     #[test]
     fn validate_boxes_deny_unknown() {
-        let bad: Result<PutBoxesRequest, _> =
-            serde_json::from_str(r#"{"boxes":[],"extra":1}"#);
+        let bad: Result<PutBoxesRequest, _> = serde_json::from_str(r#"{"boxes":[],"extra":1}"#);
         assert!(bad.is_err(), "deny_unknown_fields da casa");
     }
 

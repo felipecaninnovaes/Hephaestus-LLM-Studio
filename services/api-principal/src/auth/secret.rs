@@ -35,12 +35,11 @@ pub async fn load_or_generate_secret(pool: &PgPool) -> Result<[u8; 32], String> 
         }
     }
 
-    let existing: Option<Vec<u8>> = sqlx::query_scalar(
-        "SELECT jwt_secret FROM auth_state WHERE id = 1",
-    )
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| format!("auth_state select: {e}"))?;
+    let existing: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT jwt_secret FROM auth_state WHERE id = 1")
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| format!("auth_state select: {e}"))?;
     if let Some(bytes) = existing {
         if bytes.len() != 32 {
             return Err(format!(

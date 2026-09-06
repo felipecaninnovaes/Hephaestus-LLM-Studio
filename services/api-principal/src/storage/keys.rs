@@ -30,7 +30,10 @@ pub fn sanitize_filename(raw: &str) -> String {
     let mut prev_dash = false;
     for c in tmp.chars() {
         if c == '-' {
-            if !prev_dash { out.push('-'); prev_dash = true; }
+            if !prev_dash {
+                out.push('-');
+                prev_dash = true;
+            }
         } else {
             out.push(c);
             prev_dash = false;
@@ -54,11 +57,7 @@ pub fn canonical_filename(raw: &str, media: crate::storage::sniff::MediaType) ->
 
 /// Chave legível do objeto (D5): IDs imutáveis; `canonical` já é o
 /// `canonical_filename` (formato final `datasets/{ds}/images/{img}/{stem}.{ext}`).
-pub fn image_object_key(
-    dataset_id: Uuid,
-    image_id: Uuid,
-    canonical: &str,
-) -> String {
+pub fn image_object_key(dataset_id: Uuid, image_id: Uuid, canonical: &str) -> String {
     format!("datasets/{dataset_id}/images/{image_id}/{canonical}")
 }
 
@@ -92,14 +91,20 @@ mod tests {
         let (ds, img) = (Uuid::nil(), Uuid::nil());
         let canonical = canonical_filename("foto.png", crate::storage::sniff::MediaType::Jpeg);
         assert_eq!(canonical, "foto.jpg");
-        assert_eq!(image_object_key(ds, img, &canonical), format!("datasets/{ds}/images/{img}/foto.jpg"));
+        assert_eq!(
+            image_object_key(ds, img, &canonical),
+            format!("datasets/{ds}/images/{img}/foto.jpg")
+        );
     }
 
     #[test]
     fn chave_formato_exato() {
         let (ds, img) = (Uuid::nil(), Uuid::nil());
         let canonical = canonical_filename("a.png", crate::storage::sniff::MediaType::Png);
-        assert_eq!(image_object_key(ds, img, &canonical), format!("datasets/{ds}/images/{img}/a.png"));
+        assert_eq!(
+            image_object_key(ds, img, &canonical),
+            format!("datasets/{ds}/images/{img}/a.png")
+        );
     }
 
     #[test]
@@ -113,7 +118,10 @@ mod tests {
 
     #[test]
     fn traversal_nao_vaza_para_sufixo() {
-        let c = canonical_filename("../../etc/passwd.jpg", crate::storage::sniff::MediaType::Png);
+        let c = canonical_filename(
+            "../../etc/passwd.jpg",
+            crate::storage::sniff::MediaType::Png,
+        );
         assert_eq!(c, "etc-passwd.png");
         assert!(!c.contains('/'));
         assert!(!c.contains('\\'));

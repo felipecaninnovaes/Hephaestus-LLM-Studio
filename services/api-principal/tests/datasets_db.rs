@@ -61,10 +61,7 @@ fn authed_cookie() -> String {
     format!("heph_session={token}")
 }
 
-async fn call(
-    app: axum::Router,
-    req: Request<Body>,
-) -> (StatusCode, http::HeaderMap, Vec<u8>) {
+async fn call(app: axum::Router, req: Request<Body>) -> (StatusCode, http::HeaderMap, Vec<u8>) {
     let resp = app.oneshot(req).await.expect("oneshot");
     let status = resp.status();
     let headers = resp.headers().clone();
@@ -231,18 +228,10 @@ async fn duplicate_slug_conflicts() {
     let cookie = authed_cookie();
     let classes = serde_json::json!(["a"]);
 
-    let (status, _, _) = call(
-        app.clone(),
-        post_create("Mesmo Nome", &classes, &cookie),
-    )
-    .await;
+    let (status, _, _) = call(app.clone(), post_create("Mesmo Nome", &classes, &cookie)).await;
     assert_eq!(status, StatusCode::CREATED);
 
-    let (status, _, body) = call(
-        app.clone(),
-        post_create("Mesmo Nome", &classes, &cookie),
-    )
-    .await;
+    let (status, _, body) = call(app.clone(), post_create("Mesmo Nome", &classes, &cookie)).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(json(&body)["code"], "slug_conflict");
 
@@ -285,13 +274,12 @@ async fn classes_idx_and_colors() {
         .parse()
         .expect("uuid");
 
-    let rows: Vec<(String, i32, String)> = sqlx::query_as(
-        "SELECT name, idx, color FROM classes WHERE dataset_id = $1 ORDER BY idx",
-    )
-    .bind(id)
-    .fetch_all(&st.pool)
-    .await
-    .expect("classes do banco");
+    let rows: Vec<(String, i32, String)> =
+        sqlx::query_as("SELECT name, idx, color FROM classes WHERE dataset_id = $1 ORDER BY idx")
+            .bind(id)
+            .fetch_all(&st.pool)
+            .await
+            .expect("classes do banco");
     assert_eq!(
         rows,
         vec![
@@ -382,12 +370,14 @@ async fn updated_at_trigger_bumps() {
         .parse()
         .expect("uuid");
 
-    let (created_before, updated_before): (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>) =
-        sqlx::query_as("SELECT created_at, updated_at FROM datasets WHERE id = $1")
-            .bind(id)
-            .fetch_one(&st.pool)
-            .await
-            .expect("timestamps");
+    let (created_before, updated_before): (
+        chrono::DateTime<chrono::Utc>,
+        chrono::DateTime<chrono::Utc>,
+    ) = sqlx::query_as("SELECT created_at, updated_at FROM datasets WHERE id = $1")
+        .bind(id)
+        .fetch_one(&st.pool)
+        .await
+        .expect("timestamps");
     sqlx::query("SELECT pg_sleep(0.05)")
         .execute(&st.pool)
         .await
@@ -397,14 +387,19 @@ async fn updated_at_trigger_bumps() {
         .execute(&st.pool)
         .await
         .expect("update");
-    let (created_after, updated_after): (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>) =
-        sqlx::query_as("SELECT created_at, updated_at FROM datasets WHERE id = $1")
-            .bind(id)
-            .fetch_one(&st.pool)
-            .await
-            .expect("timestamps");
+    let (created_after, updated_after): (
+        chrono::DateTime<chrono::Utc>,
+        chrono::DateTime<chrono::Utc>,
+    ) = sqlx::query_as("SELECT created_at, updated_at FROM datasets WHERE id = $1")
+        .bind(id)
+        .fetch_one(&st.pool)
+        .await
+        .expect("timestamps");
 
-    assert!(updated_after > updated_before, "trigger não bumpou updated_at");
+    assert!(
+        updated_after > updated_before,
+        "trigger não bumpou updated_at"
+    );
     assert_eq!(created_after, created_before, "trigger mexeu em created_at");
 }
 
@@ -424,7 +419,9 @@ async fn rejects_unknown_and_bad_body() {
             .uri("/api/datasets")
             .header(http::header::CONTENT_TYPE, "application/json")
             .header(http::header::COOKIE, &cookie)
-            .body(Body::from(r#"{"title":"x","type":"yolo_bbox","imagesCount":9}"#))
+            .body(Body::from(
+                r#"{"title":"x","type":"yolo_bbox","imagesCount":9}"#,
+            ))
             .unwrap(),
     )
     .await;
@@ -487,10 +484,7 @@ async fn rejects_unknown_and_bad_body() {
     assert_eq!(n, 0);
 }
 
-async fn counters_of(
-    pool: &sqlx::PgPool,
-    id: uuid::Uuid,
-) -> (i32, i32, i64, String) {
+async fn counters_of(pool: &sqlx::PgPool, id: uuid::Uuid) -> (i32, i32, i64, String) {
     sqlx::query_as::<_, (i32, i32, i64, String)>(
         "SELECT images_count, labeled_count, size_bytes, status FROM datasets WHERE id = $1",
     )
@@ -534,12 +528,10 @@ async fn t0003_coluna_source_drops() {
     .await
     .expect("information_schema");
     assert_eq!(n, 0, "datasets.source ainda existe");
-    let t: String = sqlx::query_scalar(
-        "SELECT to_regclass('public.videos')::text",
-    )
-    .fetch_one(&st.pool)
-    .await
-    .expect("to_regclass videos");
+    let t: String = sqlx::query_scalar("SELECT to_regclass('public.videos')::text")
+        .fetch_one(&st.pool)
+        .await
+        .expect("to_regclass videos");
     assert_eq!(t, "videos");
 }
 
@@ -569,7 +561,10 @@ async fn t0003_gatilho_contadores_status_yolo() {
             .expect("class id");
 
     let img1 = insert_image(&st.pool, ds, "a.jpg", 100).await;
-    assert_eq!(counters_of(&st.pool, ds).await, (1, 0, 100, "needs_labeling".to_string()));
+    assert_eq!(
+        counters_of(&st.pool, ds).await,
+        (1, 0, 100, "needs_labeling".to_string())
+    );
 
     sqlx::query(
         "INSERT INTO boxes (image_id, class_id, x, y, w, h, origin) VALUES ($1,$2,0.5,0.5,0.2,0.2,'manual')",
@@ -579,10 +574,16 @@ async fn t0003_gatilho_contadores_status_yolo() {
     .execute(&st.pool)
     .await
     .expect("insert box");
-    assert_eq!(counters_of(&st.pool, ds).await, (1, 1, 100, "ready".to_string()));
+    assert_eq!(
+        counters_of(&st.pool, ds).await,
+        (1, 1, 100, "ready".to_string())
+    );
 
     let _img2 = insert_image(&st.pool, ds, "b.jpg", 50).await;
-    assert_eq!(counters_of(&st.pool, ds).await, (2, 1, 150, "in_progress".to_string()));
+    assert_eq!(
+        counters_of(&st.pool, ds).await,
+        (2, 1, 150, "in_progress".to_string())
+    );
 
     // Cenário exato da T2: delete da imagem rotulada não pode errar nem
     // deixar estado intermediário persistido.
@@ -591,7 +592,10 @@ async fn t0003_gatilho_contadores_status_yolo() {
         .execute(&st.pool)
         .await
         .expect("delete imagem rotulada");
-    assert_eq!(counters_of(&st.pool, ds).await, (1, 0, 50, "needs_labeling".to_string()));
+    assert_eq!(
+        counters_of(&st.pool, ds).await,
+        (1, 0, 50, "needs_labeling".to_string())
+    );
 }
 
 #[tokio::test]
@@ -620,14 +624,20 @@ async fn t0003_gatilho_caption_format_captions() {
     .expect("insert class");
 
     let img = insert_image(&st.pool, ds, "c.jpg", 80).await;
-    assert_eq!(counters_of(&st.pool, ds).await, (1, 0, 80, "needs_labeling".to_string()));
+    assert_eq!(
+        counters_of(&st.pool, ds).await,
+        (1, 0, 80, "needs_labeling".to_string())
+    );
 
     sqlx::query("INSERT INTO captions (image_id, text, origin) VALUES ($1,'um gato','manual')")
         .bind(img)
         .execute(&st.pool)
         .await
         .expect("insert caption");
-    assert_eq!(counters_of(&st.pool, ds).await, (1, 1, 80, "ready".to_string()));
+    assert_eq!(
+        counters_of(&st.pool, ds).await,
+        (1, 1, 80, "ready".to_string())
+    );
 
     // Box NÃO conta para format captions (R9 espelhado).
     sqlx::query(
@@ -638,7 +648,10 @@ async fn t0003_gatilho_caption_format_captions() {
     .execute(&st.pool)
     .await
     .expect("insert box");
-    assert_eq!(counters_of(&st.pool, ds).await, (1, 1, 80, "ready".to_string()));
+    assert_eq!(
+        counters_of(&st.pool, ds).await,
+        (1, 1, 80, "ready".to_string())
+    );
 
     // CHECK: caption com text vazio é erro; imagem segue rotulada pela anterior.
     let img2 = insert_image(&st.pool, ds, "d.jpg", 10).await;
@@ -647,7 +660,10 @@ async fn t0003_gatilho_caption_format_captions() {
         .execute(&st.pool)
         .await;
     assert!(bad.is_err(), "caption vazio deveria violar o CHECK");
-    assert_eq!(counters_of(&st.pool, ds).await, (2, 1, 90, "in_progress".to_string()));
+    assert_eq!(
+        counters_of(&st.pool, ds).await,
+        (2, 1, 90, "in_progress".to_string())
+    );
 }
 
 #[tokio::test]
@@ -711,7 +727,10 @@ async fn t0003_delete_dataset_cascade() {
             .fetch_one(&st.pool)
             .await
             .expect("updated_at 1");
-    sqlx::query("SELECT pg_sleep(0.05)").execute(&st.pool).await.expect("pg_sleep");
+    sqlx::query("SELECT pg_sleep(0.05)")
+        .execute(&st.pool)
+        .await
+        .expect("pg_sleep");
     sqlx::query("SELECT heph_refresh_dataset_counters($1)")
         .bind(ds)
         .execute(&st.pool)
@@ -910,7 +929,12 @@ async fn t0003_upload_stored_duplicate_rejected() {
 
     let (status, _, body) = call(
         app.clone(),
-        post_upload(&cookie, &ds2, boundary, multipart_body(boundary, &[("x.png", b"GIF89a-nao")])),
+        post_upload(
+            &cookie,
+            &ds2,
+            boundary,
+            multipart_body(boundary, &[("x.png", b"GIF89a-nao")]),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -920,7 +944,12 @@ async fn t0003_upload_stored_duplicate_rejected() {
     let jpeg = jpeg_1x1();
     let (status, _, body) = call(
         app.clone(),
-        post_upload(&cookie, &ds2, boundary, multipart_body(boundary, &[("foto.png", &jpeg)])),
+        post_upload(
+            &cookie,
+            &ds2,
+            boundary,
+            multipart_body(boundary, &[("foto.png", &jpeg)]),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -1097,7 +1126,12 @@ async fn t0003_upload_storage_unavailable_503() {
     let boundary = "heph-failing-boundary";
     let (status, _, body) = call(
         app.clone(),
-        post_upload(&cookie, &ds, boundary, multipart_body(boundary, &[("a.png", &png_1x1())])),
+        post_upload(
+            &cookie,
+            &ds,
+            boundary,
+            multipart_body(boundary, &[("a.png", &png_1x1())]),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
@@ -1163,7 +1197,10 @@ async fn t0003_upload_malformed_400() {
         Request::builder()
             .method("POST")
             .uri(format!("/api/datasets/{ds}/upload"))
-            .header(http::header::CONTENT_TYPE, "multipart/form-data; boundary=X")
+            .header(
+                http::header::CONTENT_TYPE,
+                "multipart/form-data; boundary=X",
+            )
             .header(http::header::COOKIE, &cookie)
             .body(Body::from("lixo-que-nunca-fecha-boundary"))
             .unwrap(),
@@ -1354,8 +1391,7 @@ async fn t0003_data_proxy() {
 
     // Backend morto ⇒ 503.
     let mut st_fail = state().await;
-    st_fail.storage =
-        std::sync::Arc::new(api_principal::storage::MockStorage::failing());
+    st_fail.storage = std::sync::Arc::new(api_principal::storage::MockStorage::failing());
     let app_fail = routes::build(st_fail.clone());
     let ds_id2: uuid::Uuid = {
         let (status, _, body) = call(
@@ -1364,7 +1400,11 @@ async fn t0003_data_proxy() {
         )
         .await;
         assert_eq!(status, StatusCode::CREATED);
-        json(&body)["id"].as_str().expect("id").parse().expect("uuid")
+        json(&body)["id"]
+            .as_str()
+            .expect("id")
+            .parse()
+            .expect("uuid")
     };
     let img3 = insert_image(&st_fail.pool, ds_id2, "m.jpg", 10).await;
     let ds2 = ds_id2.to_string();
@@ -1822,7 +1862,9 @@ async fn t0003_delete_sweep_registrado() {
         "sweep ausente: {ops:?}"
     );
     assert!(
-        mock.snapshot().iter().all(|(k, _)| !k.starts_with(&format!("datasets/{ds_id}/"))),
+        mock.snapshot()
+            .iter()
+            .all(|(k, _)| !k.starts_with(&format!("datasets/{ds_id}/"))),
         "objeto órfão sob o prefixo: {:?}",
         mock.snapshot()
     );
@@ -1834,8 +1876,7 @@ async fn t0003_delete_sweep_falho_ainda_204() {
     // D7: sweep falho NÃO vira erro — DELETE com backend morto ainda é 204.
     let _guard = SERIAL.lock().await;
     let mut st = state().await;
-    st.storage =
-        std::sync::Arc::new(api_principal::storage::MockStorage::failing());
+    st.storage = std::sync::Arc::new(api_principal::storage::MockStorage::failing());
     let app = routes::build(st.clone());
     let cookie = authed_cookie();
 
@@ -1870,10 +1911,7 @@ async fn unauthenticated_is_401_even_with_db() {
     for (method, uri) in [
         ("GET", "/api/datasets"),
         ("POST", "/api/datasets"),
-        (
-            "GET",
-            "/api/datasets/00000000-0000-0000-0000-000000000000",
-        ),
+        ("GET", "/api/datasets/00000000-0000-0000-0000-000000000000"),
         (
             "DELETE",
             "/api/datasets/00000000-0000-0000-0000-000000000000",

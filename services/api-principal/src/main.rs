@@ -20,14 +20,19 @@ fn load_storage() -> Result<(Arc<dyn StoragePort>, StorageConfig), String> {
     let url_ttl_secs = std::env::var("S3_URL_TTL_SECS")
         .ok()
         .filter(|s| !s.is_empty())
-        .map(|s| s.parse::<u64>().map_err(|_| "storage: S3_URL_TTL_SECS inválido"))
+        .map(|s| {
+            s.parse::<u64>()
+                .map_err(|_| "storage: S3_URL_TTL_SECS inválido")
+        })
         .transpose()?
         .unwrap_or(3600);
     // Revisão 3b.6: fail-fast no range do SigV4 (presigned max 7 dias). Com
     // TTL válido, `presign_get` (assinatura local) não tem caminho de falha —
     // o 503 indocumentado de list/detail (achado F1) torna-se inalcançável.
     if !(1..=604_800).contains(&url_ttl_secs) {
-        return Err("storage: S3_URL_TTL_SECS fora de 1..=604800 (máx SigV4 de 7 dias)".to_string());
+        return Err(
+            "storage: S3_URL_TTL_SECS fora de 1..=604800 (máx SigV4 de 7 dias)".to_string(),
+        );
     }
     let config = StorageConfig {
         bucket,
@@ -102,8 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|v| v == "true")
         .unwrap_or(false);
 
-    let (storage, storage_config) =
-        load_storage().map_err(|e| format!("storage: {e}"))?;
+    let (storage, storage_config) = load_storage().map_err(|e| format!("storage: {e}"))?;
 
     let state = AppState {
         pool,

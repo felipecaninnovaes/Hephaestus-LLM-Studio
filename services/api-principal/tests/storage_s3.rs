@@ -22,10 +22,7 @@ fn env_or(key: &str, default: &str) -> String {
 fn test_storage() -> S3Storage {
     let cfg = StorageConfig {
         bucket: env_or("S3_BUCKET", "heph-data"),
-        public_endpoint: Some(env_or(
-            "S3_PUBLIC_ENDPOINT_URL",
-            "http://localhost:8333",
-        )),
+        public_endpoint: Some(env_or("S3_PUBLIC_ENDPOINT_URL", "http://localhost:8333")),
         url_ttl_secs: 3600,
     };
     S3Storage::new(
@@ -164,6 +161,9 @@ async fn s3_dead_server_unavailable() {
     let t0 = Instant::now();
     let r = s.put("datasets/_test-dead/x.bin", f.path()).await;
     let dt = t0.elapsed();
-    assert!(matches!(r, Err(api_principal::storage::StorageError::Unavailable(_))));
+    assert!(matches!(
+        r,
+        Err(api_principal::storage::StorageError::Unavailable(_))
+    ));
     assert!(dt < Duration::from_secs(5), "servidor morto ≤5s ({dt:?})");
 }

@@ -70,7 +70,10 @@ mod tests {
 
     #[test]
     fn sniff_jpeg() {
-        assert_eq!(sniff(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 0]), Some(MediaType::Jpeg));
+        assert_eq!(
+            sniff(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 0]),
+            Some(MediaType::Jpeg)
+        );
     }
 
     #[test]

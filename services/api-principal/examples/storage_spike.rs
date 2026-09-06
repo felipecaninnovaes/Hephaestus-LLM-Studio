@@ -81,7 +81,10 @@ async fn main() {
             .body(ByteStream::from(small))
             .send()
             .await;
-        println!("[PUT_ONLY] resultado: {:?}", r.map(|_| "ok").map_err(|e| e.to_string()));
+        println!(
+            "[PUT_ONLY] resultado: {:?}",
+            r.map(|_| "ok").map_err(|e| e.to_string())
+        );
         return;
     }
     if std::env::var("SPIKE_PUT_BIG").is_ok() {
@@ -106,7 +109,10 @@ async fn main() {
             .body(ByteStream::from_path(p).await.unwrap())
             .send()
             .await;
-        println!("[PUT_BIG] 512 MiB resultado: {:?}", r.map(|_| "ok").map_err(|e| e.to_string()));
+        println!(
+            "[PUT_BIG] 512 MiB resultado: {:?}",
+            r.map(|_| "ok").map_err(|e| e.to_string())
+        );
         return;
     }
     if let Ok(path) = std::env::var("SPIKE_UPLOAD_FILE") {
@@ -125,7 +131,13 @@ async fn main() {
             .await
             .unwrap();
         let cfg = PresigningConfig::expires_in(Duration::from_secs(3600)).unwrap();
-        let pre = client.get_object().bucket(BUCKET).key(key).presigned(cfg).await.unwrap();
+        let pre = client
+            .get_object()
+            .bucket(BUCKET)
+            .key(key)
+            .presigned(cfg)
+            .await
+            .unwrap();
         println!("PRESIGNED_URL {}", pre.uri());
         return;
     }
@@ -156,7 +168,13 @@ async fn spike_live_server() {
                 "[C2] PUT 1 KiB ok em {:?} — o bucket heph-data foi auto-criado (no init-container)",
                 t0.elapsed()
             );
-            let head = client.head_object().bucket(BUCKET).key(key_small).send().await.unwrap();
+            let head = client
+                .head_object()
+                .bucket(BUCKET)
+                .key(key_small)
+                .send()
+                .await
+                .unwrap();
             let got = client
                 .get_object()
                 .bucket(BUCKET)
@@ -269,7 +287,11 @@ async fn spike_live_server() {
             req = req.continuation_token(t.clone());
         }
         let resp = req.send().await.unwrap();
-        all_keys.extend(resp.contents().iter().filter_map(|o| o.key().map(|k| k.to_string())));
+        all_keys.extend(
+            resp.contents()
+                .iter()
+                .filter_map(|o| o.key().map(|k| k.to_string())),
+        );
         pages += 1;
         token = resp.next_continuation_token().map(|s| s.to_string());
         if token.is_none() {
@@ -340,9 +362,13 @@ async fn spike_c7_dead_server() {
         .await;
     let dt = t7.elapsed();
     match r7 {
-        Ok(_) => println!("[C7] put_object SUCEDEU pós-stop ({dt:?}) — servidor ainda estava vivo? refaça"),
+        Ok(_) => println!(
+            "[C7] put_object SUCEDEU pós-stop ({dt:?}) — servidor ainda estava vivo? refaça"
+        ),
         Err(e) => {
-            println!("[C7] put_object ERROU em {dt:?} → mapeável a StorageError::Unavailable (503): {e}");
+            println!(
+                "[C7] put_object ERROU em {dt:?} → mapeável a StorageError::Unavailable (503): {e}"
+            );
             if dt <= Duration::from_secs(5) {
                 println!("  → C7 PASS (≤5s)");
             } else {

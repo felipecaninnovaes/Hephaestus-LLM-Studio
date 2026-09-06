@@ -1,24 +1,23 @@
-# CI — Gitea Actions (act_runner, label ubuntu-latest)
+# CI — Gitea Actions (act_runner v3.3.2, label ubuntu-latest)
 #
-# Desenho v1 (ADR sem arquivo; registrado em docs/coordenacao.md sessão 4):
-# - ZERO ações externas além de actions/checkout@v4 (que o próprio gitea
-#   resolve) — todos os steps são `run:` puros. Imagens pinadas por digest,
-#   mesmas do compose/Dockerfiles (uma fonte de verdade).
+# Desenho v1 (registrado em docs/coordenacao.md sessão 4):
+# - ZERO ações externas — o actions/checkout@v4 saiu porque act_runner v3.3.2
+#   NÃO injeta node no container (prova: primeiro run, exit 127
+#   "node: executable file not found" em rust:slim e docker:29-cli, 2026-09-06).
+#   Checkout = git clone manual com o token automático do Gitea
+#   (basic x-access-token — o mesmo esquema que o actions/checkout usa).
+# - Imagens pinadas por digest, mesmas do compose/Dockerfiles.
 # - UMA job Rust com `services:` postgres: fmt + check + testes sem banco +
-#   testes de banco --ignored, tudo na mesma compilação (economia de CI).
+#   testes de banco --ignored, tudo na mesma compilação.
 # - Sem cache de cargo/npm no v1 (adicionaria action externa); custo aceito.
 # - Testes de storage (storage_s3, --ignored) ficam LOCAIS via
 #   scripts/test-storage.sh — exigem SeaweedFS, não cobertos aqui.
 #
-# Notas de gotcha do act_runner (se o primeiro run falhar, olhe aqui):
-# 1. actions/checkout@v4 é action JS — o act_runner injeta o node empacotado
-#    nele no container; em imagens slim isso normalmente funciona. Se falhar
-#    com "node: not found", trocar o checkout por:
-#      - run: apt-get update && apt-get install -y --no-install-recommends git
-#      - run: git clone "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" . && git checkout "$GITHUB_SHA"
-# 2. A resolução de `actions/checkout` depende de [actions] na config do Gitea
-#    (URL default github.com ou mirror). Se o Gitea não alcançar, é preciso
-#    espelhar o action ou usar o fallback manual acima.
+# Conquistas do primeiro run (2026-09-06): digest pin puxa ✓, healthcheck do
+# service postgres passa ✓, download de action ✓. Único gaps: node ausente.
+#
+# Se um dia trocar o clone por actions/checkout de novo,precisará de um
+# container com node+git ou de runner com injeção de node.
 name: CI
 
 on:
@@ -41,8 +40,15 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
+    env:
+      HEPH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - name: git (rust:slim não tem git nem ca-certificates)
+        run: apt-get update -qq && apt-get install -y -qq --no-install-recommends git ca-certificates
+      - name: checkout manual (clone completo — repo pequeno)
+        run: |
+          git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$HEPH_TOKEN" | base64 -w0)" clone "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" .
+          git checkout "$GITHUB_SHA"
       - name: fmt (padrão rustfmt, workspace inteiro)
         run: cargo fmt --all --check
       - name: check (workspace, sem banco — regra ADR-0002 D10)
@@ -58,8 +64,14 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0
+    env:
+      HEPH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      # node:20-slim é baseado em buildpack-deps scm-slim: JÁ TEM git.
+      - name: checkout manual
+        run: |
+          git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$HEPH_TOKEN" | base64 -w0)" clone "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" .
+          git checkout "$GITHUB_SHA"
       - name: install (lockfile da raiz, workspaces)
         run: npm ci
       - name: build
@@ -69,8 +81,16 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: docker:29-cli@sha256:eccaacfeed644c7de222ff047483568cb988dde95476fbaaf10ea2d04921bb66
+    env:
+      HEPH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      # docker:29-cli é alpine: git via apk; busybox base64 não quebra linha.
+      - name: git
+        run: apk add --no-cache git ca-certificates
+      - name: checkout manual
+        run: |
+          git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$HEPH_TOKEN" | base64)" clone "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" .
+          git checkout "$GITHUB_SHA"
       - name: valida compose (parse puro, sem daemon)
         run: docker compose -f infra/compose.yaml -f infra/compose.integ.yaml config -q
       - name: valida compose do spike

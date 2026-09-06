@@ -59,13 +59,3 @@ export const STATUS_LABELS: Record<DatasetStatus, string> = {
   needs_labeling: "Aguardando rotulagem",
 };
 
-export function trainTabFor(category: DatasetCategory): string {
-  switch (category) {
-    case "difusao":
-      return "/difusao";
-    case "openclip":
-      return "/openclip";
-    case "yolo":
-      return "/yolo";
-  }
-}

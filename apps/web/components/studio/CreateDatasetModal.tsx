@@ -109,7 +109,7 @@ export default function CreateDatasetModal({ open, onClose, onCreated }: Props) 
           setNameError("Já existe um dataset com esse nome.");
           return;
         }
-        if (err.code === "invalid_request" || err.code === "validation") {
+        if (err.code === "invalid_request") {
           setTopError("Verifique os campos.");
           return;
         }

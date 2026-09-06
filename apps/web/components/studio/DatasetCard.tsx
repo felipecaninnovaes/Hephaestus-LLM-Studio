@@ -47,10 +47,17 @@ export default function DatasetCard({
         <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-zinc-800/80">
           <CategoryIcon category={dataset.category} />
         </span>
-        <span
-          className={`tracking-caps rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase ${STATUS_STYLES[dataset.status]}`}
-        >
-          {STATUS_LABELS[dataset.status]}
+        <span className="flex items-center gap-1.5">
+          {dataset.autoTracked && (
+            <span className="tracking-caps rounded-full border border-cyan-400/30 bg-cyan-400/10 px-2 py-0.5 text-[10px] font-medium uppercase text-cyan-300">
+              AutoTracker
+            </span>
+          )}
+          <span
+            className={`tracking-caps rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase ${STATUS_STYLES[dataset.status]}`}
+          >
+            {STATUS_LABELS[dataset.status]}
+          </span>
         </span>
       </div>
       <div className="min-w-0">

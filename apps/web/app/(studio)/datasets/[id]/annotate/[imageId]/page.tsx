@@ -12,6 +12,7 @@ import {
 } from "@/components/icons";
 import { ApiError } from "@/lib/api";
 import { getDataset } from "@/lib/datasets";
+import { newId } from "@/lib/id";
 import { getImage, putBoxes } from "@/lib/images";
 import type {
   BBoxData,
@@ -331,7 +332,7 @@ export default function AnnotateImagePage() {
         const classId =
           activeCls?.id ?? classesRef.current[0]?.id ?? "";
         if (!classId) return;
-        const nid = crypto.randomUUID();
+        const nid = newId();
         setBoxes((prev) => [
           ...prev,
           { id: nid, classId, x, y, w, h, conf: null, origin: "", trackId: null },
@@ -374,6 +375,15 @@ export default function AnnotateImagePage() {
       return;
     }
     if (tool === "bbox") {
+      // Sem classe não há caixa para nascer (onUp descartaria em silêncio):
+      // bloqueia na origem com feedback em vez de deixar desenhar à toa.
+      if (!classesRef.current.length) {
+        showToast(
+          "Este dataset não tem classes — crie uma antes de desenhar caixas.",
+          "error",
+        );
+        return;
+      }
       const p = toNorm(e.clientX, e.clientY);
       if (!p) return;
       drawRef.current = { startX: p.x, startY: p.y };

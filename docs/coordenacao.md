@@ -12,7 +12,8 @@ ser interrompido no meio de uma.
    registrado (branch aberta, commits pendentes de push).
 3. `graft check` se for mexer em código indexado (refresh: `graft build`).
 4. Fontes de verdade para a fatia: `IDEIA.md`, `docs/backend.md` §9/§10,
-   `docs/frontend.md` §10, `docs/repo-estrutura.md` (ordem de fatias) e os ADRs em
+   `docs/frontend.md` §10, `docs/repo-estrutura.md` (ordem de fatias),
+   `docs/dividas.md` (dívidas a honrar no nascedouro) e os ADRs em
    `docs/adr/` — a 3b tem especificação própria e completa em
    **`docs/adr/0003-object-storage-s3.md`** (decisões D0–D10, delta de contrato,
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
@@ -24,6 +25,11 @@ ser interrompido no meio de uma.
   1. **Referência formal** — `docs/design-system.md` MESCLADO (base OpenDesign: frontmatter YAML navegável + Do's/Don'ts + regras nomeadas; seções exclusivas da versão impeccable reincorporadas: iconografia, anatomia de componentes, a11y, avaliação crítica; token Runtime Python `#eab308` recuperado com prova v1:864). **Descoberta do reviewer**: o `ai-vision-training-studio.html` do tronco JÁ É a regeneração OpenDesign (3641 linhas, `LoginPage` ~329) desde o merge `chore/opendesign` (`39a1410`) — o `ai-vision-training-studio-v2.html` que o coordenador importou do OpenDesign era byte-idêntico e foi REMOVIDO (`1a00b22`); referência única = protótipo da raiz.
   2. **Auditoria+correção visual** (`@ui-designer` qwen3.7-plus, Chrome flatpak :9222 + skill chrome-mcp): `/login` (blobs de luz zenital, meta v1.3, placeholder, autoFocus, focus ring emerald, footer "Single-User Mode" SEM botão demo — instrumentação rejeitada); DatasetCard (violet/sky → `text-zinc-300` PROVADO contra v1:1528; p-5; tiles com borda; chips estilo v1; "Treinar →" text-link); TabsBar (aba ativa `text-white` sem underline); Topbar (inline style → classes; superfície `zinc-950/80` MEDIDA E PROVADA igual à v1 — suspeita inicial do coordenador era falsa); modal `max-w-lg`. Pendências fechadas via `@frontend-dev`: `IconLock` (padrão Base, paths do protótipo) + ícones no DatasetMenu (adaptações declaradas: Eye→IconLayers, Play→IconTarget). **Smoke do login com senha dev `changeme`: 4/4 PASS** (autoFocus; POST 200 + cookie; redirect; 401 → "Senha incorreta."; regression redirect; console limpo).
   3. **Causa-raiz** — charters de `@frontend-dev`/`@ui-designer` agora apontam `docs/design-system.md` como fonte de ESTILO (paleta FECHADA, regras nomeadas: One CTA/Monospace Truth/Refractive Edge/Class Palette Integrity; cores fora da paleta proibidas) e o protótipo como fonte de LAYOUT. É o mecanismo anti-improviso para os implementadores low.
+4. **Organização — dívidas viraram registro próprio (inspiração: artigo "Harness
+   Engineering" da OpenAI, 2026-02-11)**: seção de dívidas extraída deste arquivo
+   para **`docs/dividas.md`** (registro permanente: em aberto/quitado, fatia marcada,
+   como atualizar). Este arquivo referencia e não duplica; pendências do Fecho
+   também migraram para lá.
 - **Fixes de ambiente (desbloqueio do dev; branch `fix/infra-env` `c09569a`)**: healthcheck do SeaweedFS dependia de GNU wget (exit 8 em 403); a tag **mutável** `4.45_full` trocou o wget para BusyBox (exit 1) → container unhealthy permanente → novo probe portável (aceita QUALQUER resposta HTTP: `wget -S … | grep -q HTTP/1.1`). Runtime do principal `bookworm`(glibc 2.36) → `trixie-slim` (builder rust:slim é trixie/2.41; `aws-lc-sys` exige GLIBC_2.38 — **R10 da ADR-0003 materializado por tag mutável**). **Lição: tags de imagem mutáveis quebram builds verificados; recomendação PENDENTE ao usuário: fixar digests no compose/Dockerfiles.**
 - **Review da `fix/web-design-alignment`: APROVA** — 1 menor corrigido (v2 duplicado removido) e 1 menor REFUTADO com prova empírica: botão "Treinar" disabled — a regra global `button:disabled` do globals.css JÁ aplica opacity .55 + not-allowed (getComputedStyle confirmado) e o hit-test resolve no próprio botão (sem click-through ao Link) — falso positivo duplo do reviewer, registrado como lição (provar antes de corrigir).
 - **Branches aguardando MERGE do usuário (ordem importa)**: ~~todas~~ **MERGEADAS em 2026-09-05**: `fix/web-3c-review` (`0554d3f`, pelo usuário), `fix/web-design-alignment` (`a19d835` — conflito em TabsBar resolvido pelo coordenador: 6 abas da emenda + decisão visual da auditoria na aba ativa `text-white` sem underline; DatasetCard/Modal auto-mergeados, tag AutoTracker preservada, `max-w-lg` combinado), `fix/infra-env` (`fdfaff6`), `chore/agent-design-ref` (`11ebdfb`). **Verificação pós-merge**: build web verde (rota `ƒ /datasets/[id]` viva), compose config OK, smoke visual no Chrome: 6 abas + badge de contagem, aba ativa `rgb(255,255,255)` sem underline, card p-5/16px com Refractive Edge provado (borda topo `0.13` vs laterais `0.07`), botão Treinar com affordance global (opacity .55 + not-allowed). Branches de fatia ainda não apagadas — decisão do usuário. `main` ~6 à frente do origin (push pendente).
@@ -45,7 +51,7 @@ ser interrompido no meio de uma.
   usuário. Entregue: migration 0003 + `StoragePort`/`MockStorage`/`S3Storage` + 6 rotas
   (upload, images, detail, `/data`, boxes, caption) + sweep pós-commit + `source`
   derivado + `classes{id}`; spec 0.3.0; revisões 3b.3/3b.6 feitas. Dívida 3b QUITADA
-  (ver "Dívidas"); sobraram: logging server-side (fatia nomeada), gate `sub` órfão,
+   (ver `docs/dividas.md`); sobraram: logging server-side (fatia nomeada), gate `sub` órfão,
   `cargo fmt`. A/B 3b.6 registrado no bullet do experimento — **encerrado pelo usuário:
   sem swap; `@reviewer` é o despacho único, max só como escalada** (`a343a7c` em
   `chore/reviewer-escalacao`).
@@ -186,38 +192,15 @@ CVE-2026-40344** (bypass de assinatura na trilha `STREAMING-UNSIGNED-PAYLOAD-TRA
 falsas está no fim da ADR-0003, marcada para o commit `3b.8` (docs descrevem o que existe,
 não o que foi aprovado).
 
-## Dívidas registradas que as próximas fatias precisam honrar
+## Dívidas técnicas
 
-- **3b (upload/imagens) — QUITADA 2026-09-05** (`feat/datasets-storage`:
-  `f6c6ff5` migration 0003, `656a474` porta/mock/AppState, `c012be5` upload+lista,
-  `a21345b` fix livelock/413/filename, `507637e` S3+compose+runner, `94fc0db`
-  detail+`/data`, `8451fa0` boxes+caption, `3b6b46e` fix TTL/sweep, `393163c` sweep+
-  `source`+classes com `id`; docs sincronizados no 3b.8). Entregue: bucket S3/SeaweedFS
-  como blob canônico (volume `datasets`/`DATASETS_DIR` do principal mortos; sweep de
-  prefixo `datasets/<id>/` pós-commit best-effort), `DefaultBodyLimit` dedicado
-  (total 200 MiB + 8 MiB + teto por arquivo 200 MiB, envelope — ADR-0002 T10),
-  `images.object_key` + `sha256`/`media_type`, `videos` sem rota de escrita,
-  `heph_refresh_dataset_counters` (nunca `+=`, status derivado), `source` derivado
-  `s3://{bucket}/datasets/{id}/`, `classes` como `{id,name,idx,color}` (gap classId,
-  3b.7). O que SOBROU para as fatias seguintes: export/import/package → **3e**
-  (backup interim = console + `mc mirror`); bloco `--datasets` no
-  `scripts/e2e-smoke.sh` (se ainda não coberto); UI `/datasets` (3c) e
-  galeria/anotação (3d). Verificado: lista, `GET /:id` e `POST` preenchem `classes`
-  com `{id,name,idx,color}` (`handlers.rs:80,237,277`).
-- **Jobs (fatia 4)** — `jobs.dataset_id UUID NULL REFERENCES datasets(id)
-  ON DELETE SET NULL` + snapshot `dataset_versions` (nunca `RESTRICT`) — ADR-0002 T4.
-- **3d** — derivar `autoTracked` de `boxes.origin='autotracker'` (T7); hoje é
-  constante `false`.
-- **Hardening (sem fatia marcada)** — gate aceita `sub` órfão: cookie assinado com
-  segredo antigo sobrevive a reset de `users` e passa a ler/deletar datasets (T8;
-  mitigação = `SELECT EXISTS` no gate ou rotacionar segredo no reset). `cargo fmt
-  -p api-principal` segue violando padrão (hunks pré-existentes da Fatia 2 +
-  acréscimo da 3b); nenhum CI de fmt — decisão de quando formatar é do usuário.
-- **Logging server-side (fatia nomeada, sem número)** — revisores 3b.3/3b.6: `Err(_)
-  => internal()` engole detalhes (banco vira 500 mudo, sem log nenhum) e o `map_err`
-  do SDK descarta `code()`; sweep do DELETE usa `eprintln` como mínimo honesto até
-  a fatia chegar. Escopo: log server-side (nunca no response) antes/depois da fatia
-  de jobs.
+As dívidas técnicas e pendências vivem em **`docs/dividas.md`** — registro
+permanente de primeira classe (em aberto / quitado, com fatia marcada quando
+aplicável; inspirado no `tech-debt-tracker` do artigo "Harness Engineering"
+da OpenAI). Este arquivo não as duplica: ao registrar, marcar fatia ou quitar
+uma dívida, atualize o `dividas.md`. Fatias novas DEVEM ler o `dividas.md`
+(item 4 do protocolo de retomada) e honrar as dívidas relevantes no
+nascedouro.
 
 ## Plano em andamento — PRÓXIMO PASSO EXATO: fatia 3d (galeria `/datasets/[id]` + editor BBox)
 
@@ -260,12 +243,9 @@ autorizou a landing direto no tronco).
 - [x] **3b mergeada** (`04b8987`); **3c no tronco** (`1f182ed`), revisada (CONDICIONAL,
       F1–F6) e emendada em `fix/web-3c-review` — build web limpo, greps zerados.
 - [x] Próximo passo = ~~4 merges~~ ✅ **MERGEADOS** (3c-review pelo usuário `0554d3f`; design-alignment `a19d835` com conflito de TabsBar resolvido; infra-env `fdfaff6`; agent-design-ref `11ebdfb`) → **3d é a próxima fatia**.
-- [ ] Pendências que continuam valendo, sem fatia marcada: CLI
-      `studio reset-password` (ADR-0001 T4), `cargo fmt -p api-principal` segue,
-      logging server-side (fatia nomeada — revisores 3b.3/3b.6), gate `sub` órfão
-      (ADR-0002 T8), testes de UI (backlog §12 — cobrir criar→listar→excluir quando
-      o e2e for ampliado), **fixar digests de imagem no compose/Dockerfiles** (lição
-      das tags mutáveis — decisão do usuário), sincronizar `docs/frontend.md` linha 3
-      (protótipo agora é a regeneração de 3641 linhas).
+- [ ] Pendências e dívidas que continuam valendo: ver **`docs/dividas.md`**
+      (registro permanente — inclui CLI `reset-password`, `cargo fmt`,
+      logging server-side, gate `sub` órfão, digests de imagem, testes de UI,
+      sync `docs/frontend.md` linha 3).
       ~~`lefthook install`~~ ✅ quitado em `chore/agent-team` (gate ativo: hooks
       instalados + commitlint real + deny de commit nos subagentes).

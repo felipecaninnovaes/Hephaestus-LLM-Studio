@@ -12,16 +12,16 @@ permission:
     "git rebase*": deny
 ---
 
-Você implementa EXATAMENTE a especificação que receber em `apps/web` (Next.js 16 + TypeScript + **Tailwind v4**). O sistema visual é Tailwind: tokens definidos no `@theme` de `apps/web/app/globals.css`, derivados do protótipo `ai-vision-training-studio.html` (referência visual na raiz). Use classes utilitárias/tokens existentes antes de escrever CSS novo; NÃO reinvente visual.
+Você implementa EXATAMENTE a especificação que receber em `apps/web` (Next.js 16 + TypeScript + **Tailwind v4**). O sistema visual é Tailwind: tokens definidos no `@theme` de `apps/web/app/globals.css`, derivados de `docs/design-system.md` v2 e `apps/web/app/globals.css`. Use classes utilitárias/tokens existentes antes de escrever CSS novo; NÃO reinvente visual.
 
 ## Estilo — fonte de verdade (LEIA antes de estilizar qualquer componente)
 
-**`docs/design-system.md` é a fonte de verdade de ESTILO**: paleta FECHADA (dark-only; acento emerald; verde #34d399, âmbar #f59e0b, rosa #ef4444, ciano #06b6d4, amarelo #eab308 — nada além disso), tipografia (Inter UI + JetBrains Mono para todo número/telemetria), glass 3 níveis (`.glass-card/.glass-menu/.glass-modal`) e as regras nomeadas: **One CTA Rule** (1 botão sólido esmeralda por painel), **Monospace Truth** (todo número em mono), **Refractive Edge** (borda superior do vidro mais iluminada), **Class Palette Integrity** (cores de classe reservadas). **Cores fora da paleta são PROIBIDAS** — nunca invente violet/sky/roxo "aproximado". Referência de layout: `ai-vision-training-studio.html` (protótipo único na raiz — regenerado via OpenDesign; canônico também para `/login`, função `LoginPage` ~linha 329). `docs/frontend.md` §10 = contratos/comportamento; `docs/design-system.md` = aparência.
+**`docs/design-system.md` v2 é a fonte de verdade de ESTILO**: paleta FECHADA dark-only — primária brand violeta `#8350f2` (escala brand-* no @theme), neutros zinc-*, semânticas: sucesso `#34d399`, alerta `#f59e0b`, danger `#ef4444`, telemetria `#06b6d4` — **classes `emerald-*` PROIBIDAS no app** (no Tailwind v4 nativo resolvem para o verde da v1 — regra Brand-Only do design-system). Tipografia: Space Grotesk (display), system sans (body), JetBrains Mono (todo número/telemetria) — self-hosted em `apps/web/fonts/`. Glass 3 níveis (`.glass-card/.glass-menu/.glass-modal`) e as regras nomeadas v2: **One CTA**, **Brand-Only**, **Class Palette Integrity**, **Monospace Truth**, **Vidro Óptico**, **Anti-Scroll-Trap**, **Responsividade**, **Densidade de Botões**, **Truncamento Honesto**. **Cores fora da paleta são PROIBIDAS**. Referência de LAYOUT: o próprio app (`apps/web/app/**`) + `docs/design-system.md`; protótipo temporário `temp_redesign/new_ui.html` (gitignored) só com trecho apontado pelo coordenador. `docs/frontend.md` §10 = contratos/comportamento; `docs/design-system.md` = aparência.
 
 ## Desempate de posse (com @ui-designer)
 
 - Você: estrutura da tela, rotas, chamadas de API, estados, comportamento — e cria componentes com estilo razoável via tokens.
-- `@ui-designer`: fiel à referência (paleta, tipografia, espaçamentos, glass). Se ele medir delta de computed-style contra o protótipo e ajustar classes/tokens, isso não é regressão do seu trabalho — aceite.
+- `@ui-designer`: fiel à referência (paleta, tipografia, espaçamentos, glass). Se ele medir delta de computed-style contra o app/design-system e ajustar classes/tokens, isso não é regressão do seu trabalho — aceite.
 - Conflito real (a mudança visual exige mudar lógica/estrutura): nenhum dos dois faz; reporta ao coordenador.
 
 ## Regras

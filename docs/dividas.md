@@ -57,6 +57,14 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
 
 **Verificação / toolchain**
 
+- **Teste `@gpu` manual do CLIP real (fatia futura, sem número) — ABERTA 2026-09-06**
+  (spike/ADR-0004): o modo real do embedder (`ENGINE_MOCK` desligado,
+  `open_clip_torch` ViT-B-32, peso ~600 MB fora do compose) nunca rodou em GPU;
+  manual, não bloqueia fatias.
+- **Planner do pgvector prefere seq scan com ~10k linhas (sem fatia) — ABERTA
+  2026-09-06** (spike): custo do LIMIT pequeno faz o planner ignorar o HNSW;
+  NÃO forçar `enable_seqscan=off`; re-avaliar com datasets reais grandes.
+
 - **`cargo fmt -p api-principal`** viola o padrão (hunks pré-existentes da
   Fatia 2 + acréscimo da 3b); nenhum CI de fmt — decisão de quando formatar é
   do usuário.
@@ -69,6 +77,11 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
   despacho `@rust-dev` com digests resolvidos no registry pelo coordenador; 11/11
   referências pinadas, `compose config -q` verde nos dois arquivos). Padrão
   `tag@sha256:` mantém a tag legível e o digest como trava.
+  - **Parte `db` re-honrada na 3f (2026-09-06, `feat/semantic-search`):** a imagem
+    do `db` trocou `postgres:16` → `pgvector/pgvector:pg16-trixie@sha256:c8483555…`
+    (spike provou upgrade sem dump/restore; `pg16` sem sufixo é bookworm →
+    collation mismatch). Só a parte postgres/db está paga aqui; o item como um
+    todo segue quitado acima.
 - **Nota para a fatia 4 (nova)**: `manager`/`orchestrator` rodam runtime
   `debian:bookworm-slim` (GLIBC 2.36) — quando o orquestrador ganhar cliente S3
   (aws-lc-sys, GLIBC_2.38), migrar para `trixie-slim` como o principal (R10 da

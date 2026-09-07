@@ -1,0 +1,8 @@
+/target
+/build.log
+/spike.dump
+/batch32.json
+/rust-vector.txt
+/spike-results.txt
+/spike-c1.log
+/embed-build.log

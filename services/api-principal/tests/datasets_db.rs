@@ -34,6 +34,10 @@ async fn state() -> AppState {
         .expect("rodar migrations");
     // Limpeza explícita (sem TRUNCATE: não toca `users`/`auth_state`;
     // a lista cresce na 3b com `images` e filhas).
+    sqlx::query("DELETE FROM image_embeddings")
+        .execute(&pool)
+        .await
+        .expect("limpar image_embeddings");
     sqlx::query("DELETE FROM classes")
         .execute(&pool)
         .await
@@ -53,6 +57,8 @@ async fn state() -> AppState {
             public_endpoint: None,
             url_ttl_secs: 60,
         },
+        embedder: std::sync::Arc::new(api_principal::search::MockEmbedder::new()),
+        embedding_model: "ViT-B-32".to_string(),
     }
 }
 
@@ -3148,4 +3154,707 @@ async fn t0003_trash_invisivel_e_trash_count() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0004_search_migration() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Busca Vetor", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds_id: uuid::Uuid = json(&body)["id"]
+        .as_str()
+        .expect("id")
+        .parse()
+        .expect("uuid");
+
+    let img1 = insert_image(&st.pool, ds_id, "v1.jpg", 100).await;
+    let img2 = insert_image(&st.pool, ds_id, "v2.jpg", 100).await;
+
+    fn vec_literal(f: impl Fn(usize) -> f32) -> String {
+        let vals: Vec<String> = (0..512).map(|i| format!("{}", f(i))).collect();
+        format!("[{}]", vals.join(","))
+    }
+    let emb1 = vec_literal(|i| (i as f32) / 512.0);
+    let emb2 = vec_literal(|i| 1.0 - (i as f32) / 512.0);
+
+    sqlx::query(
+        "INSERT INTO image_embeddings (image_id, dataset_id, model, embedding) VALUES ($1, $2, 'ViT-B-32', $3::vector)",
+    )
+    .bind(img1)
+    .bind(ds_id)
+    .bind(&emb1)
+    .execute(&st.pool)
+    .await
+    .expect("insert embedding 1");
+    sqlx::query(
+        "INSERT INTO image_embeddings (image_id, dataset_id, model, embedding) VALUES ($1, $2, 'ViT-B-32', $3::vector)",
+    )
+    .bind(img2)
+    .bind(ds_id)
+    .bind(&emb2)
+    .execute(&st.pool)
+    .await
+    .expect("insert embedding 2");
+
+    // Top-1 pela distância coseno é a própria imagem (distância 0).
+    let top: uuid::Uuid = sqlx::query_scalar(
+        "SELECT image_id FROM image_embeddings WHERE dataset_id = $1 ORDER BY embedding <=> $2::vector LIMIT 1",
+    )
+    .bind(ds_id)
+    .bind(&emb1)
+    .fetch_one(&st.pool)
+    .await
+    .expect("select top-1");
+    assert_eq!(top, img1);
+
+    // CHECK do enum fechado: outro modelo é erro.
+    let img3 = insert_image(&st.pool, ds_id, "v3.jpg", 10).await;
+    let bad = sqlx::query(
+        "INSERT INTO image_embeddings (image_id, dataset_id, model, embedding) VALUES ($1, $2, 'outro-modelo', $3::vector)",
+    )
+    .bind(img3)
+    .bind(ds_id)
+    .bind(&emb1)
+    .execute(&st.pool)
+    .await;
+    assert!(bad.is_err(), "model fora do enum deveria violar o CHECK");
+    sqlx::query("DELETE FROM images WHERE id = $1")
+        .bind(img3)
+        .execute(&st.pool)
+        .await
+        .expect("cleanup img3");
+
+    // CASCADE duplo: delete do dataset zera embeddings e imagens.
+    sqlx::query("DELETE FROM datasets WHERE id = $1")
+        .bind(ds_id)
+        .execute(&st.pool)
+        .await
+        .expect("delete dataset");
+    let n_emb: i64 = sqlx::query_scalar("SELECT count(*) FROM image_embeddings")
+        .fetch_one(&st.pool)
+        .await
+        .expect("count embeddings");
+    assert_eq!(n_emb, 0);
+    let n_img: i64 = sqlx::query_scalar("SELECT count(*) FROM images WHERE dataset_id = $1")
+        .bind(ds_id)
+        .fetch_one(&st.pool)
+        .await
+        .expect("count images");
+    assert_eq!(n_img, 0);
+}
+
+/// Poll do estado derivado: até ~10s (sleep 100ms) até `image_embeddings`
+/// do dataset chegar a `want` (o MockEmbedder é rápido; o disparo é async).
+async fn poll_embeddings(pool: &sqlx::PgPool, ds: uuid::Uuid, want: i64) {
+    for _ in 0..100 {
+        let n: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM image_embeddings WHERE dataset_id = $1")
+                .bind(ds)
+                .fetch_one(pool)
+                .await
+                .expect("count embeddings");
+        if n >= want {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("timeout aguardando {want} embeddings do dataset {ds}");
+}
+
+async fn get_status(
+    app: axum::Router,
+    cookie: &str,
+    ds: &str,
+) -> (http::StatusCode, serde_json::Value) {
+    let (status, _, body) = call(
+        app,
+        Request::builder()
+            .method("GET")
+            .uri(format!("/api/datasets/{ds}/search/status"))
+            .header(http::header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    (status, json(&body))
+}
+
+async fn post_index(
+    app: axum::Router,
+    cookie: &str,
+    ds: &str,
+) -> (http::StatusCode, serde_json::Value) {
+    let (status, _, body) = call(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/datasets/{ds}/search/index"))
+            .header(http::header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    (status, json(&body))
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0004_upload_dispara_indexacao() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Idx Upload", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds = json(&body)["id"].as_str().expect("id").to_string();
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+
+    let boundary = "heph-idx-boundary";
+    let (status, _, body) = call(
+        app.clone(),
+        post_upload(
+            &cookie,
+            &ds,
+            boundary,
+            multipart_body(boundary, &[("a.png", &png_1x1()), ("b.png", &jpeg_1x1())]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    poll_embeddings(&st.pool, ds_id, 2).await;
+    let (status, got) = get_status(app.clone(), &cookie, &ds).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(got["status"], "ready");
+    assert_eq!(got["imagesCount"], 2);
+    assert_eq!(got["indexedCount"], 2);
+    assert_eq!(got["model"], "ViT-B-32");
+    assert_eq!(got["dim"], 512);
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0004_search_index_rebuild_idempotente() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Idx Rebuild", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds = json(&body)["id"].as_str().expect("id").to_string();
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+
+    let boundary = "heph-rebuild-boundary";
+    let (status, _, _) = call(
+        app.clone(),
+        post_upload(
+            &cookie,
+            &ds,
+            boundary,
+            multipart_body(boundary, &[("a.png", &png_1x1())]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    poll_embeddings(&st.pool, ds_id, 1).await;
+
+    let (status, got) = post_index(app.clone(), &cookie, &ds).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(got["status"], "indexing");
+    // Rebuild sem pendentes não trabalha: aguarda o lock/rodada e confere.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let (status, got) = post_index(app.clone(), &cookie, &ds).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(got["status"], "indexing");
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM image_embeddings WHERE dataset_id = $1")
+        .bind(ds_id)
+        .fetch_one(&st.pool)
+        .await
+        .expect("count embeddings");
+    assert_eq!(n, 1, "ON CONFLICT não duplica");
+    let (status, got) = get_status(app.clone(), &cookie, &ds).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(got["status"], "ready");
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0004_status_derivado() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    // Dataset vazio: not_indexed, 0, 0.
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Idx Vazio", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds_empty = json(&body)["id"].as_str().expect("id").to_string();
+    let (status, got) = get_status(app.clone(), &cookie, &ds_empty).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(got["status"], "not_indexed");
+    assert_eq!(got["imagesCount"], 0);
+    assert_eq!(got["indexedCount"], 0);
+
+    // Dataset com imagem e sem embedding: not_indexed (D5 literal — 0
+    // embeddings do modelo ativo; o front oferece "Indexar agora" como reparo).
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Idx Parcial", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds = json(&body)["id"].as_str().expect("id").to_string();
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+    let boundary = "heph-parcial-boundary";
+    let (status, _, _) = call(
+        app.clone(),
+        post_upload(
+            &cookie,
+            &ds,
+            boundary,
+            multipart_body(boundary, &[("a.png", &png_1x1())]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    poll_embeddings(&st.pool, ds_id, 1).await;
+    sqlx::query("DELETE FROM image_embeddings WHERE dataset_id = $1")
+        .bind(ds_id)
+        .execute(&st.pool)
+        .await
+        .expect("delete embeddings");
+    let (status, got) = get_status(app.clone(), &cookie, &ds).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(got["status"], "not_indexed");
+    assert_eq!(got["imagesCount"], 1);
+    assert_eq!(got["indexedCount"], 0);
+
+    // Lixeira (review 3f [MAIOR]): soft-delete NÃO remove embedding — o
+    // indexedCount com JOIN nas ativas impede `ready` falso com pendentes.
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Idx Lixeira", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds = json(&body)["id"].as_str().expect("id").to_string();
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+    let boundary = "heph-lixeira-boundary";
+    let (status, _, _) = call(
+        app.clone(),
+        post_upload(
+            &cookie,
+            &ds,
+            boundary,
+            multipart_body(boundary, &[("b1.png", &png_1x1()), ("b2.png", &png_1x1())]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    poll_embeddings(&st.pool, ds_id, 2).await;
+    let (status, got) = get_status(app.clone(), &cookie, &ds).await;
+    assert_eq!(got["status"], "ready");
+    // Trasha uma das duas: ativas=1, indexed (JOIN ativas)=1 → segue ready.
+    sqlx::query(
+        "UPDATE images SET deleted_at = now() WHERE dataset_id = $1 AND filename = 'b1.png'",
+    )
+    .bind(ds_id)
+    .execute(&st.pool)
+    .await
+    .expect("soft delete");
+    let (status, got) = get_status(app.clone(), &cookie, &ds).await;
+    assert_eq!(got["status"], "ready");
+    assert_eq!(got["imagesCount"], 1);
+    assert_eq!(got["indexedCount"], 1);
+    // Nova imagem ATIVA sem embedding (insert direto, sem spawn): ativas=2,
+    // indexed=1 → indexing. Sem o JOIN, indexed seria 2 e mentiria `ready`.
+    insert_image(&st.pool, ds_id, "b3.png", 10).await;
+    let (status, got) = get_status(app.clone(), &cookie, &ds).await;
+    assert_eq!(got["status"], "indexing");
+    assert_eq!(got["imagesCount"], 2);
+    assert_eq!(got["indexedCount"], 1);
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0004_lock_concorrente_serializa_disparos() {
+    // Critério de aceite da 3f.4 ("lock serializa 2 disparos") — dois
+    // indexadores do MESMO dataset em paralelo: ambos completam, count == N,
+    // ON CONFLICT não duplica (review 3f [MENOR]).
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let (status, _, body) = call(
+        routes::build(st.clone()),
+        post_create(
+            "Idx Concorrente",
+            &serde_json::json!(["a"]),
+            &authed_cookie(),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds = json(&body)["id"].as_str().expect("id").to_string();
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+    // Upload REAL: o objeto precisa existir no storage (o indexer faz
+    // StoragePort.get — insert_image direto geraria "object not found").
+    let boundary = "heph-lock-boundary";
+    let (status, _, _) = call(
+        routes::build(st.clone()),
+        post_upload(
+            &authed_cookie(),
+            &ds,
+            boundary,
+            multipart_body(boundary, &[("c1.png", &png_1x1()), ("c2.png", &png_1x1())]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    poll_embeddings(&st.pool, ds_id, 2).await;
+    // Zera os embeddings (objetos seguem no storage): agora os 2 disparos
+    // concorrentes têm trabalho de verdade.
+    sqlx::query("DELETE FROM image_embeddings WHERE dataset_id = $1")
+        .bind(ds_id)
+        .execute(&st.pool)
+        .await
+        .expect("delete embeddings");
+
+    let s1 = st.clone();
+    let s2 = st.clone();
+    let j1 = tokio::spawn(async move {
+        api_principal::search::indexer::index_dataset_images(s1, ds_id, None).await
+    });
+    let j2 = tokio::spawn(async move {
+        api_principal::search::indexer::index_dataset_images(s2, ds_id, None).await
+    });
+    let (r1, r2) = tokio::join!(j1, j2);
+    assert_eq!(r1.expect("spawn 1"), 2);
+    assert_eq!(r2.expect("spawn 2"), 0, "2º disparo não tem pendentes");
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM image_embeddings WHERE dataset_id = $1")
+        .bind(ds_id)
+        .fetch_one(&st.pool)
+        .await
+        .expect("count");
+    assert_eq!(n, 2, "ON CONFLICT não duplica");
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0004_search_index_202_em_dataset_sem_imagens() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Idx Sem Img", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds = json(&body)["id"].as_str().expect("id").to_string();
+
+    let (status, got) = post_index(app.clone(), &cookie, &ds).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(got["status"], "not_indexed");
+}
+
+async fn get_search(
+    app: axum::Router,
+    cookie: &str,
+    ds: &str,
+    query: &str,
+) -> (http::StatusCode, serde_json::Value) {
+    let (status, _, body) = call(
+        app,
+        Request::builder()
+            .method("GET")
+            .uri(format!("/api/datasets/{ds}/search?{query}"))
+            .header(http::header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    (status, json(&body))
+}
+
+async fn post_by_image(
+    app: axum::Router,
+    cookie: &str,
+    ds: &str,
+    body: &serde_json::Value,
+) -> (http::StatusCode, serde_json::Value) {
+    let (status, _, resp) = call(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/datasets/{ds}/search/by-image"))
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, cookie)
+            .body(Body::from(body.to_string()))
+            .unwrap(),
+    )
+    .await;
+    (status, json(&resp))
+}
+
+/// Upload de 2 imagens distintas + poll até `want` embeddings; retorna
+/// `(ds_string, [(filename, image_id)])` ordenado por filename.
+async fn setup_search_dataset(
+    app: axum::Router,
+    st: &api_principal::auth::AppState,
+    cookie: &str,
+    title: &str,
+    classes: &serde_json::Value,
+) -> (String, Vec<(String, uuid::Uuid)>) {
+    let (status, _, body) = call(app.clone(), post_create(title, classes, cookie)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds = json(&body)["id"].as_str().expect("id").to_string();
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+    let boundary = format!("heph-search-{}", &ds[..8]);
+    let (status, _, _) = call(
+        app.clone(),
+        post_upload(
+            cookie,
+            &ds,
+            &boundary,
+            multipart_body(&boundary, &[("a.png", &png_1x1()), ("b.png", &jpeg_1x1())]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    poll_embeddings(&st.pool, ds_id, 2).await;
+    let rows: Vec<(uuid::Uuid, String)> =
+        sqlx::query_as("SELECT id, filename FROM images WHERE dataset_id = $1 ORDER BY filename")
+            .bind(ds_id)
+            .fetch_all(&st.pool)
+            .await
+            .expect("images do dataset");
+    assert_eq!(rows.len(), 2);
+    (ds, rows.into_iter().map(|(id, f)| (f, id)).collect())
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0005_search_por_texto() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+    let (ds, _) = setup_search_dataset(
+        app.clone(),
+        &st,
+        &cookie,
+        "Busca Txt",
+        &serde_json::json!(["a"]),
+    )
+    .await;
+
+    let (status, got) = get_search(app.clone(), &cookie, &ds, "q=qualquer+texto").await;
+    assert_eq!(status, StatusCode::OK);
+    let items = got["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 2);
+    let s0 = items[0]["score"].as_f64().expect("score f64");
+    let s1 = items[1]["score"].as_f64().expect("score f64");
+    assert!(s0 >= s1, "score decrescente: {s0} >= {s1}");
+    for it in items {
+        let s = it["score"].as_f64().expect("score f64");
+        assert!((-1.0..=1.0).contains(&s), "score em [-1,1]: {s}");
+        assert!(it["image"]["id"].is_string());
+        assert!(it["image"]["filename"].is_string());
+        assert!(it["image"]["url"].is_string(), "wire Image com url");
+    }
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0005_search_409_index_not_ready() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+    let (ds, _) = setup_search_dataset(
+        app.clone(),
+        &st,
+        &cookie,
+        "Busca 409",
+        &serde_json::json!(["a"]),
+    )
+    .await;
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+    sqlx::query("DELETE FROM image_embeddings WHERE dataset_id = $1")
+        .bind(ds_id)
+        .execute(&st.pool)
+        .await
+        .expect("delete embeddings");
+    let (status, got) = get_search(app.clone(), &cookie, &ds, "q=x").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(got["code"], "index_not_ready");
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0005_search_filtro_class_id_split() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+    let (ds, imgs) = setup_search_dataset(
+        app.clone(),
+        &st,
+        &cookie,
+        "Busca Filtro",
+        &serde_json::json!(["classe_a", "classe_b"]),
+    )
+    .await;
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+    // imgs ordenado por filename: [a.png, b.png].
+    let img_a = imgs[0].1;
+    let img_b = imgs[1].1;
+    let class_a: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM classes WHERE dataset_id = $1 AND name = 'classe_a'")
+            .bind(ds_id)
+            .fetch_one(&st.pool)
+            .await
+            .expect("classe_a");
+    let class_b: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM classes WHERE dataset_id = $1 AND name = 'classe_b'")
+            .bind(ds_id)
+            .fetch_one(&st.pool)
+            .await
+            .expect("classe_b");
+    for (img, class) in [(img_a, class_a), (img_b, class_b)] {
+        sqlx::query(
+            "INSERT INTO boxes (image_id, class_id, x, y, w, h, origin) VALUES ($1, $2, 0.5, 0.5, 0.2, 0.2, 'manual')",
+        )
+        .bind(img)
+        .bind(class)
+        .execute(&st.pool)
+        .await
+        .expect("insert box");
+    }
+    // Image A em train (default), B em val.
+    sqlx::query("UPDATE images SET split = 'val' WHERE id = $1")
+        .bind(img_b)
+        .execute(&st.pool)
+        .await
+        .expect("split val");
+
+    let (status, got) =
+        get_search(app.clone(), &cookie, &ds, &format!("q=x&classId={class_a}")).await;
+    assert_eq!(status, StatusCode::OK);
+    let items = got["items"].as_array().expect("items");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["image"]["id"], img_a.to_string());
+
+    let (status, got) = get_search(app.clone(), &cookie, &ds, "q=x&split=train").await;
+    assert_eq!(status, StatusCode::OK);
+    let items = got["items"].as_array().expect("items");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["image"]["id"], img_a.to_string());
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0005_search_by_image_top1_e_threshold() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+    let (ds, imgs) = setup_search_dataset(
+        app.clone(),
+        &st,
+        &cookie,
+        "Busca Img",
+        &serde_json::json!(["a"]),
+    )
+    .await;
+    let img_a = imgs[0].1.to_string();
+
+    let (status, got) = post_by_image(
+        app.clone(),
+        &cookie,
+        &ds,
+        &serde_json::json!({"imageId": img_a}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let items = got["items"].as_array().expect("items");
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["image"]["id"], img_a);
+    let top = items[0]["score"].as_f64().expect("score");
+    assert!(
+        (top - 1.0).abs() < 1e-5,
+        "top-1 é a própria (score ~1.0): {top}"
+    );
+
+    let (status, got) = post_by_image(
+        app.clone(),
+        &cookie,
+        &ds,
+        &serde_json::json!({"imageId": img_a, "threshold": 0.99}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let items = got["items"].as_array().expect("items");
+    assert_eq!(items.len(), 1, "threshold 0.99 só deixa a própria");
+    assert_eq!(items[0]["image"]["id"], img_a);
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0005_search_by_image_404_de_outro_dataset() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+    let (ds_a, _) = setup_search_dataset(
+        app.clone(),
+        &st,
+        &cookie,
+        "Busca A",
+        &serde_json::json!(["a"]),
+    )
+    .await;
+    let (_ds_b, imgs_b) = setup_search_dataset(
+        app.clone(),
+        &st,
+        &cookie,
+        "Busca B",
+        &serde_json::json!(["a"]),
+    )
+    .await;
+
+    let (status, got) = post_by_image(
+        app.clone(),
+        &cookie,
+        &ds_a,
+        &serde_json::json!({"imageId": imgs_b[0].1.to_string()}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(got["code"], "not_found");
 }

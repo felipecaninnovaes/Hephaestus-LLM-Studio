@@ -922,6 +922,22 @@ pub async fn upload(
             MSG_INVALID_REQUEST,
         );
     }
+    // 10. Disparo da indexação (3f.4, ADR-0004 D4): fire-and-forget das
+    // imagens `stored` do lote — a resposta não espera; erros são logados
+    // dentro do indexer (best-effort R4).
+    let stored_ids: Vec<Uuid> = items
+        .iter()
+        .filter(|i| i.status == "stored")
+        .filter_map(|i| i.image_id.as_deref().and_then(|s| s.parse().ok()))
+        .collect();
+    if !stored_ids.is_empty() {
+        let st = state.clone();
+        tokio::spawn(async move {
+            let wrote =
+                crate::search::indexer::index_dataset_images(st, ds_id, Some(stored_ids)).await;
+            eprintln!("[indexer] dataset {ds_id} upload: {wrote} embeddings escritos");
+        });
+    }
     (StatusCode::OK, Json(UploadResult { items })).into_response()
 }
 
@@ -937,7 +953,8 @@ pub struct ImageQuery {
 /// URL híbrida D3 (3b.5): com `public_endpoint` configurado é presigned
 /// (assinatura local, sem rede); sem ele, fallback incondicional para a
 /// rota `/data`. `Err` = resposta 503 `storage_unavailable` já montada.
-async fn image_url(
+/// `pub(crate)` para reutilização pela busca (3f.5: mesmo wire `Image`).
+pub(crate) async fn image_url(
     state: &AppState,
     object_key: &str,
     ds_id: Uuid,

@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
+    image: pgvector/pgvector:pg16-trixie@sha256:c8483555ce48101872f888c1df8a895ff689d6c7c7a5f7ac266475f9dfe89e0b
     environment:
       POSTGRES_USER: studio
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-studio}
@@ -28,6 +28,9 @@ services:
       S3_SECRET_KEY: ${S3_SECRET_KEY:-heph-local-dev}
       S3_PUBLIC_ENDPOINT_URL: ${S3_PUBLIC_ENDPOINT_URL:-http://localhost:8333}
       S3_URL_TTL_SECS: ${S3_URL_TTL_SECS:-3600}
+      EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-mock}
+      EMBEDDER_URL: ${EMBEDDER_URL:-http://embedder:8090}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-ViT-B-32}
     depends_on:
       db:
         condition: service_started
@@ -44,7 +47,13 @@ services:
     image: chrislusf/seaweedfs:4.45_full@sha256:04851d83f42aad1ae898d1b190e2140fd1cef1015bc1a1b783282fefcf65e03b
     command: "server -s3 -ip.bind=0.0.0.0 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json -dir=/data -master.volumeSizeLimitMB=1024"
     ports:
-      - '127.0.0.1:8333:8333'
+      # R1 (ADR-0003): default loopback — a LAN nunca toca o bucket. Para
+      # acessar o studio de OUTRO dispositivo da rede (página via IP), o
+      # operador publica a porta com SEAWEED_PUBLISH=0.0.0.0 no `.env` e
+      # aponta S3_PUBLIC_ENDPOINT_URL para http://<ip-da-máquina>:8333
+      # (presigned é assinado nesse host — gotcha SigV4 D3; receita no
+      # .env.example). Credenciais são LOCAL-DEV: rotacione se sair da LAN.
+      - '${SEAWEED_PUBLISH:-127.0.0.1}:8333:8333'
       - '127.0.0.1:9333:9333'
     volumes:
       - seaweed_data:/data
@@ -60,6 +69,31 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
+
+  # Embedder CLIP (ADR-0004 D1, 3f.3): inferência de embeddings para busca
+  # semântica. INFRA local (como o SeaweedFS) — não job do orquestrador
+  # (unificação runner na fatia 4). Mock hash por default (ENGINE_MOCK=1):
+  # determinístico e sem torch; modo real CLIP é @gpu manual fora do compose
+  # (peso ~600 MB, cache em volume models). Sem auth: rede interna docker,
+  # bind só no loopback do host (R3).
+  embedder:
+    build:
+      context: ../engines/trainer-clip
+      dockerfile: Dockerfile
+    environment:
+      ENGINE_MOCK: "1"
+      MODEL: ${EMBEDDING_MODEL:-ViT-B-32}
+      PORT: "8090"
+    ports:
+      - '127.0.0.1:8090:8090'
+    volumes:
+      - models:/data/models
+    healthcheck:
+      # stdlib pura (imagem python:3.12-slim não tem wget/curl): /health responde 200 {"status":"ok"}.
+      test: ["CMD-SHELL", "python -c 'import urllib.request as u; u.urlopen(\"http://localhost:8090/health\", timeout=3)'"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
 
   manager:
     build:

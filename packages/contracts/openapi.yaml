@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.4.0
+  version: 0.5.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -594,6 +594,211 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/datasets/{id}/search/index:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK do dataset. Valor que não parseia como UUID responde 404 `not_found`
+          (não 400, padrão D8 replicado).
+    post:
+      operationId: indexDataset
+      tags: [datasets]
+      summary: Rebuild dos embeddings do dataset (fire-and-forget)
+      description: |
+        Dispara a indexação assíncrona (Fatia 3f.4, ADR-0004 D4/D5): 202 sempre.
+        Dataset sem imagens ⇒ `{"status":"not_indexed"}` (não trabalha); senão
+        spawna o indexador (advisory lock serializa disparos concorrentes) e
+        responde `{"status":"indexing"}` sem esperar. O progresso é derivado em
+        `GET …/search/status`; `stale` nunca é emitido na v1 (reservado).
+      responses:
+        "202":
+          description: Rebuild disparado (`indexing`) ou dataset sem imagens (`not_indexed`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SearchIndexResponse" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Dataset inexistente ou id não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/datasets/{id}/search/status:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK do dataset. Valor que não parseia como UUID responde 404 `not_found`
+          (não 400, padrão D8 replicado).
+    get:
+      operationId: getSearchStatus
+      tags: [datasets]
+      summary: Estado derivado da indexação do dataset
+      description: |
+        Contadores derivados (Fatia 3f.4, ADR-0004 D4/D5): `imagesCount` conta
+        `images` ativas (`deleted_at IS NULL` — lixeira invisível); `indexedCount`
+        conta `image_embeddings` do modelo ativo. `status` (D5 literal): 0
+        embeddings do modelo ativo ⇒ `not_indexed` (o front oferece "Indexar
+        agora", que também é o reparo manual para crash puro); 0 < `indexedCount`
+        < `imagesCount` ⇒ `indexing`; iguais ⇒ `ready`. `stale` nunca é emitido
+        na v1 (reservado).
+      responses:
+        "200":
+          description: Estado da indexação (`SearchStatus`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SearchStatus" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Dataset inexistente ou id não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/datasets/{id}/search:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK do dataset. Valor que não parseia como UUID responde 404 `not_found`
+          (não 400, padrão D8 replicado).
+    get:
+      operationId: searchDataset
+      tags: [datasets]
+      summary: Busca semântica por texto no dataset
+      description: |
+        Busca por similaridade coseno sobre os embeddings do modelo ativo
+        (Fatia 3f.5, ADR-0004 D5): o texto `q` é embedado e os top-k candidatos
+        vêm do HNSW global (`LIMIT k*4`, cap 400) com pós-filtro em Rust
+        (`classId`/`split` — o índice global não filtra). `indexedCount == 0`
+        no modelo ativo ⇒ 409 `index_not_ready` (dataset com imagens mas sem
+        embeddings — o front oferece "Indexar agora"); embedder inalcançável
+        ⇒ 503 `embedding_unavailable`. `score` = cosseno RAW (faixa -1..1;
+        CLIP normaliza L2 no embedder), ordenado desc.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 500 }
+          description: Texto da consulta (1..500 chars; ausente/vazio ⇒ 400).
+        - name: k
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+          description: Tamanho do top-k (default 20; fora de 1..100 ⇒ 400).
+        - name: classId
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+          description: >
+            Filtro opcional por classe (só imagens com ao menos 1 box da classe
+            passam). Não-UUID ⇒ 400 `invalid_request` — divergência CONSCIENTE
+            do D8 (filtro opcional, não id de recurso; documentada na ADR-0004).
+        - name: split
+          in: query
+          required: false
+          schema: { type: string, enum: [train, val] }
+          description: Filtra pelo split (mesmo domínio do CHECK da migration 0003; outro valor ⇒ 400).
+      responses:
+        "200":
+          description: Resultados ordenados por score desc (`SearchResponse`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SearchResponse" }
+        "400":
+          description: "Consulta inválida (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Dataset inexistente ou id não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "Dataset sem embeddings do modelo ativo (`code: index_not_ready`, ADR-0004 D5)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Embedder inalcançável (`code: embedding_unavailable`, ADR-0004 D1)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/datasets/{id}/search/by-image:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK do dataset. Valor que não parseia como UUID responde 404 `not_found`
+          (não 400, padrão D8 replicado).
+    post:
+      operationId: searchByImage
+      tags: [datasets]
+      summary: Busca semântica por imagem do dataset
+      description: |
+        Similaridade coseno com o vetor de query = o embedding da própria
+        imagem no modelo ativo (Fatia 3f.5, ADR-0004 D5): nunca chama o
+        embedder (sem 503). `imageId` não-UUID ou imagem fora do dataset ⇒
+        404 `not_found` (D8 replicado); imagem sem embedding no modelo ativo
+        ⇒ 409 `index_not_ready`. A própria imagem aparece com score ~1.0
+        (não excluída — a UI destaca). `score` = cosseno RAW (faixa -1..1;
+        CLIP normaliza L2 no embedder), ordenado desc.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ByImageRequest" }
+      responses:
+        "200":
+          description: Resultados ordenados por score desc (`SearchResponse`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SearchResponse" }
+        "400":
+          description: "Corpo inválido (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Dataset inexistente, id não-UUID ou imagem fora do dataset (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "Imagem sem embedding do modelo ativo (`code: index_not_ready`, ADR-0004 D5)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/datasets/{id}/images:
     parameters:
       - name: id
@@ -822,8 +1027,8 @@ components:
       properties:
         code:
           type: string
-          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, storage_unavailable, classes_in_use, internal]
-          description: "Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`; o cliente DEVE ter ramo default: o enum cresce por fatia (aditivo na 0.2.0: `not_found`, `slug_conflict`; na 0.3.0: `storage_unavailable`, ADR-0003 D10; na 0.3.0, fatia 3g.1: `classes_in_use`)."
+          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, storage_unavailable, classes_in_use, index_not_ready, embedding_unavailable, internal]
+          description: "Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`; o cliente DEVE ter ramo default: o enum cresce por fatia (aditivo na 0.2.0: `not_found`, `slug_conflict`; na 0.3.0: `storage_unavailable`, ADR-0003 D10; na 0.3.0, fatia 3g.1: `classes_in_use`; na 0.5.0, fatia 3f.5: `index_not_ready`, `embedding_unavailable`, ADR-0004 D5)."
         message:
           type: string
           description: Humano-curto, ESTÁTICO por code; nunca contém hash, token, segredo ou existência de usuário.
@@ -1228,3 +1433,85 @@ components:
           anyOf:
             - $ref: "#/components/schemas/Caption"
             - type: "null"
+
+    SearchIndexResponse:
+      type: object
+      required: [status]
+      additionalProperties: false
+      description: "Resposta 202 do rebuild (Fatia 3f.4, ADR-0004 D5; aditivo na 0.5.0)."
+      properties:
+        status:
+          type: string
+          enum: [indexing, not_indexed]
+          description: "`indexing` = rebuild disparado (fire-and-forget); `not_indexed` = dataset sem imagens (não trabalha)."
+
+    SearchStatus:
+      type: object
+      required: [status, imagesCount, indexedCount, model, dim]
+      additionalProperties: false
+      description: "Estado derivado da indexação (Fatia 3f.4, ADR-0004 D5; aditivo na 0.5.0)."
+      properties:
+        status:
+          type: string
+          enum: [not_indexed, indexing, ready, stale]
+          description: "        `not_indexed` = dataset sem imagens (nada a indexar); `indexing` =
+        imagens ainda sem embedding completo; `ready` = toda imagem ativa tem
+        embedding do modelo ativo. `stale` reservado, nunca emitido na v1."
+        imagesCount:
+          type: integer
+          minimum: 0
+          description: Imagens ativas do dataset (`deleted_at IS NULL` — lixeira invisível).
+        indexedCount:
+          type: integer
+          minimum: 0
+          description: Embeddings do modelo ativo (`image_embeddings` por dataset + model).
+        model:
+          type: string
+          description: "Modelo de embedding ativo (ex.: `ViT-B-32`)."
+        dim:
+          type: integer
+          description: Dimensão fixa dos vetores (512, ViT-B-32).
+
+    SearchResponse:
+      type: object
+      required: [items]
+      additionalProperties: false
+      description: "Resultados da busca semântica (Fatia 3f.5, ADR-0004 D5; aditivo na 0.5.0)."
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/SearchItem" }
+          description: Ordenados por score desc (a ordem do HNSW é por distância asc).
+
+    SearchItem:
+      type: object
+      required: [image, score]
+      additionalProperties: false
+      description: "Imagem (mesmo wire `Image` do list) + similaridade (Fatia 3f.5; aditivo na 0.5.0)."
+      properties:
+        image: { $ref: "#/components/schemas/Image" }
+        score:
+          type: number
+          description: "Similaridade coseno RAW (faixa -1..1; CLIP normaliza L2 no embedder)."
+
+    ByImageRequest:
+      type: object
+      required: [imageId]
+      additionalProperties: false
+      description: "Busca por imagem (Fatia 3f.5, ADR-0004 D5; aditivo na 0.5.0)."
+      properties:
+        imageId:
+          type: string
+          format: uuid
+          description: "Imagem do dataset (não-UUID ou fora do dataset ⇒ 404 `not_found`, D8 replicado)."
+        k:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+          description: Tamanho do top-k (default 20; fora de 1..100 ⇒ 400).
+        threshold:
+          type: number
+          minimum: -1
+          maximum: 1
+          description: "Pós-filtro opcional (`score >= threshold`; fora de -1..1 ⇒ 400)."

@@ -251,6 +251,8 @@ mod tests {
                 public_endpoint: None,
                 url_ttl_secs: 60,
             },
+            embedder: std::sync::Arc::new(crate::search::MockEmbedder::new()),
+            embedding_model: "ViT-B-32".to_string(),
         };
         let resp = login(
             axum::extract::State(state),

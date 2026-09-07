@@ -3,6 +3,7 @@
 //! modo `ready`/`setup_required` → router de `auth::routes::build` (D9).
 
 use api_principal::auth::{password, routes, secret, AppState};
+use api_principal::search::{EmbeddingPort, HttpEmbedder, MockEmbedder};
 use api_principal::storage::{MockStorage, S3Storage, StorageConfig, StoragePort};
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -109,6 +110,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (storage, storage_config) = load_storage().map_err(|e| format!("storage: {e}"))?;
 
+    // 6. embedding (ADR-0004 D1, 3f.2): `EMBEDDING_BACKEND` (default `"mock"`).
+    let embedding_backend =
+        std::env::var("EMBEDDING_BACKEND").unwrap_or_else(|_| "mock".to_string());
+    let embedding_model =
+        std::env::var("EMBEDDING_MODEL").unwrap_or_else(|_| "ViT-B-32".to_string());
+    let embedder: Arc<dyn EmbeddingPort> = match embedding_backend.as_str() {
+        "mock" => Arc::new(MockEmbedder::new()),
+        "http" => Arc::new(HttpEmbedder::new(
+            std::env::var("EMBEDDER_URL").unwrap_or_else(|_| "http://embedder:8090".to_string()),
+            embedding_model.clone(),
+        )),
+        other => return Err(format!("EMBEDDING_BACKEND inválido: {other} (use mock|http)").into()),
+    };
+    println!("embedding: backend={embedding_backend} model={embedding_model}");
+
     let state = AppState {
         pool,
         jwt_secret,
@@ -116,6 +132,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         setup_required,
         storage,
         storage_config,
+        embedder,
+        embedding_model,
     };
 
     let app = routes::build(state);

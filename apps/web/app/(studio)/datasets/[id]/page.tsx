@@ -10,12 +10,19 @@ import {
   IconLayers,
   IconPlay,
   IconPlus,
+  IconSearch,
   IconSparkles,
   IconTarget,
   IconTrash,
 } from "@/components/icons";
 import { ApiError } from "@/lib/api";
 import { getDataset } from "@/lib/datasets";
+import {
+  getSearchStatus,
+  searchByImage,
+  searchDataset,
+  triggerSearchIndex,
+} from "@/lib/search";
 import {
   listImages,
   purgeTrash,
@@ -24,7 +31,13 @@ import {
   uploadImages,
 } from "@/lib/images";
 import { formatBytes } from "@/lib/format";
-import type { Dataset, ImageItem, StudioClass } from "@/types/studio";
+import type {
+  Dataset,
+  ImageItem,
+  SearchItem,
+  SearchStatus,
+  StudioClass,
+} from "@/types/studio";
 import ClassesModal from "@/components/studio/ClassesModal";
 import ConfirmDialog from "@/components/studio/ConfirmDialog";
 
@@ -54,6 +67,16 @@ export default function DatasetGalleryPage() {
   const [purgeOpen, setPurgeOpen] = useState(false);
   const [purgeBusy, setPurgeBusy] = useState(false);
   const [restoringId, setRestoringId] = useState<string | null>(null);
+  const [searchInput, setSearchInput] = useState("");
+  const [activeQuery, setActiveQuery] = useState<string | null>(null);
+  const [similarFor, setSimilarFor] = useState<string | null>(null);
+  const [results, setResults] = useState<SearchItem[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searchStatus, setSearchStatus] = useState<SearchStatus | null>(null);
+  const [statusFailed, setStatusFailed] = useState(false);
+  const [indexBusy, setIndexBusy] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollAbortRef = useRef<AbortController | null>(null);
 
   const load = useCallback(
     async (id: string) => {
@@ -93,6 +116,74 @@ export default function DatasetGalleryPage() {
   useEffect(() => {
     if (datasetId) load(datasetId);
   }, [datasetId, load]);
+
+  function stopSearchPolling() {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+    pollAbortRef.current?.abort();
+    pollAbortRef.current = null;
+  }
+
+  // Arma o polling do status (2s) — chamado pelo efeito de status E por
+  // handleTriggerIndex (review 3f fechamento [MAIOR]: o efeito não re-roda
+  // quando só o estado muda; sem isso o badge congelava em "Indexando 0/0").
+  function startSearchPolling() {
+    if (pollRef.current) return;
+    const pollCtrl = new AbortController();
+    pollAbortRef.current = pollCtrl;
+    pollRef.current = setInterval(async () => {
+      try {
+        const next = await getSearchStatus(datasetId as string, pollCtrl.signal);
+        if (pollCtrl.signal.aborted) return;
+        setSearchStatus(next);
+        setStatusFailed(false);
+        if (next.status !== "indexing") stopSearchPolling();
+      } catch {
+        if (pollCtrl.signal.aborted) return;
+        // Mantém o polling — falha transitória não trava a página.
+      }
+    }, 2000);
+  }
+
+  // Status do índice + polling a cada 2s enquanto indexa.
+  useEffect(() => {
+    if (!datasetId) return;
+    const ctrl = new AbortController();
+    let cancelled = false;
+    async function fetchStatus() {
+      try {
+        const st = await getSearchStatus(datasetId as string, ctrl.signal);
+        if (cancelled) return;
+        setSearchStatus(st);
+        setStatusFailed(false);
+        if (st.status === "indexing") {
+          startSearchPolling();
+        } else {
+          stopSearchPolling();
+        }
+      } catch (err) {
+        if (cancelled) return;
+        if (err instanceof ApiError && err.status === 401) return;
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        setStatusFailed(true);
+      }
+    }
+    fetchStatus();
+    return () => {
+      cancelled = true;
+      ctrl.abort();
+      stopSearchPolling();
+    };
+    // items.length: re-checa o índice após upload (novas imagens mudam o estado).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [datasetId, items.length]);
+
+  function messageForSearch(err: unknown): string {
+    if (err instanceof ApiError && err.message) return err.message;
+    return "Falha na busca.";
+  }
 
   async function loadMore() {
     if (!datasetId || loadingMore) return;
@@ -180,8 +271,113 @@ export default function DatasetGalleryPage() {
     }
   }
 
+  function clearSearch() {
+    setActiveQuery(null);
+    setSimilarFor(null);
+    setResults([]);
+  }
+
+  async function handleTextSearch(query: string) {
+    if (!datasetId) return;
+    const q = query.trim();
+    if (!q) {
+      showToast("Digite um texto para buscar.", "info");
+      return;
+    }
+    setSearching(true);
+    try {
+      const res = await searchDataset(datasetId, q);
+      setResults(res.items);
+      setActiveQuery(q);
+      setSimilarFor(null);
+    } catch (err) {
+      if (err instanceof ApiError && err.code === "index_not_ready") {
+        setSearchStatus((prev) =>
+          prev ? { ...prev, status: "not_indexed" } : prev,
+        );
+        showToast("Índice vazio — indexe para buscar.", "info");
+        return;
+      }
+      if (err instanceof ApiError && err.code === "embedding_unavailable") {
+        showToast("Embedder indisponível — tente novamente.", "error");
+        return;
+      }
+      if (
+        err instanceof ApiError &&
+        (err.code === "unauthorized" || err.status === 401)
+      ) {
+        router.replace("/login");
+        return;
+      }
+      showToast(messageForSearch(err), "error");
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  async function handleSimilarSearch(item: ImageItem) {
+    if (!datasetId) return;
+    setSearching(true);
+    try {
+      const res = await searchByImage(datasetId, item.id);
+      setResults(res.items);
+      setSimilarFor(item.filename);
+      setActiveQuery(null);
+    } catch (err) {
+      if (err instanceof ApiError && err.code === "index_not_ready") {
+        setSearchStatus((prev) =>
+          prev ? { ...prev, status: "not_indexed" } : prev,
+        );
+        showToast("Índice vazio — indexe para buscar.", "info");
+        return;
+      }
+      if (
+        err instanceof ApiError &&
+        (err.code === "unauthorized" || err.status === 401)
+      ) {
+        router.replace("/login");
+        return;
+      }
+      showToast(messageForSearch(err), "error");
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  async function handleTriggerIndex() {
+    if (!datasetId || indexBusy) return;
+    setIndexBusy(true);
+    try {
+      const res = await triggerSearchIndex(datasetId);
+      if (res.status === "indexing") {
+        setSearchStatus((prev) =>
+          prev
+            ? { ...prev, status: "indexing" }
+            : {
+                status: "indexing",
+                imagesCount: 0,
+                indexedCount: 0,
+                model: "ViT-B-32",
+                dim: 512,
+              },
+        );
+        // O efeito de status não re-roda só porque o estado mudou (deps:
+        // datasetId/items.length) — arma o polling aqui (review 3f [MAIOR]).
+        startSearchPolling();
+        showToast("Indexação disparada.", "success");
+      } else {
+        showToast("Nada a indexar — o dataset não tem imagens.", "info");
+      }
+    } catch (err) {
+      showToast(messageForSearch(err), "error");
+    } finally {
+      setIndexBusy(false);
+    }
+  }
+
   async function switchView(next: GalleryView) {
     if (!datasetId || next === view) return;
+    clearSearch();
     try {
       const page = await listImages(datasetId, {
         limit: PAGE_LIMIT,
@@ -576,6 +772,74 @@ export default function DatasetGalleryPage() {
         </div>
       )}
 
+      {view === "ativas" && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            handleTextSearch(searchInput);
+          }}
+          className="flex flex-wrap items-center gap-2"
+        >
+          <div className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-950/60 px-3 py-2 focus-within:border-emerald-500/60">
+            <IconSearch className="h-4 w-4 shrink-0 text-zinc-500" />
+            <label htmlFor="gallery-search" className="sr-only">
+              Buscar por texto
+            </label>
+            <input
+              id="gallery-search"
+              type="text"
+              value={searchInput}
+              maxLength={500}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder="Buscar por texto — ex.: 'defeito de solda'"
+              aria-label="Buscar por texto"
+              className="min-w-0 flex-1 rounded-lg bg-transparent text-xs text-zinc-200 placeholder:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={searching}
+            className="flex items-center space-x-1.5 rounded-xl bg-emerald-500 px-4 py-2 text-xs font-semibold text-zinc-950 shadow-lg shadow-emerald-500/20 transition-all hover:bg-emerald-400 disabled:opacity-60"
+          >
+            <IconSearch className="h-4 w-4" />
+            <span>{searching ? "Buscando…" : "Buscar"}</span>
+          </button>
+          <span aria-live="polite">
+            {statusFailed || !searchStatus ? (
+              <span className="rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-xs font-medium text-zinc-400">
+                Status indisponível
+              </span>
+            ) : searchStatus.status === "not_indexed" ? (
+              <span className="flex flex-wrap items-center gap-2">
+                <span className="rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-xs font-medium text-zinc-400">
+                  Sem índice
+                </span>
+                <button
+                  type="button"
+                  onClick={handleTriggerIndex}
+                  disabled={indexBusy}
+                  className="rounded-full border border-zinc-700/80 bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800 disabled:opacity-60"
+                >
+                  {indexBusy ? "Indexando…" : "Indexar agora"}
+                </button>
+              </span>
+            ) : searchStatus.status === "indexing" ? (
+              <span className="rounded-full border border-amber-400/40 bg-amber-400/10 px-3 py-1.5 font-mono text-xs font-medium text-amber-300">
+                Indexando {searchStatus.indexedCount}/{searchStatus.imagesCount}
+              </span>
+            ) : searchStatus.status === "ready" ? (
+              <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1.5 text-xs font-medium text-emerald-300">
+                Busca pronta
+              </span>
+            ) : (
+              <span className="rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-xs font-medium text-zinc-400">
+                Índice desatualizado?
+              </span>
+            )}
+          </span>
+        </form>
+      )}
+
       {view === "trash" ? (
         total === 0 ? (
           <div className="glass-card rounded-2xl border border-zinc-800 px-4 py-14 text-center">
@@ -645,6 +909,65 @@ export default function DatasetGalleryPage() {
             {uploading ? `Enviando ${uploadCount} arquivo(s)…` : "Enviar amostras"}
           </button>
         </div>
+      ) : activeQuery !== null || similarFor !== null ? (
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-zinc-800/80 bg-zinc-950/60 px-4 py-2.5 text-[11px] text-zinc-400">
+            <span>
+              Resultados da busca —{" "}
+              <span className="font-mono text-zinc-200">
+                {results.length.toLocaleString()}
+              </span>{" "}
+              {results.length === 1 ? "imagem" : "imagens"}
+            </span>
+            <button
+              type="button"
+              onClick={clearSearch}
+              className="rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-xs font-medium text-zinc-300 transition-colors hover:text-zinc-100"
+            >
+              Limpar busca
+            </button>
+          </div>
+          {results.length === 0 ? (
+            <div className="glass-card rounded-2xl border border-zinc-800 px-4 py-14 text-center">
+              <p className="text-sm text-zinc-300">
+                {activeQuery !== null
+                  ? `Nenhum resultado para '${activeQuery}'`
+                  : "Nenhuma imagem similar"}
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+              {results.map((result) => (
+                <div
+                  key={result.image.id}
+                  onClick={() =>
+                    router.push(
+                      `/datasets/${datasetId}/annotate/${result.image.id}`,
+                    )
+                  }
+                  className="group relative h-36 cursor-pointer overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/90 transition-all hover:border-emerald-500/60"
+                >
+                  <img
+                    src={result.image.url}
+                    alt={result.image.filename}
+                    loading="lazy"
+                    className="absolute inset-0 h-full w-full object-cover"
+                  />
+                  <div className="absolute inset-0 bg-[radial-gradient(#ffffff_1px,transparent_1px)] opacity-20 [background-size:16px_16px]"></div>
+                  <span
+                    title="Similaridade (cosseno, -1..1)"
+                    className="absolute top-2 right-2 rounded border border-zinc-700 bg-zinc-950/90 px-1.5 py-0.5 font-mono text-[10px] text-emerald-300"
+                  >
+                    {result.score.toFixed(2)}
+                  </span>
+                  <div className="absolute inset-x-0 bottom-0 flex items-center justify-between border-t border-zinc-800/80 bg-zinc-950/90 px-2.5 py-1.5 font-mono text-[10px] text-zinc-400 backdrop-blur-sm">
+                    <span className="truncate">{result.image.filename}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       ) : (
         <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
           {items.map((item) => (
@@ -663,18 +986,32 @@ export default function DatasetGalleryPage() {
               <span className="absolute top-2 right-2 rounded border border-zinc-700 bg-zinc-950/90 px-1.5 py-0.5 font-mono text-[8px] text-zinc-300">
                 {item.split}
               </span>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setDeleting(item);
-                }}
-                aria-label={`Mover ${item.filename} para a lixeira`}
-                title="Mover para a lixeira"
-                className="absolute top-2 left-2 rounded-lg border border-rose-500/40 bg-zinc-950/90 p-1.5 text-rose-300 opacity-0 transition-all group-hover:opacity-100 focus-visible:opacity-100 hover:bg-rose-500/20"
-              >
-                <IconTrash className="h-3.5 w-3.5" />
-              </button>
+              <div className="absolute top-2 left-2 flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setDeleting(item);
+                  }}
+                  aria-label={`Mover ${item.filename} para a lixeira`}
+                  title="Mover para a lixeira"
+                  className="rounded-lg border border-rose-500/40 bg-zinc-950/90 p-1.5 text-rose-300 opacity-0 transition-all group-hover:opacity-100 focus-visible:opacity-100 hover:bg-rose-500/20"
+                >
+                  <IconTrash className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleSimilarSearch(item);
+                  }}
+                  aria-label={`Buscar similares de ${item.filename}`}
+                  title="Buscar similares"
+                  className="rounded-lg border border-emerald-500/40 bg-zinc-950/90 p-1.5 text-emerald-300 opacity-0 transition-all group-hover:opacity-100 focus-visible:opacity-100 hover:bg-emerald-500/20"
+                >
+                  <IconSearch className="h-3.5 w-3.5" />
+                </button>
+              </div>
               <div className="absolute inset-x-0 bottom-0 flex items-center justify-between border-t border-zinc-800/80 bg-zinc-950/90 px-2.5 py-1.5 font-mono text-[10px] text-zinc-400 backdrop-blur-sm">
                 <span className="truncate">{item.filename}</span>
                 <span className="shrink-0 transition-colors group-hover:text-emerald-400">

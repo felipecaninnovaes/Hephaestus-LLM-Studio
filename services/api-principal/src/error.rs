@@ -33,3 +33,7 @@ pub const MSG_UNAUTHORIZED: &str = "unauthorized";
 pub const MSG_STORAGE_UNAVAILABLE: &str = "storage unavailable";
 /// 409 de remoção de classe em uso por anotações (fatia 3g.1).
 pub const MSG_CLASSES_IN_USE: &str = "class in use by annotations";
+/// 409 de busca sem embeddings do modelo ativo (fatia 3f.5, ADR-0004 D5).
+pub const MSG_INDEX_NOT_READY: &str = "index not ready";
+/// 503 de embedder inalcançável (fatia 3f.5, ADR-0004 D1).
+pub const MSG_EMBEDDING_UNAVAILABLE: &str = "embedding unavailable";

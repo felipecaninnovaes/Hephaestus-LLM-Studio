@@ -44,6 +44,8 @@ fn setup_state() -> AppState {
             public_endpoint: None,
             url_ttl_secs: 60,
         },
+        embedder: std::sync::Arc::new(api_principal::search::MockEmbedder::new()),
+        embedding_model: "ViT-B-32".to_string(),
     }
 }
 
@@ -630,6 +632,143 @@ async fn put_boxes_and_caption_reject_without_db() {
         .await;
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{uri}");
         assert_eq!(json(&body)["code"], "invalid_request", "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn search_reject_without_db() {
+    // Validação pura da 3f.5 ANTES de qualquer query (pool `connect_lazy`
+    // nunca é tocado — mesmo padrão de `put_boxes_and_caption_reject_without_db`).
+    let app = routes::build(setup_state());
+    let (token, _) = session::issue_jwt(uuid::Uuid::new_v4(), &SETUP_SECRET);
+    let cookie = format!("heph_session={token}");
+    let ds = "00000000-0000-0000-0000-000000000000";
+
+    // GET sem `q` ⇒ 400.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri(format!("/api/datasets/{ds}/search"))
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+
+    // `q` com 501 chars ⇒ 400; `q` vazio ⇒ 400.
+    for q in ["a".repeat(501), String::new()] {
+        let (status, _, body) = call(
+            app.clone(),
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/datasets/{ds}/search?q={q}"))
+                .header(http::header::COOKIE, cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "q len");
+        assert_eq!(json(&body)["code"], "invalid_request");
+    }
+
+    // `k=0` / `k=101` ⇒ 400.
+    for k in ["0", "101"] {
+        let (status, _, body) = call(
+            app.clone(),
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/datasets/{ds}/search?q=x&k={k}"))
+                .header(http::header::COOKIE, cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "k={k}");
+        assert_eq!(json(&body)["code"], "invalid_request");
+    }
+
+    // `classId=abc` ⇒ 400 (filtro opcional, não id de recurso).
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri(format!("/api/datasets/{ds}/search?q=x&classId=abc"))
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+
+    // `split=test` ⇒ 400 (CHECK da 0003 só admite train|val).
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri(format!("/api/datasets/{ds}/search?q=x&split=test"))
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+
+    // by-image com `imageId="abc"` ⇒ 404 (D8 replicado).
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/datasets/{ds}/search/by-image"))
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::from(r#"{"imageId":"abc"}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json(&body)["code"], "not_found");
+
+    // by-image com `threshold=1.5` ⇒ 400.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/datasets/{ds}/search/by-image"))
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::from(
+                r#"{"imageId":"00000000-0000-0000-0000-000000000000","threshold":1.5}"#,
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+
+    // dataset id não-UUID nas duas rotas ⇒ 404 (D8).
+    for req in [
+        Request::builder()
+            .method("GET")
+            .uri("/api/datasets/nao-e-uuid/search?q=x")
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::empty())
+            .unwrap(),
+        Request::builder()
+            .method("POST")
+            .uri("/api/datasets/nao-e-uuid/search/by-image")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::from(r#"{"imageId":"abc"}"#))
+            .unwrap(),
+    ] {
+        let (status, _, body) = call(app.clone(), req).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(json(&body)["code"], "not_found");
     }
 }
 

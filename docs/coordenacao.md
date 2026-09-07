@@ -19,7 +19,7 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-07 (sessão 8: REESTRUTURAÇÃO DE COORDENAÇÃO FEITA — regra "coordenador não fixa" nos charters, em `chore/agent-no-fix-rule`; 3f e ci-ownership MERGEADAS na main pelo usuário; próxima fatia na ordem = 3e)
+## Estado atual — 2026-09-07 (sessão 10: FATIA 3e ABERTA — plano commitado `f2f3a99`, 6 perguntas da §7 fechadas pelo usuário; 3e.0 ADR-0006 em curso)
 
 - **Sessão 7 foi CANCELADA pelo usuário no meio e reiniciada** — causa-raiz: o coordenador misturava decisão com execução (fixes de CI/fmt/compose/web feitos por ele), o contexto saturou e a sequência de fatias divergiu (3g pulou na frente; depois começou a planejar 3e fora de hora). O registro desatualizado foi o sintoma visível.
 - **Merges feitos pelo usuário**: `feat/semantic-search` (3f inteira, `43ab513`) e `chore/ci-ownership` (`f37e524` — CI tem dono = `@infra-dev`; reviewer checa coerência ci/compose). Main sincronizada com origin; branches de fatia apagadas. **Sequência informada pelo usuário: 3e → 3f → 3h** — 3f FEITA (fora de ordem), **3e continua PENDENTE**; definição da 3h a confirmar com o usuário/roadmap.
@@ -32,6 +32,19 @@ ser interrompido no meio de uma.
 - **Branch `chore/agent-no-fix-rule`**: 3 charters editados pelo `@fixer` (primeiro despacho sob a regra nova — 5 substituições; verificação do coordenador OK: só os 3 arquivos tocados; único "você mesmo" restante no charter = RODAR checks, que é verificação, não execução). Push/merge = usuário.
 - **Propostas AINDA pendentes de aprovação do usuário** (da auditoria de sobrecarga): script `scripts/ci-watch.sh` (matriz de runs/jobs via API Gitea — mata o polling manual) e smokes E2E versionados `scripts/smoke-*.sh` (o smoke das sessões 5–7 foi reescrito à mão a cada sessão).
 - Ambiente herdado da sessão 7: compose de pé (db pg16-trixie, seaweedfs, manager, principal com código 3f, embedder healthy), dev server :3000, Chrome :9222.
+
+### Sessão 10 — fatia 3e ABERTA (2026-09-07 — perguntas fechadas; 3e.0 ADR-0006 em curso)
+
+- Protocolo de retomada conferido: main sincronizada com origin; disco bate com o registrado.
+- Plano da 3e **commitado no tronco** (`f2f3a99`, `docs(coord)` — doc de coordenação, exceção autorizada).
+- **Usuário fechou as 6 perguntas da §7 do plano: "tudo como você recomenda"** →
+  (1) `POST /:id/package` (manifest p/ orquestrador) vai para a **fatia 4** (revisão consciente do D9 da ADR-0003);
+  (2) Importar na UI **só na galeria** (nada no header de `/datasets`);
+  (3) conflito de nome no import = **409 `slug_conflict` seco**, sem auto-sufixo;
+  (4) limite do zip de import = **200 MiB + envelope 8 MiB** (padrão do upload 3b);
+  (5) export inclui **somente imagens ativas** (`deleted_at IS NULL` — lixeira fora);
+  (6) **sem migration** na 3e (schema já tem `origin='import'` desde a 3b) — ADR-0006 fecha explicitamente.
+- **Próximo passo**: 3e.0 — `@architect` despachado com brief completo (decisões D1–D9 do plano §4 + as 6 respostas acima) → entregável `docs/adr/0006-export-import.md` no formato da casa (decisões D0–Dn, delta OpenAPI 0.5.0→0.6.0 **LISTADO** — aplicado só nos commits de código, plano de commits 3e.1–3e.3, riscos). **Aprovação do usuário na ADR → branch `feat/datasets-export-import` → 3e.1**. 3e.1 e 3e.2 SEQUENCIAIS (mesmo módulo `src/datasets/` + openapi); 3e.3 (UI) só `apps/web/**` — contratos sempre sequenciais.
 
 ### Sessão 9 — plano da 3e ANTECIPADO em arquivo (2026-09-07 — NADA implementado)
 
@@ -322,10 +335,9 @@ uma dívida, atualize o `dividas.md`. Fatias novas DEVEM ler o `dividas.md`
 (item 4 do protocolo de retomada) e honrar as dívidas relevantes no
 nascedouro.
 
-## Plano em andamento — PRÓXIMO PASSO EXATO: fatia 3d (galeria `/datasets/[id]` + editor BBox)
+## Plano em andamento — PRÓXIMO PASSO EXATO: fatia 3e (export/import) — ADR-0006 (3e.0)
 
-**Todos os merges da sessão 3 fechados no tronco (ver "Estado atual"). Sequência daqui (atualizada pela ADR-0004):**
-**3d galeria `/datasets/[id]` + editor BBox** (o placeholder honesto criado pela emenda é substituído pelo conteúdo real; upload UI entra aqui; `autoTracked` derivado de `boxes.origin='autotracker'` — dívida T7) → **3f busca semântica (ADR-0004)** → **3e export/import** → **4 jobs/package/materialização** (orquestrador ganha cliente S3 com credencial escopada por prefixo e absorve o embedder como runner-CLIP — mesma interface HTTP da 3f; dívida T4 da ADR-0002 — `jobs.dataset_id ON DELETE SET NULL` + `dataset_versions` — honrada no nascedouro).
+**Sequência daqui:** **3e export/import (ESTA FATIA — em curso)** → **4 jobs/package/materialização** (orquestrador ganha cliente S3 com credencial escopada por prefixo e absorve o embedder como runner-CLIP — mesma interface HTTP da 3f; dívida T4 da ADR-0002 — `jobs.dataset_id ON DELETE SET NULL` + `dataset_versions` — honrada no nascedouro; **herda `POST /:id/package` movido da 3e por decisão do usuário 2026-09-07**). 3h = definição a confirmar com o usuário/roadmap. Estado detalhado da 3e no topo (Sessão 10) e em `docs/plano-3e-export-import.md`.
 
 **3b.0–3b.8 FEITOS e MERGEADOS (`04b8987`); 3c FEITA, REVISADA e EMENDADA (ver "Estado atual").** A sequência:
 

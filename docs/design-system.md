@@ -103,23 +103,29 @@ responsive:
   lg: "1024px"
   xl: "1280px"
 components:
+  button-base: "inline-flex items-center justify-center gap-2 text-sm font-medium whitespace-nowrap select-none transition active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
   button-primary:
-    backgroundColor: "{colors.primary}"
-    textColor: "#ffffff"
-    rounded: "{rounded.md}"
-    padding: "h-11 px-4 (lg, CTA único do contexto)"
+    classes: "rounded-lg border border-brand-500/30 bg-brand-500/[0.12] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985]"
+    padding: "default h-9 px-4 (px-3 com ícone); lg h-10 px-5 (CTA primário do contexto); sm h-8 px-3 rounded-md"
   button-primary-hover:
-    backgroundColor: "{colors.primary-hover}"
+    classes: "hover:border-brand-500/50 hover:bg-brand-500/[0.18]"
   button-secondary:
-    backgroundColor: "transparent"
-    textColor: "{colors.fg-default}"
-    rounded: "{rounded.md}"
-    padding: "h-9 px-3 (md, default das ações secundárias)"
+    classes: "rounded-lg border border-white/10 bg-white/[0.05] text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] hover:border-white/20 hover:bg-white/[0.10]"
+    padding: "default h-9 px-4; sm h-8 px-3 rounded-md"
   button-ghost:
-    backgroundColor: "transparent"
-    textColor: "{colors.fg-default}"
-    rounded: "{rounded.md}"
+    classes: "bg-transparent border-transparent text-zinc-300 hover:bg-white/[0.06] hover:text-white"
     padding: "h-9 px-3 (md)"
+  button-destructive:
+    classes: "rounded-lg border border-[#ef4444]/30 bg-[#ef4444]/[0.12] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] hover:border-[#ef4444]/50 hover:bg-[#ef4444]/[0.18]"
+  segmented-control:
+    container: "inline-flex rounded-full border border-white/10 bg-black/40 p-1"
+    item-active: "rounded-full bg-brand-500/[0.18] text-brand-300"
+    item-inactive: "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.05]"
+    item-size: "h-7 px-2.5 rounded-full [&_svg]:size-4"
+  submodule-pill:
+    active: "rounded-lg border border-brand-500/30 bg-brand-500/[0.12] text-white (ícone brand-400)"
+    inactive: "rounded-lg border border-white/8 bg-white/[0.03] text-zinc-400 hover:text-zinc-200 (ícone zinc-500)"
+    size: "h-9 text-sm"
   card-glass:
     backgroundColor: "{colors.surface-card}"
     rounded: "{rounded.xl}"
@@ -183,7 +189,7 @@ Escala brand completa (do `tailwind.config` do protótipo): 50 `#f5f3ff` · 100 
 Escala zinc do protótipo: 50 `#fbfaff` · 100 `#f4f2f9` · 200 `#e5e1ef` · 300 `#cfc9dc` · 400 `#9a92a6` · 500 `#756d82` · 600 `#585164` · 700 `#3e3749` · 800 `#2a2336` · 900 `#1f1b26` · 950 `#0d0d0d`.
 
 ### Named Rules
-1. **The One CTA Rule.** Existe apenas um botão sólido violeta (`bg-brand-500`, `#8350f2`) visível como ação definitiva em cada painel (ex.: "Iniciar Treinamento", "Salvar Alterações"). Controles secundários utilizam acabamento ghost, vidro sutil ou contorno fino no novo estilo.
+1. **The One CTA Rule.** Existe apenas um CTA por contexto, no estilo outline-violeta translúcido (`border-brand-500/30` + `bg-brand-500/[0.12]`, texto `text-white`); NUNCA violeta sólido (`bg-brand-500`) como fundo de botão (ex.: "Iniciar Treinamento", "Salvar Alterações"). O sólido `bg-brand-500` fica RESERVADO a elementos de destaque que não sejam botão (badges de estado se necessário). Controles secundários utilizam o secundário translúcido ou ghost (ver § Components/Buttons).
 2. **The Brand-Only Rule.** A paleta do app é `brand-*`/`zinc-*`. Classes `emerald-*` são PROIBIDAS no código do app.
    > ⚠️ **BANNER OBRIGATÓRIO — armadilha de compatibilidade:** no protótipo (`temp_redesign/new_ui.html`, `tailwind.config`), a escala `emerald` foi REMAPEADA para a paleta violeta (`emerald-500 = #8350f2`) apenas por compatibilidade com classes antigas. No app real (Tailwind v4), `emerald-500 = #10b981` — o verde-esmeralda da v1! Qualquer classe `emerald-*` no código do app regressa o design à v1. Use sempre `brand-500` (`#8350f2`); trate ocorrências de `emerald-*` como bug de regressão visual.
 3. **The Class Palette Integrity Rule (legado, escopo reduzido).** As cores semânticas de status (success `#34d399`, alert `#f59e0b`, danger `#ef4444`, telemetria `#06b6d4`) são reservadas e nunca reutilizadas para indicar estados de interface conflitantes na mesma área visual. As cores de classe de detecção do canvas seguem a mesma disciplina dentro do editor de BBoxes.
@@ -191,7 +197,7 @@ Escala zinc do protótipo: 50 `#fbfaff` · 100 `#f4f2f9` · 200 `#e5e1ef` · 300
 5. **The Vidro Óptico Rule (ex-Refractive Edge).** Toda superfície elevada de vidro possui borda superior (`border-top`) com opacidade de iluminação de 1.8x a 2.5x maior que as bordas laterais e inferiores, simulando reflexão ótica de luz zenital — com leve translucidez sobre o fundo escuro (ex.: `.glass-card` com `background: rgba(31, 27, 38, 0.70)` + `border-top: 1px solid rgba(255,255,255,0.16)` sobre borda base `rgba(131, 80, 242, 0.14)`). Ver os utilitários glass do protótipo como referência de contraste (`.glass-card` / `.glass-menu` / `.glass-modal`).
 6. **The Anti-Scroll-Trap Rule.** Em `< md`, workspaces rolam como documento ÚNICO (painéis internos `overflow-visible`); scroll interno de coluna só existe em `≥ md` (`md:overflow-y-auto`) ou com `max-h` explícito + `overscroll-contain`. Nunca aninhe `overflow-y-auto` pai+filho em `flex-col` — no protótipo isso prendeu a imagem gerada do Playground fora do alcance (81px de scroll num conteúdo a 1010px).
 7. **The Responsividade Rule.** Breakpoints Tailwind default (`sm 640 / md 768 / lg 1024 / xl 1280`). `< lg` = shell mobile: sidebar vira drawer (`min(85vw, 320px)`) + backdrop; títulos usam `truncate` com badge INLINE — nunca quebram em 2 linhas. Pílulas de sub-navegação = `overflow-x-auto` + fade edge na direita + auto-scroll posicionando a pílula ativa visível. Breadcrumb sempre em 1 linha (truncate no segmento do meio).
-8. **The Densidade de Botões Rule.** Dois tamanhos canônicos: `md` = `h-9 px-3` (default, ações secundárias) e `lg` = `h-11 px-4` (SÓ o CTA primário do contexto). Hit area mínima 44×44 (WCAG 2.5.5 — o padding pode exceder o visual). Em `< md`, ações secundárias de toolbar (ex.: AutoLabel/AutoTracker/Exportar da galeria) colapsam para menu overflow "⋯" ou ícone com tooltip — nunca 4 botões de texto completo empilhando 2 linhas. Dropzone/imagens de preview com altura responsiva (`h-24` mobile, `h-36`+ desktop) — nunca altura fixa grande.
+8. **The Densidade de Botões Rule (fidelidade Arcane v2.10.1, root 14px).** Três tamanhos canônicos: `sm h-8 px-3 rounded-md` · `default h-9 px-4` (com ícone: `px-3`) · `lg h-10 px-5` (CTA primário do contexto). Todos sobre a base comum (ver § Components/Buttons). Hit area mínima 28px (WCAG 2.5.8), recomendado 44px quando o layout permitir; a densidade Arcane usa 28–35px e a fidelidade visual prevalece sobre o ideal de 44px. Em `< md`, ações secundárias de toolbar (ex.: AutoLabel/AutoTracker/Exportar da galeria) colapsam para menu overflow "⋯" ou ícone com tooltip — nunca 4 botões de texto completo empilhando 2 linhas. Dropzone/imagens de preview com altura responsiva (`h-24` mobile, `h-36`+ desktop) — nunca altura fixa grande.
 9. **The Truncamento Honesto Rule.** Placeholders, labels e valores longos usam `truncate`/`line-clamp` SEMPRE com `title=` (o texto completo permanece acessível). Pill de categoria/tag nunca corta texto sem affordance de continuação.
 
 ## Typography
@@ -220,6 +226,18 @@ O estúdio opera em um modelo espacial de precisão, composto por:
   - *Coluna de Monitoramento/Anotação:* Painel fluido responsivo preenchendo o restante da viewport (`p-4 md:p-6`), contendo gráficos de convergência, canvas de imagem/vídeo ou terminal de streaming de logs.
 - **Espaçamento e Ritmo:** Grade de 4px/8px. Gaps padrão de `12px` a `16px` entre cards de parâmetros e `24px` entre seções estruturais.
 
+### Densidade Global (fidelidade Arcane v2.10.1)
+
+- `html { font-size: 14px }` — a densidade do Arcane; todo o resto da escala `rem` encolhe ~12,5% uniformemente.
+- `--radius` base = `0.875rem`; botões arredondados = 12px (`rounded-lg` na nossa escala); painel/modal = `rounded-2xl` (16px).
+- Tabela de tamanhos de botão (root 14px):
+
+  | Tamanho | Classes | Uso |
+  |---|---|---|
+  | `sm` | `h-8 px-3 rounded-md` | Ações compactas, toolbars densas |
+  | `default` | `h-9 px-4` (com ícone: `px-3`) | Default de todas as ações |
+  | `lg` | `h-10 px-5` | CTA primário do contexto |
+
 ## Elevation & Depth
 
 O sistema rejeita sombras difusas cinzentas ou pretas sólidas. A profundidade é produzida por **Vidro Óptico Translúcido (Frosted Glassmorphism)** em 3 níveis com refração de borda superior:
@@ -241,12 +259,26 @@ O sistema rejeita sombras difusas cinzentas ou pretas sólidas. A profundidade �
 
 ## Components
 
-### Buttons
-- **Primary (CTA único, `lg`):** `bg-brand-500 (#8350f2) text-white h-11 px-4 text-sm font-medium rounded-lg hover:bg-brand-600 transition-colors shadow-sm` + glow `rgba(131, 80, 242, 0.25)` em execução ativa.
-  - **Nota de acessibilidade (fatia redesign UI v2):** CTA em `brand-500` (`#8350f2`) + `text-white` ≈ 4.78:1 — passa WCAG AA (texto normal, 4.5:1). Este é o piso: não clarear o fundo do CTA; `brand-600+` só aumenta contraste.
-- **Secondary / Ghost (`md`, default):** `bg-zinc-900/60 border border-zinc-700/80 text-zinc-200 h-9 px-3 text-xs rounded-lg hover:bg-zinc-800`.
-- **Destructive / Abort:** `border border-rose-500/60 text-rose-400 bg-rose-950/20 h-9 px-3 text-xs rounded-lg hover:bg-rose-950/40`.
+### Buttons (fidelidade Arcane v2.10.1, extraído do código-fonte — `variants.ts`)
+
+Base comum a todos os tons (aplicar sempre antes do tom/tamanho):
+
+```
+inline-flex items-center justify-center gap-2 text-sm font-medium whitespace-nowrap select-none transition active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55
+```
+
+Tamanhos (com root 14px — ver § Densidade Global): `sm h-8 px-3 rounded-md` · `default h-9 px-4` (com ícone: `px-3`) · `lg h-10 px-5` (CTA primário do contexto).
+
+- **Primary (CTA único, outline-violeta translúcido):** `rounded-lg border border-brand-500/30 bg-brand-500/[0.12] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985]` + inset highlight `rgba(255,255,255,0.08)` no topo.
+  - **Nota de acessibilidade:** o CTA outline usa texto `text-white` sobre véu `bg-brand-500/[0.12]` no fundo dark — manter o véu translúcido, não clarear; o contraste vem do texto branco sobre o fundo escuro.
+  - **Nota de reserva:** o sólido `bg-brand-500` (`#8350f2`) NÃO é fundo de botão — fica reservado a elementos de destaque que não sejam botão (badges de estado se necessário).
+- **Secondary (`md`, default):** `rounded-lg border border-white/10 bg-white/[0.05] text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] hover:border-white/20 hover:bg-white/[0.10]`.
+- **Ghost:** `bg-transparent border-transparent text-zinc-300 hover:bg-white/[0.06] hover:text-white`.
+- **Primary destrutivo (mesma fórmula do primário com destructive):** `border-[#ef4444]/30 bg-[#ef4444]/[0.12] text-white hover:border-[#ef4444]/50 hover:bg-[#ef4444]/[0.18]` (base comum + tamanhos idênticos ao primário).
+- **Destructive / Abort (legado, preferir o primário destrutivo acima):** `border border-rose-500/60 text-rose-400 bg-rose-950/20 h-9 px-3 text-xs rounded-lg hover:bg-rose-950/40`.
 - **Warning / Pause:** `border border-amber-500/60 text-amber-400 bg-amber-950/20 h-9 px-3 text-xs rounded-lg hover:bg-amber-950/40`.
+- **Segmented control (toggle grade/lista e afins):** container `inline-flex rounded-full border border-white/10 bg-black/40 p-1`; item `h-7 px-2.5 rounded-full` com ícones `[&_svg]:size-4`; item ativo `rounded-full bg-brand-500/[0.18] text-brand-300`; item inativo `text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.05]`.
+- **Pílula de sub-módulo/aba (ex.: Galeria de Datasets | AutoTracker | AutoLabel):** altura `h-9`, `text-sm`; ativa `rounded-lg border border-brand-500/30 bg-brand-500/[0.12] text-white` + ícone `brand-400`; inativa `rounded-lg border border-white/8 bg-white/[0.03] text-zinc-400 hover:text-zinc-200` + ícone `zinc-500`.
 
 ### Chips & Badges
 - **Status Badge:** Cápsula pill com borda fina translúcida e ponto luminoso pulsante (`w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse`).
@@ -259,6 +291,20 @@ O sistema rejeita sombras difusas cinzentas ou pretas sólidas. A profundidade �
 ### Inputs & Fields
 - `bg-black/40 border border-zinc-800 text-zinc-100 rounded-lg px-3 py-1.5 text-xs font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500`. Em `< md` (iOS Safari), inputs/selects/textarea usam `font-size: 16px` para prevenir zoom automático.
 
+### Login — AuthAmbient (fidelidade Arcane v2.10.1 — substitui os "blobs de luz zenital")
+
+Fundo fixo (`position:fixed inset-0 pointer-events-none aria-hidden`) com 4 camadas:
+
+1. **mesh**: 4 radial-gradients violeta — `radial-gradient(ellipse 60% 50% at 18% 22%, color-mix(in oklab, var(--accent) 14%, transparent), transparent 60%)` + os mesmos em `82%/78%` (10%), `78%/18% (8%)`, `22%/82%` (6%), `opacity 0.5` — usar `brand-500` no lugar de `var(--accent)`; em CSS puro: `radial-gradient(ellipse 60% 50% at 18% 22%, rgba(131,80,242,0.14), transparent 60%)` etc.
+2. **grid**: SVG pattern 48×48 (linhas 1px `stroke-opacity 0.15` cinza `#969696`), `background-repeat: repeat`, `background-size: 48px 48px`, com `mask-image: radial-gradient(circle at 50% 50%, #000 30%, transparent 80%)`, `opacity 0.5` — A GRADE. SVG data-URI: `<svg width='48' height='48'><path d='M47.5 0v48M0 47.5h48' stroke='rgba(150,150,150,1)' stroke-width='1' stroke-opacity='0.15'/></svg>`.
+3. **noise**: feTurbulence fractalNoise `baseFrequency 0.9`, `opacity 0.05`.
+4. **vignette**: `radial-gradient(ellipse at center, transparent 40%, color-mix(in oklab, var(--bg) 80%, transparent) 100%)`.
+
+- **Panel**: `rounded-2xl border border-white/10 bg-[rgba(32,32,38,0.40)] backdrop-blur-xl p-6 sm:p-8` + **hairline**: `::before` absoluta no topo (`left/right 1.5rem`, `height 1px`) com `linear-gradient(90deg, transparent, rgba(131,80,242,0.6), transparent)`.
+- **Logo**: drop-shadow violeta 45% (`drop-shadow(0 0 28px rgba(131,80,242,0.45))`); versão em mono `text-[10px] tracking-[0.2em] uppercase text-zinc-400/60` abaixo.
+- Título `text-2xl font-semibold tracking-tight`, sub `text-sm text-zinc-400`, labels `text-xs`, CTA login `w-full` no estilo primário outline-translúcido acima.
+- Entrada staggered `rise 0.6s cubic-bezier(0.22,1,0.36,1)` com delays 500/650/900ms + `prefers-reduced-motion: none`.
+
 ### Navigation
 - Topbar sticky com seletor de pods em dropdown; sidebar macro (drawer em `< lg`); barra de abas com divisores verticais sutis entre os grupos de Difusão/CLIP/YOLO, AutoLabel/AutoTracker e Datasets; pílulas de sub-navegação com `overflow-x-auto` + fade edge na direita + auto-scroll da pílula ativa.
 
@@ -269,7 +315,8 @@ O sistema rejeita sombras difusas cinzentas ou pretas sólidas. A profundidade �
 ## Do's and Don'ts
 
 ### Do:
-- **Do** manter rigorosamente a convenção de exatamente um botão primário violeta sólido (`bg-brand-500 #8350f2`) por workspace.
+- **Do** manter rigorosamente a convenção de exatamente um CTA outline-violeta translúcido (`border-brand-500/30` + `bg-brand-500/[0.12]`) por workspace — nunca sólido como fundo de botão.
+- **Do** dar a todo botão o inset highlight `rgba(255,255,255,0.08)` no topo (primário/destrutivo) ou `rgba(255,255,255,0.06)` (secundário).
 - **Do** utilizar a fonte monoespaçada (`JetBrains Mono`) para todos os dados quantitativos, telemetria, paths e coordenadas.
 - **Do** respeitar o anel de foco `outline: 2px solid #8350f2` com `outline-offset: 2px` para acessibilidade em todos os controles interativos.
 - **Do** suportar `prefers-reduced-motion: reduce` desativando pulsos e animações de laser no canvas.
@@ -281,7 +328,7 @@ O sistema rejeita sombras difusas cinzentas ou pretas sólidas. A profundidade �
 - **Don't** utilizar temas claros (Light Mode) — a interface é exclusivamente Dark-Only para fidelidade e ergonomia de visão computacional.
 - **Don't** utilizar emojis como ícones de ação ou identificadores de categoria; utilize apenas ícones vetoriais monolínea de 1.7px.
 - **Don't** aplicar sombras pretas opacas ou gradientes coloridos pesados em cards de fundo.
-- **Don't** permitir que o texto do botão primário violeta seja de baixo contraste; o CTA usa texto claro sobre `#8350f2`.
+- **Don't** usar o sólido `bg-brand-500` como fundo de BOTÃO — reservado a destaques que não sejam botão (badges de estado se necessário); botões usam sempre o véu translúcido `bg-brand-500/[0.12]` + `border-brand-500/30`.
 - **Don't** usar classes `emerald-*` no código do app — elas resolvem para o verde `#10b981` da v1 no Tailwind v4 (ver banner da regra Brand-Only).
 - **Don't** aninhar `overflow-y-auto` pai+filho em `flex-col` (scroll-trap — ver regra Anti-Scroll-Trap).
 - **Don't** usar botão de texto completo em toolbar mobile — colapsar para menu overflow "⋯" ou ícone com tooltip.
@@ -314,14 +361,14 @@ Todos os ícones são construídos com linhas limpas, `strokeWidth="1.7"` e `vie
 - **Status Global à Direita:** Indicador de prontidão do daemon com bolinha animada (`animate-ping` durante execução).
 
 ### Workspaces (Layout de Divisão 2 Colunas)
-- **Coluna de Configuração (Esquerda):** Largura fixa de 320px a 384px (`w-full md:w-80 lg:w-96`), rolagem independente apenas em `≥ md`; em `< md` o workspace rola como documento único (ver regra Anti-Scroll-Trap). Contém seletores com dropdown óptico, inputs numéricos em grid 2 colunas, sliders de taxa de aprendizado e o CTA primário de treino (`h-11`).
+- **Coluna de Configuração (Esquerda):** Largura fixa de 320px a 384px (`w-full md:w-80 lg:w-96`), rolagem independente apenas em `≥ md`; em `< md` o workspace rola como documento único (ver regra Anti-Scroll-Trap). Contém seletores com dropdown óptico, inputs numéricos em grid 2 colunas, sliders de taxa de aprendizado e o CTA primário de treino (`lg h-10`).
 - **Coluna de Monitoramento/Visualização (Direita):** Fluida, com padding `p-4 md:p-6`, contendo banner de status ativo, cards de métricas em grade, gráficos SVG de convergência e terminal de logs com rolagem.
 - **Mobile (`< lg`):** Sidebar vira drawer + backdrop; breadcrumb em 1 linha com truncate no segmento do meio; pílulas de sub-navegação com scroll horizontal + fade edge.
 
 ### Editor de BBoxes da Galeria (`gallery-bbox-editor`)
 - **Barra de Ferramentas:** Alternância entre Caixa (`B`), Mover/Selecionar (`V`) e Pan (`H`). Em `< md`, ações secundárias colapsam para overflow "⋯" (ver regra Densidade de Botões).
 - **Paleta de Classes com Código de Atalho:**
-  - `[1] solda_fria` → Violeta brand (`bg-brand-500 #8350f2`)
+  - `[1] solda_fria` → Violeta brand (`bg-brand-500` / `#8350f2`)
   - `[2] curto_circuito` → Âmbar (`bg-amber-500`)
   - `[3] componente_ausente` → Rosa/Vermelho (`bg-rose-500`)
   - `[4] trilha_rompida` → Ciano (`bg-cyan-500`)
@@ -337,8 +384,8 @@ Foco visível: regra do anel de foco (`outline: 2px solid #8350f2` com `outline-
 
 1. **Contraste em Estados Desabilitados:**
    - Redução de opacidade para `0.55` e `cursor: not-allowed` é aplicada estritamente aos controles que possuem o atributo `disabled`.
-2. **Hit Area Mínima (WCAG 2.5.5):**
-   - Alvos de toque com `min-height: 44px` / `min-width: 44px` (`.touch-target`); o padding pode exceder o visual do botão. Sliders com thumb de 22px + borda branca para aderência em touch (`touch-action: manipulation` / `pan-y`).
+2. **Hit Area Mínima (WCAG 2.5.8):**
+   - Alvos de toque com mínimo 28px, recomendado 44px quando o layout permitir (`.touch-target`); o padding pode exceder o visual do botão. A densidade Arcane usa 28–35px e a fidelidade visual prevalece. Sliders com thumb de 22px + borda branca para aderência em touch (`touch-action: manipulation` / `pan-y`).
    - Safe areas iOS/Android (`.safe-area-top` / `.safe-area-bottom`) e `font-size: 16px` em inputs mobile para prevenir zoom automático do Safari.
 3. **Respeito a Preferências de Movimento (`prefers-reduced-motion`):**
    ```css
@@ -367,5 +414,6 @@ Foco visível: regra do anel de foco (`outline: 2px solid #8350f2` com `outline-
 
 ## Versionamento
 
+- `v2.1 — 2026-09-07` — emenda de fidelidade Arcane: botões outline-translúcidos (fim do primário sólido), densidade root 14px, login AuthAmbient (grade de fundo).
 - `v2 — 2026-09-07` — redesign Arcane do usuário (protótipo `temp_redesign/new_ui.html`, paleta violeta oklch, Space Grotesk, sidebar macro).
 - `v1 — esmeralda/Inter` (protótipo `ai-vision-training-studio.html`, DEPRECADO nesta fatia).

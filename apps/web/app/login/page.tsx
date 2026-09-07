@@ -70,62 +70,193 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="studio-shell relative overflow-hidden bg-[var(--bg)]">
-      {/* Luz óptica zenital decorativa de fundo com undertone Arcane Violet */}
-      <div aria-hidden="true" className="absolute w-[520px] h-[520px] bg-brand-500/10 rounded-full blur-[130px] pointer-events-none -top-24 -left-24" />
-      <div aria-hidden="true" className="absolute w-[440px] h-[440px] bg-brand-700/10 rounded-full blur-[110px] pointer-events-none -bottom-20 -right-20" />
+    <>
+      {/* ── AuthAmbient background (Arcane v2.1) ── */}
+      <style>{`
+        @keyframes rise {
+          from { opacity: 0; transform: translateY(12px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes spin {
+          from { transform: translate(-50%, -50%) rotate(0deg); }
+          to   { transform: translate(-50%, -50%) rotate(360deg); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .rise { animation: none !important; opacity: 1 !important; }
+          .ambient-shimmer { animation: none !important; }
+        }
+      `}</style>
 
-      <section
-        className="glass-card w-[min(25rem,100%)] rounded-2xl px-8 py-8 text-left relative z-10 border border-brand-500/20 shadow-2xl"
-        aria-labelledby="login-title"
+      {/* Camada fixa de fundo com as 4 texturas */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none fixed inset-0 overflow-hidden"
+        style={{ background: "var(--bg)" }}
       >
-        <div className="flex items-center justify-between">
-          <span className="studio-badge">Hephaestus Studio</span>
-          <span className="text-[10px] font-mono text-zinc-500">v1.3</span>
-        </div>
+        {/* 1 — Mesh: 4 radial-gradients violeta */}
+        <div
+          className="absolute inset-0"
+          style={{
+            opacity: 0.5,
+            background:
+              "radial-gradient(ellipse 60% 50% at 18% 22%, rgba(131,80,242,0.14), transparent 60%)," +
+              "radial-gradient(ellipse 55% 45% at 82% 78%, rgba(131,80,242,0.10), transparent 65%)," +
+              "radial-gradient(ellipse 45% 55% at 78% 18%, rgba(131,80,242,0.08), transparent 60%)," +
+              "radial-gradient(ellipse 50% 40% at 22% 82%, rgba(131,80,242,0.06), transparent 65%)",
+          }}
+        />
 
-        <h1 id="login-title" className="font-display mt-4 mb-1 text-lg font-semibold text-zinc-100 flex items-center gap-2">
-          <IconLock className="w-4 h-4" />
-          <span>Bem-vindo(a) de volta</span>
-        </h1>
-        <p className="mb-6 text-xs text-zinc-400">
-          Acesso single-user deste studio local.
-        </p>
-        <form onSubmit={onSubmit} className="flex flex-col gap-4">
-          <div>
-            <label htmlFor="password" className="mb-1.5 block font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-zinc-400">
-              Senha
-            </label>
-            <input
-              id="password"
-              name="password"
-              type="password"
-              autoComplete="current-password"
-              required
-              placeholder="Digite sua senha…"
-              autoFocus
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              disabled={submitting}
-              className="w-full min-h-[44px] rounded-xl border border-zinc-700/80 bg-zinc-900 px-3.5 py-2.5 font-mono text-base sm:text-xs text-zinc-200 placeholder:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:opacity-55 touch-manipulation"
-            />
-          </div>
-          <p role="status" aria-live="polite" className="m-0 min-h-5 text-[11px] font-mono text-red-500">
-            {error}
-          </p>
-          <button
-            type="submit"
-            disabled={submitting}
-            className="h-11 w-full rounded-xl bg-brand-500 px-4 text-sm font-semibold text-white shadow-lg shadow-brand-500/20 transition-all hover:bg-brand-600 active:scale-[0.98] disabled:opacity-55 cursor-pointer"
+        {/* 2 — Grid: SVG pattern 48×48 com máscara radial */}
+        <div
+          className="absolute inset-0"
+          style={{
+            opacity: 0.5,
+            backgroundImage:
+              'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'48\' height=\'48\'%3E%3Cpath d=\'M47.5 0v48M0 47.5h48\' stroke=\'rgba(150,150,150,1)\' stroke-width=\'1\' stroke-opacity=\'0.15\' fill=\'none\'/%3E%3C/svg%3E")',
+            backgroundSize: "48px 48px",
+            WebkitMaskImage:
+              "radial-gradient(circle at 50% 50%, #000 30%, transparent 80%)",
+            maskImage:
+              "radial-gradient(circle at 50% 50%, #000 30%, transparent 80%)",
+          }}
+        />
+
+        {/* 3 — Noise: feTurbulence fractalNoise */}
+        <div
+          className="absolute inset-0"
+          style={{
+            opacity: 0.05,
+            backgroundImage:
+              'url("data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 200 200\'><filter id=\'n\'><feTurbulence type=\'fractalNoise\' baseFrequency=\'0.9\' numOctaves=\'2\' stitchTiles=\'stitch\'/><feColorMatrix values=\'0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0\'/></filter><rect width=\'100%25\' height=\'100%25\' filter=\'url(%23n)\'/></svg>")',
+          }}
+        />
+
+        {/* 4 — Vignette */}
+        <div
+          className="absolute inset-0"
+          style={{
+            background:
+              "radial-gradient(ellipse at center, transparent 40%, color-mix(in oklab, var(--bg) 80%, transparent) 100%)",
+          }}
+        />
+
+        {/* 5 — Shimmer cónico rotativo (opcional, Arcane) */}
+        <div
+          className="ambient-shimmer absolute top-1/2 left-1/2 w-[300vmax] h-[300vmax]"
+          style={{
+            animation: "spin 60s linear infinite",
+            background:
+              "conic-gradient(from 0deg, rgba(131,80,242,0.08), rgba(131,80,242,0.05), rgba(131,80,242,0.07), rgba(131,80,242,0.08))",
+          }}
+        />
+      </div>
+
+      {/* ── Conteúdo centralizado ── */}
+      <main className="relative z-10 flex min-h-dvh items-center justify-center p-6">
+        <div className="flex w-full max-w-[400px] flex-col items-center">
+          {/* Logo / Identidade */}
+          <div
+            className="rise flex flex-col items-center gap-2"
+            style={{ animationDelay: "0ms" }}
           >
-            {submitting ? "Autenticando…" : "Entrar no Hephaestus"}
-          </button>
-        </form>
+            <span
+              className="inline-flex items-center gap-2 font-display text-xl font-semibold text-zinc-100"
+              style={{
+                filter: "drop-shadow(0 0 28px rgba(131,80,242,0.45))",
+              }}
+            >
+              <IconLock className="size-5" />
+              Hephaestus Studio
+            </span>
+            <span className="font-mono text-[10px] tracking-[0.2em] uppercase text-zinc-400/60">
+              v1.3
+            </span>
+          </div>
 
-        <div className="mt-6 pt-4 border-t border-white/5 font-mono text-[11px] text-zinc-500">
-          <span>Single-User Local</span>
+          {/* Panel de login */}
+          <section
+            className="rise relative mt-10 w-full overflow-hidden rounded-2xl border border-white/10 bg-[rgba(32,32,38,0.40)] p-6 backdrop-blur-xl sm:p-8"
+            aria-labelledby="login-title"
+            style={{ animationDelay: "150ms" }}
+          >
+            {/* Hairline violeta no topo */}
+            <span
+              aria-hidden="true"
+              className="absolute top-0 left-6 right-6 h-px"
+              style={{
+                background:
+                  "linear-gradient(90deg, transparent, rgba(131,80,242,0.6), transparent)",
+              }}
+            />
+
+            <h1
+              id="login-title"
+              className="text-center font-display text-2xl font-semibold tracking-tight text-zinc-100"
+            >
+              Bem-vindo(a) de volta
+            </h1>
+            <p className="mt-1.5 text-center text-sm text-zinc-400">
+              Acesso single-user deste studio local.
+            </p>
+
+            <form onSubmit={onSubmit} className="mt-6 space-y-4">
+              {/* Campo senha com ícone à esquerda */}
+              <div>
+                <label
+                  htmlFor="password"
+                  className="mb-1.5 block text-xs text-zinc-300"
+                >
+                  Senha
+                </label>
+                <div className="relative">
+                  <IconLock className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-zinc-500" />
+                  <input
+                    id="password"
+                    name="password"
+                    type="password"
+                    autoComplete="current-password"
+                    required
+                    placeholder="Digite sua senha…"
+                    autoFocus
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    disabled={submitting}
+                    className="h-10 w-full rounded-lg border border-white/10 bg-white/[0.04] pl-9 pr-3 text-sm text-zinc-100 placeholder:text-zinc-500 transition focus:border-brand-500/50 focus:ring-2 focus:ring-brand-500/30 focus:outline-none disabled:opacity-55"
+                  />
+                </div>
+              </div>
+
+              {/* Mensagem de erro */}
+              <p
+                role="status"
+                aria-live="polite"
+                className="m-0 min-h-5 text-sm text-[#ef4444]"
+              >
+                {error}
+              </p>
+
+              {/* CTA primário outline-translúcido */}
+              <button
+                type="submit"
+                disabled={submitting}
+                className="mt-1 inline-flex h-10 w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] text-sm font-medium text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] disabled:pointer-events-none disabled:opacity-55 focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent"
+              >
+                {submitting ? "Autenticando…" : "Entrar no Hephaestus"}
+              </button>
+            </form>
+          </section>
+
+          {/* Footer */}
+          <div
+            className="rise mt-8 text-center"
+            style={{ animationDelay: "300ms" }}
+          >
+            <span className="font-mono text-[10px] tracking-[0.2em] uppercase text-zinc-400/60">
+              Single-User Local
+            </span>
+          </div>
         </div>
-      </section>
-    </main>
+      </main>
+    </>
   );
 }

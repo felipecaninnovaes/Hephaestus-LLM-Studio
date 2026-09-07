@@ -158,3 +158,22 @@ export interface PutClassesResponse {
   classes: StudioClass[];
 }
 
+export type SearchIndexStatus = "not_indexed" | "indexing" | "ready" | "stale";
+
+export interface SearchStatus {
+  status: SearchIndexStatus;
+  imagesCount: number;
+  indexedCount: number;
+  model: string;
+  dim: number;
+}
+
+export interface SearchItem {
+  image: ImageItem;
+  score: number;
+}
+
+export interface SearchResponse {
+  items: SearchItem[];
+}
+

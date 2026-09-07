@@ -201,6 +201,11 @@ local; para o remoto, presigned-assinado-no-endpoint-alcançável entra junto do
 sem segundo consumidor — extrai-se trivialmente quando o orquestrador precisar; a
 reversibilidade de D4 é o propósito da porta).
 
+> **Banner pós-3e (2026-09-07):** revisado pela ADR-0006 (3e) — export/import
+> implementados na 3e (`POST /:id/export`, `POST /datasets/import`, spec 0.6.0);
+> `POST /:id/package` movido para a fatia 4. Corpo abaixo preservado como
+> registro da 3b — não reescrevê-lo.
+
 ### D9 — Export/import/package sobem para 3e; chunking de 8 MB sobrevive só no transporte remoto
 
 `POST /:id/export`, `POST /datasets/import`, `POST /:id/package` ficam fora da 3b: nenhuma

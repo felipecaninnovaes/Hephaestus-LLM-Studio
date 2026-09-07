@@ -83,7 +83,7 @@ Exigência da IDEIA: lista/grade → clique abre galeria → só na galeria Auto
 
 ### 5.1 Lista (`datasets-workspace`)
 
-- Header "Gerenciador de Datasets" + toggle grade/lista (`viewMode`), Importar (Backup), Novo Dataset.
+- Header "Gerenciador de Datasets" + toggle grade/lista (`viewMode`), Novo Dataset. (O botão "Importar (Backup)" do header foi REMOVIDO na Fatia 3e — P2 da ADR-0006: import só na galeria.)
 - Filtros: busca por nome/classe/formato + pills `Todos/Difusão/OpenCLIP/YOLO` com contadores.
 - Card grade: ícone, `title`, `type`, tiles Imagens / % Rotuladas (`labeledCount/imagesCount`), chips de classes, rodapé `size · lastModified`, tag `AutoTracker` se aplicável, CTA "Treinar →" (roteia via `trainTabFor(ds)`).
 - Lista: tabela Nome / Formato-Tarefa / Imagens / Progresso / Origem Storage (`source` derivado: `null` em dataset vazio, `s3://{bucket}/datasets/{id}/` com imagens — ADR-0003 D5) / Ações.
@@ -93,7 +93,7 @@ Exigência da IDEIA: lista/grade → clique abre galeria → só na galeria Auto
 ### 5.2 Galeria (`dataset-gallery`)
 
 - Breadcrumb voltar + título + meta `type · N imagens · size · source`.
-- Ações: AutoLabel, AutoTracker, Exportar (`.zip + dataset.yaml + anotações`), "Treinar este Dataset".
+- Ações — Exportar/Importar IMPLEMENTADOS (Fatia 3e, ADR-0006): Exportar baixa o `.zip` do backup via blob + `Content-Disposition` (`lib/backup.ts::exportDataset`, toasts 404/503); Importar abre o `ImportDatasetModal` (file picker `.zip` + campo nome opcional ≤96, toasts por `code` em 400/503/413, resultado com contagens + "Abrir dataset importado"); **fluxo de substituição: 409 `slug_conflict` → diálogo de irreversibilidade ("substituir apaga o dataset atual; a ação não tem reversão", Cancelar/Substituir) → re-envio com `replace=true` (o 409 NÃO é toast)**. Pacote = `manifest.json` (fonte da verdade) + `dataset.yaml`/`labels/*.txt`/`captions.jsonl` derivados + `images/*`. Demais ações: AutoLabel, AutoTracker, "Treinar este Dataset".
 - Faixa resumo: `N amostras · X rotuladas por AutoTracker|AutoLabel · Formato · Backup: exportar/importar mantém JSON/YAML + anotações`.
 - Se `imagesCount === 0`: empty state "Galeria vazia" + "Enviar amostras" (upload Rust).
 - Grade: até 8 thumbs mockadas (`img_0001.jpg`...), overlay BBox para `category==='yolo'`, selo `caption.txt` para difusão/CLIP, tile dashed "Adicionar imagens / vídeo". Clique: yolo → abre editor BBox; demais → toast "Revisão de caption no AutoLabel".
@@ -177,7 +177,7 @@ interface BBox { id: number; classId: number; label: string; x: number; y: numbe
 2. Treino YOLO: vincular dataset YOLO → hiperparams → Iniciar → monitor (epoch/loss/mAP/logs/val) → Pausar/Abortar → pesos exportados.
 3. Preparo seguro: ajustar prompt/modelo/threshold no sandbox → Testar Inferência/Caption → Executar no Dataset (lote).
 4. Correção manual: validação ou galeria → editor BBox → Salvar → re-treino.
-5. Backup: Exportar (`.zip + dataset.yaml + anotações + captions.jsonl`) / Importar (mesmo pacote).
+5. Backup — IMPLEMENTADO (Fatia 3e): Exportar (`.zip + dataset.yaml + anotações + captions.jsonl`) / Importar (mesmo pacote) na galeria, com diálogo de substituição no 409.
 
 ## 10. Contratos que o front vai exigir do Rust (alinhado com backend.md §9)
 
@@ -185,7 +185,7 @@ interface BBox { id: number; classId: number; label: string; x: number; y: numbe
   - Rota `/login`: form de senha; erros ramificados por `code` em pt-BR (`invalid_credentials` → "Senha incorreta.", `setup_required` → "Servidor em modo setup — defina STUDIO_PASSWORD.", `invalid_request` → "Envie a senha.", default → "Falha inesperada."); sucesso → `/` (`router.replace` + `refresh`); já logado (`GET /me` ok) → volta a `/`.
   - Gate de sessão via `proxy.ts`: `/login` passa direto (decide por si via `/me`); sem cookie `heph_session` → redirect `/login`; com cookie → passa, validade decidida pelo servidor via `/me` (`/` redireciona a `/login` se `/me` não-ok; logout → `POST /logout` + volta a `/login`). `/api/*` fora do matcher — envelope 401 do backend repassado intacto.
   - Resolução T5: front chama `/api/*` relativo (`credentials: "same-origin"`, sem CORS); rewrite Next → `API_INTERNAL_URL` (dev `http://localhost:8080`, compose `http://principal:8080`). `NEXT_PUBLIC_API_URL` ficou como resíduo de build (só `ARG` no Dockerfile; runtime usa o proxy `/api`).
-- Datasets: `GET/POST /api/datasets`, `GET/DELETE /api/datasets/:id` — IMPLEMENTADO (Fatia 3a — contrato `packages/contracts/openapi.yaml`, ADR-0002). Upload/imagens/boxes/caption — IMPLEMENTADO (Fatia 3b — spec 0.3.0, contrato que a 3c/3d implementa; as rotas de UI que os consomem ainda NÃO existem — `/datasets` é a 3c): `POST /:id/upload` (multipart `files`; corpo total 200 MiB + 8 MiB envelope → 413; teto por arquivo 200 MiB → item `rejected/too_large`; resposta `{items:[{imageId,filename,status,reason,bytes,width,height}]}` camelCase), `GET /:id/images?limit(=50, máx 200)&offset(=0)&split(train|val)&labeled(bool)` → `{items,total,limit,offset}`, `GET /:id/images/:imageId` (Image flat + `boxes[]` + `caption|null`), `GET /:id/images/:imageId/data` (proxy incondicional, `Cache-Control: private, max-age=31536000, immutable`), `PUT .../images/:imageId/boxes` (`{boxes:[{classId,x,y,w,h,conf?,origin?,trackId?}]}` cap 1000, domínio 0..1), `PUT .../images/:imageId/caption` (upsert `{text:1..8000,origin?,model?≤255}`). Export/import/package seguem pendentes (3e): `POST /:id/export`, `POST /datasets/import`, `POST /:id/package`.
+- Datasets: `GET/POST /api/datasets`, `GET/DELETE /api/datasets/:id` — IMPLEMENTADO (Fatia 3a — contrato `packages/contracts/openapi.yaml`, ADR-0002). Upload/imagens/boxes/caption — IMPLEMENTADO (Fatia 3b — spec 0.3.0, contrato que a 3c/3d implementa; as rotas de UI que os consomem ainda NÃO existem — `/datasets` é a 3c): `POST /:id/upload` (multipart `files`; corpo total 200 MiB + 8 MiB envelope → 413; teto por arquivo 200 MiB → item `rejected/too_large`; resposta `{items:[{imageId,filename,status,reason,bytes,width,height}]}` camelCase), `GET /:id/images?limit(=50, máx 200)&offset(=0)&split(train|val)&labeled(bool)` → `{items,total,limit,offset}`, `GET /:id/images/:imageId` (Image flat + `boxes[]` + `caption|null`), `GET /:id/images/:imageId/data` (proxy incondicional, `Cache-Control: private, max-age=31536000, immutable`), `PUT .../images/:imageId/boxes` (`{boxes:[{classId,x,y,w,h,conf?,origin?,trackId?}]}` cap 1000, domínio 0..1), `PUT .../images/:imageId/caption` (upsert `{text:1..8000,origin?,model?≤255}`). Export/import — IMPLEMENTADO (Fatia 3e, spec 0.6.0, ADR-0006): `POST /:id/export` (download `.zip` via blob + `Content-Disposition`), `POST /datasets/import` (FormData `file` + `title` opcional + `replace: "true"` só quando true; fluxo 409 → diálogo de irreversibilidade → `replace=true`); `lib/backup.ts` (`exportDataset`/`importDataset` + copies por `code`) + `components/studio/ImportDatasetModal.tsx`; limite do zip 200 MiB + 8 MiB envelope (413). `POST /:id/package` segue pendente (fatia 4).
 - Ambientes (alias UI de orquestradores): `GET /api/environments` (= `GET /api/orchestrators`), `POST /environments/select|connect` (= adopt/enable).
 - Jobs: `POST /api/jobs/{yolo|difusao|clip|autolabel|autotracker|playground}`, `GET /:id`, `POST /:id/{pause,abort,resume}`, `GET /:id/{metrics,samples,artifacts}`, `WS /ws/jobs/:id/logs?since_seq=` + `WS /ws/telemetry`.
 - Runners/playground: `POST /runners/{engine}/up`, `POST /runners/:id/{kill,infer}`, `GET /runners` — infer via `POST /:id/infer`, 409 se preemptado.
@@ -213,7 +213,8 @@ Cada workspace segue o grid do protótipo: `painel config 320–384px + área fl
 - [ ] React Query para datasets/jobs + WS para logs/telemetria + barra VRAM.
 - [ ] Canvas BBox real com drag/resize/zoom/atalhos e persistência normalizada.
 - [ ] Charts reais ligados a `/metrics`; manter estilo SVG + gradiente do protótipo.
-- [ ] Upload com progresso/cancel + import/export `.zip` validado.
+- [x] Import/export `.zip` validado (Fatia 3e — galeria + modal + toasts por `code`).
+- [ ] Upload com progresso/cancel.
 - [ ] Formulários controlados com validação (epochs≥1, lr ranges, trigger word obrigatória).
 - [ ] Testes: render das 6 abas, fluxo lista→galeria→editor, sandbox→lote, mocks de WS.
 
@@ -223,5 +224,5 @@ Cada workspace segue o grid do protótipo: `painel config 320–384px + área fl
 - **Playground (nova aba, mesmo design):** runner sob demanda para os 3 motores — Difusão (gerar imagem), YOLO (inferência imagem/vídeo), CLIP (busca semântica). Orquestrador sobe o runner, mantém ativo até faltar VRAM ou usuário clicar "Matar runner". Card de status com VRAM usada + botão kill + aviso de preempção.
 - **Samples por ciclo:** em cada treino (YOLO/Difusão/CLIP) exibir N previews geradas por época/steps com métrica + imagem — é o "health visual". Exige `GET /api/jobs/:id/samples?cycle=N` e grade na direita dos workspaces.
 - **Downloads de modelos:** settings com campos HF token + Civitai key (env como fallback) + input de URL. Front só coleta e exibe progresso; download real é do orquestrador.
-- **Limites:** upload avulso imagem/vídeo 200 MB por arquivo (validação no front + item `rejected/too_large` e 413 do Rust no corpo total). Envio de dataset p/ orquestrador sem limite, com md5 + fragmentação quando remoto — front mostra barra de empacotamento → envio → verificação.
+- **Limites:** upload avulso imagem/vídeo 200 MB por arquivo (validação no front + item `rejected/too_large` e 413 do Rust no corpo total); zip de import: 200 MiB + 8 MiB de envelope (413 do Rust no corpo total; modal mostra "Backup maior que o limite de 200 MiB."). Envio de dataset p/ orquestrador sem limite, com md5 + fragmentação quando remoto — front mostra barra de empacotamento → envio → verificação.
 - **Pré-condições 3b/3d (ADR-0002 T3/T4/T7):** 3b ENTREGOU storage+imagens+anotação (upload/imagens/boxes/caption + `source` derivado + sweep de prefixo); export/import/package → 3e. DELETE ganhou sweep de prefixo `datasets/{id}/` pós-commit reapável best-effort (não mais cleanup de `<DATASETS_DIR>/<slug>` — disco morreu, ADR-0003 D7); `jobs.dataset_id ON DELETE SET NULL` + snapshot `dataset_versions` (nunca `RESTRICT`); derivar `autoTracked` de `boxes.origin='autotracker'` — detalhe no ADR.

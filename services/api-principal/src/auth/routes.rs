@@ -80,6 +80,7 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
         "/api/datasets/:id/search/by-image",
         &[200, 400, 401, 404, 409],
     ),
+    ("POST", "/api/datasets/:id/export", &[200, 401, 404, 503]),
 ];
 
 /// Rotas públicas (sem gate): `/health` + `/api/auth/*`.
@@ -198,6 +199,10 @@ pub fn build(state: AppState) -> axum::Router {
         .route(
             "/api/datasets/:id/search/by-image",
             post(search::handlers::post_search_by_image),
+        )
+        .route(
+            "/api/datasets/:id/export",
+            post(datasets::export::export_dataset),
         )
         // route_layer DEPOIS dos .route(): aplicado a um router vazio o axum 0.7 panic
         // no boot (path_router.rs, `routes.is_empty()`). Só cobre as rotas deste

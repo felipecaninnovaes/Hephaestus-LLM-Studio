@@ -36,7 +36,7 @@ pub struct StorageConfig {
     pub url_ttl_secs: u64,
 }
 
-/// Porta de storage (D8): 6 métodos.
+/// Porta de storage (D8): 7 métodos.
 #[async_trait::async_trait]
 pub trait StoragePort: Send + Sync {
     /// D2/spool: o handler grava tempfile e faz PUT com content-length exato;
@@ -45,6 +45,10 @@ pub trait StoragePort: Send + Sync {
     async fn put(&self, key: &str, path: &Path) -> Result<(), StorageError>;
     /// Fallback /data (D3); corpo total ≤ 200 MB (limite da rota).
     async fn get(&self, key: &str) -> Result<Vec<u8>, StorageError>;
+    /// Espelho do `put` (ADR-0006 D9, export): streama bucket→disco sem
+    /// carregar RAM — a porta recebe CAMINHO de destino, nunca devolve bytes.
+    /// `NotFound` ⇒ objeto ausente (o export faz skip + `eprintln`).
+    async fn get_to_file(&self, key: &str, path: &Path) -> Result<(), StorageError>;
     /// TTL/bucket vêm do StorageConfig na implementação; assinado no endpoint
     /// PÚBLICO quando configurado (D3, gotcha SigV4 do Host).
     async fn presign_get(&self, key: &str) -> Result<String, StorageError>;

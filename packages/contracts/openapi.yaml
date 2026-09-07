@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.5.0
+  version: 0.6.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -334,6 +334,60 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Dataset inexistente ou id não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Backend de objetos indisponível (`code: storage_unavailable`, ADR-0003 D10)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/datasets/{id}/export:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK do dataset. Valor que não parseia como UUID responde 404 `not_found`
+          (não 400, padrão D8 replicado).
+    post:
+      operationId: exportDataset
+      tags: [datasets]
+      summary: Exporta o dataset como backup estruturado (.zip em stream)
+      description: |
+        Backup estruturado do dataset (Fatia 3e.1, ADR-0006 D1/D2): o zip nasce
+        do banco em tempdir (`manifest.json` fonte da verdade + `dataset.yaml` /
+        `labels/*.txt` / `captions.jsonl` derivados + `images/*`) e é
+        respondido em stream — o zip nunca toca o bucket. Só imagens ativas
+        (`deleted_at IS NULL`); imagem com linha mas sem objeto é pulada
+        (os `counts` do manifest refletem o exportado); dataset vazio ⇒ 200
+        com zip só-manifest (`counts.images=0`). O `manifest.json` é artefato
+        de transporte snake_case (fora de `/api/*`, a fronteira HTTP não
+        contamina o transporte).
+      responses:
+        "200":
+          description: Zip do backup (`{slug}.zip`).
+          headers:
+            Content-Disposition:
+              required: true
+              description: 'attachment; filename="{slug}.zip" (slug é kebab-case ASCII, seguro no header).'
+              schema: { type: string }
+            Content-Length:
+              required: true
+              description: Tamanho do arquivo spoolado.
+              schema: { type: integer }
+          content:
+            application/zip:
+              schema: { type: string, format: binary }
         "401":
           description: "Sem sessão válida (`code: unauthorized`)."
           content:

@@ -129,6 +129,28 @@ impl StoragePort for MockStorage {
         data.ok_or(StorageError::NotFound)
     }
 
+    async fn get_to_file(&self, key: &str, path: &Path) -> Result<(), StorageError> {
+        if self.is_failing() {
+            return Err(StorageError::Unavailable("injected".to_string()));
+        }
+        let data = {
+            let objects = self.objects.read().await;
+            objects.get(key).cloned()
+        };
+        let data = match data {
+            Some(d) => d,
+            None => return Err(StorageError::NotFound),
+        };
+        tokio::fs::write(path, &data)
+            .await
+            .map_err(|_| StorageError::Unavailable("storage unavailable".to_string()))?;
+        {
+            let mut ops = self.ops.write().await;
+            ops.push(format!("GET_TO_FILE {key}"));
+        }
+        Ok(())
+    }
+
     async fn presign_get(&self, key: &str) -> Result<String, StorageError> {
         if self.is_failing() {
             return Err(StorageError::Unavailable("injected".to_string()));
@@ -245,6 +267,31 @@ mod tests {
         assert!(m.ops().contains(&"DELETE_PREFIX ds/1/".to_string()));
         assert_eq!(m.get("ds/2/z").await.expect("fora do prefixo"), vec![4]);
         assert!(matches!(m.get("ds/1/a").await, Err(StorageError::NotFound)));
+    }
+
+    #[tokio::test]
+    async fn get_to_file_observavel() {
+        let m = MockStorage::new();
+        m.put_bytes("k/a.bin", vec![4, 5, 6]).await;
+        let path = std::env::temp_dir().join(format!(
+            "heph-mock-get-to-file-{}.bin",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        m.get_to_file("k/a.bin", &path).await.expect("get_to_file");
+        assert_eq!(std::fs::read(&path).expect("read"), vec![4, 5, 6]);
+        std::fs::remove_file(&path).ok();
+        assert!(m.ops().contains(&"GET_TO_FILE k/a.bin".to_string()));
+        assert!(matches!(
+            m.get_to_file(
+                "ausente",
+                &std::env::temp_dir().join("heph-mock-get-to-file-ausente.bin")
+            )
+            .await,
+            Err(StorageError::NotFound)
+        ));
     }
 
     #[tokio::test]

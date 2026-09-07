@@ -1,8 +1,8 @@
 ---
 description: Implementador de infraestrutura do Hephaestus — executa tarefas mecânicas e bem especificadas em infra/ (compose, configs), Dockerfiles, scripts/ de verificação e CI. Receba especificação completa, não decida arquitetura.
 mode: subagent
-model: opencode-go/muse-spark-1.3-contributor
-variant: medium
+model: opencode-go/mimo-v2.5
+<!-- variant: low -->
 temperature: 0.1
 permission:
   bash:

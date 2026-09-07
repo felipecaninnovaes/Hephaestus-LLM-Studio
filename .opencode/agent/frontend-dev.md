@@ -1,8 +1,8 @@
 ---
 description: Implementador frontend do Hephaestus — executa especificações de UI/rotas em apps/web (Next.js + TypeScript) seguindo o design system do HTML de referência. Não decide arquitetura.
 mode: subagent
-model: opencode-go/muse-spark-1.3-contributor
-variant: low
+model: opencode-go/mimo-v2.5
+<!-- variant: low -->
 temperature: 0.2
 permission:
   bash:

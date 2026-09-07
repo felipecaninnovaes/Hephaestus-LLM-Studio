@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import DatasetCard from "@/components/studio/DatasetCard";
 import DatasetTable from "@/components/studio/DatasetTable";
@@ -52,6 +52,7 @@ export default function DatasetsPage() {
   const [deleting, setDeleting] = useState<Dataset | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [menu, setMenu] = useState<{ dataset: Dataset; x: number; y: number } | null>(null);
+  const pillsRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -78,6 +79,12 @@ export default function DatasetsPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    pillsRef.current
+      ?.querySelector('[data-active="true"]')
+      ?.scrollIntoView({ inline: "nearest", block: "nearest" });
+  }, [pill]);
 
   const counts = useMemo(() => {
     const c: Record<Pill, number> = {
@@ -140,44 +147,51 @@ export default function DatasetsPage() {
 
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-6">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-baseline gap-3">
-          <h1 className="tracking-display text-base font-semibold text-zinc-100 lg:text-lg">
-            Gerenciador de Datasets
-          </h1>
-          <span className="font-mono text-xs text-zinc-500">
-            {datasets.length} datasets
-          </span>
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div className="min-w-0">
+          <div className="flex items-baseline gap-3">
+            <h1 className="font-display tracking-display truncate text-xl font-semibold text-zinc-100 lg:text-2xl" title="Gerenciador de Datasets">
+              Gerenciador de Datasets
+            </h1>
+            <span className="shrink-0 font-mono text-xs text-zinc-500">
+              {datasets.length} datasets
+            </span>
+          </div>
+          <p className="mt-0.5 text-xs text-zinc-400">
+            Repositório unificado por categoria: Difusão, OpenCLIP e YOLO. Clique em um dataset para abrir a galeria.
+          </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex min-h-[44px] items-center gap-2">
+          <div className="flex min-h-[44px] items-center gap-1 rounded-xl border border-zinc-800 bg-zinc-900/60 p-1" role="group" aria-label="Modo de visualização">
+            <button
+              type="button"
+              aria-pressed={viewMode === "grid"}
+              aria-label="Ver em grade"
+              title="Ver em grade"
+              onClick={() => setViewMode("grid")}
+              className={`flex min-h-[36px] min-w-[44px] items-center justify-center rounded-lg p-2 transition-colors ${viewMode === "grid" ? "bg-zinc-800 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
+            >
+              <IconGrid className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              aria-pressed={viewMode === "list"}
+              aria-label="Ver em lista"
+              title="Ver em lista"
+              onClick={() => setViewMode("list")}
+              className={`flex min-h-[36px] min-w-[44px] items-center justify-center rounded-lg p-2 transition-colors ${viewMode === "list" ? "bg-zinc-800 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
+            >
+              <IconList className="h-4 w-4" />
+            </button>
+          </div>
           <button
             type="button"
             onClick={() => setCreateOpen(true)}
-            className="flex items-center gap-1.5 rounded-xl bg-emerald-500 px-3 py-2 text-xs font-semibold text-zinc-950 shadow-lg shadow-emerald-500/20"
+            className="flex h-11 min-h-[44px] items-center gap-1.5 rounded-xl bg-brand-500 px-4 text-xs font-semibold text-white shadow-lg shadow-brand-500/20 transition-colors hover:bg-brand-600 active:scale-[0.98]"
           >
             <IconPlus className="h-4 w-4" />
             Novo Dataset
           </button>
-          <div className="flex items-center gap-1 rounded-full border border-zinc-800 bg-zinc-900/60 p-1">
-          <button
-            type="button"
-            aria-pressed={viewMode === "grid"}
-            aria-label="Ver em grade"
-            onClick={() => setViewMode("grid")}
-            className={`rounded-full p-1.5 transition-colors ${viewMode === "grid" ? "bg-zinc-800 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
-          >
-            <IconGrid className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            aria-pressed={viewMode === "list"}
-            aria-label="Ver em lista"
-            onClick={() => setViewMode("list")}
-            className={`rounded-full p-1.5 transition-colors ${viewMode === "list" ? "bg-zinc-800 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
-          >
-            <IconList className="h-4 w-4" />
-          </button>
-          </div>
         </div>
       </div>
 
@@ -189,28 +203,38 @@ export default function DatasetsPage() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Buscar por nome, slug ou classe…"
-            className="w-full rounded-xl border border-zinc-800 bg-zinc-900/60 py-2 pr-3 pl-9 text-sm text-zinc-100 placeholder:text-zinc-500"
+            aria-label="Buscar por nome, slug ou classe"
+            className="w-full rounded-xl border border-zinc-800 bg-black/40 py-2 pr-3 pl-9 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-brand-500 focus:outline-none"
           />
         </label>
-        <div className="flex flex-wrap gap-1.5">
-          {PILLS.map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              onClick={() => setPill(p.id)}
-              aria-pressed={pill === p.id}
-              className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
-                pill === p.id
-                  ? "border-emerald-400/50 bg-emerald-400/10 text-emerald-300"
-                  : "border-zinc-800 bg-zinc-900/60 text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              {p.label}{" "}
-              <span className="font-mono text-[11px] opacity-70">
-                {counts[p.id]}
-              </span>
-            </button>
-          ))}
+        <div className="relative min-w-0 flex-1 sm:flex-none">
+          <div ref={pillsRef} className="no-scrollbar flex gap-1.5 overflow-x-auto py-0.5 pr-8">
+            {PILLS.map((p) => {
+              const label = `${p.label} (${counts[p.id]})`;
+              const active = pill === p.id;
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => setPill(p.id)}
+                  aria-pressed={active}
+                  data-active={active}
+                  title={label}
+                  className={`flex min-h-[44px] shrink-0 items-center gap-1.5 truncate rounded-xl border px-3.5 py-2 text-xs transition-colors ${
+                    active
+                      ? "border-brand-500/40 bg-brand-500/20 font-semibold text-brand-300"
+                      : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200"
+                  }`}
+                >
+                  <span className="truncate">{p.label}</span>{" "}
+                  <span className="font-mono text-[11px] opacity-70">
+                    {counts[p.id]}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="pointer-events-none absolute top-0 right-0 h-full w-8 bg-gradient-to-l from-zinc-950 to-transparent" aria-hidden="true" />
         </div>
       </div>
 
@@ -224,14 +248,16 @@ export default function DatasetsPage() {
           <button
             type="button"
             onClick={load}
-            className="rounded-lg border border-zinc-700/80 bg-zinc-900/60 px-4 py-2 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800"
+            className="h-9 rounded-lg border border-zinc-700/80 bg-zinc-900/60 px-4 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800"
           >
             Tentar novamente
           </button>
         </div>
       ) : datasets.length === 0 ? (
         <div className="glass-card flex flex-col items-center gap-2 rounded-2xl p-12 text-center">
-          <IconDatabase className="h-10 w-10 text-zinc-700" />
+          <span className="mx-auto mb-1 flex h-12 w-12 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900 text-zinc-400">
+            <IconDatabase className="h-10 w-10 text-zinc-700" />
+          </span>
           <p className="text-sm font-medium text-zinc-200">
             Nenhum dataset ainda
           </p>
@@ -241,17 +267,20 @@ export default function DatasetsPage() {
         </div>
       ) : filtered.length === 0 ? (
         <div className="glass-card flex flex-col items-center gap-3 rounded-2xl p-12 text-center">
+          <span className="mx-auto mb-1 flex h-12 w-12 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900 text-zinc-400">
+            <IconDatabase className="h-6 w-6" />
+          </span>
           <p className="text-sm font-medium text-zinc-200">Nada encontrado</p>
           <button
             type="button"
             onClick={clearFilters}
-            className="rounded-lg border border-zinc-700/80 bg-zinc-900/60 px-4 py-2 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800"
+            className="h-9 rounded-lg border border-zinc-700/80 bg-zinc-900/60 px-4 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800"
           >
             Limpar Filtros
           </button>
         </div>
       ) : viewMode === "grid" ? (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {filtered.map((d) => (
             <DatasetCard key={d.id} dataset={d} onContextMenu={handleContextMenu} />
           ))}

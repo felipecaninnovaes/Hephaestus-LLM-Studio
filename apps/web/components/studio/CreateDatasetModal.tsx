@@ -138,10 +138,10 @@ export default function CreateDatasetModal({ open, onClose, onCreated }: Props) 
       >
         <div className="flex items-center justify-between border-b border-white/10 pb-4">
           <div className="flex items-center space-x-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/15 text-emerald-400">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-brand-500/30 bg-brand-500/15 text-brand-400">
               <IconPlus className="h-4 w-4" />
             </div>
-            <h3 id="create-dataset-title" className="text-sm font-bold text-white">
+            <h3 id="create-dataset-title" className="font-display text-sm font-bold text-white">
               Novo Dataset
             </h3>
           </div>
@@ -163,7 +163,7 @@ export default function CreateDatasetModal({ open, onClose, onCreated }: Props) 
             </p>
           )}
           <div>
-            <label htmlFor="create-dataset-name" className="mb-1 block font-medium text-zinc-300">
+            <label htmlFor="create-dataset-name" className="tracking-caps mb-1 block font-mono text-[11px] font-medium uppercase text-zinc-300">
               Nome
             </label>
             <input
@@ -175,7 +175,7 @@ export default function CreateDatasetModal({ open, onClose, onCreated }: Props) 
               placeholder="Ex.: Inspeção de PCB v2"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              className="w-full rounded-xl border border-zinc-700/80 bg-zinc-900 px-3 py-2 font-mono text-zinc-200 focus:border-emerald-500 focus:outline-none"
+              className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3 py-2 font-mono text-zinc-200 focus:border-brand-500 focus:outline-none"
             />
             {slug && (
               <p className="mt-1 font-mono text-[11px] text-zinc-500">
@@ -191,14 +191,14 @@ export default function CreateDatasetModal({ open, onClose, onCreated }: Props) 
           </div>
 
           <div>
-            <label htmlFor="create-dataset-type" className="mb-1 block font-medium text-zinc-300">
+            <label htmlFor="create-dataset-type" className="tracking-caps mb-1 block font-mono text-[11px] font-medium uppercase text-zinc-300">
               Tipo / Tarefa
             </label>
             <select
               id="create-dataset-type"
               value={type}
               onChange={(e) => setType(e.target.value as DatasetType)}
-              className="w-full rounded-xl border border-zinc-700/80 bg-zinc-900 px-3 py-2 font-mono text-zinc-200"
+              className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3 py-2 font-mono text-zinc-200 focus:border-brand-500 focus:outline-none"
             >
               {TYPES.map((t) => (
                 <option key={t} value={t}>
@@ -209,7 +209,7 @@ export default function CreateDatasetModal({ open, onClose, onCreated }: Props) 
           </div>
 
           <div>
-            <label htmlFor="create-dataset-classes" className="mb-1 block font-medium text-zinc-300">
+            <label htmlFor="create-dataset-classes" className="tracking-caps mb-1 block font-mono text-[11px] font-medium uppercase text-zinc-300">
               Classes (opcional)
             </label>
             <input
@@ -218,7 +218,7 @@ export default function CreateDatasetModal({ open, onClose, onCreated }: Props) 
               placeholder="defeito_a, defeito_b, anomalia"
               value={classesRaw}
               onChange={(e) => setClassesRaw(e.target.value)}
-              className="w-full rounded-xl border border-zinc-700/80 bg-zinc-900 px-3 py-2 font-mono text-zinc-200 focus:border-emerald-500 focus:outline-none"
+              className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3 py-2 font-mono text-zinc-200 focus:border-brand-500 focus:outline-none"
             />
             <p className="mt-1 text-[11px] text-zinc-500">
               Separadas por vírgula — ordem vira índice YOLO
@@ -235,14 +235,14 @@ export default function CreateDatasetModal({ open, onClose, onCreated }: Props) 
               type="button"
               onClick={onClose}
               disabled={busy}
-              className="rounded-xl bg-zinc-900 px-4 py-2 font-medium text-zinc-300 hover:bg-zinc-800"
+              className="h-9 rounded-xl bg-zinc-900 px-4 font-medium text-zinc-300 hover:bg-zinc-800"
             >
               Cancelar
             </button>
             <button
               type="submit"
               disabled={busy}
-              className="rounded-xl bg-emerald-500 px-5 py-2 font-semibold text-zinc-950 shadow-lg shadow-emerald-500/20 active:scale-[0.98] disabled:opacity-60"
+              className="h-11 rounded-xl bg-brand-500 px-5 font-semibold text-white shadow-lg shadow-brand-500/20 active:scale-[0.98] disabled:opacity-60"
             >
               {busy ? "Criando…" : "Criar Dataset"}
             </button>

@@ -71,6 +71,7 @@ export default function DatasetGalleryPage() {
   const [purgeOpen, setPurgeOpen] = useState(false);
   const [purgeBusy, setPurgeBusy] = useState(false);
   const [restoringId, setRestoringId] = useState<string | null>(null);
+  const [actionsOpen, setActionsOpen] = useState(false);
   const [searchInput, setSearchInput] = useState("");
   const [activeQuery, setActiveQuery] = useState<string | null>(null);
   const [similarFor, setSimilarFor] = useState<string | null>(null);
@@ -659,7 +660,7 @@ export default function DatasetGalleryPage() {
           <button
             type="button"
             onClick={() => router.push("/datasets")}
-            className="rounded-lg border border-zinc-800 bg-zinc-900 p-2 text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-white"
+            className="min-h-[44px] min-w-[44px] rounded-lg border border-zinc-800 bg-zinc-900 p-2 text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
             title="Voltar para a lista de datasets"
             aria-label="Voltar para a lista de datasets"
           >
@@ -673,11 +674,14 @@ export default function DatasetGalleryPage() {
               <polyline points="15 18 9 12 15 6" />
             </svg>
           </button>
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-emerald-400">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-brand-500/30 bg-brand-500/10 text-brand-400">
             <IconDatabase className="h-5 w-5" />
           </div>
-          <div>
-            <h2 className="text-base font-bold tracking-tight text-white">
+          <div className="min-w-0 flex-1">
+            <h2
+              title={dataset.title}
+              className="truncate text-base font-bold tracking-tight text-white"
+            >
               {dataset.title}
             </h2>
             <p className="font-mono text-xs text-zinc-400">
@@ -687,12 +691,12 @@ export default function DatasetGalleryPage() {
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="hidden flex-wrap items-center gap-2 md:flex">
           <button
             type="button"
             onClick={() => setClassesOpen(true)}
             title="Renomear, reordenar, criar ou remover classes"
-            className="flex items-center space-x-1.5 rounded-lg border border-zinc-700/80 bg-zinc-900 px-3 py-2 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800"
+            className="flex h-9 items-center space-x-1.5 rounded-lg border border-zinc-700/80 bg-zinc-900 px-3 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
           >
             <IconLayers className="h-4 w-4" />
             <span>Classes</span>
@@ -701,7 +705,7 @@ export default function DatasetGalleryPage() {
             type="button"
             disabled
             title="Preparo assistido chega numa fatia futura."
-            className="flex items-center space-x-1.5 rounded-lg border border-zinc-700/80 bg-zinc-900 px-3 py-2 text-xs font-medium text-zinc-200 opacity-60"
+            className="flex h-9 cursor-not-allowed items-center space-x-1.5 rounded-lg border border-zinc-700/80 bg-zinc-900 px-3 text-xs font-medium text-zinc-200 opacity-60"
           >
             <IconSparkles className="h-4 w-4" />
             <span>AutoLabel</span>
@@ -710,39 +714,119 @@ export default function DatasetGalleryPage() {
             type="button"
             disabled
             title="Geração automática de boxes chega na fatia 4."
-            className="flex items-center space-x-1.5 rounded-lg border border-zinc-700/80 bg-zinc-900 px-3 py-2 text-xs font-medium text-zinc-200 opacity-60"
+            className="flex h-9 cursor-not-allowed items-center space-x-1.5 rounded-lg border border-zinc-700/80 bg-zinc-900 px-3 text-xs font-medium text-zinc-200 opacity-60"
           >
             <IconTarget className="h-4 w-4" />
             <span>AutoTracker</span>
           </button>
           <button
             type="button"
-            onClick={handleExport}
-            disabled={exporting}
-            title="Baixar backup estruturado (.zip)"
-            className="flex items-center space-x-1.5 rounded-lg border border-zinc-700/80 bg-zinc-900 px-3 py-2 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800 disabled:opacity-60"
-          >
-            <IconDownload className="h-4 w-4" />
-            <span>{exporting ? "Exportando…" : "Exportar"}</span>
-          </button>
-          <button
-            type="button"
             onClick={() => setImportOpen(true)}
             title="Importar backup estruturado (.zip)"
-            className="flex items-center space-x-1.5 rounded-lg border border-zinc-700/80 bg-zinc-900 px-3 py-2 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800"
+            className="flex h-9 items-center space-x-1.5 rounded-lg border border-zinc-700/80 bg-zinc-900 px-3 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
           >
             <IconFolder className="h-4 w-4" />
             <span>Importar</span>
           </button>
           <button
             type="button"
+            onClick={handleExport}
+            disabled={exporting}
+            title="Baixar backup estruturado (.zip)"
+            className="flex h-11 items-center space-x-1.5 rounded-lg bg-brand-500 px-4 text-xs font-semibold text-white shadow-lg shadow-brand-500/20 transition-colors hover:bg-brand-600 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+          >
+            <IconDownload className="h-4 w-4" />
+            <span>{exporting ? "Exportando…" : "Exportar"}</span>
+          </button>
+          <button
+            type="button"
             disabled
             title="Treino chega na fatia 4."
-            className="flex items-center space-x-1.5 rounded-lg bg-emerald-500 px-4 py-2 text-xs font-semibold text-zinc-950 opacity-60 shadow-lg shadow-emerald-500/20"
+            className="flex h-9 cursor-not-allowed items-center space-x-1.5 rounded-lg border border-zinc-700/80 bg-zinc-900 px-3 text-xs font-medium text-zinc-200 opacity-60"
           >
             <IconPlay className="h-4 w-4" />
             <span>Treinar este Dataset</span>
           </button>
+        </div>
+        <div className="relative md:hidden">
+          <button
+            type="button"
+            onClick={() => setActionsOpen((v) => !v)}
+            aria-expanded={actionsOpen}
+            aria-label="Ações do dataset"
+            title="Ações do dataset"
+            className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg border border-zinc-700/80 bg-zinc-900 px-3 text-lg leading-none text-zinc-200 transition-colors hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+          >
+            <span aria-hidden="true">⋯</span>
+          </button>
+          {actionsOpen && (
+            <div className="glass-menu absolute right-0 z-30 mt-2 flex w-52 flex-col gap-1 rounded-2xl p-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setActionsOpen(false);
+                  setClassesOpen(true);
+                }}
+                title="Renomear, reordenar, criar ou remover classes"
+                className="flex h-9 items-center space-x-2 rounded-lg px-3 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800"
+              >
+                <IconLayers className="h-4 w-4" />
+                <span>Classes</span>
+              </button>
+              <button
+                type="button"
+                disabled
+                title="Preparo assistido chega numa fatia futura."
+                className="flex h-9 cursor-not-allowed items-center space-x-2 rounded-lg px-3 text-xs font-medium text-zinc-200 opacity-60"
+              >
+                <IconSparkles className="h-4 w-4" />
+                <span>AutoLabel</span>
+              </button>
+              <button
+                type="button"
+                disabled
+                title="Geração automática de boxes chega na fatia 4."
+                className="flex h-9 cursor-not-allowed items-center space-x-2 rounded-lg px-3 text-xs font-medium text-zinc-200 opacity-60"
+              >
+                <IconTarget className="h-4 w-4" />
+                <span>AutoTracker</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setActionsOpen(false);
+                  setImportOpen(true);
+                }}
+                title="Importar backup estruturado (.zip)"
+                className="flex h-9 items-center space-x-2 rounded-lg px-3 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800"
+              >
+                <IconFolder className="h-4 w-4" />
+                <span>Importar</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setActionsOpen(false);
+                  handleExport();
+                }}
+                disabled={exporting}
+                title="Baixar backup estruturado (.zip)"
+                className="flex h-9 items-center space-x-2 rounded-lg px-3 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800 disabled:opacity-60"
+              >
+                <IconDownload className="h-4 w-4" />
+                <span>{exporting ? "Exportando…" : "Exportar"}</span>
+              </button>
+              <button
+                type="button"
+                disabled
+                title="Treino chega na fatia 4."
+                className="flex h-9 cursor-not-allowed items-center space-x-2 rounded-lg px-3 text-xs font-medium text-zinc-200 opacity-60"
+              >
+                <IconPlay className="h-4 w-4" />
+                <span>Treinar este Dataset</span>
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -771,9 +855,9 @@ export default function DatasetGalleryPage() {
             type="button"
             onClick={() => switchView("ativas")}
             aria-pressed={view === "ativas"}
-            className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
+            className={`h-9 rounded-full border px-3 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 ${
               view === "ativas"
-                ? "border-emerald-400/50 bg-emerald-400/10 text-emerald-300"
+                ? "border-brand-500/50 bg-brand-500/10 text-brand-300"
                 : "border-zinc-800 bg-zinc-900/60 text-zinc-400 hover:text-zinc-200"
             }`}
           >
@@ -786,9 +870,9 @@ export default function DatasetGalleryPage() {
             type="button"
             onClick={() => switchView("trash")}
             aria-pressed={view === "trash"}
-            className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
+            className={`h-9 rounded-full border px-3 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 ${
               view === "trash"
-                ? "border-emerald-400/50 bg-emerald-400/10 text-emerald-300"
+                ? "border-brand-500/50 bg-brand-500/10 text-brand-300"
                 : "border-zinc-800 bg-zinc-900/60 text-zinc-400 hover:text-zinc-200"
             }`}
           >
@@ -818,7 +902,7 @@ export default function DatasetGalleryPage() {
           }}
           className="flex flex-wrap items-center gap-2"
         >
-          <div className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-950/60 px-3 py-2 focus-within:border-emerald-500/60">
+          <div className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-950/60 px-3 py-2 focus-within:border-brand-500/60">
             <IconSearch className="h-4 w-4 shrink-0 text-zinc-500" />
             <label htmlFor="gallery-search" className="sr-only">
               Buscar por texto
@@ -831,13 +915,13 @@ export default function DatasetGalleryPage() {
               onChange={(e) => setSearchInput(e.target.value)}
               placeholder="Buscar por texto — ex.: 'defeito de solda'"
               aria-label="Buscar por texto"
-              className="min-w-0 flex-1 rounded-lg bg-transparent text-xs text-zinc-200 placeholder:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+              className="min-w-0 flex-1 rounded-lg bg-transparent text-xs text-zinc-200 placeholder:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
             />
           </div>
           <button
             type="submit"
             disabled={searching}
-            className="flex items-center space-x-1.5 rounded-xl bg-emerald-500 px-4 py-2 text-xs font-semibold text-zinc-950 shadow-lg shadow-emerald-500/20 transition-all hover:bg-emerald-400 disabled:opacity-60"
+            className="flex h-11 items-center space-x-1.5 rounded-xl bg-brand-500 px-4 text-xs font-semibold text-white shadow-lg shadow-brand-500/20 transition-all hover:bg-brand-600 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
           >
             <IconSearch className="h-4 w-4" />
             <span>{searching ? "Buscando…" : "Buscar"}</span>
@@ -888,7 +972,7 @@ export default function DatasetGalleryPage() {
             {items.map((item) => (
               <div
                 key={item.id}
-                className="group relative h-36 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/90 transition-all hover:border-emerald-500/60"
+                className="group relative h-24 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/90 transition-all hover:border-brand-500/60"
               >
                 <img
                   src={item.url}
@@ -910,7 +994,7 @@ export default function DatasetGalleryPage() {
                   {restoringId === item.id ? "Restaurando…" : "Restaurar"}
                 </button>
                 <div className="absolute inset-x-0 bottom-0 flex items-center justify-between border-t border-zinc-800/80 bg-zinc-950/90 px-2.5 py-1.5 font-mono text-[10px] text-zinc-400 backdrop-blur-sm">
-                  <span className="truncate">{item.filename}</span>
+                  <span title={item.filename} className="truncate">{item.filename}</span>
                 </div>
               </div>
             ))}
@@ -919,7 +1003,7 @@ export default function DatasetGalleryPage() {
                 type="button"
                 onClick={loadMore}
                 disabled={loadingMore}
-                className="flex h-36 flex-col items-center justify-center space-y-1.5 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 text-zinc-400 transition-all hover:border-emerald-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 disabled:opacity-60"
+                className="flex h-24 flex-col items-center justify-center space-y-1.5 md:h-36 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 text-zinc-400 transition-all hover:border-brand-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 disabled:opacity-60"
               >
                 <span className="font-mono text-[10px]">
                   {loadingMore ? "Carregando…" : "Carregar mais"}
@@ -983,7 +1067,7 @@ export default function DatasetGalleryPage() {
                       `/datasets/${datasetId}/annotate/${result.image.id}`,
                     )
                   }
-                  className="group relative h-36 cursor-pointer overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/90 transition-all hover:border-emerald-500/60"
+                  className="group relative h-24 cursor-pointer overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/90 transition-all hover:border-brand-500/60"
                 >
                   <img
                     src={result.image.url}
@@ -994,12 +1078,12 @@ export default function DatasetGalleryPage() {
                   <div className="absolute inset-0 bg-[radial-gradient(#ffffff_1px,transparent_1px)] opacity-20 [background-size:16px_16px]"></div>
                   <span
                     title="Similaridade (cosseno, -1..1)"
-                    className="absolute top-2 right-2 rounded border border-zinc-700 bg-zinc-950/90 px-1.5 py-0.5 font-mono text-[10px] text-emerald-300"
+                    className="absolute top-2 right-2 rounded border border-brand-500/30 bg-zinc-950/90 px-1.5 py-0.5 font-mono text-[10px] text-brand-300"
                   >
                     {result.score.toFixed(2)}
                   </span>
                   <div className="absolute inset-x-0 bottom-0 flex items-center justify-between border-t border-zinc-800/80 bg-zinc-950/90 px-2.5 py-1.5 font-mono text-[10px] text-zinc-400 backdrop-blur-sm">
-                    <span className="truncate">{result.image.filename}</span>
+                    <span title={result.image.filename} className="truncate">{result.image.filename}</span>
                   </div>
                 </div>
               ))}
@@ -1012,7 +1096,7 @@ export default function DatasetGalleryPage() {
             <div
               key={item.id}
               onClick={() => handleTileClick(item)}
-              className="group relative h-36 cursor-pointer overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/90 transition-all hover:border-emerald-500/60"
+              className="group relative h-24 cursor-pointer overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/90 transition-all hover:border-brand-500/60"
             >
               <img
                 src={item.url}
@@ -1045,14 +1129,14 @@ export default function DatasetGalleryPage() {
                   }}
                   aria-label={`Buscar similares de ${item.filename}`}
                   title="Buscar similares"
-                  className="rounded-lg border border-emerald-500/40 bg-zinc-950/90 p-1.5 text-emerald-300 opacity-0 transition-all group-hover:opacity-100 focus-visible:opacity-100 hover:bg-emerald-500/20"
+                  className="rounded-lg border border-brand-500/40 bg-zinc-950/90 p-1.5 text-brand-300 opacity-0 transition-all group-hover:opacity-100 focus-visible:opacity-100 hover:bg-brand-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
                 >
                   <IconSearch className="h-3.5 w-3.5" />
                 </button>
               </div>
-              <div className="absolute inset-x-0 bottom-0 flex items-center justify-between border-t border-zinc-800/80 bg-zinc-950/90 px-2.5 py-1.5 font-mono text-[10px] text-zinc-400 backdrop-blur-sm">
-                <span className="truncate">{item.filename}</span>
-                <span className="shrink-0 transition-colors group-hover:text-emerald-400">
+              <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 border-t border-zinc-800/80 bg-zinc-950/90 px-2.5 py-1.5 font-mono text-[10px] text-zinc-400 backdrop-blur-sm">
+                <span title={item.filename} className="min-w-0 flex-1 truncate">{item.filename}</span>
+                <span title={dataset.category === "yolo" ? "Editar bounding boxes" : "Ver caption"} className="shrink-0 truncate transition-colors group-hover:text-brand-400">
                   {dataset.category === "yolo" ? "editar bbox →" : "ver caption →"}
                 </span>
               </div>
@@ -1062,7 +1146,7 @@ export default function DatasetGalleryPage() {
             type="button"
             onClick={() => fileRef.current?.click()}
             disabled={uploading}
-            className="flex h-36 flex-col items-center justify-center space-y-1.5 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 text-zinc-400 transition-all hover:border-emerald-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 disabled:opacity-60"
+            className="flex h-24 flex-col items-center justify-center space-y-1.5 md:h-36 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 text-zinc-400 transition-all hover:border-brand-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 disabled:opacity-60"
           >
             <IconPlus className="h-5 w-5" />
             <span className="font-mono text-[10px]">
@@ -1076,7 +1160,7 @@ export default function DatasetGalleryPage() {
               type="button"
               onClick={loadMore}
               disabled={loadingMore}
-              className="flex h-36 flex-col items-center justify-center space-y-1.5 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 text-zinc-400 transition-all hover:border-emerald-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 disabled:opacity-60"
+              className="flex h-24 flex-col items-center justify-center space-y-1.5 md:h-36 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 text-zinc-400 transition-all hover:border-brand-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 disabled:opacity-60"
             >
               <span className="font-mono text-[10px]">
                 {loadingMore ? "Carregando…" : "Carregar mais"}

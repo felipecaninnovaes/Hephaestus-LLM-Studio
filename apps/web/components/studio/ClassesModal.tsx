@@ -211,7 +211,7 @@ export default function ClassesModal({
                   placeholder="nome_da_classe"
                   maxLength={64}
                   aria-label={`Classe ${i + 1}`}
-                  className="w-full rounded-xl border border-zinc-700/80 bg-zinc-900 px-3 py-2 font-mono text-zinc-200 focus:border-emerald-500 focus:outline-none"
+                  className="h-9 w-full rounded-xl border border-zinc-700/80 bg-zinc-900 px-3 font-mono text-zinc-200 focus:border-brand-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
                 />
                 <button
                   type="button"
@@ -229,7 +229,7 @@ export default function ClassesModal({
             type="button"
             onClick={addRow}
             disabled={busy || rows.length >= MAX_CLASSES}
-            className="flex items-center space-x-1.5 rounded-xl border border-zinc-700/80 bg-zinc-900 px-3 py-2 font-medium text-zinc-300 transition-colors hover:bg-zinc-800 disabled:opacity-60"
+            className="flex h-9 items-center space-x-1.5 rounded-xl border border-zinc-700/80 bg-zinc-900 px-3 font-medium text-zinc-300 transition-colors hover:bg-zinc-800 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
           >
             <IconPlus className="h-4 w-4" />
             <span>Adicionar classe</span>
@@ -240,7 +240,7 @@ export default function ClassesModal({
               type="button"
               onClick={onClose}
               disabled={busy}
-              className="rounded-xl bg-zinc-900 px-4 py-2 font-medium text-zinc-300 hover:bg-zinc-800"
+              className="h-9 rounded-xl bg-zinc-900 px-4 font-medium text-zinc-300 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
             >
               Cancelar
             </button>
@@ -248,7 +248,7 @@ export default function ClassesModal({
               type="submit"
               disabled={busy || unchanged}
               title={unchanged ? "Nenhuma alteração para salvar." : undefined}
-              className="rounded-xl bg-emerald-500 px-5 py-2 font-semibold text-zinc-950 shadow-lg shadow-emerald-500/20 active:scale-[0.98] disabled:opacity-60"
+              className="h-11 rounded-xl bg-brand-500 px-4 font-semibold text-white shadow-lg shadow-brand-500/20 transition-colors hover:bg-brand-600 active:scale-[0.98] disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
             >
               {busy ? "Salvando…" : "Salvar classes"}
             </button>

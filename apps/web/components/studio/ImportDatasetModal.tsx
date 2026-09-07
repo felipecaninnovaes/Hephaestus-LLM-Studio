@@ -108,7 +108,7 @@ export default function ImportDatasetModal({ onClose }: Props) {
       >
         <div className="flex items-center justify-between border-b border-white/10 pb-4">
           <div className="flex items-center space-x-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/15 text-emerald-400">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-brand-500/30 bg-brand-500/15 text-brand-400">
               <IconDownload className="h-4 w-4" />
             </div>
             <h3 id="import-dataset-title" className="text-sm font-bold text-white">
@@ -137,7 +137,7 @@ export default function ImportDatasetModal({ onClose }: Props) {
                 type="button"
                 onClick={() => setPhase("form")}
                 disabled={busy}
-                className="rounded-xl bg-zinc-900 px-4 py-2 font-medium text-zinc-300 hover:bg-zinc-800"
+                className="h-9 rounded-xl bg-zinc-900 px-4 font-medium text-zinc-300 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
               >
                 Cancelar
               </button>
@@ -145,7 +145,7 @@ export default function ImportDatasetModal({ onClose }: Props) {
                 type="button"
                 onClick={() => runImport(true)}
                 disabled={busy}
-                className="rounded-xl bg-rose-500/90 px-5 py-2 text-xs font-semibold text-zinc-50 hover:bg-rose-500 disabled:opacity-60"
+                className="h-11 rounded-xl bg-rose-500/90 px-5 text-xs font-semibold text-zinc-50 hover:bg-rose-500 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
               >
                 {busy ? "Substituindo…" : "Substituir"}
               </button>
@@ -168,7 +168,7 @@ export default function ImportDatasetModal({ onClose }: Props) {
                 type="file"
                 accept=".zip"
                 onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-                className="w-full rounded-xl border border-zinc-700/80 bg-zinc-900 px-3 py-2 font-mono text-zinc-200 file:mr-3 file:rounded-lg file:border-0 file:bg-zinc-800 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-zinc-200 focus:border-emerald-500 focus:outline-none"
+                className="w-full rounded-xl border border-zinc-700/80 bg-zinc-900 px-3 py-2 font-mono text-zinc-200 file:mr-3 file:rounded-lg file:border-0 file:bg-zinc-800 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-zinc-200 focus:border-brand-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
               />
               {file && (
                 <p className="mt-1 font-mono text-[11px] text-zinc-500">
@@ -188,7 +188,7 @@ export default function ImportDatasetModal({ onClose }: Props) {
                 placeholder="Importar com outro nome"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                className="w-full rounded-xl border border-zinc-700/80 bg-zinc-900 px-3 py-2 font-mono text-zinc-200 focus:border-emerald-500 focus:outline-none"
+                className="w-full rounded-xl border border-zinc-700/80 bg-zinc-900 px-3 py-2 font-mono text-zinc-200 focus:border-brand-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
               />
               <p className="mt-1 text-[11px] text-zinc-500">
                 Vazio usa o nome do backup — máx 96 caracteres.
@@ -199,14 +199,14 @@ export default function ImportDatasetModal({ onClose }: Props) {
                 type="button"
                 onClick={onClose}
                 disabled={busy}
-                className="rounded-xl bg-zinc-900 px-4 py-2 font-medium text-zinc-300 hover:bg-zinc-800"
+                className="h-9 rounded-xl bg-zinc-900 px-4 font-medium text-zinc-300 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
               >
                 Cancelar
               </button>
               <button
                 type="submit"
                 disabled={busy || !file}
-                className="rounded-xl bg-emerald-500 px-5 py-2 font-semibold text-zinc-950 shadow-lg shadow-emerald-500/20 active:scale-[0.98] disabled:opacity-60"
+                className="h-11 rounded-xl bg-brand-500 px-4 font-semibold text-white shadow-lg shadow-brand-500/20 transition-colors hover:bg-brand-600 active:scale-[0.98] disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
               >
                 {busy ? "Importando…" : "Importar"}
               </button>

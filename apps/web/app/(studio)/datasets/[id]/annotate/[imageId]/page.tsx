@@ -520,14 +520,14 @@ export default function AnnotateImagePage() {
   return (
     <div className="flex flex-1 flex-col overflow-y-auto md:flex-row md:overflow-hidden">
       {/* Ferramentas e Classes Laterais */}
-      <div className="w-full space-y-5 border-r border-zinc-800/80 bg-zinc-950/60 p-4 md:w-72 md:overflow-y-auto">
+      <div className="w-full space-y-5 overflow-visible border-r border-zinc-800/80 bg-zinc-950/60 p-4 md:w-80 md:overflow-y-auto">
         <button
           type="button"
           onClick={() => router.push(`/datasets/${id}`)}
-          className="flex w-full items-center space-x-2 rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 text-xs font-medium text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-white"
+          className="flex h-9 w-full items-center space-x-2 rounded-xl border border-zinc-800 bg-zinc-900 px-3 text-xs font-medium text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
         >
           <svg
-            className="h-3.5 w-3.5"
+            className="h-3.5 w-3.5 shrink-0"
             fill="none"
             stroke="currentColor"
             strokeWidth="1.7"
@@ -535,7 +535,7 @@ export default function AnnotateImagePage() {
           >
             <polyline points="15 18 9 12 15 6" />
           </svg>
-          <span>Voltar para a galeria · {dataset.title}</span>
+          <span title={`Voltar para a galeria · ${dataset.title}`} className="min-w-0 flex-1 truncate text-left">Voltar para a galeria · {dataset.title}</span>
         </button>
 
         <div>
@@ -551,14 +551,28 @@ export default function AnnotateImagePage() {
                   key={tool.id}
                   type="button"
                   onClick={() => setActiveTool(tool.id)}
-                  className={`flex w-full items-center space-x-2 rounded-xl px-3 py-2 text-left font-medium transition-all ${
+                  className={`flex h-9 w-full items-center space-x-2 rounded-xl px-3 text-left font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 ${
                     isActive
-                      ? "border border-emerald-500/30 bg-emerald-500/15 text-emerald-300"
+                      ? "border border-brand-500/30 bg-brand-500/15 text-brand-300"
                       : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
                   }`}
                 >
                   <ToolIcon />
-                  <span>{tool.label}</span>
+                  <span>
+                    {(() => {
+                      const m = /^(.*\()([A-Za-z])\)$/.exec(tool.label);
+                      if (!m) return tool.label;
+                      return (
+                        <>
+                          {m[1]}
+                          <kbd className="rounded border border-white/10 bg-black/40 px-1 font-mono text-[10px]">
+                            {m[2]}
+                          </kbd>
+                          )
+                        </>
+                      );
+                    })()}
+                  </span>
                 </button>
               );
             })}
@@ -604,7 +618,7 @@ export default function AnnotateImagePage() {
           <button
             type="button"
             onClick={() => setClassesOpen(true)}
-            className="mt-2 w-full rounded-xl border border-zinc-700/80 bg-zinc-900 px-3 py-2 text-xs font-medium text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-white"
+            className="mt-2 h-9 w-full rounded-xl border border-zinc-700/80 bg-zinc-900 px-3 text-xs font-medium text-zinc-300 transition-colors hover:bg-zinc-800 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
           >
             Gerenciar classes
           </button>
@@ -645,7 +659,7 @@ export default function AnnotateImagePage() {
             type="button"
             onClick={handleSave}
             disabled={saving || !hasClasses}
-            className="mt-4 w-full rounded-xl bg-emerald-500 px-3 py-2 text-xs font-semibold text-zinc-950 transition-colors hover:bg-emerald-400"
+            className="mt-4 h-11 w-full rounded-xl bg-brand-500 px-3 text-xs font-semibold text-white transition-colors hover:bg-brand-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
           >
             {saving ? "Salvando…" : `${dirty ? "● " : ""}Salvar Anotações`}
           </button>
@@ -659,7 +673,7 @@ export default function AnnotateImagePage() {
             type="button"
             onClick={() => setZoom((z) => Math.max(50, z - 25))}
             aria-label="Diminuir zoom do canvas"
-            className="p-1 text-zinc-400 hover:text-white"
+            className="rounded p-1 text-zinc-400 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
             title="Diminuir Zoom"
           >
             <IconZoomOut />
@@ -669,7 +683,7 @@ export default function AnnotateImagePage() {
             type="button"
             onClick={() => setZoom((z) => Math.min(250, z + 25))}
             aria-label="Aumentar zoom do canvas"
-            className="p-1 text-zinc-400 hover:text-white"
+            className="rounded p-1 text-zinc-400 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
             title="Aumentar Zoom"
           >
             <IconZoomIn />
@@ -678,7 +692,7 @@ export default function AnnotateImagePage() {
           <button
             type="button"
             onClick={() => setZoom(100)}
-            className="text-[10px] text-emerald-400 hover:underline"
+            className="min-h-[44px] rounded px-1 text-[10px] text-brand-400 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
           >
             Resetar 100%
           </button>
@@ -686,7 +700,7 @@ export default function AnnotateImagePage() {
 
         <div
           ref={frameRef}
-          className={`relative flex items-center justify-center overflow-hidden rounded-2xl border-2 border-zinc-700/80 bg-zinc-900/90 shadow-2xl transition-transform duration-200 ${
+          className={`relative flex items-center justify-center overflow-hidden rounded-2xl border-2 border-zinc-700/80 border-t-white/20 bg-zinc-900/90 shadow-2xl transition-transform duration-200 ${
             activeTool === "pan"
               ? "cursor-grab active:cursor-grabbing"
               : activeTool === "bbox"

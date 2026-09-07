@@ -82,6 +82,7 @@ export default function DatasetGalleryPage() {
   const [indexBusy, setIndexBusy] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollAbortRef = useRef<AbortController | null>(null);
+  const searchTimerRef = useRef<number | null>(null);
 
   const load = useCallback(
     async (id: string) => {
@@ -184,6 +185,26 @@ export default function DatasetGalleryPage() {
     // items.length: re-checa o índice após upload (novas imagens mudam o estado).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [datasetId, items.length]);
+
+  // Busca dinâmica com debounce (500ms) — dispara quando searchInput muda.
+  useEffect(() => {
+    if (searchTimerRef.current) {
+      window.clearTimeout(searchTimerRef.current);
+      searchTimerRef.current = null;
+    }
+    const q = searchInput.trim();
+    if (!q) return;
+    searchTimerRef.current = window.setTimeout(() => {
+      void handleTextSearch(searchInput);
+    }, 500);
+    return () => {
+      if (searchTimerRef.current) {
+        window.clearTimeout(searchTimerRef.current);
+        searchTimerRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchInput]);
 
   function messageForSearch(err: unknown): string {
     if (err instanceof ApiError && err.message) return err.message;
@@ -895,15 +916,13 @@ export default function DatasetGalleryPage() {
       )}
 
       {view === "ativas" && (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            handleTextSearch(searchInput);
-          }}
-          className="flex flex-wrap items-center gap-2"
-        >
-          <div className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-950/60 px-3 py-2 focus-within:border-brand-500/60">
-            <IconSearch className="h-4 w-4 shrink-0 text-zinc-500" />
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex h-11 min-w-0 flex-1 items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950/60 px-3 focus-within:border-brand-500/60 focus-within:ring-1 focus-within:ring-brand-500/30">
+            {searching ? (
+              <span className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-brand-500/30 border-t-brand-500" />
+            ) : (
+              <IconSearch className="h-4 w-4 shrink-0 text-zinc-500" />
+            )}
             <label htmlFor="gallery-search" className="sr-only">
               Buscar por texto
             </label>
@@ -913,27 +932,32 @@ export default function DatasetGalleryPage() {
               value={searchInput}
               maxLength={500}
               onChange={(e) => setSearchInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  if (searchTimerRef.current)
+                    window.clearTimeout(searchTimerRef.current);
+                  void handleTextSearch(searchInput);
+                }
+              }}
               placeholder="Buscar por texto — ex.: 'defeito de solda'"
               aria-label="Buscar por texto"
-              className="min-w-0 flex-1 rounded-lg bg-transparent text-xs text-zinc-200 placeholder:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+              className="min-w-0 flex-1 rounded-lg bg-transparent text-sm text-zinc-200 placeholder:text-zinc-600 focus-visible:outline-none"
             />
           </div>
-          <button
-            type="submit"
-            disabled={searching}
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] px-5 text-xs font-semibold whitespace-nowrap text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
-          >
-            <IconSearch className="h-4 w-4" />
-            <span>{searching ? "Buscando…" : "Buscar"}</span>
-          </button>
           <span aria-live="polite">
             {statusFailed || !searchStatus ? (
-              <span className="rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-xs font-medium text-zinc-400">
+              <span
+                title="Não foi possível consultar o status do índice"
+                className="cursor-default rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-xs font-medium text-zinc-400"
+              >
                 Status indisponível
               </span>
             ) : searchStatus.status === "not_indexed" ? (
               <span className="flex flex-wrap items-center gap-2">
-                <span className="rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-xs font-medium text-zinc-400">
+                <span
+                  title="Este dataset ainda não tem embeddings — use 'Indexar agora'"
+                  className="cursor-default rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-xs font-medium text-zinc-400"
+                >
                   Sem índice
                 </span>
                 <button
@@ -946,20 +970,29 @@ export default function DatasetGalleryPage() {
                 </button>
               </span>
             ) : searchStatus.status === "indexing" ? (
-              <span className="rounded-full border border-amber-400/40 bg-amber-400/10 px-3 py-1.5 font-mono text-xs font-medium text-amber-300">
+              <span
+                title="Indexação de busca semântica em andamento"
+                className="cursor-default rounded-full border border-amber-400/40 bg-amber-400/10 px-3 py-1.5 font-mono text-xs font-medium text-amber-300"
+              >
                 Indexando {searchStatus.indexedCount}/{searchStatus.imagesCount}
               </span>
             ) : searchStatus.status === "ready" ? (
-              <span className="rounded-full border border-[#34d399]/30 bg-[#34d399]/10 px-3 py-1.5 text-xs font-medium text-[#a7f3d0]">
+              <span
+                title="Índice de busca semântica pronto — a busca acontece enquanto você digita"
+                className="cursor-default rounded-full border border-[#34d399]/30 bg-[#34d399]/10 px-3 py-1.5 text-xs font-medium text-[#a7f3d0]"
+              >
                 Busca pronta
               </span>
             ) : (
-              <span className="rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-xs font-medium text-zinc-400">
+              <span
+                title="Há imagens sem embedding — reindexe"
+                className="cursor-default rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-xs font-medium text-zinc-400"
+              >
                 Índice desatualizado?
               </span>
             )}
           </span>
-        </form>
+        </div>
       )}
 
       {view === "trash" ? (
@@ -972,7 +1005,7 @@ export default function DatasetGalleryPage() {
             {items.map((item) => (
               <div
                 key={item.id}
-                className="group relative h-24 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/90 transition-all hover:border-brand-500/60"
+                className="group relative h-24 md:h-36 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/90 transition-all hover:border-brand-500/60"
               >
                 <img
                   src={item.url}
@@ -1067,7 +1100,7 @@ export default function DatasetGalleryPage() {
                       `/datasets/${datasetId}/annotate/${result.image.id}`,
                     )
                   }
-                  className="group relative h-24 cursor-pointer overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/90 transition-all hover:border-brand-500/60"
+                  className="group relative h-24 md:h-36 cursor-pointer overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/90 transition-all hover:border-brand-500/60"
                 >
                   <img
                     src={result.image.url}
@@ -1096,7 +1129,7 @@ export default function DatasetGalleryPage() {
             <div
               key={item.id}
               onClick={() => handleTileClick(item)}
-              className="group relative h-24 cursor-pointer overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/90 transition-all hover:border-brand-500/60"
+              className="group relative h-24 md:h-36 cursor-pointer overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/90 transition-all hover:border-brand-500/60"
             >
               <img
                 src={item.url}

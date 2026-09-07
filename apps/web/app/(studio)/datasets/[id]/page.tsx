@@ -76,6 +76,7 @@ export default function DatasetGalleryPage() {
   const [statusFailed, setStatusFailed] = useState(false);
   const [indexBusy, setIndexBusy] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollAbortRef = useRef<AbortController | null>(null);
 
   const load = useCallback(
     async (id: string) => {
@@ -121,6 +122,29 @@ export default function DatasetGalleryPage() {
       clearInterval(pollRef.current);
       pollRef.current = null;
     }
+    pollAbortRef.current?.abort();
+    pollAbortRef.current = null;
+  }
+
+  // Arma o polling do status (2s) — chamado pelo efeito de status E por
+  // handleTriggerIndex (review 3f fechamento [MAIOR]: o efeito não re-roda
+  // quando só o estado muda; sem isso o badge congelava em "Indexando 0/0").
+  function startSearchPolling() {
+    if (pollRef.current) return;
+    const pollCtrl = new AbortController();
+    pollAbortRef.current = pollCtrl;
+    pollRef.current = setInterval(async () => {
+      try {
+        const next = await getSearchStatus(datasetId as string, pollCtrl.signal);
+        if (pollCtrl.signal.aborted) return;
+        setSearchStatus(next);
+        setStatusFailed(false);
+        if (next.status !== "indexing") stopSearchPolling();
+      } catch {
+        if (pollCtrl.signal.aborted) return;
+        // Mantém o polling — falha transitória não trava a página.
+      }
+    }, 2000);
   }
 
   // Status do índice + polling a cada 2s enquanto indexa.
@@ -135,17 +159,7 @@ export default function DatasetGalleryPage() {
         setSearchStatus(st);
         setStatusFailed(false);
         if (st.status === "indexing") {
-          if (!pollRef.current) {
-            pollRef.current = setInterval(async () => {
-              try {
-                const next = await getSearchStatus(datasetId as string);
-                setSearchStatus(next);
-                if (next.status !== "indexing") stopSearchPolling();
-              } catch {
-                // Mantém o polling — falha transitória não trava a página.
-              }
-            }, 2000);
-          }
+          startSearchPolling();
         } else {
           stopSearchPolling();
         }
@@ -162,6 +176,8 @@ export default function DatasetGalleryPage() {
       ctrl.abort();
       stopSearchPolling();
     };
+    // items.length: re-checa o índice após upload (novas imagens mudam o estado).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [datasetId, items.length]);
 
   function messageForSearch(err: unknown): string {
@@ -333,7 +349,6 @@ export default function DatasetGalleryPage() {
     setIndexBusy(true);
     try {
       const res = await triggerSearchIndex(datasetId);
-      showToast("Indexação disparada.", "success");
       if (res.status === "indexing") {
         setSearchStatus((prev) =>
           prev
@@ -346,6 +361,12 @@ export default function DatasetGalleryPage() {
                 dim: 512,
               },
         );
+        // O efeito de status não re-roda só porque o estado mudou (deps:
+        // datasetId/items.length) — arma o polling aqui (review 3f [MAIOR]).
+        startSearchPolling();
+        showToast("Indexação disparada.", "success");
+      } else {
+        showToast("Nada a indexar — o dataset não tem imagens.", "info");
       }
     } catch (err) {
       showToast(messageForSearch(err), "error");
@@ -772,7 +793,7 @@ export default function DatasetGalleryPage() {
               onChange={(e) => setSearchInput(e.target.value)}
               placeholder="Buscar por texto — ex.: 'defeito de solda'"
               aria-label="Buscar por texto"
-              className="min-w-0 flex-1 bg-transparent text-xs text-zinc-200 placeholder:text-zinc-600 focus-visible:outline-none"
+              className="min-w-0 flex-1 rounded-lg bg-transparent text-xs text-zinc-200 placeholder:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
             />
           </div>
           <button

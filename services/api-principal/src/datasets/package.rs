@@ -239,6 +239,283 @@ struct ZipFileEntry {
     bytes: i64,
 }
 
+// ---------------------------------------------------------------------------
+// build_package — função compartilhada (F4.2b: refator do F4.1)
+// ---------------------------------------------------------------------------
+
+/// Resultado do build do package (reusado pela rota POST /:id/package e
+/// pelo job submission POST /api/jobs/yolo).
+pub struct PackageBuildResult {
+    pub version_id: String,
+    pub key: String,
+    pub bytes: i64,
+    pub md5_zip: String,
+    pub files: Vec<TransportFile>,
+}
+
+/// Constrói o package do dataset: congela snapshot, materializa YOLO, gera
+/// zip autossuficiente, faz PUT em `packages/<version_id>/` e INSERT em
+/// `dataset_versions`.
+///
+/// Retorna `Ok(PackageBuildResult)` com todos os dados que o chamador
+/// precisa (rota ou job submission). `Err(Response)` = erro HTTP pronto.
+///
+/// Refactor do F4.1: a rota `POST /:id/package` e o job submission
+/// compartilham esta função (ADR-0007 D7).
+pub async fn build_package(state: &AppState, ds_id: Uuid) -> Result<PackageBuildResult, Response> {
+    // 1. Dataset existe?
+    let ds: Option<(Uuid, String, String, String, String)> = match sqlx::query_as(
+        "SELECT id, slug, title, category, type, format FROM datasets WHERE id = $1",
+    )
+    .bind(ds_id)
+    .fetch_optional(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return Err(internal()),
+    };
+    let (_ds_id, slug, _title, category, _format) = match ds {
+        Some(r) => r,
+        None => return Err(err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND)),
+    };
+
+    // 2. Classes ordenadas por idx.
+    let class_rows: Vec<(Uuid, String, i32)> = match sqlx::query_as(
+        "SELECT id, name, idx FROM classes WHERE dataset_id = $1 ORDER BY idx",
+    )
+    .bind(ds_id)
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return Err(internal()),
+    };
+
+    // 3. Imagens ATIVAS com object_key (lixeira fora).
+    type ImgTuple = (Uuid, String, String, i32, i32, String);
+    let image_rows: Vec<ImgTuple> = match sqlx::query_as(
+        "SELECT id, filename, object_key, width, height, split FROM images WHERE dataset_id = $1 AND deleted_at IS NULL ORDER BY created_at, id",
+    )
+    .bind(ds_id)
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return Err(internal()),
+    };
+
+    // 4. Boxes das imagens ativas.
+    type BoxTuple = (Uuid, i32, f64, f64, f64, f64);
+    let box_rows: Vec<BoxTuple> = match sqlx::query_as(
+        "SELECT b.image_id, c.idx, b.x, b.y, b.w, b.h \
+         FROM boxes b \
+         JOIN images i ON i.id = b.image_id \
+         JOIN classes c ON c.id = b.class_id \
+         WHERE i.dataset_id = $1 AND i.deleted_at IS NULL",
+    )
+    .bind(ds_id)
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return Err(internal()),
+    };
+
+    // 5. Monta snapshot manifest.
+    let mut boxes_by_image: HashMap<Uuid, Vec<SnapshotBox>> = HashMap::new();
+    for (img_id, class_idx, x, y, w, h) in &box_rows {
+        boxes_by_image
+            .entry(*img_id)
+            .or_default()
+            .push(SnapshotBox {
+                class_idx: *class_idx,
+                x: *x,
+                y: *y,
+                w: *w,
+                h: *h,
+            });
+    }
+
+    let mut labeled = 0usize;
+    let snapshot_images: Vec<SnapshotImage> = image_rows
+        .iter()
+        .map(|(id, filename, _object_key, width, height, split)| {
+            let boxes = boxes_by_image.remove(id).unwrap_or_default();
+            if !boxes.is_empty() {
+                labeled += 1;
+            }
+            SnapshotImage {
+                filename: filename.clone(),
+                split: split.clone(),
+                width: *width,
+                height: *height,
+                boxes,
+            }
+        })
+        .collect();
+
+    let snapshot = PackageManifest {
+        dataset: SnapshotDataset {
+            id: ds_id,
+            slug: slug.clone(),
+            category,
+            engine: "yolo".to_string(),
+        },
+        classes: class_rows
+            .iter()
+            .map(|(_id, name, idx)| SnapshotClass {
+                idx: *idx,
+                name: name.clone(),
+            })
+            .collect(),
+        images: snapshot_images,
+        counts: SnapshotCounts {
+            images: image_rows.len(),
+            labeled,
+            classes: class_rows.len(),
+        },
+    };
+
+    // 6. Gera version_id e manifest_json (usados nos PUTs; INSERT fica no passo 9 abaixo).
+    let version_id = Uuid::new_v4();
+    let manifest_json = serde_json::to_value(&snapshot).unwrap_or(serde_json::Value::Null);
+
+    // 7. Materializa YOLO em tempdir + baixa imagens do storage + gera zip.
+    let tmp = match tempfile::TempDir::new() {
+        Ok(d) => d,
+        Err(_) => return Err(internal()),
+    };
+    let export_manifest = snapshot_to_export_manifest(&snapshot);
+    if materialize_yolo_tree(tmp.path(), &export_manifest)
+        .await
+        .is_err()
+    {
+        return Err(internal());
+    }
+    // Baixa binários das imagens do storage para o tempdir (fail-closed: 503 se blob ausente).
+    if let Err(resp) = materialize_images_from_storage(state, tmp.path(), &image_rows).await {
+        return Err(resp);
+    }
+    let (zip_path, file_entries) = match generate_package_zip(tmp.path(), &export_manifest).await {
+        Ok(p) => p,
+        Err(resp) => return Err(resp),
+    };
+
+    // 8. Calcula md5 e bytes do zip.
+    let zip_bytes = match tokio::fs::read(&zip_path).await {
+        Ok(b) => b,
+        Err(_) => return Err(internal()),
+    };
+    let zip_len = zip_bytes.len() as i64;
+    let zip_md5 = {
+        use md5::Digest;
+        let hash = md5::Md5::digest(&zip_bytes);
+        hex::encode(hash)
+    };
+
+    // 9–10. PUT zip, PUT manifest, INSERT — com compensação best-effort.
+    let zip_key = format!("packages/{version_id}/dataset.zip");
+    if state.storage.put(&zip_key, &zip_path).await.is_err() {
+        let _ = state
+            .storage
+            .delete_prefix(&format!("packages/{version_id}/"))
+            .await;
+        return Err(err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "storage_unavailable",
+            MSG_STORAGE_UNAVAILABLE,
+        ));
+    }
+
+    // Monta manifest.json de transporte (snake_case) e faz PUT.
+    let files_json: Vec<serde_json::Value> = file_entries
+        .iter()
+        .map(|fe| {
+            serde_json::json!({
+                "filename": fe.filename,
+                "md5": fe.md5,
+                "bytes": fe.bytes,
+            })
+        })
+        .collect();
+    let transport_manifest = serde_json::json!({
+        "dataset_id": ds_id.to_string(),
+        "slug": slug,
+        "category": snapshot.dataset.category,
+        "engine": snapshot.dataset.engine,
+        "files": files_json,
+        "md5_zip": zip_md5,
+        "bytes": zip_len,
+        "chunks": null,
+        "created_at": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    });
+    let manifest_key = format!("packages/{version_id}/manifest.json");
+    let manifest_path = tmp.path().join("manifest.json");
+    if tokio::fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&transport_manifest).unwrap_or_else(|_| "{}".to_string()),
+    )
+    .await
+    .is_err()
+    {
+        let _ = state
+            .storage
+            .delete_prefix(&format!("packages/{version_id}/"))
+            .await;
+        return Err(internal());
+    }
+    if state
+        .storage
+        .put(&manifest_key, &manifest_path)
+        .await
+        .is_err()
+    {
+        let _ = state
+            .storage
+            .delete_prefix(&format!("packages/{version_id}/"))
+            .await;
+        return Err(err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "storage_unavailable",
+            MSG_STORAGE_UNAVAILABLE,
+        ));
+    }
+
+    // INSERT em dataset_versions — só após PUTs bem-sucedidos (doutrina: objeto→linha).
+    let inserted =
+        sqlx::query("INSERT INTO dataset_versions (id, dataset_id, manifest) VALUES ($1, $2, $3)")
+            .bind(version_id)
+            .bind(ds_id)
+            .bind(&manifest_json)
+            .execute(&state.pool)
+            .await
+            .is_ok();
+    if !inserted {
+        let _ = state
+            .storage
+            .delete_prefix(&format!("packages/{version_id}/"))
+            .await;
+        return Err(internal());
+    }
+
+    // 11. Monta resultado.
+    let response_files: Vec<TransportFile> = file_entries
+        .into_iter()
+        .map(|fe| TransportFile {
+            filename: fe.filename,
+            md5: fe.md5,
+            bytes: fe.bytes,
+        })
+        .collect();
+    Ok(PackageBuildResult {
+        version_id: version_id.to_string(),
+        key: zip_key,
+        bytes: zip_len,
+        md5_zip: zip_md5,
+        files: response_files,
+    })
+}
+
 /// Gera zip do package (Stored para imagens, Deflated para texto).
 /// Retorna o caminho do zip + metadados de cada entrada (md5/bytes por arquivo).
 async fn generate_package_zip(
@@ -427,263 +704,21 @@ pub async fn package_dataset(
         );
     }
 
-    // 4. Dataset existe?
-    let ds: Option<(Uuid, String, String, String, String)> = match sqlx::query_as(
-        "SELECT id, slug, title, category, type, format FROM datasets WHERE id = $1",
-    )
-    .bind(ds_id)
-    .fetch_optional(&state.pool)
-    .await
-    {
-        Ok(r) => r,
-        Err(_) => return internal(),
-    };
-    let (_ds_id, slug, _title, category, _format) = match ds {
-        Some(r) => r,
-        None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
-    };
-
-    // 5. Classes ordenadas por idx.
-    let class_rows: Vec<(Uuid, String, i32)> = match sqlx::query_as(
-        "SELECT id, name, idx FROM classes WHERE dataset_id = $1 ORDER BY idx",
-    )
-    .bind(ds_id)
-    .fetch_all(&state.pool)
-    .await
-    {
-        Ok(r) => r,
-        Err(_) => return internal(),
-    };
-
-    // 6. Imagens ATIVAS com object_key (lixeira fora).
-    type ImgTuple = (Uuid, String, String, i32, i32, String);
-    let image_rows: Vec<ImgTuple> = match sqlx::query_as(
-        "SELECT id, filename, object_key, width, height, split FROM images WHERE dataset_id = $1 AND deleted_at IS NULL ORDER BY created_at, id",
-    )
-    .bind(ds_id)
-    .fetch_all(&state.pool)
-    .await
-    {
-        Ok(r) => r,
-        Err(_) => return internal(),
-    };
-
-    // 7. Boxes das imagens ativas.
-    type BoxTuple = (Uuid, i32, f64, f64, f64, f64);
-    let box_rows: Vec<BoxTuple> = match sqlx::query_as(
-        "SELECT b.image_id, c.idx, b.x, b.y, b.w, b.h \
-         FROM boxes b \
-         JOIN images i ON i.id = b.image_id \
-         JOIN classes c ON c.id = b.class_id \
-         WHERE i.dataset_id = $1 AND i.deleted_at IS NULL",
-    )
-    .bind(ds_id)
-    .fetch_all(&state.pool)
-    .await
-    {
-        Ok(r) => r,
-        Err(_) => return internal(),
-    };
-
-    // 8. Monta snapshot manifest.
-    let mut boxes_by_image: HashMap<Uuid, Vec<SnapshotBox>> = HashMap::new();
-    for (img_id, class_idx, x, y, w, h) in &box_rows {
-        boxes_by_image
-            .entry(*img_id)
-            .or_default()
-            .push(SnapshotBox {
-                class_idx: *class_idx,
-                x: *x,
-                y: *y,
-                w: *w,
-                h: *h,
-            });
+    // 4. Build package (função compartilhada com job submission — F4.2b).
+    match build_package(&state, ds_id).await {
+        Ok(result) => (
+            StatusCode::OK,
+            Json(PackageResponse {
+                version_id: result.version_id,
+                key: result.key,
+                bytes: result.bytes,
+                md5_zip: result.md5_zip,
+                files: result.files,
+            }),
+        )
+            .into_response(),
+        Err(resp) => resp,
     }
-
-    let mut labeled = 0usize;
-    let snapshot_images: Vec<SnapshotImage> = image_rows
-        .iter()
-        .map(|(id, filename, _object_key, width, height, split)| {
-            let boxes = boxes_by_image.remove(id).unwrap_or_default();
-            if !boxes.is_empty() {
-                labeled += 1;
-            }
-            SnapshotImage {
-                filename: filename.clone(),
-                split: split.clone(),
-                width: *width,
-                height: *height,
-                boxes,
-            }
-        })
-        .collect();
-
-    let snapshot = PackageManifest {
-        dataset: SnapshotDataset {
-            id: ds_id,
-            slug: slug.clone(),
-            category,
-            engine: "yolo".to_string(),
-        },
-        classes: class_rows
-            .iter()
-            .map(|(_id, name, idx)| SnapshotClass {
-                idx: *idx,
-                name: name.clone(),
-            })
-            .collect(),
-        images: snapshot_images,
-        counts: SnapshotCounts {
-            images: image_rows.len(),
-            labeled,
-            classes: class_rows.len(),
-        },
-    };
-
-    // 9. Gera version_id e manifest_json (usados nos PUTs; INSERT fica no passo 8 abaixo).
-    let version_id = Uuid::new_v4();
-    let manifest_json = serde_json::to_value(&snapshot).unwrap_or(serde_json::Value::Null);
-
-    // 10. Materializa YOLO em tempdir + baixa imagens do storage + gera zip.
-    let tmp = match tempfile::TempDir::new() {
-        Ok(d) => d,
-        Err(_) => return internal(),
-    };
-    let export_manifest = snapshot_to_export_manifest(&snapshot);
-    if materialize_yolo_tree(tmp.path(), &export_manifest)
-        .await
-        .is_err()
-    {
-        return internal();
-    }
-    // Baixa binários das imagens do storage para o tempdir (fail-closed: 503 se blob ausente).
-    if let Err(resp) = materialize_images_from_storage(&state, tmp.path(), &image_rows).await {
-        return resp;
-    }
-    let (zip_path, file_entries) = match generate_package_zip(tmp.path(), &export_manifest).await {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
-
-    // 11. Calcula md5 e bytes do zip.
-    let zip_bytes = match tokio::fs::read(&zip_path).await {
-        Ok(b) => b,
-        Err(_) => return internal(),
-    };
-    let zip_len = zip_bytes.len() as i64;
-    let zip_md5 = {
-        use md5::Digest;
-        let hash = md5::Md5::digest(&zip_bytes);
-        hex::encode(hash)
-    };
-
-    // 12–13–14. PUT zip, PUT manifest, INSERT — com compensação best-effort:
-    // se PUTs ou INSERT falharem, limpa objetos órfãos no storage.
-    let zip_key = format!("packages/{version_id}/dataset.zip");
-    if state.storage.put(&zip_key, &zip_path).await.is_err() {
-        let _ = state
-            .storage
-            .delete_prefix(&format!("packages/{version_id}/"))
-            .await;
-        return err(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "storage_unavailable",
-            MSG_STORAGE_UNAVAILABLE,
-        );
-    }
-
-    // Monta manifest.json de transporte (snake_case) e faz PUT.
-    // D1: files[] = entradas do zip (md5 + bytes por arquivo; md5_zip = md5 do zip).
-    let files_json: Vec<serde_json::Value> = file_entries
-        .iter()
-        .map(|fe| {
-            serde_json::json!({
-                "filename": fe.filename,
-                "md5": fe.md5,
-                "bytes": fe.bytes,
-            })
-        })
-        .collect();
-    let transport_manifest = serde_json::json!({
-        "dataset_id": ds_id.to_string(),
-        "slug": slug,
-        "category": snapshot.dataset.category,
-        "engine": snapshot.dataset.engine,
-        "files": files_json,
-        "md5_zip": zip_md5,
-        "bytes": zip_len,
-        "chunks": null,
-        "created_at": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-    });
-    let manifest_key = format!("packages/{version_id}/manifest.json");
-    let manifest_path = tmp.path().join("manifest.json");
-    if tokio::fs::write(
-        &manifest_path,
-        serde_json::to_string_pretty(&transport_manifest).unwrap_or_else(|_| "{}".to_string()),
-    )
-    .await
-    .is_err()
-    {
-        let _ = state
-            .storage
-            .delete_prefix(&format!("packages/{version_id}/"))
-            .await;
-        return internal();
-    }
-    if state
-        .storage
-        .put(&manifest_key, &manifest_path)
-        .await
-        .is_err()
-    {
-        let _ = state
-            .storage
-            .delete_prefix(&format!("packages/{version_id}/"))
-            .await;
-        return err(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "storage_unavailable",
-            MSG_STORAGE_UNAVAILABLE,
-        );
-    }
-
-    // INSERT em dataset_versions — só após PUTs bem-sucedidos (doutrina: objeto→linha).
-    let inserted =
-        sqlx::query("INSERT INTO dataset_versions (id, dataset_id, manifest) VALUES ($1, $2, $3)")
-            .bind(version_id)
-            .bind(ds_id)
-            .bind(&manifest_json)
-            .execute(&state.pool)
-            .await
-            .is_ok();
-    if !inserted {
-        let _ = state
-            .storage
-            .delete_prefix(&format!("packages/{version_id}/"))
-            .await;
-        return internal();
-    }
-
-    // 15. Resposta 200 — files[] = entradas do zip (camelCase, D1 linha 175–178).
-    let response_files: Vec<TransportFile> = file_entries
-        .into_iter()
-        .map(|fe| TransportFile {
-            filename: fe.filename,
-            md5: fe.md5,
-            bytes: fe.bytes,
-        })
-        .collect();
-    (
-        StatusCode::OK,
-        Json(PackageResponse {
-            version_id: version_id.to_string(),
-            key: zip_key,
-            bytes: zip_len,
-            md5_zip: zip_md5,
-            files: response_files,
-        }),
-    )
-        .into_response()
 }
 
 #[cfg(test)]

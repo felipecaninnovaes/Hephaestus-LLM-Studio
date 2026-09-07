@@ -98,11 +98,14 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
         &[200, 401, 404, 503],
     ),
     ("GET", "/api/telemetry", &[200, 401, 503]),
+    ("POST", "/api/jobs/yolo", &[202, 400, 401, 404, 409, 503]),
+    ("POST", "/api/jobs/:id/abort", &[200, 401, 404, 409, 503]),
 ];
 
-/// Rotas públicas (sem gate): `/health` + `/api/auth/*`.
+/// Rotas públicas (sem gate): `/health` + `/ready` + `/api/auth/*`.
 pub const PUBLIC_ROUTES: &[(&str, &str, &[u16])] = &[
     ("GET", "/health", &[200]),
+    ("GET", "/ready", &[200, 503]),
     ("POST", "/api/auth/login", &[200, 400, 401, 503]),
     ("GET", "/api/auth/me", &[200, 401]),
     ("POST", "/api/auth/logout", &[204]),
@@ -136,6 +139,25 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
         "ready"
     };
     Json(json!({ "status": "ok", "service": "api-principal", "auth": auth }))
+}
+
+/// GET /ready — readiness check (D11 :459-460). 200 se db saudável; 503 senão.
+async fn ready(State(state): State<AppState>) -> Response {
+    // Check db: SELECT 1.
+    let db_ok: bool = sqlx::query_scalar::<_, i32>("SELECT 1")
+        .fetch_one(&state.pool)
+        .await
+        .is_ok();
+
+    if db_ok {
+        (StatusCode::OK, Json(json!({ "status": "ok" }))).into_response()
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "status": "unavailable", "reason": "database" })),
+        )
+            .into_response()
+    }
 }
 
 /// Fallback D9: caminho não roteado — sem sessão válida → 401 `unauthorized`;
@@ -252,6 +274,8 @@ pub fn build(state: AppState) -> axum::Router {
             get(jobs::handlers::get_artifact_data),
         )
         .route("/api/telemetry", get(jobs::handlers::get_telemetry))
+        .route("/api/jobs/yolo", post(jobs::handlers::submit_yolo_job))
+        .route("/api/jobs/:id/abort", post(jobs::handlers::abort_job))
         // route_layer DEPOIS dos .route(): aplicado a um router vazio o axum 0.7 panic
         // no boot (path_router.rs, `routes.is_empty()`). Só cobre as rotas deste
         // sub-router — /health e /api/auth/* seguem fora do gate, e o .fallback()
@@ -262,6 +286,7 @@ pub fn build(state: AppState) -> axum::Router {
         ));
     axum::Router::new()
         .route("/health", get(health))
+        .route("/ready", get(ready))
         .route("/api/auth/login", post(handlers::login))
         .route("/api/auth/me", get(handlers::me))
         .route("/api/auth/logout", post(handlers::logout))

@@ -5148,3 +5148,521 @@ async fn t4_package_blob_ausente_503() {
         "nenhuma versão deve ser criada se materialização falhou"
     );
 }
+
+// ---------------------------------------------------------------------------
+// F4.2b — helpers para testes de jobs com MockManager customizado
+// ---------------------------------------------------------------------------
+
+/// Versão de `state()` que aceita MockManager customizado.
+/// Retorna (AppState, Arc<MockStorage>, Arc<MockManager>) — o storage e o
+/// mock ficam acessíveis para asserts (ops(), last_create_job_body()).
+async fn state_with_manager(
+    manager: api_principal::jobs::manager_client::MockManager,
+) -> (
+    AppState,
+    std::sync::Arc<api_principal::storage::MockStorage>,
+    std::sync::Arc<api_principal::jobs::manager_client::MockManager>,
+) {
+    let url = std::env::var("DATABASE_URL")
+        .expect("DATABASE_URL é obrigatório para este teste --ignored");
+    let pool = sqlx::PgPool::connect(&url)
+        .await
+        .expect("conectar no Postgres de desenvolvimento");
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .expect("rodar migrations");
+    sqlx::query("DELETE FROM image_embeddings")
+        .execute(&pool)
+        .await
+        .expect("limpar image_embeddings");
+    sqlx::query("DELETE FROM dataset_versions")
+        .execute(&pool)
+        .await
+        .expect("limpar dataset_versions");
+    sqlx::query("DELETE FROM classes")
+        .execute(&pool)
+        .await
+        .expect("limpar classes");
+    sqlx::query("DELETE FROM datasets")
+        .execute(&pool)
+        .await
+        .expect("limpar datasets");
+    let storage = std::sync::Arc::new(api_principal::storage::MockStorage::new());
+    let manager_arc = std::sync::Arc::new(manager);
+    let st = AppState {
+        pool,
+        jwt_secret: TEST_SECRET,
+        secure_cookie: false,
+        setup_required: false,
+        storage: storage.clone(),
+        storage_config: api_principal::storage::StorageConfig {
+            bucket: "heph-test".into(),
+            public_endpoint: None,
+            url_ttl_secs: 60,
+        },
+        embedder: std::sync::Arc::new(api_principal::search::MockEmbedder::new()),
+        embedding_model: "ViT-B-32".to_string(),
+        manager: manager_arc.clone(),
+    };
+    (st, storage, manager_arc)
+}
+
+// ---------------------------------------------------------------------------
+// F4.2b — t4_job_cria_yolo_202: POST /api/jobs/yolo → 202 completo
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t4_job_cria_yolo_202() {
+    let _guard = SERIAL.lock().await;
+
+    // MockManager com create_job retornando 202.
+    let mock = {
+        let mut m = api_principal::jobs::manager_client::MockManager::default();
+        m.create_job_result = Some(api_principal::jobs::manager_client::CreateJobResponse {
+            job_id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890".into(),
+            status: "queued".into(),
+            queue_position: Some(1),
+        });
+        m
+    };
+    let (st, storage, mock_mgr) = state_with_manager(mock).await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    // 1. Cria dataset yolo + 2 classes.
+    let (status, _, body) = call(
+        app.clone(),
+        post_create(
+            "Job YOLO",
+            &serde_json::json!(["solda_fria", "ponte"]),
+            &cookie,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let created = json(&body);
+    let ds = created["id"].as_str().expect("id").to_string();
+    let class_id: uuid::Uuid = created["classes"][0]["id"]
+        .as_str()
+        .expect("classes[0].id")
+        .parse()
+        .expect("uuid");
+
+    // 2. Upload 1 imagem + 1 box.
+    let png = png_1x1();
+    let boundary = "heph-job-img";
+    let (status, _, body) = call(
+        app.clone(),
+        post_upload(
+            &cookie,
+            &ds,
+            boundary,
+            multipart_body(boundary, &[("foto.png", &png)]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let img_id = json(&body)["items"][0]["imageId"]
+        .as_str()
+        .expect("imageId")
+        .to_string();
+    let (status, _, _) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/images/{img_id}/boxes"),
+            serde_json::json!({"boxes": [{"classId": class_id, "x": 0.5, "y": 0.5, "w": 0.2, "h": 0.2}]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // 3. Snapshot dataset_versions antes do POST.
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+    let versions_before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM dataset_versions WHERE dataset_id = $1")
+            .bind(ds_id)
+            .fetch_one(&st.pool)
+            .await
+            .expect("count versions before");
+    let ops_before = storage.ops().len();
+
+    // 4. POST /api/jobs/yolo.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/api/jobs/yolo")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::from(format!(r#"{{"datasetId":"{ds}"}}"#)))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let resp = json(&body);
+
+    // 5. Asserts da response.
+    let job_id = resp["jobId"].as_str().expect("jobId");
+    assert!(job_id.parse::<uuid::Uuid>().is_ok(), "jobId é UUID válido");
+    assert_eq!(resp["status"], "queued");
+
+    // 6. dataset_versions tem EXATAMENTE 1 row nova.
+    let versions_after: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM dataset_versions WHERE dataset_id = $1")
+            .bind(ds_id)
+            .fetch_one(&st.pool)
+            .await
+            .expect("count versions after");
+    assert_eq!(versions_after, versions_before + 1);
+
+    // 7. MockStorage ops contêm PUTs de packages/<vid>/dataset.zip e manifest.json.
+    let ops_after = &storage.ops()[ops_before..];
+    let has_zip = ops_after
+        .iter()
+        .any(|op| op.starts_with("PUT packages/") && op.ends_with("/dataset.zip"));
+    let has_manifest = ops_after
+        .iter()
+        .any(|op| op.starts_with("PUT packages/") && op.ends_with("/manifest.json"));
+    assert!(
+        has_zip,
+        "storage deve conter PUT do dataset.zip: {:?}",
+        ops_after
+    );
+    assert!(
+        has_manifest,
+        "storage deve conter PUT do manifest.json: {:?}",
+        ops_after
+    );
+
+    // 8. Body capturado do create_job.
+    let captured = mock_mgr
+        .last_create_job_body()
+        .expect("create_job foi chamado");
+    assert_eq!(captured["kind"], "yolo_train");
+    assert_eq!(captured["engine"], "yolo");
+    let config = captured["config_yaml"].as_str().expect("config_yaml");
+    assert!(
+        config.contains("{dataset_path}"),
+        "config_yaml deve conter {{dataset_path}}"
+    );
+    assert!(
+        config.contains("{output_path}"),
+        "config_yaml deve conter {{output_path}}"
+    );
+    assert!(
+        config.contains("epochs: 100"),
+        "config_yaml epochs default=100"
+    );
+    assert!(
+        config.contains("model: \"yolo11m\""),
+        "config_yaml model default=yolo11m"
+    );
+    assert!(
+        captured["vram_min_gb"].is_null(),
+        "vram_min_gb é null na v1"
+    );
+    let pkg_ref = &captured["package_ref"];
+    let version_id_row: String = sqlx::query_scalar(
+        "SELECT id::text FROM dataset_versions WHERE dataset_id = $1 ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(ds_id)
+    .fetch_one(&st.pool)
+    .await
+    .expect("version_id");
+    assert_eq!(pkg_ref["version_id"], version_id_row);
+}
+
+// ---------------------------------------------------------------------------
+// F4.2b — t4_job_dataset_not_ready_409: 3 cenários de 409
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t4_job_dataset_not_ready_409() {
+    let _guard = SERIAL.lock().await;
+    let (st, _, _) =
+        state_with_manager(api_principal::jobs::manager_client::MockManager::default()).await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    // (i) Dataset com category != 'yolo'.
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Not YOLO", &serde_json::json!(["a", "b"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds_wrong_cat = json(&body)["id"].as_str().expect("id").to_string();
+    let ds_wrong_cat_id: uuid::Uuid = ds_wrong_cat.parse().expect("uuid");
+    sqlx::query("UPDATE datasets SET category = 'difusao' WHERE id = $1")
+        .bind(ds_wrong_cat_id)
+        .execute(&st.pool)
+        .await
+        .expect("UPDATE category");
+
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/api/jobs/yolo")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::from(format!(r#"{{"datasetId":"{ds_wrong_cat}"}}"#)))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(json(&body)["code"], "dataset_not_ready");
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM dataset_versions WHERE dataset_id = $1")
+        .bind(ds_wrong_cat_id)
+        .fetch_one(&st.pool)
+        .await
+        .expect("count");
+    assert_eq!(n, 0, "(i) nenhuma versão criada");
+
+    // (ii) Dataset yolo com 0 classes.
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("No Classes", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds_no_cls = json(&body)["id"].as_str().expect("id").to_string();
+    let ds_no_cls_id: uuid::Uuid = ds_no_cls.parse().expect("uuid");
+    // Remove classes inseridas pelo post_create.
+    sqlx::query("DELETE FROM classes WHERE dataset_id = $1")
+        .bind(ds_no_cls_id)
+        .execute(&st.pool)
+        .await
+        .expect("DELETE classes");
+
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/api/jobs/yolo")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::from(format!(r#"{{"datasetId":"{ds_no_cls}"}}"#)))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(json(&body)["code"], "dataset_not_ready");
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM dataset_versions WHERE dataset_id = $1")
+        .bind(ds_no_cls_id)
+        .fetch_one(&st.pool)
+        .await
+        .expect("count");
+    assert_eq!(n, 0, "(ii) nenhuma versão criada");
+
+    // (iii) Dataset yolo com >= 1 classe e 0 imagens.
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("No Images", &serde_json::json!(["x"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds_no_img = json(&body)["id"].as_str().expect("id").to_string();
+    let ds_no_img_id: uuid::Uuid = ds_no_img.parse().expect("uuid");
+    // Dataset já tem 1 classe, 0 imagens — nada a ajustar.
+
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/api/jobs/yolo")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::from(format!(r#"{{"datasetId":"{ds_no_img}"}}"#)))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(json(&body)["code"], "dataset_not_ready");
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM dataset_versions WHERE dataset_id = $1")
+        .bind(ds_no_img_id)
+        .fetch_one(&st.pool)
+        .await
+        .expect("count");
+    assert_eq!(n, 0, "(iii) nenhuma versão criada");
+}
+
+// ---------------------------------------------------------------------------
+// F4.2b — t4_job_manager_offline_503_compensa: compensação completa
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t4_job_manager_offline_503_compensa() {
+    let _guard = SERIAL.lock().await;
+
+    let mock = {
+        let mut m = api_principal::jobs::manager_client::MockManager::default();
+        m.fail = true;
+        m
+    };
+    let (st, storage, _) = state_with_manager(mock).await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    // 1. Dataset pronto (classes + 1 imagem com box).
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Manager Offline", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds = json(&body)["id"].as_str().expect("id").to_string();
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+    let class_id: uuid::Uuid = json(&body)["classes"][0]["id"]
+        .as_str()
+        .expect("class id")
+        .parse()
+        .expect("uuid");
+
+    let png = png_1x1();
+    let boundary = "heph-mgr-offline";
+    let (status, _, body) = call(
+        app.clone(),
+        post_upload(
+            &cookie,
+            &ds,
+            boundary,
+            multipart_body(boundary, &[("foto.png", &png)]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let img_id = json(&body)["items"][0]["imageId"]
+        .as_str()
+        .expect("imageId")
+        .to_string();
+    let (status, _, _) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/images/{img_id}/boxes"),
+            serde_json::json!({"boxes": [{"classId": class_id, "x": 0.5, "y": 0.5, "w": 0.2, "h": 0.2}]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // 2. POST → 503 queue_unavailable.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/api/jobs/yolo")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::from(format!(r#"{{"datasetId":"{ds}"}}"#)))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(json(&body)["code"], "queue_unavailable");
+
+    // 3. NENHUMA row nova em dataset_versions (compensação DB).
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM dataset_versions WHERE dataset_id = $1")
+        .bind(ds_id)
+        .fetch_one(&st.pool)
+        .await
+        .expect("count versions");
+    assert_eq!(n, 0, "compensação deve ter removido a row do build");
+
+    // 4. MockStorage não contém objetos em packages/ (compensação storage).
+    let pkg_objects: Vec<(String, usize)> = storage
+        .snapshot()
+        .into_iter()
+        .filter(|(k, _)| k.starts_with("packages/"))
+        .collect();
+    assert!(
+        pkg_objects.is_empty(),
+        "compensação deve ter removido objetos de packages/: {pkg_objects:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// F4.2b — t4_job_abort_estados: POST /api/jobs/:id/abort (3 cenários)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t4_job_abort_estados() {
+    let _guard = SERIAL.lock().await;
+
+    // (i) abort_job → Ok("cancelling") → 200.
+    {
+        let mock = {
+            let mut m = api_principal::jobs::manager_client::MockManager::default();
+            m.abort_job_result = Some(api_principal::jobs::manager_client::AbortJobResponse {
+                status: "cancelling".to_string(),
+            });
+            m
+        };
+        let (st, _, _) = state_with_manager(mock).await;
+        let app = routes::build(st.clone());
+        let fake_id = uuid::Uuid::new_v4().to_string();
+        let (status, _, body) = call(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/jobs/{fake_id}/abort"))
+                .header(http::header::COOKIE, authed_cookie())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json(&body)["status"], "cancelling");
+    }
+
+    // (ii) abort_job → NotAbortable → 409 job_not_abortable.
+    {
+        let mock = {
+            let mut m = api_principal::jobs::manager_client::MockManager::default();
+            m.abort_not_abortable = true;
+            m
+        };
+        let (st, _, _) = state_with_manager(mock).await;
+        let app = routes::build(st.clone());
+        let fake_id = uuid::Uuid::new_v4().to_string();
+        let (status, _, body) = call(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/jobs/{fake_id}/abort"))
+                .header(http::header::COOKIE, authed_cookie())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(json(&body)["code"], "job_not_abortable");
+    }
+
+    // (iii) id não-UUID → 404.
+    {
+        let (st, _, _) =
+            state_with_manager(api_principal::jobs::manager_client::MockManager::default()).await;
+        let app = routes::build(st.clone());
+        let (status, _, _) = call(
+            app,
+            Request::builder()
+                .method("POST")
+                .uri("/api/jobs/not-a-uuid/abort")
+                .header(http::header::COOKIE, authed_cookie())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+}

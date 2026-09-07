@@ -15,6 +15,8 @@ pub enum ManagerError {
     Unavailable(String),
     /// Resposta 404 do manager (job/artefato não existe).
     NotFound,
+    /// Resposta 409 do manager (job em estado terminal — abort não possível).
+    NotAbortable,
 }
 
 impl std::fmt::Display for ManagerError {
@@ -22,6 +24,7 @@ impl std::fmt::Display for ManagerError {
         match self {
             Self::Unavailable(_) => write!(f, "manager unavailable"),
             Self::NotFound => write!(f, "manager: not found"),
+            Self::NotAbortable => write!(f, "manager: job not abortable"),
         }
     }
 }
@@ -81,6 +84,20 @@ pub struct InternalTelemetry {
     pub jobs_active: i32,
 }
 
+/// Resposta do manager ao criar job (snake_case interno).
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateJobResponse {
+    pub job_id: String,
+    pub status: String,
+    pub queue_position: Option<i32>,
+}
+
+/// Resposta do manager ao abortar job (snake_case interno).
+#[derive(Debug, Clone, Deserialize)]
+pub struct AbortJobResponse {
+    pub status: String,
+}
+
 /// Trait do client do manager (mockable).
 #[async_trait]
 pub trait ManagerPort: Send + Sync {
@@ -102,6 +119,13 @@ pub trait ManagerPort: Send + Sync {
 
     /// Telemetria do manager (cache de heartbeat).
     async fn get_telemetry(&self) -> Result<InternalTelemetry, ManagerError>;
+
+    /// Cria um job via manager (ADR-0007 D3/D7).
+    async fn create_job(&self, body: &serde_json::Value)
+        -> Result<CreateJobResponse, ManagerError>;
+
+    /// Aborta um job via manager (ADR-0007 D7).
+    async fn abort_job(&self, id: &str) -> Result<AbortJobResponse, ManagerError>;
 }
 
 /// Implementação HTTP real do manager client.
@@ -223,6 +247,59 @@ impl ManagerPort for HttpManager {
     async fn get_telemetry(&self) -> Result<InternalTelemetry, ManagerError> {
         self.get_json("/internal/telemetry").await
     }
+
+    async fn create_job(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<CreateJobResponse, ManagerError> {
+        let url = format!("{}/internal/jobs", self.base_url);
+        let resp = self
+            .client
+            .post(&url)
+            .header("authorization", self.auth_header())
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| ManagerError::Unavailable(format!("manager request: {e}")))?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(ManagerError::NotFound);
+        }
+        if !status.is_success() {
+            return Err(ManagerError::Unavailable(format!(
+                "manager status: {status}"
+            )));
+        }
+        resp.json()
+            .await
+            .map_err(|e| ManagerError::Unavailable(format!("manager body: {e}")))
+    }
+
+    async fn abort_job(&self, id: &str) -> Result<AbortJobResponse, ManagerError> {
+        let url = format!("{}/internal/jobs/{id}/abort", self.base_url);
+        let resp = self
+            .client
+            .post(&url)
+            .header("authorization", self.auth_header())
+            .send()
+            .await
+            .map_err(|e| ManagerError::Unavailable(format!("manager request: {e}")))?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(ManagerError::NotFound);
+        }
+        if status == reqwest::StatusCode::CONFLICT {
+            return Err(ManagerError::NotAbortable);
+        }
+        if !status.is_success() {
+            return Err(ManagerError::Unavailable(format!(
+                "manager status: {status}"
+            )));
+        }
+        resp.json()
+            .await
+            .map_err(|e| ManagerError::Unavailable(format!("manager body: {e}")))
+    }
 }
 
 /// Mock do manager para testes unitários.
@@ -232,8 +309,24 @@ pub struct MockManager {
     pub get_job_result: Option<InternalJob>,
     pub list_artifacts_result: Option<Vec<InternalArtifact>>,
     pub get_telemetry_result: Option<InternalTelemetry>,
+    pub create_job_result: Option<CreateJobResponse>,
+    pub abort_job_result: Option<AbortJobResponse>,
     /// Se `true`, todas as chamadas retornam `Unavailable`.
     pub fail: bool,
+    /// Se `true`, `abort_job` retorna `NotAbortable` (para testar 409).
+    pub abort_not_abortable: bool,
+    /// Body capturado na última chamada a `create_job` (para asserts de teste).
+    last_create_job_body: std::sync::Mutex<Option<serde_json::Value>>,
+}
+
+impl MockManager {
+    /// Retorna o body capturado na última chamada a `create_job`.
+    pub fn last_create_job_body(&self) -> Option<serde_json::Value> {
+        self.last_create_job_body
+            .try_lock()
+            .ok()
+            .and_then(|m| m.clone())
+    }
 }
 
 impl Default for MockManager {
@@ -244,7 +337,11 @@ impl Default for MockManager {
             get_job_result: None,
             list_artifacts_result: Some(vec![]),
             get_telemetry_result: None,
+            create_job_result: None,
+            abort_job_result: None,
             fail: false,
+            abort_not_abortable: false,
+            last_create_job_body: std::sync::Mutex::new(None),
         }
     }
 }
@@ -290,5 +387,32 @@ impl ManagerPort for MockManager {
         self.get_telemetry_result
             .clone()
             .ok_or(ManagerError::Unavailable("no telemetry".into()))
+    }
+
+    async fn create_job(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<CreateJobResponse, ManagerError> {
+        if self.fail {
+            return Err(ManagerError::Unavailable("mock fail".into()));
+        }
+        // Captura body para asserts de teste (try_lock: non-blocking, testes
+        // rodam serializados pelo SERIAL.lock).
+        if let Ok(mut guard) = self.last_create_job_body.try_lock() {
+            *guard = Some(body.clone());
+        }
+        self.create_job_result
+            .clone()
+            .ok_or(ManagerError::Unavailable("no create_job result".into()))
+    }
+
+    async fn abort_job(&self, _id: &str) -> Result<AbortJobResponse, ManagerError> {
+        if self.fail {
+            return Err(ManagerError::Unavailable("mock fail".into()));
+        }
+        if self.abort_not_abortable {
+            return Err(ManagerError::NotAbortable);
+        }
+        self.abort_job_result.clone().ok_or(ManagerError::NotFound)
     }
 }

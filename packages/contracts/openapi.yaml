@@ -64,6 +64,36 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/HealthResponse" }
 
+  /ready:
+    get:
+      operationId: getReady
+      tags: [health]
+      summary: Readiness do api-principal
+      description: |
+        200 se db saudável (SELECT 1); 503 senão. Sem auth (fora do /api).
+        Readiness check para healthchecks do compose (D11 :459-460).
+      security: []
+      responses:
+        "200":
+          description: Pronto para receber tráfego.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, enum: [ok] }
+        "503":
+          description: Não pronto (database indisponível).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, reason]
+                properties:
+                  status: { type: string, enum: [unavailable] }
+                  reason: { type: string }
+
   /api/auth/login:
     post:
       operationId: login
@@ -1193,6 +1223,52 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/jobs/yolo:
+    post:
+      operationId: submitYoloJob
+      tags: [jobs]
+      summary: Submete job de treino YOLO
+      description: |
+        Cria job de treino YOLO (ADR-0007 D7). Valida hiperparâmetros,
+        verifica readiness do dataset (category=yolo, ≥1 classe, ≥1 imagem),
+        materializa package, e envia ao manager.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/YoloJobRequest" }
+      responses:
+        "202":
+          description: Job criado e enfileirado.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubmitJobResponse" }
+        "400":
+          description: "Body malformado, campos desconhecidos ou parâmetros inválidos (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Dataset inexistente ou datasetId não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "Dataset não pronto para treino — category≠yolo, 0 classes ou 0 imagens (`code: dataset_not_ready`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/jobs/queue:
     get:
       operationId: listJobQueue
@@ -1245,6 +1321,47 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "404":
           description: "Job inexistente ou id não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/jobs/{id}/abort:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: "PK do job. UUID inválido ⇒ 404 `not_found` (D8)."
+    post:
+      operationId: abortJob
+      tags: [jobs]
+      summary: Aborta um job
+      description: |
+        Aborta um job via manager (ADR-0007 D7 :372-373).
+        Job em estado terminal (done/failed/cancelled) ⇒ 409 `job_not_abortable`.
+      responses:
+        "200":
+          description: Abort requisitado.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AbortResponse" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Job inexistente ou id não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "Job em estado terminal — abort não possível (`code: job_not_abortable`)."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1436,8 +1553,8 @@ components:
       properties:
         code:
           type: string
-          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, storage_unavailable, classes_in_use, index_not_ready, embedding_unavailable, import_invalid, engine_unsupported, queue_unavailable, internal]
-          description: "Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`; o cliente DEVE ter ramo default: o enum cresce por fatia (aditivo na 0.2.0: `not_found`, `slug_conflict`; na 0.3.0: `storage_unavailable`, ADR-0003 D10; na 0.3.0, fatia 3g.1: `classes_in_use`; na 0.5.0, fatia 3f.5: `index_not_ready`, `embedding_unavailable`, ADR-0004 D5; na 0.6.0, fatia 3e: `import_invalid`; na 0.7.0, fatia 4: `engine_unsupported`, `queue_unavailable`)."
+          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, storage_unavailable, classes_in_use, index_not_ready, embedding_unavailable, import_invalid, engine_unsupported, queue_unavailable, dataset_not_ready, job_not_abortable, internal]
+          description: "Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`; o cliente DEVE ter ramo default: o enum cresce por fatia (aditivo na 0.2.0: `not_found`, `slug_conflict`; na 0.3.0: `storage_unavailable`, ADR-0003 D10; na 0.3.0, fatia 3g.1: `classes_in_use`; na 0.5.0, fatia 3f.5: `index_not_ready`, `embedding_unavailable`, ADR-0004 D5; na 0.6.0, fatia 3e: `import_invalid`; na 0.7.0, fatia 4: `engine_unsupported`, `queue_unavailable`, `dataset_not_ready`, `job_not_abortable`)."
         message:
           type: string
           description: Humano-curto, ESTÁTICO por code; nunca contém hash, token, segredo ou existência de usuário.
@@ -1574,6 +1691,90 @@ components:
           type: string
           format: date-time
           description: "`datasets.updated_at` (RFC 3339), não string relativa; a UI formata 'há 12 minutos'."
+
+    YoloJobRequest:
+      type: object
+      required: [datasetId]
+      additionalProperties: false
+      description: >
+        Body de `POST /api/jobs/yolo` (ADR-0007 D6/D7). `datasetId` é
+        obrigatório; os demais campos são OPCIONAIS com defaults.
+        Wire camelCase; `deny_unknown_fields` garante 400 para chaves desconhecidas.
+      properties:
+        datasetId:
+          type: string
+          format: uuid
+          description: "PK do dataset. Não-UUID ou inexistente ⇒ 404 `not_found`."
+        model:
+          type: string
+          enum: [yolo11n, yolo11m, yolo11x, yolov9-c, yolo11-seg]
+          default: yolo11m
+        epochs:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          default: 100
+        batch:
+          type: integer
+          enum: [8, 16, 32, 64]
+          default: 16
+        imgsz:
+          type: integer
+          enum: [416, 640, 1024]
+          default: 640
+        lr0:
+          type: number
+          minimum: 0.00001
+          maximum: 0.1
+          default: 0.01
+        optimizer:
+          type: string
+          enum: [AdamW, SGD, Muon]
+          default: AdamW
+        augment:
+          $ref: "#/components/schemas/YoloAugment"
+        seed:
+          type: [integer, "null"]
+          format: uint64
+          description: "Seed opcional (null = 42 no config.yaml)."
+
+    YoloAugment:
+      type: object
+      additionalProperties: false
+      description: "Configuração de augmentação do treino YOLO (ADR-0007 D6)."
+      properties:
+        mosaic:
+          type: boolean
+          default: true
+        mixupFlip:
+          type: boolean
+          default: false
+
+    SubmitJobResponse:
+      type: object
+      required: [jobId, status]
+      additionalProperties: false
+      description: "Resposta 202 do POST /api/jobs/yolo (ADR-0007 D7)."
+      properties:
+        jobId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [queued]
+        queuePosition:
+          type: [integer, "null"]
+          description: "Posição na fila (null se o manager não devolve)."
+
+    AbortResponse:
+      type: object
+      required: [status]
+      additionalProperties: false
+      description: "Resposta do POST /api/jobs/:id/abort (ADR-0007 D7)."
+      properties:
+        status:
+          type: string
+          enum: [cancelling, cancelled]
 
     Class:
       type: object

@@ -19,7 +19,19 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-07 (sessão 7: fatia 3f COMPLETA na branch `feat/semantic-search` — 10 commits, review back-end CONDICIONAL resolvido + review fechamento BLOQUEIA resolvido; pronta para push+CI+merge do usuário. Merge `spike/search-pgvector` ANTES da feat)
+## Estado atual — 2026-09-07 (sessão 8: REESTRUTURAÇÃO DE COORDENAÇÃO FEITA — regra "coordenador não fixa" nos charters, em `chore/agent-no-fix-rule`; 3f e ci-ownership MERGEADAS na main pelo usuário; próxima fatia na ordem = 3e)
+
+- **Sessão 7 foi CANCELADA pelo usuário no meio e reiniciada** — causa-raiz: o coordenador misturava decisão com execução (fixes de CI/fmt/compose/web feitos por ele), o contexto saturou e a sequência de fatias divergiu (3g pulou na frente; depois começou a planejar 3e fora de hora). O registro desatualizado foi o sintoma visível.
+- **Merges feitos pelo usuário**: `feat/semantic-search` (3f inteira, `43ab513`) e `chore/ci-ownership` (`f37e524` — CI tem dono = `@infra-dev`; reviewer checa coerência ci/compose). Main sincronizada com origin; branches de fatia apagadas. **Sequência informada pelo usuário: 3e → 3f → 3h** — 3f FEITA (fora de ordem), **3e continua PENDENTE**; definição da 3h a confirmar com o usuário/roadmap.
+- **REGRAS NOVAS DE PROCESSO (sessão 8, pedidas pelo usuário — valem para sempre)**:
+  1. **Nenhum fix pelo coordenador — regra absoluta**: toda correção (build/teste/lint/UI/docs/config/charters), por menor que seja, mesmo fora de fatia, é ESPECIFICADA pelo coordenador e EXECUTADA pelo `@fixer`. Sem exceção. Charters atualizados: `hephaestus.md` (bullet de roteamento reescrito + passos 5/6 do fluxo), `fixer.md` (escopo estendido a edição mecânica em sessão de manutenção), `rust-dev.md` (`cargo fmt --all` obrigatório antes de reportar — lição 3g).
+  2. **Registro por passo executado**: atualizar este arquivo a cada passo fechado, não só ao abrir/fechar fatia — registro desatualizado é o primeiro sintoma de sobrecarga.
+  3. **CI tem dono**: run falho é problema de infra — despachar diagnóstico/correção ao `@infra-dev`, não ao coordenador.
+- **Branch `chore/agent-no-fix-rule`**: 3 charters editados pelo `@fixer` (primeiro despacho sob a regra nova — 5 substituições; verificação do coordenador OK: só os 3 arquivos tocados; único "você mesmo" restante no charter = RODAR checks, que é verificação, não execução). Push/merge = usuário.
+- **Propostas AINDA pendentes de aprovação do usuário** (da auditoria de sobrecarga): script `scripts/ci-watch.sh` (matriz de runs/jobs via API Gitea — mata o polling manual) e smokes E2E versionados `scripts/smoke-*.sh` (o smoke das sessões 5–7 foi reescrito à mão a cada sessão).
+- Ambiente herdado da sessão 7: compose de pé (db pg16-trixie, seaweedfs, manager, principal com código 3f, embedder healthy), dev server :3000, Chrome :9222.
+
+### Sessão 7 — fatia 3f implementada e MERGEADA pelo usuário (contexto)
 
 - **CI pós-3g confirmado**: run 21 (main) e run 20 (feat/datasets-management) VERDES — 3g fechada definitivamente.
 - **Fatia 3f "busca semântica" COMPLETA — 10 commits (`b046f56`..`a9080ff`) em `feat/semantic-search`**:

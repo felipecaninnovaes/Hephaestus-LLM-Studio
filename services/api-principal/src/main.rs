@@ -3,6 +3,7 @@
 //! modo `ready`/`setup_required` → router de `auth::routes::build` (D9).
 
 use api_principal::auth::{password, routes, secret, AppState};
+use api_principal::jobs::manager_client::{HttpManager, ManagerPort};
 use api_principal::search::{EmbeddingPort, HttpEmbedder, MockEmbedder};
 use api_principal::storage::{MockStorage, S3Storage, StorageConfig, StoragePort};
 use sqlx::PgPool;
@@ -125,6 +126,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     println!("embedding: backend={embedding_backend} model={embedding_model}");
 
+    // 7. manager client (ADR-0007 D3): `MANAGER_URL` + `MANAGER_TOKEN` (fail-fast).
+    let manager_url =
+        std::env::var("MANAGER_URL").unwrap_or_else(|_| "http://manager:8081".to_string());
+    let manager_token = std::env::var("MANAGER_TOKEN")
+        .map_err(|_| "MANAGER_TOKEN is not set (required for manager client)")?;
+    let manager: Arc<dyn ManagerPort> = Arc::new(HttpManager::new(manager_url, manager_token));
+    println!("manager: url={}", {
+        let _ = &manager;
+        std::env::var("MANAGER_URL").unwrap_or_else(|_| "http://manager:8081".to_string())
+    });
+
     let state = AppState {
         pool,
         jwt_secret,
@@ -134,6 +146,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         storage_config,
         embedder,
         embedding_model,
+        manager,
     };
 
     let app = routes::build(state);

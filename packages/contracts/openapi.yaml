@@ -36,6 +36,8 @@ tags:
     description: Liveness do serviço — pública por decisão do §2 (isenta do middleware de auth).
   - name: datasets
     description: Metadados de dataset no Postgres; blobs em disco e imagens a partir da Fatia 3b.
+  - name: jobs
+    description: Jobs de treinamento e telemetria (BFF do manager, ADR-0007).
 
 # Proteção padrão: rotas exigem o cookie de sessão.
 # Endpoints públicos declaram `security: []` explicitamente (inclusive /api/auth/me,
@@ -1155,6 +1157,243 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/jobs:
+    get:
+      operationId: listJobs
+      tags: [jobs]
+      summary: Lista todos os jobs (BFF do manager)
+      description: |
+        Lista jobs via manager (ADR-0007 D3). Filtros opcionais `status` e `engine`.
+        Manager indisponível ⇒ 503 `queue_unavailable`.
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema: { type: string }
+          description: Filtro por status do job.
+        - name: engine
+          in: query
+          required: false
+          schema: { type: string }
+          description: Filtro por engine.
+      responses:
+        "200":
+          description: Lista de jobs.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobList" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/jobs/queue:
+    get:
+      operationId: listJobQueue
+      tags: [jobs]
+      summary: Fila ordenada de jobs
+      description: |
+        Fila de jobs ordenada por posição (ADR-0007 D7). Manager indisponível ⇒ 503 `queue_unavailable`.
+      responses:
+        "200":
+          description: Fila de jobs.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobQueue" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/jobs/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK do job. Valor que não parseia como UUID responde 404 `not_found`
+          (não 400, padrão D8).
+    get:
+      operationId: getJob
+      tags: [jobs]
+      summary: Detalhe de um job
+      description: |
+        Detalhe do job via manager (ADR-0007 D3). Manager indisponível ⇒ 503 `queue_unavailable`.
+      responses:
+        "200":
+          description: Job encontrado.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Job" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Job inexistente ou id não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/jobs/{id}/metrics:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: "PK do job. UUID inválido ⇒ 404 `not_found` (D8)."
+    get:
+      operationId: getJobMetrics
+      tags: [jobs]
+      summary: Métricas de treinamento por epoch
+      description: |
+        Séries por epoch com re-mapeamento camelCase (ADR-0007 D7): `mAP50-95` → `map5095`.
+        Job existe mas sem métricas ⇒ 200 com `items: []`.
+      responses:
+        "200":
+          description: Métricas do job.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobMetrics" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Job inexistente ou id não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/jobs/{id}/artifacts:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: "PK do job. UUID inválido ⇒ 404 `not_found` (D8)."
+    get:
+      operationId: listJobArtifacts
+      tags: [jobs]
+      summary: Artefatos de um job
+      description: |
+        Lista artefatos do job via manager (ADR-0007 D8). Manager indisponível ⇒ 503 `queue_unavailable`.
+      responses:
+        "200":
+          description: Lista de artefatos.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ArtifactList" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Job inexistente ou id não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/jobs/{id}/artifacts/{artifactId}/data:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: "PK do job. UUID inválido ⇒ 404 `not_found` (D8)."
+      - name: artifactId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: "PK do artefato. UUID inválido ⇒ 404 `not_found` (D8)."
+    get:
+      operationId: getJobArtifactData
+      tags: [jobs]
+      summary: Bytes do artefato (proxy)
+      description: |
+        Proxy do objeto do artefato (ADR-0007 D8): metadata via manager +
+        objeto via StoragePort (admin), key = `artifacts/<job_id>/<path>`.
+        Confere `md5` se barato. Manager indisponível ⇒ 503; storage fora ⇒ 503.
+      responses:
+        "200":
+          description: Bytes do artefato.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Job/artefato inexistente ou id não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager ou storage indisponível (`code: queue_unavailable` ou `storage_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/telemetry:
+    get:
+      operationId: getTelemetry
+      tags: [jobs]
+      summary: Telemetria do sistema (CPU/RAM/VRAM)
+      description: |
+        Proxy puro do cache de telemetria do manager (ADR-0007 D9).
+        Sem GPU (mock) ⇒ `measured: false`, `vramUsed/vramTotal: null`.
+        Manager indisponível ⇒ 503 `queue_unavailable` (delta consciente da D7
+        original :355 — o docs-sync cobre depois).
+      responses:
+        "200":
+          description: Telemetria do sistema.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Telemetry" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
 components:
   securitySchemes:
     sessionCookie:
@@ -1197,8 +1436,8 @@ components:
       properties:
         code:
           type: string
-          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, storage_unavailable, classes_in_use, index_not_ready, embedding_unavailable, import_invalid, engine_unsupported, internal]
-          description: "Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`; o cliente DEVE ter ramo default: o enum cresce por fatia (aditivo na 0.2.0: `not_found`, `slug_conflict`; na 0.3.0: `storage_unavailable`, ADR-0003 D10; na 0.3.0, fatia 3g.1: `classes_in_use`; na 0.5.0, fatia 3f.5: `index_not_ready`, `embedding_unavailable`, ADR-0004 D5; na 0.6.0, fatia 3e: `import_invalid`; na 0.7.0, fatia 4: `engine_unsupported`)."
+          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, storage_unavailable, classes_in_use, index_not_ready, embedding_unavailable, import_invalid, engine_unsupported, queue_unavailable, internal]
+          description: "Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`; o cliente DEVE ter ramo default: o enum cresce por fatia (aditivo na 0.2.0: `not_found`, `slug_conflict`; na 0.3.0: `storage_unavailable`, ADR-0003 D10; na 0.3.0, fatia 3g.1: `classes_in_use`; na 0.5.0, fatia 3f.5: `index_not_ready`, `embedding_unavailable`, ADR-0004 D5; na 0.6.0, fatia 3e: `import_invalid`; na 0.7.0, fatia 4: `engine_unsupported`, `queue_unavailable`)."
         message:
           type: string
           description: Humano-curto, ESTÁTICO por code; nunca contém hash, token, segredo ou existência de usuário.
@@ -1742,3 +1981,210 @@ components:
           format: int64
           minimum: 0
           description: "Tamanho em bytes."
+
+    Job:
+      type: object
+      required: [id, kind, engine, model, mode, status, createdAt]
+      additionalProperties: false
+      description: "Job de treinamento (ADR-0007 D7)."
+      properties:
+        id: { type: string, format: uuid }
+        kind:
+          type: string
+          description: "Tipo do job (ex.: yolo_train)."
+        engine:
+          type: string
+          description: "Engine alvo (ex.: yolo)."
+        model:
+          type: string
+          description: "Modelo (ex.: yolo11m)."
+        mode:
+          type: string
+          description: "Modo de execução."
+        datasetId:
+          type: [string, "null"]
+          format: uuid
+          description: "Dataset associado (null quando dataset foi deletado)."
+        status:
+          type: string
+          enum: [queued, dispatched, preparing, running, cancelling, done, failed, cancelled]
+          description: "Status do ciclo do job."
+        queueReason:
+          type: [string, "null"]
+          description: "Motivo da espera na fila."
+        queuePosition:
+          type: [integer, "null"]
+          description: "Posição na fila (null quando não está queued)."
+        progress:
+          type: [number, "null"]
+          minimum: 0
+          maximum: 1
+          description: "Progresso 0..1 (null quando não disponível)."
+        epoch:
+          type: [integer, "null"]
+          minimum: 0
+          description: "Epoch corrente do treino."
+        step:
+          type: [integer, "null"]
+          minimum: 0
+          description: "Step corrente do treino."
+        metrics:
+          description: "Métricas re-mapeadas camelCase (null quando não disponível)."
+          anyOf:
+            - type: array
+              items: { $ref: "#/components/schemas/MetricsItem" }
+            - type: "null"
+        vramMinGb:
+          type: [integer, "null"]
+          minimum: 0
+          description: "VRAM mínima exigida em GB."
+        orchestratorId:
+          type: [string, "null"]
+          format: uuid
+          description: "Orquestrador que executa o job."
+        createdAt: { type: string, format: date-time }
+        finishedAt:
+          type: [string, "null"]
+          format: date-time
+          description: "Momento da finalização (null enquanto ativo)."
+
+    JobList:
+      type: object
+      required: [items, total]
+      additionalProperties: false
+      description: "Lista de jobs (ADR-0007 D7)."
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Job" }
+        total:
+          type: integer
+          minimum: 0
+          description: "Total de jobs (com filtros aplicados)."
+
+    MetricsItem:
+      type: object
+      required: [epoch, boxLoss, clsLoss, dflLoss, map50, map5095]
+      additionalProperties: false
+      description: "Métricas de treinamento por epoch (camelCase wire; mAP50-95 → map5095)."
+      properties:
+        epoch:
+          type: integer
+          minimum: 0
+        boxLoss:
+          type: number
+          description: "Box loss (mean average precision component)."
+        clsLoss:
+          type: number
+          description: "Classification loss."
+        dflLoss:
+          type: number
+          description: "DFL (distribution focal) loss."
+        map50:
+          type: number
+          description: "mAP at IoU=0.50."
+        map5095:
+          type: number
+          description: "mAP at IoU=0.50:0.95 (chave `mAP50-95` no JSONB snake_case do manager)."
+
+    JobMetrics:
+      type: object
+      required: [items]
+      additionalProperties: false
+      description: "Métricas de treinamento por epoch (ADR-0007 D7)."
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/MetricsItem" }
+          description: "Série temporal por epoch (vazio se job existe mas sem métricas)."
+
+    QueueItem:
+      type: object
+      required: [jobId, position]
+      additionalProperties: false
+      description: "Item da fila de jobs (ADR-0007 D7)."
+      properties:
+        jobId:
+          type: string
+          format: uuid
+          description: "PK do job na fila."
+        position:
+          type: integer
+          minimum: 1
+          description: "Posição na fila (1-based)."
+        queueReason:
+          type: [string, "null"]
+          description: "Motivo da espera na fila."
+
+    JobQueue:
+      type: object
+      required: [items]
+      additionalProperties: false
+      description: "Fila ordenada de jobs (ADR-0007 D7)."
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/QueueItem" }
+
+    JobArtifact:
+      type: object
+      required: [id, kind, path, md5, bytes]
+      additionalProperties: false
+      description: "Artefato de um job (ADR-0007 D8)."
+      properties:
+        id: { type: string, format: uuid }
+        kind:
+          type: string
+          description: "Tipo do artefato (ex.: model, metrics)."
+        path:
+          type: string
+          description: "Caminho relativo ao prefixo `artifacts/<job_id>/`."
+        md5:
+          type: string
+          pattern: '^[0-9a-f]{32}$'
+          description: "MD5 do conteúdo (hex, calculado pelo orquestrador)."
+        bytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: "Tamanho em bytes."
+
+    ArtifactList:
+      type: object
+      required: [items]
+      additionalProperties: false
+      description: "Lista de artefatos de um job (ADR-0007 D8)."
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/JobArtifact" }
+
+    Telemetry:
+      type: object
+      required: [measured, gpus, jobsActive]
+      additionalProperties: false
+      description: "Telemetria do sistema (ADR-0007 D9)."
+      properties:
+        measured:
+          type: boolean
+          description: "true se VRAM é medível (false no mock sem GPU)."
+        vramUsed:
+          type: [integer, "null"]
+          description: "VRAM usada em MB (null quando não medível)."
+        vramTotal:
+          type: [integer, "null"]
+          description: "VRAM total em MB (null quando não medível)."
+        cpu:
+          type: [number, "null"]
+          description: "Uso de CPU (0..1 ou percentual, dependendo do orquestrador)."
+        ram:
+          type: [integer, "null"]
+          description: "RAM usada em MB."
+        gpus:
+          type: array
+          items: { type: string }
+          description: "Lista de GPUs detectadas (vazia no mock)."
+        jobsActive:
+          type: integer
+          minimum: 0
+          description: "Número de jobs ativos (preparing/running)."

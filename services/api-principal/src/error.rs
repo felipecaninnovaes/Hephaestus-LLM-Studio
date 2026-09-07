@@ -41,3 +41,5 @@ pub const MSG_EMBEDDING_UNAVAILABLE: &str = "embedding unavailable";
 pub const MSG_IMPORT_INVALID: &str = "invalid import package";
 /// 400 de engine não suportado (fatia 4, ADR-0007 D7).
 pub const MSG_ENGINE_UNSUPPORTED: &str = "engine not supported";
+/// 503 de manager indisponível (fatia 4, ADR-0007 D7 — `queue_unavailable`).
+pub const MSG_QUEUE_UNAVAILABLE: &str = "queue unavailable";

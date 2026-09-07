@@ -18,4 +18,6 @@ pub struct AppState {
     pub storage_config: crate::storage::StorageConfig,
     pub embedder: std::sync::Arc<dyn crate::search::EmbeddingPort>,
     pub embedding_model: String,
+    /// Client do manager (BFF, ADR-0007 D3).
+    pub manager: std::sync::Arc<dyn crate::jobs::manager_client::ManagerPort>,
 }

@@ -46,6 +46,7 @@ fn setup_state() -> AppState {
         },
         embedder: std::sync::Arc::new(api_principal::search::MockEmbedder::new()),
         embedding_model: "ViT-B-32".to_string(),
+        manager: std::sync::Arc::new(api_principal::jobs::manager_client::MockManager::default()),
     }
 }
 

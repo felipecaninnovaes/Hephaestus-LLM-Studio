@@ -18,7 +18,7 @@ use axum::{
 use serde_json::{json, Value};
 
 use super::{gate, handlers, AppState};
-use crate::{datasets, search};
+use crate::{datasets, jobs, search};
 
 /// `(método, path, status_codes)` — espelho exato do contrato (sem `x-reserved`).
 /// Toda rota de negócio nova entra AQUI, montada no sub-router `protected`
@@ -87,6 +87,17 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
         &[200, 400, 401, 404, 503],
     ),
     ("POST", "/api/datasets/import", &[201, 400, 401, 409, 503]),
+    ("GET", "/api/jobs", &[200, 401, 503]),
+    ("GET", "/api/jobs/queue", &[200, 401, 503]),
+    ("GET", "/api/jobs/:id", &[200, 401, 404, 503]),
+    ("GET", "/api/jobs/:id/metrics", &[200, 401, 404, 503]),
+    ("GET", "/api/jobs/:id/artifacts", &[200, 401, 404, 503]),
+    (
+        "GET",
+        "/api/jobs/:id/artifacts/:artifactId/data",
+        &[200, 401, 404, 503],
+    ),
+    ("GET", "/api/telemetry", &[200, 401, 503]),
 ];
 
 /// Rotas públicas (sem gate): `/health` + `/api/auth/*`.
@@ -224,6 +235,23 @@ pub fn build(state: AppState) -> axum::Router {
             post(datasets::import::import_dataset)
                 .layer(DefaultBodyLimit::max(IMPORT_BODY_LIMIT_BYTES)),
         )
+        // Jobs (ADR-0007 D3: BFF do manager, 7 rotas de leitura).
+        .route("/api/jobs", get(jobs::handlers::list_jobs))
+        .route("/api/jobs/queue", get(jobs::handlers::list_queue))
+        .route("/api/jobs/:id", get(jobs::handlers::get_job))
+        .route(
+            "/api/jobs/:id/metrics",
+            get(jobs::handlers::get_job_metrics),
+        )
+        .route(
+            "/api/jobs/:id/artifacts",
+            get(jobs::handlers::list_artifacts),
+        )
+        .route(
+            "/api/jobs/:id/artifacts/:artifactId/data",
+            get(jobs::handlers::get_artifact_data),
+        )
+        .route("/api/telemetry", get(jobs::handlers::get_telemetry))
         // route_layer DEPOIS dos .route(): aplicado a um router vazio o axum 0.7 panic
         // no boot (path_router.rs, `routes.is_empty()`). Só cobre as rotas deste
         // sub-router — /health e /api/auth/* seguem fora do gate, e o .fallback()

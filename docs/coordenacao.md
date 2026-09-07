@@ -19,7 +19,14 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-06 (sessão 6: fatia 3g FEITA — CI rust falhou em fmt; fix `599fc46` commitado, aguardando re-push do usuário)
+## Estado atual — 2026-09-07 (sessão 7: spike 3f.0 FEITO — 5/5 PASS na branch `spike/search-pgvector`, aguardando fundição pelo usuário; próxima = 3f.1)
+
+- **CI run 21 (main, `10c209c`) e run 20 (feat/datasets-management) VERDES** — fix de fmt da 3g fechou a fatia; **3g landed e main verde**.
+- **Spike 3f.0 EXECUTADO e PASSOU (5/5)** — branch `spike/search-pgvector` (commits `e07ce2d` harness+matriz, `3717a66` appêndice na ADR-0004). Matriz em **`spike/SEARCH-SPIKE.md`**; script único `spike/search/run-spike.sh` imprime a matriz (lição 3b.0). Provas: pgvector pg16-**trixie** abre o volume real do postgres:16 sem dump/restore (0 fatais, CREATE EXTENSION no banco migrado, 9 tabelas intactas); crate `pgvector =0.4.1` × sqlx 0.8.6 round-trip exato; HNSW 10k×512 build 1.76s, p50 0.317ms, top-1 20/20; embedder mock 17.9ms batch32 + **paridade tripla do mock fixado** (sha256-chain, rust×python 1.4e-17); pg_dump→restore preserva tipo e valores (md5). **Correções na ADR-0004** (appêndice): tag `pg16-trixie@sha256:c8483555…` (a `pg16` é bookworm → collation mismatch quebra CREATE DATABASE); crate pinado `=0.4.1` (0.4.2 exige sqlx 0.9); planner prefere seq scan com 10k linhas (não forçar índice). Containers/volumes spike limpos; volume real só foi copiado, nunca tocado.
+- **Próximo passo**: usuário funde `spike/search-pgvector` (harness/matriz vivem no tronco, como no 3b.0) → abrir `feat/semantic-search` de main e despachar 3f.1 (`@rust-dev`: migration `0004_search.sql` + test-db + compose db→pg16-trixie digest) → 3f.2 EmbeddingPort → 3f.3 engine serve (python-engines) + serviço compose (infra-dev) → 3f.4 indexação → 3f.5 rotas+spec **0.5.0** → review @reviewer (back-end completo) → 3f.6 UI (@frontend-dev) → 3f.7 docs-sync. Spec recalibrada para **0.5.0** (3g tomou a 0.4.0 — nota de delta na ADR-0004 D5).
+- 🌱 Economia graft nesta sessão: pendente de medição (sessão focada em spike docker/cargo).
+
+### Sessão 6 — fatia 3g FEITA — CI rust falhou em fmt; fix `599fc46` commitado, re-push feito pelo usuário (contexto)
 
 - **CI run 19 (`0c5a995`) FALHOU no job rust**: `cargo fmt --all --check` — os commits da 3g saíram sem fmt (handlers.rs/models.rs/datasets_db.rs). web e compose verdes. **Fix `599fc46` (chore(fmt))** commitado; 64+10+37 re-verificados pós-fmt; sem mudança de semântica. **LIÇÃO DE PROCESSO (vale para toda fatia com código rust): o checklist de verificação do coordenador passa a incluir `cargo fmt --all --check` — e os prompts aos implementadores rust-dev devem pedir fmt rodado antes de reportar pronto** (a lição da sessão 4 existia e não foi aplicada ao dispatch — falha do coordenador). Re-push da branch = usuário (ou push coordenador se autorizado).
 

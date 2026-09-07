@@ -160,3 +160,28 @@ async fn http_embedder_unavailable() {
         "esperado Unavailable, obteve {err:?}"
     );
 }
+
+#[tokio::test]
+async fn embedding_error_mapeia_503_no_envelope() {
+    // Cobertura do 503 da 3f.5 sem servidor falso: o mapeamento é função
+    // pura (`embedding_error_response`) — ambas as variantes caem na mesma
+    // família (o envelope `{code, message}` não tem campo de detalhe).
+    use http_body_util::BodyExt;
+    for e in [
+        EmbeddingError::Unavailable("caiu".to_string()),
+        EmbeddingError::InvalidResponse("shape".to_string()),
+    ] {
+        let resp = api_principal::search::handlers::embedding_error_response(&e);
+        assert_eq!(resp.status(), http::StatusCode::SERVICE_UNAVAILABLE);
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes()
+            .to_vec();
+        let v: serde_json::Value = serde_json::from_slice(&body).expect("corpo JSON");
+        assert_eq!(v["code"], "embedding_unavailable");
+        assert!(v["message"].is_string());
+    }
+}

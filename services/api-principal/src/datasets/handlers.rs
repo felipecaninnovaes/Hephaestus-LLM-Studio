@@ -953,7 +953,8 @@ pub struct ImageQuery {
 /// URL híbrida D3 (3b.5): com `public_endpoint` configurado é presigned
 /// (assinatura local, sem rede); sem ele, fallback incondicional para a
 /// rota `/data`. `Err` = resposta 503 `storage_unavailable` já montada.
-async fn image_url(
+/// `pub(crate)` para reutilização pela busca (3f.5: mesmo wire `Image`).
+pub(crate) async fn image_url(
     state: &AppState,
     object_key: &str,
     ds_id: Uuid,

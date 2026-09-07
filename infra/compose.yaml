@@ -64,6 +64,31 @@ services:
       timeout: 5s
       retries: 12
 
+  # Embedder CLIP (ADR-0004 D1, 3f.3): inferência de embeddings para busca
+  # semântica. INFRA local (como o SeaweedFS) — não job do orquestrador
+  # (unificação runner na fatia 4). Mock hash por default (ENGINE_MOCK=1):
+  # determinístico e sem torch; modo real CLIP é @gpu manual fora do compose
+  # (peso ~600 MB, cache em volume models). Sem auth: rede interna docker,
+  # bind só no loopback do host (R3).
+  embedder:
+    build:
+      context: ../engines/trainer-clip
+      dockerfile: Dockerfile
+    environment:
+      ENGINE_MOCK: "1"
+      MODEL: ${EMBEDDING_MODEL:-ViT-B-32}
+      PORT: "8090"
+    ports:
+      - '127.0.0.1:8090:8090'
+    volumes:
+      - models:/data/models
+    healthcheck:
+      # stdlib pura (imagem python:3.12-slim não tem wget/curl): /health responde 200 {"status":"ok"}.
+      test: ["CMD-SHELL", "python -c 'import urllib.request as u; u.urlopen(\"http://localhost:8090/health\", timeout=3)'"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
   manager:
     build:
       context: ..

@@ -162,14 +162,14 @@ export default function DatasetsPage() {
           </p>
         </div>
         <div className="flex min-h-[44px] items-center gap-2">
-          <div className="flex min-h-[44px] items-center gap-1 rounded-xl border border-zinc-800 bg-zinc-900/60 p-1" role="group" aria-label="Modo de visualização">
+          <div className="inline-flex rounded-full border border-white/10 bg-black/40 p-1" role="group" aria-label="Modo de visualização">
             <button
               type="button"
               aria-pressed={viewMode === "grid"}
               aria-label="Ver em grade"
               title="Ver em grade"
               onClick={() => setViewMode("grid")}
-              className={`flex min-h-[36px] min-w-[44px] items-center justify-center rounded-lg p-2 transition-colors ${viewMode === "grid" ? "bg-zinc-800 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
+              className={`inline-flex h-7 items-center justify-center rounded-full px-2.5 transition active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 ${viewMode === "grid" ? "bg-brand-500/[0.18] text-brand-300" : "text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200"}`}
             >
               <IconGrid className="h-4 w-4" />
             </button>
@@ -179,7 +179,7 @@ export default function DatasetsPage() {
               aria-label="Ver em lista"
               title="Ver em lista"
               onClick={() => setViewMode("list")}
-              className={`flex min-h-[36px] min-w-[44px] items-center justify-center rounded-lg p-2 transition-colors ${viewMode === "list" ? "bg-zinc-800 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}
+              className={`inline-flex h-7 items-center justify-center rounded-full px-2.5 transition active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 ${viewMode === "list" ? "bg-brand-500/[0.18] text-brand-300" : "text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200"}`}
             >
               <IconList className="h-4 w-4" />
             </button>
@@ -187,7 +187,7 @@ export default function DatasetsPage() {
           <button
             type="button"
             onClick={() => setCreateOpen(true)}
-            className="flex h-11 min-h-[44px] items-center gap-1.5 rounded-xl bg-brand-500 px-4 text-xs font-semibold text-white shadow-lg shadow-brand-500/20 transition-colors hover:bg-brand-600 active:scale-[0.98]"
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] px-5 text-xs font-semibold whitespace-nowrap text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
           >
             <IconPlus className="h-4 w-4" />
             Novo Dataset
@@ -220,10 +220,10 @@ export default function DatasetsPage() {
                   aria-pressed={active}
                   data-active={active}
                   title={label}
-                  className={`flex min-h-[44px] shrink-0 items-center gap-1.5 truncate rounded-xl border px-3.5 py-2 text-xs transition-colors ${
+                  className={`inline-flex h-9 shrink-0 items-center gap-1.5 truncate rounded-lg border px-4 text-sm font-medium whitespace-nowrap transition active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 ${
                     active
-                      ? "border-brand-500/40 bg-brand-500/20 font-semibold text-brand-300"
-                      : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200"
+                      ? "border-brand-500/30 bg-brand-500/[0.12] text-white"
+                      : "border-white/[0.08] bg-white/[0.03] text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200"
                   }`}
                 >
                   <span className="truncate">{p.label}</span>{" "}
@@ -248,7 +248,7 @@ export default function DatasetsPage() {
           <button
             type="button"
             onClick={load}
-            className="h-9 rounded-lg border border-zinc-700/80 bg-zinc-900/60 px-4 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800"
+            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-4 text-xs font-medium whitespace-nowrap text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
           >
             Tentar novamente
           </button>
@@ -274,7 +274,7 @@ export default function DatasetsPage() {
           <button
             type="button"
             onClick={clearFilters}
-            className="h-9 rounded-lg border border-zinc-700/80 bg-zinc-900/60 px-4 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800"
+            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-4 text-xs font-medium whitespace-nowrap text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
           >
             Limpar Filtros
           </button>

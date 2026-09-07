@@ -51,7 +51,7 @@ export default function StudioLayout({
               type="button"
               onClick={() => setSidebarOpen(true)}
               aria-label="Abrir menu lateral"
-              className="touch-target touch-manipulation flex items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900 p-2 text-zinc-400 transition-colors hover:text-white lg:hidden"
+              className="inline-flex size-9 items-center justify-center rounded-lg border border-transparent bg-transparent p-0 text-zinc-300 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 lg:hidden"
             >
               <IconMenu />
             </button>

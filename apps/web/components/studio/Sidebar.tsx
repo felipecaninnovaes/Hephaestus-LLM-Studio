@@ -83,7 +83,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
             type="button"
             onClick={onClose}
             aria-label="Fechar menu lateral"
-            className="touch-target touch-manipulation flex items-center justify-center rounded-xl p-2 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-white lg:hidden"
+            className="inline-flex size-9 items-center justify-center rounded-lg border border-transparent bg-transparent p-0 text-zinc-300 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 lg:hidden"
           >
             <IconX />
           </button>
@@ -225,7 +225,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
             disabled={leaving}
             title={leaving ? "Saindo…" : "Sair da sessão"}
             aria-label="Sair da sessão"
-            className="touch-target touch-manipulation flex min-w-[44px] items-center justify-center rounded-xl p-2 text-zinc-400 transition-colors hover:bg-rose-950/30 hover:text-rose-400 disabled:opacity-55"
+            className="inline-flex size-9 items-center justify-center rounded-lg border border-transparent bg-transparent p-0 text-zinc-300 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
           >
             <IconLogOut />
           </button>

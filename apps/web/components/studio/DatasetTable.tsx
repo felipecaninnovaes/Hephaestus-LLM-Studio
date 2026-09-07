@@ -103,7 +103,7 @@ export default function DatasetTable({
                       const rect = e.currentTarget.getBoundingClientRect();
                       onContextMenu(d, rect.left, rect.bottom);
                     }}
-                    className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg p-1.5 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+                    className="inline-flex size-9 items-center justify-center rounded-lg border border-transparent bg-transparent p-0 text-zinc-400 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
                   >
                     <IconMoreVertical className="h-4 w-4" />
                   </button>

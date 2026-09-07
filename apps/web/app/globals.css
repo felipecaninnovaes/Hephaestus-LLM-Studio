@@ -56,6 +56,11 @@
   box-sizing: border-box;
 }
 
+/* Densidade global Arcane v2.1 — root 14px; todo o rem-based encolhe ~12,5%. */
+html {
+  font-size: 14px;
+}
+
 html,
 body {
   margin: 0;

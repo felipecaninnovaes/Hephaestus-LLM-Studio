@@ -3858,3 +3858,696 @@ async fn t0005_search_by_image_404_de_outro_dataset() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(got["code"], "not_found");
 }
+
+// ==== Fatia 3e.2 — import (ADR-0006 D3–D7) ====
+
+/// Zip em memória a partir de `(arcname, bytes)` (Stored — o método não
+/// importa para o import, só o layout).
+fn build_zip_bytes(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut buf = std::io::Cursor::new(Vec::new());
+    {
+        let mut zip = zip::ZipWriter::new(&mut buf);
+        let opts = zip::write::SimpleFileOptions::default();
+        for (name, data) in entries {
+            zip.start_file(*name, opts).expect("entry");
+            std::io::Write::write_all(&mut zip, data).expect("write");
+        }
+        zip.finish().expect("finish");
+    }
+    buf.into_inner()
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    use sha2::Digest as _;
+    hex::encode(sha2::Sha256::digest(data))
+}
+
+/// Multipart do import: `file` (binário) + `title`/`replace` (texto).
+fn import_multipart_body(
+    boundary: &str,
+    zip_bytes: &[u8],
+    title: Option<&str>,
+    replace: Option<&str>,
+) -> Vec<u8> {
+    let mut body = Vec::new();
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"backup.zip\"\r\nContent-Type: application/zip\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(zip_bytes);
+    body.extend_from_slice(b"\r\n");
+    if let Some(t) = title {
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\n{t}\r\n"
+            )
+            .as_bytes(),
+        );
+    }
+    if let Some(r) = replace {
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"replace\"\r\n\r\n{r}\r\n"
+            )
+            .as_bytes(),
+        );
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    body
+}
+
+fn post_import(cookie: &str, boundary: &str, body: Vec<u8>) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/api/datasets/import")
+        .header(
+            http::header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .header(http::header::COOKIE, cookie)
+        .body(Body::from(body))
+        .unwrap()
+}
+
+async fn post_export(app: axum::Router, cookie: &str, ds: &str) -> (StatusCode, Vec<u8>) {
+    let (status, _, body) = call(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/datasets/{ds}/export"))
+            .header(http::header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    (status, body)
+}
+
+async fn get_dataset_json(
+    app: axum::Router,
+    cookie: &str,
+    ds: &str,
+) -> (StatusCode, serde_json::Value) {
+    let (status, _, body) = call(
+        app,
+        Request::builder()
+            .method("GET")
+            .uri(format!("/api/datasets/{ds}"))
+            .header(http::header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    if status == StatusCode::OK {
+        (status, json(&body))
+    } else {
+        (status, serde_json::Value::Null)
+    }
+}
+
+async fn get_image_detail_json(
+    app: axum::Router,
+    cookie: &str,
+    ds: &str,
+    img: &str,
+) -> serde_json::Value {
+    let (status, _, body) = call(
+        app,
+        Request::builder()
+            .method("GET")
+            .uri(format!("/api/datasets/{ds}/images/{img}"))
+            .header(http::header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    json(&body)
+}
+
+/// Manifest mínimo de teste (snake_case, fonte da verdade): 2 classes,
+/// imagens descritas em `imgs` (já em `serde_json::Value`).
+fn test_manifest_json(title: &str, slug: &str, imgs: serde_json::Value) -> Vec<u8> {
+    serde_json::json!({
+        "schema_version": 1,
+        "exported_at": "2026-09-07T12:00:00Z",
+        "dataset": {"name": slug, "title": title, "type": "yolo_bbox", "format": "yolo_txt",
+            "counts": {"images": 1, "labeled": 0, "classes": 2, "size_bytes": 10}},
+        "classes": [{"idx": 0, "name": "solda_fria", "color": "#10b981"},
+            {"idx": 1, "name": "ponte", "color": "#f59e0b"}],
+        "images": imgs,
+    })
+    .to_string()
+    .into_bytes()
+}
+
+fn test_manifest_image(
+    filename: &str,
+    split: &str,
+    media_type: &str,
+    bytes: &[u8],
+    boxes: serde_json::Value,
+    caption: serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "filename": filename, "split": split, "width": 1, "height": 1,
+        "bytes": bytes.len(), "sha256": sha256_hex(bytes), "media_type": media_type,
+        "boxes": boxes, "caption": caption,
+    })
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t3e_import_roundtrip_fidelidade() {
+    let _guard = SERIAL.lock().await;
+    let mut st = state().await;
+    let mock = std::sync::Arc::new(api_principal::storage::MockStorage::new());
+    st.storage = mock.clone();
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    // Origem: dataset com 2 classes, 2 imagens (train+val), boxes
+    // manual+autotracker (conf/track_id) e caption (origin/model).
+    let (status, _, body) = call(
+        app.clone(),
+        post_create(
+            "Roundtrip Fi",
+            &serde_json::json!(["solda_fria", "ponte"]),
+            &cookie,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let created = json(&body);
+    let ds = created["id"].as_str().expect("id").to_string();
+    let class_manual = created["classes"][0]["id"]
+        .as_str()
+        .expect("c0")
+        .to_string();
+    let class_auto = created["classes"][1]["id"]
+        .as_str()
+        .expect("c1")
+        .to_string();
+
+    let png = png_1x1();
+    let jpeg = jpeg_1x1();
+    let boundary = "heph-rt-boundary";
+    let (status, _, body) = call(
+        app.clone(),
+        post_upload(
+            &cookie,
+            &ds,
+            boundary,
+            multipart_body(boundary, &[("rt1.png", &png), ("rt2.jpg", &jpeg)]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let items = json(&body)["items"].as_array().expect("items").clone();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["status"], "stored");
+    assert_eq!(items[1]["status"], "stored");
+    let img1 = items[0]["imageId"].as_str().expect("img1").to_string();
+    let img2 = items[1]["imageId"].as_str().expect("img2").to_string();
+
+    // img2 vai para val (split por imagem sobrevive ao roundtrip).
+    sqlx::query("UPDATE images SET split = 'val' WHERE filename = 'rt2.jpg'")
+        .execute(&st.pool)
+        .await
+        .expect("split val");
+
+    let (status, _, _) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/images/{img1}/boxes"),
+            serde_json::json!({"boxes": [
+                {"classId": class_manual, "x": 0.1, "y": 0.2, "w": 0.3, "h": 0.4},
+                {"classId": class_auto, "x": 0.5, "y": 0.5, "w": 0.2, "h": 0.3, "conf": 0.96, "origin": "autotracker", "trackId": 7},
+            ]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _, _) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/images/{img2}/caption"),
+            serde_json::json!({"text": "placa ok", "origin": "manual", "model": "clip-test"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Export → zip válido.
+    let (status, zip_bytes) = post_export(app.clone(), &cookie, &ds).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(zip_bytes.len() > 100, "zip não-vazio");
+
+    // Import como dataset novo (title override ⇒ slug novo, sem 409).
+    let boundary = "heph-rt-import";
+    let (status, _, body) = call(
+        app.clone(),
+        post_import(
+            &cookie,
+            boundary,
+            import_multipart_body(boundary, &zip_bytes, Some("Roundtrip Copia"), None),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let imported = json(&body);
+    assert_eq!(imported["slug"], "roundtrip-copia");
+    assert_eq!(imported["title"], "Roundtrip Copia");
+    let new_ds = imported["id"].as_str().expect("id").to_string();
+    assert_ne!(new_ds, ds);
+    assert_eq!(imported["imagesCount"], 2);
+    assert_eq!(imported["labeledCount"], 1);
+    assert_eq!(imported["autoTracked"], true);
+    // Classes: idx/name preservados (cores rederivadas da paleta por idx).
+    let classes = imported["classes"].as_array().expect("classes");
+    assert_eq!(classes.len(), 2);
+    assert_eq!(classes[0]["idx"], 0);
+    assert_eq!(classes[0]["name"], "solda_fria");
+    assert_eq!(classes[1]["idx"], 1);
+    assert_eq!(classes[1]["name"], "ponte");
+
+    // Imagens por API: split + boxes (coords/origin/conf/trackId) + caption.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri(format!("/api/datasets/{new_ds}/images"))
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let list = json(&body);
+    assert_eq!(list["total"], 2);
+    let mut by_filename: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for it in list["items"].as_array().expect("items") {
+        by_filename.insert(
+            it["filename"].as_str().expect("filename").to_string(),
+            it["id"].as_str().expect("id").to_string(),
+        );
+        if it["filename"] == "rt2.jpg" {
+            assert_eq!(it["split"], "val");
+        } else {
+            assert_eq!(it["split"], "train");
+        }
+    }
+    let new_img1 = by_filename["rt1.png"].clone();
+    let new_img2 = by_filename["rt2.jpg"].clone();
+
+    let d1 = get_image_detail_json(app.clone(), &cookie, &new_ds, &new_img1).await;
+    let boxes = d1["boxes"].as_array().expect("boxes");
+    assert_eq!(boxes.len(), 2);
+    // O detail ordena por id (UUID v4 — handlers.rs ORDER BY id) e o import insere
+    // as boxes no mesmo statement (created_at constante): a ordem NO WIRE não é
+    // determinística (dívida "ordem de boxes" em dividas.md). O contrato não
+    // promete ordem — comparar por identidade, nunca por posição.
+    let manual = boxes
+        .iter()
+        .find(|b| b["trackId"].is_null())
+        .expect("box manual (sem trackId)");
+    let auto = boxes
+        .iter()
+        .find(|b| b["trackId"].as_i64() == Some(7))
+        .expect("box autotracker (trackId 7)");
+    assert_eq!(manual["origin"], "manual");
+    assert_eq!(manual["x"].as_f64(), Some(0.1));
+    assert_eq!(manual["y"].as_f64(), Some(0.2));
+    assert_eq!(manual["w"].as_f64(), Some(0.3));
+    assert_eq!(manual["h"].as_f64(), Some(0.4));
+    assert_eq!(auto["origin"], "autotracker");
+    assert_eq!(auto["conf"], 0.96);
+    assert_eq!(auto["trackId"], 7);
+    assert_eq!(auto["x"].as_f64(), Some(0.5));
+    assert_eq!(auto["y"].as_f64(), Some(0.5));
+    assert_eq!(auto["w"].as_f64(), Some(0.2));
+    assert_eq!(auto["h"].as_f64(), Some(0.3));
+
+    let d2 = get_image_detail_json(app.clone(), &cookie, &new_ds, &new_img2).await;
+    assert_eq!(d2["boxes"].as_array().expect("boxes").len(), 0);
+    assert_eq!(d2["caption"]["text"], "placa ok");
+    assert_eq!(d2["caption"]["origin"], "manual");
+    assert_eq!(d2["caption"]["model"], "clip-test");
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t3e_import_substituicao_replace_true() {
+    let _guard = SERIAL.lock().await;
+    let mut st = state().await;
+    let mock = std::sync::Arc::new(api_principal::storage::MockStorage::new());
+    st.storage = mock.clone();
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Subst Alvo", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let created = json(&body);
+    let ds = created["id"].as_str().expect("id").to_string();
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+    let class_id = created["classes"][0]["id"]
+        .as_str()
+        .expect("c0")
+        .to_string();
+
+    let png = png_1x1();
+    let boundary = "heph-subst-up";
+    let (status, _, body) = call(
+        app.clone(),
+        post_upload(
+            &cookie,
+            &ds,
+            boundary,
+            multipart_body(boundary, &[("s.png", &png)]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let img = json(&body)["items"][0]["imageId"]
+        .as_str()
+        .expect("img")
+        .to_string();
+    let (status, _, _) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/images/{img}/boxes"),
+            serde_json::json!({"boxes": [{"classId": class_id, "x": 0.5, "y": 0.5, "w": 0.2, "h": 0.2, "origin": "autotracker"}]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    // Embedding antiga existe (o upload indexa fire-and-forget com o mock).
+    poll_embeddings(&st.pool, ds_id, 1).await;
+
+    let (status, zip_bytes) = post_export(app.clone(), &cookie, &ds).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Substituição consentida: mesmo slug + replace=true ⇒ 201, id novo.
+    let boundary = "heph-subst-import";
+    let (status, _, body) = call(
+        app.clone(),
+        post_import(
+            &cookie,
+            boundary,
+            import_multipart_body(boundary, &zip_bytes, None, Some("true")),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let imported = json(&body);
+    assert_eq!(imported["slug"], "subst-alvo");
+    let new_ds = imported["id"].as_str().expect("id").to_string();
+    assert_ne!(new_ds, ds);
+    assert_eq!(imported["imagesCount"], 1);
+    assert_eq!(imported["autoTracked"], true);
+
+    // Linha antiga sumiu (CASCADE) + sweep do prefixo antigo no mock.
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM datasets WHERE id = $1")
+        .bind(ds_id)
+        .fetch_one(&st.pool)
+        .await
+        .expect("count old");
+    assert_eq!(n, 0);
+    let (status, _) = get_dataset_json(app.clone(), &cookie, &ds).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        mock.ops()
+            .contains(&format!("DELETE_PREFIX datasets/{ds_id}/")),
+        "sweep do prefixo antigo: {:?}",
+        mock.ops()
+    );
+    // Embeddings antigas morreram no CASCADE da 0004; re-indexação recria.
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM image_embeddings WHERE dataset_id = $1")
+        .bind(ds_id)
+        .fetch_one(&st.pool)
+        .await
+        .expect("count old embeddings");
+    assert_eq!(n, 0);
+    let new_id: uuid::Uuid = new_ds.parse().expect("uuid");
+    poll_embeddings(&st.pool, new_id, 1).await;
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t3e_import_409_sem_replace_nada_muda() {
+    let _guard = SERIAL.lock().await;
+    let mut st = state().await;
+    let mock = std::sync::Arc::new(api_principal::storage::MockStorage::new());
+    st.storage = mock.clone();
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Conflito X", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let created = json(&body);
+    let ds = created["id"].as_str().expect("id").to_string();
+    let png = png_1x1();
+    let boundary = "heph-cfl-up";
+    let (status, _, _) = call(
+        app.clone(),
+        post_upload(
+            &cookie,
+            &ds,
+            boundary,
+            multipart_body(boundary, &[("c.png", &png)]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let puts_before = mock.ops().iter().filter(|o| o.starts_with("PUT ")).count();
+
+    // Zip VÁLIDO com o mesmo slug, sem `replace` ⇒ 409 (detecção, pós-validação).
+    let manifest = test_manifest_json(
+        "Conflito X",
+        "conflito-x",
+        serde_json::json!([test_manifest_image(
+            "c.png",
+            "train",
+            "png",
+            &png,
+            serde_json::json!([]),
+            serde_json::json!(null)
+        )]),
+    );
+    let zip_bytes = build_zip_bytes(&[("manifest.json", &manifest), ("images/c.png", &png)]);
+    let boundary = "heph-cfl-import";
+    let (status, _, body) = call(
+        app.clone(),
+        post_import(
+            &cookie,
+            boundary,
+            import_multipart_body(boundary, &zip_bytes, None, None),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(json(&body)["code"], "slug_conflict");
+
+    // Nada muda: dataset intacto, nenhum PUT novo no bucket.
+    let (status, got) = get_dataset_json(app.clone(), &cookie, &ds).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(got["imagesCount"], 1);
+    let puts_after = mock.ops().iter().filter(|o| o.starts_with("PUT ")).count();
+    assert_eq!(puts_before, puts_after);
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t3e_import_zip_invalido_com_replace_nao_destroi() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Intacto Z", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds = json(&body)["id"].as_str().expect("id").to_string();
+    let png = png_1x1();
+    let boundary = "heph-int-up";
+    let (status, _, _) = call(
+        app.clone(),
+        post_upload(
+            &cookie,
+            &ds,
+            boundary,
+            multipart_body(boundary, &[("z.png", &png)]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Zip corrompido + replace=true ⇒ 400 (validação ANTES do teardown).
+    let boundary = "heph-int-import";
+    let (status, _, body) = call(
+        app.clone(),
+        post_import(
+            &cookie,
+            boundary,
+            import_multipart_body(boundary, b"nao-e-zip", None, Some("true")),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "import_invalid");
+
+    // Dataset existente INTACTO.
+    let (status, got) = get_dataset_json(app.clone(), &cookie, &ds).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(got["imagesCount"], 1);
+    assert_eq!(got["title"], "Intacto Z");
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t3e_import_manifest_corrompido_400_sem_criar() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    let n_before: i64 = sqlx::query_scalar("SELECT count(*) FROM datasets")
+        .fetch_one(&st.pool)
+        .await
+        .expect("count");
+    let png = png_1x1();
+    let zip_bytes = build_zip_bytes(&[("manifest.json", b"{corrompido"), ("images/a.png", &png)]);
+    let boundary = "heph-bad-manifest";
+    let (status, _, body) = call(
+        app.clone(),
+        post_import(
+            &cookie,
+            boundary,
+            import_multipart_body(boundary, &zip_bytes, None, None),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "import_invalid");
+    let n_after: i64 = sqlx::query_scalar("SELECT count(*) FROM datasets")
+        .fetch_one(&st.pool)
+        .await
+        .expect("count");
+    assert_eq!(n_before, n_after);
+
+    // replace inválido ⇒ 400 `invalid_request` (erro de form, não de pacote).
+    let manifest = test_manifest_json(
+        "Qualquer",
+        "qualquer",
+        serde_json::json!([test_manifest_image(
+            "a.png",
+            "train",
+            "png",
+            &png,
+            serde_json::json!([]),
+            serde_json::json!(null)
+        )]),
+    );
+    let zip_bytes = build_zip_bytes(&[("manifest.json", &manifest), ("images/a.png", &png)]);
+    let (status, _, body) = call(
+        app.clone(),
+        post_import(
+            &cookie,
+            boundary,
+            import_multipart_body(boundary, &zip_bytes, None, Some("maybe")),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t3e_import_falha_put_no_meio_503_limpa_novo() {
+    let _guard = SERIAL.lock().await;
+    let mut st = state().await;
+    let mock = std::sync::Arc::new(api_principal::storage::MockStorage::new());
+    // Primeiro PUT passa, do segundo em diante o bucket "cai".
+    mock.fail_after_puts(1);
+    st.storage = mock.clone();
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    let png = png_1x1();
+    let jpeg = jpeg_1x1();
+    let manifest = test_manifest_json(
+        "Falha Meio",
+        "falha-meio",
+        serde_json::json!([
+            test_manifest_image(
+                "f1.png",
+                "train",
+                "png",
+                &png,
+                serde_json::json!([]),
+                serde_json::json!(null)
+            ),
+            test_manifest_image(
+                "f2.jpg",
+                "train",
+                "jpeg",
+                &jpeg,
+                serde_json::json!([]),
+                serde_json::json!(null)
+            ),
+        ]),
+    );
+    let zip_bytes = build_zip_bytes(&[
+        ("manifest.json", &manifest),
+        ("images/f1.png", &png),
+        ("images/f2.jpg", &jpeg),
+    ]);
+    let boundary = "heph-fail-mid";
+    let (status, _, body) = call(
+        app.clone(),
+        post_import(
+            &cookie,
+            boundary,
+            import_multipart_body(boundary, &zip_bytes, None, None),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(json(&body)["code"], "storage_unavailable");
+
+    // Linha do dataset NOVO removida (CASCADE) + sweep do prefixo no mock.
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM datasets WHERE slug = 'falha-meio'")
+        .fetch_one(&st.pool)
+        .await
+        .expect("count");
+    assert_eq!(n, 0);
+    assert!(
+        mock.ops()
+            .iter()
+            .any(|o| o.starts_with("DELETE_PREFIX datasets/")),
+        "sweep do prefixo novo: {:?}",
+        mock.ops()
+    );
+}

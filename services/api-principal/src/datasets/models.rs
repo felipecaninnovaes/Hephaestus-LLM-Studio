@@ -640,6 +640,156 @@ pub fn plan_classes(existing: &[Uuid], req: &PutClassesRequest) -> Result<ClassP
     })
 }
 
+// ---------------------------------------------------------------------------
+// Import (fatia 3e.2, ADR-0006 D3/D4): validações puras do pacote, sem banco.
+// O manifest é o de `export.rs` (fonte da verdade do roundtrip, D1); campos
+// desconhecidos são permitidos no parse (forward-compat — o gate é o
+// `schema_version`). `Err(())` ⇒ o handler responde 400 `import_invalid`.
+// ---------------------------------------------------------------------------
+
+/// Parse do campo multipart `replace` (D3/P3): ausente ⇒ `false`;
+/// `"true"`/`"false"` literais; qualquer outro valor ⇒ `Err(())`
+/// (o handler responde 400 `invalid_request`, não `import_invalid`).
+pub fn parse_import_replace(raw: Option<&str>) -> Result<bool, ()> {
+    match raw {
+        None => Ok(false),
+        Some("true") => Ok(true),
+        Some("false") => Ok(false),
+        Some(_) => Err(()),
+    }
+}
+
+/// Título resolvido do import (D3): form `title` quando presente e não-vazio
+/// (após trim) tem precedência sobre o `title` do manifest; o resultado
+/// precisa ter 1..=96 chars. `Err(())` ⇒ 400 `invalid_request`.
+pub fn resolve_import_title(form: Option<&str>, manifest_title: &str) -> Result<String, ()> {
+    let chosen = match form {
+        Some(t) if !t.trim().is_empty() => t.trim().to_string(),
+        _ => manifest_title.trim().to_string(),
+    };
+    let n = chosen.chars().count();
+    if (1..=96).contains(&n) {
+        Ok(chosen)
+    } else {
+        Err(())
+    }
+}
+
+fn valid_dataset_type(s: &str) -> bool {
+    matches!(
+        s,
+        "yolo_bbox" | "yolo_seg" | "difusao_lora" | "clip_image_text"
+    )
+}
+
+fn valid_dataset_format(s: &str) -> bool {
+    matches!(s, "yolo_txt" | "captions" | "pairs")
+}
+
+fn valid_media_type(s: &str) -> bool {
+    matches!(s, "jpeg" | "png" | "webp")
+}
+
+fn valid_split(s: &str) -> bool {
+    matches!(s, "train" | "val")
+}
+
+fn valid_sha256(s: &str) -> bool {
+    s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// `(category, task)` derivados do `type` do manifest (espelho da tabela
+/// `derive` — o import não recebe category/task do cliente).
+pub fn category_task_of(dataset_type: &str) -> Result<(&'static str, &'static str), ()> {
+    match dataset_type {
+        "yolo_bbox" => Ok(("yolo", "detect_track")),
+        "yolo_seg" => Ok(("yolo", "segment")),
+        "difusao_lora" => Ok(("difusao", "caption")),
+        "clip_image_text" => Ok(("openclip", "embedding")),
+        _ => Err(()),
+    }
+}
+
+/// Validação de domínios e referências do manifest (D3/D4), sem banco nem
+/// zip: gate `schema_version == 1`; `dataset.type`/`format` nos domínios do
+/// CHECK; classes com `idx` denso 0..n-1 (ordem do array) e nomes válidos
+/// pela regra da casa; imagens com split/media_type/dimensões/bytes/splits
+/// válidos, `sha256` 64-hex, `class_idx` dentro das classes, boxes em
+/// 0..=1 com `conf` em 0..=1 e `origin` no CHECK, captions com texto
+/// 1..=8000 e `origin`/`model` válidos.
+pub fn validate_import_manifest(m: &super::export::ExportManifest) -> Result<(), ()> {
+    if m.schema_version != 1 {
+        return Err(());
+    }
+    if !valid_dataset_type(&m.dataset.r#type) || !valid_dataset_format(&m.dataset.format) {
+        return Err(());
+    }
+    if m.dataset.title.trim().is_empty() || m.dataset.title.chars().count() > 96 {
+        return Err(());
+    }
+    let n_classes = m.classes.len();
+    if n_classes > 200 {
+        return Err(());
+    }
+    for (pos, c) in m.classes.iter().enumerate() {
+        if c.idx != pos as i32 {
+            return Err(());
+        }
+        if !is_valid_class_name(c.name.trim()) {
+            return Err(());
+        }
+    }
+    for img in &m.images {
+        if img.filename.is_empty() || img.filename.chars().count() > 255 {
+            return Err(());
+        }
+        if !valid_split(&img.split) || !valid_media_type(&img.media_type) {
+            return Err(());
+        }
+        if img.width <= 0 || img.height <= 0 || img.bytes < 0 {
+            return Err(());
+        }
+        if !valid_sha256(&img.sha256) {
+            return Err(());
+        }
+        for b in &img.boxes {
+            if !(0..n_classes as i32).contains(&b.class_idx) {
+                return Err(());
+            }
+            for v in [b.x, b.y, b.w, b.h] {
+                if !(0.0..=1.0).contains(&v) {
+                    return Err(());
+                }
+            }
+            if let Some(c) = b.conf {
+                if !(0.0..=1.0).contains(&c) {
+                    return Err(());
+                }
+            }
+            if !is_valid_origin(&b.origin) {
+                return Err(());
+            }
+        }
+        if let Some(cap) = &img.caption {
+            let n = cap.text.chars().count();
+            if !(1..=8000).contains(&n) {
+                return Err(());
+            }
+            if !is_valid_origin(&cap.origin) {
+                return Err(());
+            }
+            if cap
+                .model
+                .as_deref()
+                .is_some_and(|m| m.chars().count() > 255)
+            {
+                return Err(());
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -897,5 +1047,115 @@ mod tests {
     fn put_classes_deny_unknown() {
         let bad: Result<PutClassesRequest, _> = serde_json::from_str(r#"{"classes":[],"extra":1}"#);
         assert!(bad.is_err(), "deny_unknown_fields da casa");
+    }
+
+    #[test]
+    fn import_replace_regras() {
+        assert_eq!(parse_import_replace(None), Ok(false));
+        assert_eq!(parse_import_replace(Some("true")), Ok(true));
+        assert_eq!(parse_import_replace(Some("false")), Ok(false));
+        assert_eq!(parse_import_replace(Some("1")), Err(()));
+        assert_eq!(parse_import_replace(Some("True")), Err(()));
+        assert_eq!(parse_import_replace(Some("")), Err(()));
+    }
+
+    #[test]
+    fn import_title_form_vence_manifest() {
+        assert_eq!(
+            resolve_import_title(Some(" Novo Nome "), "Antigo").unwrap(),
+            "Novo Nome"
+        );
+        assert_eq!(
+            resolve_import_title(Some("   "), "Do Manifest").unwrap(),
+            "Do Manifest"
+        );
+        assert_eq!(
+            resolve_import_title(None, "Do Manifest").unwrap(),
+            "Do Manifest"
+        );
+        assert!(resolve_import_title(None, "").is_err());
+        assert!(resolve_import_title(Some(&"a".repeat(97)), "x").is_err());
+        assert!(resolve_import_title(Some(&"a".repeat(96)), "x").is_ok());
+    }
+
+    #[test]
+    fn import_category_task_espelho_do_derive() {
+        assert_eq!(category_task_of("yolo_bbox"), Ok(("yolo", "detect_track")));
+        assert_eq!(category_task_of("yolo_seg"), Ok(("yolo", "segment")));
+        assert_eq!(category_task_of("difusao_lora"), Ok(("difusao", "caption")));
+        assert_eq!(
+            category_task_of("clip_image_text"),
+            Ok(("openclip", "embedding"))
+        );
+        assert_eq!(category_task_of("outro"), Err(()));
+    }
+
+    fn import_manifest_minimo() -> super::super::export::ExportManifest {
+        use super::super::export::*;
+        ExportManifest {
+            schema_version: 1,
+            exported_at: "2026-09-07T12:00:00Z".to_string(),
+            dataset: ManifestDataset {
+                name: "d".to_string(),
+                title: "D".to_string(),
+                r#type: "yolo_bbox".to_string(),
+                format: "yolo_txt".to_string(),
+                counts: ManifestCounts {
+                    images: 1,
+                    labeled: 1,
+                    classes: 1,
+                    size_bytes: 10,
+                },
+            },
+            classes: vec![ManifestClass {
+                idx: 0,
+                name: "gato".to_string(),
+                color: "#10b981".to_string(),
+            }],
+            images: vec![ManifestImage {
+                filename: "a.jpg".to_string(),
+                split: "train".to_string(),
+                width: 1,
+                height: 1,
+                bytes: 10,
+                sha256: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+                    .to_string(),
+                media_type: "jpeg".to_string(),
+                boxes: vec![ManifestBox {
+                    class_idx: 0,
+                    x: 0.5,
+                    y: 0.5,
+                    w: 0.2,
+                    h: 0.2,
+                    conf: Some(0.9),
+                    origin: "autotracker".to_string(),
+                    track_id: Some(7),
+                }],
+                caption: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn import_manifest_ok_e_gates() {
+        assert!(validate_import_manifest(&import_manifest_minimo()).is_ok());
+        let mut m = import_manifest_minimo();
+        m.schema_version = 2;
+        assert!(validate_import_manifest(&m).is_err());
+        let mut m = import_manifest_minimo();
+        m.images[0].boxes[0].class_idx = 5;
+        assert!(validate_import_manifest(&m).is_err());
+        let mut m = import_manifest_minimo();
+        m.images[0].boxes[0].origin = "hack".to_string();
+        assert!(validate_import_manifest(&m).is_err());
+        let mut m = import_manifest_minimo();
+        m.images[0].media_type = "gif".to_string();
+        assert!(validate_import_manifest(&m).is_err());
+        let mut m = import_manifest_minimo();
+        m.classes[0].idx = 3;
+        assert!(validate_import_manifest(&m).is_err());
+        let mut m = import_manifest_minimo();
+        m.dataset.r#type = "outro".to_string();
+        assert!(validate_import_manifest(&m).is_err());
     }
 }

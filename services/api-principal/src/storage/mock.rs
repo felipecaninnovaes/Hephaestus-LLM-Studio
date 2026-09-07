@@ -18,6 +18,11 @@ pub struct MockStorage {
     objects: RwLock<HashMap<String, Vec<u8>>>,
     ops: RwLock<Vec<String>>,
     failing: std::sync::atomic::AtomicBool,
+    /// Falha injetada após N PUTs bem-sucedidos (teste de falha no meio do
+    /// ingest do import, 3e.2): `usize::MAX` = nunca. O PUT que estoura
+    /// retorna `Unavailable("injected")` sem gravar op.
+    fail_after_puts: std::sync::atomic::AtomicUsize,
+    puts_done: std::sync::atomic::AtomicUsize,
 }
 
 impl MockStorage {
@@ -33,6 +38,8 @@ impl MockStorage {
             objects: RwLock::new(HashMap::new()),
             ops: RwLock::new(Vec::new()),
             failing: std::sync::atomic::AtomicBool::new(false),
+            fail_after_puts: std::sync::atomic::AtomicUsize::new(usize::MAX),
+            puts_done: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -47,6 +54,14 @@ impl MockStorage {
 
     fn is_failing(&self) -> bool {
         self.failing.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Os próximos `n` PUTs passam; do `n+1`-ésimo em diante, `put` retorna
+    /// `Unavailable("injected")`. `put_bytes` (semeadura de fixture) não
+    /// conta nem falha — só o `put` da porta.
+    pub fn fail_after_puts(&self, n: usize) {
+        self.fail_after_puts
+            .store(n, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// `key→bytes` ordenado por key (para asserções de teste).
@@ -98,6 +113,18 @@ impl Default for MockStorage {
 impl StoragePort for MockStorage {
     async fn put(&self, key: &str, path: &Path) -> Result<(), StorageError> {
         if self.is_failing() {
+            return Err(StorageError::Unavailable("injected".to_string()));
+        }
+        // `fail_after_puts(n)` deixa passar os PUTs #0..#n-1 e injeta do #n
+        // em diante (default `MAX` = nunca). `put_bytes` não conta.
+        let done = self
+            .puts_done
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if done
+            >= self
+                .fail_after_puts
+                .load(std::sync::atomic::Ordering::SeqCst)
+        {
             return Err(StorageError::Unavailable("injected".to_string()));
         }
         let data = tokio::fs::read(path)

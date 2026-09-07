@@ -81,6 +81,7 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
         &[200, 400, 401, 404, 409],
     ),
     ("POST", "/api/datasets/:id/export", &[200, 401, 404, 503]),
+    ("POST", "/api/datasets/import", &[201, 400, 401, 409, 503]),
 ];
 
 /// Rotas públicas (sem gate): `/health` + `/api/auth/*`.
@@ -95,6 +96,11 @@ pub const PUBLIC_ROUTES: &[(&str, &str, &[u16])] = &[
 /// envelope multipart (D2). NÃO é por field (axum embrulha a stream toda —
 /// descoberta da revisão 3b.3).
 pub const UPLOAD_BODY_LIMIT_BYTES: usize = 200 * 1024 * 1024 + 8 * 1024 * 1024;
+
+/// Limite do CORPO TOTAL do zip de import: 200 MiB de pacote + 8 MiB de
+/// folga p/ envelope multipart (P4, mesmo padrão do upload 3b — o limite
+/// mora na camada de roteamento, nunca no handler).
+pub const IMPORT_BODY_LIMIT_BYTES: usize = 200 * 1024 * 1024 + 8 * 1024 * 1024;
 
 /// Contrato total (inventário D8): união REAL de `PUBLIC_ROUTES` +
 /// `PROTECTED_ROUTES`. É função justamente para não existir alias esquecido —
@@ -203,6 +209,11 @@ pub fn build(state: AppState) -> axum::Router {
         .route(
             "/api/datasets/:id/export",
             post(datasets::export::export_dataset),
+        )
+        .route(
+            "/api/datasets/import",
+            post(datasets::import::import_dataset)
+                .layer(DefaultBodyLimit::max(IMPORT_BODY_LIMIT_BYTES)),
         )
         // route_layer DEPOIS dos .route(): aplicado a um router vazio o axum 0.7 panic
         // no boot (path_router.rs, `routes.is_empty()`). Só cobre as rotas deste

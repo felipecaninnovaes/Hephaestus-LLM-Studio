@@ -37,3 +37,5 @@ pub const MSG_CLASSES_IN_USE: &str = "class in use by annotations";
 pub const MSG_INDEX_NOT_READY: &str = "index not ready";
 /// 503 de embedder inalcançável (fatia 3f.5, ADR-0004 D1).
 pub const MSG_EMBEDDING_UNAVAILABLE: &str = "embedding unavailable";
+/// 400 de pacote de import inválido (fatia 3e.2, ADR-0006 D7).
+pub const MSG_IMPORT_INVALID: &str = "invalid import package";

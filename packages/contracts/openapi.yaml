@@ -404,6 +404,69 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/datasets/import:
+    post:
+      operationId: importDataset
+      tags: [datasets]
+      summary: Importa um backup estruturado (.zip do export)
+      description: |
+        Restaura um backup gerado pelo export (Fatia 3e.2, ADR-0006 D3–D7):
+        o `manifest.json` é a fonte da verdade do roundtrip (os derivados
+        `dataset.yaml` / `labels/*.txt` / `captions.jsonl` são ignorados);
+        validação completa do pacote ANTES de qualquer write/teardown;
+        `origin` das boxes e do caption preservado literal; classes recriadas
+        por `idx` com cores da paleta (nunca do cliente). Substituição
+        consentida: slug existente + sem `replace` ⇒ 409 `slug_conflict`
+        (protocolo de detecção — o servidor nunca substitui sozinho); a UI
+        confirma a irreversibilidade e re-envia com `replace=true` ⇒ teardown
+        + ingest com dataset_id novo (201). Corpo total limitado a
+        200 MiB + 8 MiB de envelope (413 global).
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Pacote `.zip` do export (obrigatório).
+                title:
+                  type: string
+                  description: Override do nome (opcional, ≤96 chars — importar como dataset novo); ausente/vazio usa o `title` do manifest.
+                replace:
+                  type: string
+                  enum: ["true", "false"]
+                  description: Consentimento para SUBSTITUIR o dataset de mesmo slug (opcional, default `false`; valor inválido ⇒ 400 `invalid_request`).
+      responses:
+        "201":
+          description: Dataset recriado (`Dataset` existente — nenhum schema novo de resposta).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Dataset" }
+        "400":
+          description: "Form inválido (sem `file`, `title`/`replace` inválidos; `code: invalid_request`) ou pacote inválido (manifest ausente/incompatível/corrompido, zip-slip/bomb, dedupe, sha256/media_type divergentes, domínios inválidos; `code: import_invalid`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "Slug já existe e `replace` não é `true` (`code: slug_conflict` — protocolo de detecção da substituição, ADR-0006 D5)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Backend de objetos indisponível (`code: storage_unavailable`, ADR-0003 D10)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/datasets/{id}/images/{imageId}/boxes:
     parameters:
       - name: id
@@ -1081,8 +1144,8 @@ components:
       properties:
         code:
           type: string
-          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, storage_unavailable, classes_in_use, index_not_ready, embedding_unavailable, internal]
-          description: "Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`; o cliente DEVE ter ramo default: o enum cresce por fatia (aditivo na 0.2.0: `not_found`, `slug_conflict`; na 0.3.0: `storage_unavailable`, ADR-0003 D10; na 0.3.0, fatia 3g.1: `classes_in_use`; na 0.5.0, fatia 3f.5: `index_not_ready`, `embedding_unavailable`, ADR-0004 D5)."
+          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, storage_unavailable, classes_in_use, index_not_ready, embedding_unavailable, import_invalid, internal]
+          description: "Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`; o cliente DEVE ter ramo default: o enum cresce por fatia (aditivo na 0.2.0: `not_found`, `slug_conflict`; na 0.3.0: `storage_unavailable`, ADR-0003 D10; na 0.3.0, fatia 3g.1: `classes_in_use`; na 0.5.0, fatia 3f.5: `index_not_ready`, `embedding_unavailable`, ADR-0004 D5; na 0.6.0, fatia 3e: `import_invalid`)."
         message:
           type: string
           description: Humano-curto, ESTÁTICO por code; nunca contém hash, token, segredo ou existência de usuário.

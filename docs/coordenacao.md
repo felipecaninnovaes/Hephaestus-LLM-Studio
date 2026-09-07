@@ -33,6 +33,11 @@ ser interrompido no meio de uma.
 - **Propostas AINDA pendentes de aprovação do usuário** (da auditoria de sobrecarga): script `scripts/ci-watch.sh` (matriz de runs/jobs via API Gitea — mata o polling manual) e smokes E2E versionados `scripts/smoke-*.sh` (o smoke das sessões 5–7 foi reescrito à mão a cada sessão).
 - Ambiente herdado da sessão 7: compose de pé (db pg16-trixie, seaweedfs, manager, principal com código 3f, embedder healthy), dev server :3000, Chrome :9222.
 
+### Sessão 9 — plano da 3e ANTECIPADO em arquivo (2026-09-07 — NADA implementado)
+
+- Usuário pediu antecipação do planejamento, gravado em arquivo, sem implementar. Entregue: **`docs/plano-3e-export-import.md`** — escopo (fontes: IDEIA §1, PRODUCT.md :28/:41, ADR-0003 D9, backend.md :51/:249, frontend.md :96/:180), o que a fatia herda (ganchos de UI desabilitados, spec 0.5.0, `origin='import'` já no schema, sem migration esperada), decisões já travadas vs. **decisões abertas D1–D9 para a ADR-0006** (`@architect` no 3e.0), esqueleto de commits 3e.0–3e.5 com donos (3e.1/3e.2 SEQUENCIAIS — mesmo módulo), verificação (roundtrip export→import como critério de aceitação), **6 perguntas ao usuário a fechar antes da ADR** (inclui mover `POST /:id/package` para a fatia 4 — recomendação do coordenador) e checklist de retomada (§9 do plano).
+- **Próximo passo quando a fatia abrir**: checklist §9 do plano → perguntas → 3e.0 (@architect) → aprovação → branch `feat/datasets-export-import`.
+
 ### Sessão 7 — fatia 3f implementada e MERGEADA pelo usuário (contexto)
 
 - **CI pós-3g confirmado**: run 21 (main) e run 20 (feat/datasets-management) VERDES — 3g fechada definitivamente.

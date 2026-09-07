@@ -150,6 +150,37 @@ impl StoragePort for S3Storage {
         Ok(bytes.into_bytes().to_vec())
     }
 
+    async fn get_to_file(&self, key: &str, path: &Path) -> Result<(), StorageError> {
+        // Espelho do `put` (ADR-0006 D9): `get_object().body.into_async_read()`
+        // → copy para arquivo — streama bucket→disco sem carregar RAM.
+        let out = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+            .map_err(|e| {
+                let svc = e.into_service_error();
+                if matches!(
+                    svc,
+                    aws_sdk_s3::operation::get_object::GetObjectError::NoSuchKey(_)
+                ) {
+                    StorageError::NotFound
+                } else {
+                    StorageError::Unavailable("storage unavailable".into())
+                }
+            })?;
+        let mut reader = out.body.into_async_read();
+        let mut file = tokio::fs::File::create(path)
+            .await
+            .map_err(|_| StorageError::Unavailable("storage unavailable".into()))?;
+        tokio::io::copy(&mut reader, &mut file)
+            .await
+            .map_err(|_| StorageError::Unavailable("storage unavailable".into()))?;
+        Ok(())
+    }
+
     async fn presign_get(&self, key: &str) -> Result<String, StorageError> {
         // Assinado no endpoint PÚBLICO (presign_client) — gotcha SigV4 D3.
         let cfg = PresigningConfig::expires_in(Duration::from_secs(self.url_ttl_secs))

@@ -17,6 +17,7 @@ import {
 } from "@/components/icons";
 import { ApiError } from "@/lib/api";
 import { getDataset } from "@/lib/datasets";
+import { exportDataset, exportErrorMessage } from "@/lib/backup";
 import {
   getSearchStatus,
   searchByImage,
@@ -40,6 +41,7 @@ import type {
 } from "@/types/studio";
 import ClassesModal from "@/components/studio/ClassesModal";
 import ConfirmDialog from "@/components/studio/ConfirmDialog";
+import ImportDatasetModal from "@/components/studio/ImportDatasetModal";
 
 const PAGE_LIMIT = 50;
 
@@ -60,6 +62,8 @@ export default function DatasetGalleryPage() {
   const [uploadCount, setUploadCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [classesOpen, setClassesOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [view, setView] = useState<GalleryView>("ativas");
   const [trashTotal, setTrashTotal] = useState(0);
   const [deleting, setDeleting] = useState<ImageItem | null>(null);
@@ -372,6 +376,30 @@ export default function DatasetGalleryPage() {
       showToast(messageForSearch(err), "error");
     } finally {
       setIndexBusy(false);
+    }
+  }
+
+  async function handleExport() {
+    if (!dataset || exporting) return;
+    setExporting(true);
+    try {
+      await exportDataset(dataset.id, dataset.slug);
+    } catch (err) {
+      if (
+        err instanceof ApiError &&
+        (err.code === "unauthorized" || err.status === 401)
+      ) {
+        router.replace("/login");
+        return;
+      }
+      showToast(
+        err instanceof ApiError
+          ? exportErrorMessage(err.code)
+          : "Falha ao exportar dataset.",
+        "error",
+      );
+    } finally {
+      setExporting(false);
     }
   }
 
@@ -689,12 +717,22 @@ export default function DatasetGalleryPage() {
           </button>
           <button
             type="button"
-            disabled
-            title="Backup estruturado chega na fatia 3e."
-            className="flex items-center space-x-1.5 rounded-lg border border-zinc-700/80 bg-zinc-900 px-3 py-2 text-xs font-medium text-zinc-200 opacity-60"
+            onClick={handleExport}
+            disabled={exporting}
+            title="Baixar backup estruturado (.zip)"
+            className="flex items-center space-x-1.5 rounded-lg border border-zinc-700/80 bg-zinc-900 px-3 py-2 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800 disabled:opacity-60"
           >
             <IconDownload className="h-4 w-4" />
-            <span>Exportar</span>
+            <span>{exporting ? "Exportando…" : "Exportar"}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setImportOpen(true)}
+            title="Importar backup estruturado (.zip)"
+            className="flex items-center space-x-1.5 rounded-lg border border-zinc-700/80 bg-zinc-900 px-3 py-2 text-xs font-medium text-zinc-200 transition-colors hover:bg-zinc-800"
+          >
+            <IconFolder className="h-4 w-4" />
+            <span>Importar</span>
           </button>
           <button
             type="button"
@@ -1065,6 +1103,7 @@ export default function DatasetGalleryPage() {
           onSaved={handleClassesSaved}
         />
       )}
+      {importOpen && <ImportDatasetModal onClose={() => setImportOpen(false)} />}
       <ConfirmDialog
         open={deleting !== null}
         title="Mover para a lixeira"

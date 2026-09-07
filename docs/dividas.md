@@ -23,7 +23,30 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
   materialização)**: `jobs.dataset_id UUID NULL REFERENCES datasets(id) ON
   DELETE SET NULL` + snapshot `dataset_versions` (nunca `RESTRICT`) —
   ADR-0002 T4. Nessa mesma fatia o orquestrador ganha cliente S3 com
-  credencial escopada por prefixo.
+  credencial escopada por prefixo. (O `POST /:id/package` também é da
+  fatia 4 — revisão D0 da ADR-0006 sobre o ADR-0003 D9.)
+- **M2 — lacunas de teste do export/import (re-auditoria do reviewer da 3e,
+  sem fatia marcada)**: (a) nenhum teste abre o zip gerado PELO HANDLER (o
+  unit cobre `build_label_entries` puro; o loop real com `a.jpg`+`a.png` +
+  zip final sem teste); (b) skip de órfão sem teste-db; (c) fixture de
+  dedupe pós-sniff e teto de reader contado em zip real, sem fixture.
+- **Borda composta em `label_arcname_for` (re-auditoria do reviewer da 3e,
+  sem fatia marcada)** — `src/datasets/export.rs:292`: `used.insert` ignora
+  o retorno — o caso de 3 vias (`a.jpg`+`a_png.jpg`+`a.png` na ordem criada)
+  ainda produz arcname duplicado; correção = loop de sufixo + teste 3-vias.
+  Raríssimo; roundtrip interno não afetado (import ignora labels).
+- **SELECTs pós-commit do import sem cleanup (re-auditoria do reviewer da
+  3e, sem fatia marcada)** — `src/datasets/import.rs:637-645` (mapa
+  class_idx→id) e `:761-784` (SELECT final do dataset + classes): falha de
+  leitura aí deixa o dataset novo commitado (vazio/completo) com 500;
+  all-or-nothing estrito chamaria `cleanup_failed_import` nesses retornos
+  também.
+- **NIT a11y do ImportDatasetModal (re-auditoria do reviewer da 3e, sem
+  fatia marcada)**: o foco não migra para o botão "Substituir" na fase
+  `confirm` (padrão do ConfirmDialog — consistente, registrável).
+- **NIT RAM do import (re-auditoria do reviewer da 3e, sem fatia
+  marcada)**: `extract_images` lê a imagem inteira em memória para
+  sniff/decode (teto 200 MiB/imagem limita; a 3b spoola sem acumular).
 
 ### Sem fatia marcada
 
@@ -110,6 +133,21 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
   (`DatasetRow.auto_tracked` + teste de integração com 3 casos: autotracker→
   true, manual→false, vazio→false). Sem mudança de contrato (campo já existia; 
   descrição do openapi atualizada).
+
+- **3e (export/import de dataset) — QUITADA 2026-09-07**
+  (`feat/datasets-export-import`: export `21b95b9`, import `f37d76f`, UI
+  `44cf475`, fixes `71b5587`/`23e0f3e`/`b07c215`/`096eb95`; review final
+  APROVA COM NITS). Entregue: `POST /:id/export` (200 401 404 503, zip em
+  stream do banco em tempdir) + `POST /datasets/import` (201 400 401 409
+  503, multipart `file`+`title`≤96+`replace`, substituição consentida
+  409→`replace=true`, erro novo `import_invalid`, limite 200 MiB + 8 MiB
+  envelope); UI na galeria (`lib/backup.ts`, `ImportDatasetModal`,
+  Importar removido do header). `POST /:id/package` + `dataset_versions`
+  (T4) ficam na fatia 4. Sem migration (schema já tinha `origin` com
+  `import` desde a 0003 — §10 intocado).
+  - Nota: a ordem de boxes no wire segue não-determinística (`ORDER BY id`
+    UUID — dívida "Ordem estável de `boxes`" acima, pré-existente e
+    reafirmada, não duplicada; o teste da 3e compara por identidade).
 
 - **3b (upload/imagens) — QUITADA 2026-09-05** (`feat/datasets-storage`,
   `f6c6ff5`..`393163c`; docs no 3b.8). Entregue: bucket S3/SeaweedFS como blob

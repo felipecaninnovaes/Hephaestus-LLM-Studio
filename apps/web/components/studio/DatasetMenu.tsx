@@ -3,6 +3,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Dataset } from "@/types/studio";
+import { ApiError } from "@/lib/api";
+import { showToast } from "@/components/studio/Toast";
+import { exportDataset, exportErrorMessage } from "@/lib/backup";
 import {
   IconDownload,
   IconLayers,
@@ -86,9 +89,27 @@ export default function DatasetMenu({ dataset, x, y, onClose, onDelete }: Props)
         <button
           type="button"
           role="menuitem"
-          disabled
-          title="Export chega na fatia 3e"
-          className="flex w-full cursor-not-allowed items-center gap-2 rounded-xl px-3 py-2 text-left text-zinc-500"
+          onClick={async () => {
+            onClose();
+            try {
+              await exportDataset(dataset.id, dataset.slug);
+            } catch (err) {
+              if (
+                err instanceof ApiError &&
+                (err.code === "unauthorized" || err.status === 401)
+              ) {
+                router.replace("/login");
+                return;
+              }
+              showToast(
+                err instanceof ApiError
+                  ? exportErrorMessage(err.code)
+                  : "Falha ao exportar dataset.",
+                "error",
+              );
+            }
+          }}
+          className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-zinc-200 transition-colors hover:bg-emerald-500/20 hover:text-emerald-300"
         >
           <IconDownload className="w-3.5 h-3.5 shrink-0" />
           <span>Exportar</span>

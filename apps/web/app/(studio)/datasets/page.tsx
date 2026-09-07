@@ -10,7 +10,6 @@ import DatasetMenu from "@/components/studio/DatasetMenu";
 import { showToast } from "@/components/studio/Toast";
 import {
   IconDatabase,
-  IconDownload,
   IconGrid,
   IconList,
   IconPlus,
@@ -151,15 +150,6 @@ export default function DatasetsPage() {
           </span>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            disabled
-            title="Import chega na fatia 3e"
-            className="flex items-center gap-1.5 rounded-xl border border-zinc-700/80 bg-zinc-900/60 px-3 py-2 text-xs font-medium text-zinc-400 opacity-60"
-          >
-            <IconDownload className="h-4 w-4" />
-            Importar
-          </button>
           <button
             type="button"
             onClick={() => setCreateOpen(true)}

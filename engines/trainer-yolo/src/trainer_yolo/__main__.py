@@ -1,11 +1,11 @@
-"""Mock CPU do motor YOLO — responde health e devolve métricas falsas (compose.integ)."""
+"""trainer-yolo — motor de treino YOLO (mock/real).
 
-import json
+Entrypoint para CLI e health check. Delega para trainer_yolo.train.
+"""
 
+from __future__ import annotations
 
-def main() -> None:
-    print(json.dumps({"status": "ok", "engine": "trainer-yolo", "mode": "mock"}))
-
+from trainer_yolo.train import main
 
 if __name__ == "__main__":
     main()

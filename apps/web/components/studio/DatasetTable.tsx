@@ -64,7 +64,7 @@ export default function DatasetTable({
                   <Link href={`/datasets/${d.id}`} className="block min-w-28" title={`${pct} rotulado`}>
                     <span className="mb-1 block h-1 overflow-hidden rounded-full bg-zinc-800">
                       <span
-                        className="block h-full rounded-full bg-emerald-500"
+                        className="block h-full rounded-full bg-[#34d399]"
                         style={{
                           width:
                             d.imagesCount > 0

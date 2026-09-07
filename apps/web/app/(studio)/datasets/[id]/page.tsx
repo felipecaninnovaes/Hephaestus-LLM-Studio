@@ -836,7 +836,7 @@ export default function DatasetGalleryPage() {
         </span>
         <span className="h-3 w-px bg-zinc-700"></span>
         <span>
-          <span className="text-emerald-400">
+          <span className="text-[#34d399]">
             {dataset.labeledCount.toLocaleString()}
           </span>{" "}
           rotuladas por {reviewer}
@@ -950,7 +950,7 @@ export default function DatasetGalleryPage() {
                 Indexando {searchStatus.indexedCount}/{searchStatus.imagesCount}
               </span>
             ) : searchStatus.status === "ready" ? (
-              <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1.5 text-xs font-medium text-emerald-300">
+              <span className="rounded-full border border-[#34d399]/30 bg-[#34d399]/10 px-3 py-1.5 text-xs font-medium text-[#a7f3d0]">
                 Busca pronta
               </span>
             ) : (
@@ -989,7 +989,7 @@ export default function DatasetGalleryPage() {
                   onClick={() => handleRestore(item)}
                   disabled={restoringId === item.id}
                   aria-label={`Restaurar ${item.filename}`}
-                  className="absolute top-2 left-2 rounded-lg border border-emerald-500/40 bg-zinc-950/90 px-2 py-1 font-mono text-[10px] font-medium text-emerald-300 transition-colors hover:bg-emerald-500/20 disabled:opacity-60"
+                  className="absolute top-2 left-2 rounded-lg border border-[#34d399]/40 bg-zinc-950/90 px-2 py-1 font-mono text-[10px] font-medium text-[#a7f3d0] transition-colors hover:bg-[#34d399]/20 disabled:opacity-60"
                 >
                   {restoringId === item.id ? "Restaurando…" : "Restaurar"}
                 </button>

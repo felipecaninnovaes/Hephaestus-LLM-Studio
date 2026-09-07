@@ -10,7 +10,7 @@ import { STATUS_LABELS, type Dataset } from "@/types/studio";
 const STATUS_STYLES: Record<Dataset["status"], string> = {
   needs_labeling: "text-amber-300 border-amber-400/30 bg-amber-400/10",
   in_progress: "text-cyan-300 border-cyan-400/30 bg-cyan-400/10",
-  ready: "text-emerald-300 border-emerald-400/30 bg-emerald-400/10",
+  ready: "text-[#34d399] border-[#34d399]/30 bg-[#34d399]/10",
 };
 
 const CATEGORY_LABELS: Record<Dataset["category"], string> = {
@@ -92,7 +92,7 @@ export default function DatasetCard({
           <p className="tracking-caps text-[10px] uppercase text-zinc-500">
             Rotuladas
           </p>
-          <p className="font-mono text-sm font-bold text-emerald-400">
+          <p className="font-mono text-sm font-bold text-[#34d399]">
             {formatPercent(dataset.labeledCount, dataset.imagesCount)}
           </p>
         </div>

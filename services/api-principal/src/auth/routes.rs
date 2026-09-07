@@ -81,6 +81,11 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
         &[200, 400, 401, 404, 409],
     ),
     ("POST", "/api/datasets/:id/export", &[200, 401, 404, 503]),
+    (
+        "POST",
+        "/api/datasets/:id/package",
+        &[200, 400, 401, 404, 503],
+    ),
     ("POST", "/api/datasets/import", &[201, 400, 401, 409, 503]),
 ];
 
@@ -209,6 +214,10 @@ pub fn build(state: AppState) -> axum::Router {
         .route(
             "/api/datasets/:id/export",
             post(datasets::export::export_dataset),
+        )
+        .route(
+            "/api/datasets/:id/package",
+            post(datasets::package::package_dataset),
         )
         .route(
             "/api/datasets/import",

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.6.0
+  version: 0.7.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -400,6 +400,59 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "503":
           description: "Backend de objetos indisponível (`code: storage_unavailable`, ADR-0003 D10)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/datasets/{id}/package:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK do dataset. Valor que não parseia como UUID responde 404 `not_found`
+          (não 400, padrão D8 replicado).
+    post:
+      operationId: packageDataset
+      tags: [datasets]
+      summary: Congela versão do dataset e gera package para treino
+      description: |
+        Congela o dataset como `dataset_versions` (snapshot JSONB com classes,
+        imagens ativas e boxes), materializa a árvore YOLO (labels/*.txt +
+        dataset.yaml) em tempdir, gera zip e faz PUT em
+        `packages/<version_id>/dataset.zip` + `manifest.json`.
+        Apenas `engine: "yolo"` é suportado na v1; outros valores retornam
+        400 `engine_unsupported`. O snapshot congelado é imutável — edição
+        posterior do dataset não afeta a versão (trava lógica por versão, ADR-0007).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PackageRequest" }
+      responses:
+        "200":
+          description: Package criado (`PackageResponse` com versão congelada).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PackageResponse" }
+        "400":
+          description: "Body inválido (`code: invalid_request`) ou engine não suportado (`code: engine_unsupported`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Dataset inexistente ou id não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Backend de objetos indisponível (`code: storage_unavailable`)."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1144,8 +1197,8 @@ components:
       properties:
         code:
           type: string
-          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, storage_unavailable, classes_in_use, index_not_ready, embedding_unavailable, import_invalid, internal]
-          description: "Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`; o cliente DEVE ter ramo default: o enum cresce por fatia (aditivo na 0.2.0: `not_found`, `slug_conflict`; na 0.3.0: `storage_unavailable`, ADR-0003 D10; na 0.3.0, fatia 3g.1: `classes_in_use`; na 0.5.0, fatia 3f.5: `index_not_ready`, `embedding_unavailable`, ADR-0004 D5; na 0.6.0, fatia 3e: `import_invalid`)."
+          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, storage_unavailable, classes_in_use, index_not_ready, embedding_unavailable, import_invalid, engine_unsupported, internal]
+          description: "Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`; o cliente DEVE ter ramo default: o enum cresce por fatia (aditivo na 0.2.0: `not_found`, `slug_conflict`; na 0.3.0: `storage_unavailable`, ADR-0003 D10; na 0.3.0, fatia 3g.1: `classes_in_use`; na 0.5.0, fatia 3f.5: `index_not_ready`, `embedding_unavailable`, ADR-0004 D5; na 0.6.0, fatia 3e: `import_invalid`; na 0.7.0, fatia 4: `engine_unsupported`)."
         message:
           type: string
           description: Humano-curto, ESTÁTICO por code; nunca contém hash, token, segredo ou existência de usuário.
@@ -1632,3 +1685,60 @@ components:
           minimum: -1
           maximum: 1
           description: "Pós-filtro opcional (`score >= threshold`; fora de -1..1 ⇒ 400)."
+
+    PackageRequest:
+      type: object
+      required: [engine]
+      additionalProperties: false
+      description: "Request do package (Fatia 4, ADR-0007 D7)."
+      properties:
+        engine:
+          type: string
+          enum: [yolo]
+          description: "Engine alvo. Na v1 somente `yolo` é suportado; outro valor ⇒ 400 `engine_unsupported`."
+
+    PackageResponse:
+      type: object
+      required: [versionId, key, bytes, md5Zip, files]
+      additionalProperties: false
+      description: "Package criado — versão congelada do dataset (Fatia 4, ADR-0007 D7)."
+      properties:
+        versionId:
+          type: string
+          format: uuid
+          description: "PK da row em `dataset_versions` (snapshot congelado)."
+        key:
+          type: string
+          description: "Key do zip no storage: `packages/<versionId>/dataset.zip`."
+        bytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: "Tamanho do zip em bytes."
+        md5Zip:
+          type: string
+          pattern: '^[0-9a-f]{32}$'
+          description: "MD5 do zip (hex)."
+        files:
+          type: array
+          items: { $ref: "#/components/schemas/TransportFile" }
+          description: "Entradas do zip."
+
+    TransportFile:
+      type: object
+      required: [filename, md5, bytes]
+      additionalProperties: false
+      description: "Entrada de arquivo no manifest de transporte."
+      properties:
+        filename:
+          type: string
+          description: "Nome do arquivo no zip."
+        md5:
+          type: string
+          pattern: '^[0-9a-f]{32}$'
+          description: "MD5 do conteúdo (hex)."
+        bytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: "Tamanho em bytes."

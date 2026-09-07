@@ -39,3 +39,5 @@ pub const MSG_INDEX_NOT_READY: &str = "index not ready";
 pub const MSG_EMBEDDING_UNAVAILABLE: &str = "embedding unavailable";
 /// 400 de pacote de import inválido (fatia 3e.2, ADR-0006 D7).
 pub const MSG_IMPORT_INVALID: &str = "invalid import package";
+/// 400 de engine não suportado (fatia 4, ADR-0007 D7).
+pub const MSG_ENGINE_UNSUPPORTED: &str = "engine not supported";

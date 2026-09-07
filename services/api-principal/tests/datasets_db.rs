@@ -4551,3 +4551,599 @@ async fn t3e_import_falha_put_no_meio_503_limpa_novo() {
         mock.ops()
     );
 }
+
+// ---------------------------------------------------------------------------
+// F4.1 — Package (ADR-0007)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t4_package_cria_version_com_snapshot() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    // Cria dataset.
+    let (status, _, body) = call(
+        app.clone(),
+        post_create(
+            "Package Teste",
+            &serde_json::json!(["solda_fria", "ponte"]),
+            &cookie,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = json(&body)["id"].as_str().expect("id").to_string();
+
+    // Package com engine=yolo → 200.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/datasets/{id}/package"))
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::from(r#"{"engine":"yolo"}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let resp = json(&body);
+    let version_id = resp["versionId"].as_str().expect("versionId");
+    assert!(!version_id.is_empty());
+    assert!(resp["md5Zip"].as_str().is_some());
+    assert!(resp["bytes"].as_i64().is_some());
+
+    // dataset_versions tem 1 row com manifest congelado.
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM dataset_versions WHERE dataset_id = $1")
+        .bind(id.parse::<uuid::Uuid>().expect("uuid"))
+        .fetch_one(&st.pool)
+        .await
+        .expect("count dataset_versions");
+    assert_eq!(n, 1);
+
+    // Manifest congelado tem dataset.id correto.
+    let manifest_val: serde_json::Value =
+        sqlx::query_scalar("SELECT manifest FROM dataset_versions WHERE id = $1")
+            .bind(version_id.parse::<uuid::Uuid>().expect("uuid"))
+            .fetch_one(&st.pool)
+            .await
+            .expect("manifest");
+    assert_eq!(manifest_val["dataset"]["id"], id);
+    assert_eq!(manifest_val["dataset"]["engine"], "yolo");
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t4_package_snapshot_imutavel() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    // Cria dataset.
+    let (status, _, body) = call(
+        app.clone(),
+        post_create(
+            "Snapshot Imutavel",
+            &serde_json::json!(["classe_a"]),
+            &cookie,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = json(&body)["id"].as_str().expect("id").to_string();
+
+    // Package.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/datasets/{id}/package"))
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::from(r#"{"engine":"yolo"}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let version_id = json(&body)["versionId"]
+        .as_str()
+        .expect("versionId")
+        .to_string();
+
+    // Lê o manifest antes da edição.
+    let manifest_before: serde_json::Value =
+        sqlx::query_scalar("SELECT manifest FROM dataset_versions WHERE id = $1")
+            .bind(version_id.parse::<uuid::Uuid>().expect("uuid"))
+            .fetch_one(&st.pool)
+            .await
+            .expect("manifest");
+    let images_before = manifest_before["images"].as_array().expect("images").len();
+
+    // Edita o dataset (PUT classes — adiciona uma classe nova).
+    let (status, _, _) = call(
+        app.clone(),
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/api/datasets/{id}/classes"))
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::from(
+                r#"{"classes":[{"name":"classe_a"},{"name":"classe_b"}]}"#,
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Manifest NÃO muda (snapshot congelado).
+    let manifest_after: serde_json::Value =
+        sqlx::query_scalar("SELECT manifest FROM dataset_versions WHERE id = $1")
+            .bind(version_id.parse::<uuid::Uuid>().expect("uuid"))
+            .fetch_one(&st.pool)
+            .await
+            .expect("manifest");
+    let images_after = manifest_after["images"].as_array().expect("images").len();
+    assert_eq!(
+        images_before, images_after,
+        "snapshot não deve mudar após edição"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t4_package_engine_unsupported_400() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    // Cria dataset.
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Engine Test", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = json(&body)["id"].as_str().expect("id").to_string();
+
+    // Package com engine inválido → 400 engine_unsupported.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/datasets/{id}/package"))
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::from(r#"{"engine":"stable_diffusion"}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "engine_unsupported");
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t4_package_id_nao_uuid_404() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/api/datasets/nao-e-uuid/package")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::from(r#"{"engine":"yolo"}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(json(&body)["code"], "not_found");
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t4_package_zip_conteudo_labels_yaml() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    // Cria dataset com 2 classes.
+    let (status, _, body) = call(
+        app.clone(),
+        post_create(
+            "Zip Conteudo",
+            &serde_json::json!(["solda_fria", "ponte"]),
+            &cookie,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = json(&body)["id"].as_str().expect("id").to_string();
+
+    // Package → 200.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/datasets/{id}/package"))
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::from(r#"{"engine":"yolo"}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let resp = json(&body);
+    let version_id = resp["versionId"].as_str().expect("versionId");
+    let key = resp["key"].as_str().expect("key");
+    let bytes = resp["bytes"].as_i64().expect("bytes");
+    let md5 = resp["md5Zip"].as_str().expect("md5Zip");
+    assert!(key.starts_with(&format!("packages/{version_id}/dataset.zip")));
+    assert!(bytes > 0, "zip deve ter tamanho > 0");
+    assert!(!md5.is_empty(), "md5 não deve ser vazio");
+
+    // Verifica que as classes estão corretas no snapshot congelado.
+    let manifest_val: serde_json::Value =
+        sqlx::query_scalar("SELECT manifest FROM dataset_versions WHERE id = $1")
+            .bind(version_id.parse::<uuid::Uuid>().expect("uuid"))
+            .fetch_one(&st.pool)
+            .await
+            .expect("manifest");
+    let class_names: Vec<&str> = manifest_val["classes"]
+        .as_array()
+        .expect("classes")
+        .iter()
+        .map(|c| c["name"].as_str().expect("name"))
+        .collect();
+    assert_eq!(class_names, vec!["solda_fria", "ponte"]);
+    // Counts corretos.
+    assert_eq!(manifest_val["counts"]["images"], 0);
+    assert_eq!(manifest_val["counts"]["classes"], 2);
+    // Engine no snapshot.
+    assert_eq!(manifest_val["dataset"]["engine"], "yolo");
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t4_package_body_invalido_400() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    // Cria dataset.
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Body Test", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = json(&body)["id"].as_str().expect("id").to_string();
+
+    // JSON malformado → 400.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/datasets/{id}/package"))
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::from(r#"{"engine": true}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+
+    // Campo desconhecido → 400 (deny_unknown_fields).
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/datasets/{id}/package"))
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::from(r#"{"engine":"yolo","extra":1}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+
+    // Body vazio → 400.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/datasets/{id}/package"))
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::from("{}"))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+}
+
+// ---------------------------------------------------------------------------
+// F4.1 — Zip autossuficiente com imagens reais.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t4_package_zip_autossuficiente_com_imagens() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    // 1. Cria dataset com 2 classes.
+    let (status, _, body) = call(
+        app.clone(),
+        post_create(
+            "Zip Auto Imgs",
+            &serde_json::json!(["solda_fria", "ponte"]),
+            &cookie,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let created = json(&body);
+    let ds = created["id"].as_str().expect("id").to_string();
+    let class_id: uuid::Uuid = created["classes"][0]["id"]
+        .as_str()
+        .expect("classes[0].id")
+        .parse()
+        .expect("uuid");
+
+    // 2. Upload de 2 imagens reais.
+    let png = png_1x1();
+    let jpeg = jpeg_1x1();
+    let boundary = "heph-pkg-images";
+    let (status, _, body) = call(
+        app.clone(),
+        post_upload(
+            &cookie,
+            &ds,
+            boundary,
+            multipart_body(boundary, &[("foto1.png", &png), ("foto2.jpg", &jpeg)]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let items = json(&body)["items"].clone();
+    assert_eq!(items.as_array().expect("items").len(), 2);
+    assert_eq!(items[0]["status"], "stored");
+    assert_eq!(items[1]["status"], "stored");
+
+    // 2b. Adiciona 1 box na primeira imagem (foto1.png) para gerar 1 label.
+    let img1_id = items[0]["imageId"].as_str().expect("imageId");
+    let (status, _, _) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/images/{img1_id}/boxes"),
+            serde_json::json!({"boxes": [{"classId": class_id, "x": 0.5, "y": 0.5, "w": 0.2, "h": 0.2}]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // 3. Package → 200.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/datasets/{ds}/package"))
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::from(r#"{"engine":"yolo"}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let resp = json(&body);
+    let version_id = resp["versionId"].as_str().expect("versionId");
+    let key = resp["key"].as_str().expect("key");
+    let md5_zip_resp = resp["md5Zip"].as_str().expect("md5Zip");
+    let files = resp["files"].as_array().expect("files");
+
+    // 4. Asserts da response.
+    assert_eq!(key, format!("packages/{version_id}/dataset.zip"));
+    assert_eq!(
+        files.len(),
+        4,
+        "1 yaml + 1 label (só da imagem rotulada) + 2 imagens"
+    );
+
+    let filenames: Vec<&str> = files
+        .iter()
+        .map(|f| f["filename"].as_str().unwrap())
+        .collect();
+    assert!(filenames.contains(&"dataset.yaml"));
+    let label_files: Vec<&str> = filenames
+        .iter()
+        .filter(|f| f.starts_with("labels/") && f.ends_with(".txt"))
+        .copied()
+        .collect();
+    assert_eq!(
+        label_files.len(),
+        1,
+        "exatamente 1 label (só foto1.png rotulada)"
+    );
+    assert!(
+        label_files[0].starts_with("labels/foto1"),
+        "label deve ser de foto1: {}",
+        label_files[0]
+    );
+    assert!(filenames.contains(&"images/foto1.png"));
+    assert!(filenames.contains(&"images/foto2.jpg"));
+
+    // md5 de cada entrada: 32 hex chars.
+    for f in files {
+        let md5 = f["md5"].as_str().expect("md5");
+        assert_eq!(md5.len(), 32, "md5 deve ter 32 hex chars: {md5}");
+        assert!(f["bytes"].as_i64().unwrap() >= 0, "bytes >= 0");
+    }
+
+    // Imagens: bytes == tamanho real; md5 confere.
+    for f in files {
+        let fname = f["filename"].as_str().unwrap();
+        let nbytes = f["bytes"].as_i64().unwrap();
+        if fname == "images/foto1.png" {
+            assert_eq!(nbytes, png.len() as i64);
+            use md5::Digest;
+            let expected = hex::encode(md5::Md5::digest(&png));
+            assert_eq!(f["md5"].as_str().unwrap(), expected);
+        } else if fname == "images/foto2.jpg" {
+            assert_eq!(nbytes, jpeg.len() as i64);
+            use md5::Digest;
+            let expected = hex::encode(md5::Md5::digest(&jpeg));
+            assert_eq!(f["md5"].as_str().unwrap(), expected);
+        }
+    }
+
+    // 5. Busca zip do storage → md5 confere.
+    let zip_bytes = st.storage.get(key).await.expect("get zip");
+    use md5::Digest;
+    let computed_md5 = hex::encode(md5::Md5::digest(&zip_bytes));
+    assert_eq!(computed_md5, md5_zip_resp, "md5 do zip confere");
+
+    // 6. Abre zip in-memory e verifica entradas.
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&zip_bytes)).expect("zip archive");
+    let mut names = Vec::new();
+    for i in 0..archive.len() {
+        let entry = archive.by_index(i).expect("entry");
+        names.push(entry.name().to_string());
+    }
+    names.sort();
+    assert!(names.contains(&"dataset.yaml".to_string()));
+    assert!(names.contains(&"images/foto1.png".to_string()));
+    assert!(names.contains(&"images/foto2.jpg".to_string()));
+    assert_eq!(names.iter().filter(|n| n.starts_with("labels/")).count(), 1);
+
+    // Conteúdo da imagem confere com os bytes enviados.
+    {
+        let mut entry = archive
+            .by_name("images/foto1.png")
+            .expect("foto1.png in zip");
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut buf).expect("read entry");
+        assert_eq!(buf, png, "conteúdo foto1.png confere");
+    }
+    {
+        let mut entry = archive
+            .by_name("images/foto2.jpg")
+            .expect("foto2.jpg in zip");
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut buf).expect("read entry");
+        assert_eq!(buf, jpeg, "conteúdo foto2.jpg confere");
+    }
+
+    // 7. Snapshot congelado.
+    let manifest_val: serde_json::Value =
+        sqlx::query_scalar("SELECT manifest FROM dataset_versions WHERE id = $1")
+            .bind(version_id.parse::<uuid::Uuid>().expect("uuid"))
+            .fetch_one(&st.pool)
+            .await
+            .expect("manifest");
+    assert_eq!(manifest_val["counts"]["images"], 2);
+    let img_filenames: Vec<&str> = manifest_val["images"]
+        .as_array()
+        .expect("images")
+        .iter()
+        .map(|i| i["filename"].as_str().expect("filename"))
+        .collect();
+    assert!(img_filenames.contains(&"foto1.png"));
+    assert!(img_filenames.contains(&"foto2.jpg"));
+}
+
+// ---------------------------------------------------------------------------
+// F4.1 — Blob ausente ⇒ 503 + sem versão persistida.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t4_package_blob_ausente_503() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    // 1. Cria dataset + upload de 1 imagem real.
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Blob Morto Pkg", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds = json(&body)["id"].as_str().expect("id").to_string();
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+
+    let boundary = "heph-blob-missing";
+    let png = png_1x1();
+    let (status, _, body) = call(
+        app.clone(),
+        post_upload(
+            &cookie,
+            &ds,
+            boundary,
+            multipart_body(boundary, &[("foto.png", &png)]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let items = json(&body)["items"].clone();
+    assert_eq!(items[0]["status"], "stored");
+
+    // 2. Descobre object_key.
+    let object_key: String = sqlx::query_scalar(
+        "SELECT object_key FROM images WHERE dataset_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(ds_id)
+    .fetch_one(&st.pool)
+    .await
+    .expect("object_key");
+
+    // 3. Remove blob do storage.
+    st.storage.delete(&object_key).await.expect("delete blob");
+
+    // 4. Package → 503 storage_unavailable.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/datasets/{ds}/package"))
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::from(r#"{"engine":"yolo"}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(json(&body)["code"], "storage_unavailable");
+
+    // 5. NÃO foi criada row nova em dataset_versions.
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM dataset_versions WHERE dataset_id = $1")
+            .bind(ds_id)
+            .fetch_one(&st.pool)
+            .await
+            .expect("count versions");
+    assert_eq!(
+        count, 0,
+        "nenhuma versão deve ser criada se materialização falhou"
+    );
+}

@@ -34,6 +34,10 @@ async fn state() -> AppState {
         .expect("rodar migrations");
     // Limpeza explícita (sem TRUNCATE: não toca `users`/`auth_state`;
     // a lista cresce na 3b com `images` e filhas).
+    sqlx::query("DELETE FROM image_embeddings")
+        .execute(&pool)
+        .await
+        .expect("limpar image_embeddings");
     sqlx::query("DELETE FROM classes")
         .execute(&pool)
         .await
@@ -3148,4 +3152,100 @@ async fn t0003_trash_invisivel_e_trash_count() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0004_search_migration() {
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Busca Vetor", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds_id: uuid::Uuid = json(&body)["id"]
+        .as_str()
+        .expect("id")
+        .parse()
+        .expect("uuid");
+
+    let img1 = insert_image(&st.pool, ds_id, "v1.jpg", 100).await;
+    let img2 = insert_image(&st.pool, ds_id, "v2.jpg", 100).await;
+
+    fn vec_literal(f: impl Fn(usize) -> f32) -> String {
+        let vals: Vec<String> = (0..512).map(|i| format!("{}", f(i))).collect();
+        format!("[{}]", vals.join(","))
+    }
+    let emb1 = vec_literal(|i| (i as f32) / 512.0);
+    let emb2 = vec_literal(|i| 1.0 - (i as f32) / 512.0);
+
+    sqlx::query(
+        "INSERT INTO image_embeddings (image_id, dataset_id, model, embedding) VALUES ($1, $2, 'ViT-B-32', $3::vector)",
+    )
+    .bind(img1)
+    .bind(ds_id)
+    .bind(&emb1)
+    .execute(&st.pool)
+    .await
+    .expect("insert embedding 1");
+    sqlx::query(
+        "INSERT INTO image_embeddings (image_id, dataset_id, model, embedding) VALUES ($1, $2, 'ViT-B-32', $3::vector)",
+    )
+    .bind(img2)
+    .bind(ds_id)
+    .bind(&emb2)
+    .execute(&st.pool)
+    .await
+    .expect("insert embedding 2");
+
+    // Top-1 pela distância coseno é a própria imagem (distância 0).
+    let top: uuid::Uuid = sqlx::query_scalar(
+        "SELECT image_id FROM image_embeddings WHERE dataset_id = $1 ORDER BY embedding <=> $2::vector LIMIT 1",
+    )
+    .bind(ds_id)
+    .bind(&emb1)
+    .fetch_one(&st.pool)
+    .await
+    .expect("select top-1");
+    assert_eq!(top, img1);
+
+    // CHECK do enum fechado: outro modelo é erro.
+    let img3 = insert_image(&st.pool, ds_id, "v3.jpg", 10).await;
+    let bad = sqlx::query(
+        "INSERT INTO image_embeddings (image_id, dataset_id, model, embedding) VALUES ($1, $2, 'outro-modelo', $3::vector)",
+    )
+    .bind(img3)
+    .bind(ds_id)
+    .bind(&emb1)
+    .execute(&st.pool)
+    .await;
+    assert!(bad.is_err(), "model fora do enum deveria violar o CHECK");
+    sqlx::query("DELETE FROM images WHERE id = $1")
+        .bind(img3)
+        .execute(&st.pool)
+        .await
+        .expect("cleanup img3");
+
+    // CASCADE duplo: delete do dataset zera embeddings e imagens.
+    sqlx::query("DELETE FROM datasets WHERE id = $1")
+        .bind(ds_id)
+        .execute(&st.pool)
+        .await
+        .expect("delete dataset");
+    let n_emb: i64 = sqlx::query_scalar("SELECT count(*) FROM image_embeddings")
+        .fetch_one(&st.pool)
+        .await
+        .expect("count embeddings");
+    assert_eq!(n_emb, 0);
+    let n_img: i64 = sqlx::query_scalar("SELECT count(*) FROM images WHERE dataset_id = $1")
+        .bind(ds_id)
+        .fetch_one(&st.pool)
+        .await
+        .expect("count images");
+    assert_eq!(n_img, 0);
 }

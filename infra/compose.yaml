@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
+    image: pgvector/pgvector:pg16-trixie@sha256:c8483555ce48101872f888c1df8a895ff689d6c7c7a5f7ac266475f9dfe89e0b
     environment:
       POSTGRES_USER: studio
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-studio}

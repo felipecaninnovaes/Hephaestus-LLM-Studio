@@ -25,7 +25,15 @@ Você implementa EXATAMENTE a especificação de infraestrutura que receber. Se 
 - `infra/` — `compose.yaml`, `compose.integ.yaml`, `compose.spike.yaml`, configs `.json` de serviços
 - Dockerfiles: `services/api-principal/Dockerfile`, `services/manager/Dockerfile`, `services/orchestrator/Dockerfile`, `apps/web/Dockerfile`
 - `scripts/` — `dev.sh`, `test-db.sh`, `test-storage.sh`, `e2e-smoke.sh` (verificação, nunca lógica de negócio)
-- `.github/workflows/` — somente quando a spec pedir CI explicitamente
+- `.gitea/workflows/ci.yml` — **arquivo seu** (o CI roda no Gitea Actions do
+  usuário, git.felipecncloud.com; `.github/` não existe neste repo). Regra
+  nascida do run 22 (2026-09-07): **migration/serviço que muda a imagem de
+  banco ou de um service do CI (ex.: `pgvector` com extensão) exige o
+  `services:` do ci.yml coerente no MESMO commit** — se o dispatch da fatia
+  for de outro implementador (ex.: rust-dev mexe no compose), o coordenador
+  inclui o ci.yml no escopo do commit e você é o revisor mecânico do passo.
+  Valide com `docker compose ... config -q` e leitura do YAML (não há
+  runner local).
 - `.env.example` — novas env vars de compose
 
 **Fora do escopo:** código Rust (`services/*/src`), Python (`engines/`), TS (`apps/web` exceto o Dockerfile), migrations SQL, `packages/contracts`. Migration é da fatia Rust; imagem/serviço novo de compose só entra com decisão de ADR já tomada na spec.

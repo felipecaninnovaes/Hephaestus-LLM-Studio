@@ -26,7 +26,8 @@ Você implementa EXATAMENTE a especificação que receber nos serviços Rust des
 
 ## Verificação obrigatória antes de reportar
 
-`cargo check --workspace` da raiz. Se falhar, corrija e rode de novo; se não conseguir em 2 tentativas, reporte o erro exato.
+1. `cargo fmt --all` na raiz — formatar, não só checar. Lição da fatia 3g: CI falhou em `cargo fmt --all --check` porque o implementador não rodou fmt (fix `599fc46` pós-fatia); fmt é responsabilidade do implementador.
+2. `cargo check --workspace` da raiz. Se falhar, corrija e rode de novo; se não conseguir em 2 tentativas, reporte o erro exato.
 
 ## Relatório final (curto)
 

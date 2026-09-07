@@ -6,7 +6,7 @@
 ## 0. Escopo e base (resposta à revisão)
 
 - **Nome vs. escopo:** `Hephaestus-LLM-Studio` é legado; o escopo implementado é **visão computacional/multimodal** (YOLO, Difusão LoRA, OpenCLIP). LLM textual (SFT/DPO/vLLM) é futuro, não entra no MVP.
-- **Base presente no repo:** `IDEIA.md`, `arquitetura_studio_modular.png` e `ai-vision-training-studio.html` (verificado em disco). Conteúdo da IDEIA incorporado aqui + `frontend.md`.
+- **Base presente no repo:** `IDEIA.md`, `arquitetura_studio_modular.png`. Conteúdo da IDEIA incorporado aqui + `frontend.md`.
 
 ## 1. Topologia e responsabilidades
 

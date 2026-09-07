@@ -5,6 +5,8 @@
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use std::collections::HashSet;
+
 /// Paleta do design system (hex minúsculo, bate o CHECK `^#[0-9a-f]{6}$`).
 pub const CLASS_PALETTE: [&str; 6] = [
     "#10b981", // emerald
@@ -731,11 +733,16 @@ pub fn validate_import_manifest(m: &super::export::ExportManifest) -> Result<(),
     if n_classes > 200 {
         return Err(());
     }
+    let mut seen: HashSet<String> = HashSet::new();
     for (pos, c) in m.classes.iter().enumerate() {
         if c.idx != pos as i32 {
             return Err(());
         }
-        if !is_valid_class_name(c.name.trim()) {
+        let trimmed = c.name.trim();
+        if !is_valid_class_name(trimmed) {
+            return Err(());
+        }
+        if !seen.insert(trimmed.to_string()) {
             return Err(());
         }
     }
@@ -1157,5 +1164,42 @@ mod tests {
         let mut m = import_manifest_minimo();
         m.dataset.r#type = "outro".to_string();
         assert!(validate_import_manifest(&m).is_err());
+    }
+
+    #[test]
+    fn import_manifest_classe_duplicada_pos_trim_rejeita() {
+        use super::super::export::ManifestClass;
+        let mut m = import_manifest_minimo();
+        m.classes = vec![
+            ManifestClass {
+                idx: 0,
+                name: "a".to_string(),
+                color: "#10b981".to_string(),
+            },
+            ManifestClass {
+                idx: 1,
+                name: " a ".to_string(),
+                color: "#f59e0b".to_string(),
+            },
+        ];
+        assert!(validate_import_manifest(&m).is_err());
+        let mut ok = import_manifest_minimo();
+        // Nomes distintos com espaços nas bordas passam (trim sem
+        // falso-positivo). Nota: a regra da casa só aceita [A-Za-z0-9_],
+        // então o positivo usa padding externo — "a b" com espaço interno
+        // é inválido pela regra e nunca chegaria ao dedupe.
+        ok.classes = vec![
+            ManifestClass {
+                idx: 0,
+                name: " a ".to_string(),
+                color: "#10b981".to_string(),
+            },
+            ManifestClass {
+                idx: 1,
+                name: "ab ".to_string(),
+                color: "#f59e0b".to_string(),
+            },
+        ];
+        assert!(validate_import_manifest(&ok).is_ok());
     }
 }

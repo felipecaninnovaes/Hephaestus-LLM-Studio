@@ -171,7 +171,7 @@ export default function ClassesModal({
             onClick={onClose}
             disabled={busy}
             aria-label="Fechar modal"
-            className="rounded-lg p-1 text-zinc-400 transition-colors hover:text-white"
+            className="rounded-lg border border-transparent bg-transparent p-1 text-zinc-300 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
           >
             <IconX className="h-4 w-4" />
           </button>
@@ -211,13 +211,13 @@ export default function ClassesModal({
                   placeholder="nome_da_classe"
                   maxLength={64}
                   aria-label={`Classe ${i + 1}`}
-                  className="w-full rounded-xl border border-zinc-700/80 bg-zinc-900 px-3 py-2 font-mono text-zinc-200 focus:border-emerald-500 focus:outline-none"
+                  className="h-9 w-full rounded-xl border border-zinc-700/80 bg-zinc-900 px-3 font-mono text-zinc-200 focus:border-brand-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
                 />
                 <button
                   type="button"
                   onClick={() => removeRow(row.key)}
                   aria-label={`Remover classe ${i + 1}`}
-                  className="shrink-0 rounded-lg p-1.5 text-zinc-500 transition-colors hover:bg-rose-500/10 hover:text-rose-300"
+                  className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg border border-transparent bg-transparent p-0 text-zinc-400 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
                 >
                   <IconX className="h-4 w-4" />
                 </button>
@@ -229,7 +229,7 @@ export default function ClassesModal({
             type="button"
             onClick={addRow}
             disabled={busy || rows.length >= MAX_CLASSES}
-            className="flex items-center space-x-1.5 rounded-xl border border-zinc-700/80 bg-zinc-900 px-3 py-2 font-medium text-zinc-300 transition-colors hover:bg-zinc-800 disabled:opacity-60"
+            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-3 text-xs font-medium whitespace-nowrap text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
           >
             <IconPlus className="h-4 w-4" />
             <span>Adicionar classe</span>
@@ -240,7 +240,7 @@ export default function ClassesModal({
               type="button"
               onClick={onClose}
               disabled={busy}
-              className="rounded-xl bg-zinc-900 px-4 py-2 font-medium text-zinc-300 hover:bg-zinc-800"
+              className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-transparent bg-transparent px-4 text-xs font-medium whitespace-nowrap text-zinc-300 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
             >
               Cancelar
             </button>
@@ -248,7 +248,7 @@ export default function ClassesModal({
               type="submit"
               disabled={busy || unchanged}
               title={unchanged ? "Nenhuma alteração para salvar." : undefined}
-              className="rounded-xl bg-emerald-500 px-5 py-2 font-semibold text-zinc-950 shadow-lg shadow-emerald-500/20 active:scale-[0.98] disabled:opacity-60"
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] px-5 text-xs font-semibold whitespace-nowrap text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
             >
               {busy ? "Salvando…" : "Salvar classes"}
             </button>

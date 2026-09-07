@@ -10,11 +10,16 @@ import { STATUS_LABELS, type Dataset } from "@/types/studio";
 const STATUS_STYLES: Record<Dataset["status"], string> = {
   needs_labeling: "text-amber-300 border-amber-400/30 bg-amber-400/10",
   in_progress: "text-cyan-300 border-cyan-400/30 bg-cyan-400/10",
-  ready: "text-emerald-300 border-emerald-400/30 bg-emerald-400/10",
+  ready: "text-[#34d399] border-[#34d399]/30 bg-[#34d399]/10",
+};
+
+const CATEGORY_LABELS: Record<Dataset["category"], string> = {
+  difusao: "Difusão",
+  openclip: "OpenCLIP",
+  yolo: "YOLO",
 };
 
 function CategoryIcon({ category }: { category: Dataset["category"] }) {
-  // Ref: v1 usa text-zinc-300 para todos os ícones de categoria (sem cores de classe)
   if (category === "yolo")
     return <IconTarget className="w-4 h-4 text-zinc-300" />;
   if (category === "difusao")
@@ -31,6 +36,7 @@ export default function DatasetCard({
 }) {
   const visibleClasses = dataset.classes.slice(0, 4);
   const extra = dataset.classes.length - visibleClasses.length;
+  const categoryLabel = CATEGORY_LABELS[dataset.category] ?? dataset.category;
   return (
     <Link
       href={`/datasets/${dataset.id}`}
@@ -42,31 +48,35 @@ export default function DatasetCard({
             }
           : undefined
       }
-      className="glass-card rounded-2xl p-5 flex flex-col justify-between gap-3 transition-all hover:border-zinc-600 cursor-pointer group"
+      className="glass-card rounded-2xl p-5 flex flex-col justify-between gap-3 transition-all hover:border-brand-500/30 cursor-pointer group"
     >
       <div className="flex items-start justify-between gap-2">
-        <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-zinc-900/90 border border-zinc-700/80 text-zinc-300 group-hover:text-emerald-400 transition-colors">
+        <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-zinc-900/90 border border-zinc-700/80 text-zinc-300 group-hover:text-brand-400 transition-colors">
           <CategoryIcon category={dataset.category} />
         </span>
-        <span className="flex items-center gap-1.5">
+        <span className="flex min-w-0 items-center justify-end gap-1.5">
           {dataset.autoTracked && (
-            <span className="tracking-caps rounded-full border border-cyan-400/30 bg-cyan-400/10 px-2 py-0.5 text-[10px] font-medium uppercase text-cyan-300">
+            <span className="tracking-caps rounded-full border border-cyan-400/30 bg-cyan-400/10 px-2 py-0.5 text-[10px] font-medium uppercase text-cyan-300" title="AutoTracker">
               AutoTracker
             </span>
           )}
           <span
-            className={`tracking-caps rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase ${STATUS_STYLES[dataset.status]}`}
+            className={`tracking-caps truncate rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase ${STATUS_STYLES[dataset.status]}`}
+            title={STATUS_LABELS[dataset.status]}
           >
             {STATUS_LABELS[dataset.status]}
           </span>
         </span>
       </div>
       <div className="min-w-0">
-        <p className="truncate text-sm font-medium text-zinc-100">
+        <p className="truncate text-sm font-medium text-zinc-100" title={dataset.title}>
           {dataset.title}
         </p>
-        <p className="truncate font-mono text-xs text-zinc-500">
+        <p className="truncate font-mono text-xs text-zinc-500" title={dataset.slug}>
           {dataset.slug}
+        </p>
+        <p className="tracking-caps mt-1 truncate font-mono text-[10px] uppercase text-zinc-500" title={categoryLabel}>
+          {categoryLabel}
         </p>
       </div>
       <div className="grid grid-cols-2 gap-2">
@@ -82,7 +92,7 @@ export default function DatasetCard({
           <p className="tracking-caps text-[10px] uppercase text-zinc-500">
             Rotuladas
           </p>
-          <p className="font-mono text-sm font-bold text-emerald-400">
+          <p className="font-mono text-sm font-bold text-[#34d399]">
             {formatPercent(dataset.labeledCount, dataset.imagesCount)}
           </p>
         </div>
@@ -96,21 +106,22 @@ export default function DatasetCard({
             {visibleClasses.map((c) => (
               <span
                 key={c.id}
-                className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-900 text-zinc-300 border border-zinc-800"
+                title={c.name}
+                className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-900 text-zinc-300 border border-zinc-800 max-w-full truncate"
               >
                 {c.name}
               </span>
             ))}
             {extra > 0 && (
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-900 text-zinc-400 border border-zinc-800">
+              <span title={`Mais ${extra} classes`} className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-900 text-zinc-400 border border-zinc-800">
                 +{extra}
               </span>
             )}
           </div>
         </div>
       )}
-      <div className="mt-5 pt-3 border-t border-zinc-800/80 flex items-center justify-between text-[11px] text-zinc-400 font-mono">
-        <span>
+      <div className="mt-5 pt-3 border-t border-zinc-800/80 flex items-center justify-between gap-2 text-[11px] text-zinc-400 font-mono">
+        <span className="min-w-0 truncate" title={`${formatBytes(dataset.sizeBytes)} · ${formatRelativeTime(dataset.lastModified)}`}>
           {formatBytes(dataset.sizeBytes)} · {formatRelativeTime(dataset.lastModified)}
         </span>
         <button
@@ -118,7 +129,7 @@ export default function DatasetCard({
           disabled
           title="Treino chega na fatia 4"
           onClick={(e) => e.preventDefault()}
-          className="text-emerald-400 hover:text-emerald-300 font-medium"
+          className="shrink-0 cursor-not-allowed font-medium text-brand-400/70"
         >
           Treinar →
         </button>

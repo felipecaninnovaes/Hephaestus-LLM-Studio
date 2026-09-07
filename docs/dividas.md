@@ -118,6 +118,27 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
 
 **Frontend**
 
+- **Paleta de classes no backend desalinhada do v2 — ABERTA 2026-09-07**
+  (origem: fatia redesign UI v2): cores de classes nascem no Postgres com a
+  paleta da v1 (`services/api-principal/src/datasets/models.rs:11-18`
+  `CLASS_PALETTE`, cabeça `#10b981` emerald + `#f59e0b` amber) e o editor
+  renderiza `cls.color` como veio do banco. É dado, não estilo — realinhar a
+  rotação de cores no backend numa fatia futura (decidir: migration dos
+  valores existentes + enum novo).
+- **Canvas do editor com navy v1 hardcoded — ABERTA 2026-09-07**
+  (origem: fatia redesign UI v2): `apps/web/app/(studio)/datasets/[id]/
+  annotate/[imageId]/page.tsx:670` usa `bg-[#0b0f17]` pré-existente (fora do
+  token v2 `zinc-950`/`--bg`). Limpeza trivial em fatia de manutenção.
+- **Telemetria real da sidebar — ABERTA 2026-09-07**
+  (origem: fatia redesign UI v2): card TELEMETRIA DO NÓ (`Sidebar.tsx:20-24`
+  `TELEMETRY_ROWS`, valores `"—"`, `title="Telemetria chega na fatia 4"`)
+  com placeholders honestos — o backend não expõe telemetria; chegará com a
+  fatia 4 (orquestrador). O card já renderiza a estrutura pronta.
+- **Contraste do CTA documentado (NÃO é dívida — decisão da fatia redesign
+  UI v2)**: CTA em `brand-500` (`#8350f2`) + `text-white` ≈ 4.78:1 — passa
+  WCAG AA (texto normal, 4.5:1); piso mínimo, ver nota em
+  `docs/design-system.md` (Components → Buttons). Registrado aqui só como
+  referência contra re-litígios de contraste.
 - **Testes de UI** (backlog §12 do `frontend.md`) — cobrir
   criar→listar→excluir quando o e2e for ampliado.
 - ~~**Sincronizar `docs/frontend.md` linha 3** — ainda descreve o protótipo como

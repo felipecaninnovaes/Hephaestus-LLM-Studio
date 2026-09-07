@@ -71,7 +71,7 @@ export default function DatasetMenu({ dataset, x, y, onClose, onDelete }: Props)
             onClose();
             router.push(`/datasets/${dataset.id}`);
           }}
-          className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-zinc-200 transition-colors hover:bg-emerald-500/20 hover:text-emerald-300"
+          className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-zinc-200 transition-colors hover:bg-brand-500/20 hover:text-brand-300"
         >
           <IconLayers className="w-3.5 h-3.5 shrink-0" />
           <span>Abrir galeria</span>
@@ -109,7 +109,7 @@ export default function DatasetMenu({ dataset, x, y, onClose, onDelete }: Props)
               );
             }
           }}
-          className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-zinc-200 transition-colors hover:bg-emerald-500/20 hover:text-emerald-300"
+          className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-zinc-200 transition-colors hover:bg-brand-500/20 hover:text-brand-300"
         >
           <IconDownload className="w-3.5 h-3.5 shrink-0" />
           <span>Exportar</span>

@@ -1,8 +1,8 @@
 ---
 description: Mapeador do monorepo — localiza arquivos, símbolos e fluxos de código e devolve mapa com file:line. Somente leitura, barato e rápido.
 mode: subagent
-model: opencode-go/muse-spark-1.3-contributor
-variant: low
+model: opencode-go/mimo-v2.5
+<!-- variant: low -->
 temperature: 0.2
 permission:
   edit: deny

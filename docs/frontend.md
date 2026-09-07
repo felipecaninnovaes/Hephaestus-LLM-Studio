@@ -1,8 +1,8 @@
 # Hephaestus LLM Studio — Documentação do Front-end
 
-> Fonte: `ai-vision-training-studio.html` (protótipo single-file 3641 linhas, marca "OmniVision Studio v1.3") + `IDEIA.md` + `arquitetura_studio_modular.png`.
-> Status: **protótipo validado visualmente, não reutilizar como código final**. Alvo real: **Next.js + TypeScript**.
-> Idioma da UI no protótipo: pt-BR.
+> Fonte: o próprio app (`apps/web`) + `docs/design-system.md` v2 (contrato de estilo Arcane). O protótipo v1 `ai-vision-training-studio.html` está APOSENTADO como referência de layout (não removido do repo; apenas sem valor normativo).
+> Status: **shell v2 implementado (fatia redesign UI v2): Sidebar macro + breadcrumbs; Topbar+TabsBar APOSENTADOS (componentes deletados)**. Alvo real: **Next.js + TypeScript**.
+> Idioma da UI: pt-BR.
 
 ## 1. Visão geral e posição na arquitetura
 
@@ -27,7 +27,7 @@ O front-end nunca executa treino, nunca decide onde treinar, nunca manipula arqu
 
 ## 2. Protótipo atual vs. alvo
 
-| Aspecto | Protótipo (`ai-vision-training-studio.html`) | Alvo Next.js/TS |
+| Aspecto | Protótipo v1 (`ai-vision-training-studio.html`, APOSENTADO — comparativo histórico) | Alvo Next.js/TS |
 |---|---|---|
 | Runtime | React 18 UMD + Babel standalone + Tailwind CDN, tudo num `App()` com ~40 `useState` | App Router, componentes server/client separados, Tailwind real + CSS modules |
 | Estado | Local, mockado (`INITIAL_DATASETS`, `setInterval` de 3s simulando epoch) | Server state via React Query / SWR + client state via Zustand; jobs reais via polling/WS |
@@ -52,30 +52,31 @@ Manter no Next.js — é a parte boa do protótipo:
 
 Não levar para o Next.js: `tailwind.config` inline via CDN, `text/babel`, `data-od-id` (só instrumentação do protótipo).
 
-## 4. Shell global
+## 4. Shell global (v2 — fatia redesign UI v2)
 
-### 4.1 Header (`studio-topbar`, h-14, sticky)
+> Topbar (`components/studio/Topbar.tsx`) + TabsBar (`components/studio/TabsBar.tsx`) APOSENTADOS — componentes deletados nesta fatia. O shell v2 é `Sidebar.tsx` + header com breadcrumbs + chip "Local".
 
-- Logo + `Studio v1.3` + seletor de ambiente (`env-switcher-btn` → `env-dropdown-glass`): `Docker Local (RTX 4090)`, `RunPod Pod #8841 (A100)`, `VPS Dedicada (L40S)` + CTA "Conectar novo Pod / Cluster".
-- Telemetria: `Rust Core: 0.2ms`, `Motor Python: PyTorch 2.4.1`, barra VRAM (`4.2/24 GB idle`, `14.8/24 GB treinando`), botão `MoreVertical` → context menu `settings`.
-- No real: ambiente = `GET /api/environments` + `POST /api/environments/select`; telemetria = WS `/ws/telemetry` (Rust Core latency, VRAM, PyTorch/CUDA versão).
+### 4.1 Sidebar macro (`components/studio/Sidebar.tsx`)
 
-### 4.2 Barra de abas (`studio-tabs-bar`, h-11)
+- Módulos de sistema: **Dados & Anotação** ativo (`aria-current="page"`); **Forja & Treinamento** e **Execução & Playground** desabilitados honestos (`aria-disabled="true"`, `title="Fatia futura"`); **Configurações** desabilitado (`title="Fatia futura"`).
+- Card **TELEMETRIA DO NÓ**: placeholders `"—"` (VRAM/CPU/RAM, barras `w-0`) + `title="Telemetria chega na fatia 4"` — estrutura pronta, backend não expõe telemetria (ver `docs/dividas.md`).
+- **Sair da sessão** = `POST /api/auth/logout` (`credentials: "same-origin"`, erro ignorado) + `router.replace("/login")` + `router.refresh()` — mecanismo migrado da Topbar (`Sidebar.tsx:30-42`).
+- Drawer mobile: largura `w-[min(85vw,320px)]`, backdrop `bg-black/70 backdrop-blur-sm` (`lg:hidden`), fecha em `Escape` (listener em `(studio)/layout.tsx:31-38`) e em navegação (`setSidebarOpen(false)` no `pathname`).
 
-6 abas em 3 grupos (labels e badges do protótipo — manter):
+### 4.2 Header do shell (`app/(studio)/layout.tsx`)
 
-- **Treino:** `difusao` (Difusão, badge `Flux·SDXL·1.5`), `openclip` (OpenCLIP, `Embedding`), `yolo` (YOLO Detecção/Tracking, `v8/v9/v11`).
-- **Preparo:** `autolabel` (AutoLabel, `Difusão·CLIP`), `autotracker` (AutoTracker, `Vídeo·Imagem`).
-- **Dados:** `datasets` (Datasets, badge = contagem).
-- Status global à direita: "Pronto para Treinar" vs "Treinamento em Execução (Orquestrador → Motor Python)".
-
-Roteamento sugerido (App Router): `/difusao`, `/openclip`, `/yolo`, `/autolabel`, `/autotracker`, `/datasets`, `/datasets/[id]`, `/datasets/[id]/annotate/[imageId]`. O protótipo usa `activeTab + openDatasetId + editingGalleryImage` — mapear direto para rotas.
+- Breadcrumbs em 1 linha via `usePathname` (segmentos com `truncate`, `max-w-[140px]` no meio; raiz = "Studio").
+- Chip estático **"Local"** (`title="Nó local — ambiente único nesta fatia"`) — sem dropdown funcional, não há endpoint de ambientes nesta fatia.
 
 ### 4.3 Elementos transversais
 
 - `create-dataset-modal`: backdrop `bg-black/70 backdrop-blur-sm`, campos nome (slugifica `toLowerCase().replace(/\s+/g,'-')`), tipo/tarefa (4 options), classes CSV, dropzone `.zip`/JPG/PNG/WebP + `.txt`. Submit cria `status: needs_labeling`.
 - `glass-context-menu`: tipos `dataset` (Abrir galeria / Treinar neste dataset / Executar AutoLabel ou AutoTracker conforme categoria / Exportar / Excluir), `sample_image` (Corrigir BBox / Re-executar AutoTracker), `settings|import_dataset` (Selecionar backup `.zip/.json` / Reiniciar Runtime).
-- Toast: manter API `showToast(message, type)`.
+- Toast: manter API `showToast(message, type)` (restyle v2; toast com ação vive 6s — Desfazer da 3g).
+
+### 4.4 Páginas no estilo v2 (APRESENTAÇÃO apenas — contratos §10 e lógica intocados)
+
+`/datasets`, galeria (`datasets/[id]`), editor BBox (`annotate/[imageId]`) e `/login` migrados para o v2 (`docs/design-system.md`): densidade de botões (CTA único `h-11`, secundárias `h-9`, menu overflow `"⋯"` em `<md`), pílulas de categoria com `overflow-x-auto` + fade edge + auto-scroll da pílula ativa, anti-scroll-trap (workspace rola como documento único em `<md`; scroll interno de coluna só em `≥md` com `md:overflow-y-auto`).
 
 ## 5. Datasets + Galeria + Editor (coração da IDEIA)
 
@@ -201,7 +202,8 @@ interface BBox { id: number; classId: number; label: string; x: number; y: numbe
 app/(studio)/difusao|openclip|yolo|autolabel|autotracker|datasets/page.tsx
 app/datasets/[id]/page.tsx          # galeria
 app/datasets/[id]/annotate/[imageId]/page.tsx  # editor BBox
-components/studio/{Topbar,TabsBar,DatasetCard,DatasetTable,GalleryGrid,BBoxCanvas,MetricCard,LossChart,MapChart,RecallChart,LogTerminal,SandboxPreview,GlassMenu,Toast}.tsx
+components/studio/{Sidebar,DatasetCard,DatasetTable,GalleryGrid,BBoxCanvas,MetricCard,LossChart,MapChart,RecallChart,LogTerminal,SandboxPreview,GlassMenu,Toast}.tsx
+# (Topbar e TabsBar APOSENTADOS e deletados na fatia redesign UI v2 — ver §4.)
 components/icons.tsx  lib/{api,ws,format}.ts  store/{studio, jobs}.ts  types/studio.ts
 ```
 
@@ -226,3 +228,4 @@ Cada workspace segue o grid do protótipo: `painel config 320–384px + área fl
 - **Downloads de modelos:** settings com campos HF token + Civitai key (env como fallback) + input de URL. Front só coleta e exibe progresso; download real é do orquestrador.
 - **Limites:** upload avulso imagem/vídeo 200 MB por arquivo (validação no front + item `rejected/too_large` e 413 do Rust no corpo total); zip de import: 200 MiB + 8 MiB de envelope (413 do Rust no corpo total; modal mostra "Backup maior que o limite de 200 MiB."). Envio de dataset p/ orquestrador sem limite, com md5 + fragmentação quando remoto — front mostra barra de empacotamento → envio → verificação.
 - **Pré-condições 3b/3d (ADR-0002 T3/T4/T7):** 3b ENTREGOU storage+imagens+anotação (upload/imagens/boxes/caption + `source` derivado + sweep de prefixo); export/import/package → 3e. DELETE ganhou sweep de prefixo `datasets/{id}/` pós-commit reapável best-effort (não mais cleanup de `<DATASETS_DIR>/<slug>` — disco morreu, ADR-0003 D7); `jobs.dataset_id ON DELETE SET NULL` + snapshot `dataset_versions` (nunca `RESTRICT`); derivar `autoTracked` de `boxes.origin='autotracker'` — detalhe no ADR.
+- **Fatia redesign UI v2 (branch `feature/redesign-app`, review APROVA COM NITS):** `docs/frontend.md` §4 reescrito (shell Sidebar+breadcrumbs+chip Local; Topbar+TabsBar aposentados/deletados), §4.4 registra migração visual de `/datasets`, galeria, editor e `/login` (contratos §10 intocados). Detalhes de estilo no `docs/design-system.md` v2; dívidas novas no `docs/dividas.md`.

@@ -14,7 +14,7 @@ export default function DatasetTable({
     <div className="overflow-x-auto">
       <table className="w-full text-xs">
         <thead>
-          <tr className="tracking-caps text-left uppercase text-zinc-500">
+          <tr className="tracking-caps text-left font-mono uppercase text-zinc-500">
             <th className="px-3 py-2 font-medium">Nome</th>
             <th className="px-3 py-2 font-medium">Formato-Tarefa</th>
             <th className="px-3 py-2 font-medium">Imagens</th>
@@ -38,20 +38,20 @@ export default function DatasetTable({
                       }
                     : undefined
                 }
-                className="border-t border-zinc-800/80 transition-colors hover:bg-zinc-800/40"
+                className="border-t border-zinc-800/80 transition-colors hover:bg-brand-500/5"
               >
-                <td className="px-3 py-2.5">
-                  <Link href={`/datasets/${d.id}`} className="block">
-                    <span className="block truncate text-[13px] font-medium text-zinc-100">
+                <td className="max-w-56 px-3 py-2.5">
+                  <Link href={`/datasets/${d.id}`} className="block min-w-0">
+                    <span className="block truncate text-[13px] font-medium text-zinc-100" title={d.title}>
                       {d.title}
                     </span>
-                    <span className="block truncate font-mono text-[11px] text-zinc-500">
+                    <span className="block truncate font-mono text-[11px] text-zinc-500" title={d.slug}>
                       {d.slug}
                     </span>
                   </Link>
                 </td>
                 <td className="whitespace-nowrap px-3 py-2.5 text-zinc-300">
-                  <Link href={`/datasets/${d.id}`} className="block">
+                  <Link href={`/datasets/${d.id}`} className="block" title={TYPE_LABELS[d.type]}>
                     {TYPE_LABELS[d.type]}
                   </Link>
                 </td>
@@ -61,10 +61,10 @@ export default function DatasetTable({
                   </Link>
                 </td>
                 <td className="px-3 py-2.5">
-                  <Link href={`/datasets/${d.id}`} className="block min-w-28">
+                  <Link href={`/datasets/${d.id}`} className="block min-w-28" title={`${pct} rotulado`}>
                     <span className="mb-1 block h-1 overflow-hidden rounded-full bg-zinc-800">
                       <span
-                        className="block h-full rounded-full bg-emerald-500"
+                        className="block h-full rounded-full bg-[#34d399]"
                         style={{
                           width:
                             d.imagesCount > 0
@@ -82,12 +82,13 @@ export default function DatasetTable({
                   <Link
                     href={`/datasets/${d.id}`}
                     className="block truncate font-mono text-zinc-400"
+                    title={d.source ?? "—"}
                   >
                     {d.source ?? "—"}
                   </Link>
                 </td>
-                <td className="whitespace-nowrap px-3 py-2.5 text-zinc-400">
-                  <Link href={`/datasets/${d.id}`} className="block">
+                <td className="whitespace-nowrap px-3 py-2.5 font-mono text-zinc-400">
+                  <Link href={`/datasets/${d.id}`} className="block" title={formatRelativeTime(d.lastModified)}>
                     {formatRelativeTime(d.lastModified)}
                   </Link>
                 </td>
@@ -95,13 +96,14 @@ export default function DatasetTable({
                   <button
                     type="button"
                     aria-label={`Ações do dataset ${d.title}`}
+                    title={`Ações do dataset ${d.title}`}
                     onClick={(e) => {
                       e.stopPropagation();
                       if (!onContextMenu) return;
                       const rect = e.currentTarget.getBoundingClientRect();
                       onContextMenu(d, rect.left, rect.bottom);
                     }}
-                    className="rounded-lg p-1.5 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+                    className="inline-flex size-9 items-center justify-center rounded-lg border border-transparent bg-transparent p-0 text-zinc-400 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
                   >
                     <IconMoreVertical className="h-4 w-4" />
                   </button>

@@ -52,7 +52,7 @@ Estúdio de engenharia de IA de ponta a ponta que integra ferramentas especializ
 
 ## Evidence on Hand
 
-- Protótipo funcional e visualmente validado de referência: `ai-vision-training-studio.html`.
+- Referência visual: `docs/design-system.md` v2 realizando-se em `apps/web/` (design v2 'Arcane'); protótipo v1 aposentado e removido do repo.
 - Especificações e decisões arquiteturais documentadas: `IDEIA.md`, `docs/frontend.md`, `docs/backend.md`, `docs/repo-estrutura.md` e ADRs estruturadas (`docs/adr/0001`, `docs/adr/0002`, `docs/adr/0003`).
 - Base de código web em desenvolvimento ativo em `apps/web` (Next.js 16, React 19, Tailwind CSS v4, design tokens integrados em `globals.css`).
 

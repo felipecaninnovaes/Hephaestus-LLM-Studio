@@ -3452,6 +3452,113 @@ async fn t0004_status_derivado() {
     assert_eq!(got["status"], "not_indexed");
     assert_eq!(got["imagesCount"], 1);
     assert_eq!(got["indexedCount"], 0);
+
+    // Lixeira (review 3f [MAIOR]): soft-delete NÃO remove embedding — o
+    // indexedCount com JOIN nas ativas impede `ready` falso com pendentes.
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("Idx Lixeira", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds = json(&body)["id"].as_str().expect("id").to_string();
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+    let boundary = "heph-lixeira-boundary";
+    let (status, _, _) = call(
+        app.clone(),
+        post_upload(
+            &cookie,
+            &ds,
+            boundary,
+            multipart_body(boundary, &[("b1.png", &png_1x1()), ("b2.png", &png_1x1())]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    poll_embeddings(&st.pool, ds_id, 2).await;
+    let (status, got) = get_status(app.clone(), &cookie, &ds).await;
+    assert_eq!(got["status"], "ready");
+    // Trasha uma das duas: ativas=1, indexed (JOIN ativas)=1 → segue ready.
+    sqlx::query(
+        "UPDATE images SET deleted_at = now() WHERE dataset_id = $1 AND filename = 'b1.png'",
+    )
+    .bind(ds_id)
+    .execute(&st.pool)
+    .await
+    .expect("soft delete");
+    let (status, got) = get_status(app.clone(), &cookie, &ds).await;
+    assert_eq!(got["status"], "ready");
+    assert_eq!(got["imagesCount"], 1);
+    assert_eq!(got["indexedCount"], 1);
+    // Nova imagem ATIVA sem embedding (insert direto, sem spawn): ativas=2,
+    // indexed=1 → indexing. Sem o JOIN, indexed seria 2 e mentiria `ready`.
+    insert_image(&st.pool, ds_id, "b3.png", 10).await;
+    let (status, got) = get_status(app.clone(), &cookie, &ds).await;
+    assert_eq!(got["status"], "indexing");
+    assert_eq!(got["imagesCount"], 2);
+    assert_eq!(got["indexedCount"], 1);
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0004_lock_concorrente_serializa_disparos() {
+    // Critério de aceite da 3f.4 ("lock serializa 2 disparos") — dois
+    // indexadores do MESMO dataset em paralelo: ambos completam, count == N,
+    // ON CONFLICT não duplica (review 3f [MENOR]).
+    let _guard = SERIAL.lock().await;
+    let st = state().await;
+    let (status, _, body) = call(
+        routes::build(st.clone()),
+        post_create(
+            "Idx Concorrente",
+            &serde_json::json!(["a"]),
+            &authed_cookie(),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds = json(&body)["id"].as_str().expect("id").to_string();
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+    // Upload REAL: o objeto precisa existir no storage (o indexer faz
+    // StoragePort.get — insert_image direto geraria "object not found").
+    let boundary = "heph-lock-boundary";
+    let (status, _, _) = call(
+        routes::build(st.clone()),
+        post_upload(
+            &authed_cookie(),
+            &ds,
+            boundary,
+            multipart_body(boundary, &[("c1.png", &png_1x1()), ("c2.png", &png_1x1())]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    poll_embeddings(&st.pool, ds_id, 2).await;
+    // Zera os embeddings (objetos seguem no storage): agora os 2 disparos
+    // concorrentes têm trabalho de verdade.
+    sqlx::query("DELETE FROM image_embeddings WHERE dataset_id = $1")
+        .bind(ds_id)
+        .execute(&st.pool)
+        .await
+        .expect("delete embeddings");
+
+    let s1 = st.clone();
+    let s2 = st.clone();
+    let j1 = tokio::spawn(async move {
+        api_principal::search::indexer::index_dataset_images(s1, ds_id, None).await
+    });
+    let j2 = tokio::spawn(async move {
+        api_principal::search::indexer::index_dataset_images(s2, ds_id, None).await
+    });
+    let (r1, r2) = tokio::join!(j1, j2);
+    assert_eq!(r1.expect("spawn 1"), 2);
+    assert_eq!(r2.expect("spawn 2"), 0, "2º disparo não tem pendentes");
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM image_embeddings WHERE dataset_id = $1")
+        .bind(ds_id)
+        .fetch_one(&st.pool)
+        .await
+        .expect("count");
+    assert_eq!(n, 2, "ON CONFLICT não duplica");
 }
 
 #[tokio::test]

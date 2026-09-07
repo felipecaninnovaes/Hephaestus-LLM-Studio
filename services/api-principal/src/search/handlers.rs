@@ -128,8 +128,14 @@ pub async fn get_status(State(state): State<AppState>, Path(id): Path<String>) -
         Ok(n) => n,
         Err(_) => return internal(),
     };
+    // Denominador alinhado ao indexador (review 3f [MAIOR]): embeddings de
+    // imagens na lixeira NÃO contam — soft-delete não remove embedding, e sem
+    // o JOIN o estado derivaria `ready` com imagens ativas pendentes (R4
+    // invisível: "Indexar agora"/"Indexando X/N" nunca apareceriam).
     let indexed: i64 = match sqlx::query_scalar(
-        "SELECT count(*) FROM image_embeddings WHERE dataset_id = $1 AND model = $2",
+        "SELECT count(*) FROM image_embeddings e \
+         JOIN images i ON i.id = e.image_id \
+         WHERE e.dataset_id = $1 AND e.model = $2 AND i.deleted_at IS NULL",
     )
     .bind(ds_id)
     .bind(&state.embedding_model)
@@ -394,8 +400,12 @@ pub async fn get_search(
         Ok(false) => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
         Err(r) => return r,
     }
+    // Mesmo denominador do status (JOIN ativas — review 3f [MAIOR]): 409 só
+    // quando NENHUMA imagem ATIVA tem embedding do modelo ativo.
     let indexed: i64 = match sqlx::query_scalar(
-        "SELECT count(*) FROM image_embeddings WHERE dataset_id = $1 AND model = $2",
+        "SELECT count(*) FROM image_embeddings e \
+         JOIN images i ON i.id = e.image_id \
+         WHERE e.dataset_id = $1 AND e.model = $2 AND i.deleted_at IS NULL",
     )
     .bind(ds_id)
     .bind(&state.embedding_model)
@@ -409,7 +419,14 @@ pub async fn get_search(
         return index_not_ready();
     }
     let query_vec = match state.embedder.embed_texts(&[q]).await {
-        Ok(mut v) => v.pop().expect("embed_texts ecoa o input"),
+        // porta garante vetor por input na mesma ordem; defesa sem panic
+        // (review 3f [NIT]): shape errado vira 503 da mesma família.
+        Ok(mut v) if !v.is_empty() => v.remove(0),
+        Ok(_) => {
+            return embedding_error_response(&EmbeddingError::InvalidResponse(
+                "embed_texts ecoa o input".to_string(),
+            ))
+        }
         Err(e) => return embedding_error_response(&e),
     };
     let items = match run_search(

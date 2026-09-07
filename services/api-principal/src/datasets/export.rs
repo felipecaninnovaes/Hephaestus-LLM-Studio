@@ -268,6 +268,46 @@ pub fn stem_of(filename: &str) -> &str {
     }
 }
 
+/// Extensão canônica do filename sem o ponto (para desambiguar labels).
+fn ext_of(filename: &str) -> &str {
+    match filename.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() => ext,
+        _ => "bin",
+    }
+}
+
+/// Arcname do label YOLO de uma imagem. A primeira imagem com um dado stem
+/// fica com `labels/{stem}.txt`; em colisão (ex.: `a.jpg` + `a.png`) a
+/// imagem corrente é desambiguada para `labels/{stem}_{ext}.txt` (ordem do
+/// manifest/created_at ⇒ determinístico). `used` guarda os arcnames já
+/// emitidos. Só o arcname muda — o conteúdo continua o da imagem.
+fn label_arcname_for(filename: &str, used: &mut std::collections::HashSet<String>) -> String {
+    let stem = stem_of(filename);
+    let proposed = format!("labels/{stem}.txt");
+    if used.insert(proposed.clone()) {
+        return proposed;
+    }
+    let disambiguated = format!("labels/{stem}_{}.txt", ext_of(filename));
+    eprintln!("[export] labels de mesmo stem colidem; desambiguado {proposed} para {disambiguated} ({filename})");
+    used.insert(disambiguated.clone());
+    disambiguated
+}
+
+/// Entradas `labels/*.txt` para imagens com ≥1 box (puro, unit-testável):
+/// `(arcname, conteúdo YOLO da imagem correspondente)`.
+pub fn build_label_entries(images: &[ManifestImage]) -> Vec<(String, String)> {
+    let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for img in images {
+        if img.boxes.is_empty() {
+            continue;
+        }
+        let arcname = label_arcname_for(&img.filename, &mut used);
+        out.push((arcname, yolo_label_lines(&img.boxes)));
+    }
+    out
+}
+
 /// Uma linha `cls cx cy w h` por box, 6 decimais (materialização YOLO —
 /// sem conf/origin/track_id por construção).
 pub fn yolo_label_lines(boxes: &[ManifestBox]) -> String {
@@ -572,11 +612,13 @@ pub async fn export_dataset(
             is_text: true,
         });
     }
+    let mut used_labels: std::collections::HashSet<String> = std::collections::HashSet::new();
     for img in &manifest.images {
         if img.boxes.is_empty() {
             continue;
         }
-        let label_path = labels_dir.join(format!("{}.txt", stem_of(&img.filename)));
+        let arcname = label_arcname_for(&img.filename, &mut used_labels);
+        let label_path = labels_dir.join(arcname.strip_prefix("labels/").unwrap_or(&arcname));
         if tokio::fs::write(&label_path, yolo_label_lines(&img.boxes))
             .await
             .is_err()
@@ -584,7 +626,7 @@ pub async fn export_dataset(
             return internal();
         }
         entries.push(ZipEntry {
-            arcname: format!("labels/{}.txt", stem_of(&img.filename)),
+            arcname,
             fs_path: label_path,
             is_text: true,
         });
@@ -923,6 +965,62 @@ mod tests {
     fn stem_of_regras() {
         assert_eq!(stem_of("img_0001.jpg"), "img_0001");
         assert_eq!(stem_of("sem_ext"), "sem_ext");
+    }
+
+    #[test]
+    fn labels_mesmo_stem_desambiguado_por_ext() {
+        // `a.jpg` + `a.png` (mesmo stem, extensões distintas) ⇒ arcnames
+        // `labels/a.txt` + `labels/a_png.txt`, sem duplicata, cada conteúdo
+        // com as boxes da imagem certa.
+        let c0 = Uuid::new_v4();
+        let i1 = Uuid::new_v4();
+        let i2 = Uuid::new_v4();
+        let classes = vec![class(c0, "a", 0)];
+        let images = vec![img(i1, "a.jpg", "train"), img(i2, "a.png", "train")];
+        let boxes = vec![
+            ExportBoxRow {
+                image_id: i1,
+                class_id: c0,
+                x: 0.1,
+                y: 0.1,
+                w: 0.1,
+                h: 0.1,
+                conf: None,
+                origin: "manual".to_string(),
+                track_id: None,
+            },
+            ExportBoxRow {
+                image_id: i2,
+                class_id: c0,
+                x: 0.9,
+                y: 0.9,
+                w: 0.05,
+                h: 0.05,
+                conf: None,
+                origin: "manual".to_string(),
+                track_id: None,
+            },
+        ];
+        let m = build_manifest(
+            "d",
+            "D",
+            "yolo_bbox",
+            "yolo_txt",
+            &classes,
+            &images,
+            &boxes,
+            &[],
+        );
+        let entries = build_label_entries(&m.images);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].0, "labels/a.txt");
+        assert_eq!(entries[1].0, "labels/a_png.txt");
+        let uniq: std::collections::HashSet<&str> =
+            entries.iter().map(|(a, _)| a.as_str()).collect();
+        assert_eq!(uniq.len(), 2, "sem duplicata de arcname");
+        assert_eq!(entries[0].1, yolo_label_lines(&m.images[0].boxes));
+        assert_eq!(entries[1].1, yolo_label_lines(&m.images[1].boxes));
+        assert_ne!(entries[0].1, entries[1].1);
     }
 
     #[test]

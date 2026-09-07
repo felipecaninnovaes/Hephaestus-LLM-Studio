@@ -524,7 +524,7 @@ export default function AnnotateImagePage() {
         <button
           type="button"
           onClick={() => router.push(`/datasets/${id}`)}
-          className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-3 text-xs font-medium whitespace-nowrap text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
+          className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-3 text-xs font-medium whitespace-nowrap text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
         >
           <svg
             className="h-3.5 w-3.5 shrink-0"
@@ -551,7 +551,7 @@ export default function AnnotateImagePage() {
                   key={tool.id}
                   type="button"
                   onClick={() => setActiveTool(tool.id)}
-                  className={`inline-flex h-9 w-full items-center gap-2 rounded-lg border px-3 text-left text-xs font-medium whitespace-nowrap transition active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 ${
+                  className={`inline-flex h-9 w-full items-center gap-2 rounded-lg border px-3 text-left text-xs font-medium whitespace-nowrap transition active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 ${
                     isActive
                       ? "border-brand-500/30 bg-brand-500/[0.18] text-brand-300"
                       : "border-transparent bg-transparent text-zinc-300 hover:bg-white/[0.06] hover:text-white"
@@ -618,7 +618,7 @@ export default function AnnotateImagePage() {
           <button
             type="button"
             onClick={() => setClassesOpen(true)}
-            className="mt-2 inline-flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-3 text-xs font-medium whitespace-nowrap text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
+            className="mt-2 inline-flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-3 text-xs font-medium whitespace-nowrap text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
           >
             Gerenciar classes
           </button>
@@ -659,7 +659,7 @@ export default function AnnotateImagePage() {
             type="button"
             onClick={handleSave}
             disabled={saving || !hasClasses}
-            className="mt-4 inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] px-5 text-xs font-semibold whitespace-nowrap text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
+            className="mt-4 inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] px-5 text-xs font-semibold whitespace-nowrap text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
           >
             {saving ? "Salvando…" : `${dirty ? "● " : ""}Salvar Anotações`}
           </button>
@@ -673,7 +673,7 @@ export default function AnnotateImagePage() {
             type="button"
             onClick={() => setZoom((z) => Math.max(50, z - 25))}
             aria-label="Diminuir zoom do canvas"
-            className="rounded-lg border border-transparent bg-transparent p-1 text-zinc-300 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
+            className="rounded-lg border border-transparent bg-transparent p-1 text-zinc-300 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
             title="Diminuir Zoom"
           >
             <IconZoomOut />
@@ -683,7 +683,7 @@ export default function AnnotateImagePage() {
             type="button"
             onClick={() => setZoom((z) => Math.min(250, z + 25))}
             aria-label="Aumentar zoom do canvas"
-            className="rounded-lg border border-transparent bg-transparent p-1 text-zinc-300 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
+            className="rounded-lg border border-transparent bg-transparent p-1 text-zinc-300 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
             title="Aumentar Zoom"
           >
             <IconZoomIn />
@@ -692,7 +692,7 @@ export default function AnnotateImagePage() {
           <button
             type="button"
             onClick={() => setZoom(100)}
-            className="inline-flex h-8 items-center justify-center gap-2 rounded-md border border-transparent bg-transparent px-3 text-[10px] font-medium whitespace-nowrap text-zinc-300 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
+            className="inline-flex h-8 items-center justify-center gap-2 rounded-md border border-transparent bg-transparent px-3 text-[10px] font-medium whitespace-nowrap text-zinc-300 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
           >
             Resetar 100%
           </button>

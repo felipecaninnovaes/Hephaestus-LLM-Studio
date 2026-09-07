@@ -303,7 +303,7 @@ Fundo fixo (`position:fixed inset-0 pointer-events-none aria-hidden`) com 4 cama
 - **Panel**: `rounded-2xl border border-white/10 bg-[rgba(32,32,38,0.40)] backdrop-blur-xl p-6 sm:p-8` + **hairline**: `::before` absoluta no topo (`left/right 1.5rem`, `height 1px`) com `linear-gradient(90deg, transparent, rgba(131,80,242,0.6), transparent)`.
 - **Logo**: drop-shadow violeta 45% (`drop-shadow(0 0 28px rgba(131,80,242,0.45))`); versão em mono `text-[10px] tracking-[0.2em] uppercase text-zinc-400/60` abaixo.
 - Título `text-2xl font-semibold tracking-tight`, sub `text-sm text-zinc-400`, labels `text-xs`, CTA login `w-full` no estilo primário outline-translúcido acima.
-- Entrada staggered `rise 0.6s cubic-bezier(0.22,1,0.36,1)` com delays 500/650/900ms + `prefers-reduced-motion: none`.
+- Entrada staggered `rise 0.6s cubic-bezier(0.22,1,0.36,1)` com delays 0/150/300ms (logo/panel/footer) + desligado com `prefers-reduced-motion: reduce` (animation: none / opacity: 1).
 
 ### Navigation
 - Topbar sticky com seletor de pods em dropdown; sidebar macro (drawer em `< lg`); barra de abas com divisores verticais sutis entre os grupos de Difusão/CLIP/YOLO, AutoLabel/AutoTracker e Datasets; pílulas de sub-navegação com `overflow-x-auto` + fade edge na direita + auto-scroll da pílula ativa.

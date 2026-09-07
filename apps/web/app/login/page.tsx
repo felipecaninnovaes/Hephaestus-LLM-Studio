@@ -221,7 +221,7 @@ export default function LoginPage() {
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}
                     disabled={submitting}
-                    className="h-10 w-full rounded-lg border border-white/10 bg-white/[0.04] pl-9 pr-3 text-sm text-zinc-100 placeholder:text-zinc-500 transition focus:border-brand-500/50 focus:ring-2 focus:ring-brand-500/30 focus:outline-none disabled:opacity-55"
+                    className="h-10 w-full rounded-lg border border-white/10 bg-white/[0.04] pl-9 pr-3 text-[16px] sm:text-sm text-zinc-100 placeholder:text-zinc-500 transition focus:border-brand-500/50 focus:ring-2 focus:ring-brand-500/30 focus:outline-none disabled:opacity-55"
                   />
                 </div>
               </div>
@@ -239,7 +239,7 @@ export default function LoginPage() {
               <button
                 type="submit"
                 disabled={submitting}
-                className="mt-1 inline-flex h-10 w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] text-sm font-medium text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] disabled:pointer-events-none disabled:opacity-55 focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent"
+                className="mt-1 inline-flex h-10 w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] text-sm font-medium text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] disabled:pointer-events-none disabled:opacity-55 focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)]"
               >
                 {submitting ? "Autenticando…" : "Entrar no Hephaestus"}
               </button>

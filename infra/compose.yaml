@@ -47,7 +47,13 @@ services:
     image: chrislusf/seaweedfs:4.45_full@sha256:04851d83f42aad1ae898d1b190e2140fd1cef1015bc1a1b783282fefcf65e03b
     command: "server -s3 -ip.bind=0.0.0.0 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json -dir=/data -master.volumeSizeLimitMB=1024"
     ports:
-      - '127.0.0.1:8333:8333'
+      # R1 (ADR-0003): default loopback — a LAN nunca toca o bucket. Para
+      # acessar o studio de OUTRO dispositivo da rede (página via IP), o
+      # operador publica a porta com SEAWEED_PUBLISH=0.0.0.0 no `.env` e
+      # aponta S3_PUBLIC_ENDPOINT_URL para http://<ip-da-máquina>:8333
+      # (presigned é assinado nesse host — gotcha SigV4 D3; receita no
+      # .env.example). Credenciais são LOCAL-DEV: rotacione se sair da LAN.
+      - '${SEAWEED_PUBLISH:-127.0.0.1}:8333:8333'
       - '127.0.0.1:9333:9333'
     volumes:
       - seaweed_data:/data

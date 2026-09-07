@@ -44,6 +44,8 @@ fn setup_state() -> AppState {
             public_endpoint: None,
             url_ttl_secs: 60,
         },
+        embedder: std::sync::Arc::new(api_principal::search::MockEmbedder::new()),
+        embedding_model: "ViT-B-32".to_string(),
     }
 }
 

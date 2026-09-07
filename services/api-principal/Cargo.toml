@@ -22,10 +22,12 @@ hex = "0.4.3"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 aws-sdk-s3 = "1.145.0"
 aws-smithy-types = "1.6.3"
+pgvector = { version = "=0.4.1", features = ["sqlx"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+base64 = "0.22"
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }
 http = "1"
 http-body-util = "0.1"
 serde_yaml = "0.9"
-base64 = "0.22"

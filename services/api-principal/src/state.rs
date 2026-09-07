@@ -16,4 +16,6 @@ pub struct AppState {
     pub setup_required: bool,
     pub storage: std::sync::Arc<dyn crate::storage::StoragePort>,
     pub storage_config: crate::storage::StorageConfig,
+    pub embedder: std::sync::Arc<dyn crate::search::EmbeddingPort>,
+    pub embedding_model: String,
 }

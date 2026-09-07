@@ -28,6 +28,9 @@ services:
       S3_SECRET_KEY: ${S3_SECRET_KEY:-heph-local-dev}
       S3_PUBLIC_ENDPOINT_URL: ${S3_PUBLIC_ENDPOINT_URL:-http://localhost:8333}
       S3_URL_TTL_SECS: ${S3_URL_TTL_SECS:-3600}
+      EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-mock}
+      EMBEDDER_URL: ${EMBEDDER_URL:-http://embedder:8090}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-ViT-B-32}
     depends_on:
       db:
         condition: service_started

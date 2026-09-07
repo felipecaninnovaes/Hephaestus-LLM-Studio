@@ -57,6 +57,19 @@ fn invalid_request() -> Response {
     )
 }
 
+/// Compensação fatal do import (all-or-nothing D5/D6): DELETE da linha NOVA
+/// (CASCADE apaga images/boxes/captions) + sweep best-effort do prefixo.
+async fn cleanup_failed_import(state: &AppState, new_id: Uuid) {
+    let _ = sqlx::query("DELETE FROM datasets WHERE id = $1")
+        .bind(new_id)
+        .execute(&state.pool)
+        .await;
+    let prefix = format!("datasets/{new_id}/");
+    if let Err(e) = state.storage.delete_prefix(&prefix).await {
+        eprintln!("aviso: sweep do prefixo {prefix} falhou ({e}) — objetos reapáveis");
+    }
+}
+
 /// Teto do spool do zip (defesa extra — o teto de CORPO mora na rota,
 /// `IMPORT_BODY_LIMIT_BYTES`; excedeu aqui ⇒ 413 no envelope).
 pub const MAX_IMPORT_SPOOL_BYTES: i64 = 200 * 1024 * 1024;
@@ -644,14 +657,7 @@ pub async fn import_dataset(State(state): State<AppState>, mut multipart: Multip
         let key = keys::image_object_key(new_id, image_id, &v.canonical);
         if state.storage.put(&key, &v.spool).await.is_err() {
             // Falha fatal: 503 + delete da linha NOVA (CASCADE) + sweep.
-            let _ = sqlx::query("DELETE FROM datasets WHERE id = $1")
-                .bind(new_id)
-                .execute(&state.pool)
-                .await;
-            let prefix = format!("datasets/{new_id}/");
-            if let Err(e) = state.storage.delete_prefix(&prefix).await {
-                eprintln!("aviso: sweep do prefixo {prefix} falhou ({e}) — objetos reapáveis");
-            }
+            cleanup_failed_import(&state, new_id).await;
             return err(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "storage_unavailable",
@@ -677,11 +683,7 @@ pub async fn import_dataset(State(state): State<AppState>, mut multipart: Multip
         .await
         .is_ok();
         if !image_ok {
-            let _ = state.storage.delete(&key).await;
-            let _ = sqlx::query("DELETE FROM images WHERE id = $1")
-                .bind(image_id)
-                .execute(&state.pool)
-                .await;
+            cleanup_failed_import(&state, new_id).await;
             return internal();
         }
         if !v.boxes.is_empty() {
@@ -730,11 +732,7 @@ pub async fn import_dataset(State(state): State<AppState>, mut multipart: Multip
                 .await
                 .is_ok();
             if !boxes_ok {
-                let _ = state.storage.delete(&key).await;
-                let _ = sqlx::query("DELETE FROM images WHERE id = $1")
-                    .bind(image_id)
-                    .execute(&state.pool)
-                    .await;
+                cleanup_failed_import(&state, new_id).await;
                 return internal();
             }
         }
@@ -751,11 +749,7 @@ pub async fn import_dataset(State(state): State<AppState>, mut multipart: Multip
             .await
             .is_ok();
             if !caption_ok {
-                let _ = state.storage.delete(&key).await;
-                let _ = sqlx::query("DELETE FROM images WHERE id = $1")
-                    .bind(image_id)
-                    .execute(&state.pool)
-                    .await;
+                cleanup_failed_import(&state, new_id).await;
                 return internal();
             }
         }

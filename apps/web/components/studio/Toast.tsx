@@ -59,7 +59,7 @@ export function dismissToast(id: number): void {
 }
 
 const DOT_BY_TYPE: Record<ToastType, string> = {
-  success: "bg-emerald-400",
+  success: "bg-brand-400",
   error: "bg-rose-400",
   info: "bg-cyan-400",
 };
@@ -88,7 +88,7 @@ export function ToastHost() {
                 dismissToast(toast.id);
                 toast.action?.onClick();
               }}
-              className="shrink-0 font-medium text-emerald-300 underline decoration-emerald-400/50 underline-offset-2 transition-colors hover:text-emerald-200"
+              className="shrink-0 font-medium text-brand-300 underline decoration-brand-400/50 underline-offset-2 transition-colors hover:text-brand-200"
             >
               {toast.action.label}
             </button>

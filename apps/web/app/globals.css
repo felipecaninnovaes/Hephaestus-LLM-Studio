@@ -1,31 +1,55 @@
 @import "tailwindcss";
 
-/* Design tokens extraídos de ai-vision-training-studio.html (<style>, linhas 38-47)
-   + tailwind.config inline (brand/emerald, fontes). Tema dark-only.
-   Tailwind v4 real (docs/frontend.md §2): paleta zinc/emerald do protótipo
-   vem on-board; daqui só tokens de marca + classes glass/utilitárias próprias. */
+/* Design tokens v2 — redesign Arcane (docs/design-system.md v2, fonte de estilo).
+   Layout: temp_redesign/new_ui.html. Tailwind v4: escala brand/zinc via @theme. */
+
+@theme {
+  --color-brand-50: #f5f3ff;
+  --color-brand-100: #ede9fe;
+  --color-brand-200: #ddd6fe;
+  --color-brand-300: #c4b5fd;
+  --color-brand-400: #a78bfa;
+  --color-brand-500: #8350f2;
+  --color-brand-600: #6c45bf;
+  --color-brand-700: #51358c;
+  --color-brand-800: #3b2569;
+  --color-brand-900: #261647;
+  --color-brand-950: #150a2b;
+
+  --color-zinc-50: #fbfaff;
+  --color-zinc-100: #f4f2f9;
+  --color-zinc-200: #e5e1ef;
+  --color-zinc-300: #cfc9dc;
+  --color-zinc-400: #9a92a6;
+  --color-zinc-500: #756d82;
+  --color-zinc-600: #585164;
+  --color-zinc-700: #3e3749;
+  --color-zinc-800: #2a2336;
+  --color-zinc-900: #1f1b26;
+  --color-zinc-950: #0d0d0d;
+
+  --font-display: "Space Grotesk", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: "JetBrains Mono", "IBM Plex Mono", ui-monospace, monospace;
+}
 
 :root {
-  --bg: oklch(13.5% 0.012 260);
-  --surface: oklch(17.5% 0.016 260);
-  --surface-elevated: oklch(21.5% 0.02 260);
-  --fg: oklch(96% 0.005 260);
-  --muted: oklch(65% 0.015 260);
-  --border: oklch(26% 0.018 260);
-  --accent: oklch(68% 0.2 150);
-  --accent-glow: oklch(68% 0.2 150 / 22%);
+  --bg: oklch(15.9% 0.000 89.9);
+  --surface: oklch(23.2% 0.022 301.4);
+  --surface-elevated: oklch(28.5% 0.030 298.0);
+  --fg: oklch(96.0% 0.006 290.0);
+  --muted: oklch(65.0% 0.018 295.0);
+  --border: oklch(35.0% 0.045 295.0);
+  --accent: oklch(57.8% 0.229 292.2);
+  --accent-hover: oklch(50.1% 0.182 293.5);
+  --accent-subtle: oklch(41.0% 0.138 294.3);
+  --accent-glow: rgba(131, 80, 242, 0.25);
 
-  /* Equivalentes hex do protótipo (fallbacks / superfícies de vidro) */
-  --bg-hex: #090c12;
-  --fg-hex: #f1f3f9;
-  --brand-50: #ecfdf5;
-  --brand-400: #34d399;
-  --brand-500: #10b981;
-  --brand-600: #059669;
+  /* Equivalentes hex do design-system v2 (fallbacks) */
+  --bg-hex: #0d0d0d;
+  --fg-hex: #f5f3f8;
 
-  --font-sans: "Inter", -apple-system, blinkmacsystemfont, "Segoe UI", roboto,
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter",
     sans-serif;
-  --font-mono: "JetBrains Mono", "IBM Plex Mono", ui-monospace, monospace;
 }
 
 * {
@@ -43,58 +67,72 @@ body {
   background-color: var(--bg);
   color: var(--fg-hex);
   color: var(--fg);
-  font-family: -apple-system, blinkmacsystemfont, var(--font-sans);
+  font-family: var(--font-sans);
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Tipografia utilitária do protótipo */
+h1,
+h2,
+h3,
+.font-display {
+  font-family: var(--font-display);
+}
+
+/* Tipografia utilitária do design-system */
 .tracking-caps {
   letter-spacing: 0.08em;
 }
 
 .tracking-display {
   letter-spacing: -0.02em;
+  font-family: var(--font-display);
 }
 
-/* Glassmorphism em 3 níveis (protótipo: .glass-menu / .glass-card / .glass-modal) */
+/* Vidro óptico v2 em 3 níveis (design-system § Elevation & Depth).
+   Mesmos nomes de classe da v1 para os componentes não migrados. */
 .glass-menu {
-  background: rgba(13, 17, 26, 0.82);
+  background: rgba(25, 21, 32, 0.88);
   backdrop-filter: blur(28px) saturate(190%);
   -webkit-backdrop-filter: blur(28px) saturate(190%);
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  border-top: 1px solid rgba(255, 255, 255, 0.24);
+  border: 1px solid rgba(131, 80, 242, 0.16);
+  border-top: 1px solid rgba(255, 255, 255, 0.22);
   box-shadow:
     0 24px 60px -8px rgba(0, 0, 0, 0.85),
-    0 0 0 1px rgba(255, 255, 255, 0.04),
-    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+    0 0 0 1px rgba(131, 80, 242, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
 }
 
 .glass-card {
-  background: rgba(18, 23, 35, 0.62);
+  background: rgba(31, 27, 38, 0.7);
   backdrop-filter: blur(20px) saturate(160%);
   -webkit-backdrop-filter: blur(20px) saturate(160%);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  border-top: 1px solid rgba(255, 255, 255, 0.13);
+  border: 1px solid rgba(131, 80, 242, 0.14);
+  border-top: 1px solid rgba(255, 255, 255, 0.16);
   box-shadow:
-    0 12px 30px -6px rgba(0, 0, 0, 0.45),
+    0 12px 30px -6px rgba(0, 0, 0, 0.55),
     inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
-.glass-modal {
-  background: rgba(11, 15, 24, 0.88);
-  backdrop-filter: blur(32px) saturate(200%);
-  -webkit-backdrop-filter: blur(32px) saturate(200%);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-top: 1px solid rgba(255, 255, 255, 0.28);
-  box-shadow:
-    0 30px 80px -12px rgba(0, 0, 0, 0.9),
-    0 0 0 1px rgba(255, 255, 255, 0.06),
-    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+.glass-card:hover {
+  border-color: rgba(131, 80, 242, 0.3);
+  background: rgba(38, 33, 47, 0.78);
 }
 
-/* Scrollbars finas 5px (protótipo) */
+.glass-modal {
+  background: rgba(20, 17, 26, 0.94);
+  backdrop-filter: blur(32px) saturate(200%);
+  -webkit-backdrop-filter: blur(32px) saturate(200%);
+  border: 1px solid rgba(131, 80, 242, 0.2);
+  border-top: 1px solid rgba(255, 255, 255, 0.26);
+  box-shadow:
+    0 30px 80px -12px rgba(0, 0, 0, 0.9),
+    0 0 0 1px rgba(131, 80, 242, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+
+/* Scrollbars finas 5px */
 ::-webkit-scrollbar {
   width: 5px;
   height: 5px;
@@ -103,21 +141,21 @@ body {
   background: rgba(0, 0, 0, 0.25);
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(131, 80, 242, 0.2);
   border-radius: 999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.28);
+  background: rgba(131, 80, 242, 0.4);
 }
 
-/* Foco acessível WCAG 2.2 AA (protótipo) */
+/* Foco acessível WCAG (anel brand) */
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
 [role="tab"]:focus-visible,
 a:focus-visible {
-  outline: 2px solid #10b981;
+  outline: 2px solid #8350f2;
   outline-offset: 2px;
 }
 
@@ -126,7 +164,7 @@ button:disabled {
   cursor: not-allowed;
 }
 
-/* Shell mínimo da fatia 1.5 (layout próprio, cores do protótipo) */
+/* Shell mínimo (telas fora do studio) */
 .studio-shell {
   min-height: 100vh;
   display: flex;
@@ -166,10 +204,37 @@ button:disabled {
   font-size: 0.6875rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--brand-400);
-  border: 1px solid rgba(16, 185, 129, 0.35);
+  color: #8350f2;
+  border: 1px solid rgba(131, 80, 242, 0.35);
+  background: rgba(131, 80, 242, 0.08);
   border-radius: 999px;
   padding: 0.25rem 0.75rem;
+  display: inline-block;
+}
+
+/* Utilitários tácteis / scroll (design-system § Acessibilidade) */
+.touch-target {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+.touch-manipulation {
+  touch-action: manipulation;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.safe-area-top {
+  padding-top: max(0.5rem, env(safe-area-inset-top));
+}
+.safe-area-bottom {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -183,7 +248,7 @@ button:disabled {
   }
 }
 
-/* Toast do studio (fatia 3c.1): entrada suave, fiel ao `studio-toast` do protótipo */
+/* Toast do studio: entrada suave */
 @keyframes toast-in {
   from {
     opacity: 0;

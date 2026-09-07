@@ -68,7 +68,7 @@ export default function ConfirmDialog({
             type="button"
             onClick={onClose}
             disabled={busy}
-            className="rounded-xl bg-zinc-900 px-4 py-2 text-xs font-medium text-zinc-300 hover:bg-zinc-800"
+            className="h-9 rounded-lg bg-zinc-900 px-3 text-xs font-medium text-zinc-300 hover:bg-zinc-800"
           >
             Cancelar
           </button>
@@ -78,8 +78,8 @@ export default function ConfirmDialog({
             disabled={busy}
             className={
               danger
-                ? "rounded-xl bg-rose-500/90 px-5 py-2 text-xs font-semibold text-zinc-50 hover:bg-rose-500 disabled:opacity-60"
-                : "rounded-xl bg-emerald-500 px-5 py-2 text-xs font-semibold text-zinc-950 disabled:opacity-60"
+                ? "h-9 rounded-lg border border-rose-500/60 bg-rose-950/20 px-3 text-xs font-semibold text-rose-400 hover:bg-rose-950/40 disabled:opacity-60"
+                : "h-11 rounded-lg bg-brand-500 px-4 text-sm font-medium text-white shadow-sm hover:bg-brand-600 disabled:opacity-60"
             }
           >
             {busy ? "Aguarde…" : confirmLabel}

@@ -94,6 +94,13 @@ export default function DatasetMenu({ dataset, x, y, onClose, onDelete }: Props)
             try {
               await exportDataset(dataset.id, dataset.slug);
             } catch (err) {
+              if (
+                err instanceof ApiError &&
+                (err.code === "unauthorized" || err.status === 401)
+              ) {
+                router.replace("/login");
+                return;
+              }
               showToast(
                 err instanceof ApiError
                   ? exportErrorMessage(err.code)

@@ -145,7 +145,7 @@ export default function ImportDatasetModal({ onClose }: Props) {
                 type="button"
                 onClick={() => runImport(true)}
                 disabled={busy}
-                className="rounded-xl bg-rose-500 px-5 py-2 font-semibold text-zinc-950 shadow-lg shadow-rose-500/20 active:scale-[0.98] disabled:opacity-60"
+                className="rounded-xl bg-rose-500/90 px-5 py-2 text-xs font-semibold text-zinc-50 hover:bg-rose-500 disabled:opacity-60"
               >
                 {busy ? "Substituindo…" : "Substituir"}
               </button>

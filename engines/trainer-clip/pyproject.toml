@@ -7,3 +7,9 @@ dependencies = []
 
 [tool.uv]
 package = true
+
+[project.optional-dependencies]
+serve = ["open_clip_torch>=2.20", "torch", "pillow"]
+
+[project.scripts]
+trainer-clip-serve = "trainer_clip.serve:main"

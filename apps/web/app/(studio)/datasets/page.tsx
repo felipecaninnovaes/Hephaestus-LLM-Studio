@@ -210,7 +210,7 @@ export default function DatasetsPage() {
         <div className="relative min-w-0 flex-1 sm:flex-none">
           <div ref={pillsRef} className="no-scrollbar flex gap-1.5 overflow-x-auto py-0.5 pr-8">
             {PILLS.map((p) => {
-              const label = `${p.label} (${counts[p.id]})`;
+              const label = `${p.label} ${counts[p.id]}`;
               const active = pill === p.id;
               return (
                 <button

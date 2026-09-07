@@ -36,7 +36,7 @@ export default function DatasetCard({
 }) {
   const visibleClasses = dataset.classes.slice(0, 4);
   const extra = dataset.classes.length - visibleClasses.length;
-  const categoryLabel = CATEGORY_LABELS[dataset.category];
+  const categoryLabel = CATEGORY_LABELS[dataset.category] ?? dataset.category;
   return (
     <Link
       href={`/datasets/${dataset.id}`}

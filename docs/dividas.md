@@ -49,7 +49,12 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
   response) antes/depois da fatia de jobs. Desenho-alvo a validar ao abrir a
   fatia (mesma fonte): logs estruturados JSON numa pilha local consultável
   pelo agente — transforma metas tipo "inicialização < 800 ms" em tarefas
-  verificáveis.
+  verificáveis. **Desenho técnico (doc de governança adotado pelo usuário,
+  2026-09-07): Rust = `tracing` + `tracing-subscriber` com formatter JSON;
+  correlação ponta-a-ponta via `x-request-id` (o principal gera/recebe e
+  propaga para manager/orquestrador/engines; todo log carrega `request_id`);
+  `/health` liveness + `/ready` readiness como probes do compose (o principal
+  já tem `/health`; a readiness verifica db/storage/embedder).**
 - **CLI `studio reset-password`** (ADR-0001 T4).
 - **Gate aceita `sub` órfão** (ADR-0002 T8): cookie assinado com segredo
   antigo sobrevive a reset de `users` e passa a ler/deletar datasets;

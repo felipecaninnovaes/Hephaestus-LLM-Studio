@@ -18,7 +18,7 @@ use axum::{
 use serde_json::{json, Value};
 
 use super::{gate, handlers, AppState};
-use crate::datasets;
+use crate::{datasets, search};
 
 /// `(método, path, status_codes)` — espelho exato do contrato (sem `x-reserved`).
 /// Toda rota de negócio nova entra AQUI, montada no sub-router `protected`
@@ -68,6 +68,8 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
         &[200, 204, 401, 404, 503],
     ),
     ("DELETE", "/api/datasets/:id/trash", &[204, 401, 404]),
+    ("POST", "/api/datasets/:id/search/index", &[202, 401, 404]),
+    ("GET", "/api/datasets/:id/search/status", &[200, 401, 404]),
 ];
 
 /// Rotas públicas (sem gate): `/health` + `/api/auth/*`.
@@ -170,6 +172,14 @@ pub fn build(state: AppState) -> axum::Router {
         .route(
             "/api/datasets/:id/trash",
             delete(datasets::handlers::delete_trash),
+        )
+        .route(
+            "/api/datasets/:id/search/index",
+            post(search::handlers::post_index),
+        )
+        .route(
+            "/api/datasets/:id/search/status",
+            get(search::handlers::get_status),
         )
         // route_layer DEPOIS dos .route(): aplicado a um router vazio o axum 0.7 panic
         // no boot (path_router.rs, `routes.is_empty()`). Só cobre as rotas deste

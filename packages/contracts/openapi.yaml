@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.4.0
+  version: 0.5.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -583,6 +583,80 @@ paths:
       responses:
         "204":
           description: Lixeira purgada (sem corpo; vazia também é 204).
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Dataset inexistente ou id não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/datasets/{id}/search/index:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK do dataset. Valor que não parseia como UUID responde 404 `not_found`
+          (não 400, padrão D8 replicado).
+    post:
+      operationId: indexDataset
+      tags: [datasets]
+      summary: Rebuild dos embeddings do dataset (fire-and-forget)
+      description: |
+        Dispara a indexação assíncrona (Fatia 3f.4, ADR-0004 D4/D5): 202 sempre.
+        Dataset sem imagens ⇒ `{"status":"not_indexed"}` (não trabalha); senão
+        spawna o indexador (advisory lock serializa disparos concorrentes) e
+        responde `{"status":"indexing"}` sem esperar. O progresso é derivado em
+        `GET …/search/status`; `stale` nunca é emitido na v1 (reservado).
+      responses:
+        "202":
+          description: Rebuild disparado (`indexing`) ou dataset sem imagens (`not_indexed`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SearchIndexResponse" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Dataset inexistente ou id não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/datasets/{id}/search/status:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK do dataset. Valor que não parseia como UUID responde 404 `not_found`
+          (não 400, padrão D8 replicado).
+    get:
+      operationId: getSearchStatus
+      tags: [datasets]
+      summary: Estado derivado da indexação do dataset
+      description: |
+        Contadores derivados (Fatia 3f.4, ADR-0004 D4/D5): `imagesCount` conta
+        `images` ativas (`deleted_at IS NULL` — lixeira invisível); `indexedCount`
+        conta `image_embeddings` do modelo ativo. `status` (D5 literal): 0
+        embeddings do modelo ativo ⇒ `not_indexed` (o front oferece "Indexar
+        agora", que também é o reparo manual para crash puro); 0 < `indexedCount`
+        < `imagesCount` ⇒ `indexing`; iguais ⇒ `ready`. `stale` nunca é emitido
+        na v1 (reservado).
+      responses:
+        "200":
+          description: Estado da indexação (`SearchStatus`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SearchStatus" }
         "401":
           description: "Sem sessão válida (`code: unauthorized`)."
           content:
@@ -1228,3 +1302,41 @@ components:
           anyOf:
             - $ref: "#/components/schemas/Caption"
             - type: "null"
+
+    SearchIndexResponse:
+      type: object
+      required: [status]
+      additionalProperties: false
+      description: "Resposta 202 do rebuild (Fatia 3f.4, ADR-0004 D5; aditivo na 0.5.0)."
+      properties:
+        status:
+          type: string
+          enum: [indexing, not_indexed]
+          description: "`indexing` = rebuild disparado (fire-and-forget); `not_indexed` = dataset sem imagens (não trabalha)."
+
+    SearchStatus:
+      type: object
+      required: [status, imagesCount, indexedCount, model, dim]
+      additionalProperties: false
+      description: "Estado derivado da indexação (Fatia 3f.4, ADR-0004 D5; aditivo na 0.5.0)."
+      properties:
+        status:
+          type: string
+          enum: [not_indexed, indexing, ready, stale]
+          description: "        `not_indexed` = dataset sem imagens (nada a indexar); `indexing` =
+        imagens ainda sem embedding completo; `ready` = toda imagem ativa tem
+        embedding do modelo ativo. `stale` reservado, nunca emitido na v1."
+        imagesCount:
+          type: integer
+          minimum: 0
+          description: Imagens ativas do dataset (`deleted_at IS NULL` — lixeira invisível).
+        indexedCount:
+          type: integer
+          minimum: 0
+          description: Embeddings do modelo ativo (`image_embeddings` por dataset + model).
+        model:
+          type: string
+          description: "Modelo de embedding ativo (ex.: `ViT-B-32`)."
+        dim:
+          type: integer
+          description: Dimensão fixa dos vetores (512, ViT-B-32).

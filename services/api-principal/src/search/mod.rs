@@ -5,5 +5,7 @@
 //! `HttpEmbedder` (embedder real atrás de `ENGINE_MOCK`) implementam.
 
 pub mod embed;
+pub mod handlers;
+pub mod indexer;
 
 pub use embed::{EmbedderConfig, EmbeddingError, EmbeddingPort, HttpEmbedder, MockEmbedder, DIM};

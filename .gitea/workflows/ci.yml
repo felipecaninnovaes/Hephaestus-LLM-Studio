@@ -35,7 +35,12 @@ jobs:
       image: rust:1.97.1-slim@sha256:8e8cf8f7fd54a2d23d5a743b3a03f56e26b6c774276c33fa0595111704ebb15c
     services:
       postgres:
-        image: postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
+        # Mesma imagem do compose (ADR-0004, spike 3f.0): pgvector pg16-trixie —
+        # a migration 0004 faz CREATE EXTENSION vector, que a postgres:16
+        # oficial NÃO tem (run 22: 48/48 testes de banco falharam no setup).
+        # Regra: migration que muda a imagem de banco atualiza este service
+        # no MESMO commit.
+        image: pgvector/pgvector:pg16-trixie@sha256:c8483555ce48101872f888c1df8a895ff689d6c7c7a5f7ac266475f9dfe89e0b
         env:
           POSTGRES_USER: studio
           POSTGRES_PASSWORD: test

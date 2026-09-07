@@ -202,6 +202,8 @@ Escala zinc do protótipo: 50 `#fbfaff` · 100 `#f4f2f9` · 200 `#e5e1ef` · 300
 
 **Character:** Pareamento de identidade geométrica (Space Grotesk) com sistema operacional neutro no corpo e rigor matemático absoluto da JetBrains Mono em telemetria, logs e anotações.
 
+**Self-host (decisão da fatia redesign UI v2):** fontes servidas de `apps/web/fonts/*.woff2` (variable: Space Grotesk 300–700, JetBrains Mono 100–800) via `next/font/local` (`apps/web/app/layout.tsx`) — sem egress para `fonts.googleapis.com` no build. Motivo: `next/font/google` exigia egress no build, risco para o runner CI self-hosted.
+
 ### Hierarchy
 - **Display** (SemiBold 600, 1.5rem / 24px, line-height 1.2, tracking -0.02em, Space Grotesk): Títulos principais de tela, nome da aplicação no shell e cabeçalhos de workspaces.
 - **Headline** (SemiBold 600, 1.125rem / 18px, line-height 1.3, tracking -0.01em, Space Grotesk): Títulos de seções de workspace e nomes de datasets.
@@ -241,6 +243,7 @@ O sistema rejeita sombras difusas cinzentas ou pretas sólidas. A profundidade �
 
 ### Buttons
 - **Primary (CTA único, `lg`):** `bg-brand-500 (#8350f2) text-white h-11 px-4 text-sm font-medium rounded-lg hover:bg-brand-600 transition-colors shadow-sm` + glow `rgba(131, 80, 242, 0.25)` em execução ativa.
+  - **Nota de acessibilidade (fatia redesign UI v2):** CTA em `brand-500` (`#8350f2`) + `text-white` ≈ 4.78:1 — passa WCAG AA (texto normal, 4.5:1). Este é o piso: não clarear o fundo do CTA; `brand-600+` só aumenta contraste.
 - **Secondary / Ghost (`md`, default):** `bg-zinc-900/60 border border-zinc-700/80 text-zinc-200 h-9 px-3 text-xs rounded-lg hover:bg-zinc-800`.
 - **Destructive / Abort:** `border border-rose-500/60 text-rose-400 bg-rose-950/20 h-9 px-3 text-xs rounded-lg hover:bg-rose-950/40`.
 - **Warning / Pause:** `border border-amber-500/60 text-amber-400 bg-amber-950/20 h-9 px-3 text-xs rounded-lg hover:bg-amber-950/40`.

@@ -1,9 +1,10 @@
 # Plano da Fatia 3e — Export/Import (backup estruturado de dataset)
 
-**Status:** PLANEJADO — nada implementado. Este arquivo é o plano de coordenação
-da fatia; o design formal (ADR-0006) ainda não existe e é o **primeiro passo**
-quando a fatia abrir. Nenhum commit de código parte daqui sem a ADR aprovada
-pelo usuário.
+**Status:** ACEITO — a ADR-0006 (`docs/adr/0006-export-import.md`) foi escrita pelo
+`@architect`, auditada, emendada (substituição consentida: 409 → diálogo de
+irreversibilidade → `replace=true`) e **ACEITA pelo usuário em 2026-09-07**. A ADR é a
+especificação executável; este arquivo permanece como plano de coordenação da fatia
+(tabela de commits, donos, verificação). Implementação em curso a partir do 3e.1.
 
 **Criado:** 2026-09-07 (sessão 9, antecipação pedida pelo usuário — "planejar e
 gravar em arquivo, sem implementar").

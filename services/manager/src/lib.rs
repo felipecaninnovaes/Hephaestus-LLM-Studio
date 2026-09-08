@@ -90,13 +90,6 @@ pub struct JobRow {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct QueuePosition {
-    pub job_id: String,
-    pub position: i32,
-    pub queue_reason: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
 pub struct ArtifactRow {
     pub id: String,
     pub kind: String,
@@ -309,16 +302,25 @@ pub async fn create_job(
 }
 
 /// Lista jobs com filtros opcionais.
+///
+/// Cada item carrega `queue_position` (= posição na fila se status=queued,
+/// senão null) + `queue_reason`. A fila deriva dos items (status=queued,
+/// ordenados por position) — não existe mais payload separado de fila.
 pub async fn list_jobs(
     pool: &PgPool,
     status: Option<&str>,
     engine: Option<&str>,
 ) -> Result<ListJobsResponse, ManagerError> {
-    // Pré-computa posições da fila.
-    let queue_positions = list_queue(pool).await.unwrap_or_default();
-    let pos_map: std::collections::HashMap<String, i32> = queue_positions
+    // Pré-computa posições da fila (inline — list_queue foi removida).
+    let queue_rows: Vec<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM jobs WHERE status = 'queued' ORDER BY created_at")
+            .fetch_all(pool)
+            .await
+            .map_err(|e| ManagerError::Internal(format!("queue positions: {e}")))?;
+    let pos_map: std::collections::HashMap<String, i32> = queue_rows
         .into_iter()
-        .map(|q| (q.job_id, q.position))
+        .enumerate()
+        .map(|(i, (id,))| (id.to_string(), (i + 1) as i32))
         .collect();
 
     let mut query = String::from("SELECT id, kind, engine, model, mode, dataset_id, status, queue_reason, progress, epoch, step, metrics, vram_min_gb, orchestrator_id, created_at, finished_at FROM jobs WHERE 1=1");
@@ -398,32 +400,18 @@ pub async fn list_jobs(
     })
 }
 
-/// Lista a fila de jobs queued (ordenada por created_at).
-pub async fn list_queue(pool: &PgPool) -> Result<Vec<QueuePosition>, ManagerError> {
-    let rows: Vec<(Uuid, Option<String>)> = sqlx::query_as(
-        "SELECT id, queue_reason FROM jobs WHERE status = 'queued' ORDER BY created_at",
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(|e| ManagerError::Internal(format!("list queue: {e}")))?;
-
-    Ok(rows
-        .into_iter()
-        .enumerate()
-        .map(|(i, (id, reason))| QueuePosition {
-            job_id: id.to_string(),
-            position: (i + 1) as i32,
-            queue_reason: reason,
-        })
-        .collect())
-}
-
 /// Retorna um job por ID.
 pub async fn get_job(pool: &PgPool, id: Uuid) -> Result<JobRow, ManagerError> {
-    let queue_positions = list_queue(pool).await.unwrap_or_default();
-    let pos_map: std::collections::HashMap<String, i32> = queue_positions
+    // Pré-computa posições da fila (inline).
+    let queue_rows: Vec<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM jobs WHERE status = 'queued' ORDER BY created_at")
+            .fetch_all(pool)
+            .await
+            .map_err(|e| ManagerError::Internal(format!("queue positions: {e}")))?;
+    let pos_map: std::collections::HashMap<String, i32> = queue_rows
         .into_iter()
-        .map(|q| (q.job_id, q.position))
+        .enumerate()
+        .map(|(i, (id,))| (id.to_string(), (i + 1) as i32))
         .collect();
 
     let row: Option<(

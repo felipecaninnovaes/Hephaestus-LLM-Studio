@@ -12,11 +12,13 @@ import {
   IconDatabase,
   IconGrid,
   IconList,
+  IconPlay,
   IconPlus,
   IconSearch,
 } from "@/components/icons";
 import { ApiError } from "@/lib/api";
 import { deleteDataset, listDatasets } from "@/lib/datasets";
+import TrainYoloModal from "@/components/studio/TrainYoloModal";
 import type { Dataset, DatasetCategory } from "@/types/studio";
 
 type ViewMode = "grid" | "list";
@@ -52,6 +54,7 @@ export default function DatasetsPage() {
   const [deleting, setDeleting] = useState<Dataset | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [menu, setMenu] = useState<{ dataset: Dataset; x: number; y: number } | null>(null);
+  const [trainDataset, setTrainDataset] = useState<Dataset | null>(null);
   const pillsRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
@@ -282,7 +285,7 @@ export default function DatasetsPage() {
       ) : viewMode === "grid" ? (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {filtered.map((d) => (
-            <DatasetCard key={d.id} dataset={d} onContextMenu={handleContextMenu} />
+            <DatasetCard key={d.id} dataset={d} onContextMenu={handleContextMenu} onTrain={(d) => setTrainDataset(d)} />
           ))}
         </div>
       ) : (
@@ -325,6 +328,16 @@ export default function DatasetsPage() {
           y={menu.y}
           onClose={() => setMenu(null)}
           onDelete={(d) => setDeleting(d)}
+          onTrain={(d) => setTrainDataset(d)}
+        />
+      )}
+      {trainDataset && (
+        <TrainYoloModal
+          open
+          datasetId={trainDataset.id}
+          datasetTitle={trainDataset.title}
+          onClose={() => setTrainDataset(null)}
+          onJobCreated={() => setTrainDataset(null)}
         />
       )}
     </div>

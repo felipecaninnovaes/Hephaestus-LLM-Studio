@@ -177,3 +177,103 @@ export interface SearchResponse {
   items: SearchItem[];
 }
 
+/* ── Jobs (F4.7) ──────────────────────────────────────────── */
+
+export type JobStatus =
+  | "queued"
+  | "running"
+  | "done"
+  | "failed"
+  | "cancelled";
+
+export type JobKind = "yolo_train";
+
+export interface JobMetrics {
+  epoch: number;
+  boxLoss: number;
+  clsLoss: number;
+  dflLoss: number;
+  map50: number;
+  map5095: number;
+}
+
+export interface JobMetricsResponse {
+  items: JobMetrics[];
+}
+
+export interface Job {
+  id: string;
+  kind: JobKind;
+  engine: string;
+  model: string;
+  mode: string | null;
+  datasetId: string;
+  status: JobStatus;
+  queueReason: string | null;
+  queuePosition: number | null;
+  progress: number;
+  epoch: number | null;
+  step: number | null;
+  metrics: Record<string, unknown> | null;
+  vramMinGb: number | null;
+  orchestratorId: string | null;
+  createdAt: string;
+  finishedAt: string | null;
+}
+
+export interface JobListResponse {
+  items: Job[];
+  total: number;
+}
+
+export interface JobArtifact {
+  id: string;
+  jobId: string;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+  createdAt: string;
+}
+
+export interface JobArtifactsResponse {
+  items: JobArtifact[];
+}
+
+export interface Telemetry {
+  measured: boolean;
+  cpu: number | null;
+  ram: number | null;
+  vramUsed: number | null;
+  vramTotal: number | null;
+  gpus: string | null;
+  jobsActive: number;
+}
+
+/* ── Augment toggles for YOLO train ──────────────────────── */
+export interface YoloAugment {
+  mosaic: boolean;
+  mixupFlip: boolean;
+}
+
+/* ── Toast helpers for jobs ────────────────────────────────── */
+export type JobErrorCode =
+  | "invalid_request"
+  | "dataset_not_ready"
+  | "queue_unavailable"
+  | "not_found";
+
+export function jobErrorMessage(code: string): string {
+  switch (code) {
+    case "invalid_request":
+      return "Parâmetros de treino inválidos.";
+    case "dataset_not_ready":
+      return "O dataset não está pronto para treino.";
+    case "queue_unavailable":
+      return "Fila de treino indisponível — tente novamente.";
+    case "not_found":
+      return "Job não encontrado.";
+    default:
+      return "Falha ao criar job de treino.";
+  }
+}
+

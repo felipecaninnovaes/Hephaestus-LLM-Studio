@@ -226,7 +226,25 @@ impl ManagerPort for HttpManager {
     }
 
     async fn list_queue(&self) -> Result<Vec<InternalQueueItem>, ManagerError> {
-        self.get_json("/internal/jobs").await
+        // GET /internal/jobs (sem filtros) → {items, total}.
+        // Deriva a fila: filtra status=queued, ordena por queue_position.
+        #[derive(Deserialize)]
+        struct ListResponse {
+            items: Vec<InternalJob>,
+        }
+        let body: ListResponse = self.get_json("/internal/jobs").await?;
+        let mut queue: Vec<InternalQueueItem> = body
+            .items
+            .into_iter()
+            .filter(|j| j.status == "queued")
+            .map(|j| InternalQueueItem {
+                job_id: j.id,
+                position: j.queue_position.unwrap_or(0),
+                queue_reason: j.queue_reason,
+            })
+            .collect();
+        queue.sort_by_key(|q| q.position);
+        Ok(queue)
     }
 
     async fn get_job(&self, id: &str) -> Result<InternalJob, ManagerError> {

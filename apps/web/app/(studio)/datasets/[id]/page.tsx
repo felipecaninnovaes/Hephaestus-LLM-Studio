@@ -42,6 +42,7 @@ import type {
 import ClassesModal from "@/components/studio/ClassesModal";
 import ConfirmDialog from "@/components/studio/ConfirmDialog";
 import ImportDatasetModal from "@/components/studio/ImportDatasetModal";
+import TrainYoloModal from "@/components/studio/TrainYoloModal";
 
 const PAGE_LIMIT = 50;
 
@@ -72,6 +73,7 @@ export default function DatasetGalleryPage() {
   const [purgeBusy, setPurgeBusy] = useState(false);
   const [restoringId, setRestoringId] = useState<string | null>(null);
   const [actionsOpen, setActionsOpen] = useState(false);
+  const [trainOpen, setTrainOpen] = useState(false);
   const [searchInput, setSearchInput] = useState("");
   const [activeQuery, setActiveQuery] = useState<string | null>(null);
   const [similarFor, setSimilarFor] = useState<string | null>(null);
@@ -734,7 +736,7 @@ export default function DatasetGalleryPage() {
           <button
             type="button"
             disabled
-            title="Geração automática de boxes chega na fatia 4."
+            title="AutoTracker chega em fatia futura."
             className="inline-flex h-9 cursor-not-allowed items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-3 text-xs font-medium whitespace-nowrap text-zinc-100 opacity-55 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
           >
             <IconTarget className="h-4 w-4" />
@@ -759,15 +761,28 @@ export default function DatasetGalleryPage() {
             <IconDownload className="h-4 w-4" />
             <span>{exporting ? "Exportando…" : "Exportar"}</span>
           </button>
-          <button
-            type="button"
-            disabled
-            title="Treino chega na fatia 4."
-            className="inline-flex h-9 cursor-not-allowed items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-3 text-xs font-medium whitespace-nowrap text-zinc-100 opacity-55 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
-          >
-            <IconPlay className="h-4 w-4" />
-            <span>Treinar este Dataset</span>
-          </button>
+          {(() => {
+            const trainEnabled = dataset.category === "yolo" && dataset.classes.length > 0 && dataset.imagesCount > 0;
+            const trainTitle = trainEnabled
+              ? "Abrir modal de treino YOLO"
+              : "Treino YOLO exige dataset yolo com ≥1 classe e ≥1 imagem";
+            return (
+              <button
+                type="button"
+                disabled={!trainEnabled}
+                title={trainTitle}
+                onClick={() => trainEnabled && setTrainOpen(true)}
+                className={`inline-flex h-9 items-center justify-center gap-2 rounded-lg border px-3 text-xs font-medium whitespace-nowrap shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 ${
+                  trainEnabled
+                    ? "border-brand-500/30 bg-brand-500/[0.12] text-white transition hover:border-brand-500/50 hover:bg-brand-500/[0.18]"
+                    : "cursor-not-allowed border-white/10 bg-white/[0.05] text-zinc-100 opacity-55"
+                }`}
+              >
+                <IconPlay className="h-4 w-4" />
+                <span>Treinar este Dataset</span>
+              </button>
+            );
+          })()}
         </div>
         <div className="relative md:hidden">
           <button
@@ -837,15 +852,32 @@ export default function DatasetGalleryPage() {
                 <IconDownload className="h-4 w-4" />
                 <span>{exporting ? "Exportando…" : "Exportar"}</span>
               </button>
-              <button
-                type="button"
-                disabled
-                title="Treino chega na fatia 4."
-                className="flex h-9 cursor-not-allowed items-center space-x-2 rounded-lg px-3 text-xs font-medium text-zinc-200 opacity-60"
-              >
-                <IconPlay className="h-4 w-4" />
-                <span>Treinar este Dataset</span>
-              </button>
+              {(() => {
+                const trainEnabled = dataset.category === "yolo" && dataset.classes.length > 0 && dataset.imagesCount > 0;
+                const trainTitle = trainEnabled
+                  ? "Abrir modal de treino YOLO"
+                  : "Treino YOLO exige dataset yolo com ≥1 classe e ≥1 imagem";
+                return (
+                  <button
+                    type="button"
+                    disabled={!trainEnabled}
+                    title={trainTitle}
+                    onClick={() => {
+                      if (!trainEnabled) return;
+                      setActionsOpen(false);
+                      setTrainOpen(true);
+                    }}
+                    className={`flex h-9 items-center space-x-2 rounded-lg px-3 text-xs font-medium ${
+                      trainEnabled
+                        ? "text-zinc-200 transition-colors hover:bg-brand-500/[0.12] hover:text-brand-300"
+                        : "cursor-not-allowed text-zinc-200 opacity-60"
+                    }`}
+                  >
+                    <IconPlay className="h-4 w-4" />
+                    <span>Treinar este Dataset</span>
+                  </button>
+                );
+              })()}
             </div>
           )}
         </div>
@@ -1221,6 +1253,15 @@ export default function DatasetGalleryPage() {
         />
       )}
       {importOpen && <ImportDatasetModal onClose={() => setImportOpen(false)} />}
+      {trainOpen && dataset && (
+        <TrainYoloModal
+          open
+          datasetId={dataset.id}
+          datasetTitle={dataset.title}
+          onClose={() => setTrainOpen(false)}
+          onJobCreated={() => setTrainOpen(false)}
+        />
+      )}
       <ConfirmDialog
         open={deleting !== null}
         title="Mover para a lixeira"

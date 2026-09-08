@@ -189,34 +189,25 @@ async fn create_job_handler(State(state): State<AppState>, body: Bytes) -> Respo
     }
 }
 
-/// GET /internal/jobs — lista jobs ou fila (dependendo de query params).
+/// GET /internal/jobs — lista jobs.
 ///
-/// Sem query params: retorna `Vec<QueuePosition>` (chamado por `list_queue` do principal).
-/// Com query params: retorna `{items: [...], total: N}` (chamado por `list_jobs` do principal).
+/// SEMPRE retorna `{items: [...], total: N}` onde cada item carrega os campos
+/// do job + `queue_position` (posição na fila se status=queued, senão null) +
+/// `queue_reason`. Query params opcionais filtram por status/engine.
 async fn list_jobs_handler(
     State(state): State<AppState>,
     Query(params): Query<ListJobsQuery>,
 ) -> Response {
-    if params.status.is_some() || params.engine.is_some() {
-        // Job list mode.
-        match manager::list_jobs(
-            &state.pool,
-            params.status.as_deref(),
-            params.engine.as_deref(),
-        )
-        .await
-        {
-            Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
-            Err(ManagerError::Internal(e)) => internal_error(&e),
-            Err(e) => internal_error(&e.to_string()),
-        }
-    } else {
-        // Queue mode (list_queue do principal).
-        match manager::list_queue(&state.pool).await {
-            Ok(items) => (StatusCode::OK, Json(items)).into_response(),
-            Err(ManagerError::Internal(e)) => internal_error(&e),
-            Err(e) => internal_error(&e.to_string()),
-        }
+    match manager::list_jobs(
+        &state.pool,
+        params.status.as_deref(),
+        params.engine.as_deref(),
+    )
+    .await
+    {
+        Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
+        Err(ManagerError::Internal(e)) => internal_error(&e),
+        Err(e) => internal_error(&e.to_string()),
     }
 }
 

@@ -770,17 +770,14 @@ async fn list_jobs_e_queue() {
         .await
         .expect("create 3");
 
-    // Lista queue.
-    let queue = manager::list_queue(&p).await.expect("queue");
-    assert_eq!(queue.len(), 3);
-    assert_eq!(queue[0].position, 1);
-    assert_eq!(queue[1].position, 2);
-    assert_eq!(queue[2].position, 3);
-
-    // Lista jobs.
+    // Lista jobs (queue_position derivado dos items).
     let list = manager::list_jobs(&p, None, None).await.expect("list");
     assert_eq!(list.total, 3);
     assert_eq!(list.items.len(), 3);
+    // Todos queued → queue_position preenchido (1, 2, 3).
+    assert_eq!(list.items[0].queue_position, Some(1));
+    assert_eq!(list.items[1].queue_position, Some(2));
+    assert_eq!(list.items[2].queue_position, Some(3));
 
     // Filtra por status.
     let list_q = manager::list_jobs(&p, Some("queued"), None)

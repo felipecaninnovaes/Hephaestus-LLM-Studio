@@ -6557,3 +6557,151 @@ async fn t5_autotrack_11_submit_202() {
     );
     assert!(captured["package_ref"].is_object(), "package_ref presente");
 }
+
+// ---------------------------------------------------------------------------
+// t5_autotrack_12 — filtro imageId: aplica só a imagem especificada e rejeita
+// imageId de outro dataset (regressão do [MAIOR] do review)
+// ---------------------------------------------------------------------------
+
+/// Gera boxes.json com N imagens, cada uma com M boxes da mesma classe.
+fn fake_boxes_json_multi_image(entries: &[(&str, &str, usize)]) -> Vec<u8> {
+    let images: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|(filename, class, n)| {
+            let boxes: Vec<serde_json::Value> = (0..*n)
+                .map(|i| {
+                    serde_json::json!({
+                        "class": class,
+                        "x": 0.1,
+                        "y": 0.2,
+                        "w": 0.3,
+                        "h": 0.4,
+                        "conf": 0.5 + (i as f64 * 0.0001).min(0.49),
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "filename": filename,
+                "boxes": boxes,
+            })
+        })
+        .collect();
+    let body = serde_json::json!({
+        "engine": "autotracker",
+        "model": "mock",
+        "seed": 42,
+        "conf": 0.5,
+        "images": images,
+    });
+    serde_json::to_vec(&body).expect("serialize boxes.json multi-image")
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t5_autotrack_12_imageid_filtro() {
+    let _guard = SERIAL.lock().await;
+
+    let cookie = authed_cookie();
+    let (st_base, _, _) =
+        state_with_manager(api_principal::jobs::manager_client::MockManager::default()).await;
+
+    // --- Setup dataset A via API (2 imagens) ---
+    let app_base = routes::build(st_base.clone());
+    let (ds_a, ds_a_id, _class_id, _, img1_fn, img2_fn) =
+        setup_autotracker_dataset(&app_base, &cookie).await;
+    drop(app_base);
+
+    // --- boxes.json com 2 imagens: foto1 → 2 boxes, foto2 → 3 boxes ---
+    let boxes = fake_boxes_json_multi_image(&[(&img1_fn, "solda_fria", 2), (&img2_fn, "ponte", 3)]);
+
+    let (mock, job_id) = setup_autotracker_mock(&boxes, &ds_a);
+    let storage = std::sync::Arc::new(api_principal::storage::MockStorage::new());
+    storage
+        .put_bytes(&format!("artifacts/{job_id}/boxes.json"), boxes.clone())
+        .await;
+    let st = state_with_seeded_storage(st_base.pool.clone(), storage, mock).await;
+    let app = routes::build(st.clone());
+
+    // Resolve image_id de img2 (foto2).
+    let img2_id = image_id_by_filename(&st.pool, ds_a_id, &img2_fn).await;
+    let img1_id = image_id_by_filename(&st.pool, ds_a_id, &img1_fn).await;
+
+    // --- Passo 1: apply com imageId = foto2 ---
+    let (status, body) = call_apply(
+        &app,
+        &cookie,
+        &job_id,
+        &serde_json::json!({"imageId": img2_id.to_string()}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let resp = json(&body);
+    assert_eq!(resp["applied"], 3, "foto2 deve ter 3 boxes aplicadas");
+    assert_eq!(resp["skipped"], 0);
+    assert_eq!(resp["images"], 1, "somente 1 imagem processada");
+
+    // --- Assert banco: foto2 tem EXATAMENTE 3 boxes autotracker ---
+    let (foto2_count, foto2_origins) = count_boxes(&st.pool, img2_id).await;
+    assert_eq!(foto2_count, 3, "foto2: 3 boxes no banco");
+    assert!(
+        foto2_origins.iter().all(|o| o == "autotracker"),
+        "foto2: todas as boxes são autotracker"
+    );
+
+    // --- Assert banco: foto1 tem ZERO boxes autotracker (nada vazou) ---
+    let (foto1_count, foto1_origins) = count_boxes(&st.pool, img1_id).await;
+    assert_eq!(foto1_count, 0, "foto1: zero boxes (não processada)");
+    assert!(foto1_origins.is_empty(), "foto1: nenhuma box deve existir");
+
+    // --- Passo 2: imageId de imagem de OUTRO dataset → 404 ---
+    // Cria dataset B com 1 imagem (título diferente para slug único).
+    let (status_b_ds, _, body_b_ds) = call(
+        app.clone(),
+        post_create(
+            "Autotracker Test B",
+            &serde_json::json!(["solda_fria", "ponte"]),
+            &cookie,
+        ),
+    )
+    .await;
+    assert_eq!(status_b_ds, StatusCode::CREATED);
+    let ds_b = json(&body_b_ds)["id"]
+        .as_str()
+        .expect("ds_b id")
+        .to_string();
+    let ds_b_id: uuid::Uuid = ds_b.parse().expect("ds_b uuid");
+    let png = png_1x1();
+    let boundary_b = "heph-at-b";
+    let (status_b_up, _, body_b_up) = call(
+        app.clone(),
+        post_upload(
+            &cookie,
+            &ds_b,
+            boundary_b,
+            multipart_body(boundary_b, &[("foto_b_001.jpg", &png)]),
+        ),
+    )
+    .await;
+    assert_eq!(status_b_up, StatusCode::OK);
+    let img_b_fn = json(&body_b_up)["items"][0]["filename"]
+        .as_str()
+        .expect("filename")
+        .to_string();
+    let img_b_id = image_id_by_filename(&st.pool, ds_b_id, &img_b_fn).await;
+
+    // Reusa o mesmo job (pertence ao dataset A) mas manda imageId do dataset B.
+    let (status_b, body_b) = call_apply(
+        &app,
+        &cookie,
+        &job_id,
+        &serde_json::json!({"imageId": img_b_id.to_string()}),
+    )
+    .await;
+    assert_eq!(
+        status_b,
+        StatusCode::NOT_FOUND,
+        "imageId de outro dataset deve retornar 404"
+    );
+    let resp_b = json(&body_b);
+    assert_eq!(resp_b["code"], "not_found", "error code deve ser not_found");
+}

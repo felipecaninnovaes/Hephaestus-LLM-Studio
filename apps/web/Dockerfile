@@ -11,6 +11,8 @@ RUN npm ci --include=dev 2>/dev/null || npm install --include=dev
 COPY apps/web/ apps/web/
 ARG NEXT_PUBLIC_API_URL=http://localhost:8080
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ARG API_INTERNAL_URL=http://principal:8080
+ENV API_INTERNAL_URL=$API_INTERNAL_URL
 RUN npm run build --workspace=web
 
 # Runtime enxuto

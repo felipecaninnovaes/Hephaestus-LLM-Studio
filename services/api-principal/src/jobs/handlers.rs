@@ -856,11 +856,11 @@ pub async fn apply_autotracker_boxes(
         Err(_) => return invalid_request(),
     };
 
-    // 1a. Se imageId fornecido, valida UUID.
+    // 1a. Se imageId fornecido, valida UUID — não-UUID ⇒ 400 (campo de body).
     let filter_image_id: Option<Uuid> = match &req.image_id {
         Some(s) => match s.parse::<Uuid>() {
             Ok(v) => Some(v),
-            Err(_) => return not_found(),
+            Err(_) => return invalid_request(),
         },
         None => None,
     };
@@ -970,6 +970,13 @@ pub async fn apply_autotracker_boxes(
         .map(|(id, fname)| (fname.clone(), *id))
         .collect();
 
+    // 5a. Se filter_image_id definido, valida que é imagem ATIVA do dataset.
+    if let Some(fid) = filter_image_id {
+        if !filename_to_id.values().any(|id| *id == fid) {
+            return not_found();
+        }
+    }
+
     // 6. Busca classes do dataset (name → class_id).
     let class_rows: Vec<(Uuid, String)> = match sqlx::query_as::<_, (Uuid, String)>(
         "SELECT id, name FROM classes WHERE dataset_id = $1",
@@ -995,29 +1002,15 @@ pub async fn apply_autotracker_boxes(
     let mut images_with_boxes: i64 = 0;
 
     for engine_image in &artifact.images {
-        // Resolve filename → image_id.
-        let image_id = match filter_image_id {
-            Some(fid) => {
-                // imageId no body: aplica SÓ a essa imagem.
-                // Verifica se o filename bate (se fornecido no artefato).
-                if !filter_image_id.is_some() {
-                    continue;
-                }
-                fid
-            }
-            None => match filename_to_id.get(&engine_image.filename) {
-                Some(id) => *id,
-                None => {
-                    // Imagem inexistente/deletada → skip.
-                    total_skipped += engine_image.boxes.len() as i64;
-                    continue;
-                }
-            },
+        // Resolve filename → image_id (SEMPRE por filename, mesmo com filter_image_id).
+        let Some(image_id) = filename_to_id.get(&engine_image.filename) else {
+            // Imagem inexistente/deletada → skip.
+            total_skipped += engine_image.boxes.len() as i64;
+            continue;
         };
-
-        // Filtra: se filter_image_id definido, só processa se filename bate.
+        // Filtra: se filter_image_id definido, só processa essa imagem.
         if let Some(fid) = filter_image_id {
-            if fid != image_id {
+            if *image_id != fid {
                 continue;
             }
         }
@@ -1053,12 +1046,11 @@ pub async fn apply_autotracker_boxes(
             valid_boxes.truncate(1000);
         }
 
-        // Sem boxes válidas para esta imagem → intocada.
-        if valid_boxes.is_empty() {
-            continue;
-        }
-
         // Transação por imagem: DELETE + INSERT.
+        // DELETE SEMPRE ocorre quando a imagem está presente no artefato
+        // (mesmo que valid_boxes fique vazio — semântica last-write-wins por
+        // origem: se o engine EMITIU boxes para a imagem, as anteriores da
+        // mesma origem devem ser removidas).
         let mut tx = match state.pool.begin().await {
             Ok(t) => t,
             Err(_) => {
@@ -1100,69 +1092,72 @@ pub async fn apply_autotracker_boxes(
             }
         }
 
-        // INSERT em massa com RETURNING (mesmo padrão do put_boxes).
-        type BoxTuple = (
-            Uuid,
-            Uuid,
-            f64,
-            f64,
-            f64,
-            f64,
-            Option<f64>,
-            String,
-            Option<i32>,
-        );
-        let inserted: Vec<BoxTuple> = {
-            let class_ids: Vec<Uuid> = valid_boxes.iter().map(|b| b.0).collect();
-            let xs: Vec<f64> = valid_boxes.iter().map(|b| b.1).collect();
-            let ys: Vec<f64> = valid_boxes.iter().map(|b| b.2).collect();
-            let ws: Vec<f64> = valid_boxes.iter().map(|b| b.3).collect();
-            let hs: Vec<f64> = valid_boxes.iter().map(|b| b.4).collect();
-            let confs: Vec<Option<f64>> = valid_boxes.iter().map(|b| b.5).collect();
-            let origins: Vec<String> = valid_boxes.iter().map(|b| b.6.clone()).collect();
-            let tracks: Vec<Option<i32>> = valid_boxes.iter().map(|b| b.7).collect();
-            match sqlx::query_as::<_, BoxTuple>(
-                "INSERT INTO boxes (image_id, class_id, x, y, w, h, conf, origin, track_id) \
-                 SELECT $1, t.class_id, t.x, t.y, t.w, t.h, t.conf, t.origin, t.track_id \
-                 FROM unnest($2::uuid[], $3::float8[], $4::float8[], $5::float8[], $6::float8[], $7::float8[], $8::text[], $9::int[]) \
-                 AS t(class_id, x, y, w, h, conf, origin, track_id) \
-                 RETURNING id, class_id, x, y, w, h, conf, origin, track_id",
-            )
-            .bind(image_id)
-            .bind(&class_ids)
-            .bind(&xs)
-            .bind(&ys)
-            .bind(&ws)
-            .bind(&hs)
-            .bind(&confs)
-            .bind(&origins)
-            .bind(&tracks)
-            .fetch_all(&mut *tx)
-            .await
-            {
-                Ok(r) => r,
-                Err(_) => {
-                    return err(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "internal",
-                        "internal server error",
-                    )
+        // INSERT em massa — apenas se há boxes válidas.
+        if !valid_boxes.is_empty() {
+            type BoxTuple = (
+                Uuid,
+                Uuid,
+                f64,
+                f64,
+                f64,
+                f64,
+                Option<f64>,
+                String,
+                Option<i32>,
+            );
+            let inserted: Vec<BoxTuple> = {
+                let class_ids: Vec<Uuid> = valid_boxes.iter().map(|b| b.0).collect();
+                let xs: Vec<f64> = valid_boxes.iter().map(|b| b.1).collect();
+                let ys: Vec<f64> = valid_boxes.iter().map(|b| b.2).collect();
+                let ws: Vec<f64> = valid_boxes.iter().map(|b| b.3).collect();
+                let hs: Vec<f64> = valid_boxes.iter().map(|b| b.4).collect();
+                let confs: Vec<Option<f64>> = valid_boxes.iter().map(|b| b.5).collect();
+                let origins: Vec<String> = valid_boxes.iter().map(|b| b.6.clone()).collect();
+                let tracks: Vec<Option<i32>> = valid_boxes.iter().map(|b| b.7).collect();
+                match sqlx::query_as::<_, BoxTuple>(
+                    "INSERT INTO boxes (image_id, class_id, x, y, w, h, conf, origin, track_id) \
+                     SELECT $1, t.class_id, t.x, t.y, t.w, t.h, t.conf, t.origin, t.track_id \
+                     FROM unnest($2::uuid[], $3::float8[], $4::float8[], $5::float8[], $6::float8[], $7::float8[], $8::text[], $9::int[]) \
+                     AS t(class_id, x, y, w, h, conf, origin, track_id) \
+                     RETURNING id, class_id, x, y, w, h, conf, origin, track_id",
+                )
+                .bind(image_id)
+                .bind(&class_ids)
+                .bind(&xs)
+                .bind(&ys)
+                .bind(&ws)
+                .bind(&hs)
+                .bind(&confs)
+                .bind(&origins)
+                .bind(&tracks)
+                .fetch_all(&mut *tx)
+                .await
+                {
+                    Ok(r) => r,
+                    Err(_) => {
+                        return err(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "internal",
+                            "internal server error",
+                        )
+                    }
                 }
-            }
-        };
+            };
 
+            let count = inserted.len() as i64;
+            total_applied += count;
+            if count > 0 {
+                images_with_boxes += 1;
+            }
+        }
+
+        // Sempre commita — a fase DELETE ocorreu mesmo sem INSERT.
         if tx.commit().await.is_err() {
             return err(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal",
                 "internal server error",
             );
-        }
-
-        let count = inserted.len() as i64;
-        total_applied += count;
-        if count > 0 {
-            images_with_boxes += 1;
         }
     }
 
@@ -1630,29 +1625,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn submit_autotracker_job_503_manager_offline() {
-        let mut mock = MockManager::default();
-        mock.fail = true;
-        let state = test_state(mock);
-        let resp = submit_autotracker_job(
-            axum::extract::State(state),
-            Ok(axum::body::Bytes::from(
-                r#"{"datasetId":"00000000-0000-0000-0000-000000000000"}"#,
-            )),
-        )
-        .await;
-        // With connect_lazy pool, dataset check will fail → 500 internal,
-        // but if mock.fail is true the manager will 503.
-        // The actual status depends on whether the pool check succeeds.
-        assert!(
-            resp.status() == StatusCode::SERVICE_UNAVAILABLE
-                || resp.status() == StatusCode::INTERNAL_SERVER_ERROR,
-            "expected 503 or 500, got {}",
-            resp.status()
-        );
-    }
-
-    #[tokio::test]
     async fn abort_job_404_non_uuid() {
         let mock = MockManager::default();
         let state = test_state(mock);
@@ -1936,7 +1908,7 @@ mod tests {
             )),
         )
         .await;
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     // --- helpers ---

@@ -6222,12 +6222,6 @@ async fn t5_autotrack_06_classe_inexistente() {
     });
     let boxes = serde_json::to_vec(&body_json).expect("serialize");
 
-    let (st_base, _, _) =
-        state_with_manager(api_principal::jobs::manager_client::MockManager::default()).await;
-    let app_base = routes::build(st_base.clone());
-    let (ds, ds_id, _, _, img1_fn, _) = setup_autotracker_dataset(&app_base, &cookie).await;
-    drop(app_base);
-
     let (mock, job_id) = setup_autotracker_mock(&boxes, &ds);
     let storage = std::sync::Arc::new(api_principal::storage::MockStorage::new());
     storage
@@ -6394,4 +6388,172 @@ async fn t5_autotrack_09_job_not_done() {
     assert_eq!(status, StatusCode::CONFLICT);
     let resp = json(&body);
     assert_eq!(resp["code"], "job_not_done");
+}
+
+// ---------------------------------------------------------------------------
+// t5_autotrack_10 — rerun com classe renomeada: autotracker boxes removidas,
+// manual preservada, skipped refletido
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t5_autotrack_10_rerun_classe_renomeada() {
+    let _guard = SERIAL.lock().await;
+
+    let cookie = authed_cookie();
+    let (st_base, _, _) =
+        state_with_manager(api_principal::jobs::manager_client::MockManager::default()).await;
+    let app_base = routes::build(st_base.clone());
+    let (ds, ds_id, class_id, _, img1_fn, _) = setup_autotracker_dataset(&app_base, &cookie).await;
+
+    // --- Passo 1: adiciona 1 box manual para preservar ---
+    let img1_id = image_id_by_filename(&st_base.pool, ds_id, &img1_fn).await;
+    let (status, _, _) = call(
+        app_base.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/images/{img1_id}/boxes"),
+            serde_json::json!({"boxes": [{"classId": class_id, "x": 0.3, "y": 0.3, "w": 0.1, "h": 0.1}]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (count_manual_before, _) = count_boxes(&st_base.pool, img1_id).await;
+    assert_eq!(count_manual_before, 1, "1 box manual antes do apply 1");
+    drop(app_base);
+
+    // --- Passo 2: apply 1 — 2 boxes autotracker (solda_fria) ---
+    let body_json = serde_json::json!({
+        "engine": "autotracker",
+        "model": "mock",
+        "seed": 42,
+        "conf": 0.5,
+        "images": [{
+            "filename": img1_fn,
+            "boxes": [
+                {"class": "solda_fria", "x": 0.1, "y": 0.2, "w": 0.3, "h": 0.4, "conf": 0.9},
+                {"class": "solda_fria", "x": 0.5, "y": 0.5, "w": 0.1, "h": 0.1, "conf": 0.8},
+            ]
+        }]
+    });
+    let boxes = serde_json::to_vec(&body_json).expect("serialize");
+    let (mock1, job_id1) = setup_autotracker_mock(&boxes, &ds);
+    let storage1 = std::sync::Arc::new(api_principal::storage::MockStorage::new());
+    storage1
+        .put_bytes(&format!("artifacts/{job_id1}/boxes.json"), boxes.clone())
+        .await;
+    let st1 = state_with_seeded_storage(st_base.pool.clone(), storage1, mock1).await;
+    let app1 = routes::build(st1.clone());
+    let (status, body) = call_apply(&app1, &cookie, &job_id1, &serde_json::json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    let resp = json(&body);
+    assert_eq!(resp["applied"], 2, "apply 1: 2 boxes autotracker");
+    assert_eq!(resp["skipped"], 0);
+    let (count_after_1, origins1) = count_boxes(&st1.pool, img1_id).await;
+    assert_eq!(count_after_1, 3, "após apply 1: 1 manual + 2 autotracker");
+    assert!(
+        origins1.contains(&"manual".to_string()),
+        "box manual preservada"
+    );
+    assert!(
+        origins1.contains(&"autotracker".to_string()),
+        "boxes autotracker presentes"
+    );
+
+    // --- Passo 3: renomear classe "solda_fria" → "solda_fria_v2" ---
+    sqlx::query("UPDATE classes SET name = 'solda_fria_v2' WHERE id = $1")
+        .bind(class_id)
+        .execute(&st1.pool)
+        .await
+        .expect("rename class");
+    drop(app1);
+
+    // --- Passo 4: apply 2 — mesmo job, mesmas boxes com classe "solda_fria" ---
+    //  A classe "solda_fria" não existe mais → todas as boxes skippadas.
+    //  Mas o engine EMITIU boxes para a imagem → DELETE autotracker deve ocorrer.
+    let (mock2, job_id2) = setup_autotracker_mock(&boxes, &ds);
+    let storage2 = std::sync::Arc::new(api_principal::storage::MockStorage::new());
+    storage2
+        .put_bytes(&format!("artifacts/{job_id2}/boxes.json"), boxes)
+        .await;
+    let st2 = state_with_seeded_storage(st1.pool.clone(), storage2, mock2).await;
+    let app2 = routes::build(st2.clone());
+    let (status, body) = call_apply(&app2, &cookie, &job_id2, &serde_json::json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    let resp = json(&body);
+    assert_eq!(
+        resp["applied"], 0,
+        "apply 2: 0 boxes válidas (classe renomeada)"
+    );
+    assert_eq!(resp["skipped"], 2, "apply 2: 2 boxes skippadas");
+    let (count_after_2, origins2) = count_boxes(&st2.pool, img1_id).await;
+    assert_eq!(count_after_2, 1, "após apply 2: apenas 1 box manual");
+    assert!(
+        origins2.contains(&"manual".to_string()),
+        "box manual preservada após apply 2"
+    );
+    assert!(
+        !origins2.contains(&"autotracker".to_string()),
+        "boxes autotracker removidas após apply 2"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// t5_autotrack_11 — POST /api/jobs/autotracker → 202 + body completo
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t5_autotrack_11_submit_202() {
+    let _guard = SERIAL.lock().await;
+
+    let mock = {
+        let mut m = api_principal::jobs::manager_client::MockManager::default();
+        m.create_job_result = Some(api_principal::jobs::manager_client::CreateJobResponse {
+            job_id: "b1b2c3d4-e5f6-7890-abcd-ef1234567890".into(),
+            status: "queued".into(),
+            queue_position: Some(1),
+        });
+        m
+    };
+    let (st, _storage, mock_mgr) = state_with_manager(mock).await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    // 1. Cria dataset yolo via API (helper).
+    let (ds, _ds_id, _class_id, _, _, _) = setup_autotracker_dataset(&app, &cookie).await;
+
+    // 2. POST /api/jobs/autotracker.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/api/jobs/autotracker")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::from(serde_json::json!({"datasetId": ds}).to_string()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "deve retornar 202");
+    let resp = json(&body);
+    assert_eq!(
+        resp["jobId"].as_str().expect("jobId"),
+        "b1b2c3d4-e5f6-7890-abcd-ef1234567890"
+    );
+    assert_eq!(resp["status"].as_str().expect("status"), "queued");
+    assert_eq!(resp["queuePosition"].as_i64().expect("queuePosition"), 1);
+
+    // 3. Verifica body capturado no MockManager.
+    let captured = mock_mgr.last_create_job_body().expect("create_job chamado");
+    assert_eq!(captured["kind"].as_str().unwrap(), "autotracker");
+    assert_eq!(captured["engine"].as_str().unwrap(), "autotracker");
+    assert_eq!(captured["mode"].as_str().unwrap(), "autotrack");
+    assert_eq!(captured["model"].as_str().unwrap(), "mock");
+    assert!(
+        captured["params"]["package_ref"].is_object(),
+        "params.package_ref presente"
+    );
+    assert!(captured["package_ref"].is_object(), "package_ref presente");
 }

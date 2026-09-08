@@ -1310,7 +1310,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "503":
-          description: "Manager indisponível (`code: queue_unavailable`)."
+          description: "Manager indisponível (`code: queue_unavailable`) ou storage indisponível (`code: storage_unavailable`)."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1344,7 +1344,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/AutotrackerApplyResponse" }
         "400":
-          description: "Body malformado ou `boxes.json` inválido (`code: invalid_request`)."
+          description: "Body malformado, `imageId` não-UUID ou `boxes.json` inválido (`code: invalid_request`)."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1354,7 +1354,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "404":
-          description: "Job inexistente, não-UUID, não-autotracker ou artefato `boxes.json` ausente (`code: not_found`)."
+          description: "Job inexistente, não-UUID, não-autotracker, artefato `boxes.json` ausente ou `imageId` não é imagem ativa do dataset (`code: not_found`)."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }

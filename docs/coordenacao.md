@@ -537,3 +537,12 @@ autorizou a landing direto no tronco).
       sync `docs/frontend.md` linha 3).
       ~~`lefthook install`~~ ✅ quitado em `chore/agent-team` (gate ativo: hooks
       instalados + commitlint real + deny de commit nos subagentes).
+
+## Sessão 2026-09-08 (pós-reboot — ambiente + fix proxy web)
+
+- **Reboot do host**: containers só derrubados (Exited 137/1); `docker compose up -d` em `infra/` recompôs tudo (7/7 up, seaweedfs/embedder healthy, volumes preservados). Nada de dados perdeu.
+- **Senha do studio**: 401 com `changeme` levou a falsa pista; causa real do meu 401 de teste = rota errada (`/login` vs `/api/auth/login`, fallback D9). NO ENTANTO, no caminho o `users` foi zerado + rebootstrap com `STUDIO_PASSWORD=changeme` (CLI reset-password = dívida T4 ADR-0001; receita de reset: `DELETE FROM users` + recriar principal com env). **Senha dev vigente: `changeme`**.
+- **"Login quebrado" reportado pelo usuário**: NÃO regressão do redesign. Bug latente de build: Next 16 compila `rewrites()` no `routes-manifest.json` em BUILD-time; Dockerfile não passava `API_INTERNAL_URL` → fallback `localhost:8080` assado no manifest → web proxyava `/api/*` para si mesmo (ECONNREFUSED → 500 "Falha inesperada."). Host dev server nunca mostrou porque lá `localhost:8080` é o principal publicado. Smoke pós-fix: `POST /api/auth/login` via :3000 → 200 + redirect /dashboard (Chrome, screenshot).
+- **Fix commitado `d8d01a4`** (`fix(web)`, branch `feat/integracao`): ARG/ENV `API_INTERNAL_URL=http://principal:8080` no `apps/web/Dockerfile` + `.dockerignore` na RAIZ do repo (nit do review: `.dockerignore` aninhado é no-op — Docker só lê o da raiz do contexto `..`; prova: `.next/dev` sumiu da imagem). Review APROVADO COM NITS → nits quitadas. `next-env.d.ts` modificado = ruído de regeneração, deixado fora do commit (usuário editando front).
+- **404 pré-existente registrado**: sidebar faz prefetch RSC de `/autotracker` (rota não existe — só dashboard/datasets/jobs). Decidir no redesign: desabilitar link ou criar rota (AutoTracker = fatia 4).
+- **PRÓXIMO**: usuário termina redesign do front-end (branch própria) → pedir review ao coordenador (auditoria @ui-designer/@reviewer + smoke Chrome).

@@ -3,10 +3,12 @@
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import Sidebar from "@/components/studio/Sidebar";
+import ActionCenter from "@/components/studio/ActionCenter";
 import { ToastHost } from "@/components/studio/Toast";
-import { IconMenu } from "@/components/icons";
+import { IconMenu, IconZap } from "@/components/icons";
 
 const SEGMENT_LABELS: Record<string, string> = {
+  dashboard: "Painel",
   datasets: "Datasets",
   annotate: "Anotar",
   login: "Login",
@@ -24,6 +26,25 @@ export default function StudioLayout({
 }) {
   const pathname = usePathname();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [actionCenterOpen, setActionCenterOpen] = useState(false);
+  const [sidebarPinned, setSidebarPinned] = useState(false);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("hephaestus_sidebar_pinned");
+      if (saved === "true") setSidebarPinned(true);
+    } catch {}
+  }, []);
+
+  const handleTogglePin = () => {
+    setSidebarPinned((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("hephaestus_sidebar_pinned", String(next));
+      } catch {}
+      return next;
+    });
+  };
 
   useEffect(() => {
     setSidebarOpen(false);
@@ -43,7 +64,21 @@ export default function StudioLayout({
 
   return (
     <div className="flex h-screen overflow-hidden bg-zinc-950 text-zinc-100">
-      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      {/* Espaçador estático no desktop para manter o layout livre de layout-shift durante expansão */}
+      <div
+        className={`hidden shrink-0 transition-[width] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] lg:block ${
+          sidebarPinned ? "w-[260px]" : "w-[68px]"
+        }`}
+        aria-hidden="true"
+      />
+
+      <Sidebar
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        onOpenActionCenter={() => setActionCenterOpen(true)}
+        pinned={sidebarPinned}
+        onTogglePin={handleTogglePin}
+      />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-14 shrink-0 items-center justify-between border-b border-zinc-800/80 bg-zinc-950/80 px-3 backdrop-blur-xl sm:px-4">
@@ -104,7 +139,16 @@ export default function StudioLayout({
             </nav>
           </div>
 
-          <div className="flex shrink-0 items-center">
+          <div className="flex shrink-0 items-center space-x-2">
+            <button
+              type="button"
+              onClick={() => setActionCenterOpen(true)}
+              title="Centro de Atividades"
+              aria-label="Abrir Centro de Atividades"
+              className="inline-flex size-9 items-center justify-center rounded-lg border border-white/10 bg-white/[0.05] p-0 text-zinc-300 shadow-sm transition hover:border-white/20 hover:bg-white/[0.10] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 cursor-pointer"
+            >
+              <IconZap className="size-4 text-brand-400" />
+            </button>
             <span
               title="Nó local — ambiente único nesta fatia"
               className="flex items-center space-x-2 rounded-full border border-zinc-800 bg-zinc-900/90 px-2.5 py-1 font-mono text-[11px] text-zinc-300"
@@ -117,6 +161,10 @@ export default function StudioLayout({
 
         <main className="min-h-0 flex-1 overflow-y-auto">{children}</main>
         <ToastHost />
+        <ActionCenter
+          open={actionCenterOpen}
+          onClose={() => setActionCenterOpen(false)}
+        />
       </div>
     </div>
   );

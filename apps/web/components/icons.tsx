@@ -289,3 +289,116 @@ export function IconStop(props: IconProps) {
     </Base>
   );
 }
+
+export function IconZap(props: IconProps) {
+  return (
+    <Base {...props}>
+      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+    </Base>
+  );
+}
+
+export function IconPin(props: IconProps) {
+  return (
+    <Base {...props}>
+      <line x1="12" y1="17" x2="12" y2="22" />
+      <path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.89A2 2 0 0 1 15 10.77V5a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v5.77a2 2 0 0 1-1.11 1.79l-1.78.89A2 2 0 0 0 5 15.24Z" />
+    </Base>
+  );
+}
+
+export function IconHome(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+      <polyline points="9 22 9 12 15 12 15 22" />
+    </Base>
+  );
+}
+
+export function IconShield(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+    </Base>
+  );
+}
+
+export function IconServer(props: IconProps) {
+  return (
+    <Base {...props}>
+      <rect width="20" height="8" x="2" y="2" rx="2" ry="2" />
+      <rect width="20" height="8" x="2" y="14" rx="2" ry="2" />
+      <line x1="6" x2="6.01" y1="6" y2="6" />
+      <line x1="6" x2="6.01" y1="18" y2="18" />
+    </Base>
+  );
+}
+
+export function IconActivity(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+    </Base>
+  );
+}
+
+export function IconBox(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z" />
+      <path d="m3.3 7 8.7 5 8.7-5" />
+      <path d="M12 22V12" />
+    </Base>
+  );
+}
+
+export function IconNetwork(props: IconProps) {
+  return (
+    <Base {...props}>
+      <rect x="16" y="16" width="6" height="6" rx="1" />
+      <rect x="2" y="16" width="6" height="6" rx="1" />
+      <rect x="9" y="2" width="6" height="6" rx="1" />
+      <path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3" />
+      <path d="M12 12V8" />
+    </Base>
+  );
+}
+
+export function IconHardDrive(props: IconProps) {
+  return (
+    <Base {...props}>
+      <line x1="22" y1="12" x2="2" y2="12" />
+      <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
+      <line x1="6" y1="16" x2="6.01" y2="16" />
+      <line x1="10" y1="16" x2="10.01" y2="16" />
+    </Base>
+  );
+}
+
+export function IconChevronsUpDown(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="m7 15 5 5 5-5" />
+      <path d="m7 9 5-5 5 5" />
+    </Base>
+  );
+}
+
+export function IconChevronRight(props: IconProps) {
+  return (
+    <Base {...props}>
+      <polyline points="9 18 15 12 9 6" />
+    </Base>
+  );
+}
+
+export function IconMoreHorizontal(props: IconProps) {
+  return (
+    <Base {...props}>
+      <circle cx="12" cy="12" r="1" />
+      <circle cx="19" cy="12" r="1" />
+      <circle cx="5" cy="12" r="1" />
+    </Base>
+  );
+}

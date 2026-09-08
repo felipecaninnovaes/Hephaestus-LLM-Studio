@@ -1,0 +1,99 @@
+"use client";
+
+import React, { useEffect, type ReactNode } from "react";
+import { IconX } from "@/components/icons";
+
+export interface ModalProps {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  icon?: React.ReactNode;
+  children: ReactNode;
+  maxWidth?: "sm" | "md" | "lg" | "xl";
+  busy?: boolean;
+  ariaLabel?: string;
+}
+
+const MAX_WIDTH_CLASSES = {
+  sm: "max-w-sm",
+  md: "max-w-md",
+  lg: "max-w-lg",
+  xl: "max-w-xl",
+};
+
+export function Modal({
+  open,
+  onClose,
+  title,
+  icon,
+  children,
+  maxWidth = "lg",
+  busy = false,
+  ariaLabel,
+}: ModalProps) {
+  useEffect(() => {
+    if (!open || busy) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, busy, onClose]);
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+      onClick={() => {
+        if (!busy) onClose();
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={ariaLabel || title}
+        className={`glass-modal relative w-full ${MAX_WIDTH_CLASSES[maxWidth]} rounded-2xl p-6 text-zinc-100 shadow-2xl overflow-hidden max-h-[90vh] flex flex-col`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Hairline zenital com gradiente violeta no topo */}
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute top-0 left-6 right-6 h-px"
+          style={{
+            background:
+              "linear-gradient(90deg, transparent, rgba(131,80,242,0.6), transparent)",
+          }}
+        />
+
+        {/* Header */}
+        <div className="flex shrink-0 items-center justify-between border-b border-white/10 pb-4">
+          <div className="flex items-center space-x-2.5 min-w-0">
+            {icon && (
+              <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-brand-500/30 bg-brand-500/15 text-brand-400 [&_svg]:size-4">
+                {icon}
+              </div>
+            )}
+            <h3 className="font-display text-sm font-bold text-white truncate">
+              {title}
+            </h3>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            aria-label="Fechar diálogo"
+            className="rounded-lg border border-transparent bg-transparent p-1 text-zinc-300 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 cursor-pointer"
+          >
+            <IconX className="size-4" />
+          </button>
+        </div>
+
+        {/* Conteúdo com scroll interno se necessário */}
+        <div className="mt-4 flex-1 overflow-y-auto">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+export default Modal;

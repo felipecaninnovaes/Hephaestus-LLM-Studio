@@ -25,7 +25,7 @@ RUN mkdir -p services/api-principal/src services/manager/src \
 
 # Runtime: trixie-slim (GLIBC 2.41 — spike C2 provou; bookworm FALHA) + docker-cli.
 FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
-RUN apt-get update && apt-get install -y --no-install-recommends docker.io \
+RUN apt-get update && apt-get install -y --no-install-recommends docker-cli \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /app/target/release/orchestrator /app/orchestrator

@@ -666,9 +666,18 @@ async fn run_job_inner(
     let job_id = &dispatch.job_id;
     let job_workdir = PathBuf::from(&dispatch.workdir);
 
-    // Cria diretórios de trabalho (§8/:102 — datasets-cache/<job_id>/)
-    let datasets_cache = job_workdir.join("datasets-cache").join(job_id);
-    let outputs = job_workdir.join("outputs").join(job_id);
+    // Nomes dos volumes nomeados Docker (compose monta em {workdir}/{vol_name}).
+    let vol_datasets = std::env::var("ORCH_VOL_DATASETS").unwrap_or_else(|_| "datasets".into());
+    let vol_outputs = std::env::var("ORCH_VOL_OUTPUTS").unwrap_or_else(|_| "outputs".into());
+
+    // Cria diretórios de trabalho — paths DENTRO dos volumes nomeados.
+    // datasets volume: {workdir}/{vol_datasets}/datasets-cache/<job_id>/
+    // outputs volume:  {workdir}/{vol_outputs}/<job_id>/
+    let datasets_cache = job_workdir
+        .join(&vol_datasets)
+        .join("datasets-cache")
+        .join(job_id);
+    let outputs = job_workdir.join(&vol_outputs).join(job_id);
     let temp_dir = job_workdir.join("tmp").join(job_id);
 
     tokio::fs::create_dir_all(&datasets_cache)
@@ -727,9 +736,10 @@ async fn run_job_inner(
         .unwrap_or(100);
 
     if let Some(ref config_yaml) = dispatch.config_yaml {
-        // Dentro do container trainer: /datasets e /outputs (via -v mounts)
-        let dataset_path = "/datasets".to_string();
-        let output_path = "/outputs".to_string();
+        // Dentro do container trainer: /datasets/datasets-cache/<job_id> e /outputs/<job_id>
+        // (via -v volumes nomeados montados no compose).
+        let dataset_path = format!("/datasets/datasets-cache/{job_id}");
+        let output_path = format!("/outputs/{job_id}");
         let real_config = replace_config_placeholders(config_yaml, &dataset_path, &output_path);
 
         // Valida que é YAML parseável (D6)
@@ -766,14 +776,8 @@ async fn run_job_inner(
     active_jobs.insert(job_id.to_string(), active_state);
 
     let volumes = vec![
-        (
-            datasets_cache.to_string_lossy().to_string(),
-            "/datasets".to_string(),
-        ),
-        (
-            outputs.to_string_lossy().to_string(),
-            "/outputs".to_string(),
-        ),
+        (vol_datasets, "/datasets".to_string()),
+        (vol_outputs, "/outputs".to_string()),
     ];
 
     // Spawn metrics collector (polls metrics.jsonl durante execução)
@@ -1103,10 +1107,11 @@ mod tests {
     #[test]
     fn replace_config_placeholders_basic() {
         let config = "dataset_path: {dataset_path}\noutput_path: {output_path}";
-        let result = replace_config_placeholders(config, "/datasets/j1", "/outputs/j1");
+        let result =
+            replace_config_placeholders(config, "/datasets/datasets-cache/j1", "/outputs/j1");
         assert_eq!(
             result,
-            "dataset_path: /datasets/j1\noutput_path: /outputs/j1"
+            "dataset_path: /datasets/datasets-cache/j1\noutput_path: /outputs/j1"
         );
     }
 
@@ -1114,9 +1119,10 @@ mod tests {
     fn replace_config_placeholders_yaml_parseable() {
         let config =
             "dataset_path: {dataset_path}\noutput_path: {output_path}\nepochs: 100\nmodel: yolo11m";
-        let result = replace_config_placeholders(config, "/datasets/j1", "/outputs/j1");
+        let result =
+            replace_config_placeholders(config, "/datasets/datasets-cache/j1", "/outputs/j1");
         let parsed: serde_yaml::Value = serde_yaml::from_str(&result).unwrap();
-        assert_eq!(parsed["dataset_path"], "/datasets/j1");
+        assert_eq!(parsed["dataset_path"], "/datasets/datasets-cache/j1");
         assert_eq!(parsed["output_path"], "/outputs/j1");
         assert_eq!(parsed["epochs"], 100);
         assert_eq!(parsed["model"], "yolo11m");

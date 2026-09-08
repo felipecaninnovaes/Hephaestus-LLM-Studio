@@ -42,7 +42,9 @@ function clamp01(v: number): number {
 }
 
 export default function AnnotateImagePage() {
-  const { id, imageId } = useParams<{ id: string; imageId: string }>();
+  const params = useParams<{ id: string; imageId: string }>();
+  const id = params?.id ?? "";
+  const imageId = params?.imageId ?? "";
   const router = useRouter();
 
   const [dataset, setDataset] = useState<Dataset | null>(null);

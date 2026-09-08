@@ -7,12 +7,14 @@ import ActionCenter from "@/components/studio/ActionCenter";
 import { ToastHost } from "@/components/studio/Toast";
 import { IconMenu, IconZap } from "@/components/icons";
 
+import { ACTION_CENTER_EVENT } from "@/lib/events";
+
 const SEGMENT_LABELS: Record<string, string> = {
   dashboard: "Painel",
   datasets: "Datasets",
   annotate: "Anotar",
   login: "Login",
-  jobs: "Forja & Treinamento",
+  jobs: "Treino YOLO",
 };
 
 function labelFor(segment: string): string {
@@ -28,6 +30,12 @@ export default function StudioLayout({
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [actionCenterOpen, setActionCenterOpen] = useState(false);
   const [sidebarPinned, setSidebarPinned] = useState(false);
+
+  useEffect(() => {
+    const handleOpen = () => setActionCenterOpen(true);
+    window.addEventListener(ACTION_CENTER_EVENT, handleOpen);
+    return () => window.removeEventListener(ACTION_CENTER_EVENT, handleOpen);
+  }, []);
 
   useEffect(() => {
     try {
@@ -51,6 +59,16 @@ export default function StudioLayout({
   }, [pathname]);
 
   useEffect(() => {
+    const handleResize = () => {
+      if (window.innerWidth >= 1024 && sidebarOpen) {
+        setSidebarOpen(false);
+      }
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [sidebarOpen]);
+
+  useEffect(() => {
     if (!sidebarOpen) return;
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") setSidebarOpen(false);
@@ -63,7 +81,7 @@ export default function StudioLayout({
   const lastIndex = segments.length - 1;
 
   return (
-    <div className="flex h-screen overflow-hidden bg-zinc-950 text-zinc-100">
+    <div className="flex h-screen h-[100dvh] overflow-hidden bg-zinc-950 text-zinc-100">
       {/* Espaçador estático no desktop para manter o layout livre de layout-shift durante expansão */}
       <div
         className={`hidden shrink-0 transition-[width] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] lg:block ${

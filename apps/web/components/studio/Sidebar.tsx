@@ -70,7 +70,32 @@ export default function Sidebar({
   const [isHovered, setIsHovered] = useState(false);
   const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
 
-  const isExpanded = isHovered || pinned;
+  // No mobile, a gaveta quando aberta é SEMPRE expandida com texto e categorias completas.
+  // No desktop (≥ 1024px), expande com hover ou se estiver fixada (pinned).
+  const isDesktopExpanded = isHovered || pinned;
+  const isExpanded = open || isDesktopExpanded;
+
+  // Fecha o drawer mobile ao redimensionar para tela desktop (≥ 1024px)
+  useEffect(() => {
+    const handleResize = () => {
+      if (typeof window !== "undefined" && window.innerWidth >= 1024 && open) {
+        onClose();
+      }
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [open, onClose]);
+
+  // Trava o scroll da página de fundo enquanto a gaveta mobile estiver aberta
+  useEffect(() => {
+    if (open && typeof window !== "undefined" && window.innerWidth < 1024) {
+      const prevOverflow = document.body.style.overflow;
+      document.body.style.overflow = "hidden";
+      return () => {
+        document.body.style.overflow = prevOverflow;
+      };
+    }
+  }, [open]);
 
   useEffect(() => {
     let active = true;
@@ -129,18 +154,11 @@ export default function Sidebar({
       items: [
         {
           id: "jobs",
-          label: "Forja & Treinamento",
+          label: "Treino YOLO",
           href: "/jobs",
-          icon: IconLayers,
+          icon: IconTarget,
           badge: telemetry?.jobsActive ? `${telemetry.jobsActive}` : undefined,
           isAvailable: true,
-        },
-        {
-          id: "yolo",
-          label: "YOLO Vision",
-          href: "/yolo",
-          icon: IconTarget,
-          isAvailable: false,
         },
         {
           id: "difusao",
@@ -229,6 +247,26 @@ export default function Sidebar({
   }
 
   const handleItemClick = (e: React.MouseEvent, item: NavItem) => {
+    if (item.id === "autotracker") {
+      e.preventDefault();
+      onClose();
+      router.push("/datasets");
+      showToast(
+        "O AutoTracker opera na galeria. Selecione um dataset YOLO para executá-lo.",
+        "info",
+      );
+      return;
+    }
+    if (item.id === "autolabel") {
+      e.preventDefault();
+      onClose();
+      router.push("/datasets");
+      showToast(
+        "O AutoLabel opera na galeria. Selecione um dataset para executá-lo.",
+        "info",
+      );
+      return;
+    }
     if (!item.isAvailable) {
       e.preventDefault();
       showToast(
@@ -260,14 +298,24 @@ export default function Sidebar({
 
       <aside
         aria-label="Navegação do studio"
-        onMouseEnter={() => setIsHovered(true)}
-        onMouseLeave={() => setIsHovered(false)}
-        className={`fixed inset-y-0 left-0 z-40 flex flex-col border-r border-zinc-800/80 bg-zinc-950/95 backdrop-blur-xl transition-[width,transform,box-shadow] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${
-          open ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
+        onMouseEnter={() => {
+          if (typeof window !== "undefined" && window.innerWidth >= 1024) {
+            setIsHovered(true);
+          }
+        }}
+        onMouseLeave={() => {
+          if (typeof window !== "undefined" && window.innerWidth >= 1024) {
+            setIsHovered(false);
+          }
+        }}
+        className={`fixed inset-y-0 left-0 z-50 flex flex-col border-r border-zinc-800/80 bg-zinc-950/95 backdrop-blur-xl transition-[width,transform,box-shadow] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] lg:z-30 ${
+          open
+            ? "translate-x-0 shadow-2xl shadow-black/80"
+            : "-translate-x-full lg:translate-x-0"
         } ${
           isExpanded
-            ? "w-[min(85vw,300px)] lg:w-[260px] lg:shadow-[16px_0_40px_rgba(0,0,0,0.75)]"
-            : "w-[min(85vw,300px)] lg:w-[68px] lg:shadow-none"
+            ? "w-[280px] max-w-[85vw] sm:w-[300px] lg:w-[260px] lg:shadow-[16px_0_40px_rgba(0,0,0,0.75)]"
+            : "w-[280px] max-w-[85vw] sm:w-[300px] lg:w-[68px] lg:shadow-none"
         }`}
       >
         {/* Header Superior (Brand Logo + Pin) */}
@@ -299,7 +347,7 @@ export default function Sidebar({
 
           {/* Botão de Fixar / Fechar */}
           {isExpanded && (
-            <div className="ml-auto flex items-center">
+            <div className="ml-auto flex items-center space-x-1">
               {onTogglePin && (
                 <button
                   type="button"
@@ -319,9 +367,9 @@ export default function Sidebar({
                 type="button"
                 onClick={onClose}
                 aria-label="Fechar menu lateral"
-                className="inline-flex size-9 items-center justify-center rounded-lg border border-transparent bg-transparent p-0 text-zinc-300 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] lg:hidden"
+                className="inline-flex size-9 items-center justify-center rounded-lg border border-transparent bg-transparent p-0 text-zinc-400 transition hover:bg-white/[0.08] hover:text-white active:scale-[0.985] lg:hidden cursor-pointer"
               >
-                <IconX />
+                <IconX className="size-4.5" />
               </button>
             </div>
           )}
@@ -329,7 +377,7 @@ export default function Sidebar({
 
         {/* Scrollable Navigation Body */}
         <div
-          className={`flex-1 space-y-3.5 overflow-y-auto overflow-x-hidden transition-all duration-300 ${
+          className={`flex-1 min-h-0 space-y-3.5 overflow-y-auto overflow-x-hidden transition-all duration-300 ${
             isExpanded ? "p-3" : "py-3 px-0 flex flex-col items-center"
           }`}
         >
@@ -337,7 +385,10 @@ export default function Sidebar({
           <div className={isExpanded ? "w-full" : "flex justify-center w-full"}>
             <button
               type="button"
-              onClick={() => router.push("/dashboard")}
+              onClick={() => {
+                onClose();
+                router.push("/dashboard");
+              }}
               title="Orquestrador Local (http://localhost:8080 · CUDA 12.4)"
               className={`group relative flex items-center rounded-xl border border-white/10 bg-white/[0.03] transition-all hover:border-brand-500/40 hover:bg-brand-500/[0.06] active:scale-[0.985] cursor-pointer ${
                 isExpanded
@@ -497,8 +548,8 @@ export default function Sidebar({
 
         {/* Rodapé: Status do Orquestrador + Perfil do Usuário + Versão */}
         <div
-          className={`flex shrink-0 flex-col border-t border-zinc-800/80 bg-zinc-950/90 transition-all duration-300 ${
-            isExpanded ? "p-3 space-y-3" : "py-3 px-0 items-center space-y-2"
+          className={`flex shrink-0 flex-col border-t border-zinc-800/80 bg-zinc-950/90 pb-[max(0.75rem,env(safe-area-inset-bottom))] transition-all duration-300 ${
+            isExpanded ? "p-3 space-y-2.5" : "py-3 px-0 items-center space-y-2"
           }`}
         >
           {/* Card Orquestrador Online */}

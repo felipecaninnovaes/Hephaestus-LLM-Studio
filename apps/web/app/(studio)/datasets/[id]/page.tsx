@@ -43,14 +43,15 @@ import ClassesModal from "@/components/studio/ClassesModal";
 import ConfirmDialog from "@/components/studio/ConfirmDialog";
 import ImportDatasetModal from "@/components/studio/ImportDatasetModal";
 import TrainYoloModal from "@/components/studio/TrainYoloModal";
+import AutoTrackerModal from "@/components/studio/AutoTrackerModal";
 
 const PAGE_LIMIT = 50;
 
 type GalleryView = "ativas" | "trash";
 
 export default function DatasetGalleryPage() {
-  const params = useParams<{ id: string }>();
-  const datasetId = params.id;
+  const params = useParams<{ id?: string }>();
+  const datasetId = params?.id;
   const router = useRouter();
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -74,6 +75,7 @@ export default function DatasetGalleryPage() {
   const [restoringId, setRestoringId] = useState<string | null>(null);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [trainOpen, setTrainOpen] = useState(false);
+  const [autoTrackerOpen, setAutoTrackerOpen] = useState(false);
   const [searchInput, setSearchInput] = useState("");
   const [activeQuery, setActiveQuery] = useState<string | null>(null);
   const [similarFor, setSimilarFor] = useState<string | null>(null);
@@ -733,15 +735,28 @@ export default function DatasetGalleryPage() {
             <IconSparkles className="h-4 w-4" />
             <span>AutoLabel</span>
           </button>
-          <button
-            type="button"
-            disabled
-            title="AutoTracker chega em fatia futura."
-            className="inline-flex h-9 cursor-not-allowed items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-3 text-xs font-medium whitespace-nowrap text-zinc-100 opacity-55 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
-          >
-            <IconTarget className="h-4 w-4" />
-            <span>AutoTracker</span>
-          </button>
+          {(() => {
+            const atEnabled = dataset.category === "yolo" && dataset.classes.length > 0 && dataset.imagesCount > 0;
+            const atTitle = atEnabled
+              ? "Executar AutoTracker neste dataset"
+              : "AutoTracker exige dataset yolo com ≥1 classe e ≥1 imagem";
+            return (
+              <button
+                type="button"
+                disabled={!atEnabled}
+                title={atTitle}
+                onClick={() => atEnabled && setAutoTrackerOpen(true)}
+                className={`inline-flex h-9 items-center justify-center gap-2 rounded-lg border px-3 text-xs font-medium whitespace-nowrap shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 ${
+                  atEnabled
+                    ? "border-brand-500/30 bg-brand-500/[0.12] text-white transition hover:border-brand-500/50 hover:bg-brand-500/[0.18]"
+                    : "cursor-not-allowed border-white/10 bg-white/[0.05] text-zinc-100 opacity-55"
+                }`}
+              >
+                <IconTarget className="h-4 w-4" />
+                <span>AutoTracker</span>
+              </button>
+            );
+          })()}
           <button
             type="button"
             onClick={() => setImportOpen(true)}
@@ -818,15 +833,32 @@ export default function DatasetGalleryPage() {
                 <IconSparkles className="h-4 w-4" />
                 <span>AutoLabel</span>
               </button>
-              <button
-                type="button"
-                disabled
-                title="Geração automática de boxes chega na fatia 4."
-                className="flex h-9 cursor-not-allowed items-center space-x-2 rounded-lg px-3 text-xs font-medium text-zinc-200 opacity-60"
-              >
-                <IconTarget className="h-4 w-4" />
-                <span>AutoTracker</span>
-              </button>
+              {(() => {
+                const atEnabled = dataset.category === "yolo" && dataset.classes.length > 0 && dataset.imagesCount > 0;
+                const atTitle = atEnabled
+                  ? "Executar AutoTracker neste dataset"
+                  : "AutoTracker exige dataset yolo com ≥1 classe e ≥1 imagem";
+                return (
+                  <button
+                    type="button"
+                    disabled={!atEnabled}
+                    title={atTitle}
+                    onClick={() => {
+                      if (!atEnabled) return;
+                      setActionsOpen(false);
+                      setAutoTrackerOpen(true);
+                    }}
+                    className={`flex h-9 items-center space-x-2 rounded-lg px-3 text-xs font-medium ${
+                      atEnabled
+                        ? "text-zinc-200 transition-colors hover:bg-brand-500/[0.12] hover:text-brand-300"
+                        : "cursor-not-allowed text-zinc-200 opacity-60"
+                    }`}
+                  >
+                    <IconTarget className="h-4 w-4" />
+                    <span>AutoTracker</span>
+                  </button>
+                );
+              })()}
               <button
                 type="button"
                 onClick={() => {
@@ -1260,6 +1292,15 @@ export default function DatasetGalleryPage() {
           datasetTitle={dataset.title}
           onClose={() => setTrainOpen(false)}
           onJobCreated={() => setTrainOpen(false)}
+        />
+      )}
+      {autoTrackerOpen && dataset && (
+        <AutoTrackerModal
+          open
+          datasetId={dataset.id}
+          datasetTitle={dataset.title}
+          onClose={() => setAutoTrackerOpen(false)}
+          onJobCreated={() => setAutoTrackerOpen(false)}
         />
       )}
       <ConfirmDialog

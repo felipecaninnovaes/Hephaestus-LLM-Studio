@@ -7,6 +7,7 @@ import { ApiError } from "@/lib/api";
 import { startYoloJob } from "@/lib/jobs";
 import { jobErrorMessage } from "@/types/studio";
 import { showToast } from "./Toast";
+import { openActionCenter } from "@/lib/events";
 import type { YoloAugment } from "@/types/studio";
 
 const MODELS = ["yolo11n", "yolo11m", "yolo11x", "yolov9-c", "yolo11-seg"] as const;
@@ -107,7 +108,7 @@ export default function TrainYoloModal({
       );
       onClose();
       onJobCreated();
-      router.push("/jobs");
+      openActionCenter();
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.code === "unauthorized" || err.status === 401) {

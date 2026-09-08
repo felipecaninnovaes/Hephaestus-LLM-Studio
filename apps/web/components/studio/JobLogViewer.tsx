@@ -32,7 +32,8 @@ export function JobLogViewer({ job, metrics = [], artifacts = [] }: JobLogViewer
     job.status === "queued" ||
     job.status === "cancelling";
 
-  const [isOpen, setIsOpen] = useState(true);
+  // Expandido automaticamente apenas para jobs ativos; colapsado para jobs concluídos para otimizar espaço vertical
+  const [isOpen, setIsOpen] = useState(isActive);
   const [autoScroll, setAutoScroll] = useState(true);
   const [copied, setCopied] = useState(false);
   const [filter, setFilter] = useState<LogType>("all");

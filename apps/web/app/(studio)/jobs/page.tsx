@@ -396,7 +396,7 @@ function JobsPageContent() {
       {!error && (
         <div className="flex flex-col md:flex-row items-start gap-6">
           {/* Coluna 1: Setup & Controle (Fixa: w-full md:w-80 lg:w-96 shrink-0) */}
-          <aside className="w-full md:w-80 lg:w-96 shrink-0 md:sticky md:top-4">
+          <aside className="w-full md:w-80 lg:w-96 shrink-0 md:sticky md:top-4 md:max-h-[calc(100vh-2rem)] md:overflow-y-auto [scrollbar-width:thin]">
             <div className="glass-card rounded-2xl p-5 border border-zinc-800/80">
               <ForjaYoloSetup
                 onJobCreated={handleJobCreated}

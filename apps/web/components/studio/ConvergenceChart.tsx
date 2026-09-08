@@ -77,6 +77,8 @@ export function MetricSparkline({
         viewBox={`0 0 ${width} ${height}`}
         className="w-full h-7 overflow-visible block"
         preserveAspectRatio="none"
+        aria-hidden="true"
+        role="img"
       >
         <defs>
           <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
@@ -297,6 +299,8 @@ export function ConvergenceChart({
         <svg
           viewBox={`0 0 ${viewBoxWidth} ${viewBoxHeight}`}
           className="w-full h-44 overflow-visible block"
+          role="img"
+          aria-label="Gráfico vetorial de curvas de convergência de treino YOLO"
           onMouseLeave={() => setHoverIndex(null)}
           onMouseMove={(e) => {
             if (metrics.length <= 1) return;

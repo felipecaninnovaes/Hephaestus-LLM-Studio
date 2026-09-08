@@ -1,14 +1,21 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { IconPlay, IconDatabase } from "@/components/icons";
+import {
+  IconPlay,
+  IconDatabase,
+  IconAlertTriangle,
+  IconInfo,
+  IconZap,
+} from "@/components/icons";
 import { ApiError } from "@/lib/api";
-import { startYoloJob } from "@/lib/jobs";
+import { getTelemetry, startYoloJob } from "@/lib/jobs";
 import { listDatasets } from "@/lib/datasets";
 import { jobErrorMessage } from "@/types/studio";
 import { showToast } from "./Toast";
-import type { Dataset, YoloAugment } from "@/types/studio";
+import { openActionCenter } from "@/lib/events";
+import type { Dataset, Telemetry, YoloAugment } from "@/types/studio";
 
 const MODELS = ["yolo11n", "yolo11m", "yolo11x", "yolov9-c", "yolo11-seg"] as const;
 const EPOCHS_MIN = 1;
@@ -17,8 +24,50 @@ const BATCH_OPTIONS = [8, 16, 32, 64] as const;
 const IMGSZ_OPTIONS = [416, 640, 1024] as const;
 const OPTIMIZERS = ["AdamW", "SGD", "Muon"] as const;
 
+/**
+ * Estimativa preditiva de VRAM com base na arquitetura, tamanho do lote,
+ * resolução e estados de momentos do otimizador selecionado.
+ */
+export function estimateYoloVramGb(
+  model: string,
+  batch: number,
+  imgsz: number,
+  optimizer: string,
+): number {
+  let baseWeightsGb = 1.2;
+  let activationFactor = 1.0;
+
+  if (model === "yolo11n") {
+    baseWeightsGb = 0.8;
+    activationFactor = 0.6;
+  } else if (model === "yolo11m") {
+    baseWeightsGb = 1.6;
+    activationFactor = 1.0;
+  } else if (model === "yolo11x") {
+    baseWeightsGb = 3.2;
+    activationFactor = 1.8;
+  } else if (model === "yolov9-c") {
+    baseWeightsGb = 2.2;
+    activationFactor = 1.3;
+  } else if (model === "yolo11-seg") {
+    baseWeightsGb = 2.0;
+    activationFactor = 1.5;
+  }
+
+  const resFactor = Math.pow(imgsz / 640, 2);
+  const batchMemory = (batch / 16) * 1.8 * activationFactor * resFactor;
+
+  let optOverhead = 0.4;
+  if (optimizer === "AdamW") optOverhead = 0.8;
+  if (optimizer === "Muon") optOverhead = 1.2;
+  if (optimizer === "SGD") optOverhead = 0.3;
+
+  return Math.round((baseWeightsGb + batchMemory + optOverhead) * 10) / 10;
+}
+
 interface Props {
   onJobCreated?: (jobId: string) => void;
+  initialTelemetry?: Telemetry | null;
 }
 
 export default function ForjaYoloSetup({ onJobCreated }: Props) {
@@ -42,6 +91,71 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
   });
   const [busy, setBusy] = useState(false);
   const [topError, setTopError] = useState<string | null>(null);
+
+  // Telemetria de hardware do nó
+  const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadTelem() {
+      try {
+        const t = await getTelemetry();
+        if (!cancelled) setTelemetry(t);
+      } catch {
+        // Best-effort
+      }
+    }
+    loadTelem();
+    const timer = setInterval(loadTelem, 10000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+
+  // Estimativa preditiva de VRAM em GB
+  const estimatedVram = useMemo(
+    () => estimateYoloVramGb(model, batch, imgsz, optimizer),
+    [model, batch, imgsz, optimizer],
+  );
+
+  const nodeVramTotalGb = useMemo(() => {
+    if (telemetry?.vramTotal && telemetry.vramTotal > 0) {
+      return telemetry.vramTotal > 1000
+        ? Math.round((telemetry.vramTotal / (1024 * 1024 * 1024)) * 10) / 10
+        : telemetry.vramTotal;
+    }
+    return null;
+  }, [telemetry?.vramTotal]);
+
+  const oomRisk = useMemo<"safe" | "warning" | "danger">(() => {
+    if (nodeVramTotalGb != null) {
+      if (estimatedVram > nodeVramTotalGb) return "danger";
+      if (estimatedVram > nodeVramTotalGb * 0.8) return "warning";
+      return "safe";
+    }
+    // Host CPU / Mock ou hardware sem VRAM exposta
+    if (estimatedVram >= 16) return "danger";
+    if (estimatedVram >= 10) return "warning";
+    return "safe";
+  }, [estimatedVram, nodeVramTotalGb]);
+
+  const deviceLabel = useMemo(() => {
+    if (telemetry?.gpus && telemetry.gpus.length > 0) {
+      return `${telemetry.gpus[0]} (${nodeVramTotalGb || 24} GB)`;
+    }
+    return "Host CPU (Modo Mock)";
+  }, [telemetry?.gpus, nodeVramTotalGb]);
+
+  function handleAutoFixSafeParams() {
+    setBatch(16);
+    setImgsz(640);
+    if (model === "yolo11x") setModel("yolo11m");
+    showToast(
+      "Hiperparâmetros ajustados para o perfil seguro de VRAM (Batch 16, ImgSz 640).",
+      "info",
+    );
+  }
 
   // Load YOLO datasets
   useEffect(() => {
@@ -130,6 +244,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
       setOptimizer("AdamW");
       setAugment({ mosaic: true, mixupFlip: true });
       onJobCreated?.(result.jobId);
+      openActionCenter();
     } catch (err) {
       if (err instanceof ApiError) {
         setTopError(jobErrorMessage(err.code));
@@ -180,7 +295,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
           <h2 className="font-display text-sm font-bold text-white">
             Setup do Treino YOLO
           </h2>
-          <p className="font-mono text-[10px] text-zinc-400">
+          <p className="font-mono text-[11px] text-zinc-400">
             Configure e inicie um novo treinamento
           </p>
         </div>
@@ -204,7 +319,13 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
           Dataset
         </label>
         {datasetsLoading ? (
-          <p className="py-2 font-mono text-xs text-zinc-500">Carregando datasets…</p>
+          <select
+            id="setup-dataset"
+            disabled
+            className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3 py-2 font-mono text-zinc-500 cursor-not-allowed"
+          >
+            <option>Carregando datasets…</option>
+          </select>
         ) : (
           <select
             id="setup-dataset"
@@ -398,12 +519,110 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
         </div>
       </div>
 
+      {/* Previsão de VRAM & Alertas Preventivos de CUDA OOM */}
+      <div
+        className={`rounded-xl border p-3 space-y-2.5 transition ${
+          oomRisk === "danger"
+            ? "border-rose-500/40 bg-rose-500/[0.06]"
+            : oomRisk === "warning"
+              ? "border-amber-500/35 bg-amber-500/[0.05]"
+              : "border-zinc-800 bg-black/40"
+        }`}
+      >
+        <div className="flex items-center justify-between font-mono text-[11px]">
+          <span className="tracking-caps font-medium uppercase text-zinc-400 flex items-center gap-1.5">
+            <IconZap className="size-3.5 text-brand-400" />
+            VRAM Estimada
+          </span>
+          <span
+            className={`font-semibold ${
+              oomRisk === "danger"
+                ? "text-rose-400"
+                : oomRisk === "warning"
+                  ? "text-amber-300"
+                  : "text-zinc-100"
+            }`}
+          >
+            ~{estimatedVram} GB {nodeVramTotalGb ? `/ ${nodeVramTotalGb} GB` : ""}
+          </span>
+        </div>
+
+        {/* Barra de Consumo de VRAM */}
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-900 border border-zinc-800">
+          <div
+            className={`h-full rounded-full transition-all duration-300 ${
+              oomRisk === "danger"
+                ? "bg-rose-500"
+                : oomRisk === "warning"
+                  ? "bg-amber-400"
+                  : "bg-brand-500"
+            }`}
+            style={{
+              width: `${Math.min(
+                100,
+                Math.max(6, Math.round((estimatedVram / (nodeVramTotalGb || 16)) * 100)),
+              )}%`,
+            }}
+          />
+        </div>
+
+        {/* Dispositivo de Destino */}
+        <div className="flex items-center justify-between font-mono text-[11px] text-zinc-400">
+          <span>Dispositivo:</span>
+          <span className="text-zinc-300 truncate max-w-[180px]" title={deviceLabel}>
+            {deviceLabel}
+          </span>
+        </div>
+
+        {/* Alerta Preventivo de CUDA OOM */}
+        {oomRisk !== "safe" && (
+          <div
+            className={`rounded-lg border p-2.5 space-y-2 ${
+              oomRisk === "danger"
+                ? "border-rose-500/30 bg-rose-950/40 text-rose-200"
+                : "border-amber-500/30 bg-amber-950/40 text-amber-200"
+            }`}
+          >
+            <div className="flex items-start gap-2">
+              <IconAlertTriangle
+                className={`size-4 shrink-0 mt-0.5 ${
+                  oomRisk === "danger" ? "text-rose-400" : "text-amber-400"
+                }`}
+              />
+              <div className="space-y-1 font-mono text-[11px]">
+                <p className="font-semibold text-white">
+                  {oomRisk === "danger"
+                    ? "Risco Crítico de CUDA OOM"
+                    : "Alerta de VRAM Elevada"}
+                </p>
+                <p className="text-zinc-300 leading-snug">
+                  {oomRisk === "danger"
+                    ? `A combinação selecionada exige ~${estimatedVram} GB de VRAM${
+                        nodeVramTotalGb ? ` (limite do nó: ${nodeVramTotalGb} GB)` : ""
+                      }. O treinamento local falhará por falta de memória na GPU.`
+                    : `A estimativa de ~${estimatedVram} GB opera próxima ao limite seguro de alocação da GPU.`}
+                </p>
+              </div>
+            </div>
+
+            {/* Ação de Auto-Fix */}
+            <button
+              type="button"
+              onClick={handleAutoFixSafeParams}
+              className="w-full inline-flex items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.06] hover:bg-white/10 py-1 text-[11px] font-mono text-zinc-200 transition"
+            >
+              <span>Ajustar para Perfil Seguro (Batch 16, ImgSz 640)</span>
+            </button>
+          </div>
+        )}
+      </div>
+
       {/* CTA */}
-      <div className="flex justify-end pt-2">
+      <div className="pt-2">
         <button
           type="submit"
           disabled={!canSubmit}
-          className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] px-5 text-xs font-semibold whitespace-nowrap text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
+          className="w-full inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] px-5 text-xs font-semibold whitespace-nowrap text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 cursor-pointer"
         >
           {busy ? (
             "Iniciando…"

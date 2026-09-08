@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   abortJob,
   downloadArtifact,
   getJobArtifacts,
   getJobMetrics,
+  getTelemetry,
   listJobs,
 } from "@/lib/jobs";
 import { applyAutotrackerBoxes } from "@/lib/autotracker";
@@ -15,34 +16,51 @@ import { showToast } from "@/components/studio/Toast";
 import ConfirmDialog from "@/components/studio/ConfirmDialog";
 import ForjaYoloSetup from "@/components/studio/ForjaYoloSetup";
 import {
+  ConvergenceChart,
+  MetricSparkline,
+} from "@/components/studio/ConvergenceChart";
+import { JobLogViewer } from "@/components/studio/JobLogViewer";
+import {
+  IconCheck,
+  IconDatabase,
   IconDownload,
+  IconLayers,
+  IconPlay,
   IconRefresh,
   IconTarget,
   IconTrash,
+  IconX,
+  IconZap,
 } from "@/components/icons";
 import type {
   Job,
   JobArtifact,
   JobMetrics as JobMetricsType,
   JobStatus,
+  Telemetry,
 } from "@/types/studio";
 import { autotrackerErrorMessage } from "@/types/studio";
+import { formatBytes, formatRelativeTime } from "@/lib/format";
+import { openActionCenter } from "@/lib/events";
 
 const POLL_INTERVAL = 3000;
 
+const SPARK_COLORS: Record<string, string> = {
+  map50: "#34d399",
+  map5095: "#2dd4bf",
+  boxLoss: "#38bdf8",
+  clsLoss: "#818cf8",
+  dflLoss: "#fbbf24",
+  epoch: "#a1a1aa",
+};
+
 const STATUS_STYLE: Record<JobStatus, string> = {
-  queued:
-    "border-brand-500/30 bg-brand-500/10 text-brand-300",
-  running:
-    "border-brand-500/30 bg-brand-500/10 text-brand-300",
-  cancelling:
-    "border-brand-500/30 bg-brand-500/10 text-brand-300",
-  done:
-    "border-[#34d399]/30 bg-[#34d399]/10 text-[#a7f3d0]",
-  failed:
-    "border-rose-500/30 bg-rose-500/10 text-rose-300",
-  cancelled:
-    "border-rose-500/30 bg-rose-500/10 text-rose-300",
+  queued: "border-amber-500/30 bg-amber-500/10 text-amber-300",
+  running: "border-brand-500/35 bg-brand-500/15 text-brand-300",
+  cancelling: "border-amber-500/30 bg-amber-500/10 text-amber-300",
+  done: "border-[#34d399]/30 bg-[#34d399]/10 text-[#a7f3d0]",
+  failed: "border-rose-500/30 bg-rose-500/10 text-rose-300",
+  cancelled: "border-zinc-700 bg-zinc-800 text-zinc-400",
 };
 
 const STATUS_LABEL: Record<JobStatus, string> = {
@@ -55,28 +73,20 @@ const STATUS_LABEL: Record<JobStatus, string> = {
 };
 
 function formatDuration(start: string, end: string | null): string {
-  const ms = (end ? new Date(end) : new Date()).getTime() - new Date(start).getTime();
+  const ms =
+    (end ? new Date(end).getTime() : Date.now()) - new Date(start).getTime();
   if (ms < 0) return "—";
   const s = Math.floor(ms / 1000);
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
-  return `${m}m ${s % 60}s`;
-}
-
-function relativeTime(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const s = Math.floor(diff / 1000);
-  if (s < 60) return "agora";
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m atrás`;
+  if (m < 60) return `${m}m ${s % 60}s`;
   const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h atrás`;
-  const d = Math.floor(h / 24);
-  return `${d}d atrás`;
+  return `${h}h ${m % 60}m`;
 }
 
-export default function JobsPage() {
+function JobsPageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -87,13 +97,31 @@ export default function JobsPage() {
   const [abortBusy, setAbortBusy] = useState(false);
   const [applyBusy, setApplyBusy] = useState(false);
   const [applyOverwrite, setApplyOverwrite] = useState(false);
+  const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Lê query param ?selected=jobId se fornecido na navegação
+  useEffect(() => {
+    const qSelected = searchParams.get("selected");
+    if (qSelected) {
+      setSelectedJobId(qSelected);
+    }
+  }, [searchParams]);
 
   // Resetar applyOverwrite ao trocar de job
   useEffect(() => {
     setApplyOverwrite(false);
   }, [selectedJobId]);
+
+  const fetchTelemetry = useCallback(async () => {
+    try {
+      const data = await getTelemetry();
+      setTelemetry(data);
+    } catch {
+      // Best-effort
+    }
+  }, []);
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -107,7 +135,7 @@ export default function JobsPage() {
       ) {
         return;
       }
-      setError("Falha ao carregar jobs.");
+      setError("Falha ao carregar lista de jobs.");
     } finally {
       setLoading(false);
     }
@@ -115,9 +143,10 @@ export default function JobsPage() {
 
   useEffect(() => {
     fetchJobs();
-  }, [fetchJobs]);
+    fetchTelemetry();
+  }, [fetchJobs, fetchTelemetry]);
 
-  // Polling: ativo quando há jobs running/queued/cancelling
+  // Polling a cada 3s se houver jobs ativos
   useEffect(() => {
     function hasActiveJobs(list: Job[]) {
       return list.some(
@@ -147,20 +176,49 @@ export default function JobsPage() {
     };
   }, [jobs, fetchJobs]);
 
-  // Carregar métricas e artefatos quando um job é selecionado
+  const sorted = useMemo(
+    () =>
+      [...jobs].sort(
+        (a, b) =>
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+      ),
+    [jobs],
+  );
+
+  const activeJob = useMemo(
+    () =>
+      jobs.find(
+        (j) =>
+          j.status === "running" ||
+          j.status === "queued" ||
+          j.status === "cancelling",
+      ) ?? null,
+    [jobs],
+  );
+
+  const selectedJob = useMemo(() => {
+    if (selectedJobId) {
+      return jobs.find((j) => j.id === selectedJobId) ?? null;
+    }
+    // Auto-focus no job ativo, ou no mais recente concluído
+    return activeJob ?? sorted[0] ?? null;
+  }, [jobs, selectedJobId, activeJob, sorted]);
+
+  // Carregar métricas e artefatos quando o selectedJob mudar
   useEffect(() => {
-    if (!selectedJobId) return;
+    const targetId = selectedJob?.id;
+    if (!targetId) return;
     const ctrl = new AbortController();
 
     async function loadDetail() {
       try {
         const [m, a] = await Promise.all([
-          getJobMetrics(selectedJobId!),
-          getJobArtifacts(selectedJobId!),
+          getJobMetrics(targetId!),
+          getJobArtifacts(targetId!),
         ]);
         if (!ctrl.signal.aborted) {
-          setMetrics((prev) => ({ ...prev, [selectedJobId!]: m.items }));
-          setArtifacts((prev) => ({ ...prev, [selectedJobId!]: a.items }));
+          setMetrics((prev) => ({ ...prev, [targetId!]: m.items }));
+          setArtifacts((prev) => ({ ...prev, [targetId!]: a.items }));
         }
       } catch {
         // Detalhe é best-effort
@@ -169,50 +227,48 @@ export default function JobsPage() {
 
     loadDetail();
     return () => ctrl.abort();
-  }, [selectedJobId]);
+  }, [selectedJob?.id]);
 
-  // Re-fetch métricas quando o job selecionado muda de estado
+  // Re-fetch métricas e artefatos quando o job selecionado está ativo e jobs atualiza
   useEffect(() => {
-    if (!selectedJobId) return;
-    const job = jobs.find((j) => j.id === selectedJobId);
+    const targetId = selectedJob?.id;
+    if (!targetId) return;
+    const job = jobs.find((j) => j.id === targetId);
     if (!job) return;
 
     const isActive =
       job.status === "queued" ||
       job.status === "running" ||
       job.status === "cancelling";
-    const isTerminal =
-      job.status === "done" ||
-      job.status === "failed" ||
-      job.status === "cancelled";
-    if (!isActive && !isTerminal) return;
+    if (!isActive) return;
 
     const ctrl = new AbortController();
 
     async function refreshDetail() {
       try {
         const [m, a] = await Promise.all([
-          getJobMetrics(selectedJobId!),
-          getJobArtifacts(selectedJobId!),
+          getJobMetrics(targetId!),
+          getJobArtifacts(targetId!),
         ]);
         if (!ctrl.signal.aborted) {
-          setMetrics((prev) => ({ ...prev, [selectedJobId!]: m.items }));
-          setArtifacts((prev) => ({ ...prev, [selectedJobId!]: a.items }));
+          setMetrics((prev) => ({ ...prev, [targetId!]: m.items }));
+          setArtifacts((prev) => ({ ...prev, [targetId!]: a.items }));
         }
       } catch {
-        // Ignora
+        // Detalhe é best-effort
       }
     }
+
     refreshDetail();
     return () => ctrl.abort();
-  }, [selectedJobId, jobs]);
+  }, [selectedJob?.id, jobs]);
 
   async function handleAbort() {
     if (!abortTarget) return;
     setAbortBusy(true);
     try {
       await abortJob(abortTarget.id);
-      showToast("Job cancelado.", "success");
+      showToast("Job cancelado com sucesso.", "success");
       setAbortTarget(null);
       await fetchJobs();
     } catch (err) {
@@ -278,380 +334,508 @@ export default function JobsPage() {
   function handleJobCreated(jobId: string) {
     setSelectedJobId(jobId);
     void fetchJobs();
+    openActionCenter();
   }
 
-  const sorted = [...jobs].sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-  );
+  const activeJobsCount = jobs.filter(
+    (j) =>
+      j.status === "running" ||
+      j.status === "queued" ||
+      j.status === "cancelling",
+  ).length;
 
   const selectedJob = selectedJobId
     ? jobs.find((j) => j.id === selectedJobId) ?? null
     : null;
 
   return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-6 md:flex-row md:gap-5">
+    <div className="mx-auto max-w-[1600px] w-full px-4 py-5 md:px-6 lg:px-8 space-y-6">
       {/* ═══════════════════════════════════════════════
-          COLUNA ESQUERDA — Activity Feed (≥ md)
+          HEADER DA FORJA
           ═══════════════════════════════════════════════ */}
-      <aside className="md:w-[300px] md:shrink-0">
-        {/* Header do feed — sempre visível */}
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="font-display text-sm font-semibold text-zinc-200">
-            Atividade
-          </h2>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-zinc-800/80 pb-4">
+        <div>
+          <div className="flex items-center space-x-2.5">
+            <span className="flex size-7 items-center justify-center rounded-lg border border-brand-500/30 bg-brand-500/15 text-brand-400">
+              <IconTarget className="size-4" />
+            </span>
+            <h1 className="font-display text-lg font-bold text-white tracking-tight">
+              Forja de Treino YOLO
+            </h1>
+            <span className="rounded-full border border-zinc-800 bg-zinc-900/90 px-2 py-0.5 font-mono text-[11px] uppercase tracking-caps text-zinc-400">
+              Ultralytics Engine
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-zinc-400 max-w-2xl">
+            Configure hiperparâmetros, selecione datasets e execute o treinamento local com telemetria em tempo real.
+          </p>
+        </div>
+
+        <div className="flex items-center space-x-2.5 shrink-0">
           <button
             type="button"
             onClick={() => void fetchJobs()}
-            title="Atualizar lista"
-            className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.05] px-2.5 text-[11px] font-medium text-zinc-300 transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-3.5 disabled:pointer-events-none disabled:opacity-55"
+            disabled={loading}
+            title="Atualizar lista e status dos jobs"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.05] px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-white/10 hover:text-white active:scale-[0.985] transition cursor-pointer"
           >
-            <IconRefresh className="h-3.5 w-3.5" />
+            <IconRefresh className={`size-3.5 ${loading ? "animate-spin text-brand-400" : ""}`} />
             <span>Atualizar</span>
           </button>
+          <button
+            type="button"
+            onClick={openActionCenter}
+            title="Abrir Centro de Atividades lateral"
+            className="inline-flex items-center gap-1.5 rounded-xl border border-brand-500/30 bg-brand-500/10 px-3 py-1.5 text-xs font-medium text-brand-300 transition hover:bg-brand-500/20 active:scale-[0.985] cursor-pointer"
+          >
+            <IconZap className="size-3.5 text-brand-400" />
+            <span className="hidden sm:inline">Centro de Atividades</span>
+          </button>
         </div>
+      </div>
 
-        {/* Feed container — overflow-y-auto PRÓPRIO apenas em ≥ md */}
-        <div className="flex flex-col gap-1.5 md:h-[calc(100vh-12rem)] md:overflow-y-auto md:rounded-2xl md:border md:border-zinc-800/80 md:bg-black/20 md:p-2">
-          {/* Loading */}
-          {loading && (
-            <p className="py-8 text-center font-mono text-xs text-zinc-500">
-              Carregando…
-            </p>
-          )}
-
-          {/* Empty state */}
-          {!loading && sorted.length === 0 && (
-            <div className="flex flex-col items-center gap-2 py-8 text-center">
-              <span className="flex h-10 w-10 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900">
-                <IconTarget className="h-5 w-5 text-zinc-700" />
-              </span>
-              <p className="text-xs font-medium text-zinc-400">
-                Nenhum job ainda
-              </p>
+      {/* ═══════════════════════════════════════════════
+          WORKSPACE DE 2 COLUNAS CANÔNICO DO STUDIO
+          ═══════════════════════════════════════════════ */}
+      {!error && (
+        <div className="flex flex-col md:flex-row items-start gap-6">
+          {/* Coluna 1: Setup & Controle (Fixa: w-full md:w-80 lg:w-96 shrink-0) */}
+          <aside className="w-full md:w-80 lg:w-96 shrink-0 md:sticky md:top-4">
+            <div className="glass-card rounded-2xl p-5 border border-zinc-800/80">
+              <ForjaYoloSetup
+                onJobCreated={handleJobCreated}
+                initialTelemetry={telemetry}
+              />
             </div>
-          )}
+          </aside>
 
-          {/* Job feed items */}
-          {!loading &&
-            sorted.map((job) => {
-              const isSelected = selectedJobId === job.id;
-              const isActive =
-                job.status === "queued" || job.status === "running";
-              const pct = Math.round((job.progress ?? 0) * 100);
-
-              return (
-                <button
-                  key={job.id}
-                  type="button"
-                  onClick={() => setSelectedJobId(job.id)}
-                  className={`flex w-full flex-col gap-1 rounded-xl p-3 text-left transition-all ${
-                    isSelected
-                      ? "border border-brand-500/30 bg-brand-500/[0.12]"
-                      : "border border-transparent hover:bg-white/[0.04]"
-                  }`}
-                >
-                  {/* Top row: status + time */}
-                  <div className="flex items-center justify-between gap-2">
+          {/* Coluna 2: Canvas de Monitoramento Fluido & Histórico (flex-1 min-w-0) */}
+          <section className="w-full flex-1 min-w-0 space-y-6">
+            {/* Monitor Stage: Job Ativo ou Selecionado */}
+            {selectedJob ? (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <h2 className="font-display text-sm font-semibold text-zinc-200">
+                      {selectedJob.status === "running" ||
+                      selectedJob.status === "queued" ||
+                      selectedJob.status === "cancelling"
+                        ? "Execução Ativa no Nó Local"
+                        : "Painel de Execução & Métricas"}
+                    </h2>
                     <span
-                      className={`shrink-0 rounded-full border px-2 py-0.5 font-mono text-[10px] font-medium ${STATUS_STYLE[job.status]}`}
+                      className={`rounded-full border px-2.5 py-0.5 font-mono text-[11px] font-medium ${STATUS_STYLE[selectedJob.status]}`}
                     >
-                      {STATUS_LABEL[job.status]}
-                    </span>
-                    <span
-                      className="font-mono text-[10px] text-zinc-500"
-                      title={new Date(job.createdAt).toLocaleString("pt-BR")}
-                    >
-                      {relativeTime(job.createdAt)}
+                      {STATUS_LABEL[selectedJob.status]}
                     </span>
                   </div>
+                  {selectedJobId && selectedJobId !== activeJob?.id && (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedJobId(null)}
+                      className="text-xs text-zinc-400 hover:text-zinc-200 transition underline underline-offset-2"
+                    >
+                      {activeJob ? "Voltar ao job ativo" : "Ver último job"}
+                    </button>
+                  )}
+                </div>
 
-                  {/* Model + kind */}
-                  <div className="min-w-0">
-                    <span className="block truncate text-xs font-semibold text-zinc-100">
-                      {job.model}
-                    </span>
-                    <span className="block truncate font-mono text-[10px] text-zinc-500">
-                      {job.kind}
-                    </span>
+                {/* Job Hero Card */}
+                <div className="glass-card rounded-2xl p-5 space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-display text-base font-semibold text-zinc-100">
+                          {selectedJob.model}
+                        </span>
+                        <span className="font-mono text-[11px] text-zinc-400">
+                          · {selectedJob.kind} · {selectedJob.engine}
+                        </span>
+                      </div>
+                      <div className="mt-1 flex items-center gap-3 font-mono text-[11px] text-zinc-400">
+                        <span>
+                          Duração: {formatDuration(selectedJob.createdAt, selectedJob.finishedAt)}
+                        </span>
+                        {selectedJob.epoch != null && (
+                          <span>Epoch {selectedJob.epoch}</span>
+                        )}
+                        {(selectedJob.status === "queued" ||
+                          selectedJob.status === "running") && (
+                          <span className="text-brand-300 font-semibold">
+                            {Math.round((selectedJob.progress ?? 0) * 100)}%
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 font-mono text-[11px] text-zinc-400">
+                      <span title={selectedJob.id}>ID: {selectedJob.id.slice(0, 8)}…</span>
+                      {selectedJob.datasetId && (
+                        <button
+                          type="button"
+                          onClick={() => router.push(`/datasets/${selectedJob.datasetId}`)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-zinc-800 bg-black/40 px-2.5 py-1 text-xs text-brand-400 hover:text-brand-300 hover:border-brand-500/30 transition"
+                        >
+                          <IconDatabase className="size-3" />
+                          <span>Dataset</span>
+                        </button>
+                      )}
+                    </div>
                   </div>
 
-                  {/* Progress bar (active jobs) */}
-                  {isActive && (
-                    <div className="h-1 w-full overflow-hidden rounded-full bg-zinc-800">
-                      <div
-                        className="h-full rounded-full bg-[#34d399] transition-all duration-500"
-                        style={{ width: `${pct}%` }}
-                      />
+                  {/* Barra de progresso full-width para jobs ativos */}
+                  {(selectedJob.status === "queued" ||
+                    selectedJob.status === "running" ||
+                    selectedJob.status === "cancelling") && (
+                    <div className="space-y-1.5 pt-1">
+                      <div className="flex items-center justify-between font-mono text-[11px]">
+                        <span className="text-zinc-400">Progresso do Treinamento</span>
+                        <span className="font-semibold text-brand-300">
+                          {Math.round((selectedJob.progress ?? 0) * 100)}%
+                        </span>
+                      </div>
+                      <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-900 border border-zinc-800">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-brand-600 via-brand-500 to-brand-400 transition-all duration-500"
+                          style={{
+                            width: `${Math.min(
+                              100,
+                              Math.max(3, Math.round((selectedJob.progress ?? 0) * 100)),
+                            )}%`,
+                          }}
+                        />
+                      </div>
                     </div>
                   )}
 
-                  {/* Cancelling indicator */}
-                  {job.status === "cancelling" && (
-                    <span className="font-mono text-[10px] text-zinc-500">
-                      cancelando…
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-        </div>
-      </aside>
+                  {/* Métricas da Execução & Curvas de Convergência */}
+                  {(selectedJob.kind === "yolo_train" ||
+                    (metrics[selectedJob.id] && metrics[selectedJob.id].length > 0)) && (
+                    <div className="space-y-4 pt-3 border-t border-zinc-800/80">
+                      {/* Curvas de Convergência Vetoriais (SVG Multi-Curve) */}
+                      <ConvergenceChart
+                        metrics={metrics[selectedJob.id] || []}
+                        totalEpochs={selectedJob.epoch || 100}
+                        isJobActive={selectedJob.status === "running"}
+                      />
 
-      {/* ═══════════════════════════════════════════════
-          ÁREA CENTRAL — Setup ou Detalhe do Job
-          ═══════════════════════════════════════════════ */}
-      <main className="min-w-0 flex-1">
-        {/* Error global */}
-        {error && (
-          <div className="glass-card flex flex-col items-center gap-3 rounded-2xl p-10 text-center">
-            <p className="text-sm text-zinc-300">{error}</p>
-            <button
-              type="button"
-              onClick={() => {
-                setLoading(true);
-                void fetchJobs();
-              }}
-              className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-4 text-xs font-medium whitespace-nowrap text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
-            >
-              Tentar novamente
-            </button>
-          </div>
-        )}
-
-        {/* Estado: nenhum job selecionado → Setup */}
-        {!error && !selectedJob && <ForjaYoloSetup onJobCreated={handleJobCreated} />}
-
-        {/* Estado: job selecionado → Detalhe */}
-        {!error && selectedJob && (
-          <div className="space-y-5">
-            {/* Voltar ao setup */}
-            <button
-              type="button"
-              onClick={() => setSelectedJobId(null)}
-              className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-3 text-xs font-medium whitespace-nowrap text-zinc-300 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
-            >
-              ← Voltar ao setup
-            </button>
-
-            {/* Job header */}
-            <div className="glass-card rounded-2xl p-5">
-              <div className="flex items-center gap-3">
-                <span
-                  className={`shrink-0 rounded-full border px-2.5 py-1 font-mono text-[11px] font-medium ${STATUS_STYLE[selectedJob.status]}`}
-                >
-                  {STATUS_LABEL[selectedJob.status]}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="truncate text-sm font-semibold text-zinc-100">
-                      {selectedJob.model}
-                    </span>
-                    <span className="font-mono text-[10px] text-zinc-500">
-                      {selectedJob.kind}
-                    </span>
-                    {selectedJob.queuePosition != null &&
-                      selectedJob.status === "queued" && (
-                        <span className="font-mono text-[10px] text-zinc-500">
-                          #{selectedJob.queuePosition}
-                        </span>
+                      {/* Cards com Sparklines Integradas */}
+                      {metrics[selectedJob.id] && metrics[selectedJob.id].length > 0 && (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <h3 className="font-mono text-[11px] font-semibold uppercase tracking-caps text-zinc-300">
+                              Métricas da Execução (Epoch{" "}
+                              {metrics[selectedJob.id]![metrics[selectedJob.id]!.length - 1].epoch}
+                              )
+                            </h3>
+                            <span className="font-mono text-[11px] text-zinc-500">
+                              {metrics[selectedJob.id]!.length} checkpoint(s)
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
+                            {(
+                              [
+                                ["map50", "mAP@50", true],
+                                ["map5095", "mAP@50-95", true],
+                                ["boxLoss", "Box Loss", false],
+                                ["clsLoss", "Cls Loss", false],
+                                ["dflLoss", "Dfl Loss", false],
+                                ["epoch", "Epochs", false],
+                              ] as const
+                            ).map(([key, label, isPercent]) => {
+                              const jobMetrics = metrics[selectedJob.id]!;
+                              const last = jobMetrics[jobMetrics.length - 1];
+                              const val = last[key as keyof JobMetricsType];
+                              const isPrimary = key === "map50";
+                              const series = jobMetrics.map(
+                                (m) => m[key as keyof JobMetricsType] as number,
+                              );
+                              return (
+                                <div
+                                  key={key}
+                                  className={`rounded-xl border p-3 flex flex-col justify-between ${
+                                    isPrimary
+                                      ? "border-brand-500/30 bg-brand-500/10"
+                                      : "border-zinc-800 bg-black/40"
+                                  }`}
+                                >
+                                  <div>
+                                    <span
+                                      className={`block font-mono text-[11px] font-medium tracking-caps uppercase ${
+                                        isPrimary ? "text-brand-300" : "text-zinc-400"
+                                      }`}
+                                    >
+                                      {label}
+                                    </span>
+                                    <span className="block font-mono text-base font-semibold text-zinc-100 mt-1">
+                                      {typeof val === "number"
+                                        ? isPercent
+                                          ? `${(val * 100).toFixed(1)}%`
+                                          : key === "epoch"
+                                            ? val
+                                            : val.toFixed(4)
+                                        : "—"}
+                                    </span>
+                                  </div>
+                                  <div className="mt-2 pt-2 border-t border-white/[0.04]">
+                                    <MetricSparkline
+                                      data={series}
+                                      color={SPARK_COLORS[key] || "#34d399"}
+                                    />
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
                       )}
-                  </div>
-                  <div className="mt-0.5 flex items-center gap-3 font-mono text-[10px] text-zinc-400">
-                    <span title={`Criado em ${new Date(selectedJob.createdAt).toLocaleString("pt-BR")}`}>
-                      {formatDuration(selectedJob.createdAt, selectedJob.finishedAt)}
-                    </span>
-                    {selectedJob.epoch != null && (
-                      <span>Epoch {selectedJob.epoch}</span>
-                    )}
-                    {(selectedJob.status === "queued" ||
-                      selectedJob.status === "running") && (
-                      <span className="text-brand-300">
-                        {Math.round((selectedJob.progress ?? 0) * 100)}%
-                      </span>
-                    )}
-                  </div>
-                </div>
-                <span className="font-mono text-[10px] text-zinc-500" title={selectedJob.id}>
-                  {selectedJob.id.slice(0, 8)}
-                </span>
-              </div>
+                    </div>
+                  )}
 
-              {/* Progress bar full width */}
-              {(selectedJob.status === "queued" ||
-                selectedJob.status === "running") && (
-                <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-zinc-800">
-                  <div
-                    className="h-full rounded-full bg-[#34d399] transition-all duration-500"
-                    style={{
-                      width: `${Math.round((selectedJob.progress ?? 0) * 100)}%`,
-                    }}
-                  />
-                </div>
-              )}
-            </div>
-
-            {/* Métricas */}
-            {metrics[selectedJob.id] && metrics[selectedJob.id].length > 0 && (
-              <div className="glass-card rounded-2xl p-5">
-                <h4 className="tracking-caps mb-3 font-mono text-[11px] font-semibold uppercase text-zinc-400">
-                  {"Métricas (Epoch "}
-                  {metrics[selectedJob.id]![
-                    metrics[selectedJob.id]!.length - 1
-                  ].epoch}
-                  {")"}
-                </h4>
-                <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
-                  {(
-                    [
-                      ["boxLoss", "Box Loss"],
-                      ["clsLoss", "Cls Loss"],
-                      ["dflLoss", "Dfl Loss"],
-                      ["map50", "mAP@50"],
-                      ["map5095", "mAP@50-95"],
-                      ["epoch", "Epoch"],
-                    ] as const
-                  ).map(([key, label]) => {
-                    const jobMetrics = metrics[selectedJob.id]!;
-                    const last = jobMetrics[jobMetrics.length - 1];
-                    const val = last[key];
-                    return (
-                      <div
-                        key={key}
-                        className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-2"
-                      >
-                        <span className="block font-mono text-[10px] text-zinc-500">
-                          {label}
-                        </span>
-                        <span className="block font-mono text-sm font-medium text-zinc-200">
-                          {typeof val === "number"
-                            ? key === "epoch"
-                              ? val
-                              : val.toFixed(4)
-                            : "—"}
-                        </span>
+                  {/* Artefatos Gerados (Achatado - sem nested-cards) */}
+                  {artifacts[selectedJob.id] && artifacts[selectedJob.id].length > 0 && (
+                    <div className="space-y-3 pt-3 border-t border-zinc-800/80">
+                      <h3 className="font-mono text-[11px] font-semibold uppercase tracking-caps text-zinc-300">
+                        Artefatos Gerados ({artifacts[selectedJob.id].length})
+                      </h3>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                        {artifacts[selectedJob.id].map((art) => (
+                          <div
+                            key={art.id}
+                            className="flex items-center justify-between rounded-xl border border-zinc-800 bg-black/40 p-3"
+                          >
+                            <div className="min-w-0 mr-2">
+                              <span
+                                className="block text-xs font-semibold text-zinc-200 truncate"
+                                title={art.path}
+                              >
+                                {art.path.split("/").pop()}
+                              </span>
+                              <span className="block font-mono text-[11px] text-zinc-400">
+                                {formatBytes(art.bytes)} · {art.kind}
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleDownloadArtifact(selectedJob.id, art)}
+                              className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.06] px-2.5 py-1.5 text-xs font-medium text-zinc-200 hover:bg-white/15 active:scale-[0.985] transition"
+                            >
+                              <IconDownload className="size-3.5" />
+                              <span>Baixar</span>
+                            </button>
+                          </div>
+                        ))}
                       </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
+                    </div>
+                  )}
 
-            {/* Artefatos */}
-            {artifacts[selectedJob.id] &&
-              artifacts[selectedJob.id].length > 0 && (
-                <div className="glass-card rounded-2xl p-5">
-                  <h4 className="tracking-caps mb-3 font-mono text-[11px] font-semibold uppercase text-zinc-400">
-                    Artefatos
-                  </h4>
-                  <div className="flex flex-wrap gap-2">
-                    {(artifacts[selectedJob.id] ?? []).map((art) => (
-                      <button
-                        key={art.id}
-                        type="button"
-                        onClick={() =>
-                          handleDownloadArtifact(selectedJob.id, art)
-                        }
-                        title={`Baixar ${art.path} (${art.bytes} bytes)`}
-                        className="inline-flex h-9 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-3 text-xs font-medium text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
-                      >
-                        <IconDownload className="h-3.5 w-3.5" />
-                        <span className="font-mono">{art.path}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-            {/* Sem artefatos */}
-            {selectedJob.status === "done" &&
-              artifacts[selectedJob.id] &&
-              artifacts[selectedJob.id].length === 0 && (
-                <p className="text-xs text-zinc-500">Sem artefatos.</p>
-              )}
-
-            {/* Ações */}
-            {(selectedJob.status === "queued" ||
-              selectedJob.status === "running") && (
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setAbortTarget(selectedJob)}
-                  className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-[#ef4444]/30 bg-[#ef4444]/[0.12] px-4 text-xs font-medium whitespace-nowrap text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-[#ef4444]/50 hover:bg-[#ef4444]/[0.18] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
-                >
-                  <IconTrash className="h-3.5 w-3.5" />
-                  Abortar
-                </button>
-              </div>
-            )}
-
-            {/* Aplicar boxes — somente para autotracker done */}
-            {selectedJob.status === "done" &&
-              selectedJob.engine === "autotracker" && (
-                <div className="glass-card rounded-2xl p-5">
-                  <h4 className="tracking-caps mb-3 font-mono text-[11px] font-semibold uppercase text-zinc-400">
-                    Aplicar ao dataset
-                  </h4>
-                  <p className="mb-3 text-xs text-zinc-400">
-                    As boxes geradas pelo AutoTracker estão prontas para serem
-                    aplicadas ao dataset.
-                  </p>
-                  {(() => {
-                    const jobArts = artifacts[selectedJob.id] ?? [];
-                    const hasBoxes = jobArts.some((a) => a.kind === "boxes");
-                    return (
+                  {/* Ações do Job */}
+                  <div className="flex items-center justify-between gap-3 pt-2">
+                    {selectedJob.kind === "autotracker" && selectedJob.status === "done" && (
                       <div className="flex items-center gap-3">
-                        <label className="flex items-center gap-2 text-xs text-zinc-300">
+                        <label className="flex items-center gap-2 text-xs text-zinc-400 cursor-pointer">
                           <input
                             type="checkbox"
                             checked={applyOverwrite}
                             onChange={(e) => setApplyOverwrite(e.target.checked)}
-                            disabled={applyBusy || !hasBoxes}
-                            className="h-4 w-4 rounded border-zinc-700 bg-black/40 accent-brand-500"
+                            className="rounded border-zinc-700 bg-zinc-800 text-brand-500 focus:ring-brand-500/40"
                           />
-                          Sobrescrever anotações manuais
+                          <span>Sobrescrever anotações existentes</span>
                         </label>
                         <button
                           type="button"
-                          onClick={() => void handleApplyBoxes(selectedJob)}
-                          disabled={applyBusy || !hasBoxes}
-                          title={hasBoxes ? undefined : "Aguardando artefato boxes.json…"}
-                          className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] px-5 text-xs font-semibold whitespace-nowrap text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
+                          disabled={applyBusy}
+                          onClick={() => handleApplyBoxes(selectedJob)}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] px-3 py-1.5 text-xs font-medium text-white transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] disabled:opacity-50"
                         >
-                          <IconTarget className="h-3.5 w-3.5" />
-                          {applyBusy ? "Aplicando…" : "Aplicar boxes ao dataset"}
+                          <IconCheck className="size-3.5 text-brand-400" />
+                          <span>{applyBusy ? "Aplicando…" : "Aplicar boxes ao dataset"}</span>
                         </button>
                       </div>
+                    )}
+
+                    {(selectedJob.status === "queued" || selectedJob.status === "running") && (
+                      <button
+                        type="button"
+                        onClick={() => setAbortTarget(selectedJob)}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/15 px-3 py-1.5 text-xs font-medium text-rose-300 transition hover:bg-rose-500/25 active:scale-[0.985] cursor-pointer"
+                      >
+                        <IconTrash className="size-3.5" />
+                        <span>Cancelar Execução</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Visualizador Colapsável de Streaming de Logs do Orquestrador */}
+                <JobLogViewer
+                  job={selectedJob}
+                  metrics={metrics[selectedJob.id] || []}
+                  artifacts={artifacts[selectedJob.id] || []}
+                />
+              </div>
+            ) : (
+              /* Empty State quando não há nenhum job */
+              <div className="glass-card flex flex-col items-center gap-3.5 rounded-2xl p-12 text-center">
+                <span className="flex size-12 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900/90 text-zinc-400">
+                  <IconTarget className="size-6 text-brand-400/60" />
+                </span>
+                <div className="max-w-md space-y-1">
+                  <h3 className="font-display text-sm font-semibold text-zinc-200">
+                    Nenhum treinamento registrado
+                  </h3>
+                  <p className="text-xs text-zinc-400">
+                    Configure os hiperparâmetros no painel lateral à esquerda e clique em{" "}
+                    <strong className="text-zinc-200">Iniciar Treino</strong> para disparar a
+                    primeira execução local no nó.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* ═══════════════════════════════════════════════
+                HISTÓRICO COMPLETO DE JOBS
+                ═══════════════════════════════════════════════ */}
+            <div className="space-y-3.5 pt-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <h3 className="font-display text-sm font-semibold text-zinc-200">
+                    Histórico de Execuções
+                  </h3>
+                  <span className="rounded-full border border-zinc-800 bg-zinc-900/80 px-2 py-0.5 font-mono text-[11px] text-zinc-400">
+                    {sorted.length} {sorted.length === 1 ? "execução" : "execuções"}
+                  </span>
+                </div>
+                {activeJobsCount > 0 && (
+                  <span className="flex items-center gap-1.5 font-mono text-[11px] text-brand-300">
+                    <span className="size-1.5 rounded-full bg-brand-400 animate-pulse" />
+                    {activeJobsCount} ativo(s)
+                  </span>
+                )}
+              </div>
+
+              {loading ? (
+                <div className="glass-card rounded-2xl p-8 text-center text-xs text-zinc-500 font-mono">
+                  Carregando histórico de jobs…
+                </div>
+              ) : sorted.length === 0 ? (
+                <div className="glass-card flex flex-col items-center gap-3 rounded-2xl p-8 text-center">
+                  <p className="text-xs font-medium text-zinc-400">
+                    Nenhum histórico disponível até o momento.
+                  </p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-2">
+                  {sorted.map((job) => {
+                    const isActive =
+                      job.status === "queued" ||
+                      job.status === "running" ||
+                      job.status === "cancelling";
+                    const isFocused = selectedJob?.id === job.id;
+                    const pct = Math.round((job.progress ?? 0) * 100);
+
+                    return (
+                      <div
+                        key={job.id}
+                        onClick={() => setSelectedJobId(job.id)}
+                        className={`group flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl p-3.5 transition cursor-pointer ${
+                          isFocused
+                            ? "border border-brand-500/40 bg-brand-500/[0.08] shadow-sm"
+                            : "glass-card hover:border-zinc-700"
+                        }`}
+                      >
+                        <div className="flex items-center gap-3 min-w-0 flex-1">
+                          <span
+                            className={`shrink-0 rounded-full border px-2.5 py-0.5 font-mono text-[11px] font-medium ${STATUS_STYLE[job.status]}`}
+                          >
+                            {STATUS_LABEL[job.status]}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="text-xs font-semibold text-zinc-100 shrink-0">
+                                {job.model}
+                              </span>
+                              <span
+                                className="font-mono text-[11px] text-zinc-400 truncate"
+                                title={`${job.kind} · ${job.engine}`}
+                              >
+                                · {job.kind} · {job.engine}
+                              </span>
+                              {isFocused && (
+                                <span className="hidden sm:inline-flex shrink-0 rounded border border-brand-500/30 bg-brand-500/15 px-1.5 py-0.2 font-mono text-[11px] text-brand-300">
+                                  Ativo no monitor
+                                </span>
+                              )}
+                            </div>
+                            <div className="mt-0.5 flex items-center gap-3 font-mono text-[11px] text-zinc-400">
+                              <span>{formatRelativeTime(job.createdAt)}</span>
+                              <span>Duração: {formatDuration(job.createdAt, job.finishedAt)}</span>
+                              {isActive && (
+                                <span className="text-brand-300 font-semibold">{pct}%</span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center space-x-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedJobId(job.id);
+                            }}
+                            className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium transition active:scale-[0.985] ${
+                              isFocused
+                                ? "border border-brand-500/40 bg-brand-500/20 text-brand-200"
+                                : "border border-white/10 bg-white/[0.06] text-zinc-200 hover:bg-white/15"
+                            }`}
+                          >
+                            <span>{isFocused ? "Em exibição" : "Ver detalhes"}</span>
+                            <span>→</span>
+                          </button>
+                        </div>
+                      </div>
                     );
-                  })()}
+                  })}
                 </div>
               )}
-          </div>
-        )}
-      </main>
+            </div>
+          </section>
+        </div>
+      )}
 
-      {/* Abort confirm dialog */}
+      {/* Confirmação de Abort */}
       <ConfirmDialog
-        open={abortTarget !== null}
-        title="Abortar job"
+        open={Boolean(abortTarget)}
+        title="Cancelar execução do Job"
         body={
-          abortTarget ? (
-            <p>
-              Tem certeza que deseja abortar o job{" "}
-              <strong className="text-zinc-100">{abortTarget.model}</strong>?
-              {abortTarget.status === "queued"
-                ? " O job ainda não iniciou."
-                : " O job em execução será interrompido."}
-            </p>
-          ) : null
+          <p className="text-xs text-zinc-300">
+            Tem certeza de que deseja interromper o job{" "}
+            <strong className="text-white font-mono">{abortTarget?.model}</strong> (
+            {abortTarget?.id.slice(0, 8)}…)? O processo será interrompido imediatamente.
+          </p>
         }
-        confirmLabel="Abortar"
+        confirmLabel="Sim, cancelar job"
         danger
         busy={abortBusy}
         onConfirm={handleAbort}
-        onClose={() => {
-          if (!abortBusy) setAbortTarget(null);
-        }}
+        onClose={() => setAbortTarget(null)}
       />
     </div>
   );
 }
+
+export default function JobsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex h-full items-center justify-center p-8">
+          <div className="size-8 animate-spin rounded-full border-2 border-brand-500 border-t-transparent" />
+        </div>
+      }
+    >
+      <JobsPageContent />
+    </Suspense>
+  );
+}
+

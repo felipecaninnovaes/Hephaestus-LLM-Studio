@@ -7,6 +7,7 @@ import { ApiError } from "@/lib/api";
 import { startAutotrackerJob } from "@/lib/autotracker";
 import { autotrackerErrorMessage } from "@/types/studio";
 import { showToast } from "./Toast";
+import { openActionCenter } from "@/lib/events";
 
 const CONF_MIN = 0.3;
 const CONF_MAX = 0.95;
@@ -76,7 +77,7 @@ export default function AutoTrackerModal({
       );
       onClose();
       onJobCreated();
-      router.push("/jobs");
+      openActionCenter();
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.code === "unauthorized" || err.status === 401) {

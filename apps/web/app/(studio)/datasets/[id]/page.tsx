@@ -50,8 +50,8 @@ const PAGE_LIMIT = 50;
 type GalleryView = "ativas" | "trash";
 
 export default function DatasetGalleryPage() {
-  const params = useParams<{ id: string }>();
-  const datasetId = params.id;
+  const params = useParams<{ id?: string }>();
+  const datasetId = params?.id;
   const router = useRouter();
   const fileRef = useRef<HTMLInputElement>(null);
 

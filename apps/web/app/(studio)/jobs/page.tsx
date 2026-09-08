@@ -90,6 +90,11 @@ export default function JobsPage() {
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Resetar applyOverwrite ao trocar de job
+  useEffect(() => {
+    setApplyOverwrite(false);
+  }, [selectedJobId]);
+
   const fetchJobs = useCallback(async () => {
     try {
       const data = await listJobs();
@@ -241,6 +246,7 @@ export default function JobsPage() {
             }
           : undefined,
       );
+      setApplyOverwrite(false);
       await fetchJobs();
     } catch (err) {
       if (err instanceof ApiError) {
@@ -320,7 +326,7 @@ export default function JobsPage() {
                 <IconTarget className="h-5 w-5 text-zinc-700" />
               </span>
               <p className="text-xs font-medium text-zinc-400">
-                Nenhum treino ainda
+                Nenhum job ainda
               </p>
             </div>
           )}
@@ -589,27 +595,34 @@ export default function JobsPage() {
                     As boxes geradas pelo AutoTracker estão prontas para serem
                     aplicadas ao dataset.
                   </p>
-                  <div className="flex items-center gap-3">
-                    <label className="flex items-center gap-2 text-xs text-zinc-300">
-                      <input
-                        type="checkbox"
-                        checked={applyOverwrite}
-                        onChange={(e) => setApplyOverwrite(e.target.checked)}
-                        disabled={applyBusy}
-                        className="h-4 w-4 rounded border-zinc-700 bg-black/40 accent-brand-500"
-                      />
-                      Sobrescrever anotações manuais
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => void handleApplyBoxes(selectedJob)}
-                      disabled={applyBusy}
-                      className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] px-5 text-xs font-semibold whitespace-nowrap text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
-                    >
-                      <IconTarget className="h-3.5 w-3.5" />
-                      {applyBusy ? "Aplicando…" : "Aplicar boxes ao dataset"}
-                    </button>
-                  </div>
+                  {(() => {
+                    const jobArts = artifacts[selectedJob.id] ?? [];
+                    const hasBoxes = jobArts.some((a) => a.kind === "boxes");
+                    return (
+                      <div className="flex items-center gap-3">
+                        <label className="flex items-center gap-2 text-xs text-zinc-300">
+                          <input
+                            type="checkbox"
+                            checked={applyOverwrite}
+                            onChange={(e) => setApplyOverwrite(e.target.checked)}
+                            disabled={applyBusy || !hasBoxes}
+                            className="h-4 w-4 rounded border-zinc-700 bg-black/40 accent-brand-500"
+                          />
+                          Sobrescrever anotações manuais
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => void handleApplyBoxes(selectedJob)}
+                          disabled={applyBusy || !hasBoxes}
+                          title={hasBoxes ? undefined : "Aguardando artefato boxes.json…"}
+                          className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] px-5 text-xs font-semibold whitespace-nowrap text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
+                        >
+                          <IconTarget className="h-3.5 w-3.5" />
+                          {applyBusy ? "Aplicando…" : "Aplicar boxes ao dataset"}
+                        </button>
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
           </div>

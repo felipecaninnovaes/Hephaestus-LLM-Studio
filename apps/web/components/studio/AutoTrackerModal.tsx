@@ -31,14 +31,12 @@ export default function AutoTrackerModal({
   const router = useRouter();
   const sliderRef = useRef<HTMLInputElement>(null);
   const [conf, setConf] = useState<number>(CONF_DEFAULT);
-  const [overwrite, setOverwrite] = useState(false);
   const [busy, setBusy] = useState(false);
   const [topError, setTopError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
     setConf(CONF_DEFAULT);
-    setOverwrite(false);
     setTopError(null);
     setBusy(false);
     const t = setTimeout(() => sliderRef.current?.focus(), 30);
@@ -193,24 +191,6 @@ export default function AutoTrackerModal({
               <span>{CONF_MIN}</span>
               <span>{CONF_MAX}</span>
             </div>
-          </div>
-
-          {/* Overwrite checkbox — guardado aqui, aplicado no apply */}
-          <div className="flex items-start gap-2.5">
-            <input
-              id="at-overwrite"
-              type="checkbox"
-              checked={overwrite}
-              onChange={(e) => setOverwrite(e.target.checked)}
-              disabled={busy}
-              className="mt-0.5 h-4 w-4 shrink-0 rounded border-zinc-700 bg-black/40 accent-brand-500"
-            />
-            <label htmlFor="at-overwrite" className="text-xs text-zinc-300 leading-tight">
-              Sobrescrever anotações existentes
-              <span className="mt-0.5 block text-[10px] text-zinc-500">
-                Quando aplicado, substitui todas as boxes (manuais e de AutoTracker anteriores).
-              </span>
-            </label>
           </div>
 
           {/* CTA */}

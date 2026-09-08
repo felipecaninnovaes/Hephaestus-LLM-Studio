@@ -15,7 +15,6 @@ from __future__ import annotations
 import hashlib
 import json
 import struct
-import sys
 from pathlib import Path
 
 import yaml
@@ -158,6 +157,7 @@ def _box_for_image(
     conf_key = f"{seed}:{filename}:{class_name}:conf".encode("utf-8")
     conf_raw = hashlib.sha256(conf_key).digest()[0]
     conf = conf_min + (0.99 - conf_min) * (conf_raw / 255.0)
+    conf = min(conf, 0.99)
 
     return {
         "class": class_name,

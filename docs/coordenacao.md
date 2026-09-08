@@ -19,7 +19,16 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-08 (sessão 14 — FATIA 4 FECHADA: F4.7–F4.9 completos, 38 commits na `feat/jobs-v1`, todas as baterias verdes; aguarda DECISÃO DO USUÁRIO de push/CI/merge)
+## Estado atual — 2026-09-08 (sessão 15 — FATIA 4 MERGEADA NA MAIN (`367676f`); planejando a PRÓXIMA FATIA em paralelo ao CI)
+
+- **Merge da `feat/jobs-v1` na main confirmado** (`367676f`, árvore limpa, sincronizada com origin). 38 commits da fatia.
+- **CI não verificável pelo coordenador**: token de `~/.config/hep-ci/token` retorna **401 Unauthorized** em ambos os formatos (`token`/`Bearer`) na API do Gitea — aparenta rotação/expiração. Pendente do usuário: token novo (ou confirmação manual dos 3 jobs rust/web/compose no run do merge).
+- **PRÓXIMA FATIA EM PLANEJAMENTO (proposta enviada ao usuário, aguardando escolha)**:
+  - **A (RECOMENDADA) — Fatia 5: AutoTracker v1 (mock, mesma arquitetura da fatia 4)**: fecha o loop YOLO (preparo de dados → treino). Reusa manager/orquestrador/trainer-yolo da fatia 4; `boxes.origin='autotracker'` já existe no schema desde a 0003; UI já tem ganchos (menus 4.3 "Executar AutoTracker"/"Re-executar", badge `autoTracked`, editor BBox para revisão); IDEIA.md §3 lista AutoTracker como a ferramenta de preparo do YOLO (imagem e vídeo). Decisões de arquitetura para @architect: (1) como as boxes geradas voltam ao Postgres — Postgres de datasets é dono do principal e o orquestrador não tem credencial nele (candidatos: artifact do job ingerido pelo principal pós-done, ou report push estendido); (2) rota — `POST /api/jobs/autotracker` reusando a fila vs `POST /api/preview/autotracker` efêmero (backend.md §9 prevê preview); (3) `jobs.engine` é TEXT livre (sem CHECK) — sem migration para engine novo, confirmar; (4) origem `autolabel` para captions está FORA do CHECK atual de `captions.origin` ('manual','autotracker','import') — não afeta esta fatia, mas se for tocar, decidir; (5) vídeo fica FORA da v1 (tabela `videos` sem rota de escrita). Modelo mock ENGINE_MOCK + modo real @gpu manual, padrão da casa.
+  - **B — Fatia de dívidas F4.8** (abort races preparing/dispatched, watchdog offline do orquestrador, pytest do trainer no CI, defaults de token uniformes, unzip `\`, NITs frontend listados em dividas.md). Manutenção pura, honra dívida antes de construir em cima.
+  - **C — Treino CLIP ou difusão (mock)** — mais pesada, não fecha loop de preparo de dados ainda.
+  - **D — Backlog pequeno**: "Importar" na lista de datasets, `scripts/ci-watch.sh`, versionar `smoke_f4.py` (vira `scripts/smoke-f4.py`).
+- **Próximo passo da sessão 15**: usuário escolhe a fatia (A recomendada) → despachar @architect se A (decisões 1–5) → plano numerado → fatia nova `feat/<slice>`.
 
 ## Resumo da sessão 14 (fecho da fatia 4)
 

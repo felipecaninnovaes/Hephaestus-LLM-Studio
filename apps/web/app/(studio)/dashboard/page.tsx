@@ -21,6 +21,7 @@ import {
   IconZap,
 } from "@/components/icons";
 import { getTelemetry, listJobs } from "@/lib/jobs";
+import { Button } from "@/components/ui/Button";
 import type { Dataset, Job, Telemetry } from "@/types/studio";
 
 interface NodeData {
@@ -226,17 +227,19 @@ export default function DashboardPage() {
           </div>
 
           {/* Refresh Button */}
-          <button
+          <Button
             type="button"
+            variant="secondary"
+            size="md"
             onClick={handleManualRefresh}
             disabled={isRefreshing}
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-4 font-medium text-xs text-zinc-200 transition-all hover:border-white/20 hover:bg-white/[0.08] hover:text-white active:scale-[0.985] cursor-pointer disabled:opacity-50"
+            loading={isRefreshing}
           >
             <IconRefresh
               className={`size-4 ${isRefreshing ? "animate-spin text-brand-400" : "text-zinc-400"}`}
             />
             <span>Atualizar</span>
-          </button>
+          </Button>
         </div>
       </div>
 

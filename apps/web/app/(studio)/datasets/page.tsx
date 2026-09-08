@@ -8,13 +8,13 @@ import ConfirmDialog from "@/components/studio/ConfirmDialog";
 import CreateDatasetModal from "@/components/studio/CreateDatasetModal";
 import DatasetMenu from "@/components/studio/DatasetMenu";
 import { showToast } from "@/components/studio/Toast";
+import { Button, SearchInput, SubmodulePills } from "@/components/ui";
 import {
   IconDatabase,
   IconGrid,
   IconList,
   IconPlay,
   IconPlus,
-  IconSearch,
   IconUpload,
 } from "@/components/icons";
 import { ApiError } from "@/lib/api";
@@ -61,7 +61,6 @@ export default function DatasetsPage() {
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [menu, setMenu] = useState<{ dataset: Dataset; x: number; y: number } | null>(null);
   const [trainDataset, setTrainDataset] = useState<Dataset | null>(null);
-  const pillsRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -88,12 +87,6 @@ export default function DatasetsPage() {
   useEffect(() => {
     load();
   }, [load]);
-
-  useEffect(() => {
-    pillsRef.current
-      ?.querySelector('[data-active="true"]')
-      ?.scrollIntoView({ inline: "nearest", block: "nearest" });
-  }, [pill]);
 
   const counts = useMemo(() => {
     const c: Record<Pill, number> = {
@@ -260,74 +253,54 @@ export default function DatasetsPage() {
               <IconList className="h-4 w-4" />
             </button>
           </div>
-          <button
+          <Button
             type="button"
+            variant="secondary"
+            size="md"
             onClick={() => {
               setCreateMode("import");
               setDroppedInspection(null);
               setCreateOpen(true);
             }}
-            className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3.5 text-xs font-medium whitespace-nowrap text-zinc-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.08] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
           >
             <IconUpload className="h-4 w-4 text-zinc-400" />
             Importar
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
+            variant="primary"
+            size="md"
             onClick={() => {
               setCreateMode("empty");
               setDroppedInspection(null);
               setCreateOpen(true);
             }}
-            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] px-4 text-xs font-semibold whitespace-nowrap text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
           >
             <IconPlus className="h-4 w-4" />
             Novo Dataset
-          </button>
+          </Button>
         </div>
       </div>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <label className="relative block w-full sm:max-w-xs">
-          <IconSearch className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-zinc-400" />
-          <input
-            type="search"
+        <div className="w-full sm:max-w-xs">
+          <SearchInput
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onClear={() => setQuery("")}
             placeholder="Buscar por nome, slug ou classe…"
             aria-label="Buscar por nome, slug ou classe"
-            className="w-full rounded-xl border border-zinc-800 bg-black/40 py-2 pr-3 pl-9 text-sm text-zinc-100 placeholder:text-zinc-400 focus:border-brand-500 focus:outline-none"
           />
-        </label>
-        <div className="relative min-w-0 flex-1 sm:flex-none">
-          <div ref={pillsRef} className="no-scrollbar flex gap-1.5 overflow-x-auto py-0.5 pr-8">
-            {PILLS.map((p) => {
-              const label = `${p.label} ${counts[p.id]}`;
-              const active = pill === p.id;
-              return (
-                <button
-                  key={p.id}
-                  type="button"
-                  onClick={() => setPill(p.id)}
-                  aria-pressed={active}
-                  data-active={active}
-                  title={label}
-                  className={`inline-flex h-9 shrink-0 items-center gap-1.5 truncate rounded-lg border px-4 text-sm font-medium whitespace-nowrap transition active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 ${
-                    active
-                      ? "border-brand-500/30 bg-brand-500/[0.12] text-white"
-                      : "border-white/[0.08] bg-white/[0.03] text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200"
-                  }`}
-                >
-                  <span className="truncate">{p.label}</span>{" "}
-                  <span className="font-mono text-[11px] opacity-70">
-                    {counts[p.id]}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-          <div className="pointer-events-none absolute top-0 right-0 h-full w-8 bg-gradient-to-l from-zinc-950 to-transparent" aria-hidden="true" />
         </div>
+        <SubmodulePills<Pill>
+          value={pill}
+          onChange={setPill}
+          items={PILLS.map((p) => ({
+            id: p.id,
+            label: p.label,
+            count: counts[p.id],
+          }))}
+        />
       </div>
 
       {loading ? (
@@ -337,13 +310,14 @@ export default function DatasetsPage() {
       ) : error ? (
         <div className="glass-card flex flex-col items-center gap-3 rounded-2xl p-10 text-center">
           <p className="text-sm text-zinc-300">{error}</p>
-          <button
+          <Button
             type="button"
+            variant="secondary"
+            size="md"
             onClick={load}
-            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-4 text-xs font-medium whitespace-nowrap text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
           >
             Tentar novamente
-          </button>
+          </Button>
         </div>
       ) : datasets.length === 0 ? (
         <div
@@ -379,30 +353,32 @@ export default function DatasetsPage() {
             </p>
           </div>
           <div className="flex items-center gap-3 pt-2">
-            <button
+            <Button
               type="button"
+              variant="secondary"
+              size="md"
               onClick={() => {
                 setCreateMode("empty");
                 setDroppedInspection(null);
                 setCreateOpen(true);
               }}
-              className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-4 text-xs font-medium whitespace-nowrap text-zinc-200 transition hover:bg-white/[0.08] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4"
             >
               <IconPlus className="h-4 w-4" />
               Container Vazio
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
+              variant="primary"
+              size="md"
               onClick={() => {
                 setCreateMode("import");
                 setDroppedInspection(null);
                 setCreateOpen(true);
               }}
-              className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] px-5 text-xs font-semibold whitespace-nowrap text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4"
             >
               <IconUpload className="h-4 w-4" />
               Importar ZIP / Pasta
-            </button>
+            </Button>
           </div>
         </div>
       ) : filtered.length === 0 ? (
@@ -411,13 +387,14 @@ export default function DatasetsPage() {
             <IconDatabase className="h-6 w-6" />
           </span>
           <p className="text-sm font-medium text-zinc-200">Nada encontrado</p>
-          <button
+          <Button
             type="button"
+            variant="secondary"
+            size="md"
             onClick={clearFilters}
-            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-4 text-xs font-medium whitespace-nowrap text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
           >
             Limpar Filtros
-          </button>
+          </Button>
         </div>
       ) : viewMode === "grid" ? (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 2xl:grid-cols-4">

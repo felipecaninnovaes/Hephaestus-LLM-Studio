@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { showToast } from "@/components/studio/Toast";
+import { Button, SearchInput, SubmodulePills } from "@/components/ui";
 import {
   IconDatabase,
   IconDownload,
@@ -717,85 +718,84 @@ export default function DatasetGalleryPage() {
         </div>
 
         <div className="hidden flex-wrap items-center gap-2 md:flex">
-          <button
+          <Button
             type="button"
+            variant="secondary"
+            size="sm"
             onClick={() => setClassesOpen(true)}
             title="Renomear, reordenar, criar ou remover classes"
-            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-3 text-xs font-medium whitespace-nowrap text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
           >
             <IconLayers className="h-4 w-4" />
             <span>Classes</span>
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
+            variant="secondary"
+            size="sm"
             disabled
             title="Preparo assistido chega numa fatia futura."
-            className="inline-flex h-9 cursor-not-allowed items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-3 text-xs font-medium whitespace-nowrap text-zinc-100 opacity-55 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
           >
             <IconSparkles className="h-4 w-4" />
             <span>AutoLabel</span>
-          </button>
+          </Button>
           {(() => {
             const atEnabled = dataset.category === "yolo" && dataset.classes.length > 0 && dataset.imagesCount > 0;
             const atTitle = atEnabled
               ? "Executar AutoTracker neste dataset"
               : "AutoTracker exige dataset yolo com ≥1 classe e ≥1 imagem";
             return (
-              <button
+              <Button
                 type="button"
+                variant="secondary"
+                size="sm"
                 disabled={!atEnabled}
                 title={atTitle}
                 onClick={() => atEnabled && setAutoTrackerOpen(true)}
-                className={`inline-flex h-9 items-center justify-center gap-2 rounded-lg border px-3 text-xs font-medium whitespace-nowrap shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 ${
-                  atEnabled
-                    ? "border-brand-500/30 bg-brand-500/[0.12] text-white transition hover:border-brand-500/50 hover:bg-brand-500/[0.18]"
-                    : "cursor-not-allowed border-white/10 bg-white/[0.05] text-zinc-100 opacity-55"
-                }`}
               >
                 <IconTarget className="h-4 w-4" />
                 <span>AutoTracker</span>
-              </button>
+              </Button>
             );
           })()}
-          <button
+          <Button
             type="button"
+            variant="secondary"
+            size="sm"
             onClick={() => setImportOpen(true)}
             title="Importar backup estruturado (.zip)"
-            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-3 text-xs font-medium whitespace-nowrap text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
           >
             <IconFolder className="h-4 w-4" />
             <span>Importar</span>
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
+            variant="primary"
+            size="sm"
             onClick={handleExport}
             disabled={exporting}
+            loading={exporting}
             title="Baixar backup estruturado (.zip)"
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] px-5 text-xs font-semibold whitespace-nowrap text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
           >
             <IconDownload className="h-4 w-4" />
             <span>{exporting ? "Exportando…" : "Exportar"}</span>
-          </button>
+          </Button>
           {(() => {
             const trainEnabled = dataset.category === "yolo" && dataset.classes.length > 0 && dataset.imagesCount > 0;
             const trainTitle = trainEnabled
               ? "Abrir modal de treino YOLO"
               : "Treino YOLO exige dataset yolo com ≥1 classe e ≥1 imagem";
             return (
-              <button
+              <Button
                 type="button"
+                variant="secondary"
+                size="sm"
                 disabled={!trainEnabled}
                 title={trainTitle}
                 onClick={() => trainEnabled && setTrainOpen(true)}
-                className={`inline-flex h-9 items-center justify-center gap-2 rounded-lg border px-3 text-xs font-medium whitespace-nowrap shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 ${
-                  trainEnabled
-                    ? "border-brand-500/30 bg-brand-500/[0.12] text-white transition hover:border-brand-500/50 hover:bg-brand-500/[0.18]"
-                    : "cursor-not-allowed border-white/10 bg-white/[0.05] text-zinc-100 opacity-55"
-                }`}
               >
                 <IconPlay className="h-4 w-4" />
                 <span>Treinar este Dataset</span>
-              </button>
+              </Button>
             );
           })()}
         </div>
@@ -936,66 +936,39 @@ export default function DatasetGalleryPage() {
 
       {trashTotal > 0 && (
         <div className="flex flex-wrap items-center gap-1.5">
-          <button
-            type="button"
-            onClick={() => switchView("ativas")}
-            aria-pressed={view === "ativas"}
-            className={`inline-flex h-9 items-center gap-1.5 rounded-lg border px-4 text-sm font-medium whitespace-nowrap transition active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 ${
-              view === "ativas"
-                ? "border-brand-500/30 bg-brand-500/[0.12] text-white"
-                : "border-white/[0.08] bg-white/[0.03] text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200"
-            }`}
-          >
-            Ativas{" "}
-            <span className="font-mono text-[11px] opacity-70">
-              {dataset.imagesCount.toLocaleString()}
-            </span>
-          </button>
-          <button
-            type="button"
-            onClick={() => switchView("trash")}
-            aria-pressed={view === "trash"}
-            className={`inline-flex h-9 items-center gap-1.5 rounded-lg border px-4 text-sm font-medium whitespace-nowrap transition active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 ${
-              view === "trash"
-                ? "border-brand-500/30 bg-brand-500/[0.12] text-white"
-                : "border-white/[0.08] bg-white/[0.03] text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200"
-            }`}
-          >
-            Lixeira{" "}
-            <span className="font-mono text-[11px] opacity-70">
-              {trashTotal.toLocaleString()}
-            </span>
-          </button>
+          <SubmodulePills<GalleryView>
+            value={view}
+            onChange={(v) => switchView(v)}
+            items={[
+              { id: "ativas", label: "Ativas", count: dataset.imagesCount },
+              { id: "trash", label: "Lixeira", count: trashTotal },
+            ]}
+          />
           {view === "trash" && (
-            <button
+            <Button
               type="button"
+              variant="destructive"
+              size="sm"
               onClick={() => setPurgeOpen(true)}
-              className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-[#ef4444]/30 bg-[#ef4444]/[0.12] px-4 text-xs font-medium whitespace-nowrap text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-[#ef4444]/50 hover:bg-[#ef4444]/[0.18] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
             >
               <IconTrash className="h-3.5 w-3.5" />
               <span>Esvaziar lixeira</span>
-            </button>
+            </Button>
           )}
         </div>
       )}
 
       {view === "ativas" && (
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex h-11 min-w-0 flex-1 items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950/60 px-3 focus-within:border-brand-500/60 focus-within:ring-1 focus-within:ring-brand-500/30">
-            {searching ? (
-              <span className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-brand-500/30 border-t-brand-500" />
-            ) : (
-              <IconSearch className="h-4 w-4 shrink-0 text-zinc-500" />
-            )}
-            <label htmlFor="gallery-search" className="sr-only">
-              Buscar por texto
-            </label>
-            <input
+          <div className="min-w-0 flex-1">
+            <SearchInput
               id="gallery-search"
-              type="text"
+              size="lg"
+              loading={searching}
               value={searchInput}
               maxLength={500}
               onChange={(e) => setSearchInput(e.target.value)}
+              onClear={clearSearch}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   if (searchTimerRef.current)
@@ -1005,7 +978,6 @@ export default function DatasetGalleryPage() {
               }}
               placeholder="Buscar por texto — ex.: 'defeito de solda'"
               aria-label="Buscar por texto"
-              className="min-w-0 flex-1 rounded-lg bg-transparent text-sm text-zinc-200 placeholder:text-zinc-600 focus-visible:outline-none"
             />
           </div>
           <span aria-live="polite">
@@ -1024,14 +996,16 @@ export default function DatasetGalleryPage() {
                 >
                   Sem índice
                 </span>
-                <button
+                <Button
                   type="button"
+                  variant="secondary"
+                  size="sm"
                   onClick={handleTriggerIndex}
                   disabled={indexBusy}
-                  className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-4 text-xs font-medium whitespace-nowrap text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
+                  loading={indexBusy}
                 >
                   {indexBusy ? "Indexando…" : "Indexar agora"}
-                </button>
+                </Button>
               </span>
             ) : searchStatus.status === "indexing" ? (
               <span
@@ -1119,14 +1093,17 @@ export default function DatasetGalleryPage() {
             Este dataset ainda não tem amostras. Envie imagens pelo botão
             abaixo; o upload é gerido pelo backend.
           </p>
-          <button
+          <Button
             type="button"
+            variant="secondary"
+            size="md"
             onClick={() => fileRef.current?.click()}
             disabled={uploading}
-            className="mt-4 inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-4 text-xs font-medium whitespace-nowrap text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
+            loading={uploading}
+            className="mt-4"
           >
             {uploading ? `Enviando ${uploadCount} arquivo(s)…` : "Enviar amostras"}
-          </button>
+          </Button>
         </div>
       ) : activeQuery !== null || similarFor !== null ? (
         <div className="flex flex-col gap-3">
@@ -1138,13 +1115,14 @@ export default function DatasetGalleryPage() {
               </span>{" "}
               {results.length === 1 ? "imagem" : "imagens"}
             </span>
-            <button
+            <Button
               type="button"
+              variant="secondary"
+              size="sm"
               onClick={clearSearch}
-              className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-4 text-xs font-medium whitespace-nowrap text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
             >
               Limpar busca
-            </button>
+            </Button>
           </div>
           {results.length === 0 ? (
             <div className="glass-card rounded-2xl border border-zinc-800 px-4 py-14 text-center">

@@ -7,11 +7,19 @@ export interface ModalProps {
   open: boolean;
   onClose: () => void;
   title: string;
+  description?: ReactNode;
   icon?: React.ReactNode;
   children: ReactNode;
   maxWidth?: "sm" | "md" | "lg" | "xl";
   busy?: boolean;
   ariaLabel?: string;
+  className?: string;
+  bodyClassName?: string;
+  headerRight?: React.ReactNode;
+  showCloseButton?: boolean;
+  onDragOver?: React.DragEventHandler<HTMLDivElement>;
+  onDragLeave?: React.DragEventHandler<HTMLDivElement>;
+  onDrop?: React.DragEventHandler<HTMLDivElement>;
 }
 
 const MAX_WIDTH_CLASSES = {
@@ -25,11 +33,19 @@ export function Modal({
   open,
   onClose,
   title,
+  description,
   icon,
   children,
   maxWidth = "lg",
   busy = false,
   ariaLabel,
+  className = "",
+  bodyClassName = "",
+  headerRight,
+  showCloseButton = true,
+  onDragOver,
+  onDragLeave,
+  onDrop,
 }: ModalProps) {
   useEffect(() => {
     if (!open || busy) return;
@@ -53,7 +69,10 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-label={ariaLabel || title}
-        className={`glass-modal relative w-full ${MAX_WIDTH_CLASSES[maxWidth]} rounded-2xl p-6 text-zinc-100 shadow-2xl overflow-hidden max-h-[90vh] flex flex-col`}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+        className={`glass-modal relative w-full ${MAX_WIDTH_CLASSES[maxWidth]} rounded-2xl p-6 text-zinc-100 shadow-2xl overflow-hidden max-h-[90vh] flex flex-col ${className}`.trim()}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Hairline zenital com gradiente violeta no topo */}
@@ -74,23 +93,35 @@ export function Modal({
                 {icon}
               </div>
             )}
-            <h3 className="font-display text-sm font-bold text-white truncate">
-              {title}
-            </h3>
+            <div className="min-w-0">
+              <h3 className="font-display text-sm font-bold text-white truncate">
+                {title}
+              </h3>
+              {description && (
+                <div className="text-xs text-zinc-400 truncate">
+                  {description}
+                </div>
+              )}
+            </div>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={busy}
-            aria-label="Fechar diálogo"
-            className="rounded-lg border border-transparent bg-transparent p-1 text-zinc-300 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 cursor-pointer"
-          >
-            <IconX className="size-4" />
-          </button>
+          <div className="flex items-center space-x-1.5 shrink-0">
+            {headerRight}
+            {showCloseButton && (
+              <button
+                type="button"
+                onClick={onClose}
+                disabled={busy}
+                aria-label="Fechar diálogo"
+                className="rounded-lg border border-transparent bg-transparent p-1 text-zinc-300 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 cursor-pointer"
+              >
+                <IconX className="size-4" />
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Conteúdo com scroll interno se necessário */}
-        <div className="mt-4 flex-1 overflow-y-auto">{children}</div>
+        <div className={`mt-4 flex-1 overflow-y-auto ${bodyClassName}`.trim()}>{children}</div>
       </div>
     </div>
   );

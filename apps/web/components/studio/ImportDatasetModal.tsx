@@ -2,7 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { IconDownload, IconX } from "@/components/icons";
+import { IconDownload } from "@/components/icons";
+import { Modal } from "@/components/ui/Modal";
+import { Button } from "@/components/ui/Button";
 import { ApiError } from "@/lib/api";
 import { importDataset, importErrorMessage } from "@/lib/backup";
 import type { Dataset } from "@/types/studio";
@@ -28,15 +30,6 @@ export default function ImportDatasetModal({ onClose }: Props) {
     const t = setTimeout(() => titleRef.current?.focus(), 30);
     return () => clearTimeout(t);
   }, []);
-
-  useEffect(() => {
-    if (busy) return;
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [busy, onClose]);
 
   async function runImport(replace: boolean): Promise<Dataset | null> {
     if (!file) return null;
@@ -93,38 +86,14 @@ export default function ImportDatasetModal({ onClose }: Props) {
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
-      onClick={() => {
-        if (!busy) onClose();
-      }}
+    <Modal
+      open={true}
+      onClose={onClose}
+      title={phase === "confirm" ? "Substituir dataset" : "Importar backup"}
+      icon={<IconDownload className="h-4 w-4" />}
+      maxWidth="lg"
+      busy={busy}
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="import-dataset-title"
-        className="glass-modal relative w-full max-w-lg rounded-2xl p-6 text-zinc-100 shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between border-b border-white/10 pb-4">
-          <div className="flex items-center space-x-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-brand-500/30 bg-brand-500/15 text-brand-400">
-              <IconDownload className="h-4 w-4" />
-            </div>
-            <h3 id="import-dataset-title" className="text-sm font-bold text-white">
-              {phase === "confirm" ? "Substituir dataset" : "Importar backup"}
-            </h3>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={busy}
-            aria-label="Fechar modal"
-            className="rounded-lg border border-transparent bg-transparent p-1 text-zinc-300 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
-          >
-            <IconX className="h-4 w-4" />
-          </button>
-        </div>
 
         {phase === "confirm" ? (
           <div className="mt-4 space-y-4 text-xs">
@@ -133,22 +102,24 @@ export default function ImportDatasetModal({ onClose }: Props) {
               atual e recria a partir do backup — a ação não tem reversão.
             </p>
             <div className="flex justify-end space-x-2 pt-2">
-              <button
+              <Button
                 type="button"
+                variant="ghost"
+                size="md"
                 onClick={() => setPhase("form")}
                 disabled={busy}
-                className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-transparent bg-transparent px-4 text-xs font-medium whitespace-nowrap text-zinc-300 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
               >
                 Cancelar
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
+                variant="destructive"
+                size="lg"
                 onClick={() => runImport(true)}
-                disabled={busy}
-                className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-[#ef4444]/30 bg-[#ef4444]/[0.12] px-5 text-xs font-semibold whitespace-nowrap text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-[#ef4444]/50 hover:bg-[#ef4444]/[0.18] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
+                loading={busy}
               >
-                {busy ? "Substituindo…" : "Substituir"}
-              </button>
+                Substituir
+              </Button>
             </div>
           </div>
         ) : (
@@ -195,25 +166,27 @@ export default function ImportDatasetModal({ onClose }: Props) {
               </p>
             </div>
             <div className="flex justify-end space-x-2 pt-2">
-              <button
+              <Button
                 type="button"
+                variant="ghost"
+                size="md"
                 onClick={onClose}
                 disabled={busy}
-                className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-transparent bg-transparent px-4 text-xs font-medium whitespace-nowrap text-zinc-300 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
               >
                 Cancelar
-              </button>
-              <button
+              </Button>
+              <Button
                 type="submit"
+                variant="primary"
+                size="lg"
                 disabled={busy || !file}
-                className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] px-5 text-xs font-semibold whitespace-nowrap text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
+                loading={busy}
               >
-                {busy ? "Importando…" : "Importar"}
-              </button>
+                Importar
+              </Button>
             </div>
           </form>
         )}
-      </div>
-    </div>
+    </Modal>
   );
 }

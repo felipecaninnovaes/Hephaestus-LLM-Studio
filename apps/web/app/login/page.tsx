@@ -3,6 +3,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { IconLock } from "@/components/icons";
+import { Button } from "@/components/ui/Button";
 
 type ApiError = { code?: string };
 
@@ -236,13 +237,15 @@ export default function LoginPage() {
               </p>
 
               {/* CTA primário outline-translúcido */}
-              <button
+              <Button
                 type="submit"
-                disabled={submitting}
-                className="mt-1 inline-flex h-10 w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] text-sm font-medium text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] disabled:pointer-events-none disabled:opacity-55 focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)]"
+                variant="primary"
+                size="lg"
+                loading={submitting}
+                className="mt-1 w-full"
               >
                 {submitting ? "Autenticando…" : "Entrar no Hephaestus"}
-              </button>
+              </Button>
             </form>
           </section>
 

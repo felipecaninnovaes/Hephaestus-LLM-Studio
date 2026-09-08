@@ -14,6 +14,7 @@ export interface SubmodulePillsProps<T extends string = string> {
   value: T;
   onChange: (value: T) => void;
   className?: string;
+  size?: "sm" | "md";
 }
 
 export function SubmodulePills<T extends string = string>({
@@ -21,6 +22,7 @@ export function SubmodulePills<T extends string = string>({
   value,
   onChange,
   className = "",
+  size = "md",
 }: SubmodulePillsProps<T>) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -29,6 +31,11 @@ export function SubmodulePills<T extends string = string>({
       ?.querySelector('[data-active="true"]')
       ?.scrollIntoView({ inline: "nearest", block: "nearest" });
   }, [value]);
+
+  const sizeClass =
+    size === "sm"
+      ? "h-7.5 px-2.5 text-xs"
+      : "h-9 px-4 text-sm";
 
   return (
     <div className={`relative min-w-0 flex-1 sm:flex-none ${className}`.trim()}>
@@ -51,7 +58,7 @@ export function SubmodulePills<T extends string = string>({
               data-active={active}
               title={labelWithCount}
               onClick={() => onChange(item.id)}
-              className={`inline-flex h-9 shrink-0 items-center gap-1.5 truncate rounded-lg border px-4 text-sm font-medium whitespace-nowrap transition active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 cursor-pointer ${
+              className={`inline-flex shrink-0 items-center gap-1.5 truncate rounded-lg border font-medium whitespace-nowrap transition active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 cursor-pointer ${sizeClass} ${
                 active
                   ? "border-brand-500/30 bg-brand-500/[0.12] text-white"
                   : "border-white/[0.08] bg-white/[0.03] text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200"

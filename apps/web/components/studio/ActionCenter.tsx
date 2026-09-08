@@ -9,12 +9,12 @@ import {
   IconDownload,
   IconPlay,
   IconRefresh,
-  IconSearch,
   IconTarget,
   IconTrash,
   IconX,
   IconZap,
 } from "@/components/icons";
+import { SearchInput, SubmodulePills } from "@/components/ui";
 import {
   abortJob,
   downloadArtifact,
@@ -456,76 +456,30 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
           </div>
 
           {/* Abas de Filtro de Jobs */}
-          <div className="flex items-center space-x-1.5 border-b border-white/10 px-4 py-2.5 bg-black/20">
-            <button
-              type="button"
-              onClick={() => setTab("all")}
-              className={`rounded-lg px-2.5 py-1 text-xs font-medium transition ${
-                tab === "all"
-                  ? "border border-white/15 bg-white/10 text-white"
-                  : "text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              Todos ({sortedJobs.length})
-            </button>
-            <button
-              type="button"
-              onClick={() => setTab("running")}
-              className={`rounded-lg px-2.5 py-1 text-xs font-medium transition ${
-                tab === "running"
-                  ? "border border-brand-500/35 bg-brand-500/20 text-brand-300"
-                  : "text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              Em execução ({activeCount})
-            </button>
-            <button
-              type="button"
-              onClick={() => setTab("done")}
-              className={`rounded-lg px-2.5 py-1 text-xs font-medium transition ${
-                tab === "done"
-                  ? "border border-[#34d399]/35 bg-[#34d399]/20 text-[#a7f3d0]"
-                  : "text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              Concluídos ({doneCount})
-            </button>
-            <button
-              type="button"
-              onClick={() => setTab("failed")}
-              className={`rounded-lg px-2.5 py-1 text-xs font-medium transition ${
-                tab === "failed"
-                  ? "border border-rose-500/35 bg-rose-500/20 text-rose-300"
-                  : "text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              Falhas ({failedCount})
-            </button>
+          <div className="border-b border-white/10 px-3 py-2 bg-black/20">
+            <SubmodulePills<"all" | "running" | "done" | "failed">
+              size="sm"
+              value={tab}
+              onChange={setTab}
+              items={[
+                { id: "all", label: "Todos", count: sortedJobs.length },
+                { id: "running", label: "Em execução", count: activeCount },
+                { id: "done", label: "Concluídos", count: doneCount },
+                { id: "failed", label: "Falhas", count: failedCount },
+              ]}
+            />
           </div>
 
           {/* Barra de Pesquisa */}
           <div className="border-b border-white/10 p-3">
-            <div className="relative flex items-center rounded-xl border border-zinc-800 bg-black/40 px-3 py-1.5 transition focus-within:border-brand-500/60 focus-within:ring-1 focus-within:ring-brand-500/30">
-              <IconSearch className="size-3.5 shrink-0 text-zinc-500 mr-2" />
-              <input
-                type="search"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Pesquisar por modelo, job ID ou tipo…"
-                aria-label="Pesquisar jobs"
-                className="min-w-0 flex-1 bg-transparent font-sans text-xs text-zinc-100 placeholder:text-zinc-500 focus-visible:outline-none"
-              />
-              {query && (
-                <button
-                  type="button"
-                  onClick={() => setQuery("")}
-                  aria-label="Limpar pesquisa"
-                  className="text-zinc-500 hover:text-zinc-200 text-xs ml-1"
-                >
-                  ✕
-                </button>
-              )}
-            </div>
+            <SearchInput
+              size="md"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onClear={() => setQuery("")}
+              placeholder="Pesquisar por modelo, job ID ou tipo…"
+              aria-label="Pesquisar jobs"
+            />
           </div>
 
           {/* Lista de Jobs / Timeline */}

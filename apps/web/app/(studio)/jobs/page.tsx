@@ -15,6 +15,7 @@ import { ApiError } from "@/lib/api";
 import { showToast } from "@/components/studio/Toast";
 import ConfirmDialog from "@/components/studio/ConfirmDialog";
 import ForjaYoloSetup from "@/components/studio/ForjaYoloSetup";
+import { Button } from "@/components/ui/Button";
 import {
   ConvergenceChart,
   MetricSparkline,
@@ -368,25 +369,27 @@ function JobsPageContent() {
         </div>
 
         <div className="flex items-center space-x-2.5 shrink-0">
-          <button
+          <Button
             type="button"
+            variant="secondary"
+            size="sm"
             onClick={() => void fetchJobs()}
             disabled={loading}
             title="Atualizar lista e status dos jobs"
-            className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.05] px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-white/10 hover:text-white active:scale-[0.985] transition cursor-pointer"
           >
             <IconRefresh className={`size-3.5 ${loading ? "animate-spin text-brand-400" : ""}`} />
             <span>Atualizar</span>
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
+            variant="secondary"
+            size="sm"
             onClick={openActionCenter}
             title="Abrir Centro de Atividades lateral"
-            className="inline-flex items-center gap-1.5 rounded-xl border border-brand-500/30 bg-brand-500/10 px-3 py-1.5 text-xs font-medium text-brand-300 transition hover:bg-brand-500/20 active:scale-[0.985] cursor-pointer"
           >
             <IconZap className="size-3.5 text-brand-400" />
             <span className="hidden sm:inline">Centro de Atividades</span>
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -396,7 +399,7 @@ function JobsPageContent() {
       {!error && (
         <div className="flex flex-col md:flex-row items-start gap-6">
           {/* Coluna 1: Setup & Controle (Fixa: w-full md:w-80 lg:w-96 shrink-0) */}
-          <aside className="w-full md:w-80 lg:w-96 shrink-0 md:sticky md:top-4 md:max-h-[calc(100vh-2rem)] md:overflow-y-auto [scrollbar-width:thin]">
+          <aside className="w-full md:w-80 lg:w-96 shrink-0 md:sticky md:top-4 md:max-h-[calc(100vh-2rem)] md:overflow-y-auto overflow-x-hidden [scrollbar-width:thin]">
             <div className="glass-card rounded-2xl p-5 border border-zinc-800/80">
               <ForjaYoloSetup
                 onJobCreated={handleJobCreated}
@@ -611,14 +614,15 @@ function JobsPageContent() {
                                 {formatBytes(art.bytes)} · {art.kind}
                               </span>
                             </div>
-                            <button
+                            <Button
                               type="button"
+                              variant="secondary"
+                              size="sm"
                               onClick={() => handleDownloadArtifact(selectedJob.id, art)}
-                              className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.06] px-2.5 py-1.5 text-xs font-medium text-zinc-200 hover:bg-white/15 active:scale-[0.985] transition"
                             >
                               <IconDownload className="size-3.5" />
                               <span>Baixar</span>
-                            </button>
+                            </Button>
                           </div>
                         ))}
                       </div>
@@ -638,27 +642,30 @@ function JobsPageContent() {
                           />
                           <span>Sobrescrever anotações existentes</span>
                         </label>
-                        <button
+                        <Button
                           type="button"
+                          variant="primary"
+                          size="sm"
                           disabled={applyBusy}
+                          loading={applyBusy}
                           onClick={() => handleApplyBoxes(selectedJob)}
-                          className="inline-flex items-center gap-1.5 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] px-3 py-1.5 text-xs font-medium text-white transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] disabled:opacity-50"
                         >
                           <IconCheck className="size-3.5 text-brand-400" />
                           <span>{applyBusy ? "Aplicando…" : "Aplicar boxes ao dataset"}</span>
-                        </button>
+                        </Button>
                       </div>
                     )}
 
                     {(selectedJob.status === "queued" || selectedJob.status === "running") && (
-                      <button
+                      <Button
                         type="button"
+                        variant="destructive"
+                        size="sm"
                         onClick={() => setAbortTarget(selectedJob)}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/15 px-3 py-1.5 text-xs font-medium text-rose-300 transition hover:bg-rose-500/25 active:scale-[0.985] cursor-pointer"
                       >
                         <IconTrash className="size-3.5" />
                         <span>Cancelar Execução</span>
-                      </button>
+                      </Button>
                     )}
                   </div>
                 </div>

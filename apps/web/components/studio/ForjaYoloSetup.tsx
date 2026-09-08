@@ -10,6 +10,8 @@ import {
   IconZap,
 } from "@/components/icons";
 import { ApiError } from "@/lib/api";
+import { Button } from "@/components/ui/Button";
+import { Select, type SelectOption, type SelectRefHandle } from "@/components/ui/Select";
 import { getTelemetry, startYoloJob } from "@/lib/jobs";
 import { listDatasets } from "@/lib/datasets";
 import { jobErrorMessage } from "@/types/studio";
@@ -71,7 +73,7 @@ interface Props {
 }
 
 export default function ForjaYoloSetup({ onJobCreated }: Props) {
-  const firstRef = useRef<HTMLSelectElement>(null);
+  const firstRef = useRef<SelectRefHandle>(null);
 
   // Datasets
   const [datasets, setDatasets] = useState<Dataset[]>([]);
@@ -196,6 +198,71 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
 
   const eligibleDatasets = datasets.filter(datasetReady);
   const hasEligibleDataset = eligibleDatasets.length > 0;
+
+  const datasetOptions = useMemo<SelectOption<string>[]>(() => {
+    return datasets.map((d) => {
+      const ready = datasetReady(d);
+      const reason = datasetDisabledReason(d);
+      return {
+        value: d.id,
+        label: d.title,
+        badge: (
+          <span className="flex items-center gap-1.5 font-mono text-[11px] text-zinc-400">
+            <span className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-zinc-300">
+              {d.imagesCount} imgs
+            </span>
+            <span className="text-zinc-600">·</span>
+            <span className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-zinc-300">
+              {d.classes.length} cls
+            </span>
+          </span>
+        ),
+        disabled: !ready,
+        disabledReason: reason ?? undefined,
+        icon: <IconDatabase className="w-3.5 h-3.5 text-brand-400" />,
+      };
+    });
+  }, [datasets]);
+
+  const modelOptions = useMemo<SelectOption<string>[]>(() => {
+    return MODELS.map((m) => {
+      let badgeText: string | undefined;
+      if (m === "yolo11n") badgeText = "Nano · Ultraleve";
+      else if (m === "yolo11m") badgeText = "Médio · Padrão";
+      else if (m === "yolo11x") badgeText = "Extra · Alta VRAM";
+      else if (m === "yolo11-seg") badgeText = "Segmentação";
+      return {
+        value: m,
+        label: m,
+        badge: badgeText ? (
+          <span className="font-mono text-[11px] text-zinc-400">
+            {badgeText}
+          </span>
+        ) : undefined,
+      };
+    });
+  }, []);
+
+  const batchOptions = useMemo<SelectOption<number>[]>(() => {
+    return BATCH_OPTIONS.map((b) => ({
+      value: b,
+      label: `${b}`,
+    }));
+  }, []);
+
+  const imgszOptions = useMemo<SelectOption<number>[]>(() => {
+    return IMGSZ_OPTIONS.map((s) => ({
+      value: s,
+      label: `${s}px`,
+    }));
+  }, []);
+
+  const optimizerOptions = useMemo<SelectOption<string>[]>(() => {
+    return OPTIMIZERS.map((o) => ({
+      value: o,
+      label: o,
+    }));
+  }, []);
   const parsedLr0 = parseFloat(lr0);
   const epochsValid = Number.isInteger(epochs) && epochs >= EPOCHS_MIN && epochs <= EPOCHS_MAX;
   const lr0Valid = !isNaN(parsedLr0) && parsedLr0 >= 1e-5 && parsedLr0 <= 0.1 + 1e-9;
@@ -311,79 +378,39 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
       )}
 
       {/* Dataset selector */}
-      <div>
-        <label
-          htmlFor="setup-dataset"
-          className="tracking-caps mb-1 block font-mono text-[11px] font-medium uppercase text-zinc-300"
-        >
-          Dataset
-        </label>
-        {datasetsLoading ? (
-          <select
-            id="setup-dataset"
-            disabled
-            className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3 py-2 font-mono text-zinc-500 cursor-not-allowed"
-          >
-            <option>Carregando datasets…</option>
-          </select>
-        ) : (
-          <select
-            id="setup-dataset"
-            ref={firstRef}
-            value={selectedDatasetId}
-            onChange={(e) => setSelectedDatasetId(e.target.value)}
-            disabled={busy}
-            className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3 py-2 font-mono text-zinc-200 focus:border-brand-500 focus:outline-none"
-          >
-            <option value="">Selecione um dataset…</option>
-            {datasets.map((d) => {
-              const ready = datasetReady(d);
-              const reason = datasetDisabledReason(d);
-              return (
-                <option
-                  key={d.id}
-                  value={d.id}
-                  disabled={!ready}
-                  title={ready ? d.title : `${reason}`}
-                >
-                  {d.title} · {d.imagesCount} imagens · {d.classes.length} classes
-                  {!ready ? ` — ${reason}` : ""}
-                </option>
-              );
-            })}
-          </select>
-        )}
-      </div>
+      <Select
+        id="setup-dataset"
+        ref={firstRef}
+        label="Dataset"
+        options={datasetOptions}
+        value={selectedDatasetId}
+        onChange={(val) => setSelectedDatasetId(val)}
+        placeholder="Selecione um dataset…"
+        loading={datasetsLoading}
+        loadingText="Carregando datasets…"
+        emptyText="Nenhum dataset YOLO elegível encontrado"
+        disabled={busy}
+        searchable={datasets.length > 5}
+        fontMono
+      />
 
       {/* Modelo */}
-      <div>
-        <label
-          htmlFor="setup-model"
-          className="tracking-caps mb-1 block font-mono text-[11px] font-medium uppercase text-zinc-300"
-        >
-          Modelo
-        </label>
-        <select
-          id="setup-model"
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-          disabled={busy}
-          className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3 py-2 font-mono text-zinc-200 focus:border-brand-500 focus:outline-none"
-        >
-          {MODELS.map((m) => (
-            <option key={m} value={m}>
-              {m}
-            </option>
-          ))}
-        </select>
-      </div>
+      <Select
+        id="setup-model"
+        label="Modelo"
+        options={modelOptions}
+        value={model}
+        onChange={(val) => setModel(val)}
+        disabled={busy}
+        fontMono
+      />
 
       {/* Grid: Epochs / Batch / ImgSz */}
       <div className="grid grid-cols-3 gap-3">
         <div>
           <label
             htmlFor="setup-epochs"
-            className="tracking-caps mb-1 block font-mono text-[11px] font-medium uppercase text-zinc-300"
+            className="tracking-caps mb-1.5 block font-mono text-[11px] font-medium uppercase text-zinc-300"
           >
             Epochs
           </label>
@@ -395,50 +422,31 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
             value={epochs}
             onChange={(e) => setEpochs(Number(e.target.value))}
             disabled={busy}
-            className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3 py-2 font-mono text-zinc-200 focus:border-brand-500 focus:outline-none"
+            className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3.5 py-2 font-mono text-xs text-zinc-200 focus:border-brand-500 focus:outline-none"
           />
         </div>
         <div>
-          <label
-            htmlFor="setup-batch"
-            className="tracking-caps mb-1 block font-mono text-[11px] font-medium uppercase text-zinc-300"
-          >
-            Batch
-          </label>
-          <select
+          <Select
             id="setup-batch"
+            label="Batch"
+            options={batchOptions}
             value={batch}
-            onChange={(e) => setBatch(Number(e.target.value))}
+            onChange={(val) => setBatch(Number(val))}
             disabled={busy}
-            className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3 py-2 font-mono text-zinc-200 focus:border-brand-500 focus:outline-none"
-          >
-            {BATCH_OPTIONS.map((b) => (
-              <option key={b} value={b}>
-                {b}
-              </option>
-            ))}
-          </select>
+            fontMono
+          />
         </div>
         <div>
-          <label
-            htmlFor="setup-imgsz"
-            className="tracking-caps mb-1 block font-mono text-[11px] font-medium uppercase text-zinc-300"
-          >
-            ImgSz
-          </label>
-          <select
+          <Select
             id="setup-imgsz"
+            label="ImgSz"
+            options={imgszOptions}
             value={imgsz}
-            onChange={(e) => setImgsz(Number(e.target.value))}
+            onChange={(val) => setImgsz(Number(val))}
             disabled={busy}
-            className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3 py-2 font-mono text-zinc-200 focus:border-brand-500 focus:outline-none"
-          >
-            {IMGSZ_OPTIONS.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
+            align="right"
+            fontMono
+          />
         </div>
       </div>
 
@@ -447,7 +455,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
         <div>
           <label
             htmlFor="setup-lr0"
-            className="tracking-caps mb-1 block font-mono text-[11px] font-medium uppercase text-zinc-300"
+            className="tracking-caps mb-1.5 block font-mono text-[11px] font-medium uppercase text-zinc-300"
           >
             LR0
           </label>
@@ -458,29 +466,20 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
             value={lr0}
             onChange={(e) => setLr0(e.target.value)}
             disabled={busy}
-            className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3 py-2 font-mono text-zinc-200 focus:border-brand-500 focus:outline-none"
+            className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3.5 py-2 font-mono text-xs text-zinc-200 focus:border-brand-500 focus:outline-none"
           />
         </div>
         <div>
-          <label
-            htmlFor="setup-optimizer"
-            className="tracking-caps mb-1 block font-mono text-[11px] font-medium uppercase text-zinc-300"
-          >
-            Otimizador
-          </label>
-          <select
+          <Select
             id="setup-optimizer"
+            label="Otimizador"
+            options={optimizerOptions}
             value={optimizer}
-            onChange={(e) => setOptimizer(e.target.value)}
+            onChange={(val) => setOptimizer(val)}
             disabled={busy}
-            className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3 py-2 font-mono text-zinc-200 focus:border-brand-500 focus:outline-none"
-          >
-            {OPTIMIZERS.map((o) => (
-              <option key={o} value={o}>
-                {o}
-              </option>
-            ))}
-          </select>
+            align="right"
+            fontMono
+          />
         </div>
       </div>
 
@@ -619,10 +618,13 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
 
       {/* CTA */}
       <div className="pt-2">
-        <button
+        <Button
           type="submit"
+          variant="primary"
+          size="lg"
           disabled={!canSubmit}
-          className="w-full inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] px-5 text-sm font-semibold whitespace-nowrap text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 cursor-pointer"
+          loading={busy}
+          className="w-full"
         >
           {busy ? (
             "Iniciando…"
@@ -632,7 +634,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
               Iniciar Treino
             </>
           )}
-        </button>
+        </Button>
       </div>
     </form>
   );

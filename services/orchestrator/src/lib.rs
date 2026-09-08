@@ -98,7 +98,6 @@ pub enum PipelineError {
     DockerFailed { exit_code: i32, logs_tail: String },
     ArtifactUpload(String),
     ReportFailed(String),
-    UnsupportedEngine(String),
 }
 
 impl std::fmt::Display for PipelineError {
@@ -118,12 +117,6 @@ impl std::fmt::Display for PipelineError {
             }
             Self::ArtifactUpload(e) => write!(f, "artifact upload failed: {e}"),
             Self::ReportFailed(e) => write!(f, "report failed: {e}"),
-            Self::UnsupportedEngine(e) => {
-                write!(
-                    f,
-                    "unsupported engine: {e} (expected 'yolo' or 'autotracker')"
-                )
-            }
         }
     }
 }

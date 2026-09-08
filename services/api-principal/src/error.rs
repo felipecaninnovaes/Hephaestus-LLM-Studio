@@ -47,3 +47,5 @@ pub const MSG_QUEUE_UNAVAILABLE: &str = "queue unavailable";
 pub const MSG_DATASET_NOT_READY: &str = "dataset not ready for training";
 /// 409 de job em estado terminal, abort não possível (fatia 4, ADR-0007 D7 — `job_not_abortable`).
 pub const MSG_JOB_NOT_ABORTABLE: &str = "job is not abortable";
+/// 409 de job que ainda não está `done` (fatia 5, ADR-0008 D1 — `job_not_done`).
+pub const MSG_JOB_NOT_DONE: &str = "job is not done";

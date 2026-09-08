@@ -26,10 +26,9 @@ export function startYoloJob(params: {
   });
 }
 
-/** GET /api/jobs?engine= — lista todos os jobs com status/progress.
- *  Passa um param vazio para forçar o modo lista no BFF (sem filtrar por engine). */
+/** GET /api/jobs — lista todos os jobs com status/progress. */
 export function listJobs(): Promise<JobListResponse> {
-  return apiFetch("/api/jobs?engine=");
+  return apiFetch("/api/jobs");
 }
 
 /** GET /api/jobs/:id/metrics — série de métricas por epoch. */

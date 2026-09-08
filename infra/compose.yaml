@@ -21,6 +21,7 @@ services:
       STUDIO_PASSWORD: ${STUDIO_PASSWORD:-changeme}
       STUDIO_MASTER_KEY: ${STUDIO_MASTER_KEY:-changeme}
       MANAGER_URL: http://manager:8081
+      MANAGER_TOKEN: ${MANAGER_TOKEN:-changeme}
       STORAGE_BACKEND: ${STORAGE_BACKEND:-s3}
       S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://seaweedfs:8333}
       S3_BUCKET: ${S3_BUCKET:-heph-data}

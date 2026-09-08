@@ -124,6 +124,8 @@ services:
       S3_ORCH_SECRET_KEY: ${S3_ORCH_SECRET_KEY:-heph-orch-local-dev}
       ORCH_WORKDIR: ${ORCH_WORKDIR:-/data}
       EXEC_MODE: ${EXEC_MODE:-docker}
+      ORCH_VOL_DATASETS: ${COMPOSE_PROJECT_NAME:-infra}_datasets
+      ORCH_VOL_OUTPUTS: ${COMPOSE_PROJECT_NAME:-infra}_outputs
       PORT: "8082"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

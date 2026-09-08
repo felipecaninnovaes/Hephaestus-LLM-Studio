@@ -325,22 +325,60 @@ pub async fn list_jobs(
 
     let mut query = String::from("SELECT id, kind, engine, model, mode, dataset_id, status, queue_reason, progress, epoch, step, metrics, vram_min_gb, orchestrator_id, created_at, finished_at FROM jobs WHERE 1=1");
     let mut count_query = String::from("SELECT COUNT(*) FROM jobs WHERE 1=1");
+    let mut bind_idx: u32 = 1;
 
-    if let Some(s) = status {
-        query.push_str(&format!(" AND status = '{s}'"));
-        count_query.push_str(&format!(" AND status = '{s}'"));
+    if status.is_some() {
+        let clause = format!(" AND status = ${bind_idx}");
+        query.push_str(&clause);
+        count_query.push_str(&clause);
+        bind_idx += 1;
     }
-    if let Some(e) = engine {
-        query.push_str(&format!(" AND engine = '{e}'"));
-        count_query.push_str(&format!(" AND engine = '{e}'"));
+    if engine.is_some() {
+        let clause = format!(" AND engine = ${bind_idx}");
+        query.push_str(&clause);
+        count_query.push_str(&clause);
     }
     query.push_str(" ORDER BY created_at DESC");
 
-    let total: (i64,) = sqlx::query_as(&count_query)
+    let mut count_q = sqlx::query_as::<_, (i64,)>(&count_query);
+    if let Some(s) = status {
+        count_q = count_q.bind(s);
+    }
+    if let Some(e) = engine {
+        count_q = count_q.bind(e);
+    }
+    let total: (i64,) = count_q
         .fetch_one(pool)
         .await
         .map_err(|e| ManagerError::Internal(format!("count jobs: {e}")))?;
 
+    let mut main_q = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            String,
+            String,
+            String,
+            String,
+            Option<Uuid>,
+            String,
+            Option<String>,
+            Option<f64>,
+            Option<i32>,
+            Option<i32>,
+            Option<serde_json::Value>,
+            Option<i32>,
+            Option<Uuid>,
+            DateTime<Utc>,
+            Option<DateTime<Utc>>,
+        ),
+    >(&query);
+    if let Some(s) = status {
+        main_q = main_q.bind(s);
+    }
+    if let Some(e) = engine {
+        main_q = main_q.bind(e);
+    }
     let rows: Vec<(
         Uuid,
         String,
@@ -358,7 +396,7 @@ pub async fn list_jobs(
         Option<Uuid>,
         DateTime<Utc>,
         Option<DateTime<Utc>>,
-    )> = sqlx::query_as(&query)
+    )> = main_q
         .fetch_all(pool)
         .await
         .map_err(|e| ManagerError::Internal(format!("list jobs: {e}")))?;
@@ -634,6 +672,30 @@ pub async fn report_job(
 
     let current_status = current.ok_or(ManagerError::NotFound)?;
 
+    // Guarda de transição: status terminais são imutáveis.
+    if current_status == "done" || current_status == "failed" || current_status == "cancelled" {
+        tracing::warn!(
+            job_id = %id,
+            current_status = %current_status,
+            report_status = %report.status,
+            "report ignorado para job terminal"
+        );
+        return Ok(());
+    }
+
+    // Guarda de transição: cancelling só aceita done/failed/cancelled.
+    if current_status == "cancelling"
+        && !matches!(report.status.as_str(), "done" | "failed" | "cancelled")
+    {
+        tracing::warn!(
+            job_id = %id,
+            current_status = %current_status,
+            report_status = %report.status,
+            "report ignorado para job em cancelling (aceita apenas done/failed/cancelled)"
+        );
+        return Ok(());
+    }
+
     match report.status.as_str() {
         "preparing" | "running" => {
             sqlx::query(
@@ -655,11 +717,6 @@ pub async fn report_job(
         }
 
         "done" => {
-            // Idempotente: se já done, não duplica artifacts.
-            if current_status == "done" {
-                return Ok(());
-            }
-
             // Valida e insere artifacts.
             if let Some(artifacts) = &report.artifacts {
                 for art in artifacts {
@@ -712,11 +769,6 @@ pub async fn report_job(
         }
 
         "failed" => {
-            // Idempotente.
-            if current_status == "failed" {
-                return Ok(());
-            }
-
             // Merge error into params.
             if let Some(err_msg) = &report.error {
                 sqlx::query("UPDATE jobs SET params = params || $2::jsonb WHERE id = $1")

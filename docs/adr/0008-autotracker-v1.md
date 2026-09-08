@@ -520,3 +520,51 @@ commit. Despachos de fix nunca editam fora do escopo (reportam ao coordenador).
   registradas). **Recomendação:** sim (sem rota de escrita de `videos`; mock).
 
 **Aceitas (2026-09-08)**: P1–P4 conforme recomendado. Branch: `feat/autotracker-v1`.
+
+## Fecho da fatia (2026-09-08)
+
+**Commits (12+4, branch `feat/autotracker-v1` de `main`):**
+
+```
+61492ea fix(web): sidebar destaca módulo ativo via usePathname
+4b627d3 feat(web): forja com setup central e atividade na coluna esquerda
+55a0a17 feat(engine): subcomando autotrack mock determinístico no trainer-yolo
+874c809 feat(api): rota de submit de job autotracker (spec 0.8.0)
+41c2a74 feat(orchestrator): ramifica subcomando e artefatos por engine
+8ec751d refactor(orchestrator): remove variante de erro não construída
+da76dfa feat(api): apply de boxes autotracker com merge por origem (erro job_not_done)
+f941cb2 test(api): integração t5 do apply autotracker (9 casos de ingest)
+fba566d feat(web): autotracker mock na galeria e aplicar boxes na forja
+11a703e fix(web): elegibilidade da forja alinhada a cantrain (status ready removido)
+44133ae chore(orchestrator): ignora e remove residuos de runtime do volume de outputs
+b3f5c5e fix(api): filtro imageid do apply resolve por filename e valida imagem ativa
+d5e01ca fix(web): overwrite unico no apply, reset de estado e copias honestas
+```
+
+**Resultados de teste:**
+- Unit principal: 175 testes (validação autotrack, config yaml, parser boxes.json, resolução filename/class, inventário de rotas ≡ spec 0.8.0, erros 401/409/400/503, manager mockado)
+- Contract: 12 testes (spec 0.8.0 ≡ router, 2 rotas novas + erro `job_not_done`)
+- Orchestrator: 28 testes (ramificação engine→subcomando/artefatos yolo vs autotracker, boxes.json coletado/subido, metrics 1-linha parseada)
+- Engine pytest: 37 testes (mock autotrack determinístico, shape boxes.json, metrics 1-linha)
+- Test-db: 77 testes (ingest idempotente, preservação de manual, overwrite total, re-executar, job_not_done, dataset_not_ready, cap 1000, skip classe/imagem inexistente, dataset_id null)
+- Smoke E2E backend: 16/16 (`smoke_f5_autotracker.py`) — criar dataset yolo + classe + imagem → AutoTracker → 202 → `/jobs` → done → Aplicar boxes → galeria com boxes (origin autotracker) → badge `autoTracked` → editor mostra as boxes → re-executar substitui → abort → console limpo
+- Smoke UI Chrome: completo (forja 2 colunas, sidebar ativa, modal→apply→editor)
+
+**Review (2 partes):**
+- P1 (Rust): BLOQUEIA → fixado (imageId por filename resolve por filename; all-skipped DELETE executado; t5_10/11; overwrite único; conf clamp)
+- P2 (engine/web): APROVA COM NITS → fixes aplicados
+
+**Fixes do review aplicados:**
+- `imageId` no apply resolve por filename (não por UUID direto); não-UUID → 400 `invalid_request`; fora do dataset → 404 `not_found`
+- Imagem presente no artefato com boxes emitidas (mesmo todas skippadas) → DELETE executado (last-write-wins por origem, `handlers.rs:1049-1053`)
+- `t5_10`/`t5_11`: testes de integração do apply com 9 casos de ingest
+- Overwrite único: modal AutoTracker SEM checkbox de overwrite (decisão no card de apply de `/jobs`, default `overwrite=false`)
+- Conf clamp: slider 0.3–0.95, validação no backend `0..=1`
+- `canTrain`/`canStartAutotracker` alinhados a `category==='yolo'` + ≥1 classe + ≥1 imagem (sem depender de `status==='ready'`)
+
+**Estado final das decisões:**
+- (a) Apply aceita `{overwrite?, imageId?}`; `imageId` não-UUID → 400 `invalid_request`; `imageId` fora do dataset → 404
+- (b) Imagem presente no artefato com boxes emitidas (mesmo todas skippadas) tem DELETE executado (last-write-wins por origem)
+- (c) `ForjaYoloSetup` NÃO exige `status ready` (critério canTrain: yolo + ≥1 classe + ≥1 imagem)
+- (d) Modal AutoTracker SEM checkbox de overwrite (decisão única no card de apply da Forja, default `overwrite=false`)
+- (e) Submit aceita 503 `queue_unavailable` OU `storage_unavailable`

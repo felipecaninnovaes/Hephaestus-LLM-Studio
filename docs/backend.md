@@ -58,6 +58,7 @@
 - **Pause = checkpoint + libera VRAM** (não `docker pause`): `pause` pede `save_checkpoint`, derruba o trainer e mantém `last.ckpt`; `resume` recria do checkpoint. Sem checkpoint do engine, pause é recusado (`409 checkpoint_unsupported`) e só `abort` vale.
 - Orquestrador sobe **um container `trainer-<engine>-<jobid>` por job** a partir de imagens por engine (isola deps: ultralytics vs. diffusers/kohya vs. open_clip). Ao destruir o container, **cache persiste fora**: volumes `models/`, `datasets-cache/`, `outputs/` mapeados no host/remoto.
 - **Imagens (decisão): uma por engine** (yolo, difusão, clip, autolabel/tracker, runner), **base no estável mais recente testado** (não pinar no 12.4/2.4.1 do protótipo; registrar a versão validada em `engines.yaml`), **build local no compose** (sem registry externo por enquanto; tags `hephaestus/trainer-<engine>:local`).
+  - **Emenda — AutoTracker v1 (ADR-0008 D2/D6):** o autotracker v1 (mock) reutiliza a imagem `trainer-yolo:local` via subcomando `autotrack` (`python -m trainer_yolo autotrack --config <config.yaml> --output <output_path>`), sem modelo real. Runner/imagem próprios (florence-2/qwen-vl, ADR-0008 D6) são fatia futura.
 - Paralelismo por VRAM, não fixo: com folga (ex. RunPod 80 GB) roda 2+ trainers e enfileira o resto (FIFO + cancel manual). Fila visível no front com posição e motivo (`waiting_vram`).
 - Entrada do trainer: zip do §3 + `config.yaml` gerado pelo principal (hiperparams do front) + mounts de modelos solicitados.
 - **trainer-clip ganhou modo `serve` (Fatia 3f; `engines/trainer-clip/src/trainer_clip/serve.py`, extras `[serve]` no pyproject: `open_clip_torch/torch/pillow`):** mock via `ENGINE_MOCK=1` (vetores hash determinísticos, stdlib puro, sem torch — default do compose); modo real = OpenCLIP `ViT-B-32` (`laion2b_s34b_b79k`, lazy, GPU se disponível) só `@gpu` manual fora do compose. (Nota: não existe seção de engines neste arquivo — o modo serve vive aqui no §4.)
@@ -136,6 +137,14 @@ datasets: GET/POST /api/datasets, GET/DELETE /api/datasets/:id  → implementado
 models:   GET /api/models (lista pesos em disco/banco p/ dropdowns), POST /api/models/upload, POST /api/models/download
 preview:  POST /api/preview/{autolabel,autotracker,generate,search} (job efêmero ou runner quente, sem fila de treino)
 jobs:     POST /api/jobs/yolo  → implementado (Fatia 4; ADR-0007 D7 — spec 0.7.0)
+          POST /api/jobs/autotracker  → implementado (Fatia 5; ADR-0008 D0/D3 — spec 0.8.0)
+            body `{datasetId, model?, conf?}` → 202 `{jobId,status:"queued",queuePosition?}`
+            erros: 400 `invalid_request` (model∉{mock} | conf fora 0..1), 404 `not_found`,
+            409 `dataset_not_ready` (category≠yolo, 0 classes, 0 imagens), 503 `queue_unavailable`
+          POST /api/jobs/:id/autotracker/apply  → implementado (Fatia 5; ADR-0008 D1/D1a — spec 0.8.0)
+            body `{overwrite?, imageId?}` → 200 `{applied, skipped, images}`
+            erros: 400 `invalid_request` (imageId não-UUID), 404 `not_found`, 409 `job_not_done`,
+            503 `queue_unavailable`/`storage_unavailable`
           GET /api/jobs         → implementado (Fatia 4; lista `{items,total}`)
           GET /api/jobs/queue   → implementado (Fatia 4; fila `{items:[{jobId,position,queueReason}]}`)
           GET /api/jobs/:id     → implementado (Fatia 4; detalhe do job)
@@ -143,7 +152,7 @@ jobs:     POST /api/jobs/yolo  → implementado (Fatia 4; ADR-0007 D7 — spec 0
           GET /api/jobs/:id/metrics  → implementado (Fatia 4; `{items:[{epoch,boxLoss,clsLoss,dflLoss,map50,map5095}]}`)
           GET /api/jobs/:id/artifacts  → implementado (Fatia 4; `{items:[{id,kind,path,md5,bytes}]}`)
           GET /api/jobs/:id/artifacts/:artifactId/data  → implementado (Fatia 4; proxy do objeto via StoragePort)
-          # Adiados para fatias futuras: pause/resume, samples, WS, runners, outros engines
+          # Adiados para fatias futuras: pause/resume, samples, WS, runners, difusao/clip/autolabel
 runners:  POST /api/runners/{difusao,yolo,clip}/up, POST /api/runners/:id/kill, GET /api/runners
           POST /api/runners/:id/infer {prompt|image|query} (inferência interativa; 409 se preemptado)
 orchestrators (via manager): GET /api/orchestrators, POST /api/orchestrators/adopt {endpoint,key},
@@ -164,6 +173,11 @@ ws:       /ws/jobs/:id/logs?since_seq=, /ws/telemetry
   - **Telemetria:** `{measured:bool, cpu:float|null, ram:i64|null, vramUsed:i64|null, vramTotal:i64|null, gpus:string[], jobsActive:i32}`. CPU/RAM reais (leitura `/proc` do container orquestrador via heartbeat ~2s). Sem GPU (mock local) → `measured:false`, `vramUsed/vramTotal:null`, `gpus:[]`. O texto "sem GPU (mock)" é renderizado pelo front quando `measured:false` (Sidebar `!telemetry?.measured`). **Nota:** `measured:false` é o caminho morto previsto na ADR-0007 D9 — o mock SEMPRE reporta `measured:false` porque não há GPU; `measured:true` só ocorrerá quando o orquestrador detectar `nvidia-smi` (`@gpu` manual, fora do compose).
   - **Erros novos na v1:** `queue_unavailable` (503, todas as rotas jobs/telemetry), `dataset_not_ready` (409, `POST /api/jobs/yolo` quando category≠yolo ou 0 classes/imagens), `job_not_abortable` (409, `POST /:id/abort` em estado terminal), `engine_unsupported` (400, `POST /:id/package` quando engine≠yolo).
   - **`POST /api/datasets/:id/package`:** body `{engine:"yolo"}` → 200 `PackageResponse{versionId,key,bytes,md5Zip,files}`; 400 `engine_unsupported` (engine≠yolo na v1) | 404 dataset | 503 storage/queue. Congela `dataset_versions{manifest}` (snapshot JSONB, T4 ADR-0002). `config.yaml` gerado pelo principal com placeholders `{dataset_path}`/`{output_path}` substituídos pelo orquestrador no spawn do container. Trainer via `docker run` com volumes nomeados (`datasets-cache/<jobid>/`, `models/`, `outputs/`).
+- Nota Fatia 5 (ADR-0008, spec 0.8.0, `packages/contracts/openapi.yaml`):
+  - **`POST /api/jobs/autotracker`** — body `{datasetId, model?, conf?}` → 202 `SubmitJobResponse{jobId,status:"queued",queuePosition?}`. Validação: `model` ∈ `{mock}` apenas (default `mock`), `conf` em `0..=1` (default `0.65`). Erros: 400 `invalid_request` (model∉{mock} | conf fora de domínio), 404 `not_found` (dataset não-UUID/inexistente), 409 `dataset_not_ready` (category≠yolo, 0 classes, 0 imagens ativas), 503 `queue_unavailable`. Job: `kind='autotracker'`, `engine='autotracker'`, `mode='autotrack'` (TEXT livre, sem migration).
+  - **`POST /api/jobs/:id/autotracker/apply`** — body `{overwrite?: bool, imageId?: string}` → 200 `AutotrackerApplyResponse{applied, skipped, images}` (`applied` = boxes gravadas, `skipped` = boxes ignoradas (classe/imagem inexistente ou cap), `images` = imagens que receberam ≥1 box). Validação `imageId`: não-UUID ⇒ 400 `invalid_request`; UUID fora do dataset ⇒ 404 `not_found`. Fluxo: job via manager (engine='autotracker', status='done', dataset_id presente) → artefato `boxes.json` via `list_artifacts` (kind='boxes') + path/md5 → `StoragePort.get` → parse → resolve filename→image_id + class name→class_id → transação por imagem DELETE+INSERT. Merge por origem (D1a): `overwrite=false` → DELETE só `origin='autotracker'` (preserva manual/import); `overwrite=true` → DELETE total. Imagem presente no artefato com boxes emitidas (mesmo todas skippadas) → DELETE executado (last-write-wins por origem, código `handlers.rs:1049-1053`). Erros: 400 `invalid_request`, 404 `not_found`, 409 `job_not_done` (job não está `done`), 409 `dataset_not_ready` (dataset_id null/deletado), 503 `queue_unavailable`/`storage_unavailable`.
+  - **`queue_unavailable` estendido:** as rotas novas também retornam 503 quando o manager está inalcançável (mesmo mapeamento do Fatia 4).
+  - **`boxes.json` (snake_case, transporte):** `{engine, model, seed, conf, images:[{filename, boxes:[{class, x, y, w, h, conf}]}]}`. Keyado por filename (engine não conhece image UUID) e class name (robusto a reordenação).
 - Nota Fatia 3a (ADR-0002 D1, casing): TODAS as chaves de body/query/response de `/api/*` são camelCase (o teste `json_property_names_are_camel_case` rejeita o resto). **Os nomes listados no §9 são colunas (§10) ou campos de transporte, não chaves JSON** — ex.: settings `{hfToken, …}` no wire vs colunas `hf_token` em `settings`; datasets `sizeBytes/imagesCount/lastModified` no wire vs colunas `size_bytes/images_count/updated_at`. A rota `PUT/GET /api/settings/keys` ainda **não está implementada**; as colunas de `settings` permanecem snake_case.
 - Nota Fatia 3b (ADR-0003, spec 0.3.0 — shapes reais em `services/api-principal/src/datasets/models.rs`, tabela de rotas ≡ `PROTECTED_ROUTES` em `src/auth/routes.rs`):
   ```

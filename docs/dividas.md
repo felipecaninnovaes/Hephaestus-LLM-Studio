@@ -60,7 +60,7 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
 - **Defaults de token inconsistentes (review F4.8):** manager aceita `manager-dev-token` como default (`MANAGER_TOKEN` env); orquestrador bypassa auth sem `MANAGER_TOKEN` (Bearer vazio aceito na v1 local); principal fail-fast sem `MANAGER_TOKEN`. Sem fail-fast uniforme entre os 3.
 - **`unzip_safe` não rejeita separador `\` (review F4.8):** divergência com `validate_artifact_path` do principal (que aceita `\`); inócuo em Linux mas viola defesa em profundidade.
 - **NITs frontend (review F4.8):**
-  - Highlight de módulo ativo da Sidebar hardcoded em "Dados & Anotação" (sem `usePathname` — o módulo ativo NÃO muda quando o usuário navega para `/jobs`).
+  - ~~Highlight de módulo ativo da Sidebar hardcoded em "Dados & Anotação" (sem `usePathname` — o módulo ativo NÃO muda quando o usuário navega para `/jobs`).~~ **QUITADA 2026-09-08** (Fatia 5, commit `61492ea`: `usePathname` destaca módulo ativo via `pathname` no `Sidebar.tsx`).
   - Duplicação tripla de `canTrain`/`trainDisabledReason` (lógica de condição de treino repetida no botão da galeria, no `DatasetMenu` e na galeria de datasets).
   - Toast "Job cancelado." no 200 quando o estado real é `cancelling` (o handler retorna `{"status":"cancelling"}` mas a UI pode exibir mensagem genérica).
   - Telemetria pollada a cada 3s mesmo com drawer da Sidebar fechado (consumo de requests desnecessário quando o card não está visível).
@@ -80,10 +80,24 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
   payload pós-save (correto), mas os chips `#N` no canvas podem reordenar
   entre loads. Correção real = coluna de ordenação/`ORDER BY` determinístico
   no backend — só valerá a pena quando o autotracker consertar caixas
-  existentes, hoje os efeitos são cosméticos.
+  existentes, hoje os efeitos são cosméticos. **Reafirmação (Fatia 5):** o apply do autotracker não piora a ordem semanticamente porque o merge por origem é atômico por imagem — mas a dívida permanece aberta para quando o autotracker consertar caixas existentes.
+- **R1 drift de classes snapshot→apply (curta, Fatia 5):** o snapshot (`SnapshotClass{index,name}`, sem id) congela classes do pacote; no apply, o principal resolve por `name` no dataset atual. Se uma classe foi renomeada/deletada entre job e apply → box skippada (contagem honesta). Aceito na v1 mock; alternativa futura: snapshot com id de classe + decisão de re-mapear.
+- **AutoTracker de vídeo — ABERTA 2026-09-08 (ADR-0008 D5):** extração de frames + tracking por `track_id` (`boxes.track_id` já existe desde 0003) + rota de escrita de `videos` (tabela existe sem rota de escrita desde 3b). IDEIA.md §3/:42 pede "Video e Imagem"; a v1 é imagem apenas.
+- **AutoTracker real — ABERTA 2026-09-08 (ADR-0008 D6):** modelo local (`florence-2-large`, `yolov8x-world`, `qwen2-vl-7b` em frontend.md §7.1) + upload de modelo + imagem `runner-autotracker` própria (honra backend.md §4 uma-imagem-por-engine) + classe open-set mapeada para classes existentes/adicionadas. O v1 usa mock determinístico (`ENGINE_MOCK=1`) sem modelo real.
 
 **Verificação / toolchain**
 
+- **test-db.sh apaga estado de produto quando a stack está de pé — ABERTA 2026-09-08**
+  (causa-raiz achada na fatia 5): o script roda os testes do manager
+  (`manager_db`) no MESMO banco `studio` do compose (localhost:5432), e os
+  fixtures fazem `DELETE FROM orchestrators` (e limpeza de jobs) — cada
+  `bash scripts/test-db.sh` com a stack de pé invalida a auto-adoção e
+  deixa dispatches presos em `waiting_slot` até um restart do manager
+  (que re-adota no boot). Sintoma: `orchestrators` vazio + jobs em
+  `waiting_slot` sem despacho. Conserto certo: isolar os testes-db num
+  banco efêmero próprio (ex.: `studio_test` criado + migrations aplicadas
+  + drop no fim), nunca o banco do produto. Mitigação de curto prazo:
+  restart do manager após rodar test-db.
 - **Teste `@gpu` manual do CLIP real (fatia futura, sem número) — ABERTA 2026-09-06**
   (spike/ADR-0004): o modo real do embedder (`ENGINE_MOCK` desligado,
   `open_clip_torch` ViT-B-32, peso ~600 MB fora do compose) nunca rodou em GPU;

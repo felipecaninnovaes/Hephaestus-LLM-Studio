@@ -641,7 +641,7 @@ pub async fn run_job(
     let result = run_job_inner(&dispatch, s3, report_client, executor, &active_jobs).await;
 
     if let Err(err_msg) = result {
-        let _ = report_for_error
+        if let Err(report_err) = report_for_error
             .report(
                 &job_id,
                 &ReportBody {
@@ -654,7 +654,14 @@ pub async fn run_job(
                     artifacts: None,
                 },
             )
-            .await;
+            .await
+        {
+            tracing::warn!(
+                job_id = %job_id,
+                report_error = %report_err,
+                "falha ao reportar erro terminal do job"
+            );
+        }
     }
 
     active_jobs.remove(&job_id);

@@ -14,7 +14,6 @@ use axum::{
     Json, Router,
 };
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use tower_http::trace::TraceLayer;
 
 use orchestrator::{
@@ -30,11 +29,9 @@ use orchestrator::{
 struct AppState {
     s3: Arc<dyn orchestrator::S3Port>,
     report_client: Arc<dyn orchestrator::ReportClient>,
-    heartbeat_client: Arc<dyn orchestrator::HeartbeatClient>,
     executor: Arc<dyn orchestrator::TrainerExecutor>,
     active_jobs: orchestrator::ActiveJobs,
     manager_token: Option<String>,
-    jobs_count: Arc<RwLock<usize>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -195,12 +192,6 @@ async fn dispatch_handler(State(state): State<AppState>, body: Bytes) -> Respons
         orchestrator::ActiveJobState::new(String::new()),
     );
 
-    // Atualiza contagem
-    {
-        let mut count = state.jobs_count.write().await;
-        *count = state.active_jobs.len();
-    }
-
     let s3 = Arc::clone(&state.s3);
     let report_client = Arc::clone(&state.report_client);
     let executor = Arc::clone(&state.executor);
@@ -352,34 +343,30 @@ async fn main() {
 
     // State.
     let active_jobs = orchestrator::new_active_jobs();
-    let jobs_count = Arc::new(RwLock::new(0usize));
 
     let state = AppState {
         s3: Arc::clone(&s3),
         report_client: Arc::clone(&report_client),
-        heartbeat_client: Arc::clone(&heartbeat_client),
         executor,
         active_jobs,
         manager_token,
-        jobs_count: Arc::clone(&jobs_count),
     };
 
     // Heartbeat loop (~2s, D4/D9).
+    let heartbeat_active_jobs = Arc::clone(&state.active_jobs);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
         loop {
             interval.tick().await;
 
-            let jobs_active = jobs_count.read().await;
             let body = HeartbeatBody {
                 gpus: vec![],
                 vram_total: None,
                 vram_used: None,
                 cpu: Some(orchestrator::read_cpu()),
                 ram: Some(orchestrator::read_ram()),
-                jobs_active: *jobs_active as i32,
+                jobs_active: heartbeat_active_jobs.len() as i32,
             };
-            drop(jobs_active);
 
             if let Err(e) = heartbeat_client.send(&body).await {
                 tracing::warn!("heartbeat failed: {e}");

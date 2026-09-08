@@ -809,3 +809,139 @@ async fn list_jobs_e_queue() {
         .expect("list queued after abort");
     assert_eq!(list_queued.total, 2);
 }
+
+/// Testa append incremental de metrics por epoch + dedup (R4).
+/// Cada report do orquestrador envia 1 objeto; o manager deve acumular em array.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn metrics_append_e_dedup_por_epoch() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img")
+        .await
+        .expect("dispatch");
+
+    // 1. Report running — epoch 1 (formato orquestrador: objeto único).
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "running".into(),
+            progress: Some(0.1),
+            epoch: Some(1),
+            step: None,
+            metrics: Some(serde_json::json!({
+                "epoch": 1,
+                "box_loss": 0.5,
+                "cls_loss": 0.3,
+                "dfl_loss": 0.2,
+                "mAP50": 0.8,
+                "mAP50-95": 0.6
+            })),
+            error: None,
+            artifacts: None,
+        },
+    )
+    .await
+    .expect("report running epoch 1");
+
+    let job = manager::get_job(&p, job_id)
+        .await
+        .expect("get after epoch 1");
+    let m = job.metrics.expect("metrics after epoch 1");
+    let items = m
+        .get("items")
+        .and_then(|v| v.as_array())
+        .expect("items array");
+    assert_eq!(items.len(), 1, "deve ter 1 item após epoch 1");
+    assert_eq!(items[0]["epoch"], 1);
+    assert_eq!(items[0]["box_loss"], 0.5);
+
+    // 2. Report running — epoch 2 (append).
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "running".into(),
+            progress: Some(0.2),
+            epoch: Some(2),
+            step: None,
+            metrics: Some(serde_json::json!({
+                "epoch": 2,
+                "box_loss": 0.4,
+                "cls_loss": 0.2,
+                "dfl_loss": 0.1,
+                "mAP50": 0.9,
+                "mAP50-95": 0.7
+            })),
+            error: None,
+            artifacts: None,
+        },
+    )
+    .await
+    .expect("report running epoch 2");
+
+    let job = manager::get_job(&p, job_id)
+        .await
+        .expect("get after epoch 2");
+    let m = job.metrics.expect("metrics after epoch 2");
+    let items = m
+        .get("items")
+        .and_then(|v| v.as_array())
+        .expect("items array");
+    assert_eq!(items.len(), 2, "deve ter 2 itens após epoch 2");
+    // Ordenados por epoch.
+    assert_eq!(items[0]["epoch"], 1);
+    assert_eq!(items[0]["box_loss"], 0.5);
+    assert_eq!(items[1]["epoch"], 2);
+    assert_eq!(items[1]["mAP50"], 0.9);
+
+    // 3. Report duplicado do epoch 1 — deve substituir (dedup), não duplicar.
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "running".into(),
+            progress: Some(0.15),
+            epoch: Some(1),
+            step: None,
+            metrics: Some(serde_json::json!({
+                "epoch": 1,
+                "box_loss": 0.45,
+                "cls_loss": 0.28,
+                "dfl_loss": 0.18,
+                "mAP50": 0.82,
+                "mAP50-95": 0.62
+            })),
+            error: None,
+            artifacts: None,
+        },
+    )
+    .await
+    .expect("report duplicate epoch 1");
+
+    let job = manager::get_job(&p, job_id).await.expect("get after dedup");
+    let m = job.metrics.expect("metrics after dedup");
+    let items = m
+        .get("items")
+        .and_then(|v| v.as_array())
+        .expect("items array");
+    assert_eq!(items.len(), 2, "dedup: não duplica epoch existente");
+    // Epoch 1 atualizado com novos valores.
+    assert_eq!(items[0]["epoch"], 1);
+    assert_eq!(items[0]["box_loss"], 0.45);
+    assert_eq!(items[0]["mAP50"], 0.82);
+    // Epoch 2 inalterado.
+    assert_eq!(items[1]["epoch"], 2);
+    assert_eq!(items[1]["mAP50"], 0.9);
+}

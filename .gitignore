@@ -15,3 +15,6 @@ __pycache__/
 .env.*
 !.env.example
 dist/
+
+# Orchestrator runtime outputs — fallback volume, never versioned
+services/orchestrator/infra_outputs/

@@ -63,7 +63,6 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
   }
 
   const cpuPct = telemetry?.cpu != null ? Math.min(100, Math.max(0, telemetry.cpu)) : null;
-  const ramPct = telemetry?.ram != null ? Math.min(100, Math.max(0, telemetry.ram)) : null;
   const vramPct =
     telemetry?.measured && telemetry.vramUsed != null && telemetry.vramTotal != null && telemetry.vramTotal > 0
       ? Math.min(100, Math.max(0, (telemetry.vramUsed / telemetry.vramTotal) * 100))
@@ -268,7 +267,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
               </div>
             </div>
 
-            {/* RAM */}
+            {/* RAM — Wire only sends bytes, not total, so no percentage bar is shown */}
             <div>
               <div className="mb-1 flex justify-between font-mono text-[10px] text-zinc-400">
                 <span>RAM</span>
@@ -276,20 +275,14 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
                   {telemetry?.ram != null ? formatRam(telemetry.ram) : "—"}
                 </span>
               </div>
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-800">
-                <div
-                  className="h-full rounded-full bg-brand-500 transition-all duration-500"
-                  style={{ width: ramPct != null ? `${ramPct}%` : "0%" }}
-                />
-              </div>
             </div>
 
             {/* GPUs info */}
-            {telemetry?.gpus && (
+            {telemetry?.gpus && telemetry.gpus.length > 0 && (
               <div className="flex items-center gap-2 border-t border-zinc-800/60 pt-2">
                 <span className="font-mono text-[10px] text-zinc-500">GPU:</span>
-                <span className="truncate font-mono text-[10px] text-zinc-300" title={telemetry.gpus}>
-                  {telemetry.gpus}
+                <span className="truncate font-mono text-[10px] text-zinc-300" title={telemetry.gpus.join(", ")}>
+                  {telemetry.gpus.join(", ")}
                 </span>
               </div>
             )}

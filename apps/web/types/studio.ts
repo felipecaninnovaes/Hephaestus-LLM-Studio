@@ -245,7 +245,7 @@ export interface Telemetry {
   ram: number | null;
   vramUsed: number | null;
   vramTotal: number | null;
-  gpus: string | null;
+  gpus: string[];
   jobsActive: number;
 }
 

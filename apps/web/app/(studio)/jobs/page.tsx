@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   abortJob,
   downloadArtifact,
@@ -8,6 +9,7 @@ import {
   getJobMetrics,
   listJobs,
 } from "@/lib/jobs";
+import { applyAutotrackerBoxes } from "@/lib/autotracker";
 import { ApiError } from "@/lib/api";
 import { showToast } from "@/components/studio/Toast";
 import ConfirmDialog from "@/components/studio/ConfirmDialog";
@@ -24,6 +26,7 @@ import type {
   JobMetrics as JobMetricsType,
   JobStatus,
 } from "@/types/studio";
+import { autotrackerErrorMessage } from "@/types/studio";
 
 const POLL_INTERVAL = 3000;
 
@@ -73,6 +76,7 @@ function relativeTime(dateStr: string): string {
 }
 
 export default function JobsPage() {
+  const router = useRouter();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -81,6 +85,8 @@ export default function JobsPage() {
   const [artifacts, setArtifacts] = useState<Record<string, JobArtifact[]>>({});
   const [abortTarget, setAbortTarget] = useState<Job | null>(null);
   const [abortBusy, setAbortBusy] = useState(false);
+  const [applyBusy, setApplyBusy] = useState(false);
+  const [applyOverwrite, setApplyOverwrite] = useState(false);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -216,6 +222,42 @@ export default function JobsPage() {
       showToast("Falha ao cancelar job.", "error");
     } finally {
       setAbortBusy(false);
+    }
+  }
+
+  async function handleApplyBoxes(job: Job) {
+    setApplyBusy(true);
+    try {
+      const result = await applyAutotrackerBoxes(job.id, {
+        overwrite: applyOverwrite,
+      });
+      showToast(
+        `${result.applied} boxes aplicadas, ${result.skipped} ignoradas em ${result.images} imagem(ns).`,
+        "success",
+        job.datasetId
+          ? {
+              label: "Abrir dataset",
+              onClick: () => router.push(`/datasets/${job.datasetId}`),
+            }
+          : undefined,
+      );
+      await fetchJobs();
+    } catch (err) {
+      if (err instanceof ApiError) {
+        if (err.code === "unauthorized" || err.status === 401) {
+          router.replace("/login");
+          return;
+        }
+        if (err.code === "job_not_done") {
+          showToast("O job ainda não terminou — aguarde a conclusão.", "info");
+          return;
+        }
+        showToast(autotrackerErrorMessage(err.code), "error");
+        return;
+      }
+      showToast("Falha ao aplicar boxes.", "error");
+    } finally {
+      setApplyBusy(false);
     }
   }
 
@@ -535,6 +577,41 @@ export default function JobsPage() {
                 </button>
               </div>
             )}
+
+            {/* Aplicar boxes — somente para autotracker done */}
+            {selectedJob.status === "done" &&
+              selectedJob.engine === "autotracker" && (
+                <div className="glass-card rounded-2xl p-5">
+                  <h4 className="tracking-caps mb-3 font-mono text-[11px] font-semibold uppercase text-zinc-400">
+                    Aplicar ao dataset
+                  </h4>
+                  <p className="mb-3 text-xs text-zinc-400">
+                    As boxes geradas pelo AutoTracker estão prontas para serem
+                    aplicadas ao dataset.
+                  </p>
+                  <div className="flex items-center gap-3">
+                    <label className="flex items-center gap-2 text-xs text-zinc-300">
+                      <input
+                        type="checkbox"
+                        checked={applyOverwrite}
+                        onChange={(e) => setApplyOverwrite(e.target.checked)}
+                        disabled={applyBusy}
+                        className="h-4 w-4 rounded border-zinc-700 bg-black/40 accent-brand-500"
+                      />
+                      Sobrescrever anotações manuais
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => void handleApplyBoxes(selectedJob)}
+                      disabled={applyBusy}
+                      className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] px-5 text-xs font-semibold whitespace-nowrap text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
+                    >
+                      <IconTarget className="h-3.5 w-3.5" />
+                      {applyBusy ? "Aplicando…" : "Aplicar boxes ao dataset"}
+                    </button>
+                  </div>
+                </div>
+              )}
           </div>
         )}
       </main>

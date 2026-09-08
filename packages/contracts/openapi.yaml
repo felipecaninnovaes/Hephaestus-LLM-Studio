@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.7.0
+  version: 0.8.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -1269,6 +1269,106 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/jobs/autotracker:
+    post:
+      operationId: submitAutotrackerJob
+      tags: [jobs]
+      summary: Submete job de autotrack
+      description: |
+        Cria job de autotrack (ADR-0008 D0/D3). Valida modelo (mock apenas),
+        conf (0..1), verifica readiness do dataset (category=yolo, ≥1 classe,
+        ≥1 imagem), materializa package, e envia ao manager.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AutotrackerJobRequest" }
+      responses:
+        "202":
+          description: Job criado e enfileirado.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubmitJobResponse" }
+        "400":
+          description: "Body malformado, campos desconhecidos ou parâmetros inválidos (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Dataset inexistente ou datasetId não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "Dataset não pronto para autotrack — category≠yolo, 0 classes ou 0 imagens (`code: dataset_not_ready`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`) ou storage indisponível (`code: storage_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/jobs/{id}/autotracker/apply:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: "PK do job. UUID inválido ⇒ 404 `not_found` (D8)."
+    post:
+      operationId: applyAutotrackerBoxes
+      tags: [jobs]
+      summary: Aplica boxes do autotracker ao dataset
+      description: |
+        Ingest do artefato `boxes.json` de um job autotracker `done` no dataset
+        associado (ADR-0008 D1/D1a). Merge dirigido por origem: `overwrite=false`
+        (default) preserva manuais e substitui boxes `autotracker`; `overwrite=true`
+        substituição total. Cap 1000/imagem; classes e imagens inexistentes são
+        skippadas (contagem honesta).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AutotrackerApplyRequest" }
+      responses:
+        "200":
+          description: Boxes aplicadas.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutotrackerApplyResponse" }
+        "400":
+          description: "Body malformado, `imageId` não-UUID ou `boxes.json` inválido (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Job inexistente, não-UUID, não-autotracker, artefato `boxes.json` ausente ou `imageId` não é imagem ativa do dataset (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "Job não está `done` (`code: job_not_done`) ou dataset_id null/deletado (`code: dataset_not_ready`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`) ou storage indisponível (`code: storage_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/jobs/queue:
     get:
       operationId: listJobQueue
@@ -1553,8 +1653,8 @@ components:
       properties:
         code:
           type: string
-          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, storage_unavailable, classes_in_use, index_not_ready, embedding_unavailable, import_invalid, engine_unsupported, queue_unavailable, dataset_not_ready, job_not_abortable, internal]
-          description: "Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`; o cliente DEVE ter ramo default: o enum cresce por fatia (aditivo na 0.2.0: `not_found`, `slug_conflict`; na 0.3.0: `storage_unavailable`, ADR-0003 D10; na 0.3.0, fatia 3g.1: `classes_in_use`; na 0.5.0, fatia 3f.5: `index_not_ready`, `embedding_unavailable`, ADR-0004 D5; na 0.6.0, fatia 3e: `import_invalid`; na 0.7.0, fatia 4: `engine_unsupported`, `queue_unavailable`, `dataset_not_ready`, `job_not_abortable`)."
+          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, storage_unavailable, classes_in_use, index_not_ready, embedding_unavailable, import_invalid, engine_unsupported, queue_unavailable, dataset_not_ready, job_not_abortable, job_not_done, internal]
+          description: "Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`; o cliente DEVE ter ramo default: o enum cresce por fatia (aditivo na 0.2.0: `not_found`, `slug_conflict`; na 0.3.0: `storage_unavailable`, ADR-0003 D10; na 0.3.0, fatia 3g.1: `classes_in_use`; na 0.5.0, fatia 3f.5: `index_not_ready`, `embedding_unavailable`, ADR-0004 D5; na 0.6.0, fatia 3e: `import_invalid`; na 0.7.0, fatia 4: `engine_unsupported`, `queue_unavailable`, `dataset_not_ready`, `job_not_abortable`; na 0.8.0, fatia 5: `job_not_done`)."
         message:
           type: string
           description: Humano-curto, ESTÁTICO por code; nunca contém hash, token, segredo ou existência de usuário.
@@ -1750,6 +1850,31 @@ components:
           type: boolean
           default: false
 
+    AutotrackerJobRequest:
+      type: object
+      additionalProperties: false
+      required: [datasetId]
+      description: |
+        Body de `POST /api/jobs/autotracker` (ADR-0008 D3). `datasetId` é
+        obrigatório; os demais campos são OPCIONAIS com defaults.
+        Wire camelCase; `deny_unknown_fields` garante 400 para chaves desconhecidas.
+      properties:
+        datasetId:
+          type: string
+          format: uuid
+          description: "PK do dataset. Não-UUID ou inexistente ⇒ 404 `not_found`."
+        model:
+          type: string
+          enum: [mock]
+          default: mock
+          description: "Modelo a usar (apenas mock na v1)."
+        conf:
+          type: number
+          minimum: 0.0
+          maximum: 1.0
+          default: 0.65
+          description: "Limiar de confiança (0..1)."
+
     SubmitJobResponse:
       type: object
       required: [jobId, status]
@@ -1775,6 +1900,42 @@ components:
         status:
           type: string
           enum: [cancelling, cancelled]
+
+    AutotrackerApplyRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        Body de `POST /api/jobs/:id/autotracker/apply` (ADR-0008 D1).
+        `overwrite` (default false) e `imageId` (UUID opcional).
+        Wire camelCase; `deny_unknown_fields` garante 400 para chaves desconhecidas.
+      properties:
+        overwrite:
+          type: boolean
+          default: false
+          description: "true = DELETE total da imagem; false = DELETE só de boxes com origin=autotracker."
+        imageId:
+          type: [string, "null"]
+          format: uuid
+          description: "UUID opcional — aplica SÓ a esta imagem (ausente = todas do resultado)."
+
+    AutotrackerApplyResponse:
+      type: object
+      required: [applied, skipped, images]
+      additionalProperties: false
+      description: "Resposta 200 do apply (ADR-0008 D1)."
+      properties:
+        applied:
+          type: integer
+          minimum: 0
+          description: "Número de boxes gravadas."
+        skipped:
+          type: integer
+          minimum: 0
+          description: "Número de boxes ignoradas (classe/imagem inexistente ou cap)."
+        images:
+          type: integer
+          minimum: 0
+          description: "Número de imagens que receberam ao menos uma box."
 
     Class:
       type: object

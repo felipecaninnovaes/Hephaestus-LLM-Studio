@@ -281,8 +281,11 @@ def main(argv: list[str] | None = None) -> None:
         cmd_train(argv[1:])
     elif argv[0] == "health":
         cmd_health()
+    elif argv[0] == "autotrack":
+        from trainer_yolo.autotrack import cmd_autotrack
+        cmd_autotrack(argv[1:])
     else:
-        _die(f"Unknown subcommand: {argv[0]}. Use 'train' or 'health'.")
+        _die(f"Unknown subcommand: {argv[0]}. Use 'train', 'autotrack', or 'health'.")
 
 
 if __name__ == "__main__":

@@ -99,6 +99,16 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
     ),
     ("GET", "/api/telemetry", &[200, 401, 503]),
     ("POST", "/api/jobs/yolo", &[202, 400, 401, 404, 409, 503]),
+    (
+        "POST",
+        "/api/jobs/autotracker",
+        &[202, 400, 401, 404, 409, 503],
+    ),
+    (
+        "POST",
+        "/api/jobs/:id/autotracker/apply",
+        &[200, 400, 401, 404, 409, 503],
+    ),
     ("POST", "/api/jobs/:id/abort", &[200, 401, 404, 409, 503]),
 ];
 
@@ -275,6 +285,14 @@ pub fn build(state: AppState) -> axum::Router {
         )
         .route("/api/telemetry", get(jobs::handlers::get_telemetry))
         .route("/api/jobs/yolo", post(jobs::handlers::submit_yolo_job))
+        .route(
+            "/api/jobs/autotracker",
+            post(jobs::handlers::submit_autotracker_job),
+        )
+        .route(
+            "/api/jobs/:id/autotracker/apply",
+            post(jobs::handlers::apply_autotracker_boxes),
+        )
         .route("/api/jobs/:id/abort", post(jobs::handlers::abort_job))
         // route_layer DEPOIS dos .route(): aplicado a um router vazio o axum 0.7 panic
         // no boot (path_router.rs, `routes.is_empty()`). Só cobre as rotas deste

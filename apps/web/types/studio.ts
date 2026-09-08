@@ -187,7 +187,7 @@ export type JobStatus =
   | "failed"
   | "cancelled";
 
-export type JobKind = "yolo_train";
+export type JobKind = "yolo_train" | "autotracker";
 
 export interface JobMetrics {
   epoch: number;
@@ -255,12 +255,28 @@ export interface YoloAugment {
   mixupFlip: boolean;
 }
 
+/* ── AutoTracker (Fatia 5 — ADR-0008) ─────────────────────── */
+
+export interface AutotrackerJobRequest {
+  datasetId: string;
+  model?: string;
+  conf?: number;
+}
+
+export interface AutotrackerApplyResponse {
+  applied: number;
+  skipped: number;
+  images: number;
+}
+
 /* ── Toast helpers for jobs ────────────────────────────────── */
 export type JobErrorCode =
   | "invalid_request"
   | "dataset_not_ready"
   | "queue_unavailable"
-  | "not_found";
+  | "not_found"
+  | "job_not_done"
+  | "storage_unavailable";
 
 export function jobErrorMessage(code: string): string {
   switch (code) {
@@ -274,6 +290,25 @@ export function jobErrorMessage(code: string): string {
       return "Job não encontrado.";
     default:
       return "Falha ao criar job de treino.";
+  }
+}
+
+export function autotrackerErrorMessage(code: string): string {
+  switch (code) {
+    case "invalid_request":
+      return "Parâmetros do AutoTracker inválidos.";
+    case "dataset_not_ready":
+      return "O dataset não está pronto — exige category yolo, ≥1 classe e ≥1 imagem.";
+    case "queue_unavailable":
+      return "Fila de processamento indisponível — tente novamente.";
+    case "not_found":
+      return "Job não encontrado.";
+    case "job_not_done":
+      return "O job ainda não terminou — aguarde a conclusão.";
+    case "storage_unavailable":
+      return "Armazenamento de artefatos indisponível — tente novamente.";
+    default:
+      return "Falha ao processar AutoTracker.";
   }
 }
 

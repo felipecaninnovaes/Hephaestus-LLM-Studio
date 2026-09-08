@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import {
   IconCpu,
   IconDatabase,
@@ -23,8 +23,12 @@ const TELEMETRY_POLL_MS = 3000;
 
 export default function Sidebar({ open, onClose }: SidebarProps) {
   const router = useRouter();
+  const pathname = usePathname();
   const [leaving, setLeaving] = useState(false);
   const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
+
+  const isDatasetsActive = pathname?.startsWith("/datasets") ?? false;
+  const isJobsActive = pathname === "/jobs" || (pathname?.startsWith("/jobs") ?? false);
 
   // Telemetry polling
   useEffect(() => {
@@ -132,10 +136,18 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
               <a
                 href="/datasets"
                 onClick={onClose}
-                className="relative flex w-full items-start space-x-3 overflow-hidden rounded-xl border border-brand-500/30 bg-zinc-900/90 p-2.5 text-left text-white shadow-sm"
+                className={`relative flex w-full items-start space-x-3 overflow-hidden rounded-xl border p-2.5 text-left text-white ${
+                  isDatasetsActive
+                    ? "border-brand-500/30 bg-zinc-900/90 shadow-sm"
+                    : "border-transparent transition-colors hover:bg-white/[0.06]"
+                }`}
               >
-                <span className="absolute top-1/2 left-0 h-6 w-1 -translate-y-1/2 rounded-r-full bg-brand-500" />
-                <span className="shrink-0 rounded-lg border border-brand-500/30 bg-brand-500/15 p-2 text-brand-400">
+                {isDatasetsActive && <span className="absolute top-1/2 left-0 h-6 w-1 -translate-y-1/2 rounded-r-full bg-brand-500" />}
+                <span className={`shrink-0 rounded-lg border p-2 ${
+                  isDatasetsActive
+                    ? "border-brand-500/30 bg-brand-500/15 text-brand-400"
+                    : "border-white/10 bg-zinc-900 text-zinc-300"
+                }`}>
                   <IconDatabase />
                 </span>
                 <span className="min-w-0 flex-1">
@@ -158,9 +170,18 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
               <a
                 href="/jobs"
                 onClick={onClose}
-                className="flex w-full items-start space-x-3 rounded-xl border border-transparent p-2.5 text-left text-zinc-200 transition-colors hover:bg-white/[0.06] hover:text-white"
+                className={`relative flex w-full items-start space-x-3 overflow-hidden rounded-xl border p-2.5 text-left ${
+                  isJobsActive
+                    ? "border-brand-500/30 bg-zinc-900/90 text-white shadow-sm"
+                    : "border-transparent text-zinc-200 transition-colors hover:bg-white/[0.06] hover:text-white"
+                }`}
               >
-                <span className="shrink-0 rounded-lg border border-white/10 bg-zinc-900 p-2 text-zinc-300">
+                {isJobsActive && <span className="absolute top-1/2 left-0 h-6 w-1 -translate-y-1/2 rounded-r-full bg-brand-500" />}
+                <span className={`shrink-0 rounded-lg border p-2 ${
+                  isJobsActive
+                    ? "border-brand-500/30 bg-brand-500/15 text-brand-400"
+                    : "border-white/10 bg-zinc-900 text-zinc-300"
+                }`}>
                   <IconLayers />
                 </span>
                 <span className="min-w-0 flex-1">

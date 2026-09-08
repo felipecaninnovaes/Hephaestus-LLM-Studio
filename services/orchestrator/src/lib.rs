@@ -841,19 +841,27 @@ async fn run_job_inner(
         }
     });
 
+    // Ramifica subcomando e artefatos por engine (A.3 — D2)
+    let subcommand_args: Vec<String> = match dispatch.engine.as_str() {
+        "yolo" => vec![
+            "train".to_string(),
+            "--config".to_string(),
+            format!("/outputs/{job_id}/config.yaml"),
+            "--output".to_string(),
+            format!("/outputs/{job_id}"),
+        ],
+        "autotracker" => vec![
+            "autotrack".to_string(),
+            "--config".to_string(),
+            format!("/outputs/{job_id}/config.yaml"),
+            "--output".to_string(),
+            format!("/outputs/{job_id}"),
+        ],
+        other => return Err(format!("unsupported engine: {other}")),
+    };
+
     let (exit_code, logs) = executor
-        .run(
-            &dispatch.image,
-            &container_name,
-            &volumes,
-            &[
-                "train".to_string(),
-                "--config".to_string(),
-                format!("/outputs/{job_id}/config.yaml"),
-                "--output".to_string(),
-                format!("/outputs/{job_id}"),
-            ],
-        )
+        .run(&dispatch.image, &container_name, &volumes, &subcommand_args)
         .await;
 
     // Cancela metrics collector
@@ -869,13 +877,20 @@ async fn run_job_inner(
     }
 
     // 9. Upload artifacts para S3 (D8 — artifacts/<job_id>/)
+    let artifact_specs: Vec<(&str, &str)> = match dispatch.engine.as_str() {
+        "yolo" => vec![
+            ("best.pt", "model"),
+            ("last.pt", "model"),
+            ("metrics.jsonl", "metrics"),
+        ],
+        "autotracker" => vec![("boxes.json", "boxes"), ("metrics.jsonl", "metrics")],
+        // Já validado acima — seguro unwrap
+        _ => return Err(format!("unsupported engine: {}", dispatch.engine)),
+    };
+
     let mut artifacts = Vec::new();
 
-    for (filename, kind) in [
-        ("best.pt", "model"),
-        ("last.pt", "model"),
-        ("metrics.jsonl", "metrics"),
-    ] {
+    for (filename, kind) in artifact_specs {
         let file_path = outputs.join(filename);
         if file_path.exists() {
             let art_key = format!("artifacts/{job_id}/{filename}");
@@ -1353,5 +1368,343 @@ mod tests {
 
         // Segundo dispatch com mesmo job_id deve ser detectado
         assert!(active.contains_key("job-123"));
+    }
+
+    // =========================================================================
+    // A.3 — engine branching tests
+    // =========================================================================
+
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    /// Mock S3 que serve um zip válido para download e grava uploads.
+    struct FakeS3 {
+        downloads: Mutex<Vec<String>>,
+        uploads: Mutex<Vec<(String, PathBuf)>>,
+        zip_bytes: Vec<u8>,
+    }
+
+    impl FakeS3 {
+        fn new() -> Self {
+            // Cria um zip in-memory com dataset.yaml vazio
+            let mut buf = std::io::Cursor::new(Vec::new());
+            {
+                let mut zip = zip::ZipWriter::new(&mut buf);
+                let opts = zip::write::SimpleFileOptions::default();
+                zip.start_file("dataset.yaml", opts).unwrap();
+                zip.write_all(b"classes: []\nimages: []\n").unwrap();
+                zip.finish().unwrap();
+            }
+            Self {
+                downloads: Mutex::new(Vec::new()),
+                uploads: Mutex::new(Vec::new()),
+                zip_bytes: buf.into_inner(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl S3Port for FakeS3 {
+        async fn get_to_file(&self, key: &str, path: &std::path::Path) -> Result<(), String> {
+            self.downloads.lock().unwrap().push(key.to_string());
+            std::fs::write(path, &self.zip_bytes).map_err(|e| format!("write zip: {e}"))
+        }
+
+        async fn put(&self, key: &str, path: &std::path::Path) -> Result<(), String> {
+            self.uploads
+                .lock()
+                .unwrap()
+                .push((key.to_string(), path.to_path_buf()));
+            Ok(())
+        }
+
+        async fn ping(&self) -> bool {
+            true
+        }
+    }
+
+    /// Mock ReportClient que grava relatórios.
+    struct FakeReport {
+        reports: Mutex<Vec<ReportBody>>,
+    }
+
+    impl FakeReport {
+        fn new() -> Self {
+            Self {
+                reports: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn statuses(&self) -> Vec<String> {
+            self.reports
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|r| r.status.clone())
+                .collect()
+        }
+
+        fn done_artifacts(&self) -> Option<Vec<ArtifactReport>> {
+            self.reports
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|r| r.status == "done")
+                .and_then(|r| r.artifacts.clone())
+        }
+    }
+
+    #[async_trait]
+    impl ReportClient for FakeReport {
+        async fn report(&self, _job_id: &str, body: &ReportBody) -> Result<(), String> {
+            self.reports.lock().unwrap().push(body.clone());
+            Ok(())
+        }
+    }
+
+    /// Executor que simula o trainer — apenas grava os args recebidos.
+    struct FakeTrainerExecutor {
+        last_args: Mutex<Option<Vec<String>>>,
+    }
+
+    impl FakeTrainerExecutor {
+        fn new() -> Self {
+            Self {
+                last_args: Mutex::new(None),
+            }
+        }
+
+        fn last_args(&self) -> Option<Vec<String>> {
+            self.last_args.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl TrainerExecutor for FakeTrainerExecutor {
+        async fn run(
+            &self,
+            _image: &str,
+            _container_name: &str,
+            _volumes: &[(String, String)],
+            args: &[String],
+        ) -> (i32, String) {
+            *self.last_args.lock().unwrap() = Some(args.to_vec());
+            (0, "ok".to_string())
+        }
+
+        async fn stop(&self, _container_name: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// Helper que cria os arquivos de output simulados no diretorio correto.
+    /// O run_job_inner le de `workdir/outputs/<job_id>/`, entao pre-criamos la.
+    fn create_fake_outputs(workdir: &Path, job_id: &str, files: &HashMap<String, Vec<u8>>) {
+        let outputs = workdir.join("outputs").join(job_id);
+        std::fs::create_dir_all(&outputs).unwrap();
+        for (name, content) in files {
+            std::fs::write(outputs.join(name), content).unwrap();
+        }
+    }
+
+    /// Helper para criar um DispatchRequest de teste.
+    fn make_dispatch(job_id: &str, engine: &str) -> DispatchRequest {
+        DispatchRequest {
+            job_id: job_id.to_string(),
+            engine: engine.to_string(),
+            image: "hephaestus/trainer-yolo:local".to_string(),
+            exec_mode: "docker".to_string(),
+            package_ref: PackageRef {
+                key: "packages/test-pkg/dataset.zip".to_string(),
+                md5_zip: String::new(), // será calculado
+                bytes: 0,
+            },
+            config_yaml: Some(
+                "epochs: 1\ndataset_path: {dataset_path}\noutput_path: {output_path}".to_string(),
+            ),
+            dataset_version_id: None,
+            workdir: "/tmp".to_string(),
+        }
+    }
+
+    /// Cria um dispatch com MD5 correto do zip fake.
+    fn make_dispatch_with_valid_md5(
+        job_id: &str,
+        engine: &str,
+        zip_path: &Path,
+    ) -> DispatchRequest {
+        let md5 = compute_file_md5(zip_path).unwrap();
+        let mut d = make_dispatch(job_id, engine);
+        d.package_ref.md5_zip = md5;
+        d
+    }
+
+    // -- A.3 test 1: engine yolo → subcomando train, artefatos [best.pt, last.pt, metrics.jsonl] --
+
+    #[tokio::test]
+    async fn engine_yolo_uses_train_subcommand_and_yolo_artifacts() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Prepara zip fake para o S3
+        let s3 = Arc::new(FakeS3::new());
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_dispatch_with_valid_md5("job-yolo-001", "yolo", &zip_path);
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        // Pre-cria os arquivos de output que o "trainer" produziria
+        let mut output_files = HashMap::new();
+        output_files.insert("best.pt".to_string(), b"fake model".to_vec());
+        output_files.insert("last.pt".to_string(), b"fake model".to_vec());
+        output_files.insert(
+            "metrics.jsonl".to_string(),
+            br#"{"box_loss":0.5,"cls_loss":0.3,"dfl_loss":0.2,"mAP50":0.8,"mAP50-95":0.6,"epoch":1}"#.to_vec(),
+        );
+        create_fake_outputs(tmp.path(), "job-yolo-001", &output_files);
+
+        let result = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "yolo pipeline should succeed: {:?}",
+            result.err()
+        );
+
+        // Verifica subcomando
+        let args = executor.last_args().unwrap();
+        assert_eq!(args[0], "train");
+        assert_eq!(args[1], "--config");
+        assert_eq!(args[3], "--output");
+
+        // Verifica artefatos: yolo produz best.pt, last.pt, metrics.jsonl
+        let artifacts = report.done_artifacts().unwrap();
+        let kinds: Vec<&str> = artifacts.iter().map(|a| a.kind.as_str()).collect();
+        let filenames: Vec<&str> = artifacts.iter().map(|a| a.path.as_str()).collect();
+        assert!(filenames.contains(&"best.pt"));
+        assert!(filenames.contains(&"last.pt"));
+        assert!(filenames.contains(&"metrics.jsonl"));
+        assert!(kinds.contains(&"model")); // best.pt e last.pt são kind "model"
+        assert!(kinds.contains(&"metrics")); // metrics.jsonl é kind "metrics"
+        assert!(!filenames.contains(&"boxes.json")); // yolo NÃO produz boxes.json
+    }
+
+    // -- A.3 test 2: engine autotracker → subcomando autotrack, artefatos [boxes.json, metrics.jsonl] --
+
+    #[tokio::test]
+    async fn engine_autotracker_uses_autotrack_subcommand_and_autotracker_artifacts() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let s3 = Arc::new(FakeS3::new());
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_dispatch_with_valid_md5("job-at-001", "autotracker", &zip_path);
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let mut output_files = HashMap::new();
+        output_files.insert(
+            "boxes.json".to_string(),
+            br#"{"engine":"autotracker","model":"mock","seed":42,"conf":0.65,"images":[]}"#
+                .to_vec(),
+        );
+        output_files.insert(
+            "metrics.jsonl".to_string(),
+            br#"{"box_loss":0.1,"cls_loss":0.2,"dfl_loss":0.3,"mAP50":0.9,"mAP50-95":0.7,"epoch":1}"#.to_vec(),
+        );
+        create_fake_outputs(tmp.path(), "job-at-001", &output_files);
+
+        let result = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "autotracker pipeline should succeed: {:?}",
+            result.err()
+        );
+
+        // Verifica subcomando: autotrack, não train
+        let args = executor.last_args().unwrap();
+        assert_eq!(args[0], "autotrack");
+        assert_eq!(args[1], "--config");
+        assert_eq!(args[3], "--output");
+
+        // Verifica artefatos: autotracker produz boxes.json + metrics.jsonl
+        let artifacts = report.done_artifacts().unwrap();
+        let filenames: Vec<&str> = artifacts.iter().map(|a| a.path.as_str()).collect();
+        let kinds: Vec<&str> = artifacts.iter().map(|a| a.kind.as_str()).collect();
+        assert!(filenames.contains(&"boxes.json"));
+        assert!(filenames.contains(&"metrics.jsonl"));
+        assert!(kinds.contains(&"boxes")); // boxes.json é kind "boxes"
+        assert!(kinds.contains(&"metrics")); // metrics.jsonl é kind "metrics"
+        assert!(!filenames.contains(&"best.pt")); // autotracker NÃO produz model artifacts
+        assert!(!filenames.contains(&"last.pt"));
+    }
+
+    // -- A.3 test 3: engine desconhecido → falha limpa (via run_job que faz o report "failed") --
+
+    #[tokio::test]
+    async fn unknown_engine_returns_clean_error() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let s3 = Arc::new(FakeS3::new());
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_dispatch_with_valid_md5("job-bad-001", "diffusion", &zip_path);
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        // Usa run_job (não run_job_inner) para testar o caminho completo de falha
+        run_job(
+            dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            active_jobs.clone(),
+        )
+        .await;
+
+        // Verifica que os reports incluem preparing e failed (via run_job outer)
+        let statuses = report.statuses();
+        assert!(statuses.contains(&"preparing".to_string()));
+        assert!(statuses.contains(&"failed".to_string()));
+        assert!(!statuses.contains(&"done".to_string()));
+
+        // Executor nunca foi chamado (engine check falha antes)
+        assert!(executor.last_args().is_none());
+    }
+
+    // -- A.3 test 4: parse_metrics_line aceita a linha 1-epoch do autotrack --
+
+    #[test]
+    fn parse_metrics_line_accepts_autotrack_single_epoch() {
+        let line = r#"{"box_loss":0.045,"cls_loss":0.067,"dfl_loss":0.123,"mAP50":0.912,"mAP50-95":0.654,"epoch":1}"#;
+        let m = parse_metrics_line(line).expect("should parse autotrack metrics line");
+        assert_eq!(m.epoch, 1);
+        assert!((m.box_loss - 0.045).abs() < 1e-6);
+        assert!((m.cls_loss - 0.067).abs() < 1e-6);
+        assert!((m.dfl_loss - 0.123).abs() < 1e-6);
+        assert!((m.map50 - 0.912).abs() < 1e-6);
+        assert!((m.map50_95 - 0.654).abs() < 1e-6);
     }
 }

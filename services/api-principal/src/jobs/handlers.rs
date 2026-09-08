@@ -20,11 +20,11 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::{
-    err, MSG_DATASET_NOT_READY, MSG_INVALID_REQUEST, MSG_JOB_NOT_ABORTABLE, MSG_NOT_FOUND,
-    MSG_QUEUE_UNAVAILABLE, MSG_STORAGE_UNAVAILABLE,
+    err, MSG_DATASET_NOT_READY, MSG_INVALID_REQUEST, MSG_JOB_NOT_ABORTABLE, MSG_JOB_NOT_DONE,
+    MSG_NOT_FOUND, MSG_QUEUE_UNAVAILABLE, MSG_STORAGE_UNAVAILABLE,
 };
 use crate::jobs::manager_client::ManagerError;
-use crate::jobs::models::{self, YoloJobRequest};
+use crate::jobs::models::{self, AutotrackerJobRequest, YoloJobRequest};
 use crate::state::AppState;
 use crate::storage::StorageError;
 
@@ -151,6 +151,18 @@ pub struct AbortResponse {
     pub status: String,
 }
 
+/// AutoTracker apply response (camelCase wire — ADR-0008 D1).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutotrackerApplyResponse {
+    /// Número de boxes gravadas.
+    pub applied: i64,
+    /// Número de boxes ignoradas (classe/imagem inexistente ou cap).
+    pub skipped: i64,
+    /// Número de imagens que receberam ao menos uma box.
+    pub images: i64,
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -193,6 +205,10 @@ fn job_not_abortable() -> Response {
         "job_not_abortable",
         MSG_JOB_NOT_ABORTABLE,
     )
+}
+
+fn job_not_done() -> Response {
+    err(StatusCode::CONFLICT, "job_not_done", MSG_JOB_NOT_DONE)
 }
 
 fn invalid_request() -> Response {
@@ -619,6 +635,164 @@ pub async fn submit_yolo_job(
 }
 
 // ---------------------------------------------------------------------------
+// POST /api/jobs/autotracker — submit job de autotrack (ADR-0008 D0/D3)
+// ---------------------------------------------------------------------------
+
+/// POST /api/jobs/autotracker — cria job de autotrack (ADR-0008 D0/D3).
+///
+/// Status: 202 | 400 `invalid_request` | 401 | 404 `not_found` |
+/// 409 `dataset_not_ready` | 503 `queue_unavailable`.
+pub async fn submit_autotracker_job(
+    State(state): State<AppState>,
+    body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
+) -> Response {
+    // 1. Parse body.
+    let raw = match body {
+        Ok(b) => b,
+        Err(_) => return invalid_request(),
+    };
+    let req: AutotrackerJobRequest = match serde_json::from_slice(&raw) {
+        Ok(v) => v,
+        Err(_) => return invalid_request(),
+    };
+
+    // 2. Validação pura (models.rs).
+    let req = match models::validate_autotrack_request(req) {
+        Ok(v) => v,
+        Err(_) => return invalid_request(),
+    };
+
+    // 3. Parse dataset_id — não-UUID ⇒ 404 (D8).
+    let ds_id: uuid::Uuid = match req.dataset_id.parse() {
+        Ok(v) => v,
+        Err(_) => return not_found(),
+    };
+
+    // 4. Dataset existe?
+    let ds_exists: bool =
+        match sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM datasets WHERE id = $1)")
+            .bind(ds_id)
+            .fetch_one(&state.pool)
+            .await
+        {
+            Ok(b) => b,
+            Err(_) => {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "internal server error",
+                )
+            }
+        };
+    if !ds_exists {
+        return not_found();
+    }
+
+    // 5. Dataset pronto? (ADR-0008 D3)
+    //    409 `dataset_not_ready`: category ≠ 'yolo' OU 0 classes OU 0 imagens ativas.
+    let readiness: Option<(String, i64, i64)> = match sqlx::query_as::<_, (String, i64, i64)>(
+        "SELECT d.category, \
+         (SELECT count(*) FROM classes WHERE dataset_id = d.id), \
+         (SELECT count(*) FROM images WHERE dataset_id = d.id AND deleted_at IS NULL) \
+         FROM datasets d WHERE d.id = $1",
+    )
+    .bind(ds_id)
+    .fetch_optional(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "internal server error",
+            )
+        }
+    };
+    match readiness {
+        None => return not_found(),
+        Some((category, class_count, image_count)) => {
+            if category != "yolo" || class_count == 0 || image_count == 0 {
+                return dataset_not_ready();
+            }
+        }
+    }
+
+    // 6. Build package (função compartilhada — F4.2b).
+    let package = match crate::datasets::package::build_package(&state, ds_id).await {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+
+    // 7. Gera config.yaml.
+    let job_id = uuid::Uuid::new_v4().to_string();
+    let config_yaml = models::generate_autotrack_config_yaml(&job_id, &req);
+
+    // 8. POST ao manager (ADR-0008 D3 — snake_case interno).
+    let manager_body = serde_json::json!({
+        "kind": "autotracker",
+        "engine": "autotracker",
+        "model": req.model,
+        "mode": "autotrack",
+        "dataset_id": ds_id.to_string(),
+        "dataset_version_id": package.version_id,
+        "package_ref": {
+            "version_id": package.version_id,
+            "key": package.key,
+            "md5_zip": package.md5_zip,
+            "bytes": package.bytes,
+        },
+        "config_yaml": config_yaml,
+        "params": {
+            "model": req.model,
+            "conf": req.conf,
+            "package_ref": {
+                "version_id": package.version_id,
+                "key": package.key,
+                "md5_zip": package.md5_zip,
+                "bytes": package.bytes,
+            },
+        },
+        "vram_min_gb": null,
+    });
+
+    match state.manager.create_job(&manager_body).await {
+        Ok(resp) => {
+            let body = SubmitJobResponse {
+                job_id: resp.job_id,
+                status: resp.status,
+                queue_position: resp.queue_position,
+            };
+            (StatusCode::ACCEPTED, Json(body)).into_response()
+        }
+        Err(ManagerError::Unavailable(_)) => {
+            // Compensação: remove o package criado se o manager falhar
+            // (operação composta: package sem job = lixo).
+            let _ = state
+                .storage
+                .delete_prefix(&format!("packages/{}/", package.version_id))
+                .await;
+            let _ = sqlx::query("DELETE FROM dataset_versions WHERE id = $1")
+                .bind(package.version_id.parse::<uuid::Uuid>().expect("uuid"))
+                .execute(&state.pool)
+                .await;
+            queue_unavailable()
+        }
+        Err(_) => {
+            let _ = state
+                .storage
+                .delete_prefix(&format!("packages/{}/", package.version_id))
+                .await;
+            let _ = sqlx::query("DELETE FROM dataset_versions WHERE id = $1")
+                .bind(package.version_id.parse::<uuid::Uuid>().expect("uuid"))
+                .execute(&state.pool)
+                .await;
+            queue_unavailable()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // POST /api/jobs/:id/abort — aborta job (F4.2b)
 // ---------------------------------------------------------------------------
 
@@ -644,6 +818,359 @@ pub async fn abort_job(State(state): State<AppState>, Path(id): Path<String>) ->
         Err(ManagerError::NotAbortable) => job_not_abortable(),
         Err(ManagerError::Unavailable(_)) => queue_unavailable(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/jobs/:id/autotracker/apply — ingest de boxes no principal
+// (ADR-0008 D1/D1a)
+// ---------------------------------------------------------------------------
+
+/// POST /api/jobs/:id/autotracker/apply — ingest de boxes no principal.
+///
+/// Status: 200 | 400 `invalid_request` | 404 `not_found` | 409 `job_not_done`
+///         | 409 `dataset_not_ready` | 503 `queue_unavailable`/`storage_unavailable`.
+///
+/// Fluxo (ADR-0008 D1):
+/// 1. Busca job no manager → valida engine/status/dataset_id
+/// 2. Localiza artefato `boxes.json` via `list_artifacts`, valida path, lê via
+///    `StoragePort.get`, confere md5
+/// 3. Parse do JSON, resolve filename→image_id, class→class_id
+/// 4. Escrita por imagem (transação DELETE+INSERT) com merge por origem
+pub async fn apply_autotracker_boxes(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
+) -> Response {
+    // 0. Parse job id — não-UUID ⇒ 404.
+    if parse_uuid(&id).is_none() {
+        return not_found();
+    }
+
+    // 1. Parse body.
+    let raw = match body {
+        Ok(b) => b,
+        Err(_) => return invalid_request(),
+    };
+    let req: models::AutotrackerApplyRequest = match serde_json::from_slice(&raw) {
+        Ok(v) => v,
+        Err(_) => return invalid_request(),
+    };
+
+    // 1a. Se imageId fornecido, valida UUID — não-UUID ⇒ 400 (campo de body).
+    let filter_image_id: Option<Uuid> = match &req.image_id {
+        Some(s) => match s.parse::<Uuid>() {
+            Ok(v) => Some(v),
+            Err(_) => return invalid_request(),
+        },
+        None => None,
+    };
+
+    // 2. Busca job no manager.
+    let job = match state.manager.get_job(&id).await {
+        Ok(j) => j,
+        Err(ManagerError::NotFound) => return not_found(),
+        Err(ManagerError::Unavailable(_)) => return queue_unavailable(),
+        Err(_) => return queue_unavailable(),
+    };
+
+    // 2a. Valida engine == 'autotracker'.
+    if job.engine != "autotracker" {
+        return not_found();
+    }
+
+    // 2b. Valida status == 'done'.
+    if job.status != "done" {
+        return job_not_done();
+    }
+
+    // 2c. Valida dataset_id presente.
+    let dataset_id_str = match &job.dataset_id {
+        Some(s) => s.clone(),
+        None => return dataset_not_ready(),
+    };
+    let dataset_id: Uuid = match dataset_id_str.parse() {
+        Ok(v) => v,
+        Err(_) => return dataset_not_ready(),
+    };
+
+    // 3. Localiza artefato `boxes.json` via list_artifacts.
+    let artifacts = match state.manager.list_artifacts(&id).await {
+        Ok(a) => a,
+        Err(ManagerError::NotFound) => return not_found(),
+        Err(ManagerError::Unavailable(_)) => return queue_unavailable(),
+        Err(_) => return queue_unavailable(),
+    };
+    let boxes_artifact = match artifacts.iter().find(|a| a.kind == "boxes") {
+        Some(a) => a,
+        None => return not_found(),
+    };
+
+    // 3a. Valida path do artefato (defesa em profundidade).
+    if let Err(resp) = validate_artifact_path(&boxes_artifact.path) {
+        return resp;
+    }
+
+    // 3b. Lê objeto via StoragePort (admin).
+    let key = format!("artifacts/{id}/{}", boxes_artifact.path);
+    let bytes = match state.storage.get(&key).await {
+        Ok(b) => b,
+        Err(StorageError::NotFound) => {
+            return err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "storage_unavailable",
+                MSG_STORAGE_UNAVAILABLE,
+            );
+        }
+        Err(StorageError::Unavailable(_)) => return storage_unavailable(),
+    };
+
+    // 3c. Confere md5.
+    let computed = format!(
+        "{:x}",
+        md5::Digest::finalize({
+            use md5::Digest;
+            let mut h = md5::Md5::new();
+            md5::Digest::update(&mut h, &bytes);
+            h
+        })
+    );
+    if computed != boxes_artifact.md5 {
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "storage_unavailable",
+            MSG_STORAGE_UNAVAILABLE,
+        );
+    }
+
+    // 4. Parse do JSON.
+    let artifact = match models::parse_boxes_json(&bytes) {
+        Ok(a) => a,
+        Err(_) => return invalid_request(),
+    };
+
+    // 5. Busca imagens ativas do dataset (filename → image_id).
+    let image_rows: Vec<(Uuid, String)> = match sqlx::query_as::<_, (Uuid, String)>(
+        "SELECT id, filename FROM images WHERE dataset_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(dataset_id)
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "internal server error",
+            )
+        }
+    };
+    let filename_to_id: std::collections::HashMap<String, Uuid> = image_rows
+        .iter()
+        .map(|(id, fname)| (fname.clone(), *id))
+        .collect();
+
+    // 5a. Se filter_image_id definido, valida que é imagem ATIVA do dataset.
+    if let Some(fid) = filter_image_id {
+        if !filename_to_id.values().any(|id| *id == fid) {
+            return not_found();
+        }
+    }
+
+    // 6. Busca classes do dataset (name → class_id).
+    let class_rows: Vec<(Uuid, String)> = match sqlx::query_as::<_, (Uuid, String)>(
+        "SELECT id, name FROM classes WHERE dataset_id = $1",
+    )
+    .bind(dataset_id)
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "internal server error",
+            )
+        }
+    };
+    let class_map = models::resolve_class_ids(&class_rows);
+
+    // 7. Processa cada imagem: uma transação por imagem (ADR-0008 D1a).
+    let mut total_applied: i64 = 0;
+    let mut total_skipped: i64 = 0;
+    let mut images_with_boxes: i64 = 0;
+
+    for engine_image in &artifact.images {
+        // Resolve filename → image_id (SEMPRE por filename, mesmo com filter_image_id).
+        let Some(image_id) = filename_to_id.get(&engine_image.filename) else {
+            // Imagem inexistente/deletada → skip.
+            total_skipped += engine_image.boxes.len() as i64;
+            continue;
+        };
+        // Filtra: se filter_image_id definido, só processa essa imagem.
+        if let Some(fid) = filter_image_id {
+            if *image_id != fid {
+                continue;
+            }
+        }
+
+        // Resolve class names → class_ids, coletando skippadas.
+        let mut valid_boxes: Vec<(Uuid, f64, f64, f64, f64, Option<f64>, String, Option<i32>)> =
+            Vec::new();
+        for eb in &engine_image.boxes {
+            match class_map.get(&eb.class) {
+                Some(class_id) => {
+                    valid_boxes.push((
+                        *class_id,
+                        eb.x,
+                        eb.y,
+                        eb.w,
+                        eb.h,
+                        Some(eb.conf),
+                        "autotracker".to_string(),
+                        None,
+                    ));
+                }
+                None => {
+                    // Classe inexistente → skip.
+                    total_skipped += 1;
+                }
+            }
+        }
+
+        // Cap 1000/imagem.
+        if valid_boxes.len() > 1000 {
+            let excess = valid_boxes.len() - 1000;
+            total_skipped += excess as i64;
+            valid_boxes.truncate(1000);
+        }
+
+        // Transação por imagem: DELETE + INSERT.
+        // DELETE SEMPRE ocorre quando a imagem está presente no artefato
+        // (mesmo que valid_boxes fique vazio — semântica last-write-wins por
+        // origem: se o engine EMITIU boxes para a imagem, as anteriores da
+        // mesma origem devem ser removidas).
+        let mut tx = match state.pool.begin().await {
+            Ok(t) => t,
+            Err(_) => {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "internal server error",
+                )
+            }
+        };
+
+        if req.overwrite {
+            // DELETE total da imagem.
+            if sqlx::query("DELETE FROM boxes WHERE image_id = $1")
+                .bind(image_id)
+                .execute(&mut *tx)
+                .await
+                .is_err()
+            {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "internal server error",
+                );
+            }
+        } else {
+            // DELETE só das boxes de origem autotracker.
+            if sqlx::query("DELETE FROM boxes WHERE image_id = $1 AND origin = 'autotracker'")
+                .bind(image_id)
+                .execute(&mut *tx)
+                .await
+                .is_err()
+            {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "internal server error",
+                );
+            }
+        }
+
+        // INSERT em massa — apenas se há boxes válidas.
+        if !valid_boxes.is_empty() {
+            type BoxTuple = (
+                Uuid,
+                Uuid,
+                f64,
+                f64,
+                f64,
+                f64,
+                Option<f64>,
+                String,
+                Option<i32>,
+            );
+            let inserted: Vec<BoxTuple> = {
+                let class_ids: Vec<Uuid> = valid_boxes.iter().map(|b| b.0).collect();
+                let xs: Vec<f64> = valid_boxes.iter().map(|b| b.1).collect();
+                let ys: Vec<f64> = valid_boxes.iter().map(|b| b.2).collect();
+                let ws: Vec<f64> = valid_boxes.iter().map(|b| b.3).collect();
+                let hs: Vec<f64> = valid_boxes.iter().map(|b| b.4).collect();
+                let confs: Vec<Option<f64>> = valid_boxes.iter().map(|b| b.5).collect();
+                let origins: Vec<String> = valid_boxes.iter().map(|b| b.6.clone()).collect();
+                let tracks: Vec<Option<i32>> = valid_boxes.iter().map(|b| b.7).collect();
+                match sqlx::query_as::<_, BoxTuple>(
+                    "INSERT INTO boxes (image_id, class_id, x, y, w, h, conf, origin, track_id) \
+                     SELECT $1, t.class_id, t.x, t.y, t.w, t.h, t.conf, t.origin, t.track_id \
+                     FROM unnest($2::uuid[], $3::float8[], $4::float8[], $5::float8[], $6::float8[], $7::float8[], $8::text[], $9::int[]) \
+                     AS t(class_id, x, y, w, h, conf, origin, track_id) \
+                     RETURNING id, class_id, x, y, w, h, conf, origin, track_id",
+                )
+                .bind(image_id)
+                .bind(&class_ids)
+                .bind(&xs)
+                .bind(&ys)
+                .bind(&ws)
+                .bind(&hs)
+                .bind(&confs)
+                .bind(&origins)
+                .bind(&tracks)
+                .fetch_all(&mut *tx)
+                .await
+                {
+                    Ok(r) => r,
+                    Err(_) => {
+                        return err(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "internal",
+                            "internal server error",
+                        )
+                    }
+                }
+            };
+
+            let count = inserted.len() as i64;
+            total_applied += count;
+            if count > 0 {
+                images_with_boxes += 1;
+            }
+        }
+
+        // Sempre commita — a fase DELETE ocorreu mesmo sem INSERT.
+        if tx.commit().await.is_err() {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "internal server error",
+            );
+        }
+    }
+
+    // 8. Resposta 200.
+    (
+        StatusCode::OK,
+        Json(AutotrackerApplyResponse {
+            applied: total_applied,
+            skipped: total_skipped,
+            images: images_with_boxes,
+        }),
+    )
+        .into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -1032,6 +1559,71 @@ mod tests {
 
     // --- POST /api/jobs/:id/abort unit tests (F4.2b) ---
 
+    // --- POST /api/jobs/autotracker unit tests (ADR-0008 A.2) ---
+
+    #[tokio::test]
+    async fn submit_autotracker_job_400_empty_body() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        // Empty bytes → invalid JSON → 400.
+        let resp =
+            submit_autotracker_job(axum::extract::State(state), Ok(axum::body::Bytes::from("")))
+                .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_autotracker_job_400_invalid_body() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_autotracker_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(r#"{"invalid"}"#)),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_autotracker_job_400_unknown_fields() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_autotracker_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"datasetId":"00000000-0000-0000-0000-000000000000","extra":1}"#,
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_autotracker_job_400_invalid_model() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_autotracker_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"datasetId":"00000000-0000-0000-0000-000000000000","model":"resnet50"}"#,
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_autotracker_job_404_non_uuid() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_autotracker_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(r#"{"datasetId":"not-a-uuid"}"#)),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
     #[tokio::test]
     async fn abort_job_404_non_uuid() {
         let mock = MockManager::default();
@@ -1078,6 +1670,245 @@ mod tests {
         )
         .await;
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    // =========================================================================
+    // apply_autotracker_boxes tests (ADR-0008 D1)
+    // =========================================================================
+
+    fn autotracker_job_done() -> InternalJob {
+        InternalJob {
+            id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            kind: "autotracker".into(),
+            engine: "autotracker".into(),
+            model: "mock".into(),
+            mode: "autotrack".into(),
+            dataset_id: Some("550e8400-e29b-41d4-a716-446655440001".into()),
+            status: "done".into(),
+            queue_reason: None,
+            queue_position: None,
+            progress: Some(1.0),
+            epoch: None,
+            step: None,
+            metrics: None,
+            vram_min_gb: None,
+            orchestrator_id: None,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            finished_at: Some("2026-01-01T01:00:00Z".into()),
+        }
+    }
+
+    fn boxes_artifact() -> InternalArtifact {
+        let json_data = br#"{"engine":"autotracker","model":"mock","seed":42,"conf":0.65,"images":[{"filename":"img_0001.jpg","boxes":[{"class":"solda_fria","x":0.1,"y":0.2,"w":0.3,"h":0.4,"conf":0.96}]}]}"#;
+        let md5 = format!(
+            "{:x}",
+            md5::Digest::finalize({
+                use md5::Digest;
+                let mut h = md5::Md5::new();
+                md5::Digest::update(&mut h, json_data);
+                h
+            })
+        );
+        InternalArtifact {
+            id: "aaaa-bbbb-cccc-dddd".into(),
+            kind: "boxes".into(),
+            path: "boxes.json".into(),
+            md5,
+            bytes: json_data.len() as i64,
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_404_non_uuid() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = apply_autotracker_boxes(
+            axum::extract::State(state),
+            Path("nao-e-uuid".to_string()),
+            Ok(axum::body::Bytes::from_static(b"{}")),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn apply_400_empty_body() {
+        let mut mock = MockManager::default();
+        mock.get_job_result = Some(autotracker_job_done());
+        let state = test_state(mock);
+        // Empty bytes fail JSON parse → 400 invalid_request.
+        let resp = apply_autotracker_boxes(
+            axum::extract::State(state),
+            Path("550e8400-e29b-41d4-a716-446655440000".to_string()),
+            Ok(axum::body::Bytes::new()),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn apply_400_invalid_body() {
+        let mut mock = MockManager::default();
+        mock.get_job_result = Some(autotracker_job_done());
+        let state = test_state(mock);
+        let resp = apply_autotracker_boxes(
+            axum::extract::State(state),
+            Path("550e8400-e29b-41d4-a716-446655440000".to_string()),
+            Ok(axum::body::Bytes::from_static(b"not json")),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn apply_400_unknown_fields() {
+        let mut mock = MockManager::default();
+        mock.get_job_result = Some(autotracker_job_done());
+        let state = test_state(mock);
+        let resp = apply_autotracker_boxes(
+            axum::extract::State(state),
+            Path("550e8400-e29b-41d4-a716-446655440000".to_string()),
+            Ok(axum::body::Bytes::from_static(b"{\"extra\":1}")),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn apply_404_not_autotracker_engine() {
+        let mut mock = MockManager::default();
+        let mut job = autotracker_job_done();
+        job.engine = "yolo".into();
+        mock.get_job_result = Some(job);
+        let state = test_state(mock);
+        let resp = apply_autotracker_boxes(
+            axum::extract::State(state),
+            Path("550e8400-e29b-41d4-a716-446655440000".to_string()),
+            Ok(axum::body::Bytes::from_static(b"{}")),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn apply_409_job_not_done_running() {
+        let mut mock = MockManager::default();
+        let mut job = autotracker_job_done();
+        job.status = "running".into();
+        mock.get_job_result = Some(job);
+        let state = test_state(mock);
+        let resp = apply_autotracker_boxes(
+            axum::extract::State(state),
+            Path("550e8400-e29b-41d4-a716-446655440000".to_string()),
+            Ok(axum::body::Bytes::from_static(b"{}")),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], "job_not_done");
+    }
+
+    #[tokio::test]
+    async fn apply_409_job_not_done_queued() {
+        let mut mock = MockManager::default();
+        let mut job = autotracker_job_done();
+        job.status = "queued".into();
+        mock.get_job_result = Some(job);
+        let state = test_state(mock);
+        let resp = apply_autotracker_boxes(
+            axum::extract::State(state),
+            Path("550e8400-e29b-41d4-a716-446655440000".to_string()),
+            Ok(axum::body::Bytes::from_static(b"{}")),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], "job_not_done");
+    }
+
+    #[tokio::test]
+    async fn apply_409_dataset_not_ready_null() {
+        let mut mock = MockManager::default();
+        let mut job = autotracker_job_done();
+        job.dataset_id = None;
+        mock.get_job_result = Some(job);
+        let state = test_state(mock);
+        let resp = apply_autotracker_boxes(
+            axum::extract::State(state),
+            Path("550e8400-e29b-41d4-a716-446655440000".to_string()),
+            Ok(axum::body::Bytes::from_static(b"{}")),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], "dataset_not_ready");
+    }
+
+    #[tokio::test]
+    async fn apply_503_manager_offline() {
+        let mut mock = MockManager::default();
+        mock.fail = true;
+        let state = test_state(mock);
+        let resp = apply_autotracker_boxes(
+            axum::extract::State(state),
+            Path("550e8400-e29b-41d4-a716-446655440000".to_string()),
+            Ok(axum::body::Bytes::from_static(b"{}")),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn apply_404_job_not_found() {
+        let mock = MockManager::default(); // get_job_result = None → NotFound
+        let state = test_state(mock);
+        let resp = apply_autotracker_boxes(
+            axum::extract::State(state),
+            Path("550e8400-e29b-41d4-a716-446655440000".to_string()),
+            Ok(axum::body::Bytes::from_static(b"{}")),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn apply_404_no_boxes_artifact() {
+        let mut mock = MockManager::default();
+        mock.get_job_result = Some(autotracker_job_done());
+        mock.list_artifacts_result = Some(vec![]); // no boxes artifact
+        let state = test_state(mock);
+        let resp = apply_autotracker_boxes(
+            axum::extract::State(state),
+            Path("550e8400-e29b-41d4-a716-446655440000".to_string()),
+            Ok(axum::body::Bytes::from_static(b"{}")),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn apply_image_id_non_uuid() {
+        let mut mock = MockManager::default();
+        mock.get_job_result = Some(autotracker_job_done());
+        let state = test_state(mock);
+        let resp = apply_autotracker_boxes(
+            axum::extract::State(state),
+            Path("550e8400-e29b-41d4-a716-446655440000".to_string()),
+            Ok(axum::body::Bytes::from_static(
+                b"{\"imageId\":\"not-uuid\"}",
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     // --- helpers ---

@@ -86,6 +86,182 @@ pub fn default_augment_values() -> (bool, bool) {
 }
 
 // ---------------------------------------------------------------------------
+// AutoTracker (ADR-0008 D3) — body, validação e config.yaml
+// ---------------------------------------------------------------------------
+
+/// Models aceitos para AutoTracker v1 (Apenas mock).
+const ALLOWED_AUTOTRACK_MODELS: &[&str] = &["mock"];
+
+/// Body de `POST /api/jobs/autotracker` (wire camelCase — ADR-0008 D3).
+///
+/// `datasetId` é obrigatório; `model` e `conf` são OPCIONAIS com defaults.
+/// `deny_unknown_fields` garante 400 para chaves desconhecidas.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutotrackerJobRequest {
+    pub dataset_id: String,
+    #[serde(default = "default_autotrack_model")]
+    pub model: String,
+    #[serde(default = "default_autotrack_conf")]
+    pub conf: f64,
+}
+
+fn default_autotrack_model() -> String {
+    "mock".to_string()
+}
+
+fn default_autotrack_conf() -> f64 {
+    0.65
+}
+
+/// Valida o body do POST /api/jobs/autotracker.
+///
+/// `Err(String)` ⇒ 400 `invalid_request`; `Ok(AutotrackerJobRequest)` com defaults
+/// já aplicados pelo serde.
+pub fn validate_autotrack_request(
+    req: AutotrackerJobRequest,
+) -> Result<AutotrackerJobRequest, String> {
+    if !ALLOWED_AUTOTRACK_MODELS.contains(&req.model.as_str()) {
+        return Err(format!(
+            "model must be one of: {}",
+            ALLOWED_AUTOTRACK_MODELS.join(", ")
+        ));
+    }
+    if !(0.0..=1.0).contains(&req.conf) {
+        return Err("conf must be between 0.0 and 1.0".to_string());
+    }
+    Ok(req)
+}
+
+/// Gera `config.yaml` para AutoTracker (ADR-0008 D3).
+///
+/// Placeholders literais `{dataset_path}` e `{output_path}` — o orquestrador
+/// substitui no spawn; o principal é agnóstico de paths.
+pub fn generate_autotrack_config_yaml(job_id: &str, req: &AutotrackerJobRequest) -> String {
+    format!(
+        r#"# Configuração de autotrack (gerada pelo api-principal)
+job_id: "{job_id}"
+engine: "autotracker"
+model: "{model}"
+mode: "autotrack"
+dataset_path: "{{dataset_path}}"
+output_path: "{{output_path}}"
+seed: 42
+autotrack:
+  model: "{model}"
+  conf: {conf}
+"#,
+        job_id = job_id,
+        model = req.model,
+        conf = req.conf,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// AutoTracker apply (ADR-0008 D1/D1a) — body, parse do boxes.json
+// ---------------------------------------------------------------------------
+
+/// Body de `POST /api/jobs/:id/autotracker/apply` (wire camelCase — ADR-0008 D1).
+///
+/// `overwrite` (default false) e `imageId` (UUID opcional) — `deny_unknown_fields`.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutotrackerApplyRequest {
+    #[serde(default)]
+    pub overwrite: bool,
+    #[serde(default)]
+    pub image_id: Option<String>,
+}
+
+/// Box extraída do `boxes.json` do engine (snake_case transporte — ADR-0008 D1).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct EngineBox {
+    pub class: String,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    pub conf: f64,
+}
+
+/// Imagem dentro do `boxes.json` (snake_case transporte — ADR-0008 D1).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct EngineImage {
+    pub filename: String,
+    pub boxes: Vec<EngineBox>,
+}
+
+/// Formato completo do artefato `boxes.json` (snake_case transporte — ADR-0008 D1).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct BoxesArtifact {
+    pub engine: String,
+    pub model: String,
+    pub seed: u64,
+    pub conf: f64,
+    pub images: Vec<EngineImage>,
+}
+
+/// Parse do `boxes.json` com validação de shape e domínios.
+///
+/// `Err(String)` ⇒ 400 `invalid_request`. Validações:
+/// - JSON parseável com shape `BoxesArtifact`
+/// - Cada box: `x/y/w/h` em `0..=1`, `conf` em `0..=1`
+/// - Nome de classe não vazio
+/// - Filename não vazio
+/// - Nenhuma imagem com filename duplicado
+pub fn parse_boxes_json(data: &[u8]) -> Result<BoxesArtifact, String> {
+    let art: BoxesArtifact =
+        serde_json::from_slice(data).map_err(|e| format!("invalid boxes.json: {e}"))?;
+
+    // Validação de campos não vazios
+    if art.engine.is_empty() {
+        return Err("engine is empty".into());
+    }
+    if art.images.is_empty() {
+        // Imagens vazias é válido (job sem resultado — aplica nada).
+        return Ok(art);
+    }
+
+    let mut filenames = std::collections::HashSet::new();
+    for img in &art.images {
+        if img.filename.is_empty() {
+            return Err("filename is empty".into());
+        }
+        if !filenames.insert(&img.filename) {
+            return Err(format!("duplicate filename: {}", img.filename));
+        }
+        for b in &img.boxes {
+            if b.class.is_empty() {
+                return Err("class name is empty".into());
+            }
+            for v in [b.x, b.y, b.w, b.h] {
+                if !(0.0..=1.0).contains(&v) {
+                    return Err(format!("box coordinate out of 0..=1: {v}"));
+                }
+            }
+            if !(0.0..=1.0).contains(&b.conf) {
+                return Err(format!("box conf out of 0..=1: {}", b.conf));
+            }
+        }
+    }
+    Ok(art)
+}
+
+/// Resolve nomes de classe para class_ids do dataset.
+///
+/// Retorna `(class_id_map, skipped_count)`: um mapa de `class_name → class_id`
+/// para classes que existem; classes ausentes são omitidas (contadas como
+/// skipped pelo caller).
+pub fn resolve_class_ids(
+    classes: &[(uuid::Uuid, String)],
+) -> std::collections::HashMap<String, uuid::Uuid> {
+    classes
+        .iter()
+        .map(|(id, name)| (name.clone(), *id))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Validação pura (ADR-0007 D6 :329-334)
 // ---------------------------------------------------------------------------
 
@@ -391,5 +567,211 @@ mod tests {
         assert!(yaml.contains("mosaic: false"));
         assert!(yaml.contains("mixup_flip: true"));
         assert!(yaml.contains("seed: 99"));
+    }
+
+    // =========================================================================
+    // AutoTracker (ADR-0008 D3) tests
+    // =========================================================================
+
+    #[test]
+    fn autotrack_defaults_apply() {
+        let raw = r#"{"datasetId":"00000000-0000-0000-0000-000000000000"}"#;
+        let req: AutotrackerJobRequest = serde_json::from_str(raw).expect("parse");
+        assert_eq!(req.model, "mock");
+        assert!((req.conf - 0.65).abs() < 1e-10);
+    }
+
+    #[test]
+    fn autotrack_custom_values() {
+        let raw =
+            r#"{"datasetId":"00000000-0000-0000-0000-000000000000","model":"mock","conf":0.8}"#;
+        let req: AutotrackerJobRequest = serde_json::from_str(raw).expect("parse");
+        assert_eq!(req.model, "mock");
+        assert!((req.conf - 0.8).abs() < 1e-10);
+    }
+
+    #[test]
+    fn autotrack_deny_unknown_fields() {
+        let raw = r#"{"datasetId":"00000000-0000-0000-0000-000000000000","extra":1}"#;
+        let err = serde_json::from_str::<AutotrackerJobRequest>(raw);
+        assert!(err.is_err(), "deny_unknown_fields");
+    }
+
+    #[test]
+    fn autotrack_invalid_model() {
+        let raw = r#"{"datasetId":"00000000-0000-0000-0000-000000000000","model":"resnet50"}"#;
+        let req: AutotrackerJobRequest = serde_json::from_str(raw).expect("parse");
+        assert!(validate_autotrack_request(req).is_err());
+    }
+
+    #[test]
+    fn autotrack_valid_model_mock() {
+        let raw = r#"{"datasetId":"00000000-0000-0000-0000-000000000000","model":"mock"}"#;
+        let req: AutotrackerJobRequest = serde_json::from_str(raw).expect("parse");
+        assert!(validate_autotrack_request(req).is_ok());
+    }
+
+    #[test]
+    fn autotrack_conf_boundary() {
+        // Dentro do domínio 0..=1
+        for c in [0.0, 0.5, 1.0] {
+            let raw =
+                format!(r#"{{"datasetId":"00000000-0000-0000-0000-000000000000","conf":{c}}}"#);
+            let req: AutotrackerJobRequest = serde_json::from_str(&raw).expect("parse");
+            assert!(validate_autotrack_request(req).is_ok(), "conf={c}");
+        }
+        // Fora do domínio
+        for c in [-0.1, 1.1] {
+            let raw =
+                format!(r#"{{"datasetId":"00000000-0000-0000-0000-000000000000","conf":{c}}}"#);
+            let req: AutotrackerJobRequest = serde_json::from_str(&raw).expect("parse");
+            assert!(validate_autotrack_request(req).is_err(), "conf={c}");
+        }
+    }
+
+    #[test]
+    fn autotrack_config_yaml_placeholders_and_defaults() {
+        let raw = r#"{"datasetId":"00000000-0000-0000-0000-000000000000"}"#;
+        let req: AutotrackerJobRequest = serde_json::from_str(raw).expect("parse");
+        let yaml = generate_autotrack_config_yaml("test-job-001", &req);
+
+        // Placeholders presentes.
+        assert!(yaml.contains("{dataset_path}"));
+        assert!(yaml.contains("{output_path}"));
+
+        // Defaults corretos.
+        assert!(yaml.contains("model: \"mock\""));
+        assert!(yaml.contains("conf: 0.65"));
+        assert!(yaml.contains("seed: 42"));
+        assert!(yaml.contains("job_id: \"test-job-001\""));
+        assert!(yaml.contains("engine: \"autotracker\""));
+        assert!(yaml.contains("mode: \"autotrack\""));
+        assert!(yaml.contains("autotrack:"));
+
+        // Parseável como YAML.
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml parse");
+        assert_eq!(parsed["autotrack"]["conf"].as_f64().unwrap(), 0.65);
+        assert_eq!(parsed["engine"].as_str().unwrap(), "autotracker");
+    }
+
+    #[test]
+    fn autotrack_config_yaml_custom_conf() {
+        let raw = r#"{"datasetId":"00000000-0000-0000-0000-000000000000","conf":0.9}"#;
+        let req: AutotrackerJobRequest = serde_json::from_str(raw).expect("parse");
+        let yaml = generate_autotrack_config_yaml("job-xyz", &req);
+
+        assert!(yaml.contains("conf: 0.9"));
+        assert!(yaml.contains("engine: \"autotracker\""));
+        assert!(yaml.contains("mode: \"autotrack\""));
+    }
+
+    // =========================================================================
+    // AutoTracker apply (ADR-0008 D1) — AutotrackerApplyRequest tests
+    // =========================================================================
+
+    #[test]
+    fn apply_defaults_apply() {
+        let raw = r#"{}"#;
+        let req: AutotrackerApplyRequest = serde_json::from_str(raw).expect("parse");
+        assert!(!req.overwrite);
+        assert!(req.image_id.is_none());
+    }
+
+    #[test]
+    fn apply_custom_values() {
+        let raw = r#"{"overwrite":true,"imageId":"00000000-0000-0000-0000-000000000000"}"#;
+        let req: AutotrackerApplyRequest = serde_json::from_str(raw).expect("parse");
+        assert!(req.overwrite);
+        assert!(req.image_id.is_some());
+    }
+
+    #[test]
+    fn apply_deny_unknown_fields() {
+        let raw = r#"{"extra":1}"#;
+        let err = serde_json::from_str::<AutotrackerApplyRequest>(raw);
+        assert!(err.is_err(), "deny_unknown_fields");
+    }
+
+    // =========================================================================
+    // parse_boxes_json tests (ADR-0008 D1)
+    // =========================================================================
+
+    fn sample_boxes_json() -> &'static [u8] {
+        br#"{"engine":"autotracker","model":"mock","seed":42,"conf":0.65,"images":[{"filename":"img_0001.jpg","boxes":[{"class":"solda_fria","x":0.1,"y":0.2,"w":0.3,"h":0.4,"conf":0.96}]}]}"#
+    }
+
+    #[test]
+    fn parse_boxes_json_ok() {
+        let art = parse_boxes_json(sample_boxes_json()).expect("parse ok");
+        assert_eq!(art.engine, "autotracker");
+        assert_eq!(art.model, "mock");
+        assert_eq!(art.seed, 42);
+        assert!((art.conf - 0.65).abs() < 1e-10);
+        assert_eq!(art.images.len(), 1);
+        assert_eq!(art.images[0].filename, "img_0001.jpg");
+        assert_eq!(art.images[0].boxes.len(), 1);
+        assert_eq!(art.images[0].boxes[0].class, "solda_fria");
+    }
+
+    #[test]
+    fn parse_boxes_json_invalid_json() {
+        let err = parse_boxes_json(b"not json");
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn parse_boxes_json_empty_images_ok() {
+        let data = br#"{"engine":"autotracker","model":"mock","seed":1,"conf":0.5,"images":[]}"#;
+        let art = parse_boxes_json(data).expect("empty images ok");
+        assert!(art.images.is_empty());
+    }
+
+    #[test]
+    fn parse_boxes_json_duplicate_filename() {
+        let data = br#"{"engine":"autotracker","model":"mock","seed":1,"conf":0.5,"images":[{"filename":"a.jpg","boxes":[]},{"filename":"a.jpg","boxes":[]}]}"#;
+        assert!(parse_boxes_json(data).is_err());
+    }
+
+    #[test]
+    fn parse_boxes_json_empty_filename() {
+        let data = br#"{"engine":"autotracker","model":"mock","seed":1,"conf":0.5,"images":[{"filename":"","boxes":[]}]}"#;
+        assert!(parse_boxes_json(data).is_err());
+    }
+
+    #[test]
+    fn parse_boxes_json_empty_class() {
+        let data = br#"{"engine":"autotracker","model":"mock","seed":1,"conf":0.5,"images":[{"filename":"a.jpg","boxes":[{"class":"","x":0.1,"y":0.2,"w":0.3,"h":0.4,"conf":0.9}]}]}"#;
+        assert!(parse_boxes_json(data).is_err());
+    }
+
+    #[test]
+    fn parse_boxes_json_coord_out_of_range() {
+        let data = br#"{"engine":"autotracker","model":"mock","seed":1,"conf":0.5,"images":[{"filename":"a.jpg","boxes":[{"class":"c","x":1.5,"y":0.2,"w":0.3,"h":0.4,"conf":0.9}]}]}"#;
+        assert!(parse_boxes_json(data).is_err());
+    }
+
+    #[test]
+    fn parse_boxes_json_conf_out_of_range() {
+        let data = br#"{"engine":"autotracker","model":"mock","seed":1,"conf":0.5,"images":[{"filename":"a.jpg","boxes":[{"class":"c","x":0.1,"y":0.2,"w":0.3,"h":0.4,"conf":1.5}]}]}"#;
+        assert!(parse_boxes_json(data).is_err());
+    }
+
+    #[test]
+    fn parse_boxes_json_boundary_coords() {
+        // 0.0 e 1.0 devem ser aceitos.
+        let data = br#"{"engine":"autotracker","model":"mock","seed":1,"conf":0.5,"images":[{"filename":"a.jpg","boxes":[{"class":"c","x":0.0,"y":1.0,"w":0.5,"h":0.5,"conf":0.0},{"class":"d","x":1.0,"y":0.0,"w":1.0,"h":1.0,"conf":1.0}]}]}"#;
+        let art = parse_boxes_json(data).expect("boundary ok");
+        assert_eq!(art.images[0].boxes.len(), 2);
+    }
+
+    #[test]
+    fn resolve_class_ids_ok() {
+        let classes = vec![
+            (uuid::Uuid::nil(), "solda_fria".into()),
+            (uuid::Uuid::new_v4(), "good_weld".into()),
+        ];
+        let map = resolve_class_ids(&classes);
+        assert_eq!(map.len(), 2);
+        assert_eq!(map["solda_fria"], uuid::Uuid::nil());
     }
 }

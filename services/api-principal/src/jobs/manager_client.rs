@@ -320,7 +320,14 @@ impl ManagerPort for HttpManager {
     }
 }
 
-/// Mock do manager para testes unitários.
+/// Mock do manager para testes unitários e de integração.
+///
+/// Dois níveis de configuração:
+/// - **fixo** (`get_job_result`, `list_artifacts_result`): retrocompatível,
+///   usado por todos os testes unitários existentes (176+ verdes).
+/// - **por-ID** (`jobs_by_id`, `artifacts_by_id`): para testes de integração
+///   que simulam um fluxo completo com IDs reais; `get_job`/`list_artifacts`
+///   consultam o mapa por-ID antes de cair no resultado fixo.
 pub struct MockManager {
     pub list_jobs_result: Option<(Vec<InternalJob>, i32)>,
     pub list_queue_result: Option<Vec<InternalQueueItem>>,
@@ -335,6 +342,11 @@ pub struct MockManager {
     pub abort_not_abortable: bool,
     /// Body capturado na última chamada a `create_job` (para asserts de teste).
     last_create_job_body: std::sync::Mutex<Option<serde_json::Value>>,
+    /// Jobs indexados por ID — `get_job` consulta aqui antes do resultado fixo.
+    pub jobs_by_id: std::collections::HashMap<String, InternalJob>,
+    /// Artefatos indexados por job_id — `list_artifacts` consulta aqui antes do
+    /// resultado fixo.
+    pub artifacts_by_id: std::collections::HashMap<String, Vec<InternalArtifact>>,
 }
 
 impl MockManager {
@@ -360,6 +372,8 @@ impl Default for MockManager {
             fail: false,
             abort_not_abortable: false,
             last_create_job_body: std::sync::Mutex::new(None),
+            jobs_by_id: std::collections::HashMap::new(),
+            artifacts_by_id: std::collections::HashMap::new(),
         }
     }
 }
@@ -384,16 +398,24 @@ impl ManagerPort for MockManager {
         Ok(self.list_queue_result.clone().unwrap_or_default())
     }
 
-    async fn get_job(&self, _id: &str) -> Result<InternalJob, ManagerError> {
+    async fn get_job(&self, id: &str) -> Result<InternalJob, ManagerError> {
         if self.fail {
             return Err(ManagerError::Unavailable("mock fail".into()));
+        }
+        // Consulta por-ID primeiro (integração), depois resultado fixo (unit).
+        if let Some(job) = self.jobs_by_id.get(id) {
+            return Ok(job.clone());
         }
         self.get_job_result.clone().ok_or(ManagerError::NotFound)
     }
 
-    async fn list_artifacts(&self, _job_id: &str) -> Result<Vec<InternalArtifact>, ManagerError> {
+    async fn list_artifacts(&self, job_id: &str) -> Result<Vec<InternalArtifact>, ManagerError> {
         if self.fail {
             return Err(ManagerError::Unavailable("mock fail".into()));
+        }
+        // Consulta por-ID primeiro (integração), depois resultado fixo (unit).
+        if let Some(arts) = self.artifacts_by_id.get(job_id) {
+            return Ok(arts.clone());
         }
         Ok(self.list_artifacts_result.clone().unwrap_or_default())
     }

@@ -19,7 +19,17 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-08 (sessão 13 ENCERRADA POR SATURAÇÃO — F4.0–F4.6 + E2E backend 17/17 fechados e commitados; F4.7 frontend EM CURSO com trabalho parcial JÁ COMMITADO; sessão nova deve retomar na CONTINUAÇÃO do F4.7)
+## Estado atual — 2026-09-08 (sessão 14 — FATIA 4 FECHADA: F4.7–F4.9 completos, 38 commits na `feat/jobs-v1`, todas as baterias verdes; aguarda DECISÃO DO USUÁRIO de push/CI/merge)
+
+## Resumo da sessão 14 (fecho da fatia 4)
+
+- **F4.7 FECHADO**: hack `?engine=` removido (`d439be0`); build web verde; smoke Chrome COMPLETO provado (Treinar→modal→202→/jobs→done 22s→métricas epoch 100 mAP→best.pt 110 bytes octet-stream→telemetria real CPU/RAM→abort 200 cancelling→failed; abort tardio→409 com toast honesto; console limpo; screenshots 1440/768/390 salvos em ~/.cache/tmp/opencode/f47-*). 3 fixes no caminho: artefatos alinhados ao wire `{id,kind,path,md5,bytes}` (`a4ca85b`), estado `cancelling` no JobStatus/pill (`ab34219`), e o ambiente limpo (3 datasets de teste 204×3 + jobs/artifacts DELETE).
+- **F4.8 FECHADO — review em 3 partes PARALELAS** (despacho único falhou 2× com `Bad Request: model deepseek-v4-flash` no charter do reviewer; divisão de escopo resolveu — o problema era TAMANHO do contexto, não o modelo): backend Rust = **BLOQUEIA**, engine/infra e frontend = **APROVA COM NITS**. Achado crítico: **SQL injection** no `list_jobs` do manager (status/engine interpolados via format!). 10 fixes roteados: 5 Rust (@rust-dev) + 5 web (@fixer) + 1 cleanup (`ramPct` órfão). Commits: `61fe829` (binds+guarda de transição), `83be449` (teste 13/14→14/14, assert DESC), `fca3a6f` (heartbeat usa active_jobs real — matou o bug jobsActive congelado; log no report de erro), `00045e7` (gpus array + barra RAM removida), `6538ef0` (polling cobre cancelling + refetch de detalhe), `f3d7f1c` (janela lr0 1e-5).
+- **Pós-fix REPROVADO zero**: rebuild+recreate manager/orchestrator → **smoke E2E 17/17 PASS de novo** + `jobsActive:0` provado ao vivo com jobs terminais. test-db principal 66/66 + manager **14/14** (agora verde), fmt/check limpos, build web exit 0.
+- **F4.9 FECHADO (`03d232e`)**: backend.md §9/§10/§11 (10 rotas, 503 queue_unavailable generalizado — delta consciente, wire real, migration 0006), frontend.md §4.1/§10/§12 (rota /jobs, telemetria real, measured:false = caminho morto), dividas.md (+9 dívidas do review, telemetria sidebar QUITADA), ADR-0007 ganhou seção "Fecho da fatia". Fix factual pelo @fixer (6 keys do metrics.jsonl, não hiperparâmetros).
+- **Dívidas do review F4.8 registradas em dividas.md** (não bloqueiam merge): abort races (preparing/dispatched, cancelled vs failed), watchdog offline, pytest no CI, best==last mock, reports best-effort, defaults de token, unzip `\`, NITs frontend (highlight ativo, canTrain duplicado, toast wording, polling drawer).
+- **Lição nova (processo)**: despacho de review de fatia GRANDE (13k linhas) quebra o charter com erro de API ambíguo ("Bad Request: model X" parecia config, era tamanho) — dividir o review em partes por escopo desde o início; a regra das duas correções quase levou a fix de config desnecessário (usuário corretamente pediu retentativa).
+- **Próximo passo: USUÁRIO decide push/CI/merge da `feat/jobs-v1`** (CI vai rodar rust/web/compose; pytest do trainer não está no CI — dívida registrada). Backlog não bloqueante segue: "Importar" na lista de datasets, definição da 3h, ci-watch.sh, versionar smoke_f4.py.
 
 ## Checklist de retomada (sessão 14 — ler TUDO abaixo antes de agir)
 

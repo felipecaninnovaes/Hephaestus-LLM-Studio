@@ -18,7 +18,7 @@ use axum::{
 use serde_json::{json, Value};
 
 use super::{gate, handlers, AppState};
-use crate::{datasets, search};
+use crate::{datasets, jobs, search};
 
 /// `(método, path, status_codes)` — espelho exato do contrato (sem `x-reserved`).
 /// Toda rota de negócio nova entra AQUI, montada no sub-router `protected`
@@ -81,12 +81,31 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
         &[200, 400, 401, 404, 409],
     ),
     ("POST", "/api/datasets/:id/export", &[200, 401, 404, 503]),
+    (
+        "POST",
+        "/api/datasets/:id/package",
+        &[200, 400, 401, 404, 503],
+    ),
     ("POST", "/api/datasets/import", &[201, 400, 401, 409, 503]),
+    ("GET", "/api/jobs", &[200, 401, 503]),
+    ("GET", "/api/jobs/queue", &[200, 401, 503]),
+    ("GET", "/api/jobs/:id", &[200, 401, 404, 503]),
+    ("GET", "/api/jobs/:id/metrics", &[200, 401, 404, 503]),
+    ("GET", "/api/jobs/:id/artifacts", &[200, 401, 404, 503]),
+    (
+        "GET",
+        "/api/jobs/:id/artifacts/:artifactId/data",
+        &[200, 401, 404, 503],
+    ),
+    ("GET", "/api/telemetry", &[200, 401, 503]),
+    ("POST", "/api/jobs/yolo", &[202, 400, 401, 404, 409, 503]),
+    ("POST", "/api/jobs/:id/abort", &[200, 401, 404, 409, 503]),
 ];
 
-/// Rotas públicas (sem gate): `/health` + `/api/auth/*`.
+/// Rotas públicas (sem gate): `/health` + `/ready` + `/api/auth/*`.
 pub const PUBLIC_ROUTES: &[(&str, &str, &[u16])] = &[
     ("GET", "/health", &[200]),
+    ("GET", "/ready", &[200, 503]),
     ("POST", "/api/auth/login", &[200, 400, 401, 503]),
     ("GET", "/api/auth/me", &[200, 401]),
     ("POST", "/api/auth/logout", &[204]),
@@ -120,6 +139,25 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
         "ready"
     };
     Json(json!({ "status": "ok", "service": "api-principal", "auth": auth }))
+}
+
+/// GET /ready — readiness check (D11 :459-460). 200 se db saudável; 503 senão.
+async fn ready(State(state): State<AppState>) -> Response {
+    // Check db: SELECT 1.
+    let db_ok: bool = sqlx::query_scalar::<_, i32>("SELECT 1")
+        .fetch_one(&state.pool)
+        .await
+        .is_ok();
+
+    if db_ok {
+        (StatusCode::OK, Json(json!({ "status": "ok" }))).into_response()
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "status": "unavailable", "reason": "database" })),
+        )
+            .into_response()
+    }
 }
 
 /// Fallback D9: caminho não roteado — sem sessão válida → 401 `unauthorized`;
@@ -211,10 +249,33 @@ pub fn build(state: AppState) -> axum::Router {
             post(datasets::export::export_dataset),
         )
         .route(
+            "/api/datasets/:id/package",
+            post(datasets::package::package_dataset),
+        )
+        .route(
             "/api/datasets/import",
             post(datasets::import::import_dataset)
                 .layer(DefaultBodyLimit::max(IMPORT_BODY_LIMIT_BYTES)),
         )
+        // Jobs (ADR-0007 D3: BFF do manager, 7 rotas de leitura).
+        .route("/api/jobs", get(jobs::handlers::list_jobs))
+        .route("/api/jobs/queue", get(jobs::handlers::list_queue))
+        .route("/api/jobs/:id", get(jobs::handlers::get_job))
+        .route(
+            "/api/jobs/:id/metrics",
+            get(jobs::handlers::get_job_metrics),
+        )
+        .route(
+            "/api/jobs/:id/artifacts",
+            get(jobs::handlers::list_artifacts),
+        )
+        .route(
+            "/api/jobs/:id/artifacts/:artifactId/data",
+            get(jobs::handlers::get_artifact_data),
+        )
+        .route("/api/telemetry", get(jobs::handlers::get_telemetry))
+        .route("/api/jobs/yolo", post(jobs::handlers::submit_yolo_job))
+        .route("/api/jobs/:id/abort", post(jobs::handlers::abort_job))
         // route_layer DEPOIS dos .route(): aplicado a um router vazio o axum 0.7 panic
         // no boot (path_router.rs, `routes.is_empty()`). Só cobre as rotas deste
         // sub-router — /health e /api/auth/* seguem fora do gate, e o .fallback()
@@ -225,6 +286,7 @@ pub fn build(state: AppState) -> axum::Router {
         ));
     axum::Router::new()
         .route("/health", get(health))
+        .route("/ready", get(ready))
         .route("/api/auth/login", post(handlers::login))
         .route("/api/auth/me", get(handlers::me))
         .route("/api/auth/logout", post(handlers::logout))

@@ -1,10 +1,14 @@
 # Integração CPU-only: mesmo stack do compose.yaml, com engine-mock no lugar
 # dos trainers GPU. Uso: docker compose -f compose.yaml -f compose.integ.yaml up --abort-on-container-exit
+#
+# Nota F4.0: EXEC_MODE=docker é o DEFAULT (spike 3/3 PASS). O compose.integ
+# alinha ao veredito do spike — docker-from-docker via socket do host funciona
+# e é o caminho de aceite. subprocess fica atrás do env para RunPod (sem socket).
 services:
   principal:
     environment:
       STUDIO_PASSWORD: ${STUDIO_PASSWORD:-teste-01}
   orchestrator-local:
     environment:
-      EXEC_MODE: subprocess
+      EXEC_MODE: docker
       ENGINE_MOCK: '1'

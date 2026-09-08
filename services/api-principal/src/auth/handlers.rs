@@ -253,6 +253,7 @@ mod tests {
             },
             embedder: std::sync::Arc::new(crate::search::MockEmbedder::new()),
             embedding_model: "ViT-B-32".to_string(),
+            manager: std::sync::Arc::new(crate::jobs::manager_client::MockManager::default()),
         };
         let resp = login(
             axum::extract::State(state),

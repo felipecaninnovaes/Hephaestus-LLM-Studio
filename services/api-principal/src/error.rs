@@ -39,3 +39,11 @@ pub const MSG_INDEX_NOT_READY: &str = "index not ready";
 pub const MSG_EMBEDDING_UNAVAILABLE: &str = "embedding unavailable";
 /// 400 de pacote de import inválido (fatia 3e.2, ADR-0006 D7).
 pub const MSG_IMPORT_INVALID: &str = "invalid import package";
+/// 400 de engine não suportado (fatia 4, ADR-0007 D7).
+pub const MSG_ENGINE_UNSUPPORTED: &str = "engine not supported";
+/// 503 de manager indisponível (fatia 4, ADR-0007 D7 — `queue_unavailable`).
+pub const MSG_QUEUE_UNAVAILABLE: &str = "queue unavailable";
+/// 409 de dataset não pronto para treino (fatia 4, ADR-0007 D7 — `dataset_not_ready`).
+pub const MSG_DATASET_NOT_READY: &str = "dataset not ready for training";
+/// 409 de job em estado terminal, abort não possível (fatia 4, ADR-0007 D7 — `job_not_abortable`).
+pub const MSG_JOB_NOT_ABORTABLE: &str = "job is not abortable";

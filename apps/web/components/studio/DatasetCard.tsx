@@ -27,16 +27,34 @@ function CategoryIcon({ category }: { category: Dataset["category"] }) {
   return <IconLayers className="w-4 h-4 text-zinc-300" />;
 }
 
+/** Habilita Treinar: category yolo + ≥1 classe + ≥1 imagem. */
+function canTrain(ds: Dataset): boolean {
+  return ds.category === "yolo" && ds.classes.length > 0 && ds.imagesCount > 0;
+}
+
+/** Title honesto quando desabilitado. */
+function trainDisabledReason(ds: Dataset): string {
+  if (ds.category !== "yolo") return "Treino disponível apenas para datasets YOLO.";
+  if (ds.classes.length === 0) return "Treino YOLO exige dataset yolo com ≥1 classe.";
+  if (ds.imagesCount === 0) return "Treino YOLO exige dataset yolo com ≥1 imagem.";
+  return "";
+}
+
 export default function DatasetCard({
   dataset,
   onContextMenu,
+  onTrain,
 }: {
   dataset: Dataset;
   onContextMenu?: (dataset: Dataset, x: number, y: number) => void;
+  onTrain?: (dataset: Dataset) => void;
 }) {
   const visibleClasses = dataset.classes.slice(0, 4);
   const extra = dataset.classes.length - visibleClasses.length;
   const categoryLabel = CATEGORY_LABELS[dataset.category] ?? dataset.category;
+  const trainEnabled = canTrain(dataset);
+  const trainTitle = trainEnabled ? "Abrir modal de treino YOLO" : trainDisabledReason(dataset);
+
   return (
     <Link
       href={`/datasets/${dataset.id}`}
@@ -126,10 +144,18 @@ export default function DatasetCard({
         </span>
         <button
           type="button"
-          disabled
-          title="Treino chega na fatia 4"
-          onClick={(e) => e.preventDefault()}
-          className="shrink-0 cursor-not-allowed font-medium text-brand-400/70"
+          disabled={!trainEnabled}
+          title={trainTitle}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (trainEnabled && onTrain) onTrain(dataset);
+          }}
+          className={`shrink-0 font-medium ${
+            trainEnabled
+              ? "text-brand-400 transition-colors hover:text-brand-300"
+              : "cursor-not-allowed text-brand-400/50"
+          }`}
         >
           Treinar →
         </button>

@@ -78,5 +78,9 @@ TEST_CODE=0
 DATABASE_URL="postgres://studio:${POSTGRES_PASSWORD:-studio}@localhost:5432/studio" \
   cargo test -p api-principal --test datasets_db -- --ignored || TEST_CODE=$?
 
+# 5. Testes do manager (F4.3) — mesmo banco, MESMO exit code guardado.
+DATABASE_URL="postgres://studio:${POSTGRES_PASSWORD:-studio}@localhost:5432/studio" \
+  cargo test -p manager --test manager_db -- --ignored || TEST_CODE=$?
+
 # 6. Exit com o código do cargo test (o trap limpa antes).
 exit "$TEST_CODE"

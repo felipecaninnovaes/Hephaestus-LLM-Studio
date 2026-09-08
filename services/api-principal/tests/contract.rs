@@ -46,6 +46,7 @@ fn setup_state() -> AppState {
         },
         embedder: std::sync::Arc::new(api_principal::search::MockEmbedder::new()),
         embedding_model: "ViT-B-32".to_string(),
+        manager: std::sync::Arc::new(api_principal::jobs::manager_client::MockManager::default()),
     }
 }
 
@@ -829,6 +830,118 @@ fn json_property_names_are_camel_case() {
     let mut ruim = Vec::new();
     walk_camel_case(&yaml, &mut ruim);
     assert!(ruim.is_empty(), "D1: nomes fora de camelCase: {ruim:?}");
+}
+
+#[tokio::test]
+async fn job_response_keys_are_camel_case() {
+    // Contract test: GET /api/jobs/:id and GET /api/jobs must NOT leak
+    // snake_case keys (ADR-0007 D7 :370-371 — Job camelCase with
+    // queuePosition, queueReason, createdAt, finishedAt).
+    use api_principal::jobs::manager_client::{InternalJob, MockManager};
+
+    let mock = MockManager::default();
+    let mut state = setup_state();
+    state.manager = std::sync::Arc::new({
+        let mut m = mock;
+        let job = InternalJob {
+            id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            kind: "yolo_train".into(),
+            engine: "yolo".into(),
+            model: "yolo11m".into(),
+            mode: "train".into(),
+            dataset_id: Some("550e8400-e29b-41d4-a716-446655440001".into()),
+            status: "running".into(),
+            queue_reason: Some("waiting_vram".into()),
+            queue_position: Some(2),
+            progress: Some(0.5),
+            epoch: Some(5),
+            step: Some(100),
+            metrics: None,
+            vram_min_gb: Some(4),
+            orchestrator_id: Some("550e8400-e29b-41d4-a716-446655440002".into()),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            finished_at: None,
+        };
+        m.get_job_result = Some(job.clone());
+        m.list_jobs_result = Some((vec![job], 1));
+        m
+    });
+    let app = routes::build(state);
+    let (token, _) = session::issue_jwt(uuid::Uuid::new_v4(), &SETUP_SECRET);
+    let cookie = format!("heph_session={token}");
+
+    // GET /api/jobs/:id → 200 + camelCase keys.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri("/api/jobs/550e8400-e29b-41d4-a716-446655440000")
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let job = json(&body);
+    // Must NOT contain snake_case keys.
+    for key in job.as_object().expect("job is object").keys() {
+        assert!(
+            !key.contains('_'),
+            "GET /api/jobs/:id leaked snake_case key: {key}"
+        );
+    }
+    // Must contain expected camelCase keys.
+    assert!(job.get("queuePosition").is_some(), "missing queuePosition");
+    assert!(job.get("queueReason").is_some(), "missing queueReason");
+    assert!(job.get("createdAt").is_some(), "missing createdAt");
+    assert!(job.get("datasetId").is_some(), "missing datasetId");
+    assert!(job.get("vramMinGb").is_some(), "missing vramMinGb");
+    assert!(
+        job.get("orchestratorId").is_some(),
+        "missing orchestratorId"
+    );
+    // Must NOT contain the snake_case equivalents.
+    assert!(job.get("queue_position").is_none(), "leaked queue_position");
+    assert!(job.get("queue_reason").is_none(), "leaked queue_reason");
+    assert!(job.get("created_at").is_none(), "leaked created_at");
+    assert!(job.get("dataset_id").is_none(), "leaked dataset_id");
+    assert!(job.get("vram_min_gb").is_none(), "leaked vram_min_gb");
+    assert!(
+        job.get("orchestrator_id").is_none(),
+        "leaked orchestrator_id"
+    );
+
+    // GET /api/jobs → 200 + items with camelCase keys.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri("/api/jobs")
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let list = json(&body);
+    let items = list["items"].as_array().expect("items array");
+    assert!(!items.is_empty(), "expected at least one job in list");
+    for (i, item) in items.iter().enumerate() {
+        for key in item.as_object().expect("item is object").keys() {
+            assert!(
+                !key.contains('_'),
+                "GET /api/jobs items[{i}] leaked snake_case key: {key}"
+            );
+        }
+        assert!(
+            item.get("queuePosition").is_some(),
+            "items[{i}] missing queuePosition"
+        );
+        assert!(
+            item.get("createdAt").is_some(),
+            "items[{i}] missing createdAt"
+        );
+    }
 }
 
 #[test]

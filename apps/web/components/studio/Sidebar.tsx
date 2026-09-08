@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   IconCpu,
@@ -11,21 +11,42 @@ import {
   IconTarget,
   IconX,
 } from "@/components/icons";
+import { getTelemetry } from "@/lib/jobs";
+import type { Telemetry } from "@/types/studio";
 
 interface SidebarProps {
   open: boolean;
   onClose: () => void;
 }
 
-const TELEMETRY_ROWS = [
-  { label: "VRAM", value: "—" },
-  { label: "CPU", value: "—" },
-  { label: "RAM", value: "—" },
-] as const;
+const TELEMETRY_POLL_MS = 3000;
 
 export default function Sidebar({ open, onClose }: SidebarProps) {
   const router = useRouter();
   const [leaving, setLeaving] = useState(false);
+  const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
+
+  // Telemetry polling
+  useEffect(() => {
+    let active = true;
+    let timer: ReturnType<typeof setInterval> | null = null;
+
+    async function fetchTelemetry() {
+      try {
+        const data = await getTelemetry();
+        if (active) setTelemetry(data);
+      } catch {
+        // Mantém estado anterior se falhar
+      }
+    }
+
+    fetchTelemetry();
+    timer = setInterval(fetchTelemetry, TELEMETRY_POLL_MS);
+    return () => {
+      active = false;
+      if (timer) clearInterval(timer);
+    };
+  }, []);
 
   async function logout() {
     setLeaving(true);
@@ -39,6 +60,17 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
     }
     router.replace("/login");
     router.refresh();
+  }
+
+  const cpuPct = telemetry?.cpu != null ? Math.min(100, Math.max(0, telemetry.cpu)) : null;
+  const vramPct =
+    telemetry?.measured && telemetry.vramUsed != null && telemetry.vramTotal != null && telemetry.vramTotal > 0
+      ? Math.min(100, Math.max(0, (telemetry.vramUsed / telemetry.vramTotal) * 100))
+      : null;
+
+  function formatRam(val: number | null): string {
+    if (val == null) return "—";
+    return `${(val / (1024 * 1024 * 1024)).toFixed(1)} GB`;
   }
 
   return (
@@ -96,9 +128,10 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
               Módulos de Sistema
             </div>
             <div className="space-y-1.5">
-              {/* Módulo ativo */}
-              <span
-                aria-current="page"
+              {/* Dados & Anotação */}
+              <a
+                href="/datasets"
+                onClick={onClose}
                 className="relative flex w-full items-start space-x-3 overflow-hidden rounded-xl border border-brand-500/30 bg-zinc-900/90 p-2.5 text-left text-white shadow-sm"
               >
                 <span className="absolute top-1/2 left-0 h-6 w-1 -translate-y-1/2 rounded-r-full bg-brand-500" />
@@ -119,40 +152,43 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
                     Curadoria, BBoxes e legendas
                   </span>
                 </span>
-              </span>
+              </a>
 
-              {/* Desabilitados honestos */}
-              <span
-                title="Fatia futura"
-                aria-disabled="true"
-                className="flex w-full cursor-not-allowed items-start space-x-3 rounded-xl border border-transparent p-2.5 text-left text-zinc-400 opacity-55"
+              {/* Forja & Treinamento — HABILITADO */}
+              <a
+                href="/jobs"
+                onClick={onClose}
+                className="flex w-full items-start space-x-3 rounded-xl border border-transparent p-2.5 text-left text-zinc-200 transition-colors hover:bg-white/[0.06] hover:text-white"
               >
-                <span className="shrink-0 rounded-lg bg-zinc-900 p-2 text-zinc-400">
+                <span className="shrink-0 rounded-lg border border-white/10 bg-zinc-900 p-2 text-zinc-300">
                   <IconLayers />
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="flex items-center justify-between gap-2">
                     <span
                       title="Forja & Treinamento"
-                      className="min-w-0 flex-1 truncate text-xs font-semibold text-zinc-100"
+                      className="min-w-0 flex-1 truncate text-xs font-semibold"
                     >
                       Forja &amp; Treinamento
                     </span>
-                    <span className="shrink-0 rounded bg-zinc-800/80 px-1.5 py-0.5 font-mono text-[10px] text-zinc-400">
-                      3 Motores
-                    </span>
+                    {telemetry != null && telemetry.jobsActive > 0 && (
+                      <span className="shrink-0 rounded bg-brand-500/20 px-1.5 py-0.5 font-mono text-[10px] text-brand-300">
+                        {telemetry.jobsActive} active
+                      </span>
+                    )}
                   </span>
                   <span
-                    title="Difusão, OpenCLIP e YOLO"
+                    title="Treino YOLO ativo"
                     className="mt-0.5 block truncate text-[11px] text-zinc-400"
                   >
-                    Difusão, OpenCLIP e YOLO
+                    Treino YOLO ativo
                   </span>
                 </span>
-              </span>
+              </a>
 
+              {/* Desabilitados honestos */}
               <span
-                title="Fatia futura"
+                title="Disponível em fatia futura"
                 aria-disabled="true"
                 className="flex w-full cursor-not-allowed items-start space-x-3 rounded-xl border border-transparent p-2.5 text-left text-zinc-400 opacity-55"
               >
@@ -182,37 +218,81 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
             </div>
           </div>
 
-          {/* Telemetria do nó (placeholders honestos) */}
-          <div
-            title="Telemetria chega na fatia 4"
-            className="glass-card space-y-3 rounded-xl border border-zinc-800/80 bg-zinc-950/60 p-3.5"
-          >
+          {/* Telemetria do nó (REAL) */}
+          <div className="glass-card space-y-3 rounded-xl border border-zinc-800/80 bg-zinc-950/60 p-3.5">
             <div className="flex items-center justify-between">
               <span className="font-mono text-[10px] font-semibold uppercase tracking-caps text-zinc-400">
                 Telemetria do Nó
               </span>
-              <span className="font-mono text-[10px] text-zinc-500">—</span>
+              {telemetry?.jobsActive != null && telemetry.jobsActive > 0 && (
+                <span className="font-mono text-[10px] text-brand-300">
+                  {telemetry.jobsActive} job{telemetry.jobsActive > 1 ? "s" : ""}
+                </span>
+              )}
             </div>
-            {TELEMETRY_ROWS.map((row) => (
-              <div key={row.label}>
-                <div className="mb-1 flex justify-between font-mono text-[10px] text-zinc-400">
-                  <span>{row.label}</span>
-                  <span title={row.value} className="text-zinc-200">
-                    {row.value}
-                  </span>
-                </div>
-                <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-800">
-                  <div className="h-full w-0 rounded-full bg-brand-500" />
-                </div>
+
+            {/* VRAM */}
+            <div>
+              <div className="mb-1 flex justify-between font-mono text-[10px] text-zinc-400">
+                <span>VRAM</span>
+                <span className="text-zinc-200">
+                  {!telemetry?.measured
+                    ? "sem GPU (mock)"
+                    : vramPct != null
+                      ? `${telemetry!.vramUsed!.toFixed(1)} / ${telemetry!.vramTotal!.toFixed(1)} GB`
+                      : "—"}
+                </span>
               </div>
-            ))}
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-800">
+                <div
+                  className="h-full rounded-full bg-brand-500 transition-all duration-500"
+                  style={{ width: vramPct != null ? `${vramPct}%` : "0%" }}
+                />
+              </div>
+            </div>
+
+            {/* CPU */}
+            <div>
+              <div className="mb-1 flex justify-between font-mono text-[10px] text-zinc-400">
+                <span>CPU</span>
+                <span className="text-zinc-200">
+                  {cpuPct != null ? `${cpuPct.toFixed(1)}%` : "—"}
+                </span>
+              </div>
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-800">
+                <div
+                  className="h-full rounded-full bg-brand-500 transition-all duration-500"
+                  style={{ width: cpuPct != null ? `${cpuPct}%` : "0%" }}
+                />
+              </div>
+            </div>
+
+            {/* RAM — Wire only sends bytes, not total, so no percentage bar is shown */}
+            <div>
+              <div className="mb-1 flex justify-between font-mono text-[10px] text-zinc-400">
+                <span>RAM</span>
+                <span className="text-zinc-200">
+                  {telemetry?.ram != null ? formatRam(telemetry.ram) : "—"}
+                </span>
+              </div>
+            </div>
+
+            {/* GPUs info */}
+            {telemetry?.gpus && telemetry.gpus.length > 0 && (
+              <div className="flex items-center gap-2 border-t border-zinc-800/60 pt-2">
+                <span className="font-mono text-[10px] text-zinc-500">GPU:</span>
+                <span className="truncate font-mono text-[10px] text-zinc-300" title={telemetry.gpus.join(", ")}>
+                  {telemetry.gpus.join(", ")}
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
         {/* Rodapé */}
         <div className="flex shrink-0 items-center justify-between border-t border-zinc-800/80 bg-zinc-950/80 p-3">
           <span
-            title="Fatia futura"
+            title="Disponível em fatia futura"
             aria-disabled="true"
             className="touch-target flex cursor-not-allowed items-center space-x-2 rounded-xl px-3 py-2 text-xs text-zinc-400 opacity-55"
           >

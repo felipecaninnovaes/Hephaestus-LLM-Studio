@@ -9,6 +9,7 @@ import { exportDataset, exportErrorMessage } from "@/lib/backup";
 import {
   IconDownload,
   IconLayers,
+  IconPlay,
   IconTarget,
   IconTrash,
 } from "@/components/icons";
@@ -19,9 +20,23 @@ interface Props {
   y: number;
   onClose: () => void;
   onDelete: (dataset: Dataset) => void;
+  onTrain: (dataset: Dataset) => void;
 }
 
-export default function DatasetMenu({ dataset, x, y, onClose, onDelete }: Props) {
+/** Habilita Treinar: category yolo + ≥1 classe + ≥1 imagem. */
+function canTrain(ds: Dataset): boolean {
+  return ds.category === "yolo" && ds.classes.length > 0 && ds.imagesCount > 0;
+}
+
+/** Title honesto quando desabilitado. */
+function trainDisabledReason(ds: Dataset): string {
+  if (ds.category !== "yolo") return "Treino disponível apenas para datasets YOLO.";
+  if (ds.classes.length === 0) return "Treino YOLO exige dataset yolo com ≥1 classe.";
+  if (ds.imagesCount === 0) return "Treino YOLO exige dataset yolo com ≥1 imagem.";
+  return "";
+}
+
+export default function DatasetMenu({ dataset, x, y, onClose, onDelete, onTrain }: Props) {
   const router = useRouter();
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ top: y, left: x });
@@ -43,6 +58,9 @@ export default function DatasetMenu({ dataset, x, y, onClose, onDelete }: Props)
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  const trainEnabled = canTrain(dataset);
+  const trainTitle = trainEnabled ? "Abrir modal de treino YOLO" : trainDisabledReason(dataset);
 
   return (
     <>
@@ -79,11 +97,20 @@ export default function DatasetMenu({ dataset, x, y, onClose, onDelete }: Props)
         <button
           type="button"
           role="menuitem"
-          disabled
-          title="Treino chega na fatia 4"
-          className="flex w-full cursor-not-allowed items-center gap-2 rounded-xl px-3 py-2 text-left text-zinc-500"
+          disabled={!trainEnabled}
+          title={trainTitle}
+          onClick={() => {
+            if (!trainEnabled) return;
+            onClose();
+            onTrain(dataset);
+          }}
+          className={`flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left transition-colors ${
+            trainEnabled
+              ? "text-zinc-200 hover:bg-brand-500/20 hover:text-brand-300"
+              : "cursor-not-allowed text-zinc-500"
+          }`}
         >
-          <IconTarget className="w-3.5 h-3.5 shrink-0" />
+          <IconPlay className="w-3.5 h-3.5 shrink-0" />
           <span>Treinar neste dataset</span>
         </button>
         <button

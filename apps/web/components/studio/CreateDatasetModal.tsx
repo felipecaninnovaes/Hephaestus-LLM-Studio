@@ -2,12 +2,28 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { IconPlus, IconX } from "@/components/icons";
+import {
+  IconCheck,
+  IconFileArchive,
+  IconFolder,
+  IconPlus,
+  IconUpload,
+  IconX,
+} from "@/components/icons";
 import { ApiError } from "@/lib/api";
+import { importDataset, importErrorMessage } from "@/lib/backup";
 import { CLASS_RE, MAX_CLASSES } from "@/lib/classes";
+import {
+  inspectDataTransfer,
+  inspectZipFile,
+  type InspectionResult,
+} from "@/lib/dataset-inspector";
 import { createDataset } from "@/lib/datasets";
+import { formatBytes } from "@/lib/format";
+import { uploadImages } from "@/lib/images";
 import { TYPE_LABELS, type Dataset, type DatasetType } from "@/types/studio";
 import { showToast } from "./Toast";
+
 const TYPES = Object.keys(TYPE_LABELS) as DatasetType[];
 
 export function slugPreview(title: string): string {
@@ -25,31 +41,60 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onCreated: (dataset: Dataset) => void;
+  initialMode?: "empty" | "import";
+  initialInspection?: InspectionResult | null;
 }
 
-export default function CreateDatasetModal({ open, onClose, onCreated }: Props) {
+type Phase = "form" | "confirm";
+
+export default function CreateDatasetModal({
+  open,
+  onClose,
+  onCreated,
+  initialMode = "empty",
+  initialInspection = null,
+}: Props) {
   const router = useRouter();
   const nameRef = useRef<HTMLInputElement>(null);
+  const zipInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
+
+  const [mode, setMode] = useState<"empty" | "import">(initialMode);
+  const [phase, setPhase] = useState<Phase>("form");
   const [title, setTitle] = useState("");
   const [type, setType] = useState<DatasetType>("yolo_bbox");
   const [classesRaw, setClassesRaw] = useState("");
+  const [inspection, setInspection] = useState<InspectionResult | null>(null);
+
   const [nameError, setNameError] = useState<string | null>(null);
   const [classesError, setClassesError] = useState<string | null>(null);
   const [topError, setTopError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [busyText, setBusyText] = useState("");
+  const [isDraggingModal, setIsDraggingModal] = useState(false);
 
   useEffect(() => {
     if (!open) return;
-    setTitle("");
-    setType("yolo_bbox");
-    setClassesRaw("");
+    setPhase("form");
     setNameError(null);
     setClassesError(null);
     setTopError(null);
     setBusy(false);
-    const t = setTimeout(() => nameRef.current?.focus(), 30);
+
+    if (initialInspection) {
+      setMode("import");
+      applyInspection(initialInspection);
+    } else {
+      setMode(initialMode);
+      setTitle("");
+      setType("yolo_bbox");
+      setClassesRaw("");
+      setInspection(null);
+    }
+
+    const t = setTimeout(() => nameRef.current?.focus(), 50);
     return () => clearTimeout(t);
-  }, [open ]);
+  }, [open, initialMode, initialInspection]);
 
   useEffect(() => {
     if (!open || busy) return;
@@ -62,28 +107,122 @@ export default function CreateDatasetModal({ open, onClose, onCreated }: Props) 
 
   if (!open) return null;
 
-  const slug = slugPreview(title);
-  const simpleSlug = title.toLowerCase().trim().replace(/\s+/g, "-");
-  const showAdjustHint = slug.length > 0 && slug !== simpleSlug;
+  function applyInspection(res: InspectionResult) {
+    setInspection(res);
+    setTitle(res.title);
+    setType(res.category);
+    setClassesRaw(res.classes.join(", "));
+    setNameError(null);
+    setClassesError(null);
+    setTopError(null);
+  }
+
+  async function handleZipSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setBusy(true);
+    setBusyText("Inspecionando arquivo ZIP…");
+    try {
+      const res = await inspectZipFile(file);
+      applyInspection(res);
+    } catch (err) {
+      setTopError(err instanceof Error ? err.message : "Falha ao inspecionar ZIP.");
+    } finally {
+      setBusy(false);
+      if (zipInputRef.current) zipInputRef.current.value = "";
+    }
+  }
+
+  async function handleFolderSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+    setBusy(true);
+    setBusyText("Inspecionando pasta…");
+    try {
+      const files: File[] = [];
+      const classSet = new Set<string>();
+      let rootDir = "";
+
+      for (let i = 0; i < fileList.length; i++) {
+        const file = fileList[i];
+        const path = file.webkitRelativePath || file.name;
+        const parts = path.split("/");
+        if (!rootDir && parts.length > 1) {
+          rootDir = parts[0];
+        }
+        if (parts.length > 2) {
+          const sub = parts[parts.length - 2]?.toLowerCase();
+          if (sub && !["images", "labels", "train", "val", "test", "data"].includes(sub)) {
+            classSet.add(sub.replace(/[^a-z0-9_]/g, "_").slice(0, 64));
+          }
+        }
+        files.push(file);
+      }
+
+      const res: InspectionResult = {
+        title: rootDir ? rootDir.replace(/[-_]+/g, " ").trim().slice(0, 96) : "Novo Dataset",
+        category: "yolo_bbox",
+        classes: Array.from(classSet),
+        imagesCount: files.length,
+        isBackupZip: false,
+        folderFiles: files,
+        sourceLabel: rootDir ? `Pasta "${rootDir}"` : `${files.length} arquivos`,
+      };
+      applyInspection(res);
+    } catch (err) {
+      setTopError(err instanceof Error ? err.message : "Falha ao inspecionar pasta.");
+    } finally {
+      setBusy(false);
+      if (folderInputRef.current) folderInputRef.current.value = "";
+    }
+  }
+
+  async function handleModalDrop(e: React.DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingModal(false);
+    setBusy(true);
+    setBusyText("Inspecionando dados soltos…");
+    try {
+      const res = await inspectDataTransfer(e.dataTransfer);
+      if (res) {
+        setMode("import");
+        applyInspection(res);
+      } else {
+        setTopError("Nenhum arquivo ZIP ou imagem suportada detectada.");
+      }
+    } catch (err) {
+      setTopError(err instanceof Error ? err.message : "Falha ao processar arquivos soltos.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function parseClasses(): string[] {
+    const seen = new Set<string>();
+    const list: string[] = [];
+    for (const part of classesRaw.split(",")) {
+      const name = part.trim();
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      list.push(name);
+    }
+    return list;
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setNameError(null);
     setClassesError(null);
     setTopError(null);
+
     const trimmed = title.trim();
     if (!trimmed || trimmed.length > 96) {
       setNameError("Dê um nome ao dataset (máx 96 caracteres).");
       return;
     }
-    const seen = new Set<string>();
-    const classes: string[] = [];
-    for (const part of classesRaw.split(",")) {
-      const name = part.trim();
-      if (!name || seen.has(name)) continue;
-      seen.add(name);
-      classes.push(name);
-    }
+
+    const classes = parseClasses();
     const bad = classes.find((c) => !CLASS_RE.test(c));
     if (bad) {
       setClassesError("Classe inválida: use letras, números e _ (máx 64).");
@@ -93,12 +232,132 @@ export default function CreateDatasetModal({ open, onClose, onCreated }: Props) 
       setClassesError("Máximo de 200 classes por dataset.");
       return;
     }
+
+    // 1. Ingestão via Pacote de Backup Hephaestus (.zip)
+    if (mode === "import" && inspection?.isBackupZip && inspection.file) {
+      await runBackupImport(inspection.file, false);
+      return;
+    }
+
+    // 2. Ingestão de Pasta com Imagens Locais
+    if (mode === "import" && inspection?.folderFiles && inspection.folderFiles.length > 0) {
+      await runFolderIngest(trimmed, type, classes, inspection.folderFiles);
+      return;
+    }
+
+    // 3. Criação de Container Vazio Tradicional
+    await runEmptyCreation(trimmed, type, classes);
+  }
+
+  async function runBackupImport(file: File, replace: boolean) {
     setBusy(true);
+    setBusyText(replace ? "Substituindo dataset…" : "Importando backup…");
+    try {
+      const trimmed = title.trim();
+      const created = await importDataset(file, {
+        ...(trimmed ? { title: trimmed.slice(0, 96) } : {}),
+        ...(replace ? { replace: true } : {}),
+      });
+      showToast(
+        `Dataset importado com sucesso — ${created.imagesCount.toLocaleString()} imagens, ${created.classes.length} classes.`,
+        "success",
+        {
+          label: "Abrir dataset",
+          onClick: () => router.push(`/datasets/${created.id}`),
+        },
+      );
+      onClose();
+      onCreated(created);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        if (err.status === 401) {
+          router.replace("/login");
+          return;
+        }
+        if (err.status === 413) {
+          setTopError("Arquivo maior que o limite de 200 MiB.");
+          return;
+        }
+        if (err.status === 409 && err.code === "slug_conflict" && !replace) {
+          setPhase("confirm");
+          return;
+        }
+        setTopError(importErrorMessage(err.code));
+        return;
+      }
+      setTopError("Falha ao importar backup.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runFolderIngest(
+    datasetTitle: string,
+    datasetType: DatasetType,
+    classes: string[],
+    files: File[],
+  ) {
+    setBusy(true);
+    setBusyText("Criando dataset…");
     try {
       const created = await createDataset(
-        classes.length > 0 ? { title: trimmed, type, classes } : { title: trimmed, type },
+        classes.length > 0
+          ? { title: datasetTitle, type: datasetType, classes }
+          : { title: datasetTitle, type: datasetType },
       );
-      showToast("Dataset criado.", "success");
+
+      setBusyText(`Enviando ${files.length} imagens…`);
+      const uploadRes = await uploadImages(created.id, files);
+      const uploadedCount = uploadRes.items.filter(
+        (i) => i.status === "stored" || i.status === "duplicate",
+      ).length;
+
+      showToast(
+        `Dataset criado e ingestado — ${uploadedCount} imagens carregadas.`,
+        "success",
+        {
+          label: "Abrir dataset",
+          onClick: () => router.push(`/datasets/${created.id}`),
+        },
+      );
+      onClose();
+      onCreated(created);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        if (err.code === "slug_conflict") {
+          setNameError("Já existe um dataset com esse nome.");
+          return;
+        }
+        if (err.status === 401) {
+          router.replace("/login");
+          return;
+        }
+        setTopError(err.message || "Erro na ingestão.");
+        return;
+      }
+      setTopError("Falha na ingestão da pasta.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runEmptyCreation(
+    datasetTitle: string,
+    datasetType: DatasetType,
+    classes: string[],
+  ) {
+    setBusy(true);
+    setBusyText("Criando dataset…");
+    try {
+      const created = await createDataset(
+        classes.length > 0
+          ? { title: datasetTitle, type: datasetType, classes }
+          : { title: datasetTitle, type: datasetType },
+      );
+      showToast("Dataset criado com sucesso.", "success", {
+        label: "Abrir dataset",
+        onClick: () => router.push(`/datasets/${created.id}`),
+      });
       onClose();
       onCreated(created);
     } catch (err) {
@@ -108,7 +367,7 @@ export default function CreateDatasetModal({ open, onClose, onCreated }: Props) 
           return;
         }
         if (err.code === "invalid_request") {
-          setTopError("Verifique os campos.");
+          setTopError("Verifique os campos preenchidos.");
           return;
         }
         if (err.code === "unauthorized" || err.status === 401) {
@@ -116,15 +375,19 @@ export default function CreateDatasetModal({ open, onClose, onCreated }: Props) 
           return;
         }
       }
-      setTopError("Falha inesperada.");
+      setTopError("Falha ao criar dataset.");
     } finally {
       setBusy(false);
     }
   }
 
+  const slug = slugPreview(title);
+  const simpleSlug = title.toLowerCase().trim().replace(/\s+/g, "-");
+  const showAdjustHint = slug.length > 0 && slug !== simpleSlug;
+
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-md transition-all"
       onClick={() => {
         if (!busy) onClose();
       }}
@@ -133,121 +396,325 @@ export default function CreateDatasetModal({ open, onClose, onCreated }: Props) 
         role="dialog"
         aria-modal="true"
         aria-labelledby="create-dataset-title"
-        className="glass-modal relative w-full max-w-lg rounded-2xl p-6 text-zinc-100 shadow-2xl"
+        className="glass-modal relative w-full max-w-lg rounded-2xl p-6 text-zinc-100 shadow-2xl transition-all"
         onClick={(e) => e.stopPropagation()}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setIsDraggingModal(true);
+        }}
+        onDragLeave={() => setIsDraggingModal(false)}
+        onDrop={handleModalDrop}
       >
+        {/* Cabeçalho da Modal */}
         <div className="flex items-center justify-between border-b border-white/10 pb-4">
           <div className="flex items-center space-x-2.5">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-brand-500/30 bg-brand-500/15 text-brand-400">
-              <IconPlus className="h-4 w-4" />
+              {mode === "import" ? <IconUpload className="h-4 w-4" /> : <IconPlus className="h-4 w-4" />}
             </div>
-            <h3 id="create-dataset-title" className="font-display text-sm font-bold text-white">
-              Novo Dataset
-            </h3>
+            <div>
+              <h3 id="create-dataset-title" className="font-display text-sm font-bold text-white">
+                {phase === "confirm"
+                  ? "Substituir Dataset Existente"
+                  : "Novo Dataset & Ingestão"}
+              </h3>
+              <p className="text-[11px] text-zinc-400">
+                {phase === "confirm"
+                  ? "Ação irreversível de substituição de dados"
+                  : "Crie um container vazio ou ingeste pacotes ZIP e pastas"}
+              </p>
+            </div>
           </div>
           <button
             type="button"
             onClick={onClose}
             disabled={busy}
             aria-label="Fechar modal"
-            className="rounded-lg border border-transparent bg-transparent p-1 text-zinc-300 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
+            className="rounded-lg border border-transparent bg-transparent p-1 text-zinc-400 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
           >
             <IconX className="h-4 w-4" />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="mt-4 space-y-4 text-xs">
-          {topError && (
-            <p role="alert" className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
-              {topError}
-            </p>
-          )}
-          <div>
-            <label htmlFor="create-dataset-name" className="tracking-caps mb-1 block font-mono text-[11px] font-medium uppercase text-zinc-300">
-              Nome
-            </label>
-            <input
-              id="create-dataset-name"
-              ref={nameRef}
-              type="text"
-              required
-              maxLength={96}
-              placeholder="Ex.: Inspeção de PCB v2"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3 py-2 font-mono text-zinc-200 focus:border-brand-500 focus:outline-none"
-            />
-            {slug && (
-              <p className="mt-1 font-mono text-[11px] text-zinc-500">
-                slug: {slug}
-                {showAdjustHint && " · o servidor pode ajustar"}
+        {/* Confirmação de Substituição (Slug Conflict) */}
+        {phase === "confirm" ? (
+          <div className="mt-4 space-y-4 text-xs">
+            <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3.5 text-xs leading-relaxed text-rose-200">
+              <p className="font-semibold text-rose-100 mb-1">Conflito de Identificador (Slug)</p>
+              Já existe um dataset com este identificador. A substituição irá apagar o dataset atual e
+              recriá-lo a partir do arquivo importado. Esta operação não pode ser desfeita.
+            </div>
+            <div className="flex justify-end space-x-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setPhase("form")}
+                disabled={busy}
+                className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-transparent bg-transparent px-4 text-xs font-medium whitespace-nowrap text-zinc-300 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985]"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => inspection?.file && runBackupImport(inspection.file, true)}
+                disabled={busy}
+                className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-[#ef4444]/30 bg-[#ef4444]/[0.12] px-5 text-xs font-semibold whitespace-nowrap text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-[#ef4444]/50 hover:bg-[#ef4444]/[0.18] active:scale-[0.985]"
+              >
+                {busy ? "Substituindo…" : "Substituir Dataset"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} className="mt-4 space-y-4 text-xs">
+            {/* Seletor Segmentado de Modo */}
+            <div className="inline-flex w-full rounded-xl border border-white/10 bg-black/40 p-1" role="tablist">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mode === "empty"}
+                onClick={() => {
+                  setMode("empty");
+                  setInspection(null);
+                }}
+                className={`flex-1 py-1.5 text-center text-xs font-medium rounded-lg transition active:scale-[0.985] ${
+                  mode === "empty"
+                    ? "bg-brand-500/[0.18] text-white shadow-sm border border-brand-500/30"
+                    : "text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                Container Vazio
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mode === "import"}
+                onClick={() => setMode("import")}
+                className={`flex-1 py-1.5 text-center text-xs font-medium rounded-lg transition active:scale-[0.985] ${
+                  mode === "import"
+                    ? "bg-brand-500/[0.18] text-white shadow-sm border border-brand-500/30"
+                    : "text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                Ingestão (ZIP / Pasta)
+              </button>
+            </div>
+
+            {/* Alerta de Erro Topo */}
+            {topError && (
+              <p role="alert" className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+                {topError}
               </p>
             )}
-            {nameError && (
-              <p role="alert" className="mt-1 text-[11px] text-rose-300">
-                {nameError}
-              </p>
+
+            {/* Modo Ingestão: Dropzone & Detecção */}
+            {mode === "import" && (
+              <div>
+                {!inspection ? (
+                  <div
+                    className={`relative rounded-xl border-2 border-dashed p-6 text-center transition-all ${
+                      isDraggingModal
+                        ? "border-brand-500 bg-brand-500/15"
+                        : "border-zinc-800 bg-black/40 hover:border-zinc-700"
+                    }`}
+                  >
+                    <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900 text-zinc-400 mb-2.5">
+                      <IconUpload className="h-5 w-5" />
+                    </div>
+                    <p className="text-xs font-semibold text-zinc-200">
+                      Arraste um pacote ZIP ou pasta aqui
+                    </p>
+                    <p className="mt-0.5 text-[11px] text-zinc-400">
+                      Autodeteção de classes, anotações e contagem de imagens
+                    </p>
+
+                    <div className="mt-4 flex items-center justify-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => zipInputRef.current?.click()}
+                        className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.05] px-3 font-mono text-[11px] font-medium text-zinc-200 transition hover:bg-white/[0.1] active:scale-[0.985]"
+                      >
+                        <IconFileArchive className="h-3.5 w-3.5 text-brand-400" />
+                        Selecionar ZIP
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => folderInputRef.current?.click()}
+                        className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.05] px-3 font-mono text-[11px] font-medium text-zinc-200 transition hover:bg-white/[0.1] active:scale-[0.985]"
+                      >
+                        <IconFolder className="h-3.5 w-3.5 text-amber-400" />
+                        Selecionar Pasta
+                      </button>
+                    </div>
+
+                    <input
+                      ref={zipInputRef}
+                      type="file"
+                      accept=".zip"
+                      onChange={handleZipSelect}
+                      className="hidden"
+                    />
+                    <input
+                      ref={folderInputRef}
+                      type="file"
+                      multiple
+                      onChange={handleFolderSelect}
+                      className="hidden"
+                      {...({ webkitdirectory: "", directory: "" } as React.InputHTMLAttributes<HTMLInputElement>)}
+                    />
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-brand-500/30 bg-brand-500/[0.08] p-3.5">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-brand-500/40 bg-brand-500/20 text-brand-300">
+                          {inspection.isBackupZip ? <IconFileArchive className="h-4 w-4" /> : <IconFolder className="h-4 w-4" />}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="truncate font-mono text-xs font-semibold text-zinc-200" title={inspection.sourceLabel}>
+                            {inspection.sourceLabel}
+                          </p>
+                          <p className="font-mono text-[11px] text-brand-300">
+                            {inspection.imagesCount} imagens identificadas
+                            {inspection.file && ` · ${formatBytes(inspection.file.size)}`}
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setInspection(null);
+                          setTitle("");
+                          setClassesRaw("");
+                        }}
+                        className="text-[11px] font-mono text-zinc-400 hover:text-white underline px-2 py-1"
+                      >
+                        Trocar
+                      </button>
+                    </div>
+
+                    {/* Classes Autodetectadas */}
+                    {inspection.classes.length > 0 && (
+                      <div className="mt-3 pt-2.5 border-t border-brand-500/20">
+                        <span className="text-[11px] font-mono uppercase tracking-caps text-brand-200 block mb-1.5">
+                          Classes Detectadas ({inspection.classes.length}):
+                        </span>
+                        <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto">
+                          {inspection.classes.map((c) => (
+                            <span
+                              key={c}
+                              className="inline-flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded bg-black/40 text-zinc-200 border border-brand-500/20"
+                            >
+                              <IconCheck className="h-2.5 w-2.5 text-emerald-400" />
+                              {c}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             )}
-          </div>
 
-          <div>
-            <label htmlFor="create-dataset-type" className="tracking-caps mb-1 block font-mono text-[11px] font-medium uppercase text-zinc-300">
-              Tipo / Tarefa
-            </label>
-            <select
-              id="create-dataset-type"
-              value={type}
-              onChange={(e) => setType(e.target.value as DatasetType)}
-              className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3 py-2 font-mono text-zinc-200 focus:border-brand-500 focus:outline-none"
-            >
-              {TYPES.map((t) => (
-                <option key={t} value={t}>
-                  {TYPE_LABELS[t]}
-                </option>
-              ))}
-            </select>
-          </div>
+            {/* Campo Nome */}
+            <div>
+              <label htmlFor="create-dataset-name" className="tracking-caps mb-1 block font-mono text-[11px] font-medium uppercase text-zinc-300">
+                Nome do Dataset
+              </label>
+              <input
+                id="create-dataset-name"
+                ref={nameRef}
+                type="text"
+                required
+                maxLength={96}
+                placeholder="Ex.: Inspeção de PCB v2"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3 py-2 font-mono text-zinc-200 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500/40"
+              />
+              {slug && (
+                <p className="mt-1 font-mono text-[11px] text-zinc-400">
+                  slug: {slug}
+                  {showAdjustHint && " · o servidor pode ajustar"}
+                </p>
+              )}
+              {nameError && (
+                <p role="alert" className="mt-1 text-[11px] text-rose-300">
+                  {nameError}
+                </p>
+              )}
+            </div>
 
-          <div>
-            <label htmlFor="create-dataset-classes" className="tracking-caps mb-1 block font-mono text-[11px] font-medium uppercase text-zinc-300">
-              Classes (opcional)
-            </label>
-            <input
-              id="create-dataset-classes"
-              type="text"
-              placeholder="defeito_a, defeito_b, anomalia"
-              value={classesRaw}
-              onChange={(e) => setClassesRaw(e.target.value)}
-              className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3 py-2 font-mono text-zinc-200 focus:border-brand-500 focus:outline-none"
-            />
-            <p className="mt-1 text-[11px] text-zinc-500">
-              Separadas por vírgula — ordem vira índice YOLO
-            </p>
-            {classesError && (
-              <p role="alert" className="mt-1 text-[11px] text-rose-300">
-                {classesError}
+            {/* Campo Tipo / Tarefa */}
+            <div>
+              <label htmlFor="create-dataset-type" className="tracking-caps mb-1 block font-mono text-[11px] font-medium uppercase text-zinc-300">
+                Tipo / Tarefa
+              </label>
+              <select
+                id="create-dataset-type"
+                value={type}
+                onChange={(e) => setType(e.target.value as DatasetType)}
+                className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3 py-2 font-mono text-zinc-200 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500/40"
+              >
+                {TYPES.map((t) => (
+                  <option key={t} value={t}>
+                    {TYPE_LABELS[t]}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Campo Classes */}
+            <div>
+              <label htmlFor="create-dataset-classes" className="tracking-caps mb-1 block font-mono text-[11px] font-medium uppercase text-zinc-300">
+                Classes {mode === "import" && inspection?.classes.length ? "(ajustáveis)" : "(opcional)"}
+              </label>
+              <input
+                id="create-dataset-classes"
+                type="text"
+                placeholder="defeito_a, defeito_b, anomalia"
+                value={classesRaw}
+                onChange={(e) => setClassesRaw(e.target.value)}
+                className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3 py-2 font-mono text-zinc-200 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500/40"
+              />
+              <p className="mt-1 text-[11px] text-zinc-400">
+                Separadas por vírgula — ordem vira índice YOLO
               </p>
-            )}
-          </div>
+              {classesError && (
+                <p role="alert" className="mt-1 text-[11px] text-rose-300">
+                  {classesError}
+                </p>
+              )}
+            </div>
 
-          <div className="flex justify-end space-x-2 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={busy}
-              className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-transparent bg-transparent px-4 text-xs font-medium whitespace-nowrap text-zinc-300 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
-            >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              disabled={busy}
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] px-5 text-xs font-semibold whitespace-nowrap text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
-            >
-              {busy ? "Criando…" : "Criar Dataset"}
-            </button>
-          </div>
-        </form>
+            {/* Ações do Rodapé */}
+            <div className="flex items-center justify-between pt-3 border-t border-white/10">
+              <span className="font-mono text-[11px] text-zinc-400">
+                {busy ? busyText : mode === "import" && inspection ? "Pronto para criar e ingestar" : "Container vazio"}
+              </span>
+
+              <div className="flex items-center space-x-2">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  disabled={busy}
+                  className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-transparent bg-transparent px-4 text-xs font-medium whitespace-nowrap text-zinc-300 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] disabled:pointer-events-none disabled:opacity-55"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={busy || (mode === "import" && !inspection && !title.trim())}
+                  className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] px-5 text-xs font-semibold whitespace-nowrap text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
+                >
+                  {busy
+                    ? busyText || "Processando…"
+                    : mode === "import" && inspection
+                      ? `Criar e Ingestar (${inspection.imagesCount} imgs)`
+                      : "Criar Dataset"}
+                </button>
+              </div>
+            </div>
+          </form>
+        )}
       </div>
     </div>
   );

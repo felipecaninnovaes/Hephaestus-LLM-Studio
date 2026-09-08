@@ -14,7 +14,7 @@ export default function DatasetTable({
     <div className="overflow-x-auto">
       <table className="w-full text-xs">
         <thead>
-          <tr className="tracking-caps text-left font-mono uppercase text-zinc-500">
+          <tr className="tracking-caps text-left font-mono text-[11px] uppercase text-zinc-400">
             <th className="px-3 py-2 font-medium">Nome</th>
             <th className="px-3 py-2 font-medium">Formato-Tarefa</th>
             <th className="px-3 py-2 font-medium">Imagens</th>
@@ -42,10 +42,10 @@ export default function DatasetTable({
               >
                 <td className="max-w-56 px-3 py-2.5">
                   <Link href={`/datasets/${d.id}`} className="block min-w-0">
-                    <span className="block truncate text-[13px] font-medium text-zinc-100" title={d.title}>
+                    <span className="block truncate text-sm font-medium text-zinc-100" title={d.title}>
                       {d.title}
                     </span>
-                    <span className="block truncate font-mono text-[11px] text-zinc-500" title={d.slug}>
+                    <span className="block truncate font-mono text-[11px] text-zinc-400" title={d.slug}>
                       {d.slug}
                     </span>
                   </Link>

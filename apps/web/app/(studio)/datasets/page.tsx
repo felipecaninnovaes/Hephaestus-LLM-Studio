@@ -15,9 +15,11 @@ import {
   IconPlay,
   IconPlus,
   IconSearch,
+  IconUpload,
 } from "@/components/icons";
 import { ApiError } from "@/lib/api";
 import { deleteDataset, listDatasets } from "@/lib/datasets";
+import { inspectDataTransfer, type InspectionResult } from "@/lib/dataset-inspector";
 import TrainYoloModal from "@/components/studio/TrainYoloModal";
 import type { Dataset, DatasetCategory } from "@/types/studio";
 
@@ -51,6 +53,10 @@ export default function DatasetsPage() {
   const [query, setQuery] = useState("");
   const [pill, setPill] = useState<Pill>("all");
   const [createOpen, setCreateOpen] = useState(false);
+  const [createMode, setCreateMode] = useState<"empty" | "import">("empty");
+  const [droppedInspection, setDroppedInspection] = useState<InspectionResult | null>(null);
+  const [isDraggingPage, setIsDraggingPage] = useState(false);
+  const dragCounterRef = useRef(0);
   const [deleting, setDeleting] = useState<Dataset | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [menu, setMenu] = useState<{ dataset: Dataset; x: number; y: number } | null>(null);
@@ -148,15 +154,82 @@ export default function DatasetsPage() {
     }
   }
 
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    dragCounterRef.current += 1;
+    if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
+      setIsDraggingPage(true);
+    }
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    dragCounterRef.current -= 1;
+    if (dragCounterRef.current <= 0) {
+      setIsDraggingPage(false);
+      dragCounterRef.current = 0;
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingPage(false);
+    dragCounterRef.current = 0;
+    try {
+      const res = await inspectDataTransfer(e.dataTransfer);
+      if (res) {
+        setDroppedInspection(res);
+        setCreateMode("import");
+        setCreateOpen(true);
+      }
+    } catch {
+      // continua
+    }
+  };
+
   return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-6">
+    <div
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+      className="relative mx-auto flex w-full max-w-7xl flex-col gap-4 px-4 sm:px-6 py-6"
+    >
+      {/* Overlay Óptico de Drag & Drop Global */}
+      {isDraggingPage && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6 backdrop-blur-md transition-all animate-in fade-in"
+          onDragOver={(e) => e.preventDefault()}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          <div className="pointer-events-none flex flex-col items-center gap-4 rounded-3xl border-2 border-dashed border-brand-500/80 bg-brand-500/10 p-12 text-center shadow-[0_0_60px_rgba(131,80,242,0.3)]">
+            <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-brand-500/40 bg-brand-500/20 text-brand-300">
+              <IconUpload className="h-8 w-8" />
+            </div>
+            <div>
+              <p className="font-display text-lg font-bold text-white">
+                Solte o arquivo ZIP ou pasta aqui
+              </p>
+              <p className="font-mono text-xs text-brand-200/80 mt-1">
+                Autodeteção imediata de classes, anotações e contagem de imagens
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div className="min-w-0">
           <div className="flex items-baseline gap-3">
             <h1 className="font-display tracking-display truncate text-xl font-semibold text-zinc-100 lg:text-2xl" title="Gerenciador de Datasets">
               Gerenciador de Datasets
             </h1>
-            <span className="shrink-0 font-mono text-xs text-zinc-500">
+            <span className="shrink-0 font-mono text-xs text-zinc-400">
               {datasets.length} datasets
             </span>
           </div>
@@ -189,8 +262,24 @@ export default function DatasetsPage() {
           </div>
           <button
             type="button"
-            onClick={() => setCreateOpen(true)}
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] px-5 text-xs font-semibold whitespace-nowrap text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
+            onClick={() => {
+              setCreateMode("import");
+              setDroppedInspection(null);
+              setCreateOpen(true);
+            }}
+            className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3.5 text-xs font-medium whitespace-nowrap text-zinc-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.08] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
+          >
+            <IconUpload className="h-4 w-4 text-zinc-400" />
+            Importar
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setCreateMode("empty");
+              setDroppedInspection(null);
+              setCreateOpen(true);
+            }}
+            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] px-4 text-xs font-semibold whitespace-nowrap text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
           >
             <IconPlus className="h-4 w-4" />
             Novo Dataset
@@ -200,14 +289,14 @@ export default function DatasetsPage() {
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <label className="relative block w-full sm:max-w-xs">
-          <IconSearch className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+          <IconSearch className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-zinc-400" />
           <input
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Buscar por nome, slug ou classe…"
             aria-label="Buscar por nome, slug ou classe"
-            className="w-full rounded-xl border border-zinc-800 bg-black/40 py-2 pr-3 pl-9 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-brand-500 focus:outline-none"
+            className="w-full rounded-xl border border-zinc-800 bg-black/40 py-2 pr-3 pl-9 text-sm text-zinc-100 placeholder:text-zinc-400 focus:border-brand-500 focus:outline-none"
           />
         </label>
         <div className="relative min-w-0 flex-1 sm:flex-none">
@@ -242,7 +331,7 @@ export default function DatasetsPage() {
       </div>
 
       {loading ? (
-        <p className="py-10 text-center font-mono text-xs text-zinc-500">
+        <p className="py-10 text-center font-mono text-xs text-zinc-400">
           Carregando datasets…
         </p>
       ) : error ? (
@@ -257,16 +346,64 @@ export default function DatasetsPage() {
           </button>
         </div>
       ) : datasets.length === 0 ? (
-        <div className="glass-card flex flex-col items-center gap-2 rounded-2xl p-12 text-center">
-          <span className="mx-auto mb-1 flex h-12 w-12 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900 text-zinc-400">
-            <IconDatabase className="h-10 w-10 text-zinc-700" />
-          </span>
-          <p className="text-sm font-medium text-zinc-200">
-            Nenhum dataset ainda
-          </p>
-          <p className="text-xs text-zinc-500">
-            Crie seu primeiro dataset para começar a anotar.
-          </p>
+        <div
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+          onDrop={async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            try {
+              const res = await inspectDataTransfer(e.dataTransfer);
+              if (res) {
+                setDroppedInspection(res);
+                setCreateMode("import");
+                setCreateOpen(true);
+              }
+            } catch {
+              // continua
+            }
+          }}
+          className="glass-card group flex flex-col items-center gap-4 rounded-2xl border-2 border-dashed border-zinc-800 hover:border-brand-500/50 p-12 text-center transition-colors"
+        >
+          <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-zinc-800 bg-zinc-900/80 text-zinc-400 group-hover:text-brand-400 group-hover:border-brand-500/40 transition-colors">
+            <IconUpload className="h-6 w-6" />
+          </div>
+          <div>
+            <p className="font-display text-base font-semibold text-zinc-100">
+              Nenhum dataset cadastrado ainda
+            </p>
+            <p className="mt-1 max-w-md text-xs text-zinc-400">
+              Arraste um pacote ZIP de backup ou pasta de imagens diretamente para cá para autodeteção de classes e ingestão imediata, ou inicie com um container vazio.
+            </p>
+          </div>
+          <div className="flex items-center gap-3 pt-2">
+            <button
+              type="button"
+              onClick={() => {
+                setCreateMode("empty");
+                setDroppedInspection(null);
+                setCreateOpen(true);
+              }}
+              className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-4 text-xs font-medium whitespace-nowrap text-zinc-200 transition hover:bg-white/[0.08] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4"
+            >
+              <IconPlus className="h-4 w-4" />
+              Container Vazio
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setCreateMode("import");
+                setDroppedInspection(null);
+                setCreateOpen(true);
+              }}
+              className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] px-5 text-xs font-semibold whitespace-nowrap text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4"
+            >
+              <IconUpload className="h-4 w-4" />
+              Importar ZIP / Pasta
+            </button>
+          </div>
         </div>
       ) : filtered.length === 0 ? (
         <div className="glass-card flex flex-col items-center gap-3 rounded-2xl p-12 text-center">
@@ -283,7 +420,7 @@ export default function DatasetsPage() {
           </button>
         </div>
       ) : viewMode === "grid" ? (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 2xl:grid-cols-4">
           {filtered.map((d) => (
             <DatasetCard key={d.id} dataset={d} onContextMenu={handleContextMenu} onTrain={(d) => setTrainDataset(d)} />
           ))}
@@ -296,7 +433,12 @@ export default function DatasetsPage() {
 
       <CreateDatasetModal
         open={createOpen}
-        onClose={() => setCreateOpen(false)}
+        onClose={() => {
+          setCreateOpen(false);
+          setDroppedInspection(null);
+        }}
+        initialMode={createMode}
+        initialInspection={droppedInspection}
         onCreated={(created) =>
           setDatasets((prev) => [created, ...prev.filter((d) => d.id !== created.id)])
         }

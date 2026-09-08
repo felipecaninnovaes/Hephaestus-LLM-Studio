@@ -1,67 +1,73 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-09-05T13:34:00Z",
+  "generatedAt": "2026-09-08T21:48:00Z",
   "title": "Design System: Hephaestus LLM Studio",
   "extensions": {
     "colorMeta": {
       "primary": {
         "role": "primary",
-        "displayName": "Esmeralda Técnico",
-        "canonical": "oklch(68% 0.20 150)",
-        "tonalRamp": ["#ecfdf5", "#a7f3d0", "#6ee7b7", "#34d399", "#10b981", "#059669", "#047857", "#065f46", "#064e3b"]
+        "displayName": "Violeta Arcane",
+        "canonical": "oklch(57.8% 0.229 292.2)",
+        "tonalRamp": ["#f5f3ff", "#ede9fe", "#ddd6fe", "#c4b5fd", "#a78bfa", "#8350f2", "#6c45bf", "#51358c", "#3b2569", "#261647", "#150a2b"]
       },
       "primary-glow": {
         "role": "primary",
-        "displayName": "Esmeralda Halo",
-        "canonical": "oklch(68% 0.20 150 / 22%)",
+        "displayName": "Halo Violeta Glow",
+        "canonical": "rgba(131, 80, 242, 0.25)",
         "tonalRamp": []
       },
       "primary-hover": {
         "role": "primary",
-        "displayName": "Esmeralda Profundo",
-        "canonical": "#059669",
+        "displayName": "Violeta Profundo Hover",
+        "canonical": "#6c45bf",
         "tonalRamp": []
       },
       "bg-base": {
         "role": "neutral",
         "displayName": "Fundo Base Escuro",
-        "canonical": "oklch(13.5% 0.012 260)",
-        "tonalRamp": ["#090c12", "#0d111a", "#121723"]
+        "canonical": "oklch(15.9% 0.000 89.9)",
+        "tonalRamp": ["#fbfaff", "#f4f2f9", "#e5e1ef", "#cfc9dc", "#9a92a6", "#756d82", "#585164", "#3e3749", "#2a2336", "#1f1b26", "#0d0d0d"]
       },
       "surface-card": {
         "role": "neutral",
         "displayName": "Vidro Card",
-        "canonical": "rgba(18, 23, 35, 0.62)",
+        "canonical": "rgba(31, 27, 38, 0.70)",
         "tonalRamp": []
       },
       "surface-menu": {
         "role": "neutral",
-        "displayName": "Vidro Menu",
-        "canonical": "rgba(13, 17, 26, 0.82)",
+        "displayName": "Vidro Menu & Topbar",
+        "canonical": "rgba(25, 21, 32, 0.88)",
         "tonalRamp": []
       },
       "surface-modal": {
         "role": "neutral",
         "displayName": "Vidro Modal",
-        "canonical": "rgba(11, 15, 24, 0.88)",
+        "canonical": "rgba(20, 17, 26, 0.94)",
         "tonalRamp": []
       },
       "fg-default": {
         "role": "neutral",
         "displayName": "Texto Principal",
-        "canonical": "oklch(96% 0.005 260)",
-        "tonalRamp": ["#f1f3f9", "#cbd5e1", "#94a3b8"]
+        "canonical": "oklch(96.0% 0.006 290.0)",
+        "tonalRamp": ["#f5f3f8", "#cfc9dc", "#9a92a6"]
       },
       "fg-muted": {
         "role": "neutral",
-        "displayName": "Texto Secundário",
-        "canonical": "oklch(65% 0.015 260)",
-        "tonalRamp": ["#94a3b8", "#64748b"]
+        "displayName": "Texto Secundário Muted",
+        "canonical": "oklch(65.0% 0.018 295.0)",
+        "tonalRamp": ["#9a92a6", "#756d82"]
       },
       "border-default": {
         "role": "neutral",
-        "displayName": "Borda Translúcida",
-        "canonical": "rgba(255, 255, 255, 0.09)",
+        "displayName": "Borda Estrutural Translúcida",
+        "canonical": "rgba(131, 80, 242, 0.14)",
+        "tonalRamp": []
+      },
+      "border-top-glass": {
+        "role": "neutral",
+        "displayName": "Refração Borda Superior Zenital",
+        "canonical": "rgba(255, 255, 255, 0.16)",
         "tonalRamp": []
       },
       "status-success": {
@@ -87,23 +93,30 @@
         "displayName": "Telemetria Ciano",
         "canonical": "#06b6d4",
         "tonalRamp": []
+      },
+      "status-runtime-python": {
+        "role": "secondary",
+        "displayName": "Runtime PyTorch Amarelo",
+        "canonical": "#eab308",
+        "tonalRamp": []
       }
     },
     "typographyMeta": {
-      "display": { "displayName": "Display", "purpose": "Títulos principais de tela e cabeçalhos de workspaces." },
-      "headline": { "displayName": "Headline", "purpose": "Títulos de seções de workspace e nomes de datasets." },
-      "title": { "displayName": "Title", "purpose": "Títulos de cards de parâmetros e labels de grupos." },
-      "body": { "displayName": "Body", "purpose": "Textos explicativos e descrições técnicas." },
-      "label": { "displayName": "Label Mono", "purpose": "Labels em uppercase, telemetria, coordenadas BBox e logs." }
+      "display": { "displayName": "Display Space Grotesk", "purpose": "Títulos principais de tela, nome da aplicação e cabeçalhos de workspaces." },
+      "headline": { "displayName": "Headline Space Grotesk", "purpose": "Títulos de seções de workspace e nomes de datasets." },
+      "title": { "displayName": "Title Space Grotesk", "purpose": "Títulos de cards de parâmetros e labels de grupos de campos." },
+      "body": { "displayName": "Body System Sans", "purpose": "Textos explicativos, descrições técnicas e controles gerais de UI." },
+      "label": { "displayName": "Label JetBrains Mono", "purpose": "Labels em uppercase, telemetria, coordenadas BBox, logs e valores quantitativos." }
     },
     "shadows": [
-      { "name": "glass-card-shadow", "value": "0 12px 30px -6px rgba(0, 0, 0, 0.45)", "purpose": "Sombra de cards de dados e painéis." },
-      { "name": "glass-menu-shadow", "value": "0 24px 60px -8px rgba(0, 0, 0, 0.85)", "purpose": "Sombra profunda para dropdowns e toasts." },
-      { "name": "glass-modal-shadow", "value": "0 30px 80px -12px rgba(0, 0, 0, 0.90)", "purpose": "Sombra maciça para diálogos centrais." }
+      { "name": "glass-card-shadow", "value": "0 12px 30px -6px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.06)", "purpose": "Sombra óptica de cards de dados e painéis translúcidos." },
+      { "name": "glass-menu-shadow", "value": "0 24px 60px -8px rgba(0, 0, 0, 0.85), inset 0 1px 0 rgba(255, 255, 255, 0.12)", "purpose": "Sombra profunda para dropdowns, menus de contexto e toasts." },
+      { "name": "glass-modal-shadow", "value": "0 30px 80px -12px rgba(0, 0, 0, 0.90), inset 0 1px 0 rgba(255, 255, 255, 0.15)", "purpose": "Sombra maciça com backdrop escurecido para diálogos centrais." }
     ],
     "motion": [
-      { "name": "ease-out-quad", "value": "cubic-bezier(0.16, 1, 0.3, 1)", "purpose": "Transições de hover em botões e cards." },
-      { "name": "fade-in", "value": "fadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1)", "purpose": "Abertura de toasts e modais." }
+      { "name": "ease-standard", "value": "cubic-bezier(0.16, 1, 0.3, 1)", "purpose": "Transições suaves de hover e foco em controles." },
+      { "name": "toast-in", "value": "toast-in 0.25s ease-out", "purpose": "Animação suave de entrada de toasts na base direita." },
+      { "name": "rise", "value": "rise 0.6s cubic-bezier(0.22, 1, 0.36, 1)", "purpose": "Entrada escalonada suave do painel de login AuthAmbient." }
     ],
     "breakpoints": [
       { "name": "sm", "value": "640px" },
@@ -117,80 +130,124 @@
       "name": "Primary Button",
       "kind": "button",
       "refersTo": "button-primary",
-      "description": "Botão de ação principal único do workspace (Iniciar Treino / Salvar).",
+      "description": "CTA primário outline-violeta translúcido único do painel (ex.: Iniciar Treino, Salvar).",
       "html": "<button class=\"ds-btn-primary\">Iniciar Treinamento</button>",
-      "css": ".ds-btn-primary { background: #10b981; color: #090c12; font-family: Inter, sans-serif; font-size: 12px; font-weight: 600; padding: 8px 16px; border: none; border-radius: 8px; cursor: pointer; transition: background 0.15s ease, transform 0.1s ease; } .ds-btn-primary:hover { background: #34d399; transform: translateY(-1px); } .ds-btn-primary:focus-visible { outline: 2px solid #10b981; outline-offset: 2px; }"
+      "css": ".ds-btn-primary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; background: rgba(131, 80, 242, 0.12); color: #ffffff; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', sans-serif; font-size: 14px; font-weight: 500; height: 40px; padding: 0 20px; border: 1px solid rgba(131, 80, 242, 0.30); border-radius: 12px; cursor: pointer; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 1px 2px rgba(0, 0, 0, 0.18); transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease; user-select: none; } .ds-btn-primary:hover { background: rgba(131, 80, 242, 0.18); border-color: rgba(131, 80, 242, 0.50); } .ds-btn-primary:active { transform: scale(0.985); } .ds-btn-primary:focus-visible { outline: 2px solid #8350f2; outline-offset: 2px; }"
     },
     {
-      "name": "Secondary Ghost Button",
+      "name": "Secondary Button",
       "kind": "button",
-      "refersTo": "button-ghost",
-      "description": "Ações de suporte, navegação secundária e cancelamento.",
-      "html": "<button class=\"ds-btn-ghost\">Cancelar</button>",
-      "css": ".ds-btn-ghost { background: rgba(24, 24, 27, 0.6); color: #f1f3f9; font-family: Inter, sans-serif; font-size: 12px; font-weight: 500; padding: 8px 16px; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 8px; cursor: pointer; transition: background 0.15s ease; } .ds-btn-ghost:hover { background: rgba(39, 39, 42, 0.8); } .ds-btn-ghost:focus-visible { outline: 2px solid #10b981; outline-offset: 2px; }"
+      "refersTo": "button-secondary",
+      "description": "Ações secundárias de suporte, filtros e navegação.",
+      "html": "<button class=\"ds-btn-secondary\">Cancelar</button>",
+      "css": ".ds-btn-secondary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; background: rgba(255, 255, 255, 0.05); color: #f4f2f9; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', sans-serif; font-size: 14px; font-weight: 500; height: 36px; padding: 0 16px; border: 1px solid rgba(255, 255, 255, 0.10); border-radius: 12px; cursor: pointer; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 1px 2px rgba(0, 0, 0, 0.16); transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease; user-select: none; } .ds-btn-secondary:hover { background: rgba(255, 255, 255, 0.10); border-color: rgba(255, 255, 255, 0.20); } .ds-btn-secondary:active { transform: scale(0.985); } .ds-btn-secondary:focus-visible { outline: 2px solid #8350f2; outline-offset: 2px; }"
+    },
+    {
+      "name": "Primary Destructive Button",
+      "kind": "button",
+      "refersTo": "button-destructive",
+      "description": "Ações irreversíveis, exclusões e aborto de jobs.",
+      "html": "<button class=\"ds-btn-destructive\">Abortar Job</button>",
+      "css": ".ds-btn-destructive { display: inline-flex; align-items: center; justify-content: center; gap: 8px; background: rgba(239, 68, 68, 0.12); color: #ffffff; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', sans-serif; font-size: 14px; font-weight: 500; height: 36px; padding: 0 16px; border: 1px solid rgba(239, 68, 68, 0.30); border-radius: 12px; cursor: pointer; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 1px 2px rgba(0, 0, 0, 0.18); transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease; user-select: none; } .ds-btn-destructive:hover { background: rgba(239, 68, 68, 0.18); border-color: rgba(239, 68, 68, 0.50); } .ds-btn-destructive:active { transform: scale(0.985); } .ds-btn-destructive:focus-visible { outline: 2px solid #ef4444; outline-offset: 2px; }"
     },
     {
       "name": "Glass Card",
       "kind": "card",
       "refersTo": "card-glass",
-      "description": "Card translúcido com vidro óptico para datasets e métricas.",
-      "html": "<div class=\"ds-glass-card\"><div class=\"ds-card-header\">Loss de Convergência</div><div class=\"ds-card-value\">0.0412</div></div>",
-      "css": ".ds-glass-card { background: rgba(18, 23, 35, 0.62); backdrop-filter: blur(20px) saturate(160%); border: 1px solid rgba(255, 255, 255, 0.07); border-top: 1px solid rgba(255, 255, 255, 0.13); border-radius: 14px; padding: 16px; box-shadow: 0 12px 30px -6px rgba(0, 0, 0, 0.45); } .ds-card-header { font-family: Inter, sans-serif; font-size: 12px; color: rgba(241, 243, 249, 0.65); margin-bottom: 8px; } .ds-card-value { font-family: 'JetBrains Mono', monospace; font-size: 20px; font-weight: 600; color: #10b981; }"
+      "description": "Card translúcido com vidro óptico berinjela para métricas e datasets.",
+      "html": "<div class=\"ds-glass-card\"><div class=\"ds-card-header\">Loss de Treinamento</div><div class=\"ds-card-value\">0.0384</div></div>",
+      "css": ".ds-glass-card { background: rgba(31, 27, 38, 0.70); backdrop-filter: blur(20px) saturate(160%); -webkit-backdrop-filter: blur(20px) saturate(160%); border: 1px solid rgba(131, 80, 242, 0.14); border-top: 1px solid rgba(255, 255, 255, 0.16); border-radius: 16px; padding: 16px; box-shadow: 0 12px 30px -6px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.06); transition: border-color 0.2s ease, background 0.2s ease; } .ds-glass-card:hover { border-color: rgba(131, 80, 242, 0.30); background: rgba(38, 33, 47, 0.78); } .ds-card-header { font-family: 'Space Grotesk', sans-serif; font-size: 12px; font-weight: 600; color: rgba(245, 243, 248, 0.65); margin-bottom: 8px; } .ds-card-value { font-family: 'JetBrains Mono', monospace; font-size: 20px; font-weight: 600; color: #8350f2; }"
     },
     {
       "name": "Telemetry Pill",
       "kind": "chip",
       "refersTo": "status-telemetry",
-      "description": "Cápsula monoespaçada para métricas de latência e VRAM na topbar.",
+      "description": "Cápsula monoespaçada na Sidebar reportando VRAM, CPU e nós.",
       "html": "<div class=\"ds-pill-telemetry\"><span class=\"ds-dot-active\"></span>VRAM 4.2 / 24 GB</div>",
-      "css": ".ds-pill-telemetry { display: inline-flex; align-items: center; gap: 6px; background: rgba(0, 0, 0, 0.4); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 9999px; padding: 4px 10px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #f1f3f9; } .ds-dot-active { width: 6px; height: 6px; border-radius: 9999px; background: #10b981; }"
+      "css": ".ds-pill-telemetry { display: inline-flex; align-items: center; gap: 6px; background: rgba(0, 0, 0, 0.40); border: 1px solid rgba(255, 255, 255, 0.10); border-radius: 9999px; padding: 4px 10px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #cfc9dc; } .ds-dot-active { width: 6px; height: 6px; border-radius: 9999px; background: #8350f2; box-shadow: 0 0 8px rgba(131, 80, 242, 0.6); }"
     },
     {
       "name": "Input Field",
       "kind": "input",
       "refersTo": "input-text",
-      "description": "Campo de formulário para parâmetros, hiperparâmetros e busca.",
+      "description": "Campo de entrada monoespaçado para busca e hiperparâmetros.",
       "html": "<input class=\"ds-input\" type=\"text\" placeholder=\"learning_rate (ex: 0.001)\" />",
-      "css": ".ds-input { background: rgba(0, 0, 0, 0.4); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; padding: 8px 12px; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #f1f3f9; width: 100%; box-sizing: border-box; } .ds-input:focus-visible { outline: none; border-color: #10b981; box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.25); }"
+      "css": ".ds-input { background: rgba(0, 0, 0, 0.40); border: 1px solid rgba(42, 35, 54, 1); border-radius: 8px; padding: 8px 12px; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #f5f3f8; width: 100%; box-sizing: border-box; outline: none; transition: border-color 0.15s ease, box-shadow 0.15s ease; } .ds-input:focus-visible { border-color: #8350f2; box-shadow: 0 0 0 2px rgba(131, 80, 242, 0.35); }"
+    },
+    {
+      "name": "Submodule Pill",
+      "kind": "chip",
+      "refersTo": "submodule-pill",
+      "description": "Pílula de sub-navegação em abas/módulos com fade edge.",
+      "html": "<div class=\"ds-submodule-pill ds-active\">Galeria de Datasets</div>",
+      "css": ".ds-submodule-pill { display: inline-flex; align-items: center; height: 36px; padding: 0 14px; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', sans-serif; font-size: 14px; font-weight: 500; border-radius: 12px; border: 1px solid rgba(255, 255, 255, 0.08); background: rgba(255, 255, 255, 0.03); color: #9a92a6; cursor: pointer; transition: all 0.15s ease; } .ds-submodule-pill.ds-active { border-color: rgba(131, 80, 242, 0.30); background: rgba(131, 80, 242, 0.12); color: #ffffff; }"
     }
   ],
   "narrative": {
-    "northStar": "The Optical Foundry",
-    "overview": "O Hephaestus LLM Studio projeta a precisão de um laboratório de fundição e ótica industrial de ponta. Fundo escuro profundo (#090c12), vidro translúcido óptico e acento esmeralda (#10b981). Tipografia com Inter para clareza da UI e JetBrains Mono para telemetria, logs e parâmetros.",
+    "northStar": "The Arcane Foundry",
+    "overview": "O Hephaestus LLM Studio projeta a precisão de um laboratório de fundição e ótica industrial de ponta. Fundo escuro profundo (#0d0d0d), superfícies translúcidas em vidro óptico fumê com undertone berinjela e acento violeta (#8350f2). Densidade compacta com root 14px e tipografia rigorosa: Space Grotesk para títulos, system sans para corpo e JetBrains Mono para telemetria, logs e anotações.",
     "keyCharacteristics": [
       "Estética Dark-Only de Alta Fidelidade (Anti-Slop)",
       "Vidro Óptico em 3 Níveis (.glass-card, .glass-menu, .glass-modal)",
-      "Economia de Ação: Exatamente 1 CTA Primário Sólido por painel",
-      "Microtipografia Técnica Exata em Mono para telemetria e métricas"
+      "Economia de Ação: Exatamente 1 CTA Primário translúcido violeta por painel",
+      "Microtipografia Técnica Exata em JetBrains Mono para telemetria e BBoxes",
+      "Densidade Compacta Arcane v2.1 (html font-size 14px)"
     ],
     "rules": [
       {
         "name": "The One CTA Rule",
-        "body": "Existe apenas um botão sólido verde esmeralda por painel. Ações secundárias utilizam acabamento ghost ou vidro.",
+        "body": "Existe apenas um CTA no estilo outline-violeta translúcido (border-brand-500/30 + bg-brand-500/[0.12]) por contexto; NUNCA violeta sólido como fundo de botão.",
+        "section": "colors"
+      },
+      {
+        "name": "The Brand-Only Rule",
+        "body": "Classes emerald-* são terminantemente proibidas no código da aplicação — no Tailwind v4 resolvem para o verde da v1.",
         "section": "colors"
       },
       {
         "name": "The Monospace Truth Rule",
-        "body": "Todo número de telemetria, VRAM, latência, coordenadas de BBox e logs deve ser renderizado em JetBrains Mono.",
+        "body": "Todo número de telemetria, VRAM, CPU, RAM, latência, coordenadas de BBox e logs deve ser renderizado em JetBrains Mono.",
         "section": "typography"
       },
       {
-        "name": "The Refractive Edge Rule",
-        "body": "Toda superfície elevada de vidro possui borda superior com iluminação de 1.8x a 2.5x maior que as demais bordas.",
+        "name": "The Vidro Óptico Rule",
+        "body": "Toda superfície elevada de vidro possui borda superior com iluminação de 1.8x a 2.5x maior que as laterais e inferiores.",
         "section": "elevation"
+      },
+      {
+        "name": "The Anti-Scroll-Trap Rule",
+        "body": "Em < md workspaces rolam como documento único; nunca aninhar overflow-y-auto em flex-col.",
+        "section": "layout"
+      },
+      {
+        "name": "The Densidade de Botões Rule",
+        "body": "Botões seguem estritamente sm h-8, default h-9, lg h-10; hit-area mínima de 28px no desktop/tablet.",
+        "section": "layout"
+      },
+      {
+        "name": "The Truncamento Honesto Rule",
+        "body": "Valores truncados utilizam sempre title='...' contendo o texto completo para auditoria acessível.",
+        "section": "layout"
       }
     ],
     "dos": [
-      "Do manter 1 botão primário sólido esmeralda por painel",
-      "Do utilizar JetBrains Mono para todos os dados quantitativos",
-      "Do respeitar o anel de foco verde 2px para acessibilidade WCAG 2.2 AA",
-      "Do aplicar vidro óptico em 3 níveis (.glass-card, .glass-menu, .glass-modal)"
+      "Do manter 1 CTA outline-violeta translúcido por contexto de ação",
+      "Do dar inset highlight zenital de 1px a todo botão (branco 8% ou 6%)",
+      "Do utilizar JetBrains Mono para todos os dados numéricos e telemetria",
+      "Do respeitar o anel de foco violeta 2px (#8350f2) com offset de 2px",
+      "Do aplicar vidro óptico em 3 níveis (.glass-card, .glass-menu, .glass-modal)",
+      "Do aplicar fade edge na direita de trilhos horizontais com overflow",
+      "Do usar truncate sempre acompanhado de title='...'"
     ],
     "donts": [
-      "Don't utilizar modo claro (Light Mode)",
-      "Don't usar emojis para ações ou categorias na interface",
-      "Don't aplicar sombras opacas pretas ou gradientes turvos",
-      "Don't utilizar texto claro em botões primários esmeralda (usar text-zinc-950)"
+      "Don't utilizar modo claro (Light Mode) sob hipótese alguma",
+      "Don't usar emojis como ícones de ação ou categoria na interface",
+      "Don't aplicar sombras opacas pretas ou gradientes coloridos pesados",
+      "Don't usar o tom sólido bg-brand-500 como fundo de botão",
+      "Don't utilizar classes emerald-* no código do app",
+      "Don't aninhar overflow-y-auto pai e filho em flex-col",
+      "Don't usar múltiplos botões de texto por extenso em toolbars móveis",
+      "Don't quebrar títulos de tela ou sidebar em 2 linhas"
     ]
   }
 }

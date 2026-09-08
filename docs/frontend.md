@@ -1,6 +1,6 @@
 # Hephaestus LLM Studio — Documentação do Front-end
 
-> Fonte: o próprio app (`apps/web`) + `docs/design-system.md` v2 (contrato de estilo Arcane). O protótipo v1 `ai-vision-training-studio.html` está APOSENTADO como referência de layout (não removido do repo; apenas sem valor normativo).
+> Fonte: o próprio app (`apps/web`) + `docs/DESIGN.md` (Design System unificado Arcane v2/v2.1). Protótipos legados foram completamente aposentados e removidos do repositório.
 > Status: **shell v2 implementado (fatia redesign UI v2): Sidebar macro + breadcrumbs; Topbar+TabsBar APOSENTADOS (componentes deletados)**. Alvo real: **Next.js + TypeScript**.
 > Idioma da UI: pt-BR.
 
@@ -27,7 +27,7 @@ O front-end nunca executa treino, nunca decide onde treinar, nunca manipula arqu
 
 ## 2. Protótipo atual vs. alvo
 
-| Aspecto | Protótipo v1 (`ai-vision-training-studio.html`, APOSENTADO — comparativo histórico) | Alvo Next.js/TS |
+| Aspecto | Protótipo v1 (APOSENTADO — comparativo histórico) | Alvo Next.js/TS |
 |---|---|---|
 | Runtime | React 18 UMD + Babel standalone + Tailwind CDN, tudo num `App()` com ~40 `useState` | App Router, componentes server/client separados, Tailwind real + CSS modules |
 | Estado | Local, mockado (`INITIAL_DATASETS`, `setInterval` de 3s simulando epoch) | Server state via React Query / SWR + client state via Zustand; jobs reais via polling/WS |
@@ -37,20 +37,19 @@ O front-end nunca executa treino, nunca decide onde treinar, nunca manipula arqu
 | Logs | Array de strings com `slice(-50)` | Stream WebSocket `Rust Core → Orquestrador → Motor Python` |
 | i18n/a11y | pt-BR hardcoded, bom ponto de partida a11y | Manter padrão + extrair strings |
 
-## 3. Design system extraído do protótipo (manter)
+## 3. Design system implementado (Arcane v2/v2.1)
 
-Manter no Next.js — é a parte boa do protótipo:
+A especificação normativa completa e canônica vive em **`docs/DESIGN.md`**. Principais diretrizes:
 
-- **Paleta dark-only:** fundo `#090c12`, superfícies `zinc-950/900`, acento `emerald-500 (#10b981)`, secundários `cyan/amber/rose` para classes e métricas. Variáveis CSS `:root` com `oklch()` já definidas no `<style>`.
-- **Glassmorphism em 3 níveis:** `.glass-menu` (dropdowns, toast, context menu), `.glass-card` (cards, gráficos), `.glass-modal` (modal criar dataset). Todos com `backdrop-filter: blur + saturate`, borda superior mais clara (`inset 0 1px 0`), sombra profunda.
-- **Tipografia:** `Inter` para UI, `JetBrains Mono / IBM Plex Mono` para números, configs, logs, YOLO TXT. Classes utilitárias `.tracking-caps` (labels uppercase) e `.tracking-display`.
-- **Ícones:** set próprio `Icons` (~25 SVGs monolínea, stroke 1.7, sem emojis funcionais): Cpu, Layers, Target, Database, Wand, Play/Pause/Stop, Crosshair, BoxSelect, Terminal, Sliders, Server, Zap, etc. Migrar 1:1 para `components/icons.tsx`.
-- **CTA único por painel:** 1 botão sólido `bg-emerald-500 text-zinc-950` por workspace (`start-training-btn`, `run-autotracker-btn`, `run-autolabel-btn`, `start-clip-training-btn`). Pausar = amber outline, Abortar = rose outline.
-- **Feedback:** toast bottom-right (`studio-toast`, `role=status aria-live=polite`, auto-dismiss 3.6s, tipos success/error/info), menu de contexto em vidro (`glass-context-menu`), modal com `role=dialog aria-modal=true`, foco inicial via `datasetNameRef`, `Escape` fecha modal/menu/editor.
-- **A11y já feita:** `focus-visible` verde 2px, `button:disabled {opacity .55}`, `prefers-reduced-motion: reduce` zerando animações (`pulse-glow`, `scan-laser`), `aria-label` em todos os selects/inputs, `role=tablist/tab aria-selected`.
-- **Scrollbars finas 5px**, telemetria em `font-mono text-xs`.
-
-Não levar para o Next.js: `tailwind.config` inline via CDN, `text/babel`, `data-od-id` (só instrumentação do protótipo).
+- **Paleta dark-only profunda:** fundo base `#0d0d0d`, acento primário `brand-500` Violeta Arcane (`#8350f2`), neutros `zinc-*` com undertone berinjela, secundários semânticos (`#34d399` sucesso, `#f59e0b` alerta, `#ef4444` perigo, `#06b6d4` telemetria).
+- **Regra Brand-Only:** classes `emerald-*` são **estritamente proibidas** no app (no Tailwind v4 nativo resolvem para verde legado da v1).
+- **Vidro óptico em 3 níveis:** `.glass-menu` (dropdowns, toast, context menu), `.glass-card` (cards, gráficos), `.glass-modal` (modais). Todos com `backdrop-filter: blur + saturate`, borda superior zenital (`border-top: 1px solid rgba(255, 255, 255, 0.16)`) e sombra profunda.
+- **Tipografia:** `Space Grotesk` para display/títulos, system sans para UI e `JetBrains Mono` para números, configs, telemetria, logs e BBoxes (regra *Monospace Truth*). Fontes self-hosted em `apps/web/fonts/*.woff2`.
+- **Densidade:** `html { font-size: 14px }` (densidade compacta profissional Arcane).
+- **CTA único translúcido:** exatamente 1 botão por contexto no formato `border-brand-500/30 bg-brand-500/[0.12] text-white` (regra *One CTA*). Botão com fundo sólido `bg-brand-500` é proibido.
+- **Feedback:** toast bottom-right (`studio-toast`, `role=status aria-live=polite`, auto-dismiss), menu de contexto em vidro (`glass-context-menu`), modais acessíveis com `role=dialog aria-modal=true`, foco inicial e `Escape`.
+- **A11y:** `focus-visible` violeta 2px (`outline: 2px solid #8350f2`), `button:disabled {opacity .55}`, `prefers-reduced-motion: reduce` zerando animações, labels semânticos em formulários.
+- **Scrollbars finas 5px** e telemetria em `font-mono text-xs`.
 
 ## 4. Shell global (v2 — fatia redesign UI v2)
 
@@ -76,7 +75,7 @@ Não levar para o Next.js: `tailwind.config` inline via CDN, `text/babel`, `data
 
 ### 4.4 Páginas no estilo v2 (APRESENTAÇÃO apenas — contratos §10 e lógica intocados)
 
-`/datasets`, galeria (`datasets/[id]`), editor BBox (`annotate/[imageId]`) e `/login` migrados para o v2 (`docs/design-system.md`): densidade de botões (CTA único `h-11`, secundárias `h-9`, menu overflow `"⋯"` em `<md`), pílulas de categoria com `overflow-x-auto` + fade edge + auto-scroll da pílula ativa, anti-scroll-trap (workspace rola como documento único em `<md`; scroll interno de coluna só em `≥md` com `md:overflow-y-auto`).
+`/datasets`, galeria (`datasets/[id]`), editor BBox (`annotate/[imageId]`) e `/login` migrados para o v2 (`docs/DESIGN.md`): densidade de botões (CTA único `h-10`, secundárias `h-9`, menu overflow `"⋯"` em `<md`), pílulas de categoria com `overflow-x-auto` + fade edge + auto-scroll da pílula ativa, anti-scroll-trap (workspace rola como documento único em `<md`; scroll interno de coluna só em `≥md` com `md:overflow-y-auto`).
 
 ## 5. Datasets + Galeria + Editor (coração da IDEIA)
 
@@ -243,4 +242,4 @@ Cada workspace segue o grid do protótipo: `painel config 320–384px + área fl
 - **Downloads de modelos:** settings com campos HF token + Civitai key (env como fallback) + input de URL. Front só coleta e exibe progresso; download real é do orquestrador.
 - **Limites:** upload avulso imagem/vídeo 200 MB por arquivo (validação no front + item `rejected/too_large` e 413 do Rust no corpo total); zip de import: 200 MiB + 8 MiB de envelope (413 do Rust no corpo total; modal mostra "Backup maior que o limite de 200 MiB."). Envio de dataset p/ orquestrador sem limite, com md5 + fragmentação quando remoto — front mostra barra de empacotamento → envio → verificação.
 - **Pré-condições 3b/3d (ADR-0002 T3/T4/T7):** 3b ENTREGOU storage+imagens+anotação (upload/imagens/boxes/caption + `source` derivado + sweep de prefixo); export/import/package → 3e. DELETE ganhou sweep de prefixo `datasets/{id}/` pós-commit reapável best-effort (não mais cleanup de `<DATASETS_DIR>/<slug>` — disco morreu, ADR-0003 D7); `jobs.dataset_id ON DELETE SET NULL` + snapshot `dataset_versions` (nunca `RESTRICT`); derivar `autoTracked` de `boxes.origin='autotracker'` — detalhe no ADR.
-- **Fatia redesign UI v2 (branch `feature/redesign-app`, review APROVA COM NITS):** `docs/frontend.md` §4 reescrito (shell Sidebar+breadcrumbs+chip Local; Topbar+TabsBar aposentados/deletados), §4.4 registra migração visual de `/datasets`, galeria, editor e `/login` (contratos §10 intocados). Detalhes de estilo no `docs/design-system.md` v2; dívidas novas no `docs/dividas.md`.
+- **Fatia redesign UI v2 (branch `feature/redesign-app`, review APROVA COM NITS):** `docs/frontend.md` §4 reescrito (shell Sidebar+breadcrumbs+chip Local; Topbar+TabsBar aposentados/deletados), §4.4 registra migração visual de `/datasets`, galeria, editor e `/login` (contratos §10 intocados). Detalhes de estilo em `docs/DESIGN.md`; dívidas novas no `docs/dividas.md`.

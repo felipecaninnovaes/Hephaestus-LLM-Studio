@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
-/* Design tokens v2 — redesign Arcane (docs/design-system.md v2, fonte de estilo).
-   Layout: temp_redesign/new_ui.html. Tailwind v4: escala brand/zinc via @theme. */
+/* Design tokens v2 — redesign Arcane (docs/DESIGN.md, fonte normativa de estilo).
+   Tailwind v4: escala brand/zinc via @theme. */
 
 @theme {
   --color-brand-50: #f5f3ff;

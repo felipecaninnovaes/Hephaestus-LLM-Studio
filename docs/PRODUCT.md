@@ -47,12 +47,12 @@ Estúdio de engenharia de IA de ponta a ponta que integra ferramentas especializ
 ## Brand Commitments
 
 - **Nome Oficial:** Hephaestus LLM Studio.
-- **Identidade e Design System:** Tema exclusivo dark (`#090c12`, superfícies zinc-900/950, acento emerald-500 `#10b981` com destaques semânticos âmbar/ciano/rosa para métricas e classes). Superfícies com glassmorphism em 3 níveis (.glass-menu, .glass-card, .glass-modal). Tipografia em Inter para UI e JetBrains Mono para telemetria, dados e código.
+- **Identidade e Design System:** Tema exclusivo dark ("The Arcane Foundry": fundo base `#0d0d0d`, superfícies translúcidas em vidro óptico com undertone berinjela, acento brand violeta `#8350f2` com destaques semânticos para métricas e classes). Superfícies com glassmorphism em 3 níveis (.glass-menu, .glass-card, .glass-modal). Tipografia em Space Grotesk para display/títulos, system sans para UI e JetBrains Mono para telemetria, dados e código.
 - **Voz e Tom:** Técnico, direto, utilitário e confiável, voltado para engenharia de alto desempenho.
 
 ## Evidence on Hand
 
-- Referência visual: `docs/design-system.md` v2 realizando-se em `apps/web/` (design v2 'Arcane'); protótipo v1 aposentado e removido do repo.
+- Referência visual: `docs/DESIGN.md` (Design System unificado Arcane v2/v2.1) realizando-se em `apps/web/`; protótipos antigos aposentados e removidos do repo.
 - Especificações e decisões arquiteturais documentadas: `IDEIA.md`, `docs/frontend.md`, `docs/backend.md`, `docs/repo-estrutura.md` e ADRs estruturadas (`docs/adr/0001`, `docs/adr/0002`, `docs/adr/0003`).
 - Base de código web em desenvolvimento ativo em `apps/web` (Next.js 16, React 19, Tailwind CSS v4, design tokens integrados em `globals.css`).
 
@@ -66,5 +66,5 @@ Estúdio de engenharia de IA de ponta a ponta que integra ferramentas especializ
 ## Accessibility & Inclusion
 
 - Conformidade com as diretrizes WCAG 2.2 AA.
-- Foco visível de alto contraste (`outline: 2px solid #10b981`), estados desabilitados claros com contraste mantido e navegação integral por teclado em fluxos modais e editores de anotação.
+- Foco visível de alto contraste (`outline: 2px solid #8350f2`), estados desabilitados claros com contraste mantido e navegação integral por teclado em fluxos modais e editores de anotação.
 - Respeito irrestrito a `prefers-reduced-motion: reduce` para desativar efeitos visuais de scan e pulso.

@@ -60,6 +60,7 @@ pub struct MetricsItem {
 
 /// Job response (camelCase wire).
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct JobResponse {
     pub id: String,
     pub kind: String,

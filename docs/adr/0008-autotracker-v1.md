@@ -1,6 +1,6 @@
 # ADR-0008 — AutoTracker v1 (mock, local): execução em lote + retorno de boxes ao Postgres (Fatia 5)
 
-- **Status:** **PROPOSTA** — aguarda aceite explícito do usuário. Nada implementado.
+- **Status:** **ACEITA** (2026-09-08 — usuário: "sim aceito", fecha P1–P4). Especificação executável da fatia 5.
   Este documento é a **especificação executável** da fatia 5; os deltas de
   contrato abaixo são aplicados **apenas nos commits da fatia** (openapi junto do
   código, docs de texto no `docs-sync` do fim), nunca antes.
@@ -504,7 +504,7 @@ router a cada commit (delta OpenAPI incremental); A.4 pode dividir em A.4a
 se estourar ~400 linhas de produção — specs incrementais, contract≡router a cada
 commit. Despachos de fix nunca editam fora do escopo (reportam ao coordenador).
 
-## Perguntas ao usuário (fecháveis com "tudo como você recomenda")
+## Perguntas ao usuário — FECHADAS (2026-09-08: aceite P1–P4)
 
 - **P1 — Retorno de boxes (D1):** ingest pós-done pelo principal via artefato
   `boxes.json`, com apply **explícito** (`POST /:id/autotracker/apply`) e merge
@@ -519,5 +519,4 @@ commit. Despachos de fix nunca editam fora do escopo (reportam ao coordenador).
 - **P4 — Escopo (D5/D6):** vídeo e upload de modelo ficam FORA da v1 (dívidas
   registradas). **Recomendação:** sim (sem rota de escrita de `videos`; mock).
 
-**Ao aceitar:** "tudo como você recomenda" fecha P1–P4 com as recomendações
-acima e a ADR vira especificação executável (branch `feat/autotracker-v1`).
+**Aceitas (2026-09-08)**: P1–P4 conforme recomendado. Branch: `feat/autotracker-v1`.

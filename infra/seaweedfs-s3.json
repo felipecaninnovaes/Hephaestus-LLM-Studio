@@ -9,6 +9,22 @@
         }
       ],
       "actions": ["Admin", "Read", "Write", "List", "Tagging", "UserManagement"]
+    },
+    {
+      "name": "heph-orchestrator",
+      "credentials": [
+        {
+          "accessKey": "heph-orch",
+          "secretKey": "heph-orch-local-dev"
+        }
+      ],
+      "actions": [
+        "Read:heph-data/packages/*",
+        "List:heph-data/packages/*",
+        "Read:heph-data/artifacts/*",
+        "Write:heph-data/artifacts/*",
+        "List:heph-data/artifacts/*"
+      ]
     }
   ]
 }

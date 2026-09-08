@@ -34,8 +34,6 @@ services:
     depends_on:
       db:
         condition: service_started
-      manager:
-        condition: service_started
       seaweedfs:
         condition: service_healthy
 
@@ -105,7 +103,10 @@ services:
       DATABASE_URL: postgres://studio:${POSTGRES_PASSWORD:-studio}@db/studio
       MANAGER_TOKEN: ${MANAGER_TOKEN:-changeme}
     depends_on:
-      - db
+      db:
+        condition: service_started
+      principal:
+        condition: service_started
 
   orchestrator-local:
     build:
@@ -114,8 +115,15 @@ services:
     ports:
       - '8082:8082'
     environment:
-      MANAGER_URL: http://manager:8081
-      EXEC_MODE: docker
+      MANAGER_URL: ${MANAGER_URL:-http://manager:8081}
+      MANAGER_TOKEN: ${MANAGER_TOKEN:-changeme}
+      S3_ORCH_ENDPOINT_URL: ${S3_ORCH_ENDPOINT_URL:-http://seaweedfs:8333}
+      S3_ORCH_BUCKET: ${S3_ORCH_BUCKET:-heph-data}
+      S3_ORCH_ACCESS_KEY: ${S3_ORCH_ACCESS_KEY:-heph-orch}
+      S3_ORCH_SECRET_KEY: ${S3_ORCH_SECRET_KEY:-heph-orch-local-dev}
+      ORCH_WORKDIR: ${ORCH_WORKDIR:-/data}
+      EXEC_MODE: ${EXEC_MODE:-docker}
+      PORT: "8082"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - datasets:/data/datasets
@@ -123,6 +131,17 @@ services:
       - outputs:/data/outputs
     depends_on:
       - manager
+
+  # Build-only: imagem hephaestus/trainer-yolo:local (ADR-0007 D5).
+  # Não inicia com `docker compose up` — só com `--profile build`.
+  # Build: docker compose --profile build build trainer-yolo
+  trainer-yolo:
+    profiles:
+      - build
+    image: hephaestus/trainer-yolo:local
+    build:
+      context: ../engines/trainer-yolo
+      dockerfile: Dockerfile
 
   web:
     build:

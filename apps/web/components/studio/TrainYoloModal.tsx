@@ -74,7 +74,7 @@ export default function TrainYoloModal({
 
   const parsedLr0 = parseFloat(lr0);
   const epochsValid = Number.isInteger(epochs) && epochs >= EPOCHS_MIN && epochs <= EPOCHS_MAX;
-  const lr0Valid = !isNaN(parsedLr0) && parsedLr0 > 0 && parsedLr0 <= 0.1 + 1e-9;
+  const lr0Valid = !isNaN(parsedLr0) && parsedLr0 >= 1e-5 && parsedLr0 <= 0.1 + 1e-9;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -85,7 +85,7 @@ export default function TrainYoloModal({
       return;
     }
     if (!lr0Valid) {
-      setTopError("Learning rate deve ser entre 0 e 0.1.");
+      setTopError("lr0 deve estar entre 0.00001 e 0.1.");
       return;
     }
 

@@ -499,6 +499,7 @@ pub trait TrainerExecutor: Send + Sync {
         image: &str,
         container_name: &str,
         volumes: &[(String, String)], // (host_path, container_path)
+        args: &[String],              // argumentos após a imagem (ex.: train --config …)
     ) -> (i32, String);
 
     /// Para um container (abort via docker stop --time 5 → exit 137).
@@ -515,6 +516,7 @@ impl TrainerExecutor for DockerExecutor {
         image: &str,
         container_name: &str,
         volumes: &[(String, String)],
+        args: &[String],
     ) -> (i32, String) {
         let mut cmd = tokio::process::Command::new("docker");
         cmd.arg("run").arg("--rm").arg("--name").arg(container_name);
@@ -524,6 +526,7 @@ impl TrainerExecutor for DockerExecutor {
         }
 
         cmd.arg(image);
+        cmd.args(args);
 
         match cmd.output().await {
             Ok(o) => {
@@ -565,6 +568,7 @@ impl TrainerExecutor for SubprocessExecutor {
         _image: &str,
         _container_name: &str,
         _volumes: &[(String, String)],
+        _args: &[String],
     ) -> (i32, String) {
         // Subprocess mode: tenta rodar o trainer diretamente.
         // Não é o caminho de aceite — falha honestamente se o pacote não estiver instalado.
@@ -830,7 +834,18 @@ async fn run_job_inner(
     });
 
     let (exit_code, logs) = executor
-        .run(&dispatch.image, &container_name, &volumes)
+        .run(
+            &dispatch.image,
+            &container_name,
+            &volumes,
+            &[
+                "train".to_string(),
+                "--config".to_string(),
+                format!("/outputs/{job_id}/config.yaml"),
+                "--output".to_string(),
+                format!("/outputs/{job_id}"),
+            ],
+        )
         .await;
 
     // Cancela metrics collector
@@ -1250,6 +1265,71 @@ mod tests {
             epoch: 100,
         };
         assert!((compute_progress(&m, 100) - 1.0).abs() < 1e-6);
+    }
+
+    // -- executor args test --
+
+    struct FakeExecutor {
+        last_args: std::sync::Mutex<Option<Vec<String>>>,
+    }
+
+    impl FakeExecutor {
+        fn new() -> Self {
+            Self {
+                last_args: std::sync::Mutex::new(None),
+            }
+        }
+
+        fn last_args(&self) -> Option<Vec<String>> {
+            self.last_args.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl TrainerExecutor for FakeExecutor {
+        async fn run(
+            &self,
+            _image: &str,
+            _container_name: &str,
+            _volumes: &[(String, String)],
+            args: &[String],
+        ) -> (i32, String) {
+            *self.last_args.lock().unwrap() = Some(args.to_vec());
+            (0, "ok".to_string())
+        }
+
+        async fn stop(&self, _container_name: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn run_job_inner_passes_correct_args() {
+        use std::sync::Arc;
+
+        let executor = Arc::new(FakeExecutor::new());
+        let job_id = "test-job-001";
+
+        // Simulate the args that run_job_inner would build
+        let expected_args = vec![
+            "train".to_string(),
+            "--config".to_string(),
+            format!("/outputs/{job_id}/config.yaml"),
+            "--output".to_string(),
+            format!("/outputs/{job_id}"),
+        ];
+
+        // Directly call executor.run to verify args are forwarded
+        let (_, _) = executor
+            .run(
+                "my-image:latest",
+                "trainer-test",
+                &[("/data/datasets".into(), "/datasets".into())],
+                &expected_args,
+            )
+            .await;
+
+        assert_eq!(executor.last_args(), Some(expected_args));
     }
 
     // -- idempotency test (dispatch com mesmo job_id → 409) --

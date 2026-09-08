@@ -100,7 +100,7 @@ export default function JobsPage() {
   // Polling: ativo quando há jobs running/queued; pausa quando tudo done/failed/cancelled
   useEffect(() => {
     function hasActiveJobs(list: Job[]) {
-      return list.some((j) => j.status === "queued" || j.status === "running");
+      return list.some((j) => j.status === "queued" || j.status === "running" || j.status === "cancelling");
     }
 
     if (pollRef.current) {
@@ -149,11 +149,17 @@ export default function JobsPage() {
     return () => ctrl.abort();
   }, [expandedId]);
 
-  // Re-fetch métricas quando um job termina
+  // Re-fetch métricas quando um job muda de estado (ativa e terminal)
   useEffect(() => {
     if (!expandedId) return;
     const job = jobs.find((j) => j.id === expandedId);
-    if (!job || (job.status !== "done" && job.status !== "failed" && job.status !== "cancelled")) return;
+    if (!job) return;
+
+    const isActive = job.status === "queued" || job.status === "running" || job.status === "cancelling";
+    const isTerminal = job.status === "done" || job.status === "failed" || job.status === "cancelled";
+    if (!isActive && !isTerminal) return;
+
+    const ctrl = new AbortController();
 
     async function refreshDetail() {
       try {
@@ -161,13 +167,16 @@ export default function JobsPage() {
           getJobMetrics(expandedId!),
           getJobArtifacts(expandedId!),
         ]);
-        setMetrics((prev) => ({ ...prev, [expandedId!]: m.items }));
-        setArtifacts((prev) => ({ ...prev, [expandedId!]: a.items }));
+        if (!ctrl.signal.aborted) {
+          setMetrics((prev) => ({ ...prev, [expandedId!]: m.items }));
+          setArtifacts((prev) => ({ ...prev, [expandedId!]: a.items }));
+        }
       } catch {
         // Ignora
       }
     }
     refreshDetail();
+    return () => ctrl.abort();
   }, [expandedId, jobs]);
 
   async function handleAbort() {

@@ -228,11 +228,10 @@ export interface JobListResponse {
 
 export interface JobArtifact {
   id: string;
-  jobId: string;
-  filename: string;
-  contentType: string;
-  sizeBytes: number;
-  createdAt: string;
+  kind: string;
+  path: string;
+  md5: string;
+  bytes: number;
 }
 
 export interface JobArtifactsResponse {

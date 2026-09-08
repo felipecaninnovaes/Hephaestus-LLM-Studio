@@ -189,7 +189,7 @@ export default function JobsPage() {
 
   async function handleDownloadArtifact(jobId: string, art: JobArtifact) {
     try {
-      await downloadArtifact(jobId, art.id, art.filename);
+      await downloadArtifact(jobId, art.id, art.path);
     } catch {
       showToast("Falha ao baixar artefato.", "error");
     }
@@ -402,11 +402,11 @@ export default function JobsPage() {
                               key={art.id}
                               type="button"
                               onClick={() => handleDownloadArtifact(job.id, art)}
-                              title={`Baixar ${art.filename} (${art.sizeBytes} bytes)`}
+                              title={`Baixar ${art.path} (${art.bytes} bytes)`}
                               className="inline-flex h-9 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-3 text-xs font-medium text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
                             >
                               <IconDownload className="h-3.5 w-3.5" />
-                              <span className="font-mono">{art.filename}</span>
+                              <span className="font-mono">{art.path}</span>
                             </button>
                           ))}
                         </div>

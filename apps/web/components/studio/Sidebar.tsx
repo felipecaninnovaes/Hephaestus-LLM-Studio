@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -69,6 +69,38 @@ export default function Sidebar({
   const [leaving, setLeaving] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [confirmingLogout, setConfirmingLogout] = useState(false);
+  const userMenuRef = useRef<HTMLDivElement>(null);
+
+  // Fecha o menu de perfil ao trocar de rota ou fechar o drawer
+  useEffect(() => {
+    setUserMenuOpen(false);
+    setConfirmingLogout(false);
+  }, [pathname, open]);
+
+  // Fecha o menu suspenso do usuário ao clicar fora ou teclar Escape
+  useEffect(() => {
+    if (!userMenuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
+        setUserMenuOpen(false);
+        setConfirmingLogout(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setUserMenuOpen(false);
+        setConfirmingLogout(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [userMenuOpen]);
 
   // No mobile, a gaveta quando aberta é SEMPRE expandida com texto e categorias completas.
   // No desktop (≥ 1024px), expande com hover ou se estiver fixada (pinned).
@@ -334,11 +366,11 @@ export default function Sidebar({
                   <span className="font-display text-sm font-semibold tracking-tight text-white">
                     Hephaestus
                   </span>
-                  <span className="rounded border border-brand-500/30 bg-brand-500/15 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-caps text-brand-300">
+                  <span className="rounded border border-brand-500/30 bg-brand-500/15 px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-caps text-brand-300">
                     Studio
                   </span>
                 </div>
-                <div className="font-mono text-[10px] text-zinc-500 whitespace-nowrap">
+                <div className="font-mono text-[11px] text-zinc-500 whitespace-nowrap">
                   <span title="Hephaestus LLM Studio v1.3.0">v1.3.0 · AI Engine</span>
                 </div>
               </div>
@@ -354,7 +386,7 @@ export default function Sidebar({
                   onClick={onTogglePin}
                   title={pinned ? "Desafixar barra lateral" : "Fixar barra lateral"}
                   aria-label={pinned ? "Desafixar barra lateral" : "Fixar barra lateral"}
-                  className={`hidden size-8 items-center justify-center rounded-lg border transition hover:bg-white/[0.06] active:scale-[0.985] lg:inline-flex cursor-pointer ${
+                  className={`hidden size-8 items-center justify-center rounded-lg border transition hover:bg-white/[0.06] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] lg:inline-flex cursor-pointer ${
                     pinned
                       ? "border-brand-500/40 bg-brand-500/20 text-brand-300"
                       : "border-transparent text-zinc-400 hover:text-zinc-200"
@@ -367,7 +399,7 @@ export default function Sidebar({
                 type="button"
                 onClick={onClose}
                 aria-label="Fechar menu lateral"
-                className="inline-flex size-9 items-center justify-center rounded-lg border border-transparent bg-transparent p-0 text-zinc-400 transition hover:bg-white/[0.08] hover:text-white active:scale-[0.985] lg:hidden cursor-pointer"
+                className="inline-flex size-9 items-center justify-center rounded-lg border border-transparent bg-transparent p-0 text-zinc-400 transition hover:bg-white/[0.08] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] lg:hidden cursor-pointer"
               >
                 <IconX className="size-4.5" />
               </button>
@@ -390,7 +422,8 @@ export default function Sidebar({
                 router.push("/dashboard");
               }}
               title="Orquestrador Local (http://localhost:8080 · CUDA 12.4)"
-              className={`group relative flex items-center rounded-xl border border-white/10 bg-white/[0.03] transition-all hover:border-brand-500/40 hover:bg-brand-500/[0.06] active:scale-[0.985] cursor-pointer ${
+              aria-label="Orquestrador Local (http://localhost:8080 · CUDA 12.4)"
+              className={`group relative flex items-center rounded-xl border border-white/10 bg-white/[0.03] transition-all hover:border-brand-500/40 hover:bg-brand-500/[0.06] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] cursor-pointer ${
                 isExpanded
                   ? "w-full justify-between p-2.5"
                   : "size-10 justify-center p-0"
@@ -406,7 +439,7 @@ export default function Sidebar({
                       <div className="truncate text-xs font-semibold text-zinc-200 group-hover:text-white">
                         Orquestrador Local
                       </div>
-                      <div className="truncate font-mono text-[10px] text-zinc-500">
+                      <div className="truncate font-mono text-[11px] text-zinc-500">
                         localhost:8080 · PyTorch CUDA
                       </div>
                     </div>
@@ -429,7 +462,8 @@ export default function Sidebar({
                   onOpenActionCenter();
                 }}
                 title="Centro de Atividades (Notificações & Jobs)"
-                className={`group relative flex items-center rounded-xl border border-white/10 bg-white/[0.03] text-xs text-zinc-300 transition-all hover:border-brand-500/40 hover:bg-brand-500/[0.06] hover:text-white active:scale-[0.985] cursor-pointer ${
+                aria-label={`Centro de Atividades (${telemetry?.jobsActive ?? 0} jobs ativos)`}
+                className={`group relative flex items-center rounded-xl border border-white/10 bg-white/[0.03] text-xs text-zinc-300 transition-all hover:border-brand-500/40 hover:bg-brand-500/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] cursor-pointer ${
                   isExpanded
                     ? "w-full justify-between p-2.5"
                     : "size-10 justify-center p-0"
@@ -445,15 +479,15 @@ export default function Sidebar({
                         Centro de Atividades
                       </span>
                     </div>
-                    <span className="rounded-full border border-brand-500/30 bg-brand-500/20 px-1.5 py-0.5 font-mono text-[10px] text-brand-300 shrink-0">
-                      {telemetry?.jobsActive ?? 3}
+                    <span className="rounded-full border border-brand-500/30 bg-brand-500/20 px-1.5 py-0.5 font-mono text-[11px] text-brand-300 shrink-0">
+                      {telemetry?.jobsActive ?? 0}
                     </span>
                   </>
                 ) : (
                   <>
                     <IconActivity className="size-4.5 text-brand-400 group-hover:scale-110 transition-transform" />
-                    <span className="absolute -top-1 -right-1 flex size-4 items-center justify-center rounded-full bg-brand-500 font-mono text-[9px] font-bold text-white shadow-sm">
-                      {telemetry?.jobsActive ?? 3}
+                    <span className="absolute -top-1 -right-1 flex size-4 items-center justify-center rounded-full bg-brand-500 font-mono text-[11px] font-bold text-white shadow-sm">
+                      {telemetry?.jobsActive ?? 0}
                     </span>
                   </>
                 )}
@@ -468,7 +502,7 @@ export default function Sidebar({
               className={isExpanded ? "w-full" : "flex flex-col items-center w-full"}
             >
               {isExpanded && (
-                <div className="mb-1 px-3 font-mono text-[10px] font-semibold uppercase tracking-wider text-zinc-500 whitespace-nowrap">
+                <div className="mb-1 px-3 font-mono text-[11px] font-semibold uppercase tracking-wider text-zinc-500 whitespace-nowrap">
                   {section.title}
                 </div>
               )}
@@ -487,7 +521,9 @@ export default function Sidebar({
                       href={item.href}
                       onClick={(e) => handleItemClick(e, item)}
                       title={`${item.label}${!item.isAvailable ? " (Em breve)" : ""}`}
-                      className={`group relative flex items-center overflow-hidden rounded-xl transition-all ${
+                      aria-label={!isExpanded ? `${item.label}${!item.isAvailable ? " (Em breve)" : ""}` : undefined}
+                      aria-current={active ? "page" : undefined}
+                      className={`group relative flex items-center overflow-hidden rounded-xl transition-all focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] ${
                         active
                           ? isExpanded
                             ? "w-full p-2 space-x-3 items-center border border-brand-500/30 bg-brand-500/15 text-white shadow-sm"
@@ -520,7 +556,7 @@ export default function Sidebar({
                             {item.label}
                           </span>
                           {item.badge && (
-                            <span className="rounded-full border border-brand-500/30 bg-brand-500/15 px-1.5 py-0.2 font-mono text-[9px] text-brand-300 shrink-0">
+                            <span className="rounded-full border border-brand-500/30 bg-brand-500/15 px-1.5 py-0.5 font-mono text-[11px] text-brand-300 shrink-0">
                               {item.badge}
                             </span>
                           )}
@@ -532,9 +568,10 @@ export default function Sidebar({
                         <div className="relative flex items-center justify-center">
                           <Icon className="size-4.5" />
                           {item.badge && (
-                            <span className="absolute -top-1.5 -right-2 flex size-3 items-center justify-center rounded-full bg-brand-500/80 font-mono text-[8px] font-bold text-white">
-                              •
-                            </span>
+                            <span
+                              className="absolute -top-1 -right-1 flex size-2 rounded-full bg-brand-400 ring-2 ring-zinc-950"
+                              aria-hidden="true"
+                            />
                           )}
                         </div>
                       )}
@@ -554,85 +591,217 @@ export default function Sidebar({
         >
           {/* Card Orquestrador Online */}
           {isExpanded ? (
-            <div className="flex items-center justify-between rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-2.5 py-2 text-xs">
+            <div className="flex items-center justify-between rounded-xl border border-[#34d399]/25 bg-[#34d399]/[0.05] px-2.5 py-2 text-xs">
               <div className="flex items-center space-x-2">
                 <span className="relative flex h-2 w-2">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#34d399] opacity-75" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-[#34d399]" />
                 </span>
-                <span className="text-zinc-300 font-medium">Orquestrador Online</span>
+                <span className="text-zinc-200 font-medium">Orquestrador Online</span>
               </div>
-              <span className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[10px] text-emerald-300">
+              <span className="rounded-md border border-[#34d399]/30 bg-[#34d399]/10 px-1.5 py-0.5 font-mono text-[11px] text-[#34d399]">
                 v1.3.0
               </span>
             </div>
           ) : (
             <div
               title="Orquestrador Online (v1.3.0)"
-              className="relative flex size-10 items-center justify-center rounded-xl border border-emerald-500/20 bg-emerald-500/5 text-emerald-400"
+              className="relative flex size-10 items-center justify-center rounded-xl border border-[#34d399]/25 bg-[#34d399]/[0.05] text-[#34d399]"
             >
               <IconServer className="size-4" />
               <span className="absolute top-1 right-1 flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#34d399] opacity-75" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-[#34d399]" />
               </span>
             </div>
           )}
 
-          {/* Usuário e Logout */}
+          {/* Usuário, Dados da Sessão e Menu de Logout Blindado */}
           <div
-            className={`flex items-center rounded-xl border border-white/5 bg-white/[0.02] ${
-              isExpanded ? "p-2 justify-between" : "p-0 size-10 justify-center"
-            }`}
+            className={`relative w-full ${isExpanded ? "" : "flex justify-center"}`}
+            ref={userMenuRef}
           >
-            {isExpanded ? (
-              <>
-                <div className="flex items-center space-x-2.5 overflow-hidden">
-                  <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-brand-600 font-display text-xs font-bold text-white shadow-sm">
+            {/* Menu Suspenso de Vidro Nível 2 (.glass-menu) */}
+            {userMenuOpen && (
+              <div
+                role="menu"
+                aria-label="Perfil do operador e opções de sessão"
+                className={`glass-menu absolute z-50 rounded-2xl p-3 shadow-2xl transition-all ${
+                  isExpanded
+                    ? "bottom-full mb-2 left-0 right-0"
+                    : "bottom-0 left-[calc(100%+8px)] w-72"
+                }`}
+              >
+                {/* Cabeçalho do Operador */}
+                <div className="flex items-start space-x-2.5 pb-2.5 border-b border-white/8">
+                  <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-brand-600 font-display text-xs font-bold text-white shadow-sm ring-1 ring-brand-400/40">
                     H
                   </div>
-                  <div className="min-w-0">
-                    <div className="truncate text-xs font-semibold text-zinc-200">
-                      Hephaestus Admin
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="truncate text-xs font-semibold text-zinc-100">
+                        Hephaestus Admin
+                      </span>
+                      <span className="rounded border border-brand-500/30 bg-brand-500/15 px-1.5 py-0.5 font-mono text-[11px] font-semibold uppercase tracking-caps text-brand-300">
+                        Root
+                      </span>
                     </div>
-                    <div className="truncate font-mono text-[10px] text-zinc-500">
+                    <div className="truncate font-mono text-[11px] text-zinc-400">
                       admin@localhost
                     </div>
                   </div>
                 </div>
 
-                <div className="flex items-center space-x-1">
-                  <button
-                    type="button"
-                    onClick={logout}
-                    disabled={leaving}
-                    title="Sair da sessão"
-                    aria-label="Sair da sessão"
-                    className="inline-flex size-7 items-center justify-center rounded-lg border border-transparent text-zinc-400 transition hover:bg-white/[0.08] hover:text-rose-400 cursor-pointer"
-                  >
-                    <IconLogOut className="size-3.5" />
-                  </button>
+                {/* Metadados da Sessão e Ambiente */}
+                <div className="py-2.5 space-y-1.5 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+                      Ambiente Ativo
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-[#34d399]">
+                      <span className="size-1.5 rounded-full bg-[#34d399] animate-pulse" />
+                      Online
+                    </span>
+                  </div>
+                  <div className="rounded-xl border border-white/5 bg-white/[0.02] p-2 space-y-1">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-zinc-400">Nó</span>
+                      <span className="font-mono text-zinc-200">Orquestrador Local</span>
+                    </div>
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-zinc-400">Endpoint</span>
+                      <span className="font-mono text-zinc-400">localhost:8080</span>
+                    </div>
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-zinc-400">Runtime</span>
+                      <span className="font-mono text-zinc-300">PyTorch CUDA</span>
+                    </div>
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-zinc-400">Versão</span>
+                      <span className="font-mono text-zinc-500">v1.3.0</span>
+                    </div>
+                  </div>
                 </div>
-              </>
-            ) : (
-              <button
-                type="button"
-                onClick={logout}
-                disabled={leaving}
-                title="Hephaestus Admin (Sair)"
-                aria-label="Sair da sessão"
-                className="flex size-10 items-center justify-center rounded-xl text-zinc-400 transition hover:bg-white/[0.06] hover:text-rose-400 cursor-pointer"
-              >
-                <div className="flex size-7 items-center justify-center rounded-full bg-brand-600 font-display text-xs font-bold text-white">
+
+                {/* Ação de Logout com Confirmação Blindada */}
+                <div className="pt-1 border-t border-white/8">
+                  {!confirmingLogout ? (
+                    <button
+                      type="button"
+                      onClick={() => setConfirmingLogout(true)}
+                      disabled={leaving}
+                      className="group flex w-full items-center justify-between rounded-xl border border-transparent px-2.5 py-2 text-xs font-medium text-zinc-300 transition hover:border-rose-500/30 hover:bg-rose-500/10 hover:text-rose-300 active:scale-[0.985] cursor-pointer focus-visible:ring-2 focus-visible:ring-brand-500/70"
+                    >
+                      <div className="flex items-center space-x-2">
+                        <IconLogOut className="size-3.5 text-zinc-400 group-hover:text-rose-400 transition-colors" />
+                        <span>Encerrar Sessão</span>
+                      </div>
+                      <IconChevronRight className="size-3.5 text-zinc-600 group-hover:text-rose-400/70 transition-colors" />
+                    </button>
+                  ) : (
+                    <div className="rounded-xl border border-rose-500/30 bg-rose-950/20 p-2.5 space-y-2">
+                      <div className="flex items-center gap-1.5 text-xs font-semibold text-rose-200">
+                        <IconShield className="size-3.5 text-rose-400 shrink-0" />
+                        <span>Encerrar sessão?</span>
+                      </div>
+                      <p className="text-[11px] leading-tight text-zinc-400">
+                        Treinos e processos no daemon continuarão em segundo plano.
+                      </p>
+                      <div className="flex items-center gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => setConfirmingLogout(false)}
+                          disabled={leaving}
+                          className="flex-1 h-7.5 rounded-lg border border-white/10 bg-white/[0.05] text-xs font-medium text-zinc-300 hover:bg-white/[0.10] hover:text-white transition active:scale-[0.985] cursor-pointer focus-visible:ring-2 focus-visible:ring-brand-500/70"
+                        >
+                          Cancelar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={logout}
+                          disabled={leaving}
+                          className="flex-1 h-7.5 rounded-lg border border-rose-500/40 bg-rose-500/20 text-xs font-semibold text-rose-200 hover:bg-rose-500/30 transition shadow-sm active:scale-[0.985] cursor-pointer focus-visible:ring-2 focus-visible:ring-brand-500/70"
+                        >
+                          {leaving ? "Saindo…" : "Confirmar"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Gatilho de Perfil (Expandido vs Rail) */}
+            <div
+              onClick={() => setUserMenuOpen((prev) => !prev)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setUserMenuOpen((prev) => !prev);
+                }
+              }}
+              aria-haspopup="menu"
+              aria-expanded={userMenuOpen}
+              aria-label="Perfil do operador e opções de sessão"
+              className={`group flex items-center rounded-xl border transition-all active:scale-[0.985] cursor-pointer focus-visible:ring-2 focus-visible:ring-brand-500/70 ${
+                isExpanded
+                  ? "p-2 justify-between w-full border-white/5 bg-white/[0.02] hover:border-brand-500/30 hover:bg-white/[0.05]"
+                  : "p-0 size-10 justify-center border-transparent hover:bg-white/[0.06]"
+              } ${
+                userMenuOpen
+                  ? "border-brand-500/40 bg-brand-500/10 shadow-sm"
+                  : ""
+              }`}
+            >
+              {isExpanded ? (
+                <>
+                  <div className="flex items-center space-x-2.5 overflow-hidden">
+                    <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-brand-600 font-display text-xs font-bold text-white shadow-sm ring-1 ring-brand-400/30">
+                      H
+                    </div>
+                    <div className="min-w-0 text-left">
+                      <div className="truncate text-xs font-semibold text-zinc-200 group-hover:text-white">
+                        Hephaestus Admin
+                      </div>
+                      <div className="truncate font-mono text-[11px] text-zinc-500">
+                        admin@localhost
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center space-x-1">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setUserMenuOpen(true);
+                        setConfirmingLogout(true);
+                      }}
+                      disabled={leaving}
+                      title="Opções de saída"
+                      aria-label="Encerrar sessão"
+                      className="inline-flex size-7 items-center justify-center rounded-lg border border-transparent text-zinc-400 transition hover:bg-white/[0.08] hover:text-rose-400 cursor-pointer focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)]"
+                    >
+                      <IconLogOut className="size-3.5" />
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div
+                  title="Hephaestus Admin (Opções da sessão)"
+                  className="flex size-7 items-center justify-center rounded-full bg-brand-600 font-display text-xs font-bold text-white shadow-sm ring-1 ring-brand-400/30 group-hover:ring-brand-400/60 transition"
+                >
                   H
                 </div>
-              </button>
-            )}
+              )}
+            </div>
           </div>
 
           {/* Versão centralizada no rodapé */}
           {isExpanded && (
-            <div className="text-center font-mono text-[10px] text-zinc-600">
+            <div className="text-center font-mono text-[11px] text-zinc-600">
               Hephaestus Studio v1.3.0
             </div>
           )}

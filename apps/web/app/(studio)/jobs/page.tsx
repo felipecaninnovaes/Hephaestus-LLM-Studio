@@ -7,6 +7,7 @@ import {
   downloadArtifact,
   getJobArtifacts,
   getJobMetrics,
+  getTelemetry,
   listJobs,
 } from "@/lib/jobs";
 import { applyAutotrackerBoxes } from "@/lib/autotracker";
@@ -14,6 +15,11 @@ import { ApiError } from "@/lib/api";
 import { showToast } from "@/components/studio/Toast";
 import ConfirmDialog from "@/components/studio/ConfirmDialog";
 import ForjaYoloSetup from "@/components/studio/ForjaYoloSetup";
+import {
+  ConvergenceChart,
+  MetricSparkline,
+} from "@/components/studio/ConvergenceChart";
+import { JobLogViewer } from "@/components/studio/JobLogViewer";
 import {
   IconCheck,
   IconDatabase,
@@ -31,12 +37,22 @@ import type {
   JobArtifact,
   JobMetrics as JobMetricsType,
   JobStatus,
+  Telemetry,
 } from "@/types/studio";
 import { autotrackerErrorMessage } from "@/types/studio";
 import { formatBytes, formatRelativeTime } from "@/lib/format";
 import { openActionCenter } from "@/lib/events";
 
 const POLL_INTERVAL = 3000;
+
+const SPARK_COLORS: Record<string, string> = {
+  map50: "#34d399",
+  map5095: "#2dd4bf",
+  boxLoss: "#38bdf8",
+  clsLoss: "#818cf8",
+  dflLoss: "#fbbf24",
+  epoch: "#a1a1aa",
+};
 
 const STATUS_STYLE: Record<JobStatus, string> = {
   queued: "border-amber-500/30 bg-amber-500/10 text-amber-300",
@@ -68,12 +84,9 @@ function formatDuration(start: string, end: string | null): string {
   return `${h}h ${m % 60}m`;
 }
 
-type ViewMode = "setup" | "history";
-
 function JobsPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [viewMode, setViewMode] = useState<ViewMode>("setup");
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -84,6 +97,7 @@ function JobsPageContent() {
   const [abortBusy, setAbortBusy] = useState(false);
   const [applyBusy, setApplyBusy] = useState(false);
   const [applyOverwrite, setApplyOverwrite] = useState(false);
+  const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -92,7 +106,6 @@ function JobsPageContent() {
     const qSelected = searchParams.get("selected");
     if (qSelected) {
       setSelectedJobId(qSelected);
-      setViewMode("history");
     }
   }, [searchParams]);
 
@@ -100,6 +113,15 @@ function JobsPageContent() {
   useEffect(() => {
     setApplyOverwrite(false);
   }, [selectedJobId]);
+
+  const fetchTelemetry = useCallback(async () => {
+    try {
+      const data = await getTelemetry();
+      setTelemetry(data);
+    } catch {
+      // Best-effort
+    }
+  }, []);
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -121,7 +143,8 @@ function JobsPageContent() {
 
   useEffect(() => {
     fetchJobs();
-  }, [fetchJobs]);
+    fetchTelemetry();
+  }, [fetchJobs, fetchTelemetry]);
 
   // Polling a cada 3s se houver jobs ativos
   useEffect(() => {
@@ -153,20 +176,49 @@ function JobsPageContent() {
     };
   }, [jobs, fetchJobs]);
 
-  // Carregar métricas e artefatos quando um job é selecionado
+  const sorted = useMemo(
+    () =>
+      [...jobs].sort(
+        (a, b) =>
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+      ),
+    [jobs],
+  );
+
+  const activeJob = useMemo(
+    () =>
+      jobs.find(
+        (j) =>
+          j.status === "running" ||
+          j.status === "queued" ||
+          j.status === "cancelling",
+      ) ?? null,
+    [jobs],
+  );
+
+  const selectedJob = useMemo(() => {
+    if (selectedJobId) {
+      return jobs.find((j) => j.id === selectedJobId) ?? null;
+    }
+    // Auto-focus no job ativo, ou no mais recente concluído
+    return activeJob ?? sorted[0] ?? null;
+  }, [jobs, selectedJobId, activeJob, sorted]);
+
+  // Carregar métricas e artefatos quando o selectedJob mudar
   useEffect(() => {
-    if (!selectedJobId) return;
+    const targetId = selectedJob?.id;
+    if (!targetId) return;
     const ctrl = new AbortController();
 
     async function loadDetail() {
       try {
         const [m, a] = await Promise.all([
-          getJobMetrics(selectedJobId!),
-          getJobArtifacts(selectedJobId!),
+          getJobMetrics(targetId!),
+          getJobArtifacts(targetId!),
         ]);
         if (!ctrl.signal.aborted) {
-          setMetrics((prev) => ({ ...prev, [selectedJobId!]: m.items }));
-          setArtifacts((prev) => ({ ...prev, [selectedJobId!]: a.items }));
+          setMetrics((prev) => ({ ...prev, [targetId!]: m.items }));
+          setArtifacts((prev) => ({ ...prev, [targetId!]: a.items }));
         }
       } catch {
         // Detalhe é best-effort
@@ -175,7 +227,41 @@ function JobsPageContent() {
 
     loadDetail();
     return () => ctrl.abort();
-  }, [selectedJobId]);
+  }, [selectedJob?.id]);
+
+  // Re-fetch métricas e artefatos quando o job selecionado está ativo e jobs atualiza
+  useEffect(() => {
+    const targetId = selectedJob?.id;
+    if (!targetId) return;
+    const job = jobs.find((j) => j.id === targetId);
+    if (!job) return;
+
+    const isActive =
+      job.status === "queued" ||
+      job.status === "running" ||
+      job.status === "cancelling";
+    if (!isActive) return;
+
+    const ctrl = new AbortController();
+
+    async function refreshDetail() {
+      try {
+        const [m, a] = await Promise.all([
+          getJobMetrics(targetId!),
+          getJobArtifacts(targetId!),
+        ]);
+        if (!ctrl.signal.aborted) {
+          setMetrics((prev) => ({ ...prev, [targetId!]: m.items }));
+          setArtifacts((prev) => ({ ...prev, [targetId!]: a.items }));
+        }
+      } catch {
+        // Detalhe é best-effort
+      }
+    }
+
+    refreshDetail();
+    return () => ctrl.abort();
+  }, [selectedJob?.id, jobs]);
 
   async function handleAbort() {
     if (!abortTarget) return;
@@ -251,19 +337,6 @@ function JobsPageContent() {
     openActionCenter();
   }
 
-  const sorted = useMemo(
-    () =>
-      [...jobs].sort(
-        (a, b) =>
-          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-      ),
-    [jobs],
-  );
-
-  const selectedJob = selectedJobId
-    ? jobs.find((j) => j.id === selectedJobId) ?? null
-    : null;
-
   const activeJobsCount = jobs.filter(
     (j) =>
       j.status === "running" ||
@@ -272,11 +345,11 @@ function JobsPageContent() {
   ).length;
 
   return (
-    <div className="mx-auto max-w-5xl px-4 py-6 md:px-6 space-y-6">
+    <div className="mx-auto max-w-[1600px] w-full px-4 py-5 md:px-6 lg:px-8 space-y-6">
       {/* ═══════════════════════════════════════════════
-          HEADER DA FORJA & NAVEGAÇÃO DE ABAS
+          HEADER DA FORJA
           ═══════════════════════════════════════════════ */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-zinc-800/80 pb-5">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-zinc-800/80 pb-4">
         <div>
           <div className="flex items-center space-x-2.5">
             <span className="flex size-7 items-center justify-center rounded-lg border border-brand-500/30 bg-brand-500/15 text-brand-400">
@@ -285,49 +358,26 @@ function JobsPageContent() {
             <h1 className="font-display text-lg font-bold text-white tracking-tight">
               Forja de Treino YOLO
             </h1>
-            <span className="rounded-full border border-zinc-800 bg-zinc-900/90 px-2 py-0.5 font-mono text-[10px] text-zinc-400">
+            <span className="rounded-full border border-zinc-800 bg-zinc-900/90 px-2 py-0.5 font-mono text-[11px] uppercase tracking-caps text-zinc-400">
               Ultralytics Engine
             </span>
           </div>
-          <p className="mt-1 text-xs text-zinc-400">
+          <p className="mt-1 text-xs text-zinc-400 max-w-2xl">
             Configure hiperparâmetros, selecione datasets e execute o treinamento local com telemetria em tempo real.
           </p>
         </div>
 
-        <div className="flex items-center space-x-2 shrink-0">
-          {/* Alternador de Abas */}
-          <div className="flex items-center rounded-xl border border-white/10 bg-black/40 p-1">
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedJobId(null);
-                setViewMode("setup");
-              }}
-              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-                viewMode === "setup" && !selectedJob
-                  ? "border border-white/15 bg-white/10 text-white shadow-sm"
-                  : "text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              Setup de Treino
-            </button>
-            <button
-              type="button"
-              onClick={() => setViewMode("history")}
-              className={`flex items-center space-x-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-                viewMode === "history" || selectedJob
-                  ? "border border-white/15 bg-white/10 text-white shadow-sm"
-                  : "text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              <span>Histórico & Detalhes</span>
-              {activeJobsCount > 0 && (
-                <span className="size-1.5 rounded-full bg-brand-400 animate-pulse" />
-              )}
-            </button>
-          </div>
-
-          {/* Botão de abrir o Centro de Atividades na lateral */}
+        <div className="flex items-center space-x-2.5 shrink-0">
+          <button
+            type="button"
+            onClick={() => void fetchJobs()}
+            disabled={loading}
+            title="Atualizar lista e status dos jobs"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.05] px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-white/10 hover:text-white active:scale-[0.985] transition cursor-pointer"
+          >
+            <IconRefresh className={`size-3.5 ${loading ? "animate-spin text-brand-400" : ""}`} />
+            <span>Atualizar</span>
+          </button>
           <button
             type="button"
             onClick={openActionCenter}
@@ -340,334 +390,413 @@ function JobsPageContent() {
         </div>
       </div>
 
-      {/* Error global */}
-      {error && (
-        <div className="glass-card flex flex-col items-center gap-3 rounded-2xl p-8 text-center">
-          <p className="text-sm text-zinc-300">{error}</p>
-          <button
-            type="button"
-            onClick={() => {
-              setLoading(true);
-              void fetchJobs();
-            }}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.05] px-3.5 py-1.5 text-xs font-medium text-zinc-200 hover:bg-white/10"
-          >
-            <IconRefresh className="size-3.5" />
-            <span>Tentar novamente</span>
-          </button>
-        </div>
-      )}
-
       {/* ═══════════════════════════════════════════════
-          MODO 1: SETUP DE TREINO YOLO (FORJA)
+          WORKSPACE DE 2 COLUNAS CANÔNICO DO STUDIO
           ═══════════════════════════════════════════════ */}
-      {!error && viewMode === "setup" && !selectedJob && (
-        <div className="min-w-0">
-          <ForjaYoloSetup onJobCreated={handleJobCreated} />
-        </div>
-      )}
+      {!error && (
+        <div className="flex flex-col md:flex-row items-start gap-6">
+          {/* Coluna 1: Setup & Controle (Fixa: w-full md:w-80 lg:w-96 shrink-0) */}
+          <aside className="w-full md:w-80 lg:w-96 shrink-0 md:sticky md:top-4">
+            <div className="glass-card rounded-2xl p-5 border border-zinc-800/80">
+              <ForjaYoloSetup
+                onJobCreated={handleJobCreated}
+                initialTelemetry={telemetry}
+              />
+            </div>
+          </aside>
 
-      {/* ═══════════════════════════════════════════════
-          MODO 2: DETALHES DE UM JOB ESPECÍFICO SELECIONADO
-          ═══════════════════════════════════════════════ */}
-      {!error && selectedJob && (
-        <div className="space-y-5">
-          {/* Voltar ao histórico / setup */}
-          <div className="flex items-center justify-between">
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedJobId(null);
-                setViewMode("setup");
-              }}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.05] px-3 py-1.5 text-xs font-medium text-zinc-300 transition hover:bg-white/[0.10] hover:text-white active:scale-[0.985]"
-            >
-              ← Voltar ao Setup de Treino
-            </button>
-            <button
-              type="button"
-              onClick={() => setSelectedJobId(null)}
-              className="text-xs text-zinc-400 hover:text-zinc-200 underline underline-offset-2"
-            >
-              Ver todos os jobs
-            </button>
-          </div>
-
-          {/* Job Header Card */}
-          <div className="glass-card rounded-2xl p-5">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <span
-                  className={`shrink-0 rounded-full border px-2.5 py-1 font-mono text-[11px] font-medium ${STATUS_STYLE[selectedJob.status]}`}
-                >
-                  {STATUS_LABEL[selectedJob.status]}
-                </span>
-                <div>
+          {/* Coluna 2: Canvas de Monitoramento Fluido & Histórico (flex-1 min-w-0) */}
+          <section className="w-full flex-1 min-w-0 space-y-6">
+            {/* Monitor Stage: Job Ativo ou Selecionado */}
+            {selectedJob ? (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold text-zinc-100">
-                      {selectedJob.model}
-                    </span>
-                    <span className="font-mono text-[10px] text-zinc-500">
-                      {selectedJob.kind} · {selectedJob.engine}
-                    </span>
-                  </div>
-                  <div className="mt-0.5 flex items-center gap-3 font-mono text-[10px] text-zinc-400">
-                    <span>
-                      Duração: {formatDuration(selectedJob.createdAt, selectedJob.finishedAt)}
-                    </span>
-                    {selectedJob.epoch != null && (
-                      <span>Epoch {selectedJob.epoch}</span>
-                    )}
-                    {(selectedJob.status === "queued" ||
-                      selectedJob.status === "running") && (
-                      <span className="text-brand-300">
-                        {Math.round((selectedJob.progress ?? 0) * 100)}%
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2 font-mono text-[10px] text-zinc-400">
-                <span title={selectedJob.id}>ID: {selectedJob.id.slice(0, 8)}…</span>
-                {selectedJob.datasetId && (
-                  <button
-                    type="button"
-                    onClick={() => router.push(`/datasets/${selectedJob.datasetId}`)}
-                    className="inline-flex items-center gap-1 rounded border border-zinc-800 bg-black/40 px-2 py-0.5 text-brand-400 hover:text-brand-300"
-                  >
-                    <IconDatabase className="size-3" />
-                    <span>Dataset</span>
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Barra de progresso full-width */}
-            {(selectedJob.status === "queued" ||
-              selectedJob.status === "running") && (
-              <div className="mt-4 h-1.5 w-full overflow-hidden rounded-full bg-zinc-800">
-                <div
-                  className="h-full rounded-full bg-gradient-to-r from-brand-500 to-[#34d399] transition-all duration-500"
-                  style={{
-                    width: `${Math.max(4, Math.round((selectedJob.progress ?? 0) * 100))}%`,
-                  }}
-                />
-              </div>
-            )}
-          </div>
-
-          {/* Métricas */}
-          {metrics[selectedJob.id] && metrics[selectedJob.id].length > 0 && (
-            <div className="glass-card rounded-2xl p-5">
-              <h4 className="tracking-caps mb-3 font-mono text-[11px] font-semibold uppercase text-zinc-400">
-                Métricas da Execução (Epoch{" "}
-                {metrics[selectedJob.id]![metrics[selectedJob.id]!.length - 1].epoch}
-                )
-              </h4>
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2.5">
-                {(
-                  [
-                    ["map50", "mAP@50", true],
-                    ["map5095", "mAP@50-95", true],
-                    ["boxLoss", "Box Loss", false],
-                    ["clsLoss", "Cls Loss", false],
-                    ["dflLoss", "Dfl Loss", false],
-                    ["epoch", "Epochs", false],
-                  ] as const
-                ).map(([key, label, isPercent]) => {
-                  const jobMetrics = metrics[selectedJob.id]!;
-                  const last = jobMetrics[jobMetrics.length - 1];
-                  const val = last[key as keyof JobMetricsType];
-                  return (
-                    <div
-                      key={key}
-                      className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3"
+                    <h2 className="font-display text-sm font-semibold text-zinc-200">
+                      {selectedJob.status === "running" ||
+                      selectedJob.status === "queued" ||
+                      selectedJob.status === "cancelling"
+                        ? "Execução Ativa no Nó Local"
+                        : "Painel de Execução & Métricas"}
+                    </h2>
+                    <span
+                      className={`rounded-full border px-2.5 py-0.5 font-mono text-[11px] font-medium ${STATUS_STYLE[selectedJob.status]}`}
                     >
-                      <span className="block font-mono text-[10px] text-zinc-500">
-                        {label}
-                      </span>
-                      <span className="block font-mono text-base font-semibold text-zinc-100 mt-1">
-                        {typeof val === "number"
-                          ? isPercent
-                            ? `${(val * 100).toFixed(1)}%`
-                            : key === "epoch"
-                              ? val
-                              : val.toFixed(4)
-                          : "—"}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* Artefatos */}
-          {artifacts[selectedJob.id] && artifacts[selectedJob.id].length > 0 && (
-            <div className="glass-card rounded-2xl p-5">
-              <h4 className="tracking-caps mb-3 font-mono text-[11px] font-semibold uppercase text-zinc-400">
-                Artefatos Gerados ({artifacts[selectedJob.id].length})
-              </h4>
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
-                {artifacts[selectedJob.id].map((art) => (
-                  <div
-                    key={art.id}
-                    className="flex items-center justify-between rounded-xl border border-zinc-800 bg-black/40 p-3"
-                  >
-                    <div className="min-w-0 mr-2">
-                      <span className="block text-xs font-semibold text-zinc-200 truncate">
-                        {art.path.split("/").pop()}
-                      </span>
-                      <span className="block font-mono text-[10px] text-zinc-500">
-                        {formatBytes(art.bytes)} · {art.kind}
-                      </span>
-                    </div>
+                      {STATUS_LABEL[selectedJob.status]}
+                    </span>
+                  </div>
+                  {selectedJobId && selectedJobId !== activeJob?.id && (
                     <button
                       type="button"
-                      onClick={() => handleDownloadArtifact(selectedJob.id, art)}
-                      className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.06] px-2.5 py-1.5 text-xs font-medium text-zinc-200 hover:bg-white/15 active:scale-[0.985]"
+                      onClick={() => setSelectedJobId(null)}
+                      className="text-xs text-zinc-400 hover:text-zinc-200 transition underline underline-offset-2"
                     >
-                      <IconDownload className="size-3.5" />
-                      <span>Baixar</span>
+                      {activeJob ? "Voltar ao job ativo" : "Ver último job"}
                     </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+                  )}
+                </div>
 
-          {/* Ações do Job */}
-          <div className="flex items-center justify-between gap-3 pt-2">
-            {selectedJob.kind === "autotracker" && selectedJob.status === "done" && (
-              <div className="flex items-center gap-3">
-                <label className="flex items-center gap-2 text-xs text-zinc-400 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={applyOverwrite}
-                    onChange={(e) => setApplyOverwrite(e.target.checked)}
-                    className="rounded border-zinc-700 bg-zinc-800 text-brand-500 focus:ring-brand-500/40"
-                  />
-                  <span>Sobrescrever anotações existentes</span>
-                </label>
-                <button
-                  type="button"
-                  disabled={applyBusy}
-                  onClick={() => handleApplyBoxes(selectedJob)}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-[#34d399]/40 bg-[#34d399]/15 px-3 py-1.5 text-xs font-medium text-[#a7f3d0] transition hover:bg-[#34d399]/25 active:scale-[0.985] disabled:opacity-50"
-                >
-                  <IconCheck className="size-3.5" />
-                  <span>{applyBusy ? "Aplicando…" : "Aplicar boxes ao dataset"}</span>
-                </button>
-              </div>
-            )}
-
-            {(selectedJob.status === "queued" || selectedJob.status === "running") && (
-              <button
-                type="button"
-                onClick={() => setAbortTarget(selectedJob)}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/15 px-3 py-1.5 text-xs font-medium text-rose-300 transition hover:bg-rose-500/25 active:scale-[0.985]"
-              >
-                <IconTrash className="size-3.5" />
-                <span>Cancelar Execução</span>
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* ═══════════════════════════════════════════════
-          MODO 3: HISTÓRICO COMPLETO DE JOBS (CONTINUAÇÃO DO ACTION CENTER)
-          ═══════════════════════════════════════════════ */}
-      {!error && viewMode === "history" && !selectedJob && (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="font-display text-sm font-semibold text-zinc-200">
-              Todos os Jobs do Nó Local ({sorted.length})
-            </h3>
-            <button
-              type="button"
-              onClick={() => void fetchJobs()}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.05] px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-white/10 active:scale-[0.985]"
-            >
-              <IconRefresh className="size-3.5" />
-              <span>Atualizar</span>
-            </button>
-          </div>
-
-          {loading ? (
-            <div className="glass-card rounded-2xl p-10 text-center text-xs text-zinc-500 font-mono">
-              Carregando histórico de jobs…
-            </div>
-          ) : sorted.length === 0 ? (
-            <div className="glass-card flex flex-col items-center gap-3 rounded-2xl p-10 text-center">
-              <span className="flex size-10 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900 text-zinc-400">
-                <IconTarget className="size-5 text-zinc-600" />
-              </span>
-              <p className="text-xs font-medium text-zinc-300">
-                Nenhum job registrado no histórico
-              </p>
-              <button
-                type="button"
-                onClick={() => setViewMode("setup")}
-                className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.05] px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-white/10"
-              >
-                <IconPlay className="size-3 text-brand-400" />
-                <span>Iniciar Primeiro Treino</span>
-              </button>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 gap-2.5">
-              {sorted.map((job) => {
-                const isActive =
-                  job.status === "queued" ||
-                  job.status === "running" ||
-                  job.status === "cancelling";
-                const pct = Math.round((job.progress ?? 0) * 100);
-
-                return (
-                  <div
-                    key={job.id}
-                    className="glass-card group flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl p-4 transition hover:border-zinc-700"
-                  >
-                    <div className="flex items-center gap-3 min-w-0 flex-1">
-                      <span
-                        className={`shrink-0 rounded-full border px-2.5 py-0.5 font-mono text-[10px] font-medium ${STATUS_STYLE[job.status]}`}
-                      >
-                        {STATUS_LABEL[job.status]}
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-semibold text-zinc-100 truncate">
-                            {job.model}
+                {/* Job Hero Card */}
+                <div className="glass-card rounded-2xl p-5 space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-display text-base font-semibold text-zinc-100">
+                          {selectedJob.model}
+                        </span>
+                        <span className="font-mono text-[11px] text-zinc-400">
+                          · {selectedJob.kind} · {selectedJob.engine}
+                        </span>
+                      </div>
+                      <div className="mt-1 flex items-center gap-3 font-mono text-[11px] text-zinc-400">
+                        <span>
+                          Duração: {formatDuration(selectedJob.createdAt, selectedJob.finishedAt)}
+                        </span>
+                        {selectedJob.epoch != null && (
+                          <span>Epoch {selectedJob.epoch}</span>
+                        )}
+                        {(selectedJob.status === "queued" ||
+                          selectedJob.status === "running") && (
+                          <span className="text-brand-300 font-semibold">
+                            {Math.round((selectedJob.progress ?? 0) * 100)}%
                           </span>
-                          <span className="font-mono text-[10px] text-zinc-500 truncate">
-                            · {job.kind} · {job.engine}
-                          </span>
-                        </div>
-                        <div className="mt-0.5 flex items-center gap-3 font-mono text-[10px] text-zinc-400">
-                          <span>{formatRelativeTime(job.createdAt)}</span>
-                          <span>Duração: {formatDuration(job.createdAt, job.finishedAt)}</span>
-                          {isActive && <span className="text-brand-300">{pct}%</span>}
-                        </div>
+                        )}
                       </div>
                     </div>
 
-                    <div className="flex items-center space-x-2 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => setSelectedJobId(job.id)}
-                        className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.06] px-2.5 py-1.5 text-xs font-medium text-zinc-200 transition hover:bg-white/15 active:scale-[0.985]"
-                      >
-                        <span>Ver detalhes</span>
-                        <span>→</span>
-                      </button>
+                    <div className="flex items-center gap-2 font-mono text-[11px] text-zinc-400">
+                      <span title={selectedJob.id}>ID: {selectedJob.id.slice(0, 8)}…</span>
+                      {selectedJob.datasetId && (
+                        <button
+                          type="button"
+                          onClick={() => router.push(`/datasets/${selectedJob.datasetId}`)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-zinc-800 bg-black/40 px-2.5 py-1 text-xs text-brand-400 hover:text-brand-300 hover:border-brand-500/30 transition"
+                        >
+                          <IconDatabase className="size-3" />
+                          <span>Dataset</span>
+                        </button>
+                      )}
                     </div>
                   </div>
-                );
-              })}
+
+                  {/* Barra de progresso full-width para jobs ativos */}
+                  {(selectedJob.status === "queued" ||
+                    selectedJob.status === "running" ||
+                    selectedJob.status === "cancelling") && (
+                    <div className="space-y-1.5 pt-1">
+                      <div className="flex items-center justify-between font-mono text-[11px]">
+                        <span className="text-zinc-400">Progresso do Treinamento</span>
+                        <span className="font-semibold text-brand-300">
+                          {Math.round((selectedJob.progress ?? 0) * 100)}%
+                        </span>
+                      </div>
+                      <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-900 border border-zinc-800">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-brand-600 via-brand-500 to-brand-400 transition-all duration-500"
+                          style={{
+                            width: `${Math.min(
+                              100,
+                              Math.max(3, Math.round((selectedJob.progress ?? 0) * 100)),
+                            )}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Métricas da Execução & Curvas de Convergência */}
+                  {(selectedJob.kind === "yolo_train" ||
+                    (metrics[selectedJob.id] && metrics[selectedJob.id].length > 0)) && (
+                    <div className="space-y-4 pt-3 border-t border-zinc-800/80">
+                      {/* Curvas de Convergência Vetoriais (SVG Multi-Curve) */}
+                      <ConvergenceChart
+                        metrics={metrics[selectedJob.id] || []}
+                        totalEpochs={selectedJob.epoch || 100}
+                        isJobActive={selectedJob.status === "running"}
+                      />
+
+                      {/* Cards com Sparklines Integradas */}
+                      {metrics[selectedJob.id] && metrics[selectedJob.id].length > 0 && (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <h3 className="font-mono text-[11px] font-semibold uppercase tracking-caps text-zinc-300">
+                              Métricas da Execução (Epoch{" "}
+                              {metrics[selectedJob.id]![metrics[selectedJob.id]!.length - 1].epoch}
+                              )
+                            </h3>
+                            <span className="font-mono text-[11px] text-zinc-500">
+                              {metrics[selectedJob.id]!.length} checkpoint(s)
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
+                            {(
+                              [
+                                ["map50", "mAP@50", true],
+                                ["map5095", "mAP@50-95", true],
+                                ["boxLoss", "Box Loss", false],
+                                ["clsLoss", "Cls Loss", false],
+                                ["dflLoss", "Dfl Loss", false],
+                                ["epoch", "Epochs", false],
+                              ] as const
+                            ).map(([key, label, isPercent]) => {
+                              const jobMetrics = metrics[selectedJob.id]!;
+                              const last = jobMetrics[jobMetrics.length - 1];
+                              const val = last[key as keyof JobMetricsType];
+                              const isPrimary = key === "map50";
+                              const series = jobMetrics.map(
+                                (m) => m[key as keyof JobMetricsType] as number,
+                              );
+                              return (
+                                <div
+                                  key={key}
+                                  className={`rounded-xl border p-3 flex flex-col justify-between ${
+                                    isPrimary
+                                      ? "border-brand-500/30 bg-brand-500/10"
+                                      : "border-zinc-800 bg-black/40"
+                                  }`}
+                                >
+                                  <div>
+                                    <span
+                                      className={`block font-mono text-[11px] font-medium tracking-caps uppercase ${
+                                        isPrimary ? "text-brand-300" : "text-zinc-400"
+                                      }`}
+                                    >
+                                      {label}
+                                    </span>
+                                    <span className="block font-mono text-base font-semibold text-zinc-100 mt-1">
+                                      {typeof val === "number"
+                                        ? isPercent
+                                          ? `${(val * 100).toFixed(1)}%`
+                                          : key === "epoch"
+                                            ? val
+                                            : val.toFixed(4)
+                                        : "—"}
+                                    </span>
+                                  </div>
+                                  <div className="mt-2 pt-2 border-t border-white/[0.04]">
+                                    <MetricSparkline
+                                      data={series}
+                                      color={SPARK_COLORS[key] || "#34d399"}
+                                    />
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Artefatos Gerados (Achatado - sem nested-cards) */}
+                  {artifacts[selectedJob.id] && artifacts[selectedJob.id].length > 0 && (
+                    <div className="space-y-3 pt-3 border-t border-zinc-800/80">
+                      <h3 className="font-mono text-[11px] font-semibold uppercase tracking-caps text-zinc-300">
+                        Artefatos Gerados ({artifacts[selectedJob.id].length})
+                      </h3>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                        {artifacts[selectedJob.id].map((art) => (
+                          <div
+                            key={art.id}
+                            className="flex items-center justify-between rounded-xl border border-zinc-800 bg-black/40 p-3"
+                          >
+                            <div className="min-w-0 mr-2">
+                              <span
+                                className="block text-xs font-semibold text-zinc-200 truncate"
+                                title={art.path}
+                              >
+                                {art.path.split("/").pop()}
+                              </span>
+                              <span className="block font-mono text-[11px] text-zinc-400">
+                                {formatBytes(art.bytes)} · {art.kind}
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleDownloadArtifact(selectedJob.id, art)}
+                              className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.06] px-2.5 py-1.5 text-xs font-medium text-zinc-200 hover:bg-white/15 active:scale-[0.985] transition"
+                            >
+                              <IconDownload className="size-3.5" />
+                              <span>Baixar</span>
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Ações do Job */}
+                  <div className="flex items-center justify-between gap-3 pt-2">
+                    {selectedJob.kind === "autotracker" && selectedJob.status === "done" && (
+                      <div className="flex items-center gap-3">
+                        <label className="flex items-center gap-2 text-xs text-zinc-400 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={applyOverwrite}
+                            onChange={(e) => setApplyOverwrite(e.target.checked)}
+                            className="rounded border-zinc-700 bg-zinc-800 text-brand-500 focus:ring-brand-500/40"
+                          />
+                          <span>Sobrescrever anotações existentes</span>
+                        </label>
+                        <button
+                          type="button"
+                          disabled={applyBusy}
+                          onClick={() => handleApplyBoxes(selectedJob)}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] px-3 py-1.5 text-xs font-medium text-white transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] disabled:opacity-50"
+                        >
+                          <IconCheck className="size-3.5 text-brand-400" />
+                          <span>{applyBusy ? "Aplicando…" : "Aplicar boxes ao dataset"}</span>
+                        </button>
+                      </div>
+                    )}
+
+                    {(selectedJob.status === "queued" || selectedJob.status === "running") && (
+                      <button
+                        type="button"
+                        onClick={() => setAbortTarget(selectedJob)}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/15 px-3 py-1.5 text-xs font-medium text-rose-300 transition hover:bg-rose-500/25 active:scale-[0.985] cursor-pointer"
+                      >
+                        <IconTrash className="size-3.5" />
+                        <span>Cancelar Execução</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Visualizador Colapsável de Streaming de Logs do Orquestrador */}
+                <JobLogViewer
+                  job={selectedJob}
+                  metrics={metrics[selectedJob.id] || []}
+                  artifacts={artifacts[selectedJob.id] || []}
+                />
+              </div>
+            ) : (
+              /* Empty State quando não há nenhum job */
+              <div className="glass-card flex flex-col items-center gap-3.5 rounded-2xl p-12 text-center">
+                <span className="flex size-12 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900/90 text-zinc-400">
+                  <IconTarget className="size-6 text-brand-400/60" />
+                </span>
+                <div className="max-w-md space-y-1">
+                  <h3 className="font-display text-sm font-semibold text-zinc-200">
+                    Nenhum treinamento registrado
+                  </h3>
+                  <p className="text-xs text-zinc-400">
+                    Configure os hiperparâmetros no painel lateral à esquerda e clique em{" "}
+                    <strong className="text-zinc-200">Iniciar Treino</strong> para disparar a
+                    primeira execução local no nó.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* ═══════════════════════════════════════════════
+                HISTÓRICO COMPLETO DE JOBS
+                ═══════════════════════════════════════════════ */}
+            <div className="space-y-3.5 pt-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <h3 className="font-display text-sm font-semibold text-zinc-200">
+                    Histórico de Execuções
+                  </h3>
+                  <span className="rounded-full border border-zinc-800 bg-zinc-900/80 px-2 py-0.5 font-mono text-[11px] text-zinc-400">
+                    {sorted.length} {sorted.length === 1 ? "execução" : "execuções"}
+                  </span>
+                </div>
+                {activeJobsCount > 0 && (
+                  <span className="flex items-center gap-1.5 font-mono text-[11px] text-brand-300">
+                    <span className="size-1.5 rounded-full bg-brand-400 animate-pulse" />
+                    {activeJobsCount} ativo(s)
+                  </span>
+                )}
+              </div>
+
+              {loading ? (
+                <div className="glass-card rounded-2xl p-8 text-center text-xs text-zinc-500 font-mono">
+                  Carregando histórico de jobs…
+                </div>
+              ) : sorted.length === 0 ? (
+                <div className="glass-card flex flex-col items-center gap-3 rounded-2xl p-8 text-center">
+                  <p className="text-xs font-medium text-zinc-400">
+                    Nenhum histórico disponível até o momento.
+                  </p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-2">
+                  {sorted.map((job) => {
+                    const isActive =
+                      job.status === "queued" ||
+                      job.status === "running" ||
+                      job.status === "cancelling";
+                    const isFocused = selectedJob?.id === job.id;
+                    const pct = Math.round((job.progress ?? 0) * 100);
+
+                    return (
+                      <div
+                        key={job.id}
+                        onClick={() => setSelectedJobId(job.id)}
+                        className={`group flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl p-3.5 transition cursor-pointer ${
+                          isFocused
+                            ? "border border-brand-500/40 bg-brand-500/[0.08] shadow-sm"
+                            : "glass-card hover:border-zinc-700"
+                        }`}
+                      >
+                        <div className="flex items-center gap-3 min-w-0 flex-1">
+                          <span
+                            className={`shrink-0 rounded-full border px-2.5 py-0.5 font-mono text-[11px] font-medium ${STATUS_STYLE[job.status]}`}
+                          >
+                            {STATUS_LABEL[job.status]}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="text-xs font-semibold text-zinc-100 shrink-0">
+                                {job.model}
+                              </span>
+                              <span
+                                className="font-mono text-[11px] text-zinc-400 truncate"
+                                title={`${job.kind} · ${job.engine}`}
+                              >
+                                · {job.kind} · {job.engine}
+                              </span>
+                              {isFocused && (
+                                <span className="hidden sm:inline-flex shrink-0 rounded border border-brand-500/30 bg-brand-500/15 px-1.5 py-0.2 font-mono text-[11px] text-brand-300">
+                                  Ativo no monitor
+                                </span>
+                              )}
+                            </div>
+                            <div className="mt-0.5 flex items-center gap-3 font-mono text-[11px] text-zinc-400">
+                              <span>{formatRelativeTime(job.createdAt)}</span>
+                              <span>Duração: {formatDuration(job.createdAt, job.finishedAt)}</span>
+                              {isActive && (
+                                <span className="text-brand-300 font-semibold">{pct}%</span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center space-x-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedJobId(job.id);
+                            }}
+                            className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium transition active:scale-[0.985] ${
+                              isFocused
+                                ? "border border-brand-500/40 bg-brand-500/20 text-brand-200"
+                                : "border border-white/10 bg-white/[0.06] text-zinc-200 hover:bg-white/15"
+                            }`}
+                          >
+                            <span>{isFocused ? "Em exibição" : "Ver detalhes"}</span>
+                            <span>→</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
-          )}
+          </section>
         </div>
       )}
 

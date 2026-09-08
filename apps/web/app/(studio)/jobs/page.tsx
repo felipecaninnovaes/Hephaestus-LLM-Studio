@@ -33,6 +33,8 @@ const STATUS_STYLE: Record<JobStatus, string> = {
     "border-brand-500/30 bg-brand-500/10 text-brand-300",
   running:
     "border-brand-500/30 bg-brand-500/10 text-brand-300",
+  cancelling:
+    "border-brand-500/30 bg-brand-500/10 text-brand-300",
   done:
     "border-[#34d399]/30 bg-[#34d399]/10 text-[#a7f3d0]",
   failed:
@@ -44,6 +46,7 @@ const STATUS_STYLE: Record<JobStatus, string> = {
 const STATUS_LABEL: Record<JobStatus, string> = {
   queued: "Na fila",
   running: "Executando",
+  cancelling: "Cancelando",
   done: "Concluído",
   failed: "Falhou",
   cancelled: "Cancelado",

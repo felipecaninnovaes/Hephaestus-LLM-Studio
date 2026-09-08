@@ -182,6 +182,7 @@ export interface SearchResponse {
 export type JobStatus =
   | "queued"
   | "running"
+  | "cancelling"
   | "done"
   | "failed"
   | "cancelled";

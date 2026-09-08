@@ -670,18 +670,19 @@ async fn run_job_inner(
     let job_id = &dispatch.job_id;
     let job_workdir = PathBuf::from(&dispatch.workdir);
 
-    // Nomes dos volumes nomeados Docker (compose monta em {workdir}/{vol_name}).
-    let vol_datasets = std::env::var("ORCH_VOL_DATASETS").unwrap_or_else(|_| "datasets".into());
-    let vol_outputs = std::env::var("ORCH_VOL_OUTPUTS").unwrap_or_else(|_| "outputs".into());
+    // paths internos = mounts do compose (/data/datasets, /data/outputs);
+    // envs ORCH_VOL_* = NOME do volume docker (com prefixo do projeto) para o docker run.
+    let vol_datasets =
+        std::env::var("ORCH_VOL_DATASETS").unwrap_or_else(|_| "infra_datasets".into());
+    let vol_outputs = std::env::var("ORCH_VOL_OUTPUTS").unwrap_or_else(|_| "infra_outputs".into());
 
-    // Cria diretórios de trabalho — paths DENTRO dos volumes nomeados.
-    // datasets volume: {workdir}/{vol_datasets}/datasets-cache/<job_id>/
-    // outputs volume:  {workdir}/{vol_outputs}/<job_id>/
+    // Cria diretórios de trabalho — paths FIXOS no filesystem do orquestrador.
+    // O compose monta infra_datasets em /data/datasets e infra_outputs em /data/outputs.
     let datasets_cache = job_workdir
-        .join(&vol_datasets)
+        .join("datasets")
         .join("datasets-cache")
         .join(job_id);
-    let outputs = job_workdir.join(&vol_outputs).join(job_id);
+    let outputs = job_workdir.join("outputs").join(job_id);
     let temp_dir = job_workdir.join("tmp").join(job_id);
 
     tokio::fs::create_dir_all(&datasets_cache)

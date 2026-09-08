@@ -344,10 +344,6 @@ function JobsPageContent() {
       j.status === "cancelling",
   ).length;
 
-  const selectedJob = selectedJobId
-    ? jobs.find((j) => j.id === selectedJobId) ?? null
-    : null;
-
   return (
     <div className="mx-auto max-w-[1600px] w-full px-4 py-5 md:px-6 lg:px-8 space-y-6">
       {/* ═══════════════════════════════════════════════

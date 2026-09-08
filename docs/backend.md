@@ -115,6 +115,7 @@
 ```
 auth:     POST /api/auth/login, GET /api/auth/me, POST /api/auth/logout  → implementado (ADR-0001/openapi)
 health:   GET /health → {status, service, auth: ready|setup_required}  → implementado (campo `auth` novo, ADR-0001 D3)
+          GET /ready → {status: ok|unavailable, reason?}  → implementado (Fatia 4; D11 ADR-0007; liveness + readiness)
 settings: PUT/GET /api/settings/keys {hfToken, civitaiKey, openaiKey, anthropicKey, vllmEndpoint}, GET /api/settings/vram-policy
 datasets: GET/POST /api/datasets, GET/DELETE /api/datasets/:id  → implementado (Fatia 3a; ADR-0002/openapi)
            POST /api/datasets/:id/upload, GET /api/datasets/:id/images,
@@ -130,22 +131,39 @@ datasets: GET/POST /api/datasets, GET/DELETE /api/datasets/:id  → implementado
                → implementado (Fatia 3f; ADR-0004/openapi 0.5.0)
             POST /api/datasets/:id/export, POST /api/datasets/import
                → implementado (Fatia 3e; ADR-0006/openapi 0.6.0 — ver Nota Fatia 3e abaixo)
-            POST /api/datasets/:id/package (gera zip manifest+md5 p/ orquestrador)
-              → adiado para a fatia 4 (revisão D0 da ADR-0006 sobre o ADR-0003 D9)
+            POST /api/datasets/:id/package
+               → implementado (Fatia 4; ADR-0007 D1 — congela `dataset_versions`, gera zip, PUT `packages/<version_id>/`)
 models:   GET /api/models (lista pesos em disco/banco p/ dropdowns), POST /api/models/upload, POST /api/models/download
 preview:  POST /api/preview/{autolabel,autotracker,generate,search} (job efêmero ou runner quente, sem fila de treino)
-jobs:     POST /api/jobs/{yolo,difusao,clip,autolabel,autotracker,playground}
-          GET /api/jobs/:id, POST /api/jobs/:id/{pause,abort,resume}, GET /api/jobs/queue
-          GET /api/jobs/:id/metrics, GET /api/jobs/:id/samples, GET /api/jobs/:id/artifacts
+jobs:     POST /api/jobs/yolo  → implementado (Fatia 4; ADR-0007 D7 — spec 0.7.0)
+          GET /api/jobs         → implementado (Fatia 4; lista `{items,total}`)
+          GET /api/jobs/queue   → implementado (Fatia 4; fila `{items:[{jobId,position,queueReason}]}`)
+          GET /api/jobs/:id     → implementado (Fatia 4; detalhe do job)
+          POST /api/jobs/:id/abort  → implementado (Fatia 4; 200 `{"status":"cancelling"|"cancelled"}` | 409 `job_not_abortable`)
+          GET /api/jobs/:id/metrics  → implementado (Fatia 4; `{items:[{epoch,boxLoss,clsLoss,dflLoss,map50,map5095}]}`)
+          GET /api/jobs/:id/artifacts  → implementado (Fatia 4; `{items:[{id,kind,path,md5,bytes}]}`)
+          GET /api/jobs/:id/artifacts/:artifactId/data  → implementado (Fatia 4; proxy do objeto via StoragePort)
+          # Adiados para fatias futuras: pause/resume, samples, WS, runners, outros engines
 runners:  POST /api/runners/{difusao,yolo,clip}/up, POST /api/runners/:id/kill, GET /api/runners
           POST /api/runners/:id/infer {prompt|image|query} (inferência interativa; 409 se preemptado)
 orchestrators (via manager): GET /api/orchestrators, POST /api/orchestrators/adopt {endpoint,key},
           POST /api/orchestrators/:id/{enable,disable,remove}, GET /api/orchestrators/:id/health
           # alias UI: /api/environments* responde o mesmo que /api/orchestrators* (front usa "Ambientes")
+          → manager auto-adota `orchestrator-local` no boot (Fatia 4; ADR-0007 D3)
+telemetry: GET /api/telemetry  → implementado (Fatia 4; proxy do cache do manager: {measured,cpu,ram,vramUsed,vramTotal,gpus,jobsActive})
 ws:       /ws/jobs/:id/logs?since_seq=, /ws/telemetry
 ```
 
 - Nota Fatia 2 (D9): `/api/auth/me` valida o próprio cookie (isento do gate por prefixo, §2); `route_layer` plugado na Fatia 3a (ADR-0002 D9) — fallback fail-closed (sem sessão → 401 mesmo em rota inexistente; com sessão → 404 sem body, fora da OpenAPI).
+- Nota Fatia 4 (ADR-0007 D7/D9 — spec 0.7.0, `packages/contracts/openapi.yaml`):
+  - **`queue_unavailable` (503) em TODAS as rotas de jobs + telemetry:** o `handlers.rs` do principal mapeia `ManagerError::Unavailable` (e qualquer outro erro do manager client) para 503 `queue_unavailable` em **todas** as 9 rotas que falam com o manager (`list_jobs`, `list_queue`, `get_job`, `get_job_metrics`, `list_artifacts`, `get_artifact_data`, `submit_yolo_job`, `abort_job`, `get_telemetry`). A ADR-0007 D7 previa `queue_unavailable` só no `POST /api/jobs/yolo` e na rota `data` — o código generalizou (decisão do coordenador na F4.2a: se o manager está inalcançável, qualquer leitura de estado de jobs não tem fonte fiável).
+  - **`GET /api/jobs` SEMPRE `{items,total}`:** o shape é camelCase `JobList` (não há "dual-shape"); a fila (`GET /api/jobs/queue`) é um payload separado `{items:[{jobId,position,queueReason}]}` derivado do mesmo `queue_position`/`queue_reason` do banco.
+  - **`GET /api/jobs/:id` devolve o payload interno do manager (snake_case verbatim):** o principal é BFF puro — ecoa o JSON do manager sem mapear `queue_reason`/`queue_position` (campos snake_case no wire). Cuidado: o front precisa ler snake_case nests se consumir esses campos. O `metrics` JSONB do banco é snake_case (`mAP50-95`) e o principal re-mapeia `map5095` no response de `/metrics`.
+  - **Artefatos:** `{id,kind,path,md5,bytes}` — `path` é relativo ao prefixo `artifacts/<job_id>/`.
+  - **`POST /api/jobs/:id/abort`:** 200 `{"status":"cancelling"}` (job em `preparing`/`running`) ou `{"status":"cancelled"}` (job em `queued`/`dispatched`); 409 `job_not_abortable` em estado terminal (`done`/`failed`/`cancelled`). Código: `manager::abort_job` (`lib.rs:532-585`) consulta status antes de escrever.
+  - **Telemetria:** `{measured:bool, cpu:float|null, ram:i64|null, vramUsed:i64|null, vramTotal:i64|null, gpus:string[], jobsActive:i32}`. CPU/RAM reais (leitura `/proc` do container orquestrador via heartbeat ~2s). Sem GPU (mock local) → `measured:false`, `vramUsed/vramTotal:null`, `gpus:[]`. O texto "sem GPU (mock)" é renderizado pelo front quando `measured:false` (Sidebar `!telemetry?.measured`). **Nota:** `measured:false` é o caminho morto previsto na ADR-0007 D9 — o mock SEMPRE reporta `measured:false` porque não há GPU; `measured:true` só ocorrerá quando o orquestrador detectar `nvidia-smi` (`@gpu` manual, fora do compose).
+  - **Erros novos na v1:** `queue_unavailable` (503, todas as rotas jobs/telemetry), `dataset_not_ready` (409, `POST /api/jobs/yolo` quando category≠yolo ou 0 classes/imagens), `job_not_abortable` (409, `POST /:id/abort` em estado terminal), `engine_unsupported` (400, `POST /:id/package` quando engine≠yolo).
+  - **`POST /api/datasets/:id/package`:** body `{engine:"yolo"}` → 200 `PackageResponse{versionId,key,bytes,md5Zip,files}`; 400 `engine_unsupported` (engine≠yolo na v1) | 404 dataset | 503 storage/queue. Congela `dataset_versions{manifest}` (snapshot JSONB, T4 ADR-0002). `config.yaml` gerado pelo principal com placeholders `{dataset_path}`/`{output_path}` substituídos pelo orquestrador no spawn do container. Trainer via `docker run` com volumes nomeados (`datasets-cache/<jobid>/`, `models/`, `outputs/`).
 - Nota Fatia 3a (ADR-0002 D1, casing): TODAS as chaves de body/query/response de `/api/*` são camelCase (o teste `json_property_names_are_camel_case` rejeita o resto). **Os nomes listados no §9 são colunas (§10) ou campos de transporte, não chaves JSON** — ex.: settings `{hfToken, …}` no wire vs colunas `hf_token` em `settings`; datasets `sizeBytes/imagesCount/lastModified` no wire vs colunas `size_bytes/images_count/updated_at`. A rota `PUT/GET /api/settings/keys` ainda **não está implementada**; as colunas de `settings` permanecem snake_case.
 - Nota Fatia 3b (ADR-0003, spec 0.3.0 — shapes reais em `services/api-principal/src/datasets/models.rs`, tabela de rotas ≡ `PROTECTED_ROUTES` em `src/auth/routes.rs`):
   ```
@@ -237,19 +255,41 @@ videos(id UUID PK, dataset_id UUID FK CASCADE, filename TEXT CHECK 1..255, objec
   -- IMPLEMENTADO (Fatia 3b): idem objeto, índice `videos(dataset_id)`; SEM rota de escrita
   -- na 3b (nasce agora porque DDL é estático e a FK CASCADE vem junto das irmãs — ADR-0003 D5).
 dataset_versions(id UUID PK, dataset_id UUID FK, manifest JSONB, created_at TIMESTAMPTZ);
+  -- IMPLEMENTADO (Fatia 4; `migrations/0006_jobs.sql`): snapshot JSONB do dataset no despacho do job (T4 ADR-0002).
+  -- `dataset_id` FK ON DELETE CASCADE (a versão morre com o dataset).
+  -- Dono: principal (domínio de dataset); manifest snake_case: {dataset{id,slug,category,engine},classes[],images[{filename,split,width,height,boxes[],caption?}],counts}.
+  -- "Trava lógica por versão" — edição posterior do dataset não afeta a row (§10/:258).
+  -- Índice: `dataset_versions(dataset_id, created_at)`.
+orchestrators(id UUID PK, name TEXT, endpoint TEXT UNIQUE, kind TEXT,     -- local|remoto
+  fingerprint TEXT, token_hash TEXT, gpus JSONB, vram_total_gb INT,
+  status TEXT, last_heartbeat TIMESTAMPTZ);
+  -- IMPLEMENTADO (Fatia 4; `migrations/0006_jobs.sql`): manager auto-adota `orchestrator-local` no boot (ADR-0007 D3).
+  -- Índice: `orchestrators(status)`.
 models(id UUID PK, engine TEXT, name TEXT, path TEXT, source TEXT,         -- hf|civitai|upload
   url TEXT NULL, hash TEXT NULL, bytes BIGINT, created_at TIMESTAMPTZ);
 jobs(id UUID PK, kind TEXT, dataset_id UUID NULL FK, engine TEXT, model TEXT, mode TEXT,
   params JSONB, config_yaml TEXT, status TEXT, queue_reason TEXT NULL,
   orchestrator_id UUID NULL FK, vram_min_gb INT, progress FLOAT,
   epoch INT, step INT, metrics JSONB, created_at TIMESTAMPTZ, finished_at TIMESTAMPTZ NULL);
+  -- IMPLEMENTADO (Fatia 4; `migrations/0006_jobs.sql`): ciclo `queued→dispatched→preparing→running→done|failed|cancelled`.
+  -- CHECK de status inclui `cancelling` (janela transitória entre abort aceito e confirmação do orquestrador — ADR-0007 D3/D7).
+  -- `dataset_id` FK ON DELETE SET NULL (T4); `orchestrator_id` FK ON DELETE SET NULL.
+  -- `params` JSONB inclui `package_ref` (snake_case): `{version_id,key,md5_zip,bytes}` (D1b ADR-0007).
+  -- `config.yaml` gerado pelo principal com placeholders `{dataset_path}`/`{output_path}` substituídos pelo orquestrador no spawn.
+  -- `metrics` JSONB é snake_case (transporte) — principal re-mapeia para camelCase no response de `/api/jobs/:id/metrics` (mAP50-95 → map5095).
+  -- Índices: `jobs(status)`, `jobs(dataset_id)`, `jobs(created_at)`.
 job_artifacts(id UUID PK, job_id UUID FK, kind TEXT, path TEXT, md5 TEXT, bytes BIGINT);
+  -- IMPLEMENTADO (Fatia 4; `migrations/0006_jobs.sql`): artefatos retornados pelo orquestrador (ADR-0007 D8).
+  -- `job_id` FK ON DELETE CASCADE; `md5` CHECK hex 32; `bytes` CHECK >= 0.
+  -- Grava kind/path/md5/bytes — `path` é relativo ao prefixo `artifacts/<job_id>/`.
+  -- Escrita: manager insere a partir do report `done` do orquestrador (orquestrador não toca Postgres — stateless).
+  -- Índice: `job_artifacts(job_id)`.
 job_samples(job_id UUID FK, cycle INT, idx INT, image_path TEXT, meta JSONB, PRIMARY KEY(job_id, cycle, idx));
 runners(id UUID PK, engine TEXT, model TEXT, orchestrator_id UUID FK,
   status TEXT, vram_gb INT, last_used TIMESTAMPTZ);
 ```
 
-- Índices: `images(dataset_id)`, `images(dataset_id, split)`, `images(dataset_id, filename) parcial ativa + images(dataset_id) parcial lixeira (0005)`, `boxes(image_id)`, `boxes(class_id)`, `videos(dataset_id)`, `classes(dataset_id, idx)`, `image_embeddings(dataset_id, model)` + HNSW do embedding (0004), `jobs(status)`, `job_artifacts(job_id)`.
+- Índices: `images(dataset_id)`, `images(dataset_id, split)`, `images(dataset_id, filename) parcial ativa + images(dataset_id) parcial lixeira (0005)`, `boxes(image_id)`, `boxes(class_id)`, `videos(dataset_id)`, `classes(dataset_id, idx)`, `image_embeddings(dataset_id, model)` + HNSW do embedding (0004), `orchestrators(status)`, `jobs(status)`, `jobs(dataset_id)`, `jobs(created_at)`, `job_artifacts(job_id)`, `dataset_versions(dataset_id, created_at)`.
 - Nota (ADR-0002 D1, casing — resolvido; era ADR-0001 T3 "a definir antes da Fatia 3"): wire camelCase em `/api/*` (`userId`, `sizeBytes`, `lastModified`, settings `hfToken`…); colunas SQL snake_case; valores de enum, `Error.code` e artefatos de transporte (`manifest.json`, `config.yaml`, SQLite do orquestrador) snake_case.
 - Regra: contadores do dataset recalculados por função única `heph_refresh_dataset_counters(uuid)` — IMPLEMENTADO (Fatia 3b; `migrations/0003_images.sql`, fecha ADR-0002 T2): recalcula `images_count`/`labeled_count`/`size_bytes` e deriva `status` (`needs_labeling`/`in_progress`/`ready`) a partir das tabelas-fato, nunca `+=` (drift impossível; `UPDATE` com guarda `IS DISTINCT FROM` evita churn de `updated_at`); disparada por triggers `AFTER INSERT OR UPDATE OR DELETE` em `images`, `videos` e `boxes`/`captions` (via lookup de `dataset_id`); a ordem trigger-usuário × cascata-RJ do `DELETE FROM images` deixa de importar (o último disparo vê o estado final); `labeled` = imagem com ≥1 box (format `yolo_txt`) **ou** linha em `captions` (demais formats) — taxonomia R9; `size_bytes` soma `images` + `videos`. Chaves externas com `ON DELETE CASCADE` de dataset→filhos. O invariante `labeled_count <= images_count` continua sem `CHECK` (não deferrável) — é obrigação do trigger.
 - **Split:** coluna `images.split (train|val)`; padrão 80/20 estratificado no package com override manual na galeria (seletor train/val por imagem).
@@ -259,11 +299,12 @@ runners(id UUID PK, engine TEXT, model TEXT, orchestrator_id UUID FK,
 
 ## 11. Schemas, retenção e setup inicial
 
-- `manifest.json` (transporte orquestrador — PROJETO da fatia 4, ainda não implementado; ADR-0003 D9 revisto pela D0 da ADR-0006): `{dataset_id, slug, category, engine, files:[{key,filename,md5,bytes}], md5_zip, bytes, chunks, created_at}` (`files[].path` → `{key,filename,md5,bytes}`; snake_case, orquestrador recebe o manifest com `key` quando ganhar cliente S3). **Não confundir** com o `manifest.json` de backup da Fatia 3e (artefato distinto, D1 da ADR-0006: `schema_version/classes/images/boxes` — fonte da verdade do roundtrip export/import, com `dataset.yaml`/`labels/*.txt`/`captions.jsonl` como derivados ignorados no re-import).
-- `config.yaml` por job: comum `{job_id, engine, model, mode, dataset_path, output_path, seed}` + específico:
-  - yolo: `{model, epochs, batch, imgsz, lr0, optimizer, augment:{mosaic, mixup_flip}}`;
-  - difusao: `{base_model, trigger_word, rank, alpha, optimizer, steps, lr, cfg}`;
-  - clip: `{backbone, embed_dim, loss, lr, warmup, batch, epochs}`.
+- `manifest.json` (transporte orquestrador — IMPLEMENTADO Fatia 4; ADR-0007 D1): `{dataset_id, slug, category, engine, files:[{filename,md5,bytes}], md5_zip, bytes, chunks:null, created_at}`. **Na v1 local:** `files[].key` ausente (não há leitura por objeto — o orquestrador baixa o zip inteiro); `chunks: null` (não há transporte chunked — D9 da ADR-0003, adiado para orquestrador remoto). Snake_case (transporte, fora de `/api/*`). **Não confundir** com o `manifest.json` de backup da Fatia 3e (artefato distinto, D1 da ADR-0006: `schema_version/classes/images/boxes` — fonte da verdade do roundtrip export/import, com `dataset.yaml`/`labels/*.txt`/`captions.jsonl` como derivados ignorados no re-import).
+- `config.yaml` por job — IMPLEMENTADO (Fatia 4; ADR-0007 D6): comum `{job_id, engine, model, mode, dataset_path, output_path, seed}` + específico:
+  - yolo: `{model, epochs, batch, imgsz, lr0, optimizer, augment:{mosaic, mixup_flip}}`.
+  - difusao: `{base_model, trigger_word, rank, alpha, optimizer, steps, lr, cfg}` (adiado).
+  - clip: `{backbone, embed_dim, loss, lr, warmup, batch, epochs}` (adiado).
+  - `dataset_path`/`output_path` são **placeholders** (`{dataset_path}`/`{output_path}`) substituídos pelo orquestrador no momento do spawn do container trainer com os mounts reais. O principal é agnóstico de paths locais.
 - `engines.yaml`: `{engine, image, cuda, torch, validated_at}` — ex. `trainer-difusao: hephaestus/trainer-difusao:local`.
 - Retenção: samples últimos 5 ciclos ou 500 MB/job; logs 10 MB + 30 dias; artifacts guarda `best + last`, resto com GC manual (`DELETE /api/jobs/:id/artifacts?keep=best,last`).
 - Setup: `STUDIO_PASSWORD` no primeiro boot (hash Argon2 em `users`); troca via CLI `studio reset-password` (sem expor rota); chaves cifradas app-level com `STUDIO_MASTER_KEY` (nunca em log); `infra/compose.yaml` sobe `db (pgvector/pgvector:pg16-trixie@sha256:c8483555ce48101872f888c1df8a895ff689d6c7c7a5f7ac266475f9dfe89e0b) + principal (:8080) + manager + orquestrador-local (socket docker) + web (next) + seaweedfs (:8333 S3, :9333 master UI) + embedder (127.0.0.1:8090)` com volumes `pgdata, seaweed_data, datasets, models, outputs`. Serviço novo `seaweedfs` (`chrislusf/seaweedfs:4.45_full` pinado, `server -s3 -ip.bind=0.0.0.0 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json`, identidade em `infra/seaweedfs-s3.json`, bind loopback `127.0.0.1:8333:8333` + `127.0.0.1:9333:9333`, healthcheck por `wget` com `403 = no ar`); principal com `STORAGE_BACKEND=s3`, `S3_ENDPOINT_URL=http://seaweedfs:8333`, `S3_BUCKET=heph-data`, `S3_PUBLIC_ENDPOINT_URL=http://localhost:8333`, `S3_URL_TTL_SECS=3600`, mais `EMBEDDING_BACKEND=mock` (`mock|http`), `EMBEDDER_URL=http://embedder:8090`, `EMBEDDING_MODEL=ViT-B-32` (Fatia 3f). Serviço novo `embedder` (Fatia 3f, ADR-0004 D1; build `engines/trainer-clip`, `ENGINE_MOCK=1`, porta `127.0.0.1:8090`, healthcheck stdlib via `/health`, volume `models:/data/models`); o volume `models` é reusado como cache do peso (~600 MB) no caminho real. O volume `datasets` do orquestrador-local SOBREVIVE (para `models`/`outputs`/cache de build); o volume `datasets` do principal morreu (blobs no bucket).

@@ -52,36 +52,35 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
 
 **Backend**
 
+- **Abort races (review F4.8):** abort durante `preparing` pode ser engolido (estado substituído pelo progress report do orquestrador; `is_cancelled` não é consultado no pipeline — dead code); abort em `dispatched` não notifica o orquestrador (o dispatch já foi feito mas o orquestrador pode estar starting); abort em voo termina `failed` (nunca `cancelled` — o orquestrador reporta `failed` com erro "job not found or already finished" quando o container é stopado). Janela de segundos em mock local; conserto exige testes de abort-em-voo.
+- **Watchdog de orquestrador (review F4.8):** orquestrador morto nunca fica `offline` (dispatch tenta para sempre em single-orchestrator — o health-check 15s/5 falhas da ADR-0007 D3 não está implementado no manager v1; o `status` de `orchestrators` permanece `online` mesmo sem heartbeat).
+- **CI: pytest do trainer-yolo (review F4.8):** contrato das 6 keys do `metrics.jsonl` (`epoch, box_loss, cls_loss, dfl_loss, mAP50, mAP50-95`) com o parser do orquestrador (`parse_metrics_line`) não roda em CI — job Python ausente em `.gitea/workflows/ci.yml`. Validado manualmente no E2E.
+- **Mock: best.pt e last.pt idênticos (review F4.8):** artefatos deterministas (bytes de cabeçalho, mesmos 32 bytes) — diferenciar por mAP50 se a UI consumir histograma ou comparação entre best/last.
+- **Reports de métrica best-effort (review F4.8):** `let _ =` sem retry no orquestrador (`lib.rs` — report de progresso/métricas); terminal de erro agora tem log (`tracing::warn`), mas falha do manager no momento da falha prende o job até recovery no boot.
+- **Defaults de token inconsistentes (review F4.8):** manager aceita `manager-dev-token` como default (`MANAGER_TOKEN` env); orquestrador bypassa auth sem `MANAGER_TOKEN` (Bearer vazio aceito na v1 local); principal fail-fast sem `MANAGER_TOKEN`. Sem fail-fast uniforme entre os 3.
+- **`unzip_safe` não rejeita separador `\` (review F4.8):** divergência com `validate_artifact_path` do principal (que aceita `\`); inócuo em Linux mas viola defesa em profundidade.
+- **NITs frontend (review F4.8):**
+  - Highlight de módulo ativo da Sidebar hardcoded em "Dados & Anotação" (sem `usePathname` — o módulo ativo NÃO muda quando o usuário navega para `/jobs`).
+  - Duplicação tripla de `canTrain`/`trainDisabledReason` (lógica de condição de treino repetida no botão da galeria, no `DatasetMenu` e na galeria de datasets).
+  - Toast "Job cancelado." no 200 quando o estado real é `cancelling` (o handler retorna `{"status":"cancelling"}` mas a UI pode exibir mensagem genérica).
+  - Telemetria pollada a cada 3s mesmo com drawer da Sidebar fechado (consumo de requests desnecessário quando o card não está visível).
+- **SubprocessExecutor = stub honesto (review F4.8):** `EXEC_MODE=subprocess` implementado mas é stub (só `subprocess.run`, sem progress streaming). RunPod = fatia futura. Se já não estiver em dividas.md, registrado aqui.
 - **GC automático da lixeira (TTL) — ABERTA 2026-09-06** (fatia futura, fora da
   3g por D9 da ADR-0005): hoje só purge manual via UI (`DELETE /:id/trash`);
   `images.deleted_at` já dá o dado (idade do soft delete); falta TTL +
   purge agendado (job/cron que DELETE físico + sweep das vencidas).
-- **Ordem estável de `boxes` entre saves (nota menor da 3d)** — o PUT boxes é
-  `DELETE`+`INSERT` com `RETURNING`: os ids nascem novos a cada save e
-  `GET detail` não garante ordem (visto no smoke 3d: `[autotracker, manual]`
-  no PUT, `[manual, autotracker]` no GET seguinte). A UI correlaciona
-  seleção por índice de payload pós-save (correto), mas os chips `#N` no
-  canvas podem reordenar entre loads. Correção real = coluna de ordenação/
-  `ORDER BY` determinístico no backend — só valerá a pena quando o
-  autotracker consertar caixas existentes (fatia 4), hoje os efeitos são
-  cosméticos.
-- **Logging server-side (fatia nomeada, sem número)** — revisores 3b.3/3b.6:
-  `Err(_) => internal()` engole detalhes (banco vira 500 mudo, sem log nenhum)
-  e o `map_err` do SDK descarta `code()`; sweep do DELETE usa `eprintln` como
-  mínimo honesto até a fatia chegar. Escopo: log server-side (nunca no
-  response) antes/depois da fatia de jobs. Desenho-alvo a validar ao abrir a
-  fatia (mesma fonte): logs estruturados JSON numa pilha local consultável
-  pelo agente — transforma metas tipo "inicialização < 800 ms" em tarefas
-  verificáveis. **Desenho técnico (doc de governança adotado pelo usuário,
-  2026-09-07): Rust = `tracing` + `tracing-subscriber` com formatter JSON;
-  correlação ponta-a-ponta via `x-request-id` (o principal gera/recebe e
-  propaga para manager/orquestrador/engines; todo log carrega `request_id`);
-  `/health` liveness + `/ready` readiness como probes do compose (o principal
-  já tem `/health`; a readiness verifica db/storage/embedder).**
+- **Logging server-side (Fatia 4 parcial — review F4.8):** `tracing` + `tracing-subscriber` com formatter JSON + `x-request-id` + `/ready` entraram nos 3 serviços Rust (D11 ADR-0007); **pendente:** buffer de logs 1000/2000 linhas, `?since_seq`, `WS` de logs (fatia de logs/WS).
 - **CLI `studio reset-password`** (ADR-0001 T4).
 - **Gate aceita `sub` órfão** (ADR-0002 T8): cookie assinado com segredo
   antigo sobrevive a reset de `users` e passa a ler/deletar datasets;
   mitigação = `SELECT EXISTS` no gate ou rotacionar segredo no reset.
+- **Ordem estável de `boxes` entre saves (nota menor da 3d)** — o PUT boxes é
+  `DELETE`+`INSERT` com `RETURNING`: os ids nascem novos a cada save e
+  `GET detail` não garante ordem. A UI correlaciona seleção por índice de
+  payload pós-save (correto), mas os chips `#N` no canvas podem reordenar
+  entre loads. Correção real = coluna de ordenação/`ORDER BY` determinístico
+  no backend — só valerá a pena quando o autotracker consertar caixas
+  existentes, hoje os efeitos são cosméticos.
 
 **Verificação / toolchain**
 
@@ -110,11 +109,10 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
     (spike provou upgrade sem dump/restore; `pg16` sem sufixo é bookworm →
     collation mismatch). Só a parte postgres/db está paga aqui; o item como um
     todo segue quitado acima.
-- **Nota para a fatia 4 (nova)**: `manager`/`orchestrator` rodam runtime
-  `debian:bookworm-slim` (GLIBC 2.36) — quando o orquestrador ganhar cliente S3
-  (aws-lc-sys, GLIBC_2.38), migrar para `trixie-slim` como o principal (R10 da
-  ADR-0003). Os 3 Dockerfiles Rust seguem compartilhando o digest do builder
-  `rust:1.97.1-slim`.
+- **Nota (atualizada Fatia 4):** o **orquestrador** migrou para `trixie-slim`
+  (`rust:1.97.1-slim` builder, `debian:trixie-slim` runtime — GLIBC 2.41 para
+  aws-lc-sys); o **manager** mantém `bookworm-slim` (sem S3 na v1). Os 3
+  Dockerfiles Rust seguem compartilhando o digest do builder.
 
 **Frontend**
 
@@ -129,11 +127,11 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
   (origem: fatia redesign UI v2): `apps/web/app/(studio)/datasets/[id]/
   annotate/[imageId]/page.tsx:670` usa `bg-[#0b0f17]` pré-existente (fora do
   token v2 `zinc-950`/`--bg`). Limpeza trivial em fatia de manutenção.
-- **Telemetria real da sidebar — ABERTA 2026-09-07**
-  (origem: fatia redesign UI v2): card TELEMETRIA DO NÓ (`Sidebar.tsx:20-24`
-  `TELEMETRY_ROWS`, valores `"—"`, `title="Telemetria chega na fatia 4"`)
-  com placeholders honestos — o backend não expõe telemetria; chegará com a
-  fatia 4 (orquestrador). O card já renderiza a estrutura pronta.
+- ~~**Telemetria real da sidebar — ABERTA 2026-09-07~~ **QUITADA 2026-09-08**
+  (Fatia 4, `feat/jobs-v1`): card TELEMETRIA DO NÓ agora faz polling
+  `getTelemetry()` a cada 3s (`Sidebar.tsx:30-48`), preenche VRAM/CPU/RAM
+  (barras `brand`); VRAM `"sem GPU (mock)"` quando `!measured`; remove
+  `title="Telemetria chega na fatia 4"`.
 - **Contraste do CTA documentado (NÃO é dívida — decisão da fatia redesign
   UI v2)**: CTA em `brand-500` (`#8350f2`) + `text-white` ≈ 4.78:1 — passa
   WCAG AA (texto normal, 4.5:1); piso mínimo, ver nota em

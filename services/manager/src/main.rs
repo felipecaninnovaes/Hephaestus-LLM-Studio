@@ -337,10 +337,10 @@ fn build_router(state: AppState) -> Router {
             "/internal/jobs",
             post(create_job_handler).get(list_jobs_handler),
         )
-        .route("/internal/jobs/{id}", get(get_job_handler))
-        .route("/internal/jobs/{id}/artifacts", get(list_artifacts_handler))
-        .route("/internal/jobs/{id}/abort", post(abort_job_handler))
-        .route("/internal/jobs/{id}/report", post(report_job_handler))
+        .route("/internal/jobs/:id", get(get_job_handler))
+        .route("/internal/jobs/:id/artifacts", get(list_artifacts_handler))
+        .route("/internal/jobs/:id/abort", post(abort_job_handler))
+        .route("/internal/jobs/:id/report", post(report_job_handler))
         .route("/internal/heartbeat", post(heartbeat_handler))
         .route("/internal/telemetry", get(telemetry_handler))
         .layer(middleware::from_fn_with_state(
@@ -412,11 +412,12 @@ async fn main() {
     }
 
     // State.
+    let orch_client = Arc::new(HttpOrchestratorClient::new(Some(token.clone())));
     let state = AppState {
         pool: pool.clone(),
         token,
         telemetry_cache: manager::new_telemetry_cache(),
-        orch_client: Arc::new(HttpOrchestratorClient::new()),
+        orch_client,
         exec_mode,
         orch_workdir,
         trainer_image,

@@ -173,26 +173,28 @@ pub trait OrchestratorClient: Send + Sync {
 /// Cliente HTTP real do orquestrador.
 pub struct HttpOrchestratorClient {
     client: reqwest::Client,
+    token: Option<String>,
 }
 
 impl HttpOrchestratorClient {
-    pub fn new() -> Self {
+    pub fn new(token: Option<String>) -> Self {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .connect_timeout(std::time::Duration::from_secs(5))
             .build()
             .expect("reqwest client do orchestrator");
-        Self { client }
+        Self { client, token }
     }
 }
 
 #[async_trait]
 impl OrchestratorClient for HttpOrchestratorClient {
     async fn post(&self, url: &str, body: &serde_json::Value) -> Result<(), String> {
-        let resp = self
-            .client
-            .post(url)
-            .json(body)
+        let mut req = self.client.post(url).json(body);
+        if let Some(ref t) = self.token {
+            req = req.header("Authorization", format!("Bearer {t}"));
+        }
+        let resp = req
             .send()
             .await
             .map_err(|e| format!("orchestrator request: {e}"))?;
@@ -936,5 +938,17 @@ mod tests {
     #[test]
     fn is_valid_md5_non_hex() {
         assert!(!is_valid_md5("d41d8cd98f00b204e9800998ecf8427g"));
+    }
+
+    #[test]
+    fn http_orchestrator_client_stores_token() {
+        let client = HttpOrchestratorClient::new(Some("tok_test".into()));
+        assert!(client.token.as_deref() == Some("tok_test"));
+    }
+
+    #[test]
+    fn http_orchestrator_client_none_token() {
+        let client = HttpOrchestratorClient::new(None);
+        assert!(client.token.is_none());
     }
 }

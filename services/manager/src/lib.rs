@@ -179,7 +179,7 @@ pub struct HttpOrchestratorClient {
 impl HttpOrchestratorClient {
     pub fn new(token: Option<String>) -> Self {
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(10))
             .connect_timeout(std::time::Duration::from_secs(5))
             .build()
             .expect("reqwest client do orchestrator");

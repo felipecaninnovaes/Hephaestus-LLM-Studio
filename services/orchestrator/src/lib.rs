@@ -456,7 +456,7 @@ pub struct HttpHeartbeatClient {
 impl HttpHeartbeatClient {
     pub fn new(manager_url: &str, token: Option<&str>) -> Self {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(10))
             .connect_timeout(Duration::from_secs(3))
             .build()
             .expect("reqwest client do heartbeat");

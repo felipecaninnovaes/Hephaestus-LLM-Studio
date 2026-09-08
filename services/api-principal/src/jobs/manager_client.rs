@@ -138,7 +138,7 @@ pub struct HttpManager {
 impl HttpManager {
     pub fn new(base_url: String, token: String) -> Self {
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(10))
             .connect_timeout(std::time::Duration::from_secs(5))
             .build()
             .expect("reqwest client do HttpManager");

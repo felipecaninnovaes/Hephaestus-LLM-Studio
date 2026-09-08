@@ -68,13 +68,13 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
     return () => clearTimeout(t);
   }, []);
 
-  // Derive dataset eligibility
+  // Derive dataset eligibility (mirrors DatasetMenu.canTrain: category + classes + images)
   function datasetReady(d: Dataset): boolean {
-    return d.status === "ready" && d.classes.length >= 1 && d.imagesCount >= 1;
+    return d.category === "yolo" && d.classes.length >= 1 && d.imagesCount >= 1;
   }
 
   function datasetDisabledReason(d: Dataset): string | null {
-    if (d.status !== "ready") return `Status: ${d.status}`;
+    if (d.category !== "yolo") return "Treino disponível apenas para datasets YOLO.";
     if (d.classes.length < 1) return "Nenhuma classe definida";
     if (d.imagesCount < 1) return "Nenhuma imagem";
     return null;

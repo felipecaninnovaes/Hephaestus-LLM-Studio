@@ -32,8 +32,8 @@ from trainer_yolo.train import (
     REQUIRED_YOLO_KEYS,
     _convert_ultralytics_metrics,
     _copy_flat_weights,
-    _fix_dataset_yaml_path,
     _make_fake_artifact,
+    _prepare_dataset_yaml,
     _seed_bytes,
     _synthetic_metrics,
     _write_metrics_line,
@@ -592,11 +592,11 @@ class TestRealTrainTolerantParsing:
 
 
 # ---------------------------------------------------------------------------
-# (g) _fix_dataset_yaml_path — absolute path rewriting
+# (g) _prepare_dataset_yaml — path rewriting + list→txt conversion
 # ---------------------------------------------------------------------------
 
-class TestFixDatasetYamlPath:
-    """Tests for _fix_dataset_yaml_path (pure, no ultralytics)."""
+class TestPrepareDatasetYaml:
+    """Tests for _prepare_dataset_yaml (pure, no ultralytics)."""
 
     def test_relative_path_rewritten_to_absolute(self, tmp_path: Path) -> None:
         """YAML with path: . + absolute dataset_path → path rewritten, train/val intact."""
@@ -607,7 +607,7 @@ class TestFixDatasetYamlPath:
         with open(yaml_path, "w") as f:
             yaml.safe_dump(yaml_content, f, sort_keys=False)
 
-        _fix_dataset_yaml_path(yaml_path, ds)
+        _prepare_dataset_yaml(yaml_path, ds)
 
         with open(yaml_path, "r") as f:
             result = yaml.safe_load(f)
@@ -626,9 +626,94 @@ class TestFixDatasetYamlPath:
         with open(yaml_path, "w") as f:
             yaml.safe_dump(yaml_content, f, sort_keys=False)
 
-        _fix_dataset_yaml_path(yaml_path, ds)
+        _prepare_dataset_yaml(yaml_path, ds)
 
         with open(yaml_path, "r") as f:
             result = yaml.safe_load(f)
 
         assert result["path"] == "/abs/já"
+
+    def test_list_train_val_generates_txt_files(self, tmp_path: Path) -> None:
+        """List-style train+val → train.txt/val.txt with absolute paths, YAML points to txt."""
+        ds = tmp_path / "dataset"
+        ds.mkdir()
+        images = ds / "images"
+        images.mkdir()
+        (images / "a.png").write_bytes(b"\x89PNG")
+        (images / "b.png").write_bytes(b"\x89PNG")
+        (images / "c.png").write_bytes(b"\x89PNG")
+
+        yaml_content = {
+            "path": ".",
+            "train": ["images/a.png", "images/b.png"],
+            "val": ["images/c.png"],
+            "nc": 1,
+        }
+        yaml_path = ds / "dataset.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.safe_dump(yaml_content, f, sort_keys=False)
+
+        _prepare_dataset_yaml(yaml_path, ds)
+
+        # YAML now points to txt files
+        with open(yaml_path, "r") as f:
+            result = yaml.safe_load(f)
+        assert result["train"] == "train.txt"
+        assert result["val"] == "val.txt"
+
+        # train.txt has absolute paths, one per line
+        train_txt = (ds / "train.txt").read_text().strip().split("\n")
+        assert train_txt == [str(ds / "images/a.png"), str(ds / "images/b.png")]
+
+        # val.txt has absolute path
+        val_txt = (ds / "val.txt").read_text().strip().split("\n")
+        assert val_txt == [str(ds / "images/c.png")]
+
+    def test_empty_val_points_to_train_txt(self, tmp_path: Path) -> None:
+        """Empty val list → val points to train.txt (small dataset fallback)."""
+        ds = tmp_path / "dataset"
+        ds.mkdir()
+        images = ds / "images"
+        images.mkdir()
+        (images / "a.png").write_bytes(b"\x89PNG")
+
+        yaml_content = {
+            "path": ".",
+            "train": ["images/a.png"],
+            "val": [],
+            "nc": 1,
+        }
+        yaml_path = ds / "dataset.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.safe_dump(yaml_content, f, sort_keys=False)
+
+        _prepare_dataset_yaml(yaml_path, ds)
+
+        with open(yaml_path, "r") as f:
+            result = yaml.safe_load(f)
+        assert result["train"] == "train.txt"
+        assert result["val"] == "train.txt"
+
+    def test_missing_val_points_to_train_txt(self, tmp_path: Path) -> None:
+        """No val key at all → val points to train.txt (small dataset fallback)."""
+        ds = tmp_path / "dataset"
+        ds.mkdir()
+        images = ds / "images"
+        images.mkdir()
+        (images / "a.png").write_bytes(b"\x89PNG")
+
+        yaml_content = {
+            "path": ".",
+            "train": ["images/a.png"],
+            "nc": 1,
+        }
+        yaml_path = ds / "dataset.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.safe_dump(yaml_content, f, sort_keys=False)
+
+        _prepare_dataset_yaml(yaml_path, ds)
+
+        with open(yaml_path, "r") as f:
+            result = yaml.safe_load(f)
+        assert result["train"] == "train.txt"
+        assert result["val"] == "train.txt"

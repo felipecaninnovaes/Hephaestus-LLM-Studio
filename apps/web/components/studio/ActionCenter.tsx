@@ -22,7 +22,7 @@ import {
   IconX,
   IconZap,
 } from "@/components/icons";
-import { SearchInput, SubmodulePills, Badge, jobStatusToBadgeVariant } from "@/components/ui";
+import { SearchInput, SubmodulePills, Badge, ProgressBar, jobStatusToBadgeVariant } from "@/components/ui";
 import {
   abortJob,
   downloadArtifact,
@@ -853,18 +853,14 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
 
                             {/* Barra de Progresso em jobs ativos */}
                             {isActive && (
-                              <div className="mt-2.5">
-                                <div className="flex items-center justify-between text-[11px] font-mono text-zinc-400 mb-1">
-                                  <span>Progresso do Treinamento</span>
-                                  <span className="font-semibold text-brand-300 tabular-nums">{pct}%</span>
-                                </div>
-                                <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/40 border border-white/10">
-                                  <div
-                                    className="h-full rounded-full bg-gradient-to-r from-brand-600 via-brand-500 to-brand-400 transition-all duration-500 motion-reduce:transition-none"
-                                    style={{ width: `${Math.max(4, pct)}%` }}
-                                  />
-                                </div>
-                              </div>
+                              <ProgressBar
+                                value={pct}
+                                variant="brand"
+                                size="md"
+                                label="Progresso do Treinamento"
+                                showPercent
+                                className="mt-2.5"
+                              />
                             )}
 
                             {/* Painel expansível: Detalhes, Métricas, Ações */}

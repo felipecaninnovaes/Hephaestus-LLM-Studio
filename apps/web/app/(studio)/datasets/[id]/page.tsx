@@ -6,6 +6,7 @@ import {
   Button,
   ConfirmDialog,
   DropOverlay,
+  EmptyState,
   SearchInput,
   SubmodulePills,
   showToast,
@@ -1012,9 +1013,12 @@ export default function DatasetGalleryPage() {
 
       {view === "trash" ? (
         total === 0 ? (
-          <div className="glass-card rounded-2xl border border-zinc-800 px-4 py-14 text-center">
-            <p className="text-sm text-zinc-300">A lixeira está vazia.</p>
-          </div>
+          <EmptyState
+            icon={<IconTrash className="h-5 w-5" />}
+            title="A lixeira está vazia"
+            description="Imagens movidas para a lixeira aparecerão aqui antes da exclusão definitiva."
+            className="py-14 border border-zinc-800"
+          />
         ) : (
           <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
             {items.map((item) => (
@@ -1041,15 +1045,12 @@ export default function DatasetGalleryPage() {
           </div>
         )
       ) : dataset.imagesCount === 0 ? (
-        <div className="glass-card rounded-2xl border border-zinc-800 px-4 py-14 text-center">
-          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900 text-zinc-400">
-            <IconFolder className="h-5 w-5" />
-          </div>
-          <h3 className="text-sm font-semibold text-zinc-200">Galeria vazia</h3>
-          <p className="mx-auto mt-1 max-w-sm text-xs text-zinc-400">
-            Este dataset ainda não tem amostras. Envie imagens pelo botão
-            abaixo; o upload é gerido pelo backend.
-          </p>
+        <EmptyState
+          icon={<IconFolder className="h-5 w-5" />}
+          title="Galeria vazia"
+          description="Este dataset ainda não tem amostras. Envie imagens pelo botão abaixo; o upload é gerido pelo backend."
+          className="py-14 border border-zinc-800"
+        >
           <Button
             type="button"
             variant="secondary"
@@ -1057,11 +1058,11 @@ export default function DatasetGalleryPage() {
             onClick={() => fileRef.current?.click()}
             disabled={uploading}
             loading={uploading}
-            className="mt-4"
+            className="mt-2"
           >
             {uploading ? `Enviando ${uploadCount} arquivo(s)…` : "Enviar amostras"}
           </Button>
-        </div>
+        </EmptyState>
       ) : activeQuery !== null || similarFor !== null ? (
         <div className="flex flex-col gap-3">
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-zinc-800/80 bg-zinc-950/60 backdrop-blur-sm px-4 py-2.5 text-[11px] text-zinc-400">
@@ -1082,13 +1083,16 @@ export default function DatasetGalleryPage() {
             </Button>
           </div>
           {results.length === 0 ? (
-            <div className="glass-card rounded-2xl border border-zinc-800 px-4 py-14 text-center">
-              <p className="text-sm text-zinc-300">
-                {activeQuery !== null
+            <EmptyState
+              icon={<IconSearch className="h-5 w-5" />}
+              title={
+                activeQuery !== null
                   ? `Nenhum resultado para '${activeQuery}'`
-                  : "Nenhuma imagem similar"}
-              </p>
-            </div>
+                  : "Nenhuma imagem similar"
+              }
+              description="Tente ajustar os termos de busca ou utilize uma imagem diferente como referência."
+              className="py-14 border border-zinc-800"
+            />
           ) : (
             <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
               {results.map((result) => (

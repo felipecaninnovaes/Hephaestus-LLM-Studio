@@ -21,7 +21,7 @@ import {
   IconZap,
 } from "@/components/icons";
 import { getTelemetry, listJobs } from "@/lib/jobs";
-import { Button } from "@/components/ui/Button";
+import { Button, SegmentedControl } from "@/components/ui";
 import type { Dataset, Job, Telemetry } from "@/types/studio";
 
 interface NodeData {
@@ -208,35 +208,25 @@ export default function DashboardPage() {
 
         {/* Action Controls */}
         <div className="flex items-center space-x-2.5">
-          {/* View Toggle - Canonical Segmented Control from DESIGN.md:302 */}
-          <div className="inline-flex rounded-full border border-white/10 bg-black/40 p-1 shadow-sm">
-            <button
-              type="button"
-              onClick={() => setViewMode("grid")}
-              aria-label="Visualização em Grade"
-              title="Visualização em Grade"
-              className={`flex h-7 px-2.5 items-center justify-center rounded-full transition-colors cursor-pointer ${
-                viewMode === "grid"
-                  ? "bg-brand-500/[0.18] text-brand-300 shadow-sm"
-                  : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.05]"
-              }`}
-            >
-              <IconGrid className="size-4" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setViewMode("list")}
-              aria-label="Visualização em Lista"
-              title="Visualização em Lista"
-              className={`flex h-7 px-2.5 items-center justify-center rounded-full transition-colors cursor-pointer ${
-                viewMode === "list"
-                  ? "bg-brand-500/[0.18] text-brand-300 shadow-sm"
-                  : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.05]"
-              }`}
-            >
-              <IconList className="size-4" />
-            </button>
-          </div>
+          <SegmentedControl<"grid" | "list">
+            ariaLabel="Modo de visualização"
+            value={viewMode}
+            onChange={setViewMode}
+            options={[
+              {
+                id: "grid",
+                icon: <IconGrid className="h-4 w-4" />,
+                title: "Visualização em Grade",
+                ariaLabel: "Visualização em Grade",
+              },
+              {
+                id: "list",
+                icon: <IconList className="h-4 w-4" />,
+                title: "Visualização em Lista",
+                ariaLabel: "Visualização em Lista",
+              },
+            ]}
+          />
 
           {/* Refresh Button */}
           <Button

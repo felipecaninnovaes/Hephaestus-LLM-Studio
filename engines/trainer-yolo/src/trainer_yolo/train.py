@@ -193,6 +193,96 @@ def _mock_train(cfg: dict, output: Path) -> None:
 # Real training (ultralytics, lazy import)
 # ---------------------------------------------------------------------------
 
+def _convert_ultralytics_metrics(raw: dict[str, Any]) -> dict[str, Any]:
+    """Convert ultralytics trainer.metrics keys to contract keys.
+
+    Contract keys (METRIC_KEYS): epoch, box_loss, cls_loss, dfl_loss, mAP50, mAP50-95.
+
+    Always returns a dict with all keys; missing metrics are set to None (honest skip).
+    """
+    mapping = {
+        "train/box_loss": "box_loss",
+        "train/cls_loss": "cls_loss",
+        "train/dfl_loss": "dfl_loss",
+        "metrics/mAP50(B)": "mAP50",
+        "metrics/mAP50-95(B)": "mAP50-95",
+    }
+    result: dict[str, Any] = {}
+    for ul_key, contract_key in mapping.items():
+        val = raw.get(ul_key)
+        if val is None:
+            # Epoch without this metric — still include with None (honest skip)
+            result[contract_key] = None
+        else:
+            result[contract_key] = float(val) if contract_key != "epoch" else int(val)
+    return result
+
+
+def _write_metrics_line(metrics_path: Path, epoch: int, metrics: dict[str, Any]) -> None:
+    """Append one JSON line to metrics.jsonl (contract format).
+
+    Skips writing when all 5 value metrics (box_loss, cls_loss, dfl_loss, mAP50,
+    mAP50-95) are None — no useful data for the Rust parser (as_f64()? discards).
+    """
+    value_keys = ("box_loss", "cls_loss", "dfl_loss", "mAP50", "mAP50-95")
+    if all(metrics.get(k) is None for k in value_keys):
+        return  # no usable metrics for this epoch
+    line = {"epoch": epoch, **{k: metrics.get(k) for k in METRIC_KEYS if k != "epoch"}}
+    with open(metrics_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(line) + "\n")
+
+
+def _copy_flat_weights(output: Path) -> None:
+    """Copy best.pt and last.pt from ultralytics output to flat output dir."""
+    import shutil
+
+    src_dir = output / "train" / "weights"
+    for name in ("best.pt", "last.pt"):
+        src = src_dir / name
+        dst = output / name
+        if src.is_file():
+            shutil.copy2(str(src), str(dst))
+        else:
+            # Weight file missing — not fatal, but log a warning
+            print(f"WARNING: {src} not found, skipping copy", file=sys.stderr)
+
+
+def _prepare_dataset_yaml(dataset_yaml_path: Path, dataset_dir: Path) -> None:
+    """Prepare dataset.yaml for ultralytics compatibility.
+
+    1. Rewrite relative ``path:`` to absolute (avoids CWD-dependent resolution).
+    2. Convert list-style ``train``/``val`` entries (e.g. ``[images/a.png, ...]``)
+       to .txt files with one absolute image path per line — ultralytics opens
+       .txt files as text (not .png bytes), so passing image paths directly
+       causes ``UnicodeDecodeError``.
+    3. If ``val`` is empty/missing, point to ``train.txt`` (small datasets where
+       train and val share the same images; avoids val-is-empty error).
+    """
+    with open(dataset_yaml_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+
+    # Make path absolute
+    current = data.get("path")
+    if current is not None and not Path(current).is_absolute():
+        data["path"] = str(dataset_dir)
+
+    # Convert list entries to .txt files with absolute paths
+    for key in ("train", "val"):
+        entries = data.get(key)
+        if isinstance(entries, list) and entries:
+            txt_path = dataset_dir / f"{key}.txt"
+            lines = "\n".join(str(dataset_dir / entry) for entry in entries)
+            txt_path.write_text(lines, encoding="utf-8")
+            data[key] = f"{key}.txt"
+
+    # Small datasets: val shares train images when val is empty/missing
+    if not data.get("val"):
+        data["val"] = "train.txt"
+
+    with open(dataset_yaml_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, sort_keys=False)
+
+
 def _real_train(cfg: dict, output: Path) -> None:
     """Real training via ultralytics (requires GPU + extras [train])."""
     try:
@@ -208,9 +298,28 @@ def _real_train(cfg: dict, output: Path) -> None:
     if not dataset_yaml.is_file():
         _die(f"dataset.yaml not found: {dataset_path}")
 
-    output.mkdir(parents=True, exist_ok=True)
+    # Resolve relative `path:` and list-style train/val in dataset.yaml.
+    # Builder uses `path: .` (relative to export CWD) and `train: [images/...]`
+    # which ultralytics opens as text — causing UnicodeDecodeError for images.
+    # Rewrites path to absolute and converts lists to .txt files.
+    _prepare_dataset_yaml(dataset_yaml, dataset_path)
 
+    output.mkdir(parents=True, exist_ok=True)
+    metrics_path = output / "metrics.jsonl"
+
+    seed = cfg["seed"]
     model = YOLO(yolo_cfg["model"])
+
+    # Callback: append one JSON line per epoch to metrics.jsonl
+    def on_train_epoch_end(trainer) -> None:  # noqa: ANN001 — ultralytics callback
+        epoch = trainer.epoch + 1  # ultralytics is 0-indexed
+        raw = trainer.metrics or {}
+        converted = _convert_ultralytics_metrics(raw)
+        if converted is not None:
+            _write_metrics_line(metrics_path, epoch, converted)
+
+    model.add_callback("on_train_epoch_end", on_train_epoch_end)
+
     model.train(
         data=str(dataset_yaml),
         epochs=yolo_cfg["epochs"],
@@ -224,7 +333,12 @@ def _real_train(cfg: dict, output: Path) -> None:
         project=str(output),
         name="train",
         exist_ok=True,
+        device=0,
+        seed=seed,
     )
+
+    # Post-train: copy flat weights + ensure metrics.jsonl is consistent
+    _copy_flat_weights(output)
 
 
 # ---------------------------------------------------------------------------

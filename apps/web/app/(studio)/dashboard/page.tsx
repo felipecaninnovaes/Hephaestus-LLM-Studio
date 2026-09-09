@@ -118,8 +118,9 @@ export default function DashboardPage() {
   const ramTotalGb =
     telemetry?.ramTotal != null ? (telemetry.ramTotal / (1024 * 1024 * 1024)).toFixed(1) : null;
 
-  const vramUsedGb = telemetry?.vramUsed != null ? telemetry.vramUsed.toFixed(1) : null;
-  const vramTotalGb = telemetry?.vramTotal != null ? telemetry.vramTotal.toFixed(1) : null;
+  // Wire delivers MiB (nvidia-smi); convert to GB for display
+  const vramUsedGb = telemetry?.vramUsed != null ? (telemetry.vramUsed / 1024).toFixed(1) : null;
+  const vramTotalGb = telemetry?.vramTotal != null ? (telemetry.vramTotal / 1024).toFixed(1) : null;
   const vramPct =
     telemetry?.vramUsed != null && telemetry?.vramTotal != null && telemetry.vramTotal > 0
       ? Math.min(100, Math.max(0, (telemetry.vramUsed / telemetry.vramTotal) * 100))
@@ -213,7 +214,7 @@ export default function DashboardPage() {
             modelsUnavailable
               ? "Indisponível (manager fora)"
               : models.length > 0
-                ? "pesos de treinos (mock)"
+                ? "pesos de treinos"
                 : "Sem pesos gerados"
           }
           icon={<IconImage className="size-4" />}

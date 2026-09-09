@@ -419,11 +419,15 @@ async fn main() {
         }
     };
 
-    // Boot: adopt + recovery.
-    if let Err(e) = manager::adopt_orchestrator(&pool).await {
-        tracing::error!("falha ao auto-adotar orchestrator: {e}");
+    // Boot: adopt (AUTO_ADOPT_LOCAL=0 → skip) + recovery.
+    if manager::auto_adopt_enabled(std::env::var("AUTO_ADOPT_LOCAL").ok().as_deref()) {
+        if let Err(e) = manager::adopt_orchestrator(&pool).await {
+            tracing::error!("falha ao auto-adotar orchestrator: {e}");
+        } else {
+            tracing::info!("orchestrator-local auto-adotado");
+        }
     } else {
-        tracing::info!("orchestrator-local auto-adotado");
+        tracing::info!("AUTO_ADOPT_LOCAL=0: pulando auto-adoção de orchestrator-local");
     }
 
     match manager::recover_jobs(&pool).await {

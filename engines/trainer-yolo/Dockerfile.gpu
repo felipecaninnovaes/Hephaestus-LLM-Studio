@@ -1,0 +1,30 @@
+# Engine trainer-yolo GPU (ADR-0010 D5): treino real com ultralytics.
+# Base: PyTorch 2.6.0 + CUDA 12.4 + cuDNN 9 (runtime).
+# TODO: pin digest no G.6 quando a imagem estiver validada no TrueNAS
+FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime@sha256:77f17f843507062875ce8be2a6f76aa6aa3df7f9ef1e31d9d7432f4b0f563dee
+
+# System libs required by opencv-python (cv2) — imported by ultralytics at install
+# and runtime. Fixes: ImportError: libxcb.so.1: cannot open shared object file.
+# Base is Ubuntu (pytorch official); libgl1 pulls libxcb1/libx11 transitively.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Ultralytics 8.3.x — última versão estável da linha 8.3 (8.3.253, Sep 2026).
+# Pin exato para reprodutibilidade; ADR-0010 D5.
+RUN pip install --no-cache-dir "ultralytics==8.3.253"
+
+WORKDIR /app
+
+# Copy trainer_yolo package (mesma estrutura do Dockerfile mock)
+COPY src/trainer_yolo/ /app/trainer_yolo/
+
+# Real training mode (not mock)
+ENV ENGINE_MOCK=0
+
+# Bake yolo11n.pt base weight into the image layer (~5MB).
+# Sem dependência de rede no runtime para o modelo default.
+RUN python -c "from ultralytics import YOLO; YOLO('yolo11n.pt')"
+
+ENTRYPOINT ["python", "-m", "trainer_yolo"]
+CMD ["train", "--config", "/dev/null", "--output", "/dev/null"]

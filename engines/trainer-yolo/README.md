@@ -26,12 +26,47 @@ docker run --rm \
 A variável `MOCK_EPOCH_SLEEP_MS` controla o sleep entre epochs (default 200ms).
 Defina `MOCK_EPOCH_SLEEP_MS=0` para testes rápidos.
 
-## Modo real @gpu (FORA do compose, manual)
+## Modo real @gpu (via Dockerfile.gpu)
 
 O modo real usa [ultralytics](https://docs.ultralytics.com/) e requer GPU
-compatível com CUDA. **Não é coberto por CI** — é manual e experimental.
+compatível com CUDA. A imagem `hephaestus/trainer-yolo:gpu` é construída
+a partir de `Dockerfile.gpu` e tem `ENGINE_MOCK=0` baked.
 
-### Setup
+### Build da imagem GPU
+
+```bash
+cd engines/trainer-yolo
+docker build -f Dockerfile.gpu -t hephaestus/trainer-yolo:gpu .
+```
+
+A imagem inclui:
+- Base `pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime`
+- `ultralytics==8.3.253` (pin exato)
+- Peso `yolo11n.pt` baked na camada (sem dependência de rede no runtime)
+
+### Execução via Docker
+
+```bash
+docker run --rm --gpus device=0 \
+  -v /path/to/config.yaml:/config.yaml:ro \
+  -v /path/to/output:/output \
+  hephaestus/trainer-yolo:gpu \
+  train --config /config.yaml --output /output
+```
+
+### Envelope VRAM (referência)
+
+| GPU | VRAM | Modelo | Batch max | Notas |
+|-----|------|--------|-----------|-------|
+| RTX 3060 | 12GB | yolo11n | 16 | envelope seguro (default) |
+| RTX 3060 | 12GB | yolo11m | 8 | ~10-11GB, no limite |
+| GTX 1660S | 6GB | yolo11n | 8 | fallback; yolo11m OOM |
+| GTX 1660S | 6GB | yolo11m | — | OOM (falha honesta, job failed) |
+
+**Nota:** o compose do TrueNAS (`infra/compose.gpu.yaml`, G.4) é quem orquestra
+a sessão GPU — veja `infra/README-gpu.md` para o checklist completo.
+
+### Setup local (desenvolvimento, sem Docker)
 
 1. Instale com extras `[train]`:
 
@@ -52,7 +87,7 @@ uv pip install -e '.[train]'
 export ENGINE_MOCK=0
 ```
 
-### Execução
+### Execução local
 
 ```bash
 python -m trainer_yolo train \
@@ -104,8 +139,8 @@ yolo train \
 
 - `metrics.jsonl` — uma linha JSON por epoch com keys:
   `epoch`, `box_loss`, `cls_loss`, `dfl_loss`, `mAP50`, `mAP50-95`
-- `best.pt` — melhor checkpoint
-- `last.pt` — último checkpoint
+- `best.pt` — melhor checkpoint (flat no output)
+- `last.pt` — último checkpoint (flat no output)
 
 ## Format (contrato com o orquestrador)
 

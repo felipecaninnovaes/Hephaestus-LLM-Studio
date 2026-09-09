@@ -891,6 +891,12 @@ async fn get_orchestrator(pool: &PgPool, id: Uuid) -> Result<OrchestratorRow, Ma
         .ok_or(ManagerError::Internal("orchestrator not found".into()))
 }
 
+/// AUTO_ADOPT_LOCAL: default "1" (fail-open). "0" desliga a auto-adoção
+/// de orchestrator-local no boot (sessão GPU — ADR-0010 D2).
+pub fn auto_adopt_enabled(raw: Option<&str>) -> bool {
+    raw.map(|v| v != "0").unwrap_or(true)
+}
+
 /// Auto-adoção: insere orchestrator-local se ausente, atualiza status.
 pub async fn adopt_orchestrator(pool: &PgPool) -> Result<(), ManagerError> {
     sqlx::query(
@@ -1169,5 +1175,25 @@ mod tests {
     fn http_orchestrator_client_none_token() {
         let client = HttpOrchestratorClient::new(None);
         assert!(client.token.is_none());
+    }
+
+    #[test]
+    fn auto_adopt_enabled_none_is_true() {
+        assert!(auto_adopt_enabled(None));
+    }
+
+    #[test]
+    fn auto_adopt_enabled_one_is_true() {
+        assert!(auto_adopt_enabled(Some("1")));
+    }
+
+    #[test]
+    fn auto_adopt_enabled_zero_is_false() {
+        assert!(!auto_adopt_enabled(Some("0")));
+    }
+
+    #[test]
+    fn auto_adopt_enabled_empty_is_true() {
+        assert!(auto_adopt_enabled(Some("")));
     }
 }

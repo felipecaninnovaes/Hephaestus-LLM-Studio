@@ -3,4 +3,6 @@ engines:
   - { engine: difusao, image: 'hephaestus/trainer-difusao:local' }
   - { engine: clip, image: 'hephaestus/trainer-clip:local' }
 # Base: estável mais recente testado no build; registrar cuda/torch validados aqui.
-toolchain: { cuda: TBD, torch: TBD, validated_at: null }
+# Emenda G.7 (ADR-0010 D5): toolchain validada no smoke G.6 (TrueNAS, 2026-09-09).
+# Imagem GPU: hephaestus/trainer-yolo:gpu (Dockerfile.gpu, pytorch 2.6.0-cuda12.4-cudnn9 + ultralytics==8.3.253).
+toolchain: { cuda: 12.4, torch: 2.6.0, ultralytics: '8.3.253', validated_at: '2026-09-09' }

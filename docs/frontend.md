@@ -106,7 +106,7 @@ A especificação normativa completa e canônica vive em **`docs/DESIGN.md`**. P
 - **Landing page principal do estúdio:** rota `/` redireciona automaticamente para `/dashboard`.
 - **Cabeçalho com identidade:** "Operador local" derivado da presença do cookie válido (`GET /api/auth/me` 200 — ADR-0009 D6); versão de produto via `GET /health` (`version: "0.1.0"`, ADR-0009 D5).
 - **KPIs de Alto Nível (`StatCard`):** 4 cartões em `.glass-card` exibindo Datasets totais, Modelos & Pesos (`GET /api/models`), Storage (`GET /api/storage/usage` — `datasetsBytes + artifactsBytes`), Jobs ativos/concluídos (`GET /api/jobs`).
-- **Visão do Cluster de Nós:** monitoramento a partir de `GET /api/orchestrators` — nó real `orchestrator-local` (sem RunPod); telemetria global via `GET /api/telemetry` (CPU/RAM reais, `measured:true` com `gpus:[]`/`vram_*:null` no mock — R5); card GPU mostra nome da placa via `gpus[0]`, VRAM = GB+pct (quando disponível).
+- **Visão do Cluster de Nós:** monitoramento a partir de `GET /api/orchestrators` — nó real `orchestrator-local` (sem RunPod); telemetria global via `GET /api/telemetry` (CPU/RAM reais, `measured:true` com `gpus:[]`/`vram_*:null` no mock — R5); card GPU mostra nome da placa via `gpus[0]`, VRAM = GB+pct (quando disponível). **Emenda G.7 (ADR-0010):** durante a sessão GPU (TrueNAS, `items.length===1`), o dashboard mostra **gauges reais** do nó remoto (nome da GPU real, VRAM/RAM do TrueNAS) — regra ADR-0009 D1 cumprida pelo contrato operacional. Após o teardown, volta a "sem GPU (mock)" (estado restaurado honesto).
 - **Controles de visualização:** polling a cada 3s com pausa automática quando a aba perde foco (`visibilitychange`).
 
 ### 5.2 Lista de Datasets (`datasets-workspace`)

@@ -32,6 +32,8 @@ struct AppState {
     executor: Arc<dyn orchestrator::TrainerExecutor>,
     active_jobs: orchestrator::ActiveJobs,
     manager_token: Option<String>,
+    gpu_devices: Option<String>,
+    gpu_allow_mock: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -196,10 +198,21 @@ async fn dispatch_handler(State(state): State<AppState>, body: Bytes) -> Respons
     let report_client = Arc::clone(&state.report_client);
     let executor = Arc::clone(&state.executor);
     let active_jobs = Arc::clone(&state.active_jobs);
+    let gpu_devices = state.gpu_devices.clone();
+    let gpu_allow_mock = state.gpu_allow_mock;
 
     // Spawna pipeline assíncrono (D5/D6/D8)
     tokio::spawn(async move {
-        orchestrator::run_job(req, s3, report_client, executor, active_jobs).await;
+        orchestrator::run_job(
+            req,
+            s3,
+            report_client,
+            executor,
+            active_jobs,
+            gpu_devices,
+            gpu_allow_mock,
+        )
+        .await;
     });
 
     (StatusCode::ACCEPTED, Json(serde_json::json!({"ok": true}))).into_response()
@@ -344,25 +357,60 @@ async fn main() {
     // State.
     let active_jobs = orchestrator::new_active_jobs();
 
+    // GPU config: lê uma vez no boot (D4/D7).
+    let gpu_devices_boot = std::env::var("ORCH_GPU_DEVICES")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let gpu_allow_mock_boot = std::env::var("ORCH_GPU_ALLOW_MOCK").eq(&Ok("1".to_string()));
+    if let Some(ref devices) = gpu_devices_boot {
+        tracing::info!("ORCH_GPU_DEVICES={devices} — modo GPU habilitado");
+    }
+    if gpu_allow_mock_boot {
+        tracing::info!("ORCH_GPU_ALLOW_MOCK=1 — guarda anti-mock desabilitada");
+    }
+
     let state = AppState {
         s3: Arc::clone(&s3),
         report_client: Arc::clone(&report_client),
         executor,
         active_jobs,
         manager_token,
+        gpu_devices: gpu_devices_boot.clone(),
+        gpu_allow_mock: gpu_allow_mock_boot,
     };
 
     // Heartbeat loop (~2s, D4/D9).
     let heartbeat_active_jobs = Arc::clone(&state.active_jobs);
+
+    // GPU telemetry: tenta nvidia-smi no boot; se falhar, warn único e fallback.
+    let gpu_telemetry_boot = orchestrator::try_nvidia_smi().await;
+    if gpu_telemetry_boot.is_some() {
+        tracing::info!("nvidia-smi disponível — telemetria GPU habilitada");
+    } else {
+        tracing::warn!(
+            "nvidia-smi indisponível — telemetria GPU desabilitada (gpus:[], vram:None)"
+        );
+    }
+
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
         loop {
             interval.tick().await;
 
+            // Tenta nvidia-smi a cada tick; fallback silencioso.
+            let (gpus, vram_total, vram_used) = match orchestrator::try_nvidia_smi().await {
+                Some(telemetry) => (
+                    telemetry.gpus,
+                    Some(telemetry.vram_total),
+                    Some(telemetry.vram_used),
+                ),
+                None => (vec![], None, None),
+            };
+
             let body = HeartbeatBody {
-                gpus: vec![],
-                vram_total: None,
-                vram_used: None,
+                gpus,
+                vram_total,
+                vram_used,
                 cpu: Some(orchestrator::read_cpu()),
                 ram: Some(orchestrator::read_ram()),
                 ram_total: orchestrator::read_ram_total(),

@@ -15,6 +15,7 @@ import {
   IconSparkles,
   IconTarget,
   IconTrash,
+  IconUpload,
 } from "@/components/icons";
 import { ApiError } from "@/lib/api";
 import { getDataset } from "@/lib/datasets";
@@ -88,6 +89,38 @@ export default function DatasetGalleryPage() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollAbortRef = useRef<AbortController | null>(null);
   const searchTimerRef = useRef<number | null>(null);
+  const [isDraggingPage, setIsDraggingPage] = useState(false);
+  const dragCounterRef = useRef(0);
+
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    dragCounterRef.current += 1;
+    if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
+      setIsDraggingPage(true);
+    }
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    dragCounterRef.current -= 1;
+    if (dragCounterRef.current <= 0) {
+      setIsDraggingPage(false);
+      dragCounterRef.current = 0;
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingPage(false);
+    dragCounterRef.current = 0;
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      await handleFiles(e.dataTransfer.files);
+    }
+  };
 
   const load = useCallback(
     async (id: string) => {
@@ -137,14 +170,15 @@ export default function DatasetGalleryPage() {
     pollAbortRef.current = null;
   }
 
-  // Arma o polling do status (2s) — chamado pelo efeito de status E por
-  // handleTriggerIndex (review 3f fechamento [MAIOR]: o efeito não re-roda
-  // quando só o estado muda; sem isso o badge congelava em "Indexando 0/0").
+  // Arma o polling do status (2s) — ciente de visibilidade da aba
   function startSearchPolling() {
     if (pollRef.current) return;
     const pollCtrl = new AbortController();
     pollAbortRef.current = pollCtrl;
     pollRef.current = setInterval(async () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        return;
+      }
       try {
         const next = await getSearchStatus(datasetId as string, pollCtrl.signal);
         if (pollCtrl.signal.aborted) return;
@@ -648,7 +682,7 @@ export default function DatasetGalleryPage() {
   if (loading) {
     return (
       <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-6">
-        <p className="py-10 text-center text-sm text-zinc-500">Carregando…</p>
+        <p className="py-10 text-center font-mono text-xs text-zinc-400">Carregando galeria…</p>
       </div>
     );
   }
@@ -683,7 +717,37 @@ export default function DatasetGalleryPage() {
   const reviewer = dataset.category === "yolo" ? "AutoTracker" : "AutoLabel";
 
   return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-6">
+    <div
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+      className="relative mx-auto flex max-w-6xl flex-col gap-4 px-4 py-6"
+    >
+      {/* Overlay Óptico de Drag & Drop para Upload de Imagens */}
+      {isDraggingPage && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6 backdrop-blur-md transition-all animate-in fade-in"
+          onDragOver={(e) => e.preventDefault()}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          <div className="pointer-events-none flex flex-col items-center gap-4 rounded-3xl border-2 border-dashed border-brand-500/80 bg-brand-500/10 backdrop-blur-sm p-12 text-center shadow-[0_0_60px_rgba(131,80,242,0.3)]">
+            <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-brand-500/40 bg-brand-500/20 backdrop-blur-sm text-brand-300">
+              <IconUpload className="h-8 w-8" />
+            </div>
+            <div>
+              <p className="font-display text-lg font-bold text-white">
+                Solte as imagens aqui
+              </p>
+              <p className="font-mono text-xs text-brand-200/80 mt-1">
+                Upload direto de amostras para o dataset {dataset.title}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
         <div className="flex items-center space-x-3">
           <Button
@@ -920,20 +984,20 @@ export default function DatasetGalleryPage() {
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-zinc-800/80 bg-zinc-950/60 backdrop-blur-sm px-4 py-2.5 font-mono text-[11px] text-zinc-400">
-        <span className="font-semibold text-zinc-300">
+      <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-white/10 bg-[rgba(31,27,38,0.70)] backdrop-blur-xl shadow-lg px-4 py-2.5 font-mono text-[11px] text-zinc-400">
+        <span className="font-semibold text-zinc-200">
           {dataset.imagesCount.toLocaleString()} amostras
         </span>
-        <span className="h-3 w-px bg-zinc-700"></span>
+        <span className="h-3 w-px bg-white/10"></span>
         <span>
-          <span className="text-[#34d399]">
+          <span className="text-[#34d399] font-semibold">
             {dataset.labeledCount.toLocaleString()}
           </span>{" "}
           rotuladas por {reviewer}
         </span>
-        <span className="h-3 w-px bg-zinc-700"></span>
+        <span className="h-3 w-px bg-white/10"></span>
         <span>Formato: {dataset.format}</span>
-        <span className="h-3 w-px bg-zinc-700"></span>
+        <span className="h-3 w-px bg-white/10"></span>
         <span>
           Backup: exportar/importar mantém JSON/YAML de config + anotações
         </span>
@@ -985,56 +1049,28 @@ export default function DatasetGalleryPage() {
               aria-label="Buscar por texto"
             />
           </div>
-          <span aria-live="polite">
-            {statusFailed || !searchStatus ? (
-              <span
-                title="Não foi possível consultar o status do índice"
-                className="cursor-default rounded-full border border-zinc-800 bg-zinc-900/60 backdrop-blur-sm px-3 py-1.5 text-xs font-medium text-zinc-400"
-              >
-                Status indisponível
-              </span>
-            ) : searchStatus.status === "not_indexed" ? (
-              <span className="flex flex-wrap items-center gap-2">
-                <span
-                  title="Este dataset ainda não tem embeddings — use 'Indexar agora'"
-                  className="cursor-default rounded-full border border-zinc-800 bg-zinc-900/60 backdrop-blur-sm px-3 py-1.5 text-xs font-medium text-zinc-400"
-                >
-                  Sem índice
-                </span>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  onClick={handleTriggerIndex}
-                  disabled={indexBusy}
-                  loading={indexBusy}
-                >
-                  {indexBusy ? "Indexando…" : "Indexar agora"}
-                </Button>
-              </span>
-            ) : searchStatus.status === "indexing" ? (
-              <span
-                title="Indexação de busca semântica em andamento"
-                className="cursor-default rounded-full border border-amber-400/40 bg-amber-400/10 backdrop-blur-sm px-3 py-1.5 font-mono text-xs font-medium text-amber-300"
-              >
-                Indexando {searchStatus.indexedCount}/{searchStatus.imagesCount}
-              </span>
-            ) : searchStatus.status === "ready" ? (
-              <span
-                title="Índice de busca semântica pronto — a busca acontece enquanto você digita"
-                className="cursor-default rounded-full border border-[#34d399]/30 bg-[#34d399]/10 backdrop-blur-sm px-3 py-1.5 text-xs font-medium text-[#a7f3d0]"
-              >
-                Busca pronta
-              </span>
-            ) : (
-              <span
-                title="Há imagens sem embedding — reindexe"
-                className="cursor-default rounded-full border border-zinc-800 bg-zinc-900/60 backdrop-blur-sm px-3 py-1.5 text-xs font-medium text-zinc-400"
-              >
-                Índice desatualizado?
-              </span>
-            )}
-          </span>
+          {searchStatus?.status === "indexing" && (
+            <span
+              aria-live="polite"
+              title="Indexação de busca semântica em andamento"
+              className="cursor-default rounded-full border border-amber-400/40 bg-amber-400/10 backdrop-blur-sm px-3 py-1.5 font-mono text-xs font-medium text-amber-300"
+            >
+              Indexando {searchStatus.indexedCount}/{searchStatus.imagesCount}
+            </span>
+          )}
+          {searchStatus?.status === "not_indexed" && (
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={handleTriggerIndex}
+              disabled={indexBusy}
+              loading={indexBusy}
+              title="Gerar embeddings de busca semântica para este dataset"
+            >
+              {indexBusy ? "Indexando…" : "Indexar busca"}
+            </Button>
+          )}
         </div>
       )}
 
@@ -1048,16 +1084,17 @@ export default function DatasetGalleryPage() {
             {items.map((item) => (
               <div
                 key={item.id}
-                className="group relative h-24 md:h-36 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/90 transition-all hover:border-brand-500/60"
+                className="group relative h-28 sm:h-36 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/90 transition-all hover:border-brand-500/60"
               >
                 <img
                   src={item.url}
                   alt={item.filename}
                   loading="lazy"
+                  decoding="async"
                   className="absolute inset-0 h-full w-full object-cover"
                 />
                 <div className="absolute inset-0 bg-[radial-gradient(#ffffff_1px,transparent_1px)] opacity-20 [background-size:16px_16px]"></div>
-                <span className="absolute top-2 right-2 rounded border border-zinc-700 bg-zinc-950/90 backdrop-blur-sm px-1.5 py-0.5 font-mono text-[8px] text-zinc-300">
+                <span className="absolute top-2 right-2 rounded border border-white/15 bg-zinc-950/90 backdrop-blur-sm px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-caps font-semibold text-zinc-300">
                   {item.split}
                 </span>
                 <button
@@ -1065,11 +1102,11 @@ export default function DatasetGalleryPage() {
                   onClick={() => handleRestore(item)}
                   disabled={restoringId === item.id}
                   aria-label={`Restaurar ${item.filename}`}
-                  className="absolute top-2 left-2 rounded-lg border border-[#34d399]/40 bg-zinc-950/90 backdrop-blur-sm px-2 py-1 font-mono text-[10px] font-medium text-[#a7f3d0] transition-colors hover:bg-[#34d399]/20 disabled:opacity-60"
+                  className="absolute top-2 left-2 rounded-lg border border-[#34d399]/40 bg-zinc-950/90 backdrop-blur-sm px-2 py-1 font-mono text-[11px] font-medium text-[#a7f3d0] transition-colors hover:bg-[#34d399]/20 disabled:opacity-60 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70"
                 >
                   {restoringId === item.id ? "Restaurando…" : "Restaurar"}
                 </button>
-                <div className="absolute inset-x-0 bottom-0 flex items-center justify-between border-t border-zinc-800/80 bg-zinc-950/90 px-2.5 py-1.5 font-mono text-[10px] text-zinc-400 backdrop-blur-sm">
+                <div className="absolute inset-x-0 bottom-0 flex items-center justify-between border-t border-zinc-800/80 bg-zinc-950/90 px-2.5 py-1.5 font-mono text-[11px] text-zinc-300 backdrop-blur-sm">
                   <span title={item.filename} className="truncate">{item.filename}</span>
                 </div>
               </div>
@@ -1079,9 +1116,9 @@ export default function DatasetGalleryPage() {
                 type="button"
                 onClick={loadMore}
                 disabled={loadingMore}
-                className="flex h-24 flex-col items-center justify-center space-y-1.5 md:h-36 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 backdrop-blur-sm text-zinc-400 transition-all hover:border-brand-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 disabled:opacity-60"
+                className="flex h-28 sm:h-36 flex-col items-center justify-center space-y-1.5 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 backdrop-blur-sm text-zinc-400 transition-all hover:border-brand-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 disabled:opacity-60 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70"
               >
-                <span className="font-mono text-[10px]">
+                <span className="font-mono text-[11px]">
                   {loadingMore ? "Carregando…" : "Carregar mais"}
                 </span>
               </button>
@@ -1147,22 +1184,23 @@ export default function DatasetGalleryPage() {
                       `/datasets/${datasetId}/annotate/${result.image.id}`,
                     )
                   }
-                  className="group relative h-24 md:h-36 cursor-pointer overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/90 transition-all hover:border-brand-500/60"
+                  className="group relative h-28 sm:h-36 cursor-pointer overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/90 transition-all hover:border-brand-500/60 focus-within:border-brand-500/60"
                 >
                   <img
                     src={result.image.url}
                     alt={result.image.filename}
                     loading="lazy"
+                    decoding="async"
                     className="absolute inset-0 h-full w-full object-cover"
                   />
                   <div className="absolute inset-0 bg-[radial-gradient(#ffffff_1px,transparent_1px)] opacity-20 [background-size:16px_16px]"></div>
                   <span
                     title="Similaridade (cosseno, -1..1)"
-                    className="absolute top-2 right-2 rounded border border-brand-500/30 bg-zinc-950/90 px-1.5 py-0.5 font-mono text-[10px] text-brand-300 backdrop-blur-sm"
+                    className="absolute top-2 right-2 rounded border border-brand-500/30 bg-zinc-950/90 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-brand-300 backdrop-blur-sm"
                   >
                     {result.score.toFixed(2)}
                   </span>
-                  <div className="absolute inset-x-0 bottom-0 flex items-center justify-between border-t border-zinc-800/80 bg-zinc-950/90 px-2.5 py-1.5 font-mono text-[10px] text-zinc-400 backdrop-blur-sm">
+                  <div className="absolute inset-x-0 bottom-0 flex items-center justify-between border-t border-zinc-800/80 bg-zinc-950/90 px-2.5 py-1.5 font-mono text-[11px] text-zinc-300 backdrop-blur-sm">
                     <span title={result.image.filename} className="truncate">{result.image.filename}</span>
                   </div>
                 </div>
@@ -1171,83 +1209,84 @@ export default function DatasetGalleryPage() {
           )}
         </div>
       ) : (
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
-          {items.map((item) => (
-            <div
-              key={item.id}
-              onClick={() => handleTileClick(item)}
-              className="group relative h-24 md:h-36 cursor-pointer overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/90 transition-all hover:border-brand-500/60"
-            >
-              <img
-                src={item.url}
-                alt={item.filename}
-                loading="lazy"
-                className="absolute inset-0 h-full w-full object-cover"
-              />
-              <div className="absolute inset-0 bg-[radial-gradient(#ffffff_1px,transparent_1px)] opacity-20 [background-size:16px_16px]"></div>
-              <span className="absolute top-2 right-2 rounded border border-zinc-700 bg-zinc-950/90 px-1.5 py-0.5 font-mono text-[8px] text-zinc-300 backdrop-blur-sm">
-                {item.split}
-              </span>
-              <div className="absolute top-2 left-2 flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setDeleting(item);
-                  }}
-                  aria-label={`Mover ${item.filename} para a lixeira`}
-                  title="Mover para a lixeira"
-                  className="rounded-lg border border-rose-500/40 bg-zinc-950/90 p-1.5 text-rose-300 opacity-0 backdrop-blur-sm transition-all group-hover:opacity-100 focus-visible:opacity-100 hover:bg-rose-500/20"
-                >
-                  <IconTrash className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleSimilarSearch(item);
-                  }}
-                  aria-label={`Buscar similares de ${item.filename}`}
-                  title="Buscar similares"
-                  className="rounded-lg border border-brand-500/40 bg-zinc-950/90 p-1.5 text-brand-300 opacity-0 backdrop-blur-sm transition-all group-hover:opacity-100 focus-visible:opacity-100 hover:bg-brand-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
-                >
-                  <IconSearch className="h-3.5 w-3.5" />
-                </button>
-              </div>
-              <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 border-t border-zinc-800/80 bg-zinc-950/90 px-2.5 py-1.5 font-mono text-[10px] text-zinc-400 backdrop-blur-sm">
-                <span title={item.filename} className="min-w-0 flex-1 truncate">{item.filename}</span>
-                <span title={dataset.category === "yolo" ? "Editar bounding boxes" : "Ver caption"} className="shrink-0 truncate transition-colors group-hover:text-brand-400">
-                  {dataset.category === "yolo" ? "editar bbox →" : "ver caption →"}
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+            {items.map((item) => (
+              <div
+                key={item.id}
+                onClick={() => handleTileClick(item)}
+                className="group relative h-28 sm:h-36 cursor-pointer overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/90 transition-all hover:border-brand-500/60 focus-within:border-brand-500/60"
+              >
+                <img
+                  src={item.url}
+                  alt={item.filename}
+                  loading="lazy"
+                  decoding="async"
+                  className="absolute inset-0 h-full w-full object-cover"
+                />
+                <div className="absolute inset-0 bg-[radial-gradient(#ffffff_1px,transparent_1px)] opacity-20 [background-size:16px_16px]"></div>
+                <span className="absolute top-2 right-2 rounded border border-white/15 bg-zinc-950/90 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-caps font-semibold text-zinc-300 backdrop-blur-sm">
+                  {item.split}
                 </span>
+                <div className="absolute top-2 left-2 flex items-center gap-1.5 z-10">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDeleting(item);
+                    }}
+                    aria-label={`Mover ${item.filename} para a lixeira`}
+                    title="Mover para a lixeira"
+                    className="rounded-lg border border-rose-500/40 bg-zinc-950/90 p-1.5 text-rose-300 opacity-0 backdrop-blur-sm transition-all group-hover:opacity-100 focus-visible:opacity-100 hover:bg-rose-500/20 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
+                  >
+                    <IconTrash className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleSimilarSearch(item);
+                    }}
+                    aria-label={`Buscar similares de ${item.filename}`}
+                    title="Buscar similares"
+                    className="rounded-lg border border-brand-500/40 bg-zinc-950/90 p-1.5 text-brand-300 opacity-0 backdrop-blur-sm transition-all group-hover:opacity-100 focus-visible:opacity-100 hover:bg-brand-500/20 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+                  >
+                    <IconSearch className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 border-t border-zinc-800/80 bg-zinc-950/90 px-2.5 py-1.5 font-mono text-[11px] text-zinc-300 backdrop-blur-sm">
+                  <span title={item.filename} className="min-w-0 flex-1 truncate">{item.filename}</span>
+                  <span title={dataset.category === "yolo" ? "Editar bounding boxes" : "Ver caption"} className="shrink-0 truncate transition-colors group-hover:text-brand-400">
+                    {dataset.category === "yolo" ? "editar bbox →" : "ver caption →"}
+                  </span>
+                </div>
               </div>
-            </div>
-          ))}
-          <button
-            type="button"
-            onClick={() => fileRef.current?.click()}
-            disabled={uploading}
-            className="flex h-24 flex-col items-center justify-center space-y-1.5 md:h-36 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 text-zinc-400 backdrop-blur-sm transition-all hover:border-brand-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 disabled:opacity-60"
-          >
-            <IconPlus className="h-5 w-5" />
-            <span className="font-mono text-[10px]">
-              {uploading
-                ? `Enviando ${uploadCount} arquivo(s)…`
-                : "Adicionar imagens"}
-            </span>
-          </button>
-          {items.length < total && (
+            ))}
             <button
               type="button"
-              onClick={loadMore}
-              disabled={loadingMore}
-              className="flex h-24 flex-col items-center justify-center space-y-1.5 md:h-36 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 text-zinc-400 backdrop-blur-sm transition-all hover:border-brand-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 disabled:opacity-60"
+              onClick={() => fileRef.current?.click()}
+              disabled={uploading}
+              className="flex h-28 sm:h-36 flex-col items-center justify-center space-y-1.5 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 text-zinc-400 backdrop-blur-sm transition-all hover:border-brand-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 disabled:opacity-60 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70"
             >
-              <span className="font-mono text-[10px]">
-                {loadingMore ? "Carregando…" : "Carregar mais"}
+              <IconPlus className="h-5 w-5" />
+              <span className="font-mono text-[11px]">
+                {uploading
+                  ? `Enviando ${uploadCount} arquivo(s)…`
+                  : "Adicionar imagens"}
               </span>
             </button>
-          )}
-        </div>
+            {items.length < total && (
+              <button
+                type="button"
+                onClick={loadMore}
+                disabled={loadingMore}
+                className="flex h-28 sm:h-36 flex-col items-center justify-center space-y-1.5 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 text-zinc-400 backdrop-blur-sm transition-all hover:border-brand-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 disabled:opacity-60 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70"
+              >
+                <span className="font-mono text-[11px]">
+                  {loadingMore ? "Carregando…" : "Carregar mais"}
+                </span>
+              </button>
+            )}
+          </div>
       )}
 
       <input

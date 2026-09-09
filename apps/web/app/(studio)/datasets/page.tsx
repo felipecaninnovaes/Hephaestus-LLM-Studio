@@ -279,9 +279,10 @@ export default function DatasetsPage() {
         </div>
       </div>
 
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="w-full sm:max-w-xs">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="min-w-0 flex-1 sm:min-w-[280px]">
           <SearchInput
+            size="lg"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onClear={() => setQuery("")}
@@ -289,15 +290,17 @@ export default function DatasetsPage() {
             aria-label="Buscar por nome, slug ou classe"
           />
         </div>
-        <SubmodulePills<Pill>
-          value={pill}
-          onChange={setPill}
-          items={PILLS.map((p) => ({
-            id: p.id,
-            label: p.label,
-            count: counts[p.id],
-          }))}
-        />
+        <div className="shrink-0">
+          <SubmodulePills<Pill>
+            value={pill}
+            onChange={setPill}
+            items={PILLS.map((p) => ({
+              id: p.id,
+              label: p.label,
+              count: counts[p.id],
+            }))}
+          />
+        </div>
       </div>
 
       {loading ? (
@@ -400,7 +403,7 @@ export default function DatasetsPage() {
           ))}
         </div>
       ) : (
-        <div className="glass-card rounded-2xl p-2 sm:p-3">
+        <div className="overflow-hidden rounded-2xl border border-white/10 bg-[rgba(31,27,38,0.70)] backdrop-blur-xl shadow-2xl">
           <DatasetTable datasets={filtered} onContextMenu={handleContextMenu} />
         </div>
       )}

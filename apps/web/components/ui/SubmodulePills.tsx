@@ -42,7 +42,7 @@ export function SubmodulePills<T extends string = string>({
       <div
         ref={containerRef}
         role="tablist"
-        className="no-scrollbar flex gap-1.5 overflow-x-auto py-0.5 pr-8"
+        className="no-scrollbar flex gap-1.5 overflow-x-auto py-0.5"
       >
         {items.map((item) => {
           const active = item.id === value;
@@ -75,11 +75,6 @@ export function SubmodulePills<T extends string = string>({
           );
         })}
       </div>
-      {/* Fade edge à direita para indicar overflow de scroll */}
-      <div
-        className="pointer-events-none absolute top-0 right-0 h-full w-8 bg-gradient-to-l from-zinc-950 to-transparent"
-        aria-hidden="true"
-      />
     </div>
   );
 }

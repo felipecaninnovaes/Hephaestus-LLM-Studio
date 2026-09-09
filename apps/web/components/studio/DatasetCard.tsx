@@ -154,6 +154,7 @@ function OpticalShowcase({ dataset }: { dataset: Dataset }) {
           src={hero.url}
           alt={hero.filename}
           loading="lazy"
+          decoding="async"
           className="absolute inset-0 h-full w-full object-cover"
         />
         <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-black/20 pointer-events-none" />
@@ -161,7 +162,7 @@ function OpticalShowcase({ dataset }: { dataset: Dataset }) {
         {/* Caixas delimitadoras com cores semânticas da classe */}
         {heroBoxes.map((box) => {
           const cls = classMap.get(box.classId);
-          const color = cls?.color || "#10b981";
+          const color = cls?.color || "#34d399";
           const isNearTop = box.y < 0.12;
 
           return (
@@ -211,6 +212,7 @@ function OpticalShowcase({ dataset }: { dataset: Dataset }) {
             src={images[1].url}
             alt={images[1].filename}
             loading="lazy"
+            decoding="async"
             className="absolute inset-0 h-full w-full object-cover"
           />
           <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-black/20 pointer-events-none" />
@@ -238,6 +240,7 @@ function OpticalShowcase({ dataset }: { dataset: Dataset }) {
                 src={img.url}
                 alt={img.filename}
                 loading="lazy"
+                decoding="async"
                 className="absolute inset-0 h-full w-full object-cover opacity-80 group-hover/sub:opacity-100 transition-opacity"
               />
               <div className="absolute inset-0 bg-black/25 pointer-events-none" />
@@ -275,8 +278,7 @@ export default function DatasetCard({
   const trainTitle = trainEnabled ? "Abrir modal de treino YOLO" : trainDisabledReason(dataset);
 
   return (
-    <Link
-      href={`/datasets/${dataset.id}`}
+    <div
       onContextMenu={
         onContextMenu
           ? (e) => {
@@ -285,14 +287,21 @@ export default function DatasetCard({
             }
           : undefined
       }
-      className="glass-card rounded-2xl p-5 flex flex-col h-full transition-all hover:border-brand-500/30 cursor-pointer group"
+      className="glass-card relative group rounded-2xl p-5 flex flex-col h-full transition-all hover:border-brand-500/30"
     >
+      {/* Stretch link para navegação do card sem aninhamento de botões */}
+      <Link
+        href={`/datasets/${dataset.id}`}
+        className="absolute inset-0 z-0 rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70"
+        aria-label={`Abrir dataset ${dataset.title}`}
+      />
+
       {/* 1. Cabeçalho de Categoria e Status (Altura padronizada h-8) */}
-      <div className="flex items-center justify-between gap-2 h-8">
+      <div className="relative z-10 pointer-events-none flex items-center justify-between gap-2 h-8">
         <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-zinc-900/90 border border-zinc-700/80 backdrop-blur-sm text-zinc-300 group-hover:text-brand-400 transition-colors">
           <CategoryIcon category={dataset.category} />
         </span>
-        <span className="flex min-w-0 items-center justify-end gap-1.5">
+        <span className="flex min-w-0 items-center justify-end gap-1.5 pointer-events-auto">
           {dataset.autoTracked && (
             <Badge variant="telemetry" title="AutoTracker">
               AutoTracker
@@ -308,7 +317,7 @@ export default function DatasetCard({
       </div>
 
       {/* 2. Identificação Textual (Altura padronizada h-[58px] para alinhamento baseline) */}
-      <div className="min-w-0 mt-3 h-[58px] flex flex-col justify-start">
+      <div className="relative z-10 pointer-events-none min-w-0 mt-3 h-[58px] flex flex-col justify-start">
         <p className="truncate text-sm font-semibold text-zinc-100 group-hover:text-white transition-colors" title={dataset.title}>
           {dataset.title}
         </p>
@@ -321,12 +330,12 @@ export default function DatasetCard({
       </div>
 
       {/* 3. Mosaico Óptico (Sempre inicia exatamente na mesma coordenada Y) */}
-      <div className="mt-3.5">
+      <div className="relative z-10 pointer-events-none mt-3.5">
         <OpticalShowcase dataset={dataset} />
       </div>
 
       {/* 4. Métricas Principais (Sempre alinhadas na mesma linha horizontal) */}
-      <div className="grid grid-cols-2 gap-2 mt-3.5">
+      <div className="relative z-10 pointer-events-none grid grid-cols-2 gap-2 mt-3.5">
         <div className="p-2.5 rounded-xl bg-zinc-900/80 border border-zinc-800/60 backdrop-blur-sm">
           <p className="tracking-caps font-mono text-[11px] uppercase text-zinc-400">
             Imagens
@@ -346,7 +355,7 @@ export default function DatasetCard({
       </div>
 
       {/* 5. Seção de Classes (Altura consistente min-h-[64px] garantindo simetria) */}
-      <div className="mt-3.5 min-h-[64px] flex flex-col justify-start">
+      <div className="relative z-10 pointer-events-none mt-3.5 min-h-[64px] flex flex-col justify-start">
         <div className="flex items-center justify-between mb-1">
           <span className="text-[11px] text-zinc-400 font-mono uppercase tracking-caps">
             Classes ({dataset.classes.length}):
@@ -368,7 +377,7 @@ export default function DatasetCard({
             </div>
 
             {/* Chips de classes com dot cromático */}
-            <div className="flex flex-wrap gap-1.5">
+            <div className="flex flex-wrap gap-1.5 pointer-events-auto">
               {visibleClasses.map((c) => (
                 <span
                   key={c.id}
@@ -406,7 +415,7 @@ export default function DatasetCard({
       </div>
 
       {/* 6. Rodapé (Ancorado no final com mt-auto, alinhando a linha de base em 100% dos cards) */}
-      <div className="mt-auto pt-3 border-t border-zinc-800/80 flex items-center justify-between gap-2 text-[11px] text-zinc-400 font-mono">
+      <div className="relative z-10 mt-auto pt-3 border-t border-zinc-800/80 flex items-center justify-between gap-2 text-[11px] text-zinc-400 font-mono">
         <span className="min-w-0 truncate" title={`${formatBytes(dataset.sizeBytes)} · ${formatRelativeTime(dataset.lastModified)}`}>
           {formatBytes(dataset.sizeBytes)} · {formatRelativeTime(dataset.lastModified)}
         </span>
@@ -415,11 +424,10 @@ export default function DatasetCard({
           disabled={!trainEnabled}
           title={trainTitle}
           onClick={(e) => {
-            e.preventDefault();
             e.stopPropagation();
             if (trainEnabled && onTrain) onTrain(dataset);
           }}
-          className={`shrink-0 font-medium ${
+          className={`shrink-0 font-medium cursor-pointer rounded px-1.5 py-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${
             trainEnabled
               ? "text-brand-400 transition-colors hover:text-brand-300"
               : "cursor-not-allowed text-brand-400/50"
@@ -428,6 +436,6 @@ export default function DatasetCard({
           Treinar →
         </button>
       </div>
-    </Link>
+    </div>
   );
 }

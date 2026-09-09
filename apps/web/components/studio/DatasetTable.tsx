@@ -13,18 +13,18 @@ export default function DatasetTable({
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-xs">
-        <thead>
+        <thead className="border-b border-white/10 bg-white/[0.03]">
           <tr className="tracking-caps text-left font-mono text-[11px] uppercase text-zinc-400">
-            <th className="px-3 py-2 font-medium">Nome</th>
-            <th className="px-3 py-2 font-medium">Formato-Tarefa</th>
-            <th className="px-3 py-2 font-medium">Imagens</th>
-            <th className="px-3 py-2 font-medium">Progresso</th>
-            <th className="px-3 py-2 font-medium">Origem Storage</th>
-            <th className="px-3 py-2 font-medium">Modificado</th>
-            <th className="px-3 py-2 font-medium">Ações</th>
+            <th className="px-3.5 py-3 font-medium">Nome</th>
+            <th className="px-3.5 py-3 font-medium">Formato-Tarefa</th>
+            <th className="px-3.5 py-3 font-medium">Imagens</th>
+            <th className="px-3.5 py-3 font-medium">Progresso</th>
+            <th className="px-3.5 py-3 font-medium">Origem Storage</th>
+            <th className="px-3.5 py-3 font-medium">Modificado</th>
+            <th className="px-3.5 py-3 font-medium text-right">Ações</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody className="divide-y divide-white/5">
           {datasets.map((d) => {
             const pct = formatPercent(d.labeledCount, d.imagesCount);
             return (
@@ -38,7 +38,7 @@ export default function DatasetTable({
                       }
                     : undefined
                 }
-                className="border-t border-zinc-800/80 transition-colors hover:bg-brand-500/5"
+                className="transition-colors hover:bg-brand-500/[0.05]"
               >
                 <td className="max-w-56 px-3 py-2.5">
                   <Link href={`/datasets/${d.id}`} className="block min-w-0">

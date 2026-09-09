@@ -58,6 +58,9 @@ export default function DashboardPage() {
   };
 
   const fetchDashboardData = async () => {
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+      return;
+    }
     try {
       const [telemData, datasetsRes, jobsRes] = await Promise.allSettled([
         getTelemetry(),
@@ -85,7 +88,16 @@ export default function DashboardPage() {
   useEffect(() => {
     fetchDashboardData();
     const interval = setInterval(fetchDashboardData, 3000);
-    return () => clearInterval(interval);
+    const handleVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        fetchDashboardData();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, []);
 
   const handleManualRefresh = () => {
@@ -186,7 +198,7 @@ export default function DashboardPage() {
       {/* Top Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <div className="font-mono text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+          <div className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-400">
             Painel de Controle
           </div>
           <h1 className="font-display text-2xl font-bold tracking-tight text-white sm:text-3xl">
@@ -196,17 +208,17 @@ export default function DashboardPage() {
 
         {/* Action Controls */}
         <div className="flex items-center space-x-2.5">
-          {/* View Toggle */}
-          <div className="flex items-center rounded-xl border border-white/10 bg-white/[0.04] backdrop-blur-sm p-1 shadow-sm">
+          {/* View Toggle - Canonical Segmented Control from DESIGN.md:302 */}
+          <div className="inline-flex rounded-full border border-white/10 bg-black/40 p-1 shadow-sm">
             <button
               type="button"
               onClick={() => setViewMode("grid")}
               aria-label="Visualização em Grade"
               title="Visualização em Grade"
-              className={`flex size-8 items-center justify-center rounded-lg transition-all ${
+              className={`flex h-7 px-2.5 items-center justify-center rounded-full transition-colors cursor-pointer ${
                 viewMode === "grid"
-                  ? "border border-brand-500/30 bg-brand-500/20 backdrop-blur-sm text-brand-300 shadow-sm"
-                  : "text-zinc-400 hover:text-white"
+                  ? "bg-brand-500/[0.18] text-brand-300 shadow-sm"
+                  : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.05]"
               }`}
             >
               <IconGrid className="size-4" />
@@ -216,10 +228,10 @@ export default function DashboardPage() {
               onClick={() => setViewMode("list")}
               aria-label="Visualização em Lista"
               title="Visualização em Lista"
-              className={`flex size-8 items-center justify-center rounded-lg transition-all ${
+              className={`flex h-7 px-2.5 items-center justify-center rounded-full transition-colors cursor-pointer ${
                 viewMode === "list"
-                  ? "border border-brand-500/30 bg-brand-500/20 backdrop-blur-sm text-brand-300 shadow-sm"
-                  : "text-zinc-400 hover:text-white"
+                  ? "bg-brand-500/[0.18] text-brand-300 shadow-sm"
+                  : "text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.05]"
               }`}
             >
               <IconList className="size-4" />
@@ -246,14 +258,14 @@ export default function DashboardPage() {
       {/* 4 Cards de Resumo de IA & Treinamento */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {/* Tile 1: Datasets */}
-        <div className="glass-card group rounded-2xl border border-white/10 bg-white/[0.02] p-4.5 transition-all hover:border-brand-500/30 hover:bg-white/[0.04]">
-          <div className="flex items-center space-x-2 text-zinc-400">
+        <div className="glass-card group rounded-xl border border-white/10 bg-[rgba(31,27,38,0.70)] backdrop-blur-xl p-4 transition-[border-color,background-color] hover:border-brand-500/30 hover:bg-[rgba(38,33,47,0.78)]">
+          <div className="flex items-center space-x-2 text-zinc-300">
             <IconDatabase className="size-4 text-brand-400" />
-            <span className="font-mono text-xs font-semibold tracking-wider uppercase">
+            <span className="font-mono text-[11px] font-semibold tracking-[0.08em] uppercase">
               Datasets
             </span>
           </div>
-          <div className="mt-2 font-display text-3xl font-bold tracking-tight text-white">
+          <div className="mt-2 font-mono text-2xl sm:text-3xl font-bold tracking-tight text-white">
             {datasets.length}
           </div>
           <div className="mt-1 text-xs text-zinc-400">
@@ -262,14 +274,14 @@ export default function DashboardPage() {
         </div>
 
         {/* Tile 2: Jobs de Treinamento */}
-        <div className="glass-card group rounded-2xl border border-white/10 bg-white/[0.02] p-4.5 transition-all hover:border-brand-500/30 hover:bg-white/[0.04]">
-          <div className="flex items-center space-x-2 text-zinc-400">
-            <IconLayers className="size-4 text-emerald-400" />
-            <span className="font-mono text-xs font-semibold tracking-wider uppercase">
+        <div className="glass-card group rounded-xl border border-white/10 bg-[rgba(31,27,38,0.70)] backdrop-blur-xl p-4 transition-[border-color,background-color] hover:border-brand-500/30 hover:bg-[rgba(38,33,47,0.78)]">
+          <div className="flex items-center space-x-2 text-zinc-300">
+            <IconLayers className="size-4 text-[#34d399]" />
+            <span className="font-mono text-[11px] font-semibold tracking-[0.08em] uppercase">
               Jobs de Treino
             </span>
           </div>
-          <div className="mt-2 font-display text-3xl font-bold tracking-tight text-white">
+          <div className="mt-2 font-mono text-2xl sm:text-3xl font-bold tracking-tight text-white">
             {activeJobsCount > 0 ? `${activeJobsCount} Ativo` : `${completedJobsCount} Executados`}
           </div>
           <div className="mt-1 text-xs text-zinc-400">
@@ -278,14 +290,14 @@ export default function DashboardPage() {
         </div>
 
         {/* Tile 3: Modelos & Pesos */}
-        <div className="glass-card group rounded-2xl border border-white/10 bg-white/[0.02] p-4.5 transition-all hover:border-brand-500/30 hover:bg-white/[0.04]">
-          <div className="flex items-center space-x-2 text-zinc-400">
+        <div className="glass-card group rounded-xl border border-white/10 bg-[rgba(31,27,38,0.70)] backdrop-blur-xl p-4 transition-[border-color,background-color] hover:border-brand-500/30 hover:bg-[rgba(38,33,47,0.78)]">
+          <div className="flex items-center space-x-2 text-zinc-300">
             <IconBox className="size-4 text-sky-400" />
-            <span className="font-mono text-xs font-semibold tracking-wider uppercase">
+            <span className="font-mono text-[11px] font-semibold tracking-[0.08em] uppercase">
               Modelos &amp; Pesos
             </span>
           </div>
-          <div className="mt-2 font-display text-3xl font-bold tracking-tight text-white">
+          <div className="mt-2 font-mono text-2xl sm:text-3xl font-bold tracking-tight text-white">
             14
           </div>
           <div className="mt-1 text-xs text-zinc-400">
@@ -294,14 +306,14 @@ export default function DashboardPage() {
         </div>
 
         {/* Tile 4: Storage S3 (SeaweedFS) */}
-        <div className="glass-card group rounded-2xl border border-white/10 bg-white/[0.02] p-4.5 transition-all hover:border-brand-500/30 hover:bg-white/[0.04]">
-          <div className="flex items-center space-x-2 text-zinc-400">
+        <div className="glass-card group rounded-xl border border-white/10 bg-[rgba(31,27,38,0.70)] backdrop-blur-xl p-4 transition-[border-color,background-color] hover:border-brand-500/30 hover:bg-[rgba(38,33,47,0.78)]">
+          <div className="flex items-center space-x-2 text-zinc-300">
             <IconHardDrive className="size-4 text-amber-400" />
-            <span className="font-mono text-xs font-semibold tracking-wider uppercase">
+            <span className="font-mono text-[11px] font-semibold tracking-[0.08em] uppercase">
               Storage Canônico
             </span>
           </div>
-          <div className="mt-2 font-display text-3xl font-bold tracking-tight text-white">
+          <div className="mt-2 font-mono text-2xl sm:text-3xl font-bold tracking-tight text-white">
             34.8 GB
           </div>
           <div className="mt-1 text-xs text-zinc-400">
@@ -337,17 +349,17 @@ export default function DashboardPage() {
                         <span>{node.version}</span>
                         <span className="relative ml-1.5 flex h-2 w-2">
                           <span
-                            className={`absolute inline-flex h-full w-full animate-ping rounded-full opacity-75 ${
+                            className={`absolute inline-flex h-full w-full animate-ping rounded-full opacity-75 motion-reduce:animate-none ${
                               node.versionStatus === "standby"
                                 ? "bg-amber-400"
-                                : "bg-emerald-400"
+                                : "bg-[#34d399]"
                             }`}
                           />
                           <span
                             className={`relative inline-flex h-2 w-2 rounded-full ${
                               node.versionStatus === "standby"
                                 ? "bg-amber-500"
-                                : "bg-emerald-500"
+                                : "bg-[#34d399]"
                             }`}
                           />
                         </span>
@@ -357,7 +369,7 @@ export default function DashboardPage() {
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-zinc-400">
                       <span className="font-mono">{node.endpoint}</span>
                       <span>•</span>
-                      <span className="text-zinc-500">{node.runtime}</span>
+                      <span className="text-zinc-400 font-mono">{node.runtime}</span>
                     </div>
                   </div>
 
@@ -367,7 +379,7 @@ export default function DashboardPage() {
                       <button
                         type="button"
                         disabled
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-brand-500/30 bg-brand-500/10 backdrop-blur-sm px-2.5 py-1 text-xs font-medium text-brand-300 shadow-none"
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-brand-500/30 bg-brand-500/10 backdrop-blur-sm px-2.5 py-1 text-xs font-medium text-brand-300 shadow-none select-none"
                       >
                         <IconServer className="size-3.5 text-brand-400" />
                         <span>Ativo</span>
@@ -377,7 +389,7 @@ export default function DashboardPage() {
                     <button
                       type="button"
                       aria-label="Abrir menu de opções do orquestrador"
-                      className="inline-flex size-8 items-center justify-center rounded-lg border border-transparent text-zinc-400 transition hover:bg-white/[0.08] hover:text-white"
+                      className="inline-flex size-8 items-center justify-center rounded-lg border border-transparent text-zinc-400 transition hover:bg-white/[0.08] hover:text-white cursor-pointer focus-visible:ring-2 focus-visible:ring-brand-500/70"
                     >
                       <IconMoreHorizontal className="size-4" />
                     </button>
@@ -392,7 +404,7 @@ export default function DashboardPage() {
                         {part.trim()}
                       </span>
                       {idx < node.statusText.split("·").length - 1 && (
-                        <span className="text-zinc-600">·</span>
+                        <span className="text-zinc-500">·</span>
                       )}
                     </span>
                   ))}
@@ -404,7 +416,7 @@ export default function DashboardPage() {
                     {/* Gauge GPU */}
                     <div className="min-w-0 rounded-xl bg-white/[0.02] backdrop-blur-sm p-3 border border-white/5">
                       <div className="flex items-start justify-between gap-2">
-                        <p className="flex items-center gap-1.5 text-[10px] font-semibold tracking-wide text-zinc-400 uppercase">
+                        <p className="flex items-center gap-1.5 font-mono text-[11px] font-semibold tracking-[0.08em] text-zinc-400 uppercase">
                           <IconCpu className="size-3.5 text-brand-400" />
                           <span>USO DA GPU</span>
                         </p>
@@ -412,7 +424,7 @@ export default function DashboardPage() {
                           {node.metrics.gpu.pct}%
                         </p>
                       </div>
-                      <p className="mt-0.5 truncate text-[11px] text-zinc-500 font-mono" title={node.metrics.gpu.label}>
+                      <p className="mt-0.5 truncate text-[11px] text-zinc-400 font-mono" title={node.metrics.gpu.label}>
                         {node.metrics.gpu.label}
                       </p>
                       <div className="mt-3">
@@ -432,11 +444,11 @@ export default function DashboardPage() {
                             />
                           </div>
                           <div
-                            className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-brand-500/70 to-brand-500 transition-[width] duration-700 ease-out"
+                            className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-brand-500/70 to-brand-500 transition-[width] duration-700 ease-out motion-reduce:transition-none"
                             style={{ width: `${node.metrics.gpu.pct}%` }}
                           />
                           <div
-                            className="absolute top-1/2 size-2 -translate-y-1/2 rounded-full shadow-[0_0_0_2px_#09090b] transition-[left] duration-700 ease-out bg-brand-400"
+                            className="absolute top-1/2 size-2 -translate-y-1/2 rounded-full shadow-[0_0_0_2px_#09090b] transition-[left] duration-700 ease-out motion-reduce:transition-none bg-brand-400"
                             style={{
                               left: `calc(${node.metrics.gpu.pct}% - 4px)`,
                             }}
@@ -448,7 +460,7 @@ export default function DashboardPage() {
                     {/* Gauge VRAM */}
                     <div className="min-w-0 rounded-xl bg-white/[0.02] backdrop-blur-sm p-3 border border-white/5">
                       <div className="flex items-start justify-between gap-2">
-                        <p className="flex items-center gap-1.5 text-[10px] font-semibold tracking-wide text-zinc-400 uppercase">
+                        <p className="flex items-center gap-1.5 font-mono text-[11px] font-semibold tracking-[0.08em] text-zinc-400 uppercase">
                           <IconActivity className="size-3.5 text-brand-400" />
                           <span>USO DA VRAM</span>
                         </p>
@@ -456,7 +468,7 @@ export default function DashboardPage() {
                           {node.metrics.vram.pct}%
                         </p>
                       </div>
-                      <p className="mt-0.5 truncate text-[11px] text-zinc-500 font-mono" title={node.metrics.vram.label}>
+                      <p className="mt-0.5 truncate text-[11px] text-zinc-400 font-mono" title={node.metrics.vram.label}>
                         {node.metrics.vram.label}
                       </p>
                       <div className="mt-3">
@@ -476,11 +488,11 @@ export default function DashboardPage() {
                             />
                           </div>
                           <div
-                            className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-brand-500/70 to-brand-500 transition-[width] duration-700 ease-out"
+                            className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-brand-500/70 to-brand-500 transition-[width] duration-700 ease-out motion-reduce:transition-none"
                             style={{ width: `${node.metrics.vram.pct}%` }}
                           />
                           <div
-                            className="absolute top-1/2 size-2 -translate-y-1/2 rounded-full shadow-[0_0_0_2px_#09090b] transition-[left] duration-700 ease-out bg-brand-400"
+                            className="absolute top-1/2 size-2 -translate-y-1/2 rounded-full shadow-[0_0_0_2px_#09090b] transition-[left] duration-700 ease-out motion-reduce:transition-none bg-brand-400"
                             style={{
                               left: `calc(${node.metrics.vram.pct}% - 4px)`,
                             }}
@@ -492,7 +504,7 @@ export default function DashboardPage() {
                     {/* Gauge Sistema / Host */}
                     <div className="min-w-0 rounded-xl bg-white/[0.02] backdrop-blur-sm p-3 border border-white/5">
                       <div className="flex items-start justify-between gap-2">
-                        <p className="flex items-center gap-1.5 text-[10px] font-semibold tracking-wide text-zinc-400 uppercase">
+                        <p className="flex items-center gap-1.5 font-mono text-[11px] font-semibold tracking-[0.08em] text-zinc-400 uppercase">
                           <IconHardDrive className="size-3.5 text-brand-400" />
                           <span>SISTEMA &amp; HOST</span>
                         </p>
@@ -500,7 +512,7 @@ export default function DashboardPage() {
                           {node.metrics.system.pct}%
                         </p>
                       </div>
-                      <p className="mt-0.5 truncate text-[11px] text-zinc-500 font-mono" title={node.metrics.system.label}>
+                      <p className="mt-0.5 truncate text-[11px] text-zinc-400 font-mono" title={node.metrics.system.label}>
                         {node.metrics.system.label}
                       </p>
                       <div className="mt-3">
@@ -520,11 +532,11 @@ export default function DashboardPage() {
                             />
                           </div>
                           <div
-                            className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-brand-500/70 to-brand-500 transition-[width] duration-700 ease-out"
+                            className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-brand-500/70 to-brand-500 transition-[width] duration-700 ease-out motion-reduce:transition-none"
                             style={{ width: `${node.metrics.system.pct}%` }}
                           />
                           <div
-                            className="absolute top-1/2 size-2 -translate-y-1/2 rounded-full shadow-[0_0_0_2px_#09090b] transition-[left] duration-700 ease-out bg-brand-400"
+                            className="absolute top-1/2 size-2 -translate-y-1/2 rounded-full shadow-[0_0_0_2px_#09090b] transition-[left] duration-700 ease-out motion-reduce:transition-none bg-brand-400"
                             style={{
                               left: `calc(${node.metrics.system.pct}% - 4px)`,
                             }}
@@ -540,10 +552,10 @@ export default function DashboardPage() {
         </div>
       ) : (
         /* Modo Tabela / Lista */
-        <div className="overflow-hidden rounded-2xl border border-white/10 bg-zinc-950/60 backdrop-blur-xl">
+        <div className="overflow-hidden rounded-2xl border border-white/10 bg-[rgba(31,27,38,0.70)] backdrop-blur-xl shadow-2xl">
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
-              <thead className="border-b border-white/10 bg-white/[0.03] font-mono text-[11px] text-zinc-400 uppercase tracking-wider">
+              <thead className="border-b border-white/10 bg-white/[0.03] font-mono text-[11px] text-zinc-400 uppercase tracking-[0.08em]">
                 <tr>
                   <th className="px-5 py-3.5">Orquestrador / Nó</th>
                   <th className="px-5 py-3.5">Função</th>
@@ -570,7 +582,7 @@ export default function DashboardPage() {
                           <div className="font-semibold text-white">
                             {node.name}
                           </div>
-                          <div className="font-mono text-[11px] text-zinc-500">
+                          <div className="font-mono text-[11px] text-zinc-400">
                             {node.endpoint}
                           </div>
                         </div>
@@ -588,7 +600,7 @@ export default function DashboardPage() {
                           className={`size-2 rounded-full ${
                             node.versionStatus === "standby"
                               ? "bg-amber-400"
-                              : "bg-emerald-400"
+                              : "bg-[#34d399]"
                           }`}
                         />
                       </div>
@@ -614,8 +626,8 @@ export default function DashboardPage() {
                     <td className="px-5 py-4 text-right">
                       <button
                         type="button"
-                        aria-label="Abrir menu do orquestrador"
-                        className="inline-flex size-8 items-center justify-center rounded-lg text-zinc-400 hover:bg-white/[0.08] hover:text-white"
+                        aria-label={`Abrir menu do orquestrador ${node.name}`}
+                        className="inline-flex size-8 items-center justify-center rounded-lg text-zinc-400 hover:bg-white/[0.08] hover:text-white cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70"
                       >
                         <IconMoreHorizontal className="size-4" />
                       </button>

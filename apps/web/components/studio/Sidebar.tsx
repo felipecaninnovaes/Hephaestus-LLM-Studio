@@ -123,6 +123,9 @@ export default function Sidebar({
   useEffect(() => {
     let active = true;
     const fetchTelem = async () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        return;
+      }
       try {
         const data = await getTelemetry();
         if (active) setTelemetry(data);
@@ -130,9 +133,16 @@ export default function Sidebar({
     };
     fetchTelem();
     const interval = setInterval(fetchTelem, 3000);
+    const handleVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        fetchTelem();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       active = false;
       clearInterval(interval);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);
 
@@ -292,7 +302,7 @@ export default function Sidebar({
             setIsHovered(false);
           }
         }}
-        className={`fixed inset-y-0 left-0 z-50 flex flex-col border-r border-zinc-800/80 bg-zinc-950/85 backdrop-blur-xl transition-[width,transform,box-shadow] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] lg:z-30 ${
+        className={`fixed inset-y-0 left-0 z-50 flex flex-col border-r border-zinc-800/80 bg-zinc-950/85 backdrop-blur-xl transition-[width,transform,box-shadow] duration-250 ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none will-change-[width,transform] lg:z-30 ${
           open
             ? "translate-x-0 shadow-2xl shadow-black/80"
             : "-translate-x-full lg:translate-x-0"
@@ -304,7 +314,7 @@ export default function Sidebar({
       >
         {/* Header Superior (Brand Logo + Pin) */}
         <div
-          className={`flex h-14 shrink-0 items-center border-b border-zinc-800/80 bg-zinc-950/60 transition-all duration-300 ${
+          className={`flex h-14 shrink-0 items-center border-b border-zinc-800/80 bg-zinc-950/60 transition-[padding] duration-250 ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none ${
             isExpanded ? "px-3.5 justify-between" : "px-0 justify-center"
           }`}
         >
@@ -322,7 +332,7 @@ export default function Sidebar({
                     Studio
                   </span>
                 </div>
-                <div className="font-mono text-[11px] text-zinc-500 whitespace-nowrap">
+                <div className="font-mono text-[11px] text-zinc-400 whitespace-nowrap">
                   <span title="Hephaestus LLM Studio v1.3.0">v1.3.0 · AI Engine</span>
                 </div>
               </div>
@@ -361,7 +371,7 @@ export default function Sidebar({
 
         {/* Scrollable Navigation Body */}
         <div
-          className={`flex-1 min-h-0 space-y-3.5 overflow-y-auto overflow-x-hidden transition-all duration-300 ${
+          className={`flex-1 min-h-0 space-y-3.5 overflow-y-auto overflow-x-hidden transition-[padding] duration-250 ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none ${
             isExpanded ? "p-3" : "py-3 px-0 flex flex-col items-center"
           }`}
         >
@@ -375,7 +385,7 @@ export default function Sidebar({
               }}
               title="Orquestrador Local (http://localhost:8080 · CUDA 12.4)"
               aria-label="Orquestrador Local (http://localhost:8080 · CUDA 12.4)"
-              className={`group relative flex items-center rounded-xl border border-white/10 bg-white/[0.03] transition-all hover:border-brand-500/40 hover:bg-brand-500/[0.06] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] cursor-pointer ${
+              className={`group relative flex items-center rounded-xl border border-white/10 bg-white/[0.03] transition-colors hover:border-brand-500/40 hover:bg-brand-500/[0.06] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] cursor-pointer ${
                 isExpanded
                   ? "w-full justify-between p-2.5"
                   : "size-10 justify-center p-0"
@@ -391,12 +401,12 @@ export default function Sidebar({
                       <div className="truncate text-xs font-semibold text-zinc-200 group-hover:text-white">
                         Orquestrador Local
                       </div>
-                      <div className="truncate font-mono text-[11px] text-zinc-500">
+                      <div className="truncate font-mono text-[11px] text-zinc-400">
                         localhost:8080 · PyTorch CUDA
                       </div>
                     </div>
                   </div>
-                  <IconChevronRight className="size-3.5 shrink-0 text-zinc-500 group-hover:text-zinc-300" />
+                  <IconChevronRight className="size-3.5 shrink-0 text-zinc-400 group-hover:text-zinc-200 transition-colors" />
                 </>
               ) : (
                 <IconServer className="size-4.5 text-brand-400 group-hover:scale-105 transition-transform" />
@@ -415,7 +425,7 @@ export default function Sidebar({
                 }}
                 title="Centro de Atividades (Notificações & Jobs)"
                 aria-label={`Centro de Atividades (${telemetry?.jobsActive ?? 0} jobs ativos)`}
-                className={`group relative flex items-center rounded-xl border border-white/10 bg-white/[0.03] text-xs text-zinc-300 transition-all hover:border-brand-500/40 hover:bg-brand-500/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] cursor-pointer ${
+                className={`group relative flex items-center rounded-xl border border-white/10 bg-white/[0.03] text-xs text-zinc-300 transition-colors hover:border-brand-500/40 hover:bg-brand-500/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] cursor-pointer ${
                   isExpanded
                     ? "w-full justify-between p-2.5"
                     : "size-10 justify-center p-0"
@@ -448,13 +458,16 @@ export default function Sidebar({
           )}
 
           {/* Seções de Navegação do Hephaestus LLM Studio */}
-          {sections.map((section) => (
+          {sections.map((section, sectionIdx) => (
             <div
               key={section.title}
               className={isExpanded ? "w-full" : "flex flex-col items-center w-full"}
             >
+              {!isExpanded && sectionIdx > 0 && (
+                <div className="w-6 h-px bg-white/5 my-1.5 shrink-0" aria-hidden="true" />
+              )}
               {isExpanded && (
-                <div className="mb-1 px-3 font-mono text-[11px] font-semibold uppercase tracking-wider text-zinc-500 whitespace-nowrap">
+                <div className="mb-1 px-3 font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-400 whitespace-nowrap">
                   {section.title}
                 </div>
               )}
@@ -572,7 +585,7 @@ export default function Sidebar({
 
         {/* Rodapé: Status do Orquestrador + Perfil do Usuário + Versão */}
         <div
-          className={`flex shrink-0 flex-col border-t border-zinc-800/80 bg-zinc-950/90 pb-[max(0.75rem,env(safe-area-inset-bottom))] transition-all duration-300 ${
+          className={`flex shrink-0 flex-col border-t border-zinc-800/80 bg-zinc-950/90 pb-[max(0.75rem,env(safe-area-inset-bottom))] transition-[padding] duration-250 ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none ${
             isExpanded ? "p-3 space-y-2.5" : "py-3 px-0 items-center space-y-2"
           }`}
         >
@@ -581,7 +594,7 @@ export default function Sidebar({
             <div className="flex items-center justify-between rounded-xl border border-[#34d399]/25 bg-[#34d399]/[0.05] backdrop-blur-sm px-2.5 py-2 text-xs">
               <div className="flex items-center space-x-2">
                 <span className="relative flex h-2 w-2">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#34d399] opacity-75" />
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#34d399] opacity-75 motion-reduce:animate-none" />
                   <span className="relative inline-flex h-2 w-2 rounded-full bg-[#34d399]" />
                 </span>
                 <span className="text-zinc-200 font-medium">Orquestrador Online</span>
@@ -597,7 +610,7 @@ export default function Sidebar({
             >
               <IconServer className="size-4" />
               <span className="absolute top-1 right-1 flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#34d399] opacity-75" />
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#34d399] opacity-75 motion-reduce:animate-none" />
                 <span className="relative inline-flex h-2 w-2 rounded-full bg-[#34d399]" />
               </span>
             </div>
@@ -613,7 +626,7 @@ export default function Sidebar({
               <div
                 role="menu"
                 aria-label="Perfil do operador e opções de sessão"
-                className={`glass-menu absolute z-50 rounded-2xl p-3 shadow-2xl transition-all ${
+                className={`glass-menu absolute z-50 rounded-2xl p-3 shadow-2xl transition-[opacity,transform] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none ${
                   isExpanded
                     ? "bottom-full mb-2 left-0 right-0"
                     : "bottom-0 left-[calc(100%+8px)] w-72"
@@ -642,11 +655,11 @@ export default function Sidebar({
                 {/* Metadados da Sessão e Ambiente */}
                 <div className="py-2.5 space-y-1.5 text-xs">
                   <div className="flex items-center justify-between">
-                    <span className="font-mono text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+                    <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-400">
                       Ambiente Ativo
                     </span>
                     <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-[#34d399]">
-                      <span className="size-1.5 rounded-full bg-[#34d399] animate-pulse" />
+                      <span className="size-1.5 rounded-full bg-[#34d399] animate-pulse motion-reduce:animate-none" />
                       Online
                     </span>
                   </div>
@@ -665,7 +678,7 @@ export default function Sidebar({
                     </div>
                     <div className="flex items-center justify-between text-[11px]">
                       <span className="text-zinc-400">Versão</span>
-                      <span className="font-mono text-zinc-500">v1.3.0</span>
+                      <span className="font-mono text-zinc-400">v1.3.0</span>
                     </div>
                   </div>
                 </div>
@@ -677,21 +690,21 @@ export default function Sidebar({
                       type="button"
                       onClick={() => setConfirmingLogout(true)}
                       disabled={leaving}
-                      className="group flex w-full items-center justify-between rounded-xl border border-transparent px-2.5 py-2 text-xs font-medium text-zinc-300 transition hover:border-rose-500/30 hover:bg-rose-500/10 hover:text-rose-300 active:scale-[0.985] cursor-pointer focus-visible:ring-2 focus-visible:ring-brand-500/70"
+                      className="group flex w-full items-center justify-between rounded-xl border border-transparent px-2.5 py-2 text-sm font-medium text-zinc-200 transition hover:border-rose-500/30 hover:bg-rose-500/10 hover:text-rose-300 active:scale-[0.985] cursor-pointer focus-visible:ring-2 focus-visible:ring-brand-500/70"
                     >
                       <div className="flex items-center space-x-2">
                         <IconLogOut className="size-3.5 text-zinc-400 group-hover:text-rose-400 transition-colors" />
                         <span>Encerrar Sessão</span>
                       </div>
-                      <IconChevronRight className="size-3.5 text-zinc-600 group-hover:text-rose-400/70 transition-colors" />
+                      <IconChevronRight className="size-3.5 text-zinc-400 group-hover:text-rose-400/70 transition-colors" />
                     </button>
                   ) : (
                     <div className="rounded-xl border border-rose-500/30 bg-rose-950/20 p-2.5 space-y-2">
-                      <div className="flex items-center gap-1.5 text-xs font-semibold text-rose-200">
+                      <div className="flex items-center gap-1.5 text-sm font-semibold text-rose-200">
                         <IconShield className="size-3.5 text-rose-400 shrink-0" />
                         <span>Encerrar sessão?</span>
                       </div>
-                      <p className="text-[11px] leading-tight text-zinc-400">
+                      <p className="text-xs leading-relaxed text-zinc-300">
                         Treinos e processos no daemon continuarão em segundo plano.
                       </p>
                       <div className="flex items-center gap-2 pt-1">
@@ -699,7 +712,7 @@ export default function Sidebar({
                           type="button"
                           onClick={() => setConfirmingLogout(false)}
                           disabled={leaving}
-                          className="flex-1 h-7.5 rounded-lg border border-white/10 bg-white/[0.05] text-xs font-medium text-zinc-300 hover:bg-white/[0.10] hover:text-white transition active:scale-[0.985] cursor-pointer focus-visible:ring-2 focus-visible:ring-brand-500/70"
+                          className="flex-1 h-8 rounded-md border border-white/10 bg-white/[0.05] text-sm font-medium text-zinc-200 hover:bg-white/[0.10] hover:text-white transition active:scale-[0.985] cursor-pointer focus-visible:ring-2 focus-visible:ring-brand-500/70"
                         >
                           Cancelar
                         </button>
@@ -707,7 +720,7 @@ export default function Sidebar({
                           type="button"
                           onClick={logout}
                           disabled={leaving}
-                          className="flex-1 h-7.5 rounded-lg border border-rose-500/40 bg-rose-500/20 text-xs font-semibold text-rose-200 hover:bg-rose-500/30 transition shadow-sm active:scale-[0.985] cursor-pointer focus-visible:ring-2 focus-visible:ring-brand-500/70"
+                          className="flex-1 h-8 rounded-md border border-rose-500/40 bg-rose-500/20 text-sm font-semibold text-rose-200 hover:bg-rose-500/30 transition shadow-sm active:scale-[0.985] cursor-pointer focus-visible:ring-2 focus-visible:ring-brand-500/70"
                         >
                           {leaving ? "Saindo…" : "Confirmar"}
                         </button>
@@ -721,7 +734,7 @@ export default function Sidebar({
             {/* Gatilho de Perfil (Expandido vs Rail) - Desacoplado sem elementos interativos aninhados */}
             {isExpanded ? (
               <div
-                className={`group flex items-center rounded-xl border transition-all ${
+                className={`group flex items-center rounded-xl border transition-colors ${
                   userMenuOpen
                     ? "border-brand-500/40 bg-brand-500/10 shadow-sm"
                     : "border-white/5 bg-white/[0.02] hover:border-brand-500/30 hover:bg-white/[0.05]"
@@ -772,7 +785,7 @@ export default function Sidebar({
                 aria-expanded={userMenuOpen}
                 aria-label="Perfil do operador e opções de sessão"
                 title="Hephaestus Admin (Opções da sessão)"
-                className={`flex size-10 items-center justify-center rounded-xl border transition-all cursor-pointer focus-visible:ring-2 focus-visible:ring-brand-500/70 ${
+                className={`flex size-10 items-center justify-center rounded-xl border transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-brand-500/70 ${
                   userMenuOpen
                     ? "border-brand-500/40 bg-brand-500/10 shadow-sm"
                     : "border-transparent hover:bg-white/[0.06]"
@@ -787,7 +800,7 @@ export default function Sidebar({
 
           {/* Versão centralizada no rodapé */}
           {isExpanded && (
-            <div className="text-center font-mono text-[11px] text-zinc-600">
+            <div className="text-center font-mono text-[11px] text-zinc-400">
               Hephaestus Studio v1.3.0
             </div>
           )}

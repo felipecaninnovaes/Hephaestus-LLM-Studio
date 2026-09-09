@@ -318,6 +318,33 @@ async fn telemetry_handler(State(state): State<AppState>) -> Response {
     (StatusCode::OK, Json(resp)).into_response()
 }
 
+/// GET /internal/orchestrators — lista orquestradores (tabela do manager).
+async fn list_orchestrators_handler(State(state): State<AppState>) -> Response {
+    match manager::list_orchestrators(&state.pool).await {
+        Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
+        Err(ManagerError::Internal(e)) => internal_error(&e),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+/// GET /internal/models — modelos derivados de job_artifacts.kind='model'.
+async fn list_models_handler(State(state): State<AppState>) -> Response {
+    match manager::list_models(&state.pool).await {
+        Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
+        Err(ManagerError::Internal(e)) => internal_error(&e),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+/// GET /internal/storage/usage — soma de bytes de job_artifacts.
+async fn get_storage_usage_handler(State(state): State<AppState>) -> Response {
+    match manager::get_storage_usage(&state.pool).await {
+        Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
+        Err(ManagerError::Internal(e)) => internal_error(&e),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -334,6 +361,9 @@ fn build_router(state: AppState) -> Router {
         .route("/internal/jobs/:id/report", post(report_job_handler))
         .route("/internal/heartbeat", post(heartbeat_handler))
         .route("/internal/telemetry", get(telemetry_handler))
+        .route("/internal/orchestrators", get(list_orchestrators_handler))
+        .route("/internal/models", get(list_models_handler))
+        .route("/internal/storage/usage", get(get_storage_usage_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,

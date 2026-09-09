@@ -675,6 +675,7 @@ async fn telemetry_sem_heartbeat() {
     assert!(resp.vram_total.is_none());
     assert!(resp.cpu.is_none());
     assert!(resp.ram.is_none());
+    assert!(resp.ram_total.is_none());
     assert!(resp.gpus.is_empty());
     assert_eq!(resp.jobs_active, 0);
 }
@@ -695,6 +696,7 @@ async fn telemetry_com_heartbeat() {
         vram_used: Some(8000),
         cpu: Some(0.45),
         ram: Some(16384),
+        ram_total: Some(67108864000),
         jobs_active: 2,
     };
 
@@ -708,6 +710,7 @@ async fn telemetry_com_heartbeat() {
     assert_eq!(resp.vram_used, Some(8000));
     assert_eq!(resp.cpu, Some(0.45));
     assert_eq!(resp.ram, Some(16384));
+    assert_eq!(resp.ram_total, Some(67108864000));
     assert_eq!(resp.gpus, vec!["NVIDIA RTX 3090"]);
     assert_eq!(resp.jobs_active, 2);
 }
@@ -941,4 +944,392 @@ async fn metrics_append_e_dedup_por_epoch() {
     // Epoch 2 inalterado.
     assert_eq!(items[1]["epoch"], 2);
     assert_eq!(items[1]["mAP50"], 0.9);
+}
+
+// ===========================================================================
+// F6.1a — Rotas internas de leitura
+// ===========================================================================
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn list_orchestrators_apos_adocao() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    // Sem orquestradores → vazio.
+    let resp = manager::list_orchestrators(&p).await.expect("list empty");
+    assert!(resp.items.is_empty());
+
+    // Auto-adoção.
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+
+    let resp = manager::list_orchestrators(&p)
+        .await
+        .expect("list after adopt");
+    assert_eq!(resp.items.len(), 1);
+    let item = &resp.items[0];
+    assert_eq!(item.name, "orchestrator-local");
+    assert_eq!(item.kind, "local");
+    assert_eq!(item.endpoint, "http://orchestrator-local:8082");
+    assert_eq!(item.status, "online");
+    // id é UUID válido.
+    assert!(item.id.parse::<uuid::Uuid>().is_ok());
+    // last_heartbeat: inicialmente None (não houve heartbeat ainda).
+    assert!(item.last_heartbeat.is_none());
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn list_orchestrators_heartbeat_atualiza_last() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+
+    let cache = manager::new_telemetry_cache();
+    let hb = HeartbeatRequest {
+        gpus: vec![],
+        vram_total: None,
+        vram_used: None,
+        cpu: Some(0.1),
+        ram: Some(1024),
+        ram_total: Some(4096),
+        jobs_active: 0,
+    };
+    manager::receive_heartbeat(&p, &cache, hb)
+        .await
+        .expect("heartbeat");
+
+    let resp = manager::list_orchestrators(&p)
+        .await
+        .expect("list after heartbeat");
+    assert_eq!(resp.items.len(), 1);
+    // last_heartbeat deve ter sido preenchido (datetime válido).
+    assert!(resp.items[0].last_heartbeat.is_some());
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn list_models_job_done_com_artifacts() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+
+    // Cria job, despacha, reporta done com artifacts.
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img")
+        .await
+        .expect("dispatch");
+
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "done".into(),
+            progress: Some(1.0),
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: Some(vec![
+                ArtifactItem {
+                    kind: "model".into(),
+                    path: "best.pt".into(),
+                    md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                    bytes: 512,
+                },
+                ArtifactItem {
+                    kind: "model".into(),
+                    path: "last.pt".into(),
+                    md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                    bytes: 512,
+                },
+                ArtifactItem {
+                    kind: "metrics".into(),
+                    path: "metrics.jsonl".into(),
+                    md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                    bytes: 256,
+                },
+            ]),
+        },
+    )
+    .await
+    .expect("report done");
+
+    let models = manager::list_models(&p).await.expect("list models");
+    assert_eq!(models.items.len(), 1);
+    let m = &models.items[0];
+    assert_eq!(m.engine, "yolo");
+    assert_eq!(m.model, "yolo11m");
+    assert_eq!(m.path, "best.pt"); // preferência best > last
+    assert_eq!(m.bytes, 512);
+    assert_eq!(m.job_id, job_id.to_string());
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn list_models_dedupe_mesmo_engine_model() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+
+    // Job 1: done com best.pt + last.pt.
+    let r1 = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create 1");
+    let job1: uuid::Uuid = r1.job_id.parse().unwrap();
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img")
+        .await
+        .expect("dispatch 1");
+    manager::report_job(
+        &p,
+        job1,
+        ReportRequest {
+            status: "done".into(),
+            progress: Some(1.0),
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: Some(vec![
+                ArtifactItem {
+                    kind: "model".into(),
+                    path: "best.pt".into(),
+                    md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                    bytes: 100,
+                },
+                ArtifactItem {
+                    kind: "model".into(),
+                    path: "last.pt".into(),
+                    md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                    bytes: 100,
+                },
+            ]),
+        },
+    )
+    .await
+    .expect("report done 1");
+
+    // Job 2: done com best.pt (mesmo engine/model, mais recente).
+    let r2 = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create 2");
+    let job2: uuid::Uuid = r2.job_id.parse().unwrap();
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img")
+        .await
+        .expect("dispatch 2");
+    manager::report_job(
+        &p,
+        job2,
+        ReportRequest {
+            status: "done".into(),
+            progress: Some(1.0),
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: Some(vec![ArtifactItem {
+                kind: "model".into(),
+                path: "best.pt".into(),
+                md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                bytes: 200,
+            }]),
+        },
+    )
+    .await
+    .expect("report done 2");
+
+    let models = manager::list_models(&p).await.expect("list models dedupe");
+    assert_eq!(models.items.len(), 1, "dedupe: 2 jobs = 1 item");
+    assert_eq!(
+        models.items[0].job_id,
+        job2.to_string(),
+        "deve ser o mais recente"
+    );
+    assert_eq!(models.items[0].bytes, 200);
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn list_models_exclui_autotracker_boxes() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img")
+        .await
+        .expect("dispatch");
+
+    // Done com artifacts: best.pt (model), metrics.jsonl (metrics), boxes.pt (boxes).
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "done".into(),
+            progress: Some(1.0),
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: Some(vec![
+                ArtifactItem {
+                    kind: "model".into(),
+                    path: "best.pt".into(),
+                    md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                    bytes: 512,
+                },
+                ArtifactItem {
+                    kind: "metrics".into(),
+                    path: "metrics.jsonl".into(),
+                    md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                    bytes: 256,
+                },
+                ArtifactItem {
+                    kind: "boxes".into(),
+                    path: "boxes.pt".into(),
+                    md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                    bytes: 128,
+                },
+            ]),
+        },
+    )
+    .await
+    .expect("report done with boxes");
+
+    let models = manager::list_models(&p)
+        .await
+        .expect("list models no boxes");
+    assert_eq!(models.items.len(), 1, "boxes excluído: 1 item");
+    assert_eq!(models.items[0].path, "best.pt");
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn list_models_sem_jobs_done() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let models = manager::list_models(&p).await.expect("list models empty");
+    assert!(models.items.is_empty());
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn storage_usage_soma_esperada() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+
+    // Sem artifacts → 0.
+    let usage = manager::get_storage_usage(&p).await.expect("usage empty");
+    assert_eq!(usage.artifacts_bytes, 0);
+
+    // Job 1 done com artifacts: 512 + 512 + 256 = 1280.
+    let r1 = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create 1");
+    let job1: uuid::Uuid = r1.job_id.parse().unwrap();
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img")
+        .await
+        .expect("dispatch 1");
+    manager::report_job(
+        &p,
+        job1,
+        ReportRequest {
+            status: "done".into(),
+            progress: Some(1.0),
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: Some(vec![
+                ArtifactItem {
+                    kind: "model".into(),
+                    path: "best.pt".into(),
+                    md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                    bytes: 512,
+                },
+                ArtifactItem {
+                    kind: "model".into(),
+                    path: "last.pt".into(),
+                    md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                    bytes: 512,
+                },
+                ArtifactItem {
+                    kind: "metrics".into(),
+                    path: "metrics.jsonl".into(),
+                    md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                    bytes: 256,
+                },
+            ]),
+        },
+    )
+    .await
+    .expect("report done 1");
+
+    let usage = manager::get_storage_usage(&p)
+        .await
+        .expect("usage after job 1");
+    assert_eq!(usage.artifacts_bytes, 1280);
+
+    // Job 2 done: 200 bytes → total 1480.
+    let r2 = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create 2");
+    let job2: uuid::Uuid = r2.job_id.parse().unwrap();
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img")
+        .await
+        .expect("dispatch 2");
+    manager::report_job(
+        &p,
+        job2,
+        ReportRequest {
+            status: "done".into(),
+            progress: Some(1.0),
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: Some(vec![ArtifactItem {
+                kind: "model".into(),
+                path: "best.pt".into(),
+                md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                bytes: 200,
+            }]),
+        },
+    )
+    .await
+    .expect("report done 2");
+
+    let usage = manager::get_storage_usage(&p)
+        .await
+        .expect("usage after job 2");
+    assert_eq!(usage.artifacts_bytes, 1480);
 }

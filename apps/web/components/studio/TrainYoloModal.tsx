@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { IconPlay } from "@/components/icons";
 import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
 import { Select, type SelectOption, type SelectRefHandle } from "@/components/ui/Select";
 import { ApiError } from "@/lib/api";
 import { startYoloJob } from "@/lib/jobs";
@@ -202,21 +203,16 @@ export default function TrainYoloModal({
           {/* Grid: Epochs / Batch / ImgSz */}
           <div className="grid grid-cols-3 gap-3">
             <div>
-              <label
-                htmlFor="train-epochs"
-                className="tracking-caps mb-1.5 block font-mono text-[11px] font-medium uppercase text-zinc-300"
-              >
-                Epochs
-              </label>
-              <input
+              <Input
                 id="train-epochs"
+                label="Epochs"
                 type="number"
                 min={EPOCHS_MIN}
                 max={EPOCHS_MAX}
                 value={epochs}
                 onChange={(e) => setEpochs(Number(e.target.value))}
                 disabled={busy}
-                className="w-full rounded-xl border border-zinc-800 bg-black/40 backdrop-blur-sm px-3.5 py-2 font-mono text-xs text-zinc-200 focus:border-brand-500 focus:outline-none"
+                fontMono
               />
             </div>
             <div>
@@ -247,20 +243,15 @@ export default function TrainYoloModal({
           {/* Grid: LR0 / Optimizer */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label
-                htmlFor="train-lr0"
-                className="tracking-caps mb-1.5 block font-mono text-[11px] font-medium uppercase text-zinc-300"
-              >
-                LR0
-              </label>
-              <input
+              <Input
                 id="train-lr0"
+                label="LR0"
                 type="text"
                 inputMode="decimal"
                 value={lr0}
                 onChange={(e) => setLr0(e.target.value)}
                 disabled={busy}
-                className="w-full rounded-xl border border-zinc-800 bg-black/40 backdrop-blur-sm px-3.5 py-2 font-mono text-xs text-zinc-200 focus:border-brand-500 focus:outline-none"
+                fontMono
               />
             </div>
             <div>

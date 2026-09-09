@@ -656,22 +656,25 @@ export default function DatasetGalleryPage() {
   if (error || !dataset) {
     return (
       <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-6">
-        <button
+        <Button
           type="button"
+          variant="ghost"
+          size="md"
           onClick={() => router.push("/datasets")}
-          className="inline-flex h-9 w-fit items-center justify-center gap-2 rounded-lg border border-transparent bg-transparent px-3 text-xs font-medium whitespace-nowrap text-zinc-300 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
+          className="w-fit"
         >
           ← Datasets
-        </button>
+        </Button>
         <div className="glass-card flex flex-col items-center gap-3 rounded-2xl p-10 text-center">
           <p className="text-sm text-zinc-300">{error ?? "Dataset não encontrado."}</p>
-          <button
+          <Button
             type="button"
+            variant="secondary"
+            size="md"
             onClick={() => datasetId && load(datasetId)}
-            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] backdrop-blur-sm px-4 text-xs font-medium whitespace-nowrap text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
           >
             Tentar novamente
-          </button>
+          </Button>
         </div>
       </div>
     );
@@ -683,15 +686,16 @@ export default function DatasetGalleryPage() {
     <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-6">
       <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
         <div className="flex items-center space-x-3">
-          <button
+          <Button
             type="button"
+            variant="secondary"
+            size="icon"
             onClick={() => router.push("/datasets")}
-            className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/[0.05] backdrop-blur-sm p-0 text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
             title="Voltar para a lista de datasets"
             aria-label="Voltar para a lista de datasets"
           >
             <svg
-              className="h-4 w-4"
+              className="size-4"
               fill="none"
               stroke="currentColor"
               strokeWidth="1.7"
@@ -699,7 +703,7 @@ export default function DatasetGalleryPage() {
             >
               <polyline points="15 18 9 12 15 6" />
             </svg>
-          </button>
+          </Button>
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-brand-500/30 bg-brand-500/10 backdrop-blur-sm text-brand-400">
             <IconDatabase className="h-5 w-5" />
           </div>
@@ -800,16 +804,17 @@ export default function DatasetGalleryPage() {
           })()}
         </div>
         <div className="relative md:hidden">
-          <button
+          <Button
             type="button"
+            variant="secondary"
+            size="icon"
             onClick={() => setActionsOpen((v) => !v)}
             aria-expanded={actionsOpen}
             aria-label="Ações do dataset"
             title="Ações do dataset"
-            className="inline-flex size-9 items-center justify-center rounded-lg border border-white/10 bg-white/[0.05] backdrop-blur-sm px-3 text-lg leading-none text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] disabled:pointer-events-none disabled:opacity-55"
           >
-            <span aria-hidden="true">⋯</span>
-          </button>
+            <span aria-hidden="true" className="text-lg leading-none">⋯</span>
+          </Button>
           {actionsOpen && (
             <div className="glass-menu absolute right-0 z-30 mt-2 flex w-52 flex-col gap-1 rounded-2xl p-2">
               <button

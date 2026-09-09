@@ -12,6 +12,7 @@ import {
 } from "@/components/icons";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
+import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { Select, type SelectOption } from "@/components/ui/Select";
 import { ApiError } from "@/lib/api";
 import { importDataset, importErrorMessage } from "@/lib/backup";
@@ -102,15 +103,6 @@ export default function CreateDatasetModal({
     const t = setTimeout(() => nameRef.current?.focus(), 50);
     return () => clearTimeout(t);
   }, [open, initialMode, initialInspection]);
-
-  useEffect(() => {
-    if (!open || busy) return;
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, busy, onClose]);
 
   if (!open) return null;
 
@@ -447,37 +439,19 @@ export default function CreateDatasetModal({
         ) : (
           <form onSubmit={handleSubmit} className="mt-4 space-y-4 text-xs">
             {/* Seletor Segmentado de Modo */}
-            <div className="inline-flex w-full rounded-xl border border-white/10 bg-black/40 backdrop-blur-sm p-1" role="tablist">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={mode === "empty"}
-                onClick={() => {
-                  setMode("empty");
-                  setInspection(null);
-                }}
-                className={`flex-1 py-1.5 text-center text-xs font-medium rounded-lg transition active:scale-[0.985] ${
-                  mode === "empty"
-                    ? "bg-brand-500/[0.18] text-white shadow-sm border border-brand-500/30"
-                    : "text-zinc-400 hover:text-zinc-200"
-                }`}
-              >
-                Container Vazio
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={mode === "import"}
-                onClick={() => setMode("import")}
-                className={`flex-1 py-1.5 text-center text-xs font-medium rounded-lg transition active:scale-[0.985] ${
-                  mode === "import"
-                    ? "bg-brand-500/[0.18] text-white shadow-sm border border-brand-500/30"
-                    : "text-zinc-400 hover:text-zinc-200"
-                }`}
-              >
-                Ingestão (ZIP / Pasta)
-              </button>
-            </div>
+            <SegmentedControl<"empty" | "import">
+              ariaLabel="Modo de criação do dataset"
+              value={mode}
+              onChange={(val) => {
+                setMode(val);
+                if (val === "empty") setInspection(null);
+              }}
+              className="w-full"
+              options={[
+                { id: "empty", label: "Container Vazio" },
+                { id: "import", label: "Ingestão (ZIP / Pasta)" },
+              ]}
+            />
 
             {/* Alerta de Erro Topo */}
             {topError && (
@@ -508,22 +482,26 @@ export default function CreateDatasetModal({
                     </p>
 
                     <div className="mt-4 flex items-center justify-center gap-2">
-                      <button
+                      <Button
                         type="button"
+                        variant="secondary"
+                        size="sm"
                         onClick={() => zipInputRef.current?.click()}
-                        className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.05] px-3 font-mono text-[11px] font-medium text-zinc-200 transition hover:bg-white/[0.1] active:scale-[0.985]"
+                        leftIcon={<IconFileArchive className="h-3.5 w-3.5 text-brand-400" />}
+                        className="font-mono text-[11px]"
                       >
-                        <IconFileArchive className="h-3.5 w-3.5 text-brand-400" />
                         Selecionar ZIP
-                      </button>
-                      <button
+                      </Button>
+                      <Button
                         type="button"
+                        variant="secondary"
+                        size="sm"
                         onClick={() => folderInputRef.current?.click()}
-                        className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.05] px-3 font-mono text-[11px] font-medium text-zinc-200 transition hover:bg-white/[0.1] active:scale-[0.985]"
+                        leftIcon={<IconFolder className="h-3.5 w-3.5 text-amber-400" />}
+                        className="font-mono text-[11px]"
                       >
-                        <IconFolder className="h-3.5 w-3.5 text-amber-400" />
                         Selecionar Pasta
-                      </button>
+                      </Button>
                     </div>
 
                     <input

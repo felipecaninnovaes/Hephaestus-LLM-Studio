@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { IconTarget } from "@/components/icons";
 import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
+import { Slider } from "@/components/ui/Slider";
 import { ApiError } from "@/lib/api";
 import { startAutotrackerJob } from "@/lib/autotracker";
 import { autotrackerErrorMessage } from "@/types/studio";
@@ -32,10 +33,10 @@ export default function AutoTrackerModal({
   onJobCreated,
 }: Props) {
   const router = useRouter();
-  const sliderRef = useRef<HTMLInputElement>(null);
   const [conf, setConf] = useState<number>(CONF_DEFAULT);
   const [busy, setBusy] = useState(false);
   const [topError, setTopError] = useState<string | null>(null);
+  const sliderRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -131,33 +132,18 @@ export default function AutoTrackerModal({
           </div>
 
           {/* Confiança (slider) */}
-          <div>
-            <label
-              htmlFor="at-conf"
-              className="tracking-caps mb-1 flex items-center justify-between font-mono text-[11px] font-medium uppercase text-zinc-300"
-            >
-              <span>Confiança mínima</span>
-              <span className="font-mono text-brand-300 normal-case">
-                {conf.toFixed(2)}
-              </span>
-            </label>
-            <input
-              id="at-conf"
-              ref={sliderRef}
-              type="range"
-              min={CONF_MIN}
-              max={CONF_MAX}
-              step={CONF_STEP}
-              value={conf}
-              onChange={(e) => setConf(parseFloat(e.target.value))}
-              disabled={busy}
-              className="w-full accent-brand-500"
-            />
-            <div className="mt-0.5 flex justify-between font-mono text-[10px] text-zinc-500">
-              <span>{CONF_MIN}</span>
-              <span>{CONF_MAX}</span>
-            </div>
-          </div>
+          <Slider
+            ref={sliderRef}
+            id="at-conf"
+            label="Confiança mínima"
+            min={CONF_MIN}
+            max={CONF_MAX}
+            step={CONF_STEP}
+            value={conf}
+            onChange={setConf}
+            formatValue={(v) => v.toFixed(2)}
+            disabled={busy}
+          />
 
           {/* CTA */}
           <div className="flex justify-end space-x-2 pt-2">

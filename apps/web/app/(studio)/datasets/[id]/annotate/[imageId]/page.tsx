@@ -679,33 +679,37 @@ export default function AnnotateImagePage() {
       {/* Canvas de Edição */}
       <div className="relative flex min-h-0 flex-1 flex-col items-center justify-center overflow-auto bg-[#0b0f17] p-6">
         <div className="glass-menu absolute top-4 left-6 z-20 flex items-center space-x-2 rounded-xl border border-zinc-800 bg-zinc-900/90 px-3 py-1.5 font-mono text-xs backdrop-blur-sm">
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="icon-sm"
             onClick={() => setZoom((z) => Math.max(50, z - 25))}
             aria-label="Diminuir zoom do canvas"
-            className="rounded-lg border border-transparent bg-transparent p-1 text-zinc-300 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
             title="Diminuir Zoom"
           >
             <IconZoomOut />
-          </button>
+          </Button>
           <span className="min-w-[45px] text-center text-zinc-300">{zoom}%</span>
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="icon-sm"
             onClick={() => setZoom((z) => Math.min(250, z + 25))}
             aria-label="Aumentar zoom do canvas"
-            className="rounded-lg border border-transparent bg-transparent p-1 text-zinc-300 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
             title="Aumentar Zoom"
           >
             <IconZoomIn />
-          </button>
+          </Button>
           <div className="h-3 w-px bg-zinc-700"></div>
-          <button
+          <Button
             type="button"
+            variant="ghost"
+            size="sm"
             onClick={() => setZoom(100)}
-            className="inline-flex h-8 items-center justify-center gap-2 rounded-md border border-transparent bg-transparent px-3 text-[10px] font-medium whitespace-nowrap text-zinc-300 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
+            className="text-[10px]"
           >
             Resetar 100%
-          </button>
+          </Button>
         </div>
 
         <div

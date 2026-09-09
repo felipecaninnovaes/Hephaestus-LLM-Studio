@@ -68,14 +68,23 @@ body {
 }
 
 body {
-  background-color: var(--bg-hex);
   background-color: var(--bg);
-  color: var(--fg-hex);
   color: var(--fg);
   font-family: var(--font-sans);
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* Selection e Caret temáticos */
+::selection {
+  background-color: rgba(131, 80, 242, 0.35);
+  color: #ffffff;
+}
+
+input,
+textarea {
+  caret-color: #8350f2;
 }
 
 h1,
@@ -160,6 +169,11 @@ select:focus-visible,
 textarea:focus-visible,
 [role="tab"]:focus-visible,
 a:focus-visible {
+  outline: 2px solid #8350f2;
+  outline-offset: 2px;
+}
+
+.focus-ring:focus-visible {
   outline: 2px solid #8350f2;
   outline-offset: 2px;
 }
@@ -267,4 +281,34 @@ button:disabled {
 
 .animate-toast-in {
   animation: toast-in 0.25s ease-out;
+}
+
+/* Transição de entrada vertical */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-rise {
+  animation: rise 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Rotação lenta para ambient shimmers */
+@keyframes spin-slow {
+  from {
+    transform: translate(-50%, -50%) rotate(0deg);
+  }
+  to {
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
+}
+
+.animate-spin-slow {
+  animation: spin-slow 60s linear infinite;
 }

@@ -72,22 +72,6 @@ export default function LoginPage() {
 
   return (
     <>
-      {/* ── AuthAmbient background (Arcane v2.1) ── */}
-      <style>{`
-        @keyframes rise {
-          from { opacity: 0; transform: translateY(12px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-        @keyframes spin {
-          from { transform: translate(-50%, -50%) rotate(0deg); }
-          to   { transform: translate(-50%, -50%) rotate(360deg); }
-        }
-        @media (prefers-reduced-motion: reduce) {
-          .rise { animation: none !important; opacity: 1 !important; }
-          .ambient-shimmer { animation: none !important; }
-        }
-      `}</style>
-
       {/* Camada fixa de fundo com as 4 texturas */}
       <div
         aria-hidden="true"
@@ -138,9 +122,8 @@ export default function LoginPage() {
 
         {/* 5 — Shimmer cónico rotativo (opcional, Arcane) */}
         <div
-          className="ambient-shimmer absolute top-1/2 left-1/2 w-[300vmax] h-[300vmax]"
+          className="animate-spin-slow absolute top-1/2 left-1/2 w-[300vmax] h-[300vmax]"
           style={{
-            animation: "spin 60s linear infinite",
             background:
               "conic-gradient(from 0deg, rgba(131,80,242,0.08), rgba(131,80,242,0.05), rgba(131,80,242,0.07), rgba(131,80,242,0.08))",
           }}
@@ -152,7 +135,7 @@ export default function LoginPage() {
         <div className="flex w-full max-w-[400px] flex-col items-center">
           {/* Logo / Identidade */}
           <div
-            className="rise flex flex-col items-center gap-2"
+            className="animate-rise flex flex-col items-center gap-2"
             style={{ animationDelay: "0ms" }}
           >
             <span
@@ -171,7 +154,7 @@ export default function LoginPage() {
 
           {/* Panel de login */}
           <section
-            className="rise relative mt-10 w-full overflow-hidden rounded-2xl border border-white/10 bg-[rgba(32,32,38,0.40)] p-6 backdrop-blur-xl sm:p-8"
+            className="animate-rise relative mt-10 w-full overflow-hidden rounded-2xl border border-white/10 bg-[rgba(32,32,38,0.40)] p-6 backdrop-blur-xl sm:p-8"
             aria-labelledby="login-title"
             style={{ animationDelay: "150ms" }}
           >
@@ -246,7 +229,7 @@ export default function LoginPage() {
 
           {/* Footer */}
           <div
-            className="rise mt-8 text-center"
+            className="animate-rise mt-8 text-center"
             style={{ animationDelay: "300ms" }}
           >
             <span className="font-mono text-[10px] tracking-[0.2em] uppercase text-zinc-400/60">

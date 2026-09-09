@@ -16,6 +16,7 @@ import { showToast } from "@/components/studio/Toast";
 import ConfirmDialog from "@/components/studio/ConfirmDialog";
 import ForjaYoloSetup from "@/components/studio/ForjaYoloSetup";
 import { Button } from "@/components/ui/Button";
+import { Badge, jobStatusToBadgeVariant } from "@/components/ui/Badge";
 import {
   ConvergenceChart,
   MetricSparkline,
@@ -53,15 +54,6 @@ const SPARK_COLORS: Record<string, string> = {
   clsLoss: "#818cf8",
   dflLoss: "#fbbf24",
   epoch: "#a1a1aa",
-};
-
-const STATUS_STYLE: Record<JobStatus, string> = {
-  queued: "border-amber-500/30 bg-amber-500/10 text-amber-300 backdrop-blur-sm",
-  running: "border-brand-500/35 bg-brand-500/15 text-brand-300 backdrop-blur-sm",
-  cancelling: "border-amber-500/30 bg-amber-500/10 text-amber-300 backdrop-blur-sm",
-  done: "border-[#34d399]/30 bg-[#34d399]/10 text-[#a7f3d0] backdrop-blur-sm",
-  failed: "border-rose-500/30 bg-rose-500/10 text-rose-300 backdrop-blur-sm",
-  cancelled: "border-zinc-700 bg-zinc-800 text-zinc-400 backdrop-blur-sm",
 };
 
 const STATUS_LABEL: Record<JobStatus, string> = {
@@ -422,11 +414,12 @@ function JobsPageContent() {
                         ? "Execução Ativa no Nó Local"
                         : "Painel de Execução & Métricas"}
                     </h2>
-                    <span
-                      className={`rounded-full border px-2.5 py-0.5 font-mono text-[11px] font-medium ${STATUS_STYLE[selectedJob.status]}`}
+                    <Badge
+                      variant={jobStatusToBadgeVariant(selectedJob.status)}
+                      pulse={selectedJob.status === "running"}
                     >
                       {STATUS_LABEL[selectedJob.status]}
-                    </span>
+                    </Badge>
                   </div>
                   {selectedJobId && selectedJobId !== activeJob?.id && (
                     <button
@@ -470,14 +463,15 @@ function JobsPageContent() {
                     <div className="flex items-center gap-2 font-mono text-[11px] text-zinc-400">
                       <span title={selectedJob.id}>ID: {selectedJob.id.slice(0, 8)}…</span>
                       {selectedJob.datasetId && (
-                        <button
+                        <Button
                           type="button"
+                          variant="secondary"
+                          size="sm"
                           onClick={() => router.push(`/datasets/${selectedJob.datasetId}`)}
-                          className="inline-flex items-center gap-1 rounded-lg border border-zinc-800 bg-black/40 px-2.5 py-1 text-xs text-brand-400 hover:text-brand-300 hover:border-brand-500/30 transition backdrop-blur-sm"
+                          leftIcon={<IconDatabase className="size-3" />}
                         >
-                          <IconDatabase className="size-3" />
-                          <span>Dataset</span>
-                        </button>
+                          Dataset
+                        </Button>
                       )}
                     </div>
                   </div>
@@ -748,11 +742,13 @@ function JobsPageContent() {
                         }`}
                       >
                         <div className="flex items-center gap-3 min-w-0 flex-1">
-                          <span
-                            className={`shrink-0 rounded-full border px-2.5 py-0.5 font-mono text-[11px] font-medium ${STATUS_STYLE[job.status]}`}
+                          <Badge
+                            variant={jobStatusToBadgeVariant(job.status)}
+                            pulse={job.status === "running"}
+                            className="shrink-0"
                           >
                             {STATUS_LABEL[job.status]}
-                          </span>
+                          </Badge>
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2 min-w-0">
                               <span className="text-xs font-semibold text-zinc-100 shrink-0">
@@ -781,21 +777,18 @@ function JobsPageContent() {
                         </div>
 
                         <div className="flex items-center space-x-2 shrink-0">
-                          <button
+                          <Button
                             type="button"
+                            variant={isFocused ? "primary" : "secondary"}
+                            size="sm"
                             onClick={(e) => {
                               e.stopPropagation();
                               setSelectedJobId(job.id);
                             }}
-                            className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium transition active:scale-[0.985] backdrop-blur-sm ${
-                              isFocused
-                                ? "border border-brand-500/40 bg-brand-500/20 text-brand-200"
-                                : "border border-white/10 bg-white/[0.06] text-zinc-200 hover:bg-white/15"
-                            }`}
                           >
                             <span>{isFocused ? "Em exibição" : "Ver detalhes"}</span>
                             <span>→</span>
-                          </button>
+                          </Button>
                         </div>
                       </div>
                     );

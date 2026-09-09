@@ -9,6 +9,23 @@ export type BadgeVariant =
   | "brand"
   | "mono";
 
+export function jobStatusToBadgeVariant(status: string): BadgeVariant {
+  switch (status) {
+    case "done":
+      return "ready";
+    case "running":
+      return "brand";
+    case "queued":
+    case "cancelling":
+      return "alert";
+    case "failed":
+      return "danger";
+    case "cancelled":
+    default:
+      return "mono";
+  }
+}
+
 export interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {
   variant?: BadgeVariant;
   pulse?: boolean;

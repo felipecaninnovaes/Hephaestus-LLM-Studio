@@ -45,6 +45,26 @@ const SIZE_CLASSES: Record<ButtonSize, string> = {
   "icon-sm": "size-8 p-0 rounded-md justify-center",
 };
 
+export function getButtonClasses({
+  variant = "secondary",
+  size = "md",
+  className = "",
+}: {
+  variant?: ButtonVariant;
+  size?: ButtonSize;
+  className?: string;
+} = {}): string {
+  const baseClasses =
+    "inline-flex items-center justify-center gap-2 font-medium whitespace-nowrap select-none transition active:scale-[0.985] backdrop-blur-sm focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 cursor-pointer";
+
+  const variantClass = VARIANT_CLASSES[variant] ?? VARIANT_CLASSES.secondary;
+  const sizeClass = SIZE_CLASSES[size] ?? SIZE_CLASSES.md;
+
+  return `${baseClasses} ${variantClass} ${sizeClass} ${className}`.trim();
+}
+
+export const buttonVariants = getButtonClasses;
+
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
   (
     {
@@ -60,17 +80,11 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     },
     ref,
   ) => {
-    const baseClasses =
-      "inline-flex items-center justify-center gap-2 font-medium whitespace-nowrap select-none transition active:scale-[0.985] backdrop-blur-sm focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 cursor-pointer";
-
-    const variantClass = VARIANT_CLASSES[variant];
-    const sizeClass = SIZE_CLASSES[size];
-
     return (
       <button
         ref={ref}
         disabled={disabled || loading}
-        className={`${baseClasses} ${variantClass} ${sizeClass} ${className}`.trim()}
+        className={getButtonClasses({ variant, size, className })}
         {...props}
       >
         {loading ? (

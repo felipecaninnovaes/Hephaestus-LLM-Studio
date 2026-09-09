@@ -9,6 +9,7 @@ import {
   IconCopy,
   IconTerminal,
 } from "@/components/icons";
+import { SegmentedControl } from "@/components/ui";
 
 interface JobLogViewerProps {
   job: Job;
@@ -202,41 +203,15 @@ export function JobLogViewer({ job, metrics = [], artifacts = [] }: JobLogViewer
           {isOpen && (
             <>
               {/* Filtros */}
-              <div className="flex items-center rounded-md border border-zinc-800 bg-zinc-950/80 backdrop-blur-sm p-0.5">
-                <button
-                  type="button"
-                  onClick={() => setFilter("all")}
-                  className={`rounded px-2 py-0.5 transition ${
-                    filter === "all"
-                      ? "bg-zinc-800 text-zinc-100"
-                      : "text-zinc-400 hover:text-zinc-200"
-                  }`}
-                >
-                  Todos
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setFilter("stdout")}
-                  className={`rounded px-2 py-0.5 transition ${
-                    filter === "stdout"
-                      ? "bg-zinc-800 text-zinc-100"
-                      : "text-zinc-400 hover:text-zinc-200"
-                  }`}
-                >
-                  Stdout
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setFilter("stderr")}
-                  className={`rounded px-2 py-0.5 transition ${
-                    filter === "stderr"
-                      ? "bg-zinc-800 text-zinc-100"
-                      : "text-zinc-400 hover:text-zinc-200"
-                  }`}
-                >
-                  Stderr
-                </button>
-              </div>
+              <SegmentedControl<LogType>
+                value={filter}
+                onChange={setFilter}
+                options={[
+                  { id: "all", label: "Todos" },
+                  { id: "stdout", label: "Stdout" },
+                  { id: "stderr", label: "Stderr" },
+                ]}
+              />
 
               {/* Botão de Auto-scroll */}
               <button

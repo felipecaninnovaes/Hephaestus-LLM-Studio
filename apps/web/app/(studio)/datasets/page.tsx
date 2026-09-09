@@ -8,7 +8,7 @@ import ConfirmDialog from "@/components/studio/ConfirmDialog";
 import CreateDatasetModal from "@/components/studio/CreateDatasetModal";
 import DatasetMenu from "@/components/studio/DatasetMenu";
 import { showToast } from "@/components/studio/Toast";
-import { Button, SearchInput, SubmodulePills } from "@/components/ui";
+import { Button, SearchInput, SegmentedControl, SubmodulePills } from "@/components/ui";
 import {
   IconDatabase,
   IconGrid,
@@ -231,28 +231,25 @@ export default function DatasetsPage() {
           </p>
         </div>
         <div className="flex min-h-[44px] items-center gap-2">
-          <div className="inline-flex rounded-full border border-white/10 bg-black/40 backdrop-blur-sm p-1" role="group" aria-label="Modo de visualização">
-            <button
-              type="button"
-              aria-pressed={viewMode === "grid"}
-              aria-label="Ver em grade"
-              title="Ver em grade"
-              onClick={() => setViewMode("grid")}
-              className={`inline-flex h-7 items-center justify-center rounded-full px-2.5 transition active:scale-[0.985] backdrop-blur-sm focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 ${viewMode === "grid" ? "bg-brand-500/[0.18] text-brand-300" : "text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200"}`}
-            >
-              <IconGrid className="h-4 w-4" />
-            </button>
-            <button
-              type="button"
-              aria-pressed={viewMode === "list"}
-              aria-label="Ver em lista"
-              title="Ver em lista"
-              onClick={() => setViewMode("list")}
-              className={`inline-flex h-7 items-center justify-center rounded-full px-2.5 transition active:scale-[0.985] backdrop-blur-sm focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 ${viewMode === "list" ? "bg-brand-500/[0.18] text-brand-300" : "text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200"}`}
-            >
-              <IconList className="h-4 w-4" />
-            </button>
-          </div>
+          <SegmentedControl<ViewMode>
+            ariaLabel="Modo de visualização"
+            value={viewMode}
+            onChange={setViewMode}
+            options={[
+              {
+                id: "grid",
+                icon: <IconGrid className="h-4 w-4" />,
+                title: "Ver em grade",
+                ariaLabel: "Ver em grade",
+              },
+              {
+                id: "list",
+                icon: <IconList className="h-4 w-4" />,
+                title: "Ver em lista",
+                ariaLabel: "Ver em lista",
+              },
+            ]}
+          />
           <Button
             type="button"
             variant="secondary"

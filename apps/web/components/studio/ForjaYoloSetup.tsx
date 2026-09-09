@@ -9,11 +9,12 @@ import {
   IconInfo,
   IconZap,
 } from "@/components/icons";
-import { ApiError } from "@/lib/api";
-import { Button } from "@/components/ui/Button";
+import { Button, getButtonClasses } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
 import { Select, type SelectOption, type SelectRefHandle } from "@/components/ui/Select";
 import { getTelemetry, startYoloJob } from "@/lib/jobs";
 import { listDatasets } from "@/lib/datasets";
+import { ApiError } from "@/lib/api";
 import { jobErrorMessage } from "@/types/studio";
 import { showToast } from "./Toast";
 import { openActionCenter } from "@/lib/events";
@@ -342,7 +343,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
         </p>
         <Link
           href="/datasets"
-          className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] px-4 text-sm font-medium whitespace-nowrap text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] transition hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4"
+          className={getButtonClasses({ variant: "primary", size: "md" })}
         >
           <IconDatabase className="h-3.5 w-3.5" />
           Ir para Datasets
@@ -408,21 +409,16 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
       {/* Grid: Epochs / Batch / ImgSz */}
       <div className="grid grid-cols-3 gap-3">
         <div>
-          <label
-            htmlFor="setup-epochs"
-            className="tracking-caps mb-1.5 block font-mono text-[11px] font-medium uppercase text-zinc-300"
-          >
-            Epochs
-          </label>
-          <input
+          <Input
             id="setup-epochs"
+            label="Epochs"
             type="number"
             min={EPOCHS_MIN}
             max={EPOCHS_MAX}
             value={epochs}
             onChange={(e) => setEpochs(Number(e.target.value))}
             disabled={busy}
-            className="w-full rounded-xl border border-zinc-800 bg-black/40 backdrop-blur-sm px-3.5 py-2 font-mono text-xs text-zinc-200 focus:border-brand-500 focus:outline-none"
+            fontMono
           />
         </div>
         <div>
@@ -453,20 +449,15 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
       {/* Grid: LR0 / Optimizer */}
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label
-            htmlFor="setup-lr0"
-            className="tracking-caps mb-1.5 block font-mono text-[11px] font-medium uppercase text-zinc-300"
-          >
-            LR0
-          </label>
-          <input
+          <Input
             id="setup-lr0"
+            label="LR0"
             type="text"
             inputMode="decimal"
             value={lr0}
             onChange={(e) => setLr0(e.target.value)}
             disabled={busy}
-            className="w-full rounded-xl border border-zinc-800 bg-black/40 backdrop-blur-sm px-3.5 py-2 font-mono text-xs text-zinc-200 focus:border-brand-500 focus:outline-none"
+            fontMono
           />
         </div>
         <div>
@@ -489,32 +480,26 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
           Augmentação
         </span>
         <div className="flex gap-3">
-          <button
+          <Button
             type="button"
+            variant={augment.mosaic ? "primary" : "secondary"}
+            size="md"
             onClick={() => toggleAugment("mosaic")}
             disabled={busy}
             aria-pressed={augment.mosaic}
-            className={`inline-flex h-9 items-center gap-2 rounded-lg border px-4 text-xs font-medium transition active:scale-[0.985] backdrop-blur-sm focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] disabled:pointer-events-none disabled:opacity-55 ${
-              augment.mosaic
-                ? "border-brand-500/30 bg-brand-500/[0.12] text-white"
-                : "border-white/[0.08] bg-white/[0.03] text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200"
-            }`}
           >
             Mosaic
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
+            variant={augment.mixupFlip ? "primary" : "secondary"}
+            size="md"
             onClick={() => toggleAugment("mixupFlip")}
             disabled={busy}
             aria-pressed={augment.mixupFlip}
-            className={`inline-flex h-9 items-center gap-2 rounded-lg border px-4 text-xs font-medium transition active:scale-[0.985] backdrop-blur-sm focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] disabled:pointer-events-none disabled:opacity-55 ${
-              augment.mixupFlip
-                ? "border-brand-500/30 bg-brand-500/[0.12] text-white"
-                : "border-white/[0.08] bg-white/[0.03] text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200"
-            }`}
           >
             Mixup+Flip
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -605,13 +590,15 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
             </div>
 
             {/* Ação de Auto-Fix */}
-            <button
+            <Button
               type="button"
+              variant="secondary"
+              size="sm"
               onClick={handleAutoFixSafeParams}
-              className="w-full inline-flex items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.06] hover:bg-white/10 py-1 text-[11px] font-mono text-zinc-200 transition"
+              className="w-full font-mono text-[11px]"
             >
-              <span>Ajustar para Perfil Seguro (Batch 16, ImgSz 640)</span>
-            </button>
+              Ajustar para Perfil Seguro (Batch 16, ImgSz 640)
+            </Button>
           </div>
         )}
       </div>
@@ -624,16 +611,10 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
           size="lg"
           disabled={!canSubmit}
           loading={busy}
+          leftIcon={<IconPlay className="size-3.5" />}
           className="w-full"
         >
-          {busy ? (
-            "Iniciando…"
-          ) : (
-            <>
-              <IconPlay className="h-3.5 w-3.5" />
-              Iniciar Treino
-            </>
-          )}
+          {busy ? "Iniciando…" : "Iniciar Treino"}
         </Button>
       </div>
     </form>

@@ -14,7 +14,7 @@ import {
   IconX,
   IconZap,
 } from "@/components/icons";
-import { SearchInput, SubmodulePills } from "@/components/ui";
+import { SearchInput, SubmodulePills, Badge, jobStatusToBadgeVariant } from "@/components/ui";
 import {
   abortJob,
   downloadArtifact,
@@ -591,11 +591,11 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
 
                         {/* Status Badge + Chevron */}
                         <div className="flex items-center space-x-1.5 shrink-0">
-                          <span
-                            className={`rounded-full border px-2 py-0.5 font-mono text-[10px] font-medium uppercase tracking-caps ${config.badgeClass}`}
+                          <Badge
+                            variant={jobStatusToBadgeVariant(job.status)}
                           >
                             {config.label}
-                          </span>
+                          </Badge>
                           <span
                             className={`text-zinc-500 transition-transform duration-200 ${
                               isExpanded ? "rotate-180" : ""

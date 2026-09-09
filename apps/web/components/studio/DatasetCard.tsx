@@ -10,6 +10,7 @@ import {
 } from "@/components/icons";
 import { formatBytes, formatPercent, formatRelativeTime } from "@/lib/format";
 import { listImages, getImage } from "@/lib/images";
+import { Badge } from "@/components/ui/Badge";
 import {
   STATUS_LABELS,
   type Dataset,
@@ -18,10 +19,10 @@ import {
   type StudioClass,
 } from "@/types/studio";
 
-const STATUS_STYLES: Record<Dataset["status"], string> = {
-  needs_labeling: "text-amber-300 border-amber-400/30 bg-amber-400/10",
-  in_progress: "text-cyan-300 border-cyan-400/30 bg-cyan-400/10",
-  ready: "text-[#34d399] border-[#34d399]/30 bg-[#34d399]/10",
+const STATUS_BADGE_VARIANT: Record<Dataset["status"], "ready" | "alert" | "info"> = {
+  needs_labeling: "alert",
+  in_progress: "info",
+  ready: "ready",
 };
 
 const CATEGORY_LABELS: Record<Dataset["category"], string> = {
@@ -293,16 +294,16 @@ export default function DatasetCard({
         </span>
         <span className="flex min-w-0 items-center justify-end gap-1.5">
           {dataset.autoTracked && (
-            <span className="tracking-caps rounded-full border border-cyan-400/30 bg-cyan-400/10 backdrop-blur-sm px-2 py-0.5 font-mono text-[11px] font-medium uppercase text-cyan-300" title="AutoTracker">
+            <Badge variant="telemetry" title="AutoTracker">
               AutoTracker
-            </span>
+            </Badge>
           )}
-          <span
-            className={`tracking-caps truncate rounded-full border backdrop-blur-sm px-2 py-0.5 font-mono text-[11px] font-medium uppercase ${STATUS_STYLES[dataset.status]}`}
+          <Badge
+            variant={STATUS_BADGE_VARIANT[dataset.status]}
             title={STATUS_LABELS[dataset.status]}
           >
             {STATUS_LABELS[dataset.status]}
-          </span>
+          </Badge>
         </span>
       </div>
 

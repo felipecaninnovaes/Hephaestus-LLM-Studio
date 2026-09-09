@@ -6,6 +6,7 @@ import Sidebar from "@/components/studio/Sidebar";
 import ActionCenter from "@/components/studio/ActionCenter";
 import { ToastHost } from "@/components/studio/Toast";
 import { IconMenu, IconZap } from "@/components/icons";
+import { Badge, Button } from "@/components/ui";
 
 import { ACTION_CENTER_EVENT } from "@/lib/events";
 
@@ -140,14 +141,16 @@ export default function StudioLayout({
       <div className="relative z-10 flex min-w-0 flex-1 flex-col">
         <header className="flex h-14 shrink-0 items-center justify-between border-b border-zinc-800/80 bg-zinc-950/80 px-3 backdrop-blur-xl sm:px-4">
           <div className="flex min-w-0 items-center space-x-2.5 sm:space-x-3">
-            <button
+            <Button
               type="button"
+              variant="ghost"
+              size="icon"
               onClick={() => setSidebarOpen(true)}
               aria-label="Abrir menu lateral"
-              className="inline-flex size-9 items-center justify-center rounded-lg border border-transparent bg-transparent p-0 text-zinc-300 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 lg:hidden"
+              className="lg:hidden"
             >
               <IconMenu />
-            </button>
+            </Button>
 
             <nav
               aria-label="Navegação atual"
@@ -197,22 +200,23 @@ export default function StudioLayout({
           </div>
 
           <div className="flex shrink-0 items-center space-x-2">
-            <button
+            <Button
               type="button"
+              variant="secondary"
+              size="icon"
               onClick={() => setActionCenterOpen(true)}
               title="Centro de Atividades"
               aria-label="Abrir Centro de Atividades"
-              className="inline-flex size-9 items-center justify-center rounded-lg border border-white/10 bg-white/[0.05] backdrop-blur-sm p-0 text-zinc-300 shadow-sm transition hover:border-white/20 hover:bg-white/[0.10] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 cursor-pointer"
             >
               <IconZap className="size-4 text-brand-400" />
-            </button>
-            <span
+            </Button>
+            <Badge
+              variant="telemetry"
+              dot
               title="Nó local — ambiente único nesta fatia"
-              className="flex items-center space-x-2 rounded-full border border-zinc-800 bg-zinc-900/90 backdrop-blur-sm px-2.5 py-1 font-mono text-[11px] text-zinc-300"
             >
-              <span aria-hidden="true" className="h-2 w-2 rounded-full bg-brand-400" />
-              <span>Local</span>
-            </span>
+              Local
+            </Badge>
           </div>
         </header>
 

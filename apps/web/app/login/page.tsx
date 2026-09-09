@@ -98,27 +98,22 @@ export default function LoginPage() {
         <div
           className="absolute inset-0"
           style={{
-            opacity: 0.5,
             background:
-              "radial-gradient(ellipse 60% 50% at 18% 22%, rgba(131,80,242,0.14), transparent 60%)," +
-              "radial-gradient(ellipse 55% 45% at 82% 78%, rgba(131,80,242,0.10), transparent 65%)," +
-              "radial-gradient(ellipse 45% 55% at 78% 18%, rgba(131,80,242,0.08), transparent 60%)," +
-              "radial-gradient(ellipse 50% 40% at 22% 82%, rgba(131,80,242,0.06), transparent 65%)",
+              "radial-gradient(ellipse 65% 50% at 18% 22%, rgba(131,80,242,0.22), transparent 65%)," +
+              "radial-gradient(ellipse 60% 45% at 82% 78%, rgba(131,80,242,0.20), transparent 65%)," +
+              "radial-gradient(ellipse 50% 55% at 78% 18%, rgba(131,80,242,0.18), transparent 60%)," +
+              "radial-gradient(ellipse 55% 40% at 22% 82%, rgba(131,80,242,0.16), transparent 65%)",
           }}
         />
 
-        {/* 2 — Grid: SVG pattern 48×48 com máscara radial */}
+        {/* 2 — Grid: SVG pattern 48×48 contínuo */}
         <div
           className="absolute inset-0"
           style={{
-            opacity: 0.5,
+            opacity: 0.75,
             backgroundImage:
-              'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'48\' height=\'48\'%3E%3Cpath d=\'M47.5 0v48M0 47.5h48\' stroke=\'rgba(150,150,150,1)\' stroke-width=\'1\' stroke-opacity=\'0.15\' fill=\'none\'/%3E%3C/svg%3E")',
+              'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'48\' height=\'48\'%3E%3Cpath d=\'M47.5 0v48M0 47.5h48\' stroke=\'rgba(160,150,185,1)\' stroke-width=\'1\' stroke-opacity=\'0.18\' fill=\'none\'/%3E%3C/svg%3E")',
             backgroundSize: "48px 48px",
-            WebkitMaskImage:
-              "radial-gradient(circle at 50% 50%, #000 30%, transparent 80%)",
-            maskImage:
-              "radial-gradient(circle at 50% 50%, #000 30%, transparent 80%)",
           }}
         />
 

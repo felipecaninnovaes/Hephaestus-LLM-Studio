@@ -398,7 +398,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
           role="dialog"
           aria-modal="true"
           aria-label="Centro de Atividades"
-          className={`fixed inset-y-0 right-0 flex w-full flex-col border-l border-white/10 bg-[rgba(18,15,24,0.96)] text-zinc-100 shadow-[-24px_0_60px_rgba(0,0,0,0.85)] backdrop-blur-2xl transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] sm:w-[500px] pointer-events-auto ${
+          className={`fixed inset-y-0 right-0 flex w-full flex-col border-l border-white/10 bg-[rgba(18,15,24,0.85)] text-zinc-100 shadow-[-24px_0_60px_rgba(0,0,0,0.85)] backdrop-blur-2xl transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] sm:w-[500px] pointer-events-auto ${
             visible ? "translate-x-0" : "translate-x-full"
           }`}
         >

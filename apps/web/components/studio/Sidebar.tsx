@@ -340,7 +340,7 @@ export default function Sidebar({
             setIsHovered(false);
           }
         }}
-        className={`fixed inset-y-0 left-0 z-50 flex flex-col border-r border-zinc-800/80 bg-zinc-950/95 backdrop-blur-xl transition-[width,transform,box-shadow] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] lg:z-30 ${
+        className={`fixed inset-y-0 left-0 z-50 flex flex-col border-r border-zinc-800/80 bg-zinc-950/85 backdrop-blur-xl transition-[width,transform,box-shadow] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] lg:z-30 ${
           open
             ? "translate-x-0 shadow-2xl shadow-black/80"
             : "-translate-x-full lg:translate-x-0"

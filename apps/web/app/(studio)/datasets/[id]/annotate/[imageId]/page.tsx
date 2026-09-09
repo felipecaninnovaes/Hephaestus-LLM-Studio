@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { Button, ZoomControl, showToast } from "@/components/ui";
+import { Button, Kbd, ZoomControl, showToast } from "@/components/ui";
 import {
   IconBoxSelect,
   IconLayers,
@@ -567,9 +567,7 @@ export default function AnnotateImagePage() {
                       return (
                         <>
                           {m[1]}
-                          <kbd className="rounded border border-white/10 bg-black/40 px-1 font-mono text-[10px] backdrop-blur-sm">
-                            {m[2]}
-                          </kbd>
+                          <Kbd>{m[2]}</Kbd>
                           )
                         </>
                       );
@@ -607,7 +605,7 @@ export default function AnnotateImagePage() {
                       {cls.idx}: {cls.name}
                     </span>
                   </div>
-                  <span className="text-[10px] text-zinc-400">[{cls.idx + 1}]</span>
+                  <Kbd size="sm">{cls.idx + 1}</Kbd>
                 </button>
               ))}
             </div>

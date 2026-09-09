@@ -22,7 +22,7 @@ import {
   IconX,
   IconZap,
 } from "@/components/icons";
-import { SearchInput, SubmodulePills, Badge, ProgressBar, jobStatusToBadgeVariant } from "@/components/ui";
+import { SearchInput, SubmodulePills, Badge, ProgressBar, Drawer, jobStatusToBadgeVariant } from "@/components/ui";
 import {
   abortJob,
   downloadArtifact,
@@ -74,9 +74,6 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState<TabFilter>("all");
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [mounted, setMounted] = useState(open);
-  const [visible, setVisible] = useState(false);
-
   // Detalhes sob demanda (métricas e artefatos por jobId)
   const [metrics, setMetrics] = useState<Record<string, JobMetricsType[]>>({});
   const [artifacts, setArtifacts] = useState<Record<string, JobArtifact[]>>({});
@@ -86,46 +83,6 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
   const [applyOverwrite, setApplyOverwrite] = useState(false);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // Transição do drawer
-  useEffect(() => {
-    if (open) {
-      setMounted(true);
-      const raf = requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          setVisible(true);
-        });
-      });
-      return () => cancelAnimationFrame(raf);
-    } else {
-      setVisible(false);
-      const timer = setTimeout(() => {
-        setMounted(false);
-      }, 300);
-      return () => clearTimeout(timer);
-    }
-  }, [open]);
-
-  // Tecla Escape fecha drawer
-  useEffect(() => {
-    if (!open) return;
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
-
-  // Bloqueio do scroll do body
-  useEffect(() => {
-    if (mounted) {
-      const original = document.body.style.overflow;
-      document.body.style.overflow = "hidden";
-      return () => {
-        document.body.style.overflow = original;
-      };
-    }
-  }, [mounted]);
 
   // Busca lista de jobs e telemetria do nó em paralelo
   const fetchData = useCallback(async () => {
@@ -480,81 +437,96 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
     setExpandedId((prev) => (prev === id ? null : id));
   }
 
-  if (!mounted) return null;
-
   return (
     <>
-      <div className="fixed inset-0 z-50 overflow-hidden pointer-events-none">
-        {/* Backdrop com desfoque e fade-in fluido */}
-        <div
-          className={`fixed inset-0 bg-black/60 backdrop-blur-sm transition-opacity duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] pointer-events-auto ${
-            visible ? "opacity-100" : "opacity-0"
-          }`}
-          onClick={onClose}
-          aria-hidden="true"
-        />
-
-        {/* Drawer lateral direito */}
-        <aside
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="action-center-title"
-          className={`fixed inset-y-0 right-0 flex w-full flex-col border-l border-white/10 bg-[rgba(18,15,24,0.85)] text-zinc-100 shadow-[-24px_0_60px_rgba(0,0,0,0.85)] backdrop-blur-2xl transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] sm:w-[520px] pointer-events-auto ${
-            visible ? "translate-x-0" : "translate-x-full"
-          }`}
-        >
-          {/* Hairline zenital com gradiente violeta */}
-          <span
-            aria-hidden="true"
-            className="pointer-events-none absolute top-0 left-0 right-0 h-px"
-            style={{
-              background:
-                "linear-gradient(90deg, transparent, rgba(131,80,242,0.6), transparent)",
-            }}
-          />
-
-          {/* Header */}
-          <div className="flex h-14 shrink-0 items-center justify-between border-b border-white/10 px-5">
-            <div className="flex items-center space-x-2.5">
-              <span className="flex size-7 items-center justify-center rounded-lg border border-brand-500/30 bg-brand-500/15 backdrop-blur-sm text-brand-400">
-                <IconBell className="size-4" />
-              </span>
-              <div>
-                <h2 id="action-center-title" className="font-display text-sm font-bold text-white tracking-tight">
-                  Centro de Atividades
-                </h2>
-              </div>
-              {totalActiveCount > 0 && (
-                <span className="ml-1.5 flex items-center space-x-1.5 rounded-full border border-brand-500/30 bg-brand-500/15 backdrop-blur-sm px-2.5 py-0.5 font-mono text-[11px] font-medium text-brand-300">
-                  <span className="size-1.5 rounded-full bg-brand-400 animate-pulse motion-reduce:animate-none" />
-                  <span className="tabular-nums">{totalActiveCount} ativo{totalActiveCount > 1 ? "s" : ""}</span>
+      <Drawer
+        open={open}
+        onClose={onClose}
+        title="Centro de Atividades"
+        icon={<IconBell className="size-4" />}
+        ariaLabel="Centro de Atividades"
+        widthClass="w-full sm:w-[520px]"
+        headerRight={
+          <div className="flex items-center space-x-1.5">
+            {totalActiveCount > 0 && (
+              <span className="mr-1 flex items-center space-x-1.5 rounded-full border border-brand-500/30 bg-brand-500/15 backdrop-blur-sm px-2.5 py-0.5 font-mono text-[11px] font-medium text-brand-300">
+                <span className="size-1.5 rounded-full bg-brand-400 animate-pulse motion-reduce:animate-none" />
+                <span className="tabular-nums">
+                  {totalActiveCount} ativo{totalActiveCount > 1 ? "s" : ""}
                 </span>
-              )}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => void fetchData()}
+              title="Atualizar atividades e telemetria"
+              aria-label="Atualizar atividades"
+              disabled={loading}
+              className="inline-flex size-8 items-center justify-center rounded-lg border border-transparent bg-transparent text-zinc-400 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 cursor-pointer disabled:opacity-50"
+            >
+              <IconRefresh
+                className={`size-3.5 ${loading ? "animate-spin motion-reduce:animate-none text-brand-400" : ""}`}
+              />
+            </button>
+          </div>
+        }
+        footer={
+          <div className="p-3.5 flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div className="flex items-center space-x-2 text-[11px] font-mono text-zinc-400">
+              <span className="size-2 rounded-full bg-[#34d399] animate-pulse motion-reduce:animate-none" />
+              <span>
+                Nó Local:{" "}
+                <strong className="text-zinc-200 font-semibold">
+                  {telemetry
+                    ? `${telemetry.jobsActive} ativo(s)${telemetry.vramUsed !== null ? ` · ${(telemetry.vramUsed / 1024).toFixed(1)} GB VRAM` : ""}${telemetry.cpu !== null ? ` · ${telemetry.cpu}% CPU` : ""}`
+                    : "Operacional"}
+                </strong>
+              </span>
             </div>
 
-            <div className="flex items-center space-x-1">
+            <div className="flex items-center space-x-1.5 w-full sm:w-auto justify-end">
               <button
                 type="button"
-                onClick={() => void fetchData()}
-                title="Atualizar atividades e telemetria"
-                aria-label="Atualizar atividades"
-                disabled={loading}
-                className="inline-flex size-8 items-center justify-center rounded-lg border border-transparent bg-transparent text-zinc-400 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 cursor-pointer disabled:opacity-50"
+                onClick={() => {
+                  onClose();
+                  router.push("/dashboard");
+                }}
+                className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-zinc-300 transition hover:border-brand-500/30 hover:bg-white/[0.08] hover:text-white cursor-pointer"
+                title="Abrir Painel Geral do Nó"
               >
-                <IconRefresh
-                  className={`size-3.5 ${loading ? "animate-spin motion-reduce:animate-none text-brand-400" : ""}`}
-                />
+                <IconServer className="size-3.5 text-brand-400" />
+                <span>Painel</span>
               </button>
+
               <button
                 type="button"
-                onClick={onClose}
-                aria-label="Fechar Centro de Atividades"
-                className="inline-flex size-8 items-center justify-center rounded-lg border border-transparent bg-transparent text-zinc-400 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 cursor-pointer"
+                onClick={() => {
+                  onClose();
+                  router.push("/datasets");
+                }}
+                className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-zinc-300 transition hover:border-brand-500/30 hover:bg-white/[0.08] hover:text-white cursor-pointer"
+                title="Abrir Datasets"
               >
-                <IconX className="size-4" />
+                <IconDatabase className="size-3.5 text-brand-400" />
+                <span>Datasets</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  router.push("/jobs");
+                }}
+                className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-zinc-300 transition hover:border-brand-500/30 hover:bg-white/[0.08] hover:text-white cursor-pointer"
+                title="Abrir Forja de Treino"
+              >
+                <IconTarget className="size-3.5 text-brand-400" />
+                <span>Forja</span>
               </button>
             </div>
           </div>
+        }
+      >
 
           {/* Abas de Filtro Agnósticas */}
           <div className="border-b border-white/10 px-3 py-2 bg-black/30 backdrop-blur-sm">
@@ -1025,63 +997,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
             )}
           </div>
 
-          {/* Footer fixo do drawer com status do sistema e atalhos rápidos */}
-          <div className="border-t border-white/10 p-3.5 bg-black/40 backdrop-blur-md flex flex-col sm:flex-row items-center justify-between gap-3">
-            <div className="flex items-center space-x-2 text-[11px] font-mono text-zinc-400">
-              <span className="size-2 rounded-full bg-[#34d399] animate-pulse motion-reduce:animate-none" />
-              <span>
-                Nó Local:{" "}
-                <strong className="text-zinc-200 font-semibold">
-                  {telemetry
-                    ? `${telemetry.jobsActive} ativo(s)${telemetry.vramUsed !== null ? ` · ${(telemetry.vramUsed / 1024).toFixed(1)} GB VRAM` : ""}${telemetry.cpu !== null ? ` · ${telemetry.cpu}% CPU` : ""}`
-                    : "Operacional"}
-                </strong>
-              </span>
-            </div>
-
-            <div className="flex items-center space-x-1.5 w-full sm:w-auto justify-end">
-              <button
-                type="button"
-                onClick={() => {
-                  onClose();
-                  router.push("/dashboard");
-                }}
-                className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-zinc-300 transition hover:border-brand-500/30 hover:bg-white/[0.08] hover:text-white cursor-pointer"
-                title="Abrir Painel Geral do Nó"
-              >
-                <IconServer className="size-3.5 text-brand-400" />
-                <span>Painel</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  onClose();
-                  router.push("/datasets");
-                }}
-                className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-zinc-300 transition hover:border-brand-500/30 hover:bg-white/[0.08] hover:text-white cursor-pointer"
-                title="Abrir Datasets"
-              >
-                <IconDatabase className="size-3.5 text-brand-400" />
-                <span>Datasets</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  onClose();
-                  router.push("/jobs");
-                }}
-                className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-zinc-300 transition hover:border-brand-500/30 hover:bg-white/[0.08] hover:text-white cursor-pointer"
-                title="Abrir Forja de Treino"
-              >
-                <IconTarget className="size-3.5 text-brand-400" />
-                <span>Forja</span>
-              </button>
-            </div>
-          </div>
-        </aside>
-      </div>
+      </Drawer>
 
       {/* Confirmação de cancelamento de Job */}
       <ConfirmDialog

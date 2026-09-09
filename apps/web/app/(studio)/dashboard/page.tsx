@@ -21,7 +21,7 @@ import {
   IconZap,
 } from "@/components/icons";
 import { getTelemetry, listJobs } from "@/lib/jobs";
-import { Button, SegmentedControl } from "@/components/ui";
+import { Button, SegmentedControl, StatCard } from "@/components/ui";
 import type { Dataset, Job, Telemetry } from "@/types/studio";
 
 interface NodeData {
@@ -247,69 +247,34 @@ export default function DashboardPage() {
 
       {/* 4 Cards de Resumo de IA & Treinamento */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {/* Tile 1: Datasets */}
-        <div className="glass-card group rounded-xl border border-white/10 bg-[rgba(31,27,38,0.70)] backdrop-blur-xl p-4 transition-[border-color,background-color] hover:border-brand-500/30 hover:bg-[rgba(38,33,47,0.78)]">
-          <div className="flex items-center space-x-2 text-zinc-300">
-            <IconDatabase className="size-4 text-brand-400" />
-            <span className="font-mono text-[11px] font-semibold tracking-[0.08em] uppercase">
-              Datasets
-            </span>
-          </div>
-          <div className="mt-2 font-mono text-2xl sm:text-3xl font-bold tracking-tight text-white">
-            {datasets.length}
-          </div>
-          <div className="mt-1 text-xs text-zinc-400">
-            {totalImages > 0 ? `${totalImages} amostras · ${labeledPct}% rotuladas` : "Visão & Difusão prontas"}
-          </div>
-        </div>
-
-        {/* Tile 2: Jobs de Treinamento */}
-        <div className="glass-card group rounded-xl border border-white/10 bg-[rgba(31,27,38,0.70)] backdrop-blur-xl p-4 transition-[border-color,background-color] hover:border-brand-500/30 hover:bg-[rgba(38,33,47,0.78)]">
-          <div className="flex items-center space-x-2 text-zinc-300">
-            <IconLayers className="size-4 text-[#34d399]" />
-            <span className="font-mono text-[11px] font-semibold tracking-[0.08em] uppercase">
-              Jobs de Treino
-            </span>
-          </div>
-          <div className="mt-2 font-mono text-2xl sm:text-3xl font-bold tracking-tight text-white">
-            {activeJobsCount > 0 ? `${activeJobsCount} Ativo` : `${completedJobsCount} Executados`}
-          </div>
-          <div className="mt-1 text-xs text-zinc-400">
-            {activeJobsCount > 0 ? "Treino YOLO / Difusão em andamento" : `${completedJobsCount} concluídos · Fila central`}
-          </div>
-        </div>
-
-        {/* Tile 3: Modelos & Pesos */}
-        <div className="glass-card group rounded-xl border border-white/10 bg-[rgba(31,27,38,0.70)] backdrop-blur-xl p-4 transition-[border-color,background-color] hover:border-brand-500/30 hover:bg-[rgba(38,33,47,0.78)]">
-          <div className="flex items-center space-x-2 text-zinc-300">
-            <IconBox className="size-4 text-sky-400" />
-            <span className="font-mono text-[11px] font-semibold tracking-[0.08em] uppercase">
-              Modelos &amp; Pesos
-            </span>
-          </div>
-          <div className="mt-2 font-mono text-2xl sm:text-3xl font-bold tracking-tight text-white">
-            14
-          </div>
-          <div className="mt-1 text-xs text-zinc-400">
-            YOLOv11, Flux.1, SDXL, OpenCLIP
-          </div>
-        </div>
-
-        {/* Tile 4: Storage S3 (SeaweedFS) */}
-        <div className="glass-card group rounded-xl border border-white/10 bg-[rgba(31,27,38,0.70)] backdrop-blur-xl p-4 transition-[border-color,background-color] hover:border-brand-500/30 hover:bg-[rgba(38,33,47,0.78)]">
-          <div className="flex items-center space-x-2 text-zinc-300">
-            <IconHardDrive className="size-4 text-amber-400" />
-            <span className="font-mono text-[11px] font-semibold tracking-[0.08em] uppercase">
-              Storage Canônico
-            </span>
-          </div>
-          <div className="mt-2 font-mono text-2xl sm:text-3xl font-bold tracking-tight text-white">
-            34.8 GB
-          </div>
-          <div className="mt-1 text-xs text-zinc-400">
-            Bucket S3 SeaweedFS · heph-data
-          </div>
-        </div>
+        <StatCard
+          label="Datasets"
+          value={datasets.length}
+          subtext={totalImages > 0 ? `${totalImages} amostras · ${labeledPct}% rotuladas` : "Visão & Difusão prontas"}
+          icon={<IconDatabase className="size-4" />}
+          iconColor="text-brand-400"
+        />
+        <StatCard
+          label="Jobs de Treino"
+          value={activeJobsCount > 0 ? `${activeJobsCount} Ativo` : `${completedJobsCount} Executados`}
+          subtext={activeJobsCount > 0 ? "Treino YOLO / Difusão em andamento" : `${completedJobsCount} concluídos · Fila central`}
+          icon={<IconLayers className="size-4" />}
+          iconColor="text-[#34d399]"
+        />
+        <StatCard
+          label="Modelos & Pesos"
+          value={14}
+          subtext="YOLOv11, Flux.1, SDXL, OpenCLIP"
+          icon={<IconBox className="size-4" />}
+          iconColor="text-sky-400"
+        />
+        <StatCard
+          label="Storage Canônico"
+          value="34.8 GB"
+          subtext="Bucket S3 SeaweedFS · heph-data"
+          icon={<IconHardDrive className="size-4" />}
+          iconColor="text-amber-400"
+        />
       </div>
 
       {/* Node View: Grid or List */}

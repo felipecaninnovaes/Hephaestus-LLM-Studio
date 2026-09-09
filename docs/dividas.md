@@ -153,6 +153,22 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
   referência contra re-litígios de contraste.
 - **Testes de UI** (backlog §12 do `frontend.md`) — cobrir
   criar→listar→excluir quando o e2e for ampliado.
+- **SegmentedControl `h-7` < hit-area mínima de 28px — ABERTA 2026-09-09**
+  (origem: auditoria visual F6.2, `apps/web/components/ui/SegmentedControl.tsx`
+  ~L47; `h-7` com root 14px = 24.5px). Contradição interna do `docs/DESIGN.md`
+  (linha ~302 manda `h-7` por fidelidade Arcane v2.1; linha ~263 exige ≥28px —
+  WCAG 2.5.8). Decisão do coordenador: aceito por ora (fidelidade Arcane),
+  componente global usado em várias páginas — resolver na fatia de refinamento
+  de componentes com medição.
+- **`emerald-400` de marca em `CreateDatasetModal.tsx` — ABERTA 2026-09-09**
+  (origem: achado do F6.2 fora do escopo, `apps/web/components/studio/
+  CreateDatasetModal.tsx` ~L565). Viola a regra Brand-Only do `docs/DESIGN.md`
+  (emerald só como semântica literal documentada; classes em emerald em marca
+  são proibidas). Fix trivial em fatia de limpeza web (F6.4+).
+- **"V1.3" hardcoded na página de login — ABERTA 2026-09-09**
+  (origem: smoke F6.2, `apps/web/app/login/page.tsx` ~L151). A versão de
+  produto real vem de `GET /health` (`version:"0.1.0"`, ADR-0009 D5); o login
+  mostra "V1.3" inventado. Alinhar na fatia de limpeza web (mesma da 2).
 - ~~**Sincronizar `docs/frontend.md` linha 3** — ainda descreve o protótipo como
   "~2910 linhas"; o do tronco é a regeneração OpenDesign (3641 linhas, com
   LoginPage).~~ **QUITADA 2026-09-06** (commit 3g.6 docs-sync: linha 3 agora

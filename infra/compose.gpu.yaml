@@ -1,0 +1,68 @@
+# compose.gpu.yaml — Sessão GPU no TrueNAS (ADR-0010 D1)
+# Uso: docker compose -p gpu -f infra/compose.gpu.yaml --env-file infra/env.gpu up -d
+# Project name "gpu" evita colisão com o projeto "infra" do dev host.
+#
+# Serviços:
+#   orchestrator-gpu  — binário do orquestrador em container no TrueNAS,
+#                        heartbeats no manager do dev host (10.15.10.3:8081),
+#                        S3 SeaweedFS via LAN (10.15.10.3:8333)
+#   trainer-gpu       — build-only (profile [build]), produz hephaestus/trainer-yolo:gpu
+#
+# O container do orquestrador vê as 2 GPUs (gpus: all — D8 ADR-0010) para
+# telemetria nvidia-smi; a seleção do trainer é feita pelo executor com
+# --gpus device=… (ORCH_GPU_DEVICES).
+
+name: gpu
+
+services:
+  orchestrator-gpu:
+    build:
+      context: ..
+      dockerfile: services/orchestrator/Dockerfile
+    ports:
+      - '8082:8082'
+    environment:
+      MANAGER_URL: http://10.15.10.3:8081
+      MANAGER_TOKEN: ${MANAGER_TOKEN}
+      S3_ORCH_ENDPOINT_URL: http://10.15.10.3:8333
+      S3_ORCH_BUCKET: ${S3_ORCH_BUCKET:-heph-data}
+      S3_ORCH_ACCESS_KEY: ${S3_ORCH_ACCESS_KEY}
+      S3_ORCH_SECRET_KEY: ${S3_ORCH_SECRET_KEY}
+      ORCH_GPU_DEVICES: ${ORCH_GPU_DEVICES:-0}
+      ORCH_VOL_DATASETS: gpu_datasets
+      ORCH_VOL_OUTPUTS: gpu_outputs
+      EXEC_MODE: docker
+      PORT: '8082'
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - gpu_datasets:/data/datasets
+      - gpu_outputs:/data/outputs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -S -O /dev/null http://localhost:8082/health 2>&1 | grep -q HTTP/1.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  # Build-only: imagem hephaestus/trainer-yolo:gpu (ADR-0010 D5).
+  # Não inicia com `docker compose up` — só com `--profile build`.
+  # Build: docker compose -p gpu --profile build build trainer-gpu
+  trainer-gpu:
+    profiles:
+      - build
+    image: hephaestus/trainer-yolo:gpu
+    build:
+      context: ..
+      dockerfile: engines/trainer-yolo/Dockerfile.gpu
+
+volumes:
+  gpu_datasets:
+  gpu_outputs:

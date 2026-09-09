@@ -149,7 +149,7 @@ fora do CI.
 - Manager: env `AUTO_ADOPT_LOCAL=0` (não ressuscitar o orquestrador local em
   sessão GPU).
 - Infra: **`infra/compose.gpu.yaml`** (TrueNAS) + publish do S3 na LAN com bind
-  específico + `infra/README-gpu.md` (checklist da sessão GPU) + `.env.gpu.example`.
+  específico + `infra/README-gpu.md` (checklist da sessão GPU) + `env.gpu.example`.
 - Smoke **manual** @gpu no TrueNAS (passo final de verificação, fora do CI).
 
 **Decidido — fora (dívida/futuro, NÃO agora):**
@@ -471,7 +471,7 @@ continuaria aceitando qualquer coisa — inconsistente).
 4. **Postgres NUNCA ao remoto** — respeitado (FATO spike); o orquestrador
    remoto não recebe `DATABASE_URL` no compose.gpu.yaml.
 
-**Decidido — secrets no remoto:** `.env.gpu` no TrueNAS com `MANAGER_TOKEN`,
+**Decidido — secrets no remoto:** `env.gpu` no TrueNAS com `MANAGER_TOKEN`,
 `S3_ORCH_ACCESS_KEY`/`S3_ORCH_SECRET_KEY` (a MESMA `heph-orchestrator` — escopo
 `packages/*`+`artifacts/*` já cobre o remoto; nenhuma credencial nova) e
 `S3_ORCH_ENDPOINT_URL=http://10.15.10.3:8333`. Nada de `POSTGRES_*`/credenciais
@@ -503,7 +503,7 @@ baratas no **pre-flight do smoke G.6** (D12). Se o pre-flight falhar:
 | manager | `AUTO_ADOPT_LOCAL` | `1` | `0` → não auto-adota `orchestrator-local` no boot (D2) |
 | dev host .env | `TRAINER_IMAGE` | `hephaestus/trainer-yolo:local` | sessão GPU: `hephaestus/trainer-yolo:gpu` + recreate manager |
 | dev host .env | `SEAWEED_PUBLISH` | `127.0.0.1` | sessão GPU: `10.15.10.3` (D3) + `--force-recreate` do seaweedfs (lição F4.6 bug #5: bind-mount não detecta mudança de env) |
-| TrueNAS .env.gpu | `MANAGER_URL`/`S3_ORCH_*`/`ORCH_GPU_DEVICES` | — | apontam para `10.15.10.3` (D1/D3/D4) |
+| TrueNAS env.gpu | `MANAGER_URL`/`S3_ORCH_*`/`ORCH_GPU_DEVICES` | — | apontam para `10.15.10.3` (D1/D3/D4) |
 
 ## Testes
 
@@ -617,7 +617,7 @@ viram commits próprios); **G.7** docs-sync.
 | **G.1** | @python-engines | `train.py` caminho real completo (callback `on_train_epoch_end` → metrics.jsonl 6 keys incremental; copy flat best/last.pt; `device=0`/`seed`; conversão `mAP50(B)`/`mAP50-95(B)`) + `Dockerfile.gpu` (pytorch 2.6 cu124 runtime pinado + ultralytics pinado + `ENV ENGINE_MOCK=0` + bake `yolo11n.pt`) + pytest (ultralytics mockado, fixture metrics/results.csv) + README (seção gpu: imagem, build, envelope 6GB) | `pytest engines/trainer-yolo` verde (17 existentes + novos); mock path intocado (testes antigos passam); `docker build -f Dockerfile.gpu` local **não exigido** no CI (só lint do arquivo) |
 | **G.2** | @rust-dev (orchestrator) | `TrainerExecutor::run` + `env`/`gpu_devices`; `DockerExecutor` (`--gpus device=…`, `--shm-size=2g`, `-e`; `None` → byte-a-byte atual); `run_job_inner` lê `ORCH_GPU_DEVICES` + guarda anti-mock (`ORCH_GPU_ALLOW_MOCK` escapa); heartbeat tenta nvidia-smi (parse puro com fixture, fallback silencioso) | `cargo test -p orchestrator` verde (novos: parse nvidia-smi, args do executor Some/None, guarda anti-mock); `cargo fmt --all`; ~250-350 linhas |
 | **G.3** | @rust-dev (manager) | env `AUTO_ADOPT_LOCAL` (default `1`): boot não auto-adota `orchestrator-local` quando `0` + teste db (boot com `0` → 0 rows; default → 1 row) | `cargo test -p manager -- --ignored` + `bash scripts/test-db.sh` verdes; ~20 linhas |
-| **G.4** | @infra-dev | `infra/compose.gpu.yaml` (projeto `gpu`: orchestrator-gpu build do clone + `gpus: all` + envs `MANAGER_URL`/`S3_ORCH_*`/`ORCH_GPU_DEVICES=1`/`ORCH_VOL_DATASETS=gpu_datasets`/`ORCH_VOL_OUTPUTS=gpu_outputs` + volumes `gpu_datasets`/`gpu_outputs`; serviço build-only `trainer-gpu` com `Dockerfile.gpu`) + `.env.gpu.example` + `infra/README-gpu.md` (checklist completo da sessão GPU: publish S3 com `SEAWEED_PUBLISH=10.15.10.3` + force-recreate, `TRAINER_IMAGE=…:gpu` + recreate manager, stop local + DELETE row + INSERT remoto com gpus/vram_total_gb, pull/build/up no TrueNAS, **pre-flight nvidia-smi (3060 livre? senão `ORCH_GPU_DEVICES=1`)**, submit yolo11n batch 16 (3060), verificação, teardown) | `docker compose -f infra/compose.gpu.yaml config -q` no dev; README com todos os comandos executáveis; sem tocar `compose.yaml` (dev host intocado no default) |
+| **G.4** | @infra-dev | `infra/compose.gpu.yaml` (projeto `gpu`: orchestrator-gpu build do clone + `gpus: all` + envs `MANAGER_URL`/`S3_ORCH_*`/`ORCH_GPU_DEVICES=1`/`ORCH_VOL_DATASETS=gpu_datasets`/`ORCH_VOL_OUTPUTS=gpu_outputs` + volumes `gpu_datasets`/`gpu_outputs`; serviço build-only `trainer-gpu` com `Dockerfile.gpu`) + `env.gpu.example` + `infra/README-gpu.md` (checklist completo da sessão GPU: publish S3 com `SEAWEED_PUBLISH=10.15.10.3` + force-recreate, `TRAINER_IMAGE=…:gpu` + recreate manager, stop local + DELETE row + INSERT remoto com gpus/vram_total_gb, pull/build/up no TrueNAS, **pre-flight nvidia-smi (3060 livre? senão `ORCH_GPU_DEVICES=1`)**, submit yolo11n batch 16 (3060), verificação, teardown) | `docker compose -f infra/compose.gpu.yaml config -q` no dev; README com todos os comandos executáveis; sem tocar `compose.yaml` (dev host intocado no default) |
 | **G.5** | @reviewer | review do diff G.1–G.4 vs esta ADR (pontos de atenção: mock intocado, contrato flat do metrics.jsonl, guarda anti-mock, fallback silencioso da telemetria, sessão GPU no README) | APROVA (com ou sem nits); fixes roteados como commits próprios |
 | **G.6** | @coordenador (ops manual, via SSH — fora do CI) | **Smoke @gpu no TrueNAS**: pre-flight (`nvidia-smi -L` no host; `curl http://10.15.1.2:8082/health` do dev; nvidia-smi dentro do container do orquestrador); sessão (D2/D3/D4); build `:gpu` no TrueNAS; submit via API/UI `yolo11n epochs=3 batch=8 imgsz=640`; verificação binária (abaixo) | critérios: (1) job vai para o remoto (`orchestrators` = 1 row `remoto`; `job.orchestrator_id` = uuid remoto); (2) GPU usada = a escolhida no pre-flight (default 3060; `nvidia-smi` durante o run mostra util>0 nela e ~0 na outra; log ultralytics "Using device 0"); (3) artefatos reais (`best.pt` > 1MB, md5 varia entre runs — ≠ 110 bytes HEPHMOCK); (4) `GET /api/telemetry` com `gpus[]` reais e `vramUsed/vramTotal` > 0; dashboard com gauges reais; (5) **falha honesta**: 2º job `yolo11x` (definitivamente > 12GB) → `failed` com log OOM (não silencioso); (6) teardown: down remoto, restore dev host, DELETE row local/remoto + restart manager (re-adota local) |
 | **G.7** | @docs-sync | Aplica "O que fica falso nos docs": backend.md §8/§10/§6/§9, emendas ADR-0007 (D0/D5/D9) e ADR-0009 (D1), `engines.yaml` (toolchain validado), vram-table nota, dividas.md (novas dívidas), coordenacao.md | diff só de docs; conferência doc↔código nos dois sentidos (lição sessão 16) |

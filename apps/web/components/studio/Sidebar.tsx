@@ -6,31 +6,22 @@ import Link from "next/link";
 import {
   IconActivity,
   IconBox,
-  IconBoxSelect,
   IconChevronRight,
-  IconChevronsUpDown,
-  IconCpu,
   IconDatabase,
-  IconFolder,
   IconHardDrive,
   IconHome,
   IconImage,
-  IconLayers,
   IconList,
   IconLogOut,
   IconNetwork,
   IconPin,
   IconPlay,
-  IconRefresh,
   IconServer,
   IconSettings,
   IconShield,
-  IconSparkles,
   IconTarget,
   IconX,
-  IconZap,
 } from "@/components/icons";
-import { showToast } from "@/components/studio/Toast";
 import { getTelemetry } from "@/lib/jobs";
 import type { Telemetry } from "@/types/studio";
 
@@ -163,22 +154,6 @@ export default function Sidebar({
           icon: IconDatabase,
           isAvailable: true,
         },
-        {
-          id: "autotracker",
-          label: "AutoTracker",
-          href: "/autotracker",
-          icon: IconBoxSelect,
-          badge: "IA",
-          isAvailable: false,
-        },
-        {
-          id: "autolabel",
-          label: "AutoLabel",
-          href: "/autolabel",
-          icon: IconSparkles,
-          badge: "IA",
-          isAvailable: false,
-        },
       ],
     },
     {
@@ -197,6 +172,7 @@ export default function Sidebar({
           label: "Difusão LoRA",
           href: "/difusao",
           icon: IconImage,
+          badge: "Roadmap",
           isAvailable: false,
         },
         {
@@ -204,6 +180,7 @@ export default function Sidebar({
           label: "OpenCLIP",
           href: "/openclip",
           icon: IconNetwork,
+          badge: "Roadmap",
           isAvailable: false,
         },
         {
@@ -211,7 +188,7 @@ export default function Sidebar({
           label: "Playground",
           href: "/playground",
           icon: IconPlay,
-          badge: "Idle",
+          badge: "Roadmap",
           isAvailable: false,
         },
         {
@@ -219,7 +196,7 @@ export default function Sidebar({
           label: "Modelos & Pesos",
           href: "/models",
           icon: IconBox,
-          hasSubmenu: true,
+          badge: "Roadmap",
           isAvailable: false,
         },
       ],
@@ -232,7 +209,7 @@ export default function Sidebar({
           label: "Orquestradores",
           href: "/environments",
           icon: IconServer,
-          hasSubmenu: true,
+          badge: "Roadmap",
           isAvailable: false,
         },
         {
@@ -240,6 +217,7 @@ export default function Sidebar({
           label: "Storage S3",
           href: "/storage",
           icon: IconHardDrive,
+          badge: "Roadmap",
           isAvailable: false,
         },
       ],
@@ -252,6 +230,7 @@ export default function Sidebar({
           label: "Registro de Logs",
           href: "/events",
           icon: IconList,
+          badge: "Roadmap",
           isAvailable: false,
         },
         {
@@ -259,7 +238,7 @@ export default function Sidebar({
           label: "Configurações",
           href: "/settings",
           icon: IconSettings,
-          hasSubmenu: true,
+          badge: "Roadmap",
           isAvailable: false,
         },
       ],
@@ -278,35 +257,7 @@ export default function Sidebar({
     router.refresh();
   }
 
-  const handleItemClick = (e: React.MouseEvent, item: NavItem) => {
-    if (item.id === "autotracker") {
-      e.preventDefault();
-      onClose();
-      router.push("/datasets");
-      showToast(
-        "O AutoTracker opera na galeria. Selecione um dataset YOLO para executá-lo.",
-        "info",
-      );
-      return;
-    }
-    if (item.id === "autolabel") {
-      e.preventDefault();
-      onClose();
-      router.push("/datasets");
-      showToast(
-        "O AutoLabel opera na galeria. Selecione um dataset para executá-lo.",
-        "info",
-      );
-      return;
-    }
-    if (!item.isAvailable) {
-      e.preventDefault();
-      showToast(
-        `O módulo "${item.label}" estará disponível na próxima fatia de integração.`,
-        "info",
-      );
-      return;
-    }
+  const handleItemClick = () => {
     onClose();
   };
 
@@ -321,6 +272,7 @@ export default function Sidebar({
     <>
       {/* Mobile Backdrop */}
       <div
+        role="presentation"
         aria-label="Fechar menu lateral"
         onClick={onClose}
         className={`fixed inset-0 z-40 bg-black/70 backdrop-blur-sm transition-opacity duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] lg:hidden ${
@@ -444,7 +396,7 @@ export default function Sidebar({
                       </div>
                     </div>
                   </div>
-                  <IconChevronsUpDown className="size-3.5 shrink-0 text-zinc-500 group-hover:text-zinc-300" />
+                  <IconChevronRight className="size-3.5 shrink-0 text-zinc-500 group-hover:text-zinc-300" />
                 </>
               ) : (
                 <IconServer className="size-4.5 text-brand-400 group-hover:scale-105 transition-transform" />
@@ -515,13 +467,48 @@ export default function Sidebar({
                   const active = isItemActive(item);
                   const Icon = item.icon;
 
+                  if (!item.isAvailable) {
+                    return (
+                      <div
+                        key={item.id}
+                        role="status"
+                        aria-disabled="true"
+                        title={!isExpanded ? `${item.label} (Roadmap)` : undefined}
+                        aria-label={!isExpanded ? `${item.label} (Roadmap)` : undefined}
+                        className={`group relative flex items-center overflow-hidden rounded-xl cursor-default select-none border border-transparent opacity-45 transition-opacity ${
+                          isExpanded
+                            ? "w-full p-2 space-x-3 items-center text-zinc-400"
+                            : "size-10 justify-center p-0 text-zinc-400"
+                        }`}
+                      >
+                        {isExpanded ? (
+                          <>
+                            <span className="shrink-0 text-zinc-400">
+                              <Icon className="size-4.5" />
+                            </span>
+                            <span className="min-w-0 flex-1 truncate text-xs font-medium text-zinc-300">
+                              {item.label}
+                            </span>
+                            <span className="rounded border border-zinc-800 bg-zinc-900/60 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-zinc-400 shrink-0">
+                              Roadmap
+                            </span>
+                          </>
+                        ) : (
+                          <div className="relative flex items-center justify-center">
+                            <Icon className="size-4.5 text-zinc-400" />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  }
+
                   return (
                     <Link
                       key={item.id}
                       href={item.href}
-                      onClick={(e) => handleItemClick(e, item)}
-                      title={`${item.label}${!item.isAvailable ? " (Em breve)" : ""}`}
-                      aria-label={!isExpanded ? `${item.label}${!item.isAvailable ? " (Em breve)" : ""}` : undefined}
+                      onClick={handleItemClick}
+                      title={!isExpanded ? item.label : undefined}
+                      aria-label={!isExpanded ? item.label : undefined}
                       aria-current={active ? "page" : undefined}
                       className={`group relative flex items-center overflow-hidden rounded-xl transition-all focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] ${
                         active
@@ -531,7 +518,7 @@ export default function Sidebar({
                           : isExpanded
                             ? "w-full p-2 space-x-3 items-center border border-transparent text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-100"
                             : "size-10 justify-center p-0 border border-transparent text-zinc-400 hover:text-white hover:bg-white/[0.06]"
-                      } ${!item.isAvailable ? "opacity-75" : ""}`}
+                      }`}
                     >
                       {active && (
                         <span
@@ -731,72 +718,71 @@ export default function Sidebar({
               </div>
             )}
 
-            {/* Gatilho de Perfil (Expandido vs Rail) */}
-            <div
-              onClick={() => setUserMenuOpen((prev) => !prev)}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  setUserMenuOpen((prev) => !prev);
-                }
-              }}
-              aria-haspopup="menu"
-              aria-expanded={userMenuOpen}
-              aria-label="Perfil do operador e opções de sessão"
-              className={`group flex items-center rounded-xl border transition-all active:scale-[0.985] cursor-pointer focus-visible:ring-2 focus-visible:ring-brand-500/70 ${
-                isExpanded
-                  ? "p-2 justify-between w-full border-white/5 bg-white/[0.02] hover:border-brand-500/30 hover:bg-white/[0.05]"
-                  : "p-0 size-10 justify-center border-transparent hover:bg-white/[0.06]"
-              } ${
-                userMenuOpen
-                  ? "border-brand-500/40 bg-brand-500/10 shadow-sm"
-                  : ""
-              }`}
-            >
-              {isExpanded ? (
-                <>
-                  <div className="flex items-center space-x-2.5 overflow-hidden">
-                    <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-brand-600 font-display text-xs font-bold text-white shadow-sm ring-1 ring-brand-400/30">
-                      H
-                    </div>
-                    <div className="min-w-0 text-left">
-                      <div className="truncate text-xs font-semibold text-zinc-200 group-hover:text-white">
-                        Hephaestus Admin
-                      </div>
-                      <div className="truncate font-mono text-[11px] text-zinc-500">
-                        admin@localhost
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center space-x-1">
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setUserMenuOpen(true);
-                        setConfirmingLogout(true);
-                      }}
-                      disabled={leaving}
-                      title="Opções de saída"
-                      aria-label="Encerrar sessão"
-                      className="inline-flex size-7 items-center justify-center rounded-lg border border-transparent text-zinc-400 transition hover:bg-white/[0.08] hover:text-rose-400 cursor-pointer focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)]"
-                    >
-                      <IconLogOut className="size-3.5" />
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <div
-                  title="Hephaestus Admin (Opções da sessão)"
-                  className="flex size-7 items-center justify-center rounded-full bg-brand-600 font-display text-xs font-bold text-white shadow-sm ring-1 ring-brand-400/30 group-hover:ring-brand-400/60 transition"
+            {/* Gatilho de Perfil (Expandido vs Rail) - Desacoplado sem elementos interativos aninhados */}
+            {isExpanded ? (
+              <div
+                className={`group flex items-center rounded-xl border transition-all ${
+                  userMenuOpen
+                    ? "border-brand-500/40 bg-brand-500/10 shadow-sm"
+                    : "border-white/5 bg-white/[0.02] hover:border-brand-500/30 hover:bg-white/[0.05]"
+                } p-1.5 justify-between w-full`}
+              >
+                <button
+                  type="button"
+                  onClick={() => setUserMenuOpen((prev) => !prev)}
+                  aria-haspopup="menu"
+                  aria-expanded={userMenuOpen}
+                  aria-label="Perfil do operador e opções de sessão"
+                  className="flex items-center space-x-2.5 overflow-hidden min-w-0 flex-1 text-left cursor-pointer rounded-lg p-1 transition-colors hover:bg-white/[0.04] focus-visible:ring-2 focus-visible:ring-brand-500/70"
                 >
+                  <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-brand-600 font-display text-xs font-bold text-white shadow-sm ring-1 ring-brand-400/30">
+                    H
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-xs font-semibold text-zinc-200 group-hover:text-white">
+                      Hephaestus Admin
+                    </div>
+                    <div className="truncate font-mono text-[11px] text-zinc-400">
+                      admin@localhost
+                    </div>
+                  </div>
+                </button>
+
+                <div className="flex items-center space-x-1 pl-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setUserMenuOpen(true);
+                      setConfirmingLogout(true);
+                    }}
+                    disabled={leaving}
+                    title="Opções de saída"
+                    aria-label="Encerrar sessão"
+                    className="inline-flex size-7 items-center justify-center rounded-lg border border-transparent text-zinc-400 transition hover:bg-white/[0.08] hover:text-rose-400 cursor-pointer focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)]"
+                  >
+                    <IconLogOut className="size-3.5" />
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setUserMenuOpen((prev) => !prev)}
+                aria-haspopup="menu"
+                aria-expanded={userMenuOpen}
+                aria-label="Perfil do operador e opções de sessão"
+                title="Hephaestus Admin (Opções da sessão)"
+                className={`flex size-10 items-center justify-center rounded-xl border transition-all cursor-pointer focus-visible:ring-2 focus-visible:ring-brand-500/70 ${
+                  userMenuOpen
+                    ? "border-brand-500/40 bg-brand-500/10 shadow-sm"
+                    : "border-transparent hover:bg-white/[0.06]"
+                }`}
+              >
+                <div className="flex size-7 items-center justify-center rounded-full bg-brand-600 font-display text-xs font-bold text-white shadow-sm ring-1 ring-brand-400/30 group-hover:ring-brand-400/60 transition">
                   H
                 </div>
-              )}
-            </div>
+              </button>
+            )}
           </div>
 
           {/* Versão centralizada no rodapé */}

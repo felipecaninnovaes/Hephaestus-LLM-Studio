@@ -193,6 +193,53 @@ def _mock_train(cfg: dict, output: Path) -> None:
 # Real training (ultralytics, lazy import)
 # ---------------------------------------------------------------------------
 
+def _convert_ultralytics_metrics(raw: dict[str, Any]) -> dict[str, Any] | None:
+    """Convert ultralytics trainer.metrics keys to contract keys.
+
+    Contract keys (METRIC_KEYS): epoch, box_loss, cls_loss, dfl_loss, mAP50, mAP50-95.
+
+    Returns None if no usable metrics are available for this epoch (honest skip).
+    """
+    mapping = {
+        "train/box_loss": "box_loss",
+        "train/cls_loss": "cls_loss",
+        "train/dfl_loss": "dfl_loss",
+        "metrics/mAP50(B)": "mAP50",
+        "metrics/mAP50-95(B)": "mAP50-95",
+    }
+    result: dict[str, Any] = {}
+    for ul_key, contract_key in mapping.items():
+        val = raw.get(ul_key)
+        if val is None:
+            # Epoch without this metric — still include with None (honest skip)
+            result[contract_key] = None
+        else:
+            result[contract_key] = float(val) if contract_key != "epoch" else int(val)
+    return result
+
+
+def _write_metrics_line(metrics_path: Path, epoch: int, metrics: dict[str, Any]) -> None:
+    """Append one JSON line to metrics.jsonl (contract format)."""
+    line = {"epoch": epoch, **{k: metrics.get(k) for k in METRIC_KEYS if k != "epoch"}}
+    with open(metrics_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(line) + "\n")
+
+
+def _copy_flat_weights(output: Path) -> None:
+    """Copy best.pt and last.pt from ultralytics output to flat output dir."""
+    import shutil
+
+    src_dir = output / "train" / "weights"
+    for name in ("best.pt", "last.pt"):
+        src = src_dir / name
+        dst = output / name
+        if src.is_file():
+            shutil.copy2(str(src), str(dst))
+        else:
+            # Weight file missing — not fatal, but log a warning
+            print(f"WARNING: {src} not found, skipping copy", file=sys.stderr)
+
+
 def _real_train(cfg: dict, output: Path) -> None:
     """Real training via ultralytics (requires GPU + extras [train])."""
     try:
@@ -209,8 +256,21 @@ def _real_train(cfg: dict, output: Path) -> None:
         _die(f"dataset.yaml not found: {dataset_path}")
 
     output.mkdir(parents=True, exist_ok=True)
+    metrics_path = output / "metrics.jsonl"
 
+    seed = cfg["seed"]
     model = YOLO(yolo_cfg["model"])
+
+    # Callback: append one JSON line per epoch to metrics.jsonl
+    def on_train_epoch_end(trainer) -> None:  # noqa: ANN001 — ultralytics callback
+        epoch = trainer.epoch + 1  # ultralytics is 0-indexed
+        raw = trainer.metrics or {}
+        converted = _convert_ultralytics_metrics(raw)
+        if converted is not None:
+            _write_metrics_line(metrics_path, epoch, converted)
+
+    model.add_callback("on_train_epoch_end", on_train_epoch_end)
+
     model.train(
         data=str(dataset_yaml),
         epochs=yolo_cfg["epochs"],
@@ -224,7 +284,12 @@ def _real_train(cfg: dict, output: Path) -> None:
         project=str(output),
         name="train",
         exist_ok=True,
+        device=0,
+        seed=seed,
     )
+
+    # Post-train: copy flat weights + ensure metrics.jsonl is consistent
+    _copy_flat_weights(output)
 
 
 # ---------------------------------------------------------------------------

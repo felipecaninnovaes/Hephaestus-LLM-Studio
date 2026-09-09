@@ -30,9 +30,12 @@ from trainer_yolo.train import (
     REQUIRED_AUGMENT_KEYS,
     REQUIRED_CONFIG_KEYS,
     REQUIRED_YOLO_KEYS,
+    _convert_ultralytics_metrics,
+    _copy_flat_weights,
     _make_fake_artifact,
     _seed_bytes,
     _synthetic_metrics,
+    _write_metrics_line,
     load_and_validate_config,
 )
 
@@ -349,3 +352,231 @@ class TestStructuredOutput:
         # Stdout should contain epoch=1/2 and epoch=2/2
         assert "epoch=1/2" in result.stdout
         assert "epoch=2/2" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# (f) Real training — pure functions (ultralytics mocked)
+# ---------------------------------------------------------------------------
+
+def _fake_ultralytics_metrics(
+    *,
+    box_loss: float = 0.5,
+    cls_loss: float = 0.3,
+    dfl_loss: float = 0.2,
+    map50: float = 0.7,
+    map50_95: float = 0.5,
+) -> dict:
+    """Simulate trainer.metrics dict from ultralytics."""
+    return {
+        "train/box_loss": box_loss,
+        "train/cls_loss": cls_loss,
+        "train/dfl_loss": dfl_loss,
+        "metrics/mAP50(B)": map50,
+        "metrics/mAP50-95(B)": map50_95,
+    }
+
+
+class TestConvertUltralyticsMetrics:
+    """Tests for _convert_ultralytics_metrics (pure function)."""
+
+    def test_convert_full_metrics(self) -> None:
+        """Full metrics dict → 5 contract keys (excl. epoch) with correct mapping."""
+        raw = _fake_ultralytics_metrics(
+            box_loss=1.23, cls_loss=0.45, dfl_loss=0.67, map50=0.81, map50_95=0.55
+        )
+        result = _convert_ultralytics_metrics(raw)
+        assert result is not None
+        # _convert_ultralytics_metrics returns keys without 'epoch' (epoch is added by _write_metrics_line)
+        expected_keys = set(METRIC_KEYS) - {"epoch"}
+        assert set(result.keys()) == expected_keys
+        assert result["box_loss"] == 1.23
+        assert result["cls_loss"] == 0.45
+        assert result["dfl_loss"] == 0.67
+        assert result["mAP50"] == 0.81
+        assert result["mAP50-95"] == 0.55
+
+    def test_convert_map50_key_mapping(self) -> None:
+        """mAP50(B) → mAP50 (not mAP50(B))."""
+        raw = {"metrics/mAP50(B)": 0.9}
+        result = _convert_ultralytics_metrics(raw)
+        assert result is not None
+        assert "mAP50" in result
+        assert result["mAP50"] == 0.9
+        assert "metrics/mAP50(B)" not in result
+
+    def test_convert_map50_95_key_mapping(self) -> None:
+        """mAP50-95(B) → mAP50-95 (not mAP50-95(B))."""
+        raw = {"metrics/mAP50-95(B)": 0.65}
+        result = _convert_ultralytics_metrics(raw)
+        assert result is not None
+        assert "mAP50-95" in result
+        assert result["mAP50-95"] == 0.65
+        assert "metrics/mAP50-95(B)" not in result
+
+    def test_convert_missing_metrics_honest_skip(self) -> None:
+        """Empty metrics dict → all None (honest skip, no crash)."""
+        result = _convert_ultralytics_metrics({})
+        assert result is not None
+        expected_keys = set(METRIC_KEYS) - {"epoch"}
+        for key in expected_keys:
+            assert result[key] is None, f"Expected None for {key}"
+
+    def test_convert_partial_metrics(self) -> None:
+        """Partial metrics → present keys converted, missing keys None."""
+        raw = {"train/box_loss": 0.5, "metrics/mAP50(B)": 0.7}
+        result = _convert_ultralytics_metrics(raw)
+        assert result is not None
+        assert result["box_loss"] == 0.5
+        assert result["mAP50"] == 0.7
+        assert result["cls_loss"] is None
+        assert result["dfl_loss"] is None
+        assert result["mAP50-95"] is None
+
+    def test_convert_none_values_honest(self) -> None:
+        """Explicit None values in raw → None in output (honest)."""
+        raw = {k: None for k in [
+            "train/box_loss", "train/cls_loss", "train/dfl_loss",
+            "metrics/mAP50(B)", "metrics/mAP50-95(B)",
+        ]}
+        result = _convert_ultralytics_metrics(raw)
+        assert result is not None
+        expected_keys = set(METRIC_KEYS) - {"epoch"}
+        for key in expected_keys:
+            assert result[key] is None
+
+
+class TestWriteMetricsLine:
+    """Tests for _write_metrics_line (pure function)."""
+
+    def test_write_single_line(self, tmp_path: Path) -> None:
+        """Write one line → file has exactly that line with correct keys."""
+        metrics_path = tmp_path / "metrics.jsonl"
+        metrics = {
+            "box_loss": 0.5, "cls_loss": 0.3, "dfl_loss": 0.2,
+            "mAP50": 0.7, "mAP50-95": 0.5,
+        }
+        _write_metrics_line(metrics_path, epoch=1, metrics=metrics)
+
+        assert metrics_path.is_file()
+        line = metrics_path.read_text().strip()
+        data = json.loads(line)
+        assert set(data.keys()) == set(METRIC_KEYS)
+        assert data["epoch"] == 1
+        assert data["box_loss"] == 0.5
+
+    def test_write_append_multiple_lines(self, tmp_path: Path) -> None:
+        """Append multiple lines → file has N lines, one per epoch."""
+        metrics_path = tmp_path / "metrics.jsonl"
+        for epoch in range(1, 4):
+            metrics = {
+                "box_loss": 0.5 / epoch, "cls_loss": 0.3, "dfl_loss": 0.2,
+                "mAP50": 0.5 + epoch * 0.1, "mAP50-95": 0.3 + epoch * 0.1,
+            }
+            _write_metrics_line(metrics_path, epoch=epoch, metrics=metrics)
+
+        lines = metrics_path.read_text().strip().split("\n")
+        assert len(lines) == 3
+        for i, line in enumerate(lines, start=1):
+            data = json.loads(line)
+            assert data["epoch"] == i
+
+    def test_write_none_values(self, tmp_path: Path) -> None:
+        """None values are serialized as JSON null."""
+        metrics_path = tmp_path / "metrics.jsonl"
+        metrics = {
+            "box_loss": None, "cls_loss": None, "dfl_loss": None,
+            "mAP50": None, "mAP50-95": None,
+        }
+        _write_metrics_line(metrics_path, epoch=1, metrics=metrics)
+
+        data = json.loads(metrics_path.read_text().strip())
+        assert data["box_loss"] is None
+        assert data["mAP50"] is None
+
+
+class TestCopyFlatWeights:
+    """Tests for _copy_flat_weights (pure function)."""
+
+    def test_copy_best_and_last(self, tmp_path: Path) -> None:
+        """Copy from train/weights/ → flat output dir."""
+        output = tmp_path / "output"
+        output.mkdir()
+        weights_dir = output / "train" / "weights"
+        weights_dir.mkdir(parents=True)
+        (weights_dir / "best.pt").write_bytes(b"BEST_WEIGHT")
+        (weights_dir / "last.pt").write_bytes(b"LAST_WEIGHT")
+
+        _copy_flat_weights(output)
+
+        assert (output / "best.pt").read_bytes() == b"BEST_WEIGHT"
+        assert (output / "last.pt").read_bytes() == b"LAST_WEIGHT"
+
+    def test_copy_missing_best_no_crash(self, tmp_path: Path) -> None:
+        """Missing best.pt → warning, no crash, last.pt still copied."""
+        output = tmp_path / "output"
+        output.mkdir()
+        weights_dir = output / "train" / "weights"
+        weights_dir.mkdir(parents=True)
+        (weights_dir / "last.pt").write_bytes(b"LAST_WEIGHT")
+
+        _copy_flat_weights(output)
+
+        assert not (output / "best.pt").exists()
+        assert (output / "last.pt").read_bytes() == b"LAST_WEIGHT"
+
+    def test_copy_missing_weights_dir_no_crash(self, tmp_path: Path) -> None:
+        """Missing train/weights/ dir → no crash (graceful no-op)."""
+        output = tmp_path / "output"
+        output.mkdir()
+
+        # Should not raise
+        _copy_flat_weights(output)
+
+        assert not (output / "best.pt").exists()
+        assert not (output / "last.pt").exists()
+
+
+class TestRealTrainTolerantParsing:
+    """Tolerant parsing: epoch without metrics does not break the pipeline."""
+
+    def test_epoch_without_metrics_honest_skip(self, tmp_path: Path) -> None:
+        """Simulate callback with empty trainer.metrics → line with nulls."""
+        metrics_path = tmp_path / "metrics.jsonl"
+        raw = {}
+        converted = _convert_ultralytics_metrics(raw)
+        assert converted is not None
+        _write_metrics_line(metrics_path, epoch=1, metrics=converted)
+
+        data = json.loads(metrics_path.read_text().strip())
+        assert data["epoch"] == 1
+        # All metric values are None (honest skip)
+        for key in METRIC_KEYS:
+            if key == "epoch":
+                continue
+            assert data[key] is None
+
+    def test_mixed_epochs_some_with_metrics(self, tmp_path: Path) -> None:
+        """Some epochs with metrics, some without → all written, no crash."""
+        metrics_path = tmp_path / "metrics.jsonl"
+        for epoch in range(1, 4):
+            if epoch == 2:
+                raw = {}
+            else:
+                raw = _fake_ultralytics_metrics(box_loss=epoch * 0.1)
+            converted = _convert_ultralytics_metrics(raw)
+            _write_metrics_line(metrics_path, epoch=epoch, metrics=converted)
+
+        lines = metrics_path.read_text().strip().split("\n")
+        assert len(lines) == 3
+
+        # Epoch 1: has metrics
+        data1 = json.loads(lines[0])
+        assert data1["box_loss"] == pytest.approx(0.1)
+
+        # Epoch 2: no metrics (all None)
+        data2 = json.loads(lines[1])
+        assert data2["box_loss"] is None
+
+        # Epoch 3: has metrics
+        data3 = json.loads(lines[2])
+        assert data3["box_loss"] == pytest.approx(0.3)

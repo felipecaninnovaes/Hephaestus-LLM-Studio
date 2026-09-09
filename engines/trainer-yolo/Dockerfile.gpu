@@ -1,0 +1,23 @@
+# Engine trainer-yolo GPU (ADR-0010 D5): treino real com ultralytics.
+# Base: PyTorch 2.6.0 + CUDA 12.4 + cuDNN 9 (runtime).
+# TODO: pin digest no G.6 quando a imagem estiver validada no TrueNAS
+FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
+
+# Ultralytics 8.3.x — última versão estável da linha 8.3 (8.3.253, Sep 2026).
+# Pin exato para reprodutibilidade; ADR-0010 D5.
+RUN pip install --no-cache-dir "ultralytics==8.3.253"
+
+WORKDIR /app
+
+# Copy trainer_yolo package (mesma estrutura do Dockerfile mock)
+COPY src/trainer_yolo/ /app/trainer_yolo/
+
+# Real training mode (not mock)
+ENV ENGINE_MOCK=0
+
+# Bake yolo11n.pt base weight into the image layer (~5MB).
+# Sem dependência de rede no runtime para o modelo default.
+RUN python -c "from ultralytics import YOLO; YOLO('yolo11n.pt')"
+
+ENTRYPOINT ["python", "-m", "trainer_yolo"]
+CMD ["train", "--config", "/dev/null", "--output", "/dev/null"]

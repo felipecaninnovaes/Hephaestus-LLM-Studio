@@ -288,7 +288,7 @@ async fn ciclo_queued_done() {
                 },
                 ArtifactItem {
                     kind: "metrics".into(),
-                    path: "metrics.json".into(),
+                    path: "metrics.jsonl".into(),
                     md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
                     bytes: 256,
                 },
@@ -311,7 +311,7 @@ async fn ciclo_queued_done() {
     let paths: Vec<&str> = arts.iter().map(|a| a.path.as_str()).collect();
     assert!(paths.contains(&"best.pt"));
     assert!(paths.contains(&"last.pt"));
-    assert!(paths.contains(&"metrics.json"));
+    assert!(paths.contains(&"metrics.jsonl"));
 
     // 8. Idempotência: report duplicado não duplica artifacts.
     manager::report_job(

@@ -15,6 +15,8 @@ colors:
   border-default: "rgba(131, 80, 242, 0.14)"
   border-card: "rgba(131, 80, 242, 0.14)"
   border-top-glass: "rgba(255, 255, 255, 0.16)"
+  surface-card-hover: "rgba(38, 33, 47, 0.78)"
+  scrollbar-track: "rgba(0, 0, 0, 0.25)"
   status-success: "#34d399"
   status-alert: "#f59e0b"
   status-danger: "#ef4444"
@@ -55,6 +57,12 @@ typography:
     fontWeight: 600
     lineHeight: 1.3
     letterSpacing: "-0.01em"
+  input-mobile:
+    fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', sans-serif"
+    fontSize: "1rem"
+    fontWeight: 400
+    lineHeight: 1.5
+    letterSpacing: "normal"
   title:
     fontFamily: "'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif"
     fontSize: "0.875rem"
@@ -67,12 +75,36 @@ typography:
     fontWeight: 400
     lineHeight: 1.6
     letterSpacing: "normal"
+  caption:
+    fontFamily: "'JetBrains Mono', 'IBM Plex Mono', ui-monospace, monospace"
+    fontSize: "0.75rem"
+    fontWeight: 400
+    lineHeight: 1.5
+    letterSpacing: "normal"
   label:
     fontFamily: "'JetBrains Mono', 'IBM Plex Mono', ui-monospace, monospace"
     fontSize: "0.6875rem"
     fontWeight: 500
     lineHeight: 1.4
     letterSpacing: "0.08em"
+  micro:
+    fontFamily: "'JetBrains Mono', 'IBM Plex Mono', ui-monospace, monospace"
+    fontSize: "0.625rem"
+    fontWeight: 500
+    lineHeight: 1.4
+    letterSpacing: "0.04em"
+  pico:
+    fontFamily: "'JetBrains Mono', 'IBM Plex Mono', ui-monospace, monospace"
+    fontSize: "0.5625rem"
+    fontWeight: 500
+    lineHeight: 1.2
+    letterSpacing: "0.04em"
+  nano:
+    fontFamily: "'JetBrains Mono', 'IBM Plex Mono', ui-monospace, monospace"
+    fontSize: "0.5rem"
+    fontWeight: 500
+    lineHeight: 1.2
+    letterSpacing: "0.02em"
 rounded:
   sm: "6px"
   md: "8px"

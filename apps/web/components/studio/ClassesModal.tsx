@@ -171,7 +171,7 @@ export default function ClassesModal({
                 <span
                   className="h-2.5 w-2.5 shrink-0 rounded-full"
                   style={{
-                    background: row.color ?? "#52525b",
+                    background: row.color ?? "#585164",
                   }}
                   aria-hidden="true"
                 />

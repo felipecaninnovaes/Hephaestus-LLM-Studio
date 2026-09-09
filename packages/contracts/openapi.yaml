@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.8.0
+  version: 0.9.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -1611,6 +1611,83 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/orchestrators:
+    get:
+      operationId: listOrchestrators
+      tags: [jobs]
+      summary: Lista orquestradores registrados
+      description: |
+        Lista orquestradores via manager (ADR-0009 D1). Leitura da tabela
+        `orchestrators` do manager. Manager indisponível ⇒ 503 `queue_unavailable`.
+      responses:
+        "200":
+          description: Lista de orquestradores.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrchestratorList" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/models:
+    get:
+      operationId: listModels
+      tags: [jobs]
+      summary: Lista pesos/modelos derivados de treinos
+      description: |
+        Pesos derivados de `job_artifacts.kind='model'` de jobs `done`
+        (ADR-0009 D2). Último checkpoint por `(engine, model)`.
+        Manager indisponível ⇒ 503 `queue_unavailable`.
+      responses:
+        "200":
+          description: Lista de modelos/pesos.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelWeightList" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/storage/usage:
+    get:
+      operationId: getStorageUsage
+      tags: [jobs]
+      summary: Uso de storage (datasets + artifacts)
+      description: |
+        Soma atômica de `datasets.size_bytes` (SQL no principal) +
+        `job_artifacts.bytes` (via manager) (ADR-0009 D3). 200 é atômico:
+        qualquer fonte fora ⇒ 503 `queue_unavailable`, sem resposta parcial.
+      responses:
+        "200":
+          description: Uso de storage.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StorageUsage" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager ou database indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
 components:
   securitySchemes:
     sessionCookie:
@@ -1661,7 +1738,7 @@ components:
 
     HealthResponse:
       type: object
-      required: [status, service, auth]
+      required: [status, service, auth, version]
       properties:
         status:
           type: string
@@ -1674,6 +1751,9 @@ components:
           type: string
           enum: [ready, setup_required]
           description: "Estado do bootstrap single-user (ADR-0001 D3): ready = usuário existe; setup_required = aguardando STUDIO_PASSWORD no primeiro boot."
+        version:
+          type: string
+          description: "Versão de produto (`env!(CARGO_PKG_VERSION)` do crate api-principal)."
 
     CreateDatasetRequest:
       type: object
@@ -2542,6 +2622,9 @@ components:
         ram:
           type: [integer, "null"]
           description: "RAM usada em MB."
+        ramTotal:
+          type: [integer, "null"]
+          description: "RAM total em bytes (lida de MemTotal do /proc/meminfo)."
         gpus:
           type: array
           items: { type: string }
@@ -2550,3 +2633,104 @@ components:
           type: integer
           minimum: 0
           description: "Número de jobs ativos (preparing/running)."
+
+    Orchestrator:
+      type: object
+      required: [id, name, kind, endpoint, status]
+      additionalProperties: false
+      description: "Orquestrador registrado (ADR-0009 D1)."
+      properties:
+        id: { type: string, format: uuid }
+        name:
+          type: string
+          description: "Nome do orquestrador (ex.: orchestrator-local)."
+        kind:
+          type: string
+          enum: [local, remoto]
+          description: "Tipo do orquestrador."
+        endpoint:
+          type: string
+          description: "Endpoint HTTP interno do orquestrador."
+        status:
+          type: string
+          enum: [online, degraded, offline]
+          description: "Status de saúde do orquestrador."
+        lastHeartbeat:
+          type: [string, "null"]
+          format: date-time
+          description: "Momento do último heartbeat (null se nunca recebeu)."
+
+    OrchestratorList:
+      type: object
+      required: [items]
+      additionalProperties: false
+      description: "Lista de orquestradores (ADR-0009 D1)."
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Orchestrator" }
+
+    ModelWeight:
+      type: object
+      required: [id, name, engine, model, jobId, bytes, createdAt]
+      additionalProperties: false
+      description: "Peso/checkpoint derivado de job_artifacts (ADR-0009 D2)."
+      properties:
+        id: { type: string, format: uuid }
+        name:
+          type: string
+          description: "Nome do arquivo (basename do path, ex.: best.pt)."
+        engine:
+          type: string
+          description: "Engine do job que produziu o peso."
+        model:
+          type: string
+          description: "Modelo treinado."
+        jobId:
+          type: string
+          format: uuid
+          description: "PK do job que produziu o peso."
+        bytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: "Tamanho do arquivo em bytes."
+        createdAt:
+          type: string
+          format: date-time
+          description: "Momento de criação do job."
+
+    ModelWeightList:
+      type: object
+      required: [items]
+      additionalProperties: false
+      description: "Lista de pesos/modelos (ADR-0009 D2)."
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/ModelWeight" }
+
+    StorageUsage:
+      type: object
+      required: [datasetsBytes, artifactsBytes, totalBytes, measured]
+      additionalProperties: false
+      description: "Uso de storage (ADR-0009 D3)."
+      properties:
+        datasetsBytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: "Bytes de imagens/vídeos ativos (SQL do principal)."
+        artifactsBytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: "Bytes de artefatos de jobs (via manager)."
+        totalBytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: "Soma de datasets + artifacts."
+        measured:
+          type: boolean
+          description: "true quando 200 — bytes reais dos contadores."

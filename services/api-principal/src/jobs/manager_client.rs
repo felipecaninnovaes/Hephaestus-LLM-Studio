@@ -80,8 +80,39 @@ pub struct InternalTelemetry {
     pub vram_total: Option<i64>,
     pub cpu: Option<f64>,
     pub ram: Option<i64>,
+    #[serde(default)]
+    pub ram_total: Option<i64>,
     pub gpus: Vec<String>,
     pub jobs_active: i32,
+}
+
+/// Orquestrador retornado pelo manager (snake_case interno).
+#[derive(Debug, Clone, Deserialize)]
+pub struct InternalOrchestrator {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub endpoint: String,
+    pub status: String,
+    pub last_heartbeat: Option<String>,
+}
+
+/// Peso/modelo retornado pelo manager (snake_case interno).
+#[derive(Debug, Clone, Deserialize)]
+pub struct InternalModel {
+    pub id: String,
+    pub job_id: String,
+    pub path: String,
+    pub bytes: i64,
+    pub engine: String,
+    pub model: String,
+    pub created_at: String,
+}
+
+/// Uso de storage retornado pelo manager (snake_case interno).
+#[derive(Debug, Clone, Deserialize)]
+pub struct InternalStorageUsage {
+    pub artifacts_bytes: i64,
 }
 
 /// Resposta do manager ao criar job (snake_case interno).
@@ -126,6 +157,15 @@ pub trait ManagerPort: Send + Sync {
 
     /// Aborta um job via manager (ADR-0007 D7).
     async fn abort_job(&self, id: &str) -> Result<AbortJobResponse, ManagerError>;
+
+    /// Lista orquestradores registrados no manager.
+    async fn list_orchestrators(&self) -> Result<Vec<InternalOrchestrator>, ManagerError>;
+
+    /// Lista pesos/modelos derivados de job_artifacts (kind='model', jobs done).
+    async fn list_models(&self) -> Result<Vec<InternalModel>, ManagerError>;
+
+    /// Retorna uso de storage (artifacts bytes) do manager.
+    async fn get_storage_usage(&self) -> Result<InternalStorageUsage, ManagerError>;
 }
 
 /// Implementação HTTP real do manager client.
@@ -318,6 +358,28 @@ impl ManagerPort for HttpManager {
             .await
             .map_err(|e| ManagerError::Unavailable(format!("manager body: {e}")))
     }
+
+    async fn list_orchestrators(&self) -> Result<Vec<InternalOrchestrator>, ManagerError> {
+        #[derive(Deserialize)]
+        struct ListResponse {
+            items: Vec<InternalOrchestrator>,
+        }
+        let body: ListResponse = self.get_json("/internal/orchestrators").await?;
+        Ok(body.items)
+    }
+
+    async fn list_models(&self) -> Result<Vec<InternalModel>, ManagerError> {
+        #[derive(Deserialize)]
+        struct ListResponse {
+            items: Vec<InternalModel>,
+        }
+        let body: ListResponse = self.get_json("/internal/models").await?;
+        Ok(body.items)
+    }
+
+    async fn get_storage_usage(&self) -> Result<InternalStorageUsage, ManagerError> {
+        self.get_json("/internal/storage/usage").await
+    }
 }
 
 /// Mock do manager para testes unitários e de integração.
@@ -336,6 +398,9 @@ pub struct MockManager {
     pub get_telemetry_result: Option<InternalTelemetry>,
     pub create_job_result: Option<CreateJobResponse>,
     pub abort_job_result: Option<AbortJobResponse>,
+    pub list_orchestrators_result: Option<Vec<InternalOrchestrator>>,
+    pub list_models_result: Option<Vec<InternalModel>>,
+    pub get_storage_usage_result: Option<InternalStorageUsage>,
     /// Se `true`, todas as chamadas retornam `Unavailable`.
     pub fail: bool,
     /// Se `true`, `abort_job` retorna `NotAbortable` (para testar 409).
@@ -369,6 +434,9 @@ impl Default for MockManager {
             get_telemetry_result: None,
             create_job_result: None,
             abort_job_result: None,
+            list_orchestrators_result: None,
+            list_models_result: None,
+            get_storage_usage_result: None,
             fail: false,
             abort_not_abortable: false,
             last_create_job_body: std::sync::Mutex::new(None),
@@ -454,5 +522,28 @@ impl ManagerPort for MockManager {
             return Err(ManagerError::NotAbortable);
         }
         self.abort_job_result.clone().ok_or(ManagerError::NotFound)
+    }
+
+    async fn list_orchestrators(&self) -> Result<Vec<InternalOrchestrator>, ManagerError> {
+        if self.fail {
+            return Err(ManagerError::Unavailable("mock fail".into()));
+        }
+        Ok(self.list_orchestrators_result.clone().unwrap_or_default())
+    }
+
+    async fn list_models(&self) -> Result<Vec<InternalModel>, ManagerError> {
+        if self.fail {
+            return Err(ManagerError::Unavailable("mock fail".into()));
+        }
+        Ok(self.list_models_result.clone().unwrap_or_default())
+    }
+
+    async fn get_storage_usage(&self) -> Result<InternalStorageUsage, ManagerError> {
+        if self.fail {
+            return Err(ManagerError::Unavailable("mock fail".into()));
+        }
+        self.get_storage_usage_result
+            .clone()
+            .ok_or(ManagerError::Unavailable("no storage_usage".into()))
     }
 }

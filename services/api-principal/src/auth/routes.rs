@@ -18,7 +18,7 @@ use axum::{
 use serde_json::{json, Value};
 
 use super::{gate, handlers, AppState};
-use crate::{datasets, jobs, search};
+use crate::{datasets, jobs, monitoring, search};
 
 /// `(método, path, status_codes)` — espelho exato do contrato (sem `x-reserved`).
 /// Toda rota de negócio nova entra AQUI, montada no sub-router `protected`
@@ -110,6 +110,9 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
         &[200, 400, 401, 404, 409, 503],
     ),
     ("POST", "/api/jobs/:id/abort", &[200, 401, 404, 409, 503]),
+    ("GET", "/api/orchestrators", &[200, 401, 503]),
+    ("GET", "/api/models", &[200, 401, 503]),
+    ("GET", "/api/storage/usage", &[200, 401, 503]),
 ];
 
 /// Rotas públicas (sem gate): `/health` + `/ready` + `/api/auth/*`.
@@ -148,7 +151,9 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
     } else {
         "ready"
     };
-    Json(json!({ "status": "ok", "service": "api-principal", "auth": auth }))
+    Json(
+        json!({ "status": "ok", "service": "api-principal", "auth": auth, "version": env!("CARGO_PKG_VERSION") }),
+    )
 }
 
 /// GET /ready — readiness check (D11 :459-460). 200 se db saudável; 503 senão.
@@ -294,6 +299,10 @@ pub fn build(state: AppState) -> axum::Router {
             post(jobs::handlers::apply_autotracker_boxes),
         )
         .route("/api/jobs/:id/abort", post(jobs::handlers::abort_job))
+        // Monitoramento (F6.1b — ADR-0009 D1/D2/D3).
+        .route("/api/orchestrators", get(monitoring::get_orchestrators))
+        .route("/api/models", get(monitoring::get_models))
+        .route("/api/storage/usage", get(monitoring::get_storage_usage))
         // route_layer DEPOIS dos .route(): aplicado a um router vazio o axum 0.7 panic
         // no boot (path_router.rs, `routes.is_empty()`). Só cobre as rotas deste
         // sub-router — /health e /api/auth/* seguem fora do gate, e o .fallback()

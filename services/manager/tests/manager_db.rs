@@ -552,6 +552,57 @@ async fn auto_adocao_dedupe() {
     assert_eq!(orch.2, "online");
 }
 
+// ===========================================================================
+// G.3 — AUTO_ADOPT_LOCAL
+// ===========================================================================
+
+/// Boot com AUTO_ADOPT_LOCAL=0: adopt_orchestrator NÃO é chamado
+/// (decisão pura: auto_adopt_enabled retorna false), resultando em 0 linhas.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn auto_adopt_local_skip() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    // Decisão pura: auto_adopt_enabled(Some("0")) == false.
+    assert!(!manager::auto_adopt_enabled(Some("0")));
+
+    // Não chama adopt_orchestrator → tabela vazia.
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM orchestrators")
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(
+        count.0, 0,
+        "não deve haver orchestrator-local quando auto_adopt_enabled é false"
+    );
+}
+
+/// Boot default (AUTO_ADOPT_LOCAL não setado ou valor != "0"): adopt_orchestrator
+/// é chamado (decisão pura: auto_adopt_enabled retorna true), resultando em 1 row.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn auto_adopt_local_default() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    // Decisão pura: auto_adopt_enabled(None) == true (fail-open).
+    assert!(manager::auto_adopt_enabled(None));
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM orchestrators")
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(
+        count.0, 1,
+        "deve haver 1 orchestrator-local no boot default"
+    );
+}
+
 #[tokio::test]
 #[ignore = "requer Postgres (bash scripts/test-db.sh)"]
 async fn report_failed_grava_error_em_params() {

@@ -61,6 +61,7 @@ pub struct HeartbeatBody {
     pub vram_used: Option<i64>,
     pub cpu: Option<f64>,
     pub ram: Option<i64>,
+    pub ram_total: Option<i64>,
     pub jobs_active: i32,
 }
 
@@ -1039,6 +1040,25 @@ pub fn read_ram() -> i64 {
     total - available
 }
 
+/// Lê RAM total do /proc/meminfo (em bytes).
+///
+/// Returns `None` se a leitura ou parse falhar (nunca pânico, nunca valor inventado).
+pub fn read_ram_total() -> Option<i64> {
+    let content = std::fs::read_to_string("/proc/meminfo").ok()?;
+    parse_ram_total_from_content(&content)
+}
+
+/// Parseia o conteúdo de /proc/meminfo e devolve MemTotal em bytes.
+fn parse_ram_total_from_content(content: &str) -> Option<i64> {
+    for line in content.lines() {
+        if let Some(v) = line.strip_prefix("MemTotal:") {
+            let kb: i64 = v.split_whitespace().next().and_then(|s| s.parse().ok())?;
+            return Some(kb * 1024); // kB → B
+        }
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1138,6 +1158,25 @@ mod tests {
         let good = r#"{"box_loss":0.5,"cls_loss":0.3,"dfl_loss":0.2,"mAP50":0.8,"mAP50-95":0.6,"epoch":5}"#;
         assert!(parse_metrics_line(good).is_some());
         assert!(parse_metrics_line("{}").is_none());
+    }
+
+    // -- read_ram_total tests --
+
+    #[test]
+    fn parse_ram_total_present() {
+        let content = "MemTotal:       16384000 kB\nMemFree:         8192000 kB\nMemAvailable:    8192000 kB\n";
+        assert_eq!(parse_ram_total_from_content(content), Some(16384000 * 1024));
+    }
+
+    #[test]
+    fn parse_ram_total_missing() {
+        let content = "MemFree:         8192000 kB\nMemAvailable:    8192000 kB\n";
+        assert_eq!(parse_ram_total_from_content(content), None);
+    }
+
+    #[test]
+    fn parse_ram_total_empty() {
+        assert_eq!(parse_ram_total_from_content(""), None);
     }
 
     // -- config.yaml tests --

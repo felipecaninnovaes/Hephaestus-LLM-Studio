@@ -216,7 +216,7 @@ export default function TrainYoloModal({
                 value={epochs}
                 onChange={(e) => setEpochs(Number(e.target.value))}
                 disabled={busy}
-                className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3.5 py-2 font-mono text-xs text-zinc-200 focus:border-brand-500 focus:outline-none"
+                className="w-full rounded-xl border border-zinc-800 bg-black/40 backdrop-blur-sm px-3.5 py-2 font-mono text-xs text-zinc-200 focus:border-brand-500 focus:outline-none"
               />
             </div>
             <div>
@@ -260,7 +260,7 @@ export default function TrainYoloModal({
                 value={lr0}
                 onChange={(e) => setLr0(e.target.value)}
                 disabled={busy}
-                className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3.5 py-2 font-mono text-xs text-zinc-200 focus:border-brand-500 focus:outline-none"
+                className="w-full rounded-xl border border-zinc-800 bg-black/40 backdrop-blur-sm px-3.5 py-2 font-mono text-xs text-zinc-200 focus:border-brand-500 focus:outline-none"
               />
             </div>
             <div>

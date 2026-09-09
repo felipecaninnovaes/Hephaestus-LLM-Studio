@@ -357,7 +357,7 @@ export default function Sidebar({
           }`}
         >
           <div className="flex items-center space-x-3 overflow-hidden">
-            <div className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-brand-500/30 bg-brand-500/10 text-brand-400 shadow-sm shadow-brand-500/10">
+            <div className="flex size-10 shrink-0 items-center justify-center rounded-xl border border-brand-500/30 bg-brand-500/10 backdrop-blur-sm text-brand-400 shadow-sm shadow-brand-500/10">
               <IconTarget className="size-5" />
             </div>
             {isExpanded && (
@@ -366,7 +366,7 @@ export default function Sidebar({
                   <span className="font-display text-sm font-semibold tracking-tight text-white">
                     Hephaestus
                   </span>
-                  <span className="rounded border border-brand-500/30 bg-brand-500/15 px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-caps text-brand-300">
+                  <span className="rounded border border-brand-500/30 bg-brand-500/15 backdrop-blur-sm px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-caps text-brand-300">
                     Studio
                   </span>
                 </div>
@@ -591,7 +591,7 @@ export default function Sidebar({
         >
           {/* Card Orquestrador Online */}
           {isExpanded ? (
-            <div className="flex items-center justify-between rounded-xl border border-[#34d399]/25 bg-[#34d399]/[0.05] px-2.5 py-2 text-xs">
+            <div className="flex items-center justify-between rounded-xl border border-[#34d399]/25 bg-[#34d399]/[0.05] backdrop-blur-sm px-2.5 py-2 text-xs">
               <div className="flex items-center space-x-2">
                 <span className="relative flex h-2 w-2">
                   <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#34d399] opacity-75" />
@@ -599,14 +599,14 @@ export default function Sidebar({
                 </span>
                 <span className="text-zinc-200 font-medium">Orquestrador Online</span>
               </div>
-              <span className="rounded-md border border-[#34d399]/30 bg-[#34d399]/10 px-1.5 py-0.5 font-mono text-[11px] text-[#34d399]">
+              <span className="rounded-md border border-[#34d399]/30 bg-[#34d399]/10 backdrop-blur-sm px-1.5 py-0.5 font-mono text-[11px] text-[#34d399]">
                 v1.3.0
               </span>
             </div>
           ) : (
             <div
               title="Orquestrador Online (v1.3.0)"
-              className="relative flex size-10 items-center justify-center rounded-xl border border-[#34d399]/25 bg-[#34d399]/[0.05] text-[#34d399]"
+              className="relative flex size-10 items-center justify-center rounded-xl border border-[#34d399]/25 bg-[#34d399]/[0.05] backdrop-blur-sm text-[#34d399]"
             >
               <IconServer className="size-4" />
               <span className="absolute top-1 right-1 flex h-2 w-2">
@@ -642,7 +642,7 @@ export default function Sidebar({
                       <span className="truncate text-xs font-semibold text-zinc-100">
                         Hephaestus Admin
                       </span>
-                      <span className="rounded border border-brand-500/30 bg-brand-500/15 px-1.5 py-0.5 font-mono text-[11px] font-semibold uppercase tracking-caps text-brand-300">
+                      <span className="rounded border border-brand-500/30 bg-brand-500/15 backdrop-blur-sm px-1.5 py-0.5 font-mono text-[11px] font-semibold uppercase tracking-caps text-brand-300">
                         Root
                       </span>
                     </div>

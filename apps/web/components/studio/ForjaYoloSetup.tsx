@@ -355,7 +355,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
     <form onSubmit={handleSubmit} className="space-y-5 text-xs">
       {/* Header */}
       <div className="flex items-center gap-3">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-brand-500/30 bg-brand-500/15 text-brand-400">
+        <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-brand-500/30 bg-brand-500/15 backdrop-blur-sm text-brand-400">
           <IconPlay className="h-4 w-4" />
         </div>
         <div>
@@ -371,7 +371,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
       {topError && (
         <p
           role="alert"
-          className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
+          className="rounded-lg border border-rose-500/30 bg-rose-500/10 backdrop-blur-sm px-3 py-2 text-xs text-rose-300"
         >
           {topError}
         </p>
@@ -422,7 +422,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
             value={epochs}
             onChange={(e) => setEpochs(Number(e.target.value))}
             disabled={busy}
-            className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3.5 py-2 font-mono text-xs text-zinc-200 focus:border-brand-500 focus:outline-none"
+            className="w-full rounded-xl border border-zinc-800 bg-black/40 backdrop-blur-sm px-3.5 py-2 font-mono text-xs text-zinc-200 focus:border-brand-500 focus:outline-none"
           />
         </div>
         <div>
@@ -466,7 +466,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
             value={lr0}
             onChange={(e) => setLr0(e.target.value)}
             disabled={busy}
-            className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3.5 py-2 font-mono text-xs text-zinc-200 focus:border-brand-500 focus:outline-none"
+            className="w-full rounded-xl border border-zinc-800 bg-black/40 backdrop-blur-sm px-3.5 py-2 font-mono text-xs text-zinc-200 focus:border-brand-500 focus:outline-none"
           />
         </div>
         <div>
@@ -494,7 +494,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
             onClick={() => toggleAugment("mosaic")}
             disabled={busy}
             aria-pressed={augment.mosaic}
-            className={`inline-flex h-9 items-center gap-2 rounded-lg border px-4 text-xs font-medium transition active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] disabled:pointer-events-none disabled:opacity-55 ${
+            className={`inline-flex h-9 items-center gap-2 rounded-lg border px-4 text-xs font-medium transition active:scale-[0.985] backdrop-blur-sm focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] disabled:pointer-events-none disabled:opacity-55 ${
               augment.mosaic
                 ? "border-brand-500/30 bg-brand-500/[0.12] text-white"
                 : "border-white/[0.08] bg-white/[0.03] text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200"
@@ -507,7 +507,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
             onClick={() => toggleAugment("mixupFlip")}
             disabled={busy}
             aria-pressed={augment.mixupFlip}
-            className={`inline-flex h-9 items-center gap-2 rounded-lg border px-4 text-xs font-medium transition active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] disabled:pointer-events-none disabled:opacity-55 ${
+            className={`inline-flex h-9 items-center gap-2 rounded-lg border px-4 text-xs font-medium transition active:scale-[0.985] backdrop-blur-sm focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] disabled:pointer-events-none disabled:opacity-55 ${
               augment.mixupFlip
                 ? "border-brand-500/30 bg-brand-500/[0.12] text-white"
                 : "border-white/[0.08] bg-white/[0.03] text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200"
@@ -520,7 +520,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
 
       {/* Previsão de VRAM & Alertas Preventivos de CUDA OOM */}
       <div
-        className={`rounded-xl border p-3 space-y-2.5 transition ${
+        className={`rounded-xl border p-3 space-y-2.5 transition backdrop-blur-sm ${
           oomRisk === "danger"
             ? "border-rose-500/40 bg-rose-500/[0.06]"
             : oomRisk === "warning"

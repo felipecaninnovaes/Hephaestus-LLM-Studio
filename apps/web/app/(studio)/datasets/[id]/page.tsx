@@ -668,7 +668,7 @@ export default function DatasetGalleryPage() {
           <button
             type="button"
             onClick={() => datasetId && load(datasetId)}
-            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] px-4 text-xs font-medium whitespace-nowrap text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
+            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.05] backdrop-blur-sm px-4 text-xs font-medium whitespace-nowrap text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
           >
             Tentar novamente
           </button>
@@ -686,7 +686,7 @@ export default function DatasetGalleryPage() {
           <button
             type="button"
             onClick={() => router.push("/datasets")}
-            className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/[0.05] p-0 text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
+            className="inline-flex size-9 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/[0.05] backdrop-blur-sm p-0 text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55"
             title="Voltar para a lista de datasets"
             aria-label="Voltar para a lista de datasets"
           >
@@ -700,7 +700,7 @@ export default function DatasetGalleryPage() {
               <polyline points="15 18 9 12 15 6" />
             </svg>
           </button>
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-brand-500/30 bg-brand-500/10 text-brand-400">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-brand-500/30 bg-brand-500/10 backdrop-blur-sm text-brand-400">
             <IconDatabase className="h-5 w-5" />
           </div>
           <div className="min-w-0 flex-1">
@@ -806,7 +806,7 @@ export default function DatasetGalleryPage() {
             aria-expanded={actionsOpen}
             aria-label="Ações do dataset"
             title="Ações do dataset"
-            className="inline-flex size-9 items-center justify-center rounded-lg border border-white/10 bg-white/[0.05] px-3 text-lg leading-none text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] disabled:pointer-events-none disabled:opacity-55"
+            className="inline-flex size-9 items-center justify-center rounded-lg border border-white/10 bg-white/[0.05] backdrop-blur-sm px-3 text-lg leading-none text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] disabled:pointer-events-none disabled:opacity-55"
           >
             <span aria-hidden="true">⋯</span>
           </button>
@@ -915,7 +915,7 @@ export default function DatasetGalleryPage() {
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-zinc-800/80 bg-zinc-950/60 px-4 py-2.5 font-mono text-[11px] text-zinc-400">
+      <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-zinc-800/80 bg-zinc-950/60 backdrop-blur-sm px-4 py-2.5 font-mono text-[11px] text-zinc-400">
         <span className="font-semibold text-zinc-300">
           {dataset.imagesCount.toLocaleString()} amostras
         </span>
@@ -984,7 +984,7 @@ export default function DatasetGalleryPage() {
             {statusFailed || !searchStatus ? (
               <span
                 title="Não foi possível consultar o status do índice"
-                className="cursor-default rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-xs font-medium text-zinc-400"
+                className="cursor-default rounded-full border border-zinc-800 bg-zinc-900/60 backdrop-blur-sm px-3 py-1.5 text-xs font-medium text-zinc-400"
               >
                 Status indisponível
               </span>
@@ -992,7 +992,7 @@ export default function DatasetGalleryPage() {
               <span className="flex flex-wrap items-center gap-2">
                 <span
                   title="Este dataset ainda não tem embeddings — use 'Indexar agora'"
-                  className="cursor-default rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-xs font-medium text-zinc-400"
+                  className="cursor-default rounded-full border border-zinc-800 bg-zinc-900/60 backdrop-blur-sm px-3 py-1.5 text-xs font-medium text-zinc-400"
                 >
                   Sem índice
                 </span>
@@ -1010,21 +1010,21 @@ export default function DatasetGalleryPage() {
             ) : searchStatus.status === "indexing" ? (
               <span
                 title="Indexação de busca semântica em andamento"
-                className="cursor-default rounded-full border border-amber-400/40 bg-amber-400/10 px-3 py-1.5 font-mono text-xs font-medium text-amber-300"
+                className="cursor-default rounded-full border border-amber-400/40 bg-amber-400/10 backdrop-blur-sm px-3 py-1.5 font-mono text-xs font-medium text-amber-300"
               >
                 Indexando {searchStatus.indexedCount}/{searchStatus.imagesCount}
               </span>
             ) : searchStatus.status === "ready" ? (
               <span
                 title="Índice de busca semântica pronto — a busca acontece enquanto você digita"
-                className="cursor-default rounded-full border border-[#34d399]/30 bg-[#34d399]/10 px-3 py-1.5 text-xs font-medium text-[#a7f3d0]"
+                className="cursor-default rounded-full border border-[#34d399]/30 bg-[#34d399]/10 backdrop-blur-sm px-3 py-1.5 text-xs font-medium text-[#a7f3d0]"
               >
                 Busca pronta
               </span>
             ) : (
               <span
                 title="Há imagens sem embedding — reindexe"
-                className="cursor-default rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-xs font-medium text-zinc-400"
+                className="cursor-default rounded-full border border-zinc-800 bg-zinc-900/60 backdrop-blur-sm px-3 py-1.5 text-xs font-medium text-zinc-400"
               >
                 Índice desatualizado?
               </span>
@@ -1052,7 +1052,7 @@ export default function DatasetGalleryPage() {
                   className="absolute inset-0 h-full w-full object-cover"
                 />
                 <div className="absolute inset-0 bg-[radial-gradient(#ffffff_1px,transparent_1px)] opacity-20 [background-size:16px_16px]"></div>
-                <span className="absolute top-2 right-2 rounded border border-zinc-700 bg-zinc-950/90 px-1.5 py-0.5 font-mono text-[8px] text-zinc-300">
+                <span className="absolute top-2 right-2 rounded border border-zinc-700 bg-zinc-950/90 backdrop-blur-sm px-1.5 py-0.5 font-mono text-[8px] text-zinc-300">
                   {item.split}
                 </span>
                 <button
@@ -1060,7 +1060,7 @@ export default function DatasetGalleryPage() {
                   onClick={() => handleRestore(item)}
                   disabled={restoringId === item.id}
                   aria-label={`Restaurar ${item.filename}`}
-                  className="absolute top-2 left-2 rounded-lg border border-[#34d399]/40 bg-zinc-950/90 px-2 py-1 font-mono text-[10px] font-medium text-[#a7f3d0] transition-colors hover:bg-[#34d399]/20 disabled:opacity-60"
+                  className="absolute top-2 left-2 rounded-lg border border-[#34d399]/40 bg-zinc-950/90 backdrop-blur-sm px-2 py-1 font-mono text-[10px] font-medium text-[#a7f3d0] transition-colors hover:bg-[#34d399]/20 disabled:opacity-60"
                 >
                   {restoringId === item.id ? "Restaurando…" : "Restaurar"}
                 </button>
@@ -1074,7 +1074,7 @@ export default function DatasetGalleryPage() {
                 type="button"
                 onClick={loadMore}
                 disabled={loadingMore}
-                className="flex h-24 flex-col items-center justify-center space-y-1.5 md:h-36 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 text-zinc-400 transition-all hover:border-brand-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 disabled:opacity-60"
+                className="flex h-24 flex-col items-center justify-center space-y-1.5 md:h-36 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 backdrop-blur-sm text-zinc-400 transition-all hover:border-brand-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 disabled:opacity-60"
               >
                 <span className="font-mono text-[10px]">
                   {loadingMore ? "Carregando…" : "Carregar mais"}
@@ -1107,7 +1107,7 @@ export default function DatasetGalleryPage() {
         </div>
       ) : activeQuery !== null || similarFor !== null ? (
         <div className="flex flex-col gap-3">
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-zinc-800/80 bg-zinc-950/60 px-4 py-2.5 text-[11px] text-zinc-400">
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-zinc-800/80 bg-zinc-950/60 backdrop-blur-sm px-4 py-2.5 text-[11px] text-zinc-400">
             <span>
               Resultados da busca —{" "}
               <span className="font-mono text-zinc-200">
@@ -1153,7 +1153,7 @@ export default function DatasetGalleryPage() {
                   <div className="absolute inset-0 bg-[radial-gradient(#ffffff_1px,transparent_1px)] opacity-20 [background-size:16px_16px]"></div>
                   <span
                     title="Similaridade (cosseno, -1..1)"
-                    className="absolute top-2 right-2 rounded border border-brand-500/30 bg-zinc-950/90 px-1.5 py-0.5 font-mono text-[10px] text-brand-300"
+                    className="absolute top-2 right-2 rounded border border-brand-500/30 bg-zinc-950/90 px-1.5 py-0.5 font-mono text-[10px] text-brand-300 backdrop-blur-sm"
                   >
                     {result.score.toFixed(2)}
                   </span>
@@ -1180,7 +1180,7 @@ export default function DatasetGalleryPage() {
                 className="absolute inset-0 h-full w-full object-cover"
               />
               <div className="absolute inset-0 bg-[radial-gradient(#ffffff_1px,transparent_1px)] opacity-20 [background-size:16px_16px]"></div>
-              <span className="absolute top-2 right-2 rounded border border-zinc-700 bg-zinc-950/90 px-1.5 py-0.5 font-mono text-[8px] text-zinc-300">
+              <span className="absolute top-2 right-2 rounded border border-zinc-700 bg-zinc-950/90 px-1.5 py-0.5 font-mono text-[8px] text-zinc-300 backdrop-blur-sm">
                 {item.split}
               </span>
               <div className="absolute top-2 left-2 flex items-center gap-1.5">
@@ -1192,7 +1192,7 @@ export default function DatasetGalleryPage() {
                   }}
                   aria-label={`Mover ${item.filename} para a lixeira`}
                   title="Mover para a lixeira"
-                  className="rounded-lg border border-rose-500/40 bg-zinc-950/90 p-1.5 text-rose-300 opacity-0 transition-all group-hover:opacity-100 focus-visible:opacity-100 hover:bg-rose-500/20"
+                  className="rounded-lg border border-rose-500/40 bg-zinc-950/90 p-1.5 text-rose-300 opacity-0 backdrop-blur-sm transition-all group-hover:opacity-100 focus-visible:opacity-100 hover:bg-rose-500/20"
                 >
                   <IconTrash className="h-3.5 w-3.5" />
                 </button>
@@ -1204,7 +1204,7 @@ export default function DatasetGalleryPage() {
                   }}
                   aria-label={`Buscar similares de ${item.filename}`}
                   title="Buscar similares"
-                  className="rounded-lg border border-brand-500/40 bg-zinc-950/90 p-1.5 text-brand-300 opacity-0 transition-all group-hover:opacity-100 focus-visible:opacity-100 hover:bg-brand-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+                  className="rounded-lg border border-brand-500/40 bg-zinc-950/90 p-1.5 text-brand-300 opacity-0 backdrop-blur-sm transition-all group-hover:opacity-100 focus-visible:opacity-100 hover:bg-brand-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
                 >
                   <IconSearch className="h-3.5 w-3.5" />
                 </button>
@@ -1221,7 +1221,7 @@ export default function DatasetGalleryPage() {
             type="button"
             onClick={() => fileRef.current?.click()}
             disabled={uploading}
-            className="flex h-24 flex-col items-center justify-center space-y-1.5 md:h-36 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 text-zinc-400 transition-all hover:border-brand-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 disabled:opacity-60"
+            className="flex h-24 flex-col items-center justify-center space-y-1.5 md:h-36 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 text-zinc-400 backdrop-blur-sm transition-all hover:border-brand-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 disabled:opacity-60"
           >
             <IconPlus className="h-5 w-5" />
             <span className="font-mono text-[10px]">
@@ -1235,7 +1235,7 @@ export default function DatasetGalleryPage() {
               type="button"
               onClick={loadMore}
               disabled={loadingMore}
-              className="flex h-24 flex-col items-center justify-center space-y-1.5 md:h-36 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 text-zinc-400 transition-all hover:border-brand-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 disabled:opacity-60"
+              className="flex h-24 flex-col items-center justify-center space-y-1.5 md:h-36 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 text-zinc-400 backdrop-blur-sm transition-all hover:border-brand-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 disabled:opacity-60"
             >
               <span className="font-mono text-[10px]">
                 {loadingMore ? "Carregando…" : "Carregar mais"}

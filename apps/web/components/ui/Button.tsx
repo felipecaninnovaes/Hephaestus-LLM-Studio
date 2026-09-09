@@ -61,7 +61,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     ref,
   ) => {
     const baseClasses =
-      "inline-flex items-center justify-center gap-2 font-medium whitespace-nowrap select-none transition active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 cursor-pointer";
+      "inline-flex items-center justify-center gap-2 font-medium whitespace-nowrap select-none transition active:scale-[0.985] backdrop-blur-sm focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 cursor-pointer";
 
     const variantClass = VARIANT_CLASSES[variant];
     const sizeClass = SIZE_CLASSES[size];

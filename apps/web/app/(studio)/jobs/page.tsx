@@ -56,12 +56,12 @@ const SPARK_COLORS: Record<string, string> = {
 };
 
 const STATUS_STYLE: Record<JobStatus, string> = {
-  queued: "border-amber-500/30 bg-amber-500/10 text-amber-300",
-  running: "border-brand-500/35 bg-brand-500/15 text-brand-300",
-  cancelling: "border-amber-500/30 bg-amber-500/10 text-amber-300",
-  done: "border-[#34d399]/30 bg-[#34d399]/10 text-[#a7f3d0]",
-  failed: "border-rose-500/30 bg-rose-500/10 text-rose-300",
-  cancelled: "border-zinc-700 bg-zinc-800 text-zinc-400",
+  queued: "border-amber-500/30 bg-amber-500/10 text-amber-300 backdrop-blur-sm",
+  running: "border-brand-500/35 bg-brand-500/15 text-brand-300 backdrop-blur-sm",
+  cancelling: "border-amber-500/30 bg-amber-500/10 text-amber-300 backdrop-blur-sm",
+  done: "border-[#34d399]/30 bg-[#34d399]/10 text-[#a7f3d0] backdrop-blur-sm",
+  failed: "border-rose-500/30 bg-rose-500/10 text-rose-300 backdrop-blur-sm",
+  cancelled: "border-zinc-700 bg-zinc-800 text-zinc-400 backdrop-blur-sm",
 };
 
 const STATUS_LABEL: Record<JobStatus, string> = {
@@ -353,13 +353,13 @@ function JobsPageContent() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-zinc-800/80 pb-4">
         <div>
           <div className="flex items-center space-x-2.5">
-            <span className="flex size-7 items-center justify-center rounded-lg border border-brand-500/30 bg-brand-500/15 text-brand-400">
+            <span className="flex size-7 items-center justify-center rounded-lg border border-brand-500/30 bg-brand-500/15 text-brand-400 backdrop-blur-sm">
               <IconTarget className="size-4" />
             </span>
             <h1 className="font-display text-lg font-bold text-white tracking-tight">
               Forja de Treino YOLO
             </h1>
-            <span className="rounded-full border border-zinc-800 bg-zinc-900/90 px-2 py-0.5 font-mono text-[11px] uppercase tracking-caps text-zinc-400">
+            <span className="rounded-full border border-zinc-800 bg-zinc-900/90 px-2 py-0.5 font-mono text-[11px] uppercase tracking-caps text-zinc-400 backdrop-blur-sm">
               Ultralytics Engine
             </span>
           </div>
@@ -473,7 +473,7 @@ function JobsPageContent() {
                         <button
                           type="button"
                           onClick={() => router.push(`/datasets/${selectedJob.datasetId}`)}
-                          className="inline-flex items-center gap-1 rounded-lg border border-zinc-800 bg-black/40 px-2.5 py-1 text-xs text-brand-400 hover:text-brand-300 hover:border-brand-500/30 transition"
+                          className="inline-flex items-center gap-1 rounded-lg border border-zinc-800 bg-black/40 px-2.5 py-1 text-xs text-brand-400 hover:text-brand-300 hover:border-brand-500/30 transition backdrop-blur-sm"
                         >
                           <IconDatabase className="size-3" />
                           <span>Dataset</span>
@@ -552,7 +552,7 @@ function JobsPageContent() {
                               return (
                                 <div
                                   key={key}
-                                  className={`rounded-xl border p-3 flex flex-col justify-between ${
+                                  className={`rounded-xl border p-3 flex flex-col justify-between backdrop-blur-sm ${
                                     isPrimary
                                       ? "border-brand-500/30 bg-brand-500/10"
                                       : "border-zinc-800 bg-black/40"
@@ -569,10 +569,10 @@ function JobsPageContent() {
                                     <span className="block font-mono text-base font-semibold text-zinc-100 mt-1">
                                       {typeof val === "number"
                                         ? isPercent
-                                          ? `${(val * 100).toFixed(1)}%`
-                                          : key === "epoch"
-                                            ? val
-                                            : val.toFixed(4)
+                                           ? `${(val * 100).toFixed(1)}%`
+                                           : key === "epoch"
+                                             ? val
+                                             : val.toFixed(4)
                                         : "—"}
                                     </span>
                                   </div>
@@ -601,7 +601,7 @@ function JobsPageContent() {
                         {artifacts[selectedJob.id].map((art) => (
                           <div
                             key={art.id}
-                            className="flex items-center justify-between rounded-xl border border-zinc-800 bg-black/40 p-3"
+                            className="flex items-center justify-between rounded-xl border border-zinc-800 bg-black/40 p-3 backdrop-blur-sm"
                           >
                             <div className="min-w-0 mr-2">
                               <span
@@ -680,7 +680,7 @@ function JobsPageContent() {
             ) : (
               /* Empty State quando não há nenhum job */
               <div className="glass-card flex flex-col items-center gap-3.5 rounded-2xl p-12 text-center">
-                <span className="flex size-12 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900/90 text-zinc-400">
+                <span className="flex size-12 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900/90 text-zinc-400 backdrop-blur-sm">
                   <IconTarget className="size-6 text-brand-400/60" />
                 </span>
                 <div className="max-w-md space-y-1">
@@ -705,7 +705,7 @@ function JobsPageContent() {
                   <h3 className="font-display text-sm font-semibold text-zinc-200">
                     Histórico de Execuções
                   </h3>
-                  <span className="rounded-full border border-zinc-800 bg-zinc-900/80 px-2 py-0.5 font-mono text-[11px] text-zinc-400">
+                  <span className="rounded-full border border-zinc-800 bg-zinc-900/80 px-2 py-0.5 font-mono text-[11px] text-zinc-400 backdrop-blur-sm">
                     {sorted.length} {sorted.length === 1 ? "execução" : "execuções"}
                   </span>
                 </div>
@@ -765,7 +765,7 @@ function JobsPageContent() {
                                 · {job.kind} · {job.engine}
                               </span>
                               {isFocused && (
-                                <span className="hidden sm:inline-flex shrink-0 rounded border border-brand-500/30 bg-brand-500/15 px-1.5 py-0.2 font-mono text-[11px] text-brand-300">
+                                <span className="hidden sm:inline-flex shrink-0 rounded border border-brand-500/30 bg-brand-500/15 px-1.5 py-0.2 font-mono text-[11px] text-brand-300 backdrop-blur-sm">
                                   Ativo no monitor
                                 </span>
                               )}
@@ -787,7 +787,7 @@ function JobsPageContent() {
                               e.stopPropagation();
                               setSelectedJobId(job.id);
                             }}
-                            className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium transition active:scale-[0.985] ${
+                            className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium transition active:scale-[0.985] backdrop-blur-sm ${
                               isFocused
                                 ? "border border-brand-500/40 bg-brand-500/20 text-brand-200"
                                 : "border border-white/10 bg-white/[0.06] text-zinc-200 hover:bg-white/15"

@@ -222,7 +222,7 @@ export default function LoginPage() {
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}
                     disabled={submitting}
-                    className="h-10 w-full rounded-lg border border-white/10 bg-white/[0.04] pl-9 pr-3 text-[16px] sm:text-sm text-zinc-100 placeholder:text-zinc-500 transition focus:border-brand-500/50 focus:ring-2 focus:ring-brand-500/30 focus:outline-none disabled:opacity-55"
+                    className="h-10 w-full rounded-lg border border-white/10 bg-white/[0.04] pl-9 pr-3 text-[16px] sm:text-sm text-zinc-100 placeholder:text-zinc-500 backdrop-blur-sm transition focus:border-brand-500/50 focus:ring-2 focus:ring-brand-500/30 focus:outline-none disabled:opacity-55"
                   />
                 </div>
               </div>

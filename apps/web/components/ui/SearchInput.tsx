@@ -29,7 +29,7 @@ export const SearchInput = forwardRef<HTMLInputElement, SearchInputProps>(
 
     return (
       <div
-        className={`relative flex items-center w-full rounded-xl border border-zinc-800 bg-black/40 px-3 transition focus-within:border-brand-500/60 focus-within:ring-1 focus-within:ring-brand-500/30 ${heightClass} ${className}`.trim()}
+        className={`relative flex items-center w-full rounded-xl border border-zinc-800 bg-black/40 backdrop-blur-sm px-3 transition focus-within:border-brand-500/60 focus-within:ring-1 focus-within:ring-brand-500/30 ${heightClass} ${className}`.trim()}
       >
         {loading ? (
           <span

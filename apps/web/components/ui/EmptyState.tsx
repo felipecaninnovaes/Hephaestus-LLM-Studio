@@ -27,7 +27,7 @@ export function EmptyState({
       className={`glass-card flex flex-col items-center justify-center rounded-2xl p-10 text-center gap-3 ${className}`.trim()}
     >
       {icon && (
-        <div className="flex size-11 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900/80 text-zinc-400 [&_svg]:size-5">
+        <div className="flex size-11 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900/80 backdrop-blur-sm text-zinc-400 [&_svg]:size-5">
           {icon}
         </div>
       )}

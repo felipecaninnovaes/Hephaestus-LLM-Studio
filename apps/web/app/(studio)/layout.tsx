@@ -163,13 +163,13 @@ export default function StudioLayout({
               onClick={() => setActionCenterOpen(true)}
               title="Centro de Atividades"
               aria-label="Abrir Centro de Atividades"
-              className="inline-flex size-9 items-center justify-center rounded-lg border border-white/10 bg-white/[0.05] p-0 text-zinc-300 shadow-sm transition hover:border-white/20 hover:bg-white/[0.10] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 cursor-pointer"
+              className="inline-flex size-9 items-center justify-center rounded-lg border border-white/10 bg-white/[0.05] backdrop-blur-sm p-0 text-zinc-300 shadow-sm transition hover:border-white/20 hover:bg-white/[0.10] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 cursor-pointer"
             >
               <IconZap className="size-4 text-brand-400" />
             </button>
             <span
               title="Nó local — ambiente único nesta fatia"
-              className="flex items-center space-x-2 rounded-full border border-zinc-800 bg-zinc-900/90 px-2.5 py-1 font-mono text-[11px] text-zinc-300"
+              className="flex items-center space-x-2 rounded-full border border-zinc-800 bg-zinc-900/90 backdrop-blur-sm px-2.5 py-1 font-mono text-[11px] text-zinc-300"
             >
               <span aria-hidden="true" className="h-2 w-2 rounded-full bg-brand-400" />
               <span>Local</span>

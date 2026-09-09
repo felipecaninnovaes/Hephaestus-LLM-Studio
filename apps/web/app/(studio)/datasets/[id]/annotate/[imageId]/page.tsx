@@ -523,7 +523,7 @@ export default function AnnotateImagePage() {
   return (
     <div className="flex flex-1 flex-col overflow-y-auto md:flex-row md:overflow-hidden">
       {/* Ferramentas e Classes Laterais */}
-      <div className="w-full space-y-5 overflow-visible border-r border-zinc-800/80 bg-zinc-950/60 p-4 md:w-80 md:overflow-y-auto">
+      <div className="w-full space-y-5 overflow-visible border-r border-zinc-800/80 bg-zinc-950/60 p-4 backdrop-blur-sm md:w-80 md:overflow-y-auto">
         <Button
           type="button"
           variant="secondary"
@@ -570,7 +570,7 @@ export default function AnnotateImagePage() {
                       return (
                         <>
                           {m[1]}
-                          <kbd className="rounded border border-white/10 bg-black/40 px-1 font-mono text-[10px]">
+                          <kbd className="rounded border border-white/10 bg-black/40 px-1 font-mono text-[10px] backdrop-blur-sm">
                             {m[2]}
                           </kbd>
                           )
@@ -678,7 +678,7 @@ export default function AnnotateImagePage() {
 
       {/* Canvas de Edição */}
       <div className="relative flex min-h-0 flex-1 flex-col items-center justify-center overflow-auto bg-[#0b0f17] p-6">
-        <div className="glass-menu absolute top-4 left-6 z-20 flex items-center space-x-2 rounded-xl border border-zinc-800 bg-zinc-900/90 px-3 py-1.5 font-mono text-xs">
+        <div className="glass-menu absolute top-4 left-6 z-20 flex items-center space-x-2 rounded-xl border border-zinc-800 bg-zinc-900/90 px-3 py-1.5 font-mono text-xs backdrop-blur-sm">
           <button
             type="button"
             onClick={() => setZoom((z) => Math.max(50, z - 25))}
@@ -710,7 +710,7 @@ export default function AnnotateImagePage() {
 
         <div
           ref={frameRef}
-          className={`relative flex items-center justify-center overflow-hidden rounded-2xl border-2 border-zinc-700/80 border-t-white/20 bg-zinc-900/90 shadow-2xl transition-transform duration-200 ${
+          className={`relative flex items-center justify-center overflow-hidden rounded-2xl border-2 border-zinc-700/80 border-t-white/20 bg-zinc-900/90 shadow-2xl backdrop-blur-sm transition-transform duration-200 ${
             activeTool === "pan"
               ? "cursor-grab active:cursor-grabbing"
               : activeTool === "bbox"

@@ -417,7 +417,7 @@ export default function CreateDatasetModal({
         {/* Confirmação de Substituição (Slug Conflict) */}
         {phase === "confirm" ? (
           <div className="mt-4 space-y-4 text-xs">
-            <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3.5 text-xs leading-relaxed text-rose-200">
+            <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 backdrop-blur-sm p-3.5 text-xs leading-relaxed text-rose-200">
               <p className="font-semibold text-rose-100 mb-1">Conflito de Identificador (Slug)</p>
               Já existe um dataset com este identificador. A substituição irá apagar o dataset atual e
               recriá-lo a partir do arquivo importado. Esta operação não pode ser desfeita.
@@ -447,7 +447,7 @@ export default function CreateDatasetModal({
         ) : (
           <form onSubmit={handleSubmit} className="mt-4 space-y-4 text-xs">
             {/* Seletor Segmentado de Modo */}
-            <div className="inline-flex w-full rounded-xl border border-white/10 bg-black/40 p-1" role="tablist">
+            <div className="inline-flex w-full rounded-xl border border-white/10 bg-black/40 backdrop-blur-sm p-1" role="tablist">
               <button
                 type="button"
                 role="tab"
@@ -481,7 +481,7 @@ export default function CreateDatasetModal({
 
             {/* Alerta de Erro Topo */}
             {topError && (
-              <p role="alert" className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+              <p role="alert" className="rounded-lg border border-rose-500/30 bg-rose-500/10 backdrop-blur-sm px-3 py-2 text-xs text-rose-300">
                 {topError}
               </p>
             )}
@@ -491,7 +491,7 @@ export default function CreateDatasetModal({
               <div>
                 {!inspection ? (
                   <div
-                    className={`relative rounded-xl border-2 border-dashed p-6 text-center transition-all ${
+                    className={`relative rounded-xl border-2 border-dashed p-6 text-center transition-all backdrop-blur-sm ${
                       isDraggingModal
                         ? "border-brand-500 bg-brand-500/15"
                         : "border-zinc-800 bg-black/40 hover:border-zinc-700"
@@ -543,10 +543,10 @@ export default function CreateDatasetModal({
                     />
                   </div>
                 ) : (
-                  <div className="rounded-xl border border-brand-500/30 bg-brand-500/[0.08] p-3.5">
+                  <div className="rounded-xl border border-brand-500/30 bg-brand-500/[0.08] backdrop-blur-sm p-3.5">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2.5 min-w-0">
-                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-brand-500/40 bg-brand-500/20 text-brand-300">
+                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-brand-500/40 bg-brand-500/20 backdrop-blur-sm text-brand-300">
                           {inspection.isBackupZip ? <IconFileArchive className="h-4 w-4" /> : <IconFolder className="h-4 w-4" />}
                         </div>
                         <div className="min-w-0">
@@ -582,7 +582,7 @@ export default function CreateDatasetModal({
                           {inspection.classes.map((c) => (
                             <span
                               key={c}
-                              className="inline-flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded bg-black/40 text-zinc-200 border border-brand-500/20"
+                              className="inline-flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded bg-black/40 text-zinc-200 border border-brand-500/20 backdrop-blur-sm"
                             >
                               <IconCheck className="h-2.5 w-2.5 text-emerald-400" />
                               {c}
@@ -610,7 +610,7 @@ export default function CreateDatasetModal({
                 placeholder="Ex.: Inspeção de PCB v2"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3 py-2 font-mono text-zinc-200 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500/40"
+                className="w-full rounded-xl border border-zinc-800 bg-black/40 backdrop-blur-sm px-3 py-2 font-mono text-zinc-200 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500/40"
               />
               {slug && (
                 <p className="mt-1 font-mono text-[11px] text-zinc-400">
@@ -646,7 +646,7 @@ export default function CreateDatasetModal({
                 placeholder="defeito_a, defeito_b, anomalia"
                 value={classesRaw}
                 onChange={(e) => setClassesRaw(e.target.value)}
-                className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3 py-2 font-mono text-zinc-200 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500/40"
+                className="w-full rounded-xl border border-zinc-800 bg-black/40 backdrop-blur-sm px-3 py-2 font-mono text-zinc-200 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500/40"
               />
               <p className="mt-1 text-[11px] text-zinc-400">
                 Separadas por vírgula — ordem vira índice YOLO

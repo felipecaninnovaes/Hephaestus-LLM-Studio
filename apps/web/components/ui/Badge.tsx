@@ -49,7 +49,7 @@ export const Badge = forwardRef<HTMLSpanElement, BadgeProps>(
     return (
       <span
         ref={ref}
-        className={`inline-flex items-center gap-1.5 font-mono font-medium border ${variantClass} ${className}`.trim()}
+        className={`inline-flex items-center gap-1.5 font-mono font-medium border backdrop-blur-sm ${variantClass} ${className}`.trim()}
         {...props}
       >
         {pulse && (

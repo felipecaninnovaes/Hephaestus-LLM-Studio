@@ -164,9 +164,9 @@ export function JobLogViewer({ job, metrics = [], artifacts = [] }: JobLogViewer
   }
 
   return (
-    <div className="rounded-xl border border-zinc-800 bg-black/40 overflow-hidden">
+    <div className="rounded-xl border border-zinc-800 bg-black/40 backdrop-blur-sm overflow-hidden">
       {/* Barra de Título Colapsável */}
-      <div className="flex flex-wrap items-center justify-between gap-2.5 px-4 py-3 border-b border-zinc-800/80 bg-zinc-950/40 select-none">
+      <div className="flex flex-wrap items-center justify-between gap-2.5 px-4 py-3 border-b border-zinc-800/80 bg-zinc-950/40 backdrop-blur-sm select-none">
         <button
           type="button"
           onClick={() => setIsOpen(!isOpen)}
@@ -202,7 +202,7 @@ export function JobLogViewer({ job, metrics = [], artifacts = [] }: JobLogViewer
           {isOpen && (
             <>
               {/* Filtros */}
-              <div className="flex items-center rounded-md border border-zinc-800 bg-zinc-950/80 p-0.5">
+              <div className="flex items-center rounded-md border border-zinc-800 bg-zinc-950/80 backdrop-blur-sm p-0.5">
                 <button
                   type="button"
                   onClick={() => setFilter("all")}
@@ -242,7 +242,7 @@ export function JobLogViewer({ job, metrics = [], artifacts = [] }: JobLogViewer
               <button
                 type="button"
                 onClick={() => setAutoScroll(!autoScroll)}
-                className={`hidden lg:inline-flex items-center gap-1 rounded-md border px-2 py-1 transition whitespace-nowrap ${
+                className={`hidden lg:inline-flex items-center gap-1 rounded-md border px-2 py-1 transition whitespace-nowrap backdrop-blur-sm ${
                   autoScroll
                     ? "border-brand-500/30 bg-brand-500/10 text-brand-300"
                     : "border-zinc-800 bg-zinc-900/50 text-zinc-400 hover:text-zinc-300"
@@ -256,7 +256,7 @@ export function JobLogViewer({ job, metrics = [], artifacts = [] }: JobLogViewer
               <button
                 type="button"
                 onClick={handleCopyLogs}
-                className="inline-flex items-center gap-1 rounded-md border border-zinc-800 bg-zinc-900/60 px-2.5 py-1 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100 transition whitespace-nowrap"
+                className="inline-flex items-center gap-1 rounded-md border border-zinc-800 bg-zinc-900/60 backdrop-blur-sm px-2.5 py-1 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100 transition whitespace-nowrap"
               >
                 {copied ? (
                   <>

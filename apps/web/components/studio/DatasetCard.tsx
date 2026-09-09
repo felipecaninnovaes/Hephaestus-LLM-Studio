@@ -103,7 +103,7 @@ function OpticalShowcase({ dataset }: { dataset: Dataset }) {
 
   if (dataset.imagesCount === 0 || imageError || (!loading && images.length === 0)) {
     return (
-      <div className="relative h-32 w-full overflow-hidden rounded-xl border border-zinc-800/80 bg-zinc-950/70 flex flex-col items-center justify-center gap-1.5 group-hover:border-zinc-700/60 transition-colors">
+      <div className="relative h-32 w-full overflow-hidden rounded-xl border border-zinc-800/80 bg-zinc-950/70 backdrop-blur-sm flex flex-col items-center justify-center gap-1.5 group-hover:border-zinc-700/60 transition-colors">
         <div className="absolute inset-0 bg-[radial-gradient(#3f3f46_1px,transparent_1px)] opacity-30 [background-size:12px_12px]" />
         
         {/* Retículas ópticas simétricas nos 4 vértices */}
@@ -125,7 +125,7 @@ function OpticalShowcase({ dataset }: { dataset: Dataset }) {
 
   if (loading) {
     return (
-      <div className="relative h-32 w-full overflow-hidden rounded-xl border border-zinc-800/80 bg-zinc-950/80 animate-pulse flex items-center justify-center">
+      <div className="relative h-32 w-full overflow-hidden rounded-xl border border-zinc-800/80 bg-zinc-950/80 backdrop-blur-sm animate-pulse flex items-center justify-center">
         <span className="font-mono text-[11px] text-zinc-400 tracking-caps uppercase">
           Carregando ótica…
         </span>
@@ -288,17 +288,17 @@ export default function DatasetCard({
     >
       {/* 1. Cabeçalho de Categoria e Status (Altura padronizada h-8) */}
       <div className="flex items-center justify-between gap-2 h-8">
-        <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-zinc-900/90 border border-zinc-700/80 text-zinc-300 group-hover:text-brand-400 transition-colors">
+        <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-zinc-900/90 border border-zinc-700/80 backdrop-blur-sm text-zinc-300 group-hover:text-brand-400 transition-colors">
           <CategoryIcon category={dataset.category} />
         </span>
         <span className="flex min-w-0 items-center justify-end gap-1.5">
           {dataset.autoTracked && (
-            <span className="tracking-caps rounded-full border border-cyan-400/30 bg-cyan-400/10 px-2 py-0.5 font-mono text-[11px] font-medium uppercase text-cyan-300" title="AutoTracker">
+            <span className="tracking-caps rounded-full border border-cyan-400/30 bg-cyan-400/10 backdrop-blur-sm px-2 py-0.5 font-mono text-[11px] font-medium uppercase text-cyan-300" title="AutoTracker">
               AutoTracker
             </span>
           )}
           <span
-            className={`tracking-caps truncate rounded-full border px-2 py-0.5 font-mono text-[11px] font-medium uppercase ${STATUS_STYLES[dataset.status]}`}
+            className={`tracking-caps truncate rounded-full border backdrop-blur-sm px-2 py-0.5 font-mono text-[11px] font-medium uppercase ${STATUS_STYLES[dataset.status]}`}
             title={STATUS_LABELS[dataset.status]}
           >
             {STATUS_LABELS[dataset.status]}
@@ -326,7 +326,7 @@ export default function DatasetCard({
 
       {/* 4. Métricas Principais (Sempre alinhadas na mesma linha horizontal) */}
       <div className="grid grid-cols-2 gap-2 mt-3.5">
-        <div className="p-2.5 rounded-xl bg-zinc-900/80 border border-zinc-800/60">
+        <div className="p-2.5 rounded-xl bg-zinc-900/80 border border-zinc-800/60 backdrop-blur-sm">
           <p className="tracking-caps font-mono text-[11px] uppercase text-zinc-400">
             Imagens
           </p>
@@ -334,7 +334,7 @@ export default function DatasetCard({
             {dataset.imagesCount.toLocaleString()}
           </p>
         </div>
-        <div className="p-2.5 rounded-xl bg-zinc-900/80 border border-zinc-800/60">
+        <div className="p-2.5 rounded-xl bg-zinc-900/80 border border-zinc-800/60 backdrop-blur-sm">
           <p className="tracking-caps font-mono text-[11px] uppercase text-zinc-400">
             Rotuladas
           </p>
@@ -372,7 +372,7 @@ export default function DatasetCard({
                 <span
                   key={c.id}
                   title={`${c.name} (${c.color})`}
-                  className="inline-flex items-center gap-1.5 text-[11px] font-mono px-2 py-0.5 rounded-md bg-zinc-900/90 text-zinc-300 border border-zinc-800 max-w-full truncate group-hover:border-zinc-700/80 transition-colors"
+                  className="inline-flex items-center gap-1.5 text-[11px] font-mono px-2 py-0.5 rounded-md bg-zinc-900/90 backdrop-blur-sm text-zinc-300 border border-zinc-800 max-w-full truncate group-hover:border-zinc-700/80 transition-colors"
                 >
                   <span
                     className="w-2 h-2 rounded-full shrink-0 shadow-sm"
@@ -385,7 +385,7 @@ export default function DatasetCard({
               {extra > 0 && (
                 <span
                   title={`Mais ${extra} classes`}
-                  className="inline-flex items-center text-[11px] font-mono px-2 py-0.5 rounded-md bg-zinc-900/80 text-zinc-400 border border-zinc-800"
+                  className="inline-flex items-center text-[11px] font-mono px-2 py-0.5 rounded-md bg-zinc-900/80 backdrop-blur-sm text-zinc-400 border border-zinc-800"
                 >
                   +{extra}
                 </span>
@@ -396,7 +396,7 @@ export default function DatasetCard({
           <>
             <div className="h-1 w-full rounded-full bg-zinc-900/60 border border-zinc-800/40 mb-2 opacity-50" />
             <div className="flex items-center">
-              <span className="inline-flex items-center gap-1.5 text-[11px] font-mono px-2 py-0.5 rounded-md bg-zinc-900/50 text-zinc-400 border border-dashed border-zinc-800/80">
+              <span className="inline-flex items-center gap-1.5 text-[11px] font-mono px-2 py-0.5 rounded-md bg-zinc-900/50 backdrop-blur-sm text-zinc-400 border border-dashed border-zinc-800/80">
                 Nenhuma classe cadastrada
               </span>
             </div>

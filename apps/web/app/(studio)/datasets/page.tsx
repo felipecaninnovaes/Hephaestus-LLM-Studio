@@ -200,8 +200,8 @@ export default function DatasetsPage() {
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
         >
-          <div className="pointer-events-none flex flex-col items-center gap-4 rounded-3xl border-2 border-dashed border-brand-500/80 bg-brand-500/10 p-12 text-center shadow-[0_0_60px_rgba(131,80,242,0.3)]">
-            <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-brand-500/40 bg-brand-500/20 text-brand-300">
+          <div className="pointer-events-none flex flex-col items-center gap-4 rounded-3xl border-2 border-dashed border-brand-500/80 bg-brand-500/10 backdrop-blur-sm p-12 text-center shadow-[0_0_60px_rgba(131,80,242,0.3)]">
+            <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-brand-500/40 bg-brand-500/20 backdrop-blur-sm text-brand-300">
               <IconUpload className="h-8 w-8" />
             </div>
             <div>
@@ -231,14 +231,14 @@ export default function DatasetsPage() {
           </p>
         </div>
         <div className="flex min-h-[44px] items-center gap-2">
-          <div className="inline-flex rounded-full border border-white/10 bg-black/40 p-1" role="group" aria-label="Modo de visualização">
+          <div className="inline-flex rounded-full border border-white/10 bg-black/40 backdrop-blur-sm p-1" role="group" aria-label="Modo de visualização">
             <button
               type="button"
               aria-pressed={viewMode === "grid"}
               aria-label="Ver em grade"
               title="Ver em grade"
               onClick={() => setViewMode("grid")}
-              className={`inline-flex h-7 items-center justify-center rounded-full px-2.5 transition active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 ${viewMode === "grid" ? "bg-brand-500/[0.18] text-brand-300" : "text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200"}`}
+              className={`inline-flex h-7 items-center justify-center rounded-full px-2.5 transition active:scale-[0.985] backdrop-blur-sm focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 ${viewMode === "grid" ? "bg-brand-500/[0.18] text-brand-300" : "text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200"}`}
             >
               <IconGrid className="h-4 w-4" />
             </button>
@@ -248,7 +248,7 @@ export default function DatasetsPage() {
               aria-label="Ver em lista"
               title="Ver em lista"
               onClick={() => setViewMode("list")}
-              className={`inline-flex h-7 items-center justify-center rounded-full px-2.5 transition active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 ${viewMode === "list" ? "bg-brand-500/[0.18] text-brand-300" : "text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200"}`}
+              className={`inline-flex h-7 items-center justify-center rounded-full px-2.5 transition active:scale-[0.985] backdrop-blur-sm focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] [&_svg]:size-4 disabled:pointer-events-none disabled:opacity-55 ${viewMode === "list" ? "bg-brand-500/[0.18] text-brand-300" : "text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200"}`}
             >
               <IconList className="h-4 w-4" />
             </button>
@@ -341,7 +341,7 @@ export default function DatasetsPage() {
           }}
           className="glass-card group flex flex-col items-center gap-4 rounded-2xl border-2 border-dashed border-zinc-800 hover:border-brand-500/50 p-12 text-center transition-colors"
         >
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-zinc-800 bg-zinc-900/80 text-zinc-400 group-hover:text-brand-400 group-hover:border-brand-500/40 transition-colors">
+          <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-zinc-800 bg-zinc-900/80 backdrop-blur-sm text-zinc-400 group-hover:text-brand-400 group-hover:border-brand-500/40 transition-colors">
             <IconUpload className="h-6 w-6" />
           </div>
           <div>

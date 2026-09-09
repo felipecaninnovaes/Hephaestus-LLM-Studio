@@ -89,7 +89,7 @@ export function Modal({
         <div className="flex shrink-0 items-center justify-between border-b border-white/10 pb-4">
           <div className="flex items-center space-x-2.5 min-w-0">
             {icon && (
-              <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-brand-500/30 bg-brand-500/15 text-brand-400 [&_svg]:size-4">
+              <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-brand-500/30 bg-brand-500/15 backdrop-blur-sm text-brand-400 [&_svg]:size-4">
                 {icon}
               </div>
             )}

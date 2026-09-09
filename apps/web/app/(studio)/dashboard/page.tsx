@@ -197,7 +197,7 @@ export default function DashboardPage() {
         {/* Action Controls */}
         <div className="flex items-center space-x-2.5">
           {/* View Toggle */}
-          <div className="flex items-center rounded-xl border border-white/10 bg-white/[0.04] p-1 shadow-sm">
+          <div className="flex items-center rounded-xl border border-white/10 bg-white/[0.04] backdrop-blur-sm p-1 shadow-sm">
             <button
               type="button"
               onClick={() => setViewMode("grid")}
@@ -205,7 +205,7 @@ export default function DashboardPage() {
               title="Visualização em Grade"
               className={`flex size-8 items-center justify-center rounded-lg transition-all ${
                 viewMode === "grid"
-                  ? "border border-brand-500/30 bg-brand-500/20 text-brand-300 shadow-sm"
+                  ? "border border-brand-500/30 bg-brand-500/20 backdrop-blur-sm text-brand-300 shadow-sm"
                   : "text-zinc-400 hover:text-white"
               }`}
             >
@@ -218,7 +218,7 @@ export default function DashboardPage() {
               title="Visualização em Lista"
               className={`flex size-8 items-center justify-center rounded-lg transition-all ${
                 viewMode === "list"
-                  ? "border border-brand-500/30 bg-brand-500/20 text-brand-300 shadow-sm"
+                  ? "border border-brand-500/30 bg-brand-500/20 backdrop-blur-sm text-brand-300 shadow-sm"
                   : "text-zinc-400 hover:text-white"
               }`}
             >
@@ -328,12 +328,12 @@ export default function DashboardPage() {
                       </div>
 
                       {/* Badge Papel */}
-                      <span className="inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden whitespace-nowrap rounded-lg border font-medium text-brand-300 bg-brand-500/15 border-brand-500/30 px-2 py-0.5 text-[11px]">
+                      <span className="inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden whitespace-nowrap rounded-lg border font-medium text-brand-300 bg-brand-500/15 border-brand-500/30 backdrop-blur-sm px-2 py-0.5 text-[11px]">
                         {node.role}
                       </span>
 
                       {/* Badge Versão com ping */}
-                      <div className="inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden whitespace-nowrap rounded-lg border font-medium text-zinc-300 bg-zinc-800/40 border-zinc-700/50 px-2 py-0.5 text-[11px] font-mono">
+                      <div className="inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden whitespace-nowrap rounded-lg border font-medium text-zinc-300 bg-zinc-800/40 border-zinc-700/50 backdrop-blur-sm px-2 py-0.5 text-[11px] font-mono">
                         <span>{node.version}</span>
                         <span className="relative ml-1.5 flex h-2 w-2">
                           <span
@@ -367,7 +367,7 @@ export default function DashboardPage() {
                       <button
                         type="button"
                         disabled
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-brand-500/30 bg-brand-500/10 px-2.5 py-1 text-xs font-medium text-brand-300 shadow-none"
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-brand-500/30 bg-brand-500/10 backdrop-blur-sm px-2.5 py-1 text-xs font-medium text-brand-300 shadow-none"
                       >
                         <IconServer className="size-3.5 text-brand-400" />
                         <span>Ativo</span>
@@ -402,7 +402,7 @@ export default function DashboardPage() {
                 <div className="border-t border-white/10 pt-4">
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                     {/* Gauge GPU */}
-                    <div className="min-w-0 rounded-xl bg-white/[0.02] p-3 border border-white/5">
+                    <div className="min-w-0 rounded-xl bg-white/[0.02] backdrop-blur-sm p-3 border border-white/5">
                       <div className="flex items-start justify-between gap-2">
                         <p className="flex items-center gap-1.5 text-[10px] font-semibold tracking-wide text-zinc-400 uppercase">
                           <IconCpu className="size-3.5 text-brand-400" />
@@ -446,7 +446,7 @@ export default function DashboardPage() {
                     </div>
 
                     {/* Gauge VRAM */}
-                    <div className="min-w-0 rounded-xl bg-white/[0.02] p-3 border border-white/5">
+                    <div className="min-w-0 rounded-xl bg-white/[0.02] backdrop-blur-sm p-3 border border-white/5">
                       <div className="flex items-start justify-between gap-2">
                         <p className="flex items-center gap-1.5 text-[10px] font-semibold tracking-wide text-zinc-400 uppercase">
                           <IconActivity className="size-3.5 text-brand-400" />
@@ -490,7 +490,7 @@ export default function DashboardPage() {
                     </div>
 
                     {/* Gauge Sistema / Host */}
-                    <div className="min-w-0 rounded-xl bg-white/[0.02] p-3 border border-white/5">
+                    <div className="min-w-0 rounded-xl bg-white/[0.02] backdrop-blur-sm p-3 border border-white/5">
                       <div className="flex items-start justify-between gap-2">
                         <p className="flex items-center gap-1.5 text-[10px] font-semibold tracking-wide text-zinc-400 uppercase">
                           <IconHardDrive className="size-3.5 text-brand-400" />
@@ -563,7 +563,7 @@ export default function DashboardPage() {
                   >
                     <td className="px-5 py-4">
                       <div className="flex items-center space-x-3">
-                        <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-brand-500/30 bg-brand-500/15 text-brand-400">
+                        <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-brand-500/30 bg-brand-500/15 backdrop-blur-sm text-brand-400">
                           <IconServer className="size-4" />
                         </span>
                         <div>
@@ -577,7 +577,7 @@ export default function DashboardPage() {
                       </div>
                     </td>
                     <td className="px-5 py-4">
-                      <span className="inline-flex items-center rounded-lg border border-brand-500/30 bg-brand-500/10 px-2 py-0.5 font-medium text-brand-300">
+                      <span className="inline-flex items-center rounded-lg border border-brand-500/30 bg-brand-500/10 backdrop-blur-sm px-2 py-0.5 font-medium text-brand-300">
                         {node.role}
                       </span>
                     </td>

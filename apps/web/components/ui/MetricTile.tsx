@@ -33,7 +33,7 @@ export const MetricTile = forwardRef<HTMLDivElement, MetricTileProps>(
     return (
       <div
         ref={ref}
-        className={`rounded-xl border border-zinc-800/60 bg-zinc-900/80 p-2.5 ${className}`.trim()}
+        className={`rounded-xl border border-zinc-800/60 bg-zinc-900/80 backdrop-blur-sm p-2.5 ${className}`.trim()}
         {...props}
       >
         <p className="tracking-caps font-mono text-[10px] uppercase text-zinc-500 truncate">

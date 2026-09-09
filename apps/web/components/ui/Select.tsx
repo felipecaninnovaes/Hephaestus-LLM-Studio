@@ -334,7 +334,7 @@ export const Select = forwardRef<SelectRefHandle, SelectProps<any>>(function Sel
         aria-labelledby={label ? `${selectId}-label` : undefined}
         disabled={disabled || loading}
         onClick={() => setIsOpen((prev) => !prev)}
-        className={`group flex w-full items-center justify-between gap-2.5 rounded-xl border bg-black/40 text-left transition-all duration-150 select-none ${
+        className={`group flex w-full items-center justify-between gap-2.5 rounded-xl border bg-black/40 backdrop-blur-sm text-left transition-all duration-150 select-none ${
           fontMono ? "font-mono" : "font-sans"
         } ${sizeClasses} ${
           isOpen
@@ -411,7 +411,7 @@ export const Select = forwardRef<SelectRefHandle, SelectProps<any>>(function Sel
                     setHighlightedIndex(0);
                   }}
                   placeholder={searchPlaceholder}
-                  className="w-full rounded-lg border border-white/10 bg-black/50 py-1.5 pr-3 pl-8 font-mono text-xs text-zinc-200 placeholder-zinc-500 transition focus:border-brand-500/70 focus:bg-black/70 focus:outline-none focus:ring-1 focus:ring-brand-500/40"
+                  className="w-full rounded-lg border border-white/10 bg-black/50 backdrop-blur-sm py-1.5 pr-3 pl-8 font-mono text-xs text-zinc-200 placeholder-zinc-500 transition focus:border-brand-500/70 focus:bg-black/70 focus:outline-none focus:ring-1 focus:ring-brand-500/40"
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
                       e.preventDefault();

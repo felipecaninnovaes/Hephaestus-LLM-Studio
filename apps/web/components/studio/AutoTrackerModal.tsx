@@ -105,7 +105,7 @@ export default function AutoTrackerModal({
           {topError && (
             <p
               role="alert"
-              className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
+              className="rounded-lg border border-rose-500/30 bg-rose-500/10 backdrop-blur-sm px-3 py-2 text-xs text-rose-300"
             >
               {topError}
             </p>
@@ -124,7 +124,7 @@ export default function AutoTrackerModal({
               value="mock"
               disabled
               title="Modelo real chega em fatia futura."
-              className="w-full rounded-xl border border-zinc-800 bg-black/40 px-3 py-2 font-mono text-zinc-400 focus:border-brand-500 focus:outline-none opacity-70"
+              className="w-full rounded-xl border border-zinc-800 bg-black/40 backdrop-blur-sm px-3 py-2 font-mono text-zinc-400 focus:border-brand-500 focus:outline-none opacity-70"
             >
               <option value="mock">mock (determinístico)</option>
             </select>

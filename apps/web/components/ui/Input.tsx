@@ -52,7 +52,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
             ref={ref}
             id={inputId}
             disabled={disabled}
-            className={`w-full rounded-xl border border-zinc-800 bg-black/40 text-zinc-100 placeholder:text-zinc-500 transition focus:border-brand-500 focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-500/50 disabled:opacity-55 disabled:cursor-not-allowed ${
+            className={`w-full rounded-xl border border-zinc-800 bg-black/40 backdrop-blur-sm text-zinc-100 placeholder:text-zinc-500 transition focus:border-brand-500 focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-500/50 disabled:opacity-55 disabled:cursor-not-allowed ${
               fontMono ? "font-mono" : "font-sans"
             } ${hasPrefix ? "pl-9" : "pl-3"} ${hasSuffix ? "pr-9" : "pr-3"} py-2 text-[16px] sm:text-xs ${
               error ? "border-rose-500/50 focus:border-rose-500" : ""

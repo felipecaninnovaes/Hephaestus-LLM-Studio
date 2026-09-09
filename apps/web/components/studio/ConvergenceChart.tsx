@@ -216,8 +216,8 @@ export function ConvergenceChart({
 
   if (!metrics || metrics.length === 0) {
     return (
-      <div className="rounded-xl border border-zinc-800 bg-black/40 p-6 text-center">
-        <div className="mx-auto flex size-10 items-center justify-center rounded-lg border border-zinc-800 bg-zinc-900/60 text-zinc-400">
+      <div className="rounded-xl border border-zinc-800 bg-black/40 backdrop-blur-sm p-6 text-center">
+        <div className="mx-auto flex size-10 items-center justify-center rounded-lg border border-zinc-800 bg-zinc-900/60 backdrop-blur-sm text-zinc-400">
           <IconActivity className="size-5" />
         </div>
         <h4 className="mt-3 font-display text-sm font-semibold text-zinc-200">
@@ -235,11 +235,11 @@ export function ConvergenceChart({
   const activeHover = hoverIndex != null && metrics[hoverIndex] ? metrics[hoverIndex] : latest;
 
   return (
-    <div className="rounded-xl border border-zinc-800 bg-black/40 p-4 space-y-3.5">
+    <div className="rounded-xl border border-zinc-800 bg-black/40 backdrop-blur-sm p-4 space-y-3.5">
       {/* Header do Gráfico com Tabs e Indicador de Época */}
       <div className="flex flex-wrap items-center justify-between gap-2.5">
         <div className="flex items-center gap-2">
-          <div className="flex size-6 shrink-0 items-center justify-center rounded-md bg-brand-500/10 text-brand-400 border border-brand-500/20">
+          <div className="flex size-6 shrink-0 items-center justify-center rounded-md bg-brand-500/10 text-brand-400 border border-brand-500/20 backdrop-blur-sm">
             <IconTrendingUp className="size-3.5" />
           </div>
           <span className="font-mono text-[11px] font-semibold tracking-caps uppercase text-zinc-200 whitespace-nowrap">
@@ -257,7 +257,7 @@ export function ConvergenceChart({
         </div>
 
         {/* Tab Switcher Segmentado */}
-        <div className="flex items-center rounded-lg border border-zinc-800 bg-zinc-950/70 p-0.5">
+        <div className="flex items-center rounded-lg border border-zinc-800 bg-zinc-950/70 backdrop-blur-sm p-0.5">
           <button
             type="button"
             onClick={() => setTab("all")}

@@ -3552,8 +3552,17 @@ async fn t0004_lock_concorrente_serializa_disparos() {
         api_principal::search::indexer::index_dataset_images(s2, ds_id, None).await
     });
     let (r1, r2) = tokio::join!(j1, j2);
-    assert_eq!(r1.expect("spawn 1"), 2);
-    assert_eq!(r2.expect("spawn 2"), 0, "2º disparo não tem pendentes");
+    // Ordem agnóstica: quem ganha a corrida do advisory lock processa as 2
+    // pendentes; o outro encontra 0. O critério da 3f é o TOTAL == N e o
+    // count final == N (ON CONFLICT não duplica) — não a ordem dos spawns
+    // (CI provou inversão: run 47, left: 0 / right: 2).
+    let w1 = r1.expect("spawn 1");
+    let w2 = r2.expect("spawn 2");
+    assert_eq!(w1 + w2, 2, "exatamente as 2 pendentes foram escritas");
+    assert!(
+        (w1 == 2 && w2 == 0) || (w1 == 0 && w2 == 2),
+        "um disparo processa tudo e o outro não tem pendentes: w1={w1} w2={w2}"
+    );
     let n: i64 = sqlx::query_scalar("SELECT count(*) FROM image_embeddings WHERE dataset_id = $1")
         .bind(ds_id)
         .fetch_one(&st.pool)

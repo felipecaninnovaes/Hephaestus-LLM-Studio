@@ -32,6 +32,7 @@ from trainer_yolo.train import (
     REQUIRED_YOLO_KEYS,
     _convert_ultralytics_metrics,
     _copy_flat_weights,
+    _fix_dataset_yaml_path,
     _make_fake_artifact,
     _seed_bytes,
     _synthetic_metrics,
@@ -588,3 +589,46 @@ class TestRealTrainTolerantParsing:
         # Epoch 3: has metrics (Epoch 2 was skipped)
         data2 = json.loads(lines[1])
         assert data2["box_loss"] == pytest.approx(0.3)
+
+
+# ---------------------------------------------------------------------------
+# (g) _fix_dataset_yaml_path — absolute path rewriting
+# ---------------------------------------------------------------------------
+
+class TestFixDatasetYamlPath:
+    """Tests for _fix_dataset_yaml_path (pure, no ultralytics)."""
+
+    def test_relative_path_rewritten_to_absolute(self, tmp_path: Path) -> None:
+        """YAML with path: . + absolute dataset_path → path rewritten, train/val intact."""
+        ds = tmp_path / "dataset"
+        ds.mkdir()
+        yaml_content = {"path": ".", "train": "images/a.png", "val": "images/b.png", "nc": 1}
+        yaml_path = ds / "dataset.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.safe_dump(yaml_content, f, sort_keys=False)
+
+        _fix_dataset_yaml_path(yaml_path, ds)
+
+        with open(yaml_path, "r") as f:
+            result = yaml.safe_load(f)
+
+        assert result["path"] == str(ds)
+        assert result["train"] == "images/a.png"
+        assert result["val"] == "images/b.png"
+        assert result["nc"] == 1
+
+    def test_already_absolute_path_untouched(self, tmp_path: Path) -> None:
+        """YAML with path: /abs/já → no rewrite."""
+        ds = tmp_path / "dataset"
+        ds.mkdir()
+        yaml_content = {"path": "/abs/já", "train": "images/a.png", "nc": 1}
+        yaml_path = ds / "dataset.yaml"
+        with open(yaml_path, "w") as f:
+            yaml.safe_dump(yaml_content, f, sort_keys=False)
+
+        _fix_dataset_yaml_path(yaml_path, ds)
+
+        with open(yaml_path, "r") as f:
+            result = yaml.safe_load(f)
+
+        assert result["path"] == "/abs/já"

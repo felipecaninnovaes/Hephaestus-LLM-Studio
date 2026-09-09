@@ -247,6 +247,26 @@ def _copy_flat_weights(output: Path) -> None:
             print(f"WARNING: {src} not found, skipping copy", file=sys.stderr)
 
 
+def _fix_dataset_yaml_path(dataset_yaml: Path, dataset_path: Path) -> None:
+    """Rewrite relative ``path:`` in dataset.yaml to an absolute path.
+
+    The builder (render_dataset_yaml) uses ``path: .`` which is relative to the
+    export CWD.  In the GPU container the process CWD is the image WORKDIR
+    (``/app``), not the dataset directory, so ultralytics resolves images
+    against ``/app`` and fails with FileNotFoundError.  Rewriting ``path`` to
+    the absolute dataset directory fixes this; ``train``/``val`` remain relative
+    to ``path`` (ultralytics convention).
+    """
+    with open(dataset_yaml, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+
+    current = data.get("path")
+    if current is not None and not Path(current).is_absolute():
+        data["path"] = str(dataset_path)
+        with open(dataset_yaml, "w", encoding="utf-8") as f:
+            yaml.safe_dump(data, f, sort_keys=False)
+
+
 def _real_train(cfg: dict, output: Path) -> None:
     """Real training via ultralytics (requires GPU + extras [train])."""
     try:
@@ -261,6 +281,13 @@ def _real_train(cfg: dict, output: Path) -> None:
     dataset_yaml = dataset_path / "dataset.yaml"
     if not dataset_yaml.is_file():
         _die(f"dataset.yaml not found: {dataset_path}")
+
+    # Resolve relative `path:` in dataset.yaml to absolute.
+    # Builder uses `path: .` (relative to export CWD). In the GPU container the
+    # process CWD is `/app` (WORKDIR), not the dataset dir, so ultralytics
+    # would look for images under `/app`. Rewriting `path` to the absolute
+    # dataset dir fixes this; train/val remain relative to `path`.
+    _fix_dataset_yaml_path(dataset_yaml, dataset_path)
 
     output.mkdir(parents=True, exist_ok=True)
     metrics_path = output / "metrics.jsonl"

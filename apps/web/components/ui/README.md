@@ -26,8 +26,13 @@ Esta pasta reúne os componentes atômicos e primitivas do Design System, desenv
 | **[`Breadcrumbs`](file:///home/felipecn/DEV/redesign/apps/web/components/ui/Breadcrumbs.tsx)** | `Breadcrumbs.tsx` | Trilha de navegação com separadores em barra `/`, truncamento inteligente no segmento intermediário e realce no item ativo. |
 | **[`TruncatedText`](file:///home/felipecn/DEV/redesign/apps/web/components/ui/TruncatedText.tsx)** | `TruncatedText.tsx` | Implementa "The Truncamento Honesto Rule", garantindo que qualquer texto truncado (`truncate` ou `line-clamp`) exponha o atributo `title` com o conteúdo integral. |
 | **[`EmptyState`](file:///home/felipecn/DEV/redesign/apps/web/components/ui/EmptyState.tsx)** | `EmptyState.tsx` | Estado vazio amigável em vidro óptico com ícone, título, descrição e botão de ação. |
+| **[`ConfirmDialog`](file:///home/felipecn/DEV/Hephaestus-LLM-Studio/apps/web/components/ui/ConfirmDialog.tsx)** | `ConfirmDialog.tsx` | Diálogo de confirmação de ações críticas com suporte a estado destrutivo (`danger`), busy loader e botão primário ou cancelamento. |
+| **[`Toast`](file:///home/felipecn/DEV/Hephaestus-LLM-Studio/apps/web/components/ui/Toast.tsx)** | `Toast.tsx` | Sistema global de notificações e feedback óptico com auto-dismiss, ações interativas (`action`) e variante por tipo (`success`, `error`, `info`). |
+| **[`DropOverlay`](file:///home/felipecn/DEV/Hephaestus-LLM-Studio/apps/web/components/ui/DropOverlay.tsx)** | `DropOverlay.tsx` | Overlay de drag & drop com borda tracejada violeta e feedback visual em backdrop-blur, acompanhado do hook `useFileDrop`. |
+| **[`ZoomControl`](file:///home/felipecn/DEV/Hephaestus-LLM-Studio/apps/web/components/ui/ZoomControl.tsx)** | `ZoomControl.tsx` | Barra flutuante em `.glass-menu` para controle de escala e zoom de canvas interativos com indicador percentual mono e reset 100%. |
 
 ---
+
 
 ## Exemplos Rápidos de Uso
 

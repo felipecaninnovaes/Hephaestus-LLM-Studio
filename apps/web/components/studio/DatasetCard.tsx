@@ -10,6 +10,7 @@ import {
 } from "@/components/icons";
 import { formatBytes, formatPercent, formatRelativeTime } from "@/lib/format";
 import { listImages, getImage } from "@/lib/images";
+import { canTrainYolo, trainDisabledReason } from "@/lib/datasets";
 import { Badge } from "@/components/ui/Badge";
 import {
   STATUS_LABELS,
@@ -39,18 +40,6 @@ function CategoryIcon({ category }: { category: Dataset["category"] }) {
   return <IconLayers className="w-4 h-4 text-zinc-300" />;
 }
 
-/** Habilita Treinar: category yolo + ≥1 classe + ≥1 imagem. */
-function canTrain(ds: Dataset): boolean {
-  return ds.category === "yolo" && ds.classes.length > 0 && ds.imagesCount > 0;
-}
-
-/** Title honesto quando desabilitado. */
-function trainDisabledReason(ds: Dataset): string {
-  if (ds.category !== "yolo") return "Treino disponível apenas para datasets YOLO.";
-  if (ds.classes.length === 0) return "Treino YOLO exige dataset yolo com ≥1 classe.";
-  if (ds.imagesCount === 0) return "Treino YOLO exige dataset yolo com ≥1 imagem.";
-  return "";
-}
 
 /** Vitrine Óptica de Visão Computacional (Mosaico simétrico de miniaturas + bounding boxes). */
 function OpticalShowcase({ dataset }: { dataset: Dataset }) {
@@ -274,7 +263,7 @@ export default function DatasetCard({
   const visibleClasses = dataset.classes.slice(0, 4);
   const extra = dataset.classes.length - visibleClasses.length;
   const categoryLabel = CATEGORY_LABELS[dataset.category] ?? dataset.category;
-  const trainEnabled = canTrain(dataset);
+  const trainEnabled = canTrainYolo(dataset);
   const trainTitle = trainEnabled ? "Abrir modal de treino YOLO" : trainDisabledReason(dataset);
 
   return (

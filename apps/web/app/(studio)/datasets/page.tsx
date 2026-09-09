@@ -2,13 +2,20 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import {
+  Button,
+  ConfirmDialog,
+  DropOverlay,
+  SearchInput,
+  SegmentedControl,
+  SubmodulePills,
+  showToast,
+  useFileDrop,
+} from "@/components/ui";
 import DatasetCard from "@/components/studio/DatasetCard";
 import DatasetTable from "@/components/studio/DatasetTable";
-import ConfirmDialog from "@/components/studio/ConfirmDialog";
 import CreateDatasetModal from "@/components/studio/CreateDatasetModal";
 import DatasetMenu from "@/components/studio/DatasetMenu";
-import { showToast } from "@/components/studio/Toast";
-import { Button, SearchInput, SegmentedControl, SubmodulePills } from "@/components/ui";
 import {
   IconDatabase,
   IconGrid,
@@ -55,8 +62,20 @@ export default function DatasetsPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [createMode, setCreateMode] = useState<"empty" | "import">("empty");
   const [droppedInspection, setDroppedInspection] = useState<InspectionResult | null>(null);
-  const [isDraggingPage, setIsDraggingPage] = useState(false);
-  const dragCounterRef = useRef(0);
+  const { isDragging: isDraggingPage, dropProps } = useFileDrop({
+    onDropFiles: async (_, dataTransfer) => {
+      try {
+        const res = await inspectDataTransfer(dataTransfer);
+        if (res) {
+          setDroppedInspection(res);
+          setCreateMode("import");
+          setCreateOpen(true);
+        }
+      } catch {
+        // continua
+      }
+    },
+  });
   const [deleting, setDeleting] = useState<Dataset | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [menu, setMenu] = useState<{ dataset: Dataset; x: number; y: number } | null>(null);
@@ -147,74 +166,20 @@ export default function DatasetsPage() {
     }
   }
 
-  const handleDragEnter = (e: React.DragEvent) => {
-    e.preventDefault();
-    dragCounterRef.current += 1;
-    if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
-      setIsDraggingPage(true);
-    }
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    dragCounterRef.current -= 1;
-    if (dragCounterRef.current <= 0) {
-      setIsDraggingPage(false);
-      dragCounterRef.current = 0;
-    }
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-  };
-
-  const handleDrop = async (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDraggingPage(false);
-    dragCounterRef.current = 0;
-    try {
-      const res = await inspectDataTransfer(e.dataTransfer);
-      if (res) {
-        setDroppedInspection(res);
-        setCreateMode("import");
-        setCreateOpen(true);
-      }
-    } catch {
-      // continua
-    }
-  };
-
   return (
     <div
-      onDragEnter={handleDragEnter}
-      onDragLeave={handleDragLeave}
-      onDragOver={handleDragOver}
-      onDrop={handleDrop}
+      {...dropProps}
       className="relative mx-auto flex w-full max-w-7xl flex-col gap-4 px-4 sm:px-6 py-6"
     >
       {/* Overlay Óptico de Drag & Drop Global */}
-      {isDraggingPage && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6 backdrop-blur-md transition-all animate-in fade-in"
-          onDragOver={(e) => e.preventDefault()}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-        >
-          <div className="pointer-events-none flex flex-col items-center gap-4 rounded-3xl border-2 border-dashed border-brand-500/80 bg-brand-500/10 backdrop-blur-sm p-12 text-center shadow-[0_0_60px_rgba(131,80,242,0.3)]">
-            <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-brand-500/40 bg-brand-500/20 backdrop-blur-sm text-brand-300">
-              <IconUpload className="h-8 w-8" />
-            </div>
-            <div>
-              <p className="font-display text-lg font-bold text-white">
-                Solte o arquivo ZIP ou pasta aqui
-              </p>
-              <p className="font-mono text-xs text-brand-200/80 mt-1">
-                Autodeteção imediata de classes, anotações e contagem de imagens
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
+      <DropOverlay
+        open={isDraggingPage}
+        title="Solte o arquivo ZIP ou pasta aqui"
+        subtitle="Autodeteção imediata de classes, anotações e contagem de imagens"
+        onDragLeave={dropProps.onDragLeave}
+        onDrop={dropProps.onDrop}
+      />
+
 
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div className="min-w-0">

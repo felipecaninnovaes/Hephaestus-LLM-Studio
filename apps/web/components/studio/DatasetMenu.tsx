@@ -14,6 +14,8 @@ import {
   IconTrash,
 } from "@/components/icons";
 
+import { canTrainYolo, trainDisabledReason } from "@/lib/datasets";
+
 interface Props {
   dataset: Dataset;
   x: number;
@@ -21,19 +23,6 @@ interface Props {
   onClose: () => void;
   onDelete: (dataset: Dataset) => void;
   onTrain: (dataset: Dataset) => void;
-}
-
-/** Habilita Treinar: category yolo + ≥1 classe + ≥1 imagem. */
-function canTrain(ds: Dataset): boolean {
-  return ds.category === "yolo" && ds.classes.length > 0 && ds.imagesCount > 0;
-}
-
-/** Title honesto quando desabilitado. */
-function trainDisabledReason(ds: Dataset): string {
-  if (ds.category !== "yolo") return "Treino disponível apenas para datasets YOLO.";
-  if (ds.classes.length === 0) return "Treino YOLO exige dataset yolo com ≥1 classe.";
-  if (ds.imagesCount === 0) return "Treino YOLO exige dataset yolo com ≥1 imagem.";
-  return "";
 }
 
 export default function DatasetMenu({ dataset, x, y, onClose, onDelete, onTrain }: Props) {
@@ -59,7 +48,7 @@ export default function DatasetMenu({ dataset, x, y, onClose, onDelete, onTrain 
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const trainEnabled = canTrain(dataset);
+  const trainEnabled = canTrainYolo(dataset);
   const trainTitle = trainEnabled ? "Abrir modal de treino YOLO" : trainDisabledReason(dataset);
 
   return (

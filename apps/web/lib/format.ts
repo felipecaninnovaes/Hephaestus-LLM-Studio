@@ -43,3 +43,16 @@ export function formatPercent(part: number, total: number): string {
   if (!Number.isFinite(part) || !Number.isFinite(total) || total <= 0) return "0%";
   return `${Math.round((part / total) * 100)}%`;
 }
+
+export function formatDuration(start: string, end: string | null): string {
+  const ms =
+    (end ? new Date(end).getTime() : Date.now()) - new Date(start).getTime();
+  if (ms < 0) return "—";
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+

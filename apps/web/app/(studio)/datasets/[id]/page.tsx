@@ -2,8 +2,15 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { showToast } from "@/components/studio/Toast";
-import { Button, SearchInput, SubmodulePills } from "@/components/ui";
+import {
+  Button,
+  ConfirmDialog,
+  DropOverlay,
+  SearchInput,
+  SubmodulePills,
+  showToast,
+  useFileDrop,
+} from "@/components/ui";
 import {
   IconDatabase,
   IconDownload,
@@ -15,10 +22,15 @@ import {
   IconSparkles,
   IconTarget,
   IconTrash,
-  IconUpload,
 } from "@/components/icons";
 import { ApiError } from "@/lib/api";
-import { getDataset } from "@/lib/datasets";
+import {
+  autoTrackDisabledReason,
+  canAutoTrack,
+  canTrainYolo,
+  getDataset,
+  trainDisabledReason,
+} from "@/lib/datasets";
 import { exportDataset, exportErrorMessage } from "@/lib/backup";
 import {
   getSearchStatus,
@@ -42,10 +54,10 @@ import type {
   StudioClass,
 } from "@/types/studio";
 import ClassesModal from "@/components/studio/ClassesModal";
-import ConfirmDialog from "@/components/studio/ConfirmDialog";
 import ImportDatasetModal from "@/components/studio/ImportDatasetModal";
 import TrainYoloModal from "@/components/studio/TrainYoloModal";
 import AutoTrackerModal from "@/components/studio/AutoTrackerModal";
+import ImageCard from "@/components/studio/ImageCard";
 
 const PAGE_LIMIT = 50;
 
@@ -89,38 +101,11 @@ export default function DatasetGalleryPage() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollAbortRef = useRef<AbortController | null>(null);
   const searchTimerRef = useRef<number | null>(null);
-  const [isDraggingPage, setIsDraggingPage] = useState(false);
-  const dragCounterRef = useRef(0);
-
-  const handleDragEnter = (e: React.DragEvent) => {
-    e.preventDefault();
-    dragCounterRef.current += 1;
-    if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
-      setIsDraggingPage(true);
-    }
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    dragCounterRef.current -= 1;
-    if (dragCounterRef.current <= 0) {
-      setIsDraggingPage(false);
-      dragCounterRef.current = 0;
-    }
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-  };
-
-  const handleDrop = async (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDraggingPage(false);
-    dragCounterRef.current = 0;
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      await handleFiles(e.dataTransfer.files);
-    }
-  };
+  const { isDragging: isDraggingPage, dropProps } = useFileDrop({
+    onDropFiles: async (files) => {
+      await handleFiles(files);
+    },
+  });
 
   const load = useCallback(
     async (id: string) => {
@@ -718,35 +703,18 @@ export default function DatasetGalleryPage() {
 
   return (
     <div
-      onDragEnter={handleDragEnter}
-      onDragLeave={handleDragLeave}
-      onDragOver={handleDragOver}
-      onDrop={handleDrop}
+      {...dropProps}
       className="relative mx-auto flex max-w-6xl flex-col gap-4 px-4 py-6"
     >
       {/* Overlay Óptico de Drag & Drop para Upload de Imagens */}
-      {isDraggingPage && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6 backdrop-blur-md transition-all animate-in fade-in"
-          onDragOver={(e) => e.preventDefault()}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-        >
-          <div className="pointer-events-none flex flex-col items-center gap-4 rounded-3xl border-2 border-dashed border-brand-500/80 bg-brand-500/10 backdrop-blur-sm p-12 text-center shadow-[0_0_60px_rgba(131,80,242,0.3)]">
-            <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-brand-500/40 bg-brand-500/20 backdrop-blur-sm text-brand-300">
-              <IconUpload className="h-8 w-8" />
-            </div>
-            <div>
-              <p className="font-display text-lg font-bold text-white">
-                Solte as imagens aqui
-              </p>
-              <p className="font-mono text-xs text-brand-200/80 mt-1">
-                Upload direto de amostras para o dataset {dataset.title}
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
+      <DropOverlay
+        open={isDraggingPage}
+        title="Solte as imagens aqui"
+        subtitle={`Upload direto de amostras para o dataset ${dataset.title}`}
+        onDragLeave={dropProps.onDragLeave}
+        onDrop={dropProps.onDrop}
+      />
+
 
       <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
         <div className="flex items-center space-x-3">
@@ -806,25 +774,17 @@ export default function DatasetGalleryPage() {
             <IconSparkles className="h-4 w-4" />
             <span>AutoLabel</span>
           </Button>
-          {(() => {
-            const atEnabled = dataset.category === "yolo" && dataset.classes.length > 0 && dataset.imagesCount > 0;
-            const atTitle = atEnabled
-              ? "Executar AutoTracker neste dataset"
-              : "AutoTracker exige dataset yolo com ≥1 classe e ≥1 imagem";
-            return (
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                disabled={!atEnabled}
-                title={atTitle}
-                onClick={() => atEnabled && setAutoTrackerOpen(true)}
-              >
-                <IconTarget className="h-4 w-4" />
-                <span>AutoTracker</span>
-              </Button>
-            );
-          })()}
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            disabled={!canAutoTrack(dataset)}
+            title={autoTrackDisabledReason(dataset)}
+            onClick={() => canAutoTrack(dataset) && setAutoTrackerOpen(true)}
+          >
+            <IconTarget className="h-4 w-4" />
+            <span>AutoTracker</span>
+          </Button>
           <Button
             type="button"
             variant="secondary"
@@ -847,25 +807,17 @@ export default function DatasetGalleryPage() {
             <IconDownload className="h-4 w-4" />
             <span>{exporting ? "Exportando…" : "Exportar"}</span>
           </Button>
-          {(() => {
-            const trainEnabled = dataset.category === "yolo" && dataset.classes.length > 0 && dataset.imagesCount > 0;
-            const trainTitle = trainEnabled
-              ? "Abrir modal de treino YOLO"
-              : "Treino YOLO exige dataset yolo com ≥1 classe e ≥1 imagem";
-            return (
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                disabled={!trainEnabled}
-                title={trainTitle}
-                onClick={() => trainEnabled && setTrainOpen(true)}
-              >
-                <IconPlay className="h-4 w-4" />
-                <span>Treinar este Dataset</span>
-              </Button>
-            );
-          })()}
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            disabled={!canTrainYolo(dataset)}
+            title={trainDisabledReason(dataset)}
+            onClick={() => canTrainYolo(dataset) && setTrainOpen(true)}
+          >
+            <IconPlay className="h-4 w-4" />
+            <span>Treinar este Dataset</span>
+          </Button>
         </div>
         <div className="relative md:hidden">
           <Button
@@ -902,32 +854,24 @@ export default function DatasetGalleryPage() {
                 <IconSparkles className="h-4 w-4" />
                 <span>AutoLabel</span>
               </button>
-              {(() => {
-                const atEnabled = dataset.category === "yolo" && dataset.classes.length > 0 && dataset.imagesCount > 0;
-                const atTitle = atEnabled
-                  ? "Executar AutoTracker neste dataset"
-                  : "AutoTracker exige dataset yolo com ≥1 classe e ≥1 imagem";
-                return (
-                  <button
-                    type="button"
-                    disabled={!atEnabled}
-                    title={atTitle}
-                    onClick={() => {
-                      if (!atEnabled) return;
-                      setActionsOpen(false);
-                      setAutoTrackerOpen(true);
-                    }}
-                    className={`flex h-9 items-center space-x-2 rounded-lg px-3 text-xs font-medium ${
-                      atEnabled
-                        ? "text-zinc-200 transition-colors hover:bg-brand-500/[0.12] hover:text-brand-300"
-                        : "cursor-not-allowed text-zinc-200 opacity-60"
-                    }`}
-                  >
-                    <IconTarget className="h-4 w-4" />
-                    <span>AutoTracker</span>
-                  </button>
-                );
-              })()}
+              <button
+                type="button"
+                disabled={!canAutoTrack(dataset)}
+                title={autoTrackDisabledReason(dataset)}
+                onClick={() => {
+                  if (!canAutoTrack(dataset)) return;
+                  setActionsOpen(false);
+                  setAutoTrackerOpen(true);
+                }}
+                className={`flex h-9 items-center space-x-2 rounded-lg px-3 text-xs font-medium ${
+                  canAutoTrack(dataset)
+                    ? "text-zinc-200 transition-colors hover:bg-brand-500/[0.12] hover:text-brand-300"
+                    : "cursor-not-allowed text-zinc-200 opacity-60"
+                }`}
+              >
+                <IconTarget className="h-4 w-4" />
+                <span>AutoTracker</span>
+              </button>
               <button
                 type="button"
                 onClick={() => {
@@ -953,32 +897,24 @@ export default function DatasetGalleryPage() {
                 <IconDownload className="h-4 w-4" />
                 <span>{exporting ? "Exportando…" : "Exportar"}</span>
               </button>
-              {(() => {
-                const trainEnabled = dataset.category === "yolo" && dataset.classes.length > 0 && dataset.imagesCount > 0;
-                const trainTitle = trainEnabled
-                  ? "Abrir modal de treino YOLO"
-                  : "Treino YOLO exige dataset yolo com ≥1 classe e ≥1 imagem";
-                return (
-                  <button
-                    type="button"
-                    disabled={!trainEnabled}
-                    title={trainTitle}
-                    onClick={() => {
-                      if (!trainEnabled) return;
-                      setActionsOpen(false);
-                      setTrainOpen(true);
-                    }}
-                    className={`flex h-9 items-center space-x-2 rounded-lg px-3 text-xs font-medium ${
-                      trainEnabled
-                        ? "text-zinc-200 transition-colors hover:bg-brand-500/[0.12] hover:text-brand-300"
-                        : "cursor-not-allowed text-zinc-200 opacity-60"
-                    }`}
-                  >
-                    <IconPlay className="h-4 w-4" />
-                    <span>Treinar este Dataset</span>
-                  </button>
-                );
-              })()}
+              <button
+                type="button"
+                disabled={!canTrainYolo(dataset)}
+                title={trainDisabledReason(dataset)}
+                onClick={() => {
+                  if (!canTrainYolo(dataset)) return;
+                  setActionsOpen(false);
+                  setTrainOpen(true);
+                }}
+                className={`flex h-9 items-center space-x-2 rounded-lg px-3 text-xs font-medium ${
+                  canTrainYolo(dataset)
+                    ? "text-zinc-200 transition-colors hover:bg-brand-500/[0.12] hover:text-brand-300"
+                    : "cursor-not-allowed text-zinc-200 opacity-60"
+                }`}
+              >
+                <IconPlay className="h-4 w-4" />
+                <span>Treinar este Dataset</span>
+              </button>
             </div>
           )}
         </div>
@@ -1082,34 +1018,13 @@ export default function DatasetGalleryPage() {
         ) : (
           <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
             {items.map((item) => (
-              <div
+              <ImageCard
                 key={item.id}
-                className="group relative h-28 sm:h-36 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/90 transition-all hover:border-brand-500/60"
-              >
-                <img
-                  src={item.url}
-                  alt={item.filename}
-                  loading="lazy"
-                  decoding="async"
-                  className="absolute inset-0 h-full w-full object-cover"
-                />
-                <div className="absolute inset-0 bg-[radial-gradient(#ffffff_1px,transparent_1px)] opacity-20 [background-size:16px_16px]"></div>
-                <span className="absolute top-2 right-2 rounded border border-white/15 bg-zinc-950/90 backdrop-blur-sm px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-caps font-semibold text-zinc-300">
-                  {item.split}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => handleRestore(item)}
-                  disabled={restoringId === item.id}
-                  aria-label={`Restaurar ${item.filename}`}
-                  className="absolute top-2 left-2 rounded-lg border border-[#34d399]/40 bg-zinc-950/90 backdrop-blur-sm px-2 py-1 font-mono text-[11px] font-medium text-[#a7f3d0] transition-colors hover:bg-[#34d399]/20 disabled:opacity-60 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70"
-                >
-                  {restoringId === item.id ? "Restaurando…" : "Restaurar"}
-                </button>
-                <div className="absolute inset-x-0 bottom-0 flex items-center justify-between border-t border-zinc-800/80 bg-zinc-950/90 px-2.5 py-1.5 font-mono text-[11px] text-zinc-300 backdrop-blur-sm">
-                  <span title={item.filename} className="truncate">{item.filename}</span>
-                </div>
-              </div>
+                item={item}
+                variant="trash"
+                onRestore={() => handleRestore(item)}
+                isRestoring={restoringId === item.id}
+              />
             ))}
             {items.length < total && (
               <button
@@ -1177,33 +1092,17 @@ export default function DatasetGalleryPage() {
           ) : (
             <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
               {results.map((result) => (
-                <div
+                <ImageCard
                   key={result.image.id}
+                  item={result.image}
+                  variant="search"
+                  searchScore={result.score}
                   onClick={() =>
                     router.push(
                       `/datasets/${datasetId}/annotate/${result.image.id}`,
                     )
                   }
-                  className="group relative h-28 sm:h-36 cursor-pointer overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/90 transition-all hover:border-brand-500/60 focus-within:border-brand-500/60"
-                >
-                  <img
-                    src={result.image.url}
-                    alt={result.image.filename}
-                    loading="lazy"
-                    decoding="async"
-                    className="absolute inset-0 h-full w-full object-cover"
-                  />
-                  <div className="absolute inset-0 bg-[radial-gradient(#ffffff_1px,transparent_1px)] opacity-20 [background-size:16px_16px]"></div>
-                  <span
-                    title="Similaridade (cosseno, -1..1)"
-                    className="absolute top-2 right-2 rounded border border-brand-500/30 bg-zinc-950/90 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-brand-300 backdrop-blur-sm"
-                  >
-                    {result.score.toFixed(2)}
-                  </span>
-                  <div className="absolute inset-x-0 bottom-0 flex items-center justify-between border-t border-zinc-800/80 bg-zinc-950/90 px-2.5 py-1.5 font-mono text-[11px] text-zinc-300 backdrop-blur-sm">
-                    <span title={result.image.filename} className="truncate">{result.image.filename}</span>
-                  </div>
-                </div>
+                />
               ))}
             </div>
           )}
@@ -1211,55 +1110,17 @@ export default function DatasetGalleryPage() {
       ) : (
           <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
             {items.map((item) => (
-              <div
+              <ImageCard
                 key={item.id}
+                item={item}
+                variant="active"
                 onClick={() => handleTileClick(item)}
-                className="group relative h-28 sm:h-36 cursor-pointer overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/90 transition-all hover:border-brand-500/60 focus-within:border-brand-500/60"
-              >
-                <img
-                  src={item.url}
-                  alt={item.filename}
-                  loading="lazy"
-                  decoding="async"
-                  className="absolute inset-0 h-full w-full object-cover"
-                />
-                <div className="absolute inset-0 bg-[radial-gradient(#ffffff_1px,transparent_1px)] opacity-20 [background-size:16px_16px]"></div>
-                <span className="absolute top-2 right-2 rounded border border-white/15 bg-zinc-950/90 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-caps font-semibold text-zinc-300 backdrop-blur-sm">
-                  {item.split}
-                </span>
-                <div className="absolute top-2 left-2 flex items-center gap-1.5 z-10">
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setDeleting(item);
-                    }}
-                    aria-label={`Mover ${item.filename} para a lixeira`}
-                    title="Mover para a lixeira"
-                    className="rounded-lg border border-rose-500/40 bg-zinc-950/90 p-1.5 text-rose-300 opacity-0 backdrop-blur-sm transition-all group-hover:opacity-100 focus-visible:opacity-100 hover:bg-rose-500/20 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
-                  >
-                    <IconTrash className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleSimilarSearch(item);
-                    }}
-                    aria-label={`Buscar similares de ${item.filename}`}
-                    title="Buscar similares"
-                    className="rounded-lg border border-brand-500/40 bg-zinc-950/90 p-1.5 text-brand-300 opacity-0 backdrop-blur-sm transition-all group-hover:opacity-100 focus-visible:opacity-100 hover:bg-brand-500/20 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
-                  >
-                    <IconSearch className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-                <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 border-t border-zinc-800/80 bg-zinc-950/90 px-2.5 py-1.5 font-mono text-[11px] text-zinc-300 backdrop-blur-sm">
-                  <span title={item.filename} className="min-w-0 flex-1 truncate">{item.filename}</span>
-                  <span title={dataset.category === "yolo" ? "Editar bounding boxes" : "Ver caption"} className="shrink-0 truncate transition-colors group-hover:text-brand-400">
-                    {dataset.category === "yolo" ? "editar bbox →" : "ver caption →"}
-                  </span>
-                </div>
-              </div>
+                onDelete={() => setDeleting(item)}
+                onSearchSimilar={() => handleSimilarSearch(item)}
+                actionText={
+                  dataset.category === "yolo" ? "editar bbox →" : "ver caption →"
+                }
+              />
             ))}
             <button
               type="button"

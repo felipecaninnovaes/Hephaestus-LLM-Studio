@@ -33,7 +33,7 @@ import {
 } from "@/lib/jobs";
 import { applyAutotrackerBoxes } from "@/lib/autotracker";
 import { ApiError } from "@/lib/api";
-import { formatBytes, formatRelativeTime } from "@/lib/format";
+import { formatBytes, formatDuration, formatRelativeTime } from "@/lib/format";
 import { autotrackerErrorMessage } from "@/types/studio";
 import type {
   Job,
@@ -43,6 +43,7 @@ import type {
   Telemetry,
 } from "@/types/studio";
 import ConfirmDialog from "@/components/studio/ConfirmDialog";
+import { JOB_STATUS_CONFIG, JobArtifactsList } from "./JobCard";
 import { showToast } from "./Toast";
 
 export interface SystemNotification {
@@ -63,71 +64,7 @@ interface ActionCenterProps {
 
 type TabFilter = "all" | "active" | "jobs" | "system";
 
-const STATUS_CONFIG: Record<
-  JobStatus,
-  {
-    borderClass: string;
-    badgeClass: string;
-    iconBg: string;
-    iconColor: string;
-    label: string;
-  }
-> = {
-  queued: {
-    borderClass: "bg-amber-500",
-    badgeClass: "bg-amber-500/15 text-amber-300 border-amber-500/30 backdrop-blur-sm",
-    iconBg: "bg-amber-500/15 backdrop-blur-sm",
-    iconColor: "text-amber-400",
-    label: "Na fila",
-  },
-  running: {
-    borderClass: "bg-brand-500",
-    badgeClass: "bg-brand-500/15 text-brand-300 border-brand-500/35 backdrop-blur-sm",
-    iconBg: "bg-brand-500/15 backdrop-blur-sm",
-    iconColor: "text-brand-400",
-    label: "Executando",
-  },
-  cancelling: {
-    borderClass: "bg-amber-500",
-    badgeClass: "bg-amber-500/15 text-amber-300 border-amber-500/30 backdrop-blur-sm",
-    iconBg: "bg-amber-500/15 backdrop-blur-sm",
-    iconColor: "text-amber-400",
-    label: "Cancelando",
-  },
-  done: {
-    borderClass: "bg-[#34d399]",
-    badgeClass: "bg-[#34d399]/15 text-[#34d399] border-[#34d399]/30 backdrop-blur-sm",
-    iconBg: "bg-[#34d399]/15 backdrop-blur-sm",
-    iconColor: "text-[#34d399]",
-    label: "Concluído",
-  },
-  failed: {
-    borderClass: "bg-rose-500",
-    badgeClass: "bg-rose-500/15 text-rose-300 border-rose-500/30 backdrop-blur-sm",
-    iconBg: "bg-rose-500/15 backdrop-blur-sm",
-    iconColor: "text-rose-400",
-    label: "Falhou",
-  },
-  cancelled: {
-    borderClass: "bg-zinc-600",
-    badgeClass: "bg-zinc-800 text-zinc-400 border-zinc-700 backdrop-blur-sm",
-    iconBg: "bg-zinc-800 backdrop-blur-sm",
-    iconColor: "text-zinc-400",
-    label: "Cancelado",
-  },
-};
-
-function formatDuration(start: string, end: string | null): string {
-  const ms =
-    (end ? new Date(end).getTime() : Date.now()) - new Date(start).getTime();
-  if (ms < 0) return "—";
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ${s % 60}s`;
-  const h = Math.floor(m / 60);
-  return `${h}h ${m % 60}m`;
-}
+const STATUS_CONFIG = JOB_STATUS_CONFIG;
 
 export function ActionCenter({ open, onClose }: ActionCenterProps) {
   const router = useRouter();
@@ -687,8 +624,8 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                     className="flex flex-col items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.02] p-3 text-center transition hover:border-brand-500/30 hover:bg-white/[0.06] cursor-pointer"
                   >
                     <IconTarget className="size-4 text-brand-400" />
-                    <span className="text-xs font-medium text-zinc-200">Forja de Treino</span>
-                    <span className="text-[10px] text-zinc-400 font-mono">Executar modelos</span>
+                    <span className="text-xs font-medium text-zinc-200">Forja do YOLO</span>
+                    <span className="text-[10px] text-zinc-400 font-mono">Treino de visão</span>
                   </button>
 
                   <button
@@ -1016,31 +953,11 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
 
                                 {/* Artefatos disponíveis para download */}
                                 {jobExtraArtifacts && jobExtraArtifacts.length > 0 && (
-                                  <div>
-                                    <div className="text-[10px] font-mono text-zinc-400 uppercase tracking-caps mb-1.5">
-                                      Artefatos Gerados ({jobExtraArtifacts.length})
-                                    </div>
-                                    <div className="space-y-1.5">
-                                      {jobExtraArtifacts.map((art) => (
-                                        <div
-                                          key={art.id}
-                                          className="flex items-center justify-between rounded-lg border border-white/10 bg-white/[0.03] backdrop-blur-sm px-3 py-1.5 text-[11px]"
-                                        >
-                                          <span className="truncate text-zinc-300 mr-2 font-mono text-[11px]" title={art.path}>
-                                            {art.path.split("/").pop()} ({formatBytes(art.bytes)})
-                                          </span>
-                                          <button
-                                            type="button"
-                                            onClick={() => handleDownload(job.id, art)}
-                                            className="inline-flex items-center gap-1 text-brand-400 hover:text-brand-300 font-mono text-[11px] font-medium shrink-0 cursor-pointer"
-                                          >
-                                            <IconDownload className="size-3" />
-                                            <span>Baixar</span>
-                                          </button>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </div>
+                                  <JobArtifactsList
+                                    jobId={job.id}
+                                    artifacts={jobExtraArtifacts}
+                                    onDownload={(jId, art) => handleDownload(jId, art)}
+                                  />
                                 )}
 
                                 {/* Mensagem de Erro se falhou */}

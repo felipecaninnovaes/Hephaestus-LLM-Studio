@@ -42,8 +42,9 @@ import type {
   Telemetry,
 } from "@/types/studio";
 import { autotrackerErrorMessage } from "@/types/studio";
-import { formatBytes, formatRelativeTime } from "@/lib/format";
+import { formatBytes, formatDuration, formatRelativeTime } from "@/lib/format";
 import { openActionCenter } from "@/lib/events";
+import { JobListItem } from "@/components/studio/JobCard";
 
 const POLL_INTERVAL = 3000;
 
@@ -64,18 +65,6 @@ const STATUS_LABEL: Record<JobStatus, string> = {
   failed: "Falhou",
   cancelled: "Cancelado",
 };
-
-function formatDuration(start: string, end: string | null): string {
-  const ms =
-    (end ? new Date(end).getTime() : Date.now()) - new Date(start).getTime();
-  if (ms < 0) return "—";
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ${s % 60}s`;
-  const h = Math.floor(m / 60);
-  return `${h}h ${m % 60}m`;
-}
 
 function JobsPageContent() {
   const router = useRouter();
@@ -360,14 +349,14 @@ function JobsPageContent() {
               <IconTarget className="size-4" />
             </span>
             <h1 className="font-display text-lg font-bold text-white tracking-tight">
-              Forja de Treino YOLO
+              Forja do YOLO
             </h1>
             <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-[11px] uppercase tracking-caps text-zinc-400 backdrop-blur-sm">
               Ultralytics Engine
             </span>
           </div>
           <p className="mt-1 text-xs text-zinc-400 max-w-2xl">
-            Configure hiperparâmetros, selecione datasets e execute o treinamento local com telemetria em tempo real.
+            Ambiente de calibração e treinamento de visão computacional com telemetria em tempo real.
           </p>
         </div>
 
@@ -735,66 +724,14 @@ function JobsPageContent() {
               ) : (
                 <div className="grid grid-cols-1 gap-2.5">
                   {sorted.map((job) => {
-                    const isActive =
-                      job.status === "queued" ||
-                      job.status === "running" ||
-                      job.status === "cancelling";
                     const isFocused = selectedJob?.id === job.id;
-                    const pct = Math.round((job.progress ?? 0) * 100);
-
                     return (
-                      <div
+                      <JobListItem
                         key={job.id}
-                        onClick={() => setSelectedJobId(job.id)}
-                        className={`glass-card group relative flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 rounded-xl p-4 transition-all duration-200 cursor-pointer border ${
-                          isFocused
-                            ? "border-brand-500/50 bg-brand-500/[0.12] shadow-lg shadow-brand-500/10 ring-1 ring-brand-500/30"
-                            : "border-white/10 hover:border-brand-500/30 hover:bg-white/[0.04]"
-                        }`}
-                      >
-                        {/* Indicador de foco lateral óptico */}
-                        <div
-                          className={`absolute left-0 inset-y-2.5 w-1 rounded-r-full bg-brand-500 transition-opacity ${
-                            isFocused ? "opacity-100" : "opacity-0 group-hover:opacity-40"
-                          }`}
-                        />
-
-                        <div className="flex items-center gap-3.5 min-w-0 flex-1 pl-1">
-                          <Badge
-                            variant={jobStatusToBadgeVariant(job.status)}
-                            pulse={job.status === "running"}
-                            className="shrink-0"
-                          >
-                            {STATUS_LABEL[job.status]}
-                          </Badge>
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2 min-w-0">
-                              <span className="text-xs font-semibold text-zinc-100 shrink-0">
-                                {job.model}
-                              </span>
-                              <span
-                                className="font-mono text-[11px] text-zinc-400 truncate"
-                                title={`${job.kind} · ${job.engine}`}
-                              >
-                                · {job.kind} · {job.engine}
-                              </span>
-                              {isFocused && (
-                                <span className="hidden sm:inline-flex shrink-0 items-center rounded-md border border-brand-500/30 bg-brand-500/15 px-2 py-0.5 font-mono text-[11px] font-medium text-brand-300 backdrop-blur-sm">
-                                  Ativo no monitor
-                                </span>
-                              )}
-                            </div>
-                            <div className="mt-1 flex flex-wrap items-center gap-3 font-mono text-[11px] text-zinc-400">
-                              <span>{formatRelativeTime(job.createdAt)}</span>
-                              <span>Duração: {formatDuration(job.createdAt, job.finishedAt)}</span>
-                              {isActive && (
-                                <span className="text-brand-300 font-semibold">{pct}%</span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center space-x-2 shrink-0 pl-1 sm:pl-0">
+                        job={job}
+                        isFocused={isFocused}
+                        onSelect={(id) => setSelectedJobId(id)}
+                        actionButton={
                           <Button
                             type="button"
                             variant={isFocused ? "primary" : "secondary"}
@@ -807,8 +744,8 @@ function JobsPageContent() {
                             <span>{isFocused ? "Em exibição" : "Ver detalhes"}</span>
                             <span aria-hidden="true">→</span>
                           </Button>
-                        </div>
-                      </div>
+                        }
+                      />
                     );
                   })}
                 </div>

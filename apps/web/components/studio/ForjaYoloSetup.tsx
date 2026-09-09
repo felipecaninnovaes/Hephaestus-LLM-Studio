@@ -13,19 +13,18 @@ import { Button, getButtonClasses } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Select, type SelectOption, type SelectRefHandle } from "@/components/ui/Select";
 import { getTelemetry, startYoloJob } from "@/lib/jobs";
-import { listDatasets } from "@/lib/datasets";
+import { listDatasets, canTrainYolo, trainDisabledReason } from "@/lib/datasets";
 import { ApiError } from "@/lib/api";
 import { jobErrorMessage } from "@/types/studio";
 import { showToast } from "./Toast";
 import { openActionCenter } from "@/lib/events";
 import type { Dataset, Telemetry, YoloAugment } from "@/types/studio";
-
-const MODELS = ["yolo11n", "yolo11m", "yolo11x", "yolov9-c", "yolo11-seg"] as const;
-const EPOCHS_MIN = 1;
-const EPOCHS_MAX = 1000;
-const BATCH_OPTIONS = [8, 16, 32, 64] as const;
-const IMGSZ_OPTIONS = [416, 640, 1024] as const;
-const OPTIMIZERS = ["AdamW", "SGD", "Muon"] as const;
+import {
+  YoloHyperparameters,
+  EPOCHS_MIN,
+  EPOCHS_MAX,
+  type YoloHyperparametersValues,
+} from "./YoloHyperparameters";
 
 /**
  * Estimativa preditiva de VRAM com base na arquitetura, tamanho do lote,
@@ -82,15 +81,17 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
   const [selectedDatasetId, setSelectedDatasetId] = useState<string>("");
 
   // Form fields — mirrors TrainYoloModal defaults
-  const [model, setModel] = useState<string>("yolo11m");
-  const [epochs, setEpochs] = useState<number>(100);
-  const [batch, setBatch] = useState<number>(16);
-  const [imgsz, setImgsz] = useState<number>(640);
-  const [lr0, setLr0] = useState<string>("0.01");
-  const [optimizer, setOptimizer] = useState<string>("AdamW");
-  const [augment, setAugment] = useState<YoloAugment>({
-    mosaic: true,
-    mixupFlip: true,
+  const [params, setParams] = useState<YoloHyperparametersValues>({
+    model: "yolo11m",
+    epochs: 100,
+    batch: 16,
+    imgsz: 640,
+    lr0: "0.01",
+    optimizer: "AdamW",
+    augment: {
+      mosaic: true,
+      mixupFlip: true,
+    },
   });
   const [busy, setBusy] = useState(false);
   const [topError, setTopError] = useState<string | null>(null);
@@ -128,8 +129,8 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
 
   // Estimativa preditiva de VRAM em GB
   const estimatedVram = useMemo(
-    () => estimateYoloVramGb(model, batch, imgsz, optimizer),
-    [model, batch, imgsz, optimizer],
+    () => estimateYoloVramGb(params.model, params.batch, params.imgsz, params.optimizer),
+    [params.model, params.batch, params.imgsz, params.optimizer],
   );
 
   const nodeVramTotalGb = useMemo(() => {
@@ -160,10 +161,20 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
     return "Host CPU (Modo Mock)";
   }, [telemetry?.gpus, nodeVramTotalGb]);
 
+  const handleParamChange = <K extends keyof YoloHyperparametersValues>(
+    key: K,
+    val: YoloHyperparametersValues[K],
+  ) => {
+    setParams((prev) => ({ ...prev, [key]: val }));
+  };
+
   function handleAutoFixSafeParams() {
-    setBatch(16);
-    setImgsz(640);
-    if (model === "yolo11x") setModel("yolo11m");
+    setParams((prev) => ({
+      ...prev,
+      batch: 16,
+      imgsz: 640,
+      model: prev.model === "yolo11x" ? "yolo11m" : prev.model,
+    }));
     showToast(
       "Hiperparâmetros ajustados para o perfil seguro de VRAM (Batch 16, ImgSz 640).",
       "info",
@@ -195,25 +206,13 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
     return () => clearTimeout(t);
   }, []);
 
-  // Derive dataset eligibility (mirrors DatasetMenu.canTrain: category + classes + images)
-  function datasetReady(d: Dataset): boolean {
-    return d.category === "yolo" && d.classes.length >= 1 && d.imagesCount >= 1;
-  }
-
-  function datasetDisabledReason(d: Dataset): string | null {
-    if (d.category !== "yolo") return "Treino disponível apenas para datasets YOLO.";
-    if (d.classes.length < 1) return "Nenhuma classe definida";
-    if (d.imagesCount < 1) return "Nenhuma imagem";
-    return null;
-  }
-
-  const eligibleDatasets = datasets.filter(datasetReady);
+  const eligibleDatasets = datasets.filter(canTrainYolo);
   const hasEligibleDataset = eligibleDatasets.length > 0;
 
   const datasetOptions = useMemo<SelectOption<string>[]>(() => {
     return datasets.map((d) => {
-      const ready = datasetReady(d);
-      const reason = datasetDisabledReason(d);
+      const ready = canTrainYolo(d);
+      const reason = ready ? null : trainDisabledReason(d);
       return {
         value: d.id,
         label: d.title,
@@ -235,47 +234,8 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
     });
   }, [datasets]);
 
-  const modelOptions = useMemo<SelectOption<string>[]>(() => {
-    return MODELS.map((m) => {
-      let badgeText: string | undefined;
-      if (m === "yolo11n") badgeText = "Nano · Ultraleve";
-      else if (m === "yolo11m") badgeText = "Médio · Padrão";
-      else if (m === "yolo11x") badgeText = "Extra · Alta VRAM";
-      else if (m === "yolo11-seg") badgeText = "Segmentação";
-      return {
-        value: m,
-        label: m,
-        badge: badgeText ? (
-          <span className="font-mono text-[11px] text-zinc-400">
-            {badgeText}
-          </span>
-        ) : undefined,
-      };
-    });
-  }, []);
-
-  const batchOptions = useMemo<SelectOption<number>[]>(() => {
-    return BATCH_OPTIONS.map((b) => ({
-      value: b,
-      label: `${b}`,
-    }));
-  }, []);
-
-  const imgszOptions = useMemo<SelectOption<number>[]>(() => {
-    return IMGSZ_OPTIONS.map((s) => ({
-      value: s,
-      label: `${s}px`,
-    }));
-  }, []);
-
-  const optimizerOptions = useMemo<SelectOption<string>[]>(() => {
-    return OPTIMIZERS.map((o) => ({
-      value: o,
-      label: o,
-    }));
-  }, []);
-  const parsedLr0 = parseFloat(lr0);
-  const epochsValid = Number.isInteger(epochs) && epochs >= EPOCHS_MIN && epochs <= EPOCHS_MAX;
+  const parsedLr0 = parseFloat(params.lr0);
+  const epochsValid = Number.isInteger(params.epochs) && params.epochs >= EPOCHS_MIN && params.epochs <= EPOCHS_MAX;
   const lr0Valid = !isNaN(parsedLr0) && parsedLr0 >= 1e-5 && parsedLr0 <= 0.1 + 1e-9;
   const canSubmit = hasEligibleDataset && selectedDatasetId && epochsValid && lr0Valid && !busy;
 
@@ -300,13 +260,13 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
     try {
       const result = await startYoloJob({
         datasetId: selectedDatasetId,
-        model,
-        epochs,
-        batch,
-        imgsz,
+        model: params.model,
+        epochs: params.epochs,
+        batch: params.batch,
+        imgsz: params.imgsz,
         lr0: parsedLr0,
-        optimizer,
-        augment,
+        optimizer: params.optimizer,
+        augment: params.augment,
       });
       showToast(
         `Job de treino criado (posição ${result.queuePosition ?? "—"} na fila).`,
@@ -314,13 +274,15 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
       );
       // Reset form
       setSelectedDatasetId("");
-      setModel("yolo11m");
-      setEpochs(100);
-      setBatch(16);
-      setImgsz(640);
-      setLr0("0.01");
-      setOptimizer("AdamW");
-      setAugment({ mosaic: true, mixupFlip: true });
+      setParams({
+        model: "yolo11m",
+        epochs: 100,
+        batch: 16,
+        imgsz: 640,
+        lr0: "0.01",
+        optimizer: "AdamW",
+        augment: { mosaic: true, mixupFlip: true },
+      });
       onJobCreated?.(result.jobId);
       openActionCenter();
     } catch (err) {
@@ -332,10 +294,6 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
     } finally {
       setBusy(false);
     }
-  }
-
-  function toggleAugment(key: keyof YoloAugment) {
-    setAugment((prev) => ({ ...prev, [key]: !prev[key] }));
   }
 
   // ── Empty state: no eligible datasets ──
@@ -405,113 +363,12 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
         fontMono
       />
 
-      {/* Modelo */}
-      <Select
-        id="setup-model"
-        label="Modelo"
-        options={modelOptions}
-        value={model}
-        onChange={(val) => setModel(val)}
+      {/* Shared YOLO Hyperparameters Form */}
+      <YoloHyperparameters
+        values={params}
+        onChange={handleParamChange}
         disabled={busy}
-        fontMono
       />
-
-      {/* Grid: Epochs / Batch / ImgSz */}
-      <div className="grid grid-cols-3 gap-3">
-        <div>
-          <Input
-            id="setup-epochs"
-            label="Epochs"
-            type="number"
-            min={EPOCHS_MIN}
-            max={EPOCHS_MAX}
-            value={epochs}
-            onChange={(e) => setEpochs(Number(e.target.value))}
-            disabled={busy}
-            fontMono
-          />
-        </div>
-        <div>
-          <Select
-            id="setup-batch"
-            label="Batch"
-            options={batchOptions}
-            value={batch}
-            onChange={(val) => setBatch(Number(val))}
-            disabled={busy}
-            fontMono
-          />
-        </div>
-        <div>
-          <Select
-            id="setup-imgsz"
-            label="ImgSz"
-            options={imgszOptions}
-            value={imgsz}
-            onChange={(val) => setImgsz(Number(val))}
-            disabled={busy}
-            align="right"
-            fontMono
-          />
-        </div>
-      </div>
-
-      {/* Grid: LR0 / Optimizer */}
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <Input
-            id="setup-lr0"
-            label="LR0"
-            type="text"
-            inputMode="decimal"
-            value={lr0}
-            onChange={(e) => setLr0(e.target.value)}
-            disabled={busy}
-            fontMono
-          />
-        </div>
-        <div>
-          <Select
-            id="setup-optimizer"
-            label="Otimizador"
-            options={optimizerOptions}
-            value={optimizer}
-            onChange={(val) => setOptimizer(val)}
-            disabled={busy}
-            align="right"
-            fontMono
-          />
-        </div>
-      </div>
-
-      {/* Augment toggles */}
-      <div>
-        <span className="tracking-caps mb-2 block font-mono text-[11px] font-medium uppercase text-zinc-300">
-          Augmentação
-        </span>
-        <div className="flex gap-3">
-          <Button
-            type="button"
-            variant={augment.mosaic ? "primary" : "secondary"}
-            size="md"
-            onClick={() => toggleAugment("mosaic")}
-            disabled={busy}
-            aria-pressed={augment.mosaic}
-          >
-            Mosaic
-          </Button>
-          <Button
-            type="button"
-            variant={augment.mixupFlip ? "primary" : "secondary"}
-            size="md"
-            onClick={() => toggleAugment("mixupFlip")}
-            disabled={busy}
-            aria-pressed={augment.mixupFlip}
-          >
-            Mixup+Flip
-          </Button>
-        </div>
-      </div>
 
       {/* Previsão de VRAM & Alertas Preventivos de CUDA OOM */}
       <div

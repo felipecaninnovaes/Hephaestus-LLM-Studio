@@ -130,6 +130,8 @@ pub struct TelemetryResponse {
     pub vram_total: Option<i64>,
     pub cpu: Option<f64>,
     pub ram: Option<i64>,
+    #[serde(rename = "ramTotal")]
+    pub ram_total: Option<i64>,
     pub gpus: Vec<String>,
     #[serde(rename = "jobsActive")]
     pub jobs_active: i32,
@@ -467,6 +469,7 @@ pub async fn get_telemetry(State(state): State<AppState>) -> Response {
         vram_total: t.vram_total,
         cpu: t.cpu,
         ram: t.ram,
+        ram_total: t.ram_total,
         gpus: t.gpus,
         jobs_active: t.jobs_active,
     };
@@ -1451,6 +1454,7 @@ mod tests {
             vram_total: None,
             cpu: Some(0.5),
             ram: Some(1024),
+            ram_total: None,
             gpus: vec![],
             jobs_active: 0,
         });
@@ -1466,6 +1470,29 @@ mod tests {
         let state = test_state(mock);
         let resp = get_telemetry(axum::extract::State(state)).await;
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn get_telemetry_handler_ram_total() {
+        let mut mock = MockManager::default();
+        mock.get_telemetry_result = Some(crate::jobs::manager_client::InternalTelemetry {
+            measured: true,
+            vram_used: None,
+            vram_total: None,
+            cpu: Some(0.5),
+            ram: Some(1024),
+            ram_total: Some(8_000_000_000),
+            gpus: vec![],
+            jobs_active: 0,
+        });
+        let state = test_state(mock);
+        let resp = get_telemetry(axum::extract::State(state)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["ramTotal"], serde_json::json!(8_000_000_000_i64));
     }
 
     // --- POST /api/jobs/yolo unit tests (F4.2b) ---

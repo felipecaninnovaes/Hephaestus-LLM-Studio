@@ -365,6 +365,7 @@ async fn main() {
                 vram_used: None,
                 cpu: Some(orchestrator::read_cpu()),
                 ram: Some(orchestrator::read_ram()),
+                ram_total: orchestrator::read_ram_total(),
                 jobs_active: heartbeat_active_jobs.len() as i32,
             };
 

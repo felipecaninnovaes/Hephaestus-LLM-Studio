@@ -23,6 +23,7 @@ import {
   IconX,
 } from "@/components/icons";
 import { getTelemetry } from "@/lib/jobs";
+import { listOrchestrators, getHealth, type Orchestrator } from "@/lib/monitoring";
 import type { Telemetry } from "@/types/studio";
 
 interface SidebarProps {
@@ -60,6 +61,8 @@ export default function Sidebar({
   const [leaving, setLeaving] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
+  const [productVersion, setProductVersion] = useState<string | null>(null);
+  const [orchestrators, setOrchestrators] = useState<Orchestrator[]>([]);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [confirmingLogout, setConfirmingLogout] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
@@ -146,6 +149,38 @@ export default function Sidebar({
     };
   }, []);
 
+  // Busca versão de produto UMA VEZ no mount (rota pública /health)
+  useEffect(() => {
+    getHealth()
+      .then((h) => setProductVersion(h.version))
+      .catch(() => {});
+  }, []);
+
+  // Busca lista de orquestradores no mesmo tick da telemetria (rotas leves)
+  useEffect(() => {
+    let active = true;
+    const fetchOrchs = async () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      try {
+        const data = await listOrchestrators();
+        if (active) setOrchestrators(data.items);
+      } catch {}
+    };
+    fetchOrchs();
+    const interval = setInterval(fetchOrchs, 15000);
+    const handleVisibilityChange = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        fetchOrchs();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      active = false;
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
+
   const sections: NavSection[] = [
     {
       title: "Estúdio & Dados",
@@ -167,13 +202,20 @@ export default function Sidebar({
       ],
     },
     {
-      title: "Forja & Treino",
+      title: "Treinamento & Execução",
       items: [
         {
-          id: "jobs",
+          id: "treino",
           label: "Treino YOLO",
-          href: "/jobs",
+          href: "/treino",
           icon: IconTarget,
+          isAvailable: true,
+        },
+        {
+          id: "jobs",
+          label: "Execuções",
+          href: "/jobs",
+          icon: IconActivity,
           badge: telemetry?.jobsActive ? `${telemetry.jobsActive}` : undefined,
           isAvailable: true,
         },
@@ -271,6 +313,14 @@ export default function Sidebar({
     onClose();
   };
 
+  // Deriva status do orquestrador para o ping visual
+  const orchStatus =
+    orchestrators.length === 1 && orchestrators[0].status === "online"
+      ? "online"
+      : orchestrators.length > 0
+        ? "offline"
+        : "none";
+
   const isItemActive = (item: NavItem) => {
     if (item.id === "dashboard") {
       return pathname === "/dashboard" || pathname === "/";
@@ -333,7 +383,9 @@ export default function Sidebar({
                   </span>
                 </div>
                 <div className="font-mono text-[11px] text-zinc-400 whitespace-nowrap">
-                  <span title="Hephaestus LLM Studio v1.3.0">v1.3.0 · AI Engine</span>
+                  <span title={productVersion ? `v${productVersion}` : "Carregando versão"}>
+                    {productVersion ? `v${productVersion}` : "…"}
+                  </span>
                 </div>
               </div>
             )}
@@ -383,8 +435,8 @@ export default function Sidebar({
                 onClose();
                 router.push("/dashboard");
               }}
-              title="Orquestrador Local (http://localhost:8080 · CUDA 12.4)"
-              aria-label="Orquestrador Local (http://localhost:8080 · CUDA 12.4)"
+              title={orchestrators.length === 1 ? `${orchestrators[0].name} (${orchestrators[0].endpoint})` : "Orquestrador"}
+              aria-label={orchestrators.length === 1 ? `${orchestrators[0].name} (${orchestrators[0].endpoint})` : "Orquestrador"}
               className={`group relative flex items-center rounded-xl border border-white/10 bg-white/[0.03] transition-colors hover:border-brand-500/40 hover:bg-brand-500/[0.06] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] cursor-pointer ${
                 isExpanded
                   ? "w-full justify-between p-2.5"
@@ -399,10 +451,10 @@ export default function Sidebar({
                     </span>
                     <div className="min-w-0 text-left">
                       <div className="truncate text-xs font-semibold text-zinc-200 group-hover:text-white">
-                        Orquestrador Local
+                        {orchestrators.length === 1 ? orchestrators[0].name : "Orquestrador"}
                       </div>
                       <div className="truncate font-mono text-[11px] text-zinc-400">
-                        localhost:8080 · PyTorch CUDA
+                        {orchestrators.length === 1 ? orchestrators[0].endpoint : "—"}
                       </div>
                     </div>
                   </div>
@@ -591,28 +643,58 @@ export default function Sidebar({
         >
           {/* Card Orquestrador Online */}
           {isExpanded ? (
-            <div className="flex items-center justify-between rounded-xl border border-[#34d399]/25 bg-[#34d399]/[0.05] backdrop-blur-sm px-2.5 py-2 text-xs">
+            <div className={`flex items-center justify-between rounded-xl border backdrop-blur-sm px-2.5 py-2 text-xs ${
+              orchStatus === "online"
+                ? "border-[#34d399]/25 bg-[#34d399]/[0.05]"
+                : orchStatus === "offline"
+                  ? "border-[#f59e0b]/25 bg-[#f59e0b]/[0.05]"
+                  : "border-white/10 bg-white/[0.03]"
+            }`}>
               <div className="flex items-center space-x-2">
-                <span className="relative flex h-2 w-2">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#34d399] opacity-75 motion-reduce:animate-none" />
-                  <span className="relative inline-flex h-2 w-2 rounded-full bg-[#34d399]" />
+                {orchStatus === "online" ? (
+                  <span className="relative flex h-2 w-2">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#34d399] opacity-75 motion-reduce:animate-none" />
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-[#34d399]" />
+                  </span>
+                ) : orchStatus === "offline" ? (
+                  <span className="flex h-2 w-2">
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-[#f59e0b]" />
+                  </span>
+                ) : (
+                  <span className="flex h-2 w-2">
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-zinc-600" />
+                  </span>
+                )}
+                <span className="text-zinc-200 font-medium">
+                  {orchestrators.length === 1
+                    ? `${orchestrators[0].name} · ${orchestrators[0].status}`
+                    : "Orquestrador"}
                 </span>
-                <span className="text-zinc-200 font-medium">Orquestrador Online</span>
               </div>
-              <span className="rounded-md border border-[#34d399]/30 bg-[#34d399]/10 backdrop-blur-sm px-1.5 py-0.5 font-mono text-[11px] text-[#34d399]">
-                v1.3.0
-              </span>
+              {productVersion && (
+                <span className="rounded-md border border-[#34d399]/30 bg-[#34d399]/10 backdrop-blur-sm px-1.5 py-0.5 font-mono text-[11px] text-[#34d399]">
+                  v{productVersion}
+                </span>
+              )}
             </div>
           ) : (
             <div
-              title="Orquestrador Online (v1.3.0)"
-              className="relative flex size-10 items-center justify-center rounded-xl border border-[#34d399]/25 bg-[#34d399]/[0.05] backdrop-blur-sm text-[#34d399]"
+              title={orchestrators.length === 1 ? `${orchestrators[0].name} (${orchestrators[0].status})` : "Orquestrador"}
+              className={`relative flex size-10 items-center justify-center rounded-xl backdrop-blur-sm ${
+                orchStatus === "online"
+                  ? "border border-[#34d399]/25 bg-[#34d399]/[0.05] text-[#34d399]"
+                  : orchStatus === "offline"
+                    ? "border border-[#f59e0b]/25 bg-[#f59e0b]/[0.05] text-[#f59e0b]"
+                    : "border border-white/10 bg-white/[0.03] text-zinc-500"
+              }`}
             >
               <IconServer className="size-4" />
-              <span className="absolute top-1 right-1 flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#34d399] opacity-75 motion-reduce:animate-none" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-[#34d399]" />
-              </span>
+              {orchStatus === "online" && (
+                <span className="absolute top-1 right-1 flex h-2 w-2">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#34d399] opacity-75 motion-reduce:animate-none" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-[#34d399]" />
+                </span>
+              )}
             </div>
           )}
 
@@ -635,51 +717,38 @@ export default function Sidebar({
                 {/* Cabeçalho do Operador */}
                 <div className="flex items-start space-x-2.5 pb-2.5 border-b border-white/8">
                   <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-brand-600 font-display text-xs font-bold text-white shadow-sm ring-1 ring-brand-400/40">
-                    H
+                    O
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-1">
                       <span className="truncate text-xs font-semibold text-zinc-100">
-                        Hephaestus Admin
+                        Operador local
                       </span>
-                      <span className="rounded border border-brand-500/30 bg-brand-500/15 backdrop-blur-sm px-1.5 py-0.5 font-mono text-[11px] font-semibold uppercase tracking-caps text-brand-300">
-                        Root
-                      </span>
-                    </div>
-                    <div className="truncate font-mono text-[11px] text-zinc-400">
-                      admin@localhost
                     </div>
                   </div>
                 </div>
 
                 {/* Metadados da Sessão e Ambiente */}
                 <div className="py-2.5 space-y-1.5 text-xs">
-                  <div className="flex items-center justify-between">
-                    <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-400">
-                      Ambiente Ativo
-                    </span>
-                    <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-[#34d399]">
-                      <span className="size-1.5 rounded-full bg-[#34d399] animate-pulse motion-reduce:animate-none" />
-                      Online
-                    </span>
-                  </div>
                   <div className="rounded-xl border border-white/5 bg-white/[0.02] p-2 space-y-1">
                     <div className="flex items-center justify-between text-[11px]">
                       <span className="text-zinc-400">Nó</span>
-                      <span className="font-mono text-zinc-200">Orquestrador Local</span>
+                      <span className="font-mono text-zinc-200">
+                        {orchestrators.length === 1 ? orchestrators[0].name : "—"}
+                      </span>
                     </div>
                     <div className="flex items-center justify-between text-[11px]">
                       <span className="text-zinc-400">Endpoint</span>
-                      <span className="font-mono text-zinc-400">localhost:8080</span>
+                      <span className="font-mono text-zinc-400">
+                        {orchestrators.length === 1 ? orchestrators[0].endpoint : "—"}
+                      </span>
                     </div>
-                    <div className="flex items-center justify-between text-[11px]">
-                      <span className="text-zinc-400">Runtime</span>
-                      <span className="font-mono text-zinc-300">PyTorch CUDA</span>
-                    </div>
-                    <div className="flex items-center justify-between text-[11px]">
-                      <span className="text-zinc-400">Versão</span>
-                      <span className="font-mono text-zinc-400">v1.3.0</span>
-                    </div>
+                    {productVersion && (
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="text-zinc-400">Versão</span>
+                        <span className="font-mono text-zinc-400">v{productVersion}</span>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -749,14 +818,11 @@ export default function Sidebar({
                   className="flex items-center space-x-2.5 overflow-hidden min-w-0 flex-1 text-left cursor-pointer rounded-lg p-1 transition-colors hover:bg-white/[0.04] focus-visible:ring-2 focus-visible:ring-brand-500/70"
                 >
                   <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-brand-600 font-display text-xs font-bold text-white shadow-sm ring-1 ring-brand-400/30">
-                    H
+                    O
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-xs font-semibold text-zinc-200 group-hover:text-white">
-                      Hephaestus Admin
-                    </div>
-                    <div className="truncate font-mono text-[11px] text-zinc-400">
-                      admin@localhost
+                      Operador local
                     </div>
                   </div>
                 </button>
@@ -784,7 +850,7 @@ export default function Sidebar({
                 aria-haspopup="menu"
                 aria-expanded={userMenuOpen}
                 aria-label="Perfil do operador e opções de sessão"
-                title="Hephaestus Admin (Opções da sessão)"
+                title="Operador local (Opções da sessão)"
                 className={`flex size-10 items-center justify-center rounded-xl border transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-brand-500/70 ${
                   userMenuOpen
                     ? "border-brand-500/40 bg-brand-500/10 shadow-sm"
@@ -792,16 +858,16 @@ export default function Sidebar({
                 }`}
               >
                 <div className="flex size-7 items-center justify-center rounded-full bg-brand-600 font-display text-xs font-bold text-white shadow-sm ring-1 ring-brand-400/30 group-hover:ring-brand-400/60 transition">
-                  H
+                  O
                 </div>
               </button>
             )}
           </div>
 
           {/* Versão centralizada no rodapé */}
-          {isExpanded && (
+          {isExpanded && productVersion && (
             <div className="text-center font-mono text-[11px] text-zinc-400">
-              Hephaestus Studio v1.3.0
+              Hephaestus Studio v{productVersion}
             </div>
           )}
         </div>

@@ -18,5 +18,7 @@ export function proxy(request: NextRequest) {
 // /api/* fora do gate: o backend responde o envelope 401 e o rewrite
 // precisa repassá-lo intacto (sonda: GET /api/auth/me sem cookie → 401).
 export const config = {
-  matcher: ["/((?!api|_next/static|_next/image|favicon.ico|.*\\..*).*)"],
+  // /health fora do gate: rota pública do principal repassada pelo rewrite
+  // (versão de produto consumida pela Sidebar/dashboard — F6.2/ADR-0009).
+  matcher: ["/((?!api|health|_next/static|_next/image|favicon.ico|.*\\..*).*)"],
 };

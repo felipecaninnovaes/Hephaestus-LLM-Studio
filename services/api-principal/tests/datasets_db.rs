@@ -3552,8 +3552,17 @@ async fn t0004_lock_concorrente_serializa_disparos() {
         api_principal::search::indexer::index_dataset_images(s2, ds_id, None).await
     });
     let (r1, r2) = tokio::join!(j1, j2);
-    assert_eq!(r1.expect("spawn 1"), 2);
-    assert_eq!(r2.expect("spawn 2"), 0, "2º disparo não tem pendentes");
+    // Ordem agnóstica: quem ganha a corrida do advisory lock processa as 2
+    // pendentes; o outro encontra 0. O critério da 3f é o TOTAL == N e o
+    // count final == N (ON CONFLICT não duplica) — não a ordem dos spawns
+    // (CI provou inversão: run 47, left: 0 / right: 2).
+    let w1 = r1.expect("spawn 1");
+    let w2 = r2.expect("spawn 2");
+    assert_eq!(w1 + w2, 2, "exatamente as 2 pendentes foram escritas");
+    assert!(
+        (w1 == 2 && w2 == 0) || (w1 == 0 && w2 == 2),
+        "um disparo processa tudo e o outro não tem pendentes: w1={w1} w2={w2}"
+    );
     let n: i64 = sqlx::query_scalar("SELECT count(*) FROM image_embeddings WHERE dataset_id = $1")
         .bind(ds_id)
         .fetch_one(&st.pool)
@@ -6704,4 +6713,131 @@ async fn t5_autotrack_12_imageid_filtro() {
     );
     let resp_b = json(&body_b);
     assert_eq!(resp_b["code"], "not_found", "error code deve ser not_found");
+}
+
+// ---------------------------------------------------------------------------
+// t6_storage_usage — GET /api/storage/usage (ADR-0009 D3)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t6_storage_usage_200_datasets_bytes_matches() {
+    let _guard = SERIAL.lock().await;
+
+    let artifacts_bytes: i64 = 5000;
+    let mock = {
+        let mut m = api_principal::jobs::manager_client::MockManager::default();
+        m.get_storage_usage_result =
+            Some(api_principal::jobs::manager_client::InternalStorageUsage { artifacts_bytes });
+        m
+    };
+    let (st, _, _) = state_with_manager(mock).await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    // 1. Cria dataset via API.
+    let (status, _, body) = call(
+        app.clone(),
+        post_create(
+            "Storage Usage Test",
+            &serde_json::json!(["classe_a"]),
+            &cookie,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds = json(&body)["id"].as_str().expect("id").to_string();
+    let ds_id: uuid::Uuid = ds.parse().expect("uuid");
+
+    // 2. Insere imagens com bytes conhecidos — o trigger recalcula size_bytes.
+    let img1_bytes: i64 = 100;
+    let img2_bytes: i64 = 250;
+    let img3_bytes: i64 = 650;
+    insert_image(&st.pool, ds_id, "a1.jpg", img1_bytes).await;
+    insert_image(&st.pool, ds_id, "a2.jpg", img2_bytes).await;
+    insert_image(&st.pool, ds_id, "a3.jpg", img3_bytes).await;
+    let expected_datasets_bytes = img1_bytes + img2_bytes + img3_bytes;
+
+    // 3. Verifica que o trigger atualizou size_bytes.
+    let actual_size: i64 = sqlx::query_scalar("SELECT size_bytes FROM datasets WHERE id = $1")
+        .bind(ds_id)
+        .fetch_one(&st.pool)
+        .await
+        .expect("size_bytes");
+    assert_eq!(
+        actual_size, expected_datasets_bytes,
+        "trigger deve ter atualizado size_bytes"
+    );
+
+    // 4. GET /api/storage/usage — valida soma atômica.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri("/api/storage/usage")
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let resp = json(&body);
+    assert_eq!(
+        resp["datasetsBytes"].as_i64().expect("datasetsBytes"),
+        expected_datasets_bytes,
+        "datasetsBytes deve ser soma dos bytes das imagens"
+    );
+    assert_eq!(
+        resp["artifactsBytes"].as_i64().expect("artifactsBytes"),
+        artifacts_bytes,
+        "artifactsBytes deve vir do manager mock"
+    );
+    assert_eq!(
+        resp["totalBytes"].as_i64().expect("totalBytes"),
+        expected_datasets_bytes + artifacts_bytes,
+        "totalBytes = datasetsBytes + artifactsBytes"
+    );
+    assert_eq!(resp["measured"].as_bool().expect("measured"), true);
+
+    // 5. Valida camelCase (sem snake_case no wire).
+    assert!(
+        resp.get("datasets_bytes").is_none(),
+        "leaked snake_case datasets_bytes"
+    );
+    assert!(
+        resp.get("artifacts_bytes").is_none(),
+        "leaked snake_case artifacts_bytes"
+    );
+    assert!(
+        resp.get("total_bytes").is_none(),
+        "leaked snake_case total_bytes"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t6_storage_usage_503_manager_offline() {
+    let _guard = SERIAL.lock().await;
+
+    let mock = {
+        let mut m = api_principal::jobs::manager_client::MockManager::default();
+        m.fail = true;
+        m
+    };
+    let (st, _, _) = state_with_manager(mock).await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("GET")
+            .uri("/api/storage/usage")
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(json(&body)["code"], "queue_unavailable");
 }

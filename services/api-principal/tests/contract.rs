@@ -155,7 +155,7 @@ fn inventory_matches_openapi() {
         .collect();
     assert_eq!(
         required,
-        BTreeSet::from(["status", "service", "auth"]),
+        BTreeSet::from(["status", "service", "auth", "version"]),
         "HealthResponse.required"
     );
     let auth_enum: BTreeSet<&str> = health["properties"]["auth"]["enum"]
@@ -168,6 +168,30 @@ fn inventory_matches_openapi() {
         auth_enum,
         BTreeSet::from(["ready", "setup_required"]),
         "HealthResponse.auth enum"
+    );
+
+    // HealthResponse inclui `version` (ADR-0009 D5).
+    assert!(
+        health["properties"].get("version").is_some(),
+        "HealthResponse missing version property"
+    );
+
+    // Schemas novos existem na spec 0.9.0 (ADR-0009).
+    let schemas = yaml["components"]["schemas"]
+        .as_mapping()
+        .expect("components.schemas");
+    for name in ["Orchestrator", "ModelWeight", "StorageUsage"] {
+        assert!(
+            schemas.get(name).is_some(),
+            "missing schema {name} in openapi.yaml"
+        );
+    }
+
+    // Telemetry inclui `ramTotal` (ADR-0009 D4).
+    let telemetry = &yaml["components"]["schemas"]["Telemetry"];
+    assert!(
+        telemetry["properties"].get("ramTotal").is_some(),
+        "Telemetry missing ramTotal property"
     );
 }
 
@@ -1006,4 +1030,101 @@ fn dataset_response_keys_match_openapi() {
         required.is_subset(&got),
         "required fora do objeto serializado: {required:?} vs {got:?}"
     );
+}
+
+#[tokio::test]
+async fn orchestrator_response_keys_are_camel_case() {
+    // Contract test: GET /api/orchestrators must return camelCase keys.
+    use api_principal::jobs::manager_client::{InternalOrchestrator, MockManager};
+
+    let mock = MockManager::default();
+    let mut state = setup_state();
+    state.manager = std::sync::Arc::new({
+        let mut m = mock;
+        m.list_orchestrators_result = Some(vec![InternalOrchestrator {
+            id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            name: "orchestrator-local".into(),
+            kind: "local".into(),
+            endpoint: "http://orchestrator-local:8082".into(),
+            status: "online".into(),
+            last_heartbeat: Some("2026-09-09T12:00:00Z".into()),
+        }]);
+        m
+    });
+    let app = routes::build(state);
+    let (token, _) = session::issue_jwt(uuid::Uuid::new_v4(), &SETUP_SECRET);
+    let cookie = format!("heph_session={token}");
+
+    let (status, _, body) = call(
+        app,
+        Request::builder()
+            .method("GET")
+            .uri("/api/orchestrators")
+            .header(http::header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let json = json(&body);
+    let items = json["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 1);
+    let item = &items[0];
+    // Must have camelCase lastHeartbeat, not snake_case.
+    assert!(item.get("lastHeartbeat").is_some(), "missing lastHeartbeat");
+    assert!(
+        item.get("last_heartbeat").is_none(),
+        "leaked snake_case last_heartbeat"
+    );
+}
+
+#[tokio::test]
+async fn model_response_keys_are_camel_case() {
+    // Contract test: GET /api/models must return camelCase keys.
+    use api_principal::jobs::manager_client::{InternalModel, MockManager};
+
+    let mock = MockManager::default();
+    let mut state = setup_state();
+    state.manager = std::sync::Arc::new({
+        let mut m = mock;
+        m.list_models_result = Some(vec![InternalModel {
+            id: "550e8400-e29b-41d4-a716-446655440003".into(),
+            job_id: "550e8400-e29b-41d4-a716-446655440004".into(),
+            path: "best.pt".into(),
+            bytes: 110,
+            engine: "yolo".into(),
+            model: "yolo11m".into(),
+            created_at: "2026-09-09T12:00:00Z".into(),
+        }]);
+        m
+    });
+    let app = routes::build(state);
+    let (token, _) = session::issue_jwt(uuid::Uuid::new_v4(), &SETUP_SECRET);
+    let cookie = format!("heph_session={token}");
+
+    let (status, _, body) = call(
+        app,
+        Request::builder()
+            .method("GET")
+            .uri("/api/models")
+            .header(http::header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let json = json(&body);
+    let items = json["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 1);
+    let item = &items[0];
+    // Must have camelCase keys.
+    assert!(item.get("jobId").is_some(), "missing jobId");
+    assert!(item.get("createdAt").is_some(), "missing createdAt");
+    assert!(item.get("job_id").is_none(), "leaked snake_case job_id");
+    assert!(
+        item.get("created_at").is_none(),
+        "leaked snake_case created_at"
+    );
+    // name = basename of path.
+    assert_eq!(item["name"], "best.pt");
 }

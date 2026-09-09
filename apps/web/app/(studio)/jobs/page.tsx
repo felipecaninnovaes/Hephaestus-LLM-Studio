@@ -2,19 +2,18 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import Link from "next/link";
 import {
   abortJob,
   downloadArtifact,
   getJobArtifacts,
   getJobMetrics,
-  getTelemetry,
   listJobs,
 } from "@/lib/jobs";
 import { applyAutotrackerBoxes } from "@/lib/autotracker";
 import { ApiError } from "@/lib/api";
 import { showToast } from "@/components/studio/Toast";
 import ConfirmDialog from "@/components/studio/ConfirmDialog";
-import ForjaYoloSetup from "@/components/studio/ForjaYoloSetup";
 import { Button } from "@/components/ui/Button";
 import { Badge, jobStatusToBadgeVariant } from "@/components/ui/Badge";
 import {
@@ -23,15 +22,14 @@ import {
 } from "@/components/studio/ConvergenceChart";
 import { JobLogViewer } from "@/components/studio/JobLogViewer";
 import {
+  IconActivity,
   IconCheck,
   IconDatabase,
   IconDownload,
-  IconLayers,
   IconPlay,
   IconRefresh,
   IconTarget,
   IconTrash,
-  IconX,
   IconZap,
 } from "@/components/icons";
 import type {
@@ -39,10 +37,9 @@ import type {
   JobArtifact,
   JobMetrics as JobMetricsType,
   JobStatus,
-  Telemetry,
 } from "@/types/studio";
 import { autotrackerErrorMessage } from "@/types/studio";
-import { formatBytes, formatDuration, formatRelativeTime } from "@/lib/format";
+import { formatBytes, formatDuration } from "@/lib/format";
 import { openActionCenter } from "@/lib/events";
 import { JobListItem } from "@/components/studio/JobCard";
 
@@ -66,6 +63,13 @@ const STATUS_LABEL: Record<JobStatus, string> = {
   cancelled: "Cancelado",
 };
 
+/** Status que indicam job em andamento (ativação de polling). */
+const ACTIVE_STATUSES: JobStatus[] = ["queued", "running", "cancelling"];
+
+function isActive(status: JobStatus): boolean {
+  return ACTIVE_STATUSES.includes(status);
+}
+
 function JobsPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -79,15 +83,14 @@ function JobsPageContent() {
   const [abortBusy, setAbortBusy] = useState(false);
   const [applyBusy, setApplyBusy] = useState(false);
   const [applyOverwrite, setApplyOverwrite] = useState(false);
-  const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Lê query param ?selected=jobId se fornecido na navegação
+  // Lê query param ?job=jobId para auto-seleção (usado pela navegação de /treino)
   useEffect(() => {
-    const qSelected = searchParams.get("selected");
-    if (qSelected) {
-      setSelectedJobId(qSelected);
+    const qJob = searchParams.get("job");
+    if (qJob) {
+      setSelectedJobId(qJob);
     }
   }, [searchParams]);
 
@@ -95,15 +98,6 @@ function JobsPageContent() {
   useEffect(() => {
     setApplyOverwrite(false);
   }, [selectedJobId]);
-
-  const fetchTelemetry = useCallback(async () => {
-    try {
-      const data = await getTelemetry();
-      setTelemetry(data);
-    } catch {
-      // Best-effort
-    }
-  }, []);
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -125,26 +119,16 @@ function JobsPageContent() {
 
   useEffect(() => {
     fetchJobs();
-    fetchTelemetry();
-  }, [fetchJobs, fetchTelemetry]);
+  }, [fetchJobs]);
 
   // Polling a cada 3s se houver jobs ativos
   useEffect(() => {
-    function hasActiveJobs(list: Job[]) {
-      return list.some(
-        (j) =>
-          j.status === "queued" ||
-          j.status === "running" ||
-          j.status === "cancelling",
-      );
-    }
-
     if (pollRef.current) {
       clearInterval(pollRef.current);
       pollRef.current = null;
     }
 
-    if (hasActiveJobs(jobs)) {
+    if (jobs.some((j) => isActive(j.status))) {
       pollRef.current = setInterval(() => {
         if (typeof document !== "undefined" && document.visibilityState === "hidden") {
           return;
@@ -154,7 +138,7 @@ function JobsPageContent() {
     }
 
     const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible" && hasActiveJobs(jobs)) {
+      if (document.visibilityState === "visible" && jobs.some((j) => isActive(j.status))) {
         void fetchJobs();
       }
     };
@@ -169,33 +153,24 @@ function JobsPageContent() {
     };
   }, [jobs, fetchJobs]);
 
-  const sorted = useMemo(
-    () =>
-      [...jobs].sort(
-        (a, b) =>
-          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-      ),
-    [jobs],
-  );
-
-  const activeJob = useMemo(
-    () =>
-      jobs.find(
-        (j) =>
-          j.status === "running" ||
-          j.status === "queued" ||
-          j.status === "cancelling",
-      ) ?? null,
-    [jobs],
-  );
+  // Jobs agrupados: ativos primeiro, depois terminais — ambos em ordem cronológica (mais recente primeiro)
+  const { activeJobs, terminalJobs } = useMemo(() => {
+    const sorted = [...jobs].sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
+    return {
+      activeJobs: sorted.filter((j) => isActive(j.status)),
+      terminalJobs: sorted.filter((j) => !isActive(j.status)),
+    };
+  }, [jobs]);
 
   const selectedJob = useMemo(() => {
     if (selectedJobId) {
-      return jobs.find((j) => j.id === selectedJobId) ?? null;
+      return jobs.find((j) => j.id === selectedJobId) ?? activeJobs[0] ?? terminalJobs[0] ?? null;
     }
-    // Auto-focus no job ativo, ou no mais recente concluído
-    return activeJob ?? sorted[0] ?? null;
-  }, [jobs, selectedJobId, activeJob, sorted]);
+    // Auto-focus no job ativo mais recente, ou no mais recente terminal
+    return activeJobs[0] ?? terminalJobs[0] ?? null;
+  }, [jobs, selectedJobId, activeJobs, terminalJobs]);
 
   // Carregar métricas e artefatos quando o selectedJob mudar
   useEffect(() => {
@@ -227,13 +202,7 @@ function JobsPageContent() {
     const targetId = selectedJob?.id;
     if (!targetId) return;
     const job = jobs.find((j) => j.id === targetId);
-    if (!job) return;
-
-    const isActive =
-      job.status === "queued" ||
-      job.status === "running" ||
-      job.status === "cancelling";
-    if (!isActive) return;
+    if (!job || !isActive(job.status)) return;
 
     const ctrl = new AbortController();
 
@@ -324,39 +293,30 @@ function JobsPageContent() {
     }
   }
 
-  function handleJobCreated(jobId: string) {
-    setSelectedJobId(jobId);
-    void fetchJobs();
-    openActionCenter();
-  }
-
-  const activeJobsCount = jobs.filter(
-    (j) =>
-      j.status === "running" ||
-      j.status === "queued" ||
-      j.status === "cancelling",
-  ).length;
+  const totalCount = activeJobs.length + terminalJobs.length;
 
   return (
     <div className="mx-auto max-w-[1600px] w-full px-4 py-5 md:px-6 lg:px-8 space-y-6">
       {/* ═══════════════════════════════════════════════
-          HEADER DA FORJA
+          HEADER — EXECUÇÕES
           ═══════════════════════════════════════════════ */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/10 pb-4">
         <div>
           <div className="flex items-center space-x-2.5">
             <span className="flex size-7 items-center justify-center rounded-lg border border-brand-500/30 bg-brand-500/15 text-brand-400 backdrop-blur-sm">
-              <IconTarget className="size-4" />
+              <IconActivity className="size-4" />
             </span>
             <h1 className="font-display text-lg font-bold text-white tracking-tight">
-              Forja do YOLO
+              Execuções
             </h1>
-            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-[11px] uppercase tracking-caps text-zinc-400 backdrop-blur-sm">
-              Ultralytics Engine
-            </span>
+            {totalCount > 0 && (
+              <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-[11px] text-zinc-400 backdrop-blur-sm">
+                {totalCount} {totalCount === 1 ? "execução" : "execuções"}
+              </span>
+            )}
           </div>
           <p className="mt-1 text-xs text-zinc-400 max-w-2xl">
-            Ambiente de calibração e treinamento de visão computacional com telemetria em tempo real.
+            Fila de trabalho em execução e histórico de todos os tipos (YOLO, AutoTracker).
           </p>
         </div>
 
@@ -382,37 +342,110 @@ function JobsPageContent() {
             <IconZap className="size-3.5 text-brand-400" />
             <span className="hidden sm:inline">Centro de Atividades</span>
           </Button>
+          <Link
+            href="/treino"
+            className="inline-flex items-center gap-2 h-8 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] px-3 text-xs font-medium text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] transition focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)]"
+          >
+            <IconPlay className="size-3.5" />
+            <span>Novo Treino</span>
+          </Link>
         </div>
       </div>
 
       {/* ═══════════════════════════════════════════════
-          WORKSPACE DE 2 COLUNAS CANÔNICO DO STUDIO
+          WORKSPACE DE 2 COLUNAS: LISTA + DETALHE
           ═══════════════════════════════════════════════ */}
       {!error && (
         <div className="flex flex-col md:flex-row items-start gap-6">
-          {/* Coluna 1: Setup & Controle (Fixa: w-full md:w-80 lg:w-96 shrink-0) */}
-          <aside className="w-full md:w-80 lg:w-96 shrink-0 md:sticky md:top-4 md:max-h-[calc(100vh-2rem)] md:overflow-y-auto overflow-x-hidden [scrollbar-width:thin]">
-            <div className="glass-card rounded-2xl p-5 border border-white/10">
-              <ForjaYoloSetup
-                onJobCreated={handleJobCreated}
-                initialTelemetry={telemetry}
-              />
-            </div>
+          {/* Coluna 1: Lista de Execuções (Fixa: w-full md:w-80 lg:w-96 shrink-0) */}
+          <aside className="w-full md:w-80 lg:w-96 shrink-0 md:sticky md:top-4 md:max-h-[calc(100vh-2rem)] md:overflow-y-auto overflow-x-hidden [scrollbar-width:thin] space-y-4">
+            {loading ? (
+              <div className="glass-card rounded-2xl p-8 text-center text-xs text-zinc-400 font-mono border border-white/10">
+                Carregando execuções…
+              </div>
+            ) : totalCount === 0 ? (
+              <div className="glass-card flex flex-col items-center gap-3 rounded-2xl p-8 text-center border border-white/10">
+                <span className="flex size-10 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-zinc-400 backdrop-blur-sm">
+                  <IconActivity className="size-5 text-brand-400/60" />
+                </span>
+                <div className="space-y-1">
+                  <p className="text-xs font-semibold text-zinc-200">
+                    Nenhuma execução registrada
+                  </p>
+                  <p className="text-[11px] text-zinc-400">
+                    Inicie um treino em{" "}
+                    <Link href="/treino" className="text-brand-400 hover:text-brand-300 underline underline-offset-2">
+                      Treino YOLO
+                    </Link>{" "}
+                    ou aguarde jobs do AutoTracker.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {/* ── Jobs Ativos ── */}
+                {activeJobs.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between px-1">
+                      <h3 className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-400">
+                        Em Execução
+                      </h3>
+                      <span className="flex items-center gap-1.5 font-mono text-[11px] text-brand-300">
+                        <span className="size-1.5 rounded-full bg-brand-400 animate-pulse motion-reduce:animate-none" />
+                        {activeJobs.length}
+                      </span>
+                    </div>
+                    <div className="space-y-2">
+                      {activeJobs.map((job) => (
+                        <JobListItem
+                          key={job.id}
+                          job={job}
+                          isFocused={selectedJob?.id === job.id}
+                          onSelect={(id) => setSelectedJobId(id)}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* ── Jobs Terminais ── */}
+                {terminalJobs.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between px-1">
+                      <h3 className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-400">
+                        Histórico
+                      </h3>
+                      <span className="font-mono text-[11px] text-zinc-500">
+                        {terminalJobs.length}
+                      </span>
+                    </div>
+                    <div className="space-y-2">
+                      {terminalJobs.map((job) => (
+                        <JobListItem
+                          key={job.id}
+                          job={job}
+                          isFocused={selectedJob?.id === job.id}
+                          onSelect={(id) => setSelectedJobId(id)}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </aside>
 
-          {/* Coluna 2: Canvas de Monitoramento Fluido & Histórico (flex-1 min-w-0) */}
-          <section className="w-full flex-1 min-w-0 space-y-6">
-            {/* Monitor Stage: Job Ativo ou Selecionado */}
+          {/* Coluna 2: Painel de Detalhe (flex-1 min-w-0) */}
+          <section className="w-full flex-1 min-w-0 space-y-4">
             {selectedJob ? (
               <div className="space-y-4">
+                {/* Cabeçalho do Job Selecionado */}
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <h2 className="font-display text-sm font-semibold text-zinc-200">
-                      {selectedJob.status === "running" ||
-                      selectedJob.status === "queued" ||
-                      selectedJob.status === "cancelling"
-                        ? "Execução Ativa no Nó Local"
-                        : "Painel de Execução & Métricas"}
+                      {isActive(selectedJob.status)
+                        ? "Execução Ativa"
+                        : "Detalhes da Execução"}
                     </h2>
                     <Badge
                       variant={jobStatusToBadgeVariant(selectedJob.status)}
@@ -421,13 +454,13 @@ function JobsPageContent() {
                       {STATUS_LABEL[selectedJob.status]}
                     </Badge>
                   </div>
-                  {selectedJobId && selectedJobId !== activeJob?.id && (
+                  {selectedJobId && selectedJobId !== activeJobs[0]?.id && (
                     <button
                       type="button"
                       onClick={() => setSelectedJobId(null)}
                       className="text-xs text-zinc-400 hover:text-zinc-200 transition underline underline-offset-2"
                     >
-                      {activeJob ? "Voltar ao job ativo" : "Ver último job"}
+                      {activeJobs.length > 0 ? "Voltar ao job ativo" : "Ver último job"}
                     </button>
                   )}
                 </div>
@@ -451,8 +484,7 @@ function JobsPageContent() {
                         {selectedJob.epoch != null && (
                           <span>Epoch {selectedJob.epoch}</span>
                         )}
-                        {(selectedJob.status === "queued" ||
-                          selectedJob.status === "running") && (
+                        {isActive(selectedJob.status) && (
                           <span className="text-brand-300 font-semibold">
                             {Math.round((selectedJob.progress ?? 0) * 100)}%
                           </span>
@@ -476,13 +508,11 @@ function JobsPageContent() {
                     </div>
                   </div>
 
-                  {/* Barra de progresso full-width para jobs ativos */}
-                  {(selectedJob.status === "queued" ||
-                    selectedJob.status === "running" ||
-                    selectedJob.status === "cancelling") && (
+                  {/* Barra de progresso para jobs ativos */}
+                  {isActive(selectedJob.status) && (
                     <div className="space-y-1.5 pt-1">
                       <div className="flex items-center justify-between font-mono text-[11px]">
-                        <span className="text-zinc-400">Progresso do Treinamento</span>
+                        <span className="text-zinc-400">Progresso</span>
                         <span className="font-semibold text-brand-300">
                           {Math.round((selectedJob.progress ?? 0) * 100)}%
                         </span>
@@ -505,19 +535,17 @@ function JobsPageContent() {
                   {(selectedJob.kind === "yolo_train" ||
                     (metrics[selectedJob.id] && metrics[selectedJob.id].length > 0)) && (
                     <div className="space-y-4 pt-3 border-t border-white/10">
-                      {/* Curvas de Convergência Vetoriais (SVG Multi-Curve) */}
                       <ConvergenceChart
                         metrics={metrics[selectedJob.id] || []}
                         totalEpochs={selectedJob.epoch || 100}
                         isJobActive={selectedJob.status === "running"}
                       />
 
-                      {/* Cards com Sparklines Integradas */}
                       {metrics[selectedJob.id] && metrics[selectedJob.id].length > 0 && (
                         <div className="space-y-2">
                           <div className="flex items-center justify-between">
                             <h3 className="font-mono text-[11px] font-semibold uppercase tracking-caps text-zinc-300">
-                              Métricas da Execução (Epoch{" "}
+                              Métricas (Epoch{" "}
                               {metrics[selectedJob.id]![metrics[selectedJob.id]!.length - 1].epoch}
                               )
                             </h3>
@@ -585,11 +613,11 @@ function JobsPageContent() {
                     </div>
                   )}
 
-                  {/* Artefatos Gerados (Achatado - sem nested-cards) */}
+                  {/* Artefatos Gerados */}
                   {artifacts[selectedJob.id] && artifacts[selectedJob.id].length > 0 && (
                     <div className="space-y-3 pt-3 border-t border-white/10">
                       <h3 className="font-mono text-[11px] font-semibold uppercase tracking-caps text-zinc-300">
-                        Artefatos Gerados ({artifacts[selectedJob.id].length})
+                        Artefatos ({artifacts[selectedJob.id].length})
                       </h3>
                       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
                         {artifacts[selectedJob.id].map((art) => (
@@ -650,7 +678,7 @@ function JobsPageContent() {
                       </div>
                     )}
 
-                    {(selectedJob.status === "queued" || selectedJob.status === "running") && (
+                    {isActive(selectedJob.status) && (
                       <Button
                         type="button"
                         variant="destructive"
@@ -664,7 +692,7 @@ function JobsPageContent() {
                   </div>
                 </div>
 
-                {/* Visualizador Colapsável de Streaming de Logs do Orquestrador */}
+                {/* Log Viewer */}
                 <JobLogViewer
                   job={selectedJob}
                   metrics={metrics[selectedJob.id] || []}
@@ -672,85 +700,21 @@ function JobsPageContent() {
                 />
               </div>
             ) : (
-              /* Empty State quando não há nenhum job */
+              /* Empty State */
               <div className="glass-card flex flex-col items-center gap-3.5 rounded-2xl p-12 text-center border border-white/10">
                 <span className="flex size-12 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-zinc-400 backdrop-blur-sm">
                   <IconTarget className="size-6 text-brand-400/60" />
                 </span>
                 <div className="max-w-md space-y-1">
                   <h3 className="font-display text-sm font-semibold text-zinc-200">
-                    Nenhum treinamento registrado
+                    Nenhuma execução selecionada
                   </h3>
                   <p className="text-xs text-zinc-400">
-                    Configure os hiperparâmetros no painel lateral à esquerda e clique em{" "}
-                    <strong className="text-zinc-200">Iniciar Treino</strong> para disparar a
-                    primeira execução local no nó.
+                    Selecione uma execução na lista ao lado para ver detalhes, métricas e artefatos.
                   </p>
                 </div>
               </div>
             )}
-
-            {/* ═══════════════════════════════════════════════
-                HISTÓRICO COMPLETO DE JOBS
-                ═══════════════════════════════════════════════ */}
-            <div className="space-y-3.5 pt-2">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <h3 className="font-display text-sm font-semibold text-zinc-200">
-                    Histórico de Execuções
-                  </h3>
-                  <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-0.5 font-mono text-[11px] text-zinc-400 backdrop-blur-sm">
-                    {sorted.length} {sorted.length === 1 ? "execução" : "execuções"}
-                  </span>
-                </div>
-                {activeJobsCount > 0 && (
-                  <span className="flex items-center gap-1.5 font-mono text-[11px] text-brand-300">
-                    <span className="size-1.5 rounded-full bg-brand-400 animate-pulse motion-reduce:animate-none" />
-                    {activeJobsCount} ativo(s)
-                  </span>
-                )}
-              </div>
-
-              {loading ? (
-                <div className="glass-card rounded-2xl p-8 text-center text-xs text-zinc-400 font-mono border border-white/10">
-                  Carregando histórico de jobs…
-                </div>
-              ) : sorted.length === 0 ? (
-                <div className="glass-card flex flex-col items-center gap-3 rounded-2xl p-8 text-center border border-white/10">
-                  <p className="text-xs font-medium text-zinc-400">
-                    Nenhum histórico disponível até o momento.
-                  </p>
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 gap-2.5">
-                  {sorted.map((job) => {
-                    const isFocused = selectedJob?.id === job.id;
-                    return (
-                      <JobListItem
-                        key={job.id}
-                        job={job}
-                        isFocused={isFocused}
-                        onSelect={(id) => setSelectedJobId(id)}
-                        actionButton={
-                          <Button
-                            type="button"
-                            variant={isFocused ? "primary" : "secondary"}
-                            size="sm"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedJobId(job.id);
-                            }}
-                          >
-                            <span>{isFocused ? "Em exibição" : "Ver detalhes"}</span>
-                            <span aria-hidden="true">→</span>
-                          </Button>
-                        }
-                      />
-                    );
-                  })}
-                </div>
-              )}
-            </div>
           </section>
         </div>
       )}
@@ -789,4 +753,3 @@ export default function JobsPage() {
     </Suspense>
   );
 }
-

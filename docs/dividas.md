@@ -84,6 +84,10 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
 - **R1 drift de classes snapshot→apply (curta, Fatia 5):** o snapshot (`SnapshotClass{index,name}`, sem id) congela classes do pacote; no apply, o principal resolve por `name` no dataset atual. Se uma classe foi renomeada/deletada entre job e apply → box skippada (contagem honesta). Aceito na v1 mock; alternativa futura: snapshot com id de classe + decisão de re-mapear.
 - **AutoTracker de vídeo — ABERTA 2026-09-08 (ADR-0008 D5):** extração de frames + tracking por `track_id` (`boxes.track_id` já existe desde 0003) + rota de escrita de `videos` (tabela existe sem rota de escrita desde 3b). IDEIA.md §3/:42 pede "Video e Imagem"; a v1 é imagem apenas.
 - **AutoTracker real — ABERTA 2026-09-08 (ADR-0008 D6):** modelo local (`florence-2-large`, `yolov8x-world`, `qwen2-vl-7b` em frontend.md §7.1) + upload de modelo + imagem `runner-autotracker` própria (honra backend.md §4 uma-imagem-por-engine) + classe open-set mapeada para classes existentes/adicionadas. O v1 usa mock determinístico (`ENGINE_MOCK=1`) sem modelo real.
+- **Telemetria por orquestrador (ADR-0009 R1) — ABERTA 2026-09-09:** heartbeat com `orchestrator_id` + cache por nó + watchdog `degraded/offline`. Hoje: cache global single-node (lib.rs:800-825), heartbeat sem identidade, `status` nunca sai de `online`. Necessário para multi-nó remoto.
+- **Models real (ADR-0009 R2/D2) — ABERTA 2026-09-09:** tabela `models` + `POST /api/models/upload` + `POST /api/models/download` + volume `models/` + dropdowns de treino. A lista v1 deriva de `job_artifacts.kind='model'` (DISTINCT ON por engine/model); a fonte troca quando a tabela migrar, o contrato permanece.
+- **Reconciliação storage (ADR-0009 R3) — ABERTA 2026-09-09:** reconciliação bucket×banco / storage real via `ListObjectsV2`. Hoje: soma SQL (`datasets.size_bytes` + `SUM(job_artifacts.bytes)`), NÃO ListObjects (StoragePort não tem método de listagem; rejeitado em D3).
+- **POST /api/orchestrators/{adopt,rotate,revoke,enable,disable,remove} + GET /:id/health (ADR-0009 D0) — ABERTA 2026-09-09:** gestão de orquestradores — nasce com o orquestrador remoto RunPod (fora do v1 local). Alias `/api/environments*` acompanha.
 
 **Verificação / toolchain**
 
@@ -153,6 +157,22 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
   referência contra re-litígios de contraste.
 - **Testes de UI** (backlog §12 do `frontend.md`) — cobrir
   criar→listar→excluir quando o e2e for ampliado.
+- **SegmentedControl `h-7` < hit-area mínima de 28px — ABERTA 2026-09-09**
+  (origem: auditoria visual F6.2, `apps/web/components/ui/SegmentedControl.tsx`
+  ~L47; `h-7` com root 14px = 24.5px). Contradição interna do `docs/DESIGN.md`
+  (linha ~302 manda `h-7` por fidelidade Arcane v2.1; linha ~263 exige ≥28px —
+  WCAG 2.5.8). Decisão do coordenador: aceito por ora (fidelidade Arcane),
+  componente global usado em várias páginas — resolver na fatia de refinamento
+  de componentes com medição.
+- **`emerald-400` de marca em `CreateDatasetModal.tsx` — ABERTA 2026-09-09**
+  (origem: achado do F6.2 fora do escopo, `apps/web/components/studio/
+  CreateDatasetModal.tsx` ~L565). Viola a regra Brand-Only do `docs/DESIGN.md`
+  (emerald só como semântica literal documentada; classes em emerald em marca
+  são proibidas). Fix trivial em fatia de limpeza web (F6.4+).
+- **"V1.3" hardcoded na página de login — ABERTA 2026-09-09**
+  (origem: smoke F6.2, `apps/web/app/login/page.tsx` ~L151). A versão de
+  produto real vem de `GET /health` (`version:"0.1.0"`, ADR-0009 D5); o login
+  mostra "V1.3" inventado. Alinhar na fatia de limpeza web (mesma da 2).
 - ~~**Sincronizar `docs/frontend.md` linha 3** — ainda descreve o protótipo como
   "~2910 linhas"; o do tronco é a regeneração OpenDesign (3641 linhas, com
   LoginPage).~~ **QUITADA 2026-09-06** (commit 3g.6 docs-sync: linha 3 agora

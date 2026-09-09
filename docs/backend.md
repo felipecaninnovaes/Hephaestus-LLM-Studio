@@ -115,7 +115,7 @@
 
 ```
 auth:     POST /api/auth/login, GET /api/auth/me, POST /api/auth/logout  → implementado (ADR-0001/openapi)
-health:   GET /health → {status, service, auth: ready|setup_required}  → implementado (campo `auth` novo, ADR-0001 D3)
+health:   GET /health → {status, service, auth: ready|setup_required, version}  → implementado (campo `auth` novo ADR-0001 D3; campo `version` novo ADR-0009 D5; spec 0.9.0)
           GET /ready → {status: ok|unavailable, reason?}  → implementado (Fatia 4; D11 ADR-0007; liveness + readiness)
 settings: PUT/GET /api/settings/keys {hfToken, civitaiKey, openaiKey, anthropicKey, vllmEndpoint}, GET /api/settings/vram-policy
 datasets: GET/POST /api/datasets, GET/DELETE /api/datasets/:id  → implementado (Fatia 3a; ADR-0002/openapi)
@@ -134,7 +134,8 @@ datasets: GET/POST /api/datasets, GET/DELETE /api/datasets/:id  → implementado
                → implementado (Fatia 3e; ADR-0006/openapi 0.6.0 — ver Nota Fatia 3e abaixo)
             POST /api/datasets/:id/package
                → implementado (Fatia 4; ADR-0007 D1 — congela `dataset_versions`, gera zip, PUT `packages/<version_id>/`)
-models:   GET /api/models (lista pesos em disco/banco p/ dropdowns), POST /api/models/upload, POST /api/models/download
+models:   GET /api/models (pesos derivados de job_artifacts.kind='model' por (engine,model) de jobs done)  → implementado (F6.1; ADR-0009 D2)
+          POST /api/models/upload, POST /api/models/download  → pendentes (tabela models + volume models/ = fatia Roadmap "Modelos & Pesos"; ADR-0009 D0)
 preview:  POST /api/preview/{autolabel,autotracker,generate,search} (job efêmero ou runner quente, sem fila de treino)
 jobs:     POST /api/jobs/yolo  → implementado (Fatia 4; ADR-0007 D7 — spec 0.7.0)
           POST /api/jobs/autotracker  → implementado (Fatia 5; ADR-0008 D0/D3 — spec 0.8.0)
@@ -155,11 +156,18 @@ jobs:     POST /api/jobs/yolo  → implementado (Fatia 4; ADR-0007 D7 — spec 0
           # Adiados para fatias futuras: pause/resume, samples, WS, runners, difusao/clip/autolabel
 runners:  POST /api/runners/{difusao,yolo,clip}/up, POST /api/runners/:id/kill, GET /api/runners
           POST /api/runners/:id/infer {prompt|image|query} (inferência interativa; 409 se preemptado)
-orchestrators (via manager): GET /api/orchestrators, POST /api/orchestrators/adopt {endpoint,key},
-          POST /api/orchestrators/:id/{enable,disable,remove}, GET /api/orchestrators/:id/health
+orchestrators (via manager): GET /api/orchestrators  → implementado (F6.1; leitura da tabela do manager; ADR-0009 D1)
+          POST /api/orchestrators/adopt {endpoint,key}  → pendente (RunPod fora; ADR-0009 D0)
+          POST /api/orchestrators/:id/{enable,disable,remove}  → pendente (RunPod fora; ADR-0009 D0)
+          GET /api/orchestrators/:id/health  → pendente (RunPod fora; ADR-0009 D0)
           # alias UI: /api/environments* responde o mesmo que /api/orchestrators* (front usa "Ambientes")
+          # alias pendente — nasce com o módulo Roadmap (ADR-0009 D0)
           → manager auto-adota `orchestrator-local` no boot (Fatia 4; ADR-0007 D3)
-telemetry: GET /api/telemetry  → implementado (Fatia 4; proxy do cache do manager: {measured,cpu,ram,vramUsed,vramTotal,gpus,jobsActive})
+telemetry: GET /api/telemetry  → implementado (Fatia 4; proxy do cache do manager: {measured,cpu,ram,ramTotal,vramUsed,vramTotal,gpus,jobsActive}; ramTotal = ADR-0009 D4, bytes)
+           ramTotal: aditivo Option<i64> (bytes; ADR-0009 D4; spec 0.9.0)
+monitoring: GET /api/orchestrators  → implementado (F6.1; leitura via manager; status 200/401/503; ADR-0009 D1)
+            GET /api/models         → implementado (F6.1; derivado de job_artifacts.kind='model' por (engine,model); ADR-0009 D2)
+            GET /api/storage/usage  → implementado (F6.1; soma SQL: datasetsBytes + artifactsBytes; ADR-0009 D3)
 ws:       /ws/jobs/:id/logs?since_seq=, /ws/telemetry
 ```
 
@@ -170,7 +178,7 @@ ws:       /ws/jobs/:id/logs?since_seq=, /ws/telemetry
   - **`GET /api/jobs/:id` devolve o payload interno do manager (snake_case verbatim):** o principal é BFF puro — ecoa o JSON do manager sem mapear `queue_reason`/`queue_position` (campos snake_case no wire). Cuidado: o front precisa ler snake_case nests se consumir esses campos. O `metrics` JSONB do banco é snake_case (`mAP50-95`) e o principal re-mapeia `map5095` no response de `/metrics`.
   - **Artefatos:** `{id,kind,path,md5,bytes}` — `path` é relativo ao prefixo `artifacts/<job_id>/`.
   - **`POST /api/jobs/:id/abort`:** 200 `{"status":"cancelling"}` (job em `preparing`/`running`) ou `{"status":"cancelled"}` (job em `queued`/`dispatched`); 409 `job_not_abortable` em estado terminal (`done`/`failed`/`cancelled`). Código: `manager::abort_job` (`lib.rs:532-585`) consulta status antes de escrever.
-  - **Telemetria:** `{measured:bool, cpu:float|null, ram:i64|null, vramUsed:i64|null, vramTotal:i64|null, gpus:string[], jobsActive:i32}`. CPU/RAM reais (leitura `/proc` do container orquestrador via heartbeat ~2s). Sem GPU (mock local) → `measured:false`, `vramUsed/vramTotal:null`, `gpus:[]`. O texto "sem GPU (mock)" é renderizado pelo front quando `measured:false` (Sidebar `!telemetry?.measured`). **Nota:** `measured:false` é o caminho morto previsto na ADR-0007 D9 — o mock SEMPRE reporta `measured:false` porque não há GPU; `measured:true` só ocorrerá quando o orquestrador detectar `nvidia-smi` (`@gpu` manual, fora do compose).
+  - **Telemetria:** `{measured:bool, cpu:float|null, ram:i64|null, ramTotal:i64|null, vramUsed:i64|null, vramTotal:i64|null, gpus:string[], jobsActive:i32}`. `ramTotal` = bytes (lido de MemTotal do /proc/meminfo; ADR-0009 D4; aditivo, Option). CPU/RAM reais (leitura `/proc` do container orquestrador via heartbeat ~2s). `measured:true` = heartbeat recebido nos últimos 10s (get_telemetry L832-843). Com GPU ausente: `gpus:[]`, `vramUsed/vramTotal:null`, mas CPU/RAM **reais** — `measured:true` quando o heartbeat é fresco. O texto "sem GPU (mock)" é renderizado pelo front quando `vramTotal==null || gpus.length===0`. **Nota R5:** a semântica real (código) é: `measured:true` = heartbeat ≤ 10s; GPU ausente = `gpus:[]`/`vram_*:null` com CPU/RAM reais. `measured:false` só ocorre quando o heartbeat está ausente (>10s) — nesse caso CPU/RAM também são null. O mock SEMPRE reporta heartbeat (~2s), logo `measured:true` com `gpus:[]` (não `measured:false`).
   - **Erros novos na v1:** `queue_unavailable` (503, todas as rotas jobs/telemetry), `dataset_not_ready` (409, `POST /api/jobs/yolo` quando category≠yolo ou 0 classes/imagens), `job_not_abortable` (409, `POST /:id/abort` em estado terminal), `engine_unsupported` (400, `POST /:id/package` quando engine≠yolo).
   - **`POST /api/datasets/:id/package`:** body `{engine:"yolo"}` → 200 `PackageResponse{versionId,key,bytes,md5Zip,files}`; 400 `engine_unsupported` (engine≠yolo na v1) | 404 dataset | 503 storage/queue. Congela `dataset_versions{manifest}` (snapshot JSONB, T4 ADR-0002). `config.yaml` gerado pelo principal com placeholders `{dataset_path}`/`{output_path}` substituídos pelo orquestrador no spawn do container. Trainer via `docker run` com volumes nomeados (`datasets-cache/<jobid>/`, `models/`, `outputs/`).
 - Nota Fatia 5 (ADR-0008, spec 0.8.0, `packages/contracts/openapi.yaml`):
@@ -279,8 +287,13 @@ orchestrators(id UUID PK, name TEXT, endpoint TEXT UNIQUE, kind TEXT,     -- loc
   status TEXT, last_heartbeat TIMESTAMPTZ);
   -- IMPLEMENTADO (Fatia 4; `migrations/0006_jobs.sql`): manager auto-adota `orchestrator-local` no boot (ADR-0007 D3).
   -- Índice: `orchestrators(status)`.
+  -- Nota F6.1 (ADR-0009): `gpus`/`vram_total_gb` NUNCA são escritos no v1 — o manager não preenche essas colunas.
+  -- A telemetria por nó (cache por orquestrador + watchdog degraded/offline) é dívida (ADR-0009 R1).
 models(id UUID PK, engine TEXT, name TEXT, path TEXT, source TEXT,         -- hf|civitai|upload
   url TEXT NULL, hash TEXT NULL, bytes BIGINT, created_at TIMESTAMPTZ);
+  -- NÃO MIGRADA nesta fase (F6.1) — a lista de modelos v1 DERIVA de `job_artifacts.kind='model'`
+  -- (ADR-0009 D2): DISTINCT ON (engine,model) de jobs done, sem tabela `models` nova.
+  -- A tabela nasce quando a fatia Roadmap "Modelos & Pesos" implementar upload/download (ADR-0009 D0).
 jobs(id UUID PK, kind TEXT, dataset_id UUID NULL FK, engine TEXT, model TEXT, mode TEXT,
   params JSONB, config_yaml TEXT, status TEXT, queue_reason TEXT NULL,
   orchestrator_id UUID NULL FK, vram_min_gb INT, progress FLOAT,

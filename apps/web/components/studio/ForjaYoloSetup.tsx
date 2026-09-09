@@ -17,7 +17,6 @@ import { listDatasets, canTrainYolo, trainDisabledReason } from "@/lib/datasets"
 import { ApiError } from "@/lib/api";
 import { jobErrorMessage } from "@/types/studio";
 import { showToast } from "./Toast";
-import { openActionCenter } from "@/lib/events";
 import type { Dataset, Telemetry, YoloAugment } from "@/types/studio";
 import {
   YoloHyperparameters,
@@ -284,7 +283,6 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
         augment: { mosaic: true, mixupFlip: true },
       });
       onJobCreated?.(result.jobId);
-      openActionCenter();
     } catch (err) {
       if (err instanceof ApiError) {
         setTopError(jobErrorMessage(err.code));

@@ -37,7 +37,7 @@ export function StatCard({
             }
           : undefined
       }
-      className={`glass-card group rounded-xl border border-white/10 bg-[rgba(31,27,38,0.70)] backdrop-blur-xl p-4 transition-[border-color,background-color,box-shadow] hover:border-brand-500/30 hover:bg-[rgba(38,33,47,0.78)] ${
+      className={`glass-card group rounded-xl p-4 transition-[border-color,box-shadow] hover:border-brand-500/30 ${
         onClick
           ? "cursor-pointer active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70"
           : ""

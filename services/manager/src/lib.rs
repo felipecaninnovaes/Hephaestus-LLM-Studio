@@ -124,6 +124,7 @@ pub struct HeartbeatRequest {
     pub vram_used: Option<i64>,
     pub cpu: Option<f64>,
     pub ram: Option<i64>,
+    pub ram_total: Option<i64>,
     pub jobs_active: i32,
 }
 
@@ -139,6 +140,7 @@ pub struct TelemetryResponse {
     pub vram_total: Option<i64>,
     pub cpu: Option<f64>,
     pub ram: Option<i64>,
+    pub ram_total: Option<i64>,
     pub gpus: Vec<String>,
     pub jobs_active: i32,
 }
@@ -210,6 +212,7 @@ pub struct TelemetryState {
     pub vram_total: Option<i64>,
     pub cpu: Option<f64>,
     pub ram: Option<i64>,
+    pub ram_total: Option<i64>,
     pub gpus: Vec<String>,
     pub jobs_active: i32,
     pub last_heartbeat: Option<DateTime<Utc>>,
@@ -223,6 +226,7 @@ impl Default for TelemetryState {
             vram_total: None,
             cpu: None,
             ram: None,
+            ram_total: None,
             gpus: vec![],
             jobs_active: 0,
             last_heartbeat: None,
@@ -817,6 +821,7 @@ pub async fn receive_heartbeat(
     state.vram_total = req.vram_total;
     state.cpu = req.cpu;
     state.ram = req.ram;
+    state.ram_total = req.ram_total;
     state.gpus = req.gpus;
     state.jobs_active = req.jobs_active;
     state.last_heartbeat = Some(Utc::now());
@@ -837,6 +842,7 @@ pub async fn get_telemetry(pool: &PgPool, cache: &TelemetryCache) -> TelemetryRe
                 vram_total: state.vram_total,
                 cpu: state.cpu,
                 ram: state.ram,
+                ram_total: state.ram_total,
                 gpus: state.gpus.clone(),
                 jobs_active: state.jobs_active,
             };
@@ -857,6 +863,7 @@ pub async fn get_telemetry(pool: &PgPool, cache: &TelemetryCache) -> TelemetryRe
         vram_total: None,
         cpu: None,
         ram: None,
+        ram_total: None,
         gpus: vec![],
         jobs_active: jobs_active.0 as i32,
     }
@@ -897,6 +904,115 @@ pub async fn adopt_orchestrator(pool: &PgPool) -> Result<(), ManagerError> {
     .map_err(|e| ManagerError::Internal(format!("adopt orchestrator: {e}")))?;
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Rotas internas de leitura (F6.1a)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OrchestratorItem {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub endpoint: String,
+    pub status: String,
+    pub last_heartbeat: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OrchestratorsResponse {
+    pub items: Vec<OrchestratorItem>,
+}
+
+/// Lista todos os orquestradores (tabela do manager, sem métricas por nó).
+pub async fn list_orchestrators(pool: &PgPool) -> Result<OrchestratorsResponse, ManagerError> {
+    let rows: Vec<(Uuid, String, String, String, String, Option<DateTime<Utc>>)> = sqlx::query_as(
+        "SELECT id, name, kind, endpoint, status, last_heartbeat FROM orchestrators ORDER BY name",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("list orchestrators: {e}")))?;
+
+    let items = rows
+        .into_iter()
+        .map(|r| OrchestratorItem {
+            id: r.0.to_string(),
+            name: r.1,
+            kind: r.2,
+            endpoint: r.3,
+            status: r.4,
+            last_heartbeat: r.5.map(|t| t.to_rfc3339()),
+        })
+        .collect();
+
+    Ok(OrchestratorsResponse { items })
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelItem {
+    pub id: String,
+    pub job_id: String,
+    pub path: String,
+    pub bytes: i64,
+    pub engine: String,
+    pub model: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelsResponse {
+    pub items: Vec<ModelItem>,
+}
+
+/// Lista modelos derivados de job_artifacts.kind='model' (DISTINCT ON engine,model).
+pub async fn list_models(pool: &PgPool) -> Result<ModelsResponse, ManagerError> {
+    let rows: Vec<(Uuid, Uuid, String, i64, String, String, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT DISTINCT ON (j.engine, j.model) \
+               ja.id, ja.job_id, ja.path, ja.bytes, j.engine, j.model, j.created_at \
+         FROM job_artifacts ja JOIN jobs j ON j.id = ja.job_id \
+         WHERE ja.kind = 'model' AND j.status = 'done' \
+         ORDER BY j.engine, j.model, \
+                  (ja.path LIKE '%best%') DESC, \
+                  j.created_at DESC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("list models: {e}")))?;
+
+    let items = rows
+        .into_iter()
+        .map(|r| ModelItem {
+            id: r.0.to_string(),
+            job_id: r.1.to_string(),
+            path: r.2,
+            bytes: r.3,
+            engine: r.4,
+            model: r.5,
+            created_at: r.6.to_rfc3339(),
+        })
+        .collect();
+
+    Ok(ModelsResponse { items })
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StorageUsageResponse {
+    pub artifacts_bytes: i64,
+}
+
+/// Retorna soma de bytes de job_artifacts.
+pub async fn get_storage_usage(pool: &PgPool) -> Result<StorageUsageResponse, ManagerError> {
+    let row: (i64,) = sqlx::query_as(
+        "SELECT COALESCE(SUM(bytes), 0)::bigint AS artifacts_bytes FROM job_artifacts",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("storage usage: {e}")))?;
+
+    Ok(StorageUsageResponse {
+        artifacts_bytes: row.0,
+    })
 }
 
 /// Recovery: marca jobs órfãos como queued com queue_reason='recovered'.

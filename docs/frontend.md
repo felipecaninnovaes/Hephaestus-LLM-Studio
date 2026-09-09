@@ -59,9 +59,10 @@ A especificação normativa completa e canônica vive em **`docs/DESIGN.md`**. P
 
 - **Navegação estruturada em 4 seções temáticas:**
   1. *Estúdio & Dados:* **Painel** (`/dashboard`, ativo como home, ícone `IconHome`), **Datasets** (`/datasets`, ativo, ícone `IconDatabase`).
-  2. *Forja & Treino:* **Treino YOLO** (`/jobs`, ativo, com badge numérico de `telemetry.jobsActive` em tempo real), **Difusão LoRA** (`/difusao`, badge "Roadmap", desabilitado honesto), **OpenCLIP** (`/openclip`, badge "Roadmap", desabilitado), **Playground** (`/playground`, badge "Roadmap", desabilitado), **Modelos & Pesos** (`/models`, badge "Roadmap", desabilitado).
-  3. *Infraestrutura:* **Orquestradores** (`/environments`, badge "Roadmap", desabilitado), **Storage S3** (`/storage`, badge "Roadmap", desabilitado).
-  4. *Sistema:* **Registro de Logs** (`/events`, badge "Roadmap", desabilitado), **Configurações** (`/settings`, badge "Roadmap", desabilitado).
+  2. *Treinamento & Execução:* **Treino YOLO** (`/treino`, rota nova F6.3 — setup de treino YOLO central), **Execuções** (`/jobs`, renomeada F6.3 — fila de trabalho + histórico agrupado ativos primeiro + painel de detalhe; badge numérico de `telemetry.jobsActive` em tempo real).
+  3. *Forja & Engenharia:* **Difusão LoRA** (`/difusao`, badge "Roadmap", desabilitado honesto), **OpenCLIP** (`/openclip`, badge "Roadmap", desabilitado), **Playground** (`/playground`, badge "Roadmap", desabilitado), **Modelos & Pesos** (`/models`, badge "Roadmap", desabilitado).
+  4. *Infraestrutura:* **Orquestradores** (`/environments`, badge "Roadmap", desabilitado), **Storage S3** (`/storage`, badge "Roadmap", desabilitado).
+  5. *Sistema:* **Registro de Logs** (`/events`, badge "Roadmap", desabilitado), **Configurações** (`/settings`, badge "Roadmap", desabilitado).
 - **Destaque de rota ativa:** derivado dinamicamente via `usePathname()`, aplicando borda violeta `border-brand-500/30 bg-zinc-900/90` com barra lateral indicadora `bg-brand-500`.
 - **Pin da Sidebar no Desktop:** no viewport `lg`, a sidebar suporta modo fixado/expandido (`260px`) ou recolhido (`68px` exibindo apenas ícones com tooltips), alternado pelo botão de pino no rodapé e persistido em `localStorage` (`hephaestus_sidebar_pinned`). Um espaçador estático com transição suave em `layout.tsx` previne layout-shift durante a expansão.
 - **Drawer móvel:** em viewports menores que `lg`, colapsa automaticamente em drawer retrátil (`w-[min(85vw,320px)]`) com backdrop escurecido (`bg-black/70 backdrop-blur-sm`), fechando com tecla `Escape` ou ao clicar fora/navegar.
@@ -71,7 +72,7 @@ A especificação normativa completa e canônica vive em **`docs/DESIGN.md`**. P
 ### 4.2 Header do shell (`app/(studio)/layout.tsx`)
 
 - Botão hambúrguer móvel para abertura da Sidebar (`lg:hidden`).
-- **Breadcrumbs dinâmicos:** gerados automaticamente via `usePathname()` com mapeamento amigável (`SEGMENT_LABELS`: dashboard → "Painel", datasets → "Datasets", annotate → "Anotar", jobs → "Treino YOLO", login → "Login"), com truncamento intermediário em `max-w-[140px]` e destaque semi-bold no item ativo.
+- **Breadcrumbs dinâmicos:** gerados automaticamente via `usePathname()` com mapeamento amigável (`SEGMENT_LABELS`: dashboard → "Painel", datasets → "Datasets", annotate → "Anotar", treino → "Treino YOLO", jobs → "Execuções", login → "Login"), com truncamento intermediário em `max-w-[140px]` e destaque semi-bold no item ativo.
 - **Botão do Centro de Atividades:** atalho de alta visibilidade no canto superior direito com ícone de raio (`IconZap` em `text-brand-400`), abrindo o drawer lateral de operações e monitoramento.
 - **Chip de Ambiente / Nó:** cápsula de status `Badge` variante `telemetry` com ponto luminoso pulsante exibindo "Local" (`title="Nó local — ambiente único nesta fatia"`).
 
@@ -103,10 +104,10 @@ A especificação normativa completa e canônica vive em **`docs/DESIGN.md`**. P
 ### 5.1 Painel / Dashboard (`app/(studio)/dashboard/page.tsx`)
 
 - **Landing page principal do estúdio:** rota `/` redireciona automaticamente para `/dashboard`.
-- **Cabeçalho com saudação dinâmica:** horário contextual ("Bom dia", "Boa tarde", "Boa noite") e identificação de perfil.
-- **KPIs de Alto Nível (`StatCard`):** 4 cartões em `.glass-card` exibindo Datasets totais, Amostras cadastradas, Taxa de rotulagem (%), Jobs ativos/concluídos e consumo de hardware (CPU/RAM/VRAM).
-- **Visão do Cluster de Nós:** monitoramento comparativo entre Orquestrador Local (GPU Workstation, dados reais de telemetria) e Cluster Nuvem (RunPod Pod A100 em standby).
-- **Controles de visualização:** alternador Grade / Lista via `SegmentedControl` e botão de atualização manual com loading spinner e polling a cada 3s com pausa automática quando a aba perde foco (`visibilitychange`).
+- **Cabeçalho com identidade:** "Operador local" derivado da presença do cookie válido (`GET /api/auth/me` 200 — ADR-0009 D6); versão de produto via `GET /health` (`version: "0.1.0"`, ADR-0009 D5).
+- **KPIs de Alto Nível (`StatCard`):** 4 cartões em `.glass-card` exibindo Datasets totais, Modelos & Pesos (`GET /api/models`), Storage (`GET /api/storage/usage` — `datasetsBytes + artifactsBytes`), Jobs ativos/concluídos (`GET /api/jobs`).
+- **Visão do Cluster de Nós:** monitoramento a partir de `GET /api/orchestrators` — nó real `orchestrator-local` (sem RunPod); telemetria global via `GET /api/telemetry` (CPU/RAM reais, `measured:true` com `gpus:[]`/`vram_*:null` no mock — R5); card GPU mostra nome da placa via `gpus[0]`, VRAM = GB+pct (quando disponível).
+- **Controles de visualização:** polling a cada 3s com pausa automática quando a aba perde foco (`visibilitychange`).
 
 ### 5.2 Lista de Datasets (`datasets-workspace`)
 
@@ -216,15 +217,16 @@ interface BBox { id: number; classId: number; label: string; x: number; y: numbe
 
 ## 10. Contratos que o front vai exigir do Rust (alinhado com backend.md §9)
 
-- Auth (IMPLEMENTADO Fatia 2 — `app/login/page.tsx`, `proxy.ts`, `next.config.ts`; contrato `packages/contracts/openapi.yaml`, `docs/adr/0001-auth-single-user.md`): `POST /api/auth/login`, `GET /api/auth/me`, `POST /api/auth/logout` + `GET /health` (`auth: ready|setup_required`).
+- Auth (IMPLEMENTADO Fatia 2 — `app/login/page.tsx`, `proxy.ts`, `next.config.ts`; contrato `packages/contracts/openapi.yaml`, `docs/adr/0001-auth-single-user.md`): `POST /api/auth/login`, `GET /api/auth/me`, `POST /api/auth/logout` + `GET /health` (`{status, service, auth: ready|setup_required, version}`). A rota `/health` é pública e devolve `version` (ADR-0009 D5; spec 0.9.0) — a fonte real da versão de produto (não "v1.3.0" hardcoded).
   - Rota `/login`: form de senha; erros ramificados por `code` em pt-BR (`invalid_credentials` → "Senha incorreta.", `setup_required` → "Servidor em modo setup — defina STUDIO_PASSWORD.", `invalid_request` → "Envie a senha.", default → "Falha inesperada."); sucesso → `/` (`router.replace` + `refresh`); já logado (`GET /me` ok) → volta a `/`.
   - Gate de sessão via `proxy.ts`: `/login` passa direto (decide por si via `/me`); sem cookie `heph_session` → redirect `/login`; com cookie → passa, validade decidida pelo servidor via `/me` (`/` redireciona a `/login` se `/me` não-ok; logout → `POST /logout` + volta a `/login`). `/api/*` fora do matcher — envelope 401 do backend repassado intacto.
   - Resolução T5: front chama `/api/*` relativo (`credentials: "same-origin"`, sem CORS); rewrite Next → `API_INTERNAL_URL` (dev `http://localhost:8080`, compose `http://principal:8080`). `NEXT_PUBLIC_API_URL` ficou como resíduo de build (só `ARG` no Dockerfile; runtime usa o proxy `/api`).
 - Datasets: `GET/POST /api/datasets`, `GET/DELETE /api/datasets/:id` — IMPLEMENTADO (Fatia 3a — contrato `packages/contracts/openapi.yaml`, ADR-0002). Upload/imagens/boxes/caption — IMPLEMENTADO (Fatia 3b — spec 0.3.0, contrato que a 3c/3d implementa; as rotas de UI que os consomem ainda NÃO existem — `/datasets` é a 3c): `POST /:id/upload` (multipart `files`; corpo total 200 MiB + 8 MiB envelope → 413; teto por arquivo 200 MiB → item `rejected/too_large`; resposta `{items:[{imageId,filename,status,reason,bytes,width,height}]}` camelCase), `GET /:id/images?limit(=50, máx 200)&offset(=0)&split(train|val)&labeled(bool)` → `{items,total,limit,offset}`, `GET /:id/images/:imageId` (Image flat + `boxes[]` + `caption|null`), `GET /:id/images/:imageId/data` (proxy incondicional, `Cache-Control: private, max-age=31536000, immutable`), `PUT .../images/:imageId/boxes` (`{boxes:[{classId,x,y,w,h,conf?,origin?,trackId?}]}` cap 1000, domínio 0..1), `PUT .../images/:imageId/caption` (upsert `{text:1..8000,origin?,model?≤255}`).   Export/import — IMPLEMENTADO (Fatia 3e, spec 0.6.0, ADR-0006): `POST /:id/export` (download `.zip` via blob + `Content-Disposition`), `POST /datasets/import` (FormData `file` + `title` opcional + `replace: "true"` só quando true; fluxo 409 → diálogo de irreversibilidade → `replace=true`); `lib/backup.ts` (`exportDataset`/`importDataset` + copies por `code`) + `components/studio/ImportDatasetModal.tsx`; limite do zip 200 MiB + 8 MiB envelope (413). `POST /:id/package` — IMPLEMENTADO (Fatia 4, spec 0.7.0, ADR-0007 D1): congela `dataset_versions`, gera zip, PUT `packages/<version_id>/`, 200 `PackageResponse{versionId,key,bytes,md5Zip,files}`.
-- Ambientes (alias UI de orquestradores): `GET /api/environments` (= `GET /api/orchestrators`), `POST /environments/select|connect` (= adopt/enable).
+- Ambientes (alias UI de orquestradores): o alias `/api/environments*` é **pendente** (módulo Roadmap desabilitado honesto — ADR-0009 D0). O que existe é `GET /api/orchestrators`, consumido pelo `/dashboard` (F6.1/F6.2). POSTs de gestão (adopt/enable/disable) permanecem pendentes (RunPod fora).
 - Jobs — IMPLEMENTADO (Fatia 4 e 5; spec 0.7.0 e 0.8.0, ADR-0007 e ADR-0008):
-  - Rota `/jobs` (Forja & Treinamento):
-    - Layout profissional em 2 colunas com histórico de jobs na esquerda (`JobCard.tsx` / `JobListItem`) e área central de setup e monitoramento (`ForjaYoloSetup.tsx`, `YoloHyperparameters.tsx`).
+  - Rota `/treino` (Treino YOLO — nova, F6.3): setup de treino YOLO centralizado (`ForjaYoloSetup.tsx` movido para lá); pós-202 navega `/jobs?job=<id>` para auto-seleção na fila de execuções. Sidebar: "Treino YOLO" aponta para `/treino`.
+  - Rota `/jobs` (Execuções — renomeada F6.3): fila de trabalho de todos os tipos + histórico agrupado ativos primeiro + painel de detalhe; CTA "Novo Treino" primário; badge jobsActive na Sidebar.
+  - Sidebar: seção "Treinamento & Execução" com "Treino YOLO"→/treino (sem badge) e "Execuções"→/jobs (badge jobsActive); breadcrumbs `treino`→"Treino YOLO", `jobs`→"Execuções".
     - Setup de treino YOLO (`ForjaYoloSetup.tsx`): formulário controlado com validação para dataset YOLO, modelo backbone (`yolo11n.pt`, etc.), epochs, batch size, imgsz, taxa de aprendizado lr0, otimizador (`AdamW/SGD/Muon`) e data augmentations.
     - Gráficos vetoriais de convergência (`ConvergenceChart.tsx` e `MetricSparkline`): exibição em SVG de Loss (box, cls, dfl) e mAP (mAP50, mAP50-95) sincronizados via polling em tempo real.
     - Terminal estruturado de telemetria e logs (`JobLogViewer.tsx`): visualizador em `JetBrains Mono` com busca textual, auto-scroll e filtro de severidade de logs de streaming.
@@ -239,9 +241,14 @@ interface BBox { id: number; classId: number; label: string; x: number; y: numbe
     - `POST /api/jobs/autotracker` (`lib/autotracker.ts:startAutotrackerJob`): body `{datasetId, model?, conf?}`, 202 `{jobId,status:"queued",queuePosition?}`. Modal `AutoTrackerModal` (modelo fixo `mock`, slider `conf` 0.3–0.95 default 0.65).
     - `POST /api/jobs/:id/autotracker/apply` (`lib/autotracker.ts:applyAutotrackerBoxes`): body `{overwrite?, imageId?}`, 200 `{applied, skipped, images}`; 409 `job_not_done` (job não está `done`); 400 `invalid_request`; 404 `not_found`; 503 `queue_unavailable`/`storage_unavailable`.
   - **Centro de Atividades (`ActionCenter.tsx`):** consome `/api/jobs` e `/api/telemetry` em tempo real em uma gaveta global (`Drawer`), permitindo abortar jobs, baixar artefatos e aplicar anotações do AutoTracker sem sair do contexto de trabalho atual.
-  - Telemetria real (polling `getTelemetry()` a cada 3s via `Sidebar.tsx`, `ActionCenter.tsx` e `dashboard/page.tsx`): `Telemetry{measured,cpu,ram,vramUsed,vramTotal,gpus,jobsActive}`.
+  - Telemetria real (polling `getTelemetry()` a cada 3s via `Sidebar.tsx`, `ActionCenter.tsx` e `dashboard/page.tsx`): `Telemetry{measured,cpu,ram,ramTotal,vramUsed,vramTotal,gpus,jobsActive}`. `ramTotal` (bytes, aditivo) = total de RAM do nó; a UI calcula `ramGB = ram / (1024**3)` e `ramPct = ram / ramTotal`.
+  - **Monitoring — IMPLEMENTADO (F6.1; ADR-0009):**
+    - `GET /api/orchestrators` (`lib/monitoring.ts:listOrchestrators()`): `Orchestrator{id,name,kind,endpoint,status,lastHeartbeat}` — consome o nó real da tabela do manager. 503 `queue_unavailable` quando manager fora (UI mostra "Indisponível (manager fora)", não vazio).
+    - `GET /api/models` (`lib/monitoring.ts:listModels()`): `ModelWeight{id,name,engine,model,jobId,bytes,createdAt}` — último checkpoint `kind='model'` por `(engine,model)` de jobs `done`. 503 `queue_unavailable` quando manager fora.
+    - `GET /api/storage/usage` (`lib/monitoring.ts:getStorageUsage()`): `StorageUsage{datasetsBytes,artifactsBytes,totalBytes,measured:true}` — soma SQL por dono. 503 `queue_unavailable` quando manager/database fora.
+    - `GET /health` (`lib/monitoring.ts:getHealth()`): `HealthResponse{status,service,auth,version}` — versão de produto real (`CARGO_PKG_VERSION`, não string fixa).
 - Runners/playground: `POST /runners/{engine}/up`, `POST /runners/:id/{kill,infer}`, `GET /runners` — infer via `POST /:id/infer`, 409 se preemptado.
-- Models: `GET /api/models` (dropdowns) + `POST /models/{upload,download}`.
+- Models — `GET /api/models` IMPLEMENTADO (F6.1; pesos derivados de `job_artifacts.kind='model'` por (engine,model) de jobs done; consome `lib/monitoring.ts:listModels()`; shape `ModelWeight{id,name,engine,model,jobId,bytes,createdAt}`); `POST /api/models/upload` e `POST /api/models/download` permanecem **pendentes** (tabela `models` + volume `models/` = fatia Roadmap "Modelos & Pesos").
 - Preview/sandbox: `POST /api/preview/{autolabel|autotracker|generate|search}` (efêmero, sem fila).
 - Settings: chaves `hfToken, civitaiKey, openaiKey, anthropicKey, vllmEndpoint` no wire (camelCase global, ADR-0002 D1; colunas `settings` seguem snake_case) — rota ainda **não implementada** (mascaradas no GET quando chegar).
 - Classes e lixeira — IMPLEMENTADO (Fatia 3g, spec 0.4.0, ADR-0005): `putClasses(datasetId, classes)` (`lib/classes.ts` → `PUT /:id/classes`, reconciliação por id, 409 `classes_in_use` mantém o modal aberto); `softDeleteImage` (`DELETE /:id/images/:imageId` → 204, sem sweep) / `restoreImage` (`POST .../restore` → 204 sem conflito | 200 `{filename}` com rename `_restaurado`) / `purgeTrash` (`DELETE /:id/trash` → 204) (`lib/images.ts`; listagem da lixeira via `listImages(id, {deleted:true})`); `Toast.action` (`{label, onClick}`, toast com ação vive 6s — usado pelo Desfazer).
@@ -260,7 +267,8 @@ apps/web/
 │   │   │       ├── page.tsx              # Galeria de amostras e anotações
 │   │   │       └── annotate/[imageId]/
 │   │   │           └── page.tsx          # Editor visual de BBox YOLO
-│   │   ├── jobs/page.tsx                 # Forja & Treinamento YOLO (Setup + Atividade)
+│   │   ├── treino/page.tsx               # Setup de treino YOLO (ForjaYoloSetup; F6.3)
+│   │   ├── jobs/page.tsx                 # Execuções — fila de trabalho + histórico + detalhe (F6.3)
 │   │   └── layout.tsx                    # Shell global (Sidebar + Header + ActionCenter + ToastHost)
 │   ├── login/page.tsx                    # Autenticação single-user (AuthAmbient)
 │   ├── globals.css                       # Tokens @theme, classes glass e fontes
@@ -295,14 +303,16 @@ apps/web/
 ├── lib/
 │   ├── api.ts, autotracker.ts, backup.ts, classes.ts,
 │   ├── dataset-inspector.ts              # Pré-inspeção inteligente de pastas/ZIPs
-│   ├── datasets.ts, events.ts, format.ts, images.ts, jobs.ts, search.ts
+│   ├── datasets.ts, events.ts, format.ts, images.ts, jobs.ts,
+│   ├── monitoring.ts                     # Rotas de monitoramento (orchestrators/models/storage/health; F6.1)
+│   ├── search.ts
 └── types/
     └── studio.ts                         # Tipagens TypeScript de contratos e dados
 ```
 
 ## 12. Backlog front-end (evolução contínua)
 
-- [x] Rotas reais implementadas (`/dashboard`, `/datasets`, `/datasets/[id]`, `/annotate/[imageId]`, `/jobs`, `/login`).
+- [x] Rotas reais implementadas (`/dashboard`, `/datasets`, `/datasets/[id]`, `/annotate/[imageId]`, `/jobs` (Execuções), `/treino` (Treino YOLO), `/login`).
 - [x] Redirecionamento da raiz (`/` → `/dashboard`).
 - [x] Centro de Atividades global (`ActionCenter.tsx`) com gaveta retrátil e monitoramento em tempo real.
 - [x] Ingestão unificada por Drag & Drop na tela de datasets com pré-inspeção imediata de `.zip`/pastas (`dataset-inspector.ts`).

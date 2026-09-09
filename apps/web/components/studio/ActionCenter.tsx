@@ -3,12 +3,20 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
+  IconActivity,
+  IconAlertTriangle,
+  IconBell,
   IconCheck,
   IconChevronDown,
+  IconCpu,
   IconDatabase,
   IconDownload,
+  IconHardDrive,
+  IconInfo,
+  IconLayers,
   IconPlay,
   IconRefresh,
+  IconServer,
   IconTarget,
   IconTrash,
   IconX,
@@ -20,6 +28,7 @@ import {
   downloadArtifact,
   getJobArtifacts,
   getJobMetrics,
+  getTelemetry,
   listJobs,
 } from "@/lib/jobs";
 import { applyAutotrackerBoxes } from "@/lib/autotracker";
@@ -31,16 +40,28 @@ import type {
   JobArtifact,
   JobMetrics as JobMetricsType,
   JobStatus,
+  Telemetry,
 } from "@/types/studio";
 import ConfirmDialog from "@/components/studio/ConfirmDialog";
 import { showToast } from "./Toast";
+
+export interface SystemNotification {
+  id: string;
+  title: string;
+  message: string;
+  category: "infra" | "dataset" | "model" | "orchestrator";
+  level: "info" | "warning" | "success" | "error";
+  timestamp: string;
+  actionLabel?: string;
+  actionHref?: string;
+}
 
 interface ActionCenterProps {
   open: boolean;
   onClose: () => void;
 }
 
-type TabFilter = "all" | "running" | "done" | "failed";
+type TabFilter = "all" | "active" | "jobs" | "system";
 
 const STATUS_CONFIG: Record<
   JobStatus,
@@ -111,6 +132,7 @@ function formatDuration(start: string, end: string | null): string {
 export function ActionCenter({ open, onClose }: ActionCenterProps) {
   const router = useRouter();
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState<TabFilter>("all");
@@ -168,12 +190,20 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
     }
   }, [mounted]);
 
-  // Busca lista de jobs
-  const fetchJobs = useCallback(async () => {
+  // Busca lista de jobs e telemetria do nó em paralelo
+  const fetchData = useCallback(async () => {
     try {
       setLoading(true);
-      const res = await listJobs();
-      setJobs(res.items);
+      const [resJobs, resTel] = await Promise.allSettled([
+        listJobs(),
+        getTelemetry(),
+      ]);
+      if (resJobs.status === "fulfilled") {
+        setJobs(resJobs.value.items);
+      }
+      if (resTel.status === "fulfilled") {
+        setTelemetry(resTel.value);
+      }
     } catch {
       // Ignora erro silenciosamente em polling
     } finally {
@@ -181,40 +211,51 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
     }
   }, []);
 
-  // Busca inicial ao abrir
+  // Polling de atividades consciente de visibilidade (apenas com drawer aberto)
   useEffect(() => {
-    if (open) {
-      fetchJobs();
-    }
-  }, [open, fetchJobs]);
-
-  // Polling a cada 3s quando aberto ou quando há jobs ativos
-  useEffect(() => {
-    const hasActive = jobs.some(
-      (j) =>
-        j.status === "queued" ||
-        j.status === "running" ||
-        j.status === "cancelling",
-    );
-
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
+    if (!open) {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+      return;
     }
 
-    if (open || hasActive) {
-      pollRef.current = setInterval(() => {
-        void fetchJobs();
-      }, 3000);
+    // Busca inicial imediata ao abrir o drawer
+    void fetchData();
+
+    function tick() {
+      if (document.visibilityState === "visible") {
+        void fetchData();
+      }
     }
+
+    pollRef.current = setInterval(tick, 3000);
+
+    function onVisibilityChange() {
+      if (document.visibilityState === "visible") {
+        void fetchData();
+        if (!pollRef.current) {
+          pollRef.current = setInterval(tick, 3000);
+        }
+      } else {
+        if (pollRef.current) {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+        }
+      }
+    }
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
       if (pollRef.current) {
         clearInterval(pollRef.current);
         pollRef.current = null;
       }
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [open, jobs, fetchJobs]);
+  }, [open, fetchData]);
 
   // Carrega métricas e artefatos ao expandir um job
   useEffect(() => {
@@ -248,7 +289,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
       await abortJob(abortTarget.id);
       showToast("Job cancelado com sucesso.", "success");
       setAbortTarget(null);
-      await fetchJobs();
+      await fetchData();
     } catch (err) {
       if (
         err instanceof ApiError &&
@@ -285,7 +326,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
           : undefined,
       );
       setApplyOverwrite(false);
-      await fetchJobs();
+      await fetchData();
     } catch (err) {
       if (err instanceof ApiError) {
         showToast(autotrackerErrorMessage(err.code), "error");
@@ -307,7 +348,88 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
     }
   }
 
-  // Filtragem e ordenação (mais recentes primeiro)
+  // Notificações do sistema agnósticas (telemetria, nó orquestrador, alertas de recursos)
+  const systemNotifications = useMemo<SystemNotification[]>(() => {
+    const list: SystemNotification[] = [];
+
+    // 1. Alertas e telemetria de Hardware
+    if (telemetry) {
+      const vramUsedMb = telemetry.vramUsed ?? 0;
+      const vramTotalMb = telemetry.vramTotal ?? 0;
+      const vramPct =
+        vramTotalMb > 0 ? Math.round((vramUsedMb / vramTotalMb) * 100) : 0;
+
+      if (vramPct >= 85) {
+        list.push({
+          id: "sys-vram-alert",
+          title: "Alerta de VRAM Elevada",
+          message: `Uso de memória da GPU atingiu ${vramPct}% (${(vramUsedMb / 1024).toFixed(1)} GB de ${(vramTotalMb / 1024).toFixed(1)} GB).`,
+          category: "infra",
+          level: "warning",
+          timestamp: new Date().toISOString(),
+          actionLabel: "Ver no Painel",
+          actionHref: "/dashboard",
+        });
+      }
+
+      if (telemetry.cpu !== null && telemetry.cpu >= 90) {
+        list.push({
+          id: "sys-cpu-load",
+          title: "Carga Intensa de CPU",
+          message: `Processador do nó em ${telemetry.cpu}% de carga com ${telemetry.jobsActive} execução(ões) ativa(s).`,
+          category: "infra",
+          level: "warning",
+          timestamp: new Date().toISOString(),
+          actionLabel: "Ver Métricas",
+          actionHref: "/dashboard",
+        });
+      }
+
+      list.push({
+        id: "sys-node-status",
+        title: "Orquestrador Local Ativo",
+        message: `Nó Hephaestus operacional com ${telemetry.jobsActive} execução(ões) ativa(s) e VRAM monitorada.`,
+        category: "orchestrator",
+        level: "success",
+        timestamp: new Date().toISOString(),
+        actionLabel: "Monitor de Nós",
+        actionHref: "/dashboard",
+      });
+    }
+
+    // 2. Alertas de Jobs que falharam
+    const failedJobs = jobs.filter((j) => j.status === "failed");
+    failedJobs.slice(0, 2).forEach((job) => {
+      list.push({
+        id: `sys-job-failed-${job.id}`,
+        title: `Falha na Execução: ${job.model}`,
+        message:
+          job.queueReason ||
+          `A tarefa de ${job.kind === "yolo_train" ? "treino" : "processamento"} foi interrompida no nó local.`,
+        category: "model",
+        level: "error",
+        timestamp: job.finishedAt || job.createdAt,
+        actionLabel: "Investigar",
+        actionHref: `/jobs?selected=${job.id}`,
+      });
+    });
+
+    // 3. Sincronização do Acervo de Dados
+    list.push({
+      id: "sys-dataset-sync",
+      title: "Armazenamento & Datasets",
+      message: "Volumes de dados e diretórios de anotações sincronizados no cache NVMe local.",
+      category: "dataset",
+      level: "info",
+      timestamp: new Date(Date.now() - 1000 * 60 * 30).toISOString(),
+      actionLabel: "Explorar Datasets",
+      actionHref: "/datasets",
+    });
+
+    return list;
+  }, [telemetry, jobs]);
+
+  // Filtragem e ordenação de jobs (mais recentes primeiro)
   const sortedJobs = useMemo(() => {
     return [...jobs].sort(
       (a, b) =>
@@ -315,7 +437,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
     );
   }, [jobs]);
 
-  const activeCount = useMemo(
+  const activeJobsCount = useMemo(
     () =>
       jobs.filter(
         (j) =>
@@ -326,37 +448,32 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
     [jobs],
   );
 
-  const doneCount = useMemo(
-    () => jobs.filter((j) => j.status === "done").length,
-    [jobs],
-  );
-
-  const failedCount = useMemo(
+  const activeAlertsCount = useMemo(
     () =>
-      jobs.filter((j) => j.status === "failed" || j.status === "cancelled")
-        .length,
-    [jobs],
+      systemNotifications.filter(
+        (n) => n.level === "warning" || n.level === "error",
+      ).length,
+    [systemNotifications],
   );
 
-  const filtered = useMemo(() => {
-    let list = sortedJobs;
+  const totalActiveCount = activeJobsCount + activeAlertsCount;
 
-    if (tab === "running") {
+  // Filtragem por aba e busca unificada
+  const q = query.trim().toLowerCase();
+
+  const filteredJobs = useMemo(() => {
+    if (tab === "system") return [];
+
+    let list = sortedJobs;
+    if (tab === "active") {
       list = list.filter(
         (j) =>
           j.status === "running" ||
           j.status === "queued" ||
           j.status === "cancelling",
       );
-    } else if (tab === "done") {
-      list = list.filter((j) => j.status === "done");
-    } else if (tab === "failed") {
-      list = list.filter(
-        (j) => j.status === "failed" || j.status === "cancelled",
-      );
     }
 
-    const q = query.trim().toLowerCase();
     if (!q) return list;
 
     return list.filter((j) => {
@@ -373,7 +490,54 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
         statusLabel.includes(q)
       );
     });
-  }, [sortedJobs, tab, query]);
+  }, [sortedJobs, tab, q]);
+
+  const filteredNotifications = useMemo(() => {
+    if (tab === "jobs") return [];
+
+    let list = systemNotifications;
+    if (tab === "active") {
+      list = list.filter((n) => n.level === "warning" || n.level === "error");
+    }
+
+    if (!q) return list;
+
+    return list.filter((n) => {
+      const titleMatch = n.title.toLowerCase().includes(q);
+      const messageMatch = n.message.toLowerCase().includes(q);
+      const categoryMatch = n.category.toLowerCase().includes(q);
+      return titleMatch || messageMatch || categoryMatch;
+    });
+  }, [systemNotifications, tab, q]);
+
+  function getJobServiceInfo(job: Job) {
+    if (job.kind === "yolo_train") {
+      return {
+        serviceTitle: "Treino YOLO",
+        categoryLabel: "Visão Computacional",
+        icon: IconTarget,
+        actionText: "Ver na Forja →",
+        targetHref: `/jobs?selected=${job.id}`,
+      };
+    }
+    if (job.kind === "autotracker") {
+      return {
+        serviceTitle: "AutoTracker",
+        categoryLabel: "Rastreamento & Vídeo",
+        icon: IconLayers,
+        actionText: job.datasetId ? "Ver no Dataset →" : "Ver no Studio →",
+        targetHref: job.datasetId ? `/datasets/${job.datasetId}` : `/jobs?selected=${job.id}`,
+      };
+    }
+    const kindName = String(job.kind).replace(/_/g, " ");
+    return {
+      serviceTitle: kindName.charAt(0).toUpperCase() + kindName.slice(1),
+      categoryLabel: "Processamento IA",
+      icon: IconZap,
+      actionText: "Ver Detalhes →",
+      targetHref: `/jobs?selected=${job.id}`,
+    };
+  }
 
   function toggleExpand(id: string) {
     setExpandedId((prev) => (prev === id ? null : id));
@@ -397,8 +561,8 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
         <aside
           role="dialog"
           aria-modal="true"
-          aria-label="Centro de Atividades"
-          className={`fixed inset-y-0 right-0 flex w-full flex-col border-l border-white/10 bg-[rgba(18,15,24,0.85)] text-zinc-100 shadow-[-24px_0_60px_rgba(0,0,0,0.85)] backdrop-blur-2xl transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] sm:w-[500px] pointer-events-auto ${
+          aria-labelledby="action-center-title"
+          className={`fixed inset-y-0 right-0 flex w-full flex-col border-l border-white/10 bg-[rgba(18,15,24,0.85)] text-zinc-100 shadow-[-24px_0_60px_rgba(0,0,0,0.85)] backdrop-blur-2xl transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] sm:w-[520px] pointer-events-auto ${
             visible ? "translate-x-0" : "translate-x-full"
           }`}
         >
@@ -416,17 +580,17 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
           <div className="flex h-14 shrink-0 items-center justify-between border-b border-white/10 px-5">
             <div className="flex items-center space-x-2.5">
               <span className="flex size-7 items-center justify-center rounded-lg border border-brand-500/30 bg-brand-500/15 backdrop-blur-sm text-brand-400">
-                <IconZap className="size-4" />
+                <IconBell className="size-4" />
               </span>
               <div>
-                <h2 className="font-display text-sm font-bold text-white tracking-tight">
+                <h2 id="action-center-title" className="font-display text-sm font-bold text-white tracking-tight">
                   Centro de Atividades
                 </h2>
               </div>
-              {activeCount > 0 && (
-                <span className="ml-1.5 flex items-center space-x-1 rounded-full border border-brand-500/35 bg-brand-500/20 backdrop-blur-sm px-2 py-0.5 font-mono text-[10px] font-medium text-brand-300">
-                  <span className="size-1.5 rounded-full bg-brand-400 animate-pulse" />
-                  <span>{activeCount} ativo{activeCount > 1 ? "s" : ""}</span>
+              {totalActiveCount > 0 && (
+                <span className="ml-1.5 flex items-center space-x-1.5 rounded-full border border-brand-500/30 bg-brand-500/15 backdrop-blur-sm px-2.5 py-0.5 font-mono text-[11px] font-medium text-brand-300">
+                  <span className="size-1.5 rounded-full bg-brand-400 animate-pulse motion-reduce:animate-none" />
+                  <span className="tabular-nums">{totalActiveCount} ativo{totalActiveCount > 1 ? "s" : ""}</span>
                 </span>
               )}
             </div>
@@ -434,14 +598,14 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
             <div className="flex items-center space-x-1">
               <button
                 type="button"
-                onClick={() => void fetchJobs()}
-                title="Atualizar lista de jobs"
-                aria-label="Atualizar lista"
+                onClick={() => void fetchData()}
+                title="Atualizar atividades e telemetria"
+                aria-label="Atualizar atividades"
                 disabled={loading}
                 className="inline-flex size-8 items-center justify-center rounded-lg border border-transparent bg-transparent text-zinc-400 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 cursor-pointer disabled:opacity-50"
               >
                 <IconRefresh
-                  className={`size-3.5 ${loading ? "animate-spin text-brand-400" : ""}`}
+                  className={`size-3.5 ${loading ? "animate-spin motion-reduce:animate-none text-brand-400" : ""}`}
                 />
               </button>
               <button
@@ -455,364 +619,553 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
             </div>
           </div>
 
-          {/* Abas de Filtro de Jobs */}
-          <div className="border-b border-white/10 px-3 py-2 bg-black/20">
-            <SubmodulePills<"all" | "running" | "done" | "failed">
+          {/* Abas de Filtro Agnósticas */}
+          <div className="border-b border-white/10 px-3 py-2 bg-black/30 backdrop-blur-sm">
+            <SubmodulePills<TabFilter>
               size="sm"
               value={tab}
               onChange={setTab}
               items={[
-                { id: "all", label: "Todos", count: sortedJobs.length },
-                { id: "running", label: "Em execução", count: activeCount },
-                { id: "done", label: "Concluídos", count: doneCount },
-                { id: "failed", label: "Falhas", count: failedCount },
+                { id: "all", label: "Tudo", count: sortedJobs.length + systemNotifications.length },
+                { id: "active", label: "Em andamento", count: totalActiveCount },
+                { id: "jobs", label: "Tarefas & Treino", count: sortedJobs.length },
+                { id: "system", label: "Sistema & Alertas", count: systemNotifications.length },
               ]}
             />
           </div>
 
           {/* Barra de Pesquisa */}
-          <div className="border-b border-white/10 p-3">
+          <div className="border-b border-white/10 p-3 bg-white/[0.01]">
             <SearchInput
               size="md"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onClear={() => setQuery("")}
-              placeholder="Pesquisar por modelo, job ID ou tipo…"
-              aria-label="Pesquisar jobs"
+              placeholder="Pesquisar tarefas, modelos ou alertas do sistema…"
+              aria-label="Pesquisar atividades e notificações"
             />
           </div>
 
-          {/* Lista de Jobs / Timeline */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-2.5">
-            {filtered.length === 0 ? (
-              <div className="glass-card flex flex-col items-center gap-3 rounded-2xl p-8 text-center mt-6">
-                <span className="flex size-10 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900 text-zinc-400">
-                  <IconTarget className="size-5 text-zinc-600" />
+          {/* Lista Unificada de Atividades, Notificações & Jobs */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-3 [scrollbar-width:thin]">
+            {filteredNotifications.length === 0 && filteredJobs.length === 0 ? (
+              /* Empty State Agnóstico com Ações Rápidas do Estúdio */
+              <div className="glass-card flex flex-col items-center gap-3.5 rounded-2xl p-8 text-center mt-6 border border-white/10">
+                <span className="flex size-12 items-center justify-center rounded-xl border border-brand-500/30 bg-brand-500/15 text-brand-400 backdrop-blur-sm">
+                  <IconActivity className="size-6 text-brand-400" />
                 </span>
-                <p className="text-xs font-medium text-zinc-300">
-                  {query
-                    ? `Nenhum job encontrado para "${query}"`
-                    : "Nenhum job no momento"}
-                </p>
-                <p className="text-[11px] text-zinc-500 max-w-xs">
-                  Inicie um treinamento YOLO ou execute um AutoTracker para acompanhar o progresso em tempo real aqui.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onClose();
-                    router.push("/jobs");
-                  }}
-                  className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.05] px-3 py-1.5 text-xs font-medium text-zinc-200 transition hover:border-white/20 hover:bg-white/[0.10] active:scale-[0.985]"
-                >
-                  <IconPlay className="size-3 text-brand-400" />
-                  <span>Novo Treino YOLO</span>
-                </button>
+                <div className="max-w-sm space-y-1">
+                  <h3 className="font-display text-sm font-semibold text-zinc-200">
+                    {query ? `Nenhum resultado para "${query}"` : "Nenhuma atividade recente"}
+                  </h3>
+                  <p className="text-xs text-zinc-400 leading-relaxed">
+                    O Centro de Atividades concentra todas as notificações do sistema em tempo real — incluindo treinos de IA, anotações de visão computacional, sincronizações de datasets e alertas de telemetria dos nós.
+                  </p>
+                </div>
+
+                {/* Central de Ações Rápidas do Estúdio */}
+                <div className="mt-3 w-full grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-3 border-t border-white/5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      router.push("/datasets");
+                    }}
+                    className="flex flex-col items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.02] p-3 text-center transition hover:border-brand-500/30 hover:bg-white/[0.06] cursor-pointer"
+                  >
+                    <IconDatabase className="size-4 text-brand-400" />
+                    <span className="text-xs font-medium text-zinc-200">Datasets</span>
+                    <span className="text-[10px] text-zinc-400 font-mono">Gerenciar acervo</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      router.push("/jobs");
+                    }}
+                    className="flex flex-col items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.02] p-3 text-center transition hover:border-brand-500/30 hover:bg-white/[0.06] cursor-pointer"
+                  >
+                    <IconTarget className="size-4 text-brand-400" />
+                    <span className="text-xs font-medium text-zinc-200">Forja de Treino</span>
+                    <span className="text-[10px] text-zinc-400 font-mono">Executar modelos</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      router.push("/dashboard");
+                    }}
+                    className="flex flex-col items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.02] p-3 text-center transition hover:border-brand-500/30 hover:bg-white/[0.06] cursor-pointer"
+                  >
+                    <IconServer className="size-4 text-brand-400" />
+                    <span className="text-xs font-medium text-zinc-200">Painel do Nó</span>
+                    <span className="text-[10px] text-zinc-400 font-mono">Monitorar nós</span>
+                  </button>
+                </div>
               </div>
             ) : (
-              filtered.map((job) => {
-                const config = STATUS_CONFIG[job.status] || STATUS_CONFIG.queued;
-                const isExpanded = expandedId === job.id;
-                const isActive =
-                  job.status === "running" ||
-                  job.status === "queued" ||
-                  job.status === "cancelling";
-                const isRunning = job.status === "running";
-                const pct = Math.round((job.progress ?? 0) * 100);
-                const duration = formatDuration(job.createdAt, job.finishedAt);
-                const jobExtraMetrics = metrics[job.id];
-                const jobExtraArtifacts = artifacts[job.id];
-                const latestMetric =
-                  jobExtraMetrics && jobExtraMetrics.length > 0
-                    ? jobExtraMetrics[jobExtraMetrics.length - 1]
-                    : null;
-
-                const kindTitle =
-                  job.kind === "yolo_train"
-                    ? "Treino YOLO"
-                    : job.kind === "autotracker"
-                      ? "AutoTracker"
-                      : job.kind;
-
-                return (
-                  <div
-                    key={job.id}
-                    className="group relative overflow-hidden rounded-xl border border-zinc-800/80 bg-zinc-900/60 backdrop-blur-sm transition-all hover:border-zinc-700 hover:bg-zinc-900/90"
-                  >
-                    {/* Linha vertical de status */}
-                    <div
-                      className={`absolute top-0 bottom-0 left-0 w-1 ${config.borderClass}`}
-                      aria-hidden="true"
-                    />
-
-                    <div
-                      className="p-3 pl-4 cursor-pointer"
-                      onClick={() => toggleExpand(job.id)}
-                    >
-                      {/* Top row */}
-                      <div className="flex items-start justify-between gap-2.5">
-                        <div className="flex items-start space-x-2.5 min-w-0 flex-1">
-                          {/* Ícone de status */}
-                          <div
-                            className={`mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full ${config.iconBg} ${config.iconColor}`}
-                          >
-                            {isRunning ? (
-                              <IconRefresh className="size-3.5 animate-spin" />
-                            ) : job.status === "done" ? (
-                              <IconCheck className="size-3.5" />
-                            ) : job.status === "failed" ? (
-                              <IconX className="size-3.5" />
-                            ) : (
-                              <IconTarget className="size-3.5" />
-                            )}
-                          </div>
-
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-baseline gap-1.5 flex-wrap">
-                              <span className="text-xs font-semibold text-zinc-100 truncate">
-                                {job.model}
-                              </span>
-                              <span className="font-mono text-[10px] text-brand-400 shrink-0">
-                                · {kindTitle}
-                              </span>
-                              <span className="font-mono text-[10px] text-zinc-500 shrink-0">
-                                · {formatRelativeTime(job.createdAt)}
-                              </span>
-                            </div>
-
-                            <p className="mt-0.5 font-mono text-[10px] text-zinc-400 truncate">
-                              {job.engine} · Duração: {duration}
-                              {job.queuePosition !== null &&
-                                job.queuePosition !== undefined &&
-                                ` · Fila: #${job.queuePosition}`}
-                            </p>
-                          </div>
-                        </div>
-
-                        {/* Status Badge + Chevron */}
-                        <div className="flex items-center space-x-1.5 shrink-0">
-                          <Badge
-                            variant={jobStatusToBadgeVariant(job.status)}
-                          >
-                            {config.label}
-                          </Badge>
-                          <span
-                            className={`text-zinc-500 transition-transform duration-200 ${
-                              isExpanded ? "rotate-180" : ""
-                            }`}
-                          >
-                            <IconChevronDown className="size-3.5" />
-                          </span>
-                        </div>
+              <>
+                {/* 1. Bloco de Notificações do Sistema */}
+                {filteredNotifications.length > 0 && (
+                  <div className="space-y-2">
+                    {tab === "all" && filteredJobs.length > 0 && (
+                      <div className="flex items-center justify-between px-1">
+                        <span className="font-mono text-[11px] font-semibold uppercase tracking-caps text-zinc-400">
+                          Notificações do Sistema ({filteredNotifications.length})
+                        </span>
                       </div>
+                    )}
+                    {filteredNotifications.map((notif) => {
+                      const levelConfig = {
+                        info: {
+                          border: "border-blue-500/30",
+                          bg: "bg-blue-500/10",
+                          text: "text-blue-400",
+                          icon: IconInfo,
+                        },
+                        warning: {
+                          border: "border-amber-500/30",
+                          bg: "bg-amber-500/10",
+                          text: "text-amber-400",
+                          icon: IconAlertTriangle,
+                        },
+                        success: {
+                          border: "border-[#34d399]/30",
+                          bg: "bg-[#34d399]/10",
+                          text: "text-[#34d399]",
+                          icon: IconCheck,
+                        },
+                        error: {
+                          border: "border-rose-500/30",
+                          bg: "bg-rose-500/10",
+                          text: "text-rose-400",
+                          icon: IconAlertTriangle,
+                        },
+                      }[notif.level];
 
-                      {/* Barra de Progresso em jobs ativos */}
-                      {isActive && (
-                        <div className="mt-2.5">
-                          <div className="flex items-center justify-between text-[10px] font-mono text-zinc-400 mb-1">
-                            <span>Progresso</span>
-                            <span>{pct}%</span>
-                          </div>
-                          <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-800">
-                            <div
-                              className="h-full rounded-full bg-gradient-to-r from-brand-500 to-[#34d399] transition-all duration-500"
-                              style={{ width: `${Math.max(4, pct)}%` }}
-                            />
+                      const IconComp = levelConfig.icon;
+                      const categoryName = {
+                        infra: "Infraestrutura",
+                        orchestrator: "Orquestrador",
+                        dataset: "Datasets",
+                        model: "Modelos",
+                      }[notif.category];
+
+                      return (
+                        <div
+                          key={notif.id}
+                          className="glass-card group relative overflow-hidden rounded-xl border border-white/10 p-3.5 transition-all duration-200 hover:border-brand-500/30 hover:bg-white/[0.03]"
+                        >
+                          <div className="flex items-start gap-3">
+                            <span
+                              className={`mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-lg border ${levelConfig.border} ${levelConfig.bg} ${levelConfig.text} backdrop-blur-sm`}
+                            >
+                              <IconComp className="size-3.5" />
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-baseline justify-between gap-2">
+                                <h4 className="text-xs font-semibold text-zinc-100 truncate">
+                                  {notif.title}
+                                </h4>
+                                <span className="font-mono text-[10px] text-zinc-400 shrink-0">
+                                  {formatRelativeTime(notif.timestamp)}
+                                </span>
+                              </div>
+                              <p className="mt-1 text-xs text-zinc-300 leading-relaxed">
+                                {notif.message}
+                              </p>
+                              <div className="mt-2 flex items-center justify-between gap-2 pt-2 border-t border-white/5">
+                                <span className="rounded border border-white/10 bg-white/[0.03] px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-caps text-zinc-400">
+                                  {categoryName}
+                                </span>
+                                {notif.actionLabel && notif.actionHref && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      onClose();
+                                      router.push(notif.actionHref!);
+                                    }}
+                                    className="text-brand-400 hover:text-brand-300 font-mono text-[11px] underline underline-offset-2 cursor-pointer"
+                                  >
+                                    {notif.actionLabel} →
+                                  </button>
+                                )}
+                              </div>
+                            </div>
                           </div>
                         </div>
-                      )}
+                      );
+                    })}
+                  </div>
+                )}
 
-                      {/* Painel expansível: Detalhes, Métricas, Ações */}
-                      {isExpanded && (
+                {/* 2. Bloco de Tarefas & Treinamentos (Jobs) */}
+                {filteredJobs.length > 0 && (
+                  <div className="space-y-2">
+                    {tab === "all" && filteredNotifications.length > 0 && (
+                      <div className="flex items-center justify-between px-1 pt-2">
+                        <span className="font-mono text-[11px] font-semibold uppercase tracking-caps text-zinc-400">
+                          Tarefas & Treinamentos ({filteredJobs.length})
+                        </span>
+                      </div>
+                    )}
+                    {filteredJobs.map((job) => {
+                      const config = STATUS_CONFIG[job.status] || STATUS_CONFIG.queued;
+                      const serviceInfo = getJobServiceInfo(job);
+                      const isExpanded = expandedId === job.id;
+                      const isActive =
+                        job.status === "running" ||
+                        job.status === "queued" ||
+                        job.status === "cancelling";
+                      const isRunning = job.status === "running";
+                      const pct = Math.round((job.progress ?? 0) * 100);
+                      const duration = formatDuration(job.createdAt, job.finishedAt);
+                      const jobExtraMetrics = metrics[job.id];
+                      const jobExtraArtifacts = artifacts[job.id];
+                      const latestMetric =
+                        jobExtraMetrics && jobExtraMetrics.length > 0
+                          ? jobExtraMetrics[jobExtraMetrics.length - 1]
+                          : null;
+
+                      return (
                         <div
-                          className="mt-3 border-t border-zinc-800/80 pt-3 text-[11px] font-mono space-y-3 bg-black/30 backdrop-blur-sm -mx-3 -mb-3 p-3"
-                          onClick={(e) => e.stopPropagation()}
+                          key={job.id}
+                          className={`glass-card group relative overflow-hidden rounded-xl border transition-all duration-200 ${
+                            isExpanded
+                              ? "border-brand-500/40 bg-brand-500/[0.08] shadow-lg shadow-brand-500/5 ring-1 ring-brand-500/20"
+                              : "border-white/10 hover:border-brand-500/30 hover:bg-white/[0.04]"
+                          }`}
                         >
-                          {/* Info chips */}
-                          <div className="grid grid-cols-2 gap-2 text-[10px]">
-                            <div className="rounded bg-black/40 backdrop-blur-sm p-2 border border-zinc-800/60">
-                              <span className="text-zinc-500 block uppercase tracking-caps text-[9px]">
-                                Job ID
-                              </span>
-                              <span className="text-zinc-300 font-mono truncate block" title={job.id}>
-                                {job.id}
-                              </span>
+                          {/* Linha vertical de status */}
+                          <div
+                            className={`absolute top-0 bottom-0 left-0 w-1 ${config.borderClass}`}
+                            aria-hidden="true"
+                          />
+
+                          <div
+                            className="p-3 pl-4 cursor-pointer select-none"
+                            onClick={() => toggleExpand(job.id)}
+                            role="button"
+                            tabIndex={0}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                toggleExpand(job.id);
+                              }
+                            }}
+                            aria-expanded={isExpanded}
+                            aria-label={`${job.model} - ${config.label}`}
+                          >
+                            {/* Top row */}
+                            <div className="flex items-start justify-between gap-2.5">
+                              <div className="flex items-start space-x-2.5 min-w-0 flex-1">
+                                {/* Ícone de status */}
+                                <div
+                                  className={`mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full ${config.iconBg} ${config.iconColor}`}
+                                >
+                                  {isRunning ? (
+                                    <IconRefresh className="size-3.5 animate-spin motion-reduce:animate-none" />
+                                  ) : job.status === "done" ? (
+                                    <IconCheck className="size-3.5" />
+                                  ) : job.status === "failed" ? (
+                                    <IconX className="size-3.5" />
+                                  ) : (
+                                    <IconTarget className="size-3.5" />
+                                  )}
+                                </div>
+
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-baseline gap-1.5 flex-wrap">
+                                    <span className="text-xs font-semibold text-zinc-100 truncate">
+                                      {job.model}
+                                    </span>
+                                    <span className="font-mono text-[11px] text-brand-400 shrink-0">
+                                      · {serviceInfo.serviceTitle}
+                                    </span>
+                                    <span className="font-mono text-[11px] text-zinc-500 shrink-0">
+                                      · {formatRelativeTime(job.createdAt)}
+                                    </span>
+                                  </div>
+
+                                  <p className="mt-0.5 font-mono text-[11px] text-zinc-400 truncate">
+                                    {job.engine} · Duração: {duration}
+                                    {job.queuePosition !== null &&
+                                      job.queuePosition !== undefined &&
+                                      ` · Fila: #${job.queuePosition}`}
+                                  </p>
+                                </div>
+                              </div>
+
+                              {/* Status Badge + Chevron */}
+                              <div className="flex items-center space-x-1.5 shrink-0">
+                                <Badge variant={jobStatusToBadgeVariant(job.status)}>
+                                  {config.label}
+                                </Badge>
+                                <span
+                                  className={`text-zinc-500 transition-transform duration-200 ${
+                                    isExpanded ? "rotate-180" : ""
+                                  }`}
+                                  aria-hidden="true"
+                                >
+                                  <IconChevronDown className="size-3.5" />
+                                </span>
+                              </div>
                             </div>
 
-                            {job.datasetId ? (
-                              <div className="rounded bg-black/40 backdrop-blur-sm p-2 border border-zinc-800/60 flex items-center justify-between">
-                                <div className="min-w-0 flex-1 mr-1">
-                                  <span className="text-zinc-500 block uppercase tracking-caps text-[9px]">
-                                    Dataset
-                                  </span>
-                                  <span className="text-zinc-300 font-mono truncate block" title={job.datasetId}>
-                                    {job.datasetId.slice(0, 8)}…
-                                  </span>
+                            {/* Barra de Progresso em jobs ativos */}
+                            {isActive && (
+                              <div className="mt-2.5">
+                                <div className="flex items-center justify-between text-[11px] font-mono text-zinc-400 mb-1">
+                                  <span>Progresso do Treinamento</span>
+                                  <span className="font-semibold text-brand-300 tabular-nums">{pct}%</span>
                                 </div>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    onClose();
-                                    router.push(`/datasets/${job.datasetId}`);
-                                  }}
-                                  className="text-brand-400 hover:text-brand-300 text-[10px] underline underline-offset-2 shrink-0"
-                                >
-                                  Abrir
-                                </button>
-                              </div>
-                            ) : (
-                              <div className="rounded bg-black/40 backdrop-blur-sm p-2 border border-zinc-800/60">
-                                <span className="text-zinc-500 block uppercase tracking-caps text-[9px]">
-                                  Dataset
-                                </span>
-                                <span className="text-zinc-500">—</span>
+                                <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/40 border border-white/10">
+                                  <div
+                                    className="h-full rounded-full bg-gradient-to-r from-brand-600 via-brand-500 to-brand-400 transition-all duration-500 motion-reduce:transition-none"
+                                    style={{ width: `${Math.max(4, pct)}%` }}
+                                  />
+                                </div>
                               </div>
                             )}
-                          </div>
 
-                          {/* Métricas ao vivo/finais se disponíveis */}
-                          {latestMetric && (
-                            <div>
-                              <div className="text-[9px] text-zinc-400 uppercase tracking-caps mb-1.5">
-                                Métricas (Epoch {latestMetric.epoch})
-                              </div>
-                              <div className="grid grid-cols-4 gap-1.5 text-center">
-                                <div className="rounded bg-black/50 backdrop-blur-sm p-1.5 border border-zinc-800/80">
-                                  <span className="text-[9px] text-zinc-500 block">mAP50</span>
-                                  <span className="text-xs font-semibold text-[#34d399]">
-                                    {(latestMetric.map50 * 100).toFixed(1)}%
-                                  </span>
-                                </div>
-                                <div className="rounded bg-black/50 backdrop-blur-sm p-1.5 border border-zinc-800/80">
-                                  <span className="text-[9px] text-zinc-500 block">mAP50-95</span>
-                                  <span className="text-xs font-semibold text-[#34d399]">
-                                    {(latestMetric.map5095 * 100).toFixed(1)}%
-                                  </span>
-                                </div>
-                                <div className="rounded bg-black/50 backdrop-blur-sm p-1.5 border border-zinc-800/80">
-                                  <span className="text-[9px] text-zinc-500 block">Box Loss</span>
-                                  <span className="text-xs font-semibold text-zinc-200">
-                                    {latestMetric.boxLoss?.toFixed(3) ?? "—"}
-                                  </span>
-                                </div>
-                                <div className="rounded bg-black/50 backdrop-blur-sm p-1.5 border border-zinc-800/80">
-                                  <span className="text-[9px] text-zinc-500 block">Cls Loss</span>
-                                  <span className="text-xs font-semibold text-zinc-200">
-                                    {latestMetric.clsLoss?.toFixed(3) ?? "—"}
-                                  </span>
-                                </div>
-                              </div>
-                            </div>
-                          )}
-
-                          {/* Artefatos disponíveis para download */}
-                          {jobExtraArtifacts && jobExtraArtifacts.length > 0 && (
-                            <div>
-                              <div className="text-[9px] text-zinc-400 uppercase tracking-caps mb-1.5">
-                                Artefatos Gerados ({jobExtraArtifacts.length})
-                              </div>
-                              <div className="space-y-1">
-                                {jobExtraArtifacts.map((art) => (
-                                  <div
-                                    key={art.id}
-                                    className="flex items-center justify-between rounded border border-zinc-800 bg-black/40 backdrop-blur-sm px-2.5 py-1 text-[10px]"
-                                  >
-                                    <span className="truncate text-zinc-300 mr-2" title={art.path}>
-                                      {art.path.split("/").pop()} ({formatBytes(art.bytes)})
+                            {/* Painel expansível: Detalhes, Métricas, Ações */}
+                            {isExpanded && (
+                              <div
+                                className="mt-3 border-t border-white/10 pt-3 text-[11px] font-mono space-y-3 bg-black/40 backdrop-blur-md -mx-3 -mb-3 p-3.5"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                {/* Info chips */}
+                                <div className="grid grid-cols-2 gap-2 text-[11px]">
+                                  <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
+                                    <span className="text-zinc-400 block uppercase tracking-caps text-[10px] font-mono">
+                                      Job ID
                                     </span>
+                                    <span className="text-zinc-200 font-mono truncate block text-[11px]" title={job.id}>
+                                      {job.id}
+                                    </span>
+                                  </div>
+
+                                  {job.datasetId ? (
+                                    <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10 flex items-center justify-between">
+                                      <div className="min-w-0 flex-1 mr-1">
+                                        <span className="text-zinc-400 block uppercase tracking-caps text-[10px] font-mono">
+                                          Dataset
+                                        </span>
+                                        <span className="text-zinc-200 font-mono truncate block text-[11px]" title={job.datasetId}>
+                                          {job.datasetId.slice(0, 8)}…
+                                        </span>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          onClose();
+                                          router.push(`/datasets/${job.datasetId}`);
+                                        }}
+                                        className="text-brand-400 hover:text-brand-300 text-[11px] font-mono underline underline-offset-2 shrink-0 cursor-pointer"
+                                      >
+                                        Abrir
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
+                                      <span className="text-zinc-400 block uppercase tracking-caps text-[10px] font-mono">
+                                        Categoria
+                                      </span>
+                                      <span className="text-zinc-300 font-mono text-[11px]">{serviceInfo.categoryLabel}</span>
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Métricas ao vivo/finais se disponíveis */}
+                                {latestMetric && (
+                                  <div>
+                                    <div className="text-[10px] font-mono text-zinc-400 uppercase tracking-caps mb-1.5 flex items-center justify-between">
+                                      <span>Métricas</span>
+                                      <span className="text-zinc-400">Epoch {latestMetric.epoch}</span>
+                                    </div>
+                                    <div className="grid grid-cols-4 gap-1.5 text-center">
+                                      <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
+                                        <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">mAP50</span>
+                                        <span className="text-xs font-semibold text-[#34d399] font-mono tabular-nums">
+                                          {(latestMetric.map50 * 100).toFixed(1)}%
+                                        </span>
+                                      </div>
+                                      <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
+                                        <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">mAP50-95</span>
+                                        <span className="text-xs font-semibold text-[#34d399] font-mono tabular-nums">
+                                          {(latestMetric.map5095 * 100).toFixed(1)}%
+                                        </span>
+                                      </div>
+                                      <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
+                                        <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">Box Loss</span>
+                                        <span className="text-xs font-semibold text-zinc-200 font-mono tabular-nums">
+                                          {latestMetric.boxLoss?.toFixed(3) ?? "—"}
+                                        </span>
+                                      </div>
+                                      <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
+                                        <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">Cls Loss</span>
+                                        <span className="text-xs font-semibold text-zinc-200 font-mono tabular-nums">
+                                          {latestMetric.clsLoss?.toFixed(3) ?? "—"}
+                                        </span>
+                                      </div>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* Artefatos disponíveis para download */}
+                                {jobExtraArtifacts && jobExtraArtifacts.length > 0 && (
+                                  <div>
+                                    <div className="text-[10px] font-mono text-zinc-400 uppercase tracking-caps mb-1.5">
+                                      Artefatos Gerados ({jobExtraArtifacts.length})
+                                    </div>
+                                    <div className="space-y-1.5">
+                                      {jobExtraArtifacts.map((art) => (
+                                        <div
+                                          key={art.id}
+                                          className="flex items-center justify-between rounded-lg border border-white/10 bg-white/[0.03] backdrop-blur-sm px-3 py-1.5 text-[11px]"
+                                        >
+                                          <span className="truncate text-zinc-300 mr-2 font-mono text-[11px]" title={art.path}>
+                                            {art.path.split("/").pop()} ({formatBytes(art.bytes)})
+                                          </span>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleDownload(job.id, art)}
+                                            className="inline-flex items-center gap-1 text-brand-400 hover:text-brand-300 font-mono text-[11px] font-medium shrink-0 cursor-pointer"
+                                          >
+                                            <IconDownload className="size-3" />
+                                            <span>Baixar</span>
+                                          </button>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* Mensagem de Erro se falhou */}
+                                {job.queueReason && job.status === "failed" && (
+                                  <div className="rounded-lg bg-rose-950/40 border border-rose-800/50 p-2.5 text-rose-300 text-[11px] font-mono">
+                                    {job.queueReason}
+                                  </div>
+                                )}
+
+                                {/* Ações contextuais */}
+                                <div className="pt-2.5 border-t border-white/10 flex items-center justify-between gap-2 flex-wrap">
+                                  {/* AutoTracker: aplicar boxes */}
+                                  {job.kind === "autotracker" && job.status === "done" && (
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <label className="flex items-center gap-1.5 text-[11px] text-zinc-400 cursor-pointer">
+                                        <input
+                                          type="checkbox"
+                                          checked={applyOverwrite}
+                                          onChange={(e) => setApplyOverwrite(e.target.checked)}
+                                          className="rounded border-zinc-700 bg-zinc-800 text-brand-500 focus:ring-brand-500/40 size-3.5"
+                                        />
+                                        <span>Sobrescrever</span>
+                                      </label>
+                                      <button
+                                        type="button"
+                                        disabled={applyBusy}
+                                        onClick={() => handleApplyBoxes(job)}
+                                        className="inline-flex items-center gap-1 rounded-lg border border-[#34d399]/40 bg-[#34d399]/15 px-2.5 py-1 text-[11px] font-medium text-[#a7f3d0] transition hover:bg-[#34d399]/25 active:scale-[0.985] disabled:opacity-50 cursor-pointer"
+                                      >
+                                        <IconCheck className="size-3" />
+                                        <span>{applyBusy ? "Aplicando…" : "Aplicar ao dataset"}</span>
+                                      </button>
+                                    </div>
+                                  )}
+
+                                  {/* Cancelar Job ativo */}
+                                  {isActive && (
                                     <button
                                       type="button"
-                                      onClick={() => handleDownload(job.id, art)}
-                                      className="inline-flex items-center gap-1 text-brand-400 hover:text-brand-300 font-medium shrink-0"
+                                      onClick={() => setAbortTarget(job)}
+                                      className="inline-flex items-center gap-1 rounded-lg border border-rose-500/40 bg-rose-500/15 px-2.5 py-1 text-[11px] font-medium text-rose-300 transition hover:bg-rose-500/25 active:scale-[0.985] cursor-pointer"
                                     >
-                                      <IconDownload className="size-3" />
-                                      <span>Baixar</span>
+                                      <IconTrash className="size-3" />
+                                      <span>Cancelar Job</span>
                                     </button>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
+                                  )}
 
-                          {/* Mensagem de Erro se falhou */}
-                          {job.queueReason && job.status === "failed" && (
-                            <div className="rounded bg-rose-950/40 border border-rose-800/50 p-2 text-rose-300 text-[10px]">
-                              {job.queueReason}
-                            </div>
-                          )}
-
-                          {/* Ações contextuais */}
-                          <div className="pt-2 border-t border-zinc-800/80 flex items-center justify-between gap-2 flex-wrap">
-                            {/* AutoTracker: aplicar boxes */}
-                            {job.kind === "autotracker" && job.status === "done" && (
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <label className="flex items-center gap-1.5 text-[10px] text-zinc-400 cursor-pointer">
-                                  <input
-                                    type="checkbox"
-                                    checked={applyOverwrite}
-                                    onChange={(e) => setApplyOverwrite(e.target.checked)}
-                                    className="rounded border-zinc-700 bg-zinc-800 text-brand-500 focus:ring-brand-500/40 size-3"
-                                  />
-                                  <span>Sobrescrever</span>
-                                </label>
-                                <button
-                                  type="button"
-                                  disabled={applyBusy}
-                                  onClick={() => handleApplyBoxes(job)}
-                                  className="inline-flex items-center gap-1 rounded-lg border border-[#34d399]/40 bg-[#34d399]/15 px-2.5 py-1 text-[10px] font-medium text-[#a7f3d0] transition hover:bg-[#34d399]/25 active:scale-[0.985] disabled:opacity-50"
-                                >
-                                  <IconCheck className="size-3" />
-                                  <span>{applyBusy ? "Aplicando…" : "Aplicar ao dataset"}</span>
-                                </button>
+                                  {/* Ver detalhes no studio */}
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      onClose();
+                                      router.push(serviceInfo.targetHref);
+                                    }}
+                                    className="ml-auto text-zinc-400 hover:text-zinc-200 text-[11px] font-mono underline underline-offset-2 cursor-pointer"
+                                  >
+                                    {serviceInfo.actionText}
+                                  </button>
+                                </div>
                               </div>
                             )}
-
-                            {/* Cancelar Job ativo */}
-                            {isActive && (
-                              <button
-                                type="button"
-                                onClick={() => setAbortTarget(job)}
-                                className="inline-flex items-center gap-1 rounded-lg border border-rose-500/40 bg-rose-500/15 px-2.5 py-1 text-[10px] font-medium text-rose-300 transition hover:bg-rose-500/25 active:scale-[0.985]"
-                              >
-                                <IconTrash className="size-3" />
-                                <span>Cancelar Job</span>
-                              </button>
-                            )}
-
-                            {/* Ver detalhes no studio */}
-                            <button
-                              type="button"
-                              onClick={() => {
-                                onClose();
-                                router.push(`/jobs?selected=${job.id}`);
-                              }}
-                              className="ml-auto text-zinc-400 hover:text-zinc-200 text-[10px] underline underline-offset-2"
-                            >
-                              Ver na Forja →
-                            </button>
                           </div>
                         </div>
-                      )}
-                    </div>
+                      );
+                    })}
                   </div>
-                );
-              })
+                )}
+              </>
             )}
           </div>
 
-          {/* Footer fixo do drawer com atalho para Treino YOLO */}
-          <div className="border-t border-white/10 p-3 bg-black/40 backdrop-blur-sm flex items-center justify-between">
-            <button
-              type="button"
-              onClick={() => {
-                onClose();
-                router.push("/jobs");
-              }}
-              className="w-full inline-flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] backdrop-blur-sm py-2 text-xs font-medium text-zinc-200 transition hover:border-white/20 hover:bg-white/[0.08] active:scale-[0.985]"
-            >
-              <IconTarget className="size-3.5 text-brand-400" />
-              <span>Abrir Forja de Treino YOLO</span>
-            </button>
+          {/* Footer fixo do drawer com status do sistema e atalhos rápidos */}
+          <div className="border-t border-white/10 p-3.5 bg-black/40 backdrop-blur-md flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div className="flex items-center space-x-2 text-[11px] font-mono text-zinc-400">
+              <span className="size-2 rounded-full bg-[#34d399] animate-pulse motion-reduce:animate-none" />
+              <span>
+                Nó Local:{" "}
+                <strong className="text-zinc-200 font-semibold">
+                  {telemetry
+                    ? `${telemetry.jobsActive} ativo(s)${telemetry.vramUsed !== null ? ` · ${(telemetry.vramUsed / 1024).toFixed(1)} GB VRAM` : ""}${telemetry.cpu !== null ? ` · ${telemetry.cpu}% CPU` : ""}`
+                    : "Operacional"}
+                </strong>
+              </span>
+            </div>
+
+            <div className="flex items-center space-x-1.5 w-full sm:w-auto justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  router.push("/dashboard");
+                }}
+                className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-zinc-300 transition hover:border-brand-500/30 hover:bg-white/[0.08] hover:text-white cursor-pointer"
+                title="Abrir Painel Geral do Nó"
+              >
+                <IconServer className="size-3.5 text-brand-400" />
+                <span>Painel</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  router.push("/datasets");
+                }}
+                className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-zinc-300 transition hover:border-brand-500/30 hover:bg-white/[0.08] hover:text-white cursor-pointer"
+                title="Abrir Datasets"
+              >
+                <IconDatabase className="size-3.5 text-brand-400" />
+                <span>Datasets</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  router.push("/jobs");
+                }}
+                className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-xs font-medium text-zinc-300 transition hover:border-brand-500/30 hover:bg-white/[0.08] hover:text-white cursor-pointer"
+                title="Abrir Forja de Treino"
+              >
+                <IconTarget className="size-3.5 text-brand-400" />
+                <span>Forja</span>
+              </button>
+            </div>
           </div>
         </aside>
       </div>

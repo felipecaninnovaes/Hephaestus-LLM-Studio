@@ -101,6 +101,9 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
   useEffect(() => {
     let cancelled = false;
     async function loadTelem() {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        return;
+      }
       try {
         const t = await getTelemetry();
         if (!cancelled) setTelemetry(t);
@@ -110,9 +113,16 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
     }
     loadTelem();
     const timer = setInterval(loadTelem, 10000);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void loadTelem();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       cancelled = true;
       clearInterval(timer);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);
 
@@ -212,7 +222,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
             <span className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-zinc-300">
               {d.imagesCount} imgs
             </span>
-            <span className="text-zinc-600">·</span>
+            <span className="text-zinc-500">·</span>
             <span className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-zinc-300">
               {d.classes.length} cls
             </span>
@@ -338,7 +348,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
         <p className="text-sm font-medium text-zinc-200">
           Nenhum dataset YOLO elegível
         </p>
-        <p className="text-xs text-zinc-500">
+        <p className="text-xs text-zinc-400">
           Crie ou prepare um dataset YOLO com pelo menos 1 classe e 1 imagem para treinar.
         </p>
         <Link
@@ -510,7 +520,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
             ? "border-rose-500/40 bg-rose-500/[0.06]"
             : oomRisk === "warning"
               ? "border-amber-500/35 bg-amber-500/[0.05]"
-              : "border-zinc-800 bg-black/40"
+              : "border-white/10 bg-white/[0.02]"
         }`}
       >
         <div className="flex items-center justify-between font-mono text-[11px]">
@@ -532,9 +542,9 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
         </div>
 
         {/* Barra de Consumo de VRAM */}
-        <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-900 border border-zinc-800">
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/40 border border-white/10">
           <div
-            className={`h-full rounded-full transition-all duration-300 ${
+            className={`h-full rounded-full transition-all duration-300 motion-reduce:transition-none ${
               oomRisk === "danger"
                 ? "bg-rose-500"
                 : oomRisk === "warning"

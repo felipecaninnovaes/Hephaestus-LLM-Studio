@@ -201,7 +201,7 @@ export default function TrainYoloModal({
           />
 
           {/* Grid: Epochs / Batch / ImgSz */}
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
               <Input
                 id="train-epochs"
@@ -241,7 +241,7 @@ export default function TrainYoloModal({
           </div>
 
           {/* Grid: LR0 / Optimizer */}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <Input
                 id="train-lr0"
@@ -313,8 +313,9 @@ export default function TrainYoloModal({
               variant="primary"
               size="lg"
               loading={busy}
+              leftIcon={<IconPlay className="size-3.5" />}
             >
-              Iniciar
+              {busy ? "Iniciando…" : "Iniciar Treino"}
             </Button>
           </div>
         </form>

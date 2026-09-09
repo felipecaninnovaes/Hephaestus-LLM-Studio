@@ -100,7 +100,7 @@ export function MetricSparkline({
           cy={points.lastPoint.y}
           r={2.5}
           fill={color}
-          className="animate-pulse"
+          className="animate-pulse motion-reduce:animate-none"
         />
       </svg>
     </div>
@@ -235,7 +235,7 @@ export function ConvergenceChart({
   const activeHover = hoverIndex != null && metrics[hoverIndex] ? metrics[hoverIndex] : latest;
 
   return (
-    <div className="rounded-xl border border-zinc-800 bg-black/40 backdrop-blur-sm p-4 space-y-3.5">
+    <div className="rounded-xl border border-white/10 bg-[rgba(31,27,38,0.70)] backdrop-blur-xl shadow-lg p-4 space-y-3.5">
       {/* Header do Gráfico com Tabs e Indicador de Época */}
       <div className="flex flex-wrap items-center justify-between gap-2.5">
         <div className="flex items-center gap-2">
@@ -250,18 +250,18 @@ export function ConvergenceChart({
           </span>
           {isJobActive && (
             <span className="flex items-center gap-1 font-mono text-[11px] text-brand-400 whitespace-nowrap">
-              <span className="size-1.5 rounded-full bg-brand-400 animate-pulse" />
+              <span className="size-1.5 rounded-full bg-brand-400 animate-pulse motion-reduce:animate-none" />
               Live
             </span>
           )}
         </div>
 
         {/* Tab Switcher Segmentado */}
-        <div className="flex items-center rounded-lg border border-zinc-800 bg-zinc-950/70 backdrop-blur-sm p-0.5">
+        <div className="flex items-center rounded-lg border border-white/10 bg-black/40 backdrop-blur-sm p-0.5">
           <button
             type="button"
             onClick={() => setTab("all")}
-            className={`rounded-md px-2.5 py-1 font-mono text-[11px] transition ${
+            className={`rounded-md px-2.5 py-1 font-mono text-[11px] transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${
               tab === "all"
                 ? "bg-zinc-800 text-zinc-100 shadow-sm"
                 : "text-zinc-400 hover:text-zinc-200"
@@ -272,7 +272,7 @@ export function ConvergenceChart({
           <button
             type="button"
             onClick={() => setTab("loss")}
-            className={`rounded-md px-2.5 py-1 font-mono text-[11px] transition ${
+            className={`rounded-md px-2.5 py-1 font-mono text-[11px] transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${
               tab === "loss"
                 ? "bg-zinc-800 text-zinc-100 shadow-sm"
                 : "text-zinc-400 hover:text-zinc-200"
@@ -283,7 +283,7 @@ export function ConvergenceChart({
           <button
             type="button"
             onClick={() => setTab("map")}
-            className={`rounded-md px-2.5 py-1 font-mono text-[11px] transition ${
+            className={`rounded-md px-2.5 py-1 font-mono text-[11px] transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${
               tab === "map"
                 ? "bg-zinc-800 text-zinc-100 shadow-sm"
                 : "text-zinc-400 hover:text-zinc-200"
@@ -385,7 +385,7 @@ export function ConvergenceChart({
           {/* Curvas de Precisão (mAP) */}
           {curves && (tab === "all" || tab === "map") && (
             <>
-              {/* mAP@50 (Brand Emerald) */}
+              {/* mAP@50 (Brand Green #34d399) */}
               <path
                 d={curves.map50.path}
                 fill="none"

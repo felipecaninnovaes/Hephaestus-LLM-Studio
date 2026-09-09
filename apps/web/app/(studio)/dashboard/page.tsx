@@ -328,7 +328,7 @@ export default function DashboardPage() {
           {nodes.map((node) => (
             <div
               key={node.id}
-              className="group relative isolate gap-0 rounded-2xl p-0 text-card-foreground duration-200 backdrop-blur-md dashboard-environment-card overflow-hidden border transition-[background-color,border-color,box-shadow] hover:shadow-[0_0_24px_-8px_rgba(131,80,242,0.4)] border-brand-500/40 bg-brand-500/5"
+              className="glass-card group relative isolate gap-0 rounded-2xl p-0 border border-white/10 bg-[rgba(31,27,38,0.70)] backdrop-blur-xl overflow-hidden transition-[background-color,border-color,box-shadow] hover:border-brand-500/30 hover:bg-[rgba(38,33,47,0.78)]"
             >
               <div className="space-y-4 p-5 sm:p-6">
                 {/* Header do Card */}

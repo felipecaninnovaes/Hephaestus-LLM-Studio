@@ -192,7 +192,7 @@ export function JobLogViewer({ job, metrics = [], artifacts = [] }: JobLogViewer
 
           {isActive && (
             <span className="inline-flex items-center gap-1 font-mono text-[11px] text-brand-400 pl-1 whitespace-nowrap">
-              <span className="size-1.5 rounded-full bg-brand-400 animate-pulse" />
+              <span className="size-1.5 rounded-full bg-brand-400 animate-pulse motion-reduce:animate-none" />
               Streaming Ativo
             </span>
           )}
@@ -217,7 +217,7 @@ export function JobLogViewer({ job, metrics = [], artifacts = [] }: JobLogViewer
               <button
                 type="button"
                 onClick={() => setAutoScroll(!autoScroll)}
-                className={`hidden lg:inline-flex items-center gap-1 rounded-md border px-2 py-1 transition whitespace-nowrap backdrop-blur-sm ${
+                className={`hidden lg:inline-flex items-center gap-1 rounded-md border px-2 py-1 transition whitespace-nowrap backdrop-blur-sm cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${
                   autoScroll
                     ? "border-brand-500/30 bg-brand-500/10 text-brand-300"
                     : "border-zinc-800 bg-zinc-900/50 text-zinc-400 hover:text-zinc-300"
@@ -231,7 +231,7 @@ export function JobLogViewer({ job, metrics = [], artifacts = [] }: JobLogViewer
               <button
                 type="button"
                 onClick={handleCopyLogs}
-                className="inline-flex items-center gap-1 rounded-md border border-zinc-800 bg-zinc-900/60 backdrop-blur-sm px-2.5 py-1 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100 transition whitespace-nowrap"
+                className="inline-flex items-center gap-1 rounded-md border border-zinc-800 bg-zinc-900/60 backdrop-blur-sm px-2.5 py-1 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100 transition whitespace-nowrap cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70"
               >
                 {copied ? (
                   <>
@@ -292,8 +292,8 @@ export function JobLogViewer({ job, metrics = [], artifacts = [] }: JobLogViewer
           {/* Cursor pulsante no fim se ativo */}
           {isActive && (
             <div className="flex items-center gap-2 pt-1 text-brand-400">
-              <span className="size-2 rounded-full bg-brand-400 animate-ping" />
-              <span className="animate-pulse">Aguardando telemetria...</span>
+              <span className="size-2 rounded-full bg-brand-400 animate-ping motion-reduce:animate-none" />
+              <span className="animate-pulse motion-reduce:animate-none">Aguardando telemetria...</span>
             </div>
           )}
         </div>

@@ -157,15 +157,26 @@ function JobsPageContent() {
 
     if (hasActiveJobs(jobs)) {
       pollRef.current = setInterval(() => {
+        if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+          return;
+        }
         void fetchJobs();
       }, POLL_INTERVAL);
     }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible" && hasActiveJobs(jobs)) {
+        void fetchJobs();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       if (pollRef.current) {
         clearInterval(pollRef.current);
         pollRef.current = null;
       }
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [jobs, fetchJobs]);
 
@@ -342,7 +353,7 @@ function JobsPageContent() {
       {/* ═══════════════════════════════════════════════
           HEADER DA FORJA
           ═══════════════════════════════════════════════ */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-zinc-800/80 pb-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/10 pb-4">
         <div>
           <div className="flex items-center space-x-2.5">
             <span className="flex size-7 items-center justify-center rounded-lg border border-brand-500/30 bg-brand-500/15 text-brand-400 backdrop-blur-sm">
@@ -351,7 +362,7 @@ function JobsPageContent() {
             <h1 className="font-display text-lg font-bold text-white tracking-tight">
               Forja de Treino YOLO
             </h1>
-            <span className="rounded-full border border-zinc-800 bg-zinc-900/90 px-2 py-0.5 font-mono text-[11px] uppercase tracking-caps text-zinc-400 backdrop-blur-sm">
+            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-[11px] uppercase tracking-caps text-zinc-400 backdrop-blur-sm">
               Ultralytics Engine
             </span>
           </div>
@@ -392,7 +403,7 @@ function JobsPageContent() {
         <div className="flex flex-col md:flex-row items-start gap-6">
           {/* Coluna 1: Setup & Controle (Fixa: w-full md:w-80 lg:w-96 shrink-0) */}
           <aside className="w-full md:w-80 lg:w-96 shrink-0 md:sticky md:top-4 md:max-h-[calc(100vh-2rem)] md:overflow-y-auto overflow-x-hidden [scrollbar-width:thin]">
-            <div className="glass-card rounded-2xl p-5 border border-zinc-800/80">
+            <div className="glass-card rounded-2xl p-5 border border-white/10">
               <ForjaYoloSetup
                 onJobCreated={handleJobCreated}
                 initialTelemetry={telemetry}
@@ -433,7 +444,7 @@ function JobsPageContent() {
                 </div>
 
                 {/* Job Hero Card */}
-                <div className="glass-card rounded-2xl p-5 space-y-4">
+                <div className="glass-card rounded-2xl p-5 space-y-4 border border-white/10">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div>
                       <div className="flex items-center gap-2">
@@ -487,9 +498,9 @@ function JobsPageContent() {
                           {Math.round((selectedJob.progress ?? 0) * 100)}%
                         </span>
                       </div>
-                      <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-900 border border-zinc-800">
+                      <div className="h-2 w-full overflow-hidden rounded-full bg-black/40 border border-white/10">
                         <div
-                          className="h-full rounded-full bg-gradient-to-r from-brand-600 via-brand-500 to-brand-400 transition-all duration-500"
+                          className="h-full rounded-full bg-gradient-to-r from-brand-600 via-brand-500 to-brand-400 transition-all duration-500 motion-reduce:transition-none"
                           style={{
                             width: `${Math.min(
                               100,
@@ -504,7 +515,7 @@ function JobsPageContent() {
                   {/* Métricas da Execução & Curvas de Convergência */}
                   {(selectedJob.kind === "yolo_train" ||
                     (metrics[selectedJob.id] && metrics[selectedJob.id].length > 0)) && (
-                    <div className="space-y-4 pt-3 border-t border-zinc-800/80">
+                    <div className="space-y-4 pt-3 border-t border-white/10">
                       {/* Curvas de Convergência Vetoriais (SVG Multi-Curve) */}
                       <ConvergenceChart
                         metrics={metrics[selectedJob.id] || []}
@@ -521,7 +532,7 @@ function JobsPageContent() {
                               {metrics[selectedJob.id]![metrics[selectedJob.id]!.length - 1].epoch}
                               )
                             </h3>
-                            <span className="font-mono text-[11px] text-zinc-500">
+                            <span className="font-mono text-[11px] text-zinc-400">
                               {metrics[selectedJob.id]!.length} checkpoint(s)
                             </span>
                           </div>
@@ -549,7 +560,7 @@ function JobsPageContent() {
                                   className={`rounded-xl border p-3 flex flex-col justify-between backdrop-blur-sm ${
                                     isPrimary
                                       ? "border-brand-500/30 bg-brand-500/10"
-                                      : "border-zinc-800 bg-black/40"
+                                      : "border-white/10 bg-white/[0.02]"
                                   }`}
                                 >
                                   <div>
@@ -587,7 +598,7 @@ function JobsPageContent() {
 
                   {/* Artefatos Gerados (Achatado - sem nested-cards) */}
                   {artifacts[selectedJob.id] && artifacts[selectedJob.id].length > 0 && (
-                    <div className="space-y-3 pt-3 border-t border-zinc-800/80">
+                    <div className="space-y-3 pt-3 border-t border-white/10">
                       <h3 className="font-mono text-[11px] font-semibold uppercase tracking-caps text-zinc-300">
                         Artefatos Gerados ({artifacts[selectedJob.id].length})
                       </h3>
@@ -595,7 +606,7 @@ function JobsPageContent() {
                         {artifacts[selectedJob.id].map((art) => (
                           <div
                             key={art.id}
-                            className="flex items-center justify-between rounded-xl border border-zinc-800 bg-black/40 p-3 backdrop-blur-sm"
+                            className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.02] p-3 backdrop-blur-sm"
                           >
                             <div className="min-w-0 mr-2">
                               <span
@@ -673,8 +684,8 @@ function JobsPageContent() {
               </div>
             ) : (
               /* Empty State quando não há nenhum job */
-              <div className="glass-card flex flex-col items-center gap-3.5 rounded-2xl p-12 text-center">
-                <span className="flex size-12 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900/90 text-zinc-400 backdrop-blur-sm">
+              <div className="glass-card flex flex-col items-center gap-3.5 rounded-2xl p-12 text-center border border-white/10">
+                <span className="flex size-12 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-zinc-400 backdrop-blur-sm">
                   <IconTarget className="size-6 text-brand-400/60" />
                 </span>
                 <div className="max-w-md space-y-1">
@@ -699,30 +710,30 @@ function JobsPageContent() {
                   <h3 className="font-display text-sm font-semibold text-zinc-200">
                     Histórico de Execuções
                   </h3>
-                  <span className="rounded-full border border-zinc-800 bg-zinc-900/80 px-2 py-0.5 font-mono text-[11px] text-zinc-400 backdrop-blur-sm">
+                  <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-0.5 font-mono text-[11px] text-zinc-400 backdrop-blur-sm">
                     {sorted.length} {sorted.length === 1 ? "execução" : "execuções"}
                   </span>
                 </div>
                 {activeJobsCount > 0 && (
                   <span className="flex items-center gap-1.5 font-mono text-[11px] text-brand-300">
-                    <span className="size-1.5 rounded-full bg-brand-400 animate-pulse" />
+                    <span className="size-1.5 rounded-full bg-brand-400 animate-pulse motion-reduce:animate-none" />
                     {activeJobsCount} ativo(s)
                   </span>
                 )}
               </div>
 
               {loading ? (
-                <div className="glass-card rounded-2xl p-8 text-center text-xs text-zinc-500 font-mono">
+                <div className="glass-card rounded-2xl p-8 text-center text-xs text-zinc-400 font-mono border border-white/10">
                   Carregando histórico de jobs…
                 </div>
               ) : sorted.length === 0 ? (
-                <div className="glass-card flex flex-col items-center gap-3 rounded-2xl p-8 text-center">
+                <div className="glass-card flex flex-col items-center gap-3 rounded-2xl p-8 text-center border border-white/10">
                   <p className="text-xs font-medium text-zinc-400">
                     Nenhum histórico disponível até o momento.
                   </p>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 gap-2">
+                <div className="grid grid-cols-1 gap-2.5">
                   {sorted.map((job) => {
                     const isActive =
                       job.status === "queued" ||
@@ -735,13 +746,20 @@ function JobsPageContent() {
                       <div
                         key={job.id}
                         onClick={() => setSelectedJobId(job.id)}
-                        className={`group flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-xl p-3.5 transition cursor-pointer ${
+                        className={`glass-card group relative flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 rounded-xl p-4 transition-all duration-200 cursor-pointer border ${
                           isFocused
-                            ? "border border-brand-500/40 bg-brand-500/[0.08] shadow-sm"
-                            : "glass-card hover:border-zinc-700"
+                            ? "border-brand-500/50 bg-brand-500/[0.12] shadow-lg shadow-brand-500/10 ring-1 ring-brand-500/30"
+                            : "border-white/10 hover:border-brand-500/30 hover:bg-white/[0.04]"
                         }`}
                       >
-                        <div className="flex items-center gap-3 min-w-0 flex-1">
+                        {/* Indicador de foco lateral óptico */}
+                        <div
+                          className={`absolute left-0 inset-y-2.5 w-1 rounded-r-full bg-brand-500 transition-opacity ${
+                            isFocused ? "opacity-100" : "opacity-0 group-hover:opacity-40"
+                          }`}
+                        />
+
+                        <div className="flex items-center gap-3.5 min-w-0 flex-1 pl-1">
                           <Badge
                             variant={jobStatusToBadgeVariant(job.status)}
                             pulse={job.status === "running"}
@@ -761,12 +779,12 @@ function JobsPageContent() {
                                 · {job.kind} · {job.engine}
                               </span>
                               {isFocused && (
-                                <span className="hidden sm:inline-flex shrink-0 rounded border border-brand-500/30 bg-brand-500/15 px-1.5 py-0.2 font-mono text-[11px] text-brand-300 backdrop-blur-sm">
+                                <span className="hidden sm:inline-flex shrink-0 items-center rounded-md border border-brand-500/30 bg-brand-500/15 px-2 py-0.5 font-mono text-[11px] font-medium text-brand-300 backdrop-blur-sm">
                                   Ativo no monitor
                                 </span>
                               )}
                             </div>
-                            <div className="mt-0.5 flex items-center gap-3 font-mono text-[11px] text-zinc-400">
+                            <div className="mt-1 flex flex-wrap items-center gap-3 font-mono text-[11px] text-zinc-400">
                               <span>{formatRelativeTime(job.createdAt)}</span>
                               <span>Duração: {formatDuration(job.createdAt, job.finishedAt)}</span>
                               {isActive && (
@@ -776,7 +794,7 @@ function JobsPageContent() {
                           </div>
                         </div>
 
-                        <div className="flex items-center space-x-2 shrink-0">
+                        <div className="flex items-center space-x-2 shrink-0 pl-1 sm:pl-0">
                           <Button
                             type="button"
                             variant={isFocused ? "primary" : "secondary"}
@@ -787,7 +805,7 @@ function JobsPageContent() {
                             }}
                           >
                             <span>{isFocused ? "Em exibição" : "Ver detalhes"}</span>
-                            <span>→</span>
+                            <span aria-hidden="true">→</span>
                           </Button>
                         </div>
                       </div>

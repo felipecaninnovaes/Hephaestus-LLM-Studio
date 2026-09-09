@@ -93,12 +93,22 @@ impl std::error::Error for ScopedKeyError {}
 #[derive(Debug)]
 pub enum PipelineError {
     S3Download(String),
-    Md5Mismatch { expected: String, actual: String },
+    Md5Mismatch {
+        expected: String,
+        actual: String,
+    },
     UnzipFailed(String),
     ConfigYamlInvalid(String),
-    DockerFailed { exit_code: i32, logs_tail: String },
+    DockerFailed {
+        exit_code: i32,
+        logs_tail: String,
+    },
     ArtifactUpload(String),
     ReportFailed(String),
+    /// GPU orchestrator recebeu imagem mock — guarda anti-mock (D2).
+    GpuImageGuard {
+        image: String,
+    },
 }
 
 impl std::fmt::Display for PipelineError {
@@ -118,6 +128,12 @@ impl std::fmt::Display for PipelineError {
             }
             Self::ArtifactUpload(e) => write!(f, "artifact upload failed: {e}"),
             Self::ReportFailed(e) => write!(f, "report failed: {e}"),
+            Self::GpuImageGuard { image } => {
+                write!(
+                    f,
+                    "GPU orchestrator requires GPU trainer image (TRAINER_IMAGE={image} → :gpu)"
+                )
+            }
         }
     }
 }
@@ -495,12 +511,19 @@ impl HeartbeatClient for HttpHeartbeatClient {
 #[async_trait]
 pub trait TrainerExecutor: Send + Sync {
     /// Executa o trainer. Retorna (exit_code, logs_completos).
+    ///
+    /// `env` — variáveis de ambiente extras (ex.: `ENGINE_MOCK=0`).
+    /// `gpu_devices` — lista de índices nvidia-smi (ex.: `"0"` ou `"0,1"`).
+    ///   `Some(v)` → `--gpus "device={v}"` + `-e NVIDIA_VISIBLE_DEVICES={v}` +
+    ///   `--shm-size=2g` + envs repassados. `None` → comportamento padrão.
     async fn run(
         &self,
         image: &str,
         container_name: &str,
         volumes: &[(String, String)], // (host_path, container_path)
         args: &[String],              // argumentos após a imagem (ex.: train --config …)
+        env: &[(String, String)],     // variáveis de ambiente extras
+        gpu_devices: Option<&str>,    // índices nvidia-smi (ex.: "0")
     ) -> (i32, String);
 
     /// Para um container (abort via docker stop --time 5 → exit 137).
@@ -510,6 +533,49 @@ pub trait TrainerExecutor: Send + Sync {
 /// Executor real via CLI docker (EXEC_MODE=docker, default).
 pub struct DockerExecutor;
 
+/// Monta os argumentos do `docker run` para teste (D7).
+/// Retorna os argumentos que seriam passados ao `docker run` (sem o binário).
+pub fn build_docker_run_args(
+    image: &str,
+    container_name: &str,
+    volumes: &[(String, String)],
+    args: &[String],
+    env: &[(String, String)],
+    gpu_devices: Option<&str>,
+) -> Vec<String> {
+    let mut cmd_args = Vec::new();
+    cmd_args.push("run".to_string());
+    cmd_args.push("--rm".to_string());
+    cmd_args.push("--name".to_string());
+    cmd_args.push(container_name.to_string());
+
+    for (host, container) in volumes {
+        cmd_args.push("-v".to_string());
+        cmd_args.push(format!("{host}:{container}"));
+    }
+
+    // GPU flags (D4/D7): só quando gpu_devices está setado.
+    if let Some(devices) = gpu_devices {
+        cmd_args.push("--gpus".to_string());
+        cmd_args.push(format!("device={devices}"));
+        cmd_args.push("--shm-size".to_string());
+        cmd_args.push("2g".to_string());
+        cmd_args.push("-e".to_string());
+        cmd_args.push(format!("NVIDIA_VISIBLE_DEVICES={devices}"));
+    }
+
+    // Env extras (ENGINE_MOCK=0, etc.)
+    for (key, value) in env {
+        cmd_args.push("-e".to_string());
+        cmd_args.push(format!("{key}={value}"));
+    }
+
+    cmd_args.push(image.to_string());
+    cmd_args.extend_from_slice(args);
+
+    cmd_args
+}
+
 #[async_trait]
 impl TrainerExecutor for DockerExecutor {
     async fn run(
@@ -518,16 +584,14 @@ impl TrainerExecutor for DockerExecutor {
         container_name: &str,
         volumes: &[(String, String)],
         args: &[String],
+        env: &[(String, String)],
+        gpu_devices: Option<&str>,
     ) -> (i32, String) {
+        let cmd_args =
+            build_docker_run_args(image, container_name, volumes, args, env, gpu_devices);
+
         let mut cmd = tokio::process::Command::new("docker");
-        cmd.arg("run").arg("--rm").arg("--name").arg(container_name);
-
-        for (host, container) in volumes {
-            cmd.arg("-v").arg(format!("{host}:{container}"));
-        }
-
-        cmd.arg(image);
-        cmd.args(args);
+        cmd.args(&cmd_args);
 
         match cmd.output().await {
             Ok(o) => {
@@ -570,6 +634,8 @@ impl TrainerExecutor for SubprocessExecutor {
         _container_name: &str,
         _volumes: &[(String, String)],
         _args: &[String],
+        _env: &[(String, String)],
+        _gpu_devices: Option<&str>,
     ) -> (i32, String) {
         // Subprocess mode: tenta rodar o trainer diretamente.
         // Não é o caminho de aceite — falha honestamente se o pacote não estiver instalado.
@@ -636,10 +702,21 @@ pub async fn run_job(
     report_client: Arc<dyn ReportClient>,
     executor: Arc<dyn TrainerExecutor>,
     active_jobs: ActiveJobs,
+    gpu_devices: Option<String>,
+    gpu_allow_mock: bool,
 ) {
     let job_id = dispatch.job_id.clone();
     let report_for_error = Arc::clone(&report_client);
-    let result = run_job_inner(&dispatch, s3, report_client, executor, &active_jobs).await;
+    let result = run_job_inner(
+        &dispatch,
+        s3,
+        report_client,
+        executor,
+        &active_jobs,
+        gpu_devices.as_deref(),
+        gpu_allow_mock,
+    )
+    .await;
 
     if let Err(err_msg) = result {
         if let Err(report_err) = report_for_error
@@ -674,6 +751,8 @@ async fn run_job_inner(
     report_client: Arc<dyn ReportClient>,
     executor: Arc<dyn TrainerExecutor>,
     active_jobs: &ActiveJobs,
+    gpu_devices: Option<&str>,
+    gpu_allow_mock: bool,
 ) -> Result<(), String> {
     let job_id = &dispatch.job_id;
     let job_workdir = PathBuf::from(&dispatch.workdir);
@@ -793,6 +872,25 @@ async fn run_job_inner(
         (vol_outputs, "/outputs".to_string()),
     ];
 
+    // GPU config: lê do parâmetro (D4/D7 — lido uma vez no boot, passado via run_job).
+    let gpu_devices_ref = gpu_devices;
+
+    // Guarda anti-mock (D2): se GPU está habilitada mas a imagem é :local → falha.
+    if gpu_devices_ref.is_some() && !gpu_allow_mock {
+        if dispatch.image.contains(":local") || dispatch.image.ends_with(":local") {
+            return Err(format!(
+                "GPU orchestrator requires GPU trainer image (TRAINER_IMAGE={})",
+                dispatch.image
+            ));
+        }
+    }
+
+    // Env extras para o executor (D7): ENGINE_MOCK=0 quando GPU habilitada.
+    let mut exec_env: Vec<(String, String)> = Vec::new();
+    if gpu_devices_ref.is_some() {
+        exec_env.push(("ENGINE_MOCK".to_string(), "0".to_string()));
+    }
+
     // Spawn metrics collector (polls metrics.jsonl durante execução)
     let metrics_path = outputs.join("metrics.jsonl");
     let metrics_path_clone = metrics_path.clone();
@@ -862,7 +960,14 @@ async fn run_job_inner(
     };
 
     let (exit_code, logs) = executor
-        .run(&dispatch.image, &container_name, &volumes, &subcommand_args)
+        .run(
+            &dispatch.image,
+            &container_name,
+            &volumes,
+            &subcommand_args,
+            &exec_env,
+            gpu_devices_ref,
+        )
         .await;
 
     // Cancela metrics collector
@@ -1057,6 +1162,87 @@ fn parse_ram_total_from_content(content: &str) -> Option<i64> {
         }
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// GPU telemetry: nvidia-smi com fallback silencioso (D7)
+// ---------------------------------------------------------------------------
+
+/// Resultado do parse do nvidia-smi.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GpuTelemetry {
+    /// Nomes das GPUs visíveis (ex.: "NVIDIA GeForce RTX 3060").
+    pub gpus: Vec<String>,
+    /// VRAM total somada em bytes (nvidia-smi reporta MiB).
+    pub vram_total: i64,
+    /// VRAM usada somada em bytes.
+    pub vram_used: i64,
+}
+
+/// Tenta rodar `nvidia-smi` e parsear o CSV de saída.
+/// Retorna `None` se o binário não existir ou falhar (fallback silencioso).
+pub async fn try_nvidia_smi() -> Option<GpuTelemetry> {
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        tokio::process::Command::new("nvidia-smi")
+            .args([
+                "--query-gpu=name,memory.total,memory.used",
+                "--format=csv,noheader,nounits",
+            ])
+            .output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_nvidia_smi_csv(&stdout)
+}
+
+/// Parseia CSV do nvidia-smi (nomes + soma de VRAM em MiB → bytes).
+/// Linhas malformadas são ignoradas (skip silencioso).
+pub fn parse_nvidia_smi_csv(csv: &str) -> Option<GpuTelemetry> {
+    let mut gpus = Vec::new();
+    let mut vram_total_mib: i64 = 0;
+    let mut vram_used_mib: i64 = 0;
+
+    for line in csv.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // Formato: "NVIDIA GeForce RTX 3060, 12288, 0"
+        let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
+        if parts.len() < 3 {
+            continue; // linha malformada → ignora
+        }
+        let name = parts[0].to_string();
+        let total: i64 = match parts[1].parse() {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let used: i64 = match parts[2].parse() {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        gpus.push(name);
+        vram_total_mib += total;
+        vram_used_mib += used;
+    }
+
+    if gpus.is_empty() {
+        return None;
+    }
+
+    Some(GpuTelemetry {
+        gpus,
+        vram_total: vram_total_mib * 1024 * 1024, // MiB → bytes
+        vram_used: vram_used_mib * 1024 * 1024,   // MiB → bytes
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1355,6 +1541,8 @@ mod tests {
             _container_name: &str,
             _volumes: &[(String, String)],
             args: &[String],
+            _env: &[(String, String)],
+            _gpu_devices: Option<&str>,
         ) -> (i32, String) {
             *self.last_args.lock().unwrap() = Some(args.to_vec());
             (0, "ok".to_string())
@@ -1388,6 +1576,8 @@ mod tests {
                 "trainer-test",
                 &[("/data/datasets".into(), "/datasets".into())],
                 &expected_args,
+                &[],
+                None,
             )
             .await;
 
@@ -1526,6 +1716,8 @@ mod tests {
             _container_name: &str,
             _volumes: &[(String, String)],
             args: &[String],
+            _env: &[(String, String)],
+            _gpu_devices: Option<&str>,
         ) -> (i32, String) {
             *self.last_args.lock().unwrap() = Some(args.to_vec());
             (0, "ok".to_string())
@@ -1611,6 +1803,8 @@ mod tests {
             report.clone(),
             executor.clone(),
             &active_jobs,
+            None,
+            false,
         )
         .await;
         assert!(
@@ -1671,6 +1865,8 @@ mod tests {
             report.clone(),
             executor.clone(),
             &active_jobs,
+            None,
+            false,
         )
         .await;
         assert!(
@@ -1720,6 +1916,8 @@ mod tests {
             report.clone(),
             executor.clone(),
             active_jobs.clone(),
+            None,
+            false,
         )
         .await;
 
@@ -1745,5 +1943,298 @@ mod tests {
         assert!((m.dfl_loss - 0.123).abs() < 1e-6);
         assert!((m.map50 - 0.912).abs() < 1e-6);
         assert!((m.map50_95 - 0.654).abs() < 1e-6);
+    }
+
+    // =========================================================================
+    // G.2 — nvidia-smi telemetry parse tests
+    // =========================================================================
+
+    #[test]
+    fn parse_nvidia_smi_csv_two_gpus() {
+        let csv = "\
+NVIDIA GeForce RTX 3060, 12288, 0
+NVIDIA GeForce GTX 1660 SUPER, 6144, 1024
+";
+        let t = parse_nvidia_smi_csv(csv).expect("should parse 2 GPUs");
+        assert_eq!(
+            t.gpus,
+            vec!["NVIDIA GeForce RTX 3060", "NVIDIA GeForce GTX 1660 SUPER"]
+        );
+        // total: 12288 + 6144 = 18432 MiB → 18432 * 1024 * 1024
+        assert_eq!(t.vram_total, 18432 * 1024 * 1024);
+        // used: 0 + 1024 = 1024 MiB → 1024 * 1024 * 1024
+        assert_eq!(t.vram_used, 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn parse_nvidia_smi_csv_malformed_lines_ignored() {
+        let csv = "\
+NVIDIA GeForce RTX 3060, 12288, 0
+CORRUPTED LINE
+NVIDIA GeForce GTX 1660 SUPER, 6144, 512
+also bad, not a number
+";
+        let t = parse_nvidia_smi_csv(csv).expect("should parse valid lines only");
+        assert_eq!(t.gpus.len(), 2);
+        assert_eq!(t.gpus[0], "NVIDIA GeForce RTX 3060");
+        assert_eq!(t.gpus[1], "NVIDIA GeForce GTX 1660 SUPER");
+        // used: 0 + 512 = 512 MiB
+        assert_eq!(t.vram_used, 512 * 1024 * 1024);
+    }
+
+    #[test]
+    fn parse_nvidia_smi_csv_empty() {
+        assert!(parse_nvidia_smi_csv("").is_none());
+        assert!(parse_nvidia_smi_csv("  \n  \n").is_none());
+    }
+
+    #[test]
+    fn parse_nvidia_smi_csv_no_valid_gpus() {
+        let csv = "bad line\nanother bad\n";
+        assert!(parse_nvidia_smi_csv(csv).is_none());
+    }
+
+    // =========================================================================
+    // G.2 — DockerExecutor GPU args tests
+    // =========================================================================
+
+    #[test]
+    fn docker_run_args_gpu_some() {
+        let args = build_docker_run_args(
+            "hephaestus/trainer-yolo:gpu",
+            "trainer-yolo-job-1",
+            &[("/data/datasets".into(), "/datasets".into())],
+            &[
+                "train".to_string(),
+                "--config".to_string(),
+                "/outputs/c.yaml".to_string(),
+            ],
+            &[("ENGINE_MOCK".to_string(), "0".to_string())],
+            Some("0"),
+        );
+        // GPU flags present
+        let gpu_idx = args
+            .iter()
+            .position(|a| a == "--gpus")
+            .expect("--gpus flag");
+        assert_eq!(args[gpu_idx + 1], "device=0");
+        let shm_idx = args
+            .iter()
+            .position(|a| a == "--shm-size")
+            .expect("--shm-size flag");
+        assert_eq!(args[shm_idx + 1], "2g");
+        // NVIDIA_VISIBLE_DEVICES
+        let nvd_idx = args
+            .iter()
+            .position(|a| a == "NVIDIA_VISIBLE_DEVICES=0")
+            .expect("NVIDIA_VISIBLE_DEVICES");
+        assert!(args[nvd_idx - 1] == "-e");
+        // ENGINE_MOCK env
+        let mock_idx = args
+            .iter()
+            .position(|a| a == "ENGINE_MOCK=0")
+            .expect("ENGINE_MOCK env");
+        assert!(args[mock_idx - 1] == "-e");
+        // Image and subcommand args are present
+        assert!(args.contains(&"hephaestus/trainer-yolo:gpu".to_string()));
+        assert!(args.contains(&"train".to_string()));
+    }
+
+    #[test]
+    fn docker_run_args_gpu_none_no_flags() {
+        let args = build_docker_run_args(
+            "hephaestus/trainer-yolo:local",
+            "trainer-yolo-job-2",
+            &[],
+            &["train".to_string()],
+            &[],
+            None,
+        );
+        // NO GPU flags
+        assert!(!args.contains(&"--gpus".to_string()));
+        assert!(!args.contains(&"--shm-size".to_string()));
+        assert!(!args.iter().any(|a| a.starts_with("NVIDIA_VISIBLE_DEVICES")));
+        // Image and args present
+        assert!(args.contains(&"hephaestus/trainer-yolo:local".to_string()));
+        assert!(args.contains(&"train".to_string()));
+    }
+
+    // =========================================================================
+    // G.2 — Anti-mock guard tests (D2)
+    // =========================================================================
+
+    #[test]
+    fn anti_mock_guard_rejects_local_with_gpu() {
+        // Simula ORCH_GPU_DEVICES setado + imagem :local → deve falhar.
+        // Usa run_job para testar o caminho completo (falha → "failed" report).
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_dispatch_with_valid_md5("job-guard-001", "yolo", &zip_path);
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        dispatch.image = "hephaestus/trainer-yolo:local".to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            run_job(
+                dispatch,
+                s3.clone(),
+                report.clone(),
+                executor.clone(),
+                active_jobs.clone(),
+                Some("0".to_string()),
+                false,
+            )
+            .await;
+        });
+
+        let statuses = report.statuses();
+        assert!(
+            statuses.contains(&"failed".to_string()),
+            "should fail with anti-mock guard: {:?}",
+            statuses
+        );
+        // Executor should NOT have been called
+        assert!(executor.last_args().is_none());
+    }
+
+    #[test]
+    fn anti_mock_guard_passes_gpu_image() {
+        // GPU setado + imagem :gpu → deve passar (executor chamado).
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_dispatch_with_valid_md5("job-guard-002", "yolo", &zip_path);
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        dispatch.image = "hephaestus/trainer-yolo:gpu".to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        // Pre-cria outputs
+        let mut output_files = HashMap::new();
+        output_files.insert("best.pt".to_string(), b"fake model".to_vec());
+        output_files.insert("last.pt".to_string(), b"fake model".to_vec());
+        output_files.insert(
+            "metrics.jsonl".to_string(),
+            br#"{"box_loss":0.5,"cls_loss":0.3,"dfl_loss":0.2,"mAP50":0.8,"mAP50-95":0.6,"epoch":1}"#.to_vec(),
+        );
+        create_fake_outputs(tmp.path(), "job-guard-002", &output_files);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let result = run_job_inner(
+                &dispatch,
+                s3.clone(),
+                report.clone(),
+                executor.clone(),
+                &active_jobs,
+                Some("0"),
+                false,
+            )
+            .await;
+            assert!(
+                result.is_ok(),
+                "gpu image should pass guard: {:?}",
+                result.err()
+            );
+        });
+    }
+
+    #[test]
+    fn anti_mock_guard_bypass_with_allow_mock() {
+        // GPU setado + imagem :local + gpu_allow_mock=true → deve passar.
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_dispatch_with_valid_md5("job-guard-003", "yolo", &zip_path);
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        dispatch.image = "hephaestus/trainer-yolo:local".to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        // Pre-cria outputs
+        let mut output_files = HashMap::new();
+        output_files.insert("best.pt".to_string(), b"fake model".to_vec());
+        output_files.insert("last.pt".to_string(), b"fake model".to_vec());
+        output_files.insert(
+            "metrics.jsonl".to_string(),
+            br#"{"box_loss":0.5,"cls_loss":0.3,"dfl_loss":0.2,"mAP50":0.8,"mAP50-95":0.6,"epoch":1}"#.to_vec(),
+        );
+        create_fake_outputs(tmp.path(), "job-guard-003", &output_files);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let result = run_job_inner(
+                &dispatch,
+                s3.clone(),
+                report.clone(),
+                executor.clone(),
+                &active_jobs,
+                Some("0"),
+                true, // gpu_allow_mock
+            )
+            .await;
+            assert!(
+                result.is_ok(),
+                "ALLOW_MOCK should bypass guard: {:?}",
+                result.err()
+            );
+        });
+    }
+
+    #[test]
+    fn anti_mock_guard_no_gpu_no_check() {
+        // Sem ORCH_GPU_DEVICES → imagem :local deve passar (caminho mock padrão).
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_dispatch_with_valid_md5("job-guard-004", "yolo", &zip_path);
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        dispatch.image = "hephaestus/trainer-yolo:local".to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        // Pre-cria outputs
+        let mut output_files = HashMap::new();
+        output_files.insert("best.pt".to_string(), b"fake model".to_vec());
+        output_files.insert("last.pt".to_string(), b"fake model".to_vec());
+        output_files.insert(
+            "metrics.jsonl".to_string(),
+            br#"{"box_loss":0.5,"cls_loss":0.3,"dfl_loss":0.2,"mAP50":0.8,"mAP50-95":0.6,"epoch":1}"#.to_vec(),
+        );
+        create_fake_outputs(tmp.path(), "job-guard-004", &output_files);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let result = run_job_inner(
+                &dispatch,
+                s3.clone(),
+                report.clone(),
+                executor.clone(),
+                &active_jobs,
+                None,
+                false,
+            )
+            .await;
+            assert!(
+                result.is_ok(),
+                "no GPU set → mock path should work: {:?}",
+                result.err()
+            );
+        });
     }
 }

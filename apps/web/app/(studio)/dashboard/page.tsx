@@ -335,7 +335,7 @@ export default function DashboardPage() {
         </div>
       ) : (
         /* Modo Tabela / Lista */
-        <div className="overflow-hidden rounded-2xl border border-white/10 bg-[rgba(31,27,38,0.70)] backdrop-blur-xl shadow-2xl">
+        <div className="glass-card overflow-hidden rounded-2xl shadow-2xl">
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead className="border-b border-white/10 bg-white/[0.03] font-mono text-[11px] text-zinc-400 uppercase tracking-[0.08em]">

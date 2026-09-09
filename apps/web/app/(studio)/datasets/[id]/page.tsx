@@ -921,7 +921,7 @@ export default function DatasetGalleryPage() {
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-white/10 bg-[rgba(31,27,38,0.70)] backdrop-blur-xl shadow-lg px-4 py-2.5 font-mono text-[11px] text-zinc-400">
+      <div className="glass-card flex flex-wrap items-center gap-2 rounded-2xl shadow-lg px-4 py-2.5 font-mono text-[11px] text-zinc-400">
         <span className="font-semibold text-zinc-200">
           {dataset.imagesCount.toLocaleString()} amostras
         </span>

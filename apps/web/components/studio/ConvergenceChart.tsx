@@ -235,7 +235,7 @@ export function ConvergenceChart({
   const activeHover = hoverIndex != null && metrics[hoverIndex] ? metrics[hoverIndex] : latest;
 
   return (
-    <div className="rounded-xl border border-white/10 bg-[rgba(31,27,38,0.70)] backdrop-blur-xl shadow-lg p-4 space-y-3.5">
+    <div className="glass-card rounded-xl shadow-lg p-4 space-y-3.5">
       {/* Header do Gráfico com Tabs e Indicador de Época */}
       <div className="flex flex-wrap items-center justify-between gap-2.5">
         <div className="flex items-center gap-2">

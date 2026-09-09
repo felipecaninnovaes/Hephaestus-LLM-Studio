@@ -368,7 +368,7 @@ export default function DatasetsPage() {
           ))}
         </div>
       ) : (
-        <div className="overflow-hidden rounded-2xl border border-white/10 bg-[rgba(31,27,38,0.70)] backdrop-blur-xl shadow-2xl">
+        <div className="glass-card overflow-hidden rounded-2xl shadow-2xl">
           <DatasetTable datasets={filtered} onContextMenu={handleContextMenu} />
         </div>
       )}

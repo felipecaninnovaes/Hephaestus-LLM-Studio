@@ -15,7 +15,8 @@ const SEGMENT_LABELS: Record<string, string> = {
   datasets: "Datasets",
   annotate: "Anotar",
   login: "Login",
-  jobs: "Treino YOLO",
+  jobs: "Execuções",
+  treino: "Treino YOLO",
 };
 
 function labelFor(segment: string): string {

@@ -202,13 +202,20 @@ export default function Sidebar({
       ],
     },
     {
-      title: "Forja & Treino",
+      title: "Treinamento & Execução",
       items: [
         {
-          id: "jobs",
+          id: "treino",
           label: "Treino YOLO",
-          href: "/jobs",
+          href: "/treino",
           icon: IconTarget,
+          isAvailable: true,
+        },
+        {
+          id: "jobs",
+          label: "Execuções",
+          href: "/jobs",
+          icon: IconActivity,
           badge: telemetry?.jobsActive ? `${telemetry.jobsActive}` : undefined,
           isAvailable: true,
         },

@@ -311,18 +311,29 @@ inline-flex items-center justify-center gap-2 text-sm font-medium whitespace-now
 - Base `.glass-card` com preenchimento padronizado (`p-4` a `p-6`), cabeçalho com tracking e separador `border-b border-white/5` opcional.
 - **StatCard:** Card de KPI e métricas resumidas do estúdio em `.glass-card`, com ícone temático, rótulo uppercase em tracking mono (`tracking-wider text-zinc-400`), valor principal de alta hierarquia em `JetBrains Mono` tabular (`text-2xl sm:text-3xl font-semibold text-zinc-100`) e texto descritivo secundário.
 - **MetricTile:** Bloco compacto de telemetria/métrica interna para painéis e toolbars (`p-2.5`, `text-sm font-mono`).
+- **EmptyState:** Estado vazio informativo e amigável em vidro óptico com ícone destacado, título semântico, descrição explicativa e botão CTA opcional de ação primária.
+- **DropOverlay:** Área receptora de drag & drop com borda tracejada em violeta Arcane (`border-brand-500/50`), backdrop blur escuro (`bg-black/60`) e feedback visual tátil, acompanhada do hook utilitário `useFileDrop`.
 
 ### Overlays & Panéis Deslizantes
 - **Modal:** Caixa de diálogo central Nível 3 (`.glass-modal`) com backdrop blur, linha zenital `hairline` em gradiente violeta no topo e fechamento por `Escape`.
 - **Drawer:** Painel deslizante lateral retrátil (slide-over direita/esquerda) com backdrop translúcido escurecido, listener de tecla `Escape`, trava de rolagem de `body`, hairline zenital reflexiva, suporte a cabeçalho flexível, ações à direita (`headerRight`) e rodapé fixo aderente (`footer`).
 - **ConfirmDialog:** Diálogo de confirmação para ações críticas (ex.: exclusões destrutivas) com estados `danger`/`default` e busy spinner.
+- **Toast:** Notificações globais e feedback óptico transitório com auto-dismiss, botão de ação interativa (ex.: "Desfazer") e variantes de severidade (`success`, `error`, `info`).
 
 ### Inputs & Fields
 - `bg-black/40 border border-zinc-800 text-zinc-100 rounded-lg px-3 py-1.5 text-xs font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500`. Em visualizações móveis (`< md`), inputs e textareas adotam `font-size: 16px` para prevenir zoom automático no Safari iOS.
+- **SearchInput:** Campo de busca especializado com ícone de lupa, indicador de loading giratório (`spinner`) para pesquisas debounced assíncronas e botão de limpeza rápida (`IconX`).
+- **Select:** Menu seletor estilizado em vidro escuro (`bg-zinc-900/90`), chevron vetorial customizado, estados de foco violeta e suporte a tipografia mono ou sans.
+- **Slider:** Controle deslizante tátil de precisão com thumb circular de 22px (`#8350f2` com borda branca 2px), trilho de 8px e exibição numérica em mono.
+- **ProgressBar:** Barra de progresso com trilho `zinc-800` e preenchimento semântico (`#34d399` sucesso, `brand` violeta, âmbar e rosa).
 - **Kbd (Atalho de Teclado):** Elemento atômico para indicação de hotkeys em mono (`px-1.5 py-0.5 rounded border border-white/10 bg-white/[0.04] text-zinc-400 font-mono text-[10px] font-semibold`), garantindo legibilidade imediata de atalhos operacionais no estúdio e no canvas.
 
-### Navigation
-- Sidebar macro à esquerda com módulos de sistema, drawer mobile retrátil em `< lg`, breadcrumbs em linha única e pílulas com fade edge.
+### Navigation & Utilities
+- **Sidebar Macro:** Barra lateral vertical fixa à esquerda com módulos de sistema, modo pinável com persistência em `localStorage` (68px colapsada / 260px expandida no desktop), drawer móvel em `< lg`, breadcrumbs em linha única e pílulas com fade edge.
+- **Breadcrumbs:** Trilha de navegação em linha única com truncamento inteligente no segmento intermediário, separadores em barra `/` e mapeamento de nomes de rotas amigáveis em português.
+- **SubmodulePills:** Trilho de abas e pílulas de filtro de categorias, com auto-scroll da pílula ativa, fade edge suave à direita e contadores em mono.
+- **ZoomControl:** Barra flutuante em `.glass-menu` para controle de escala e zoom de canvas interativos com indicador percentual mono e reset 100%.
+- **TruncatedText:** Implementação utilitária de "The Truncamento Honesto Rule", garantindo que qualquer texto encurtado exponha o atributo `title` com o valor completo para auditoria e acessibilidade.
 
 ### Login — AuthAmbient (Fidelidade Arcane v2.10.1)
 Fundo fixo com 4 camadas óticas:

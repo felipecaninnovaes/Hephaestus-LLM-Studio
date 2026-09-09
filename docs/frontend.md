@@ -1,7 +1,7 @@
 # Hephaestus LLM Studio — Documentação do Front-end
 
-> Fonte: o próprio app (`apps/web`) + `docs/DESIGN.md` (Design System unificado Arcane v2/v2.1). Protótipos legados foram completamente aposentados e removidos do repositório.
-> Status: **shell v2 implementado (fatia redesign UI v2): Sidebar macro + breadcrumbs; Topbar+TabsBar APOSENTADOS (componentes deletados)**. Alvo real: **Next.js + TypeScript**.
+> Fonte: o próprio app (`apps/web`) + `docs/DESIGN.md` (Design System unificado Arcane v2/v2.1) + `apps/web/components/ui/README.md`. Protótipos legados foram completamente aposentados e removidos do repositório.
+> Status: **shell v2.1 implementado: Sidebar macro pinável + breadcrumbs dinâmicos + Centro de Atividades (ActionCenter); Painel de Controle (/dashboard) como landing page padrão; biblioteca de componentes atômicos em components/ui/. Alvo real: Next.js 16 + React 19 + TypeScript**.
 > Idioma da UI: pt-BR.
 
 ## 1. Visão geral e posição na arquitetura
@@ -51,57 +51,91 @@ A especificação normativa completa e canônica vive em **`docs/DESIGN.md`**. P
 - **A11y:** `focus-visible` violeta 2px (`outline: 2px solid #8350f2`), `button:disabled {opacity .55}`, `prefers-reduced-motion: reduce` zerando animações, labels semânticos em formulários.
 - **Scrollbars finas 5px** e telemetria em `font-mono text-xs`.
 
-## 4. Shell global (v2 — fatia redesign UI v2)
+## 4. Shell global (v2.1 — Arcane Foundry)
 
-> Topbar (`components/studio/Topbar.tsx`) + TabsBar (`components/studio/TabsBar.tsx`) APOSENTADOS — componentes deletados nesta fatia. O shell v2 é `Sidebar.tsx` + header com breadcrumbs + chip "Local".
+> O shell v2.1 é composto por `Sidebar.tsx` (pinável no desktop e drawer móvel) + header com breadcrumbs dinâmicos e Centro de Atividades (`ActionCenter.tsx`) + `ToastHost` + fundo óptico contínuo (iluminação radial violeta Arcane, grade técnica SVG 48px e vignette).
 
 ### 4.1 Sidebar macro (`components/studio/Sidebar.tsx`)
 
-- Módulos de sistema: **Dados & Anotação** ativo (`border-brand-500/30 bg-zinc-900/90` com barra lateral `bg-brand-500`, hardcoded sem `usePathname`); **Forja & Treinamento** HABILITADO (link `href="/jobs"`, `title="Forja & Treinamento"`, badge `jobsActive` quando telemetria reporta jobs ativos — `Sidebar.tsx:174-178`); **Execução & Playground** desabilitado honesto (`aria-disabled="true"`, `title="Disponível em fatia futura"`); **Configurações** desabilitado (`title="Disponível em fatia futura"`).
-- Card **TELEMETRIA DO NÓ** REAL (polling `getTelemetry()` a cada 3s — `Sidebar.tsx:30-48`): VRAM com barra `vramPct` (calculada quando `measured && vramUsed && vramTotal > 0` — `Sidebar.tsx:67-69`), texto `"sem GPU (mock)"` quando `!measured` (`Sidebar.tsx:239`); CPU com barra `cpuPct` e porcentagem; RAM em GB (`ram / 1073741824`); GPUs listadas quando `gpus.length > 0` (`Sidebar.tsx:281-288`). Job counter no header do card (`telemetry.jobsActive > 0` — `Sidebar.tsx:227-231`).
-- **Sair da sessão** = `POST /api/auth/logout` (`credentials: "same-origin"`, erro ignorado) + `router.replace("/login")` + `router.refresh()` — mecanismo migrado da Topbar (`Sidebar.tsx:51-63`).
-- Drawer mobile: largura `w-[min(85vw,320px)]`, backdrop `bg-black/70 backdrop-blur-sm` (`lg:hidden`), fecha em `Escape` (listener em `(studio)/layout.tsx:31-38`) e em navegação (`setSidebarOpen(false)` no `pathname`).
+- **Navegação estruturada em 4 seções temáticas:**
+  1. *Estúdio & Dados:* **Painel** (`/dashboard`, ativo como home, ícone `IconHome`), **Datasets** (`/datasets`, ativo, ícone `IconDatabase`).
+  2. *Forja & Treino:* **Treino YOLO** (`/jobs`, ativo, com badge numérico de `telemetry.jobsActive` em tempo real), **Difusão LoRA** (`/difusao`, badge "Roadmap", desabilitado honesto), **OpenCLIP** (`/openclip`, badge "Roadmap", desabilitado), **Playground** (`/playground`, badge "Roadmap", desabilitado), **Modelos & Pesos** (`/models`, badge "Roadmap", desabilitado).
+  3. *Infraestrutura:* **Orquestradores** (`/environments`, badge "Roadmap", desabilitado), **Storage S3** (`/storage`, badge "Roadmap", desabilitado).
+  4. *Sistema:* **Registro de Logs** (`/events`, badge "Roadmap", desabilitado), **Configurações** (`/settings`, badge "Roadmap", desabilitado).
+- **Destaque de rota ativa:** derivado dinamicamente via `usePathname()`, aplicando borda violeta `border-brand-500/30 bg-zinc-900/90` com barra lateral indicadora `bg-brand-500`.
+- **Pin da Sidebar no Desktop:** no viewport `lg`, a sidebar suporta modo fixado/expandido (`260px`) ou recolhido (`68px` exibindo apenas ícones com tooltips), alternado pelo botão de pino no rodapé e persistido em `localStorage` (`hephaestus_sidebar_pinned`). Um espaçador estático com transição suave em `layout.tsx` previne layout-shift durante a expansão.
+- **Drawer móvel:** em viewports menores que `lg`, colapsa automaticamente em drawer retrátil (`w-[min(85vw,320px)]`) com backdrop escurecido (`bg-black/70 backdrop-blur-sm`), fechando com tecla `Escape` ou ao clicar fora/navegar.
+- **Card TELEMETRIA DO NÓ REAL:** polling contínuo `getTelemetry()` a cada 3s (com auto-pausa via `visibilitychange`), monitorando consumo de VRAM com barra percentual, CPU, RAM em GB e GPUs ativas, além do contador de jobs ativos no cabeçalho.
+- **Ações de rodapé:** botão direto para abertura do Centro de Atividades (`onOpenActionCenter`), botão de alternância de fixação da sidebar e botão **Sair** (`POST /api/auth/logout` + redirect `/login`).
 
 ### 4.2 Header do shell (`app/(studio)/layout.tsx`)
 
-- Breadcrumbs em 1 linha via `usePathname` (segmentos com `truncate`, `max-w-[140px]` no meio; raiz = "Studio").
-- Chip estático **"Local"** (`title="Nó local — ambiente único nesta fatia"`) — sem dropdown funcional, não há endpoint de ambientes nesta fatia.
+- Botão hambúrguer móvel para abertura da Sidebar (`lg:hidden`).
+- **Breadcrumbs dinâmicos:** gerados automaticamente via `usePathname()` com mapeamento amigável (`SEGMENT_LABELS`: dashboard → "Painel", datasets → "Datasets", annotate → "Anotar", jobs → "Treino YOLO", login → "Login"), com truncamento intermediário em `max-w-[140px]` e destaque semi-bold no item ativo.
+- **Botão do Centro de Atividades:** atalho de alta visibilidade no canto superior direito com ícone de raio (`IconZap` em `text-brand-400`), abrindo o drawer lateral de operações e monitoramento.
+- **Chip de Ambiente / Nó:** cápsula de status `Badge` variante `telemetry` com ponto luminoso pulsante exibindo "Local" (`title="Nó local — ambiente único nesta fatia"`).
 
-### 4.3 Elementos transversais
+### 4.3 Centro de Atividades (`components/studio/ActionCenter.tsx`)
 
-- `create-dataset-modal`: backdrop `bg-black/70 backdrop-blur-sm`, campos nome (slugifica `toLowerCase().replace(/\s+/g,'-')`), tipo/tarefa (4 options), classes CSV, dropzone `.zip`/JPG/PNG/WebP + `.txt`. Submit cria `status: needs_labeling`.
-- `glass-context-menu`: tipos `dataset` (Abrir galeria / Treinar neste dataset / Executar AutoLabel ou AutoTracker conforme categoria — AutoTracker habilitado para `category==='yolo'` com ≥1 classe e ≥1 imagem; AutoLabel continua desabilitado / Exportar / Excluir), `sample_image` (Corrigir BBox / Re-executar AutoTracker — re-executar por imagem permanece futuro, não habilitado na v1), `settings|import_dataset` (Selecionar backup `.zip/.json` / Reiniciar Runtime).
-- Toast: manter API `showToast(message, type)` (restyle v2; toast com ação vive 6s — Desfazer da 3g).
+- **Painel lateral deslizante (`Drawer` à direita):** overlay retrátil para supervisão operacional ininterrupta em qualquer tela do estúdio.
+- **Abas de filtragem:**
+  - `Todos`: visão consolidada de jobs, telemetria e avisos de sistema.
+  - `Ativos`: jobs com status `queued`, `running` ou `cancelling`.
+  - `Jobs`: histórico completo de execuções de treinamento e autotracking.
+  - `Sistema`: telemetria de infraestrutura e alertas de orquestradores/nós.
+- **Funcionalidades e Ações Rápidas:**
+  - Campo de busca em tempo real (`SearchInput`) filtrando por ID, modelo ou dataset.
+  - Telemetria de nós em tempo real (CPU, RAM, VRAM, GPUs).
+  - Cancelar / Abortar job ativo diretamente com diálogo de confirmação (`ConfirmDialog`).
+  - Download rápido de artefatos de treinamento gerados (`best.pt`, `last.pt`, `boxes.json`, `metrics.jsonl`).
+  - **Aplicar boxes do AutoTracker:** botão contextual para aplicar anotações detectadas diretamente ao dataset, com opção de sobrescrever (`overwrite`).
+- **Disparo global:** acionado pelo botão no Header, na Sidebar ou via evento customizado de janela (`lib/events.ts::openActionCenter()` disparando `ACTION_CENTER_EVENT`).
 
-### 4.4 Páginas no estilo v2 (APRESENTAÇÃO apenas — contratos §10 e lógica intocados)
+### 4.4 Elementos transversais e biblioteca atômica (`components/ui/`)
 
-`/datasets`, galeria (`datasets/[id]`), editor BBox (`annotate/[imageId]`) e `/login` migrados para o v2 (`docs/DESIGN.md`): densidade de botões (CTA único `h-10`, secundárias `h-9`, menu overflow `"⋯"` em `<md`), pílulas de categoria com `overflow-x-auto` + fade edge + auto-scroll da pílula ativa, anti-scroll-trap (workspace rola como documento único em `<md`; scroll interno de coluna só em `≥md` com `md:overflow-y-auto`).
+- Biblioteca atômica dedicada em `components/ui/` (20 primitivas de UI unificadas sob o design system Arcane v2.1; ver especificação completa em `apps/web/components/ui/README.md`):
+  - `Button`, `GlassCard`, `Badge`, `Input`, `SearchInput`, `Select`, `SegmentedControl`, `SubmodulePills`, `Modal`, `Drawer`, `Slider`, `ProgressBar`, `MetricTile`, `StatCard`, `Breadcrumbs`, `TruncatedText`, `EmptyState`, `ConfirmDialog`, `Toast`, `DropOverlay`, `ZoomControl`, `Kbd`.
+- Modais de sistema em `components/studio/`: `CreateDatasetModal`, `ClassesModal`, `ImportDatasetModal`, `TrainYoloModal`, `AutoTrackerModal`, `ConfirmDialog`.
+- Sistema global de toasts (`ToastHost` e `showToast(message, type)` com suporte a ações interativas de auto-dismiss).
 
 ## 5. Datasets + Galeria + Editor (coração da IDEIA)
 
-Exigência da IDEIA: lista/grade → clique abre galeria → só na galeria AutoLabel/AutoTracker/Exportar/Importar. O protótipo já faz exatamente isso.
+### 5.1 Painel / Dashboard (`app/(studio)/dashboard/page.tsx`)
 
-### 5.1 Lista (`datasets-workspace`)
+- **Landing page principal do estúdio:** rota `/` redireciona automaticamente para `/dashboard`.
+- **Cabeçalho com saudação dinâmica:** horário contextual ("Bom dia", "Boa tarde", "Boa noite") e identificação de perfil.
+- **KPIs de Alto Nível (`StatCard`):** 4 cartões em `.glass-card` exibindo Datasets totais, Amostras cadastradas, Taxa de rotulagem (%), Jobs ativos/concluídos e consumo de hardware (CPU/RAM/VRAM).
+- **Visão do Cluster de Nós:** monitoramento comparativo entre Orquestrador Local (GPU Workstation, dados reais de telemetria) e Cluster Nuvem (RunPod Pod A100 em standby).
+- **Controles de visualização:** alternador Grade / Lista via `SegmentedControl` e botão de atualização manual com loading spinner e polling a cada 3s com pausa automática quando a aba perde foco (`visibilitychange`).
 
-- Header "Gerenciador de Datasets" + toggle grade/lista (`viewMode`), Novo Dataset. (O botão "Importar (Backup)" do header foi REMOVIDO na Fatia 3e — P2 da ADR-0006: import só na galeria.)
-- Filtros: busca por nome/classe/formato + pills `Todos/Difusão/OpenCLIP/YOLO` com contadores.
-- Card grade: ícone, `title`, `type`, tiles Imagens / % Rotuladas (`labeledCount/imagesCount`), chips de classes, rodapé `size · lastModified`, tag `AutoTracker` se aplicável, CTA "Treinar →" (roteia via `trainTabFor(ds)`).
-- Lista: tabela Nome / Formato-Tarefa / Imagens / Progresso / Origem Storage (`source` derivado: `null` em dataset vazio, `s3://{bucket}/datasets/{id}/` com imagens — ADR-0003 D5) / Ações.
-- Estado vazio com "Limpar Filtros". Clique na linha/card → `setOpenDatasetId`. Botão direito → context menu.
-- Mock inicial (5 datasets, cobrir os 3 formatos): `inspecao-pcb-defeitos-v2` (yolo, ready), `drones-veiculos-urbanos-4k` (yolo, in_progress), `cyberpunk-character-lora` (difusao), `seguranca-epi-industrial` (yolo, needs_labeling), `embeddings-marcas-produtos-clip` (openclip).
+### 5.2 Lista de Datasets (`datasets-workspace`)
 
-### 5.2 Galeria (`dataset-gallery`)
+- Header "Gerenciador de Datasets", toggle grade/lista (`viewMode`) e botão "Novo Dataset".
+- **Ingestão Unificada por Drag & Drop (`DropOverlay` + `useFileDrop`):** soltar arquivos `.zip` ou pastas em qualquer ponto da tela aciona a pré-inspeção imediata (`lib/dataset-inspector.ts`) e abre o `CreateDatasetModal` em modo importação pré-configurado.
+- **Modal de Criação / Importação (`CreateDatasetModal.tsx`):**
+  - Modo Criação Vazia: nome do dataset com slug preview automático em kebab-case, seleção de tipo/tarefa (`TYPE_OPTIONS`), definição de classes CSV.
+  - Modo Importação / Inspeção: detecção automática de formato de dataset (YOLO, Difusão, CLIP), contagem de imagens e anotações inspecionadas, e ingestão direta.
+- Filtros por formato/tarefa: busca debounced (`SearchInput`) + pills `Todos / Difusão / OpenCLIP / YOLO` com contadores mono.
+- Cards modulares de dataset (`DatasetCard.tsx`) e visualização em tabela (`DatasetTable.tsx`).
+- Menu contextual de ações rápidas (`DatasetMenu.tsx`): abrir galeria, treinar dataset, executar AutoTracker, exportar backup ou excluir.
 
-- Breadcrumb voltar + título + meta `type · N imagens · size · source`.
-- Ações — Exportar/Importar IMPLEMENTADOS (Fatia 3e, ADR-0006): Exportar baixa o `.zip` do backup via blob + `Content-Disposition` (`lib/backup.ts::exportDataset`, toasts 404/503); Importar abre o `ImportDatasetModal` (file picker `.zip` + campo nome opcional ≤96, toasts por `code` em 400/503/413, resultado com contagens + "Abrir dataset importado"); **fluxo de substituição: 409 `slug_conflict` → diálogo de irreversibilidade ("substituir apaga o dataset atual; a ação não tem reversão", Cancelar/Substituir) → re-envio com `replace=true` (o 409 NÃO é toast)**. Pacote = `manifest.json` (fonte da verdade) + `dataset.yaml`/`labels/*.txt`/`captions.jsonl` derivados + `images/*`. Demais ações: AutoLabel, AutoTracker, "Treinar este Dataset".
-- Faixa resumo: `N amostras · X rotuladas por AutoTracker|AutoLabel · Formato · Backup: exportar/importar mantém JSON/YAML + anotações`.
-- **AutoTracker — IMPLEMENTADO (Fatia 5, ADR-0008):** ação na galeria abre `AutoTrackerModal` (só para `category==='yolo'` com `classes.length>0 && imagesCount>0`; senão disabled com title honesto). Modal: modelo fixo `mock`, slider `conf` 0.3–0.95 (default 0.65), **SEM checkbox de overwrite** (decisão de apply é única no card de `/jobs`, default `overwrite=false`). Submit: `startAutotrackerJob({datasetId, model:"mock", conf})` → `POST /api/jobs/autotracker` → 202 → toast de sucesso → navega para `/jobs`.
-- Se `imagesCount === 0`: empty state "Galeria vazia" + "Enviar amostras" (upload Rust).
-- Grade: até 8 thumbs mockadas (`img_0001.jpg`...), overlay BBox para `category==='yolo'`, selo `caption.txt` para difusão/CLIP, tile dashed "Adicionar imagens / vídeo". Clique: yolo → abre editor BBox; demais → toast "Revisão de caption no AutoLabel".
-- Gestão de classes e amostras — IMPLEMENTADO (Fatia 3g): botão "Classes" abre o `ClassesModal` (renomear/adicionar/remover; 409 mantém o modal aberto com estado); hover por thumb mostra trash (soft delete → toast com **Desfazer**); pills `Ativas | Lixeira (n)` (`n` = `Dataset.trashCount`); na lixeira cada item tem `Restaurar` (conflito de filename → servidor renomeia `_restaurado` e devolve `{filename}`) e o botão `Esvaziar` (= única exclusão permanente, com `ConfirmDialog`, chama `DELETE /:id/trash`).
-- Painel de busca semântica — IMPLEMENTADO (Fatia 3f, spec 0.5.0, ADR-0004): barra de texto na galeria (só na visão `ativas`; `maxLength={500}`, submit → `searchDataset` em `lib/search.ts`) + botão "Buscar"/"Buscando…"; hover por thumb mostra lupa ("Buscar similares" → `searchByImage` com o `imageId` do item); grade de resultados com score mono (`score.toFixed(2)`, title "Similaridade (cosseno, -1..1)", clique → editor/caption) + "Limpar busca" e empty state ("Nenhum resultado para '…'"/"Nenhuma imagem similar"); badge de status com os 4 estados (`Sem índice` + botão "Indexar agora" em `not_indexed`; `Indexando indexedCount/imagesCount` em `indexing`; `ready`; `stale` tipado mas nunca emitido) com polling a cada 2s enquanto `indexing` (+ `Status indisponível` em falha); "Indexar agora" dispara `POST …/search/index` (`triggerSearchIndex`) e vira `Indexando…`.
+### 5.3 Galeria de Imagens (`dataset-gallery`)
 
-### 5.3 Editor BBox (`gallery-bbox-editor`)
+- Breadcrumb de navegação de volta, título, metadados (`type`, contagem de imagens, tamanho formatado e origem storage).
+- **Upload por Drag & Drop em lote:** soltar imagens ou vídeos na galeria ativa `DropOverlay` e executa o envio em lote com indicador de progresso e toast de retorno.
+- **Cards Modulares de Mídia (`ImageCard.tsx`):**
+  - Exibição de thumbnail com aspect ratio preservado.
+  - Overlay de caixas delimitadoras (BBoxes) para datasets YOLO ou indicador de legendas (`caption`) para Difusão/CLIP.
+  - Ações rápidas no hover: exclusão suave (mover para lixeira com toast e ação Desfazer), busca de imagens similares via OpenCLIP.
+- **Paginação Contínua (Infinite Load):** paginação em blocos de 50 itens (`PAGE_LIMIT = 50`) com indicador de carregamento dinâmico (`loadingMore`).
+- **Ações Principais:**
+  - Exportar / Importar backup estruturado (`.zip + dataset.yaml + anotações + captions.jsonl`).
+  - AutoTracker modal (`AutoTrackerModal.tsx`): disponível para datasets YOLO com classes e imagens, disparando o job de detecção automática para posterior aplicação.
+  - Treinar este Dataset: abre o modal de configuração de treinamento YOLO (`TrainYoloModal.tsx`).
+  - Gestão de classes (`ClassesModal.tsx`) e lixeira restaurável (`softDeleteImage`, `restoreImage`, `purgeTrash`).
+  - Painel de busca semântica integrada com OpenCLIP (`searchDataset` e `searchByImage`).
+
+### 5.4 Editor BBox (`gallery-bbox-editor`)
 
 - Sidebar 288px: voltar, ferramentas (`bbox B`, `select V`, `pan H`), classes do dataset (`solda_fria` emerald, `curto_circuito` amber, `componente_ausente` rose, `trilha_rompida` cyan + atalho `[1-4]`), painel "Coordenadas YOLO (Norm.)" X/Y/W/H, "Salvar Anotações".
 - Canvas central com toolbar flutuante (zoom 50–250%, Reset 100%), moldura 600×450 escalada por `canvasZoom`, caixas selecionáveis com anel `ring-white/50` + alça `se-resize`.
@@ -188,21 +222,24 @@ interface BBox { id: number; classId: number; label: string; x: number; y: numbe
   - Resolução T5: front chama `/api/*` relativo (`credentials: "same-origin"`, sem CORS); rewrite Next → `API_INTERNAL_URL` (dev `http://localhost:8080`, compose `http://principal:8080`). `NEXT_PUBLIC_API_URL` ficou como resíduo de build (só `ARG` no Dockerfile; runtime usa o proxy `/api`).
 - Datasets: `GET/POST /api/datasets`, `GET/DELETE /api/datasets/:id` — IMPLEMENTADO (Fatia 3a — contrato `packages/contracts/openapi.yaml`, ADR-0002). Upload/imagens/boxes/caption — IMPLEMENTADO (Fatia 3b — spec 0.3.0, contrato que a 3c/3d implementa; as rotas de UI que os consomem ainda NÃO existem — `/datasets` é a 3c): `POST /:id/upload` (multipart `files`; corpo total 200 MiB + 8 MiB envelope → 413; teto por arquivo 200 MiB → item `rejected/too_large`; resposta `{items:[{imageId,filename,status,reason,bytes,width,height}]}` camelCase), `GET /:id/images?limit(=50, máx 200)&offset(=0)&split(train|val)&labeled(bool)` → `{items,total,limit,offset}`, `GET /:id/images/:imageId` (Image flat + `boxes[]` + `caption|null`), `GET /:id/images/:imageId/data` (proxy incondicional, `Cache-Control: private, max-age=31536000, immutable`), `PUT .../images/:imageId/boxes` (`{boxes:[{classId,x,y,w,h,conf?,origin?,trackId?}]}` cap 1000, domínio 0..1), `PUT .../images/:imageId/caption` (upsert `{text:1..8000,origin?,model?≤255}`).   Export/import — IMPLEMENTADO (Fatia 3e, spec 0.6.0, ADR-0006): `POST /:id/export` (download `.zip` via blob + `Content-Disposition`), `POST /datasets/import` (FormData `file` + `title` opcional + `replace: "true"` só quando true; fluxo 409 → diálogo de irreversibilidade → `replace=true`); `lib/backup.ts` (`exportDataset`/`importDataset` + copies por `code`) + `components/studio/ImportDatasetModal.tsx`; limite do zip 200 MiB + 8 MiB envelope (413). `POST /:id/package` — IMPLEMENTADO (Fatia 4, spec 0.7.0, ADR-0007 D1): congela `dataset_versions`, gera zip, PUT `packages/<version_id>/`, 200 `PackageResponse{versionId,key,bytes,md5Zip,files}`.
 - Ambientes (alias UI de orquestradores): `GET /api/environments` (= `GET /api/orchestrators`), `POST /environments/select|connect` (= adopt/enable).
-- Jobs — IMPLEMENTADO (Fatia 4; spec 0.7.0, ADR-0007):
-  - Rota nova `/jobs` (Forja & Treinamento, Sidebar ativa — `Sidebar.tsx:158-187`, link `href="/jobs"` com badge `jobsActive` em tempo real).
-  - `POST /api/jobs/yolo` (`lib/jobs.ts:startYoloJob`): body `{datasetId,model,epochs,batch,imgsz,lr0,optimizer,augment}`, 202 `{jobId,status:"queued",queuePosition?}`. Modal `TrainYoloModal` (condição: dataset yolo com ≥1 classe e ≥1 imagem — verificação no botão Treinar da galeria e do `DatasetMenu`).
-  - `GET /api/jobs` (`lib/jobs.ts:listJobs`): response camelCase `{items:[Job],total}` (JobList). Polling 3s ativo quando há jobs `queued`/`running`/`cancelling`; pausa quando todos terminam (`jobs/page.tsx:100-126`).
-  - `GET /api/jobs/:id/metrics` (`lib/jobs.ts:getJobMetrics`): `{items:[{epoch,boxLoss,clsLoss,dflLoss,map50,map5095}]}` (camelCase wire; `mAP50-95` → `map5095`). Série por epoch, vazia se job sem métricas.
+- Jobs — IMPLEMENTADO (Fatia 4 e 5; spec 0.7.0 e 0.8.0, ADR-0007 e ADR-0008):
+  - Rota `/jobs` (Forja & Treinamento):
+    - Layout profissional em 2 colunas com histórico de jobs na esquerda (`JobCard.tsx` / `JobListItem`) e área central de setup e monitoramento (`ForjaYoloSetup.tsx`, `YoloHyperparameters.tsx`).
+    - Setup de treino YOLO (`ForjaYoloSetup.tsx`): formulário controlado com validação para dataset YOLO, modelo backbone (`yolo11n.pt`, etc.), epochs, batch size, imgsz, taxa de aprendizado lr0, otimizador (`AdamW/SGD/Muon`) e data augmentations.
+    - Gráficos vetoriais de convergência (`ConvergenceChart.tsx` e `MetricSparkline`): exibição em SVG de Loss (box, cls, dfl) e mAP (mAP50, mAP50-95) sincronizados via polling em tempo real.
+    - Terminal estruturado de telemetria e logs (`JobLogViewer.tsx`): visualizador em `JetBrains Mono` com busca textual, auto-scroll e filtro de severidade de logs de streaming.
+    - Botão contextual **"Aplicar boxes ao dataset"**: habilitado quando `status==='done' && engine==='autotracker'` e o artefato `boxes.json` existe, com checkbox de `overwrite` opcional.
+  - `POST /api/jobs/yolo` (`lib/jobs.ts:startYoloJob`): body `{datasetId,model,epochs,batch,imgsz,lr0,optimizer,augment}`, 202 `{jobId,status:"queued",queuePosition?}`.
+  - `GET /api/jobs` (`lib/jobs.ts:listJobs`): response camelCase `{items:[Job],total}` (JobList). Polling 3s ativo quando há jobs `queued`/`running`/`cancelling`; pausa quando todos terminam (`jobs/page.tsx`).
+  - `GET /api/jobs/:id/metrics` (`lib/jobs.ts:getJobMetrics`): `{items:[{epoch,boxLoss,clsLoss,dflLoss,map50,map5095}]}` (camelCase wire; `mAP50-95` → `map5095`). Série por epoch.
   - `GET /api/jobs/:id/artifacts` (`lib/jobs.ts:getJobArtifacts`): `{items:[{id,kind,path,md5,bytes}]}`.
   - `GET /api/jobs/:id/artifacts/:artifactId/data` (`lib/jobs.ts:downloadArtifact`): download via blob + `document.createElement("a")` + `URL.createObjectURL`.
   - `POST /api/jobs/:id/abort` (`lib/jobs.ts:abortJob`): 200 `{"status":"cancelling"|"cancelled"}` ou 409 `job_not_abortable`. UI: `ConfirmDialog` antes de abortar.
-  - `GET /api/jobs/queue` (`lib/jobs.ts:listQueue` — não exposta na UI v1, mas disponível): `{items:[{jobId,position,queueReason}]}`.
   - AutoTracker — IMPLEMENTADO (Fatia 5, ADR-0008, spec 0.8.0):
-    - `POST /api/jobs/autotracker` (`lib/autotracker.ts:startAutotrackerJob`): body `{datasetId, model?, conf?}`, 202 `{jobId,status:"queued",queuePosition?}`. Modal `AutoTrackerModal` (model fixo `mock`, slider `conf` 0.3–0.95 default 0.65, **sem checkbox de overwrite** — decisão única no card de apply).
-    - `POST /api/jobs/:id/autotracker/apply` (`lib/autotracker.ts:applyAutotrackerBoxes`): body `{overwrite?, imageId?}`, 200 `{applied, skipped, images}`; 409 `job_not_done` (job não está `done`); 400 `invalid_request` (imageId não-UUID); 404 `not_found`; 503 `queue_unavailable`/`storage_unavailable`.
-    - Rota `/jobs` reestruturada (Fatia 5): setup central `ForjaYoloSetup` + coluna Atividade à esquerda; botão **"Aplicar boxes ao dataset"** habilitado quando `status==='done' && engine==='autotracker'` + artefato `boxes.json` existe, com checkbox `overwrite` e desabilitado sem artefato boxes.json; `usePathname` para highlight do módulo ativo na Sidebar.
-  - **Nota wire snake_case:** `GET /api/jobs/:id` devolve o payload interno do manager com campos snake_case (`queue_reason`, `queue_position`), mas a UI v1 só consome `status`, `progress`, `epoch`, `step`, `metrics`, `createdAt`, `finishedAt` — todos camelCase ou primitivos.
-  - Telemetria real (polling Sidebar `getTelemetry()` a cada 3s — `Sidebar.tsx:30-48`): `Telemetry{measured,cpu,ram,vramUsed,vramTotal,gpus,jobsActive}`. CPU/RAM do `/proc` do container orquestrador (medido por heartbeat ~2s); VRAM `"sem GPU (mock)"` quando `!measured` (caminho real: `measured:false` sempre no mock local — `Sidebar.tsx:239`); GPU listada só quando `gpus.length > 0` (`Sidebar.tsx:281`). **Nota:** o texto "sem GPU (mock)" só aparece com `measured:false`, que NÃO ocorre na v1 real (o mock sempre reporta `measured:false` — caminho morto documentado na ADR-0007 D9).
+    - `POST /api/jobs/autotracker` (`lib/autotracker.ts:startAutotrackerJob`): body `{datasetId, model?, conf?}`, 202 `{jobId,status:"queued",queuePosition?}`. Modal `AutoTrackerModal` (modelo fixo `mock`, slider `conf` 0.3–0.95 default 0.65).
+    - `POST /api/jobs/:id/autotracker/apply` (`lib/autotracker.ts:applyAutotrackerBoxes`): body `{overwrite?, imageId?}`, 200 `{applied, skipped, images}`; 409 `job_not_done` (job não está `done`); 400 `invalid_request`; 404 `not_found`; 503 `queue_unavailable`/`storage_unavailable`.
+  - **Centro de Atividades (`ActionCenter.tsx`):** consome `/api/jobs` e `/api/telemetry` em tempo real em uma gaveta global (`Drawer`), permitindo abortar jobs, baixar artefatos e aplicar anotações do AutoTracker sem sair do contexto de trabalho atual.
+  - Telemetria real (polling `getTelemetry()` a cada 3s via `Sidebar.tsx`, `ActionCenter.tsx` e `dashboard/page.tsx`): `Telemetry{measured,cpu,ram,vramUsed,vramTotal,gpus,jobsActive}`.
 - Runners/playground: `POST /runners/{engine}/up`, `POST /runners/:id/{kill,infer}`, `GET /runners` — infer via `POST /:id/infer`, 409 se preemptado.
 - Models: `GET /api/models` (dropdowns) + `POST /models/{upload,download}`.
 - Preview/sandbox: `POST /api/preview/{autolabel|autotracker|generate|search}` (efêmero, sem fila).
@@ -210,31 +247,74 @@ interface BBox { id: number; classId: number; label: string; x: number; y: numbe
 - Classes e lixeira — IMPLEMENTADO (Fatia 3g, spec 0.4.0, ADR-0005): `putClasses(datasetId, classes)` (`lib/classes.ts` → `PUT /:id/classes`, reconciliação por id, 409 `classes_in_use` mantém o modal aberto); `softDeleteImage` (`DELETE /:id/images/:imageId` → 204, sem sweep) / `restoreImage` (`POST .../restore` → 204 sem conflito | 200 `{filename}` com rename `_restaurado`) / `purgeTrash` (`DELETE /:id/trash` → 204) (`lib/images.ts`; listagem da lixeira via `listImages(id, {deleted:true})`); `Toast.action` (`{label, onClick}`, toast com ação vive 6s — usado pelo Desfazer).
 - Busca semântica — IMPLEMENTADO (Fatia 3f, spec 0.5.0, ADR-0004): `searchDataset(datasetId, q, {k?, classId?, split?})` (`lib/search.ts` → `GET /:id/search?q&k&classId&split`, 200 `SearchResponse` | 400 inválida | 409 `index_not_ready` | 503 `embedding_unavailable`), `searchByImage(datasetId, imageId, {k?, threshold?})` (`lib/search.ts` → `POST /:id/search/by-image {imageId,k?,threshold?}`, 200 `SearchResponse` | 400 corpo inválido | 404 imagem fora do dataset | 409 `index_not_ready`), `getSearchStatus(datasetId)` (`lib/search.ts` → `GET /:id/search/status`, 200 `SearchStatus{status,imagesCount,indexedCount,model,dim}`), `triggerSearchIndex(datasetId)` (`lib/search.ts` → `POST /:id/search/index`, 202 `{status:indexing|not_indexed}`) (`types/studio.ts`: `SearchIndexStatus = "not_indexed"|"indexing"|"ready"|"stale"`, `SearchStatus`, `SearchItem{image,score}`, `SearchResponse{items}`); campo da imagem nos resultados é `url` (o mesmo `Image.url` do list — nunca `thumbUrl`).
 
-## 11. Estrutura de pastas sugerida (Next.js)
+## 11. Estrutura de pastas do front-end (`apps/web`)
 
 ```
-app/(studio)/difusao|openclip|yolo|autolabel|autotracker|datasets/page.tsx
-app/datasets/[id]/page.tsx          # galeria
-app/datasets/[id]/annotate/[imageId]/page.tsx  # editor BBox
-components/studio/{Sidebar,DatasetCard,DatasetTable,GalleryGrid,BBoxCanvas,MetricCard,LossChart,MapChart,RecallChart,LogTerminal,SandboxPreview,GlassMenu,Toast}.tsx
-# (Topbar e TabsBar APOSENTADOS e deletados na fatia redesign UI v2 — ver §4.)
-components/icons.tsx  lib/{api,ws,format}.ts  store/{studio, jobs}.ts  types/studio.ts
+apps/web/
+├── app/
+│   ├── (studio)/
+│   │   ├── dashboard/page.tsx            # Painel principal (home pós-login)
+│   │   ├── datasets/
+│   │   │   ├── page.tsx                  # Lista de datasets (Grade/Lista, Drag & Drop)
+│   │   │   └── [id]/
+│   │   │       ├── page.tsx              # Galeria de amostras e anotações
+│   │   │       └── annotate/[imageId]/
+│   │   │           └── page.tsx          # Editor visual de BBox YOLO
+│   │   ├── jobs/page.tsx                 # Forja & Treinamento YOLO (Setup + Atividade)
+│   │   └── layout.tsx                    # Shell global (Sidebar + Header + ActionCenter + ToastHost)
+│   ├── login/page.tsx                    # Autenticação single-user (AuthAmbient)
+│   ├── globals.css                       # Tokens @theme, classes glass e fontes
+│   ├── layout.tsx                        # Root layout e fontes locais self-hosted
+│   └── page.tsx                          # Redirecionamento para /dashboard
+├── components/
+│   ├── ui/                               # 20 Primitivas atômicas de UI (Arcane v2.1)
+│   │   ├── Button, Badge, Breadcrumbs, ConfirmDialog, Drawer, DropOverlay,
+│   │   ├── EmptyState, GlassCard, Input, Kbd, MetricTile, Modal, ProgressBar,
+│   │   ├── SearchInput, SegmentedControl, Select, Slider, StatCard, SubmodulePills,
+│   │   └── Toast, TruncatedText, ZoomControl, index.ts, README.md
+│   ├── studio/                           # Componentes de negócio e workspaces do estúdio
+│   │   ├── ActionCenter.tsx              # Gaveta lateral de monitoramento e atalhos
+│   │   ├── AutoTrackerModal.tsx          # Diálogo de disparo do AutoTracker
+│   │   ├── ClassesModal.tsx              # Diálogo de gestão de classes do dataset
+│   │   ├── ConfirmDialog.tsx             # Confirmação de exclusões e aborts
+│   │   ├── ConvergenceChart.tsx          # Gráficos de convergência Loss e mAP
+│   │   ├── CreateDatasetModal.tsx        # Criação e ingestão com inspeção de pacotes
+│   │   ├── DatasetCard.tsx               # Card de dataset em grade com métricas
+│   │   ├── DatasetMenu.tsx               # Menu contextual de ações de dataset
+│   │   ├── DatasetTable.tsx              # Visão de datasets em lista tabular
+│   │   ├── ForjaYoloSetup.tsx            # Painel central de configuração de treino
+│   │   ├── ImageCard.tsx                 # Card modular de imagem com BBoxes/captions
+│   │   ├── ImportDatasetModal.tsx        # Diálogo de importação de backup ZIP
+│   │   ├── JobCard.tsx                   # Item de histórico e status de job
+│   │   ├── JobLogViewer.tsx              # Terminal de logs estruturado com busca
+│   │   ├── Sidebar.tsx                   # Barra lateral macro de navegação e telemetria
+│   │   ├── Toast.tsx                     # Hospedeiro e disparador de notificações
+│   │   ├── TrainYoloModal.tsx            # Modal de treino a partir da galeria
+│   │   └── YoloHyperparameters.tsx       # Controles avançados de treino YOLO
+│   └── icons.tsx                         # Ícones vetoriais em traço limpo (stroke 1.7)
+├── lib/
+│   ├── api.ts, autotracker.ts, backup.ts, classes.ts,
+│   ├── dataset-inspector.ts              # Pré-inspeção inteligente de pastas/ZIPs
+│   ├── datasets.ts, events.ts, format.ts, images.ts, jobs.ts, search.ts
+└── types/
+    └── studio.ts                         # Tipagens TypeScript de contratos e dados
 ```
 
-Cada workspace segue o grid do protótipo: `painel config 320–384px + área fluida p-6`, `md:flex-row` com fallback empilhado no mobile, painel com `overflow-y-auto` próprio.
+## 12. Backlog front-end (evolução contínua)
 
-## 12. Backlog front-end (pós-protótipo)
-
-- [x] Rotas reais + `trainTabFor` como helper de navegação (Fatia 4 — `/jobs` com polling, `TrainYoloModal`).
-- [x] React Query para datasets/jobs + polling para jobs/telemetria (Fatia 4 — `lib/jobs.ts` com polling 3s, `Sidebar.tsx` com telemetry poll; React Query fica para refactor futuro).
-- [ ] Canvas BBox real com drag/resize/zoom/atalhos e persistência normalizada.
-- [ ] Charts reais ligados a `/metrics`; manter estilo SVG + gradiente do protótipo.
-- [x] Import/export `.zip` validado (Fatia 3e — galeria + modal + toasts por `code`).
-- [ ] Upload com progresso/cancel.
-- [ ] Formulários controlados com validação (epochs≥1, lr ranges, trigger word obrigatória).
-- [ ] Testes: render das 6 abas, fluxo lista→galeria→editor, sandbox→lote, mocks de WS.
-
-## 13. Adendos pós-revisão (decisões fechadas)
+- [x] Rotas reais implementadas (`/dashboard`, `/datasets`, `/datasets/[id]`, `/annotate/[imageId]`, `/jobs`, `/login`).
+- [x] Redirecionamento da raiz (`/` → `/dashboard`).
+- [x] Centro de Atividades global (`ActionCenter.tsx`) com gaveta retrátil e monitoramento em tempo real.
+- [x] Ingestão unificada por Drag & Drop na tela de datasets com pré-inspeção imediata de `.zip`/pastas (`dataset-inspector.ts`).
+- [x] Gráficos de convergência vetoriais reais em SVG (`ConvergenceChart.tsx` e `MetricSparkline`) alimentados por `/metrics`.
+- [x] Terminal de telemetria e logs estruturado com busca e auto-scroll (`JobLogViewer.tsx`).
+- [x] Biblioteca unificada de 20 componentes atômicos em `components/ui/` sob padrão Arcane v2.1.
+- [x] Polling contínuo de telemetria e jobs com otimização via `visibilitychange`.
+- [x] Import/export `.zip` estruturado validado (Fatia 3e — galeria + modal + diálogo de substituição 409).
+- [x] AutoTracker v1 integrado (Fatia 5 — modal na galeria + apply de boxes em `/jobs` e no `ActionCenter`).
+- [ ] Canvas BBox avançado com drag/resize de alta precisão, snap e persistência debounced.
+- [ ] Formulários com validação schema completa (Zod) para hiperparâmetros de treino.
+- [ ] Testes automatizados de componentes e fluxos E2E com Playwright.
 
 - **Auth — single-user local:** tela `/login` nova (não existe no protótipo). JWT HttpOnly, gate em todas as rotas do studio, logout no menu settings. Sem multi-user por enquanto.
 - **Playground (nova aba, mesmo design):** runner sob demanda para os 3 motores — Difusão (gerar imagem), YOLO (inferência imagem/vídeo), CLIP (busca semântica). Orquestrador sobe o runner, mantém ativo até faltar VRAM ou usuário clicar "Matar runner". Card de status com VRAM usada + botão kill + aviso de preempção.

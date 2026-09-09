@@ -38,8 +38,12 @@ Estúdio de engenharia de IA de ponta a ponta que integra ferramentas especializ
   - *AutoTracker:* Detecção e rastreamento automático com geração de bounding boxes em imagens e vídeos para YOLO, com editor visual em canvas para refinamento manual e suporte a upload de modelos customizados.
 - **Gestão Centrada em Datasets:**
   - Exibição de datasets em grade ou lista;
+  - Ingestão unificada por Drag & Drop com pré-inspeção imediata de pastas e arquivos compactados (`.zip`);
   - Acesso à galeria completa mediante clique no dataset (AutoLabel, AutoTracker, importação e exportação de backups concentram-se no contexto da galeria);
   - Status derivado e consistente do ciclo de vida dos dados (`needs_labeling`, `in_progress`, `ready`).
+- **Painel de Controle e Centro de Atividades (Supervisão Global):**
+  - Painel unificado (`/dashboard`) com KPIs agregados (datasets, amostras, taxa de anotação, jobs de treino) e visão do cluster de nós (local vs. nuvem);
+  - Centro de Atividades global (`ActionCenter`) em drawer deslizante para monitoramento contínuo de jobs, download de artefatos, cancelamento de execuções e aplicação contextual de caixas do AutoTracker.
 - **Restrições Arquiteturais e de Wire:**
   - Convenção de casing rígida: camelCase em toda a API REST pública (`/api/*`), snake_case no banco de dados e arquivos de manifesto;
   - Backend Rust central atua como único ponto de contato da interface web, controlando autenticação por sessão/cookie, autorização e acesso ao storage.

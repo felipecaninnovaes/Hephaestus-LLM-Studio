@@ -546,3 +546,12 @@ autorizou a landing direto no tronco).
 - **Fix commitado `d8d01a4`** (`fix(web)`, branch `feat/integracao`): ARG/ENV `API_INTERNAL_URL=http://principal:8080` no `apps/web/Dockerfile` + `.dockerignore` na RAIZ do repo (nit do review: `.dockerignore` aninhado é no-op — Docker só lê o da raiz do contexto `..`; prova: `.next/dev` sumiu da imagem). Review APROVADO COM NITS → nits quitadas. `next-env.d.ts` modificado = ruído de regeneração, deixado fora do commit (usuário editando front).
 - **404 pré-existente registrado**: sidebar faz prefetch RSC de `/autotracker` (rota não existe — só dashboard/datasets/jobs). Decidir no redesign: desabilitar link ou criar rota (AutoTracker = fatia 4).
 - **PRÓXIMO**: usuário termina redesign do front-end (branch própria) → pedir review ao coordenador (auditoria @ui-designer/@reviewer + smoke Chrome).
+
+## Sessão 2026-09-09 (sincronização de documentação da nova interface — Impeccable)
+
+- **Auditoria de documentação**: solicitada pelo usuário (`/impeccable Precisa ver se a documentação está atualizada com a nova interface`).
+- **Arquivos sincronizados**:
+  - `docs/frontend.md`: §4 (Shell v2.1: Sidebar pinável 68/260px com persistência em localStorage, breadcrumbs dinâmicos via usePathname com labels pt-BR, chip de ambiente Local, botão rápido do Centro de Atividades); §4.3 (ActionCenter como drawer deslizante global para supervisão de jobs, telemetria e apply de boxes do AutoTracker); §4.4 (biblioteca atômica components/ui/); §5.1 (Painel /dashboard com StatCards e status do cluster de nós); §5.2 (Datasets com drag & drop unificado e pré-inspeção imediata com dataset-inspector.ts); §5.3 (Galeria com ImageCard modular e infinite scroll); §10 (integração de jobs com ForjaYoloSetup, YoloHyperparameters, ConvergenceChart, JobLogViewer e ActionCenter); §11 (árvore real de arquivos do apps/web); §12 (backlog atualizado com itens entregues).
+  - `docs/DESIGN.md`: inclusão das primitivas atômicas faltantes em Components (`DropOverlay`, `EmptyState`, `SearchInput`, `Select`, `Slider`, `ProgressBar`, `Breadcrumbs`, `SubmodulePills`, `ZoomControl`, `TruncatedText`).
+  - `docs/PRODUCT.md`: inclusão do Painel de Controle e Centro de Atividades no escopo de capacidades do produto.
+- **Verificação**: `npm run build --workspace=web` verde (todas as 7 rotas compilam com sucesso), detector do Impeccable com 0 advisories (`[]`).

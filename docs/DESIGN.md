@@ -309,9 +309,17 @@ inline-flex items-center justify-center gap-2 text-sm font-medium whitespace-now
 
 ### Cards & Containers
 - Base `.glass-card` com preenchimento padronizado (`p-4` a `p-6`), cabeçalho com tracking e separador `border-b border-white/5` opcional.
+- **StatCard:** Card de KPI e métricas resumidas do estúdio em `.glass-card`, com ícone temático, rótulo uppercase em tracking mono (`tracking-wider text-zinc-400`), valor principal de alta hierarquia em `JetBrains Mono` tabular (`text-2xl sm:text-3xl font-semibold text-zinc-100`) e texto descritivo secundário.
+- **MetricTile:** Bloco compacto de telemetria/métrica interna para painéis e toolbars (`p-2.5`, `text-sm font-mono`).
+
+### Overlays & Panéis Deslizantes
+- **Modal:** Caixa de diálogo central Nível 3 (`.glass-modal`) com backdrop blur, linha zenital `hairline` em gradiente violeta no topo e fechamento por `Escape`.
+- **Drawer:** Painel deslizante lateral retrátil (slide-over direita/esquerda) com backdrop translúcido escurecido, listener de tecla `Escape`, trava de rolagem de `body`, hairline zenital reflexiva, suporte a cabeçalho flexível, ações à direita (`headerRight`) e rodapé fixo aderente (`footer`).
+- **ConfirmDialog:** Diálogo de confirmação para ações críticas (ex.: exclusões destrutivas) com estados `danger`/`default` e busy spinner.
 
 ### Inputs & Fields
 - `bg-black/40 border border-zinc-800 text-zinc-100 rounded-lg px-3 py-1.5 text-xs font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500`. Em visualizações móveis (`< md`), inputs e textareas adotam `font-size: 16px` para prevenir zoom automático no Safari iOS.
+- **Kbd (Atalho de Teclado):** Elemento atômico para indicação de hotkeys em mono (`px-1.5 py-0.5 rounded border border-white/10 bg-white/[0.04] text-zinc-400 font-mono text-[10px] font-semibold`), garantindo legibilidade imediata de atalhos operacionais no estúdio e no canvas.
 
 ### Navigation
 - Sidebar macro à esquerda com módulos de sistema, drawer mobile retrátil em `< lg`, breadcrumbs em linha única e pílulas com fade edge.

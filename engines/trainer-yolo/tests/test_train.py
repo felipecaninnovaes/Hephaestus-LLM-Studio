@@ -480,8 +480,8 @@ class TestWriteMetricsLine:
             data = json.loads(line)
             assert data["epoch"] == i
 
-    def test_write_none_values(self, tmp_path: Path) -> None:
-        """None values are serialized as JSON null."""
+    def test_write_none_values_skips_line(self, tmp_path: Path) -> None:
+        """All None values → no line written (skip when all 5 value metrics are None)."""
         metrics_path = tmp_path / "metrics.jsonl"
         metrics = {
             "box_loss": None, "cls_loss": None, "dfl_loss": None,
@@ -489,9 +489,8 @@ class TestWriteMetricsLine:
         }
         _write_metrics_line(metrics_path, epoch=1, metrics=metrics)
 
-        data = json.loads(metrics_path.read_text().strip())
-        assert data["box_loss"] is None
-        assert data["mAP50"] is None
+        # File should not exist (no line written when all 5 value metrics are None)
+        assert not metrics_path.exists()
 
 
 class TestCopyFlatWeights:
@@ -539,44 +538,53 @@ class TestCopyFlatWeights:
 class TestRealTrainTolerantParsing:
     """Tolerant parsing: epoch without metrics does not break the pipeline."""
 
-    def test_epoch_without_metrics_honest_skip(self, tmp_path: Path) -> None:
-        """Simulate callback with empty trainer.metrics → line with nulls."""
+    def test_epoch_without_metrics_skips_line(self, tmp_path: Path) -> None:
+        """Simulate callback with empty trainer.metrics → no line written (all None = skip)."""
         metrics_path = tmp_path / "metrics.jsonl"
         raw = {}
         converted = _convert_ultralytics_metrics(raw)
         assert converted is not None
         _write_metrics_line(metrics_path, epoch=1, metrics=converted)
 
+        # File should not exist (no line written when all 5 value metrics are None)
+        assert not metrics_path.exists()
+
+    def test_epoch_with_only_box_loss_writes_line(self, tmp_path: Path) -> None:
+        """Epoch with only box_loss numeric + rest None → line written with nulls."""
+        metrics_path = tmp_path / "metrics.jsonl"
+        raw = {"train/box_loss": 0.5}
+        converted = _convert_ultralytics_metrics(raw)
+        assert converted is not None
+        _write_metrics_line(metrics_path, epoch=1, metrics=converted)
+
+        assert metrics_path.is_file()
         data = json.loads(metrics_path.read_text().strip())
         assert data["epoch"] == 1
-        # All metric values are None (honest skip)
-        for key in METRIC_KEYS:
-            if key == "epoch":
-                continue
-            assert data[key] is None
+        assert data["box_loss"] == 0.5
+        assert data["cls_loss"] is None
+        assert data["dfl_loss"] is None
+        assert data["mAP50"] is None
+        assert data["mAP50-95"] is None
 
     def test_mixed_epochs_some_with_metrics(self, tmp_path: Path) -> None:
-        """Some epochs with metrics, some without → all written, no crash."""
+        """Some epochs with metrics, some without → only epochs with metrics written."""
         metrics_path = tmp_path / "metrics.jsonl"
         for epoch in range(1, 4):
             if epoch == 2:
-                raw = {}
+                raw = {}  # all None → skip
             else:
                 raw = _fake_ultralytics_metrics(box_loss=epoch * 0.1)
             converted = _convert_ultralytics_metrics(raw)
             _write_metrics_line(metrics_path, epoch=epoch, metrics=converted)
 
         lines = metrics_path.read_text().strip().split("\n")
-        assert len(lines) == 3
+        # Epoch 2 skipped (all None), so only 2 lines
+        assert len(lines) == 2
 
         # Epoch 1: has metrics
         data1 = json.loads(lines[0])
         assert data1["box_loss"] == pytest.approx(0.1)
 
-        # Epoch 2: no metrics (all None)
+        # Epoch 3: has metrics (Epoch 2 was skipped)
         data2 = json.loads(lines[1])
-        assert data2["box_loss"] is None
-
-        # Epoch 3: has metrics
-        data3 = json.loads(lines[2])
-        assert data3["box_loss"] == pytest.approx(0.3)
+        assert data2["box_loss"] == pytest.approx(0.3)

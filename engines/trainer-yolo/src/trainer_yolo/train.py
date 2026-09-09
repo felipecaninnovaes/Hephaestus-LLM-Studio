@@ -193,12 +193,12 @@ def _mock_train(cfg: dict, output: Path) -> None:
 # Real training (ultralytics, lazy import)
 # ---------------------------------------------------------------------------
 
-def _convert_ultralytics_metrics(raw: dict[str, Any]) -> dict[str, Any] | None:
+def _convert_ultralytics_metrics(raw: dict[str, Any]) -> dict[str, Any]:
     """Convert ultralytics trainer.metrics keys to contract keys.
 
     Contract keys (METRIC_KEYS): epoch, box_loss, cls_loss, dfl_loss, mAP50, mAP50-95.
 
-    Returns None if no usable metrics are available for this epoch (honest skip).
+    Always returns a dict with all keys; missing metrics are set to None (honest skip).
     """
     mapping = {
         "train/box_loss": "box_loss",
@@ -219,7 +219,14 @@ def _convert_ultralytics_metrics(raw: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _write_metrics_line(metrics_path: Path, epoch: int, metrics: dict[str, Any]) -> None:
-    """Append one JSON line to metrics.jsonl (contract format)."""
+    """Append one JSON line to metrics.jsonl (contract format).
+
+    Skips writing when all 5 value metrics (box_loss, cls_loss, dfl_loss, mAP50,
+    mAP50-95) are None — no useful data for the Rust parser (as_f64()? discards).
+    """
+    value_keys = ("box_loss", "cls_loss", "dfl_loss", "mAP50", "mAP50-95")
+    if all(metrics.get(k) is None for k in value_keys):
+        return  # no usable metrics for this epoch
     line = {"epoch": epoch, **{k: metrics.get(k) for k in METRIC_KEYS if k != "epoch"}}
     with open(metrics_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(line) + "\n")

@@ -1,7 +1,7 @@
 # Engine trainer-yolo GPU (ADR-0010 D5): treino real com ultralytics.
 # Base: PyTorch 2.6.0 + CUDA 12.4 + cuDNN 9 (runtime).
 # TODO: pin digest no G.6 quando a imagem estiver validada no TrueNAS
-FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
+FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime@sha256:77f17f843507062875ce8be2a6f76aa6aa3df7f9ef1e31d9d7432f4b0f563dee
 
 # Ultralytics 8.3.x — última versão estável da linha 8.3 (8.3.253, Sep 2026).
 # Pin exato para reprodutibilidade; ADR-0010 D5.

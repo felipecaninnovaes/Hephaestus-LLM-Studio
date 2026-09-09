@@ -109,6 +109,8 @@ pub enum PipelineError {
     GpuImageGuard {
         image: String,
     },
+    /// Erro genérico (sem variante específica).
+    Other(String),
 }
 
 impl std::fmt::Display for PipelineError {
@@ -134,6 +136,7 @@ impl std::fmt::Display for PipelineError {
                     "GPU orchestrator requires GPU trainer image (TRAINER_IMAGE={image} → :gpu)"
                 )
             }
+            Self::Other(e) => write!(f, "{e}"),
         }
     }
 }
@@ -718,7 +721,8 @@ pub async fn run_job(
     )
     .await;
 
-    if let Err(err_msg) = result {
+    if let Err(err) = result {
+        let err_msg = err.to_string();
         if let Err(report_err) = report_for_error
             .report(
                 &job_id,
@@ -753,7 +757,7 @@ async fn run_job_inner(
     active_jobs: &ActiveJobs,
     gpu_devices: Option<&str>,
     gpu_allow_mock: bool,
-) -> Result<(), String> {
+) -> Result<(), PipelineError> {
     let job_id = &dispatch.job_id;
     let job_workdir = PathBuf::from(&dispatch.workdir);
 
@@ -774,13 +778,22 @@ async fn run_job_inner(
 
     tokio::fs::create_dir_all(&datasets_cache)
         .await
-        .map_err(|e| format!("create datasets-cache: {e}"))?;
+        .map_err(|e| PipelineError::Other(format!("create datasets-cache: {e}")))?;
     tokio::fs::create_dir_all(&outputs)
         .await
-        .map_err(|e| format!("create outputs: {e}"))?;
+        .map_err(|e| PipelineError::Other(format!("create outputs: {e}")))?;
     tokio::fs::create_dir_all(&temp_dir)
         .await
-        .map_err(|e| format!("create temp: {e}"))?;
+        .map_err(|e| PipelineError::Other(format!("create temp: {e}")))?;
+
+    // Guarda anti-mock (D2): fail-fast antes de downloads/reports.
+    if gpu_devices.is_some() && !gpu_allow_mock {
+        if dispatch.image.ends_with(":local") {
+            return Err(PipelineError::GpuImageGuard {
+                image: dispatch.image.clone(),
+            });
+        }
+    }
 
     // 1. Report preparing
     report_client
@@ -797,28 +810,29 @@ async fn run_job_inner(
             },
         )
         .await
-        .map_err(|e| format!("report preparing: {e}"))?;
+        .map_err(|e| PipelineError::ReportFailed(format!("report preparing: {e}")))?;
 
     // 2. Download package.zip via S3 (scoped — D2 barreira principal)
     let zip_path = temp_dir.join("dataset.zip");
     let key = scoped_key(S3Scope::Packages, &dispatch.package_ref.key)
-        .map_err(|e| format!("invalid package key: {e}"))?;
+        .map_err(|e| PipelineError::S3Download(format!("invalid package key: {e}")))?;
 
     s3.get_to_file(&key, &zip_path)
         .await
-        .map_err(|e| format!("download package: {e}"))?;
+        .map_err(|e| PipelineError::S3Download(format!("download package: {e}")))?;
 
     // 3. Verify MD5 (crash do job se divergir — D4)
-    let actual_md5 = compute_file_md5(&zip_path).map_err(|e| format!("compute md5: {e}"))?;
+    let actual_md5 = compute_file_md5(&zip_path)
+        .map_err(|e| PipelineError::S3Download(format!("compute md5: {e}")))?;
     if actual_md5 != dispatch.package_ref.md5_zip {
-        return Err(format!(
-            "MD5 mismatch: expected {}, got {actual_md5}",
-            dispatch.package_ref.md5_zip
-        ));
+        return Err(PipelineError::Md5Mismatch {
+            expected: dispatch.package_ref.md5_zip.clone(),
+            actual: actual_md5,
+        });
     }
 
     // 4. Unzip (zip-slip safe, padrão import 3e)
-    unzip_safe(&zip_path, &datasets_cache).map_err(|e| format!("{}", e))?;
+    unzip_safe(&zip_path, &datasets_cache)?;
 
     // 5. Monta config.yaml REAL — substitui placeholders (§8/:102)
     let total_epochs = dispatch
@@ -835,14 +849,15 @@ async fn run_job_inner(
         let real_config = replace_config_placeholders(config_yaml, &dataset_path, &output_path);
 
         // Valida que é YAML parseável (D6)
-        let _: serde_yaml::Value = serde_yaml::from_str(&real_config)
-            .map_err(|e| format!("config.yaml parse error: {e}"))?;
+        let _: serde_yaml::Value = serde_yaml::from_str(&real_config).map_err(|e| {
+            PipelineError::ConfigYamlInvalid(format!("config.yaml parse error: {e}"))
+        })?;
 
         // Escreve no output_path (trainer lê de lá)
         let config_path = outputs.join("config.yaml");
         tokio::fs::write(&config_path, &real_config)
             .await
-            .map_err(|e| format!("write config.yaml: {e}"))?;
+            .map_err(|e| PipelineError::ConfigYamlInvalid(format!("write config.yaml: {e}")))?;
     }
 
     // 6. Report running
@@ -860,7 +875,7 @@ async fn run_job_inner(
             },
         )
         .await
-        .map_err(|e| format!("report running: {e}"))?;
+        .map_err(|e| PipelineError::ReportFailed(format!("report running: {e}")))?;
 
     // 7. Execute trainer (D5 :301–309)
     let container_name = format!("trainer-{}-{}", dispatch.engine, job_id);
@@ -872,22 +887,9 @@ async fn run_job_inner(
         (vol_outputs, "/outputs".to_string()),
     ];
 
-    // GPU config: lê do parâmetro (D4/D7 — lido uma vez no boot, passado via run_job).
-    let gpu_devices_ref = gpu_devices;
-
-    // Guarda anti-mock (D2): se GPU está habilitada mas a imagem é :local → falha.
-    if gpu_devices_ref.is_some() && !gpu_allow_mock {
-        if dispatch.image.contains(":local") || dispatch.image.ends_with(":local") {
-            return Err(format!(
-                "GPU orchestrator requires GPU trainer image (TRAINER_IMAGE={})",
-                dispatch.image
-            ));
-        }
-    }
-
     // Env extras para o executor (D7): ENGINE_MOCK=0 quando GPU habilitada.
     let mut exec_env: Vec<(String, String)> = Vec::new();
-    if gpu_devices_ref.is_some() {
+    if gpu_devices.is_some() {
         exec_env.push(("ENGINE_MOCK".to_string(), "0".to_string()));
     }
 
@@ -956,7 +958,7 @@ async fn run_job_inner(
             "--output".to_string(),
             format!("/outputs/{job_id}"),
         ],
-        other => return Err(format!("unsupported engine: {other}")),
+        other => return Err(PipelineError::Other(format!("unsupported engine: {other}"))),
     };
 
     let (exit_code, logs) = executor
@@ -966,7 +968,7 @@ async fn run_job_inner(
             &volumes,
             &subcommand_args,
             &exec_env,
-            gpu_devices_ref,
+            gpu_devices,
         )
         .await;
 
@@ -979,7 +981,10 @@ async fn run_job_inner(
     // 8. Check exit code
     if exit_code != 0 {
         let logs_tail = logs.lines().rev().take(20).collect::<Vec<_>>().join("\n");
-        return Err(format!("trainer failed (exit {exit_code}):\n{logs_tail}"));
+        return Err(PipelineError::DockerFailed {
+            exit_code,
+            logs_tail,
+        });
     }
 
     // 9. Upload artifacts para S3 (D8 — artifacts/<job_id>/)
@@ -991,7 +996,12 @@ async fn run_job_inner(
         ],
         "autotracker" => vec![("boxes.json", "boxes"), ("metrics.jsonl", "metrics")],
         // Já validado acima — seguro unwrap
-        _ => return Err(format!("unsupported engine: {}", dispatch.engine)),
+        _ => {
+            return Err(PipelineError::Other(format!(
+                "unsupported engine: {}",
+                dispatch.engine
+            )))
+        }
     };
 
     let mut artifacts = Vec::new();
@@ -1001,15 +1011,16 @@ async fn run_job_inner(
         if file_path.exists() {
             let art_key = format!("artifacts/{job_id}/{filename}");
             let art_key = scoped_key(S3Scope::Artifacts, &art_key)
-                .map_err(|e| format!("artifact key: {e}"))?;
-            let md5 = compute_file_md5(&file_path).map_err(|e| format!("md5 {filename}: {e}"))?;
+                .map_err(|e| PipelineError::ArtifactUpload(format!("artifact key: {e}")))?;
+            let md5 = compute_file_md5(&file_path)
+                .map_err(|e| PipelineError::ArtifactUpload(format!("md5 {filename}: {e}")))?;
             let bytes = std::fs::metadata(&file_path)
                 .map(|m| m.len() as i64)
                 .unwrap_or(0);
 
             s3.put(&art_key, &file_path)
                 .await
-                .map_err(|e| format!("upload {filename}: {e}"))?;
+                .map_err(|e| PipelineError::ArtifactUpload(format!("upload {filename}: {e}")))?;
 
             artifacts.push(ArtifactReport {
                 kind: kind.to_string(),
@@ -1051,7 +1062,7 @@ async fn run_job_inner(
             },
         )
         .await
-        .map_err(|e| format!("report done: {e}"))?;
+        .map_err(|e| PipelineError::ReportFailed(format!("report done: {e}")))?;
 
     // 12. Cleanup tempdir (datasets-cache e outputs persistem — volumes §8)
     let _ = tokio::fs::remove_dir_all(&temp_dir).await;
@@ -1173,9 +1184,9 @@ fn parse_ram_total_from_content(content: &str) -> Option<i64> {
 pub struct GpuTelemetry {
     /// Nomes das GPUs visíveis (ex.: "NVIDIA GeForce RTX 3060").
     pub gpus: Vec<String>,
-    /// VRAM total somada em bytes (nvidia-smi reporta MiB).
+    /// VRAM total somada em MiB (nvidia-smi reporta MiB).
     pub vram_total: i64,
-    /// VRAM usada somada em bytes.
+    /// VRAM usada somada em MiB.
     pub vram_used: i64,
 }
 
@@ -1189,6 +1200,7 @@ pub async fn try_nvidia_smi() -> Option<GpuTelemetry> {
                 "--query-gpu=name,memory.total,memory.used",
                 "--format=csv,noheader,nounits",
             ])
+            .kill_on_drop(true)
             .output(),
     )
     .await
@@ -1203,7 +1215,7 @@ pub async fn try_nvidia_smi() -> Option<GpuTelemetry> {
     parse_nvidia_smi_csv(&stdout)
 }
 
-/// Parseia CSV do nvidia-smi (nomes + soma de VRAM em MiB → bytes).
+/// Parseia CSV do nvidia-smi (nomes + soma de VRAM em MiB, sem conversão).
 /// Linhas malformadas são ignoradas (skip silencioso).
 pub fn parse_nvidia_smi_csv(csv: &str) -> Option<GpuTelemetry> {
     let mut gpus = Vec::new();
@@ -1240,8 +1252,8 @@ pub fn parse_nvidia_smi_csv(csv: &str) -> Option<GpuTelemetry> {
 
     Some(GpuTelemetry {
         gpus,
-        vram_total: vram_total_mib * 1024 * 1024, // MiB → bytes
-        vram_used: vram_used_mib * 1024 * 1024,   // MiB → bytes
+        vram_total: vram_total_mib,
+        vram_used: vram_used_mib,
     })
 }
 
@@ -1960,10 +1972,10 @@ NVIDIA GeForce GTX 1660 SUPER, 6144, 1024
             t.gpus,
             vec!["NVIDIA GeForce RTX 3060", "NVIDIA GeForce GTX 1660 SUPER"]
         );
-        // total: 12288 + 6144 = 18432 MiB → 18432 * 1024 * 1024
-        assert_eq!(t.vram_total, 18432 * 1024 * 1024);
-        // used: 0 + 1024 = 1024 MiB → 1024 * 1024 * 1024
-        assert_eq!(t.vram_used, 1024 * 1024 * 1024);
+        // total: 12288 + 6144 = 18432 MiB (sem conversão)
+        assert_eq!(t.vram_total, 18432);
+        // used: 0 + 1024 = 1024 MiB (sem conversão)
+        assert_eq!(t.vram_used, 1024);
     }
 
     #[test]
@@ -1978,8 +1990,8 @@ also bad, not a number
         assert_eq!(t.gpus.len(), 2);
         assert_eq!(t.gpus[0], "NVIDIA GeForce RTX 3060");
         assert_eq!(t.gpus[1], "NVIDIA GeForce GTX 1660 SUPER");
-        // used: 0 + 512 = 512 MiB
-        assert_eq!(t.vram_used, 512 * 1024 * 1024);
+        // used: 0 + 512 = 512 MiB (sem conversão)
+        assert_eq!(t.vram_used, 512);
     }
 
     #[test]
@@ -2066,7 +2078,7 @@ also bad, not a number
     #[test]
     fn anti_mock_guard_rejects_local_with_gpu() {
         // Simula ORCH_GPU_DEVICES setado + imagem :local → deve falhar.
-        // Usa run_job para testar o caminho completo (falha → "failed" report).
+        // Chama run_job_inner diretamente e verifica a variante do erro.
         let tmp = tempfile::tempdir().unwrap();
         let s3 = Arc::new(FakeS3::new());
         let zip_path = tmp.path().join("pkg.zip");
@@ -2081,24 +2093,23 @@ also bad, not a number
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            run_job(
-                dispatch,
+            let result = run_job_inner(
+                &dispatch,
                 s3.clone(),
                 report.clone(),
                 executor.clone(),
-                active_jobs.clone(),
-                Some("0".to_string()),
+                &active_jobs,
+                Some("0"),
                 false,
             )
             .await;
+            assert!(
+                matches!(result, Err(PipelineError::GpuImageGuard { .. })),
+                "should return GpuImageGuard variant: {:?}",
+                result
+            );
         });
 
-        let statuses = report.statuses();
-        assert!(
-            statuses.contains(&"failed".to_string()),
-            "should fail with anti-mock guard: {:?}",
-            statuses
-        );
         // Executor should NOT have been called
         assert!(executor.last_args().is_none());
     }
@@ -2233,6 +2244,51 @@ also bad, not a number
             assert!(
                 result.is_ok(),
                 "no GPU set → mock path should work: {:?}",
+                result.err()
+            );
+        });
+    }
+
+    #[test]
+    fn anti_mock_guard_allows_non_localgpu_tag() {
+        // GPU setado + imagem :localgpu (NÃO :local) → deve passar (ends_with(":local") = false).
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_dispatch_with_valid_md5("job-guard-005", "yolo", &zip_path);
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        dispatch.image = "hephaestus/trainer-yolo:localgpu".to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        // Pre-cria outputs
+        let mut output_files = HashMap::new();
+        output_files.insert("best.pt".to_string(), b"fake model".to_vec());
+        output_files.insert("last.pt".to_string(), b"fake model".to_vec());
+        output_files.insert(
+            "metrics.jsonl".to_string(),
+            br#"{"box_loss":0.5,"cls_loss":0.3,"dfl_loss":0.2,"mAP50":0.8,"mAP50-95":0.6,"epoch":1}"#.to_vec(),
+        );
+        create_fake_outputs(tmp.path(), "job-guard-005", &output_files);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let result = run_job_inner(
+                &dispatch,
+                s3.clone(),
+                report.clone(),
+                executor.clone(),
+                &active_jobs,
+                Some("0"),
+                false,
+            )
+            .await;
+            assert!(
+                result.is_ok(),
+                ":localgpu should NOT be blocked by guard: {:?}",
                 result.err()
             );
         });

@@ -29,8 +29,8 @@ services:
       S3_ORCH_ACCESS_KEY: ${S3_ORCH_ACCESS_KEY}
       S3_ORCH_SECRET_KEY: ${S3_ORCH_SECRET_KEY}
       ORCH_GPU_DEVICES: ${ORCH_GPU_DEVICES:-0}
-      ORCH_VOL_DATASETS: gpu_datasets
-      ORCH_VOL_OUTPUTS: gpu_outputs
+      ORCH_VOL_DATASETS: gpu_gpu_datasets
+      ORCH_VOL_OUTPUTS: gpu_gpu_outputs
       EXEC_MODE: docker
       PORT: '8082'
     volumes:
@@ -45,7 +45,7 @@ services:
               count: all
               capabilities: [gpu]
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -S -O /dev/null http://localhost:8082/health 2>&1 | grep -q HTTP/1.1"]
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8082 && echo -e 'GET /health HTTP/1.1\\n' >&3 && grep -q 200 <&3"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -60,8 +60,8 @@ services:
       - build
     image: hephaestus/trainer-yolo:gpu
     build:
-      context: ..
-      dockerfile: engines/trainer-yolo/Dockerfile.gpu
+      context: ../engines/trainer-yolo
+      dockerfile: Dockerfile.gpu
 
 volumes:
   gpu_datasets:

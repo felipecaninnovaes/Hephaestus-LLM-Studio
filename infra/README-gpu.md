@@ -196,8 +196,9 @@ curl -s http://10.15.1.2:8082/health
 ### 3.5 Verificar telemetria de GPU
 
 ```bash
-curl -s http://10.15.10.3:8081/api/telemetry | python3 -m json.tool | head -20
-# Esperado: items[0].gpus[] com nomes reais, vramUsed/vramTotal > 0
+curl -s http://10.15.10.3:8080/api/telemetry | python3 -m json.tool | head -20
+# Esperado: {measured, cpu, ram, ramTotal, vramUsed, vramTotal, gpus[], jobsActive}
+# gpus[] com nomes reais, vramUsed/vramTotal > 0
 ```
 
 ---
@@ -208,12 +209,23 @@ curl -s http://10.15.10.3:8081/api/telemetry | python3 -m json.tool | head -20
 
 1. Acesse `http://10.15.10.3:3000` (studio web)
 2. Faça login
-3. Crie um novo job YOLO com:
+3. Crie um dataset YOLO com classes e imagens via API:
+   ```bash
+   # Criar dataset (POST /api/datasets):
+   curl -b cookies.txt -X POST http://10.15.10.3:8080/api/datasets \
+     -H 'Content-Type: application/json' \
+     -d '{"name":"meu-dataset","kind":"yolo","classes":["objeto1","objeto2"]}'
+   # Upload de imagens: POST /api/datasets/{id}/upload
+   # Anotar boxes: POST /api/datasets/{id}/boxes
+   # Verificar elegibilidade YOLO: dataset kind=yolo com classes + imagens
+   ```
+4. Crie um novo job YOLO com:
+   - Dataset: selecione o dataset YOLO criado
    - Modelo: `yolo11n`
    - Epochs: `3`
    - Batch: `16` (3060 com 12GB) ou `8` (1660S com 6GB)
    - Image size: `640`
-4. Acompanhe em `/jobs` — o job deve ir para o orquestrador remoto
+5. Acompanhe em `/jobs` — o job deve ir para o orquestrador remoto
 
 ### 4.2 Submit via curl
 
@@ -227,6 +239,7 @@ curl -c cookies.txt -X POST http://10.15.10.3:8080/api/auth/login \
 curl -b cookies.txt -X POST http://10.15.10.3:8080/api/jobs/yolo \
   -H 'Content-Type: application/json' \
   -d '{
+    "datasetId": "<uuid-do-dataset>",
     "model": "yolo11n",
     "epochs": 3,
     "batch": 16,
@@ -291,11 +304,11 @@ for a in d.get('artifacts', []):
 ### Critério 4 — Telemetria real
 
 ```bash
-curl -s http://10.15.10.3:8081/api/telemetry | python3 -m json.tool
-# Esperado:
-#   items[0].gpus[] = ["NVIDIA GeForce RTX 3060", "NVIDIA GeForce GTX 1660 SUPER"]
-#   items[0].vramTotal > 0
-#   items[0].vramUsed > 0
+curl -s http://10.15.10.3:8080/api/telemetry | python3 -m json.tool
+# Esperado (shape top-level, sem items[]):
+#   gpus[] = ["NVIDIA GeForce RTX 3060", "NVIDIA GeForce GTX 1660 SUPER"]
+#   vramTotal > 0
+#   vramUsed > 0
 ```
 
 Dashboard (`http://10.15.10.3:3000`) deve mostrar gauges reais de GPU.
@@ -311,7 +324,7 @@ curl -b cookies.txt -X POST http://10.15.10.3:8080/api/jobs/yolo \
 
 Verificar:
 ```sql
-SELECT status, error FROM jobs ORDER BY created_at DESC LIMIT 1;
+SELECT status, params->>'error' AS error FROM jobs ORDER BY created_at DESC LIMIT 1;
 -- Esperado: status='failed', error contém mensagem de OOM ou CUDA out of memory
 ```
 
@@ -320,8 +333,8 @@ SELECT status, error FROM jobs ORDER BY created_at DESC LIMIT 1;
 ### Critério 6 — Telemetria após falha
 
 ```bash
-curl -s http://10.15.10.3:8081/api/telemetry | python3 -m json.tool
-# items[0].jobsActive deve decrementar corretamente após o failed
+curl -s http://10.15.10.3:8080/api/telemetry | python3 -m json.tool
+# jobsActive deve decrementar corretamente após o failed
 ```
 
 ---

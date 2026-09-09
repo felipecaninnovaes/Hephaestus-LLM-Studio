@@ -358,7 +358,9 @@ async fn main() {
     let active_jobs = orchestrator::new_active_jobs();
 
     // GPU config: lê uma vez no boot (D4/D7).
-    let gpu_devices_boot = std::env::var("ORCH_GPU_DEVICES").ok();
+    let gpu_devices_boot = std::env::var("ORCH_GPU_DEVICES")
+        .ok()
+        .filter(|s| !s.is_empty());
     let gpu_allow_mock_boot = std::env::var("ORCH_GPU_ALLOW_MOCK").eq(&Ok("1".to_string()));
     if let Some(ref devices) = gpu_devices_boot {
         tracing::info!("ORCH_GPU_DEVICES={devices} — modo GPU habilitado");

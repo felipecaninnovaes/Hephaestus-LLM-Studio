@@ -103,6 +103,8 @@ services:
     environment:
       DATABASE_URL: postgres://studio:${POSTGRES_PASSWORD:-studio}@db/studio
       MANAGER_TOKEN: ${MANAGER_TOKEN:-changeme}
+      TRAINER_IMAGE: ${TRAINER_IMAGE:-hephaestus/trainer-yolo:local}
+      AUTO_ADOPT_LOCAL: ${AUTO_ADOPT_LOCAL:-1}
     depends_on:
       db:
         condition: service_started

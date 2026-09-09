@@ -2621,7 +2621,7 @@ components:
           description: "Uso de CPU (0..1 ou percentual, dependendo do orquestrador)."
         ram:
           type: [integer, "null"]
-          description: "RAM usada em MB."
+          description: "RAM usada em bytes."
         ramTotal:
           type: [integer, "null"]
           description: "RAM total em bytes (lida de MemTotal do /proc/meminfo)."

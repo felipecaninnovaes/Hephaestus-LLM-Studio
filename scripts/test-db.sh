@@ -75,12 +75,15 @@ echo "db: pg_isready ok"
 # 4. Roda os testes --ignored, guardando o exit code.
 cd "$ROOT_DIR"
 TEST_CODE=0
+echo ">>> api-principal: datasets_db --ignored"
 DATABASE_URL="postgres://studio:${POSTGRES_PASSWORD:-studio}@localhost:5432/studio" \
   cargo test -p api-principal --test datasets_db -- --ignored || TEST_CODE=$?
 
 # 5. Testes do manager (F4.3) — mesmo banco, MESMO exit code guardado.
+echo ">>> manager: manager_db --ignored"
 DATABASE_URL="postgres://studio:${POSTGRES_PASSWORD:-studio}@localhost:5432/studio" \
   cargo test -p manager --test manager_db -- --ignored || TEST_CODE=$?
 
 # 6. Exit com o código do cargo test (o trap limpa antes).
+echo "test-db.sh: exit_code=$TEST_CODE"
 exit "$TEST_CODE"

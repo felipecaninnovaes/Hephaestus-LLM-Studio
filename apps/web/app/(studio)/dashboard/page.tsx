@@ -2,9 +2,6 @@
 
 import { useEffect, useState, useTransition } from "react";
 import {
-  IconActivity,
-  IconBox,
-  IconBoxSelect,
   IconCpu,
   IconDatabase,
   IconGrid,
@@ -12,73 +9,61 @@ import {
   IconImage,
   IconLayers,
   IconList,
-  IconMoreHorizontal,
-  IconNetwork,
   IconRefresh,
   IconServer,
-  IconSparkles,
-  IconTarget,
-  IconZap,
 } from "@/components/icons";
 import { getTelemetry, listJobs } from "@/lib/jobs";
-import { Button, SegmentedControl, StatCard } from "@/components/ui";
+import {
+  listOrchestrators,
+  listModels,
+  getStorageUsage,
+  type Orchestrator,
+  type ModelWeight,
+  type StorageUsage,
+} from "@/lib/monitoring";
+import { Button, SegmentedControl, StatCard, GlassCard } from "@/components/ui";
+import { MetricTile } from "@/components/ui/MetricTile";
+import { TruncatedText } from "@/components/ui/TruncatedText";
+import { formatBytes, formatRelativeTime } from "@/lib/format";
 import type { Dataset, Job, Telemetry } from "@/types/studio";
-
-interface NodeData {
-  id: string;
-  name: string;
-  role: string;
-  version: string;
-  versionStatus: "up-to-date" | "update-available" | "standby";
-  endpoint: string;
-  runtime: string;
-  lastSeen: string;
-  isCurrent: boolean;
-  statusText: string;
-  metrics: {
-    gpu: { pct: number; label: string };
-    vram: { pct: number; label: string };
-    system: { pct: number; label: string };
-  };
-}
 
 export default function DashboardPage() {
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [orchestrators, setOrchestrators] = useState<Orchestrator[]>([]);
+  const [models, setModels] = useState<ModelWeight[]>([]);
+  const [storageUsage, setStorageUsage] = useState<StorageUsage | null>(null);
   const [isRefreshing, startTransition] = useTransition();
   const [lastRefreshed, setLastRefreshed] = useState<Date>(new Date());
-
-  const getGreeting = () => {
-    const hour = new Date().getHours();
-    if (hour < 12) return "Bom dia";
-    if (hour < 18) return "Boa tarde";
-    return "Boa noite";
-  };
 
   const fetchDashboardData = async () => {
     if (typeof document !== "undefined" && document.visibilityState === "hidden") {
       return;
     }
     try {
-      const [telemData, datasetsRes, jobsRes] = await Promise.allSettled([
-        getTelemetry(),
-        fetch("/api/datasets", { credentials: "same-origin" }).then((r) =>
-          r.ok ? r.json() : [],
-        ),
-        listJobs().catch(() => ({ items: [], total: 0 })),
-      ]);
+      const [telemData, datasetsRes, jobsRes, orchData, modelsData, storageData] =
+        await Promise.allSettled([
+          getTelemetry(),
+          fetch("/api/datasets", { credentials: "same-origin" }).then((r) =>
+            r.ok ? r.json() : [],
+          ),
+          listJobs().catch(() => ({ items: [], total: 0 })),
+          listOrchestrators().catch(() => ({ items: [] })),
+          listModels().catch(() => ({ items: [] })),
+          getStorageUsage().catch(() => null),
+        ]);
 
-      if (telemData.status === "fulfilled") {
-        setTelemetry(telemData.value);
-      }
-      if (datasetsRes.status === "fulfilled" && Array.isArray(datasetsRes.value)) {
+      if (telemData.status === "fulfilled") setTelemetry(telemData.value);
+      if (datasetsRes.status === "fulfilled" && Array.isArray(datasetsRes.value))
         setDatasets(datasetsRes.value);
-      }
-      if (jobsRes.status === "fulfilled" && jobsRes.value?.items) {
+      if (jobsRes.status === "fulfilled" && jobsRes.value?.items)
         setJobs(jobsRes.value.items);
-      }
+      if (orchData.status === "fulfilled") setOrchestrators(orchData.value.items);
+      if (modelsData.status === "fulfilled") setModels(modelsData.value.items);
+      if (storageData.status === "fulfilled") setStorageUsage(storageData.value);
+
       setLastRefreshed(new Date());
     } catch {
       // Mantém dados em caso de flutuação
@@ -106,29 +91,30 @@ export default function DashboardPage() {
     });
   };
 
-  // Cálculos de Telemetria Real do Host
-  const realCpuPct =
-    telemetry?.cpu != null ? Math.min(100, Math.max(0, telemetry.cpu)) : 5.4;
-  const realRamUsedGb =
-    telemetry?.ram != null
-      ? (telemetry.ram / (1024 * 1024 * 1024)).toFixed(1)
-      : "13.2";
-  const realRamTotalGb = "62.8";
-  const realRamPct =
-    telemetry?.ram != null
-      ? Math.min(100, Math.max(0, (telemetry.ram / (62.8 * 1024 * 1024 * 1024)) * 100))
-      : 21.0;
+  /* ── Derived metrics (honest — no invented numbers) ──────── */
 
-  const vramUsedGb =
-    telemetry?.vramUsed != null ? telemetry.vramUsed.toFixed(1) : "4.2";
-  const vramTotalGb =
-    telemetry?.vramTotal != null && telemetry.vramTotal > 0
-      ? telemetry.vramTotal.toFixed(1)
-      : "24.0";
+  const node = orchestrators.length === 1 ? orchestrators[0] : null;
+  const hasGpu = (telemetry?.gpus?.length ?? 0) > 0 && telemetry?.vramTotal != null;
+
+  const cpuPct = telemetry?.cpu != null ? Math.min(100, Math.max(0, telemetry.cpu)) : null;
+
+  const ramUsedGb =
+    telemetry?.ram != null ? (telemetry.ram / (1024 * 1024 * 1024)).toFixed(1) : null;
+  const ramTotalGb =
+    telemetry?.ramTotal != null ? (telemetry.ramTotal / (1024 * 1024 * 1024)).toFixed(1) : null;
+  const ramPct =
+    telemetry?.ram != null && telemetry?.ramTotal != null && telemetry.ramTotal > 0
+      ? Math.min(100, Math.max(0, (telemetry.ram / telemetry.ramTotal) * 100))
+      : null;
+
+  const vramUsedGb = telemetry?.vramUsed != null ? telemetry.vramUsed.toFixed(1) : null;
+  const vramTotalGb = telemetry?.vramTotal != null ? telemetry.vramTotal.toFixed(1) : null;
   const vramPct =
-    telemetry?.vramUsed != null && telemetry?.vramTotal
+    telemetry?.vramUsed != null && telemetry?.vramTotal != null && telemetry.vramTotal > 0
       ? Math.min(100, Math.max(0, (telemetry.vramUsed / telemetry.vramTotal) * 100))
-      : 17.5;
+      : null;
+
+  const gpuLabel = hasGpu ? telemetry!.gpus[0] : null;
 
   const totalImages = datasets.reduce((acc, d) => acc + (d.imagesCount || 0), 0);
   const totalLabeled = datasets.reduce((acc, d) => acc + (d.labeledCount || 0), 0);
@@ -138,60 +124,8 @@ export default function DashboardPage() {
   const activeJobsCount = telemetry?.jobsActive ?? jobs.filter((j) => j.status === "running").length;
   const completedJobsCount = jobs.filter((j) => j.status === "done").length;
 
-  const nodes: NodeData[] = [
-    {
-      id: "node-local-gpu",
-      name: "Orquestrador Local (GPU Workstation)",
-      role: "Gerente Local",
-      version: "v1.3.0",
-      versionStatus: "up-to-date",
-      endpoint: "http://localhost:8080",
-      runtime: "Rust Core + PyTorch 2.6 CUDA 12.4",
-      lastSeen: "agora",
-      isCurrent: true,
-      statusText: `${activeJobsCount > 0 ? `${activeJobsCount} treino ativo` : "Idle (pronto)"} · ${datasets.length} datasets vinculados · 0 erros`,
-      metrics: {
-        gpu: {
-          pct: activeJobsCount > 0 ? 82.4 : 8.5,
-          label: "NVIDIA GeForce RTX 4090 (24 GB GDDR6X)",
-        },
-        vram: {
-          pct: parseFloat(vramPct.toFixed(1)),
-          label: `${vramUsedGb} GB / ${vramTotalGb} GB GDDR6X`,
-        },
-        system: {
-          pct: parseFloat(realCpuPct.toFixed(1)),
-          label: `${realRamUsedGb} GB / ${realRamTotalGb} GB · 48 CPUs`,
-        },
-      },
-    },
-    {
-      id: "node-runpod-a100",
-      name: "Cluster Nuvem (RunPod Pod A100)",
-      role: "Worker Remoto",
-      version: "v1.3.0",
-      versionStatus: "standby",
-      endpoint: "https://runpod.hephaestus.internal",
-      runtime: "PyTorch 2.6 CUDA 12.4 (Secure Pod)",
-      lastSeen: "agora",
-      isCurrent: false,
-      statusText: "Standby · Pronto para Treino Pesado (Flux/SDXL) · Latência 28ms",
-      metrics: {
-        gpu: {
-          pct: 0.0,
-          label: "NVIDIA A100-SXM4 (80 GB HBM2e)",
-        },
-        vram: {
-          pct: 0.0,
-          label: "0.0 GB / 80.0 GB HBM2e",
-        },
-        system: {
-          pct: 12.4,
-          label: "124.5 GB / 1.0 TB NVMe Cache",
-        },
-      },
-    },
-  ];
+  const fmt = (v: number | null | undefined, decimals = 1): string =>
+    v != null ? v.toFixed(decimals) : "—";
 
   return (
     <div className="min-h-full space-y-6 p-4 sm:p-6 lg:p-8">
@@ -202,7 +136,7 @@ export default function DashboardPage() {
             Painel de Controle
           </div>
           <h1 className="font-display text-2xl font-bold tracking-tight text-white sm:text-3xl">
-            {getGreeting()}, Hephaestus Admin
+            Operador local
           </h1>
         </div>
 
@@ -245,76 +179,69 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* 4 Cards de Resumo de IA & Treinamento */}
+      {/* 4 Cards de Resumo */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           label="Datasets"
           value={datasets.length}
-          subtext={totalImages > 0 ? `${totalImages} amostras · ${labeledPct}% rotuladas` : "Visão & Difusão prontas"}
+          subtext={totalImages > 0 ? `${totalImages} amostras · ${labeledPct}% rotuladas` : "Sem dados de mídia"}
           icon={<IconDatabase className="size-4" />}
           iconColor="text-brand-400"
         />
         <StatCard
           label="Jobs de Treino"
           value={activeJobsCount > 0 ? `${activeJobsCount} Ativo` : `${completedJobsCount} Executados`}
-          subtext={activeJobsCount > 0 ? "Treino YOLO / Difusão em andamento" : `${completedJobsCount} concluídos · Fila central`}
+          subtext={activeJobsCount > 0 ? "Treino em andamento" : `${completedJobsCount} concluídos`}
           icon={<IconLayers className="size-4" />}
           iconColor="text-[#34d399]"
         />
         <StatCard
           label="Modelos & Pesos"
-          value={14}
-          subtext="YOLOv11, Flux.1, SDXL, OpenCLIP"
-          icon={<IconBox className="size-4" />}
-          iconColor="text-sky-400"
+          value={models.length}
+          subtext={models.length > 0 ? "pesos de treinos (mock)" : "Sem pesos gerados"}
+          icon={<IconImage className="size-4" />}
+          iconColor="text-[#06b6d4]"
         />
         <StatCard
           label="Storage Canônico"
-          value="34.8 GB"
-          subtext="Bucket S3 SeaweedFS · heph-data"
+          value={storageUsage ? formatBytes(storageUsage.totalBytes) : "—"}
+          subtext="rastreados pelo banco · Bucket S3"
           icon={<IconHardDrive className="size-4" />}
-          iconColor="text-amber-400"
+          iconColor="text-[#f59e0b]"
         />
       </div>
 
       {/* Node View: Grid or List */}
       {viewMode === "grid" ? (
         <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
-          {nodes.map((node) => (
-            <div
-              key={node.id}
-              className="glass-card group relative isolate gap-0 rounded-2xl p-0 border border-white/10 bg-[rgba(31,27,38,0.70)] backdrop-blur-xl overflow-hidden transition-[background-color,border-color,box-shadow] hover:border-brand-500/30 hover:bg-[rgba(38,33,47,0.78)]"
-            >
+          {node && (
+            <GlassCard className="p-0 overflow-hidden">
               <div className="space-y-4 p-5 sm:p-6">
                 {/* Header do Card */}
                 <div className="flex flex-col gap-3 border-b border-white/10 pb-4 sm:flex-row sm:items-start sm:justify-between">
                   <div className="min-w-0 space-y-1.5">
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
                       <div className="max-w-full min-w-0 text-lg font-semibold tracking-tight text-white break-words">
-                        {node.name}
+                        <TruncatedText text={node.name} as="span" />
                       </div>
 
-                      {/* Badge Papel */}
+                      {/* Badge Kind */}
                       <span className="inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden whitespace-nowrap rounded-lg border font-medium text-brand-300 bg-brand-500/15 border-brand-500/30 backdrop-blur-sm px-2 py-0.5 text-[11px]">
-                        {node.role}
+                        {node.kind === "local" ? "Local" : "Remoto"}
                       </span>
 
-                      {/* Badge Versão com ping */}
+                      {/* Status badge */}
                       <div className="inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden whitespace-nowrap rounded-lg border font-medium text-zinc-300 bg-zinc-800/40 border-zinc-700/50 backdrop-blur-sm px-2 py-0.5 text-[11px] font-mono">
-                        <span>{node.version}</span>
+                        <span>{node.status}</span>
                         <span className="relative ml-1.5 flex h-2 w-2">
                           <span
                             className={`absolute inline-flex h-full w-full animate-ping rounded-full opacity-75 motion-reduce:animate-none ${
-                              node.versionStatus === "standby"
-                                ? "bg-amber-400"
-                                : "bg-[#34d399]"
+                              node.status === "online" ? "bg-[#34d399]" : "bg-[#f59e0b]"
                             }`}
                           />
                           <span
                             className={`relative inline-flex h-2 w-2 rounded-full ${
-                              node.versionStatus === "standby"
-                                ? "bg-amber-500"
-                                : "bg-[#34d399]"
+                              node.status === "online" ? "bg-[#34d399]" : "bg-[#f59e0b]"
                             }`}
                           />
                         </span>
@@ -322,188 +249,89 @@ export default function DashboardPage() {
                     </div>
 
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-zinc-400">
-                      <span className="font-mono">{node.endpoint}</span>
-                      <span>•</span>
-                      <span className="text-zinc-400 font-mono">{node.runtime}</span>
-                    </div>
-                  </div>
-
-                  {/* Ações do Card */}
-                  <div className="flex shrink-0 items-center gap-1 pt-1 sm:pt-0">
-                    {node.isCurrent && (
-                      <button
-                        type="button"
-                        disabled
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-brand-500/30 bg-brand-500/10 backdrop-blur-sm px-2.5 py-1 text-xs font-medium text-brand-300 shadow-none select-none"
-                      >
-                        <IconServer className="size-3.5 text-brand-400" />
-                        <span>Ativo</span>
-                      </button>
-                    )}
-
-                    <button
-                      type="button"
-                      aria-label="Abrir menu de opções do orquestrador"
-                      className="inline-flex size-8 items-center justify-center rounded-lg border border-transparent text-zinc-400 transition hover:bg-white/[0.08] hover:text-white cursor-pointer focus-visible:ring-2 focus-visible:ring-brand-500/70"
-                    >
-                      <IconMoreHorizontal className="size-4" />
-                    </button>
-                  </div>
-                </div>
-
-                {/* Resumo de Status */}
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm text-zinc-400">
-                  {node.statusText.split("·").map((part, idx) => (
-                    <span key={idx} className="flex items-center space-x-2">
-                      <span className="font-medium text-zinc-200">
-                        {part.trim()}
-                      </span>
-                      {idx < node.statusText.split("·").length - 1 && (
-                        <span className="text-zinc-500">·</span>
+                      <TruncatedText
+                        text={node.endpoint}
+                        className="font-mono"
+                        as="span"
+                      />
+                      {node.lastHeartbeat && (
+                        <>
+                          <span>·</span>
+                          <span className="font-mono">
+                            visto há {formatRelativeTime(node.lastHeartbeat)}
+                          </span>
+                        </>
                       )}
-                    </span>
-                  ))}
-                </div>
-
-                {/* Três Medidores de Recursos de IA (GPU, VRAM, Sistema) */}
-                <div className="border-t border-white/10 pt-4">
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                    {/* Gauge GPU */}
-                    <div className="min-w-0 rounded-xl bg-white/[0.02] backdrop-blur-sm p-3 border border-white/5">
-                      <div className="flex items-start justify-between gap-2">
-                        <p className="flex items-center gap-1.5 font-mono text-[11px] font-semibold tracking-[0.08em] text-zinc-400 uppercase">
-                          <IconCpu className="size-3.5 text-brand-400" />
-                          <span>USO DA GPU</span>
-                        </p>
-                        <p className="font-mono text-base font-semibold tracking-tight text-white tabular-nums">
-                          {node.metrics.gpu.pct}%
-                        </p>
-                      </div>
-                      <p className="mt-0.5 truncate text-[11px] text-zinc-400 font-mono" title={node.metrics.gpu.label}>
-                        {node.metrics.gpu.label}
-                      </p>
-                      <div className="mt-3">
-                        <div className="relative h-1.5 overflow-hidden rounded-full bg-zinc-800/80">
-                          <div className="pointer-events-none absolute inset-0">
-                            <span
-                              className="absolute top-0 h-full w-px bg-white/15 opacity-60"
-                              style={{ left: "25%" }}
-                            />
-                            <span
-                              className="absolute top-0 h-full w-px bg-white/15 opacity-60"
-                              style={{ left: "50%" }}
-                            />
-                            <span
-                              className="absolute top-0 h-full w-px bg-white/15 opacity-60"
-                              style={{ left: "75%" }}
-                            />
-                          </div>
-                          <div
-                            className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-brand-500/70 to-brand-500 transition-[width] duration-700 ease-out motion-reduce:transition-none"
-                            style={{ width: `${node.metrics.gpu.pct}%` }}
-                          />
-                          <div
-                            className="absolute top-1/2 size-2 -translate-y-1/2 rounded-full shadow-[0_0_0_2px_#09090b] transition-[left] duration-700 ease-out motion-reduce:transition-none bg-brand-400"
-                            style={{
-                              left: `calc(${node.metrics.gpu.pct}% - 4px)`,
-                            }}
-                          />
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Gauge VRAM */}
-                    <div className="min-w-0 rounded-xl bg-white/[0.02] backdrop-blur-sm p-3 border border-white/5">
-                      <div className="flex items-start justify-between gap-2">
-                        <p className="flex items-center gap-1.5 font-mono text-[11px] font-semibold tracking-[0.08em] text-zinc-400 uppercase">
-                          <IconActivity className="size-3.5 text-brand-400" />
-                          <span>USO DA VRAM</span>
-                        </p>
-                        <p className="font-mono text-base font-semibold tracking-tight text-white tabular-nums">
-                          {node.metrics.vram.pct}%
-                        </p>
-                      </div>
-                      <p className="mt-0.5 truncate text-[11px] text-zinc-400 font-mono" title={node.metrics.vram.label}>
-                        {node.metrics.vram.label}
-                      </p>
-                      <div className="mt-3">
-                        <div className="relative h-1.5 overflow-hidden rounded-full bg-zinc-800/80">
-                          <div className="pointer-events-none absolute inset-0">
-                            <span
-                              className="absolute top-0 h-full w-px bg-white/15 opacity-60"
-                              style={{ left: "25%" }}
-                            />
-                            <span
-                              className="absolute top-0 h-full w-px bg-white/15 opacity-60"
-                              style={{ left: "50%" }}
-                            />
-                            <span
-                              className="absolute top-0 h-full w-px bg-white/15 opacity-60"
-                              style={{ left: "75%" }}
-                            />
-                          </div>
-                          <div
-                            className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-brand-500/70 to-brand-500 transition-[width] duration-700 ease-out motion-reduce:transition-none"
-                            style={{ width: `${node.metrics.vram.pct}%` }}
-                          />
-                          <div
-                            className="absolute top-1/2 size-2 -translate-y-1/2 rounded-full shadow-[0_0_0_2px_#09090b] transition-[left] duration-700 ease-out motion-reduce:transition-none bg-brand-400"
-                            style={{
-                              left: `calc(${node.metrics.vram.pct}% - 4px)`,
-                            }}
-                          />
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Gauge Sistema / Host */}
-                    <div className="min-w-0 rounded-xl bg-white/[0.02] backdrop-blur-sm p-3 border border-white/5">
-                      <div className="flex items-start justify-between gap-2">
-                        <p className="flex items-center gap-1.5 font-mono text-[11px] font-semibold tracking-[0.08em] text-zinc-400 uppercase">
-                          <IconHardDrive className="size-3.5 text-brand-400" />
-                          <span>SISTEMA &amp; HOST</span>
-                        </p>
-                        <p className="font-mono text-base font-semibold tracking-tight text-white tabular-nums">
-                          {node.metrics.system.pct}%
-                        </p>
-                      </div>
-                      <p className="mt-0.5 truncate text-[11px] text-zinc-400 font-mono" title={node.metrics.system.label}>
-                        {node.metrics.system.label}
-                      </p>
-                      <div className="mt-3">
-                        <div className="relative h-1.5 overflow-hidden rounded-full bg-zinc-800/80">
-                          <div className="pointer-events-none absolute inset-0">
-                            <span
-                              className="absolute top-0 h-full w-px bg-white/15 opacity-60"
-                              style={{ left: "25%" }}
-                            />
-                            <span
-                              className="absolute top-0 h-full w-px bg-white/15 opacity-60"
-                              style={{ left: "50%" }}
-                            />
-                            <span
-                              className="absolute top-0 h-full w-px bg-white/15 opacity-60"
-                              style={{ left: "75%" }}
-                            />
-                          </div>
-                          <div
-                            className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-brand-500/70 to-brand-500 transition-[width] duration-700 ease-out motion-reduce:transition-none"
-                            style={{ width: `${node.metrics.system.pct}%` }}
-                          />
-                          <div
-                            className="absolute top-1/2 size-2 -translate-y-1/2 rounded-full shadow-[0_0_0_2px_#09090b] transition-[left] duration-700 ease-out motion-reduce:transition-none bg-brand-400"
-                            style={{
-                              left: `calc(${node.metrics.system.pct}% - 4px)`,
-                            }}
-                          />
-                        </div>
-                      </div>
                     </div>
                   </div>
                 </div>
+
+                {/* Status derivado de dados reais */}
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm text-zinc-400">
+                  <span className="font-medium text-zinc-200">
+                    {activeJobsCount > 0 ? `${activeJobsCount} treino ativo` : "Idle (pronto)"}
+                  </span>
+                  <span className="text-zinc-500">·</span>
+                  <span className="font-medium text-zinc-200">
+                    {datasets.length} datasets vinculados
+                  </span>
+                </div>
+
+                {/* Medidores de Recursos — só quando há 1 nó (D1) */}
+                {orchestrators.length === 1 && (
+                  <div className="border-t border-white/10 pt-4">
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                      {/* GPU */}
+                      <MetricTile
+                        label="USO DA GPU"
+                        value={gpuLabel ? `${fmt(vramPct)}%` : "sem GPU (mock)"}
+                        highlightColor={gpuLabel ? "brand" : "default"}
+                        subtext={gpuLabel ?? "Nenhuma GPU detectada"}
+                      />
+
+                      {/* VRAM */}
+                      <MetricTile
+                        label="USO DA VRAM"
+                        value={
+                          vramUsedGb && vramTotalGb
+                            ? `${vramUsedGb} / ${vramTotalGb} GB`
+                            : "—"
+                        }
+                        highlightColor="cyan"
+                        subtext={vramPct != null ? `${vramPct.toFixed(1)}%` : "medido: —"}
+                      />
+
+                      {/* Sistema & Host */}
+                      <MetricTile
+                        label="SISTEMA & HOST"
+                        value={cpuPct != null ? `${fmt(cpuPct)}%` : "—"}
+                        highlightColor={cpuPct != null ? "default" : "default"}
+                        subtext={
+                          ramUsedGb && ramTotalGb
+                            ? `${ramUsedGb} / ${ramTotalGb} GB RAM`
+                            : "RAM: —"
+                        }
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Aviso quando há mais de 1 nó */}
+                {orchestrators.length > 1 && (
+                  <div className="border-t border-white/10 pt-4 text-xs text-zinc-400">
+                    Telemetria de hardware indisponível (mais de 1 orquestrador registrado).
+                  </div>
+                )}
               </div>
-            </div>
-          ))}
+            </GlassCard>
+          )}
+
+          {/* Sem nó registrado */}
+          {!node && (
+            <GlassCard className="p-5 text-center text-zinc-400 text-sm">
+              Nenhum orquestrador registrado no sistema.
+            </GlassCard>
+          )}
         </div>
       ) : (
         /* Modo Tabela / Lista */
@@ -512,20 +340,23 @@ export default function DashboardPage() {
             <table className="w-full text-left text-xs">
               <thead className="border-b border-white/10 bg-white/[0.03] font-mono text-[11px] text-zinc-400 uppercase tracking-[0.08em]">
                 <tr>
-                  <th className="px-5 py-3.5">Orquestrador / Nó</th>
-                  <th className="px-5 py-3.5">Função</th>
-                  <th className="px-5 py-3.5">Versão</th>
-                  <th className="px-5 py-3.5">Runtime</th>
-                  <th className="px-5 py-3.5">GPU</th>
-                  <th className="px-5 py-3.5">VRAM</th>
-                  <th className="px-5 py-3.5">Sistema</th>
-                  <th className="px-5 py-3.5 text-right">Ações</th>
+                  <th className="px-5 py-3.5">Orquestrador</th>
+                  <th className="px-5 py-3.5">Status</th>
+                  <th className="px-5 py-3.5">Último Heartbeat</th>
+                  <th className="px-5 py-3.5">Endpoint</th>
+                  {orchestrators.length === 1 && (
+                    <>
+                      <th className="px-5 py-3.5">GPU</th>
+                      <th className="px-5 py-3.5">VRAM</th>
+                      <th className="px-5 py-3.5">CPU</th>
+                    </>
+                  )}
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/5">
-                {nodes.map((node) => (
+                {orchestrators.map((orch) => (
                   <tr
-                    key={node.id}
+                    key={orch.id}
                     className="transition-colors hover:bg-white/[0.02]"
                   >
                     <td className="px-5 py-4">
@@ -535,60 +366,58 @@ export default function DashboardPage() {
                         </span>
                         <div>
                           <div className="font-semibold text-white">
-                            {node.name}
+                            {orch.name}
                           </div>
                           <div className="font-mono text-[11px] text-zinc-400">
-                            {node.endpoint}
+                            {orch.endpoint}
                           </div>
                         </div>
                       </div>
                     </td>
                     <td className="px-5 py-4">
                       <span className="inline-flex items-center rounded-lg border border-brand-500/30 bg-brand-500/10 backdrop-blur-sm px-2 py-0.5 font-medium text-brand-300">
-                        {node.role}
+                        {orch.status}
                       </span>
                     </td>
                     <td className="px-5 py-4 font-mono text-zinc-300">
-                      <div className="flex items-center space-x-1.5">
-                        <span>{node.version}</span>
-                        <span
-                          className={`size-2 rounded-full ${
-                            node.versionStatus === "standby"
-                              ? "bg-amber-400"
-                              : "bg-[#34d399]"
-                          }`}
-                        />
-                      </div>
+                      {orch.lastHeartbeat ? formatRelativeTime(orch.lastHeartbeat) : "—"}
                     </td>
                     <td className="px-5 py-4 text-zinc-300 font-mono text-[11px]">
-                      {node.runtime}
+                      <TruncatedText text={orch.endpoint} as="span" />
                     </td>
-                    <td className="px-5 py-4 font-mono">
-                      <span className="text-white font-semibold">
-                        {node.metrics.gpu.pct}%
-                      </span>
-                    </td>
-                    <td className="px-5 py-4 font-mono">
-                      <span className="text-white font-semibold">
-                        {node.metrics.vram.pct}%
-                      </span>
-                    </td>
-                    <td className="px-5 py-4 font-mono">
-                      <span className="text-white font-semibold">
-                        {node.metrics.system.pct}%
-                      </span>
-                    </td>
-                    <td className="px-5 py-4 text-right">
-                      <button
-                        type="button"
-                        aria-label={`Abrir menu do orquestrador ${node.name}`}
-                        className="inline-flex size-8 items-center justify-center rounded-lg text-zinc-400 hover:bg-white/[0.08] hover:text-white cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70"
-                      >
-                        <IconMoreHorizontal className="size-4" />
-                      </button>
-                    </td>
+                    {orchestrators.length === 1 && (
+                      <>
+                        <td className="px-5 py-4 font-mono">
+                          <span className="text-white font-semibold">
+                            {gpuLabel ? `${fmt(vramPct)}%` : "—"}
+                          </span>
+                        </td>
+                        <td className="px-5 py-4 font-mono">
+                          <span className="text-white font-semibold">
+                            {vramUsedGb && vramTotalGb
+                              ? `${vramUsedGb}/${vramTotalGb}`
+                              : "—"}
+                          </span>
+                        </td>
+                        <td className="px-5 py-4 font-mono">
+                          <span className="text-white font-semibold">
+                            {cpuPct != null ? `${fmt(cpuPct)}%` : "—"}
+                          </span>
+                        </td>
+                      </>
+                    )}
                   </tr>
                 ))}
+                {orchestrators.length === 0 && (
+                  <tr>
+                    <td
+                      colSpan={7}
+                      className="px-5 py-8 text-center text-zinc-400"
+                    >
+                      Nenhum orquestrador registrado.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>

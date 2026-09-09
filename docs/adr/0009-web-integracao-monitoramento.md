@@ -162,8 +162,12 @@ usuário).
 *Por quê — leitura da tabela, sem fundir telemetria:* o cache do manager é
 **global** (heartbeat não carrega identidade de orquestrador — atualiza
 `last_heartbeat` de todos os `online/degraded`, `lib.rs:807`) e a tabela nunca
-recebe `gpus`/`vram_total_gb` (o `adopt_orchestrator` só grava
-name/endpoint/kind/status). Fundir o cache global em cada nó da lista seria
+recebe `gpus`/`vram_total_gb` pelo manager (o `adopt_orchestrator` só grava
+name/endpoint/kind/status). **Emenda G.7 (ADR-0010 D1):** a sessão GPU
+(TrueNAS) preenche `gpus`/`vram_total_gb` por **INSERT manual** na tabela
+(dado estático real do host — `gpus:["NVIDIA GeForce RTX 3060","NVIDIA GeForce
+GTX 1660 SUPER"]`, `vram_total_gb=18`). A regra "nunca escritos **pelo manager**"
+permanece — o INSERT é operação manual de infra, não código do manager. Fundir o cache global em cada nó da lista seria
 **mentir por nó** quando houver >1 orquestrador. A lista devolve o que a
 tabela tem de verdade; com exatamente 1 nó (o caso local), a UI (F6.2) compõe
 os gauges do card a partir do `GET /api/telemetry` global **só quando**

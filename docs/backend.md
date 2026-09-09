@@ -31,7 +31,7 @@
 - **Principal↔Manager (interno):** HTTP em rede docker (`manager:8081`), auth por segredo pré-compartilhado (`MANAGER_TOKEN`, `Authorization: Bearer`); front nunca fala com o manager direto.
 - **Postgres compartilhado:** um único Postgres do stack local; principal é dono de `datasets/images/auth/settings`, manager é dono de `jobs/runners/orchestrators/queue`. Sem transações cruzadas via API — cada um escreve só nas suas tabelas.
 - **Resiliência:** fila e reservas de VRAM são **reconstruídas do Postgres** no boot do manager (`jobs` em `queued/dispatched/preparing` voltam a `queued` com `queue_reason=recovered`); nada crítico só em memória.
-- **Direção de rede (NAT): outbound-first.** Modelo primário é **reverso**: orquestrador remoto abre WS persistente com o manager (`/orch/channel`, Bearer `heph_o_*` + pin) e recebe despachos por ele; artefatos voltam via `POST` do orquestrador para o manager/principal. Conexão inbound direta (manager→pod) é opcional, só quando há IP:porta alcançável.
+- **Direção de rede (NAT): outbound-first.** Modelo primário é **reverso**: orquestrador remoto abre WS persistente com o manager (`/orch/channel`, Bearer `heph_o_*` + pin) e recebe despachos por ele; artefatos voltam via `POST` do orquestrador para o manager/principal. Conexão inbound direta (manager→pod) é opcional, só quando há IP:porta alcançável. **Emenda G.7 (ADR-0010 D1):** a sessão GPU (TrueNAS) é exatamente este caso — manager despacha para `http://10.15.1.2:8082` (LAN, branch inbound direta); orquestrador remoto envia report/heartbeat para `http://10.15.10.3:8081` (dev host).
 - **Buffer de logs:** orquestrador mantém ring 2000 linhas em disco por job; principal cacheia últimas 1000; WS aceita `?since_seq=` para retomar após oscilação.
 
 ## 2. Auth (decisão: single-user local) — IMPLEMENTADO (Fatia 2)
@@ -49,7 +49,7 @@
 
 - **Postgres (principal + web):** metadados (`datasets, images, boxes, captions, classes, videos, jobs, runners, orchestrators, settings/keys ref`). Só mídia vira objeto no bucket; anotação é linha no banco (`boxes`, `captions` — ADR-0003 D6). Os formatos por engine (YOLO `images/ + labels/*.txt + data.yaml`, Difusão `img + .txt/.json + captions.jsonl`, CLIP `pares .parquet/.jsonl`) **não são canônicos**: são artefatos de build materializados no tempdir do orquestrador a partir do Postgres e mortos no `finally` (ADR-0003 D1/D6).
 - **Chunks (decisão): 8 MB** (faixa configurável 4–16 MB) **só no transporte principal→orquestrador REMOTO** (ADR-0003 D9: `POST package/init {md5_zip, bytes, chunks}` → `PUT package/:id/chunk/:i` → `POST package/:id/complete`; projeto da fatia 3e/4, ainda não implementado). Entre principal e bucket local não há chunk nenhum: upload é multipart com spool em tempfile + `put_object` de length exato.
-- **Build no orquestrador:** ele pode materializar um `build.sqlite` **interno/temporário** ou montar direto via `JSON/YAML` — o que for melhor por engine — e então **reconstrói a árvore exata do motor** (`labels/*.txt`, `data.yaml` com paths remapeados). Python nunca lê SQLite do transporte; SQLite é detalhe interno e descartável do orquestrador.
+- **Build no orquestrador:** ele pode materializar um `build.sqlite` **interno/temporário** ou montar direto via `JSON/YAML` — o que for melhor por engine — e então **reconstrói a árvore exata do motor** (`labels/*.txt`, `data.yaml` com paths remapeados). Python nunca lê SQLite do transporte; SQLite é detalhe interno e descartável do orquestrador. **Emenda G.7 (ADR-0010):** o builder/export Rust continua emitindo `train: [images/...]` no `dataset.yaml` (contrato 3e intocado). É o caminho REAL do trainer que adapta dentro do container: `_prepare_dataset_yaml` reescreve `path:` para absoluto, converte listas para `.txt` com caminhos absolutos (ultralytics 8.3.253 abre listas diretas como UTF-8 e explode com `UnicodeDecodeError`), e val vazio aponta para `train.txt`.
 
 ## 4. Jobs, trainers sob demanda e cache
 
@@ -58,6 +58,7 @@
 - **Pause = checkpoint + libera VRAM** (não `docker pause`): `pause` pede `save_checkpoint`, derruba o trainer e mantém `last.ckpt`; `resume` recria do checkpoint. Sem checkpoint do engine, pause é recusado (`409 checkpoint_unsupported`) e só `abort` vale.
 - Orquestrador sobe **um container `trainer-<engine>-<jobid>` por job** a partir de imagens por engine (isola deps: ultralytics vs. diffusers/kohya vs. open_clip). Ao destruir o container, **cache persiste fora**: volumes `models/`, `datasets-cache/`, `outputs/` mapeados no host/remoto.
 - **Imagens (decisão): uma por engine** (yolo, difusão, clip, autolabel/tracker, runner), **base no estável mais recente testado** (não pinar no 12.4/2.4.1 do protótipo; registrar a versão validada em `engines.yaml`), **build local no compose** (sem registry externo por enquanto; tags `hephaestus/trainer-<engine>:local`).
+  - **Emenda G.7 (ADR-0010 D5):** para treino real @gpu, existe **`hephaestus/trainer-yolo:gpu`** — imagem separada (`engines/trainer-yolo/Dockerfile.gpu`) com base PyTorch 2.6.0+CUDA 12.4+cuDNN 9, ultralytics==8.3.253 pinado, `ENV ENGINE_MOCK=0` baked, e peso base `yolo11n.pt` baixado no build (~5MB). Construída no TrueNAS via `docker compose -p gpu --profile build build trainer-gpu`. A imagem `:local` continua mock stdlib pura e não é afetada.
   - **Emenda — AutoTracker v1 (ADR-0008 D2/D6):** o autotracker v1 (mock) reutiliza a imagem `trainer-yolo:local` via subcomando `autotrack` (`python -m trainer_yolo autotrack --config <config.yaml> --output <output_path>`), sem modelo real. Runner/imagem próprios (florence-2/qwen-vl, ADR-0008 D6) são fatia futura.
 - Paralelismo por VRAM, não fixo: com folga (ex. RunPod 80 GB) roda 2+ trainers e enfileira o resto (FIFO + cancel manual). Fila visível no front com posição e motivo (`waiting_vram`).
 - Entrada do trainer: zip do §3 + `config.yaml` gerado pelo principal (hiperparams do front) + mounts de modelos solicitados.
@@ -86,7 +87,7 @@
     - { engine: clip,    model: ViT-B-32,            mode: train, vram_min_gb: 10 }
   ```
   Sem entrada = `default_train_gb: 16` + aviso `unmeasured` no front.
-- Medição: `nvidia-smi` 2s no orquestrador + `torch.cuda.max_memory_allocated` reportado pelo motor no fim do warmup; manager aplica `medido * 1.25` e sugere atualizar o yaml (`POST /api/settings/vram-table/propose`).
+- Medição: `nvidia-smi` 2s no orquestrador + `torch.cuda.max_memory_allocated` reportado pelo motor no fim do warmup; manager aplica `medido * 1.25` e sugere atualizar o yaml (`POST /api/settings/vram-table/propose`). **Emenda G.7 (ADR-0010 D9):** a policy VRAM permanece **no-op na v1** (sem `waiting_vram`, sem bloqueio). O envelope seguro do smoke G.6 na RTX 3060 (12GB): `yolo11n` batch=16 imgsz=416 ≈ 5.4GB (provado: 10-11% GPU util); `yolo11m` batch=8 ≈ 10-11GB (no limite). `yolo11x` batch≥32 tende a OOM — **falha honesta e visível** (job `failed`, não silencioso).
 - Regra: se `livre >= min` → sobe em paralelo; senão treino entra em `queued(waiting_vram)` e, se o bloqueio for um runner, o runner é drenado/morto primeiro. **Treino nunca é morto por falta de VRAM, só enfileirado.**
 - Config por ambiente (via manager): `max_parallel_trainers` (teto, padrão 2; efetivo = `min(teto, floor((vram_total - headroom) / vram_min_do_job))`), `vram_headroom_gb`, `runner_idle_ttl_s`, `vram-table` por modelo.
 - **Preempção (decisão):** runner idle → mata direto + toast com motivo; runner com inferência ativa → modal "Treino X precisa de N GB. Matar runner?" com countdown 30s (expirar = mata). Log de auditoria `runner_preempted {by_job}`. **Sem usuário (expirado/madrugada):** mata ao expirar, a inferência em voo retorna `409 runner_preempted {job_id}` e o playground mostra toast + estado vazio (sem corromper resposta parcial).
@@ -101,7 +102,7 @@
 
 - `POST /api/models/download {url, engine, dest}` → manager roteia ao orquestrador do ambiente ativo, que baixa com token da settings/env, verifica hash, salva em `models/<engine>/` (volume persistente, fora dos trainers) e notifica via WS.
 - Bootstrap remoto ao subir container: orquestrador mapeia `datasets-cache/<jobid>/` (build do §3), `models/<engine>/` solicitados e `outputs/<jobid>/`; na conclusão faz o caminho inverso (`.safetensors`, pesos YOLO/CLIP, imagens processadas, logs, samples) de volta ao principal com md5.
-- **Adoção (decisão: token colado):** orquestrador remoto (VPS/RunPod com IP público) ao subir **gera pairing token + fingerprint**; o usuário cola no front (`Conectar Pod`) e o manager adota (`POST /api/orchestrators/adopt {endpoint, key}`), passa a health-checkar e sincronizar regras. **Local:** o compose sobe `principal + manager + orquestrador-local` juntos e o manager **auto-adota via rede docker**, sem chave.
+- **Adoção (decisão: token colado):** orquestrador remoto (VPS/RunPod com IP público) ao subir **gera pairing token + fingerprint**; o usuário cola no front (`Conectar Pod`) e o manager adota (`POST /api/orchestrators/adopt {endpoint, key}`), passa a health-checkar e sincronizar regras. **Local:** o compose sobe `principal + manager + orquestrador-local` juntos e o manager **auto-adota via rede docker**, sem chave. **Emenda G.7 (ADR-0010):** a sessão GPU (TrueNAS) adota o orquestrador remoto por **INSERT manual** na tabela `orchestrators` (`kind='remoto'`, `endpoint='http://10.15.1.2:8082'`, preenchendo `gpus` JSONB + `vram_total_gb=18` — dados estáticos reais do host, não heartbeat). O fluxo de adoção por token (§8) descreve o futuro; o v1 TrueNAS usa o branch "inbound direta quando há IP:porta alcançável" (§1/:34).
 - **Formato do token (proposta):**
   - Pairing (uso único, curta duração): `heph_p_<32 chars base32 sem ambíguos, em grupos 4-4-4>` ex. `heph_p_7KQ2-9MZX-4TWD-8FHA`. Validade 15 min, single-use, rate-limit 5 tentativas. Exibido uma vez no log/boot do orquestrador.
   - Credencial longa (pós-adoção): `heph_o_<64 hex>` (256 bits), guardada no Postgres **só como hash SHA-256**, exibida nunca mais. Autentica manager→orquestrador via `Authorization: Bearer` + TLS com pin do fingerprint.
@@ -165,6 +166,7 @@ orchestrators (via manager): GET /api/orchestrators  → implementado (F6.1; lei
           → manager auto-adota `orchestrator-local` no boot (Fatia 4; ADR-0007 D3)
 telemetry: GET /api/telemetry  → implementado (Fatia 4; proxy do cache do manager: {measured,cpu,ram,ramTotal,vramUsed,vramTotal,gpus,jobsActive}; ramTotal = ADR-0009 D4, bytes)
            ramTotal: aditivo Option<i64> (bytes; ADR-0009 D4; spec 0.9.0)
+           **Emenda G.7 (ADR-0010):** `gpus[]`/`vramUsed`/`vramTotal` agora **carregam valores reais** quando um orquestrador com GPU heartbeats (contrato inalterado — os campos já existiam no wire). Durante a sessão GPU (TrueNAS), o orquestrador remoto reporta nomes reais de GPUs (`gpus:["NVIDIA GeForce RTX 3060","NVIDIA GeForce GTX 1660 SUPER"]`) e VRAM em MiB (nvidia-smi). Com o orquestrador local parado, o cache global não oscila entre nós.
 monitoring: GET /api/orchestrators  → implementado (F6.1; leitura via manager; status 200/401/503; ADR-0009 D1)
             GET /api/models         → implementado (F6.1; derivado de job_artifacts.kind='model' por (engine,model); ADR-0009 D2)
             GET /api/storage/usage  → implementado (F6.1; soma SQL: datasetsBytes + artifactsBytes; ADR-0009 D3)
@@ -287,7 +289,9 @@ orchestrators(id UUID PK, name TEXT, endpoint TEXT UNIQUE, kind TEXT,     -- loc
   status TEXT, last_heartbeat TIMESTAMPTZ);
   -- IMPLEMENTADO (Fatia 4; `migrations/0006_jobs.sql`): manager auto-adota `orchestrator-local` no boot (ADR-0007 D3).
   -- Índice: `orchestrators(status)`.
-  -- Nota F6.1 (ADR-0009): `gpus`/`vram_total_gb` NUNCA são escritos no v1 — o manager não preenche essas colunas.
+  -- Nota F6.1 (ADR-0009): `gpus`/`vram_total_gb` NUNCA são escritos pelo manager — o manager não preenche essas colunas.
+  -- Emenda G.7 (ADR-0010): a sessão GPU (TrueNAS) os preenche por INSERT manual na tabela
+  -- (dado estático real do host, não heartbeat): `gpus` JSONB com nomes das GPUs, `vram_total_gb=18`.
   -- A telemetria por nó (cache por orquestrador + watchdog degraded/offline) é dívida (ADR-0009 R1).
 models(id UUID PK, engine TEXT, name TEXT, path TEXT, source TEXT,         -- hf|civitai|upload
   url TEXT NULL, hash TEXT NULL, bytes BIGINT, created_at TIMESTAMPTZ);

@@ -39,7 +39,7 @@ import type {
   JobStatus,
 } from "@/types/studio";
 import { autotrackerErrorMessage } from "@/types/studio";
-import { formatBytes, formatDuration, formatRelativeTime } from "@/lib/format";
+import { formatBytes, formatDuration } from "@/lib/format";
 import { openActionCenter } from "@/lib/events";
 import { JobListItem } from "@/components/studio/JobCard";
 
@@ -166,7 +166,7 @@ function JobsPageContent() {
 
   const selectedJob = useMemo(() => {
     if (selectedJobId) {
-      return jobs.find((j) => j.id === selectedJobId) ?? null;
+      return jobs.find((j) => j.id === selectedJobId) ?? activeJobs[0] ?? terminalJobs[0] ?? null;
     }
     // Auto-focus no job ativo mais recente, ou no mais recente terminal
     return activeJobs[0] ?? terminalJobs[0] ?? null;

@@ -2,7 +2,6 @@
 
 import { useEffect, useState, useTransition } from "react";
 import {
-  IconCpu,
   IconDatabase,
   IconGrid,
   IconHardDrive,
@@ -12,6 +11,7 @@ import {
   IconRefresh,
   IconServer,
 } from "@/components/icons";
+import { ApiError } from "@/lib/api";
 import { getTelemetry, listJobs } from "@/lib/jobs";
 import {
   listOrchestrators,
@@ -35,8 +35,9 @@ export default function DashboardPage() {
   const [orchestrators, setOrchestrators] = useState<Orchestrator[]>([]);
   const [models, setModels] = useState<ModelWeight[]>([]);
   const [storageUsage, setStorageUsage] = useState<StorageUsage | null>(null);
+  const [orchsUnavailable, setOrchsUnavailable] = useState(false);
+  const [modelsUnavailable, setModelsUnavailable] = useState(false);
   const [isRefreshing, startTransition] = useTransition();
-  const [lastRefreshed, setLastRefreshed] = useState<Date>(new Date());
 
   const fetchDashboardData = async () => {
     if (typeof document !== "undefined" && document.visibilityState === "hidden") {
@@ -50,8 +51,18 @@ export default function DashboardPage() {
             r.ok ? r.json() : [],
           ),
           listJobs().catch(() => ({ items: [], total: 0 })),
-          listOrchestrators().catch(() => ({ items: [] })),
-          listModels().catch(() => ({ items: [] })),
+          listOrchestrators().catch((err) => {
+            if (err instanceof ApiError && err.code === "queue_unavailable") {
+              setOrchsUnavailable(true);
+            }
+            return { items: [] };
+          }),
+          listModels().catch((err) => {
+            if (err instanceof ApiError && err.code === "queue_unavailable") {
+              setModelsUnavailable(true);
+            }
+            return { items: [] };
+          }),
           getStorageUsage().catch(() => null),
         ]);
 
@@ -60,11 +71,15 @@ export default function DashboardPage() {
         setDatasets(datasetsRes.value);
       if (jobsRes.status === "fulfilled" && jobsRes.value?.items)
         setJobs(jobsRes.value.items);
-      if (orchData.status === "fulfilled") setOrchestrators(orchData.value.items);
-      if (modelsData.status === "fulfilled") setModels(modelsData.value.items);
+      if (orchData.status === "fulfilled") {
+        setOrchestrators(orchData.value.items);
+        setOrchsUnavailable(false);
+      }
+      if (modelsData.status === "fulfilled") {
+        setModels(modelsData.value.items);
+        setModelsUnavailable(false);
+      }
       if (storageData.status === "fulfilled") setStorageUsage(storageData.value);
-
-      setLastRefreshed(new Date());
     } catch {
       // Mantém dados em caso de flutuação
     }
@@ -102,10 +117,6 @@ export default function DashboardPage() {
     telemetry?.ram != null ? (telemetry.ram / (1024 * 1024 * 1024)).toFixed(1) : null;
   const ramTotalGb =
     telemetry?.ramTotal != null ? (telemetry.ramTotal / (1024 * 1024 * 1024)).toFixed(1) : null;
-  const ramPct =
-    telemetry?.ram != null && telemetry?.ramTotal != null && telemetry.ramTotal > 0
-      ? Math.min(100, Math.max(0, (telemetry.ram / telemetry.ramTotal) * 100))
-      : null;
 
   const vramUsedGb = telemetry?.vramUsed != null ? telemetry.vramUsed.toFixed(1) : null;
   const vramTotalGb = telemetry?.vramTotal != null ? telemetry.vramTotal.toFixed(1) : null;
@@ -124,8 +135,8 @@ export default function DashboardPage() {
   const activeJobsCount = telemetry?.jobsActive ?? jobs.filter((j) => j.status === "running").length;
   const completedJobsCount = jobs.filter((j) => j.status === "done").length;
 
-  const fmt = (v: number | null | undefined, decimals = 1): string =>
-    v != null ? v.toFixed(decimals) : "—";
+  const fmt = (v: number | null | undefined, decimals = 1, suffix = ""): string =>
+    v != null ? `${v.toFixed(decimals)}${suffix}` : "—";
 
   return (
     <div className="min-h-full space-y-6 p-4 sm:p-6 lg:p-8">
@@ -198,7 +209,13 @@ export default function DashboardPage() {
         <StatCard
           label="Modelos & Pesos"
           value={models.length}
-          subtext={models.length > 0 ? "pesos de treinos (mock)" : "Sem pesos gerados"}
+          subtext={
+            modelsUnavailable
+              ? "Indisponível (manager fora)"
+              : models.length > 0
+                ? "pesos de treinos (mock)"
+                : "Sem pesos gerados"
+          }
           icon={<IconImage className="size-4" />}
           iconColor="text-[#06b6d4]"
         />
@@ -284,9 +301,9 @@ export default function DashboardPage() {
                       {/* GPU */}
                       <MetricTile
                         label="USO DA GPU"
-                        value={gpuLabel ? `${fmt(vramPct)}%` : "sem GPU (mock)"}
+                        value={gpuLabel ?? "sem GPU (mock)"}
                         highlightColor={gpuLabel ? "brand" : "default"}
-                        subtext={gpuLabel ?? "Nenhuma GPU detectada"}
+                        subtext="nome da placa"
                       />
 
                       {/* VRAM */}
@@ -298,13 +315,13 @@ export default function DashboardPage() {
                             : "—"
                         }
                         highlightColor="cyan"
-                        subtext={vramPct != null ? `${vramPct.toFixed(1)}%` : "medido: —"}
+                        subtext={fmt(vramPct, 1, "%")}
                       />
 
                       {/* Sistema & Host */}
                       <MetricTile
                         label="SISTEMA & HOST"
-                        value={cpuPct != null ? `${fmt(cpuPct)}%` : "—"}
+                        value={fmt(cpuPct, 1, "%")}
                         highlightColor={cpuPct != null ? "default" : "default"}
                         subtext={
                           ramUsedGb && ramTotalGb
@@ -328,8 +345,12 @@ export default function DashboardPage() {
 
           {/* Sem nó registrado */}
           {!node && (
-            <GlassCard className="p-5 text-center text-zinc-400 text-sm">
-              Nenhum orquestrador registrado no sistema.
+            <GlassCard className="p-5 text-center text-sm">
+              {orchsUnavailable ? (
+                <span className="text-[#f59e0b]">Indisponível (manager fora)</span>
+              ) : (
+                <span className="text-zinc-400">Nenhum orquestrador registrado no sistema.</span>
+              )}
             </GlassCard>
           )}
         </div>
@@ -389,19 +410,19 @@ export default function DashboardPage() {
                       <>
                         <td className="px-5 py-4 font-mono">
                           <span className="text-white font-semibold">
-                            {gpuLabel ? `${fmt(vramPct)}%` : "—"}
+                            {gpuLabel ?? "—"}
                           </span>
                         </td>
                         <td className="px-5 py-4 font-mono">
                           <span className="text-white font-semibold">
                             {vramUsedGb && vramTotalGb
-                              ? `${vramUsedGb}/${vramTotalGb}`
+                              ? `${vramUsedGb}/${vramTotalGb} · ${fmt(vramPct, 1, "%")}`
                               : "—"}
                           </span>
                         </td>
                         <td className="px-5 py-4 font-mono">
                           <span className="text-white font-semibold">
-                            {cpuPct != null ? `${fmt(cpuPct)}%` : "—"}
+                            {fmt(cpuPct, 1, "%")}
                           </span>
                         </td>
                       </>
@@ -411,10 +432,14 @@ export default function DashboardPage() {
                 {orchestrators.length === 0 && (
                   <tr>
                     <td
-                      colSpan={7}
-                      className="px-5 py-8 text-center text-zinc-400"
+                      colSpan={4}
+                      className="px-5 py-8 text-center text-sm"
                     >
-                      Nenhum orquestrador registrado.
+                      {orchsUnavailable ? (
+                        <span className="text-[#f59e0b]">Indisponível (manager fora)</span>
+                      ) : (
+                        <span className="text-zinc-400">Nenhum orquestrador registrado.</span>
+                      )}
                     </td>
                   </tr>
                 )}

@@ -313,6 +313,14 @@ export default function Sidebar({
     onClose();
   };
 
+  // Deriva status do orquestrador para o ping visual
+  const orchStatus =
+    orchestrators.length === 1 && orchestrators[0].status === "online"
+      ? "online"
+      : orchestrators.length > 0
+        ? "offline"
+        : "none";
+
   const isItemActive = (item: NavItem) => {
     if (item.id === "dashboard") {
       return pathname === "/dashboard" || pathname === "/";
@@ -635,12 +643,28 @@ export default function Sidebar({
         >
           {/* Card Orquestrador Online */}
           {isExpanded ? (
-            <div className="flex items-center justify-between rounded-xl border border-[#34d399]/25 bg-[#34d399]/[0.05] backdrop-blur-sm px-2.5 py-2 text-xs">
+            <div className={`flex items-center justify-between rounded-xl border backdrop-blur-sm px-2.5 py-2 text-xs ${
+              orchStatus === "online"
+                ? "border-[#34d399]/25 bg-[#34d399]/[0.05]"
+                : orchStatus === "offline"
+                  ? "border-[#f59e0b]/25 bg-[#f59e0b]/[0.05]"
+                  : "border-white/10 bg-white/[0.03]"
+            }`}>
               <div className="flex items-center space-x-2">
-                <span className="relative flex h-2 w-2">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#34d399] opacity-75 motion-reduce:animate-none" />
-                  <span className="relative inline-flex h-2 w-2 rounded-full bg-[#34d399]" />
-                </span>
+                {orchStatus === "online" ? (
+                  <span className="relative flex h-2 w-2">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#34d399] opacity-75 motion-reduce:animate-none" />
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-[#34d399]" />
+                  </span>
+                ) : orchStatus === "offline" ? (
+                  <span className="flex h-2 w-2">
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-[#f59e0b]" />
+                  </span>
+                ) : (
+                  <span className="flex h-2 w-2">
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-zinc-600" />
+                  </span>
+                )}
                 <span className="text-zinc-200 font-medium">
                   {orchestrators.length === 1
                     ? `${orchestrators[0].name} · ${orchestrators[0].status}`
@@ -656,13 +680,21 @@ export default function Sidebar({
           ) : (
             <div
               title={orchestrators.length === 1 ? `${orchestrators[0].name} (${orchestrators[0].status})` : "Orquestrador"}
-              className="relative flex size-10 items-center justify-center rounded-xl border border-[#34d399]/25 bg-[#34d399]/[0.05] backdrop-blur-sm text-[#34d399]"
+              className={`relative flex size-10 items-center justify-center rounded-xl backdrop-blur-sm ${
+                orchStatus === "online"
+                  ? "border border-[#34d399]/25 bg-[#34d399]/[0.05] text-[#34d399]"
+                  : orchStatus === "offline"
+                    ? "border border-[#f59e0b]/25 bg-[#f59e0b]/[0.05] text-[#f59e0b]"
+                    : "border border-white/10 bg-white/[0.03] text-zinc-500"
+              }`}
             >
               <IconServer className="size-4" />
-              <span className="absolute top-1 right-1 flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#34d399] opacity-75 motion-reduce:animate-none" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-[#34d399]" />
-              </span>
+              {orchStatus === "online" && (
+                <span className="absolute top-1 right-1 flex h-2 w-2">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#34d399] opacity-75 motion-reduce:animate-none" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-[#34d399]" />
+                </span>
+              )}
             </div>
           )}
 

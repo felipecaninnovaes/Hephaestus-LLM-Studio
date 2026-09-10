@@ -23,7 +23,9 @@
         "List:heph-data/packages/*",
         "Read:heph-data/artifacts/*",
         "Write:heph-data/artifacts/*",
-        "List:heph-data/artifacts/*"
+        "List:heph-data/artifacts/*",
+        "Read:heph-data/models/*",
+        "List:heph-data/models/*"
       ]
     }
   ]

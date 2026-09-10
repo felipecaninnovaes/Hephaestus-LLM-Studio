@@ -33,6 +33,7 @@ services:
       ORCH_PAIRING_CODE: ${ORCH_PAIRING_CODE:-heph_p_change_me}
       ORCH_VOL_DATASETS: gpu_gpu_datasets
       ORCH_VOL_OUTPUTS: gpu_gpu_outputs
+      ORCH_GPU_ALLOW_MOCK: ${ORCH_GPU_ALLOW_MOCK:-}
       EXEC_MODE: docker
       PORT: '8082'
     volumes:

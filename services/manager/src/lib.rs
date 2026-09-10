@@ -1017,7 +1017,9 @@ pub async fn get_telemetry(pool: &PgPool, cache: &TelemetryCache) -> TelemetryRe
         };
     }
 
-    // >1 nós → agregação.
+    // >1 nós → agregação SOMENTE de entradas frescas (heartbeat ≤ 10s).
+    // Entradas stale (offline ou sem heartbeat recente) são ignoradas na soma/união.
+    // Se NENHUMA for fresca mas houver entradas → fallback (mesmo do 0-nós).
     let mut vram_used_sum: Option<i64> = Some(0);
     let mut vram_total_sum: Option<i64> = Some(0);
     let mut gpus: Vec<String> = Vec::new();
@@ -1025,36 +1027,57 @@ pub async fn get_telemetry(pool: &PgPool, cache: &TelemetryCache) -> TelemetryRe
     let mut measured = false;
 
     for state in cache.values() {
-        // measured: true se ≥1 nó fresco (≤10s).
-        if !measured {
-            if let Some(last) = state.last_heartbeat {
-                if (now - last).num_seconds() <= 10 {
-                    measured = true;
+        let is_fresh = state
+            .last_heartbeat
+            .map(|last| (now - last).num_seconds() <= 10)
+            .unwrap_or(false);
+
+        if is_fresh {
+            measured = true;
+
+            // vram_used/vram_total: soma dos Some (None → None global).
+            match (vram_used_sum, state.vram_used) {
+                (Some(acc), Some(val)) => vram_used_sum = Some(acc + val),
+                (Some(_), None) => vram_used_sum = None,
+                (None, _) => {}
+            }
+            match (vram_total_sum, state.vram_total) {
+                (Some(acc), Some(val)) => vram_total_sum = Some(acc + val),
+                (Some(_), None) => vram_total_sum = None,
+                (None, _) => {}
+            }
+
+            // gpus: união (ordem estável por nó).
+            for gpu in &state.gpus {
+                if !gpus.contains(gpu) {
+                    gpus.push(gpu.clone());
                 }
             }
-        }
 
-        // vram_used/vram_total: soma dos Some (None → None global).
-        match (vram_used_sum, state.vram_used) {
-            (Some(acc), Some(val)) => vram_used_sum = Some(acc + val),
-            (Some(_), None) => vram_used_sum = None,
-            (None, _) => {}
+            // jobs_active: soma.
+            jobs_active_sum += state.jobs_active;
         }
-        match (vram_total_sum, state.vram_total) {
-            (Some(acc), Some(val)) => vram_total_sum = Some(acc + val),
-            (Some(_), None) => vram_total_sum = None,
-            (None, _) => {}
-        }
+    }
 
-        // gpus: união (ordem estável por nó).
-        for gpu in &state.gpus {
-            if !gpus.contains(gpu) {
-                gpus.push(gpu.clone());
-            }
-        }
+    // Nenhuma entrada fresca → fallback (nulls + jobs da fila).
+    if !measured {
+        let jobs_active: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM jobs WHERE status NOT IN ('done', 'failed', 'cancelled')",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or((0,));
 
-        // jobs_active: soma.
-        jobs_active_sum += state.jobs_active;
+        return TelemetryResponse {
+            measured: false,
+            vram_used: None,
+            vram_total: None,
+            cpu: None,
+            ram: None,
+            ram_total: None,
+            gpus: vec![],
+            jobs_active: jobs_active.0 as i32,
+        };
     }
 
     TelemetryResponse {
@@ -1660,5 +1683,143 @@ mod tests {
     #[test]
     fn auto_adopt_enabled_empty_is_true() {
         assert!(auto_adopt_enabled(Some("")));
+    }
+
+    /// Agregação: 2 nós, 1 stale (>10s) → somente o fresco conta.
+    #[test]
+    fn agregacao_filtro_stale() {
+        use super::TelemetryState;
+        use chrono::{Duration, Utc};
+        use std::collections::HashMap;
+
+        let mut cache: HashMap<Uuid, TelemetryState> = HashMap::new();
+        let now = Utc::now();
+
+        // Nó fresco (heartbeat agora).
+        cache.insert(
+            Uuid::new_v4(),
+            TelemetryState {
+                endpoint: "http://fresh:8082".into(),
+                measured: true,
+                vram_used: Some(3000),
+                vram_total: Some(12000),
+                cpu: Some(0.4),
+                ram: Some(4096),
+                ram_total: Some(8192),
+                gpus: vec!["RTX 3060".into()],
+                jobs_active: 1,
+                last_heartbeat: Some(now),
+            },
+        );
+
+        // Nó stale (heartbeat 60s atrás).
+        cache.insert(
+            Uuid::new_v4(),
+            TelemetryState {
+                endpoint: "http://stale:8082".into(),
+                measured: true,
+                vram_used: Some(8000),
+                vram_total: Some(24000),
+                cpu: Some(0.9),
+                ram: Some(16384),
+                ram_total: Some(67108864000),
+                gpus: vec!["RTX 4090".into()],
+                jobs_active: 5,
+                last_heartbeat: Some(now - Duration::seconds(60)),
+            },
+        );
+
+        // Simula a lógica de filtro do get_telemetry (>1 nós).
+        let mut vram_used_sum: Option<i64> = Some(0);
+        let mut vram_total_sum: Option<i64> = Some(0);
+        let mut gpus: Vec<String> = Vec::new();
+        let mut jobs_active_sum: i32 = 0;
+        let mut measured = false;
+
+        for state in cache.values() {
+            let is_fresh = state
+                .last_heartbeat
+                .map(|last| (now - last).num_seconds() <= 10)
+                .unwrap_or(false);
+            if is_fresh {
+                measured = true;
+                match (vram_used_sum, state.vram_used) {
+                    (Some(acc), Some(val)) => vram_used_sum = Some(acc + val),
+                    (Some(_), None) => vram_used_sum = None,
+                    (None, _) => {}
+                }
+                match (vram_total_sum, state.vram_total) {
+                    (Some(acc), Some(val)) => vram_total_sum = Some(acc + val),
+                    (Some(_), None) => vram_total_sum = None,
+                    (None, _) => {}
+                }
+                for gpu in &state.gpus {
+                    if !gpus.contains(gpu) {
+                        gpus.push(gpu.clone());
+                    }
+                }
+                jobs_active_sum += state.jobs_active;
+            }
+        }
+
+        assert!(measured);
+        // Só o nó fresh conta.
+        assert_eq!(vram_used_sum, Some(3000));
+        assert_eq!(vram_total_sum, Some(12000));
+        assert_eq!(jobs_active_sum, 1);
+        assert_eq!(gpus, vec!["RTX 3060"]);
+        // Nó stale NÃO entra na soma.
+        assert!(!gpus.contains(&"RTX 4090".to_string()));
+    }
+
+    /// Agregação: 2 nós ambos stale → fallback (measured:false).
+    #[test]
+    fn agregacao_todos_stale_fallback() {
+        use super::TelemetryState;
+        use chrono::{Duration, Utc};
+        use std::collections::HashMap;
+
+        let mut cache: HashMap<Uuid, TelemetryState> = HashMap::new();
+        let now = Utc::now();
+
+        cache.insert(
+            Uuid::new_v4(),
+            TelemetryState {
+                endpoint: "http://a:8082".into(),
+                measured: true,
+                vram_used: Some(3000),
+                vram_total: Some(12000),
+                gpus: vec!["GPU_A".into()],
+                jobs_active: 1,
+                last_heartbeat: Some(now - Duration::seconds(30)),
+                ..Default::default()
+            },
+        );
+        cache.insert(
+            Uuid::new_v4(),
+            TelemetryState {
+                endpoint: "http://b:8082".into(),
+                measured: true,
+                vram_used: Some(2000),
+                vram_total: Some(6000),
+                gpus: vec!["GPU_B".into()],
+                jobs_active: 2,
+                last_heartbeat: Some(now - Duration::seconds(60)),
+                ..Default::default()
+            },
+        );
+
+        let mut measured = false;
+        for state in cache.values() {
+            let is_fresh = state
+                .last_heartbeat
+                .map(|last| (now - last).num_seconds() <= 10)
+                .unwrap_or(false);
+            if is_fresh {
+                measured = true;
+            }
+        }
+
+        assert!(!measured, "ambos stale → measured deve ser false");
     }
 }

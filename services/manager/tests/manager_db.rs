@@ -2292,10 +2292,10 @@ async fn adopt_verify_valido_upsert_idempotente_revive_revoked() {
         kind: "remoto".into(),
         pairing_code: "heph_p_test123".into(),
     };
-    let id1 = manager::adopt_internal(&p, &orch, &req1)
+    let item1 = manager::adopt_internal(&p, &orch, &req1)
         .await
         .expect("adopt 1");
-    assert!(!id1.is_empty());
+    assert!(!item1.id.is_empty());
 
     let row: (String, String) =
         sqlx::query_as("SELECT name, status FROM orchestrators WHERE endpoint = $1")
@@ -2313,7 +2313,7 @@ async fn adopt_verify_valido_upsert_idempotente_revive_revoked() {
         kind: "remoto".into(),
         pairing_code: "heph_p_test456".into(),
     };
-    let id2 = manager::adopt_internal(&p, &orch, &req2)
+    let item2 = manager::adopt_internal(&p, &orch, &req2)
         .await
         .expect("adopt 2");
     let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM orchestrators")
@@ -2321,7 +2321,7 @@ async fn adopt_verify_valido_upsert_idempotente_revive_revoked() {
         .await
         .unwrap();
     assert_eq!(count.0, 1, "deve continuar 1 linha");
-    assert_eq!(id1, id2, "deve retornar mesmo id");
+    assert_eq!(item1.id, item2.id, "deve retornar mesmo id");
 
     // Atualizado o name.
     let row2: (String,) = sqlx::query_as("SELECT name FROM orchestrators WHERE endpoint = $1")
@@ -2332,7 +2332,7 @@ async fn adopt_verify_valido_upsert_idempotente_revive_revoked() {
     assert_eq!(row2.0, "gpu-node-v2");
 
     // Revoga.
-    let orch_uuid: uuid::Uuid = id1.parse().unwrap();
+    let orch_uuid: uuid::Uuid = item1.id.parse().unwrap();
     manager::revoke_orchestrator(&p, orch_uuid)
         .await
         .expect("revoke");
@@ -2498,14 +2498,60 @@ async fn watchdog_nao_toca_revoked() {
 }
 
 /// Validação de adopt: kind inválido → ManagerError::InvalidRequest.
-#[test]
-fn adopt_validacao_kind_invalido() {
-    let vt = test_vram_table();
-    let _ = vt; // Só para garantir que a tabela parse ok.
-                // Teste direto da validação (sem banco).
-                // O tipo AdoptRequest com kind inválido deve ser rejeitado pela função.
-                // Como a validação é síncrona dentro de adopt_internal, testamos o path.
-                // Será coberto pelo teste db "adopt_verify_invalido_409" quando kind != local/remoto.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn adopt_validacao_kind_invalido() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    let req = manager::AdoptRequest {
+        name: "bad-kind".into(),
+        endpoint: "http://local:8082".into(),
+        kind: "invalid_kind".into(),
+        pairing_code: "code".into(),
+    };
+    let result = manager::adopt_internal(&p, &orch, &req).await;
+    assert!(matches!(result, Err(ManagerError::InvalidRequest(_))));
+}
+
+/// Validação de adopt: endpoint sem http:// → ManagerError::InvalidRequest.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn adopt_validacao_endpoint_sem_http() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    let req = manager::AdoptRequest {
+        name: "bad-endpoint".into(),
+        endpoint: "ftp://local:8082".into(),
+        kind: "local".into(),
+        pairing_code: "code".into(),
+    };
+    let result = manager::adopt_internal(&p, &orch, &req).await;
+    assert!(matches!(result, Err(ManagerError::InvalidRequest(_))));
+}
+
+/// Validação de adopt: pairing_code vazio → ManagerError::InvalidRequest.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn adopt_validacao_pairing_code_vazio() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    let req = manager::AdoptRequest {
+        name: "empty-code".into(),
+        endpoint: "http://local:8082".into(),
+        kind: "local".into(),
+        pairing_code: "".into(),
+    };
+    let result = manager::adopt_internal(&p, &orch, &req).await;
+    assert!(matches!(result, Err(ManagerError::InvalidRequest(_))));
 }
 
 /// Dispatch do dispatch_falha_volta_queued agora precisa de vram_table.

@@ -354,8 +354,8 @@ async fn main() {
         .expect("PORT deve ser um número");
 
     // D1 — identidade no heartbeat.
-    let advertise_url = std::env::var("ORCH_ADVERTISE_URL")
-        .unwrap_or_else(|_| "http://orchestrator-local:8082".into());
+    let advertise_url =
+        orchestrator::resolve_advertise_url(std::env::var("ORCH_ADVERTISE_URL").ok().as_deref());
 
     // D5.1-2 — pairing code: env define, ou gera no boot e loga uma vez.
     let pairing = Arc::new(match std::env::var("ORCH_PAIRING_CODE") {

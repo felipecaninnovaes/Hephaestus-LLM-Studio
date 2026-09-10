@@ -354,7 +354,7 @@ async fn adopt_handler(State(state): State<AppState>, body: Bytes) -> Response {
     };
 
     match manager::adopt_internal(&state.pool, state.orch_client.as_ref(), &req).await {
-        Ok(id) => (StatusCode::OK, Json(serde_json::json!({"id": id}))).into_response(),
+        Ok(item) => (StatusCode::OK, Json(item)).into_response(),
         Err(ManagerError::InvalidRequest(msg)) => bad_request(&msg),
         Err(ManagerError::PairingInvalid) => pairing_invalid(),
         Err(ManagerError::Internal(e)) => internal_error(&e),

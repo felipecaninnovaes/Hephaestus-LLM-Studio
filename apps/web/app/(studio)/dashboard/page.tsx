@@ -17,6 +17,9 @@ import {
   listOrchestrators,
   listModels,
   getStorageUsage,
+  STATUS_LABELS,
+  STATUS_CLASSES,
+  nodeMetrics,
   type Orchestrator,
   type ModelWeight,
   type StorageUsage,
@@ -118,22 +121,6 @@ export default function DashboardPage() {
 
   const fmt = (v: number | null | undefined, decimals = 1, suffix = ""): string =>
     v != null ? `${v.toFixed(decimals)}${suffix}` : "—";
-
-  /** Deriva métricas de um único nó a partir do tipo enriquecido Orchestrator. */
-  function nodeMetrics(orch: Orchestrator) {
-    const hasGpu = (orch.gpus?.length ?? 0) > 0 && orch.vramTotal != null;
-    const cpuPct = orch.measured && orch.cpu != null ? Math.min(100, Math.max(0, orch.cpu)) : null;
-    const ramUsedGb = orch.measured && orch.ram != null ? (orch.ram / (1024 * 1024 * 1024)).toFixed(1) : null;
-    const ramTotalGb = orch.measured && orch.ramTotal != null ? (orch.ramTotal / (1024 * 1024 * 1024)).toFixed(1) : null;
-    const vramUsedGb = orch.measured && orch.vramUsed != null ? (orch.vramUsed / 1024).toFixed(1) : null;
-    const vramTotalGb = orch.measured && orch.vramTotal != null ? (orch.vramTotal / 1024).toFixed(1) : null;
-    const vramPct =
-      orch.measured && orch.vramUsed != null && orch.vramTotal != null && orch.vramTotal > 0
-        ? Math.min(100, Math.max(0, (orch.vramUsed / orch.vramTotal) * 100))
-        : null;
-    const gpuLabel = hasGpu ? orch.gpus[0] : null;
-    return { cpuPct, ramUsedGb, ramTotalGb, vramUsedGb, vramTotalGb, vramPct, gpuLabel, hasGpu };
-  }
 
   return (
     <div className="min-h-full space-y-6 p-4 sm:p-6 lg:p-8">
@@ -248,15 +235,9 @@ export default function DashboardPage() {
 
                         {/* Status badge */}
                         <div className={`inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden whitespace-nowrap rounded-lg border font-medium backdrop-blur-sm px-2 py-0.5 text-[11px] font-mono ${
-                          node.status === "online"
-                            ? "text-[#34d399] bg-[#34d399]/10 border-[#34d399]/30"
-                            : node.status === "degraded"
-                              ? "text-[#f59e0b] bg-[#f59e0b]/10 border-[#f59e0b]/30"
-                              : node.status === "revoked"
-                                ? "text-zinc-500 bg-zinc-800/40 border-zinc-700/50"
-                                : "text-zinc-300 bg-zinc-800/40 border-zinc-700/50"
+                          STATUS_CLASSES[node.status] ?? STATUS_CLASSES.unknown
                         }`}>
-                          <span>{node.status}</span>
+                          <span>{STATUS_LABELS[node.status] ?? node.status}</span>
                           {(node.status === "online" || node.status === "degraded") && (
                             <span className="relative ml-1.5 flex h-2 w-2">
                               <span
@@ -408,15 +389,9 @@ export default function DashboardPage() {
                       </td>
                       <td className="px-5 py-4">
                         <span className={`inline-flex items-center rounded-lg border backdrop-blur-sm px-2 py-0.5 font-medium text-[11px] font-mono ${
-                          orch.status === "online"
-                            ? "text-[#34d399] bg-[#34d399]/10 border-[#34d399]/30"
-                            : orch.status === "degraded"
-                              ? "text-[#f59e0b] bg-[#f59e0b]/10 border-[#f59e0b]/30"
-                              : orch.status === "revoked"
-                                ? "text-zinc-500 bg-zinc-800/40 border-zinc-700/50"
-                                : "text-zinc-300 bg-zinc-800/40 border-zinc-700/50"
+                          STATUS_CLASSES[orch.status] ?? STATUS_CLASSES.unknown
                         }`}>
-                          {orch.status}
+                          {STATUS_LABELS[orch.status] ?? orch.status}
                         </span>
                       </td>
                       <td className="px-5 py-4 font-mono text-zinc-300">

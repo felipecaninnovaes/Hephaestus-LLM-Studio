@@ -1,5 +1,66 @@
 import { apiFetch } from "@/lib/api";
 
+/* ── Shared Status Helpers ─────────────────────────────────── */
+
+export const STATUS_LABELS: Record<string, string> = {
+  online: "Online",
+  degraded: "Degradado",
+  offline: "Offline",
+  revoked: "Revogado",
+  unknown: "Desconhecido",
+};
+
+export const STATUS_CLASSES: Record<string, string> = {
+  online: "text-[#34d399] bg-[#34d399]/10 border-[#34d399]/30",
+  degraded: "text-[#f59e0b] bg-[#f59e0b]/10 border-[#f59e0b]/30",
+  offline: "text-zinc-400 bg-zinc-800/40 border-zinc-700/50",
+  revoked: "text-zinc-500 bg-zinc-800/40 border-zinc-700/50",
+  unknown: "text-zinc-400 bg-zinc-800/40 border-zinc-700/50",
+};
+
+/** Deriva métricas de um único nó (fonte única — D7 H.5). */
+export function nodeMetrics(orch: Orchestrator) {
+  const hasGpu = (orch.gpus?.length ?? 0) > 0 && orch.vramTotal != null;
+  const cpuPct =
+    orch.measured && orch.cpu != null
+      ? Math.min(100, Math.max(0, orch.cpu))
+      : null;
+  const ramUsedGb =
+    orch.measured && orch.ram != null
+      ? (orch.ram / (1024 * 1024 * 1024)).toFixed(1)
+      : null;
+  const ramTotalGb =
+    orch.measured && orch.ramTotal != null
+      ? (orch.ramTotal / (1024 * 1024 * 1024)).toFixed(1)
+      : null;
+  const vramUsedGb =
+    orch.measured && orch.vramUsed != null
+      ? (orch.vramUsed / 1024).toFixed(1)
+      : null;
+  const vramTotalGb =
+    orch.measured && orch.vramTotal != null
+      ? (orch.vramTotal / 1024).toFixed(1)
+      : null;
+  const vramPct =
+    orch.measured &&
+    orch.vramUsed != null &&
+    orch.vramTotal != null &&
+    orch.vramTotal > 0
+      ? Math.min(100, Math.max(0, (orch.vramUsed / orch.vramTotal) * 100))
+      : null;
+  const gpuLabel = hasGpu ? orch.gpus[0] : null;
+  return {
+    cpuPct,
+    ramUsedGb,
+    ramTotalGb,
+    vramUsedGb,
+    vramTotalGb,
+    vramPct,
+    gpuLabel,
+    hasGpu,
+  };
+}
+
 /* ── Types ──────────────────────────────────────────────────── */
 
 export interface Orchestrator {

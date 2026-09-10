@@ -85,11 +85,12 @@ impl PairingState {
         }
     }
 
-    /// Verifica o código e consome se válido (single-use).
+    /// Verifica o código e consome se válido (single-use, atômico via compare_exchange).
     pub fn verify(&self, code: &str) -> bool {
-        if self.code == code && !self.used.load(std::sync::atomic::Ordering::SeqCst) {
-            self.used.store(true, std::sync::atomic::Ordering::SeqCst);
-            true
+        if self.code == code {
+            self.used
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
         } else {
             false
         }
@@ -104,6 +105,17 @@ pub struct PairingVerifyRequest {
 #[derive(Debug, Serialize)]
 pub struct PairingVerifyResponse {
     pub valid: bool,
+}
+
+/// Resolve o URL de advertise do orquestrador.
+///
+/// Se o valor for `None` ou string vazia, retorna o default
+/// `http://orchestrator-local:8082`. Função pura — sem side effects.
+pub fn resolve_advertise_url(env_val: Option<&str>) -> String {
+    match env_val {
+        Some(v) if !v.is_empty() => v.to_string(),
+        _ => "http://orchestrator-local:8082".into(),
+    }
 }
 
 /// Gera um pairing code aleatório no formato `heph_p_<32hex>`.
@@ -2367,25 +2379,33 @@ also bad, not a number
     }
 
     // =========================================================================
-    // H.1 — Default ORCH_ADVERTISE_URL
+    // H.1 — resolve_advertise_url (função pura)
     // =========================================================================
 
     #[test]
-    fn default_orchain_advertise_url() {
-        // Remove a env se existir
-        std::env::remove_var("ORCH_ADVERTISE_URL");
-        let url = std::env::var("ORCH_ADVERTISE_URL")
-            .unwrap_or_else(|_| "http://orchestrator-local:8082".into());
-        assert_eq!(url, "http://orchestrator-local:8082");
+    fn default_advertise_url() {
+        // None → default
+        assert_eq!(
+            resolve_advertise_url(None),
+            "http://orchestrator-local:8082"
+        );
     }
 
     #[test]
-    fn orchain_advertise_url_from_env() {
-        std::env::set_var("ORCH_ADVERTISE_URL", "http://custom:9999");
-        let url = std::env::var("ORCH_ADVERTISE_URL")
-            .unwrap_or_else(|_| "http://orchestrator-local:8082".into());
-        assert_eq!(url, "http://custom:9999");
-        std::env::remove_var("ORCH_ADVERTISE_URL");
+    fn resolve_advertise_url_from_value() {
+        assert_eq!(
+            resolve_advertise_url(Some("http://custom:9999")),
+            "http://custom:9999"
+        );
+    }
+
+    #[test]
+    fn resolve_advertise_url_empty_fallback() {
+        // Empty string → default
+        assert_eq!(
+            resolve_advertise_url(Some("")),
+            "http://orchestrator-local:8082"
+        );
     }
 
     // =========================================================================

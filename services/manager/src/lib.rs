@@ -900,7 +900,7 @@ pub async fn receive_heartbeat(
     };
 
     // 2. Atualiza last_heartbeat e status SOMENTE nesta linha.
-    sqlx::query(
+    let update_result = sqlx::query(
         "UPDATE orchestrators SET last_heartbeat = now(), status = 'online' \
          WHERE id = $1 AND status <> 'revoked'",
     )
@@ -908,6 +908,17 @@ pub async fn receive_heartbeat(
     .execute(pool)
     .await
     .map_err(|e| ManagerError::Internal(format!("update heartbeat: {e}")))?;
+
+    // Se a linha é revoked, o UPDATE não modificou nada — retorna cedo
+    // (sem UPDATE de gpus/vram, sem cache). Nó revoked não deve ser medido.
+    if update_result.rows_affected() == 0 {
+        tracing::info!(
+            orch_id = %orch_id,
+            endpoint = %req.endpoint,
+            "heartbeat ignorado: nó revoked"
+        );
+        return Ok(());
+    }
 
     // 3. Grava gpus/vram_total_gb quando heartbeat carrega VRAM e gpus não-vazio.
     if !req.gpus.is_empty() {
@@ -975,6 +986,25 @@ pub async fn get_telemetry(pool: &PgPool, cache: &TelemetryCache) -> TelemetryRe
             .last_heartbeat
             .map(|last| (now - last).num_seconds() <= 10)
             .unwrap_or(false);
+        // ADR D2.3/R5: nó sem heartbeat fresco → mesmo fallback do 0-nós.
+        if !measured {
+            let jobs_active: (i64,) = sqlx::query_as(
+                "SELECT COUNT(*) FROM jobs WHERE status NOT IN ('done', 'failed', 'cancelled')",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap_or((0,));
+            return TelemetryResponse {
+                measured: false,
+                vram_used: None,
+                vram_total: None,
+                cpu: None,
+                ram: None,
+                ram_total: None,
+                gpus: vec![],
+                jobs_active: jobs_active.0 as i32,
+            };
+        }
         return TelemetryResponse {
             measured,
             vram_used: state.vram_used,
@@ -1280,10 +1310,11 @@ pub async fn watchdog_tick(pool: &PgPool) -> Result<(), ManagerError> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(60);
 
-    // online → degraded (last_heartbeat mais velho que degraded_s).
+    // online → degraded (last_heartbeat mais velho que degraded_s OU NULL).
     let _ = sqlx::query(
         "UPDATE orchestrators SET status = 'degraded' \
-         WHERE status = 'online' AND last_heartbeat < now() - make_interval(secs => $1::float)",
+         WHERE status = 'online' \
+           AND (last_heartbeat IS NULL OR last_heartbeat < now() - make_interval(secs => $1::float))",
     )
     .bind(degraded_s as f64)
     .execute(pool)
@@ -1294,7 +1325,8 @@ pub async fn watchdog_tick(pool: &PgPool) -> Result<(), ManagerError> {
     let result = sqlx::query(
         "WITH morto AS ( \
              UPDATE orchestrators SET status = 'offline' \
-             WHERE status = 'degraded' AND last_heartbeat < now() - make_interval(secs => $1::float) \
+             WHERE status = 'degraded' \
+               AND (last_heartbeat IS NULL OR last_heartbeat < now() - make_interval(secs => $1::float)) \
              RETURNING id \
          ) \
          UPDATE jobs SET status = 'queued', queue_reason = 'recovered', orchestrator_id = NULL \
@@ -1329,11 +1361,16 @@ pub struct AdoptRequest {
 }
 
 /// Adopt interno: valida, verifica pairing no orquestrador, upsert.
+///
+/// Retorna o item completo (`OrchestratorItem`) no mesmo shape de
+/// `list_orchestrators` — enriquecido com telemetria do cache (que estará
+/// vazia na criação: `measured:false` + nulls). BFF já deserializa esse
+/// shape — nada muda nele.
 pub async fn adopt_internal(
     pool: &PgPool,
     orch_client: &dyn OrchestratorClient,
     req: &AdoptRequest,
-) -> Result<String, ManagerError> {
+) -> Result<OrchestratorItem, ManagerError> {
     // Validação de domínio.
     if req.kind != "local" && req.kind != "remoto" {
         return Err(ManagerError::InvalidRequest(
@@ -1387,14 +1424,31 @@ pub async fn adopt_internal(
     .await
     .map_err(|e| ManagerError::Internal(format!("adopt orchestrator: {e}")))?;
 
-    // Retorna id (UPERT pode ter usado linha existente — resolvia o id real).
+    // Resolve o id real (upsert pode ter usado linha existente).
     let real_id: (Uuid,) = sqlx::query_as("SELECT id FROM orchestrators WHERE endpoint = $1")
         .bind(&req.endpoint)
         .fetch_one(pool)
         .await
         .map_err(|e| ManagerError::Internal(format!("resolve adopted id: {e}")))?;
 
-    Ok(real_id.0.to_string())
+    // Retorna item completo (shape idêntico a list_orchestrators).
+    Ok(OrchestratorItem {
+        id: real_id.0.to_string(),
+        name: req.name.clone(),
+        kind: req.kind.clone(),
+        endpoint: req.endpoint.clone(),
+        status: "online".to_string(),
+        last_heartbeat: None,
+        vram_total_gb: None,
+        measured: false,
+        cpu: None,
+        ram: None,
+        ram_total: None,
+        vram_used: None,
+        vram_total: None,
+        gpus: vec![],
+        jobs_active: 0,
+    })
 }
 
 // ---------------------------------------------------------------------------

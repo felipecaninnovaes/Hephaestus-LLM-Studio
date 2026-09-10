@@ -56,6 +56,7 @@ pub struct ArtifactReport {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct HeartbeatBody {
+    pub endpoint: String,
     pub gpus: Vec<String>,
     pub vram_total: Option<i64>,
     pub vram_used: Option<i64>,
@@ -63,6 +64,55 @@ pub struct HeartbeatBody {
     pub ram: Option<i64>,
     pub ram_total: Option<i64>,
     pub jobs_active: i32,
+}
+
+// ---------------------------------------------------------------------------
+// Pairing (D5.1-2 — single-use em memória)
+// ---------------------------------------------------------------------------
+
+/// Estado do pairing code no orquestrador.
+/// O `used` flag é single-use: 1ª chamada com código correto consome; 2ª → false.
+pub struct PairingState {
+    pub code: String,
+    pub used: std::sync::atomic::AtomicBool,
+}
+
+impl PairingState {
+    pub fn new(code: String) -> Self {
+        Self {
+            code,
+            used: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Verifica o código e consome se válido (single-use).
+    pub fn verify(&self, code: &str) -> bool {
+        if self.code == code && !self.used.load(std::sync::atomic::Ordering::SeqCst) {
+            self.used.store(true, std::sync::atomic::Ordering::SeqCst);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PairingVerifyRequest {
+    pub code: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PairingVerifyResponse {
+    pub valid: bool,
+}
+
+/// Gera um pairing code aleatório no formato `heph_p_<32hex>`.
+pub fn generate_pairing_code() -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let bytes: [u8; 16] = rng.gen();
+    let hex = hex::encode(bytes);
+    format!("heph_p_{hex}")
 }
 
 // ---------------------------------------------------------------------------
@@ -2292,5 +2342,120 @@ also bad, not a number
                 result.err()
             );
         });
+    }
+
+    // =========================================================================
+    // H.1 — HeartbeatBody serializa endpoint
+    // =========================================================================
+
+    #[test]
+    fn heartbeat_body_serializes_endpoint() {
+        let body = HeartbeatBody {
+            endpoint: "http://orchestrator-local:8082".to_string(),
+            gpus: vec!["NVIDIA GeForce RTX 3060".to_string()],
+            vram_total: Some(12288),
+            vram_used: Some(1024),
+            cpu: Some(42.5),
+            ram: Some(4_000_000_000),
+            ram_total: Some(8_000_000_000),
+            jobs_active: 1,
+        };
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["endpoint"], "http://orchestrator-local:8082");
+        assert_eq!(json["gpus"][0], "NVIDIA GeForce RTX 3060");
+        assert_eq!(json["jobs_active"], 1);
+    }
+
+    // =========================================================================
+    // H.1 — Default ORCH_ADVERTISE_URL
+    // =========================================================================
+
+    #[test]
+    fn default_orchain_advertise_url() {
+        // Remove a env se existir
+        std::env::remove_var("ORCH_ADVERTISE_URL");
+        let url = std::env::var("ORCH_ADVERTISE_URL")
+            .unwrap_or_else(|_| "http://orchestrator-local:8082".into());
+        assert_eq!(url, "http://orchestrator-local:8082");
+    }
+
+    #[test]
+    fn orchain_advertise_url_from_env() {
+        std::env::set_var("ORCH_ADVERTISE_URL", "http://custom:9999");
+        let url = std::env::var("ORCH_ADVERTISE_URL")
+            .unwrap_or_else(|_| "http://orchestrator-local:8082".into());
+        assert_eq!(url, "http://custom:9999");
+        std::env::remove_var("ORCH_ADVERTISE_URL");
+    }
+
+    // =========================================================================
+    // H.1 — Pairing code generation
+    // =========================================================================
+
+    #[test]
+    fn generate_pairing_code_format() {
+        let code = generate_pairing_code();
+        assert!(
+            code.starts_with("heph_p_"),
+            "code should start with heph_p_: {code}"
+        );
+        let hex_part = &code[7..]; // "heph_p_" = 7 chars
+        assert_eq!(hex_part.len(), 32, "hex part should be 32 chars: {code}");
+        assert!(
+            hex_part.chars().all(|c| c.is_ascii_hexdigit()),
+            "hex part should be all hex digits: {code}"
+        );
+    }
+
+    #[test]
+    fn generate_pairing_code_unique() {
+        let a = generate_pairing_code();
+        let b = generate_pairing_code();
+        assert_ne!(a, b, "two generated codes should differ");
+    }
+
+    // =========================================================================
+    // H.1 — Pairing verify single-use
+    // =========================================================================
+
+    #[test]
+    fn pairing_verify_correct_then_second_false() {
+        let state = PairingState::new("heph_p_aabbccdd11223344aabbccdd11223344".to_string());
+        assert!(state.verify("heph_p_aabbccdd11223344aabbccdd11223344"));
+        // Second use — consumed
+        assert!(!state.verify("heph_p_aabbccdd11223344aabbccdd11223344"));
+    }
+
+    #[test]
+    fn pairing_verify_wrong_code() {
+        let state = PairingState::new("heph_p_aabbccdd11223344aabbccdd11223344".to_string());
+        assert!(!state.verify("heph_p_wrong_wrong_wrong_wrong_wrong_00"));
+    }
+
+    #[test]
+    fn pairing_verify_empty_code() {
+        let state = PairingState::new("heph_p_aabbccdd11223344aabbccdd11223344".to_string());
+        assert!(!state.verify(""));
+    }
+
+    // =========================================================================
+    // H.1 — PairingVerifyRequest deserialization
+    // =========================================================================
+
+    #[test]
+    fn pairing_verify_request_deserialize() {
+        let req: PairingVerifyRequest = serde_json::from_str(r#"{"code":"heph_p_test"}"#).unwrap();
+        assert_eq!(req.code, "heph_p_test");
+    }
+
+    #[test]
+    fn pairing_verify_response_serialize() {
+        let resp = PairingVerifyResponse { valid: true };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["valid"], true);
+
+        let resp = PairingVerifyResponse { valid: false };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["valid"], false);
     }
 }

@@ -261,8 +261,7 @@ export default function Sidebar({
           label: "Orquestradores",
           href: "/environments",
           icon: IconServer,
-          badge: "Roadmap",
-          isAvailable: false,
+          isAvailable: true,
         },
         {
           id: "storage",
@@ -314,12 +313,13 @@ export default function Sidebar({
   };
 
   // Deriva status do orquestrador para o ping visual
-  const orchStatus =
-    orchestrators.length === 1 && orchestrators[0].status === "online"
-      ? "online"
-      : orchestrators.length > 0
-        ? "offline"
-        : "none";
+  // Multi-nó: se ≥1 online → online; senão se ≥1 degraded → degraded; senão offline/none
+  const orchStatus = (() => {
+    if (orchestrators.length === 0) return "none";
+    if (orchestrators.some((o) => o.status === "online")) return "online";
+    if (orchestrators.some((o) => o.status === "degraded")) return "degraded";
+    return "offline";
+  })();
 
   const isItemActive = (item: NavItem) => {
     if (item.id === "dashboard") {
@@ -435,8 +435,8 @@ export default function Sidebar({
                 onClose();
                 router.push("/dashboard");
               }}
-              title={orchestrators.length === 1 ? `${orchestrators[0].name} (${orchestrators[0].endpoint})` : "Orquestrador"}
-              aria-label={orchestrators.length === 1 ? `${orchestrators[0].name} (${orchestrators[0].endpoint})` : "Orquestrador"}
+              title={orchestrators.length === 1 ? `${orchestrators[0].name} (${orchestrators[0].endpoint})` : orchestrators.length > 1 ? `${orchestrators.length} orquestradores registrados` : "Orquestrador"}
+              aria-label={orchestrators.length === 1 ? `${orchestrators[0].name} (${orchestrators[0].endpoint})` : orchestrators.length > 1 ? `${orchestrators.length} orquestradores registrados` : "Orquestrador"}
               className={`group relative flex items-center rounded-xl border border-white/10 bg-white/[0.03] transition-colors hover:border-brand-500/40 hover:bg-brand-500/[0.06] active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] cursor-pointer ${
                 isExpanded
                   ? "w-full justify-between p-2.5"
@@ -451,7 +451,7 @@ export default function Sidebar({
                     </span>
                     <div className="min-w-0 text-left">
                       <div className="truncate text-xs font-semibold text-zinc-200 group-hover:text-white">
-                        {orchestrators.length === 1 ? orchestrators[0].name : "Orquestrador"}
+                        {orchestrators.length === 1 ? orchestrators[0].name : orchestrators.length > 1 ? `${orchestrators.length} orquestradores` : "Orquestrador"}
                       </div>
                       <div className="truncate font-mono text-[11px] text-zinc-400">
                         {orchestrators.length === 1 ? orchestrators[0].endpoint : "—"}
@@ -668,7 +668,9 @@ export default function Sidebar({
                 <span className="text-zinc-200 font-medium">
                   {orchestrators.length === 1
                     ? `${orchestrators[0].name} · ${orchestrators[0].status}`
-                    : "Orquestrador"}
+                    : orchestrators.length > 1
+                      ? `${orchestrators.length} orquestradores`
+                      : "Orquestrador"}
                 </span>
               </div>
               {productVersion && (
@@ -679,7 +681,7 @@ export default function Sidebar({
             </div>
           ) : (
             <div
-              title={orchestrators.length === 1 ? `${orchestrators[0].name} (${orchestrators[0].status})` : "Orquestrador"}
+              title={orchestrators.length === 1 ? `${orchestrators[0].name} (${orchestrators[0].status})` : orchestrators.length > 1 ? `${orchestrators.length} orquestradores` : "Orquestrador"}
               className={`relative flex size-10 items-center justify-center rounded-xl backdrop-blur-sm ${
                 orchStatus === "online"
                   ? "border border-[#34d399]/25 bg-[#34d399]/[0.05] text-[#34d399]"
@@ -734,7 +736,7 @@ export default function Sidebar({
                     <div className="flex items-center justify-between text-[11px]">
                       <span className="text-zinc-400">Nó</span>
                       <span className="font-mono text-zinc-200">
-                        {orchestrators.length === 1 ? orchestrators[0].name : "—"}
+                        {orchestrators.length === 1 ? orchestrators[0].name : orchestrators.length > 1 ? `${orchestrators.length} nós` : "—"}
                       </span>
                     </div>
                     <div className="flex items-center justify-between text-[11px]">

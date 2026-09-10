@@ -177,15 +177,14 @@ build, D5/D6); "expirar o local para `offline` por watchdog antes da fatia"
 **Decidido:** o orquestrador remoto é uma **nova instância do binário atual**
 (`services/orchestrator`, sem mudança de processo), em container no TrueNAS via
 `infra/compose.gpu.yaml` (novo, nome do projeto `gpu`), registrada no manager do
-dev host por **INSERT manual na tabela `orchestrators`** (ops, 1 psql) —
-`kind='remoto'`, `endpoint='http://10.15.1.2:8082'`, `status='online'`, e
-preenchendo **`gpus` JSONB + `vram_total_gb=18`** (colunas existentes — dado
-estático real do spike; isso diverge da nota "nunca escritos no v1" do ADR-0009
-D1 — ver "O que fica falso"). O heartbeat existente (~2s, Bearer `MANAGER_TOKEN`)
-mantém a linha `online` e o cache de telemetria sem nenhuma mudança de contrato.
-Dispatch/report/artifacts fluem pelo caminho HTTP existente:
-manager (dev) → `http://10.15.1.2:8082` (LAN, branch "inbound direta quando há
-IP:porta alcançável" de backend.md §1/:34); orquestrador → manager
+dev host por **adoção via API** (Fatia H, ADR-0011 D5): `POST /api/orchestrators/adopt`
+com `ORCH_PAIRING_CODE` do env.gpu — **o INSERT manual morreu** (contrato operacional
+da sessão GPU = stop local + revoke local + adopt remoto via API/UI). A adotação
+via API upserta a linha com `status='online'` e capacidade (`gpus`/`vram_total_gb`)
+preenchida dinamicamente pelo heartbeat identificado (ADR-0011 D1). O heartbeat
+identificado (~2s, `ORCH_ADVERTISE_URL`) mantém a linha `online` e o cache de
+telemetria por nó. Dispatch/report/artifacts fluem pelo caminho HTTP existente:
+manager (dev) → `http://10.15.1.2:8082` (LAN); orquestrador → manager
 `10.15.10.3:8081`; S3 → `10.15.10.3:8333` (D3).
 
 *Por quê — reuso total:* o pipeline `run_job_inner` (download→md5→unzip→config→
@@ -203,22 +202,19 @@ já provado pelo spike — socket local, volumes locais).
 
 ### D2 — Seleção de orquestrador: contrato operacional de "sessão GPU" (LIMIT 1 arbitrário mitigado)
 
-**FATO (código):** `dispatch_next` faz `SELECT id, endpoint FROM orchestrators
+**FATO (código original, antes da Fatia H):** `dispatch_next` faz `SELECT id, endpoint FROM orchestrators
 WHERE status = 'online' LIMIT 1` — sem `ORDER BY`, escolha **arbitrária** quando
-há 2+ orquestradores online; e **não há watchdog** (status nunca sai de `online`
-— dívida F4.8). Portanto, "parar o container do orquestrador local" **não basta**
-para rotear para o remoto.
+há 2+ orquestradores online; e **não há watchdog** (status nunca sai de `online`).
+Portanto, "parar o container do orquestrador local" **não basta** para rotear para o remoto.
 
-**Decidido — sessão GPU = contrato operacional com 3 passos (checklist em
-`infra/README-gpu.md`, G.4):**
-1. `docker compose stop orchestrator-local` (para o heartbeat do local — ver D8);
-2. `DELETE FROM orchestrators WHERE kind='local'` + INSERT da linha remota (D1);
-3. `AUTO_ADOPT_LOCAL=0` no `.env` do dev host + recreate do manager — senão o
-   próximo boot do manager **ressuscita o local** e o próximo dispatch pode
-   cair no mock (trap silencioso).
-
-Com a linha local removida, o remoto é o único `online` → todo dispatch vai para
-o TrueNAS. Fim da sessão: teardown inverso (G.6/README).
+**MORTO pela Fatia H (ADR-0011 D3/D4/D5):** o contrato operacional de 3 passos
+(stop + DELETE/INSERT + `AUTO_ADOPT_LOCAL=0`) **morreu**. A sessão GPU agora usa:
+(a) `docker compose stop orchestrator-local`; (b) `POST /api/orchestrators/:id/revoke`
+do local (UI ou API); (c) `POST /api/orchestrators/adopt` do remoto com
+`ORCH_PAIRING_CODE`. O roteamento por capacidade (ADR-0011 D3) substitui o LIMIT 1;
+o watchdog (ADR-0011 D4) derruba nós mortos; a auto-adoção não ressuscita `revoked`
+(ADR-0011 D5.7). **Nenhum psql.** Teardown: revoke do remoto + `docker compose start
+orchestrator-local` + adopt do local (revive a linha revoked).
 
 **Decidido — guarda anti-mock no orquestrador remoto (5-15 linhas):** se
 `ORCH_GPU_DEVICES` estiver setado (remoto em modo GPU) e `dispatch.image`
@@ -234,9 +230,9 @@ confere o tamanho do artefato (D12/G.6).
 *Gotcha:* a imagem de fato (`:gpu` vs `:local`) é config no dev host
 (`TRAINER_IMAGE` no `.env` + recreate do manager) — a guarda só pega o caso mais
 comum (imagem default); o checklist do README manda conferir `docker compose
-config` e o tamanho do artefato. *Dívida registrada:* roteamento por capacidade
-(seleção por GPU/VRAM/kind + `vram_min_gb` vs `orchestrators.vram_total_gb`) é a
-substituição correta do LIMIT 1 e do contrato manual — fatia futura.
+config` e o tamanho do artefato. *Roteamento por capacidade parcialmente quitado*
+(ADR-0011 D3: estático, vram-table no manager); policy VRAM completa (paralelismo
+por VRAM livre, preempção) permanece dívida.
 *Descartado:* `ORDER BY (kind='remoto') DESC` no dispatch (rotearia TODOS os jobs
 para o remoto sempre que online, inclusive os que não precisam de GPU — mudança
 de semântica global sem consumidor); aceitar o LIMIT 1 arbitrário sem mitigação
@@ -429,23 +425,19 @@ volta a compor os gauges (regra ADR-0009 D1).
 *Dívida:* heartbeat com identidade + cache por nó (ADR-0009 R1) continua sendo o
 conserto de longo prazo para 2+ orquestradores simultâneos.
 
-### D9 — VRAM (12GB na 3060 / 6GB na 1660S) e a policy: vram-table continua no-op; envelope seguro documentado
+### D9 — VRAM (12GB na 3060 / 6GB na 1660S) e a policy: roteamento estático parcialmente quitado (Fatia H)
 
 **FATO (vram-table):** `yolo11n train = 6GB`, `yolo11m train = 10GB`, headroom 2.
 A 3060 tem 12GB físicos; a 1660S, 6GB.
 
-**Decidido:** a policy **permanece no-op na v1** (sem `waiting_vram`, sem
-bloqueio — ADR-0007 D9): `vram_min_gb` continua gravado mas não bloqueante. A
+**Decidido:** a policy **era no-op na v1** (sem `waiting_vram`, sem
+bloqueio — ADR-0007 D9); `vram_min_gb` era gravado mas não bloqueante. **Parcialmente quitado pela Fatia H (ADR-0011 D3):** roteamento estático entra — `vram-table.yaml` carregada pelo manager no boot; `required_gb = entries[engine][model][mode].vram_min_gb + headroom_gb`; entrada faltante ⇒ requisito `NULL` (permissivo); `queue_reason='waiting_vram'` quando há nó online mas nenhum com capacidade. **Ainda dívida:** policy VRAM aplicada completa (fila por VRAM livre dinâmica, paralelismo 2+ jobs por nó, preempção de runner, `max_parallel_trainers`). A
 fatia documenta o **envelope seguro** (README-gpu + nota no sync): na **3060
 (default)**, `yolo11n` com `batch=16` e `yolo11m` com `batch=8` (≈10-11GB — a
 entrada `yolo11m=10` + headroom 2 fecha em 12GB, no limite) são o envelope;
 `yolo11x`/`batch≥32` tendem a OOM. Na **1660S (fallback)**, só `yolo11n` com
 `batch=8` e `imgsz=640` (≈4-5GB) → **falha honesta e visível** (job `failed` com log do ultralytics —
-o pipeline reporta o erro; não é silencioso). *Por quê:* implementar a policy
-aplicada (fila `waiting_vram` por orquestrador + `vram_min` vs `vram_total`) é a
-fatia de roteamento por capacidade (D2 — dívida); o no-op + documentação é o
-escopo certo para ligar o treino real sem reescrever o dispatcher.
-*Nota registrada:* a entrada `yolo11n=6` com headroom 2 **não cabe** nos 6GB
+o pipeline reporta o erro; não é silencioso). *Nota registrada:* a entrada `yolo11n=6` com headroom 2 **não cabe** nos 6GB
 da 1660S — a fatia de policy terá de revisar entradas/headroom (na 3060,
 `yolo11m=10` + headroom 2 fecha exato em 12GB: apertado, validar no smoke).
 *Descartado:* bloquear `vram_min_gb > 6` no submit (policy de verdade sem

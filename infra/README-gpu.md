@@ -59,7 +59,8 @@ EOF'
 > `ORCH_ADVERTISE_URL` deve ser o IP/porta **públicos** do TrueNAS
 > (não hostname local — o manager do dev host usa este endereço para
 > despachar jobs). `ORCH_PAIRING_CODE` é single-use e consumido pelo
-> adopt.
+> adopt. O pairing code é exibido uma vez no log do orquestrador no boot
+> (ou definido via env para determinismo).
 
 ### 1.4 Verificar S3 SeaweedFS no dev host
 
@@ -135,15 +136,23 @@ docker compose -f infra/compose.yaml up -d manager --force-recreate
 > **Nota:** os passos 2.2 e 2.3 podem ser combinados em uma única edição
 > do `.env` seguida de um único `--force-recreate` do manager.
 
-### 2.4 Parar o orquestrador local
+### 2.4 Revogar o orquestrador local (via API)
+
+O orquestrador local pode ficar online — o revoke via API marca a linha como
+`revoked` e o dispatch não a escolhe mais (ADR-0011 D5). Alternativa: parar o
+container (para heartbeat) — mas não é obrigatório com o watchdog ativo.
 
 ```bash
-docker compose -f infra/compose.yaml stop orchestrator-local
+# Revogar o local via API (passo 1 do adopt):
+LOCAL_ID=$(curl -s http://10.15.10.3:8080/api/orchestrators \
+  | python3 -c "import sys,json; [print(o['id']) for o in json.load(sys.stdin) if o['kind']=='local']")
+curl -X POST "http://10.15.10.3:8080/api/orchestrators/${LOCAL_ID}/revoke"
+# Ou: botão "Revogar" na página /environments
 ```
 
-> **Obrigatório** (D8 ADR-0010): o heartbeat sem identidade do manager
-> sobrescreve o cache global a cada ~2s. Com o local parado, a telemetria
-> reflete exclusivamente o TrueNAS.
+> **Nota:** com o watchdog (ADR-0011 D4), o heartbeat do local continua
+> atualizando `last_heartbeat` mas o status `revoked` NÃO é alterado pelo
+> heartbeat — o watchdog também não toca `revoked`. A linha fica como tombstone.
 
 ### 2.5 Adotar o orquestrador remoto via API (fatia H)
 
@@ -385,7 +394,7 @@ Edite `infra/.env` e **remova** ou comente:
 ```
 # SEAWEED_PUBLISH=10.15.10.3    ← voltar ao default (127.0.0.1)
 # TRAINER_IMAGE=hephaestus/trainer-yolo:gpu    ← voltar ao default (…:local)
-# AUTO_ADOPT_LOCAL=0             ← não é mais necessário (fatia H), mas inofensivo se mantido
+# AUTO_ADOPT_LOCAL=0             ← não é mais necessário (Fatia H — revoke cuida), mas inofensivo se mantido
 ```
 
 Recriar serviços:
@@ -414,7 +423,10 @@ docker compose -f infra/compose.yaml start orchestrator-local
 ```
 
 O orquestrador local faz heartbeat e o manager re-adota
-automaticamente (se `AUTO_ADOPT_LOCAL=1`, que é o default).
+automaticamente (se `AUTO_ADOPT_LOCAL=1`, que é o default). Se a linha
+estiver `revoked` (após revoke via API), o adopt por auto-adoção NÃO
+ressuscita — é necessário `POST /api/orchestrators/adopt` com o pairing
+code do local para criar nova linha (ADR-0011 D5.7).
 
 Para descobrir o pairing code do local:
 ```bash
@@ -422,7 +434,7 @@ docker logs infra-orchestrator-local-1 2>&1 | grep pairing
 ```
 
 > Se precisar re-adotar manualmente, use o pairing code do log:
-> `POST /api/orchestrators/adopt` com `kind: "local"` e o código.
+> `POST /api/environments/adopt` com `kind: "local"` e o código.
 
 ### 6.5 Verificar restore
 
@@ -448,9 +460,12 @@ curl -s http://10.15.10.3:8080/api/orchestrators \
   - 3060 (12GB): `yolo11n` batch=16, `yolo11m` batch=8
   - 1660S (6GB): `yolo11n` batch=8, imgsz=640
   - `yolo11x` / batch≥32 tende a OOM → job `failed` (falha honesta)
-- **Heartbeat sem identidade** (ADR-0009 R1): o cache global de telemetria
-  é sobrescrito a cada ~2s. Só 1 orquestrador deve estar online por vez
-  durante a sessão.
+- **Heartbeat identificado** (Fatia H, ADR-0011 D1): o heartbeat carrega `endpoint`
+  (`ORCH_ADVERTISE_URL`) e o manager casa por `endpoint UNIQUE` — cache por nó,
+  sem oscilação entre nós. Watchdog 15s/60s (ADR-0011 D4).
+- **Sessão GPU sem psql** (Fatia H, ADR-0011 D5/D8): revoke local + adopt remoto
+  via API/UI. `AUTO_ADOPT_LOCAL=0` não é mais necessário (a guarda `revoked` fecha
+  o ciclo). Teardown: revoke remoto + start local + adopt local (revive `revoked`).
 - **Portas no TrueNAS**: o orquestrador GPU usa `8082` (a mesma do local,
   mas em host diferente — sem conflito de porta cross-host).
 - **NÃO tocar nos 48 containers** do TrueNAS — o projeto `gpu` é isolado.

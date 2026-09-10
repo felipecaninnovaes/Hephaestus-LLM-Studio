@@ -537,10 +537,10 @@ Rotas públicas (entram em `PROTECTED_ROUTES`; status exatos):
 ```
 GET  /api/orchestrators           200 401 503    # enriquecido com telemetria por nó
 POST /api/orchestrators/adopt     200 400 401 409 503
-POST /api/orchestrators/:id/revoke 204 400 401 404 503
+POST /api/orchestrators/:id/revoke 204 401 404 503
 GET  /api/environments            200 401 503    # alias do GET acima
 POST /api/environments/adopt      200 400 401 409 503
-POST /api/environments/:id/revoke 204 400 401 404 503
+POST /api/environments/:id/revoke 204 401 404 503
 ```
 
 - `GET /api/orchestrators` (e alias `/api/environments`) — 200 `{items:[Orchestrator]}`;
@@ -555,9 +555,7 @@ POST /api/environments/:id/revoke 204 400 401 404 503
   `Orchestrator` enriquecido | 400 `invalid_request` (domínio) | 409
   `pairing_invalid` (código inválido/usado/orquestrador inalcançável) | 503
   `queue_unavailable` (manager fora).
-- `POST /api/orchestrators/:id/revoke` — 204 (status → `revoked`) | 400 (id
-  não-UUID? **não** — 404, D8 ADR-0002) | 404 `not_found` (id não-UUID ou
-  inexistente) | 503. Alias `/api/environments/:id/revoke` idêntico.
+- `POST /api/orchestrators/:id/revoke` — 204 (status → `revoked`) | 404 `not_found` (id não-UUID ou inexistente — D8 ADR-0002) | 503. Alias `/api/environments/:id/revoke` idêntico.
 
 **Erros novos: `pairing_invalid` (409)** — único; enum `Error.code` cresce em 1.
 **Sem migration** (D6). **Spec 0.9.0 → 0.10.0.**
@@ -567,7 +565,7 @@ POST /api/environments/:id/revoke 204 400 401 404 503
 |---|---|---|
 | `HeartbeatBody.endpoint: String` | orchestrator → manager | identidade (D1); `ORCH_ADVERTISE_URL` (default `http://orchestrator-local:8082`) |
 | `POST /internal/pairing/verify {code}` → `{valid:bool}` | orchestrator | single-use em memória; `ORCH_PAIRING_CODE` (ausente → gera no boot + loga) |
-| `POST /internal/adopt {name, endpoint, kind, pairing_code}` → `{id}` | manager | upsert + verify no orquestrador (timeout 10s) |
+| `POST /internal/adopt {name, endpoint, kind, pairing_code}` → item completo | manager | upsert + verify no orquestrador (timeout 10s) |
 | `POST /internal/orchestrators/:id/revoke` → 204 | manager | status `revoked` |
 | `GET /internal/orchestrators` | manager | item ganha `{measured, cpu, ram, ram_total, vram_used, vram_total, vram_total_gb, gpus, jobs_active}` |
 | `GET /internal/telemetry` | manager | agregação (0/1/>1 nós — D2.3) |

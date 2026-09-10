@@ -318,9 +318,9 @@ async fn telemetry_handler(State(state): State<AppState>) -> Response {
     (StatusCode::OK, Json(resp)).into_response()
 }
 
-/// GET /internal/orchestrators — lista orquestradores (tabela do manager).
+/// GET /internal/orchestrators — lista orquestradores com telemetria por nó.
 async fn list_orchestrators_handler(State(state): State<AppState>) -> Response {
-    match manager::list_orchestrators(&state.pool).await {
+    match manager::list_orchestrators(&state.pool, &state.telemetry_cache).await {
         Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
         Err(ManagerError::Internal(e)) => internal_error(&e),
         Err(e) => internal_error(&e.to_string()),

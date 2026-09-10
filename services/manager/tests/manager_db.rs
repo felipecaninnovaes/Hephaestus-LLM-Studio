@@ -742,6 +742,7 @@ async fn telemetry_com_heartbeat() {
 
     let cache = manager::new_telemetry_cache();
     let hb = HeartbeatRequest {
+        endpoint: "http://orchestrator-local:8082".into(),
         gpus: vec!["NVIDIA RTX 3090".into()],
         vram_total: Some(24000),
         vram_used: Some(8000),
@@ -1008,14 +1009,18 @@ async fn list_orchestrators_apos_adocao() {
     let p = pool().await;
     cleanup(&p).await;
 
+    let cache = manager::new_telemetry_cache();
+
     // Sem orquestradores → vazio.
-    let resp = manager::list_orchestrators(&p).await.expect("list empty");
+    let resp = manager::list_orchestrators(&p, &cache)
+        .await
+        .expect("list empty");
     assert!(resp.items.is_empty());
 
     // Auto-adoção.
     manager::adopt_orchestrator(&p).await.expect("adopt");
 
-    let resp = manager::list_orchestrators(&p)
+    let resp = manager::list_orchestrators(&p, &cache)
         .await
         .expect("list after adopt");
     assert_eq!(resp.items.len(), 1);
@@ -1028,6 +1033,15 @@ async fn list_orchestrators_apos_adocao() {
     assert!(item.id.parse::<uuid::Uuid>().is_ok());
     // last_heartbeat: inicialmente None (não houve heartbeat ainda).
     assert!(item.last_heartbeat.is_none());
+    // Sem cache → measured false, campos null.
+    assert!(!item.measured);
+    assert!(item.cpu.is_none());
+    assert!(item.ram.is_none());
+    assert!(item.ram_total.is_none());
+    assert!(item.vram_used.is_none());
+    assert!(item.vram_total.is_none());
+    assert!(item.gpus.is_empty());
+    assert_eq!(item.jobs_active, 0);
 }
 
 #[tokio::test]
@@ -1041,6 +1055,7 @@ async fn list_orchestrators_heartbeat_atualiza_last() {
 
     let cache = manager::new_telemetry_cache();
     let hb = HeartbeatRequest {
+        endpoint: "http://orchestrator-local:8082".into(),
         gpus: vec![],
         vram_total: None,
         vram_used: None,
@@ -1053,12 +1068,17 @@ async fn list_orchestrators_heartbeat_atualiza_last() {
         .await
         .expect("heartbeat");
 
-    let resp = manager::list_orchestrators(&p)
+    let resp = manager::list_orchestrators(&p, &cache)
         .await
         .expect("list after heartbeat");
     assert_eq!(resp.items.len(), 1);
     // last_heartbeat deve ter sido preenchido (datetime válido).
     assert!(resp.items[0].last_heartbeat.is_some());
+    // Com cache preenchido → measured true.
+    assert!(resp.items[0].measured);
+    assert_eq!(resp.items[0].cpu, Some(0.1));
+    assert_eq!(resp.items[0].ram, Some(1024));
+    assert_eq!(resp.items[0].ram_total, Some(4096));
 }
 
 #[tokio::test]
@@ -1383,4 +1403,427 @@ async fn storage_usage_soma_esperada() {
         .await
         .expect("usage after job 2");
     assert_eq!(usage.artifacts_bytes, 1480);
+}
+
+// ===========================================================================
+// H.2 — Identidade do heartbeat + cache por nó + lista enriquecida + agregação
+// ===========================================================================
+
+/// (a) 2 nós (local+remoto) heartbeating → last_heartbeat atualizado SÓ na linha do endpoint.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn heartbeat_2_nos_atualiza_só_linha_correta() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    // Insere 2 orchestrators.
+    let local_id = uuid::Uuid::new_v4();
+    let remote_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'local', 'http://local:8082', 'local', 'online')",
+    )
+    .bind(local_id)
+    .execute(&p)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'remote', 'http://remote:8082', 'remoto', 'online')",
+    )
+    .bind(remote_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    // Heartbeat do local.
+    let cache = manager::new_telemetry_cache();
+    let hb = HeartbeatRequest {
+        endpoint: "http://local:8082".into(),
+        gpus: vec![],
+        vram_total: None,
+        vram_used: None,
+        cpu: Some(0.5),
+        ram: Some(4096),
+        ram_total: Some(8192),
+        jobs_active: 1,
+    };
+    manager::receive_heartbeat(&p, &cache, hb)
+        .await
+        .expect("heartbeat local");
+
+    // Verifica: local tem last_heartbeat, remote não.
+    let local: (Option<chrono::DateTime<chrono::Utc>>,) =
+        sqlx::query_as("SELECT last_heartbeat FROM orchestrators WHERE id = $1")
+            .bind(local_id)
+            .fetch_one(&p)
+            .await
+            .unwrap();
+    assert!(local.0.is_some(), "local deve ter last_heartbeat");
+
+    let remote: (Option<chrono::DateTime<chrono::Utc>>,) =
+        sqlx::query_as("SELECT last_heartbeat FROM orchestrators WHERE id = $1")
+            .bind(remote_id)
+            .fetch_one(&p)
+            .await
+            .unwrap();
+    assert!(remote.0.is_none(), "remote não deve ter last_heartbeat");
+}
+
+/// (b) Heartbeat de endpoint inexistente → warn + nada gravado.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn heartbeat_endpoint_inexistente_nada_gravado() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let cache = manager::new_telemetry_cache();
+    let hb = HeartbeatRequest {
+        endpoint: "http://fantasma:9999".into(),
+        gpus: vec![],
+        vram_total: None,
+        vram_used: None,
+        cpu: None,
+        ram: None,
+        ram_total: None,
+        jobs_active: 0,
+    };
+    manager::receive_heartbeat(&p, &cache, hb)
+        .await
+        .expect("heartbeat fantasma deve retornar OK");
+
+    // Nenhuma linha criada.
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM orchestrators")
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(count.0, 0);
+
+    // Cache vazio.
+    let cache_lock = cache.read().await;
+    assert!(cache_lock.is_empty());
+}
+
+/// (c) Heartbeat revive offline→online e NÃO revive revoked.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn heartbeat_revive_offline_nao_revive_revoked() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    // Insere 2 orchestrators: 1 offline, 1 revoked.
+    let offline_id = uuid::Uuid::new_v4();
+    let revoked_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'offline-orch', 'http://offline:8082', 'remoto', 'offline')",
+    )
+    .bind(offline_id)
+    .execute(&p)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'revoked-orch', 'http://revoked:8082', 'remoto', 'revoked')",
+    )
+    .bind(revoked_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let cache = manager::new_telemetry_cache();
+
+    // Heartbeat do offline.
+    let hb = HeartbeatRequest {
+        endpoint: "http://offline:8082".into(),
+        gpus: vec![],
+        vram_total: None,
+        vram_used: None,
+        cpu: None,
+        ram: None,
+        ram_total: None,
+        jobs_active: 0,
+    };
+    manager::receive_heartbeat(&p, &cache, hb)
+        .await
+        .expect("heartbeat offline");
+
+    // Offline → online.
+    let status: (String,) = sqlx::query_as("SELECT status FROM orchestrators WHERE id = $1")
+        .bind(offline_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(status.0, "online");
+
+    // Revoked → continua revoked.
+    let status: (String,) = sqlx::query_as("SELECT status FROM orchestrators WHERE id = $1")
+        .bind(revoked_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(status.0, "revoked");
+}
+
+/// (d) Heartbeat com vram_total/gpus → colunas gravadas (round MiB/1024).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn heartbeat_grava_vram_total_gb_e_gpus() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let orch_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'gpu-orch', 'http://gpu:8082', 'remoto', 'online')",
+    )
+    .bind(orch_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let cache = manager::new_telemetry_cache();
+    let hb = HeartbeatRequest {
+        endpoint: "http://gpu:8082".into(),
+        gpus: vec!["NVIDIA RTX 3060".into(), "NVIDIA GTX 1660S".into()],
+        vram_total: Some(18432), // 12288 + 6144 MiB
+        vram_used: Some(5000),
+        cpu: Some(0.3),
+        ram: Some(8192),
+        ram_total: Some(16384),
+        jobs_active: 1,
+    };
+    manager::receive_heartbeat(&p, &cache, hb)
+        .await
+        .expect("heartbeat gpu");
+
+    // Verifica colunas.
+    let row: (Option<i32>, serde_json::Value) =
+        sqlx::query_as("SELECT vram_total_gb, gpus FROM orchestrators WHERE id = $1")
+            .bind(orch_id)
+            .fetch_one(&p)
+            .await
+            .unwrap();
+    assert_eq!(row.0, Some(18), "round(18432/1024) = 18");
+    assert_eq!(
+        row.1,
+        serde_json::json!(["NVIDIA RTX 3060", "NVIDIA GTX 1660S"])
+    );
+}
+
+/// (e.1) Agregação: 2 nós com cache → soma+união+cpu/ram null.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn agregacao_2_nos_soma_uniao() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let id1 = uuid::Uuid::new_v4();
+    let id2 = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'n1', 'http://n1:8082', 'local', 'online')",
+    )
+    .bind(id1)
+    .execute(&p)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'n2', 'http://n2:8082', 'remoto', 'online')",
+    )
+    .bind(id2)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let cache = manager::new_telemetry_cache();
+
+    // Heartbeat nó 1.
+    let hb1 = HeartbeatRequest {
+        endpoint: "http://n1:8082".into(),
+        gpus: vec!["RTX 3060".into()],
+        vram_total: Some(12000),
+        vram_used: Some(3000),
+        cpu: Some(0.4),
+        ram: Some(4096),
+        ram_total: Some(8192),
+        jobs_active: 1,
+    };
+    manager::receive_heartbeat(&p, &cache, hb1)
+        .await
+        .expect("hb n1");
+
+    // Heartbeat nó 2.
+    let hb2 = HeartbeatRequest {
+        endpoint: "http://n2:8082".into(),
+        gpus: vec!["GTX 1660S".into(), "RTX 3060".into()],
+        vram_total: Some(6000),
+        vram_used: Some(2000),
+        cpu: Some(0.6),
+        ram: Some(8192),
+        ram_total: Some(16384),
+        jobs_active: 2,
+    };
+    manager::receive_heartbeat(&p, &cache, hb2)
+        .await
+        .expect("hb n2");
+
+    let resp = manager::get_telemetry(&p, &cache).await;
+    assert!(resp.measured);
+    assert_eq!(resp.vram_used, Some(5000)); // 3000 + 2000
+    assert_eq!(resp.vram_total, Some(18000)); // 12000 + 6000
+    assert_eq!(resp.jobs_active, 3); // 1 + 2
+                                     // cpu/ram null no agregado com >1 nó.
+    assert!(resp.cpu.is_none());
+    assert!(resp.ram.is_none());
+    assert!(resp.ram_total.is_none());
+    // União de gpus.
+    assert!(resp.gpus.contains(&"RTX 3060".to_string()));
+    assert!(resp.gpus.contains(&"GTX 1660S".to_string()));
+}
+
+/// (e.2) Agregação: 1 nó → idêntico a hoje (compat).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn agregacao_1_no_compat() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    // Insere orchestrator para que o heartbeat seja aceito.
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'local', 'http://local:8082', 'local', 'online')",
+    )
+    .bind(uuid::Uuid::new_v4())
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let cache = manager::new_telemetry_cache();
+    let hb = HeartbeatRequest {
+        endpoint: "http://local:8082".into(),
+        gpus: vec!["RTX 3090".into()],
+        vram_total: Some(24000),
+        vram_used: Some(8000),
+        cpu: Some(0.45),
+        ram: Some(16384),
+        ram_total: Some(67108864000),
+        jobs_active: 2,
+    };
+    manager::receive_heartbeat(&p, &cache, hb)
+        .await
+        .expect("hb local");
+
+    let resp = manager::get_telemetry(&p, &cache).await;
+    assert!(resp.measured);
+    assert_eq!(resp.vram_total, Some(24000));
+    assert_eq!(resp.vram_used, Some(8000));
+    assert_eq!(resp.cpu, Some(0.45));
+    assert_eq!(resp.ram, Some(16384));
+    assert_eq!(resp.ram_total, Some(67108864000));
+    assert_eq!(resp.gpus, vec!["RTX 3090"]);
+    assert_eq!(resp.jobs_active, 2);
+}
+
+/// (e.3) Agregação: 0 nós → fallback (measured:false + jobs da fila).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn agregacao_0_nos_fallback() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let cache = manager::new_telemetry_cache();
+    let resp = manager::get_telemetry(&p, &cache).await;
+    assert!(!resp.measured);
+    assert!(resp.vram_used.is_none());
+    assert!(resp.vram_total.is_none());
+    assert!(resp.cpu.is_none());
+    assert!(resp.ram.is_none());
+    assert!(resp.ram_total.is_none());
+    assert!(resp.gpus.is_empty());
+    // jobs_active vem da fila.
+    assert_eq!(resp.jobs_active, 0);
+}
+
+/// Teste unitário puro: agregação de 2 nós (fixture).
+#[test]
+fn agregacao_pura_2_nos() {
+    use manager::TelemetryState;
+    use std::collections::HashMap;
+
+    let mut cache: HashMap<uuid::Uuid, TelemetryState> = HashMap::new();
+
+    let id1 = uuid::Uuid::new_v4();
+    let id2 = uuid::Uuid::new_v4();
+    let now = chrono::Utc::now();
+
+    cache.insert(
+        id1,
+        TelemetryState {
+            endpoint: "http://n1:8082".into(),
+            measured: true,
+            vram_used: Some(3000),
+            vram_total: Some(12000),
+            cpu: Some(0.4),
+            ram: Some(4096),
+            ram_total: Some(8192),
+            gpus: vec!["RTX 3060".into()],
+            jobs_active: 1,
+            last_heartbeat: Some(now),
+        },
+    );
+    cache.insert(
+        id2,
+        TelemetryState {
+            endpoint: "http://n2:8082".into(),
+            measured: true,
+            vram_used: Some(2000),
+            vram_total: Some(6000),
+            cpu: Some(0.6),
+            ram: Some(8192),
+            ram_total: Some(16384),
+            gpus: vec!["GTX 1660S".into(), "RTX 3060".into()],
+            jobs_active: 2,
+            last_heartbeat: Some(now),
+        },
+    );
+
+    // Simula agregação (lógica extraída de get_telemetry).
+    let mut vram_used_sum: Option<i64> = Some(0);
+    let mut vram_total_sum: Option<i64> = Some(0);
+    let mut gpus: Vec<String> = Vec::new();
+    let mut jobs_active_sum: i32 = 0;
+
+    for state in cache.values() {
+        match (vram_used_sum, state.vram_used) {
+            (Some(acc), Some(val)) => vram_used_sum = Some(acc + val),
+            (Some(_), None) => vram_used_sum = None,
+            (None, _) => {}
+        }
+        match (vram_total_sum, state.vram_total) {
+            (Some(acc), Some(val)) => vram_total_sum = Some(acc + val),
+            (Some(_), None) => vram_total_sum = None,
+            (None, _) => {}
+        }
+        for gpu in &state.gpus {
+            if !gpus.contains(gpu) {
+                gpus.push(gpu.clone());
+            }
+        }
+        jobs_active_sum += state.jobs_active;
+    }
+
+    assert_eq!(vram_used_sum, Some(5000));
+    assert_eq!(vram_total_sum, Some(18000));
+    assert_eq!(jobs_active_sum, 3);
+    assert!(gpus.contains(&"RTX 3060".to_string()));
+    assert!(gpus.contains(&"GTX 1660S".to_string()));
 }

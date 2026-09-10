@@ -119,6 +119,7 @@ pub struct ArtifactItem {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct HeartbeatRequest {
+    pub endpoint: String,
     pub gpus: Vec<String>,
     pub vram_total: Option<i64>,
     pub vram_used: Option<i64>,
@@ -207,6 +208,7 @@ impl OrchestratorClient for HttpOrchestratorClient {
 
 #[derive(Debug)]
 pub struct TelemetryState {
+    pub endpoint: String,
     pub measured: bool,
     pub vram_used: Option<i64>,
     pub vram_total: Option<i64>,
@@ -221,6 +223,7 @@ pub struct TelemetryState {
 impl Default for TelemetryState {
     fn default() -> Self {
         Self {
+            endpoint: String::new(),
             measured: false,
             vram_used: None,
             vram_total: None,
@@ -234,10 +237,10 @@ impl Default for TelemetryState {
     }
 }
 
-pub type TelemetryCache = Arc<RwLock<TelemetryState>>;
+pub type TelemetryCache = Arc<RwLock<std::collections::HashMap<Uuid, TelemetryState>>>;
 
 pub fn new_telemetry_cache() -> TelemetryCache {
-    Arc::new(RwLock::new(TelemetryState::default()))
+    Arc::new(RwLock::new(std::collections::HashMap::new()))
 }
 
 // ---------------------------------------------------------------------------
@@ -806,16 +809,54 @@ pub async fn receive_heartbeat(
     cache: &TelemetryCache,
     req: HeartbeatRequest,
 ) -> Result<(), ManagerError> {
-    // Atualiza last_heartbeat de todos os orchestrators online.
+    // 1. Resolve endpoint → id.
+    let row: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM orchestrators WHERE endpoint = $1")
+        .bind(&req.endpoint)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("resolve heartbeat endpoint: {e}")))?;
+
+    let orch_id = match row {
+        Some((id,)) => id,
+        None => {
+            tracing::warn!(
+                endpoint = %req.endpoint,
+                "heartbeat de endpoint não registrado (orchestrator não adotado ou ORCH_ADVERTISE_URL errado)"
+            );
+            return Ok(());
+        }
+    };
+
+    // 2. Atualiza last_heartbeat e status SOMENTE nesta linha.
     sqlx::query(
-        "UPDATE orchestrators SET last_heartbeat = now() WHERE status IN ('online', 'degraded')",
+        "UPDATE orchestrators SET last_heartbeat = now(), status = 'online' \
+         WHERE id = $1 AND status <> 'revoked'",
     )
+    .bind(orch_id)
     .execute(pool)
     .await
     .map_err(|e| ManagerError::Internal(format!("update heartbeat: {e}")))?;
 
-    // Atualiza cache.
-    let mut state = cache.write().await;
+    // 3. Grava gpus/vram_total_gb quando heartbeat carrega VRAM e gpus não-vazio.
+    if !req.gpus.is_empty() {
+        if let Some(vram_total_mib) = req.vram_total {
+            let vram_total_gb = ((vram_total_mib as f64) / 1024.0).round() as i32;
+            let gpus_json = serde_json::to_value(&req.gpus)
+                .map_err(|e| ManagerError::Internal(format!("serialize gpus: {e}")))?;
+            sqlx::query("UPDATE orchestrators SET gpus = $1, vram_total_gb = $2 WHERE id = $3")
+                .bind(gpus_json)
+                .bind(vram_total_gb)
+                .bind(orch_id)
+                .execute(pool)
+                .await
+                .map_err(|e| ManagerError::Internal(format!("update orchestrator gpus: {e}")))?;
+        }
+    }
+
+    // 4. Atualiza cache por nó.
+    let mut cache = cache.write().await;
+    let state = cache.entry(orch_id).or_default();
+    state.endpoint = req.endpoint;
     state.measured = true;
     state.vram_used = req.vram_used;
     state.vram_total = req.vram_total;
@@ -829,43 +870,100 @@ pub async fn receive_heartbeat(
     Ok(())
 }
 
-/// Retorna telemetria do cache.
+/// Retorna telemetria do cache (agregação global).
 pub async fn get_telemetry(pool: &PgPool, cache: &TelemetryCache) -> TelemetryResponse {
-    let state = cache.read().await;
+    let cache = cache.read().await;
     let now = Utc::now();
 
-    if let Some(last) = state.last_heartbeat {
-        if (now - last).num_seconds() <= 10 {
-            return TelemetryResponse {
-                measured: true,
-                vram_used: state.vram_used,
-                vram_total: state.vram_total,
-                cpu: state.cpu,
-                ram: state.ram,
-                ram_total: state.ram_total,
-                gpus: state.gpus.clone(),
-                jobs_active: state.jobs_active,
-            };
-        }
+    // 0 nós no cache → fallback (comportamento atual: measured:false + jobs da fila).
+    if cache.is_empty() {
+        let jobs_active: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM jobs WHERE status NOT IN ('done', 'failed', 'cancelled')",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or((0,));
+
+        return TelemetryResponse {
+            measured: false,
+            vram_used: None,
+            vram_total: None,
+            cpu: None,
+            ram: None,
+            ram_total: None,
+            gpus: vec![],
+            jobs_active: jobs_active.0 as i32,
+        };
     }
 
-    // Sem heartbeat recente: devolve measured:false e jobs_active da fila.
-    let jobs_active: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM jobs WHERE status NOT IN ('done', 'failed', 'cancelled')",
-    )
-    .fetch_one(pool)
-    .await
-    .unwrap_or((0,));
+    // 1 nó → exatamente o de hoje (compat total).
+    if cache.len() == 1 {
+        let state = cache.values().next().unwrap();
+        let measured = state
+            .last_heartbeat
+            .map(|last| (now - last).num_seconds() <= 10)
+            .unwrap_or(false);
+        return TelemetryResponse {
+            measured,
+            vram_used: state.vram_used,
+            vram_total: state.vram_total,
+            cpu: state.cpu,
+            ram: state.ram,
+            ram_total: state.ram_total,
+            gpus: state.gpus.clone(),
+            jobs_active: state.jobs_active,
+        };
+    }
+
+    // >1 nós → agregação.
+    let mut vram_used_sum: Option<i64> = Some(0);
+    let mut vram_total_sum: Option<i64> = Some(0);
+    let mut gpus: Vec<String> = Vec::new();
+    let mut jobs_active_sum: i32 = 0;
+    let mut measured = false;
+
+    for state in cache.values() {
+        // measured: true se ≥1 nó fresco (≤10s).
+        if !measured {
+            if let Some(last) = state.last_heartbeat {
+                if (now - last).num_seconds() <= 10 {
+                    measured = true;
+                }
+            }
+        }
+
+        // vram_used/vram_total: soma dos Some (None → None global).
+        match (vram_used_sum, state.vram_used) {
+            (Some(acc), Some(val)) => vram_used_sum = Some(acc + val),
+            (Some(_), None) => vram_used_sum = None,
+            (None, _) => {}
+        }
+        match (vram_total_sum, state.vram_total) {
+            (Some(acc), Some(val)) => vram_total_sum = Some(acc + val),
+            (Some(_), None) => vram_total_sum = None,
+            (None, _) => {}
+        }
+
+        // gpus: união (ordem estável por nó).
+        for gpu in &state.gpus {
+            if !gpus.contains(gpu) {
+                gpus.push(gpu.clone());
+            }
+        }
+
+        // jobs_active: soma.
+        jobs_active_sum += state.jobs_active;
+    }
 
     TelemetryResponse {
-        measured: false,
-        vram_used: None,
-        vram_total: None,
+        measured,
+        vram_used: vram_used_sum,
+        vram_total: vram_total_sum,
         cpu: None,
         ram: None,
         ram_total: None,
-        gpus: vec![],
-        jobs_active: jobs_active.0 as i32,
+        gpus,
+        jobs_active: jobs_active_sum,
     }
 }
 
@@ -924,6 +1022,15 @@ pub struct OrchestratorItem {
     pub endpoint: String,
     pub status: String,
     pub last_heartbeat: Option<String>,
+    pub vram_total_gb: Option<i32>,
+    pub measured: bool,
+    pub cpu: Option<f64>,
+    pub ram: Option<i64>,
+    pub ram_total: Option<i64>,
+    pub vram_used: Option<i64>,
+    pub vram_total: Option<i64>,
+    pub gpus: Vec<String>,
+    pub jobs_active: i32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -931,24 +1038,73 @@ pub struct OrchestratorsResponse {
     pub items: Vec<OrchestratorItem>,
 }
 
-/// Lista todos os orquestradores (tabela do manager, sem métricas por nó).
-pub async fn list_orchestrators(pool: &PgPool) -> Result<OrchestratorsResponse, ManagerError> {
-    let rows: Vec<(Uuid, String, String, String, String, Option<DateTime<Utc>>)> = sqlx::query_as(
-        "SELECT id, name, kind, endpoint, status, last_heartbeat FROM orchestrators ORDER BY name",
+/// Lista todos os orquestradores com telemetria por nó.
+pub async fn list_orchestrators(
+    pool: &PgPool,
+    cache: &TelemetryCache,
+) -> Result<OrchestratorsResponse, ManagerError> {
+    let rows: Vec<(
+        Uuid,
+        String,
+        String,
+        String,
+        String,
+        Option<DateTime<Utc>>,
+        Option<i32>,
+    )> = sqlx::query_as(
+        "SELECT id, name, kind, endpoint, status, last_heartbeat, vram_total_gb \
+             FROM orchestrators ORDER BY name",
     )
     .fetch_all(pool)
     .await
     .map_err(|e| ManagerError::Internal(format!("list orchestrators: {e}")))?;
 
+    let cache = cache.read().await;
+    let now = Utc::now();
+
     let items = rows
         .into_iter()
-        .map(|r| OrchestratorItem {
-            id: r.0.to_string(),
-            name: r.1,
-            kind: r.2,
-            endpoint: r.3,
-            status: r.4,
-            last_heartbeat: r.5.map(|t| t.to_rfc3339()),
+        .map(|r| {
+            let orch_id = r.0;
+            let telemetry = cache.get(&orch_id);
+            let (measured, cpu, ram, ram_total, vram_used, vram_total, gpus, jobs_active) =
+                match telemetry {
+                    Some(state) => {
+                        let m = state
+                            .last_heartbeat
+                            .map(|last| (now - last).num_seconds() <= 10)
+                            .unwrap_or(false);
+                        (
+                            m,
+                            state.cpu,
+                            state.ram,
+                            state.ram_total,
+                            state.vram_used,
+                            state.vram_total,
+                            state.gpus.clone(),
+                            state.jobs_active,
+                        )
+                    }
+                    None => (false, None, None, None, None, None, vec![], 0),
+                };
+
+            OrchestratorItem {
+                id: orch_id.to_string(),
+                name: r.1,
+                kind: r.2,
+                endpoint: r.3,
+                status: r.4,
+                last_heartbeat: r.5.map(|t| t.to_rfc3339()),
+                vram_total_gb: r.6,
+                measured,
+                cpu,
+                ram,
+                ram_total,
+                vram_used,
+                vram_total,
+                gpus,
+                jobs_active,
+            }
         })
         .collect();
 

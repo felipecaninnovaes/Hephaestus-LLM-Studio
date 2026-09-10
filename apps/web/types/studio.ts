@@ -271,6 +271,57 @@ export interface AutotrackerApplyResponse {
 }
 
 /* ── Toast helpers for jobs ────────────────────────────────── */
+/* ── Models (Fatia I — ADR-0012 D6/D7) ──────────────────────── */
+
+export type ModelSource = "train" | "upload" | "download";
+
+export interface Model {
+  id: string;
+  name: string;
+  engine: string;
+  model: string | null;
+  source: ModelSource;
+  bytes: number;
+  md5: string;
+  url: string | null;
+  jobId: string | null;
+  createdAt: string;
+}
+
+export interface ModelListResponse {
+  items: Model[];
+}
+
+export function modelSourceLabel(source: ModelSource): string {
+  switch (source) {
+    case "train":
+      return "Treino";
+    case "upload":
+      return "Upload";
+    case "download":
+      return "Download";
+  }
+}
+
+export function modelErrorMessage(code: string): string {
+  switch (code) {
+    case "invalid_request":
+      return "Parâmetros inválidos.";
+    case "queue_unavailable":
+      return "Fila de processamento indisponível — tente novamente.";
+    case "not_found":
+      return "Modelo não encontrado.";
+    case "model_download_disabled":
+      return "Download por URL desabilitado — configure MODEL_DOWNLOAD_ALLOWED_HOSTS no ambiente.";
+    case "model_download_failed":
+      return "Falha ao baixar o modelo por URL — verifique o endereço e tente novamente.";
+    case "storage_unavailable":
+      return "Armazenamento indisponível — tente novamente.";
+    default:
+      return "Falha na operação de modelo.";
+  }
+}
+
 export type JobErrorCode =
   | "invalid_request"
   | "dataset_not_ready"

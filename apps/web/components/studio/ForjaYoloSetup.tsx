@@ -14,10 +14,12 @@ import { Input } from "@/components/ui/Input";
 import { Select, type SelectOption, type SelectRefHandle } from "@/components/ui/Select";
 import { getTelemetry, startYoloJob } from "@/lib/jobs";
 import { listDatasets, canTrainYolo, trainDisabledReason } from "@/lib/datasets";
+import { listModels } from "@/lib/models";
+import { formatBytes } from "@/lib/format";
 import { ApiError } from "@/lib/api";
-import { jobErrorMessage } from "@/types/studio";
+import { jobErrorMessage, modelErrorMessage } from "@/types/studio";
 import { showToast } from "./Toast";
-import type { Dataset, Telemetry, YoloAugment } from "@/types/studio";
+import type { Dataset, Model, Telemetry, YoloAugment } from "@/types/studio";
 import {
   YoloHyperparameters,
   EPOCHS_MIN,
@@ -78,6 +80,10 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [datasetsLoading, setDatasetsLoading] = useState(true);
   const [selectedDatasetId, setSelectedDatasetId] = useState<string>("");
+
+  // Models (for weights selector)
+  const [yoloModels, setYoloModels] = useState<Model[]>([]);
+  const [selectedWeightId, setSelectedWeightId] = useState<string>("");
 
   // Form fields — mirrors TrainYoloModal defaults
   const [params, setParams] = useState<YoloHyperparametersValues>({
@@ -199,6 +205,23 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
     return () => { cancelled = true; };
   }, []);
 
+  // Load YOLO models for weights selector
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const res = await listModels();
+        if (!cancelled) {
+          setYoloModels(res.items.filter((m) => m.engine === "yolo"));
+        }
+      } catch {
+        // Best-effort — dropdown mostra só "Do zero"
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, []);
+
   // Auto-focus first field
   useEffect(() => {
     const t = setTimeout(() => firstRef.current?.focus(), 30);
@@ -233,6 +256,18 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
     });
   }, [datasets]);
 
+  const weightOptions = useMemo<SelectOption<string>[]>(() => {
+    return yoloModels.map((m) => ({
+      value: m.id,
+      label: `${m.name} · ${formatBytes(m.bytes)}`,
+      badge: m.source === "train" ? (
+        <span className="rounded-full border border-brand-500/30 bg-brand-500/10 px-1.5 py-0.5 font-mono text-[10px] text-brand-400">
+          Treino
+        </span>
+      ) : undefined,
+    }));
+  }, [yoloModels]);
+
   const parsedLr0 = parseFloat(params.lr0);
   const epochsValid = Number.isInteger(params.epochs) && params.epochs >= EPOCHS_MIN && params.epochs <= EPOCHS_MAX;
   const lr0Valid = !isNaN(parsedLr0) && parsedLr0 >= 1e-5 && parsedLr0 <= 0.1 + 1e-9;
@@ -266,6 +301,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
         lr0: parsedLr0,
         optimizer: params.optimizer,
         augment: params.augment,
+        weights: selectedWeightId || null,
       });
       showToast(
         `Job de treino criado (posição ${result.queuePosition ?? "—"} na fila).`,
@@ -273,6 +309,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
       );
       // Reset form
       setSelectedDatasetId("");
+      setSelectedWeightId("");
       setParams({
         model: "yolo11m",
         epochs: 100,
@@ -285,7 +322,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
       onJobCreated?.(result.jobId);
     } catch (err) {
       if (err instanceof ApiError) {
-        setTopError(jobErrorMessage(err.code));
+        setTopError(modelErrorMessage(err.code) || jobErrorMessage(err.code));
         return;
       }
       setTopError("Falha ao criar job de treino.");
@@ -358,6 +395,19 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
         emptyText="Nenhum dataset YOLO elegível encontrado"
         disabled={busy}
         searchable={datasets.length > 5}
+        fontMono
+      />
+
+      {/* Weights selector (fine-tune) */}
+      <Select
+        id="setup-weights"
+        label="Pesos iniciais"
+        options={weightOptions}
+        value={selectedWeightId}
+        onChange={(val) => setSelectedWeightId(val)}
+        placeholder="Do zero (pré-treinado)"
+        disabled={busy}
+        searchable={yoloModels.length > 5}
         fontMono
       />
 

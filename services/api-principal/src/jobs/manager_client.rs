@@ -21,6 +21,8 @@ pub enum ManagerError {
     PairingInvalid,
     /// Resposta 409 do manager (s3_key duplicado — modelo já existe).
     Conflict,
+    /// Resposta 400 do manager (request inválido — A5).
+    InvalidRequest(String),
 }
 
 impl std::fmt::Display for ManagerError {
@@ -31,6 +33,7 @@ impl std::fmt::Display for ManagerError {
             Self::NotAbortable => write!(f, "manager: job not abortable"),
             Self::PairingInvalid => write!(f, "manager: pairing invalid"),
             Self::Conflict => write!(f, "manager: conflict"),
+            Self::InvalidRequest(_) => write!(f, "manager: invalid request"),
         }
     }
 }
@@ -515,6 +518,13 @@ impl ManagerPort for HttpManager {
         let status = resp.status();
         if status == reqwest::StatusCode::CONFLICT {
             return Err(ManagerError::Conflict);
+        }
+        if status == reqwest::StatusCode::BAD_REQUEST {
+            let msg = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "invalid request".into());
+            return Err(ManagerError::InvalidRequest(msg));
         }
         if !status.is_success() {
             return Err(ManagerError::Unavailable(format!(

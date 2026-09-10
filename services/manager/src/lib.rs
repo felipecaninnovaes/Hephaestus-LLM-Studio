@@ -884,12 +884,21 @@ pub async fn report_job(
                 if !best_models.is_empty() {
                     // Lê engine/model do job para o INSERT.
                     let job_info: Option<(String, String)> =
-                        sqlx::query_as("SELECT engine, model FROM jobs WHERE id = $1")
-                            .bind(id)
-                            .fetch_optional(pool)
-                            .await
-                            .ok()
-                            .flatten();
+                        match sqlx::query_as::<_, (String, String)>(
+                            "SELECT engine, model FROM jobs WHERE id = $1",
+                        )
+                        .bind(id)
+                        .fetch_optional(pool)
+                        .await
+                        {
+                            Ok(opt) => opt,
+                            Err(e) => {
+                                tracing::warn!(
+                                    "hook models: falha ao ler engine/model do job {id}: {e}"
+                                );
+                                None
+                            }
+                        };
                     if let Some((engine, model)) = job_info {
                         for art in best_models {
                             let s3_key = format!("artifacts/{id}/{}", art.path);
@@ -1476,8 +1485,11 @@ pub async fn create_model(
             created_at: chrono::Utc::now().to_rfc3339(),
         }),
         Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("models_s3_key_key") || msg.contains("duplicate key") {
+            // A3: checagem robusta de violação de unicidade (sqlx code 23505).
+            if e.as_database_error()
+                .map(|db| db.is_unique_violation())
+                .unwrap_or(false)
+            {
                 Err(ManagerError::Internal("model_exists".to_string()))
             } else {
                 Err(ManagerError::Internal(format!("insert model: {e}")))

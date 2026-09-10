@@ -825,9 +825,10 @@ pub async fn abort_job(State(state): State<AppState>, Path(id): Path<String>) ->
         Err(ManagerError::NotFound) => not_found(),
         Err(ManagerError::NotAbortable) => job_not_abortable(),
         Err(ManagerError::Unavailable(_)) => queue_unavailable(),
-        // PairingInvalid/Conflict não são esperados no abort; mapeia para 503.
+        // PairingInvalid/Conflict/InvalidRequest não são esperados no abort; mapeia para 503.
         Err(ManagerError::PairingInvalid) => queue_unavailable(),
         Err(ManagerError::Conflict) => queue_unavailable(),
+        Err(ManagerError::InvalidRequest(_)) => queue_unavailable(),
     }
 }
 

@@ -244,6 +244,22 @@ mod tests {
     }
 
     #[test]
+    fn host_allowed_exact_only_no_subdomain() {
+        // A2: entrada sem * casa SOMENTE host exato; subdomínio exige *.
+        let allowed = vec!["huggingface.co".to_string()];
+        assert!(host_allowed("huggingface.co", &allowed));
+        assert!(!host_allowed("cdn-lfs.huggingface.co", &allowed));
+    }
+
+    #[test]
+    fn host_allowed_wildcard_subdomain() {
+        // A2: *.huggingface.co aceita subdomínios.
+        let allowed = vec!["*.huggingface.co".to_string()];
+        assert!(host_allowed("cdn-lfs.huggingface.co", &allowed));
+        assert!(host_allowed("huggingface.co", &allowed));
+    }
+
+    #[test]
     fn is_private_ip_127() {
         assert!(is_private_ip("127.0.0.1".parse().unwrap()));
         assert!(is_private_ip("127.255.255.255".parse().unwrap()));

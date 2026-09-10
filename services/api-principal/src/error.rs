@@ -49,3 +49,5 @@ pub const MSG_DATASET_NOT_READY: &str = "dataset not ready for training";
 pub const MSG_JOB_NOT_ABORTABLE: &str = "job is not abortable";
 /// 409 de job que ainda não está `done` (fatia 5, ADR-0008 D1 — `job_not_done`).
 pub const MSG_JOB_NOT_DONE: &str = "job is not done";
+/// 409 de código de pareamento inválido ou orquestrador inalcançável (H.4, ADR-0011 D5).
+pub const MSG_PAIRING_INVALID: &str = "pairing code invalid or orchestrator unreachable";

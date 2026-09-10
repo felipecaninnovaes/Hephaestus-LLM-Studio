@@ -6,7 +6,8 @@
 
 use async_trait::async_trait;
 use manager::{
-    self, ArtifactItem, CreateJobRequest, HeartbeatRequest, ManagerError, PackageRef, ReportRequest,
+    self, ArtifactItem, CreateJobRequest, HeartbeatRequest, ManagerError, PackageRef,
+    ReportRequest, VramTable,
 };
 use sqlx::PgPool;
 
@@ -29,12 +30,21 @@ async fn pool() -> PgPool {
 /// Fake do orchestrator — registra chamadas, retorna Ok.
 struct FakeOrchestratorClient {
     calls: std::sync::Mutex<Vec<(String, serde_json::Value)>>,
+    verify_valid: bool,
 }
 
 impl FakeOrchestratorClient {
     fn new() -> Self {
         Self {
             calls: std::sync::Mutex::new(Vec::new()),
+            verify_valid: true,
+        }
+    }
+
+    fn with_verify_valid(valid: bool) -> Self {
+        Self {
+            calls: std::sync::Mutex::new(Vec::new()),
+            verify_valid: valid,
         }
     }
 
@@ -52,6 +62,18 @@ impl manager::OrchestratorClient for FakeOrchestratorClient {
             .push((url.to_string(), body.clone()));
         Ok(())
     }
+
+    async fn post_json(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((url.to_string(), body.clone()));
+        Ok(serde_json::json!({"valid": self.verify_valid}))
+    }
 }
 
 /// Fake que falha no dispatch.
@@ -60,6 +82,14 @@ struct FailingOrchestratorClient;
 #[async_trait]
 impl manager::OrchestratorClient for FailingOrchestratorClient {
     async fn post(&self, _url: &str, _body: &serde_json::Value) -> Result<(), String> {
+        Err("orchestrator unavailable (fake)".into())
+    }
+
+    async fn post_json(
+        &self,
+        _url: &str,
+        _body: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
         Err("orchestrator unavailable (fake)".into())
     }
 }
@@ -132,6 +162,19 @@ fn test_job_request(dataset_id: uuid::Uuid) -> CreateJobRequest {
     }
 }
 
+/// VRAM table de teste (espelha packages/policies/vram-table.yaml).
+fn test_vram_table() -> VramTable {
+    let yaml = r#"
+defaults:
+  headroom_gb: 2
+entries:
+  - { engine: yolo, model: yolo11n, mode: train, vram_min_gb: 6 }
+  - { engine: yolo, model: yolo11m, mode: train, vram_min_gb: 10 }
+  - { engine: clip, model: ViT-B-32, mode: train, vram_min_gb: 10 }
+"#;
+    VramTable::parse(yaml).expect("test vram table")
+}
+
 // ===========================================================================
 // Testes
 // ===========================================================================
@@ -163,6 +206,7 @@ async fn ciclo_queued_done() {
         "docker",
         "/data",
         "hephaestus/trainer-yolo:local",
+        &test_vram_table(),
     )
     .await
     .expect("dispatch");
@@ -358,7 +402,7 @@ async fn abort_em_voo_e_terminal() {
         .expect("create");
     let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
 
-    manager::dispatch_next(&p, &orch, "docker", "/data", "img")
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
         .await
         .expect("dispatch");
 
@@ -700,9 +744,10 @@ async fn dispatch_falha_volta_queued() {
 
     // Dispatch com orchestrator que falha.
     let failing = FailingOrchestratorClient;
-    let dispatched = manager::dispatch_next(&p, &failing, "docker", "/data", "img")
-        .await
-        .expect("dispatch with failing orch");
+    let dispatched =
+        manager::dispatch_next(&p, &failing, "docker", "/data", "img", &test_vram_table())
+            .await
+            .expect("dispatch with failing orch");
     // Falso porque o dispatch falhou.
     assert!(!dispatched || true); // Pode retornar true (dispatched then reverted) ou false (no orch).
 
@@ -742,6 +787,7 @@ async fn telemetry_com_heartbeat() {
 
     let cache = manager::new_telemetry_cache();
     let hb = HeartbeatRequest {
+        endpoint: "http://orchestrator-local:8082".into(),
         gpus: vec!["NVIDIA RTX 3090".into()],
         vram_total: Some(24000),
         vram_used: Some(8000),
@@ -749,6 +795,7 @@ async fn telemetry_com_heartbeat() {
         ram: Some(16384),
         ram_total: Some(67108864000),
         jobs_active: 2,
+        max_gpu_mib: Some(24000),
     };
 
     manager::receive_heartbeat(&p, &cache, hb)
@@ -878,7 +925,7 @@ async fn metrics_append_e_dedup_por_epoch() {
         .expect("create");
     let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
 
-    manager::dispatch_next(&p, &orch, "docker", "/data", "img")
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
         .await
         .expect("dispatch");
 
@@ -1008,14 +1055,18 @@ async fn list_orchestrators_apos_adocao() {
     let p = pool().await;
     cleanup(&p).await;
 
+    let cache = manager::new_telemetry_cache();
+
     // Sem orquestradores → vazio.
-    let resp = manager::list_orchestrators(&p).await.expect("list empty");
+    let resp = manager::list_orchestrators(&p, &cache)
+        .await
+        .expect("list empty");
     assert!(resp.items.is_empty());
 
     // Auto-adoção.
     manager::adopt_orchestrator(&p).await.expect("adopt");
 
-    let resp = manager::list_orchestrators(&p)
+    let resp = manager::list_orchestrators(&p, &cache)
         .await
         .expect("list after adopt");
     assert_eq!(resp.items.len(), 1);
@@ -1028,6 +1079,15 @@ async fn list_orchestrators_apos_adocao() {
     assert!(item.id.parse::<uuid::Uuid>().is_ok());
     // last_heartbeat: inicialmente None (não houve heartbeat ainda).
     assert!(item.last_heartbeat.is_none());
+    // Sem cache → measured false, campos null.
+    assert!(!item.measured);
+    assert!(item.cpu.is_none());
+    assert!(item.ram.is_none());
+    assert!(item.ram_total.is_none());
+    assert!(item.vram_used.is_none());
+    assert!(item.vram_total.is_none());
+    assert!(item.gpus.is_empty());
+    assert_eq!(item.jobs_active, 0);
 }
 
 #[tokio::test]
@@ -1041,6 +1101,7 @@ async fn list_orchestrators_heartbeat_atualiza_last() {
 
     let cache = manager::new_telemetry_cache();
     let hb = HeartbeatRequest {
+        endpoint: "http://orchestrator-local:8082".into(),
         gpus: vec![],
         vram_total: None,
         vram_used: None,
@@ -1048,17 +1109,23 @@ async fn list_orchestrators_heartbeat_atualiza_last() {
         ram: Some(1024),
         ram_total: Some(4096),
         jobs_active: 0,
+        max_gpu_mib: None,
     };
     manager::receive_heartbeat(&p, &cache, hb)
         .await
         .expect("heartbeat");
 
-    let resp = manager::list_orchestrators(&p)
+    let resp = manager::list_orchestrators(&p, &cache)
         .await
         .expect("list after heartbeat");
     assert_eq!(resp.items.len(), 1);
     // last_heartbeat deve ter sido preenchido (datetime válido).
     assert!(resp.items[0].last_heartbeat.is_some());
+    // Com cache preenchido → measured true.
+    assert!(resp.items[0].measured);
+    assert_eq!(resp.items[0].cpu, Some(0.1));
+    assert_eq!(resp.items[0].ram, Some(1024));
+    assert_eq!(resp.items[0].ram_total, Some(4096));
 }
 
 #[tokio::test]
@@ -1078,7 +1145,7 @@ async fn list_models_job_done_com_artifacts() {
         .expect("create");
     let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
 
-    manager::dispatch_next(&p, &orch, "docker", "/data", "img")
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
         .await
         .expect("dispatch");
 
@@ -1143,7 +1210,7 @@ async fn list_models_dedupe_mesmo_engine_model() {
         .await
         .expect("create 1");
     let job1: uuid::Uuid = r1.job_id.parse().unwrap();
-    manager::dispatch_next(&p, &orch, "docker", "/data", "img")
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
         .await
         .expect("dispatch 1");
     manager::report_job(
@@ -1180,7 +1247,7 @@ async fn list_models_dedupe_mesmo_engine_model() {
         .await
         .expect("create 2");
     let job2: uuid::Uuid = r2.job_id.parse().unwrap();
-    manager::dispatch_next(&p, &orch, "docker", "/data", "img")
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
         .await
         .expect("dispatch 2");
     manager::report_job(
@@ -1229,7 +1296,7 @@ async fn list_models_exclui_autotracker_boxes() {
         .await
         .expect("create");
     let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
-    manager::dispatch_next(&p, &orch, "docker", "/data", "img")
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
         .await
         .expect("dispatch");
 
@@ -1307,7 +1374,7 @@ async fn storage_usage_soma_esperada() {
         .await
         .expect("create 1");
     let job1: uuid::Uuid = r1.job_id.parse().unwrap();
-    manager::dispatch_next(&p, &orch, "docker", "/data", "img")
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
         .await
         .expect("dispatch 1");
     manager::report_job(
@@ -1355,7 +1422,7 @@ async fn storage_usage_soma_esperada() {
         .await
         .expect("create 2");
     let job2: uuid::Uuid = r2.job_id.parse().unwrap();
-    manager::dispatch_next(&p, &orch, "docker", "/data", "img")
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
         .await
         .expect("dispatch 2");
     manager::report_job(
@@ -1383,4 +1450,1205 @@ async fn storage_usage_soma_esperada() {
         .await
         .expect("usage after job 2");
     assert_eq!(usage.artifacts_bytes, 1480);
+}
+
+// ===========================================================================
+// H.2 — Identidade do heartbeat + cache por nó + lista enriquecida + agregação
+// ===========================================================================
+
+/// (a) 2 nós (local+remoto) heartbeating → last_heartbeat atualizado SÓ na linha do endpoint.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn heartbeat_2_nos_atualiza_só_linha_correta() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    // Insere 2 orchestrators.
+    let local_id = uuid::Uuid::new_v4();
+    let remote_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'local', 'http://local:8082', 'local', 'online')",
+    )
+    .bind(local_id)
+    .execute(&p)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'remote', 'http://remote:8082', 'remoto', 'online')",
+    )
+    .bind(remote_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    // Heartbeat do local.
+    let cache = manager::new_telemetry_cache();
+    let hb = HeartbeatRequest {
+        endpoint: "http://local:8082".into(),
+        gpus: vec![],
+        vram_total: None,
+        vram_used: None,
+        cpu: Some(0.5),
+        ram: Some(4096),
+        ram_total: Some(8192),
+        jobs_active: 1,
+        max_gpu_mib: None,
+    };
+    manager::receive_heartbeat(&p, &cache, hb)
+        .await
+        .expect("heartbeat local");
+
+    // Verifica: local tem last_heartbeat, remote não.
+    let local: (Option<chrono::DateTime<chrono::Utc>>,) =
+        sqlx::query_as("SELECT last_heartbeat FROM orchestrators WHERE id = $1")
+            .bind(local_id)
+            .fetch_one(&p)
+            .await
+            .unwrap();
+    assert!(local.0.is_some(), "local deve ter last_heartbeat");
+
+    let remote: (Option<chrono::DateTime<chrono::Utc>>,) =
+        sqlx::query_as("SELECT last_heartbeat FROM orchestrators WHERE id = $1")
+            .bind(remote_id)
+            .fetch_one(&p)
+            .await
+            .unwrap();
+    assert!(remote.0.is_none(), "remote não deve ter last_heartbeat");
+}
+
+/// (b) Heartbeat de endpoint inexistente → warn + nada gravado.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn heartbeat_endpoint_inexistente_nada_gravado() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let cache = manager::new_telemetry_cache();
+    let hb = HeartbeatRequest {
+        endpoint: "http://fantasma:9999".into(),
+        gpus: vec![],
+        vram_total: None,
+        vram_used: None,
+        cpu: None,
+        ram: None,
+        ram_total: None,
+        jobs_active: 0,
+        max_gpu_mib: None,
+    };
+    manager::receive_heartbeat(&p, &cache, hb)
+        .await
+        .expect("heartbeat fantasma deve retornar OK");
+
+    // Nenhuma linha criada.
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM orchestrators")
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(count.0, 0);
+
+    // Cache vazio.
+    let cache_lock = cache.read().await;
+    assert!(cache_lock.is_empty());
+}
+
+/// (c) Heartbeat revive offline→online e NÃO revive revoked.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn heartbeat_revive_offline_nao_revive_revoked() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    // Insere 2 orchestrators: 1 offline, 1 revoked.
+    let offline_id = uuid::Uuid::new_v4();
+    let revoked_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'offline-orch', 'http://offline:8082', 'remoto', 'offline')",
+    )
+    .bind(offline_id)
+    .execute(&p)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'revoked-orch', 'http://revoked:8082', 'remoto', 'revoked')",
+    )
+    .bind(revoked_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let cache = manager::new_telemetry_cache();
+
+    // Heartbeat do offline.
+    let hb = HeartbeatRequest {
+        endpoint: "http://offline:8082".into(),
+        gpus: vec![],
+        vram_total: None,
+        vram_used: None,
+        cpu: None,
+        ram: None,
+        ram_total: None,
+        jobs_active: 0,
+        max_gpu_mib: None,
+    };
+    manager::receive_heartbeat(&p, &cache, hb)
+        .await
+        .expect("heartbeat offline");
+
+    // Offline → online.
+    let status: (String,) = sqlx::query_as("SELECT status FROM orchestrators WHERE id = $1")
+        .bind(offline_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(status.0, "online");
+
+    // Revoked → continua revoked.
+    let status: (String,) = sqlx::query_as("SELECT status FROM orchestrators WHERE id = $1")
+        .bind(revoked_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(status.0, "revoked");
+}
+
+/// (d) Heartbeat com vram_total/gpus → colunas gravadas (round MiB/1024).
+/// Com max_gpu_mib, vram_total_gb = maior GPU (12288→12), não a soma (18432→18).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn heartbeat_grava_vram_total_gb_e_gpus() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let orch_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'gpu-orch', 'http://gpu:8082', 'remoto', 'online')",
+    )
+    .bind(orch_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let cache = manager::new_telemetry_cache();
+    let hb = HeartbeatRequest {
+        endpoint: "http://gpu:8082".into(),
+        gpus: vec!["NVIDIA RTX 3060".into(), "NVIDIA GTX 1660S".into()],
+        vram_total: Some(18432), // 12288 + 6144 MiB (soma — VRAM instalada)
+        vram_used: Some(5000),
+        cpu: Some(0.3),
+        ram: Some(8192),
+        ram_total: Some(16384),
+        jobs_active: 1,
+        max_gpu_mib: Some(12288), // maior GPU — capacidade de 1 job
+    };
+    manager::receive_heartbeat(&p, &cache, hb)
+        .await
+        .expect("heartbeat gpu");
+
+    // Verifica colunas: vram_total_gb = round(12288/1024) = 12 (não 18).
+    let row: (Option<i32>, serde_json::Value) =
+        sqlx::query_as("SELECT vram_total_gb, gpus FROM orchestrators WHERE id = $1")
+            .bind(orch_id)
+            .fetch_one(&p)
+            .await
+            .unwrap();
+    assert_eq!(row.0, Some(12), "round(12288/1024) = 12 (maior GPU)");
+    assert_eq!(
+        row.1,
+        serde_json::json!(["NVIDIA RTX 3060", "NVIDIA GTX 1660S"])
+    );
+}
+
+/// (d.2) Heartbeat sem max_gpu_mib (orquestrador legado) → fallback para vram_total.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn heartbeat_fallback_vram_total_sem_max_gpu_mib() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let orch_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'old-orch', 'http://old:8082', 'local', 'online')",
+    )
+    .bind(orch_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let cache = manager::new_telemetry_cache();
+    let hb = HeartbeatRequest {
+        endpoint: "http://old:8082".into(),
+        gpus: vec!["NVIDIA RTX 3060".into()],
+        vram_total: Some(12288),
+        vram_used: Some(4096),
+        cpu: Some(0.5),
+        ram: Some(8192),
+        ram_total: Some(16384),
+        jobs_active: 0,
+        max_gpu_mib: None, // orquestrador legado sem parse por GPU
+    };
+    manager::receive_heartbeat(&p, &cache, hb)
+        .await
+        .expect("heartbeat old");
+
+    // Fallback: vram_total_gb = round(12288/1024) = 12 (usa vram_total).
+    let row: (Option<i32>,) =
+        sqlx::query_as("SELECT vram_total_gb FROM orchestrators WHERE id = $1")
+            .bind(orch_id)
+            .fetch_one(&p)
+            .await
+            .unwrap();
+    assert_eq!(row.0, Some(12), "fallback: round(12288/1024) = 12");
+}
+
+/// (e.1) Agregação: 2 nós com cache → soma+união+cpu/ram null.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn agregacao_2_nos_soma_uniao() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let id1 = uuid::Uuid::new_v4();
+    let id2 = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'n1', 'http://n1:8082', 'local', 'online')",
+    )
+    .bind(id1)
+    .execute(&p)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'n2', 'http://n2:8082', 'remoto', 'online')",
+    )
+    .bind(id2)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let cache = manager::new_telemetry_cache();
+
+    // Heartbeat nó 1.
+    let hb1 = HeartbeatRequest {
+        endpoint: "http://n1:8082".into(),
+        gpus: vec!["RTX 3060".into()],
+        vram_total: Some(12000),
+        vram_used: Some(3000),
+        cpu: Some(0.4),
+        ram: Some(4096),
+        ram_total: Some(8192),
+        jobs_active: 1,
+        max_gpu_mib: Some(12000),
+    };
+    manager::receive_heartbeat(&p, &cache, hb1)
+        .await
+        .expect("hb n1");
+
+    // Heartbeat nó 2.
+    let hb2 = HeartbeatRequest {
+        endpoint: "http://n2:8082".into(),
+        gpus: vec!["GTX 1660S".into(), "RTX 3060".into()],
+        vram_total: Some(6000),
+        vram_used: Some(2000),
+        cpu: Some(0.6),
+        ram: Some(8192),
+        ram_total: Some(16384),
+        jobs_active: 2,
+        max_gpu_mib: Some(6000),
+    };
+    manager::receive_heartbeat(&p, &cache, hb2)
+        .await
+        .expect("hb n2");
+
+    let resp = manager::get_telemetry(&p, &cache).await;
+    assert!(resp.measured);
+    assert_eq!(resp.vram_used, Some(5000)); // 3000 + 2000
+    assert_eq!(resp.vram_total, Some(18000)); // 12000 + 6000
+    assert_eq!(resp.jobs_active, 3); // 1 + 2
+                                     // cpu/ram null no agregado com >1 nó.
+    assert!(resp.cpu.is_none());
+    assert!(resp.ram.is_none());
+    assert!(resp.ram_total.is_none());
+    // União de gpus.
+    assert!(resp.gpus.contains(&"RTX 3060".to_string()));
+    assert!(resp.gpus.contains(&"GTX 1660S".to_string()));
+}
+
+/// (e.2) Agregação: 1 nó → idêntico a hoje (compat).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn agregacao_1_no_compat() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    // Insere orchestrator para que o heartbeat seja aceito.
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'local', 'http://local:8082', 'local', 'online')",
+    )
+    .bind(uuid::Uuid::new_v4())
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let cache = manager::new_telemetry_cache();
+    let hb = HeartbeatRequest {
+        endpoint: "http://local:8082".into(),
+        gpus: vec!["RTX 3090".into()],
+        vram_total: Some(24000),
+        vram_used: Some(8000),
+        cpu: Some(0.45),
+        ram: Some(16384),
+        ram_total: Some(67108864000),
+        jobs_active: 2,
+        max_gpu_mib: Some(24000),
+    };
+    manager::receive_heartbeat(&p, &cache, hb)
+        .await
+        .expect("hb local");
+
+    let resp = manager::get_telemetry(&p, &cache).await;
+    assert!(resp.measured);
+    assert_eq!(resp.vram_total, Some(24000));
+    assert_eq!(resp.vram_used, Some(8000));
+    assert_eq!(resp.cpu, Some(0.45));
+    assert_eq!(resp.ram, Some(16384));
+    assert_eq!(resp.ram_total, Some(67108864000));
+    assert_eq!(resp.gpus, vec!["RTX 3090"]);
+    assert_eq!(resp.jobs_active, 2);
+}
+
+/// (e.3) Agregação: 0 nós → fallback (measured:false + jobs da fila).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn agregacao_0_nos_fallback() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let cache = manager::new_telemetry_cache();
+    let resp = manager::get_telemetry(&p, &cache).await;
+    assert!(!resp.measured);
+    assert!(resp.vram_used.is_none());
+    assert!(resp.vram_total.is_none());
+    assert!(resp.cpu.is_none());
+    assert!(resp.ram.is_none());
+    assert!(resp.ram_total.is_none());
+    assert!(resp.gpus.is_empty());
+    // jobs_active vem da fila.
+    assert_eq!(resp.jobs_active, 0);
+}
+
+/// Teste unitário puro: agregação de 2 nós (fixture).
+#[test]
+fn agregacao_pura_2_nos() {
+    use manager::TelemetryState;
+    use std::collections::HashMap;
+
+    let mut cache: HashMap<uuid::Uuid, TelemetryState> = HashMap::new();
+
+    let id1 = uuid::Uuid::new_v4();
+    let id2 = uuid::Uuid::new_v4();
+    let now = chrono::Utc::now();
+
+    cache.insert(
+        id1,
+        TelemetryState {
+            endpoint: "http://n1:8082".into(),
+            measured: true,
+            vram_used: Some(3000),
+            vram_total: Some(12000),
+            cpu: Some(0.4),
+            ram: Some(4096),
+            ram_total: Some(8192),
+            gpus: vec!["RTX 3060".into()],
+            jobs_active: 1,
+            last_heartbeat: Some(now),
+        },
+    );
+    cache.insert(
+        id2,
+        TelemetryState {
+            endpoint: "http://n2:8082".into(),
+            measured: true,
+            vram_used: Some(2000),
+            vram_total: Some(6000),
+            cpu: Some(0.6),
+            ram: Some(8192),
+            ram_total: Some(16384),
+            gpus: vec!["GTX 1660S".into(), "RTX 3060".into()],
+            jobs_active: 2,
+            last_heartbeat: Some(now),
+        },
+    );
+
+    // Simula agregação (lógica extraída de get_telemetry).
+    let mut vram_used_sum: Option<i64> = Some(0);
+    let mut vram_total_sum: Option<i64> = Some(0);
+    let mut gpus: Vec<String> = Vec::new();
+    let mut jobs_active_sum: i32 = 0;
+
+    for state in cache.values() {
+        match (vram_used_sum, state.vram_used) {
+            (Some(acc), Some(val)) => vram_used_sum = Some(acc + val),
+            (Some(_), None) => vram_used_sum = None,
+            (None, _) => {}
+        }
+        match (vram_total_sum, state.vram_total) {
+            (Some(acc), Some(val)) => vram_total_sum = Some(acc + val),
+            (Some(_), None) => vram_total_sum = None,
+            (None, _) => {}
+        }
+        for gpu in &state.gpus {
+            if !gpus.contains(gpu) {
+                gpus.push(gpu.clone());
+            }
+        }
+        jobs_active_sum += state.jobs_active;
+    }
+
+    assert_eq!(vram_used_sum, Some(5000));
+    assert_eq!(vram_total_sum, Some(18000));
+    assert_eq!(jobs_active_sum, 3);
+    assert!(gpus.contains(&"RTX 3060".to_string()));
+    assert!(gpus.contains(&"GTX 1660S".to_string()));
+}
+
+// ===========================================================================
+// H.3 — Roteamento por capacidade, watchdog, adopt/revoke
+// ===========================================================================
+
+// --- Roteamento (ADR-0011 D3) ---
+
+/// 2 nós online (12GB e NULL) + job com requisito 8 → vai para o de 12GB.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn roteamento_2_nos_requisito_8_vai_para_12gb() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+    let vt = test_vram_table();
+
+    // Nó de 12GB online (maior GPU individual — capacidade de 1 job).
+    let id_big = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status, vram_total_gb) \
+         VALUES ($1, 'big-gpu', 'http://big:8082', 'remoto', 'online', 12)",
+    )
+    .bind(id_big)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    // Nó NULL online (permissivo).
+    let id_null = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'local-mock', 'http://local:8082', 'local', 'online')",
+    )
+    .bind(id_null)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    // Job: yolo11m train → vram_min_gb=10, headroom=2, required=12. Mas queremos testar 8.
+    // Usar yolo11n: vram_min_gb=6, headroom=2, required=8.
+    let resp = manager::create_job(
+        &p,
+        CreateJobRequest {
+            kind: "yolo_train".into(),
+            engine: "yolo".into(),
+            model: "yolo11n".into(),
+            mode: "train".into(),
+            dataset_id: Some(ds_id.to_string()),
+            dataset_version_id: None,
+            package_ref: None,
+            config_yaml: None,
+            params: None,
+            vram_min_gb: None,
+        },
+    )
+    .await
+    .expect("create job");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &vt)
+        .await
+        .expect("dispatch");
+
+    // Verifica: job foi dispatched para o nó de 12GB.
+    let job = manager::get_job(&p, job_id).await.expect("get job");
+    assert_eq!(job.status, "dispatched");
+    assert_eq!(
+        job.orchestrator_id.as_deref(),
+        Some(id_big.to_string().as_str())
+    );
+}
+
+/// Sem requisito (engine/model/mode não mapeado) → NULL elegível, ORDER BY name determinístico.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn roteamento_sem_requisito_null_elegivel_order_by_nome() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+    let vt = test_vram_table();
+
+    // 2 nós online: um com nome "zzz", outro "aaa", ambos NULL.
+    let id_zzz = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'zzz-node', 'http://zzz:8082', 'remoto', 'online')",
+    )
+    .bind(id_zzz)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let id_aaa = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'aaa-node', 'http://aaa:8082', 'remoto', 'online')",
+    )
+    .bind(id_aaa)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    // Engine não mapeado na vram-table → required=NULL.
+    let resp = manager::create_job(
+        &p,
+        CreateJobRequest {
+            kind: "custom_train".into(),
+            engine: "autotracker".into(),
+            model: "custom".into(),
+            mode: "train".into(),
+            dataset_id: Some(ds_id.to_string()),
+            dataset_version_id: None,
+            package_ref: None,
+            config_yaml: None,
+            params: None,
+            vram_min_gb: None,
+        },
+    )
+    .await
+    .expect("create job");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &vt)
+        .await
+        .expect("dispatch");
+
+    // Deve ir para "aaa-node" (ORDER BY name ASC, NULLS LAST).
+    let job = manager::get_job(&p, job_id).await.expect("get job");
+    assert_eq!(job.status, "dispatched");
+    assert_eq!(
+        job.orchestrator_id.as_deref(),
+        Some(id_aaa.to_string().as_str())
+    );
+}
+
+/// Nó com job não-terminal excluído (NOT EXISTS).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn roteamento_no_com_job_excluido() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+    let vt = test_vram_table();
+
+    // Nó 1: online, 12GB — com job running.
+    let id_busy = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status, vram_total_gb) \
+         VALUES ($1, 'busy', 'http://busy:8082', 'remoto', 'online', 12)",
+    )
+    .bind(id_busy)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    // Job non-terminal no nó busy.
+    let busy_job = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO jobs (id, kind, engine, model, mode, dataset_id, status, orchestrator_id) \
+         VALUES ($1, 'yolo_train', 'yolo', 'yolo11m', 'train', $2, 'running', $3)",
+    )
+    .bind(busy_job)
+    .bind(ds_id)
+    .bind(id_busy)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    // Nó 2: online, NULL — livre.
+    let id_free = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'free', 'http://free:8082', 'local', 'online')",
+    )
+    .bind(id_free)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    // Job com requisito 8 → busy tem 12GB mas está ocupado, free tem NULL (permissivo).
+    let resp = manager::create_job(
+        &p,
+        CreateJobRequest {
+            kind: "yolo_train".into(),
+            engine: "yolo".into(),
+            model: "yolo11n".into(),
+            mode: "train".into(),
+            dataset_id: Some(ds_id.to_string()),
+            dataset_version_id: None,
+            package_ref: None,
+            config_yaml: None,
+            params: None,
+            vram_min_gb: None,
+        },
+    )
+    .await
+    .expect("create job");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &vt)
+        .await
+        .expect("dispatch");
+
+    // Deve ir para o nó livre (busy excluído pelo NOT EXISTS).
+    let job = manager::get_job(&p, job_id).await.expect("get job");
+    assert_eq!(job.status, "dispatched");
+    assert_eq!(
+        job.orchestrator_id.as_deref(),
+        Some(id_free.to_string().as_str())
+    );
+}
+
+/// Requisito 12 + só nó de 6GB → waiting_vram.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn roteamento_requisito_12_so_6gb_waiting_vram() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+    let vt = test_vram_table();
+
+    // Nó de 6GB online.
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status, vram_total_gb) \
+         VALUES ($1, 'small', 'http://small:8082', 'remoto', 'online', 6)",
+    )
+    .bind(uuid::Uuid::new_v4())
+    .execute(&p)
+    .await
+    .unwrap();
+
+    // yolo11m train: vram_min=10, headroom=2, required=12.
+    let resp = manager::create_job(
+        &p,
+        CreateJobRequest {
+            kind: "yolo_train".into(),
+            engine: "yolo".into(),
+            model: "yolo11m".into(),
+            mode: "train".into(),
+            dataset_id: Some(ds_id.to_string()),
+            dataset_version_id: None,
+            package_ref: None,
+            config_yaml: None,
+            params: None,
+            vram_min_gb: None,
+        },
+    )
+    .await
+    .expect("create job");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    let dispatched = manager::dispatch_next(&p, &orch, "docker", "/data", "img", &vt)
+        .await
+        .expect("dispatch");
+    assert!(!dispatched);
+
+    let job = manager::get_job(&p, job_id).await.expect("get job");
+    assert_eq!(job.status, "queued");
+    assert_eq!(job.queue_reason.as_deref(), Some("waiting_vram"));
+}
+
+/// Sem requisito + nenhum online → waiting_slot.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn roteamento_sem_requisito_nenhum_online_waiting_slot() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+    let vt = test_vram_table();
+
+    // Sem orchestrators online.
+    let resp = manager::create_job(
+        &p,
+        CreateJobRequest {
+            kind: "custom".into(),
+            engine: "autotracker".into(),
+            model: "custom".into(),
+            mode: "train".into(),
+            dataset_id: Some(ds_id.to_string()),
+            dataset_version_id: None,
+            package_ref: None,
+            config_yaml: None,
+            params: None,
+            vram_min_gb: None,
+        },
+    )
+    .await
+    .expect("create job");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    let dispatched = manager::dispatch_next(&p, &orch, "docker", "/data", "img", &vt)
+        .await
+        .expect("dispatch");
+    assert!(!dispatched);
+
+    let job = manager::get_job(&p, job_id).await.expect("get job");
+    assert_eq!(job.status, "queued");
+    assert_eq!(job.queue_reason.as_deref(), Some("waiting_slot"));
+}
+
+// --- Watchdog (ADR-0011 D4) ---
+
+/// Nó sem heartbeat 15s → degraded.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn watchdog_15s_degraded() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let orch_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status, last_heartbeat) \
+         VALUES ($1, 'slow', 'http://slow:8082', 'remoto', 'online', now() - interval '20 seconds')",
+    )
+    .bind(orch_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    manager::watchdog_tick(&p).await.expect("watchdog tick");
+
+    let status: (String,) = sqlx::query_as("SELECT status FROM orchestrators WHERE id = $1")
+        .bind(orch_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(status.0, "degraded");
+}
+
+/// Nó 60s sem heartbeat → offline + jobs re-queued com orchestrator_id NULL.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn watchdog_60s_offline_requeue() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let orch_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status, last_heartbeat) \
+         VALUES ($1, 'dead', 'http://dead:8082', 'remoto', 'degraded', now() - interval '70 seconds')",
+    )
+    .bind(orch_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    // Jobs não-terminais no nó morto.
+    let job1 = uuid::Uuid::new_v4();
+    let job2 = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO jobs (id, kind, engine, model, mode, dataset_id, status, orchestrator_id) \
+         VALUES ($1, 'yolo_train', 'yolo', 'yolo11m', 'train', $2, 'running', $3)",
+    )
+    .bind(job1)
+    .bind(ds_id)
+    .bind(orch_id)
+    .execute(&p)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO jobs (id, kind, engine, model, mode, dataset_id, status, orchestrator_id) \
+         VALUES ($1, 'yolo_train', 'yolo', 'yolo11m', 'train', $2, 'dispatched', $3)",
+    )
+    .bind(job2)
+    .bind(ds_id)
+    .bind(orch_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    manager::watchdog_tick(&p).await.expect("watchdog tick");
+
+    // Nó → offline.
+    let status: (String,) = sqlx::query_as("SELECT status FROM orchestrators WHERE id = $1")
+        .bind(orch_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(status.0, "offline");
+
+    // Jobs re-queued com orchestrator_id NULL.
+    for jid in [job1, job2] {
+        let job = manager::get_job(&p, jid).await.expect("get re-queued job");
+        assert_eq!(job.status, "queued");
+        assert_eq!(job.queue_reason.as_deref(), Some("recovered"));
+        assert!(job.orchestrator_id.is_none());
+    }
+}
+
+// --- Adopt / Revoke (ADR-0011 D5) ---
+
+/// Verify válido → upsert online; 2ª adoção idempotente; revive revoked.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn adopt_verify_valido_upsert_idempotente_revive_revoked() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    // 1ª adoção: cria.
+    let req1 = manager::AdoptRequest {
+        name: "gpu-node".into(),
+        endpoint: "http://gpu:8082".into(),
+        kind: "remoto".into(),
+        pairing_code: "heph_p_test123".into(),
+    };
+    let item1 = manager::adopt_internal(&p, &orch, &req1)
+        .await
+        .expect("adopt 1");
+    assert!(!item1.id.is_empty());
+
+    let row: (String, String) =
+        sqlx::query_as("SELECT name, status FROM orchestrators WHERE endpoint = $1")
+            .bind("http://gpu:8082")
+            .fetch_one(&p)
+            .await
+            .unwrap();
+    assert_eq!(row.0, "gpu-node");
+    assert_eq!(row.1, "online");
+
+    // 2ª adoção: idempotente (não duplica).
+    let req2 = manager::AdoptRequest {
+        name: "gpu-node-v2".into(),
+        endpoint: "http://gpu:8082".into(),
+        kind: "remoto".into(),
+        pairing_code: "heph_p_test456".into(),
+    };
+    let item2 = manager::adopt_internal(&p, &orch, &req2)
+        .await
+        .expect("adopt 2");
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM orchestrators")
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(count.0, 1, "deve continuar 1 linha");
+    assert_eq!(item1.id, item2.id, "deve retornar mesmo id");
+
+    // Atualizado o name.
+    let row2: (String,) = sqlx::query_as("SELECT name FROM orchestrators WHERE endpoint = $1")
+        .bind("http://gpu:8082")
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(row2.0, "gpu-node-v2");
+
+    // Revoga.
+    let orch_uuid: uuid::Uuid = item1.id.parse().unwrap();
+    manager::revoke_orchestrator(&p, orch_uuid)
+        .await
+        .expect("revoke");
+    let status: (String,) = sqlx::query_as("SELECT status FROM orchestrators WHERE id = $1")
+        .bind(orch_uuid)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(status.0, "revoked");
+
+    // Re-adoção: revive revoked → online.
+    let req3 = manager::AdoptRequest {
+        name: "gpu-node-v3".into(),
+        endpoint: "http://gpu:8082".into(),
+        kind: "remoto".into(),
+        pairing_code: "heph_p_test789".into(),
+    };
+    manager::adopt_internal(&p, &orch, &req3)
+        .await
+        .expect("re-adopt");
+    let status2: (String,) = sqlx::query_as("SELECT status FROM orchestrators WHERE id = $1")
+        .bind(orch_uuid)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(status2.0, "online");
+}
+
+/// Verify inválido → 409 pairing_invalid.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn adopt_verify_invalido_409() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let orch = FakeOrchestratorClient::with_verify_valid(false);
+
+    let req = manager::AdoptRequest {
+        name: "bad-node".into(),
+        endpoint: "http://bad:8082".into(),
+        kind: "remoto".into(),
+        pairing_code: "wrong_code".into(),
+    };
+    let result = manager::adopt_internal(&p, &orch, &req).await;
+    assert!(matches!(result, Err(ManagerError::PairingInvalid)));
+}
+
+/// Verify inalcançável (erro de rede) → 409 pairing_invalid.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn adopt_orquestrador_inalcançavel_409() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let orch = FailingOrchestratorClient;
+
+    let req = manager::AdoptRequest {
+        name: "ghost".into(),
+        endpoint: "http://ghost:8082".into(),
+        kind: "remoto".into(),
+        pairing_code: "code".into(),
+    };
+    let result = manager::adopt_internal(&p, &orch, &req).await;
+    assert!(matches!(result, Err(ManagerError::PairingInvalid)));
+}
+
+/// Revoke → 204 (via revoke_orchestrator); id inexistente → NotFound.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn revoke_204_e_id_inexistente_404() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    // Insere e revoga.
+    let orch_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'to-revoke', 'http://revoke:8082', 'local', 'online')",
+    )
+    .bind(orch_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    manager::revoke_orchestrator(&p, orch_id)
+        .await
+        .expect("revoke");
+    let status: (String,) = sqlx::query_as("SELECT status FROM orchestrators WHERE id = $1")
+        .bind(orch_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(status.0, "revoked");
+
+    // ID inexistente → NotFound.
+    let fake_id = uuid::Uuid::new_v4();
+    let result = manager::revoke_orchestrator(&p, fake_id).await;
+    assert!(matches!(result, Err(ManagerError::NotFound)));
+}
+
+/// Auto-adoção com linha revoked + AUTO_ADOPT_LOCAL=1 → linha CONTINUA revoked.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn auto_adopt_nao_revive_revoked() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    // Insere local como revoked (simula revoke manual).
+    let orch_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'orchestrator-local', 'http://orchestrator-local:8082', 'local', 'revoked')",
+    )
+    .bind(orch_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    // Auto-adoção (fail-open, default AUTO_ADOPT_LOCAL=1).
+    manager::adopt_orchestrator(&p).await.expect("auto adopt");
+
+    // Linha continua revoked (guarda anti-ressurreição).
+    let status: (String,) = sqlx::query_as("SELECT status FROM orchestrators WHERE id = $1")
+        .bind(orch_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(
+        status.0, "revoked",
+        "auto-adoção não deve ressuscitar revoked"
+    );
+}
+
+/// Watchdog não toca revoked.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn watchdog_nao_toca_revoked() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let orch_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status, last_heartbeat) \
+         VALUES ($1, 'revived', 'http://revived:8082', 'remoto', 'revoked', now() - interval '120 seconds')",
+    )
+    .bind(orch_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    manager::watchdog_tick(&p).await.expect("watchdog tick");
+
+    // Continua revoked (watchdog ignora revoked).
+    let status: (String,) = sqlx::query_as("SELECT status FROM orchestrators WHERE id = $1")
+        .bind(orch_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(status.0, "revoked");
+}
+
+/// Validação de adopt: kind inválido → ManagerError::InvalidRequest.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn adopt_validacao_kind_invalido() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    let req = manager::AdoptRequest {
+        name: "bad-kind".into(),
+        endpoint: "http://local:8082".into(),
+        kind: "invalid_kind".into(),
+        pairing_code: "code".into(),
+    };
+    let result = manager::adopt_internal(&p, &orch, &req).await;
+    assert!(matches!(result, Err(ManagerError::InvalidRequest(_))));
+}
+
+/// Validação de adopt: endpoint sem http:// → ManagerError::InvalidRequest.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn adopt_validacao_endpoint_sem_http() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    let req = manager::AdoptRequest {
+        name: "bad-endpoint".into(),
+        endpoint: "ftp://local:8082".into(),
+        kind: "local".into(),
+        pairing_code: "code".into(),
+    };
+    let result = manager::adopt_internal(&p, &orch, &req).await;
+    assert!(matches!(result, Err(ManagerError::InvalidRequest(_))));
+}
+
+/// Validação de adopt: pairing_code vazio → ManagerError::InvalidRequest.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn adopt_validacao_pairing_code_vazio() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    let req = manager::AdoptRequest {
+        name: "empty-code".into(),
+        endpoint: "http://local:8082".into(),
+        kind: "local".into(),
+        pairing_code: "".into(),
+    };
+    let result = manager::adopt_internal(&p, &orch, &req).await;
+    assert!(matches!(result, Err(ManagerError::InvalidRequest(_))));
+}
+
+/// Dispatch do dispatch_falha_volta_queued agora precisa de vram_table.
+/// Verifica que o dispatch com orchestrator que falha volta para queued.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn dispatch_falha_volta_queued_com_vram_table() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    let failing = FailingOrchestratorClient;
+    let vt = test_vram_table();
+    let _dispatched = manager::dispatch_next(&p, &failing, "docker", "/data", "img", &vt)
+        .await
+        .expect("dispatch with failing orch");
+
+    // Verifica que o job voltou para queued.
+    let job = manager::get_job(&p, job_id).await.expect("get after fail");
+    assert_eq!(job.status, "queued");
+    assert_eq!(job.queue_reason.as_deref(), Some("waiting_slot"));
+}
+
+/// VramTable parse ok com a tabela real.
+#[test]
+fn vram_table_parse_ok() {
+    let yaml = include_str!("../../../packages/policies/vram-table.yaml");
+    let vt = VramTable::parse(yaml).expect("vram-table deve parsear");
+    assert_eq!(vt.defaults.headroom_gb, 2);
+    assert!(!vt.entries.is_empty());
+
+    // yolo11n train: 6 + 2 = 8.
+    assert_eq!(vt.resolve_required_gb("yolo", "yolo11n", "train"), Some(8));
+    // yolo11m train: 10 + 2 = 12.
+    assert_eq!(vt.resolve_required_gb("yolo", "yolo11m", "train"), Some(12));
+    // Engine desconhecido → None (permissivo).
+    assert_eq!(vt.resolve_required_gb("autotracker", "x", "train"), None);
 }

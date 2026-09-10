@@ -56,6 +56,7 @@ pub struct ArtifactReport {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct HeartbeatBody {
+    pub endpoint: String,
     pub gpus: Vec<String>,
     pub vram_total: Option<i64>,
     pub vram_used: Option<i64>,
@@ -63,6 +64,69 @@ pub struct HeartbeatBody {
     pub ram: Option<i64>,
     pub ram_total: Option<i64>,
     pub jobs_active: i32,
+    /// Maior VRAM individual entre as GPUs (MiB) — capacidade real de 1 job.
+    pub max_gpu_mib: Option<i64>,
+}
+
+// ---------------------------------------------------------------------------
+// Pairing (D5.1-2 — single-use em memória)
+// ---------------------------------------------------------------------------
+
+/// Estado do pairing code no orquestrador.
+/// O `used` flag é single-use: 1ª chamada com código correto consome; 2ª → false.
+pub struct PairingState {
+    pub code: String,
+    pub used: std::sync::atomic::AtomicBool,
+}
+
+impl PairingState {
+    pub fn new(code: String) -> Self {
+        Self {
+            code,
+            used: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Verifica o código e consome se válido (single-use, atômico via compare_exchange).
+    pub fn verify(&self, code: &str) -> bool {
+        if self.code == code {
+            self.used
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        } else {
+            false
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PairingVerifyRequest {
+    pub code: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PairingVerifyResponse {
+    pub valid: bool,
+}
+
+/// Resolve o URL de advertise do orquestrador.
+///
+/// Se o valor for `None` ou string vazia, retorna o default
+/// `http://orchestrator-local:8082`. Função pura — sem side effects.
+pub fn resolve_advertise_url(env_val: Option<&str>) -> String {
+    match env_val {
+        Some(v) if !v.is_empty() => v.to_string(),
+        _ => "http://orchestrator-local:8082".into(),
+    }
+}
+
+/// Gera um pairing code aleatório no formato `heph_p_<32hex>`.
+pub fn generate_pairing_code() -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let bytes: [u8; 16] = rng.gen();
+    let hex = hex::encode(bytes);
+    format!("heph_p_{hex}")
 }
 
 // ---------------------------------------------------------------------------
@@ -1188,6 +1252,9 @@ pub struct GpuTelemetry {
     pub vram_total: i64,
     /// VRAM usada somada em MiB.
     pub vram_used: i64,
+    /// Maior VRAM total individual entre as GPUs visíveis (MiB).
+    /// 1 job = 1 GPU (backend.md §6) — capacidade real de treino de 1 job.
+    pub max_gpu_mib: i64,
 }
 
 /// Tenta rodar `nvidia-smi` e parsear o CSV de saída.
@@ -1215,12 +1282,13 @@ pub async fn try_nvidia_smi() -> Option<GpuTelemetry> {
     parse_nvidia_smi_csv(&stdout)
 }
 
-/// Parseia CSV do nvidia-smi (nomes + soma de VRAM em MiB, sem conversão).
+/// Parseia CSV do nvidia-smi (nomes + soma de VRAM em MiB + max individual).
 /// Linhas malformadas são ignoradas (skip silencioso).
 pub fn parse_nvidia_smi_csv(csv: &str) -> Option<GpuTelemetry> {
     let mut gpus = Vec::new();
     let mut vram_total_mib: i64 = 0;
     let mut vram_used_mib: i64 = 0;
+    let mut max_gpu_mib: i64 = 0;
 
     for line in csv.lines() {
         let line = line.trim();
@@ -1244,6 +1312,9 @@ pub fn parse_nvidia_smi_csv(csv: &str) -> Option<GpuTelemetry> {
         gpus.push(name);
         vram_total_mib += total;
         vram_used_mib += used;
+        if total > max_gpu_mib {
+            max_gpu_mib = total;
+        }
     }
 
     if gpus.is_empty() {
@@ -1254,6 +1325,7 @@ pub fn parse_nvidia_smi_csv(csv: &str) -> Option<GpuTelemetry> {
         gpus,
         vram_total: vram_total_mib,
         vram_used: vram_used_mib,
+        max_gpu_mib,
     })
 }
 
@@ -1976,6 +2048,8 @@ NVIDIA GeForce GTX 1660 SUPER, 6144, 1024
         assert_eq!(t.vram_total, 18432);
         // used: 0 + 1024 = 1024 MiB (sem conversão)
         assert_eq!(t.vram_used, 1024);
+        // max individual: 12288 MiB (maior GPU — capacidade de 1 job)
+        assert_eq!(t.max_gpu_mib, 12288);
     }
 
     #[test]
@@ -2004,6 +2078,16 @@ also bad, not a number
     fn parse_nvidia_smi_csv_no_valid_gpus() {
         let csv = "bad line\nanother bad\n";
         assert!(parse_nvidia_smi_csv(csv).is_none());
+    }
+
+    #[test]
+    fn parse_nvidia_smi_csv_single_gpu_max_equals_total() {
+        let csv = "NVIDIA GeForce RTX 3060, 12288, 4096\n";
+        let t = parse_nvidia_smi_csv(csv).expect("should parse 1 GPU");
+        assert_eq!(t.gpus.len(), 1);
+        assert_eq!(t.vram_total, 12288);
+        // 1 GPU: max = total (capacidade de 1 job = a única GPU)
+        assert_eq!(t.max_gpu_mib, 12288);
     }
 
     // =========================================================================
@@ -2292,5 +2376,130 @@ also bad, not a number
                 result.err()
             );
         });
+    }
+
+    // =========================================================================
+    // H.1 — HeartbeatBody serializa endpoint
+    // =========================================================================
+
+    #[test]
+    fn heartbeat_body_serializes_endpoint() {
+        let body = HeartbeatBody {
+            endpoint: "http://orchestrator-local:8082".to_string(),
+            gpus: vec!["NVIDIA GeForce RTX 3060".to_string()],
+            vram_total: Some(12288),
+            vram_used: Some(1024),
+            cpu: Some(42.5),
+            ram: Some(4_000_000_000),
+            ram_total: Some(8_000_000_000),
+            jobs_active: 1,
+            max_gpu_mib: Some(12288),
+        };
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["endpoint"], "http://orchestrator-local:8082");
+        assert_eq!(json["gpus"][0], "NVIDIA GeForce RTX 3060");
+        assert_eq!(json["jobs_active"], 1);
+        assert_eq!(json["max_gpu_mib"], 12288);
+    }
+
+    // =========================================================================
+    // H.1 — resolve_advertise_url (função pura)
+    // =========================================================================
+
+    #[test]
+    fn default_advertise_url() {
+        // None → default
+        assert_eq!(
+            resolve_advertise_url(None),
+            "http://orchestrator-local:8082"
+        );
+    }
+
+    #[test]
+    fn resolve_advertise_url_from_value() {
+        assert_eq!(
+            resolve_advertise_url(Some("http://custom:9999")),
+            "http://custom:9999"
+        );
+    }
+
+    #[test]
+    fn resolve_advertise_url_empty_fallback() {
+        // Empty string → default
+        assert_eq!(
+            resolve_advertise_url(Some("")),
+            "http://orchestrator-local:8082"
+        );
+    }
+
+    // =========================================================================
+    // H.1 — Pairing code generation
+    // =========================================================================
+
+    #[test]
+    fn generate_pairing_code_format() {
+        let code = generate_pairing_code();
+        assert!(
+            code.starts_with("heph_p_"),
+            "code should start with heph_p_: {code}"
+        );
+        let hex_part = &code[7..]; // "heph_p_" = 7 chars
+        assert_eq!(hex_part.len(), 32, "hex part should be 32 chars: {code}");
+        assert!(
+            hex_part.chars().all(|c| c.is_ascii_hexdigit()),
+            "hex part should be all hex digits: {code}"
+        );
+    }
+
+    #[test]
+    fn generate_pairing_code_unique() {
+        let a = generate_pairing_code();
+        let b = generate_pairing_code();
+        assert_ne!(a, b, "two generated codes should differ");
+    }
+
+    // =========================================================================
+    // H.1 — Pairing verify single-use
+    // =========================================================================
+
+    #[test]
+    fn pairing_verify_correct_then_second_false() {
+        let state = PairingState::new("heph_p_aabbccdd11223344aabbccdd11223344".to_string());
+        assert!(state.verify("heph_p_aabbccdd11223344aabbccdd11223344"));
+        // Second use — consumed
+        assert!(!state.verify("heph_p_aabbccdd11223344aabbccdd11223344"));
+    }
+
+    #[test]
+    fn pairing_verify_wrong_code() {
+        let state = PairingState::new("heph_p_aabbccdd11223344aabbccdd11223344".to_string());
+        assert!(!state.verify("heph_p_wrong_wrong_wrong_wrong_wrong_00"));
+    }
+
+    #[test]
+    fn pairing_verify_empty_code() {
+        let state = PairingState::new("heph_p_aabbccdd11223344aabbccdd11223344".to_string());
+        assert!(!state.verify(""));
+    }
+
+    // =========================================================================
+    // H.1 — PairingVerifyRequest deserialization
+    // =========================================================================
+
+    #[test]
+    fn pairing_verify_request_deserialize() {
+        let req: PairingVerifyRequest = serde_json::from_str(r#"{"code":"heph_p_test"}"#).unwrap();
+        assert_eq!(req.code, "heph_p_test");
+    }
+
+    #[test]
+    fn pairing_verify_response_serialize() {
+        let resp = PairingVerifyResponse { valid: true };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["valid"], true);
+
+        let resp = PairingVerifyResponse { valid: false };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["valid"], false);
     }
 }

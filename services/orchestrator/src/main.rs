@@ -17,8 +17,8 @@ use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 
 use orchestrator::{
-    self, DispatchRequest, HeartbeatBody, HttpHeartbeatClient, HttpReportClient, ReportBody,
-    S3Client,
+    self, DispatchRequest, HeartbeatBody, HttpHeartbeatClient, HttpReportClient, PairingState,
+    ReportBody, S3Client,
 };
 
 // ---------------------------------------------------------------------------
@@ -34,6 +34,7 @@ struct AppState {
     manager_token: Option<String>,
     gpu_devices: Option<String>,
     gpu_allow_mock: bool,
+    pairing: Arc<PairingState>,
 }
 
 // ---------------------------------------------------------------------------
@@ -272,6 +273,31 @@ async fn abort_handler(State(state): State<AppState>, body: Bytes) -> Response {
     (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
 }
 
+/// POST /internal/pairing/verify — verifica pairing code (D5.1-2, single-use).
+async fn pairing_verify_handler(State(state): State<AppState>, body: Bytes) -> Response {
+    if body.is_empty() {
+        return bad_request("empty body");
+    }
+
+    let req: orchestrator::PairingVerifyRequest = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            return bad_request(&format!("invalid json: {e}"));
+        }
+    };
+
+    if req.code.is_empty() {
+        return bad_request("code is required");
+    }
+
+    let valid = state.pairing.verify(&req.code);
+    (
+        StatusCode::OK,
+        Json(orchestrator::PairingVerifyResponse { valid }),
+    )
+        .into_response()
+}
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -280,6 +306,7 @@ fn build_router(state: AppState) -> Router {
     let api = Router::new()
         .route("/internal/dispatch", post(dispatch_handler))
         .route("/internal/abort", post(abort_handler))
+        .route("/internal/pairing/verify", post(pairing_verify_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
@@ -325,6 +352,26 @@ async fn main() {
         .unwrap_or_else(|_| "8082".into())
         .parse()
         .expect("PORT deve ser um número");
+
+    // D1 — identidade no heartbeat.
+    let advertise_url =
+        orchestrator::resolve_advertise_url(std::env::var("ORCH_ADVERTISE_URL").ok().as_deref());
+
+    // D5.1-2 — pairing code: env define, ou gera no boot e loga uma vez.
+    let pairing = Arc::new(match std::env::var("ORCH_PAIRING_CODE") {
+        Ok(code) if !code.is_empty() => {
+            tracing::info!("ORCH_PAIRING_CODE definido via env");
+            orchestrator::PairingState::new(code)
+        }
+        _ => {
+            let code = orchestrator::generate_pairing_code();
+            tracing::info!(
+                pairing_code = %code,
+                "pairing code gerado — copie para o manager (usado uma única vez)"
+            );
+            orchestrator::PairingState::new(code)
+        }
+    });
 
     tracing::info!("orchestrator boot: exec_mode={exec_mode}, workdir={workdir}");
 
@@ -377,10 +424,12 @@ async fn main() {
         manager_token,
         gpu_devices: gpu_devices_boot.clone(),
         gpu_allow_mock: gpu_allow_mock_boot,
+        pairing,
     };
 
     // Heartbeat loop (~2s, D4/D9).
     let heartbeat_active_jobs = Arc::clone(&state.active_jobs);
+    let heartbeat_advertise_url = advertise_url.clone();
 
     // GPU telemetry: tenta nvidia-smi no boot; se falhar, warn único e fallback.
     let gpu_telemetry_boot = orchestrator::try_nvidia_smi().await;
@@ -398,16 +447,19 @@ async fn main() {
             interval.tick().await;
 
             // Tenta nvidia-smi a cada tick; fallback silencioso.
-            let (gpus, vram_total, vram_used) = match orchestrator::try_nvidia_smi().await {
-                Some(telemetry) => (
-                    telemetry.gpus,
-                    Some(telemetry.vram_total),
-                    Some(telemetry.vram_used),
-                ),
-                None => (vec![], None, None),
-            };
+            let (gpus, vram_total, vram_used, max_gpu_mib) =
+                match orchestrator::try_nvidia_smi().await {
+                    Some(telemetry) => (
+                        telemetry.gpus,
+                        Some(telemetry.vram_total),
+                        Some(telemetry.vram_used),
+                        Some(telemetry.max_gpu_mib),
+                    ),
+                    None => (vec![], None, None, None),
+                };
 
             let body = HeartbeatBody {
+                endpoint: heartbeat_advertise_url.clone(),
                 gpus,
                 vram_total,
                 vram_used,
@@ -415,6 +467,7 @@ async fn main() {
                 ram: Some(orchestrator::read_ram()),
                 ram_total: orchestrator::read_ram_total(),
                 jobs_active: heartbeat_active_jobs.len() as i32,
+                max_gpu_mib,
             };
 
             if let Err(e) = heartbeat_client.send(&body).await {

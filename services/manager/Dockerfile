@@ -11,6 +11,7 @@ RUN mkdir -p services/api-principal/src services/manager/src services/orchestrat
   && cargo build --release -p manager \
   && rm -rf services/*/src
 COPY services/manager/src ./services/manager/src
+COPY packages/policies/vram-table.yaml ./packages/policies/vram-table.yaml
 # Workspace exige target em todos os membros: recria dummies (só manager compila via -p).
 RUN mkdir -p services/api-principal/src services/orchestrator/src \
   && echo "fn main() {}" > services/api-principal/src/main.rs \

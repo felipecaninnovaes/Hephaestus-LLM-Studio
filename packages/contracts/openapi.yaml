@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.9.0
+  version: 0.10.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -140,7 +140,180 @@ paths:
           description: "Reservado — NÃO implementado na v1 (sem rate-limit em loopback; ADR-0001 D7)."
           x-reserved: true
         "503":
-          description: "Modo setup — `users` vazio e `STUDIO_PASSWORD` ausente (`code: setup_required`). Indisponibilidade, não erro de credencial."
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/orchestrators/adopt:
+    post:
+      operationId: adoptOrchestrator
+      tags: [jobs]
+      summary: Adota um orquestrador (remoto ou local)
+      description: |
+        Adota um orquestrador via manager (ADR-0011 D5). O manager verifica o
+        pairing code no orquestrador antes de criar/atualizar o registro.
+        200 é upsert (create-or-update — re-adopt revive `revoked`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdoptRequest" }
+      responses:
+        "200":
+          description: Orquestrador adotado (upsert).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Orchestrator" }
+        "400":
+          description: "Body inválido (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "Pairing code inválido ou orquestrador inalcançável (`code: pairing_invalid`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/orchestrators/{id}/revoke:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK do orquestrador. Valor que não parseia como UUID responde 404
+          `not_found` (não 400 — D8 ADR-0002).
+    post:
+      operationId: revokeOrchestrator
+      tags: [jobs]
+      summary: Revoga um orquestrador
+      description: |
+        Revoga um orquestrador via manager (ADR-0011 D5). Status → `revoked`
+        (tombstone, não DELETE). Dispatch não escolhe `revoked`.
+      responses:
+        "204":
+          description: Orquestrador revogado.
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Orquestrador inexistente ou id não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/environments:
+    get:
+      operationId: listEnvironments
+      tags: [jobs]
+      summary: Lista orquestradores (alias de /api/orchestrators)
+      description: |
+        Alias de `GET /api/orchestrators` (ADR-0011 D5). Mesma resposta.
+      responses:
+        "200":
+          description: Lista de orquestradores.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrchestratorList" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/environments/adopt:
+    post:
+      operationId: adoptEnvironment
+      tags: [jobs]
+      summary: Adota um orquestrador (alias de /api/orchestrators/adopt)
+      description: |
+        Alias de `POST /api/orchestrators/adopt` (ADR-0011 D5). Mesmo comportamento.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdoptRequest" }
+      responses:
+        "200":
+          description: Orquestrador adotado (upsert).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Orchestrator" }
+        "400":
+          description: "Body inválido (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "Pairing code inválido ou orquestrador inalcançável (`code: pairing_invalid`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/environments/{id}/revoke:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: >
+          PK do orquestrador. Valor que não parseia como UUID responde 404
+          `not_found` (não 400 — D8 ADR-0002).
+    post:
+      operationId: revokeEnvironment
+      tags: [jobs]
+      summary: Revoga um orquestrador (alias de /api/orchestrators/:id/revoke)
+      description: |
+        Alias de `POST /api/orchestrators/{id}/revoke` (ADR-0011 D5). Mesmo comportamento.
+      responses:
+        "204":
+          description: Orquestrador revogado.
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Orquestrador inexistente ou id não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1730,8 +1903,8 @@ components:
       properties:
         code:
           type: string
-          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, storage_unavailable, classes_in_use, index_not_ready, embedding_unavailable, import_invalid, engine_unsupported, queue_unavailable, dataset_not_ready, job_not_abortable, job_not_done, internal]
-          description: "Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`; o cliente DEVE ter ramo default: o enum cresce por fatia (aditivo na 0.2.0: `not_found`, `slug_conflict`; na 0.3.0: `storage_unavailable`, ADR-0003 D10; na 0.3.0, fatia 3g.1: `classes_in_use`; na 0.5.0, fatia 3f.5: `index_not_ready`, `embedding_unavailable`, ADR-0004 D5; na 0.6.0, fatia 3e: `import_invalid`; na 0.7.0, fatia 4: `engine_unsupported`, `queue_unavailable`, `dataset_not_ready`, `job_not_abortable`; na 0.8.0, fatia 5: `job_not_done`)."
+          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, storage_unavailable, classes_in_use, index_not_ready, embedding_unavailable, import_invalid, engine_unsupported, queue_unavailable, dataset_not_ready, job_not_abortable, job_not_done, pairing_invalid, internal]
+          description: "Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`; o cliente DEVE ter ramo default: o enum cresce por fatia (aditivo na 0.2.0: `not_found`, `slug_conflict`; na 0.3.0: `storage_unavailable`, ADR-0003 D10; na 0.3.0, fatia 3g.1: `classes_in_use`; na 0.5.0, fatia 3f.5: `index_not_ready`, `embedding_unavailable`, ADR-0004 D5; na 0.6.0, fatia 3e: `import_invalid`; na 0.7.0, fatia 4: `engine_unsupported`, `queue_unavailable`, `dataset_not_ready`, `job_not_abortable`; na 0.8.0, fatia 5: `job_not_done`; na 0.10.0, fatia H: `pairing_invalid`, ADR-0011 D5)."
         message:
           type: string
           description: Humano-curto, ESTÁTICO por code; nunca contém hash, token, segredo ou existência de usuário.
@@ -2638,7 +2811,7 @@ components:
       type: object
       required: [id, name, kind, endpoint, status]
       additionalProperties: false
-      description: "Orquestrador registrado (ADR-0009 D1)."
+      description: "Orquestrador registrado (ADR-0009 D1; enriquecido H.4 — ADR-0011 D2)."
       properties:
         id: { type: string, format: uuid }
         name:
@@ -2653,12 +2826,45 @@ components:
           description: "Endpoint HTTP interno do orquestrador."
         status:
           type: string
-          enum: [online, degraded, offline]
+          enum: [online, degraded, offline, revoked, unknown]
           description: "Status de saúde do orquestrador."
         lastHeartbeat:
           type: [string, "null"]
           format: date-time
           description: "Momento do último heartbeat (null se nunca recebeu)."
+        measured:
+          type: boolean
+          description: "Se heartbeat ≤ 10s (nó com telemetria fresca)."
+        cpu:
+          type: [number, "null"]
+          description: "CPU do nó (%) — null se não medido."
+        ram:
+          type: [integer, "null"]
+          format: int64
+          description: "RAM usada do nó (MiB) — null se não medido."
+        ramTotal:
+          type: [integer, "null"]
+          format: int64
+          description: "RAM total do nó (MiB) — null se não medido."
+        vramUsed:
+          type: [integer, "null"]
+          format: int64
+          description: "VRAM usada do nó (MiB) — null se sem GPU."
+        vramTotal:
+          type: [integer, "null"]
+          format: int64
+          description: "VRAM total do nó (MiB) — null se sem GPU."
+        vramTotalGb:
+          type: [integer, "null"]
+          description: "Capacidade VRAM do nó (GB) = maior GPU individual (round(max_gpu_mib/1024)) — 1 job = 1 GPU. null se não declarada."
+        gpus:
+          type: array
+          items: { type: string }
+          description: "Lista de GPUs detectadas (vazia no mock)."
+        jobsActive:
+          type: integer
+          minimum: 0
+          description: "Número de jobs ativos (preparing/running)."
 
     OrchestratorList:
       type: object
@@ -2669,6 +2875,30 @@ components:
         items:
           type: array
           items: { $ref: "#/components/schemas/Orchestrator" }
+
+    AdoptRequest:
+      type: object
+      required: [name, endpoint, kind, pairingCode]
+      additionalProperties: false
+      description: "Body de adopt de orquestrador (H.4 — ADR-0011 D5)."
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: "Nome do orquestrador."
+        endpoint:
+          type: string
+          description: "Endpoint HTTP(S) do orquestrador (deve iniciar com http:// ou https://)."
+        kind:
+          type: string
+          enum: [local, remoto]
+          description: "Tipo do orquestrador."
+        pairingCode:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: "Código de pareamento (único uso, via ORCH_PAIRING_CODE no orquestrador)."
 
     ModelWeight:
       type: object

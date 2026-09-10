@@ -1048,6 +1048,15 @@ async fn orchestrator_response_keys_are_camel_case() {
             endpoint: "http://orchestrator-local:8082".into(),
             status: "online".into(),
             last_heartbeat: Some("2026-09-09T12:00:00Z".into()),
+            measured: true,
+            cpu: Some(42.5),
+            ram: Some(4096),
+            ram_total: Some(8192),
+            vram_used: Some(3072),
+            vram_total: Some(6144),
+            vram_total_gb: Some(6),
+            gpus: vec!["NVIDIA GeForce GTX 1660 SUPER".into()],
+            jobs_active: 1,
         }]);
         m
     });

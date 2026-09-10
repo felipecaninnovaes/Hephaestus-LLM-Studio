@@ -17,6 +17,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   login: "Login",
   jobs: "Execuções",
   treino: "Treino YOLO",
+  environments: "Orquestradores",
 };
 
 function labelFor(segment: string): string {

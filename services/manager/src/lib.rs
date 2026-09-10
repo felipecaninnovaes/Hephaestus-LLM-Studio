@@ -20,6 +20,8 @@ use uuid::Uuid;
 pub enum ManagerError {
     NotFound,
     NotAbortable,
+    InvalidRequest(String),
+    PairingInvalid,
     Internal(String),
 }
 
@@ -28,6 +30,8 @@ impl std::fmt::Display for ManagerError {
         match self {
             Self::NotFound => write!(f, "not found"),
             Self::NotAbortable => write!(f, "job not abortable"),
+            Self::InvalidRequest(e) => write!(f, "invalid request: {e}"),
+            Self::PairingInvalid => write!(f, "pairing_invalid"),
             Self::Internal(e) => write!(f, "{e}"),
         }
     }
@@ -119,6 +123,7 @@ pub struct ArtifactItem {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct HeartbeatRequest {
+    pub endpoint: String,
     pub gpus: Vec<String>,
     pub vram_total: Option<i64>,
     pub vram_used: Option<i64>,
@@ -126,6 +131,8 @@ pub struct HeartbeatRequest {
     pub ram: Option<i64>,
     pub ram_total: Option<i64>,
     pub jobs_active: i32,
+    /// Maior VRAM individual entre as GPUs (MiB) — capacidade real de 1 job.
+    pub max_gpu_mib: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -163,6 +170,11 @@ pub struct ArtifactsListResponse {
 #[async_trait]
 pub trait OrchestratorClient: Send + Sync {
     async fn post(&self, url: &str, body: &serde_json::Value) -> Result<(), String>;
+    async fn post_json(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, String>;
 }
 
 /// Cliente HTTP real do orquestrador.
@@ -199,6 +211,30 @@ impl OrchestratorClient for HttpOrchestratorClient {
         }
         Ok(())
     }
+
+    async fn post_json(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let mut req = self.client.post(url).json(body);
+        if let Some(ref t) = self.token {
+            req = req.header("Authorization", format!("Bearer {t}"));
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| format!("orchestrator request: {e}"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(format!("orchestrator status: {status}"));
+        }
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("orchestrator response body: {e}"))?;
+        Ok(json)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +243,7 @@ impl OrchestratorClient for HttpOrchestratorClient {
 
 #[derive(Debug)]
 pub struct TelemetryState {
+    pub endpoint: String,
     pub measured: bool,
     pub vram_used: Option<i64>,
     pub vram_total: Option<i64>,
@@ -221,6 +258,7 @@ pub struct TelemetryState {
 impl Default for TelemetryState {
     fn default() -> Self {
         Self {
+            endpoint: String::new(),
             measured: false,
             vram_used: None,
             vram_total: None,
@@ -234,10 +272,49 @@ impl Default for TelemetryState {
     }
 }
 
-pub type TelemetryCache = Arc<RwLock<TelemetryState>>;
+pub type TelemetryCache = Arc<RwLock<std::collections::HashMap<Uuid, TelemetryState>>>;
 
 pub fn new_telemetry_cache() -> TelemetryCache {
-    Arc::new(RwLock::new(TelemetryState::default()))
+    Arc::new(RwLock::new(std::collections::HashMap::new()))
+}
+
+// ---------------------------------------------------------------------------
+// VRAM table (ADR-0011 D3)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VramTable {
+    pub defaults: VramDefaults,
+    pub entries: Vec<VramEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VramDefaults {
+    pub headroom_gb: i32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VramEntry {
+    pub engine: String,
+    pub model: String,
+    pub mode: String,
+    pub vram_min_gb: i32,
+}
+
+impl VramTable {
+    /// Resolve o requisito VRAM para um job: vram_min_gb + headroom.
+    /// Entrada faltante ⇒ None (permissivo).
+    pub fn resolve_required_gb(&self, engine: &str, model: &str, mode: &str) -> Option<i32> {
+        self.entries
+            .iter()
+            .find(|e| e.engine == engine && e.model == model && e.mode == mode)
+            .map(|e| e.vram_min_gb + self.defaults.headroom_gb)
+    }
+
+    /// Parse a partir de string YAML. Fail-fast se inválido.
+    pub fn parse(yaml: &str) -> Result<Self, String> {
+        serde_yaml::from_str(yaml).map_err(|e| format!("vram-table parse: {e}"))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -806,16 +883,68 @@ pub async fn receive_heartbeat(
     cache: &TelemetryCache,
     req: HeartbeatRequest,
 ) -> Result<(), ManagerError> {
-    // Atualiza last_heartbeat de todos os orchestrators online.
-    sqlx::query(
-        "UPDATE orchestrators SET last_heartbeat = now() WHERE status IN ('online', 'degraded')",
+    // 1. Resolve endpoint → id.
+    let row: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM orchestrators WHERE endpoint = $1")
+        .bind(&req.endpoint)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("resolve heartbeat endpoint: {e}")))?;
+
+    let orch_id = match row {
+        Some((id,)) => id,
+        None => {
+            tracing::warn!(
+                endpoint = %req.endpoint,
+                "heartbeat de endpoint não registrado (orchestrator não adotado ou ORCH_ADVERTISE_URL errado)"
+            );
+            return Ok(());
+        }
+    };
+
+    // 2. Atualiza last_heartbeat e status SOMENTE nesta linha.
+    let update_result = sqlx::query(
+        "UPDATE orchestrators SET last_heartbeat = now(), status = 'online' \
+         WHERE id = $1 AND status <> 'revoked'",
     )
+    .bind(orch_id)
     .execute(pool)
     .await
     .map_err(|e| ManagerError::Internal(format!("update heartbeat: {e}")))?;
 
-    // Atualiza cache.
-    let mut state = cache.write().await;
+    // Se a linha é revoked, o UPDATE não modificou nada — retorna cedo
+    // (sem UPDATE de gpus/vram, sem cache). Nó revoked não deve ser medido.
+    if update_result.rows_affected() == 0 {
+        tracing::info!(
+            orch_id = %orch_id,
+            endpoint = %req.endpoint,
+            "heartbeat ignorado: nó revoked"
+        );
+        return Ok(());
+    }
+
+    // 3. Grava gpus/vram_total_gb quando heartbeat carrega VRAM e gpus não-vazio.
+    //    vram_total_gb = maior GPU individual (round(max_gpu_mib/1024)) — 1 job = 1 GPU.
+    //    Fallback: heartbeat sem max_gpu_mib (orquestrador legado) usa a soma (vram_total).
+    if !req.gpus.is_empty() {
+        let effective_vram_mib = req.max_gpu_mib.or(req.vram_total);
+        if let Some(vram_mib) = effective_vram_mib {
+            let vram_total_gb = ((vram_mib as f64) / 1024.0).round() as i32;
+            let gpus_json = serde_json::to_value(&req.gpus)
+                .map_err(|e| ManagerError::Internal(format!("serialize gpus: {e}")))?;
+            sqlx::query("UPDATE orchestrators SET gpus = $1, vram_total_gb = $2 WHERE id = $3")
+                .bind(gpus_json)
+                .bind(vram_total_gb)
+                .bind(orch_id)
+                .execute(pool)
+                .await
+                .map_err(|e| ManagerError::Internal(format!("update orchestrator gpus: {e}")))?;
+        }
+    }
+
+    // 4. Atualiza cache por nó.
+    let mut cache = cache.write().await;
+    let state = cache.entry(orch_id).or_default();
+    state.endpoint = req.endpoint;
     state.measured = true;
     state.vram_used = req.vram_used;
     state.vram_total = req.vram_total;
@@ -829,43 +958,142 @@ pub async fn receive_heartbeat(
     Ok(())
 }
 
-/// Retorna telemetria do cache.
+/// Retorna telemetria do cache (agregação global).
 pub async fn get_telemetry(pool: &PgPool, cache: &TelemetryCache) -> TelemetryResponse {
-    let state = cache.read().await;
+    let cache = cache.read().await;
     let now = Utc::now();
 
-    if let Some(last) = state.last_heartbeat {
-        if (now - last).num_seconds() <= 10 {
+    // 0 nós no cache → fallback (comportamento atual: measured:false + jobs da fila).
+    if cache.is_empty() {
+        let jobs_active: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM jobs WHERE status NOT IN ('done', 'failed', 'cancelled')",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or((0,));
+
+        return TelemetryResponse {
+            measured: false,
+            vram_used: None,
+            vram_total: None,
+            cpu: None,
+            ram: None,
+            ram_total: None,
+            gpus: vec![],
+            jobs_active: jobs_active.0 as i32,
+        };
+    }
+
+    // 1 nó → exatamente o de hoje (compat total).
+    if cache.len() == 1 {
+        let state = cache.values().next().unwrap();
+        let measured = state
+            .last_heartbeat
+            .map(|last| (now - last).num_seconds() <= 10)
+            .unwrap_or(false);
+        // ADR D2.3/R5: nó sem heartbeat fresco → mesmo fallback do 0-nós.
+        if !measured {
+            let jobs_active: (i64,) = sqlx::query_as(
+                "SELECT COUNT(*) FROM jobs WHERE status NOT IN ('done', 'failed', 'cancelled')",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap_or((0,));
             return TelemetryResponse {
-                measured: true,
-                vram_used: state.vram_used,
-                vram_total: state.vram_total,
-                cpu: state.cpu,
-                ram: state.ram,
-                ram_total: state.ram_total,
-                gpus: state.gpus.clone(),
-                jobs_active: state.jobs_active,
+                measured: false,
+                vram_used: None,
+                vram_total: None,
+                cpu: None,
+                ram: None,
+                ram_total: None,
+                gpus: vec![],
+                jobs_active: jobs_active.0 as i32,
             };
+        }
+        return TelemetryResponse {
+            measured,
+            vram_used: state.vram_used,
+            vram_total: state.vram_total,
+            cpu: state.cpu,
+            ram: state.ram,
+            ram_total: state.ram_total,
+            gpus: state.gpus.clone(),
+            jobs_active: state.jobs_active,
+        };
+    }
+
+    // >1 nós → agregação SOMENTE de entradas frescas (heartbeat ≤ 10s).
+    // Entradas stale (offline ou sem heartbeat recente) são ignoradas na soma/união.
+    // Se NENHUMA for fresca mas houver entradas → fallback (mesmo do 0-nós).
+    let mut vram_used_sum: Option<i64> = Some(0);
+    let mut vram_total_sum: Option<i64> = Some(0);
+    let mut gpus: Vec<String> = Vec::new();
+    let mut jobs_active_sum: i32 = 0;
+    let mut measured = false;
+
+    for state in cache.values() {
+        let is_fresh = state
+            .last_heartbeat
+            .map(|last| (now - last).num_seconds() <= 10)
+            .unwrap_or(false);
+
+        if is_fresh {
+            measured = true;
+
+            // vram_used/vram_total: soma dos Some (None → None global).
+            match (vram_used_sum, state.vram_used) {
+                (Some(acc), Some(val)) => vram_used_sum = Some(acc + val),
+                (Some(_), None) => vram_used_sum = None,
+                (None, _) => {}
+            }
+            match (vram_total_sum, state.vram_total) {
+                (Some(acc), Some(val)) => vram_total_sum = Some(acc + val),
+                (Some(_), None) => vram_total_sum = None,
+                (None, _) => {}
+            }
+
+            // gpus: união (ordem estável por nó).
+            for gpu in &state.gpus {
+                if !gpus.contains(gpu) {
+                    gpus.push(gpu.clone());
+                }
+            }
+
+            // jobs_active: soma.
+            jobs_active_sum += state.jobs_active;
         }
     }
 
-    // Sem heartbeat recente: devolve measured:false e jobs_active da fila.
-    let jobs_active: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM jobs WHERE status NOT IN ('done', 'failed', 'cancelled')",
-    )
-    .fetch_one(pool)
-    .await
-    .unwrap_or((0,));
+    // Nenhuma entrada fresca → fallback (nulls + jobs da fila).
+    if !measured {
+        let jobs_active: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM jobs WHERE status NOT IN ('done', 'failed', 'cancelled')",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or((0,));
+
+        return TelemetryResponse {
+            measured: false,
+            vram_used: None,
+            vram_total: None,
+            cpu: None,
+            ram: None,
+            ram_total: None,
+            gpus: vec![],
+            jobs_active: jobs_active.0 as i32,
+        };
+    }
 
     TelemetryResponse {
-        measured: false,
-        vram_used: None,
-        vram_total: None,
+        measured,
+        vram_used: vram_used_sum,
+        vram_total: vram_total_sum,
         cpu: None,
         ram: None,
         ram_total: None,
-        gpus: vec![],
-        jobs_active: jobs_active.0 as i32,
+        gpus,
+        jobs_active: jobs_active_sum,
     }
 }
 
@@ -898,11 +1126,13 @@ pub fn auto_adopt_enabled(raw: Option<&str>) -> bool {
 }
 
 /// Auto-adoção: insere orchestrator-local se ausente, atualiza status.
+/// Guarda: auto-adoção NUNCA ressuscita revoked (ADR-0011 D5.7).
 pub async fn adopt_orchestrator(pool: &PgPool) -> Result<(), ManagerError> {
     sqlx::query(
         "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
          VALUES ($1, 'orchestrator-local', 'http://orchestrator-local:8082', 'local', 'online') \
-         ON CONFLICT (endpoint) DO UPDATE SET status = 'online'",
+         ON CONFLICT (endpoint) DO UPDATE SET status = 'online' \
+         WHERE orchestrators.status <> 'revoked'",
     )
     .bind(Uuid::new_v4())
     .execute(pool)
@@ -924,6 +1154,15 @@ pub struct OrchestratorItem {
     pub endpoint: String,
     pub status: String,
     pub last_heartbeat: Option<String>,
+    pub vram_total_gb: Option<i32>,
+    pub measured: bool,
+    pub cpu: Option<f64>,
+    pub ram: Option<i64>,
+    pub ram_total: Option<i64>,
+    pub vram_used: Option<i64>,
+    pub vram_total: Option<i64>,
+    pub gpus: Vec<String>,
+    pub jobs_active: i32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -931,24 +1170,73 @@ pub struct OrchestratorsResponse {
     pub items: Vec<OrchestratorItem>,
 }
 
-/// Lista todos os orquestradores (tabela do manager, sem métricas por nó).
-pub async fn list_orchestrators(pool: &PgPool) -> Result<OrchestratorsResponse, ManagerError> {
-    let rows: Vec<(Uuid, String, String, String, String, Option<DateTime<Utc>>)> = sqlx::query_as(
-        "SELECT id, name, kind, endpoint, status, last_heartbeat FROM orchestrators ORDER BY name",
+/// Lista todos os orquestradores com telemetria por nó.
+pub async fn list_orchestrators(
+    pool: &PgPool,
+    cache: &TelemetryCache,
+) -> Result<OrchestratorsResponse, ManagerError> {
+    let rows: Vec<(
+        Uuid,
+        String,
+        String,
+        String,
+        String,
+        Option<DateTime<Utc>>,
+        Option<i32>,
+    )> = sqlx::query_as(
+        "SELECT id, name, kind, endpoint, status, last_heartbeat, vram_total_gb \
+             FROM orchestrators ORDER BY name",
     )
     .fetch_all(pool)
     .await
     .map_err(|e| ManagerError::Internal(format!("list orchestrators: {e}")))?;
 
+    let cache = cache.read().await;
+    let now = Utc::now();
+
     let items = rows
         .into_iter()
-        .map(|r| OrchestratorItem {
-            id: r.0.to_string(),
-            name: r.1,
-            kind: r.2,
-            endpoint: r.3,
-            status: r.4,
-            last_heartbeat: r.5.map(|t| t.to_rfc3339()),
+        .map(|r| {
+            let orch_id = r.0;
+            let telemetry = cache.get(&orch_id);
+            let (measured, cpu, ram, ram_total, vram_used, vram_total, gpus, jobs_active) =
+                match telemetry {
+                    Some(state) => {
+                        let m = state
+                            .last_heartbeat
+                            .map(|last| (now - last).num_seconds() <= 10)
+                            .unwrap_or(false);
+                        (
+                            m,
+                            state.cpu,
+                            state.ram,
+                            state.ram_total,
+                            state.vram_used,
+                            state.vram_total,
+                            state.gpus.clone(),
+                            state.jobs_active,
+                        )
+                    }
+                    None => (false, None, None, None, None, None, vec![], 0),
+                };
+
+            OrchestratorItem {
+                id: orch_id.to_string(),
+                name: r.1,
+                kind: r.2,
+                endpoint: r.3,
+                status: r.4,
+                last_heartbeat: r.5.map(|t| t.to_rfc3339()),
+                vram_total_gb: r.6,
+                measured,
+                cpu,
+                ram,
+                ram_total,
+                vram_used,
+                vram_total,
+                gpus,
+                jobs_active,
+            }
         })
         .collect();
 
@@ -1035,10 +1323,189 @@ pub async fn recover_jobs(pool: &PgPool) -> Result<u64, ManagerError> {
 }
 
 // ---------------------------------------------------------------------------
+// Watchdog offline (ADR-0011 D4)
+// ---------------------------------------------------------------------------
+
+/// Tick do watchdog: transições online→degraded→offline com re-queue dos jobs.
+/// Chamada pelo worker loop (~2s).
+pub async fn watchdog_tick(pool: &PgPool) -> Result<(), ManagerError> {
+    let degraded_s: i64 = std::env::var("ORCH_WATCHDOG_DEGRADED_S")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(15);
+    let offline_s: i64 = std::env::var("ORCH_WATCHDOG_OFFLINE_S")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60);
+
+    // online → degraded (last_heartbeat mais velho que degraded_s OU NULL).
+    let _ = sqlx::query(
+        "UPDATE orchestrators SET status = 'degraded' \
+         WHERE status = 'online' \
+           AND (last_heartbeat IS NULL OR last_heartbeat < now() - make_interval(secs => $1::float))",
+    )
+    .bind(degraded_s as f64)
+    .execute(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("watchdog degraded: {e}")))?;
+
+    // degraded → offline + re-queue dos jobs do nó morto (CTE espelho de recover_jobs).
+    let result = sqlx::query(
+        "WITH morto AS ( \
+             UPDATE orchestrators SET status = 'offline' \
+             WHERE status = 'degraded' \
+               AND (last_heartbeat IS NULL OR last_heartbeat < now() - make_interval(secs => $1::float)) \
+             RETURNING id \
+         ) \
+         UPDATE jobs SET status = 'queued', queue_reason = 'recovered', orchestrator_id = NULL \
+         WHERE orchestrator_id IN (SELECT id FROM morto) \
+           AND status IN ('dispatched','preparing','running','cancelling')",
+    )
+    .bind(offline_s as f64)
+    .execute(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("watchdog offline: {e}")))?;
+
+    if result.rows_affected() > 0 {
+        tracing::info!(
+            "watchdog: {} jobs re-queued de nós offline",
+            result.rows_affected()
+        );
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Adopt interno (ADR-0011 D5)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdoptRequest {
+    pub name: String,
+    pub endpoint: String,
+    pub kind: String,
+    pub pairing_code: String,
+}
+
+/// Adopt interno: valida, verifica pairing no orquestrador, upsert.
+///
+/// Retorna o item completo (`OrchestratorItem`) no mesmo shape de
+/// `list_orchestrators` — enriquecido com telemetria do cache (que estará
+/// vazia na criação: `measured:false` + nulls). BFF já deserializa esse
+/// shape — nada muda nele.
+pub async fn adopt_internal(
+    pool: &PgPool,
+    orch_client: &dyn OrchestratorClient,
+    req: &AdoptRequest,
+) -> Result<OrchestratorItem, ManagerError> {
+    // Validação de domínio.
+    if req.kind != "local" && req.kind != "remoto" {
+        return Err(ManagerError::InvalidRequest(
+            "kind must be 'local' or 'remoto'".into(),
+        ));
+    }
+    if !req.endpoint.starts_with("http://") && !req.endpoint.starts_with("https://") {
+        return Err(ManagerError::InvalidRequest(
+            "endpoint must start with http:// or https://".into(),
+        ));
+    }
+    if req.name.is_empty() || req.name.len() > 128 {
+        return Err(ManagerError::InvalidRequest(
+            "name must be 1-128 characters".into(),
+        ));
+    }
+    if req.pairing_code.is_empty() || req.pairing_code.len() > 128 {
+        return Err(ManagerError::InvalidRequest(
+            "pairing_code must be 1-128 characters".into(),
+        ));
+    }
+
+    // Verifica pairing code no orquestrador.
+    let verify_url = format!("{}/internal/pairing/verify", req.endpoint);
+    let verify_body = serde_json::json!({"code": &req.pairing_code});
+
+    match orch_client.post_json(&verify_url, &verify_body).await {
+        Ok(json) => {
+            let valid = json.get("valid").and_then(|v| v.as_bool()).unwrap_or(false);
+            if !valid {
+                return Err(ManagerError::PairingInvalid);
+            }
+        }
+        Err(_) => {
+            return Err(ManagerError::PairingInvalid);
+        }
+    }
+
+    // Upsert: cria ou revive (revoked incluído — intenção explícita do operador).
+    let orch_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status, token_hash, fingerprint) \
+         VALUES ($1, $2, $3, $4, 'online', NULL, NULL) \
+         ON CONFLICT (endpoint) DO UPDATE SET name = EXCLUDED.name, kind = EXCLUDED.kind, status = 'online'",
+    )
+    .bind(orch_id)
+    .bind(&req.name)
+    .bind(&req.endpoint)
+    .bind(&req.kind)
+    .execute(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("adopt orchestrator: {e}")))?;
+
+    // Resolve o id real (upsert pode ter usado linha existente).
+    let real_id: (Uuid,) = sqlx::query_as("SELECT id FROM orchestrators WHERE endpoint = $1")
+        .bind(&req.endpoint)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("resolve adopted id: {e}")))?;
+
+    // Retorna item completo (shape idêntico a list_orchestrators).
+    Ok(OrchestratorItem {
+        id: real_id.0.to_string(),
+        name: req.name.clone(),
+        kind: req.kind.clone(),
+        endpoint: req.endpoint.clone(),
+        status: "online".to_string(),
+        last_heartbeat: None,
+        vram_total_gb: None,
+        measured: false,
+        cpu: None,
+        ram: None,
+        ram_total: None,
+        vram_used: None,
+        vram_total: None,
+        gpus: vec![],
+        jobs_active: 0,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Revoke interno (ADR-0011 D5)
+// ---------------------------------------------------------------------------
+
+/// Revoke: status → 'revoked' (tombstone, não DELETE).
+pub async fn revoke_orchestrator(pool: &PgPool, id: Uuid) -> Result<(), ManagerError> {
+    let result = sqlx::query("UPDATE orchestrators SET status = 'revoked' WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("revoke orchestrator: {e}")))?;
+
+    if result.rows_affected() == 0 {
+        return Err(ManagerError::NotFound);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
 
 /// Pega o próximo job queued e despacha ao orquestrador.
+///
+/// Roteamento por capacidade (ADR-0011 D3): seleciona nó online sem job
+/// ativo, com capacidade VRAM suficiente (ou NULL permissivo), na ordem
+/// declarada primeiro, maior GPU primeiro, tie-break por nome.
 ///
 /// Retorna `true` se um job foi despachado, `false` se não havia job na fila.
 pub async fn dispatch_next(
@@ -1047,47 +1514,73 @@ pub async fn dispatch_next(
     exec_mode: &str,
     orch_workdir: &str,
     image: &str,
+    vram_table: &VramTable,
 ) -> Result<bool, ManagerError> {
-    // Seleciona próximo job queued (FIFO).
+    // 1. Seleciona próximo job queued (FIFO).
     let row: Option<(
-        Uuid, String, Option<serde_json::Value>, Option<String>,
+        Uuid,
+        String,
+        String,
+        String,
+        Option<serde_json::Value>,
+        Option<String>,
     )> = sqlx::query_as(
-        "SELECT id, engine, params, config_yaml FROM jobs WHERE status = 'queued' ORDER BY created_at LIMIT 1",
+        "SELECT id, engine, model, mode, params, config_yaml \
+         FROM jobs WHERE status = 'queued' ORDER BY created_at LIMIT 1",
     )
     .fetch_optional(pool)
     .await
     .map_err(|e| ManagerError::Internal(format!("select next job: {e}")))?;
 
-    let (job_id, engine, params, config_yaml) = match row {
+    let (job_id, engine, model, mode, params, config_yaml) = match row {
         Some(r) => r,
         None => return Ok(false),
     };
 
-    // Busca endpoint do orchestrator online.
-    let orch: Option<(Uuid, String)> =
-        sqlx::query_as("SELECT id, endpoint FROM orchestrators WHERE status = 'online' LIMIT 1")
-            .fetch_optional(pool)
-            .await
-            .map_err(|e| ManagerError::Internal(format!("find orchestrator: {e}")))?;
+    // 2. Resolve requisito VRAM da vram-table.
+    let required_gb: Option<i32> = vram_table.resolve_required_gb(&engine, &model, &mode);
+
+    // 3. Seleciona orquestrador elegível (ADR-0011 D3.2).
+    let orch: Option<(Uuid, String)> = sqlx::query_as(
+        "SELECT o.id, o.endpoint FROM orchestrators o \
+         WHERE o.status = 'online' \
+           AND NOT EXISTS (SELECT 1 FROM jobs j \
+                           WHERE j.orchestrator_id = o.id \
+                             AND j.status IN ('dispatched','preparing','running','cancelling')) \
+           AND ($1::int IS NULL OR o.vram_total_gb IS NULL OR o.vram_total_gb >= $1) \
+         ORDER BY (o.vram_total_gb IS NULL) ASC, \
+                  o.vram_total_gb DESC NULLS LAST, \
+                  o.name ASC \
+         LIMIT 1",
+    )
+    .bind(required_gb)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("find orchestrator: {e}")))?;
 
     let (orch_id, orch_endpoint) = match orch {
         Some(o) => o,
         None => {
-            // Nenhum orchestrator online: volta para queued.
-            sqlx::query(
-                "UPDATE jobs SET queue_reason = 'waiting_slot' WHERE id = $1 AND status = 'queued'",
-            )
-            .bind(job_id)
-            .execute(pool)
-            .await
-            .map_err(|e| ManagerError::Internal(format!("set waiting_slot: {e}")))?;
+            // Sem nó elegível: waiting_vram (se requisito) ou waiting_slot.
+            let reason = if required_gb.is_some() {
+                "waiting_vram"
+            } else {
+                "waiting_slot"
+            };
+            sqlx::query("UPDATE jobs SET queue_reason = $2 WHERE id = $1 AND status = 'queued'")
+                .bind(job_id)
+                .bind(reason)
+                .execute(pool)
+                .await
+                .map_err(|e| ManagerError::Internal(format!("set queue reason: {e}")))?;
             return Ok(false);
         }
     };
 
-    // Marca dispatched.
+    // 4. Marca dispatched.
     sqlx::query(
-        "UPDATE jobs SET status = 'dispatched', queue_reason = NULL, orchestrator_id = $2 WHERE id = $1 AND status = 'queued'",
+        "UPDATE jobs SET status = 'dispatched', queue_reason = NULL, orchestrator_id = $2 \
+         WHERE id = $1 AND status = 'queued'",
     )
     .bind(job_id)
     .bind(orch_id)
@@ -1095,7 +1588,7 @@ pub async fn dispatch_next(
     .await
     .map_err(|e| ManagerError::Internal(format!("set dispatched: {e}")))?;
 
-    // Extrai package_ref do params.
+    // 5. Monta payload do dispatch (idêntico ao anterior).
     let package_ref = params
         .as_ref()
         .and_then(|p| p.get("package_ref"))
@@ -1195,5 +1688,143 @@ mod tests {
     #[test]
     fn auto_adopt_enabled_empty_is_true() {
         assert!(auto_adopt_enabled(Some("")));
+    }
+
+    /// Agregação: 2 nós, 1 stale (>10s) → somente o fresco conta.
+    #[test]
+    fn agregacao_filtro_stale() {
+        use super::TelemetryState;
+        use chrono::{Duration, Utc};
+        use std::collections::HashMap;
+
+        let mut cache: HashMap<Uuid, TelemetryState> = HashMap::new();
+        let now = Utc::now();
+
+        // Nó fresco (heartbeat agora).
+        cache.insert(
+            Uuid::new_v4(),
+            TelemetryState {
+                endpoint: "http://fresh:8082".into(),
+                measured: true,
+                vram_used: Some(3000),
+                vram_total: Some(12000),
+                cpu: Some(0.4),
+                ram: Some(4096),
+                ram_total: Some(8192),
+                gpus: vec!["RTX 3060".into()],
+                jobs_active: 1,
+                last_heartbeat: Some(now),
+            },
+        );
+
+        // Nó stale (heartbeat 60s atrás).
+        cache.insert(
+            Uuid::new_v4(),
+            TelemetryState {
+                endpoint: "http://stale:8082".into(),
+                measured: true,
+                vram_used: Some(8000),
+                vram_total: Some(24000),
+                cpu: Some(0.9),
+                ram: Some(16384),
+                ram_total: Some(67108864000),
+                gpus: vec!["RTX 4090".into()],
+                jobs_active: 5,
+                last_heartbeat: Some(now - Duration::seconds(60)),
+            },
+        );
+
+        // Simula a lógica de filtro do get_telemetry (>1 nós).
+        let mut vram_used_sum: Option<i64> = Some(0);
+        let mut vram_total_sum: Option<i64> = Some(0);
+        let mut gpus: Vec<String> = Vec::new();
+        let mut jobs_active_sum: i32 = 0;
+        let mut measured = false;
+
+        for state in cache.values() {
+            let is_fresh = state
+                .last_heartbeat
+                .map(|last| (now - last).num_seconds() <= 10)
+                .unwrap_or(false);
+            if is_fresh {
+                measured = true;
+                match (vram_used_sum, state.vram_used) {
+                    (Some(acc), Some(val)) => vram_used_sum = Some(acc + val),
+                    (Some(_), None) => vram_used_sum = None,
+                    (None, _) => {}
+                }
+                match (vram_total_sum, state.vram_total) {
+                    (Some(acc), Some(val)) => vram_total_sum = Some(acc + val),
+                    (Some(_), None) => vram_total_sum = None,
+                    (None, _) => {}
+                }
+                for gpu in &state.gpus {
+                    if !gpus.contains(gpu) {
+                        gpus.push(gpu.clone());
+                    }
+                }
+                jobs_active_sum += state.jobs_active;
+            }
+        }
+
+        assert!(measured);
+        // Só o nó fresh conta.
+        assert_eq!(vram_used_sum, Some(3000));
+        assert_eq!(vram_total_sum, Some(12000));
+        assert_eq!(jobs_active_sum, 1);
+        assert_eq!(gpus, vec!["RTX 3060"]);
+        // Nó stale NÃO entra na soma.
+        assert!(!gpus.contains(&"RTX 4090".to_string()));
+    }
+
+    /// Agregação: 2 nós ambos stale → fallback (measured:false).
+    #[test]
+    fn agregacao_todos_stale_fallback() {
+        use super::TelemetryState;
+        use chrono::{Duration, Utc};
+        use std::collections::HashMap;
+
+        let mut cache: HashMap<Uuid, TelemetryState> = HashMap::new();
+        let now = Utc::now();
+
+        cache.insert(
+            Uuid::new_v4(),
+            TelemetryState {
+                endpoint: "http://a:8082".into(),
+                measured: true,
+                vram_used: Some(3000),
+                vram_total: Some(12000),
+                gpus: vec!["GPU_A".into()],
+                jobs_active: 1,
+                last_heartbeat: Some(now - Duration::seconds(30)),
+                ..Default::default()
+            },
+        );
+        cache.insert(
+            Uuid::new_v4(),
+            TelemetryState {
+                endpoint: "http://b:8082".into(),
+                measured: true,
+                vram_used: Some(2000),
+                vram_total: Some(6000),
+                gpus: vec!["GPU_B".into()],
+                jobs_active: 2,
+                last_heartbeat: Some(now - Duration::seconds(60)),
+                ..Default::default()
+            },
+        );
+
+        let mut measured = false;
+        for state in cache.values() {
+            let is_fresh = state
+                .last_heartbeat
+                .map(|last| (now - last).num_seconds() <= 10)
+                .unwrap_or(false);
+            if is_fresh {
+                measured = true;
+            }
+        }
+
+        assert!(!measured, "ambos stale → measured deve ser false");
     }
 }

@@ -87,8 +87,9 @@
     - { engine: clip,    model: ViT-B-32,            mode: train, vram_min_gb: 10 }
   ```
   Sem entrada = `default_train_gb: 16` + aviso `unmeasured` no front.
-- Medição: `nvidia-smi` 2s no orquestrador + `torch.cuda.max_memory_allocated` reportado pelo motor no fim do warmup; manager aplica `medido * 1.25` e sugere atualizar o yaml (`POST /api/settings/vram-table/propose`). **Emenda G.7 (ADR-0010 D9):** a policy VRAM permanece **no-op na v1** (sem `waiting_vram`, sem bloqueio). O envelope seguro do smoke G.6 na RTX 3060 (12GB): `yolo11n` batch=16 imgsz=416 ≈ 5.4GB (provado: 10-11% GPU util); `yolo11m` batch=8 ≈ 10-11GB (no limite). `yolo11x` batch≥32 tende a OOM — **falha honesta e visível** (job `failed`, não silencioso).
+- Medição: `nvidia-smi` 2s no orquestrador + `torch.cuda.max_memory_allocated` reportado pelo motor no fim do warmup; manager aplica `medido * 1.25` e sugere atualizar o yaml (`POST /api/settings/vram-table/propose`). **Emenda H.7 (ADR-0011 D3):** roteamento estático entra — `vram-table.yaml` é carregada pelo manager no boot (`VRAM_TABLE_PATH`, default compilado via `include_str!`); para cada job `queued`, `required_gb = entries[engine][model][mode].vram_min_gb + headroom_gb`; entrada faltante ⇒ requisito `NULL` (permissivo); `queue_reason='waiting_vram'` quando há nó online mas nenhum com capacidade. Nenhum nó elegível com requisito presente → `waiting_vram`; sem requisito e sem nó online → `waiting_slot`.
 - Regra: se `livre >= min` → sobe em paralelo; senão treino entra em `queued(waiting_vram)` e, se o bloqueio for um runner, o runner é drenado/morto primeiro. **Treino nunca é morto por falta de VRAM, só enfileirado.**
+- **Policy VRAM aplicada completa (fila por VRAM livre dinâmica, paralelismo 2+ jobs por nó, preempção de runner, `max_parallel_trainers`) permanece DÍVIDA** — o que entra é o roteamento estático (capacidade declarada vs requisito).**
 - Config por ambiente (via manager): `max_parallel_trainers` (teto, padrão 2; efetivo = `min(teto, floor((vram_total - headroom) / vram_min_do_job))`), `vram_headroom_gb`, `runner_idle_ttl_s`, `vram-table` por modelo.
 - **Preempção (decisão):** runner idle → mata direto + toast com motivo; runner com inferência ativa → modal "Treino X precisa de N GB. Matar runner?" com countdown 30s (expirar = mata). Log de auditoria `runner_preempted {by_job}`. **Sem usuário (expirado/madrugada):** mata ao expirar, a inferência em voo retorna `409 runner_preempted {job_id}` e o playground mostra toast + estado vazio (sem corromper resposta parcial).
 - **Multi-GPU (MVP): 1 job = 1 GPU** (`CUDA_VISIBLE_DEVICES=gpu_index` escolhido pelo orquestrador; `gpus:[{index, vram_total, vram_used}]`, sem DDP). DDP/Accelerate multi-GPU para um único treino fica fora do MVP.
@@ -102,7 +103,9 @@
 
 - `POST /api/models/download {url, engine, dest}` → manager roteia ao orquestrador do ambiente ativo, que baixa com token da settings/env, verifica hash, salva em `models/<engine>/` (volume persistente, fora dos trainers) e notifica via WS.
 - Bootstrap remoto ao subir container: orquestrador mapeia `datasets-cache/<jobid>/` (build do §3), `models/<engine>/` solicitados e `outputs/<jobid>/`; na conclusão faz o caminho inverso (`.safetensors`, pesos YOLO/CLIP, imagens processadas, logs, samples) de volta ao principal com md5.
-- **Adoção (decisão: token colado):** orquestrador remoto (VPS/RunPod com IP público) ao subir **gera pairing token + fingerprint**; o usuário cola no front (`Conectar Pod`) e o manager adota (`POST /api/orchestrators/adopt {endpoint, key}`), passa a health-checkar e sincronizar regras. **Local:** o compose sobe `principal + manager + orquestrador-local` juntos e o manager **auto-adota via rede docker**, sem chave. **Emenda G.7 (ADR-0010):** a sessão GPU (TrueNAS) adota o orquestrador remoto por **INSERT manual** na tabela `orchestrators` (`kind='remoto'`, `endpoint='http://10.15.1.2:8082'`, preenchendo `gpus` JSONB + `vram_total_gb=18` — dados estáticos reais do host, não heartbeat). O fluxo de adoção por token (§8) descreve o futuro; o v1 TrueNAS usa o branch "inbound direta quando há IP:porta alcançável" (§1/:34).
+- **Adoção (decisão: token colado):** orquestrador remoto (VPS/RunPod com IP público) ao subir **gera pairing token + fingerprint**; o usuário cola no front (`Conectar Pod`) e o manager adota (`POST /api/orchestrators/adopt {endpoint, key}`), passa a health-checkar e sincronizar regras. **Local:** o compose sobe `principal + manager + orquestrador-local` juntos e o manager **auto-adota via rede docker**, sem chave.
+  - **Implementado v1 (Fatia H, ADR-0011 D5):** pairing code `heph_p_*` (formato encorajado, não enforceado) verificado no orquestrador via `POST /internal/pairing/verify` (single-use em memória); upsert no manager via `POST /internal/adopt`; `POST /api/orchestrators/adopt` (BFF) e `POST /api/orchestrators/:id/revoke` (tombstone `revoked`, não DELETE). Alias `/api/environments*` implementado (módulo da UI habilitado). `AUTO_ADOPT_LOCAL` permanece (default `1`) com guarda "não ressuscita `revoked`".
+  - **Pendente (divida):** `heph_o_*`/TLS-pin/rotação (colunas `token_hash`/`fingerprint` existem e ficam NULL); sem rate-limit de 5 tentativas; health-check 15s/2-5 falhas do §8/:111 substituído pelo watchdog sobre heartbeat (15s/60s).
 - **Formato do token (proposta):**
   - Pairing (uso único, curta duração): `heph_p_<32 chars base32 sem ambíguos, em grupos 4-4-4>` ex. `heph_p_7KQ2-9MZX-4TWD-8FHA`. Validade 15 min, single-use, rate-limit 5 tentativas. Exibido uma vez no log/boot do orquestrador.
   - Credencial longa (pós-adoção): `heph_o_<64 hex>` (256 bits), guardada no Postgres **só como hash SHA-256**, exibida nunca mais. Autentica manager→orquestrador via `Authorization: Bearer` + TLS com pin do fingerprint.
@@ -157,17 +160,17 @@ jobs:     POST /api/jobs/yolo  → implementado (Fatia 4; ADR-0007 D7 — spec 0
           # Adiados para fatias futuras: pause/resume, samples, WS, runners, difusao/clip/autolabel
 runners:  POST /api/runners/{difusao,yolo,clip}/up, POST /api/runners/:id/kill, GET /api/runners
           POST /api/runners/:id/infer {prompt|image|query} (inferência interativa; 409 se preemptado)
-orchestrators (via manager): GET /api/orchestrators  → implementado (F6.1; leitura da tabela do manager; ADR-0009 D1)
-          POST /api/orchestrators/adopt {endpoint,key}  → pendente (RunPod fora; ADR-0009 D0)
-          POST /api/orchestrators/:id/{enable,disable,remove}  → pendente (RunPod fora; ADR-0009 D0)
-          GET /api/orchestrators/:id/health  → pendente (RunPod fora; ADR-0009 D0)
-          # alias UI: /api/environments* responde o mesmo que /api/orchestrators* (front usa "Ambientes")
-          # alias pendente — nasce com o módulo Roadmap (ADR-0009 D0)
-          → manager auto-adota `orchestrator-local` no boot (Fatia 4; ADR-0007 D3)
-telemetry: GET /api/telemetry  → implementado (Fatia 4; proxy do cache do manager: {measured,cpu,ram,ramTotal,vramUsed,vramTotal,gpus,jobsActive}; ramTotal = ADR-0009 D4, bytes)
+orchestrators (via manager): GET /api/orchestrators  → implementado (F6.1 + Fatia H; leitura da tabela do manager com telemetria por nó; ADR-0009 D1 + ADR-0011 D2)
+          POST /api/orchestrators/adopt  → implementado (Fatia H; ADR-0011 D5 — 200 upsert / 400 / 409 `pairing_invalid` / 503; spec 0.10.0)
+          POST /api/orchestrators/:id/revoke  → implementado (Fatia H; ADR-0011 D5 — 204 tombstone `revoked` / 404 / 503)
+          POST /api/orchestrators/:id/{enable,disable}  → pendente (futuro)
+          GET /api/orchestrators/:id/health  → pendente (watchdog dá o status; health-check ativo redundante na v1)
+          alias UI: /api/environments* responde o mesmo que /api/orchestrators* (front usa "Ambientes")  → implementado (Fatia H; ADR-0011 D5/D7)
+          → manager auto-adota `orchestrator-local` no boot (Fatia 4; ADR-0007 D3); auto-adoção não ressuscita `revoked` (Fatia H; ADR-0011 D5.7)
+telemetry: GET /api/telemetry  → implementado (Fatia 4 + Fatia H; proxy do cache do manager: {measured,cpu,ram,ramTotal,vramUsed,vramTotal,gpus,jobsActive}; ramTotal = ADR-0009 D4, bytes)
            ramTotal: aditivo Option<i64> (bytes; ADR-0009 D4; spec 0.9.0)
-           **Emenda G.7 (ADR-0010):** `gpus[]`/`vramUsed`/`vramTotal` agora **carregam valores reais** quando um orquestrador com GPU heartbeats (contrato inalterado — os campos já existiam no wire). Durante a sessão GPU (TrueNAS), o orquestrador remoto reporta nomes reais de GPUs (`gpus:["NVIDIA GeForce RTX 3060","NVIDIA GeForce GTX 1660 SUPER"]`) e VRAM em MiB (nvidia-smi). Com o orquestrador local parado, o cache global não oscila entre nós.
-monitoring: GET /api/orchestrators  → implementado (F6.1; leitura via manager; status 200/401/503; ADR-0009 D1)
+           **Emenda H.7 (ADR-0011):** agregação definida — 0 nós → fallback atual (`measured:false`); 1 nó → idêntico ao de hoje; >1 nós → `vramUsed/vramTotal` = soma dos Some, `gpus` = união (ordem por nó), `jobsActive` = soma, `cpu/ram/ramTotal` = **`null`** (não agregáveis de forma honesta), `measured:true` se ≥1 nó fresco. `measured` por nó = heartbeat ≤ 10s. `gpus[]`/`vramUsed`/`vramTotal` carregam valores reais quando um orquestrador com GPU heartbeats (contrato inalterado).
+monitoring: GET /api/orchestrators  → implementado (F6.1 + Fatia H; leitura via manager com telemetria por nó; status 200/401/503; ADR-0009 D1 + ADR-0011 D2)
             GET /api/models         → implementado (F6.1; derivado de job_artifacts.kind='model' por (engine,model); ADR-0009 D2)
             GET /api/storage/usage  → implementado (F6.1; soma SQL: datasetsBytes + artifactsBytes; ADR-0009 D3)
 ws:       /ws/jobs/:id/logs?since_seq=, /ws/telemetry
@@ -289,10 +292,9 @@ orchestrators(id UUID PK, name TEXT, endpoint TEXT UNIQUE, kind TEXT,     -- loc
   status TEXT, last_heartbeat TIMESTAMPTZ);
   -- IMPLEMENTADO (Fatia 4; `migrations/0006_jobs.sql`): manager auto-adota `orchestrator-local` no boot (ADR-0007 D3).
   -- Índice: `orchestrators(status)`.
-  -- Nota F6.1 (ADR-0009): `gpus`/`vram_total_gb` NUNCA são escritos pelo manager — o manager não preenche essas colunas.
-  -- Emenda G.7 (ADR-0010): a sessão GPU (TrueNAS) os preenche por INSERT manual na tabela
-  -- (dado estático real do host, não heartbeat): `gpus` JSONB com nomes das GPUs, `vram_total_gb=18`.
-  -- A telemetria por nó (cache por orquestrador + watchdog degraded/offline) é dívida (ADR-0009 R1).
+  -- Fatia H (ADR-0011): heartbeat identificado (`endpoint` no `HeartbeatBody`) grava `gpus`/`vram_total_gb` dinamicamente
+  -- (round(MiB/1024), GiB). Watchdog: `online → degraded` (15s) → `offline` (60s); re-queue dos jobs do nó morto.
+  -- Adopt por token (pairing code single-use, upsert); revoke = tombstone `revoked` (não DELETE).
 models(id UUID PK, engine TEXT, name TEXT, path TEXT, source TEXT,         -- hf|civitai|upload
   url TEXT NULL, hash TEXT NULL, bytes BIGINT, created_at TIMESTAMPTZ);
   -- NÃO MIGRADA nesta fase (F6.1) — a lista de modelos v1 DERIVA de `job_artifacts.kind='model'`

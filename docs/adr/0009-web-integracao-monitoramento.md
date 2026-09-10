@@ -146,37 +146,31 @@ branch `feat/integracao-web`.
 F6.2 junto com F6.1 (1 fatia = 1 boundary; backend primeiro — ordem do
 usuário).
 
-### D1 — `GET /api/orchestrators`: lista real da tabela do manager, sem métricas por nó
+### D1 — `GET /api/orchestrators`: lista real da tabela do manager, com telemetria por nó (Fatia H)
 
-**Decidido:** rota interna nova **`GET /internal/orchestrators`** no manager
+**Decidido (implementado na Fatia H, ADR-0011 D2):** rota interna **`GET /internal/orchestrators`** no manager
 (leitura da tabela `orchestrators`, dono = manager) + BFF
 **`GET /api/orchestrators`** no principal (padrão `ManagerPort`/`HttpManager`/
-`MockManager`, Bearer `MANAGER_TOKEN`). Item (camelCase no `/api/*`):
+`MockManager`, Bearer `MANAGER_TOKEN`). Item (camelCase no `/api/*`) agora
+**enriquecido com telemetria por nó** (ADR-0011 D2):
 
 ```json
 { "id": "uuid", "name": "orchestrator-local", "kind": "local",
   "endpoint": "http://orchestrator-local:8082",
-  "status": "online", "lastHeartbeat": "2026-09-09T12:00:00Z" }
+  "status": "online", "lastHeartbeat": "2026-09-09T12:00:00Z",
+  "measured": true, "cpu": 0.5, "ram": 1234567, "ramTotal": 33563316224,
+  "vramUsed": 0, "vramTotal": 0, "vramTotalGb": null,
+  "gpus": [], "jobsActive": 0 }
 ```
 
-*Por quê — leitura da tabela, sem fundir telemetria:* o cache do manager é
-**global** (heartbeat não carrega identidade de orquestrador — atualiza
-`last_heartbeat` de todos os `online/degraded`, `lib.rs:807`) e a tabela nunca
-recebe `gpus`/`vram_total_gb` pelo manager (o `adopt_orchestrator` só grava
-name/endpoint/kind/status). **Emenda G.7 (ADR-0010 D1):** a sessão GPU
-(TrueNAS) preenche `gpus`/`vram_total_gb` por **INSERT manual** na tabela
-(dado estático real do host — `gpus:["NVIDIA GeForce RTX 3060","NVIDIA GeForce
-GTX 1660 SUPER"]`, `vram_total_gb=18`). A regra "nunca escritos **pelo manager**"
-permanece — o INSERT é operação manual de infra, não código do manager. Fundir o cache global em cada nó da lista seria
-**mentir por nó** quando houver >1 orquestrador. A lista devolve o que a
-tabela tem de verdade; com exatamente 1 nó (o caso local), a UI (F6.2) compõe
-os gauges do card a partir do `GET /api/telemetry` global **só quando**
-`items.length === 1` (regra de apresentação, não de API). *Gotcha:* o `status`
-não sai de `online` no v1 — não há watchdog que flipe para `degraded/offline`
-(dívida F4.8 permanece); o único sinal honesto de vida é `lastHeartbeat`
-("visto há Xs" na UI, nunca "agora" fixo). *Descartado:* expor
-`gpus`/`vram_total_gb` da coluna (nunca escritos — coluna vazia não é dado);
-rota do manager devolvendo o cache global disfarçado de métrica por nó.
+*Por quê — telemetria por nó:* a Fatia H (ADR-0011 D1/D2) implementou heartbeat
+com identidade (`endpoint` no `HeartbeatBody`) + cache por nó (`HashMap<Uuid,
+TelemetryState>`). Cada item da lista agora carrega a telemetria do próprio nó.
+`measured` por nó = heartbeat ≤ 10s; sem heartbeat → `measured:false` + campos
+`null` (nunca número inventado — R5). *Gotcha:* o `status` agora sai de
+`online` (watchdog 15s/60s — ADR-0011 D4); o card UI mostra status + "visto há
+Xs". *Descartado:* manter lista sem métricas + regra `items.length===1` (morreu
+no H.5 — ADR-0011 D7).
 
 ### D2 — `GET /api/models`: pesos derivados de `job_artifacts.kind='model'` (zero infra nova)
 
@@ -396,13 +390,7 @@ cache por nó + watchdog) — registrado como dívida (R1), não como spike.
 
 ## Riscos
 
-- **R1 — Cache de telemetria global e `last_heartbeat` sem identidade:** o
-  heartbeat não identifica o orquestrador (`lib.rs:807` atualiza todos os
-  `online/degraded`) e não há watchdog `offline` (dívida F4.8). Com 1 nó o
-  dado é correto; multi-nó remoto exigirá heartbeat com `orchestrator_id` +
-  cache por nó + watchdog — dívida registrada junto com o adote remoto
-  (RunPod). Mitigação v1: a API **não** funde telemetria por nó (D1); a UI só
-  compõe gauges globais quando `items.length === 1`.
+- **R1 — Cache de telemetria global e `last_heartbeat` sem identidade:** ~~dívida~~ **QUITADA (Fatia H, ADR-0011 D1/D2/D4):** heartbeat identificado (`endpoint` no body + `ORCH_ADVERTISE_URL`), cache por nó (`HashMap<Uuid, TelemetryState>`), watchdog `degraded`/`offline` com re-queue. Multi-nó remoto funciona.
 - **R2 — `GET /api/models` é derivado de `job_artifacts`:** (a) os pesos são
   mock de 110 bytes — o card deve rotular "pesos de treinos (mock)", nunca
   "YOLOv11/Flux.1/SDXL"; (b) `job_artifacts` tem FK `ON DELETE CASCADE` do
@@ -421,13 +409,11 @@ cache por nó + watchdog) — registrado como dívida (R1), não como spike.
   novo com backend antigo vê `null`/`undefined` → "—"). Risco residual: o
   front (F6.2) deve tratar `null` e `undefined` igual — nenhum fallback
   numérico (regra "nenhum número inventado").
-- **R5 — Semântica de `measured` divergente entre doc e código:** docs/backend
-  .md :173 afirma "sem GPU → `measured:false`"; o código real devolve
-  `measured:true` com `gpus:[]` e `vram_*:null` quando há heartbeat recente
-  (CPU/RAM reais, GPU ausente). A F6.1 **não muda o comportamento** — apenas
-  a UI passa a derivar "sem GPU" de `vramTotal==null || gpus.length===0` e o
-  docs-sync (F6.4) corrige o backend.md. Sinalizar explicitamente para o
-  reviewer: não "consertar" o manager para casar com o doc antigo.
+- **R5 — Semântica de `measured` divergente entre doc e código:** ~~docs/backend
+  .md :173 afirma "sem GPU → `measured:false`"~~ **CORRIGIDO na sync H.7**: a
+  semântica real (código) é: `measured:true` = heartbeat ≤ 10s; GPU ausente =
+  `gpus:[]`/`vram_*:null` com CPU/RAM reais. A UI deriva "sem GPU" de
+  `vramTotal==null || gpus.length===0`.
 - **R6 — Versão via `CARGO_PKG_VERSION`:** expõe 0.1.0 dos crates como versão
   de produto. Se o produto evoluir com versionamento próprio (1.x), troca-se
   a fonte no mesmo lugar — o contrato (`/health.version`) não muda.

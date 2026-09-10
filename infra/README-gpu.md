@@ -31,10 +31,8 @@ ssh dockeruser@10.15.1.2 'nvidia-smi --query-gpu=index,memory.used,memory.total 
 ```
 
 > **Se a 3060 (GPU 0) estiver ocupada** (ex.: `graft deep` rodando),
-> usar `ORCH_GPU_DEVICES=1` no `env.gpu` e registrar na tabela do
-> INSERT abaixo (linha `gpus` deve listar a 1660S primeiro ou usar
-> `ORCH_GPU_DEVICES=1` com `gpus: ["NVIDIA GeForce GTX 1660 SUPER"]`
-> e `vram_total_gb=6`).
+> usar `ORCH_GPU_DEVICES=1` no `env.gpu`. O adopt (passo 2.5)
+> detecta as GPUs automaticamente via heartbeat do orquestrador.
 
 ### 1.2 Verificar manager no dev host
 
@@ -43,7 +41,28 @@ curl -s http://10.15.10.3:8081/health
 # Esperado: HTTP 200
 ```
 
-### 1.3 Verificar S3 SeaweedFS no dev host
+### 1.3 Preparar `env.gpu` no TrueNAS
+
+```bash
+ssh dockeruser@10.15.1.2 \
+  'cat > /mnt/DADOS/home/dockeruser/Hephaestus-LLM-Studio/infra/env.gpu <<EOF
+MANAGER_TOKEN=<token-do-.env-do-dev-host>
+S3_ORCH_ACCESS_KEY=<access-key>
+S3_ORCH_SECRET_KEY=<secret-key>
+S3_ORCH_BUCKET=heph-data
+ORCH_GPU_DEVICES=0
+ORCH_ADVERTISE_URL=http://10.15.1.2:8082
+ORCH_PAIRING_CODE=<código-de-pareamento-escolhido>
+EOF'
+```
+
+> `ORCH_ADVERTISE_URL` deve ser o IP/porta **públicos** do TrueNAS
+> (não hostname local — o manager do dev host usa este endereço para
+> despachar jobs). `ORCH_PAIRING_CODE` é single-use e consumido pelo
+> adopt. O pairing code é exibido uma vez no log do orquestrador no boot
+> (ou definido via env para determinismo).
+
+### 1.4 Verificar S3 SeaweedFS no dev host
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}' http://10.15.10.3:8333/
@@ -117,43 +136,61 @@ docker compose -f infra/compose.yaml up -d manager --force-recreate
 > **Nota:** os passos 2.2 e 2.3 podem ser combinados em uma única edição
 > do `.env` seguida de um único `--force-recreate` do manager.
 
-### 2.4 Parar o orquestrador local
+### 2.4 Revogar o orquestrador local (via API)
+
+O orquestrador local pode ficar online — o revoke via API marca a linha como
+`revoked` e o dispatch não a escolhe mais (ADR-0011 D5). Alternativa: parar o
+container (para heartbeat) — mas não é obrigatório com o watchdog ativo.
 
 ```bash
-docker compose -f infra/compose.yaml stop orchestrator-local
+# Revogar o local via API (passo 1 do adopt):
+LOCAL_ID=$(curl -s http://10.15.10.3:8080/api/orchestrators \
+  | python3 -c "import sys,json; [print(o['id']) for o in json.load(sys.stdin) if o['kind']=='local']")
+curl -X POST "http://10.15.10.3:8080/api/orchestrators/${LOCAL_ID}/revoke"
+# Ou: botão "Revogar" na página /environments
 ```
 
-> **Obrigatório** (D8 ADR-0010): o heartbeat sem identidade do manager
-> sobrescreve o cache global a cada ~2s. Com o local parado, a telemetria
-> reflete exclusivamente o TrueNAS.
+> **Nota:** com o watchdog (ADR-0011 D4), o heartbeat do local continua
+> atualizando `last_heartbeat` mas o status `revoked` NÃO é alterado pelo
+> heartbeat — o watchdog também não toca `revoked`. A linha fica como tombstone.
 
-### 2.5 Registrar orquestrador remoto no banco
+### 2.5 Adotar o orquestrador remoto via API (fatia H)
+
+O manager expõe `POST /api/orchestrators/adopt` que consome o
+`ORCH_PAIRING_CODE` do orquestrador — não há mais necessidade de
+acesso direto ao Postgres.
+
+**Passo 1 — Revogar o orquestrador local:**
 
 ```bash
-# Conectar ao Postgres do dev host e executar:
-psql -h 10.15.10.3 -U studio -d studio -c "
-  DELETE FROM orchestrators WHERE kind = 'local';
+# Obter o ID do orquestrador local:
+LOCAL_ID=$(curl -s http://10.15.10.3:8080/api/orchestrators \
+  | python3 -c "import sys,json; [print(o['id']) for o in json.load(sys.stdin) if o['kind']=='local']")
 
-  INSERT INTO orchestrators (id, name, endpoint, kind, gpus, vram_total_gb, status)
-  VALUES (
-    gen_random_uuid(),
-    'orchestrator-gpu',
-    'http://10.15.1.2:8082',
-    'remoto',
-    '[\"NVIDIA GeForce RTX 3060\",\"NVIDIA GeForce GTX 1660 SUPER\"]'::jsonb,
-    18,
-    'online'
-  );
-"
+# Revogar (DELETE):
+curl -X POST "http://10.15.10.3:8080/api/orchestrators/${LOCAL_ID}/revoke"
+# Ou: botão "Revogar" na página /environments
 ```
 
-> **Se usou `ORCH_GPU_DEVICES=1`** (1660S), ajustar o JSONB `gpus` e
-> `vram_total_gb=6` conforme o pre-flight.
+**Passo 2 — Adotar o orquestrador remoto:**
+
+```bash
+curl -X POST http://10.15.10.3:8080/api/orchestrators/adopt \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "orchestrator-gpu",
+    "endpoint": "http://10.15.1.2:8082",
+    "kind": "remoto",
+    "pairingCode": "<código-do-env.gpu>"
+  }'
+# Ou: modal "Adotar" na UI
+```
 
 Verificar:
-```sql
-SELECT name, kind, endpoint, status, gpus, vram_total_gb FROM orchestrators;
--- Esperado: 1 row, kind='remoto', endpoint='http://10.15.1.2:8082', status='online'
+```bash
+curl -s http://10.15.10.3:8080/api/orchestrators \
+  | python3 -m json.tool
+# Esperado: 1 row, kind='remoto', endpoint='http://10.15.1.2:8082', status='online'
 ```
 
 ---
@@ -357,7 +394,7 @@ Edite `infra/.env` e **remova** ou comente:
 ```
 # SEAWEED_PUBLISH=10.15.10.3    ← voltar ao default (127.0.0.1)
 # TRAINER_IMAGE=hephaestus/trainer-yolo:gpu    ← voltar ao default (…:local)
-# AUTO_ADOPT_LOCAL=0             ← remover (default é 1)
+# AUTO_ADOPT_LOCAL=0             ← não é mais necessário (Fatia H — revoke cuida), mas inofensivo se mantido
 ```
 
 Recriar serviços:
@@ -367,18 +404,39 @@ docker compose -f infra/compose.yaml up -d manager --force-recreate
 docker compose -f infra/compose.yaml up -d orchestrator-local
 ```
 
-### 6.3 Remover orquestrador remoto do banco
+### 6.3 Revogar orquestrador remoto via API
 
 ```bash
-psql -h 10.15.10.3 -U studio -d studio -c "
-  DELETE FROM orchestrators WHERE kind = 'remoto';
-"
+# Obter o ID do orquestrador remoto:
+REMOTE_ID=$(curl -s http://10.15.10.3:8080/api/orchestrators \
+  | python3 -c "import sys,json; [print(o['id']) for o in json.load(sys.stdin) if o['kind']=='remoto']")
+
+# Revogar:
+curl -X POST "http://10.15.10.3:8080/api/orchestrators/${REMOTE_ID}/revoke"
+# Ou: botão "Revogar" na página /environments
 ```
 
-O manager com `AUTO_ADOPT_LOCAL=1` (default) re-adota o orquestrador
-local no próximo boot/restart.
+### 6.4 Restaurar orquestrador local
 
-### 6.4 Verificar restore
+```bash
+docker compose -f infra/compose.yaml start orchestrator-local
+```
+
+O orquestrador local faz heartbeat e o manager re-adota
+automaticamente (se `AUTO_ADOPT_LOCAL=1`, que é o default). Se a linha
+estiver `revoked` (após revoke via API), o adopt por auto-adoção NÃO
+ressuscita — é necessário `POST /api/orchestrators/adopt` com o pairing
+code do local para criar nova linha (ADR-0011 D5.7).
+
+Para descobrir o pairing code do local:
+```bash
+docker logs infra-orchestrator-local-1 2>&1 | grep pairing
+```
+
+> Se precisar re-adotar manualmente, use o pairing code do log:
+> `POST /api/environments/adopt` com `kind: "local"` e o código.
+
+### 6.5 Verificar restore
 
 ```bash
 # Orquestrador local respondendo:
@@ -389,9 +447,9 @@ curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8333/
 # Esperado: 403
 
 # Banco com 1 row local:
-psql -h 10.15.10.3 -U studio -d studio -c \
-  "SELECT name, kind, status FROM orchestrators;"
-# Esperado: orchestrator-local, local, online
+curl -s http://10.15.10.3:8080/api/orchestrators \
+  | python3 -c "import sys,json; [print(f\"{o['name']} kind={o['kind']} status={o['status']}\") for o in json.load(sys.stdin)]"
+# Esperado: orchestrator-local kind=local status=online
 ```
 
 ---
@@ -402,9 +460,12 @@ psql -h 10.15.10.3 -U studio -d studio -c \
   - 3060 (12GB): `yolo11n` batch=16, `yolo11m` batch=8
   - 1660S (6GB): `yolo11n` batch=8, imgsz=640
   - `yolo11x` / batch≥32 tende a OOM → job `failed` (falha honesta)
-- **Heartbeat sem identidade** (ADR-0009 R1): o cache global de telemetria
-  é sobrescrito a cada ~2s. Só 1 orquestrador deve estar online por vez
-  durante a sessão.
+- **Heartbeat identificado** (Fatia H, ADR-0011 D1): o heartbeat carrega `endpoint`
+  (`ORCH_ADVERTISE_URL`) e o manager casa por `endpoint UNIQUE` — cache por nó,
+  sem oscilação entre nós. Watchdog 15s/60s (ADR-0011 D4).
+- **Sessão GPU sem psql** (Fatia H, ADR-0011 D5/D8): revoke local + adopt remoto
+  via API/UI. `AUTO_ADOPT_LOCAL=0` não é mais necessário (a guarda `revoked` fecha
+  o ciclo). Teardown: revoke remoto + start local + adopt local (revive `revoked`).
 - **Portas no TrueNAS**: o orquestrador GPU usa `8082` (a mesma do local,
   mas em host diferente — sem conflito de porta cross-host).
 - **NÃO tocar nos 48 containers** do TrueNAS — o projeto `gpu` é isolado.

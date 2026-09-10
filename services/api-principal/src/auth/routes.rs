@@ -111,6 +111,27 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
     ),
     ("POST", "/api/jobs/:id/abort", &[200, 401, 404, 409, 503]),
     ("GET", "/api/orchestrators", &[200, 401, 503]),
+    (
+        "POST",
+        "/api/orchestrators/adopt",
+        &[200, 400, 401, 409, 503],
+    ),
+    (
+        "POST",
+        "/api/orchestrators/:id/revoke",
+        &[204, 401, 404, 503],
+    ),
+    ("GET", "/api/environments", &[200, 401, 503]),
+    (
+        "POST",
+        "/api/environments/adopt",
+        &[200, 400, 401, 409, 503],
+    ),
+    (
+        "POST",
+        "/api/environments/:id/revoke",
+        &[204, 401, 404, 503],
+    ),
     ("GET", "/api/models", &[200, 401, 503]),
     ("GET", "/api/storage/usage", &[200, 401, 503]),
 ];
@@ -301,6 +322,24 @@ pub fn build(state: AppState) -> axum::Router {
         .route("/api/jobs/:id/abort", post(jobs::handlers::abort_job))
         // Monitoramento (F6.1b — ADR-0009 D1/D2/D3).
         .route("/api/orchestrators", get(monitoring::get_orchestrators))
+        .route(
+            "/api/orchestrators/adopt",
+            post(monitoring::adopt_orchestrator),
+        )
+        .route(
+            "/api/orchestrators/:id/revoke",
+            post(monitoring::revoke_orchestrator),
+        )
+        // Alias /api/environments (H.4 — ADR-0011 D5, mesmos handlers).
+        .route("/api/environments", get(monitoring::get_orchestrators))
+        .route(
+            "/api/environments/adopt",
+            post(monitoring::adopt_orchestrator),
+        )
+        .route(
+            "/api/environments/:id/revoke",
+            post(monitoring::revoke_orchestrator),
+        )
         .route("/api/models", get(monitoring::get_models))
         .route("/api/storage/usage", get(monitoring::get_storage_usage))
         // route_layer DEPOIS dos .route(): aplicado a um router vazio o axum 0.7 panic

@@ -183,6 +183,7 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
   (origem: smoke F6.2, `apps/web/app/login/page.tsx` ~L151). A versão de
   produto real vem de `GET /health` (`version:"0.1.0"`, ADR-0009 D5); o login
   mostra "V1.3" inventado. Alinhar na fatia de limpeza web (mesma da 2).
+- **Modal base sem focus-trap/foco inicial — ABERTA 2026-09-10 (review I.8, componente pré-existente):** `apps/web/components/ui/Modal.tsx:50-57` não captura Tab dentro do modal nem move o foco inicial para o primeiro elemento focável; Esc e click-outside funcionam. Modais novos da fatia I herdam. Correção global no componente base numa fatia de refinamento (afeta todos os modais da casa).
 - ~~**Sincronizar `docs/frontend.md` linha 3** — ainda descreve o protótipo como
   "~2910 linhas"; o do tronco é a regeneração OpenDesign (3641 linhas, com
   LoginPage).~~ **QUITADA 2026-09-06** (commit 3g.6 docs-sync: linha 3 agora

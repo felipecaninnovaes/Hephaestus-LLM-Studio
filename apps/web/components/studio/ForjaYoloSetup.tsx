@@ -17,7 +17,7 @@ import { listDatasets, canTrainYolo, trainDisabledReason } from "@/lib/datasets"
 import { listModels } from "@/lib/models";
 import { formatBytes } from "@/lib/format";
 import { ApiError } from "@/lib/api";
-import { jobErrorMessage, modelErrorMessage } from "@/types/studio";
+import { jobErrorMessage } from "@/types/studio";
 import { showToast } from "./Toast";
 import type { Dataset, Model, Telemetry, YoloAugment } from "@/types/studio";
 import {
@@ -322,7 +322,14 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
       onJobCreated?.(result.jobId);
     } catch (err) {
       if (err instanceof ApiError) {
-        setTopError(modelErrorMessage(err.code) || jobErrorMessage(err.code));
+        // B1: este é submit de JOB — jobErrorMessage como fonte primária.
+        if (selectedWeightId && err.code === "not_found") {
+          setTopError(
+            "Modelo de pesos não encontrado — remova a seleção de pesos iniciais e tente de novo.",
+          );
+        } else {
+          setTopError(jobErrorMessage(err.code));
+        }
         return;
       }
       setTopError("Falha ao criar job de treino.");

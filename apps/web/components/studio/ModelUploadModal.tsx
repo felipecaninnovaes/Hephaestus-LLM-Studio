@@ -79,21 +79,26 @@ export default function ModelUploadModal({
       <div className="space-y-4">
         {/* File picker */}
         <div>
-          <label className="mb-1.5 block font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-zinc-400">
+          <label
+            htmlFor="model-upload-file"
+            className="mb-1.5 block font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-zinc-400"
+          >
             Arquivo
           </label>
           <input
             ref={inputRef}
+            id="model-upload-file"
             type="file"
             accept=".pt"
             onChange={handleFileChange}
             disabled={busy}
-            className="hidden"
+            className="sr-only"
           />
           <button
             type="button"
             onClick={() => inputRef.current?.click()}
             disabled={busy}
+            aria-label="Selecionar arquivo .pt"
             className={`flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors cursor-pointer ${
               file
                 ? "border-brand-500/30 bg-brand-500/10"

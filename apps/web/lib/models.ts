@@ -17,33 +17,7 @@ export async function uploadModel(params: {
   form.append("engine", params.engine);
   if (params.name) form.append("name", params.name);
 
-  const res = await fetch("/api/models/upload", {
-    method: "POST",
-    body: form,
-    credentials: "same-origin",
-  });
-
-  if (!res.ok) {
-    let code = "internal";
-    let message = "";
-    try {
-      const envelope = (await res.json()) as {
-        code?: string;
-        message?: string;
-      };
-      if (typeof envelope.code === "string" && envelope.code)
-        code = envelope.code;
-      if (typeof envelope.message === "string") message = envelope.message;
-    } catch {
-      // corpo ilegível
-    }
-    const err = new Error(message || `Falha no upload: ${res.status}`);
-    (err as unknown as { code: string }).code = code;
-    (err as unknown as { status: number }).status = res.status;
-    throw err;
-  }
-
-  return res.json() as Promise<Model>;
+  return apiFetch<Model>("/api/models/upload", { method: "POST", body: form });
 }
 
 /** POST /api/models/download — download server-side por URL. Retorna 201 Model. */
@@ -52,32 +26,8 @@ export async function downloadModel(params: {
   engine: string;
   name?: string;
 }): Promise<Model> {
-  const res = await fetch("/api/models/download", {
+  return apiFetch<Model>("/api/models/download", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(params),
-    credentials: "same-origin",
+    body: params,
   });
-
-  if (!res.ok) {
-    let code = "internal";
-    let message = "";
-    try {
-      const envelope = (await res.json()) as {
-        code?: string;
-        message?: string;
-      };
-      if (typeof envelope.code === "string" && envelope.code)
-        code = envelope.code;
-      if (typeof envelope.message === "string") message = envelope.message;
-    } catch {
-      // corpo ilegível
-    }
-    const err = new Error(message || `Falha no download: ${res.status}`);
-    (err as unknown as { code: string }).code = code;
-    (err as unknown as { status: number }).status = res.status;
-    throw err;
-  }
-
-  return res.json() as Promise<Model>;
 }

@@ -308,7 +308,8 @@ def _real_train(cfg: dict, output: Path) -> None:
     metrics_path = output / "metrics.jsonl"
 
     seed = cfg["seed"]
-    model = YOLO(yolo_cfg["model"])
+    weights_path = cfg.get("weights_path")
+    model = YOLO(weights_path) if weights_path else YOLO(yolo_cfg["model"])
 
     # Callback: append one JSON line per epoch to metrics.jsonl
     def on_train_epoch_end(trainer) -> None:  # noqa: ANN001 — ultralytics callback

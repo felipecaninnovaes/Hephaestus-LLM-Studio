@@ -576,7 +576,8 @@ pub async fn submit_yolo_job(
     // 8. POST ao manager (D7 :237-240 — snake_case interno).
     //    vram_min_gb = null na v1 (decisão registrada: política VRAM real entra
     //    com GPU; R3: vram_min gravado mas não bloqueante no mock).
-    let manager_body = serde_json::json!({
+    //    D5: weights_id repassado quando presente (manager resolve → weights_ref).
+    let mut manager_body = serde_json::json!({
         "kind": "yolo_train",
         "engine": "yolo",
         "model": req.model,
@@ -600,6 +601,10 @@ pub async fn submit_yolo_job(
         },
         "vram_min_gb": null,
     });
+    // D5: insere weights_id no body quando presente.
+    if let Some(ref weights_id) = req.weights {
+        manager_body["weights_id"] = serde_json::json!(weights_id);
+    }
 
     match state.manager.create_job(&manager_body).await {
         Ok(resp) => {
@@ -1587,6 +1592,59 @@ mod tests {
         );
     }
 
+    // --- POST /api/jobs/yolo weights tests (D5 ADR-0012) ---
+
+    #[tokio::test]
+    async fn submit_yolo_job_400_weights_not_uuid() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_yolo_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"datasetId":"00000000-0000-0000-0000-000000000000","weights":"not-a-uuid"}"#,
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_yolo_job_weights_uuid_valid() {
+        // weights válido: passa validação pura (sem DB = 503 ou not_found no dataset check).
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_yolo_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"datasetId":"00000000-0000-0000-0000-000000000000","weights":"550e8400-e29b-41d4-a716-446655440000"}"#,
+            )),
+        )
+        .await;
+        // Com pool lazy, dataset check falha → 500 ou not_found dependendo do timing.
+        // O importante é que NÃO é 400 (weights UUID é válido).
+        assert_ne!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "weights UUID should not trigger 400"
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_yolo_job_extra_key_rejected_with_deny_unknown_fields() {
+        // confirmar que deny_unknown_fields funciona (mock tolera extras no yaml
+        // mas o serde rejeita no parse do body).
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_yolo_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"datasetId":"00000000-0000-0000-0000-000000000000","extraKey":"value"}"#,
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
     // --- POST /api/jobs/:id/abort unit tests (F4.2b) ---
 
     // --- POST /api/jobs/autotracker unit tests (ADR-0008 A.2) ---
@@ -1980,6 +2038,7 @@ mod tests {
             embedder: std::sync::Arc::new(crate::search::MockEmbedder::new()),
             embedding_model: "ViT-B-32".to_string(),
             manager: std::sync::Arc::new(manager),
+            model_download_allowed_hosts: vec![],
         }
     }
 }

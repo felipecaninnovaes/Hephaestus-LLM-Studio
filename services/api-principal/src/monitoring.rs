@@ -57,16 +57,23 @@ pub struct OrchestratorListResponse {
     pub items: Vec<OrchestratorResponse>,
 }
 
-/// Peso/modelo (camelCase wire — D2). `name` = basename do `path`.
+/// Peso/modelo (camelCase wire — D2/D6 ADR-0012).
+/// `name` = basename do `path` (s3_key); `model`/`jobId`/`url` nullable.
 #[derive(Debug, Serialize)]
 pub struct ModelWeightResponse {
     pub id: String,
     pub name: String,
     pub engine: String,
-    pub model: String,
-    #[serde(rename = "jobId")]
-    pub job_id: String,
+    /// Variante conhecida (treino); null para upload/download (D6).
+    pub model: Option<String>,
+    pub source: String,
     pub bytes: i64,
+    pub md5: String,
+    /// Presigned GET URL; null sem `S3_PUBLIC_ENDPOINT_URL` (D6).
+    pub url: Option<String>,
+    /// PK do job de treino; null para upload/download (D6).
+    #[serde(rename = "jobId")]
+    pub job_id: Option<String>,
     #[serde(rename = "createdAt")]
     pub created_at: String,
 }
@@ -77,13 +84,15 @@ pub struct ModelListResponse {
     pub items: Vec<ModelWeightResponse>,
 }
 
-/// Uso de storage (camelCase wire — D3).
+/// Uso de storage (camelCase wire — D3/D8 ADR-0012).
 #[derive(Debug, Serialize)]
 pub struct StorageUsageResponse {
     #[serde(rename = "datasetsBytes")]
     pub datasets_bytes: i64,
     #[serde(rename = "artifactsBytes")]
     pub artifacts_bytes: i64,
+    #[serde(rename = "modelsBytes")]
+    pub models_bytes: i64,
     #[serde(rename = "totalBytes")]
     pub total_bytes: i64,
     pub measured: bool,
@@ -140,32 +149,48 @@ pub async fn get_orchestrators(State(state): State<AppState>) -> Response {
     (StatusCode::OK, Json(OrchestratorListResponse { items })).into_response()
 }
 
-/// GET /api/models — pesos derivados de job_artifacts (D2).
+/// GET /api/models — modelos da tabela `models` (D2/D6 ADR-0012).
+///
+/// `url`: presigned GET do `s3_key` (híbrido — sem `S3_PUBLIC_ENDPOINT_URL`
+/// ⇒ `null`). Para checkpoints de treino (`artifacts/`), gera presigned do
+/// objeto; para upload/download (`models/`), idem.
 pub async fn get_models(State(state): State<AppState>) -> Response {
     let items = match state.manager.list_models().await {
         Ok(v) => v,
         Err(ManagerError::Unavailable(_)) => return queue_unavailable(),
         Err(_) => return queue_unavailable(),
     };
-    let items = items
-        .into_iter()
-        .map(|m| ModelWeightResponse {
+    let mut wire_items = Vec::with_capacity(items.len());
+    for m in items {
+        // Presign URL do s3_key (híbrido D6 — sem endpoint público ⇒ null).
+        let url = match state.storage.presign_get(&m.path).await {
+            Ok(u) => Some(u),
+            Err(_) => None,
+        };
+        wire_items.push(ModelWeightResponse {
             id: m.id,
             name: basename(&m.path).to_string(),
             engine: m.engine,
             model: m.model,
-            job_id: m.job_id,
+            source: m.source,
             bytes: m.bytes,
+            md5: m.md5,
+            url,
+            job_id: m.job_id,
             created_at: m.created_at,
-        })
-        .collect();
-    (StatusCode::OK, Json(ModelListResponse { items })).into_response()
+        });
+    }
+    (
+        StatusCode::OK,
+        Json(ModelListResponse { items: wire_items }),
+    )
+        .into_response()
 }
 
-/// GET /api/storage/usage — soma atômica de datasets + artifacts (D3).
+/// GET /api/storage/usage — soma atômica de datasets + artifacts + models (D3/D8).
 ///
 /// 200 é atômico: qualquer fonte (pool OU manager) falha ⇒ 503 `queue_unavailable`,
-/// sem resposta parcial.
+/// sem resposta parcial. `artifactsBytes` exclui `kind='model'` (D8).
 pub async fn get_storage_usage(State(state): State<AppState>) -> Response {
     // 1. datasetsBytes: SQL no principal (dono = principal).
     let datasets_bytes: i64 = match sqlx::query_scalar::<_, i64>(
@@ -181,20 +206,21 @@ pub async fn get_storage_usage(State(state): State<AppState>) -> Response {
         }
     };
 
-    // 2. artifactsBytes: via manager (dono = manager).
-    let artifacts_bytes = match state.manager.get_storage_usage().await {
-        Ok(v) => v.artifacts_bytes,
+    // 2. artifactsBytes + modelsBytes: via manager (dono = manager).
+    let usage = match state.manager.get_storage_usage().await {
+        Ok(v) => v,
         Err(ManagerError::Unavailable(_)) => return queue_unavailable(),
         Err(_) => return queue_unavailable(),
     };
 
-    let total_bytes = datasets_bytes + artifacts_bytes;
+    let total_bytes = datasets_bytes + usage.artifacts_bytes + usage.models_bytes;
 
     (
         StatusCode::OK,
         Json(StorageUsageResponse {
             datasets_bytes,
-            artifacts_bytes,
+            artifacts_bytes: usage.artifacts_bytes,
+            models_bytes: usage.models_bytes,
             total_bytes,
             measured: true,
         }),
@@ -348,11 +374,14 @@ mod tests {
     fn mock_model() -> InternalModel {
         InternalModel {
             id: "550e8400-e29b-41d4-a716-446655440003".into(),
-            job_id: "550e8400-e29b-41d4-a716-446655440004".into(),
-            path: "best.pt".into(),
-            bytes: 110,
+            name: "best.pt".into(),
             engine: "yolo".into(),
-            model: "yolo11m".into(),
+            model: Some("yolo11m".into()),
+            source: "train".into(),
+            md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+            bytes: 110,
+            path: "artifacts/550e8400-e29b-41d4-a716-446655440004/best.pt".into(),
+            job_id: Some("550e8400-e29b-41d4-a716-446655440004".into()),
             created_at: "2026-09-09T12:00:00Z".into(),
         }
     }
@@ -372,6 +401,7 @@ mod tests {
             embedder: std::sync::Arc::new(crate::search::MockEmbedder::new()),
             embedding_model: "ViT-B-32".to_string(),
             manager: std::sync::Arc::new(manager),
+            model_download_allowed_hosts: vec![],
         }
     }
 
@@ -440,7 +470,8 @@ mod tests {
     async fn get_models_wire_camel_case_and_basename() {
         let mut mock = MockManager::default();
         let mut model = mock_model();
-        model.path = "outputs/123/best.pt".into();
+        model.path = "artifacts/123/best.pt".into();
+        model.job_id = Some("550e8400-e29b-41d4-a716-446655440004".into());
         mock.list_models_result = Some(vec![model]);
         let state = test_state(mock);
         let resp = get_models(axum::extract::State(state)).await;
@@ -459,6 +490,12 @@ mod tests {
             item.get("created_at").is_none(),
             "leaked snake_case created_at"
         );
+        // D6 novos campos
+        assert_eq!(item["source"], "train");
+        assert!(item.get("md5").is_some(), "missing md5");
+        assert!(item.get("model").is_some(), "missing model");
+        // url: MockStorage não tem presign real → null
+        assert!(item.get("url").is_some(), "missing url key");
     }
 
     #[tokio::test]
@@ -472,6 +509,46 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["items"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn get_models_nullable_model_and_job_id() {
+        // Upload/download: model=null, jobId=null (D6 ADR-0012).
+        let mut mock = MockManager::default();
+        let model = InternalModel {
+            id: "550e8400-e29b-41d4-a716-446655440005".into(),
+            name: "custom.pt".into(),
+            engine: "yolo".into(),
+            model: None,
+            source: "upload".into(),
+            md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+            bytes: 2048,
+            path: "models/yolo/550e8400-e29b-41d4-a716-446655440005/custom.pt".into(),
+            job_id: None,
+            created_at: "2026-09-10T12:00:00Z".into(),
+        };
+        mock.list_models_result = Some(vec![model]);
+        let state = test_state(mock);
+        let resp = get_models(axum::extract::State(state)).await;
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let items = json["items"].as_array().expect("items array");
+        assert_eq!(items.len(), 1);
+        let item = &items[0];
+        assert_eq!(item["source"], "upload");
+        // model e jobId nullable — devem ser null, não ausentes.
+        assert!(
+            item.get("model").is_some(),
+            "model key missing (should be null)"
+        );
+        assert!(item["model"].is_null(), "model should be null for upload");
+        assert!(
+            item.get("jobId").is_some(),
+            "jobId key missing (should be null)"
+        );
+        assert!(item["jobId"].is_null(), "jobId should be null for upload");
     }
 
     // --- get_storage_usage ---
@@ -490,6 +567,7 @@ mod tests {
         let mut mock = MockManager::default();
         mock.get_storage_usage_result = Some(InternalStorageUsage {
             artifacts_bytes: 500,
+            models_bytes: 200,
         });
         let state = test_state(mock);
         let resp = get_storage_usage(axum::extract::State(state)).await;
@@ -500,15 +578,18 @@ mod tests {
         let r = StorageUsageResponse {
             datasets_bytes: 100,
             artifacts_bytes: 500,
-            total_bytes: 600,
+            models_bytes: 200,
+            total_bytes: 800,
             measured: true,
         };
         let json = serde_json::to_value(&r).unwrap();
         assert!(json.get("datasetsBytes").is_some());
         assert!(json.get("artifactsBytes").is_some());
+        assert!(json.get("modelsBytes").is_some());
         assert!(json.get("totalBytes").is_some());
         assert!(json.get("measured").is_some());
         assert!(json.get("datasets_bytes").is_none(), "leaked snake_case");
+        assert!(json.get("models_bytes").is_none(), "leaked snake_case");
     }
 
     // --- get_orchestrators enriched ---

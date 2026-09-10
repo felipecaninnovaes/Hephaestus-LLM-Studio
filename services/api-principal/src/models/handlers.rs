@@ -381,11 +381,13 @@ pub async fn upload_model(State(state): State<AppState>, mut multipart: Multipar
     }
 }
 
-/// POST /api/models/download — body `{url, engine, name?}` (D4).
+/// POST /api/models/download — body `{url, engine, name?}` (D4/E1 ADR-0012).
 ///
 /// Server-side no principal: reqwest stream → tempdir → PUT S3 → POST /internal/models.
-/// SSRF: allow-list via env `MODEL_DOWNLOAD_ALLOWED_HOSTS` (E1).
-/// Redirects: máx 5, re-validados contra allow-list + deny de privados a cada hop.
+/// SSRF: allow-list via `AppState.model_download_allowed_hosts` (E1 — boot-loaded).
+/// Redirects: `Policy::custom` com re-validação por hop contra allow-list + deny de
+/// ranges privados/metadata. Cada redirect que aponta para host não autorizado ou
+/// privado → 502 `model_download_failed` (falha dentro do client).
 pub async fn download_model(
     State(state): State<AppState>,
     Json(body): Json<DownloadRequest>,
@@ -402,27 +404,22 @@ pub async fn download_model(
         Err(_) => return invalid_request(),
     };
 
-    // E1: allow-list via env `MODEL_DOWNLOAD_ALLOWED_HOSTS`.
-    let allowed_hosts_str = std::env::var("MODEL_DOWNLOAD_ALLOWED_HOSTS").unwrap_or_default();
-    if allowed_hosts_str.trim().is_empty() {
+    // E1: allow-list via AppState (carregada no boot — não std::env::get por request).
+    let allowed_hosts = &state.model_download_allowed_hosts;
+    if allowed_hosts.is_empty() {
         return err(
             StatusCode::FORBIDDEN,
             "model_download_disabled",
             MSG_MODEL_DOWNLOAD_DISABLED,
         );
     }
-    let allowed_hosts: Vec<String> = allowed_hosts_str
-        .split(',')
-        .map(|s| s.trim().to_lowercase())
-        .filter(|s| !s.is_empty())
-        .collect();
 
     let hostname = match parsed_url.host_str() {
         Some(h) => h.to_lowercase(),
         None => return invalid_request(),
     };
 
-    if !validate::host_allowed(&hostname, &allowed_hosts) {
+    if !validate::host_allowed(&hostname, allowed_hosts) {
         return err(
             StatusCode::FORBIDDEN,
             "model_download_disabled",
@@ -460,24 +457,43 @@ pub async fn download_model(
     };
     let tmp_path = tmp_dir.path().join(&final_name);
 
+    // E1b: redirect policy com re-validação por hop.
+    // Cada redirect é verificado contra a allow-list + deny de privados antes
+    // de seguir; host não autorizado → 502 (falha dentro do client).
+    let allowed_hosts_clone = allowed_hosts.clone();
+    let redirect_policy = reqwest::redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() >= validate::MAX_REDIRECTS as usize {
+            return attempt.error("too many redirects");
+        }
+        let url = attempt.url();
+        let hop_host = match url.host_str() {
+            Some(h) => h.to_lowercase(),
+            None => return attempt.error("no hostname in redirect"),
+        };
+        if !validate::host_allowed(&hop_host, &allowed_hosts_clone) {
+            return attempt.error("redirect to non-allowed host");
+        }
+        // DNS + deny de privados no hop.
+        use std::net::ToSocketAddrs;
+        if let Ok(addrs) = format!("{hop_host}:443").to_socket_addrs() {
+            for addr in addrs {
+                if validate::is_private_ip(addr.ip()) {
+                    return attempt.error("redirect to private IP");
+                }
+            }
+        }
+        attempt.follow()
+    });
+
     let client = match reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(30))
         .timeout(std::time::Duration::from_secs(120))
-        .redirect(reqwest::redirect::Policy::limited(
-            validate::MAX_REDIRECTS as usize,
-        ))
+        .redirect(redirect_policy)
         .build()
     {
         Ok(c) => c,
         Err(_) => return invalid_request(),
     };
-
-    // Download com verificação de hostname a cada hop (custom policy).
-    // O redirect policy do reqwest não permite hook por hop, então usamos
-    // a policy limitada e verificamos o hostname final após o download.
-    // Para validação por hop, precisaríamos de um client custom — por ora,
-    // verificamos o hostname final (reduz SSRF mas não é 100% por hop).
-    // TODO(I.4b): redirect policy customizado com verificação por hop.
 
     let resp = match client.get(&body.url).send().await {
         Ok(r) => r,
@@ -491,10 +507,10 @@ pub async fn download_model(
         }
     };
 
-    // Verifica o hostname final (após redirects).
+    // Verificação final pós-redirect (redundante com Policy mas segura).
     let final_url = resp.url().clone();
     let final_hostname = final_url.host_str().unwrap_or("").to_lowercase();
-    if !validate::host_allowed(&final_hostname, &allowed_hosts) {
+    if !validate::host_allowed(&final_hostname, allowed_hosts) {
         return err(
             StatusCode::BAD_GATEWAY,
             "model_download_failed",
@@ -502,7 +518,6 @@ pub async fn download_model(
         );
     }
     if let Err(_resp) = resolve_and_check_private(&final_hostname).await {
-        // Mapeia para 502 (falha externa).
         return err(
             StatusCode::BAD_GATEWAY,
             "model_download_failed",
@@ -698,6 +713,26 @@ mod tests {
             embedder: std::sync::Arc::new(crate::search::MockEmbedder::new()),
             embedding_model: "ViT-B-32".to_string(),
             manager: std::sync::Arc::new(manager),
+            model_download_allowed_hosts: vec![],
+        }
+    }
+
+    fn test_state_with_hosts(manager: MockManager, hosts: Vec<String>) -> AppState {
+        AppState {
+            pool: sqlx::PgPool::connect_lazy("postgres://n/n").expect("lazy"),
+            jwt_secret: [0x42; 32],
+            secure_cookie: false,
+            setup_required: false,
+            storage: std::sync::Arc::new(MockStorage::new()),
+            storage_config: crate::storage::StorageConfig {
+                bucket: "heph-test".into(),
+                public_endpoint: None,
+                url_ttl_secs: 60,
+            },
+            embedder: std::sync::Arc::new(crate::search::MockEmbedder::new()),
+            embedding_model: "ViT-B-32".to_string(),
+            manager: std::sync::Arc::new(manager),
+            model_download_allowed_hosts: hosts,
         }
     }
 
@@ -822,13 +857,12 @@ mod tests {
         assert!(v.is_err());
     }
 
-    // --- Download handler 400 tests (no env dependency) ---
+    // --- Download handler tests (E1: allow-list via state) ---
 
     #[tokio::test]
     async fn download_400_invalid_scheme() {
-        std::env::set_var("MODEL_DOWNLOAD_ALLOWED_HOSTS", "example.com");
         let mock = MockManager::default();
-        let state = test_state(mock);
+        let state = test_state_with_hosts(mock, vec!["example.com".into()]);
 
         let body = DownloadRequest {
             url: "ftp://example.com/model.pt".to_string(),
@@ -838,14 +872,12 @@ mod tests {
 
         let resp = download_model(axum::extract::State(state), Json(body)).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        std::env::remove_var("MODEL_DOWNLOAD_ALLOWED_HOSTS");
     }
 
     #[tokio::test]
     async fn download_400_invalid_engine() {
-        std::env::set_var("MODEL_DOWNLOAD_ALLOWED_HOSTS", "example.com");
         let mock = MockManager::default();
-        let state = test_state(mock);
+        let state = test_state_with_hosts(mock, vec!["example.com".into()]);
 
         let body = DownloadRequest {
             url: "https://example.com/model.pt".to_string(),
@@ -855,6 +887,40 @@ mod tests {
 
         let resp = download_model(axum::extract::State(state), Json(body)).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        std::env::remove_var("MODEL_DOWNLOAD_ALLOWED_HOSTS");
+    }
+
+    #[tokio::test]
+    async fn download_403_disabled_when_no_hosts() {
+        let mock = MockManager::default();
+        let state = test_state(mock); // model_download_allowed_hosts: vec![]
+
+        let body = DownloadRequest {
+            url: "https://example.com/model.pt".to_string(),
+            engine: "yolo".to_string(),
+            name: None,
+        };
+
+        let resp = download_model(axum::extract::State(state), Json(body)).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(json["code"], "model_download_disabled");
+    }
+
+    #[tokio::test]
+    async fn download_403_host_not_in_allow_list() {
+        let mock = MockManager::default();
+        let state = test_state_with_hosts(mock, vec!["huggingface.co".into()]);
+
+        let body = DownloadRequest {
+            url: "https://evil.com/model.pt".to_string(),
+            engine: "yolo".to_string(),
+            name: None,
+        };
+
+        let resp = download_model(axum::extract::State(state), Json(body)).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 }

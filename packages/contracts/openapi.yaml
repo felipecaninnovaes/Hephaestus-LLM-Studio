@@ -1813,14 +1813,15 @@ paths:
     get:
       operationId: listModels
       tags: [jobs]
-      summary: Lista pesos/modelos derivados de treinos
+      summary: Lista modelos/checkpoints da tabela `models`
       description: |
-        Pesos derivados de `job_artifacts.kind='model'` de jobs `done`
-        (ADR-0009 D2). Último checkpoint por `(engine, model)`.
+        Modelos da tabela canônica `models` (D2/D6 ADR-0012).
+        Fonte: tabela `models` (substituiu derived SQL de `job_artifacts`).
+        `url`: presigned GET do `s3_key` (null sem `S3_PUBLIC_ENDPOINT_URL`).
         Manager indisponível ⇒ 503 `queue_unavailable`.
       responses:
         "200":
-          description: Lista de modelos/pesos.
+          description: Lista de modelos/checkpoints.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ModelWeightList" }
@@ -2174,7 +2175,7 @@ components:
       required: [datasetId]
       additionalProperties: false
       description: >
-        Body de `POST /api/jobs/yolo` (ADR-0007 D6/D7). `datasetId` é
+        Body de `POST /api/jobs/yolo` (ADR-0007 D6/D7/D5 ADR-0012). `datasetId` é
         obrigatório; os demais campos são OPCIONAIS com defaults.
         Wire camelCase; `deny_unknown_fields` garante 400 para chaves desconhecidas.
       properties:
@@ -2214,6 +2215,10 @@ components:
           type: [integer, "null"]
           format: uint64
           description: "Seed opcional (null = 42 no config.yaml)."
+        weights:
+          type: [string, "null"]
+          format: uuid
+          description: "UUID de pesos existentes na tabela `models` para fine-tune (D5). Não-UUID ⇒ 400 `invalid_request`."
 
     YoloAugment:
       type: object
@@ -3058,11 +3063,11 @@ components:
       type: object
       required: [items]
       additionalProperties: false
-      description: "Lista de pesos/modelos (ADR-0009 D2)."
+      description: "Lista de modelos/checkpoints (D6 ADR-0012 — substituiu ModelWeight)."
       properties:
         items:
           type: array
-          items: { $ref: "#/components/schemas/ModelWeight" }
+          items: { $ref: "#/components/schemas/Model" }
 
     Model:
       type: object
@@ -3110,9 +3115,9 @@ components:
 
     StorageUsage:
       type: object
-      required: [datasetsBytes, artifactsBytes, totalBytes, measured]
+      required: [datasetsBytes, artifactsBytes, modelsBytes, totalBytes, measured]
       additionalProperties: false
-      description: "Uso de storage (ADR-0009 D3)."
+      description: "Uso de storage (ADR-0009 D3 / ADR-0012 D8)."
       properties:
         datasetsBytes:
           type: integer
@@ -3123,12 +3128,17 @@ components:
           type: integer
           format: int64
           minimum: 0
-          description: "Bytes de artefatos de jobs (via manager)."
+          description: "Bytes de artefatos de jobs, excluindo `kind='model'` (via manager)."
+        modelsBytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: "Bytes de modelos/checkpoints na tabela `models` (via manager)."
         totalBytes:
           type: integer
           format: int64
           minimum: 0
-          description: "Soma de datasets + artifacts."
+          description: "Soma de datasets + artifacts + models."
         measured:
           type: boolean
           description: "true quando 200 — bytes reais dos contadores."

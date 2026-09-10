@@ -123,14 +123,21 @@ pub struct InternalOrchestrator {
 }
 
 /// Peso/modelo retornado pelo manager (snake_case interno).
+/// Shape = `ModelItem` do manager (tabela `models` — ADR-0012 D2).
 #[derive(Debug, Clone, Deserialize)]
 pub struct InternalModel {
     pub id: String,
-    pub job_id: String,
-    pub path: String,
-    pub bytes: i64,
+    pub name: String,
     pub engine: String,
-    pub model: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    pub source: String,
+    #[serde(rename = "hash")]
+    pub md5: String,
+    pub bytes: i64,
+    pub path: String,
+    #[serde(default)]
+    pub job_id: Option<String>,
     pub created_at: String,
 }
 
@@ -138,6 +145,8 @@ pub struct InternalModel {
 #[derive(Debug, Clone, Deserialize)]
 pub struct InternalStorageUsage {
     pub artifacts_bytes: i64,
+    #[serde(default)]
+    pub models_bytes: i64,
 }
 
 /// Modelo público retornado pelo manager (camelCase wire — D6 ADR-0012).

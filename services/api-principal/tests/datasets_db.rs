@@ -60,6 +60,7 @@ async fn state() -> AppState {
         embedder: std::sync::Arc::new(api_principal::search::MockEmbedder::new()),
         embedding_model: "ViT-B-32".to_string(),
         manager: std::sync::Arc::new(api_principal::jobs::manager_client::MockManager::default()),
+        model_download_allowed_hosts: vec![],
     }
 }
 
@@ -5213,6 +5214,7 @@ async fn state_with_manager(
         embedder: std::sync::Arc::new(api_principal::search::MockEmbedder::new()),
         embedding_model: "ViT-B-32".to_string(),
         manager: manager_arc.clone(),
+        model_download_allowed_hosts: vec![],
     };
     (st, storage, manager_arc)
 }
@@ -5857,6 +5859,7 @@ async fn state_with_seeded_storage(
         embedder: std::sync::Arc::new(api_principal::search::MockEmbedder::new()),
         embedding_model: "ViT-B-32".to_string(),
         manager: manager_arc,
+        model_download_allowed_hosts: vec![],
     }
 }
 
@@ -6728,7 +6731,10 @@ async fn t6_storage_usage_200_datasets_bytes_matches() {
     let mock = {
         let mut m = api_principal::jobs::manager_client::MockManager::default();
         m.get_storage_usage_result =
-            Some(api_principal::jobs::manager_client::InternalStorageUsage { artifacts_bytes });
+            Some(api_principal::jobs::manager_client::InternalStorageUsage {
+                artifacts_bytes,
+                models_bytes: 0,
+            });
         m
     };
     let (st, _, _) = state_with_manager(mock).await;

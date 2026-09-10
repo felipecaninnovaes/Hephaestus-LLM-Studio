@@ -47,6 +47,7 @@ fn setup_state() -> AppState {
         embedder: std::sync::Arc::new(api_principal::search::MockEmbedder::new()),
         embedding_model: "ViT-B-32".to_string(),
         manager: std::sync::Arc::new(api_principal::jobs::manager_client::MockManager::default()),
+        model_download_allowed_hosts: vec![],
     }
 }
 
@@ -1089,7 +1090,7 @@ async fn orchestrator_response_keys_are_camel_case() {
 
 #[tokio::test]
 async fn model_response_keys_are_camel_case() {
-    // Contract test: GET /api/models must return camelCase keys.
+    // Contract test: GET /api/models must return camelCase keys (D6 ADR-0012).
     use api_principal::jobs::manager_client::{InternalModel, MockManager};
 
     let mock = MockManager::default();
@@ -1098,11 +1099,14 @@ async fn model_response_keys_are_camel_case() {
         let mut m = mock;
         m.list_models_result = Some(vec![InternalModel {
             id: "550e8400-e29b-41d4-a716-446655440003".into(),
-            job_id: "550e8400-e29b-41d4-a716-446655440004".into(),
-            path: "best.pt".into(),
-            bytes: 110,
+            name: "best.pt".into(),
             engine: "yolo".into(),
-            model: "yolo11m".into(),
+            model: Some("yolo11m".into()),
+            source: "train".into(),
+            md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+            bytes: 110,
+            path: "artifacts/550e8400-e29b-41d4-a716-446655440004/best.pt".into(),
+            job_id: Some("550e8400-e29b-41d4-a716-446655440004".into()),
             created_at: "2026-09-09T12:00:00Z".into(),
         }]);
         m
@@ -1134,6 +1138,11 @@ async fn model_response_keys_are_camel_case() {
         item.get("created_at").is_none(),
         "leaked snake_case created_at"
     );
+    // D6 novos campos.
+    assert_eq!(item["source"], "train");
+    assert!(item.get("md5").is_some(), "missing md5");
+    assert!(item.get("model").is_some(), "missing model");
+    assert!(item.get("url").is_some(), "missing url key");
     // name = basename of path.
     assert_eq!(item["name"], "best.pt");
 }

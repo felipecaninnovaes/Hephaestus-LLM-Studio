@@ -7,6 +7,7 @@ pub mod auth;
 pub mod datasets;
 pub mod error;
 pub mod jobs;
+pub mod models;
 pub mod monitoring;
 pub mod search;
 pub mod state;

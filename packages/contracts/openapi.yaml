@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.10.0
+  version: 0.11.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -1835,6 +1835,130 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/models/upload:
+    post:
+      operationId: uploadModel
+      tags: [jobs]
+      summary: Upload de pesos de modelo (multipart)
+      description: |
+        Upload de arquivo de pesos via multipart (D3 ADR-0012).
+        Campo `file` (obrigatório) + form fields `engine` (v1: "yolo") + `name?`.
+        DefaultBodyLimit 2 GiB+8 MiB envelope; magic bytes `PK\x03\x04` obrigatório;
+        md5 hex computado; PUT S3 `models/<engine>/<id>/<name>`; compensação delete
+        se INSERT no manager falhar. Erros: 400 `invalid_request` (engine/ext/magic/name),
+        413 `invalid_request` (envelope), 503 `queue_unavailable` (manager), 503 `storage_unavailable` (S3).
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, engine]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: "Arquivo de pesos (.pt, magic PK\\x03\\x04)."
+                engine:
+                  type: string
+                  enum: [yolo]
+                  description: "Engine do modelo (v1: apenas yolo)."
+                name:
+                  type: string
+                  maxLength: 255
+                  description: "Nome opcional do modelo (deve terminar em .pt; ausente = nome do arquivo)."
+      responses:
+        "201":
+          description: Modelo criado com sucesso.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Model" }
+        "400":
+          description: "Requisição inválida (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413":
+          description: "Corpo acima do limite 2 GiB+8 MiB (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager ou storage indisponível (`code: queue_unavailable` ou `storage_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/models/download:
+    post:
+      operationId: downloadModel
+      tags: [jobs]
+      summary: Download de modelo por URL (server-side)
+      description: |
+        Download server-side de pesos por URL (D4 ADR-0012).
+        Body camelCase `{url, engine, name?}`. Allow-list via env
+        `MODEL_DOWNLOAD_ALLOWED_HOSTS` (E1): ausente/vazia ⇒ 403
+        `model_download_disabled`. Redirects máx. 5, re-validados contra
+        allow-list + deny de privados a cada hop. Stream p/ tempdir com cap
+        2 GiB e timeouts (30s connect / 120s total). PUT S3 + POST
+        /internal/models + compensação delete se INSERT falhar.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url, engine]
+              properties:
+                url:
+                  type: string
+                  format: uri
+                  description: "URL do arquivo de pesos (http/https)."
+                engine:
+                  type: string
+                  enum: [yolo]
+                  description: "Engine do modelo (v1: apenas yolo)."
+                name:
+                  type: string
+                  maxLength: 255
+                  description: "Nome opcional do modelo (deve terminar em .pt; ausente = basename da URL)."
+      responses:
+        "201":
+          description: Modelo baixado e criado com sucesso.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Model" }
+        "400":
+          description: "Requisição inválida (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: "Download desabilitado (`code: model_download_disabled`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "502":
+          description: "Falha no download externo (`code: model_download_failed`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager ou storage indisponível (`code: queue_unavailable` ou `storage_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/storage/usage:
     get:
       operationId: getStorageUsage
@@ -1903,8 +2027,8 @@ components:
       properties:
         code:
           type: string
-          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, storage_unavailable, classes_in_use, index_not_ready, embedding_unavailable, import_invalid, engine_unsupported, queue_unavailable, dataset_not_ready, job_not_abortable, job_not_done, pairing_invalid, internal]
-          description: "Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`; o cliente DEVE ter ramo default: o enum cresce por fatia (aditivo na 0.2.0: `not_found`, `slug_conflict`; na 0.3.0: `storage_unavailable`, ADR-0003 D10; na 0.3.0, fatia 3g.1: `classes_in_use`; na 0.5.0, fatia 3f.5: `index_not_ready`, `embedding_unavailable`, ADR-0004 D5; na 0.6.0, fatia 3e: `import_invalid`; na 0.7.0, fatia 4: `engine_unsupported`, `queue_unavailable`, `dataset_not_ready`, `job_not_abortable`; na 0.8.0, fatia 5: `job_not_done`; na 0.10.0, fatia H: `pairing_invalid`, ADR-0011 D5)."
+          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, storage_unavailable, classes_in_use, index_not_ready, embedding_unavailable, import_invalid, engine_unsupported, queue_unavailable, dataset_not_ready, job_not_abortable, job_not_done, pairing_invalid, model_download_failed, model_download_disabled, internal]
+          description: "Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`; o cliente DEVE ter ramo default: o enum cresce por fatia (aditivo na 0.2.0: `not_found`, `slug_conflict`; na 0.3.0: `storage_unavailable`, ADR-0003 D10; na 0.3.0, fatia 3g.1: `classes_in_use`; na 0.5.0, fatia 3f.5: `index_not_ready`, `embedding_unavailable`, ADR-0004 D5; na 0.6.0, fatia 3e: `import_invalid`; na 0.7.0, fatia 4: `engine_unsupported`, `queue_unavailable`, `dataset_not_ready`, `job_not_abortable`; na 0.8.0, fatia 5: `job_not_done`; na 0.10.0, fatia H: `pairing_invalid`, ADR-0011 D5; na 0.11.0, fatia I: `model_download_failed`, `model_download_disabled`, ADR-0012 D4/E1)."
         message:
           type: string
           description: Humano-curto, ESTÁTICO por code; nunca contém hash, token, segredo ou existência de usuário.
@@ -2939,6 +3063,50 @@ components:
         items:
           type: array
           items: { $ref: "#/components/schemas/ModelWeight" }
+
+    Model:
+      type: object
+      required: [id, name, engine, source, bytes, md5, createdAt]
+      additionalProperties: false
+      description: "Modelo público (D6 ADR-0012). Campos `model`/`jobId`/`url` são nullable (upload/download não têm jobId nem variante)."
+      properties:
+        id: { type: string, format: uuid }
+        name:
+          type: string
+          description: "Nome do arquivo de pesos (ex.: best.pt)."
+        engine:
+          type: string
+          description: "Engine do modelo."
+        model:
+          type: string
+          nullable: true
+          description: "Variante conhecida (treino); null para upload/download."
+        source:
+          type: string
+          enum: [train, upload, download]
+          description: "Origem do modelo."
+        bytes:
+          type: integer
+          format: int64
+          minimum: 0
+          description: "Tamanho do arquivo em bytes."
+        md5:
+          type: string
+          description: "Hash MD5 hex 32 do arquivo."
+        url:
+          type: string
+          format: uri
+          nullable: true
+          description: "URL presigned GET (null se sem S3_PUBLIC_ENDPOINT_URL)."
+        jobId:
+          type: string
+          format: uuid
+          nullable: true
+          description: "PK do job de treino (null para upload/download)."
+        createdAt:
+          type: string
+          format: date-time
+          description: "Momento de criação."
 
     StorageUsage:
       type: object

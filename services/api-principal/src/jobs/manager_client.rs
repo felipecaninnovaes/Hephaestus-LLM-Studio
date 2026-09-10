@@ -19,6 +19,8 @@ pub enum ManagerError {
     NotAbortable,
     /// Resposta 409 do manager (pairing code inválido ou orquestrador inalcançável).
     PairingInvalid,
+    /// Resposta 409 do manager (s3_key duplicado — modelo já existe).
+    Conflict,
 }
 
 impl std::fmt::Display for ManagerError {
@@ -28,6 +30,7 @@ impl std::fmt::Display for ManagerError {
             Self::NotFound => write!(f, "manager: not found"),
             Self::NotAbortable => write!(f, "manager: job not abortable"),
             Self::PairingInvalid => write!(f, "manager: pairing invalid"),
+            Self::Conflict => write!(f, "manager: conflict"),
         }
     }
 }
@@ -137,6 +140,24 @@ pub struct InternalStorageUsage {
     pub artifacts_bytes: i64,
 }
 
+/// Modelo público retornado pelo manager (camelCase wire — D6 ADR-0012).
+#[derive(Debug, Clone, Deserialize)]
+pub struct InternalModelResponse {
+    pub id: String,
+    pub name: String,
+    pub engine: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    pub source: String,
+    pub bytes: i64,
+    pub md5: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub job_id: Option<String>,
+    pub created_at: String,
+}
+
 /// Resposta do manager ao criar job (snake_case interno).
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateJobResponse {
@@ -197,6 +218,12 @@ pub trait ManagerPort: Send + Sync {
 
     /// Revoga um orquestrador via manager (H.4 — ADR-0011 D5).
     async fn revoke_orchestrator(&self, id: &str) -> Result<(), ManagerError>;
+
+    /// Cria um modelo via manager (I.4a — ADR-0012 D1).
+    async fn create_model(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<InternalModelResponse, ManagerError>;
 }
 
 /// Implementação HTTP real do manager client.
@@ -462,6 +489,33 @@ impl ManagerPort for HttpManager {
         }
         Ok(())
     }
+
+    async fn create_model(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<InternalModelResponse, ManagerError> {
+        let url = format!("{}/internal/models", self.base_url);
+        let resp = self
+            .client
+            .post(&url)
+            .header("authorization", self.auth_header())
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| ManagerError::Unavailable(format!("manager request: {e}")))?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::CONFLICT {
+            return Err(ManagerError::Conflict);
+        }
+        if !status.is_success() {
+            return Err(ManagerError::Unavailable(format!(
+                "manager status: {status}"
+            )));
+        }
+        resp.json()
+            .await
+            .map_err(|e| ManagerError::Unavailable(format!("manager body: {e}")))
+    }
 }
 
 /// Mock do manager para testes unitários e de integração.
@@ -493,6 +547,12 @@ pub struct MockManager {
     pub adopt_orchestrator_result: Option<InternalOrchestrator>,
     /// Se `true`, `revoke_orchestrator` retorna `NotFound` (para testar 404).
     pub revoke_not_found: bool,
+    /// Resultado de `create_model` (para testar 201).
+    pub create_model_result: Option<InternalModelResponse>,
+    /// Se `true`, `create_model` retorna `Conflict` (para testar 409).
+    pub create_model_conflict: bool,
+    /// Body capturado na última chamada a `create_model` (para asserts de teste).
+    last_create_model_body: std::sync::Mutex<Option<serde_json::Value>>,
     /// Body capturado na última chamada a `create_job` (para asserts de teste).
     last_create_job_body: std::sync::Mutex<Option<serde_json::Value>>,
     /// Jobs indexados por ID — `get_job` consulta aqui antes do resultado fixo.
@@ -506,6 +566,14 @@ impl MockManager {
     /// Retorna o body capturado na última chamada a `create_job`.
     pub fn last_create_job_body(&self) -> Option<serde_json::Value> {
         self.last_create_job_body
+            .try_lock()
+            .ok()
+            .and_then(|m| m.clone())
+    }
+
+    /// Retorna o body capturado na última chamada a `create_model`.
+    pub fn last_create_model_body(&self) -> Option<serde_json::Value> {
+        self.last_create_model_body
             .try_lock()
             .ok()
             .and_then(|m| m.clone())
@@ -530,6 +598,9 @@ impl Default for MockManager {
             fail_adopt_pairing: false,
             adopt_orchestrator_result: None,
             revoke_not_found: false,
+            create_model_result: None,
+            create_model_conflict: false,
+            last_create_model_body: std::sync::Mutex::new(None),
             last_create_job_body: std::sync::Mutex::new(None),
             jobs_by_id: std::collections::HashMap::new(),
             artifacts_by_id: std::collections::HashMap::new(),
@@ -661,5 +732,23 @@ impl ManagerPort for MockManager {
             return Err(ManagerError::NotFound);
         }
         Ok(())
+    }
+
+    async fn create_model(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<InternalModelResponse, ManagerError> {
+        if self.fail {
+            return Err(ManagerError::Unavailable("mock fail".into()));
+        }
+        if let Ok(mut guard) = self.last_create_model_body.try_lock() {
+            *guard = Some(body.clone());
+        }
+        if self.create_model_conflict {
+            return Err(ManagerError::Conflict);
+        }
+        self.create_model_result
+            .clone()
+            .ok_or(ManagerError::Unavailable("no create_model result".into()))
     }
 }

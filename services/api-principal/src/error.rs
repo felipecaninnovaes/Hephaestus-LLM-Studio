@@ -51,3 +51,7 @@ pub const MSG_JOB_NOT_ABORTABLE: &str = "job is not abortable";
 pub const MSG_JOB_NOT_DONE: &str = "job is not done";
 /// 409 de código de pareamento inválido ou orquestrador inalcançável (H.4, ADR-0011 D5).
 pub const MSG_PAIRING_INVALID: &str = "pairing code invalid or orchestrator unreachable";
+/// 502 de falha de rede/timeout/tamanho no download por URL (I.4a, ADR-0012 D4).
+pub const MSG_MODEL_DOWNLOAD_FAILED: &str = "model download failed";
+/// 403 de download por URL com MODEL_DOWNLOAD_ALLOWED_HOSTS ausente/vazio (I.4a, ADR-0012 D4/E1).
+pub const MSG_MODEL_DOWNLOAD_DISABLED: &str = "model download disabled";

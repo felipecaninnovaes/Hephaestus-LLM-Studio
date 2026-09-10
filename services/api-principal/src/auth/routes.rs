@@ -133,6 +133,12 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
         &[204, 401, 404, 503],
     ),
     ("GET", "/api/models", &[200, 401, 503]),
+    ("POST", "/api/models/upload", &[201, 400, 401, 413, 503]),
+    (
+        "POST",
+        "/api/models/download",
+        &[201, 400, 401, 403, 502, 503],
+    ),
     ("GET", "/api/storage/usage", &[200, 401, 503]),
 ];
 
@@ -341,6 +347,16 @@ pub fn build(state: AppState) -> axum::Router {
             post(monitoring::revoke_orchestrator),
         )
         .route("/api/models", get(monitoring::get_models))
+        .route(
+            "/api/models/upload",
+            post(crate::models::handlers::upload_model).layer(DefaultBodyLimit::max(
+                crate::models::validate::MODEL_UPLOAD_BODY_LIMIT_BYTES,
+            )),
+        )
+        .route(
+            "/api/models/download",
+            post(crate::models::handlers::download_model),
+        )
         .route("/api/storage/usage", get(monitoring::get_storage_usage))
         // route_layer DEPOIS dos .route(): aplicado a um router vazio o axum 0.7 panic
         // no boot (path_router.rs, `routes.is_empty()`). Só cobre as rotas deste

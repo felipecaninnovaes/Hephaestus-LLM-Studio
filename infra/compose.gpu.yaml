@@ -29,6 +29,8 @@ services:
       S3_ORCH_ACCESS_KEY: ${S3_ORCH_ACCESS_KEY}
       S3_ORCH_SECRET_KEY: ${S3_ORCH_SECRET_KEY}
       ORCH_GPU_DEVICES: ${ORCH_GPU_DEVICES:-0}
+      ORCH_ADVERTISE_URL: http://10.15.1.2:8082
+      ORCH_PAIRING_CODE: ${ORCH_PAIRING_CODE:-heph_p_change_me}
       ORCH_VOL_DATASETS: gpu_gpu_datasets
       ORCH_VOL_OUTPUTS: gpu_gpu_outputs
       EXEC_MODE: docker

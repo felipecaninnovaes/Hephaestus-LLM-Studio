@@ -6,8 +6,8 @@
 
 use async_trait::async_trait;
 use manager::{
-    self, ArtifactItem, CreateJobRequest, HeartbeatRequest, ManagerError, PackageRef,
-    ReportRequest, VramTable,
+    self, ArtifactItem, CreateJobRequest, CreateModelRequest, HeartbeatRequest, ManagerError,
+    PackageRef, ReportRequest, VramTable,
 };
 use sqlx::PgPool;
 
@@ -163,6 +163,7 @@ fn test_job_request(dataset_id: uuid::Uuid) -> CreateJobRequest {
             }
         })),
         vram_min_gb: None,
+        weights_id: None,
     }
 }
 
@@ -1787,6 +1788,307 @@ async fn hook_sem_best_pt_nao_insere() {
 }
 
 // ===========================================================================
+// I.2b — POST /internal/models, weights_id, dispatch weights_ref
+// ===========================================================================
+
+/// POST /internal/models: 201 com id dado.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_model_201_com_id_dado() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let model_id = uuid::Uuid::new_v4();
+    let req = CreateModelRequest {
+        id: model_id,
+        engine: "yolo".into(),
+        name: "best.pt".into(),
+        model: Some("yolo11m".into()),
+        s3_key: "models/yolo/abc/best.pt".into(),
+        source: "upload".into(),
+        url: None,
+        hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
+        bytes: 1024,
+        job_id: None,
+    };
+
+    let item = manager::create_model(&p, req)
+        .await
+        .expect("create model 201");
+    assert_eq!(item.id, model_id.to_string());
+    assert_eq!(item.engine, "yolo");
+    assert_eq!(item.name, "best.pt");
+    assert_eq!(item.model.as_deref(), Some("yolo11m"));
+    assert_eq!(item.source, "upload");
+    assert_eq!(item.hash, "d41d8cd98f00b204e9800998ecf8427e");
+    assert_eq!(item.bytes, 1024);
+    assert_eq!(item.path, "models/yolo/abc/best.pt");
+    assert!(item.job_id.is_none());
+}
+
+/// POST /internal/models: 400 — engine inválida.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_model_400_engine_invalida() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let req = CreateModelRequest {
+        id: uuid::Uuid::new_v4(),
+        engine: "diffusion".into(),
+        name: "model.pt".into(),
+        model: None,
+        s3_key: "models/diff/abc/model.pt".into(),
+        source: "upload".into(),
+        url: None,
+        hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
+        bytes: 100,
+        job_id: None,
+    };
+
+    let result = manager::create_model(&p, req).await;
+    assert!(matches!(result, Err(ManagerError::InvalidRequest(_))));
+}
+
+/// POST /internal/models: 400 — hash curto.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_model_400_hash_curto() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let req = CreateModelRequest {
+        id: uuid::Uuid::new_v4(),
+        engine: "yolo".into(),
+        name: "model.pt".into(),
+        model: None,
+        s3_key: "models/yolo/abc2/model.pt".into(),
+        source: "upload".into(),
+        url: None,
+        hash: "abc123".into(),
+        bytes: 100,
+        job_id: None,
+    };
+
+    let result = manager::create_model(&p, req).await;
+    assert!(matches!(result, Err(ManagerError::InvalidRequest(_))));
+}
+
+/// POST /internal/models: 400 — source inválida.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_model_400_source_invalida() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let req = CreateModelRequest {
+        id: uuid::Uuid::new_v4(),
+        engine: "yolo".into(),
+        name: "model.pt".into(),
+        model: None,
+        s3_key: "models/yolo/abc3/model.pt".into(),
+        source: "huggingface".into(),
+        url: None,
+        hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
+        bytes: 100,
+        job_id: None,
+    };
+
+    let result = manager::create_model(&p, req).await;
+    assert!(matches!(result, Err(ManagerError::InvalidRequest(_))));
+}
+
+/// POST /internal/models: 409 — s3_key duplicado.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_model_409_s3_key_duplicado() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let req1 = CreateModelRequest {
+        id: uuid::Uuid::new_v4(),
+        engine: "yolo".into(),
+        name: "best.pt".into(),
+        model: None,
+        s3_key: "models/yolo/dup/best.pt".into(),
+        source: "upload".into(),
+        url: None,
+        hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
+        bytes: 100,
+        job_id: None,
+    };
+    manager::create_model(&p, req1).await.expect("first insert");
+
+    let req2 = CreateModelRequest {
+        id: uuid::Uuid::new_v4(),
+        engine: "yolo".into(),
+        name: "best.pt".into(),
+        model: None,
+        s3_key: "models/yolo/dup/best.pt".into(),
+        source: "upload".into(),
+        url: None,
+        hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
+        bytes: 100,
+        job_id: None,
+    };
+    let result = manager::create_model(&p, req2).await;
+    match result {
+        Err(ManagerError::Internal(ref msg)) if msg == "model_exists" => {}
+        other => panic!("esperado model_exists, {:?}", other),
+    }
+}
+
+/// create_job com weights_id inexistente → 404.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_job_weights_id_inexistente_404() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let fake_id = uuid::Uuid::new_v4();
+    let mut req = test_job_request(ds_id);
+    req.weights_id = Some(fake_id);
+
+    let result = manager::create_job(&p, req).await;
+    assert!(matches!(result, Err(ManagerError::NotFound)));
+}
+
+/// POST /internal/models: 409 — s3_key duplicado.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_job_weights_valido_grava_params() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    // Insere modelo yolo via create_model.
+    let model_id = uuid::Uuid::new_v4();
+    let model_req = CreateModelRequest {
+        id: model_id,
+        engine: "yolo".into(),
+        name: "best.pt".into(),
+        model: Some("yolo11m".into()),
+        s3_key: "models/yolo/valid/best.pt".into(),
+        source: "upload".into(),
+        url: None,
+        hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
+        bytes: 2048,
+        job_id: None,
+    };
+    manager::create_model(&p, model_req)
+        .await
+        .expect("insert model");
+
+    let mut req = test_job_request(ds_id);
+    req.weights_id = Some(model_id);
+
+    let resp = manager::create_job(&p, req)
+        .await
+        .expect("create job with weights");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    // Verifica params.weights_ref no JSONB.
+    let row: (serde_json::Value,) = sqlx::query_as("SELECT params FROM jobs WHERE id = $1")
+        .bind(job_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    let wr = row.0.get("weights_ref").expect("weights_ref presente");
+    assert_eq!(wr["s3_key"], "models/yolo/valid/best.pt");
+    assert_eq!(wr["md5"], "d41d8cd98f00b204e9800998ecf8427e");
+}
+
+/// create_job SEM weights → dispatch sem weights_ref (regressão).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_job_sem_weights_dispatch_sem_weights_ref() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+
+    let _resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create job");
+
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+
+    // Verifica que o dispatch NÃO contém weights_ref.
+    let calls = orch.calls();
+    assert!(!calls.is_empty(), "dispatch should have been called");
+    let (_, body) = &calls[0];
+    assert!(
+        body.get("weights_ref").is_none(),
+        "dispatch body must not contain weights_ref when weights_id is absent"
+    );
+}
+
+/// create_job com weights → dispatch_body contém weights_ref {s3_key, md5}.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_job_com_weights_dispatch_contem_weights_ref() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+
+    // Insere modelo yolo.
+    let model_id = uuid::Uuid::new_v4();
+    let model_req = CreateModelRequest {
+        id: model_id,
+        engine: "yolo".into(),
+        name: "best.pt".into(),
+        model: Some("yolo11m".into()),
+        s3_key: "models/yolo/dispatch/best.pt".into(),
+        source: "upload".into(),
+        url: None,
+        hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
+        bytes: 2048,
+        job_id: None,
+    };
+    manager::create_model(&p, model_req)
+        .await
+        .expect("insert model");
+
+    let mut req = test_job_request(ds_id);
+    req.weights_id = Some(model_id);
+
+    let _resp = manager::create_job(&p, req)
+        .await
+        .expect("create job with weights");
+
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+
+    // Verifica dispatch_body contém weights_ref.
+    let calls = orch.calls();
+    assert!(!calls.is_empty(), "dispatch should have been called");
+    let (_, body) = &calls[0];
+    let wr = body
+        .get("weights_ref")
+        .expect("weights_ref deve estar no dispatch");
+    assert_eq!(wr["s3_key"], "models/yolo/dispatch/best.pt");
+    assert_eq!(wr["md5"], "d41d8cd98f00b204e9800998ecf8427e");
+}
+
+// ===========================================================================
 // H.2 — Identidade do heartbeat + cache por nó + lista enriquecida + agregação
 // ===========================================================================
 
@@ -2315,6 +2617,7 @@ async fn roteamento_2_nos_requisito_8_vai_para_12gb() {
             config_yaml: None,
             params: None,
             vram_min_gb: None,
+            weights_id: None,
         },
     )
     .await
@@ -2380,6 +2683,7 @@ async fn roteamento_sem_requisito_null_elegivel_order_by_nome() {
             config_yaml: None,
             params: None,
             vram_min_gb: None,
+            weights_id: None,
         },
     )
     .await
@@ -2459,6 +2763,7 @@ async fn roteamento_no_com_job_excluido() {
             config_yaml: None,
             params: None,
             vram_min_gb: None,
+            weights_id: None,
         },
     )
     .await
@@ -2513,6 +2818,7 @@ async fn roteamento_requisito_12_so_6gb_waiting_vram() {
             config_yaml: None,
             params: None,
             vram_min_gb: None,
+            weights_id: None,
         },
     )
     .await
@@ -2554,6 +2860,7 @@ async fn roteamento_sem_requisito_nenhum_online_waiting_slot() {
             config_yaml: None,
             params: None,
             vram_min_gb: None,
+            weights_id: None,
         },
     )
     .await

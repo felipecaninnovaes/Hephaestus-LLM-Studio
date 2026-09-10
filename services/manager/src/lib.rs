@@ -43,6 +43,13 @@ impl std::error::Error for ManagerError {}
 // Tipos de request/response (snake_case interno)
 // ---------------------------------------------------------------------------
 
+/// Referência de pesos para fine-tune (ADR-0012 D5 — snake_case interno).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WeightsRef {
+    pub s3_key: String,
+    pub md5: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateJobRequest {
     pub kind: String,
@@ -55,6 +62,8 @@ pub struct CreateJobRequest {
     pub config_yaml: Option<String>,
     pub params: Option<serde_json::Value>,
     pub vram_min_gb: Option<i32>,
+    /// UUID de uma row de `models` para fine-tune (ADR-0012 D5).
+    pub weights_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -345,6 +354,31 @@ pub async fn create_job(
         if let Some(ref pr) = req.package_ref {
             if let Ok(v) = serde_json::to_value(pr) {
                 params["package_ref"] = v;
+            }
+        }
+    }
+
+    // Resolve weights_id → weights_ref (ADR-0012 D5 — fail-fast no submit).
+    if let Some(weights_id) = req.weights_id {
+        let row: Option<(String, String, String)> =
+            sqlx::query_as("SELECT s3_key, hash, engine FROM models WHERE id = $1")
+                .bind(weights_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| ManagerError::Internal(format!("resolve weights: {e}")))?;
+
+        match row {
+            None => return Err(ManagerError::NotFound),
+            Some((s3_key, hash, engine)) => {
+                if engine != "yolo" {
+                    return Err(ManagerError::InvalidRequest(format!(
+                        "weights engine must be 'yolo', got '{engine}'"
+                    )));
+                }
+                params["weights_ref"] = serde_json::json!({
+                    "s3_key": s3_key,
+                    "md5": hash,
+                });
             }
         }
     }
@@ -1350,6 +1384,108 @@ pub async fn list_models(pool: &PgPool) -> Result<ModelsResponse, ManagerError> 
     Ok(ModelsResponse { items })
 }
 
+// ---------------------------------------------------------------------------
+// POST /internal/models — cria row na tabela models (ADR-0012 D1/I.2b)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateModelRequest {
+    pub id: Uuid,
+    pub engine: String,
+    pub name: String,
+    pub model: Option<String>,
+    pub s3_key: String,
+    pub source: String,
+    pub url: Option<String>,
+    pub hash: String,
+    pub bytes: i64,
+    pub job_id: Option<Uuid>,
+}
+
+/// Validação pura do CreateModelRequest (padrão da casa — função testável).
+fn validate_create_model(req: &CreateModelRequest) -> Result<(), ManagerError> {
+    if req.engine != "yolo" {
+        return Err(ManagerError::InvalidRequest(format!(
+            "engine must be 'yolo', got '{}'",
+            req.engine
+        )));
+    }
+    if !matches!(req.source.as_str(), "train" | "upload" | "download") {
+        return Err(ManagerError::InvalidRequest(format!(
+            "source must be 'train', 'upload', or 'download', got '{}'",
+            req.source
+        )));
+    }
+    if !is_valid_md5(&req.hash) {
+        return Err(ManagerError::InvalidRequest(format!(
+            "hash must be a 32-char lowercase hex md5, got '{}'",
+            req.hash
+        )));
+    }
+    if req.bytes < 0 {
+        return Err(ManagerError::InvalidRequest(format!(
+            "bytes must be >= 0, got {}",
+            req.bytes
+        )));
+    }
+    if req.name.is_empty() || req.name.len() > 255 {
+        return Err(ManagerError::InvalidRequest(format!(
+            "name must be between 1 and 255 chars, got {}",
+            req.name.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Cria uma row na tabela models (POST /internal/models — ADR-0012 D1).
+/// Retorna a row criada (shape = ModelItem).
+pub async fn create_model(
+    pool: &PgPool,
+    req: CreateModelRequest,
+) -> Result<ModelItem, ManagerError> {
+    validate_create_model(&req)?;
+
+    let result = sqlx::query(
+        "INSERT INTO models (id, engine, name, model, s3_key, source, url, hash, bytes, job_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+    )
+    .bind(req.id)
+    .bind(&req.engine)
+    .bind(&req.name)
+    .bind(&req.model)
+    .bind(&req.s3_key)
+    .bind(&req.source)
+    .bind(&req.url)
+    .bind(&req.hash)
+    .bind(req.bytes)
+    .bind(req.job_id)
+    .execute(pool)
+    .await;
+
+    match result {
+        Ok(_) => Ok(ModelItem {
+            id: req.id.to_string(),
+            name: req.name,
+            engine: req.engine,
+            model: req.model,
+            source: req.source,
+            hash: req.hash,
+            bytes: req.bytes,
+            path: req.s3_key,
+            job_id: req.job_id.map(|u| u.to_string()),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        }),
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("models_s3_key_key") || msg.contains("duplicate key") {
+                Err(ManagerError::Internal("model_exists".to_string()))
+            } else {
+                Err(ManagerError::Internal(format!("insert model: {e}")))
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct StorageUsageResponse {
     pub artifacts_bytes: i64,
@@ -1670,7 +1806,10 @@ pub async fn dispatch_next(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let dispatch_body = serde_json::json!({
+    // Extrai weights_ref do params se presente (ADR-0012 D5/I.2b).
+    let weights_ref = params.as_ref().and_then(|p| p.get("weights_ref")).cloned();
+
+    let mut dispatch_body = serde_json::json!({
         "job_id": job_id.to_string(),
         "engine": engine,
         "image": image,
@@ -1680,6 +1819,11 @@ pub async fn dispatch_next(
         "dataset_version_id": dataset_version_id,
         "workdir": orch_workdir,
     });
+
+    // Adiciona weights_ref ao dispatch quando presente (snake_case — casa com WeightsRef do orquestrador).
+    if let Some(wr) = weights_ref {
+        dispatch_body["weights_ref"] = wr;
+    }
 
     let url = format!("{}/internal/dispatch", orch_endpoint);
 

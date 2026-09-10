@@ -20,6 +20,8 @@ use uuid::Uuid;
 pub enum ManagerError {
     NotFound,
     NotAbortable,
+    InvalidRequest(String),
+    PairingInvalid,
     Internal(String),
 }
 
@@ -28,6 +30,8 @@ impl std::fmt::Display for ManagerError {
         match self {
             Self::NotFound => write!(f, "not found"),
             Self::NotAbortable => write!(f, "job not abortable"),
+            Self::InvalidRequest(e) => write!(f, "invalid request: {e}"),
+            Self::PairingInvalid => write!(f, "pairing_invalid"),
             Self::Internal(e) => write!(f, "{e}"),
         }
     }
@@ -164,6 +168,11 @@ pub struct ArtifactsListResponse {
 #[async_trait]
 pub trait OrchestratorClient: Send + Sync {
     async fn post(&self, url: &str, body: &serde_json::Value) -> Result<(), String>;
+    async fn post_json(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, String>;
 }
 
 /// Cliente HTTP real do orquestrador.
@@ -199,6 +208,30 @@ impl OrchestratorClient for HttpOrchestratorClient {
             return Err(format!("orchestrator status: {status}"));
         }
         Ok(())
+    }
+
+    async fn post_json(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let mut req = self.client.post(url).json(body);
+        if let Some(ref t) = self.token {
+            req = req.header("Authorization", format!("Bearer {t}"));
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| format!("orchestrator request: {e}"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(format!("orchestrator status: {status}"));
+        }
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("orchestrator response body: {e}"))?;
+        Ok(json)
     }
 }
 
@@ -241,6 +274,45 @@ pub type TelemetryCache = Arc<RwLock<std::collections::HashMap<Uuid, TelemetrySt
 
 pub fn new_telemetry_cache() -> TelemetryCache {
     Arc::new(RwLock::new(std::collections::HashMap::new()))
+}
+
+// ---------------------------------------------------------------------------
+// VRAM table (ADR-0011 D3)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VramTable {
+    pub defaults: VramDefaults,
+    pub entries: Vec<VramEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VramDefaults {
+    pub headroom_gb: i32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VramEntry {
+    pub engine: String,
+    pub model: String,
+    pub mode: String,
+    pub vram_min_gb: i32,
+}
+
+impl VramTable {
+    /// Resolve o requisito VRAM para um job: vram_min_gb + headroom.
+    /// Entrada faltante ⇒ None (permissivo).
+    pub fn resolve_required_gb(&self, engine: &str, model: &str, mode: &str) -> Option<i32> {
+        self.entries
+            .iter()
+            .find(|e| e.engine == engine && e.model == model && e.mode == mode)
+            .map(|e| e.vram_min_gb + self.defaults.headroom_gb)
+    }
+
+    /// Parse a partir de string YAML. Fail-fast se inválido.
+    pub fn parse(yaml: &str) -> Result<Self, String> {
+        serde_yaml::from_str(yaml).map_err(|e| format!("vram-table parse: {e}"))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -996,11 +1068,13 @@ pub fn auto_adopt_enabled(raw: Option<&str>) -> bool {
 }
 
 /// Auto-adoção: insere orchestrator-local se ausente, atualiza status.
+/// Guarda: auto-adoção NUNCA ressuscita revoked (ADR-0011 D5.7).
 pub async fn adopt_orchestrator(pool: &PgPool) -> Result<(), ManagerError> {
     sqlx::query(
         "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
          VALUES ($1, 'orchestrator-local', 'http://orchestrator-local:8082', 'local', 'online') \
-         ON CONFLICT (endpoint) DO UPDATE SET status = 'online'",
+         ON CONFLICT (endpoint) DO UPDATE SET status = 'online' \
+         WHERE orchestrators.status <> 'revoked'",
     )
     .bind(Uuid::new_v4())
     .execute(pool)
@@ -1191,10 +1265,165 @@ pub async fn recover_jobs(pool: &PgPool) -> Result<u64, ManagerError> {
 }
 
 // ---------------------------------------------------------------------------
+// Watchdog offline (ADR-0011 D4)
+// ---------------------------------------------------------------------------
+
+/// Tick do watchdog: transições online→degraded→offline com re-queue dos jobs.
+/// Chamada pelo worker loop (~2s).
+pub async fn watchdog_tick(pool: &PgPool) -> Result<(), ManagerError> {
+    let degraded_s: i64 = std::env::var("ORCH_WATCHDOG_DEGRADED_S")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(15);
+    let offline_s: i64 = std::env::var("ORCH_WATCHDOG_OFFLINE_S")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60);
+
+    // online → degraded (last_heartbeat mais velho que degraded_s).
+    let _ = sqlx::query(
+        "UPDATE orchestrators SET status = 'degraded' \
+         WHERE status = 'online' AND last_heartbeat < now() - make_interval(secs => $1::float)",
+    )
+    .bind(degraded_s as f64)
+    .execute(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("watchdog degraded: {e}")))?;
+
+    // degraded → offline + re-queue dos jobs do nó morto (CTE espelho de recover_jobs).
+    let result = sqlx::query(
+        "WITH morto AS ( \
+             UPDATE orchestrators SET status = 'offline' \
+             WHERE status = 'degraded' AND last_heartbeat < now() - make_interval(secs => $1::float) \
+             RETURNING id \
+         ) \
+         UPDATE jobs SET status = 'queued', queue_reason = 'recovered', orchestrator_id = NULL \
+         WHERE orchestrator_id IN (SELECT id FROM morto) \
+           AND status IN ('dispatched','preparing','running','cancelling')",
+    )
+    .bind(offline_s as f64)
+    .execute(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("watchdog offline: {e}")))?;
+
+    if result.rows_affected() > 0 {
+        tracing::info!(
+            "watchdog: {} jobs re-queued de nós offline",
+            result.rows_affected()
+        );
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Adopt interno (ADR-0011 D5)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdoptRequest {
+    pub name: String,
+    pub endpoint: String,
+    pub kind: String,
+    pub pairing_code: String,
+}
+
+/// Adopt interno: valida, verifica pairing no orquestrador, upsert.
+pub async fn adopt_internal(
+    pool: &PgPool,
+    orch_client: &dyn OrchestratorClient,
+    req: &AdoptRequest,
+) -> Result<String, ManagerError> {
+    // Validação de domínio.
+    if req.kind != "local" && req.kind != "remoto" {
+        return Err(ManagerError::InvalidRequest(
+            "kind must be 'local' or 'remoto'".into(),
+        ));
+    }
+    if !req.endpoint.starts_with("http://") && !req.endpoint.starts_with("https://") {
+        return Err(ManagerError::InvalidRequest(
+            "endpoint must start with http:// or https://".into(),
+        ));
+    }
+    if req.name.is_empty() || req.name.len() > 128 {
+        return Err(ManagerError::InvalidRequest(
+            "name must be 1-128 characters".into(),
+        ));
+    }
+    if req.pairing_code.is_empty() || req.pairing_code.len() > 128 {
+        return Err(ManagerError::InvalidRequest(
+            "pairing_code must be 1-128 characters".into(),
+        ));
+    }
+
+    // Verifica pairing code no orquestrador.
+    let verify_url = format!("{}/internal/pairing/verify", req.endpoint);
+    let verify_body = serde_json::json!({"code": &req.pairing_code});
+
+    match orch_client.post_json(&verify_url, &verify_body).await {
+        Ok(json) => {
+            let valid = json.get("valid").and_then(|v| v.as_bool()).unwrap_or(false);
+            if !valid {
+                return Err(ManagerError::PairingInvalid);
+            }
+        }
+        Err(_) => {
+            return Err(ManagerError::PairingInvalid);
+        }
+    }
+
+    // Upsert: cria ou revive (revoked incluído — intenção explícita do operador).
+    let orch_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status, token_hash, fingerprint) \
+         VALUES ($1, $2, $3, $4, 'online', NULL, NULL) \
+         ON CONFLICT (endpoint) DO UPDATE SET name = EXCLUDED.name, kind = EXCLUDED.kind, status = 'online'",
+    )
+    .bind(orch_id)
+    .bind(&req.name)
+    .bind(&req.endpoint)
+    .bind(&req.kind)
+    .execute(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("adopt orchestrator: {e}")))?;
+
+    // Retorna id (UPERT pode ter usado linha existente — resolvia o id real).
+    let real_id: (Uuid,) = sqlx::query_as("SELECT id FROM orchestrators WHERE endpoint = $1")
+        .bind(&req.endpoint)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("resolve adopted id: {e}")))?;
+
+    Ok(real_id.0.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Revoke interno (ADR-0011 D5)
+// ---------------------------------------------------------------------------
+
+/// Revoke: status → 'revoked' (tombstone, não DELETE).
+pub async fn revoke_orchestrator(pool: &PgPool, id: Uuid) -> Result<(), ManagerError> {
+    let result = sqlx::query("UPDATE orchestrators SET status = 'revoked' WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("revoke orchestrator: {e}")))?;
+
+    if result.rows_affected() == 0 {
+        return Err(ManagerError::NotFound);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
 
 /// Pega o próximo job queued e despacha ao orquestrador.
+///
+/// Roteamento por capacidade (ADR-0011 D3): seleciona nó online sem job
+/// ativo, com capacidade VRAM suficiente (ou NULL permissivo), na ordem
+/// declarada primeiro, maior GPU primeiro, tie-break por nome.
 ///
 /// Retorna `true` se um job foi despachado, `false` se não havia job na fila.
 pub async fn dispatch_next(
@@ -1203,47 +1432,73 @@ pub async fn dispatch_next(
     exec_mode: &str,
     orch_workdir: &str,
     image: &str,
+    vram_table: &VramTable,
 ) -> Result<bool, ManagerError> {
-    // Seleciona próximo job queued (FIFO).
+    // 1. Seleciona próximo job queued (FIFO).
     let row: Option<(
-        Uuid, String, Option<serde_json::Value>, Option<String>,
+        Uuid,
+        String,
+        String,
+        String,
+        Option<serde_json::Value>,
+        Option<String>,
     )> = sqlx::query_as(
-        "SELECT id, engine, params, config_yaml FROM jobs WHERE status = 'queued' ORDER BY created_at LIMIT 1",
+        "SELECT id, engine, model, mode, params, config_yaml \
+         FROM jobs WHERE status = 'queued' ORDER BY created_at LIMIT 1",
     )
     .fetch_optional(pool)
     .await
     .map_err(|e| ManagerError::Internal(format!("select next job: {e}")))?;
 
-    let (job_id, engine, params, config_yaml) = match row {
+    let (job_id, engine, model, mode, params, config_yaml) = match row {
         Some(r) => r,
         None => return Ok(false),
     };
 
-    // Busca endpoint do orchestrator online.
-    let orch: Option<(Uuid, String)> =
-        sqlx::query_as("SELECT id, endpoint FROM orchestrators WHERE status = 'online' LIMIT 1")
-            .fetch_optional(pool)
-            .await
-            .map_err(|e| ManagerError::Internal(format!("find orchestrator: {e}")))?;
+    // 2. Resolve requisito VRAM da vram-table.
+    let required_gb: Option<i32> = vram_table.resolve_required_gb(&engine, &model, &mode);
+
+    // 3. Seleciona orquestrador elegível (ADR-0011 D3.2).
+    let orch: Option<(Uuid, String)> = sqlx::query_as(
+        "SELECT o.id, o.endpoint FROM orchestrators o \
+         WHERE o.status = 'online' \
+           AND NOT EXISTS (SELECT 1 FROM jobs j \
+                           WHERE j.orchestrator_id = o.id \
+                             AND j.status IN ('dispatched','preparing','running','cancelling')) \
+           AND ($1::int IS NULL OR o.vram_total_gb IS NULL OR o.vram_total_gb >= $1) \
+         ORDER BY (o.vram_total_gb IS NULL) ASC, \
+                  o.vram_total_gb DESC NULLS LAST, \
+                  o.name ASC \
+         LIMIT 1",
+    )
+    .bind(required_gb)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("find orchestrator: {e}")))?;
 
     let (orch_id, orch_endpoint) = match orch {
         Some(o) => o,
         None => {
-            // Nenhum orchestrator online: volta para queued.
-            sqlx::query(
-                "UPDATE jobs SET queue_reason = 'waiting_slot' WHERE id = $1 AND status = 'queued'",
-            )
-            .bind(job_id)
-            .execute(pool)
-            .await
-            .map_err(|e| ManagerError::Internal(format!("set waiting_slot: {e}")))?;
+            // Sem nó elegível: waiting_vram (se requisito) ou waiting_slot.
+            let reason = if required_gb.is_some() {
+                "waiting_vram"
+            } else {
+                "waiting_slot"
+            };
+            sqlx::query("UPDATE jobs SET queue_reason = $2 WHERE id = $1 AND status = 'queued'")
+                .bind(job_id)
+                .bind(reason)
+                .execute(pool)
+                .await
+                .map_err(|e| ManagerError::Internal(format!("set queue reason: {e}")))?;
             return Ok(false);
         }
     };
 
-    // Marca dispatched.
+    // 4. Marca dispatched.
     sqlx::query(
-        "UPDATE jobs SET status = 'dispatched', queue_reason = NULL, orchestrator_id = $2 WHERE id = $1 AND status = 'queued'",
+        "UPDATE jobs SET status = 'dispatched', queue_reason = NULL, orchestrator_id = $2 \
+         WHERE id = $1 AND status = 'queued'",
     )
     .bind(job_id)
     .bind(orch_id)
@@ -1251,7 +1506,7 @@ pub async fn dispatch_next(
     .await
     .map_err(|e| ManagerError::Internal(format!("set dispatched: {e}")))?;
 
-    // Extrai package_ref do params.
+    // 5. Monta payload do dispatch (idêntico ao anterior).
     let package_ref = params
         .as_ref()
         .and_then(|p| p.get("package_ref"))

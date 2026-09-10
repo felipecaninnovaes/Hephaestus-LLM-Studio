@@ -18,8 +18,9 @@ use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 
 use manager::{
-    self, AbortResponse, ArtifactsListResponse, HeartbeatRequest, HttpOrchestratorClient,
-    ManagerError, OrchestratorClient, ReportRequest, TelemetryCache,
+    self, AbortResponse, AdoptRequest, ArtifactsListResponse, HeartbeatRequest,
+    HttpOrchestratorClient, ManagerError, OrchestratorClient, ReportRequest, TelemetryCache,
+    VramTable,
 };
 
 // ---------------------------------------------------------------------------
@@ -35,6 +36,7 @@ struct AppState {
     exec_mode: String,
     orch_workdir: String,
     trainer_image: String,
+    vram_table: VramTable,
 }
 
 // ---------------------------------------------------------------------------
@@ -74,6 +76,18 @@ fn not_abortable() -> Response {
 
 fn internal_error(msg: &str) -> Response {
     error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal", msg)
+}
+
+fn bad_request(msg: &str) -> Response {
+    error_response(StatusCode::BAD_REQUEST, "invalid_request", msg)
+}
+
+fn pairing_invalid() -> Response {
+    error_response(
+        StatusCode::CONFLICT,
+        "pairing_invalid",
+        "código de pareamento inválido ou orquestrador inalcançável",
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -253,6 +267,8 @@ async fn abort_job_handler(State(state): State<AppState>, Path(id): Path<String>
         Err(ManagerError::NotFound) => not_found(),
         Err(ManagerError::NotAbortable) => not_abortable(),
         Err(ManagerError::Internal(e)) => internal_error(&e),
+        Err(ManagerError::InvalidRequest(msg)) => bad_request(&msg),
+        Err(ManagerError::PairingInvalid) => internal_error("unexpected pairing_invalid"),
     }
 }
 
@@ -327,6 +343,40 @@ async fn list_orchestrators_handler(State(state): State<AppState>) -> Response {
     }
 }
 
+/// POST /internal/adopt — adopt de orquestrador remoto/local via pairing code.
+async fn adopt_handler(State(state): State<AppState>, body: Bytes) -> Response {
+    if body.is_empty() {
+        return bad_request("empty body");
+    }
+    let req: AdoptRequest = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => return bad_request(&format!("invalid json: {e}")),
+    };
+
+    match manager::adopt_internal(&state.pool, state.orch_client.as_ref(), &req).await {
+        Ok(id) => (StatusCode::OK, Json(serde_json::json!({"id": id}))).into_response(),
+        Err(ManagerError::InvalidRequest(msg)) => bad_request(&msg),
+        Err(ManagerError::PairingInvalid) => pairing_invalid(),
+        Err(ManagerError::Internal(e)) => internal_error(&e),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+/// POST /internal/orchestrators/:id/revoke — revoke orquestrador.
+async fn revoke_handler(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let uuid = match id.parse::<uuid::Uuid>() {
+        Ok(u) => u,
+        Err(_) => return not_found(),
+    };
+
+    match manager::revoke_orchestrator(&state.pool, uuid).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(ManagerError::NotFound) => not_found(),
+        Err(ManagerError::Internal(e)) => internal_error(&e),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
 /// GET /internal/models — modelos derivados de job_artifacts.kind='model'.
 async fn list_models_handler(State(state): State<AppState>) -> Response {
     match manager::list_models(&state.pool).await {
@@ -362,6 +412,8 @@ fn build_router(state: AppState) -> Router {
         .route("/internal/heartbeat", post(heartbeat_handler))
         .route("/internal/telemetry", get(telemetry_handler))
         .route("/internal/orchestrators", get(list_orchestrators_handler))
+        .route("/internal/adopt", post(adopt_handler))
+        .route("/internal/orchestrators/:id/revoke", post(revoke_handler))
         .route("/internal/models", get(list_models_handler))
         .route("/internal/storage/usage", get(get_storage_usage_handler))
         .layer(middleware::from_fn_with_state(
@@ -436,6 +488,24 @@ async fn main() {
         Err(e) => tracing::error!("falha no recovery: {e}"),
     }
 
+    // VRAM table (fail-fast no boot).
+    let vram_table_raw = match std::env::var("VRAM_TABLE_PATH") {
+        Ok(path) => std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            tracing::error!("falha ao ler VRAM_TABLE_PATH={path}: {e}");
+            panic!("VRAM_TABLE_PATH legível: {e}");
+        }),
+        Err(_) => include_str!("../../../packages/policies/vram-table.yaml").to_string(),
+    };
+    let vram_table: VramTable = VramTable::parse(&vram_table_raw).unwrap_or_else(|e| {
+        tracing::error!("falha ao parsear vram-table: {e}");
+        panic!("vram-table inválido: {e}");
+    });
+    tracing::info!(
+        "vram-table: {} entradas, headroom={}GB",
+        vram_table.entries.len(),
+        vram_table.defaults.headroom_gb
+    );
+
     // State.
     let orch_client = Arc::new(HttpOrchestratorClient::new(Some(token.clone())));
     let state = AppState {
@@ -446,6 +516,7 @@ async fn main() {
         exec_mode,
         orch_workdir,
         trainer_image,
+        vram_table,
     };
 
     // Dispatch worker (tokio task).
@@ -454,16 +525,24 @@ async fn main() {
     let dispatch_mode = state.exec_mode.clone();
     let dispatch_workdir = state.orch_workdir.clone();
     let dispatch_image = state.trainer_image.clone();
+    let dispatch_vram = state.vram_table.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
         loop {
             interval.tick().await;
+
+            // Watchdog tick (ADR-0011 D4).
+            if let Err(e) = manager::watchdog_tick(&dispatch_pool).await {
+                tracing::error!("watchdog error: {e}");
+            }
+
             match manager::dispatch_next(
                 &dispatch_pool,
                 dispatch_client.as_ref(),
                 &dispatch_mode,
                 &dispatch_workdir,
                 &dispatch_image,
+                &dispatch_vram,
             )
             .await
             {

@@ -30,7 +30,7 @@ fn default_true() -> bool {
     true
 }
 
-/// Body de `POST /api/jobs/yolo` (wire camelCase — D6/D7).
+/// Body de `POST /api/jobs/yolo` (wire camelCase — D6/D7/D5 ADR-0012).
 ///
 /// `datasetId` é obrigatório; os demais campos têm defaults e são OPCIONAIS.
 /// `deny_unknown_fields` garante 400 para chaves desconhecidas.
@@ -53,6 +53,9 @@ pub struct YoloJobRequest {
     #[serde(default = "default_augment")]
     pub augment: YoloAugment,
     pub seed: Option<u64>,
+    /// UUID de pesos existentes na tabela `models` (fine-tune — D5).
+    /// Validação: string não-UUID ⇒ 400 `invalid_request`.
+    pub weights: Option<String>,
 }
 
 fn default_model() -> String {
@@ -309,6 +312,12 @@ pub fn validate_yolo_request(req: YoloJobRequest) -> Result<YoloJobRequest, Stri
         ));
     }
     validate_augment(&req.augment)?;
+    // D5: valida weights UUID (se presente).
+    if let Some(ref w) = req.weights {
+        if uuid::Uuid::parse_str(w).is_err() {
+            return Err("weights must be a valid UUID".to_string());
+        }
+    }
     Ok(req)
 }
 
@@ -323,12 +332,18 @@ fn validate_augment(aug: &YoloAugment) -> Result<(), String> {
 // Geração de config.yaml (ADR-0007 D6 :322-327)
 // ---------------------------------------------------------------------------
 
-/// Gera `config.yaml` como string YAML (D6 :322-327).
+/// Gera `config.yaml` como string YAML (D6/D5 ADR-0012).
 ///
 /// Placeholders literais `{dataset_path}` e `{output_path}` — o orquestrador
 /// substitui no spawn; o principal é agnóstico de paths.
+/// Quando `weights` está presente, emite `weights_path: "{weights_path}"`.
 pub fn generate_config_yaml(job_id: &str, req: &YoloJobRequest) -> String {
     let augment = &req.augment;
+    let weights_line = if req.weights.is_some() {
+        format!("weights_path: \"{{weights_path}}\"\n")
+    } else {
+        String::new()
+    };
     format!(
         r#"# Configuração de treino YOLO (gerada pelo api-principal)
 job_id: "{job_id}"
@@ -337,7 +352,7 @@ model: "{model}"
 mode: "train"
 dataset_path: "{{dataset_path}}"
 output_path: "{{output_path}}"
-seed: {seed}
+{weights_line}seed: {seed}
 
 yolo:
   model: "{model}"
@@ -352,6 +367,7 @@ yolo:
 "#,
         job_id = job_id,
         model = req.model,
+        weights_line = weights_line,
         seed = req.seed.unwrap_or(42),
         epochs = req.epochs,
         batch = req.batch,
@@ -536,6 +552,8 @@ mod tests {
         // Placeholders presentes.
         assert!(yaml.contains("{dataset_path}"));
         assert!(yaml.contains("{output_path}"));
+        // Sem weights ⇒ sem weights_path.
+        assert!(!yaml.contains("weights_path"));
 
         // Defaults corretos.
         assert!(yaml.contains("model: \"yolo11m\""));
@@ -567,6 +585,49 @@ mod tests {
         assert!(yaml.contains("mosaic: false"));
         assert!(yaml.contains("mixup_flip: true"));
         assert!(yaml.contains("seed: 99"));
+        assert!(!yaml.contains("weights_path"));
+    }
+
+    // --- weights (D5 ADR-0012) ---
+
+    #[test]
+    fn weights_none_by_default() {
+        let raw = r#"{"datasetId":"00000000-0000-0000-0000-000000000000"}"#;
+        let req: YoloJobRequest = serde_json::from_str(raw).expect("parse");
+        assert!(req.weights.is_none());
+    }
+
+    #[test]
+    fn weights_valid_uuid() {
+        let raw = r#"{"datasetId":"00000000-0000-0000-0000-000000000000","weights":"550e8400-e29b-41d4-a716-446655440000"}"#;
+        let req: YoloJobRequest = serde_json::from_str(raw).expect("parse");
+        assert_eq!(
+            req.weights.as_deref(),
+            Some("550e8400-e29b-41d4-a716-446655440000")
+        );
+        assert!(validate_yolo_request(req).is_ok());
+    }
+
+    #[test]
+    fn weights_non_uuid_rejected() {
+        let raw = r#"{"datasetId":"00000000-0000-0000-0000-000000000000","weights":"not-a-uuid"}"#;
+        let req: YoloJobRequest = serde_json::from_str(raw).expect("parse");
+        assert!(validate_yolo_request(req).is_err());
+    }
+
+    #[test]
+    fn config_yaml_with_weights() {
+        let raw = r#"{"datasetId":"00000000-0000-0000-0000-000000000000","weights":"550e8400-e29b-41d4-a716-446655440000"}"#;
+        let req: YoloJobRequest = serde_json::from_str(raw).expect("parse");
+        let yaml = generate_config_yaml("job-weights-001", &req);
+
+        // weights_path presente com placeholder.
+        assert!(yaml.contains("weights_path: \"{weights_path}\""));
+        // Outros placeholders e defaults intactos.
+        assert!(yaml.contains("{dataset_path}"));
+        assert!(yaml.contains("{output_path}"));
+        assert!(yaml.contains("model: \"yolo11m\""));
+        assert!(yaml.contains("engine: \"yolo\""));
     }
 
     // =========================================================================

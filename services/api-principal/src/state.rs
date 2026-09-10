@@ -20,4 +20,7 @@ pub struct AppState {
     pub embedding_model: String,
     /// Client do manager (BFF, ADR-0007 D3).
     pub manager: std::sync::Arc<dyn crate::jobs::manager_client::ManagerPort>,
+    /// Allow-list de hosts para download por URL (E1 — ADR-0012 D4).
+    /// Carregada no boot; vazia = download desabilitado (fail-closed).
+    pub model_download_allowed_hosts: Vec<String>,
 }

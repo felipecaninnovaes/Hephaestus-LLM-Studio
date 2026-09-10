@@ -16,6 +16,7 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 import yaml
@@ -534,6 +535,113 @@ class TestCopyFlatWeights:
 
         assert not (output / "best.pt").exists()
         assert not (output / "last.pt").exists()
+
+
+class TestRealTrainWeightsPath:
+    """Tests for _real_train weights_path support (ADR-0012 I.3b)."""
+
+    def _run_real_train(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cfg: dict) -> MagicMock:
+        """Helper: mock ultralytics.YOLO and run _real_train, return the mock."""
+        from trainer_yolo.train import _real_train
+
+        output = tmp_path / "output"
+        output.mkdir(exist_ok=True)
+
+        mock_yolo_cls = MagicMock()
+        mock_model = MagicMock()
+        mock_yolo_cls.return_value = mock_model
+
+        # Patch the lazy import: ultralytics.YOLO
+        import types
+        mock_ultralytics = types.ModuleType("ultralytics")
+        mock_ultralytics.YOLO = mock_yolo_cls
+        monkeypatch.setitem(sys.modules, "ultralytics", mock_ultralytics)
+
+        # Patch _prepare_dataset_yaml to skip filesystem side effects
+        monkeypatch.setattr("trainer_yolo.train._prepare_dataset_yaml", lambda *a, **kw: None)
+
+        _real_train(cfg, output)
+        return mock_yolo_cls
+
+    def test_real_train_with_weights_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """weights_path present → YOLO called with the path, not the variant."""
+        ds = tmp_path / "dataset"
+        ds.mkdir()
+        (ds / "dataset.yaml").write_text("train: ./train\nval: ./val\nnc: 1\n")
+
+        cfg = {
+            "job_id": "test-weights", "engine": "yolo", "model": "yolo11m",
+            "mode": "train", "dataset_path": str(ds),
+            "output_path": str(tmp_path / "output"), "seed": 42,
+            "weights_path": "/outputs/test-weights/weights/best.pt",
+            "yolo": {
+                "model": "yolo11n", "epochs": 1, "batch": 16, "imgsz": 640,
+                "lr0": 0.01, "optimizer": "AdamW",
+                "augment": {"mosaic": True, "mixup_flip": False},
+            },
+        }
+        mock_yolo = self._run_real_train(tmp_path, monkeypatch, cfg)
+        mock_yolo.assert_called_once_with("/outputs/test-weights/weights/best.pt")
+
+    def test_real_train_without_weights_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No weights_path → YOLO called with the variant (current behavior)."""
+        ds = tmp_path / "dataset"
+        ds.mkdir()
+        (ds / "dataset.yaml").write_text("train: ./train\nval: ./val\nnc: 1\n")
+
+        cfg = {
+            "job_id": "test-no-weights", "engine": "yolo", "model": "yolo11m",
+            "mode": "train", "dataset_path": str(ds),
+            "output_path": str(tmp_path / "output"), "seed": 42,
+            "yolo": {
+                "model": "yolo11n", "epochs": 1, "batch": 16, "imgsz": 640,
+                "lr0": 0.01, "optimizer": "AdamW",
+                "augment": {"mosaic": True, "mixup_flip": False},
+            },
+        }
+        mock_yolo = self._run_real_train(tmp_path, monkeypatch, cfg)
+        mock_yolo.assert_called_once_with("yolo11n")
+
+    def test_mock_with_weights_path_deterministic(self, tmp_path: Path) -> None:
+        """Mock mode + weights_path present → same deterministic output (key ignored)."""
+        from trainer_yolo.train import _mock_train
+
+        ds = tmp_path / "dataset"
+        ds.mkdir()
+        (ds / "dataset.yaml").write_text("train: ./train\nval: ./val\nnc: 1\n")
+
+        cfg_with = {
+            "job_id": "test-mock-weights",
+            "engine": "yolo",
+            "model": "yolo11m",
+            "mode": "train",
+            "dataset_path": str(ds),
+            "output_path": str(tmp_path / "output"),
+            "seed": 42,
+            "weights_path": "/outputs/test-mock-weights/weights/best.pt",
+            "yolo": {
+                "model": "yolo11m",
+                "epochs": 2,
+                "batch": 16,
+                "imgsz": 640,
+                "lr0": 0.01,
+                "optimizer": "AdamW",
+                "augment": {"mosaic": True, "mixup_flip": False},
+            },
+        }
+        cfg_without = {k: v for k, v in cfg_with.items() if k != "weights_path"}
+
+        out_with = tmp_path / "out-with"
+        out_with.mkdir()
+        out_without = tmp_path / "out-without"
+        out_without.mkdir()
+
+        _mock_train(cfg_with, out_with)
+        _mock_train(cfg_without, out_without)
+
+        assert (out_with / "metrics.jsonl").read_text() == (out_without / "metrics.jsonl").read_text()
+        assert (out_with / "best.pt").read_bytes() == (out_without / "best.pt").read_bytes()
+        assert (out_with / "last.pt").read_bytes() == (out_without / "last.pt").read_bytes()
 
 
 class TestRealTrainTolerantParsing:

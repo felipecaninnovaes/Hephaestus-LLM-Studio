@@ -23,8 +23,10 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 aws-sdk-s3 = "1.145.0"
 aws-smithy-types = "1.6.3"
 pgvector = { version = "=0.4.1", features = ["sqlx"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 base64 = "0.22"
+url = "2"
+futures-util = "0.3"
 serde_yaml = "0.9"
 zip = "2"
 tokio-util = { version = "0.7", features = ["io"] }

@@ -19,6 +19,10 @@ pub enum ManagerError {
     NotAbortable,
     /// Resposta 409 do manager (pairing code inválido ou orquestrador inalcançável).
     PairingInvalid,
+    /// Resposta 409 do manager (s3_key duplicado — modelo já existe).
+    Conflict,
+    /// Resposta 400 do manager (request inválido — A5).
+    InvalidRequest(String),
 }
 
 impl std::fmt::Display for ManagerError {
@@ -28,6 +32,8 @@ impl std::fmt::Display for ManagerError {
             Self::NotFound => write!(f, "manager: not found"),
             Self::NotAbortable => write!(f, "manager: job not abortable"),
             Self::PairingInvalid => write!(f, "manager: pairing invalid"),
+            Self::Conflict => write!(f, "manager: conflict"),
+            Self::InvalidRequest(_) => write!(f, "manager: invalid request"),
         }
     }
 }
@@ -120,14 +126,21 @@ pub struct InternalOrchestrator {
 }
 
 /// Peso/modelo retornado pelo manager (snake_case interno).
+/// Shape = `ModelItem` do manager (tabela `models` — ADR-0012 D2).
 #[derive(Debug, Clone, Deserialize)]
 pub struct InternalModel {
     pub id: String,
-    pub job_id: String,
-    pub path: String,
-    pub bytes: i64,
+    pub name: String,
     pub engine: String,
-    pub model: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    pub source: String,
+    #[serde(rename = "hash")]
+    pub md5: String,
+    pub bytes: i64,
+    pub path: String,
+    #[serde(default)]
+    pub job_id: Option<String>,
     pub created_at: String,
 }
 
@@ -135,6 +148,31 @@ pub struct InternalModel {
 #[derive(Debug, Clone, Deserialize)]
 pub struct InternalStorageUsage {
     pub artifacts_bytes: i64,
+    #[serde(default)]
+    pub models_bytes: i64,
+}
+
+/// Modelo público retornado pelo manager (camelCase wire — D6 ADR-0012).
+///
+/// O manager serializa `ModelItem` com o campo `hash` (nome da coluna no DB).
+/// `InternalModel` (list_models) já tem `#[serde(rename = "hash")]`; este
+/// struct é usado para o response do POST /internal/models (create_model).
+#[derive(Debug, Clone, Deserialize)]
+pub struct InternalModelResponse {
+    pub id: String,
+    pub name: String,
+    pub engine: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    pub source: String,
+    pub bytes: i64,
+    #[serde(rename = "hash")]
+    pub md5: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub job_id: Option<String>,
+    pub created_at: String,
 }
 
 /// Resposta do manager ao criar job (snake_case interno).
@@ -197,6 +235,12 @@ pub trait ManagerPort: Send + Sync {
 
     /// Revoga um orquestrador via manager (H.4 — ADR-0011 D5).
     async fn revoke_orchestrator(&self, id: &str) -> Result<(), ManagerError>;
+
+    /// Cria um modelo via manager (I.4a — ADR-0012 D1).
+    async fn create_model(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<InternalModelResponse, ManagerError>;
 }
 
 /// Implementação HTTP real do manager client.
@@ -462,6 +506,40 @@ impl ManagerPort for HttpManager {
         }
         Ok(())
     }
+
+    async fn create_model(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<InternalModelResponse, ManagerError> {
+        let url = format!("{}/internal/models", self.base_url);
+        let resp = self
+            .client
+            .post(&url)
+            .header("authorization", self.auth_header())
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| ManagerError::Unavailable(format!("manager request: {e}")))?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::CONFLICT {
+            return Err(ManagerError::Conflict);
+        }
+        if status == reqwest::StatusCode::BAD_REQUEST {
+            let msg = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "invalid request".into());
+            return Err(ManagerError::InvalidRequest(msg));
+        }
+        if !status.is_success() {
+            return Err(ManagerError::Unavailable(format!(
+                "manager status: {status}"
+            )));
+        }
+        resp.json()
+            .await
+            .map_err(|e| ManagerError::Unavailable(format!("manager body: {e}")))
+    }
 }
 
 /// Mock do manager para testes unitários e de integração.
@@ -493,6 +571,12 @@ pub struct MockManager {
     pub adopt_orchestrator_result: Option<InternalOrchestrator>,
     /// Se `true`, `revoke_orchestrator` retorna `NotFound` (para testar 404).
     pub revoke_not_found: bool,
+    /// Resultado de `create_model` (para testar 201).
+    pub create_model_result: Option<InternalModelResponse>,
+    /// Se `true`, `create_model` retorna `Conflict` (para testar 409).
+    pub create_model_conflict: bool,
+    /// Body capturado na última chamada a `create_model` (para asserts de teste).
+    last_create_model_body: std::sync::Mutex<Option<serde_json::Value>>,
     /// Body capturado na última chamada a `create_job` (para asserts de teste).
     last_create_job_body: std::sync::Mutex<Option<serde_json::Value>>,
     /// Jobs indexados por ID — `get_job` consulta aqui antes do resultado fixo.
@@ -506,6 +590,14 @@ impl MockManager {
     /// Retorna o body capturado na última chamada a `create_job`.
     pub fn last_create_job_body(&self) -> Option<serde_json::Value> {
         self.last_create_job_body
+            .try_lock()
+            .ok()
+            .and_then(|m| m.clone())
+    }
+
+    /// Retorna o body capturado na última chamada a `create_model`.
+    pub fn last_create_model_body(&self) -> Option<serde_json::Value> {
+        self.last_create_model_body
             .try_lock()
             .ok()
             .and_then(|m| m.clone())
@@ -530,6 +622,9 @@ impl Default for MockManager {
             fail_adopt_pairing: false,
             adopt_orchestrator_result: None,
             revoke_not_found: false,
+            create_model_result: None,
+            create_model_conflict: false,
+            last_create_model_body: std::sync::Mutex::new(None),
             last_create_job_body: std::sync::Mutex::new(None),
             jobs_by_id: std::collections::HashMap::new(),
             artifacts_by_id: std::collections::HashMap::new(),
@@ -661,5 +756,61 @@ impl ManagerPort for MockManager {
             return Err(ManagerError::NotFound);
         }
         Ok(())
+    }
+
+    async fn create_model(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<InternalModelResponse, ManagerError> {
+        if self.fail {
+            return Err(ManagerError::Unavailable("mock fail".into()));
+        }
+        if let Ok(mut guard) = self.last_create_model_body.try_lock() {
+            *guard = Some(body.clone());
+        }
+        if self.create_model_conflict {
+            return Err(ManagerError::Conflict);
+        }
+        self.create_model_result
+            .clone()
+            .ok_or(ManagerError::Unavailable("no create_model result".into()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regressão I.9: o manager serializa `ModelItem.hash` (nome da coluna DB).
+    /// Sem `#[serde(rename = "hash")]` o POST /internal/models devolvia 503
+    /// porque `md5` não era encontrado no JSON → desserialização falhava →
+    /// compensação deletava objeto S3, criando modelo órfão.
+    #[test]
+    fn deserialize_create_model_response_with_hash_field() {
+        // JSON real devolvido pelo manager (shape de ModelItem serializado)
+        let json = r#"{
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "name": "best.pt",
+            "engine": "yolo",
+            "model": null,
+            "source": "upload",
+            "hash": "d41d8cd98f00b204e9800998ecf8427e",
+            "bytes": 1024,
+            "path": "models/550e8400/best.pt",
+            "job_id": null,
+            "created_at": "2026-09-10T12:00:00Z"
+        }"#;
+
+        let resp: InternalModelResponse =
+            serde_json::from_str(json).expect("deserialization must succeed");
+
+        assert_eq!(resp.md5, "d41d8cd98f00b204e9800998ecf8427e");
+        assert_eq!(resp.id, "550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(resp.name, "best.pt");
+        assert_eq!(resp.engine, "yolo");
+        assert_eq!(resp.bytes, 1024);
+        // `path` extra é ignorado (serde default) — não deve causar erro
+        assert!(resp.url.is_none());
+        assert!(resp.job_id.is_none());
     }
 }

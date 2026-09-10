@@ -16,6 +16,15 @@ use serde::{Deserialize, Serialize};
 // Tipos de request/response (snake_case interno, conforme D4)
 // ---------------------------------------------------------------------------
 
+/// Referência a pesos de modelo no S3 (fine-tune — ADR-0012 D5).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct WeightsRef {
+    /// S3 key do peso: `models/<engine>/<id>/<name>` ou `artifacts/<job_id>/<path>`.
+    pub s3_key: String,
+    /// MD5 hash esperado (hex 32).
+    pub md5: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct DispatchRequest {
     pub job_id: String,
@@ -26,6 +35,9 @@ pub struct DispatchRequest {
     pub config_yaml: Option<String>,
     pub dataset_version_id: Option<String>,
     pub workdir: String,
+    /// Pesos de modelo para fine-tune (ADR-0012 D5). `None` = treino do zero.
+    #[serde(default)]
+    pub weights_ref: Option<WeightsRef>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -215,6 +227,7 @@ impl std::error::Error for PipelineError {}
 pub enum S3Scope {
     Packages,
     Artifacts,
+    Models,
 }
 
 impl S3Scope {
@@ -222,6 +235,7 @@ impl S3Scope {
         match self {
             S3Scope::Packages => "packages/",
             S3Scope::Artifacts => "artifacts/",
+            S3Scope::Models => "models/",
         }
     }
 }
@@ -298,11 +312,23 @@ pub fn compute_progress(line: &MetricsLine, total_epochs: i32) -> f64 {
 // Config.yaml placeholder replacement (D6)
 // ---------------------------------------------------------------------------
 
-/// Substitui `{dataset_path}` e `{output_path}` no config.yaml.
-pub fn replace_config_placeholders(config: &str, dataset_path: &str, output_path: &str) -> String {
-    config
+/// Substitui `{dataset_path}`, `{output_path}` e opcionalmente `{weights_path}` no config.yaml.
+///
+/// Quando `weights_path` é `None`, o placeholder `{weights_path}` permanece literal
+/// (trainer mock tolera chave desconhecida — ADR-0012 D5).
+pub fn replace_config_placeholders(
+    config: &str,
+    dataset_path: &str,
+    output_path: &str,
+    weights_path: Option<&str>,
+) -> String {
+    let result = config
         .replace("{dataset_path}", dataset_path)
-        .replace("{output_path}", output_path)
+        .replace("{output_path}", output_path);
+    match weights_path {
+        Some(wp) => result.replace("{weights_path}", wp),
+        None => result,
+    }
 }
 
 /// Extrai o valor de `epochs` do config.yaml (para计算 progress).
@@ -898,7 +924,55 @@ async fn run_job_inner(
     // 4. Unzip (zip-slip safe, padrão import 3e)
     unzip_safe(&zip_path, &datasets_cache)?;
 
-    // 5. Monta config.yaml REAL — substitui placeholders (§8/:102)
+    // 5. Download e staging de pesos (fine-tune — ADR-0012 D5)
+    //    Pesos ficam em outputs/<job_id>/weights/<filename> (volume outputs já montado).
+    let mut weights_staged_path: Option<String> = None;
+    if let Some(ref weights_ref) = dispatch.weights_ref {
+        // Infere escopo pelo prefixo da key (models/ → Models, artifacts/ → Artifacts)
+        let scope = if weights_ref.s3_key.starts_with("models/") {
+            S3Scope::Models
+        } else if weights_ref.s3_key.starts_with("artifacts/") {
+            S3Scope::Artifacts
+        } else {
+            return Err(PipelineError::S3Download(format!(
+                "weights_ref key must start with models/ or artifacts/, got: {}",
+                weights_ref.s3_key
+            )));
+        };
+
+        let scoped_wkey = scoped_key(scope, &weights_ref.s3_key)
+            .map_err(|e| PipelineError::S3Download(format!("invalid weights_ref key: {e}")))?;
+
+        // Extrai filename do path (models/yolo/<id>/best.pt → best.pt)
+        let filename = weights_ref.s3_key.rsplit('/').next().ok_or_else(|| {
+            PipelineError::S3Download("weights_ref key has no filename".to_string())
+        })?;
+
+        let weights_dir = outputs.join("weights");
+        tokio::fs::create_dir_all(&weights_dir)
+            .await
+            .map_err(|e| PipelineError::Other(format!("create weights dir: {e}")))?;
+
+        let weights_file = weights_dir.join(filename);
+        s3.get_to_file(&scoped_wkey, &weights_file)
+            .await
+            .map_err(|e| PipelineError::S3Download(format!("download weights: {e}")))?;
+
+        // Verifica MD5
+        let actual_md5 = compute_file_md5(&weights_file)
+            .map_err(|e| PipelineError::S3Download(format!("compute weights md5: {e}")))?;
+        if actual_md5 != weights_ref.md5 {
+            return Err(PipelineError::Md5Mismatch {
+                expected: weights_ref.md5.clone(),
+                actual: actual_md5,
+            });
+        }
+
+        // Caminho absoluto dentro do container trainer (volume outputs → /outputs)
+        weights_staged_path = Some(format!("/outputs/{job_id}/weights/{filename}"));
+    }
+
+    // 6. Monta config.yaml REAL — substitui placeholders (§8/:102)
     let total_epochs = dispatch
         .config_yaml
         .as_deref()
@@ -910,7 +984,12 @@ async fn run_job_inner(
         // (via -v volumes nomeados montados no compose).
         let dataset_path = format!("/datasets/datasets-cache/{job_id}");
         let output_path = format!("/outputs/{job_id}");
-        let real_config = replace_config_placeholders(config_yaml, &dataset_path, &output_path);
+        let real_config = replace_config_placeholders(
+            config_yaml,
+            &dataset_path,
+            &output_path,
+            weights_staged_path.as_deref(),
+        );
 
         // Valida que é YAML parseável (D6)
         let _: serde_yaml::Value = serde_yaml::from_str(&real_config).map_err(|e| {
@@ -1455,7 +1534,7 @@ mod tests {
     fn replace_config_placeholders_basic() {
         let config = "dataset_path: {dataset_path}\noutput_path: {output_path}";
         let result =
-            replace_config_placeholders(config, "/datasets/datasets-cache/j1", "/outputs/j1");
+            replace_config_placeholders(config, "/datasets/datasets-cache/j1", "/outputs/j1", None);
         assert_eq!(
             result,
             "dataset_path: /datasets/datasets-cache/j1\noutput_path: /outputs/j1"
@@ -1467,7 +1546,7 @@ mod tests {
         let config =
             "dataset_path: {dataset_path}\noutput_path: {output_path}\nepochs: 100\nmodel: yolo11m";
         let result =
-            replace_config_placeholders(config, "/datasets/datasets-cache/j1", "/outputs/j1");
+            replace_config_placeholders(config, "/datasets/datasets-cache/j1", "/outputs/j1", None);
         let parsed: serde_yaml::Value = serde_yaml::from_str(&result).unwrap();
         assert_eq!(parsed["dataset_path"], "/datasets/datasets-cache/j1");
         assert_eq!(parsed["output_path"], "/outputs/j1");
@@ -1736,6 +1815,67 @@ mod tests {
         }
     }
 
+    /// Mock S3 que serve bytes customizados por prefixo (para testes de weights).
+    /// Qualquer key com `models/` ou `artifacts/` retorna `weights_bytes`;
+    /// caso contrário, retorna `zip_bytes` (comportamento padrão do FakeS3).
+    struct FakeS3WithWeights {
+        downloads: Mutex<Vec<String>>,
+        uploads: Mutex<Vec<(String, PathBuf)>>,
+        zip_bytes: Vec<u8>,
+        weights_bytes: Vec<u8>,
+    }
+
+    impl FakeS3WithWeights {
+        fn new(weights_bytes: Vec<u8>) -> Self {
+            let mut buf = std::io::Cursor::new(Vec::new());
+            {
+                let mut zip = zip::ZipWriter::new(&mut buf);
+                let opts = zip::write::SimpleFileOptions::default();
+                zip.start_file("dataset.yaml", opts).unwrap();
+                zip.write_all(b"classes: []\nimages: []\n").unwrap();
+                zip.finish().unwrap();
+            }
+            Self {
+                downloads: Mutex::new(Vec::new()),
+                uploads: Mutex::new(Vec::new()),
+                zip_bytes: buf.into_inner(),
+                weights_bytes,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl S3Port for FakeS3WithWeights {
+        async fn get_to_file(&self, key: &str, path: &std::path::Path) -> Result<(), String> {
+            self.downloads.lock().unwrap().push(key.to_string());
+            let data = if key.starts_with("models/") || key.starts_with("artifacts/") {
+                &self.weights_bytes
+            } else {
+                &self.zip_bytes
+            };
+            std::fs::write(path, data).map_err(|e| format!("write file: {e}"))
+        }
+
+        async fn put(&self, key: &str, path: &std::path::Path) -> Result<(), String> {
+            self.uploads
+                .lock()
+                .unwrap()
+                .push((key.to_string(), path.to_path_buf()));
+            Ok(())
+        }
+
+        async fn ping(&self) -> bool {
+            true
+        }
+    }
+
+    /// Calcula MD5 de bytes in-memory (hex 32).
+    fn compute_file_md5_bytes(data: &[u8]) -> String {
+        use md5::Digest;
+        let digest = md5::Md5::digest(data);
+        hex::encode(digest)
+    }
+
     /// Mock ReportClient que grava relatórios.
     struct FakeReport {
         reports: Mutex<Vec<ReportBody>>,
@@ -1839,6 +1979,7 @@ mod tests {
             ),
             dataset_version_id: None,
             workdir: "/tmp".to_string(),
+            weights_ref: None,
         }
     }
 
@@ -2501,5 +2642,411 @@ also bad, not a number
         let resp = PairingVerifyResponse { valid: false };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["valid"], false);
+    }
+
+    // =========================================================================
+    // I.3 — S3Scope::Models + scoped_key tests
+    // =========================================================================
+
+    #[test]
+    fn scoped_key_models_valid() {
+        let key = scoped_key(S3Scope::Models, "models/yolo/abc-123/best.pt");
+        assert_eq!(key, Ok("models/yolo/abc-123/best.pt".to_string()));
+    }
+
+    #[test]
+    fn scoped_key_models_outside_scope() {
+        assert_eq!(
+            scoped_key(S3Scope::Models, "packages/abc/dataset.zip"),
+            Err(ScopedKeyError::OutsideScope)
+        );
+    }
+
+    #[test]
+    fn scoped_key_packages_rejects_models_prefix() {
+        assert_eq!(
+            scoped_key(S3Scope::Packages, "models/yolo/abc/best.pt"),
+            Err(ScopedKeyError::OutsideScope)
+        );
+    }
+
+    #[test]
+    fn scoped_key_models_empty() {
+        assert_eq!(
+            scoped_key(S3Scope::Models, ""),
+            Err(ScopedKeyError::EmptyKey)
+        );
+    }
+
+    #[test]
+    fn scoped_key_models_absolute() {
+        assert_eq!(
+            scoped_key(S3Scope::Models, "/models/yolo/abc/best.pt"),
+            Err(ScopedKeyError::AbsolutePath)
+        );
+    }
+
+    #[test]
+    fn scoped_key_models_traversal() {
+        assert_eq!(
+            scoped_key(S3Scope::Models, "../etc/passwd"),
+            Err(ScopedKeyError::PathTraversal)
+        );
+    }
+
+    // =========================================================================
+    // I.3 — DispatchRequest weights_ref serde tests
+    // =========================================================================
+
+    #[test]
+    fn dispatch_request_with_weights_ref() {
+        let json = r#"{
+            "job_id": "j1",
+            "engine": "yolo",
+            "image": "img:local",
+            "exec_mode": "docker",
+            "package_ref": {"key": "packages/p/dataset.zip", "md5_zip": "abc", "bytes": 100},
+            "workdir": "/tmp",
+            "weights_ref": {"s3_key": "models/yolo/abc/best.pt", "md5": "d41d8cd98f00b204e9800998ecf8427e"}
+        }"#;
+        let req: DispatchRequest = serde_json::from_str(json).unwrap();
+        assert!(req.weights_ref.is_some());
+        let wr = req.weights_ref.unwrap();
+        assert_eq!(wr.s3_key, "models/yolo/abc/best.pt");
+        assert_eq!(wr.md5, "d41d8cd98f00b204e9800998ecf8427e");
+    }
+
+    #[test]
+    fn dispatch_request_without_weights_ref() {
+        let json = r#"{
+            "job_id": "j1",
+            "engine": "yolo",
+            "image": "img:local",
+            "exec_mode": "docker",
+            "package_ref": {"key": "packages/p/dataset.zip", "md5_zip": "abc", "bytes": 100},
+            "workdir": "/tmp"
+        }"#;
+        let req: DispatchRequest = serde_json::from_str(json).unwrap();
+        assert!(req.weights_ref.is_none());
+    }
+
+    // =========================================================================
+    // I.3 — replace_config_placeholders with weights_path
+    // =========================================================================
+
+    #[test]
+    fn replace_config_placeholders_with_weights() {
+        let config = "model: yolo11m\nweights_path: {weights_path}";
+        let result = replace_config_placeholders(
+            config,
+            "/datasets/j1",
+            "/outputs/j1",
+            Some("/outputs/j1/weights/best.pt"),
+        );
+        assert_eq!(
+            result,
+            "model: yolo11m\nweights_path: /outputs/j1/weights/best.pt"
+        );
+    }
+
+    #[test]
+    fn replace_config_placeholders_without_weights_keeps_literal() {
+        let config = "model: yolo11m\nweights_path: {weights_path}";
+        let result = replace_config_placeholders(config, "/datasets/j1", "/outputs/j1", None);
+        assert_eq!(result, "model: yolo11m\nweights_path: {weights_path}");
+    }
+
+    // =========================================================================
+    // I.3 — run_job_inner with weights_ref: staging + config substitution
+    // =========================================================================
+
+    #[tokio::test]
+    async fn weights_ref_valid_stages_file_and_replaces_placeholder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_dispatch_with_valid_md5("job-w-001", "yolo", &zip_path);
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        // Config with {weights_path} placeholder
+        dispatch.config_yaml = Some(
+            "epochs: 1\ndataset_path: {dataset_path}\noutput_path: {output_path}\nweights_path: {weights_path}".to_string(),
+        );
+
+        // Create weights file in FakeS3
+        let weights_bytes = b"fake weights data";
+        let weights_md5 = compute_file_md5_bytes(weights_bytes);
+
+        // Manually stage weights file so FakeS3 can serve it
+        // (FakeS3 always writes zip_bytes, so we intercept via a custom approach)
+        // Actually, FakeS3 writes zip_bytes for ALL downloads. For this test,
+        // we put the weights file directly and use a custom S3 mock.
+        // Simpler: create a FakeS3 that serves different content per key.
+        let weights_s3 = Arc::new(FakeS3WithWeights::new(weights_bytes.to_vec()));
+        let weights_md5_hex = weights_md5.clone();
+
+        dispatch.weights_ref = Some(WeightsRef {
+            s3_key: "models/yolo/abc-123/best.pt".to_string(),
+            md5: weights_md5_hex,
+        });
+
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        // Pre-creates outputs
+        let mut output_files = HashMap::new();
+        output_files.insert("best.pt".to_string(), b"fake model".to_vec());
+        output_files.insert("last.pt".to_string(), b"fake model".to_vec());
+        output_files.insert(
+            "metrics.jsonl".to_string(),
+            br#"{"box_loss":0.5,"cls_loss":0.3,"dfl_loss":0.2,"mAP50":0.8,"mAP50-95":0.6,"epoch":1}"#.to_vec(),
+        );
+        create_fake_outputs(tmp.path(), "job-w-001", &output_files);
+
+        let result = run_job_inner(
+            &dispatch,
+            weights_s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "weights pipeline should succeed: {:?}",
+            result.err()
+        );
+
+        // Verify weights file was staged
+        let staged = tmp.path().join("outputs/job-w-001/weights/best.pt");
+        assert!(staged.exists(), "weights file should be staged");
+        assert_eq!(
+            std::fs::read(&staged).unwrap(),
+            weights_bytes,
+            "staged weights content should match"
+        );
+
+        // Verify config.yaml has {weights_path} replaced
+        let config_content =
+            std::fs::read_to_string(tmp.path().join("outputs/job-w-001/config.yaml")).unwrap();
+        assert!(
+            config_content.contains("/outputs/job-w-001/weights/best.pt"),
+            "config.yaml should contain replaced weights_path, got: {config_content}"
+        );
+        assert!(
+            !config_content.contains("{weights_path}"),
+            "config.yaml should not contain literal {{weights_path}}"
+        );
+
+        // Verify executor args are unchanged (shape preserved)
+        let args = executor.last_args().unwrap();
+        assert_eq!(args[0], "train");
+        assert_eq!(args[1], "--config");
+        assert_eq!(args[3], "--output");
+
+        // Verify downloads include both package and weights
+        let downloads = weights_s3.downloads.lock().unwrap();
+        assert!(
+            downloads.iter().any(|k| k.contains("packages/")),
+            "should download package"
+        );
+        assert!(
+            downloads.iter().any(|k| k.contains("models/")),
+            "should download weights"
+        );
+    }
+
+    #[tokio::test]
+    async fn weights_ref_wrong_md5_fails_pipeline() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_dispatch_with_valid_md5("job-w-002", "yolo", &zip_path);
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+
+        let weights_s3 = Arc::new(FakeS3WithWeights::new(b"weights data".to_vec()));
+
+        dispatch.weights_ref = Some(WeightsRef {
+            s3_key: "models/yolo/abc-123/best.pt".to_string(),
+            md5: "00000000000000000000000000000000".to_string(), // wrong hash
+        });
+
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let result = run_job_inner(
+            &dispatch,
+            weights_s3,
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(PipelineError::Md5Mismatch { .. })),
+            "should fail with Md5Mismatch: {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn no_weights_ref_unchanged_behavior() {
+        // Sem weights_ref → pipeline idêntica ao comportamento atual (regressão)
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_dispatch_with_valid_md5("job-w-003", "yolo", &zip_path);
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        dispatch.weights_ref = None; // explicitly None
+
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let mut output_files = HashMap::new();
+        output_files.insert("best.pt".to_string(), b"fake model".to_vec());
+        output_files.insert("last.pt".to_string(), b"fake model".to_vec());
+        output_files.insert(
+            "metrics.jsonl".to_string(),
+            br#"{"box_loss":0.5,"cls_loss":0.3,"dfl_loss":0.2,"mAP50":0.8,"mAP50-95":0.6,"epoch":1}"#.to_vec(),
+        );
+        create_fake_outputs(tmp.path(), "job-w-003", &output_files);
+
+        let result = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "no-weights pipeline should succeed: {:?}",
+            result.err()
+        );
+
+        // No weights directory should exist
+        let weights_dir = tmp.path().join("outputs/job-w-003/weights");
+        assert!(
+            !weights_dir.exists(),
+            "weights dir should not exist without weights_ref"
+        );
+
+        // Config should have output_path substituted but no weights_path
+        let config_content =
+            std::fs::read_to_string(tmp.path().join("outputs/job-w-003/config.yaml")).unwrap();
+        assert!(
+            config_content.contains("output_path: /outputs/job-w-003"),
+            "config should have output_path substituted: {config_content}"
+        );
+        assert!(
+            !config_content.contains("weights_path"),
+            "config should not contain weights_path when no weights_ref: {config_content}"
+        );
+    }
+
+    #[tokio::test]
+    async fn weights_ref_artifacts_scope() {
+        // weights_ref com key em artifacts/ → usa escopo Artifacts existente
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_dispatch_with_valid_md5("job-w-004", "yolo", &zip_path);
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        dispatch.config_yaml = Some(
+            "epochs: 1\ndataset_path: {dataset_path}\noutput_path: {output_path}\nweights_path: {weights_path}".to_string(),
+        );
+
+        let weights_bytes = b"artifact weights";
+        let weights_md5 = compute_file_md5_bytes(weights_bytes);
+        let weights_s3 = Arc::new(FakeS3WithWeights::new(weights_bytes.to_vec()));
+
+        dispatch.weights_ref = Some(WeightsRef {
+            s3_key: "artifacts/job-prev/best.pt".to_string(),
+            md5: weights_md5,
+        });
+
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let mut output_files = HashMap::new();
+        output_files.insert("best.pt".to_string(), b"fake model".to_vec());
+        output_files.insert("last.pt".to_string(), b"fake model".to_vec());
+        output_files.insert(
+            "metrics.jsonl".to_string(),
+            br#"{"box_loss":0.5,"cls_loss":0.3,"dfl_loss":0.2,"mAP50":0.8,"mAP50-95":0.6,"epoch":1}"#.to_vec(),
+        );
+        create_fake_outputs(tmp.path(), "job-w-004", &output_files);
+
+        let result = run_job_inner(
+            &dispatch,
+            weights_s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "artifacts-scope weights should succeed: {:?}",
+            result.err()
+        );
+
+        // Verify staged at correct location
+        let staged = tmp.path().join("outputs/job-w-004/weights/best.pt");
+        assert!(staged.exists());
+        assert_eq!(std::fs::read(&staged).unwrap(), weights_bytes);
+    }
+
+    #[tokio::test]
+    async fn weights_ref_unknown_prefix_fails() {
+        // Key que não começa com models/ nem artifacts/ → falha
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_dispatch_with_valid_md5("job-w-005", "yolo", &zip_path);
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+
+        dispatch.weights_ref = Some(WeightsRef {
+            s3_key: "datasets/something/file.pt".to_string(),
+            md5: "d41d8cd98f00b204e9800998ecf8427e".to_string(),
+        });
+
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let result = run_job_inner(
+            &dispatch,
+            s3,
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+        )
+        .await;
+        assert!(result.is_err(), "unknown prefix should fail: {:?}", result);
     }
 }

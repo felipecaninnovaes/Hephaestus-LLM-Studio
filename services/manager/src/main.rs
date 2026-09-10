@@ -386,6 +386,35 @@ async fn list_models_handler(State(state): State<AppState>) -> Response {
     }
 }
 
+/// POST /internal/models — cria row na tabela models (ADR-0012 D1/I.2b).
+async fn create_model_handler(State(state): State<AppState>, body: Bytes) -> Response {
+    if body.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "invalid_request", "empty body");
+    }
+    let req: manager::CreateModelRequest = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                &format!("invalid json: {e}"),
+            )
+        }
+    };
+
+    match manager::create_model(&state.pool, req).await {
+        Ok(item) => (StatusCode::CREATED, Json(item)).into_response(),
+        Err(ManagerError::InvalidRequest(msg)) => bad_request(&msg),
+        Err(ManagerError::Internal(ref msg)) if msg == "model_exists" => error_response(
+            StatusCode::CONFLICT,
+            "model_exists",
+            "model with this s3_key already exists",
+        ),
+        Err(ManagerError::Internal(e)) => internal_error(&e),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
 /// GET /internal/storage/usage — soma de bytes de job_artifacts.
 async fn get_storage_usage_handler(State(state): State<AppState>) -> Response {
     match manager::get_storage_usage(&state.pool).await {
@@ -414,7 +443,10 @@ fn build_router(state: AppState) -> Router {
         .route("/internal/orchestrators", get(list_orchestrators_handler))
         .route("/internal/adopt", post(adopt_handler))
         .route("/internal/orchestrators/:id/revoke", post(revoke_handler))
-        .route("/internal/models", get(list_models_handler))
+        .route(
+            "/internal/models",
+            get(list_models_handler).post(create_model_handler),
+        )
         .route("/internal/storage/usage", get(get_storage_usage_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),

@@ -9,6 +9,21 @@ use api_principal::storage::{MockStorage, S3Storage, StorageConfig, StoragePort}
 use sqlx::PgPool;
 use std::sync::Arc;
 
+/// Boot da allow-list de hosts para download por URL (E1 — ADR-0012 D4).
+///
+/// `MODEL_DOWNLOAD_ALLOWED_HOSTS`: lista separada por vírgulas de hosts
+/// autorizados (ex.: `huggingface.co,civitai.com,*.githubusercontent.com`).
+/// Env ausente ou vazia ⇒ lista vazia ⇒ download por URL responde 403
+/// `model_download_disabled` (fail-closed).
+fn load_download_allowed_hosts() -> Vec<String> {
+    std::env::var("MODEL_DOWNLOAD_ALLOWED_HOSTS")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
 /// Boot do storage (ADR-0003 D8).
 ///
 /// `STORAGE_BACKEND` (default `"mock"`): `"mock"` monta `MockStorage`;
@@ -150,6 +165,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         embedder,
         embedding_model,
         manager,
+        model_download_allowed_hosts: load_download_allowed_hosts(),
     };
 
     let app = routes::build(state);

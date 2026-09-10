@@ -101,7 +101,7 @@
 
 ## 8. Downloads HF/Civitai + bootstrap e adoção de orquestradores
 
-- `POST /api/models/download {url, engine, dest}` → manager roteia ao orquestrador do ambiente ativo, que baixa com token da settings/env, verifica hash, salva em `models/<engine>/` (volume persistente, fora dos trainers) e notifica via WS.
+- `POST /api/models/download {url, engine, name?}` → **implementado (Fatia I)**: server-side no **principal** (reqwest stream → PUT S3 `models/<engine>/<id>/<name>`), síncrono, allow-list fail-closed via `MODEL_DOWNLOAD_ALLOWED_HOSTS` (env ausente/vazia = 403 `model_download_disabled`; feature nasce desligada); deny de ranges privados/metadata; redirects re-validados a cada hop (máx 5); cap 2 GiB, timeouts 30s/120s; falha → 502 `model_download_failed`. **Divergência consciente** da visão §9/:104 original (manager→orquestrador+volume+WS): o download v1 é síncrono no principal sem WS, sem volume novo; a visão original é arquitetura futura (ADR-0012 D4).
 - Bootstrap remoto ao subir container: orquestrador mapeia `datasets-cache/<jobid>/` (build do §3), `models/<engine>/` solicitados e `outputs/<jobid>/`; na conclusão faz o caminho inverso (`.safetensors`, pesos YOLO/CLIP, imagens processadas, logs, samples) de volta ao principal com md5.
 - **Adoção (decisão: token colado):** orquestrador remoto (VPS/RunPod com IP público) ao subir **gera pairing token + fingerprint**; o usuário cola no front (`Conectar Pod`) e o manager adota (`POST /api/orchestrators/adopt {endpoint, key}`), passa a health-checkar e sincronizar regras. **Local:** o compose sobe `principal + manager + orquestrador-local` juntos e o manager **auto-adota via rede docker**, sem chave.
   - **Implementado v1 (Fatia H, ADR-0011 D5):** pairing code `heph_p_*` (formato encorajado, não enforceado) verificado no orquestrador via `POST /internal/pairing/verify` (single-use em memória); upsert no manager via `POST /internal/adopt`; `POST /api/orchestrators/adopt` (BFF) e `POST /api/orchestrators/:id/revoke` (tombstone `revoked`, não DELETE). Alias `/api/environments*` implementado (módulo da UI habilitado). `AUTO_ADOPT_LOCAL` permanece (default `1`) com guarda "não ressuscita `revoked`".
@@ -138,8 +138,9 @@ datasets: GET/POST /api/datasets, GET/DELETE /api/datasets/:id  → implementado
                → implementado (Fatia 3e; ADR-0006/openapi 0.6.0 — ver Nota Fatia 3e abaixo)
             POST /api/datasets/:id/package
                → implementado (Fatia 4; ADR-0007 D1 — congela `dataset_versions`, gera zip, PUT `packages/<version_id>/`)
-models:   GET /api/models (pesos derivados de job_artifacts.kind='model' por (engine,model) de jobs done)  → implementado (F6.1; ADR-0009 D2)
-          POST /api/models/upload, POST /api/models/download  → pendentes (tabela models + volume models/ = fatia Roadmap "Modelos & Pesos"; ADR-0009 D0)
+models:   GET /api/models (pesos da tabela canônica `models`, ordered by created_at DESC)  → implementado (Fatia I; ADR-0012 D2 — fonte trocada de derived para tabela)
+          POST /api/models/upload  → implementado (Fatia I; ADR-0012 D3 — multipart file+engine+name?, magic PK\x03\x04, teto 2 GiB, md5)
+          POST /api/models/download  → implementado (Fatia I; ADR-0012 D4/E1 — server-side no principal, allow-list fail-closed MODEL_DOWNLOAD_ALLOWED_HOSTS, 502 model_download_failed)
 preview:  POST /api/preview/{autolabel,autotracker,generate,search} (job efêmero ou runner quente, sem fila de treino)
 jobs:     POST /api/jobs/yolo  → implementado (Fatia 4; ADR-0007 D7 — spec 0.7.0)
           POST /api/jobs/autotracker  → implementado (Fatia 5; ADR-0008 D0/D3 — spec 0.8.0)
@@ -171,8 +172,8 @@ telemetry: GET /api/telemetry  → implementado (Fatia 4 + Fatia H; proxy do cac
            ramTotal: aditivo Option<i64> (bytes; ADR-0009 D4; spec 0.9.0)
            **Emenda H.7 (ADR-0011):** agregação definida — 0 nós → fallback atual (`measured:false`); 1 nó → idêntico ao de hoje; >1 nós → `vramUsed/vramTotal` = soma dos Some, `gpus` = união (ordem por nó), `jobsActive` = soma, `cpu/ram/ramTotal` = **`null`** (não agregáveis de forma honesta), `measured:true` se ≥1 nó fresco. `measured` por nó = heartbeat ≤ 10s. `gpus[]`/`vramUsed`/`vramTotal` carregam valores reais quando um orquestrador com GPU heartbeats (contrato inalterado).
 monitoring: GET /api/orchestrators  → implementado (F6.1 + Fatia H; leitura via manager com telemetria por nó; status 200/401/503; ADR-0009 D1 + ADR-0011 D2)
-            GET /api/models         → implementado (F6.1; derivado de job_artifacts.kind='model' por (engine,model); ADR-0009 D2)
-            GET /api/storage/usage  → implementado (F6.1; soma SQL: datasetsBytes + artifactsBytes; ADR-0009 D3)
+            GET /api/models         → implementado (Fatia I; tabela canônica `models`, shape `Model` com source/md5/url/model nullable; ADR-0012 D2/D6 — fonte trocada de derived para tabela)
+            GET /api/storage/usage  → implementado (Fatia I; soma SQL: datasetsBytes + artifactsBytes (exclui kind='model') + modelsBytes; ADR-0009 D3 + ADR-0012 D8)
 ws:       /ws/jobs/:id/logs?since_seq=, /ws/telemetry
 ```
 
@@ -295,11 +296,24 @@ orchestrators(id UUID PK, name TEXT, endpoint TEXT UNIQUE, kind TEXT,     -- loc
   -- Fatia H (ADR-0011): heartbeat identificado (`endpoint` no `HeartbeatBody`) grava `gpus`/`vram_total_gb` dinamicamente
   -- (round(MiB/1024), GiB). Watchdog: `online → degraded` (15s) → `offline` (60s); re-queue dos jobs do nó morto.
   -- Adopt por token (pairing code single-use, upsert); revoke = tombstone `revoked` (não DELETE).
-models(id UUID PK, engine TEXT, name TEXT, path TEXT, source TEXT,         -- hf|civitai|upload
-  url TEXT NULL, hash TEXT NULL, bytes BIGINT, created_at TIMESTAMPTZ);
-  -- NÃO MIGRADA nesta fase (F6.1) — a lista de modelos v1 DERIVA de `job_artifacts.kind='model'`
-  -- (ADR-0009 D2): DISTINCT ON (engine,model) de jobs done, sem tabela `models` nova.
-  -- A tabela nasce quando a fatia Roadmap "Modelos & Pesos" implementar upload/download (ADR-0009 D0).
+models(id UUID PK, engine TEXT NOT NULL CHECK (engine IN ('yolo')),
+  name TEXT NOT NULL CHECK (char_length(name) BETWEEN 1 AND 255),
+  model TEXT,                                              -- variante conhecida (treino); NULL p/ upload/download
+  s3_key TEXT NOT NULL UNIQUE,                             -- 'models/<engine>/<id>/<name>' | 'artifacts/<job_id>/<path>'
+  source TEXT NOT NULL CHECK (source IN ('train','upload','download')),
+  url TEXT,                                                -- fonte original do download; NULL p/ upload/train (transporte interno)
+  hash TEXT NOT NULL CHECK (hash ~ '^[0-9a-f]{32}$'),      -- md5 (padrão da casa)
+  bytes BIGINT NOT NULL CHECK (bytes >= 0),
+  job_id UUID REFERENCES jobs(id) ON DELETE SET NULL,      -- origem do treino; upload/download NULL
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now());
+  -- IMPLEMENTADO (Fatia I; `migrations/0007_models.sql`): tabela canônica de pesos (catálogo; ADR-0012 D1/D2).
+  -- Dono: manager. Leitura: `GET /internal/models` (rota interna existente — troca a fonte de derived SQL para SELECT da tabela).
+  -- Escrita: (a) hook no `report_job` do manager — job `done` com artefato `kind='model'` e `path` contendo `best` → INSERT ON CONFLICT (s3_key) DO NOTHING;
+  --          (b) `POST /internal/models` — cria row a partir de upload/download do principal (compensação delete se INSERT falhar).
+  -- Backfill na migration: INSERT..SELECT dos artefatos `kind='model' AND path LIKE '%best%'` de jobs `done` (idempotente via ON CONFLICT).
+  -- Índices: `models(engine)`, `models(created_at DESC)`.
+  -- NOTA: checkpoint de treino vive em `artifacts/<job_id>/` (morre com o job via CASCADE; FK ON DELETE SET NULL no models.job_id preserva o modelo).
+  --       Sem rota DELETE de job hoje; sem rota DELETE de modelo no v1 (gestão de modelos = dívida).
 jobs(id UUID PK, kind TEXT, dataset_id UUID NULL FK, engine TEXT, model TEXT, mode TEXT,
   params JSONB, config_yaml TEXT, status TEXT, queue_reason TEXT NULL,
   orchestrator_id UUID NULL FK, vram_min_gb INT, progress FLOAT,
@@ -316,6 +330,9 @@ job_artifacts(id UUID PK, job_id UUID FK, kind TEXT, path TEXT, md5 TEXT, bytes 
   -- `job_id` FK ON DELETE CASCADE; `md5` CHECK hex 32; `bytes` CHECK >= 0.
   -- Grava kind/path/md5/bytes — `path` é relativo ao prefixo `artifacts/<job_id>/`.
   -- Escrita: manager insere a partir do report `done` do orquestrador (orquestrador não toca Postgres — stateless).
+  -- NOTA (Fatia I): `kind='model'` continua existindo (registro do job) mas o catálogo canônico de modelos
+  -- agora é a tabela `models` (hook do manager registra `best.pt` por job `done` via INSERT na tabela models).
+  -- `artifactsBytes` no storage/usage EXCLUI `kind='model'` (sem dupla contagem — ADR-0012 D8).
   -- Índice: `job_artifacts(job_id)`.
 job_samples(job_id UUID FK, cycle INT, idx INT, image_path TEXT, meta JSONB, PRIMARY KEY(job_id, cycle, idx));
 runners(id UUID PK, engine TEXT, model TEXT, orchestrator_id UUID FK,
@@ -342,3 +359,13 @@ runners(id UUID PK, engine TEXT, model TEXT, orchestrator_id UUID FK,
 - Retenção: samples últimos 5 ciclos ou 500 MB/job; logs 10 MB + 30 dias; artifacts guarda `best + last`, resto com GC manual (`DELETE /api/jobs/:id/artifacts?keep=best,last`).
 - Setup: `STUDIO_PASSWORD` no primeiro boot (hash Argon2 em `users`); troca via CLI `studio reset-password` (sem expor rota); chaves cifradas app-level com `STUDIO_MASTER_KEY` (nunca em log); `infra/compose.yaml` sobe `db (pgvector/pgvector:pg16-trixie@sha256:c8483555ce48101872f888c1df8a895ff689d6c7c7a5f7ac266475f9dfe89e0b) + principal (:8080) + manager + orquestrador-local (socket docker) + web (next) + seaweedfs (:8333 S3, :9333 master UI) + embedder (127.0.0.1:8090)` com volumes `pgdata, seaweed_data, datasets, models, outputs`. Serviço novo `seaweedfs` (`chrislusf/seaweedfs:4.45_full` pinado, `server -s3 -ip.bind=0.0.0.0 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json`, identidade em `infra/seaweedfs-s3.json`, bind loopback `127.0.0.1:8333:8333` + `127.0.0.1:9333:9333`, healthcheck por `wget` com `403 = no ar`); principal com `STORAGE_BACKEND=s3`, `S3_ENDPOINT_URL=http://seaweedfs:8333`, `S3_BUCKET=heph-data`, `S3_PUBLIC_ENDPOINT_URL=http://localhost:8333`, `S3_URL_TTL_SECS=3600`, mais `EMBEDDING_BACKEND=mock` (`mock|http`), `EMBEDDER_URL=http://embedder:8090`, `EMBEDDING_MODEL=ViT-B-32` (Fatia 3f). Serviço novo `embedder` (Fatia 3f, ADR-0004 D1; build `engines/trainer-clip`, `ENGINE_MOCK=1`, porta `127.0.0.1:8090`, healthcheck stdlib via `/health`, volume `models:/data/models`); o volume `models` é reusado como cache do peso (~600 MB) no caminho real. O volume `datasets` do orquestrador-local SOBREVIVE (para `models`/`outputs`/cache de build); o volume `datasets` do principal morreu (blobs no bucket).
 - **Execução sem DinD (RunPod padrão):** orquestrador opera em 2 modos — `docker` (socket disponível) ou `subprocess` (venv/python direto no mesmo host). Pods sem socket usam modo subprocess; template com DinD é opcional, não requisito.
+- Nota Fatia I (ADR-0012, spec 0.11.0):
+  - **`GET /api/models`**: fonte trocada de `job_artifacts` (derived `DISTINCT ON`) para tabela canônica `models` (D2). Contrato preservado com shape aditivo: `Model{id,name,engine,model?,source,bytes,md5,url?,jobId?,createdAt}` (D6). A dedupe por `(engine,model)` acabou: cada treino `done` produz 1 linha (o melhor checkpoint); 2 treinos do mesmo yolo11m = 2 modelos na lista (mudança de semântica do StatCard — checkpoints, não modelos distintos).
+  - **`POST /api/models/upload`**: multipart `file`+`engine`+`name?`, `DefaultBodyLimit` 2 GiB + 8 MiB envelope (413), magic `PK\x03\x04` (400 se divergir), sanitização de nome, md5 (hex 32), spool em tempdir + `put()` streama do disco (sem RAM). 201 `Model`. Compensação `delete` do objeto se o INSERT no manager falhar.
+  - **`POST /api/models/download`**: body `{url, engine, name?}` (camelCase, `deny_unknown_fields`). Server-side no **principal** (reqwest stream → PUT S3). Allow-list fail-closed via `MODEL_DOWNLOAD_ALLOWED_HOSTS` (env ausente/vazia = 403 `model_download_disabled`); deny de ranges privados/metadata (127/8, 10/8, 172.16/12, 192.168/16, ::1, fc00::/7, fe80::/10, 169.254/16); redirects re-validados a cada hop (máx 5); cap 2 GiB, timeouts 30s/120s; falha de rede/timeout/tamanho/hash → 502 `model_download_failed`. Síncrono (sem fila, sem WS). Divergência consciente da visão §9/:104 original (ADR-0012 D4).
+  - **`POST /api/jobs/yolo` ganha `weights?: string`** (UUID de `models`). Validação pura: não-UUID → 400 `invalid_request`; manager resolve no `create_job`: inexistente → 404 `not_found`, engine≠yolo → 400 `invalid_request`; grava `params.weights_ref = {s3_key, md5}` (JSONB); dispatch com `weights_ref` → orquestrador stagia em `outputs/<job_id>/weights/` e substitui `{weights_path}` no config.yaml.
+  - **`GET /api/storage/usage`**: `StorageUsage` ganha `modelsBytes` (aditivo). `artifactsBytes` exclui `kind='model'` (sem dupla contagem). `totalBytes` = datasets + artifacts + models.
+  - **Erros novos**: `model_download_failed` (502, download por URL falhou), `model_download_disabled` (403, allow-list ausente/vazia). 413 continua `invalid_request`. Wire: `{code,message}` estáticos.
+  - **Wire `Model` (camelCase)**: `{id,name,engine,model?,source,bytes,md5,url?,jobId?,createdAt}`. `model`/`jobId`/`url` nullable (upload/download não têm jobId nem variante; sem `S3_PUBLIC_ENDPOINT_URL` → `url:null`). `ModelWeight` → `Model` (aditivo — campos existentes preservados).
+  - **Spec OpenAPI**: 0.10.0 → **0.11.0** (`packages/contracts/openapi.yaml`).
+  - **Erros novos na enum**: `model_download_failed`, `model_download_disabled` (ADR-0012 D6/E1).

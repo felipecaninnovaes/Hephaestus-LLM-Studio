@@ -17,6 +17,8 @@ pub enum ManagerError {
     NotFound,
     /// Resposta 409 do manager (job em estado terminal — abort não possível).
     NotAbortable,
+    /// Resposta 409 do manager (pairing code inválido ou orquestrador inalcançável).
+    PairingInvalid,
 }
 
 impl std::fmt::Display for ManagerError {
@@ -25,6 +27,7 @@ impl std::fmt::Display for ManagerError {
             Self::Unavailable(_) => write!(f, "manager unavailable"),
             Self::NotFound => write!(f, "manager: not found"),
             Self::NotAbortable => write!(f, "manager: job not abortable"),
+            Self::PairingInvalid => write!(f, "manager: pairing invalid"),
         }
     }
 }
@@ -95,6 +98,25 @@ pub struct InternalOrchestrator {
     pub endpoint: String,
     pub status: String,
     pub last_heartbeat: Option<String>,
+    /// Telemetria por nó (H.4 — ADR-0011 D2).
+    #[serde(default)]
+    pub measured: bool,
+    #[serde(default)]
+    pub cpu: Option<f64>,
+    #[serde(default)]
+    pub ram: Option<i64>,
+    #[serde(default)]
+    pub ram_total: Option<i64>,
+    #[serde(default)]
+    pub vram_used: Option<i64>,
+    #[serde(default)]
+    pub vram_total: Option<i64>,
+    #[serde(default)]
+    pub vram_total_gb: Option<i32>,
+    #[serde(default)]
+    pub gpus: Vec<String>,
+    #[serde(default)]
+    pub jobs_active: i32,
 }
 
 /// Peso/modelo retornado pelo manager (snake_case interno).
@@ -166,6 +188,15 @@ pub trait ManagerPort: Send + Sync {
 
     /// Retorna uso de storage (artifacts bytes) do manager.
     async fn get_storage_usage(&self) -> Result<InternalStorageUsage, ManagerError>;
+
+    /// Adota um orquestrador via manager (H.4 — ADR-0011 D5).
+    async fn adopt_orchestrator(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<InternalOrchestrator, ManagerError>;
+
+    /// Revoga um orquestrador via manager (H.4 — ADR-0011 D5).
+    async fn revoke_orchestrator(&self, id: &str) -> Result<(), ManagerError>;
 }
 
 /// Implementação HTTP real do manager client.
@@ -380,6 +411,57 @@ impl ManagerPort for HttpManager {
     async fn get_storage_usage(&self) -> Result<InternalStorageUsage, ManagerError> {
         self.get_json("/internal/storage/usage").await
     }
+
+    async fn adopt_orchestrator(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<InternalOrchestrator, ManagerError> {
+        let url = format!("{}/internal/adopt", self.base_url);
+        let resp = self
+            .client
+            .post(&url)
+            .header("authorization", self.auth_header())
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| ManagerError::Unavailable(format!("manager request: {e}")))?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::CONFLICT {
+            return Err(ManagerError::PairingInvalid);
+        }
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(ManagerError::NotFound);
+        }
+        if !status.is_success() {
+            return Err(ManagerError::Unavailable(format!(
+                "manager status: {status}"
+            )));
+        }
+        resp.json()
+            .await
+            .map_err(|e| ManagerError::Unavailable(format!("manager body: {e}")))
+    }
+
+    async fn revoke_orchestrator(&self, id: &str) -> Result<(), ManagerError> {
+        let url = format!("{}/internal/orchestrators/{id}/revoke", self.base_url);
+        let resp = self
+            .client
+            .post(&url)
+            .header("authorization", self.auth_header())
+            .send()
+            .await
+            .map_err(|e| ManagerError::Unavailable(format!("manager request: {e}")))?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(ManagerError::NotFound);
+        }
+        if !status.is_success() {
+            return Err(ManagerError::Unavailable(format!(
+                "manager status: {status}"
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// Mock do manager para testes unitários e de integração.
@@ -405,6 +487,12 @@ pub struct MockManager {
     pub fail: bool,
     /// Se `true`, `abort_job` retorna `NotAbortable` (para testar 409).
     pub abort_not_abortable: bool,
+    /// Se `true`, `adopt_orchestrator` retorna `PairingInvalid` (para testar 409).
+    pub fail_adopt_pairing: bool,
+    /// Resultado de `adopt_orchestrator` (para testar 200).
+    pub adopt_orchestrator_result: Option<InternalOrchestrator>,
+    /// Se `true`, `revoke_orchestrator` retorna `NotFound` (para testar 404).
+    pub revoke_not_found: bool,
     /// Body capturado na última chamada a `create_job` (para asserts de teste).
     last_create_job_body: std::sync::Mutex<Option<serde_json::Value>>,
     /// Jobs indexados por ID — `get_job` consulta aqui antes do resultado fixo.
@@ -439,6 +527,9 @@ impl Default for MockManager {
             get_storage_usage_result: None,
             fail: false,
             abort_not_abortable: false,
+            fail_adopt_pairing: false,
+            adopt_orchestrator_result: None,
+            revoke_not_found: false,
             last_create_job_body: std::sync::Mutex::new(None),
             jobs_by_id: std::collections::HashMap::new(),
             artifacts_by_id: std::collections::HashMap::new(),
@@ -545,5 +636,30 @@ impl ManagerPort for MockManager {
         self.get_storage_usage_result
             .clone()
             .ok_or(ManagerError::Unavailable("no storage_usage".into()))
+    }
+
+    async fn adopt_orchestrator(
+        &self,
+        _body: &serde_json::Value,
+    ) -> Result<InternalOrchestrator, ManagerError> {
+        if self.fail {
+            return Err(ManagerError::Unavailable("mock fail".into()));
+        }
+        if self.fail_adopt_pairing {
+            return Err(ManagerError::PairingInvalid);
+        }
+        self.adopt_orchestrator_result
+            .clone()
+            .ok_or(ManagerError::Unavailable("no adopt result".into()))
+    }
+
+    async fn revoke_orchestrator(&self, _id: &str) -> Result<(), ManagerError> {
+        if self.fail {
+            return Err(ManagerError::Unavailable("mock fail".into()));
+        }
+        if self.revoke_not_found {
+            return Err(ManagerError::NotFound);
+        }
+        Ok(())
     }
 }

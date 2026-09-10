@@ -447,14 +447,16 @@ async fn main() {
             interval.tick().await;
 
             // Tenta nvidia-smi a cada tick; fallback silencioso.
-            let (gpus, vram_total, vram_used) = match orchestrator::try_nvidia_smi().await {
-                Some(telemetry) => (
-                    telemetry.gpus,
-                    Some(telemetry.vram_total),
-                    Some(telemetry.vram_used),
-                ),
-                None => (vec![], None, None),
-            };
+            let (gpus, vram_total, vram_used, max_gpu_mib) =
+                match orchestrator::try_nvidia_smi().await {
+                    Some(telemetry) => (
+                        telemetry.gpus,
+                        Some(telemetry.vram_total),
+                        Some(telemetry.vram_used),
+                        Some(telemetry.max_gpu_mib),
+                    ),
+                    None => (vec![], None, None, None),
+                };
 
             let body = HeartbeatBody {
                 endpoint: heartbeat_advertise_url.clone(),
@@ -465,6 +467,7 @@ async fn main() {
                 ram: Some(orchestrator::read_ram()),
                 ram_total: orchestrator::read_ram_total(),
                 jobs_active: heartbeat_active_jobs.len() as i32,
+                max_gpu_mib,
             };
 
             if let Err(e) = heartbeat_client.send(&body).await {

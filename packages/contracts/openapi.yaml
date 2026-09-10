@@ -2856,7 +2856,7 @@ components:
           description: "VRAM total do nó (MiB) — null se sem GPU."
         vramTotalGb:
           type: [integer, "null"]
-          description: "Capacidade VRAM declarada (GB, coluna) — null se não declarada."
+          description: "Capacidade VRAM do nó (GB) = maior GPU individual (round(max_gpu_mib/1024)) — 1 job = 1 GPU. null se não declarada."
         gpus:
           type: array
           items: { type: string }

@@ -126,6 +126,10 @@ spec junto do código no commit; branch `feat/orquestracao-robusta`; smoke manua
   definida; o heartbeat identificado passa a **gravar `gpus`/`vram_total_gb`** na
   linha (mata a nota "nunca escritos pelo manager" e o dado estático do INSERT
   manual).
+  **Emenda E2 (produto, 2026-09-10):** `vram_total_gb` = **maior GPU individual**
+  (`round(max_gpu_mib/1024)`) — 1 job = 1 GPU (§6), a soma das GPUs instaladas
+  (18GB no TrueNAS) NÃO é capacidade de treino; telemetria `vramTotal` continua a
+  soma (VRAM instalada). Fallback: heartbeat sem `max_gpu_mib` (legado) usa a soma.
 - **Roteamento por capacidade** (D3): substituir o `LIMIT 1` por SQL com filtro de
   nó ocupado + capacidade estática (`vram_min` da vram-table + headroom vs
   `vram_total_gb`) + `ORDER BY` determinístico; `queue_reason='waiting_vram'`
@@ -563,7 +567,7 @@ POST /api/environments/:id/revoke 204 401 404 503
 **Delta interno (fora da OpenAPI — transporte snake_case):**
 | Rota/body | Serviço | Delta |
 |---|---|---|
-| `HeartbeatBody.endpoint: String` | orchestrator → manager | identidade (D1); `ORCH_ADVERTISE_URL` (default `http://orchestrator-local:8082`) |
+| `HeartbeatBody.endpoint: String` + `.max_gpu_mib: Option<i64>` | orchestrator → manager | identidade (D1); `ORCH_ADVERTISE_URL` (default `http://orchestrator-local:8082`); `max_gpu_mib` = maior VRAM individual entre GPUs (capacidade de 1 job — §6) |
 | `POST /internal/pairing/verify {code}` → `{valid:bool}` | orchestrator | single-use em memória; `ORCH_PAIRING_CODE` (ausente → gera no boot + loga) |
 | `POST /internal/adopt {name, endpoint, kind, pairing_code}` → item completo | manager | upsert + verify no orquestrador (timeout 10s) |
 | `POST /internal/orchestrators/:id/revoke` → 204 | manager | status `revoked` |

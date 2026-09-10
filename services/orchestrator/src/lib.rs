@@ -64,6 +64,8 @@ pub struct HeartbeatBody {
     pub ram: Option<i64>,
     pub ram_total: Option<i64>,
     pub jobs_active: i32,
+    /// Maior VRAM individual entre as GPUs (MiB) — capacidade real de 1 job.
+    pub max_gpu_mib: Option<i64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1250,6 +1252,9 @@ pub struct GpuTelemetry {
     pub vram_total: i64,
     /// VRAM usada somada em MiB.
     pub vram_used: i64,
+    /// Maior VRAM total individual entre as GPUs visíveis (MiB).
+    /// 1 job = 1 GPU (backend.md §6) — capacidade real de treino de 1 job.
+    pub max_gpu_mib: i64,
 }
 
 /// Tenta rodar `nvidia-smi` e parsear o CSV de saída.
@@ -1277,12 +1282,13 @@ pub async fn try_nvidia_smi() -> Option<GpuTelemetry> {
     parse_nvidia_smi_csv(&stdout)
 }
 
-/// Parseia CSV do nvidia-smi (nomes + soma de VRAM em MiB, sem conversão).
+/// Parseia CSV do nvidia-smi (nomes + soma de VRAM em MiB + max individual).
 /// Linhas malformadas são ignoradas (skip silencioso).
 pub fn parse_nvidia_smi_csv(csv: &str) -> Option<GpuTelemetry> {
     let mut gpus = Vec::new();
     let mut vram_total_mib: i64 = 0;
     let mut vram_used_mib: i64 = 0;
+    let mut max_gpu_mib: i64 = 0;
 
     for line in csv.lines() {
         let line = line.trim();
@@ -1306,6 +1312,9 @@ pub fn parse_nvidia_smi_csv(csv: &str) -> Option<GpuTelemetry> {
         gpus.push(name);
         vram_total_mib += total;
         vram_used_mib += used;
+        if total > max_gpu_mib {
+            max_gpu_mib = total;
+        }
     }
 
     if gpus.is_empty() {
@@ -1316,6 +1325,7 @@ pub fn parse_nvidia_smi_csv(csv: &str) -> Option<GpuTelemetry> {
         gpus,
         vram_total: vram_total_mib,
         vram_used: vram_used_mib,
+        max_gpu_mib,
     })
 }
 
@@ -2038,6 +2048,8 @@ NVIDIA GeForce GTX 1660 SUPER, 6144, 1024
         assert_eq!(t.vram_total, 18432);
         // used: 0 + 1024 = 1024 MiB (sem conversão)
         assert_eq!(t.vram_used, 1024);
+        // max individual: 12288 MiB (maior GPU — capacidade de 1 job)
+        assert_eq!(t.max_gpu_mib, 12288);
     }
 
     #[test]
@@ -2066,6 +2078,16 @@ also bad, not a number
     fn parse_nvidia_smi_csv_no_valid_gpus() {
         let csv = "bad line\nanother bad\n";
         assert!(parse_nvidia_smi_csv(csv).is_none());
+    }
+
+    #[test]
+    fn parse_nvidia_smi_csv_single_gpu_max_equals_total() {
+        let csv = "NVIDIA GeForce RTX 3060, 12288, 4096\n";
+        let t = parse_nvidia_smi_csv(csv).expect("should parse 1 GPU");
+        assert_eq!(t.gpus.len(), 1);
+        assert_eq!(t.vram_total, 12288);
+        // 1 GPU: max = total (capacidade de 1 job = a única GPU)
+        assert_eq!(t.max_gpu_mib, 12288);
     }
 
     // =========================================================================
@@ -2371,11 +2393,13 @@ also bad, not a number
             ram: Some(4_000_000_000),
             ram_total: Some(8_000_000_000),
             jobs_active: 1,
+            max_gpu_mib: Some(12288),
         };
         let json = serde_json::to_value(&body).unwrap();
         assert_eq!(json["endpoint"], "http://orchestrator-local:8082");
         assert_eq!(json["gpus"][0], "NVIDIA GeForce RTX 3060");
         assert_eq!(json["jobs_active"], 1);
+        assert_eq!(json["max_gpu_mib"], 12288);
     }
 
     // =========================================================================

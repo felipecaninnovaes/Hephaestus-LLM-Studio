@@ -131,6 +131,8 @@ pub struct HeartbeatRequest {
     pub ram: Option<i64>,
     pub ram_total: Option<i64>,
     pub jobs_active: i32,
+    /// Maior VRAM individual entre as GPUs (MiB) — capacidade real de 1 job.
+    pub max_gpu_mib: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -921,9 +923,12 @@ pub async fn receive_heartbeat(
     }
 
     // 3. Grava gpus/vram_total_gb quando heartbeat carrega VRAM e gpus não-vazio.
+    //    vram_total_gb = maior GPU individual (round(max_gpu_mib/1024)) — 1 job = 1 GPU.
+    //    Fallback: heartbeat sem max_gpu_mib (orquestrador legado) usa a soma (vram_total).
     if !req.gpus.is_empty() {
-        if let Some(vram_total_mib) = req.vram_total {
-            let vram_total_gb = ((vram_total_mib as f64) / 1024.0).round() as i32;
+        let effective_vram_mib = req.max_gpu_mib.or(req.vram_total);
+        if let Some(vram_mib) = effective_vram_mib {
+            let vram_total_gb = ((vram_mib as f64) / 1024.0).round() as i32;
             let gpus_json = serde_json::to_value(&req.gpus)
                 .map_err(|e| ManagerError::Internal(format!("serialize gpus: {e}")))?;
             sqlx::query("UPDATE orchestrators SET gpus = $1, vram_total_gb = $2 WHERE id = $3")

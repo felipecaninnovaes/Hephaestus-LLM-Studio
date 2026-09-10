@@ -795,6 +795,7 @@ async fn telemetry_com_heartbeat() {
         ram: Some(16384),
         ram_total: Some(67108864000),
         jobs_active: 2,
+        max_gpu_mib: Some(24000),
     };
 
     manager::receive_heartbeat(&p, &cache, hb)
@@ -1108,6 +1109,7 @@ async fn list_orchestrators_heartbeat_atualiza_last() {
         ram: Some(1024),
         ram_total: Some(4096),
         jobs_active: 0,
+        max_gpu_mib: None,
     };
     manager::receive_heartbeat(&p, &cache, hb)
         .await
@@ -1493,6 +1495,7 @@ async fn heartbeat_2_nos_atualiza_só_linha_correta() {
         ram: Some(4096),
         ram_total: Some(8192),
         jobs_active: 1,
+        max_gpu_mib: None,
     };
     manager::receive_heartbeat(&p, &cache, hb)
         .await
@@ -1534,6 +1537,7 @@ async fn heartbeat_endpoint_inexistente_nada_gravado() {
         ram: None,
         ram_total: None,
         jobs_active: 0,
+        max_gpu_mib: None,
     };
     manager::receive_heartbeat(&p, &cache, hb)
         .await
@@ -1591,6 +1595,7 @@ async fn heartbeat_revive_offline_nao_revive_revoked() {
         ram: None,
         ram_total: None,
         jobs_active: 0,
+        max_gpu_mib: None,
     };
     manager::receive_heartbeat(&p, &cache, hb)
         .await
@@ -1614,6 +1619,7 @@ async fn heartbeat_revive_offline_nao_revive_revoked() {
 }
 
 /// (d) Heartbeat com vram_total/gpus → colunas gravadas (round MiB/1024).
+/// Com max_gpu_mib, vram_total_gb = maior GPU (12288→12), não a soma (18432→18).
 #[tokio::test]
 #[ignore = "requer Postgres (bash scripts/test-db.sh)"]
 async fn heartbeat_grava_vram_total_gb_e_gpus() {
@@ -1635,29 +1641,74 @@ async fn heartbeat_grava_vram_total_gb_e_gpus() {
     let hb = HeartbeatRequest {
         endpoint: "http://gpu:8082".into(),
         gpus: vec!["NVIDIA RTX 3060".into(), "NVIDIA GTX 1660S".into()],
-        vram_total: Some(18432), // 12288 + 6144 MiB
+        vram_total: Some(18432), // 12288 + 6144 MiB (soma — VRAM instalada)
         vram_used: Some(5000),
         cpu: Some(0.3),
         ram: Some(8192),
         ram_total: Some(16384),
         jobs_active: 1,
+        max_gpu_mib: Some(12288), // maior GPU — capacidade de 1 job
     };
     manager::receive_heartbeat(&p, &cache, hb)
         .await
         .expect("heartbeat gpu");
 
-    // Verifica colunas.
+    // Verifica colunas: vram_total_gb = round(12288/1024) = 12 (não 18).
     let row: (Option<i32>, serde_json::Value) =
         sqlx::query_as("SELECT vram_total_gb, gpus FROM orchestrators WHERE id = $1")
             .bind(orch_id)
             .fetch_one(&p)
             .await
             .unwrap();
-    assert_eq!(row.0, Some(18), "round(18432/1024) = 18");
+    assert_eq!(row.0, Some(12), "round(12288/1024) = 12 (maior GPU)");
     assert_eq!(
         row.1,
         serde_json::json!(["NVIDIA RTX 3060", "NVIDIA GTX 1660S"])
     );
+}
+
+/// (d.2) Heartbeat sem max_gpu_mib (orquestrador legado) → fallback para vram_total.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn heartbeat_fallback_vram_total_sem_max_gpu_mib() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let orch_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'old-orch', 'http://old:8082', 'local', 'online')",
+    )
+    .bind(orch_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let cache = manager::new_telemetry_cache();
+    let hb = HeartbeatRequest {
+        endpoint: "http://old:8082".into(),
+        gpus: vec!["NVIDIA RTX 3060".into()],
+        vram_total: Some(12288),
+        vram_used: Some(4096),
+        cpu: Some(0.5),
+        ram: Some(8192),
+        ram_total: Some(16384),
+        jobs_active: 0,
+        max_gpu_mib: None, // orquestrador legado sem parse por GPU
+    };
+    manager::receive_heartbeat(&p, &cache, hb)
+        .await
+        .expect("heartbeat old");
+
+    // Fallback: vram_total_gb = round(12288/1024) = 12 (usa vram_total).
+    let row: (Option<i32>,) =
+        sqlx::query_as("SELECT vram_total_gb FROM orchestrators WHERE id = $1")
+            .bind(orch_id)
+            .fetch_one(&p)
+            .await
+            .unwrap();
+    assert_eq!(row.0, Some(12), "fallback: round(12288/1024) = 12");
 }
 
 /// (e.1) Agregação: 2 nós com cache → soma+união+cpu/ram null.
@@ -1699,6 +1750,7 @@ async fn agregacao_2_nos_soma_uniao() {
         ram: Some(4096),
         ram_total: Some(8192),
         jobs_active: 1,
+        max_gpu_mib: Some(12000),
     };
     manager::receive_heartbeat(&p, &cache, hb1)
         .await
@@ -1714,6 +1766,7 @@ async fn agregacao_2_nos_soma_uniao() {
         ram: Some(8192),
         ram_total: Some(16384),
         jobs_active: 2,
+        max_gpu_mib: Some(6000),
     };
     manager::receive_heartbeat(&p, &cache, hb2)
         .await
@@ -1761,6 +1814,7 @@ async fn agregacao_1_no_compat() {
         ram: Some(16384),
         ram_total: Some(67108864000),
         jobs_active: 2,
+        max_gpu_mib: Some(24000),
     };
     manager::receive_heartbeat(&p, &cache, hb)
         .await
@@ -1879,10 +1933,10 @@ fn agregacao_pura_2_nos() {
 
 // --- Roteamento (ADR-0011 D3) ---
 
-/// 2 nós online (18GB e NULL) + job com requisito 8 → vai para o de 18GB.
+/// 2 nós online (12GB e NULL) + job com requisito 8 → vai para o de 12GB.
 #[tokio::test]
 #[ignore = "requer Postgres (bash scripts/test-db.sh)"]
-async fn roteamento_2_nos_requisito_8_vai_para_18gb() {
+async fn roteamento_2_nos_requisito_8_vai_para_12gb() {
     let _guard = SERIAL.lock().await;
     let p = pool().await;
     cleanup(&p).await;
@@ -1890,11 +1944,11 @@ async fn roteamento_2_nos_requisito_8_vai_para_18gb() {
     let orch = FakeOrchestratorClient::new();
     let vt = test_vram_table();
 
-    // Nó de 18GB online.
+    // Nó de 12GB online (maior GPU individual — capacidade de 1 job).
     let id_big = uuid::Uuid::new_v4();
     sqlx::query(
         "INSERT INTO orchestrators (id, name, endpoint, kind, status, vram_total_gb) \
-         VALUES ($1, 'big-gpu', 'http://big:8082', 'remoto', 'online', 18)",
+         VALUES ($1, 'big-gpu', 'http://big:8082', 'remoto', 'online', 12)",
     )
     .bind(id_big)
     .execute(&p)
@@ -1937,7 +1991,7 @@ async fn roteamento_2_nos_requisito_8_vai_para_18gb() {
         .await
         .expect("dispatch");
 
-    // Verifica: job foi dispatched para o nó de 18GB.
+    // Verifica: job foi dispatched para o nó de 12GB.
     let job = manager::get_job(&p, job_id).await.expect("get job");
     assert_eq!(job.status, "dispatched");
     assert_eq!(
@@ -2022,11 +2076,11 @@ async fn roteamento_no_com_job_excluido() {
     let orch = FakeOrchestratorClient::new();
     let vt = test_vram_table();
 
-    // Nó 1: online, 18GB — com job running.
+    // Nó 1: online, 12GB — com job running.
     let id_busy = uuid::Uuid::new_v4();
     sqlx::query(
         "INSERT INTO orchestrators (id, name, endpoint, kind, status, vram_total_gb) \
-         VALUES ($1, 'busy', 'http://busy:8082', 'remoto', 'online', 18)",
+         VALUES ($1, 'busy', 'http://busy:8082', 'remoto', 'online', 12)",
     )
     .bind(id_busy)
     .execute(&p)
@@ -2057,7 +2111,7 @@ async fn roteamento_no_com_job_excluido() {
     .await
     .unwrap();
 
-    // Job com requisito 8 → busy tem 18GB mas está ocupado, free tem NULL (permissivo).
+    // Job com requisito 8 → busy tem 12GB mas está ocupado, free tem NULL (permissivo).
     let resp = manager::create_job(
         &p,
         CreateJobRequest {

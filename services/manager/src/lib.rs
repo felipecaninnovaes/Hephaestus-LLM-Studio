@@ -840,6 +840,54 @@ pub async fn report_job(
                 upsert_metrics(pool, id, metrics).await?;
             }
 
+            // Hook: registra best.pt na tabela models (ADR-0012 D1).
+            // Best-effort: falha não impede o report done.
+            if let Some(artifacts) = &report.artifacts {
+                let best_models: Vec<_> = artifacts
+                    .iter()
+                    .filter(|a| a.kind == "model" && a.path.contains("best"))
+                    .collect();
+                if !best_models.is_empty() {
+                    // Lê engine/model do job para o INSERT.
+                    let job_info: Option<(String, String)> =
+                        sqlx::query_as("SELECT engine, model FROM jobs WHERE id = $1")
+                            .bind(id)
+                            .fetch_optional(pool)
+                            .await
+                            .ok()
+                            .flatten();
+                    if let Some((engine, model)) = job_info {
+                        for art in best_models {
+                            let s3_key = format!("artifacts/{id}/{}", art.path);
+                            let model_name = art.path.rsplit('/').next().unwrap_or(&art.path);
+                            let result = sqlx::query(
+                                "INSERT INTO models (id, engine, name, model, s3_key, source, hash, bytes, job_id) \
+                                 VALUES ($1, $2, $3, $4, $5, 'train', $6, $7, $8) \
+                                 ON CONFLICT (s3_key) DO NOTHING",
+                            )
+                            .bind(Uuid::new_v4())
+                            .bind(&engine)
+                            .bind(model_name)
+                            .bind(Some(model.clone()))
+                            .bind(&s3_key)
+                            .bind(&art.md5)
+                            .bind(art.bytes)
+                            .bind(id)
+                            .execute(pool)
+                            .await;
+                            if let Err(e) = result {
+                                tracing::warn!(
+                                    job_id = %id,
+                                    s3_key = %s3_key,
+                                    error = %e,
+                                    "falha ao registrar modelo na tabela models (best-effort)"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
             sqlx::query(
                 "UPDATE jobs SET status = 'done', finished_at = now(), progress = 1.0 WHERE id = $1",
             )
@@ -1246,11 +1294,14 @@ pub async fn list_orchestrators(
 #[derive(Debug, Clone, Serialize)]
 pub struct ModelItem {
     pub id: String,
-    pub job_id: String,
-    pub path: String,
-    pub bytes: i64,
+    pub name: String,
     pub engine: String,
-    pub model: String,
+    pub model: Option<String>,
+    pub source: String,
+    pub hash: String,
+    pub bytes: i64,
+    pub path: String,
+    pub job_id: Option<String>,
     pub created_at: String,
 }
 
@@ -1259,16 +1310,22 @@ pub struct ModelsResponse {
     pub items: Vec<ModelItem>,
 }
 
-/// Lista modelos derivados de job_artifacts.kind='model' (DISTINCT ON engine,model).
+/// Lista modelos da tabela `models` (catálogo canônico; ADR-0012 D2).
 pub async fn list_models(pool: &PgPool) -> Result<ModelsResponse, ManagerError> {
-    let rows: Vec<(Uuid, Uuid, String, i64, String, String, DateTime<Utc>)> = sqlx::query_as(
-        "SELECT DISTINCT ON (j.engine, j.model) \
-               ja.id, ja.job_id, ja.path, ja.bytes, j.engine, j.model, j.created_at \
-         FROM job_artifacts ja JOIN jobs j ON j.id = ja.job_id \
-         WHERE ja.kind = 'model' AND j.status = 'done' \
-         ORDER BY j.engine, j.model, \
-                  (ja.path LIKE '%best%') DESC, \
-                  j.created_at DESC",
+    let rows: Vec<(
+        Uuid,
+        String,
+        String,
+        Option<String>,
+        String,
+        String,
+        i64,
+        String,
+        Option<Uuid>,
+        DateTime<Utc>,
+    )> = sqlx::query_as(
+        "SELECT id, name, engine, model, source, hash, bytes, s3_key, job_id, created_at \
+         FROM models ORDER BY created_at DESC",
     )
     .fetch_all(pool)
     .await
@@ -1278,12 +1335,15 @@ pub async fn list_models(pool: &PgPool) -> Result<ModelsResponse, ManagerError> 
         .into_iter()
         .map(|r| ModelItem {
             id: r.0.to_string(),
-            job_id: r.1.to_string(),
-            path: r.2,
-            bytes: r.3,
-            engine: r.4,
-            model: r.5,
-            created_at: r.6.to_rfc3339(),
+            name: r.1,
+            engine: r.2,
+            model: r.3,
+            source: r.4,
+            hash: r.5,
+            bytes: r.6,
+            path: r.7, // s3_key → path (wire compat)
+            job_id: r.8.map(|u| u.to_string()),
+            created_at: r.9.to_rfc3339(),
         })
         .collect();
 
@@ -1293,19 +1353,27 @@ pub async fn list_models(pool: &PgPool) -> Result<ModelsResponse, ManagerError> 
 #[derive(Debug, Clone, Serialize)]
 pub struct StorageUsageResponse {
     pub artifacts_bytes: i64,
+    pub models_bytes: i64,
 }
 
-/// Retorna soma de bytes de job_artifacts.
+/// Retorna soma de bytes de job_artifacts (excluindo kind='model') e models.
 pub async fn get_storage_usage(pool: &PgPool) -> Result<StorageUsageResponse, ManagerError> {
     let row: (i64,) = sqlx::query_as(
-        "SELECT COALESCE(SUM(bytes), 0)::bigint AS artifacts_bytes FROM job_artifacts",
+        "SELECT COALESCE(SUM(bytes), 0)::bigint AS artifacts_bytes FROM job_artifacts WHERE kind <> 'model'",
     )
     .fetch_one(pool)
     .await
-    .map_err(|e| ManagerError::Internal(format!("storage usage: {e}")))?;
+    .map_err(|e| ManagerError::Internal(format!("storage usage artifacts: {e}")))?;
+
+    let models_row: (i64,) =
+        sqlx::query_as("SELECT COALESCE(SUM(bytes), 0)::bigint AS models_bytes FROM models")
+            .fetch_one(pool)
+            .await
+            .map_err(|e| ManagerError::Internal(format!("storage usage models: {e}")))?;
 
     Ok(StorageUsageResponse {
         artifacts_bytes: row.0,
+        models_bytes: models_row.0,
     })
 }
 

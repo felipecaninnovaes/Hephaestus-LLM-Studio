@@ -96,6 +96,10 @@ impl manager::OrchestratorClient for FailingOrchestratorClient {
 
 /// Limpa tabelas do manager.
 async fn cleanup(pool: &PgPool) {
+    sqlx::query("DELETE FROM models")
+        .execute(pool)
+        .await
+        .unwrap();
     sqlx::query("DELETE FROM job_artifacts")
         .execute(pool)
         .await
@@ -1188,15 +1192,18 @@ async fn list_models_job_done_com_artifacts() {
     assert_eq!(models.items.len(), 1);
     let m = &models.items[0];
     assert_eq!(m.engine, "yolo");
-    assert_eq!(m.model, "yolo11m");
-    assert_eq!(m.path, "best.pt"); // preferência best > last
+    assert_eq!(m.model.as_deref(), Some("yolo11m"));
+    assert_eq!(m.name, "best.pt");
+    assert_eq!(m.source, "train");
+    assert_eq!(m.hash, "d41d8cd98f00b204e9800998ecf8427e");
     assert_eq!(m.bytes, 512);
-    assert_eq!(m.job_id, job_id.to_string());
+    assert_eq!(m.path, format!("artifacts/{job_id}/best.pt"));
+    assert_eq!(m.job_id.as_deref(), Some(job_id.to_string().as_str()));
 }
 
 #[tokio::test]
 #[ignore = "requer Postgres (bash scripts/test-db.sh)"]
-async fn list_models_dedupe_mesmo_engine_model() {
+async fn list_models_cada_job_best_uma_linha() {
     let _guard = SERIAL.lock().await;
     let p = pool().await;
     cleanup(&p).await;
@@ -1242,7 +1249,7 @@ async fn list_models_dedupe_mesmo_engine_model() {
     .await
     .expect("report done 1");
 
-    // Job 2: done com best.pt (mesmo engine/model, mais recente).
+    // Job 2: done com best.pt (mesmo engine/model).
     let r2 = manager::create_job(&p, test_job_request(ds_id))
         .await
         .expect("create 2");
@@ -1271,14 +1278,22 @@ async fn list_models_dedupe_mesmo_engine_model() {
     .await
     .expect("report done 2");
 
-    let models = manager::list_models(&p).await.expect("list models dedupe");
-    assert_eq!(models.items.len(), 1, "dedupe: 2 jobs = 1 item");
-    assert_eq!(
-        models.items[0].job_id,
-        job2.to_string(),
-        "deve ser o mais recente"
-    );
+    let models = manager::list_models(&p)
+        .await
+        .expect("list models sem dedupe");
+    // Cada job gera 1 linha (sem dedupe por engine/model — D2).
+    assert_eq!(models.items.len(), 2, "2 jobs = 2 itens (sem dedupe)");
+    // Mais recente primeiro (ORDER BY created_at DESC).
     assert_eq!(models.items[0].bytes, 200);
+    assert_eq!(
+        models.items[0].job_id.as_deref(),
+        Some(job2.to_string().as_str())
+    );
+    assert_eq!(models.items[1].bytes, 100);
+    assert_eq!(
+        models.items[1].job_id.as_deref(),
+        Some(job1.to_string().as_str())
+    );
 }
 
 #[tokio::test]
@@ -1340,7 +1355,7 @@ async fn list_models_exclui_autotracker_boxes() {
         .await
         .expect("list models no boxes");
     assert_eq!(models.items.len(), 1, "boxes excluído: 1 item");
-    assert_eq!(models.items[0].path, "best.pt");
+    assert_eq!(models.items[0].name, "best.pt");
 }
 
 #[tokio::test]
@@ -1368,8 +1383,11 @@ async fn storage_usage_soma_esperada() {
     // Sem artifacts → 0.
     let usage = manager::get_storage_usage(&p).await.expect("usage empty");
     assert_eq!(usage.artifacts_bytes, 0);
+    assert_eq!(usage.models_bytes, 0);
 
-    // Job 1 done com artifacts: 512 + 512 + 256 = 1280.
+    // Job 1 done com artifacts: best.pt (512, model) + last.pt (512, model) + metrics.jsonl (256, metrics).
+    // artifacts_bytes exclui kind='model' → só metrics.jsonl = 256.
+    // models_bytes soma best.pt → 512 (last.pt não entra — hook filtra 'best').
     let r1 = manager::create_job(&p, test_job_request(ds_id))
         .await
         .expect("create 1");
@@ -1415,9 +1433,12 @@ async fn storage_usage_soma_esperada() {
     let usage = manager::get_storage_usage(&p)
         .await
         .expect("usage after job 1");
-    assert_eq!(usage.artifacts_bytes, 1280);
+    assert_eq!(usage.artifacts_bytes, 256, "artifacts exclui kind='model'");
+    assert_eq!(usage.models_bytes, 512, "models soma best.pt");
 
-    // Job 2 done: 200 bytes → total 1480.
+    // Job 2 done: best.pt (200) + metrics.jsonl (100).
+    // artifacts_bytes: 256 + 100 = 356.
+    // models_bytes: 512 + 200 = 712.
     let r2 = manager::create_job(&p, test_job_request(ds_id))
         .await
         .expect("create 2");
@@ -1435,12 +1456,20 @@ async fn storage_usage_soma_esperada() {
             step: None,
             metrics: None,
             error: None,
-            artifacts: Some(vec![ArtifactItem {
-                kind: "model".into(),
-                path: "best.pt".into(),
-                md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
-                bytes: 200,
-            }]),
+            artifacts: Some(vec![
+                ArtifactItem {
+                    kind: "model".into(),
+                    path: "best.pt".into(),
+                    md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                    bytes: 200,
+                },
+                ArtifactItem {
+                    kind: "metrics".into(),
+                    path: "metrics.jsonl".into(),
+                    md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                    bytes: 100,
+                },
+            ]),
         },
     )
     .await
@@ -1449,7 +1478,312 @@ async fn storage_usage_soma_esperada() {
     let usage = manager::get_storage_usage(&p)
         .await
         .expect("usage after job 2");
-    assert_eq!(usage.artifacts_bytes, 1480);
+    assert_eq!(usage.artifacts_bytes, 356, "artifacts exclui ambos best.pt");
+    assert_eq!(usage.models_bytes, 712, "models soma ambos best.pt");
+}
+
+// ===========================================================================
+// I.2a — Models: backfill, hook idempotente, list_models, storage
+// ===========================================================================
+
+/// Backfill: INSERT..SELECT do 0007 insere best.pt existente na tabela models.
+/// Cria job done com best.pt + last.pt via report, limpa models, roda backfill SQL
+/// → 1 linha em models (best apenas), id = artifact id.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn backfill_best_pt_para_models() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+
+    // Cria job done com best.pt + last.pt via report (popula job_artifacts).
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "done".into(),
+            progress: Some(1.0),
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: Some(vec![
+                ArtifactItem {
+                    kind: "model".into(),
+                    path: "best.pt".into(),
+                    md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                    bytes: 512,
+                },
+                ArtifactItem {
+                    kind: "model".into(),
+                    path: "last.pt".into(),
+                    md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                    bytes: 512,
+                },
+            ]),
+        },
+    )
+    .await
+    .expect("report done");
+
+    // Limpa models (simula banco antes do backfill).
+    sqlx::query("DELETE FROM models").execute(&p).await.unwrap();
+
+    // Executa o backfill SQL do 0007 (INSERT..SELECT ON CONFLICT DO NOTHING).
+    sqlx::query(
+        "INSERT INTO models (id, engine, name, model, s3_key, source, hash, bytes, job_id, created_at)
+         SELECT ja.id, j.engine, split_part(ja.path, '/', -1), j.model,
+                'artifacts/' || ja.job_id::text || '/' || ja.path, 'train',
+                ja.md5, ja.bytes, ja.job_id, j.created_at
+         FROM job_artifacts ja
+         JOIN jobs j ON j.id = ja.job_id
+         WHERE ja.kind = 'model' AND j.status = 'done' AND ja.path LIKE '%best%'
+         ON CONFLICT (s3_key) DO NOTHING",
+    )
+    .execute(&p)
+    .await
+    .expect("rodar backfill");
+
+    // Verifica: 1 linha em models (best apenas), id = artifact id.
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM models")
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(count.0, 1, "backfill deve inserir 1 linha (best apenas)");
+
+    let row: (
+        uuid::Uuid,
+        String,
+        String,
+        Option<String>,
+        String,
+        String,
+        i64,
+        Option<uuid::Uuid>,
+    ) = sqlx::query_as(
+        "SELECT id, name, engine, model, source, hash, bytes, job_id FROM models LIMIT 1",
+    )
+    .fetch_one(&p)
+    .await
+    .unwrap();
+    assert_eq!(row.1, "best.pt");
+    assert_eq!(row.2, "yolo");
+    assert_eq!(row.3.as_deref(), Some("yolo11m"));
+    assert_eq!(row.4, "train");
+    assert_eq!(row.5, "d41d8cd98f00b204e9800998ecf8427e");
+    assert_eq!(row.6, 512);
+    assert_eq!(row.7, Some(job_id));
+}
+
+/// Backfill idempotente: rodar 2× o INSERT..SELECT não duplica (ON CONFLICT).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn backfill_idempotente_2x_sem_duplicar() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "done".into(),
+            progress: Some(1.0),
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: Some(vec![ArtifactItem {
+                kind: "model".into(),
+                path: "best.pt".into(),
+                md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                bytes: 512,
+            }]),
+        },
+    )
+    .await
+    .expect("report done");
+
+    sqlx::query("DELETE FROM models").execute(&p).await.unwrap();
+
+    let backfill = "INSERT INTO models (id, engine, name, model, s3_key, source, hash, bytes, job_id, created_at)
+         SELECT ja.id, j.engine, split_part(ja.path, '/', -1), j.model,
+                'artifacts/' || ja.job_id::text || '/' || ja.path, 'train',
+                ja.md5, ja.bytes, ja.job_id, j.created_at
+         FROM job_artifacts ja
+         JOIN jobs j ON j.id = ja.job_id
+         WHERE ja.kind = 'model' AND j.status = 'done' AND ja.path LIKE '%best%'
+         ON CONFLICT (s3_key) DO NOTHING";
+
+    // Roda 2×.
+    sqlx::query(backfill).execute(&p).await.expect("backfill 1");
+    sqlx::query(backfill).execute(&p).await.expect("backfill 2");
+
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM models")
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(count.0, 1, "backfill idempotente: 2 runs = 1 linha");
+}
+
+/// Hook: report done com best.pt → 1 linha em models; report 2× (idempotência) → 1 linha.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn hook_best_pt_idempotente_report_2x() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+
+    // 1º report done.
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "done".into(),
+            progress: Some(1.0),
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: Some(vec![ArtifactItem {
+                kind: "model".into(),
+                path: "best.pt".into(),
+                md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                bytes: 512,
+            }]),
+        },
+    )
+    .await
+    .expect("report done 1");
+
+    let count1: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM models")
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(count1.0, 1, "após 1º report: 1 linha em models");
+
+    // 2º report done (idempotente — job já está done, report é ignorado, mas
+    // o hook não deve duplicar porque o guard de status terminal já retorna Ok(())).
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "done".into(),
+            progress: Some(1.0),
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: Some(vec![ArtifactItem {
+                kind: "model".into(),
+                path: "best.pt".into(),
+                md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                bytes: 512,
+            }]),
+        },
+    )
+    .await
+    .expect("report done 2 (idempotente)");
+
+    let count2: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM models")
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(
+        count2.0, 1,
+        "após 2º report: continua 1 linha (idempotente)"
+    );
+}
+
+/// Hook: job done SEM best.pt → 0 linhas em models.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn hook_sem_best_pt_nao_insere() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+
+    // Done com artifacts que NÃO contêm best.
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "done".into(),
+            progress: Some(1.0),
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: Some(vec![
+                ArtifactItem {
+                    kind: "model".into(),
+                    path: "last.pt".into(),
+                    md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                    bytes: 512,
+                },
+                ArtifactItem {
+                    kind: "metrics".into(),
+                    path: "metrics.jsonl".into(),
+                    md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                    bytes: 256,
+                },
+            ]),
+        },
+    )
+    .await
+    .expect("report done without best");
+
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM models")
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(count.0, 0, "sem best.pt → 0 linhas em models");
 }
 
 // ===========================================================================

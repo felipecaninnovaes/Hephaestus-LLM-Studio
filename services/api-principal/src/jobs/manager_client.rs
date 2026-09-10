@@ -153,6 +153,10 @@ pub struct InternalStorageUsage {
 }
 
 /// Modelo público retornado pelo manager (camelCase wire — D6 ADR-0012).
+///
+/// O manager serializa `ModelItem` com o campo `hash` (nome da coluna no DB).
+/// `InternalModel` (list_models) já tem `#[serde(rename = "hash")]`; este
+/// struct é usado para o response do POST /internal/models (create_model).
 #[derive(Debug, Clone, Deserialize)]
 pub struct InternalModelResponse {
     pub id: String,
@@ -162,6 +166,7 @@ pub struct InternalModelResponse {
     pub model: Option<String>,
     pub source: String,
     pub bytes: i64,
+    #[serde(rename = "hash")]
     pub md5: String,
     #[serde(default)]
     pub url: Option<String>,
@@ -769,5 +774,43 @@ impl ManagerPort for MockManager {
         self.create_model_result
             .clone()
             .ok_or(ManagerError::Unavailable("no create_model result".into()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regressão I.9: o manager serializa `ModelItem.hash` (nome da coluna DB).
+    /// Sem `#[serde(rename = "hash")]` o POST /internal/models devolvia 503
+    /// porque `md5` não era encontrado no JSON → desserialização falhava →
+    /// compensação deletava objeto S3, criando modelo órfão.
+    #[test]
+    fn deserialize_create_model_response_with_hash_field() {
+        // JSON real devolvido pelo manager (shape de ModelItem serializado)
+        let json = r#"{
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "name": "best.pt",
+            "engine": "yolo",
+            "model": null,
+            "source": "upload",
+            "hash": "d41d8cd98f00b204e9800998ecf8427e",
+            "bytes": 1024,
+            "path": "models/550e8400/best.pt",
+            "job_id": null,
+            "created_at": "2026-09-10T12:00:00Z"
+        }"#;
+
+        let resp: InternalModelResponse =
+            serde_json::from_str(json).expect("deserialization must succeed");
+
+        assert_eq!(resp.md5, "d41d8cd98f00b204e9800998ecf8427e");
+        assert_eq!(resp.id, "550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(resp.name, "best.pt");
+        assert_eq!(resp.engine, "yolo");
+        assert_eq!(resp.bytes, 1024);
+        // `path` extra é ignorado (serde default) — não deve causar erro
+        assert!(resp.url.is_none());
+        assert!(resp.job_id.is_none());
     }
 }

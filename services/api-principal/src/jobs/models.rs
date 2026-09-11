@@ -265,6 +265,67 @@ pub fn resolve_class_ids(
 }
 
 // ---------------------------------------------------------------------------
+// Predict (Fatia J — ADR-0013 D0/D1/D2/D8) — body, validação e config.yaml
+// ---------------------------------------------------------------------------
+
+/// Body de `POST /api/jobs/predict` (wire camelCase — ADR-0013 D8).
+///
+/// `modelId` e `datasetId` são obrigatórios; `conf` é OPCIONAL com default 0.65.
+/// `deny_unknown_fields` garante 400 para chaves desconhecidas.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PredictJobRequest {
+    /// UUID do modelo (tabela `models`); validação: não-UUID ⇒ 400.
+    pub model_id: String,
+    /// UUID do dataset; validação: não-UUID ⇒ 404 (D8).
+    pub dataset_id: String,
+    #[serde(default = "default_predict_conf")]
+    pub conf: f64,
+}
+
+fn default_predict_conf() -> f64 {
+    0.65
+}
+
+/// Valida o body do POST /api/jobs/predict.
+///
+/// `Err(String)` ⇒ 400 `invalid_request`; `Ok(PredictJobRequest)` com defaults
+/// já aplicados pelo serde.
+pub fn validate_predict_request(req: PredictJobRequest) -> Result<PredictJobRequest, String> {
+    if uuid::Uuid::parse_str(&req.model_id).is_err() {
+        return Err("modelId must be a valid UUID".to_string());
+    }
+    if !(0.0..=1.0).contains(&req.conf) {
+        return Err("conf must be between 0.0 and 1.0".to_string());
+    }
+    Ok(req)
+}
+
+/// Gera `config.yaml` para predict YOLO (ADR-0013 D3).
+///
+/// Placeholders literais `{dataset_path}`, `{output_path}` e `{weights_path}`
+/// — o orquestrador substitui no spawn; o principal é agnóstico de paths.
+pub fn generate_predict_config_yaml(job_id: &str, req: &PredictJobRequest) -> String {
+    format!(
+        r#"# Configuração de predict YOLO (gerada pelo api-principal)
+job_id: "{job_id}"
+engine: "yolo"
+model: "predict"
+mode: "predict"
+dataset_path: "{{dataset_path}}"
+output_path: "{{output_path}}"
+weights_path: "{{weights_path}}"
+seed: 42
+
+predict:
+  conf: {conf}
+"#,
+        job_id = job_id,
+        conf = req.conf,
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Validação pura (ADR-0007 D6 :329-334)
 // ---------------------------------------------------------------------------
 
@@ -834,5 +895,118 @@ mod tests {
         let map = resolve_class_ids(&classes);
         assert_eq!(map.len(), 2);
         assert_eq!(map["solda_fria"], uuid::Uuid::nil());
+    }
+
+    // =========================================================================
+    // Predict (Fatia J — ADR-0013 D0/D1/D8) tests
+    // =========================================================================
+
+    #[test]
+    fn predict_defaults_apply() {
+        let raw = r#"{"modelId":"00000000-0000-0000-0000-000000000000","datasetId":"00000000-0000-0000-0000-000000000001"}"#;
+        let req: PredictJobRequest = serde_json::from_str(raw).expect("parse");
+        assert!((req.conf - 0.65).abs() < 1e-10);
+        assert_eq!(req.model_id, "00000000-0000-0000-0000-000000000000");
+        assert_eq!(req.dataset_id, "00000000-0000-0000-0000-000000000001");
+    }
+
+    #[test]
+    fn predict_custom_values() {
+        let raw = r#"{"modelId":"550e8400-e29b-41d4-a716-446655440000","datasetId":"550e8400-e29b-41d4-a716-446655440001","conf":0.9}"#;
+        let req: PredictJobRequest = serde_json::from_str(raw).expect("parse");
+        assert!((req.conf - 0.9).abs() < 1e-10);
+    }
+
+    #[test]
+    fn predict_deny_unknown_fields() {
+        let raw = r#"{"modelId":"00000000-0000-0000-0000-000000000000","datasetId":"00000000-0000-0000-0000-000000000001","extra":1}"#;
+        let err = serde_json::from_str::<PredictJobRequest>(raw);
+        assert!(err.is_err(), "deny_unknown_fields");
+    }
+
+    #[test]
+    fn predict_missing_model_id() {
+        let raw = r#"{"datasetId":"00000000-0000-0000-0000-000000000001"}"#;
+        let err = serde_json::from_str::<PredictJobRequest>(raw);
+        assert!(err.is_err(), "missing model_id");
+    }
+
+    #[test]
+    fn predict_missing_dataset_id() {
+        let raw = r#"{"modelId":"00000000-0000-0000-0000-000000000000"}"#;
+        let err = serde_json::from_str::<PredictJobRequest>(raw);
+        assert!(err.is_err(), "missing dataset_id");
+    }
+
+    #[test]
+    fn predict_validate_ok() {
+        let raw = r#"{"modelId":"550e8400-e29b-41d4-a716-446655440000","datasetId":"550e8400-e29b-41d4-a716-446655440001"}"#;
+        let req: PredictJobRequest = serde_json::from_str(raw).expect("parse");
+        assert!(validate_predict_request(req).is_ok());
+    }
+
+    #[test]
+    fn predict_validate_model_id_not_uuid() {
+        let raw = r#"{"modelId":"not-a-uuid","datasetId":"550e8400-e29b-41d4-a716-446655440001"}"#;
+        let req: PredictJobRequest = serde_json::from_str(raw).expect("parse");
+        assert!(validate_predict_request(req).is_err());
+    }
+
+    #[test]
+    fn predict_conf_boundary() {
+        // Dentro do domínio 0..=1
+        for c in [0.0, 0.5, 1.0] {
+            let raw = format!(
+                r#"{{"modelId":"550e8400-e29b-41d4-a716-446655440000","datasetId":"550e8400-e29b-41d4-a716-446655440001","conf":{c}}}"#
+            );
+            let req: PredictJobRequest = serde_json::from_str(&raw).expect("parse");
+            assert!(validate_predict_request(req).is_ok(), "conf={c}");
+        }
+        // Fora do domínio
+        for c in [-0.1, 1.1] {
+            let raw = format!(
+                r#"{{"modelId":"550e8400-e29b-41d4-a716-446655440000","datasetId":"550e8400-e29b-41d4-a716-446655440001","conf":{c}}}"#
+            );
+            let req: PredictJobRequest = serde_json::from_str(&raw).expect("parse");
+            assert!(validate_predict_request(req).is_err(), "conf={c}");
+        }
+    }
+
+    #[test]
+    fn predict_config_yaml_placeholders_and_defaults() {
+        let raw = r#"{"modelId":"550e8400-e29b-41d4-a716-446655440000","datasetId":"550e8400-e29b-41d4-a716-446655440001"}"#;
+        let req: PredictJobRequest = serde_json::from_str(raw).expect("parse");
+        let yaml = generate_predict_config_yaml("test-predict-001", &req);
+
+        // Placeholders presentes.
+        assert!(yaml.contains("{dataset_path}"));
+        assert!(yaml.contains("{output_path}"));
+        assert!(yaml.contains("{weights_path}"));
+
+        // Defaults corretos.
+        assert!(yaml.contains("model: \"predict\""));
+        assert!(yaml.contains("engine: \"yolo\""));
+        assert!(yaml.contains("mode: \"predict\""));
+        assert!(yaml.contains("conf: 0.65"));
+        assert!(yaml.contains("seed: 42"));
+        assert!(yaml.contains("job_id: \"test-predict-001\""));
+        assert!(yaml.contains("predict:"));
+
+        // Parseável como YAML.
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml parse");
+        assert_eq!(parsed["predict"]["conf"].as_f64().unwrap(), 0.65);
+        assert_eq!(parsed["engine"].as_str().unwrap(), "yolo");
+    }
+
+    #[test]
+    fn predict_config_yaml_custom_conf() {
+        let raw = r#"{"modelId":"550e8400-e29b-41d4-a716-446655440000","datasetId":"550e8400-e29b-41d4-a716-446655440001","conf":0.9}"#;
+        let req: PredictJobRequest = serde_json::from_str(raw).expect("parse");
+        let yaml = generate_predict_config_yaml("job-predict-xyz", &req);
+
+        assert!(yaml.contains("conf: 0.9"));
+        assert!(yaml.contains("engine: \"yolo\""));
+        assert!(yaml.contains("mode: \"predict\""));
+        assert!(yaml.contains("weights_path: \"{weights_path}\""));
     }
 }

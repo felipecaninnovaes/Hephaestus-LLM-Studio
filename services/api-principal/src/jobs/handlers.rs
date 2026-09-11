@@ -24,7 +24,7 @@ use crate::error::{
     MSG_NOT_FOUND, MSG_QUEUE_UNAVAILABLE, MSG_STORAGE_UNAVAILABLE,
 };
 use crate::jobs::manager_client::ManagerError;
-use crate::jobs::models::{self, AutotrackerJobRequest, YoloJobRequest};
+use crate::jobs::models::{self, AutotrackerJobRequest, PredictJobRequest, YoloJobRequest};
 use crate::state::AppState;
 use crate::storage::StorageError;
 
@@ -786,6 +786,172 @@ pub async fn submit_autotracker_job(
                 .await;
             queue_unavailable()
         }
+        Err(_) => {
+            let _ = state
+                .storage
+                .delete_prefix(&format!("packages/{}/", package.version_id))
+                .await;
+            let _ = sqlx::query("DELETE FROM dataset_versions WHERE id = $1")
+                .bind(package.version_id.parse::<uuid::Uuid>().expect("uuid"))
+                .execute(&state.pool)
+                .await;
+            queue_unavailable()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/jobs/predict — submit job de inferência YOLO (ADR-0013 D0/D1/D8)
+// ---------------------------------------------------------------------------
+
+/// POST /api/jobs/predict — cria job de predict YOLO (ADR-0013 D0/D1/D8).
+///
+/// Status: 202 | 400 `invalid_request` | 401 | 404 `not_found` |
+/// 409 `dataset_not_ready` | 503 `queue_unavailable`.
+///
+/// Diferença R6: mapeia `NotFound→404`, `InvalidRequest→400` (padrão abort
+/// L825-831), NÃO repete o `Err(_)→503` do submit_yolo_job existente.
+pub async fn submit_predict_job(
+    State(state): State<AppState>,
+    body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
+) -> Response {
+    // 1. Parse body.
+    let raw = match body {
+        Ok(b) => b,
+        Err(_) => return invalid_request(),
+    };
+    let req: PredictJobRequest = match serde_json::from_slice(&raw) {
+        Ok(v) => v,
+        Err(_) => return invalid_request(),
+    };
+
+    // 2. Validação pura (models.rs).
+    let req = match models::validate_predict_request(req) {
+        Ok(v) => v,
+        Err(_) => return invalid_request(),
+    };
+
+    // 3. Parse dataset_id — não-UUID ⇒ 404 (D8).
+    let ds_id: uuid::Uuid = match req.dataset_id.parse() {
+        Ok(v) => v,
+        Err(_) => return not_found(),
+    };
+
+    // 4. Dataset existe?
+    let ds_exists: bool =
+        match sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM datasets WHERE id = $1)")
+            .bind(ds_id)
+            .fetch_one(&state.pool)
+            .await
+        {
+            Ok(b) => b,
+            Err(_) => {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "internal server error",
+                )
+            }
+        };
+    if !ds_exists {
+        return not_found();
+    }
+
+    // 5. Dataset pronto? (D8: predict — category=yolo, ≥1 imagem; classes NÃO obrigatórias).
+    //    409 `dataset_not_ready`: category ≠ 'yolo' OU 0 imagens ativas.
+    let readiness: Option<(String, i64)> = match sqlx::query_as::<_, (String, i64)>(
+        "SELECT d.category, \
+         (SELECT count(*) FROM images WHERE dataset_id = d.id AND deleted_at IS NULL) \
+         FROM datasets d WHERE d.id = $1",
+    )
+    .bind(ds_id)
+    .fetch_optional(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "internal server error",
+            )
+        }
+    };
+    match readiness {
+        None => return not_found(),
+        Some((category, image_count)) => {
+            if category != "yolo" || image_count == 0 {
+                return dataset_not_ready();
+            }
+        }
+    }
+
+    // 6. Build package (função compartilhada — D2).
+    let package = match crate::datasets::package::build_package(&state, ds_id).await {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+
+    // 7. Gera config.yaml.
+    let job_id = uuid::Uuid::new_v4().to_string();
+    let config_yaml = models::generate_predict_config_yaml(&job_id, &req);
+
+    // 8. POST ao manager (D5: kind='yolo_predict', engine='yolo', mode='predict',
+    //    model='predict' placeholder, weights_id=modelId).
+    let manager_body = serde_json::json!({
+        "kind": "yolo_predict",
+        "engine": "yolo",
+        "model": "predict",
+        "mode": "predict",
+        "dataset_id": ds_id.to_string(),
+        "dataset_version_id": package.version_id,
+        "package_ref": {
+            "version_id": package.version_id,
+            "key": package.key,
+            "md5_zip": package.md5_zip,
+            "bytes": package.bytes,
+        },
+        "config_yaml": config_yaml,
+        "params": {
+            "conf": req.conf,
+            "package_ref": {
+                "version_id": package.version_id,
+                "key": package.key,
+                "md5_zip": package.md5_zip,
+                "bytes": package.bytes,
+            },
+        },
+        "vram_min_gb": null,
+        "weights_id": req.model_id,
+    });
+
+    match state.manager.create_job(&manager_body).await {
+        Ok(resp) => {
+            let body = SubmitJobResponse {
+                job_id: resp.job_id,
+                status: resp.status,
+                queue_position: resp.queue_position,
+            };
+            (StatusCode::ACCEPTED, Json(body)).into_response()
+        }
+        // R6: handler do predict mapeia NotFound→404, InvalidRequest→400
+        // (diferente do submit_yolo_job que mapeia Err(_)→503).
+        Err(ManagerError::NotFound) => not_found(),
+        Err(ManagerError::InvalidRequest(_)) => invalid_request(),
+        Err(ManagerError::Unavailable(_)) => {
+            // Compensação: remove o package criado se o manager falhar
+            // (operação composta: package sem job = lixo).
+            let _ = state
+                .storage
+                .delete_prefix(&format!("packages/{}/", package.version_id))
+                .await;
+            let _ = sqlx::query("DELETE FROM dataset_versions WHERE id = $1")
+                .bind(package.version_id.parse::<uuid::Uuid>().expect("uuid"))
+                .execute(&state.pool)
+                .await;
+            queue_unavailable()
+        }
+        // Outros erros do manager → 503 + compensação.
         Err(_) => {
             let _ = state
                 .storage
@@ -1712,6 +1878,126 @@ mod tests {
         .await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
+
+    // --- POST /api/jobs/predict unit tests (Fatia J — ADR-0013 D0/D1/D8) ---
+
+    #[tokio::test]
+    async fn submit_predict_job_400_empty_body() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp =
+            submit_predict_job(axum::extract::State(state), Ok(axum::body::Bytes::from(""))).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_predict_job_400_invalid_body() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_predict_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(r#"{"invalid"}"#)),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_predict_job_400_unknown_fields() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_predict_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"modelId":"00000000-0000-0000-0000-000000000000","datasetId":"00000000-0000-0000-0000-000000000001","extra":1}"#,
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_predict_job_400_model_id_not_uuid() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_predict_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"modelId":"not-a-uuid","datasetId":"00000000-0000-0000-0000-000000000001"}"#,
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_predict_job_400_conf_out_of_range() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_predict_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"modelId":"00000000-0000-0000-0000-000000000000","datasetId":"00000000-0000-0000-0000-000000000001","conf":1.5}"#,
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_predict_job_404_dataset_id_non_uuid() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_predict_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"modelId":"00000000-0000-0000-0000-000000000000","datasetId":"not-a-uuid"}"#,
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn submit_predict_job_valid_body_passes_validation() {
+        // Prova que body com modelId UUID + conf válido passa validação (não retorna 400).
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_predict_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"modelId":"550e8400-e29b-41d4-a716-446655440000","datasetId":"550e8400-e29b-41d4-a716-446655440001"}"#,
+            )),
+        )
+        .await;
+        // Com pool lazy, vai falhar no DB (500) — mas NÃO deve ser 400.
+        assert_ne!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "valid body should not trigger 400"
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_predict_job_valid_body_with_custom_conf() {
+        // Prova que body com conf customizado passa validação.
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_predict_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"modelId":"550e8400-e29b-41d4-a716-446655440000","datasetId":"550e8400-e29b-41d4-a716-446655440001","conf":0.9}"#,
+            )),
+        )
+        .await;
+        assert_ne!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "valid body with conf=0.9 should not trigger 400"
+        );
+    }
+
+    // --- POST /api/jobs/:id/abort unit tests (F4.2b) ---
 
     #[tokio::test]
     async fn abort_job_404_non_uuid() {

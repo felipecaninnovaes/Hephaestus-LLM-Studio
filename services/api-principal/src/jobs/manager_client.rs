@@ -398,6 +398,13 @@ impl ManagerPort for HttpManager {
         if status == reqwest::StatusCode::NOT_FOUND {
             return Err(ManagerError::NotFound);
         }
+        if status == reqwest::StatusCode::BAD_REQUEST {
+            let msg = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "invalid request".into());
+            return Err(ManagerError::InvalidRequest(msg));
+        }
         if !status.is_success() {
             return Err(ManagerError::Unavailable(format!(
                 "manager status: {status}"
@@ -575,6 +582,10 @@ pub struct MockManager {
     pub create_model_result: Option<InternalModelResponse>,
     /// Se `true`, `create_model` retorna `Conflict` (para testar 409).
     pub create_model_conflict: bool,
+    /// Se `true`, `create_job` retorna `NotFound` (para testar 404 — Fatia J R6).
+    pub create_job_not_found: bool,
+    /// Se `Some`, `create_job` retorna `InvalidRequest` com a mensagem (para testar 400 — Fatia J R6).
+    pub create_job_invalid_request: Option<String>,
     /// Body capturado na última chamada a `create_model` (para asserts de teste).
     last_create_model_body: std::sync::Mutex<Option<serde_json::Value>>,
     /// Body capturado na última chamada a `create_job` (para asserts de teste).
@@ -624,6 +635,8 @@ impl Default for MockManager {
             revoke_not_found: false,
             create_model_result: None,
             create_model_conflict: false,
+            create_job_not_found: false,
+            create_job_invalid_request: None,
             last_create_model_body: std::sync::Mutex::new(None),
             last_create_job_body: std::sync::Mutex::new(None),
             jobs_by_id: std::collections::HashMap::new(),
@@ -689,6 +702,12 @@ impl ManagerPort for MockManager {
     ) -> Result<CreateJobResponse, ManagerError> {
         if self.fail {
             return Err(ManagerError::Unavailable("mock fail".into()));
+        }
+        if self.create_job_not_found {
+            return Err(ManagerError::NotFound);
+        }
+        if let Some(ref msg) = self.create_job_invalid_request {
+            return Err(ManagerError::InvalidRequest(msg.clone()));
         }
         // Captura body para asserts de teste (try_lock: non-blocking, testes
         // rodam serializados pelo SERIAL.lock).

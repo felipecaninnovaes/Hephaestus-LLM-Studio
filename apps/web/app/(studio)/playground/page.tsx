@@ -9,7 +9,7 @@ import {
   IconTarget,
 } from "@/components/icons";
 import { Button, EmptyState, GlassCard, showToast } from "@/components/ui";
-import { listDatasets } from "@/lib/datasets";
+import { listDatasets, getDataset } from "@/lib/datasets";
 import { listJobs } from "@/lib/jobs";
 import { listModels } from "@/lib/models";
 import { getPredictions, startPredictJob } from "@/lib/playground";
@@ -22,18 +22,14 @@ import type {
 import { predictErrorMessage } from "@/types/studio";
 import { ApiError } from "@/lib/api";
 import { listImages } from "@/lib/images";
+import { formatBytes } from "@/lib/format";
 
-/* ── Cores semânticas por classe de detecção (DESIGN.md §Colors) ── */
-const CLASS_COLORS: Record<string, string> = {
-  solda_fria: "#34d399",
-  curto_circuito: "#f59e0b",
-  componente_ausente: "#ef4444",
-  trilha_rompida: "#06b6d4",
-};
-const DEFAULT_CLASS_COLOR = "#8350f2";
-
-function classColor(cls: string): string {
-  return CLASS_COLORS[cls] ?? DEFAULT_CLASS_COLOR;
+/* ── Cor da box no overlay: vem do dataset.classes, fallback neutro ── */
+function classColor(
+  cls: string,
+  classes?: { name: string; color: string }[],
+): string {
+  return classes?.find((c) => c.name === cls)?.color ?? "#71717a";
 }
 
 /* ── Helpers ── */
@@ -51,12 +47,6 @@ function modelLabel(m: Model): string {
 
 function datasetLabel(ds: Dataset): string {
   return `${ds.title} (${ds.imagesCount} imgs)`;
-}
-
-function formatBytes(b: number): string {
-  if (b < 1024) return `${b} B`;
-  if (b < 1048576) return `${(b / 1024).toFixed(1)} KB`;
-  return `${(b / 1048576).toFixed(1)} MB`;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -91,10 +81,17 @@ export default function PlaygroundPage() {
   /* ── Loading states ── */
   const [loadingModels, setLoadingModels] = useState(true);
   const [loadingDatasets, setLoadingDatasets] = useState(true);
+  const [modelsError, setModelsError] = useState(false);
+  const [datasetsError, setDatasetsError] = useState(false);
 
   /* ── Refs ── */
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const activeRef = useRef(true);
+  const lastLoadedRef = useRef<string | null>(null);
+  const loadRequestRef = useRef<string | null>(null);
+  const datasetClassesCache = useRef<
+    Record<string, { name: string; color: string }[]>
+  >({});
 
   /* ── Fetch models (YOLO only) ── */
   useEffect(() => {
@@ -107,7 +104,10 @@ export default function PlaygroundPage() {
         }
       })
       .catch(() => {
-        if (active) setLoadingModels(false);
+        if (active) {
+          setModelsError(true);
+          setLoadingModels(false);
+        }
       });
     return () => {
       active = false;
@@ -125,7 +125,10 @@ export default function PlaygroundPage() {
         }
       })
       .catch(() => {
-        if (active) setLoadingDatasets(false);
+        if (active) {
+          setDatasetsError(true);
+          setLoadingDatasets(false);
+        }
       });
     return () => {
       active = false;
@@ -180,31 +183,52 @@ export default function PlaygroundPage() {
       setPredictions(null);
       setImagesMap({});
       setLoadingPredictions(true);
+      lastLoadedRef.current = jobId;
+      loadRequestRef.current = jobId;
 
       try {
         // 1. Carrega predictions.json do artefato
         const preds = await getPredictions(jobId);
-        if (!activeRef.current) return;
+        if (loadRequestRef.current !== jobId) return; // race: job mudou
         setPredictions(preds);
 
-        // 2. Carrega imagens do dataset (via job vinculado)
+        // 2. Carrega imagens do dataset (via job vinculado), com paginação
         const job = jobs.find((j) => j.id === jobId);
         if (job?.datasetId) {
+          // Cache de classes do dataset (B1)
+          if (!datasetClassesCache.current[job.datasetId]) {
+            try {
+              const ds = await getDataset(job.datasetId);
+              datasetClassesCache.current[job.datasetId] = ds.classes;
+            } catch {
+              /* dataset indisponível — fallback neutro */
+            }
+          }
+
           try {
-            const imgPage = await listImages(job.datasetId, {
-              limit: 200,
-            });
-            if (!activeRef.current) return;
             const map: Record<
               string,
               { url: string; width: number; height: number }
             > = {};
-            for (const img of imgPage.items) {
-              map[img.filename] = {
-                url: img.url,
-                width: img.width,
-                height: img.height,
-              };
+            let offset = 0;
+            const limit = 200;
+            let total = Infinity;
+            while (offset < total) {
+              const imgPage = await listImages(job.datasetId, {
+                limit,
+                offset,
+              });
+              if (loadRequestRef.current !== jobId) return; // race
+              total = imgPage.total;
+              for (const img of imgPage.items) {
+                map[img.filename] = {
+                  url: img.url,
+                  width: img.width,
+                  height: img.height,
+                };
+              }
+              offset += imgPage.items.length;
+              if (imgPage.items.length === 0) break;
             }
             setImagesMap(map);
           } catch {
@@ -216,7 +240,9 @@ export default function PlaygroundPage() {
           err instanceof Error ? err.message : "Falha ao carregar resultados.";
         showToast(msg, "error");
       } finally {
-        setLoadingPredictions(false);
+        if (loadRequestRef.current === jobId) {
+          setLoadingPredictions(false);
+        }
       }
     },
     [jobs],
@@ -227,7 +253,12 @@ export default function PlaygroundPage() {
     if (selectedJobId) {
       const job = jobs.find((j) => j.id === selectedJobId);
       if (job?.status === "done") {
-        loadJobResults(selectedJobId);
+        if (lastLoadedRef.current !== selectedJobId) {
+          loadJobResults(selectedJobId);
+        }
+      } else {
+        // Job saiu de done (ex: recém-criado, reprocessando) — reset ref
+        lastLoadedRef.current = null;
       }
     }
   }, [selectedJobId, jobs, loadJobResults]);
@@ -280,11 +311,15 @@ export default function PlaygroundPage() {
     }
   }
 
-  /* ── Deriva jobs done para exibir ── */
+  /* ── Deriva jobs done/failed para exibir ── */
   const doneJobs = jobs.filter((j) => j.status === "done");
+  const failedJobs = jobs.filter((j) => j.status === "failed");
   const activeJobs = jobs.filter(
     (j) => j.status === "queued" || j.status === "running" || j.status === "cancelling",
   );
+
+  const modelsOnly = !loadingModels && models.length === 0;
+  const datasetsOnly = !loadingDatasets && datasets.length === 0;
 
   /* ── Seleção automática: se há job done e nenhum selecionado, seleciona o mais recente ── */
   useEffect(() => {
@@ -303,10 +338,11 @@ export default function PlaygroundPage() {
           (sum, i) => sum + i.boxes.length,
           0,
         ),
+        skips: predictions.images.filter(
+          (i) => i.boxes.length > 0 && !imagesMap[i.filename],
+        ).length,
       }
     : null;
-
-  const isEmpty = !loadingModels && !loadingDatasets && models.length === 0 && datasets.length === 0;
 
   return (
     <div className="flex h-full min-h-0 flex-col lg:flex-row">
@@ -324,13 +360,63 @@ export default function PlaygroundPage() {
           </h1>
         </div>
 
+        {/* Erro de rede: modelos */}
+        {modelsError && (
+          <GlassCard className="mb-4">
+            <EmptyState
+              icon={<IconTarget className="size-8 text-red-400" />}
+              title="Falha ao carregar modelos"
+              description="Não foi possível carregar a lista de modelos."
+              actionLabel="Tentar novamente"
+              onAction={() => {
+                setModelsError(false);
+                setLoadingModels(true);
+                listModels()
+                  .then((res) => {
+                    setModels(res.items.filter((m) => m.engine === "yolo"));
+                    setLoadingModels(false);
+                  })
+                  .catch(() => {
+                    setModelsError(true);
+                    setLoadingModels(false);
+                  });
+              }}
+            />
+          </GlassCard>
+        )}
+
+        {/* Erro de rede: datasets */}
+        {datasetsError && (
+          <GlassCard className="mb-4">
+            <EmptyState
+              icon={<IconTarget className="size-8 text-red-400" />}
+              title="Falha ao carregar datasets"
+              description="Não foi possível carregar a lista de datasets."
+              actionLabel="Tentar novamente"
+              onAction={() => {
+                setDatasetsError(false);
+                setLoadingDatasets(true);
+                listDatasets()
+                  .then((data) => {
+                    setDatasets(data.filter(canPredict));
+                    setLoadingDatasets(false);
+                  })
+                  .catch(() => {
+                    setDatasetsError(true);
+                    setLoadingDatasets(false);
+                  });
+              }}
+            />
+          </GlassCard>
+        )}
+
         {/* Empty state: sem modelos YOLO */}
-        {isEmpty && (
+        {!modelsError && modelsOnly && (
           <GlassCard className="mb-4">
             <EmptyState
               icon={<IconTarget className="size-8 text-brand-400" />}
               title="Nenhum modelo YOLO disponível"
-              description="Treine um modelo ou importe pesos em Modelos & Pesos para iniciar inferência."
+              description="Nenhum modelo ainda — treine em Treino YOLO ou envie pesos em Modelos & Pesos."
               actionLabel="Abrir Modelos & Pesos"
               onAction={() => router.push("/models")}
             />
@@ -338,7 +424,7 @@ export default function PlaygroundPage() {
         )}
 
         {/* Empty state: sem datasets YOLO com imagens */}
-        {!loadingDatasets && datasets.length === 0 && models.length > 0 && (
+        {!datasetsError && datasetsOnly && models.length > 0 && (
           <GlassCard className="mb-4">
             <EmptyState
               icon={<IconTarget className="size-8 text-brand-400" />}
@@ -590,6 +676,50 @@ export default function PlaygroundPage() {
             </div>
           )}
 
+          {/* Jobs failed */}
+          {failedJobs.length > 0 && (
+            <div className="mb-4">
+              <h3 className="mb-2 font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-red-400">
+                Falhou
+              </h3>
+              <div className="space-y-2">
+                {failedJobs.map((job) => (
+                  <GlassCard
+                    key={job.id}
+                    className="flex items-center justify-between p-3"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="relative flex h-2 w-2 shrink-0">
+                          <span className="relative inline-flex h-2 w-2 rounded-full bg-red-400" />
+                        </span>
+                        <span className="truncate font-mono text-xs text-zinc-200">
+                          {job.model || "predict"}
+                        </span>
+                        <span className="rounded border border-red-800/40 bg-red-900/30 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-red-400">
+                          failed
+                        </span>
+                      </div>
+                      {job.queueReason && (
+                        <p className="mt-0.5 pl-4 font-mono text-[11px] text-zinc-500 truncate">
+                          {job.queueReason}
+                        </p>
+                      )}
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => router.push(`/jobs?job=${job.id}`)}
+                    >
+                      Ver em Execuções
+                    </Button>
+                  </GlassCard>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Lista de jobs predict concluídos */}
           {doneJobs.length > 0 && (
             <div className="mb-4">
@@ -673,7 +803,7 @@ export default function PlaygroundPage() {
                     <span className="block font-mono text-[10px] uppercase tracking-wider text-zinc-500">
                       Com detecção
                     </span>
-                    <span className="font-mono text-sm tabular-nums text-[#34d399]">
+                    <span className="font-mono text-sm tabular-nums text-zinc-200">
                       {overlayStats.withDetections}
                     </span>
                   </div>
@@ -685,6 +815,16 @@ export default function PlaygroundPage() {
                       {overlayStats.totalBoxes}
                     </span>
                   </div>
+                  {overlayStats.skips > 0 && (
+                    <div className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2">
+                      <span className="block font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+                        Skips
+                      </span>
+                      <span className="font-mono text-sm tabular-nums text-amber-400">
+                        {overlayStats.skips}
+                      </span>
+                    </div>
+                  )}
                   <div className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2">
                     <span className="block font-mono text-[10px] uppercase tracking-wider text-zinc-500">
                       Conf
@@ -739,9 +879,12 @@ export default function PlaygroundPage() {
                             loading="lazy"
                           />
                         ) : (
-                          <div className="flex aspect-video items-center justify-center text-zinc-600">
+                          <div className="flex aspect-video flex-col items-center justify-center gap-1 text-zinc-600">
                             <span className="font-mono text-[11px]">
                               {predImg.filename}
+                            </span>
+                            <span className="font-mono text-[10px] text-zinc-500">
+                              imagem não encontrada no dataset
                             </span>
                           </div>
                         )}
@@ -749,7 +892,11 @@ export default function PlaygroundPage() {
                         {/* Bounding boxes overlay */}
                         {hasBoxes &&
                           predImg.boxes.map((box, bi) => {
-                            const color = classColor(box.class);
+                            const job = jobs.find((j) => j.id === selectedJobId);
+                            const classes = job?.datasetId
+                              ? datasetClassesCache.current[job.datasetId]
+                              : undefined;
+                            const color = classColor(box.class, classes);
                             return (
                               <div
                                 key={bi}
@@ -813,6 +960,7 @@ export default function PlaygroundPage() {
           {!loadingPredictions &&
             doneJobs.length === 0 &&
             activeJobs.length === 0 &&
+            failedJobs.length === 0 &&
             !predictions && (
               <div className="flex flex-col items-center justify-center py-16 text-center">
                 <EmptyState

@@ -12,6 +12,7 @@ import {
 } from "@/components/icons";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
+import ProgressBar from "@/components/ui/ProgressBar";
 import { SegmentedControl } from "@/components/ui/SegmentedControl";
 import { Select, type SelectOption } from "@/components/ui/Select";
 import { ApiError } from "@/lib/api";
@@ -80,6 +81,8 @@ export default function CreateDatasetModal({
   const [busy, setBusy] = useState(false);
   const [busyText, setBusyText] = useState("");
   const [isDraggingModal, setIsDraggingModal] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ sent: number; total: number; batchIndex: number; batchCount: number } | null>(null);
+  const cancelledRef = useRef(false);
 
   useEffect(() => {
     if (!open) return;
@@ -297,6 +300,8 @@ export default function CreateDatasetModal({
     files: File[],
   ) {
     setBusy(true);
+    cancelledRef.current = false;
+    setUploadProgress(null);
     setBusyText("Criando dataset…");
     try {
       const created = await createDataset(
@@ -306,19 +311,48 @@ export default function CreateDatasetModal({
       );
 
       setBusyText(`Enviando ${files.length} imagens…`);
-      const uploadRes = await uploadImages(created.id, files);
+      const uploadRes = await uploadImages(created.id, files, {
+        onProgress: (p) => {
+          setUploadProgress(p);
+          setBusyText(`Enviando imagens — ${p.sent} de ${p.total} (lote ${p.batchIndex} de ${p.batchCount})…`);
+        },
+        isCancelled: () => cancelledRef.current,
+      });
+
       const uploadedCount = uploadRes.items.filter(
         (i) => i.status === "stored" || i.status === "duplicate",
       ).length;
-
-      showToast(
-        `Dataset criado e ingestado — ${uploadedCount} imagens carregadas.`,
-        "success",
-        {
-          label: "Abrir dataset",
-          onClick: () => router.push(`/datasets/${created.id}`),
-        },
+      const rejectedItems = uploadRes.items.filter(
+        (i) => i.status === "rejected" || i.status === "failed",
       );
+      const rejectedCount = rejectedItems.length;
+      const wasCancelled = cancelledRef.current;
+
+      if (wasCancelled) {
+        const summary = rejectedCount > 0
+          ? `${uploadedCount} imagens importadas de ${files.length} antes do cancelamento, ${rejectedCount} rejeitadas.`
+          : `${uploadedCount} imagens importadas de ${files.length} antes do cancelamento.`;
+        showToast(summary, "info");
+      } else if (rejectedCount === 0) {
+        showToast(
+          `${uploadedCount} imagens importadas com sucesso.`,
+          "success",
+          {
+            label: "Abrir dataset",
+            onClick: () => router.push(`/datasets/${created.id}`),
+          },
+        );
+      } else {
+        const examples = rejectedItems
+          .slice(0, 3)
+          .map((r) => `${r.filename} (${r.reason ?? r.status})`)
+          .join(", ");
+        const suffix = rejectedCount > 3 ? ` (+${rejectedCount - 3} mais)` : "";
+        showToast(
+          `${uploadedCount} imagens importadas, ${rejectedCount} rejeitadas: ${examples}${suffix}`,
+          rejectedCount > uploadedCount ? "error" : "info",
+        );
+      }
       onClose();
       onCreated(created);
     } catch (err) {
@@ -337,6 +371,7 @@ export default function CreateDatasetModal({
       setTopError("Falha na ingestão da pasta.");
     } finally {
       setBusy(false);
+      setUploadProgress(null);
     }
   }
 
@@ -562,7 +597,7 @@ export default function CreateDatasetModal({
                               key={c}
                               className="inline-flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded bg-black/40 text-zinc-200 border border-brand-500/20 backdrop-blur-sm"
                             >
-                              <IconCheck className="h-2.5 w-2.5 text-emerald-400" />
+                              <IconCheck className="h-2.5 w-2.5 text-[#34d399]" />
                               {c}
                             </span>
                           ))}
@@ -637,34 +672,67 @@ export default function CreateDatasetModal({
             </div>
 
             {/* Ações do Rodapé */}
-            <div className="flex items-center justify-between pt-3 border-t border-white/10">
-              <span className="font-mono text-[11px] text-zinc-400">
-                {busy ? busyText : mode === "import" && inspection ? "Pronto para criar e ingestar" : "Container vazio"}
-              </span>
+            <div className="pt-3 border-t border-white/10 space-y-3">
+              {/* Progress bar during upload */}
+              {uploadProgress && (
+                <div className="space-y-1.5">
+                  <ProgressBar
+                    value={(uploadProgress.sent / uploadProgress.total) * 100}
+                    variant="brand"
+                    size="sm"
+                  />
+                  <p className="font-mono text-[11px] text-zinc-400 text-center">
+                    {uploadProgress.sent} de {uploadProgress.total} · lote{" "}
+                    <span className="text-zinc-200">{uploadProgress.batchIndex}</span>
+                    /{uploadProgress.batchCount}
+                  </p>
+                </div>
+              )}
 
-              <div className="flex items-center space-x-2">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="md"
-                  onClick={onClose}
-                  disabled={busy}
-                >
-                  Cancelar
-                </Button>
-                <Button
-                  type="submit"
-                  variant="primary"
-                  size="md"
-                  disabled={busy || (mode === "import" && !inspection && !title.trim())}
-                  loading={busy}
-                >
-                  {busy
-                    ? busyText || "Processando…"
+              <div className="flex items-center justify-between">
+                <span className="font-mono text-[11px] text-zinc-400">
+                  {busy && !uploadProgress
+                    ? busyText
                     : mode === "import" && inspection
-                      ? `Criar e Ingestar (${inspection.imagesCount} imgs)`
-                      : "Criar Dataset"}
-                </Button>
+                      ? "Pronto para criar e ingestar"
+                      : "Container vazio"}
+                </span>
+
+                <div className="flex items-center space-x-2">
+                  {uploadProgress ? (
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      size="md"
+                      onClick={() => { cancelledRef.current = true; }}
+                    >
+                      Cancelar envio
+                    </Button>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="md"
+                      onClick={onClose}
+                      disabled={busy}
+                    >
+                      Cancelar
+                    </Button>
+                  )}
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    size="md"
+                    disabled={busy || (mode === "import" && !inspection && !title.trim())}
+                    loading={busy && !uploadProgress}
+                  >
+                    {busy && !uploadProgress
+                      ? busyText || "Processando…"
+                      : mode === "import" && inspection
+                        ? `Criar e Ingestar (${inspection.imagesCount} imgs)`
+                        : "Criar Dataset"}
+                  </Button>
+                </div>
               </div>
             </div>
           </form>

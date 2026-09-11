@@ -1225,4 +1225,21 @@ async fn submit_jobs_reject_invalid_orchestrator_id() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(json(&body)["code"], "invalid_request");
+
+    // 4. POST /api/jobs/autolabel com orchestratorId inválido ⇒ 400 invalid_request.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/api/jobs/autolabel")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::from(format!(
+                r#"{{"datasetId":"{valid_uuid}","orchestratorId":"nao-eh-uuid"}}"#
+            )))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
 }

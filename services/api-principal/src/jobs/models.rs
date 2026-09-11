@@ -518,6 +518,100 @@ yolo:
 }
 
 // ---------------------------------------------------------------------------
+// AutoLabel (ADR-0016)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutolabelJobRequest {
+    pub dataset_id: String,
+    #[serde(default = "default_autolabel_model")]
+    pub model: String,
+    #[serde(default)]
+    pub prompt: Option<String>,
+    #[serde(default)]
+    pub orchestrator_id: Option<String>,
+}
+
+fn default_autolabel_model() -> String {
+    "mock".to_string()
+}
+
+pub fn validate_autolabel_request(req: AutolabelJobRequest) -> Result<AutolabelJobRequest, String> {
+    if req.model != "mock" {
+        return Err("model must be 'mock'".to_string());
+    }
+    if let Some(ref p) = req.prompt {
+        if p.chars().count() > 8000 {
+            return Err("prompt must not exceed 8000 characters".to_string());
+        }
+    }
+    if let Some(ref o) = req.orchestrator_id {
+        if uuid::Uuid::parse_str(o).is_err() {
+            return Err("orchestratorId must be a valid UUID".to_string());
+        }
+    }
+    Ok(req)
+}
+
+pub fn generate_autolabel_config_yaml(job_id: &str, req: &AutolabelJobRequest) -> String {
+    let prompt_line = match &req.prompt {
+        Some(p) => format!("  prompt: \"{p}\"\n"),
+        None => String::new(),
+    };
+    format!(
+        r#"# Configuração de autolabel (gerada pelo api-principal)
+job_id: "{job_id}"
+engine: "autolabel"
+model: "{model}"
+mode: "autolabel"
+dataset_path: "{{dataset_path}}"
+output_path: "{{output_path}}"
+seed: 42
+autolabel:
+{prompt_line}"#,
+        job_id = job_id,
+        model = req.model,
+        prompt_line = prompt_line,
+    )
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutolabelApplyRequest {
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutolabelApplyResponse {
+    pub applied: i64,
+    pub skipped: i64,
+    pub images: i64,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct CaptionsJsonlItem {
+    pub filename: String,
+    pub caption: String,
+}
+
+pub fn parse_captions_jsonl(bytes: &[u8]) -> Result<Vec<CaptionsJsonlItem>, ()> {
+    let text = std::str::from_utf8(bytes).map_err(|_| ())?;
+    let mut items = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let item: CaptionsJsonlItem = serde_json::from_str(trimmed).map_err(|_| ())?;
+        items.push(item);
+    }
+    Ok(items)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1218,6 +1312,19 @@ mod tests {
         let req_auto_bad: AutotrackerJobRequest = serde_json::from_str(&raw_auto_bad).unwrap();
         assert!(validate_autotrack_request(req_auto_bad).is_err());
 
+        // AutolabelJobRequest
+        let raw_al_ok = format!(
+            r#"{{"datasetId":"550e8400-e29b-41d4-a716-446655440001","orchestratorId":"{valid_oid}"}}"#
+        );
+        let req_al_ok: AutolabelJobRequest = serde_json::from_str(&raw_al_ok).unwrap();
+        assert!(validate_autolabel_request(req_al_ok).is_ok());
+
+        let raw_al_bad = format!(
+            r#"{{"datasetId":"550e8400-e29b-41d4-a716-446655440001","orchestratorId":"{invalid_oid}"}}"#
+        );
+        let req_al_bad: AutolabelJobRequest = serde_json::from_str(&raw_al_bad).unwrap();
+        assert!(validate_autolabel_request(req_al_bad).is_err());
+
         // PredictJobRequest
         let raw_pred_ok = format!(
             r#"{{"modelId":"550e8400-e29b-41d4-a716-446655440000","datasetId":"550e8400-e29b-41d4-a716-446655440001","orchestratorId":"{valid_oid}"}}"#
@@ -1230,5 +1337,16 @@ mod tests {
         );
         let req_pred_bad: PredictJobRequest = serde_json::from_str(&raw_pred_bad).unwrap();
         assert!(validate_predict_request(req_pred_bad).is_err());
+    }
+
+    #[test]
+    fn parse_captions_jsonl_roundtrip() {
+        let data = br#"{"filename":"img1.jpg","caption":"legenda um"}
+{"filename":"img2.jpg","caption":"legenda dois"}
+"#;
+        let items = parse_captions_jsonl(data).expect("parse ok");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].filename, "img1.jpg");
+        assert_eq!(items[0].caption, "legenda um");
     }
 }

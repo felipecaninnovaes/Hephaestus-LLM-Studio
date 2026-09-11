@@ -127,11 +127,13 @@ async fn cleanup(pool: &PgPool) {
 /// Insere um dataset de teste e retorna o ID.
 async fn insert_test_dataset(pool: &PgPool) -> uuid::Uuid {
     let id = uuid::Uuid::new_v4();
+    let slug = format!("test-ds-{}", &id.to_string()[..8]);
     sqlx::query(
         "INSERT INTO datasets (id, slug, title, category, type, task, format, status) \
-         VALUES ($1, 'test-ds', 'Test DS', 'yolo', 'yolo_bbox', 'detect_track', 'yolo_txt', 'ready')",
+         VALUES ($1, $2, 'Test DS', 'yolo', 'yolo_bbox', 'detect_track', 'yolo_txt', 'ready')",
     )
     .bind(id)
+    .bind(slug)
     .execute(pool)
     .await
     .expect("insert test dataset");
@@ -4374,9 +4376,7 @@ async fn watchdog_requeue_preserva_hint_e_redispatch() {
 #[ignore = "requer Postgres (bash scripts/test-db.sh)"]
 async fn autolabel_job_lifecycle_and_dispatch() {
     let p = pool().await;
-    cleanup(&p).await;
-
-    let ds_id = uuid::Uuid::new_v4();
+    let ds_id = insert_test_dataset(&p).await;
     let req = CreateJobRequest {
         kind: "autolabel".into(),
         engine: "autolabel".into(),
@@ -4399,10 +4399,10 @@ async fn autolabel_job_lifecycle_and_dispatch() {
         orchestrator_hint: None,
     };
 
-    let job_id = manager::create_job(&p, req)
+    let res = manager::create_job(&p, req)
         .await
         .expect("create autolabel job");
-    let job = manager::get_job(&p, job_id)
+    let job = manager::get_job(&p, uuid::Uuid::parse_str(&res.job_id).unwrap())
         .await
         .expect("get autolabel job");
     assert_eq!(job.kind, "autolabel");

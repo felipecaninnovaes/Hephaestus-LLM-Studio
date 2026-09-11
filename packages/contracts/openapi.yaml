@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.14.0
+  version: 0.15.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -1591,6 +1591,105 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/jobs/autolabel:
+    post:
+      operationId: submitAutolabelJob
+      tags: [jobs]
+      summary: Submete job de autolabel
+      description: |
+        Cria job de autolabel (ADR-0016 D0). Gera legendas em lote com mock determinístico,
+        valida modelo (mock apenas), prompt opcional, verifica readiness do dataset (≥1 imagem ativa),
+        materializa package e envia ao manager.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AutolabelJobRequest" }
+      responses:
+        "202":
+          description: Job criado e enfileirado.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubmitJobResponse" }
+        "400":
+          description: "Body malformado, campos desconhecidos ou parâmetros inválidos (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Dataset inexistente ou datasetId não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "Dataset sem imagens ativas (`code: dataset_not_ready`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`) ou storage indisponível (`code: storage_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/jobs/{id}/autolabel/apply:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: "PK do job. UUID inválido ⇒ 404 `not_found`."
+    post:
+      operationId: applyAutolabelCaptions
+      tags: [jobs]
+      summary: Aplica legendas do autolabel ao dataset
+      description: |
+        Ingest do artefato `captions.jsonl` de um job autolabel `done` no dataset
+        associado (ADR-0016 D1). Merge dirigido por origem: `overwrite=false` (default)
+        preserva manuais e importadas e só atualiza imagens sem legenda ou com `origin='autolabel'`;
+        `overwrite=true` sobrescreve inclusive anotações de origem manual e import.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AutolabelApplyRequest" }
+      responses:
+        "200":
+          description: Legendas aplicadas com sucesso.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutolabelApplyResponse" }
+        "400":
+          description: "Body malformado ou `captions.jsonl` inválido (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Job inexistente, não-UUID, não-autolabel ou artefato `captions.jsonl` ausente (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "Job não está `done` (`code: job_not_done`) ou dataset não pronto (`code: dataset_not_ready`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`) ou storage indisponível (`code: storage_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/jobs/queue:
     get:
       operationId: listJobQueue
@@ -2319,6 +2418,33 @@ components:
           format: uuid
           description: "ID do orquestrador preferencial para execução (ADR-0015 D2). Opcional; ausente ou null = Automático. Não-UUID ⇒ 400 `invalid_request`."
 
+    AutolabelJobRequest:
+      type: object
+      additionalProperties: false
+      required: [datasetId]
+      description: |
+        Body de `POST /api/jobs/autolabel` (ADR-0016 D0). `datasetId` é
+        obrigatório; os demais campos são OPCIONAIS com defaults.
+        Wire camelCase; `deny_unknown_fields` garante 400 para chaves desconhecidas.
+      properties:
+        datasetId:
+          type: string
+          format: uuid
+          description: "PK do dataset. Não-UUID ou inexistente ⇒ 404 `not_found`."
+        model:
+          type: string
+          enum: [mock]
+          default: mock
+          description: "Modelo a usar (apenas mock na v1)."
+        prompt:
+          type: string
+          maxLength: 8000
+          description: "Instrução opcional para estilo/contexto da legenda."
+        orchestratorId:
+          type: [string, "null"]
+          format: uuid
+          description: "ID do orquestrador preferencial para execução (ADR-0015 D2). Opcional; ausente ou null = Automático. Não-UUID ⇒ 400 `invalid_request`."
+
     PredictJobRequest:
       type: object
       required: [modelId, datasetId]
@@ -2409,6 +2535,39 @@ components:
           type: integer
           minimum: 0
           description: "Número de imagens que receberam ao menos uma box."
+
+    AutolabelApplyRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        Body de `POST /api/jobs/:id/autolabel/apply` (ADR-0016 D1).
+        `overwrite` (default false): false = preserva legendas manuais e importadas;
+        true = sobrescreve inclusive anotações de origem manual e import.
+        Wire camelCase; `deny_unknown_fields` garante 400 para chaves desconhecidas.
+      properties:
+        overwrite:
+          type: boolean
+          default: false
+          description: "true = sobrescreve todas as legendas; false = só atualiza imagens sem legenda ou com origin=autolabel."
+
+    AutolabelApplyResponse:
+      type: object
+      required: [applied, skipped, images]
+      additionalProperties: false
+      description: "Resposta 200 do apply de autolabel (ADR-0016 D1)."
+      properties:
+        applied:
+          type: integer
+          minimum: 0
+          description: "Número de legendas gravadas/atualizadas."
+        skipped:
+          type: integer
+          minimum: 0
+          description: "Número de legendas ignoradas."
+        images:
+          type: integer
+          minimum: 0
+          description: "Número de imagens que receberam legendas."
 
     Class:
       type: object

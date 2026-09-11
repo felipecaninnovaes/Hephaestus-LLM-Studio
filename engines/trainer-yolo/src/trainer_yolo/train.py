@@ -399,8 +399,11 @@ def main(argv: list[str] | None = None) -> None:
     elif argv[0] == "autotrack":
         from trainer_yolo.autotrack import cmd_autotrack
         cmd_autotrack(argv[1:])
+    elif argv[0] == "predict":
+        from trainer_yolo.predict import cmd_predict
+        cmd_predict(argv[1:])
     else:
-        _die(f"Unknown subcommand: {argv[0]}. Use 'train', 'autotrack', or 'health'.")
+        _die(f"Unknown subcommand: {argv[0]}. Use 'train', 'autotrack', 'predict', or 'health'.")
 
 
 if __name__ == "__main__":

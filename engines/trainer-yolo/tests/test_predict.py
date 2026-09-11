@@ -514,8 +514,13 @@ class TestRealPredict:
     """Tests for _real_predict — real ultralytics path monkeypatched."""
 
     def test_real_predict_calls_yolo_with_weights(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """YOLO called with weights_path, predict called with correct args."""
+        """YOLO called with weights_path, predict called with correct args (images/ dir)."""
         ds = _make_dataset(tmp_path)
+        # Create images/ directory with actual image files (YOLO package structure)
+        images_dir = ds / "images"
+        images_dir.mkdir(exist_ok=True)
+        (images_dir / "img_0001.jpg").write_bytes(b"\x89PNG\r\n")
+        (images_dir / "img_0002.jpg").write_bytes(b"\x89PNG\r\n")
 
         # Fake result: 1 box for img_0001.jpg
         fake_result = _make_fake_result(
@@ -558,9 +563,9 @@ class TestRealPredict:
         # YOLO called with weights_path
         mock_yolo_cls.assert_called_once_with(str(tmp_path / "weights.pt"))
 
-        # predict called with correct args
+        # predict called with images/ subdirectory (YOLO package structure)
         mock_model.predict.assert_called_once_with(
-            source=str(ds), conf=0.5, imgsz=640, device=0,
+            source=str(ds / "images"), conf=0.5, imgsz=640, device=0,
         )
 
         # Verify predictions.json
@@ -577,6 +582,46 @@ class TestRealPredict:
 
         assert predictions["images"][1]["filename"] == "img_0002.jpg"
         assert predictions["images"][1]["boxes"] == []
+
+    def test_real_predict_fallback_to_flat_dataset(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When images/ dir doesn't exist, predict uses dataset_path directly."""
+        ds = _make_dataset(tmp_path)
+        # Create flat image files (no images/ dir)
+        (ds / "img_0001.jpg").write_bytes(b"\x89PNG\r\n")
+
+        fake_result = _make_fake_result(
+            str(ds / "img_0001.jpg"),
+            boxes_xywhn=[[0.5, 0.5, 0.3, 0.4]],
+            clss=[0],
+            confs=[0.92],
+        )
+
+        mock_yolo_cls = MagicMock()
+        mock_model = MagicMock()
+        mock_model.predict.return_value = [fake_result]
+        mock_model.names = {0: "solda_fria"}
+        mock_yolo_cls.return_value = mock_model
+
+        mock_ultralytics = types.ModuleType("ultralytics")
+        mock_ultralytics.YOLO = mock_yolo_cls
+        monkeypatch.setitem(sys.modules, "ultralytics", mock_ultralytics)
+
+        cfg = {
+            "job_id": "test-flat", "engine": "yolo", "model": "yolo11m",
+            "mode": "predict", "dataset_path": str(ds),
+            "output_path": str(tmp_path / "output"), "seed": 42,
+            "weights_path": str(tmp_path / "weights.pt"),
+            "predict": {"conf": 0.5},
+        }
+        output = tmp_path / "output"
+        output.mkdir(exist_ok=True)
+
+        _real_predict(cfg, output)
+
+        # No images/ dir → fallback to dataset_path directly
+        mock_model.predict.assert_called_once_with(
+            source=str(ds), conf=0.5, imgsz=640, device=0,
+        )
 
     def test_xywhn_to_topleft_clamped(self) -> None:
         """xywhn center-based → top-left with clamp."""

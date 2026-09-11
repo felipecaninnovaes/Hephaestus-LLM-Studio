@@ -144,10 +144,17 @@ def _real_predict(cfg: dict, output: Path) -> None:
     if not dataset_path.is_dir():
         _die(f"dataset_path does not exist or is not a directory: {dataset_path}")
 
+    # Resolve source: prefer <dataset_path>/images if it exists (YOLO package structure)
+    images_dir = dataset_path / "images"
+    if images_dir.is_dir() and any(images_dir.iterdir()):
+        source = str(images_dir)
+    else:
+        source = str(dataset_path)
+
     output.mkdir(parents=True, exist_ok=True)
 
     model = YOLO(weights_path)
-    results = model.predict(source=str(dataset_path), conf=conf, imgsz=640, device=0)
+    results = model.predict(source=source, conf=conf, imgsz=640, device=0)
 
     # Build predictions from results
     images_data = []

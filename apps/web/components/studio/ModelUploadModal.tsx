@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import { Button, Modal, showToast } from "@/components/ui";
+import { Button, Modal, SegmentedControl, showToast } from "@/components/ui";
 import { IconUpload, IconBox } from "@/components/icons";
 import { uploadModel } from "@/lib/models";
 import { modelErrorMessage, type Model } from "@/types/studio";
@@ -12,6 +12,11 @@ interface ModelUploadModalProps {
   onUploaded: (model: Model) => void;
 }
 
+const ENGINE_OPTIONS = [
+  { id: "yolo", label: "YOLO (Detecção / Treino)" },
+  { id: "world", label: "YOLO-World (AutoTracker)" },
+];
+
 export default function ModelUploadModal({
   open,
   onClose,
@@ -19,6 +24,7 @@ export default function ModelUploadModal({
 }: ModelUploadModalProps) {
   const [file, setFile] = useState<File | null>(null);
   const [name, setName] = useState("");
+  const [engine, setEngine] = useState<"yolo" | "world">("yolo");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -26,6 +32,7 @@ export default function ModelUploadModal({
   const reset = useCallback(() => {
     setFile(null);
     setName("");
+    setEngine("yolo");
     setError(null);
   }, []);
 
@@ -48,7 +55,7 @@ export default function ModelUploadModal({
     try {
       const model = await uploadModel({
         file,
-        engine: "yolo",
+        engine,
         name: name.trim() || undefined,
       });
       showToast("Modelo enviado com sucesso.", "success");
@@ -141,14 +148,18 @@ export default function ModelUploadModal({
           />
         </div>
 
-        {/* Engine chip fixo */}
+        {/* Engine selector */}
         <div>
           <label className="mb-1.5 block font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-zinc-400">
-            Engine
+            Engine / Tipo
           </label>
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-brand-500/35 bg-brand-500/10 px-3 py-1 font-mono text-[11px] uppercase tracking-[0.08em] text-brand-400">
-            YOLO
-          </span>
+          <SegmentedControl
+            options={ENGINE_OPTIONS}
+            value={engine}
+            onChange={(v) => setEngine(v as "yolo" | "world")}
+            ariaLabel="Tipo de modelo"
+            className="w-full justify-start"
+          />
         </div>
 
         {/* Erro */}

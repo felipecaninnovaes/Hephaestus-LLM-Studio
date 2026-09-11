@@ -311,6 +311,17 @@ export default function CreateDatasetModal({
       );
 
       setBusyText(`Enviando ${files.length} imagens…`);
+
+      // Warn about oversized files before uploading
+      const OVERSIZE_LIMIT = 200 * 1024 * 1024;
+      const oversizedCount = files.filter((f) => f.size > OVERSIZE_LIMIT).length;
+      if (oversizedCount > 0) {
+        showToast(
+          `${oversizedCount} arquivo(s) excedem 200 MiB e serão rejeitados.`,
+          "info",
+        );
+      }
+
       const uploadRes = await uploadImages(created.id, files, {
         onProgress: (p) => {
           setUploadProgress(p);
@@ -691,7 +702,7 @@ export default function CreateDatasetModal({
 
               <div className="flex items-center justify-between">
                 <span className="font-mono text-[11px] text-zinc-400">
-                  {busy && !uploadProgress
+                  {busy
                     ? busyText
                     : mode === "import" && inspection
                       ? "Pronto para criar e ingestar"

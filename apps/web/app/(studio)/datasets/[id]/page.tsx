@@ -1170,33 +1170,41 @@ export default function DatasetGalleryPage() {
                 }
               />
             ))}
-            <button
-              type="button"
-              onClick={() => fileRef.current?.click()}
-              disabled={uploading}
-              className="flex h-28 sm:h-36 flex-col items-center justify-center space-y-1.5 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 text-zinc-400 backdrop-blur-sm transition-all hover:border-brand-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 disabled:opacity-60 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70"
-            >
-              <IconPlus className="h-5 w-5" />
-              <span className="font-mono text-[11px]">
-                {uploading
-                  ? `Enviando ${uploadSent} de ${uploadCount}…`
-                  : "Adicionar imagens"}
-              </span>
-              {uploading && uploadBatchInfo && (
-                <span className="font-mono text-[10px] text-zinc-500">
-                  lote {uploadBatchInfo.batchIndex}/{uploadBatchInfo.batchCount}
+            <div className="relative inline-flex">
+              <div
+                role="button"
+                tabIndex={uploading ? -1 : 0}
+                onClick={() => { if (!uploading) fileRef.current?.click(); }}
+                onKeyDown={(e) => {
+                  if (!uploading && (e.key === "Enter" || e.key === " ")) {
+                    e.preventDefault();
+                    fileRef.current?.click();
+                  }
+                }}
+                className={`flex h-28 sm:h-36 flex-col items-center justify-center space-y-1.5 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 text-zinc-400 backdrop-blur-sm transition-all hover:border-brand-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${uploading ? "opacity-60" : ""}`}
+              >
+                <IconPlus className="h-5 w-5" />
+                <span className="font-mono text-[11px]">
+                  {uploading
+                    ? `Enviando ${uploadSent} de ${uploadCount}…`
+                    : "Adicionar imagens"}
                 </span>
-              )}
+                {uploading && uploadBatchInfo && (
+                  <span className="font-mono text-[10px] text-zinc-500">
+                    lote {uploadBatchInfo.batchIndex}/{uploadBatchInfo.batchCount}
+                  </span>
+                )}
+              </div>
               {uploading && (
                 <button
                   type="button"
-                  onClick={(e) => { e.stopPropagation(); uploadCancelledRef.current = true; }}
-                  className="mt-1 rounded-md border border-[#ef4444]/30 bg-[#ef4444]/[0.12] px-2 py-0.5 font-mono text-[10px] text-rose-300 transition-colors hover:bg-[#ef4444]/[0.20]"
+                  onClick={() => { uploadCancelledRef.current = true; }}
+                  className="absolute bottom-2 right-2 rounded-md border border-[#ef4444]/30 bg-[#ef4444]/[0.12] px-2 py-0.5 font-mono text-[10px] text-rose-300 transition-colors hover:bg-[#ef4444]/[0.20]"
                 >
                   Cancelar
                 </button>
               )}
-            </button>
+            </div>
             {items.length < total && (
               <button
                 type="button"

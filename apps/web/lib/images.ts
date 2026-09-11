@@ -117,8 +117,8 @@ export async function uploadImages(
   const batches = buildBatches(validFiles);
   const batchCount = batches.length;
   const allItems: UploadResultItem[] = [...oversized];
-  let sentCount = oversized.length; // pre-validated count
-  const totalFiles = files.length;
+  let sentCount = 0;
+  const totalFiles = validFiles.length;
 
   // 3. Send batches sequentially
   for (let i = 0; i < batches.length; i++) {
@@ -141,13 +141,13 @@ export async function uploadImages(
       const isEnvelopeLimit =
         err instanceof Object && "status" in err && (err as { status: number }).status === 413;
 
-      // Mark every file in this failed batch as rejected
+      // Mark every file in this failed batch
       for (const file of batch) {
         allItems.push({
           imageId: null,
           filename: file.name,
-          status: "rejected",
-          reason: isEnvelopeLimit ? "too_large" : "storage_error",
+          status: "failed",
+          reason: isEnvelopeLimit ? "envelope_limit" : "storage_error",
           bytes: file.size,
           width: null,
           height: null,
@@ -156,7 +156,23 @@ export async function uploadImages(
       sentCount += batch.length;
 
       // 413 = envelope too large — subsequent batches would also fail → stop
-      if (isEnvelopeLimit) break;
+      if (isEnvelopeLimit) {
+        // Mark remaining batches' files as failed (not sent)
+        for (let r = i + 1; r < batches.length; r++) {
+          for (const file of batches[r]) {
+            allItems.push({
+              imageId: null,
+              filename: file.name,
+              status: "failed",
+              reason: "envelope_limit",
+              bytes: file.size,
+              width: null,
+              height: null,
+            });
+          }
+        }
+        break;
+      }
 
       // Other errors (network, 500): continue with remaining batches
     }

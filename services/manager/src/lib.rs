@@ -359,9 +359,11 @@ pub async fn create_job(
     }
 
     // Resolve weights_id → weights_ref (ADR-0012 D5 — fail-fast no submit).
+    // Para predict: também resolve variante do modelo para jobs.model (D5).
+    let mut resolved_model = req.model.clone();
     if let Some(weights_id) = req.weights_id {
-        let row: Option<(String, String, String)> =
-            sqlx::query_as("SELECT s3_key, hash, engine FROM models WHERE id = $1")
+        let row: Option<(String, String, String, Option<String>)> =
+            sqlx::query_as("SELECT s3_key, hash, engine, model FROM models WHERE id = $1")
                 .bind(weights_id)
                 .fetch_optional(pool)
                 .await
@@ -369,7 +371,7 @@ pub async fn create_job(
 
         match row {
             None => return Err(ManagerError::NotFound),
-            Some((s3_key, hash, engine)) => {
+            Some((s3_key, hash, engine, variant)) => {
                 if engine != "yolo" {
                     return Err(ManagerError::InvalidRequest(format!(
                         "weights engine must be 'yolo', got '{engine}'"
@@ -379,6 +381,13 @@ pub async fn create_job(
                     "s3_key": s3_key,
                     "md5": hash,
                 });
+                // ADR-0012 D5/I.2b: predict com variant → jobs.model = variante (ex.: yolo11m).
+                if req.model == "predict" {
+                    if let Some(v) = variant {
+                        resolved_model = v;
+                    }
+                    // Sem variante (upload/download) → resolved_model = "predict" (literal).
+                }
             }
         }
     }
@@ -390,7 +399,7 @@ pub async fn create_job(
     .bind(job_id)
     .bind(&req.kind)
     .bind(&req.engine)
-    .bind(&req.model)
+    .bind(&resolved_model)
     .bind(&req.mode)
     .bind(dataset_id)
     .bind(&params)
@@ -1830,6 +1839,7 @@ pub async fn dispatch_next(
         "config_yaml": config_yaml,
         "dataset_version_id": dataset_version_id,
         "workdir": orch_workdir,
+        "mode": mode,
     });
 
     // Adiciona weights_ref ao dispatch quando presente (snake_case — casa com WeightsRef do orquestrador).

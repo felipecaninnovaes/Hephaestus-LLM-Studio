@@ -19,6 +19,7 @@ import { formatBytes } from "@/lib/format";
 import { ApiError } from "@/lib/api";
 import { jobErrorMessage } from "@/types/studio";
 import { showToast } from "./Toast";
+import NodeSelect from "./NodeSelect";
 import type { Dataset, Model, Telemetry, YoloAugment } from "@/types/studio";
 import {
   YoloHyperparameters,
@@ -84,6 +85,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
   // Models (for weights selector)
   const [yoloModels, setYoloModels] = useState<Model[]>([]);
   const [selectedWeightId, setSelectedWeightId] = useState<string>("");
+  const [selectedOrchestratorId, setSelectedOrchestratorId] = useState<string | null>(null);
 
   // Form fields — mirrors TrainYoloModal defaults
   const [params, setParams] = useState<YoloHyperparametersValues>({
@@ -302,6 +304,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
         optimizer: params.optimizer,
         augment: params.augment,
         weights: selectedWeightId || null,
+        orchestratorId: selectedOrchestratorId || null,
       });
       showToast(
         `Job de treino criado (posição ${result.queuePosition ?? "—"} na fila).`,
@@ -310,6 +313,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
       // Reset form
       setSelectedDatasetId("");
       setSelectedWeightId("");
+      setSelectedOrchestratorId(null);
       setParams({
         model: "yolo11m",
         epochs: 100,
@@ -423,6 +427,14 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
         values={params}
         onChange={handleParamChange}
         disabled={busy}
+      />
+
+      {/* Nó de Execução (ADR-0015 D2) */}
+      <NodeSelect
+        value={selectedOrchestratorId}
+        onChange={setSelectedOrchestratorId}
+        disabled={busy}
+        size="default"
       />
 
       {/* Previsão de VRAM & Alertas Preventivos de CUDA OOM */}

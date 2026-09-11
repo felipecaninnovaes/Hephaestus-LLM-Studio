@@ -17,6 +17,7 @@ import {
 } from "@/types/studio";
 import { showToast } from "./Toast";
 import { openActionCenter } from "@/lib/events";
+import NodeSelect from "./NodeSelect";
 
 const CONF_MIN = 0.3;
 const CONF_MAX = 0.95;
@@ -48,6 +49,7 @@ export default function AutoTrackerModal({
   const [worldModels, setWorldModels] = useState<Model[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [selectedModelId, setSelectedModelId] = useState<string>("");
+  const [selectedOrchestratorId, setSelectedOrchestratorId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -75,6 +77,7 @@ export default function AutoTrackerModal({
     if (!open) return;
     setConf(CONF_DEFAULT);
     setSelectedModelId("");
+    setSelectedOrchestratorId(null);
     setTopError(null);
     setBusy(false);
     const t = setTimeout(() => sliderRef.current?.focus(), 30);
@@ -122,6 +125,7 @@ export default function AutoTrackerModal({
         model: "mock",
         conf,
         ...(selectedModelId ? { modelId: selectedModelId } : {}),
+        ...(selectedOrchestratorId ? { orchestratorId: selectedOrchestratorId } : {}),
       });
       showToast(
         `AutoTracker iniciado (posição ${result.queuePosition ?? "—"} na fila).`,
@@ -216,6 +220,14 @@ export default function AutoTrackerModal({
           onChange={setConf}
           formatValue={(v) => v.toFixed(2)}
           disabled={busy}
+        />
+
+        {/* Nó de Execução (ADR-0015 D2) */}
+        <NodeSelect
+          value={selectedOrchestratorId}
+          onChange={setSelectedOrchestratorId}
+          disabled={busy}
+          size="default"
         />
 
         {/* CTA */}

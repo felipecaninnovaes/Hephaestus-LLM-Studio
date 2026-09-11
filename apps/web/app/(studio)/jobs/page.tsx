@@ -11,6 +11,7 @@ import {
   listJobs,
 } from "@/lib/jobs";
 import { applyAutotrackerBoxes } from "@/lib/autotracker";
+import { applyAutolabelCaptions } from "@/lib/autolabel";
 import { ApiError } from "@/lib/api";
 import { showToast } from "@/components/studio/Toast";
 import ConfirmDialog from "@/components/studio/ConfirmDialog";
@@ -38,7 +39,7 @@ import type {
   JobMetrics as JobMetricsType,
   JobStatus,
 } from "@/types/studio";
-import { autotrackerErrorMessage } from "@/types/studio";
+import { autotrackerErrorMessage, autolabelErrorMessage } from "@/types/studio";
 import { formatBytes, formatDuration } from "@/lib/format";
 import { openActionCenter } from "@/lib/events";
 import { JobListItem } from "@/components/studio/JobCard";
@@ -280,6 +281,44 @@ function JobsPageContent() {
         return;
       }
       showToast("Falha ao aplicar boxes.", "error");
+    } finally {
+      setApplyBusy(false);
+    }
+  }
+
+  async function handleApplyCaptions(job: Job) {
+    setApplyBusy(true);
+    try {
+      const result = await applyAutolabelCaptions(job.id, {
+        datasetId: job.datasetId,
+        overwrite: applyOverwrite,
+      });
+      showToast(
+        `${result.applied} legendas aplicadas, ${result.skipped} ignoradas em ${result.images} imagem(ns).`,
+        "success",
+        job.datasetId
+          ? {
+              label: "Abrir dataset",
+              onClick: () => router.push(`/datasets/${job.datasetId}`),
+            }
+          : undefined,
+      );
+      setApplyOverwrite(false);
+      await fetchJobs();
+    } catch (err) {
+      if (err instanceof ApiError) {
+        if (err.code === "unauthorized" || err.status === 401) {
+          router.replace("/login");
+          return;
+        }
+        if (err.code === "job_not_done") {
+          showToast("O job ainda não terminou — aguarde a conclusão.", "info");
+          return;
+        }
+        showToast(autolabelErrorMessage(err.code), "error");
+        return;
+      }
+      showToast("Falha ao aplicar legendas.", "error");
     } finally {
       setApplyBusy(false);
     }
@@ -696,6 +735,31 @@ function JobsPageContent() {
                         >
                           <IconCheck className="size-3.5 text-brand-400" />
                           <span>{applyBusy ? "Aplicando…" : "Aplicar boxes ao dataset"}</span>
+                        </Button>
+                      </div>
+                    )}
+
+                    {selectedJob.kind === "autolabel" && selectedJob.status === "done" && (
+                      <div className="flex items-center gap-3">
+                        <label className="flex items-center gap-2 text-xs text-zinc-400 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={applyOverwrite}
+                            onChange={(e) => setApplyOverwrite(e.target.checked)}
+                            className="rounded border-zinc-700 bg-zinc-800 text-brand-500 focus:ring-brand-500/40"
+                          />
+                          <span>Sobrescrever legendas existentes</span>
+                        </label>
+                        <Button
+                          type="button"
+                          variant="primary"
+                          size="sm"
+                          disabled={applyBusy}
+                          loading={applyBusy}
+                          onClick={() => handleApplyCaptions(selectedJob)}
+                        >
+                          <IconCheck className="size-3.5 text-brand-400" />
+                          <span>{applyBusy ? "Aplicando…" : "Aplicar legendas ao dataset"}</span>
                         </Button>
                       </div>
                     )}

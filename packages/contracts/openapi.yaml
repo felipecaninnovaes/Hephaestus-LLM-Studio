@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.13.0
+  version: 0.14.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -2268,6 +2268,10 @@ components:
           type: [string, "null"]
           format: uuid
           description: "UUID de pesos existentes na tabela `models` para fine-tune (D5). Não-UUID ⇒ 400 `invalid_request`."
+        orchestratorId:
+          type: [string, "null"]
+          format: uuid
+          description: "ID do orquestrador preferencial para execução (ADR-0015 D2). Opcional; ausente ou null = Automático. Não-UUID ⇒ 400 `invalid_request`."
 
     YoloAugment:
       type: object
@@ -2310,6 +2314,10 @@ components:
           type: [string, "null"]
           format: uuid
           description: "UUID do modelo world na tabela `models`. Presente → job real; ausente → mock. Não-UUID ⇒ 400 `invalid_request`; inexistente ⇒ 404 `not_found` (via manager)."
+        orchestratorId:
+          type: [string, "null"]
+          format: uuid
+          description: "ID do orquestrador preferencial para execução (ADR-0015 D2). Opcional; ausente ou null = Automático. Não-UUID ⇒ 400 `invalid_request`."
 
     PredictJobRequest:
       type: object
@@ -2335,6 +2343,10 @@ components:
           maximum: 1.0
           default: 0.65
           description: "Limiar de confiança (0..1)."
+        orchestratorId:
+          type: [string, "null"]
+          format: uuid
+          description: "ID do orquestrador preferencial para execução (ADR-0015 D2). Opcional; ausente ou null = Automático. Não-UUID ⇒ 400 `invalid_request`."
 
     SubmitJobResponse:
       type: object
@@ -2865,6 +2877,16 @@ components:
           type: [string, "null"]
           format: uuid
           description: "Orquestrador que executa o job."
+        orchestratorName:
+          type: [string, "null"]
+          description: "Nome do orquestrador que executa ou executou o job (ADR-0015 D1)."
+        orchestratorKind:
+          type: [string, "null"]
+          enum: [docker, slurm, "null"]
+          description: "Kind do orquestrador (ADR-0015 D1)."
+        orchestratorFallback:
+          type: boolean
+          description: "Indica se o job sofreu fallback automático após timeout no nó solicitado (ADR-0015 D3)."
         createdAt: { type: string, format: date-time }
         finishedAt:
           type: [string, "null"]

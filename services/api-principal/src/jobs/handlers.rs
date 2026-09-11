@@ -94,6 +94,9 @@ pub struct JobResponse {
     pub metrics: Option<Vec<MetricsItem>>,
     pub vram_min_gb: Option<i32>,
     pub orchestrator_id: Option<String>,
+    pub orchestrator_name: Option<String>,
+    pub orchestrator_kind: Option<String>,
+    pub orchestrator_fallback: bool,
     pub created_at: String,
     pub finished_at: Option<String>,
 }
@@ -291,6 +294,9 @@ fn to_job_response(job: crate::jobs::manager_client::InternalJob) -> JobResponse
         metrics,
         vram_min_gb: job.vram_min_gb,
         orchestrator_id: job.orchestrator_id,
+        orchestrator_name: job.orchestrator_name,
+        orchestrator_kind: job.orchestrator_kind,
+        orchestrator_fallback: job.orchestrator_fallback,
         created_at: job.created_at,
         finished_at: job.finished_at,
     }
@@ -622,6 +628,10 @@ pub async fn submit_yolo_job(
     if let Some(ref weights_id) = req.weights {
         manager_body["weights_id"] = serde_json::json!(weights_id);
     }
+    // ADR-0015 D2: insere orchestrator_hint no body quando presente.
+    if let Some(ref orch_id) = req.orchestrator_id {
+        manager_body["orchestrator_hint"] = serde_json::json!(orch_id);
+    }
 
     match state.manager.create_job(&manager_body).await {
         Ok(resp) => {
@@ -632,28 +642,22 @@ pub async fn submit_yolo_job(
             };
             (StatusCode::ACCEPTED, Json(body)).into_response()
         }
+        // ADR-0015 D6.4: alinha ao R6 (NotFound→404, InvalidRequest→400, Unavailable→503).
+        // Compensação do package em TODOS os braços de erro.
+        Err(ManagerError::NotFound) => {
+            compensate_package(&state, &package.version_id).await;
+            not_found()
+        }
+        Err(ManagerError::InvalidRequest(_)) => {
+            compensate_package(&state, &package.version_id).await;
+            invalid_request()
+        }
         Err(ManagerError::Unavailable(_)) => {
-            // Compensação: remove o package criado se o manager falhar
-            // (operação composta: package sem job = lixo).
-            let _ = state
-                .storage
-                .delete_prefix(&format!("packages/{}/", package.version_id))
-                .await;
-            let _ = sqlx::query("DELETE FROM dataset_versions WHERE id = $1")
-                .bind(package.version_id.parse::<uuid::Uuid>().expect("uuid"))
-                .execute(&state.pool)
-                .await;
+            compensate_package(&state, &package.version_id).await;
             queue_unavailable()
         }
         Err(_) => {
-            let _ = state
-                .storage
-                .delete_prefix(&format!("packages/{}/", package.version_id))
-                .await;
-            let _ = sqlx::query("DELETE FROM dataset_versions WHERE id = $1")
-                .bind(package.version_id.parse::<uuid::Uuid>().expect("uuid"))
-                .execute(&state.pool)
-                .await;
+            compensate_package(&state, &package.version_id).await;
             queue_unavailable()
         }
     }
@@ -783,6 +787,10 @@ pub async fn submit_autotracker_job(
     // ADR-0014 D2/D6: modelId presente → weights_id (manager resolve weights_ref).
     if let Some(ref model_id) = req.model_id {
         manager_body["weights_id"] = serde_json::json!(model_id);
+    }
+    // ADR-0015 D2: insere orchestrator_hint no body quando presente.
+    if let Some(ref orch_id) = req.orchestrator_id {
+        manager_body["orchestrator_hint"] = serde_json::json!(orch_id);
     }
 
     // ADR-0014 D6: mapeamento NotFound→404, InvalidRequest→400, Unavailable→503
@@ -915,7 +923,7 @@ pub async fn submit_predict_job(
 
     // 8. POST ao manager (D5: kind='yolo_predict', engine='yolo', mode='predict',
     //    model='predict' placeholder, weights_id=modelId).
-    let manager_body = serde_json::json!({
+    let mut manager_body = serde_json::json!({
         "kind": "yolo_predict",
         "engine": "yolo",
         "model": "predict",
@@ -941,6 +949,10 @@ pub async fn submit_predict_job(
         "vram_min_gb": null,
         "weights_id": req.model_id,
     });
+    // ADR-0015 D2: insere orchestrator_hint no body quando presente.
+    if let Some(ref orch_id) = req.orchestrator_id {
+        manager_body["orchestrator_hint"] = serde_json::json!(orch_id);
+    }
 
     match state.manager.create_job(&manager_body).await {
         Ok(resp) => {
@@ -1445,6 +1457,9 @@ mod tests {
             metrics: None,
             vram_min_gb: Some(4),
             orchestrator_id: Some("550e8400-e29b-41d4-a716-446655440002".into()),
+            orchestrator_name: Some("node-gpu".into()),
+            orchestrator_kind: Some("remoto".into()),
+            orchestrator_fallback: true,
             created_at: "2026-01-01T00:00:00Z".into(),
             finished_at: None,
         };
@@ -1454,6 +1469,9 @@ mod tests {
         assert_eq!(resp.status, "running");
         assert_eq!(resp.progress, Some(0.5));
         assert_eq!(resp.epoch, Some(5));
+        assert_eq!(resp.orchestrator_name.as_deref(), Some("node-gpu"));
+        assert_eq!(resp.orchestrator_kind.as_deref(), Some("remoto"));
+        assert!(resp.orchestrator_fallback);
         assert!(resp.metrics.is_none());
     }
 
@@ -1784,6 +1802,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn submit_yolo_job_400_orchestrator_id_not_uuid() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_yolo_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"datasetId":"00000000-0000-0000-0000-000000000000","model":"yolo11n","epochs":10,"batch":16,"orchestratorId":"not-a-uuid"}"#,
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn submit_yolo_job_weights_uuid_valid() {
         // weights válido: passa validação pura (sem DB = 503 ou not_found no dataset check).
         let mock = MockManager::default();
@@ -1946,6 +1978,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn submit_autotracker_job_400_orchestrator_id_not_uuid() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_autotracker_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"datasetId":"00000000-0000-0000-0000-000000000000","orchestratorId":"not-a-uuid"}"#,
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn submit_autotracker_job_manager_not_found_compensates() {
         // ADR-0014 D6: manager NotFound → 404 + compensação.
         // NOTA: test_state usa pool lazy que falha no DB ANTES de reach create_job.
@@ -2062,6 +2108,20 @@ mod tests {
             axum::extract::State(state),
             Ok(axum::body::Bytes::from(
                 r#"{"modelId":"not-a-uuid","datasetId":"00000000-0000-0000-0000-000000000001"}"#,
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_predict_job_400_orchestrator_id_not_uuid() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_predict_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"modelId":"00000000-0000-0000-0000-000000000000","datasetId":"00000000-0000-0000-0000-000000000001","orchestratorId":"not-a-uuid"}"#,
             )),
         )
         .await;
@@ -2271,6 +2331,9 @@ mod tests {
             metrics: None,
             vram_min_gb: None,
             orchestrator_id: None,
+            orchestrator_name: None,
+            orchestrator_kind: None,
+            orchestrator_fallback: false,
             created_at: "2026-01-01T00:00:00Z".into(),
             finished_at: Some("2026-01-01T01:00:00Z".into()),
         }
@@ -2508,6 +2571,9 @@ mod tests {
             metrics: None,
             vram_min_gb: None,
             orchestrator_id: None,
+            orchestrator_name: None,
+            orchestrator_kind: None,
+            orchestrator_fallback: false,
             created_at: "2026-01-01T00:00:00Z".into(),
             finished_at: None,
         }

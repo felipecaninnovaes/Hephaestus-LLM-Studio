@@ -5806,6 +5806,9 @@ fn setup_autotracker_mock(
         metrics: None,
         vram_min_gb: None,
         orchestrator_id: None,
+        orchestrator_name: None,
+        orchestrator_kind: None,
+        orchestrator_fallback: false,
         created_at: "2026-01-01T00:00:00Z".into(),
         finished_at: Some("2026-01-01T01:00:00Z".into()),
     };
@@ -6343,6 +6346,9 @@ async fn t5_autotrack_08_dataset_null_409() {
         metrics: None,
         vram_min_gb: None,
         orchestrator_id: None,
+        orchestrator_name: None,
+        orchestrator_kind: None,
+        orchestrator_fallback: false,
         created_at: "2026-01-01T00:00:00Z".into(),
         finished_at: Some("2026-01-01T01:00:00Z".into()),
     };
@@ -6387,6 +6393,9 @@ async fn t5_autotrack_09_job_not_done() {
         metrics: None,
         vram_min_gb: None,
         orchestrator_id: None,
+        orchestrator_name: None,
+        orchestrator_kind: None,
+        orchestrator_fallback: false,
         created_at: "2026-01-01T00:00:00Z".into(),
         finished_at: None,
     };

@@ -884,6 +884,9 @@ async fn job_response_keys_are_camel_case() {
             metrics: None,
             vram_min_gb: Some(4),
             orchestrator_id: Some("550e8400-e29b-41d4-a716-446655440002".into()),
+            orchestrator_name: Some("local-node".into()),
+            orchestrator_kind: Some("local".into()),
+            orchestrator_fallback: false,
             created_at: "2026-01-01T00:00:00Z".into(),
             finished_at: None,
         };
@@ -925,6 +928,9 @@ async fn job_response_keys_are_camel_case() {
         job.get("orchestratorId").is_some(),
         "missing orchestratorId"
     );
+    assert_eq!(job["orchestratorName"], "local-node");
+    assert_eq!(job["orchestratorKind"], "local");
+    assert_eq!(job["orchestratorFallback"], false);
     // Must NOT contain the snake_case equivalents.
     assert!(job.get("queue_position").is_none(), "leaked queue_position");
     assert!(job.get("queue_reason").is_none(), "leaked queue_reason");
@@ -934,6 +940,18 @@ async fn job_response_keys_are_camel_case() {
     assert!(
         job.get("orchestrator_id").is_none(),
         "leaked orchestrator_id"
+    );
+    assert!(
+        job.get("orchestrator_name").is_none(),
+        "leaked orchestrator_name"
+    );
+    assert!(
+        job.get("orchestrator_kind").is_none(),
+        "leaked orchestrator_kind"
+    );
+    assert!(
+        job.get("orchestrator_fallback").is_none(),
+        "leaked orchestrator_fallback"
     );
 
     // GET /api/jobs → 200 + items with camelCase keys.
@@ -966,6 +984,9 @@ async fn job_response_keys_are_camel_case() {
             item.get("createdAt").is_some(),
             "items[{i}] missing createdAt"
         );
+        assert_eq!(item["orchestratorName"], "local-node");
+        assert_eq!(item["orchestratorKind"], "local");
+        assert_eq!(item["orchestratorFallback"], false);
     }
 }
 
@@ -1145,4 +1166,63 @@ async fn model_response_keys_are_camel_case() {
     assert!(item.get("url").is_some(), "missing url key");
     // name = basename of path.
     assert_eq!(item["name"], "best.pt");
+}
+
+#[tokio::test]
+async fn submit_jobs_reject_invalid_orchestrator_id() {
+    let app = routes::build(setup_state());
+    let (token, _) = session::issue_jwt(uuid::Uuid::new_v4(), &SETUP_SECRET);
+    let cookie = format!("heph_session={token}");
+    let valid_uuid = "550e8400-e29b-41d4-a716-446655440000";
+
+    // 1. POST /api/jobs/yolo com orchestratorId inválido ⇒ 400 invalid_request.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/api/jobs/yolo")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::from(format!(
+                r#"{{"datasetId":"{valid_uuid}","model":"yolo11n","epochs":10,"batch":16,"orchestratorId":"nao-eh-uuid"}}"#
+            )))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+
+    // 2. POST /api/jobs/autotracker com orchestratorId inválido ⇒ 400 invalid_request.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/api/jobs/autotracker")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::from(format!(
+                r#"{{"datasetId":"{valid_uuid}","confidence":0.5,"orchestratorId":"nao-eh-uuid"}}"#
+            )))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
+
+    // 3. POST /api/jobs/predict com orchestratorId inválido ⇒ 400 invalid_request.
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/api/jobs/predict")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, cookie.clone())
+            .body(Body::from(format!(
+                r#"{{"datasetId":"{valid_uuid}","orchestratorId":"nao-eh-uuid"}}"#
+            )))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(json(&body)["code"], "invalid_request");
 }

@@ -84,6 +84,11 @@ echo ">>> manager: manager_db --ignored"
 DATABASE_URL="postgres://studio:${POSTGRES_PASSWORD:-studio}@localhost:5432/studio" \
   cargo test -p manager --test manager_db -- --ignored || TEST_CODE=$?
 
+# 5b. Testes handler do manager (binário) — mesmos critérios.
+echo ">>> manager: bin handler tests --ignored"
+DATABASE_URL="postgres://studio:${POSTGRES_PASSWORD:-studio}@localhost:5432/studio" \
+  cargo test -p manager --bin manager -- --ignored || TEST_CODE=$?
+
 # 6. Exit com o código do cargo test (o trap limpa antes).
 echo "test-db.sh: exit_code=$TEST_CODE"
 exit "$TEST_CODE"

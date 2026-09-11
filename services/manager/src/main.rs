@@ -198,6 +198,10 @@ async fn create_job_handler(State(state): State<AppState>, body: Bytes) -> Respo
 
     match manager::create_job(&state.pool, req).await {
         Ok(resp) => (StatusCode::ACCEPTED, Json(resp)).into_response(),
+        Err(ManagerError::NotFound) => not_found(),
+        Err(ManagerError::InvalidRequest(ref msg)) => {
+            error_response(StatusCode::BAD_REQUEST, "invalid_request", msg)
+        }
         Err(ManagerError::Internal(e)) => internal_error(&e),
         Err(e) => internal_error(&e.to_string()),
     }
@@ -592,4 +596,114 @@ async fn main() {
         .expect("bind");
     tracing::info!("manager ouvindo em 0.0.0.0:{port}");
     axum::serve(listener, app).await.unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    struct NoopOrch;
+
+    #[async_trait::async_trait]
+    impl OrchestratorClient for NoopOrch {
+        async fn post(&self, _url: &str, _body: &serde_json::Value) -> Result<(), String> {
+            Ok(())
+        }
+        async fn post_json(
+            &self,
+            _url: &str,
+            _body: &serde_json::Value,
+        ) -> Result<serde_json::Value, String> {
+            Ok(serde_json::json!({}))
+        }
+    }
+
+    fn test_state(pool: PgPool) -> AppState {
+        let vram_table = VramTable::parse(
+            "defaults:\n  headroom_gb: 2\nentries:\n  - { engine: yolo, model: yolo11n, mode: train, vram_min_gb: 6 }\n",
+        )
+        .unwrap();
+        AppState {
+            pool,
+            token: "test-token".into(),
+            telemetry_cache: manager::new_telemetry_cache(),
+            orch_client: Arc::new(NoopOrch),
+            exec_mode: "local".into(),
+            orch_workdir: "/tmp".into(),
+            trainer_image: "trainer:latest".into(),
+            vram_table,
+        }
+    }
+
+    /// POST /internal/jobs com weights_id inexistente → 404 not_found.
+    #[sqlx::test(migrations = "../api-principal/migrations")]
+    #[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+    async fn create_job_handler_not_found(pool: PgPool) {
+        let app = build_router(test_state(pool));
+
+        let fake_id = uuid::Uuid::new_v4();
+        let body = serde_json::json!({
+            "kind": "yolo_train",
+            "engine": "yolo",
+            "model": "yolo11m",
+            "mode": "train",
+            "weights_id": fake_id,
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/jobs")
+                    .header("authorization", "Bearer test-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(json["code"], "not_found");
+    }
+
+    /// POST /internal/jobs com JSON inválido → 400 invalid_request.
+    #[sqlx::test(migrations = "../api-principal/migrations")]
+    #[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+    async fn create_job_handler_invalid_json(pool: PgPool) {
+        let app = build_router(test_state(pool));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/jobs")
+                    .header("authorization", "Bearer test-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from("not json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(json["code"], "invalid_request");
+    }
 }

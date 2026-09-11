@@ -122,6 +122,7 @@ export type UploadResultReason =
   | "unsupported_media"
   | "too_large"
   | "storage_error"
+  | "envelope_limit"
   | null;
 
 export interface UploadResultItem {

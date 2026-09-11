@@ -77,6 +77,9 @@ export default function DatasetGalleryPage() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadCount, setUploadCount] = useState(0);
+  const [uploadSent, setUploadSent] = useState(0);
+  const [uploadBatchInfo, setUploadBatchInfo] = useState<{ batchIndex: number; batchCount: number } | null>(null);
+  const uploadCancelledRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [classesOpen, setClassesOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -266,24 +269,45 @@ export default function DatasetGalleryPage() {
     const batch = Array.from(files);
     setUploading(true);
     setUploadCount(batch.length);
+    setUploadSent(0);
+    setUploadBatchInfo(null);
+    uploadCancelledRef.current = false;
     try {
-      const { items: results } = await uploadImages(datasetId, batch);
-      const stored = results.filter((r) => r.status === "stored");
-      const problem = results.filter((r) => r.status !== "stored");
+      const { items: results } = await uploadImages(datasetId, batch, {
+        onProgress: (p) => {
+          setUploadSent(p.sent);
+          setUploadBatchInfo({ batchIndex: p.batchIndex, batchCount: p.batchCount });
+        },
+        isCancelled: () => uploadCancelledRef.current,
+      });
+      const stored = results.filter(
+        (r) => r.status === "stored" || r.status === "duplicate",
+      );
+      const problem = results.filter(
+        (r) => r.status === "rejected" || r.status === "failed",
+      );
       await load(datasetId);
-      if (problem.length === 0) {
+
+      const wasCancelled = uploadCancelledRef.current;
+      if (wasCancelled) {
+        const summary = problem.length > 0
+          ? `${stored.length} imagens importadas de ${batch.length} antes do cancelamento, ${problem.length} rejeitadas.`
+          : `${stored.length} imagens importadas de ${batch.length} antes do cancelamento.`;
+        showToast(summary, "info");
+      } else if (problem.length === 0) {
         showToast(
           `${stored.length} ${stored.length === 1 ? "imagem enviada." : "imagens enviadas."}`,
           "success",
         );
       } else {
         const examples = problem
-          .slice(0, 2)
+          .slice(0, 3)
           .map((r) => `${r.filename} (${r.reason ?? r.status})`)
           .join(", ");
+        const suffix = problem.length > 3 ? ` (+${problem.length - 3} mais)` : "";
         showToast(
-          `${problem.length} rejeitadas: ${examples}`,
-          "info",
+          `${stored.length} enviadas, ${problem.length} rejeitadas: ${examples}${suffix}`,
+          problem.length > stored.length ? "error" : "info",
         );
       }
     } catch (err) {
@@ -295,6 +319,8 @@ export default function DatasetGalleryPage() {
     } finally {
       setUploading(false);
       setUploadCount(0);
+      setUploadSent(0);
+      setUploadBatchInfo(null);
       if (fileRef.current) fileRef.current.value = "";
     }
   }
@@ -1057,11 +1083,29 @@ export default function DatasetGalleryPage() {
             size="md"
             onClick={() => fileRef.current?.click()}
             disabled={uploading}
-            loading={uploading}
+            loading={uploading && !uploadSent}
             className="mt-2"
           >
-            {uploading ? `Enviando ${uploadCount} arquivo(s)…` : "Enviar amostras"}
+            {uploading
+              ? `Enviando ${uploadSent} de ${uploadCount}…`
+              : "Enviar amostras"}
           </Button>
+          {uploading && uploadBatchInfo && (
+            <p className="mt-1.5 font-mono text-[11px] text-zinc-400">
+              lote {uploadBatchInfo.batchIndex} de {uploadBatchInfo.batchCount}
+            </p>
+          )}
+          {uploading && (
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              onClick={() => { uploadCancelledRef.current = true; }}
+              className="mt-2"
+            >
+              Cancelar envio
+            </Button>
+          )}
         </EmptyState>
       ) : activeQuery !== null || similarFor !== null ? (
         <div className="flex flex-col gap-3">
@@ -1126,19 +1170,41 @@ export default function DatasetGalleryPage() {
                 }
               />
             ))}
-            <button
-              type="button"
-              onClick={() => fileRef.current?.click()}
-              disabled={uploading}
-              className="flex h-28 sm:h-36 flex-col items-center justify-center space-y-1.5 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 text-zinc-400 backdrop-blur-sm transition-all hover:border-brand-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 disabled:opacity-60 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70"
-            >
-              <IconPlus className="h-5 w-5" />
-              <span className="font-mono text-[11px]">
-                {uploading
-                  ? `Enviando ${uploadCount} arquivo(s)…`
-                  : "Adicionar imagens"}
-              </span>
-            </button>
+            <div className="relative inline-flex">
+              <div
+                role="button"
+                tabIndex={uploading ? -1 : 0}
+                onClick={() => { if (!uploading) fileRef.current?.click(); }}
+                onKeyDown={(e) => {
+                  if (!uploading && (e.key === "Enter" || e.key === " ")) {
+                    e.preventDefault();
+                    fileRef.current?.click();
+                  }
+                }}
+                className={`flex h-28 sm:h-36 flex-col items-center justify-center space-y-1.5 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 text-zinc-400 backdrop-blur-sm transition-all hover:border-brand-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${uploading ? "opacity-60" : ""}`}
+              >
+                <IconPlus className="h-5 w-5" />
+                <span className="font-mono text-[11px]">
+                  {uploading
+                    ? `Enviando ${uploadSent} de ${uploadCount}…`
+                    : "Adicionar imagens"}
+                </span>
+                {uploading && uploadBatchInfo && (
+                  <span className="font-mono text-[10px] text-zinc-500">
+                    lote {uploadBatchInfo.batchIndex}/{uploadBatchInfo.batchCount}
+                  </span>
+                )}
+              </div>
+              {uploading && (
+                <button
+                  type="button"
+                  onClick={() => { uploadCancelledRef.current = true; }}
+                  className="absolute bottom-2 right-2 rounded-md border border-[#ef4444]/30 bg-[#ef4444]/[0.12] px-2 py-0.5 font-mono text-[10px] text-rose-300 transition-colors hover:bg-[#ef4444]/[0.20]"
+                >
+                  Cancelar
+                </button>
+              )}
+            </div>
             {items.length < total && (
               <button
                 type="button"

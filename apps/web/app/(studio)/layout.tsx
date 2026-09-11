@@ -17,6 +17,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   login: "Login",
   jobs: "Execuções",
   treino: "Treino YOLO",
+  playground: "Playground",
   environments: "Orquestradores",
   models: "Modelos",
 };

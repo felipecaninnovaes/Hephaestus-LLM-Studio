@@ -187,7 +187,7 @@ export type JobStatus =
   | "failed"
   | "cancelled";
 
-export type JobKind = "yolo_train" | "autotracker";
+export type JobKind = "yolo_train" | "autotracker" | "yolo_predict";
 
 export interface JobMetrics {
   epoch: number;
@@ -361,6 +361,51 @@ export function autotrackerErrorMessage(code: string): string {
       return "Armazenamento de artefatos indisponível — tente novamente.";
     default:
       return "Falha ao processar AutoTracker.";
+  }
+}
+
+/* ── Playground / Inferência YOLO (Fatia J — ADR-0013 D7) ───── */
+
+export interface PredictJobRequest {
+  modelId: string;
+  datasetId: string;
+  conf?: number;
+}
+
+/** Coordenadas normalizadas 0..1 do predictions.json (snake_case). */
+export interface PredictionBox {
+  class: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  conf: number;
+}
+
+export interface PredictionImage {
+  filename: string;
+  boxes: PredictionBox[];
+}
+
+export interface PredictionsData {
+  engine: string;
+  model: string;
+  conf: number;
+  images: PredictionImage[];
+}
+
+export function predictErrorMessage(code: string): string {
+  switch (code) {
+    case "invalid_request":
+      return "Parâmetros de inferência inválidos.";
+    case "dataset_not_ready":
+      return "O dataset não está pronto — exige category yolo e ≥1 imagem.";
+    case "queue_unavailable":
+      return "Fila de processamento indisponível — tente novamente.";
+    case "not_found":
+      return "Modelo ou dataset não encontrado.";
+    default:
+      return "Falha ao iniciar inferência.";
   }
 }
 

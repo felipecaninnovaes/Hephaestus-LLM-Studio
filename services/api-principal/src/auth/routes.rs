@@ -99,6 +99,7 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
     ),
     ("GET", "/api/telemetry", &[200, 401, 503]),
     ("POST", "/api/jobs/yolo", &[202, 400, 401, 404, 409, 503]),
+    ("POST", "/api/jobs/predict", &[202, 400, 401, 404, 409, 503]),
     (
         "POST",
         "/api/jobs/autotracker",
@@ -317,6 +318,10 @@ pub fn build(state: AppState) -> axum::Router {
         )
         .route("/api/telemetry", get(jobs::handlers::get_telemetry))
         .route("/api/jobs/yolo", post(jobs::handlers::submit_yolo_job))
+        .route(
+            "/api/jobs/predict",
+            post(jobs::handlers::submit_predict_job),
+        )
         .route(
             "/api/jobs/autotracker",
             post(jobs::handlers::submit_autotracker_job),

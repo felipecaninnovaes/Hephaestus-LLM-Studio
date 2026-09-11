@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.11.0
+  version: 0.12.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -1442,6 +1442,53 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/jobs/predict:
+    post:
+      operationId: submitPredictJob
+      tags: [jobs]
+      summary: Submete job de inferência YOLO
+      description: |
+        Cria job de predict YOLO (ADR-0013 D0/D1/D8). Valida modelId (UUID),
+        conf (0..1), verifica readiness do dataset (category=yolo, ≥1 imagem —
+        classes NÃO obrigatórias), materializa package, e envia ao manager com
+        kind='yolo_predict', engine='yolo', mode='predict'.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PredictJobRequest" }
+      responses:
+        "202":
+          description: Job criado e enfileirado.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubmitJobResponse" }
+        "400":
+          description: "Body malformado, campos desconhecidos, modelId não-UUID, conf fora de 0..1 ou engine do modelo ≠ yolo (validado no manager) (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Dataset ou modelId inexistente, ou datasetId não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "Dataset não pronto para predict — category≠yolo ou 0 imagens ativas (`code: dataset_not_ready`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/jobs/autotracker:
     post:
       operationId: submitAutotrackerJob
@@ -2250,6 +2297,31 @@ components:
           enum: [mock]
           default: mock
           description: "Modelo a usar (apenas mock na v1)."
+        conf:
+          type: number
+          minimum: 0.0
+          maximum: 1.0
+          default: 0.65
+          description: "Limiar de confiança (0..1)."
+
+    PredictJobRequest:
+      type: object
+      required: [modelId, datasetId]
+      additionalProperties: false
+      description: |
+        Body de `POST /api/jobs/predict` (ADR-0013 D0/D1/D8). `modelId` (UUID do
+        modelo na tabela `models`) e `datasetId` são obrigatórios; `conf` é OPCIONAL
+        com default 0.65.
+        Wire camelCase; `deny_unknown_fields` garante 400 para chaves desconhecidas.
+      properties:
+        modelId:
+          type: string
+          format: uuid
+          description: "UUID do modelo (tabela `models`). Não-UUID ⇒ 400 `invalid_request`; inexistente ⇒ 404 `not_found` (via manager)."
+        datasetId:
+          type: string
+          format: uuid
+          description: "PK do dataset. Não-UUID ou inexistente ⇒ 404 `not_found`."
         conf:
           type: number
           minimum: 0.0

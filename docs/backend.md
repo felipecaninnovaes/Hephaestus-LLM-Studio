@@ -54,6 +54,7 @@
 ## 4. Jobs, trainers sob demanda e cache
 
 - Tipos: `yolo_train | difusao_train | clip_train | autolabel | autotracker | download_model | playground`.
+- **Emenda Fatia J (ADR-0013):** a inferência YOLO real é implementada como **job na fila** (`kind='yolo_predict'`, `engine='yolo'`, `mode='predict'`), NÃO como o runner quente do §5. O módulo "Playground" da Sidebar ficou habilitado (badge Roadmap removido); `playground`/runners quentes continuam dívida (ADR-0013 D0/D7).
 - Ciclo: `queued → dispatched → preparing(env+dataset) → running → paused? → done|failed|cancelled`, com `POST /api/jobs/:id/{pause,abort}` + `POST /api/jobs/:id/resume`. **Fila central no manager** (posição + motivo `waiting_vram|waiting_slot` visíveis no front); orquestrador só executa o que recebe e reporta `vram_used/total` + heartbeat.
 - **Pause = checkpoint + libera VRAM** (não `docker pause`): `pause` pede `save_checkpoint`, derruba o trainer e mantém `last.ckpt`; `resume` recria do checkpoint. Sem checkpoint do engine, pause é recusado (`409 checkpoint_unsupported`) e só `abort` vale.
 - Orquestrador sobe **um container `trainer-<engine>-<jobid>` por job** a partir de imagens por engine (isola deps: ultralytics vs. diffusers/kohya vs. open_clip). Ao destruir o container, **cache persiste fora**: volumes `models/`, `datasets-cache/`, `outputs/` mapeados no host/remoto.
@@ -147,6 +148,12 @@ jobs:     POST /api/jobs/yolo  → implementado (Fatia 4; ADR-0007 D7 — spec 0
             body `{datasetId, model?, conf?}` → 202 `{jobId,status:"queued",queuePosition?}`
             erros: 400 `invalid_request` (model∉{mock} | conf fora 0..1), 404 `not_found`,
             409 `dataset_not_ready` (category≠yolo, 0 classes, 0 imagens), 503 `queue_unavailable`
+          POST /api/jobs/predict  → implementado (Fatia J; ADR-0013 D8 — spec 0.12.0)
+            body `{modelId, datasetId, conf?}` (conf default 0.65) → 202 `{jobId,status:"queued",queuePosition?}`
+            erros: 400 `invalid_request` (modelId não-UUID, conf fora 0..1, body malformado, engine≠yolo da row de models — via manager),
+            404 `not_found` (datasetId não-UUID/inexistente, modelId inexistente — via manager),
+            409 `dataset_not_ready` (category≠yolo, 0 imagens ativas), 503 `queue_unavailable` (manager fora — compensação do package)
+            Nota R6: handler mapeia `NotFound→404`, `InvalidRequest→400` (diferente do submit_yolo_job que mapeia Err(_)→503)
           POST /api/jobs/:id/autotracker/apply  → implementado (Fatia 5; ADR-0008 D1/D1a — spec 0.8.0)
             body `{overwrite?, imageId?}` → 200 `{applied, skipped, images}`
             erros: 400 `invalid_request` (imageId não-UUID), 404 `not_found`, 409 `job_not_done`,
@@ -369,3 +376,9 @@ runners(id UUID PK, engine TEXT, model TEXT, orchestrator_id UUID FK,
   - **Wire `Model` (camelCase)**: `{id,name,engine,model?,source,bytes,md5,url?,jobId?,createdAt}`. `model`/`jobId`/`url` nullable (upload/download não têm jobId nem variante; sem `S3_PUBLIC_ENDPOINT_URL` → `url:null`). `ModelWeight` → `Model` (aditivo — campos existentes preservados).
   - **Spec OpenAPI**: 0.10.0 → **0.11.0** (`packages/contracts/openapi.yaml`).
   - **Erros novos na enum**: `model_download_failed`, `model_download_disabled` (ADR-0012 D6/E1).
+- Nota Fatia J (ADR-0013, spec 0.12.0):
+  - **`POST /api/jobs/predict`**: body `{modelId: uuid, datasetId: uuid, conf?: number 0..1 default 0.65}` (camelCase, `deny_unknown_fields`). Validação pura: modelId não-UUID → 400; conf fora de 0..1 → 400. Readiness: dataset category=yolo + ≥1 imagem ativa (classes NÃO obrigatórias — divergência do autotracker). Build package via `build_package()` compartilhado (D2). Manager body: `kind='yolo_predict'`, `engine='yolo'`, `mode='predict'`, `model='predict'` placeholder, `weights_id=modelId`, `vram_min_gb=null`. **Mapeamento R6**: `NotFound→404`, `InvalidRequest→400`, `Unavailable→503` + compensação do package em TODOS os erros (diferente do submit_yolo_job que mapeia `Err(_)→503`).
+  - **Manager**: `dispatch_body` ganha `"mode"` (já trazia do SELECT — L1842); `create_job` com `model=="predict"` + variante NOT NULL na row de `models` → `jobs.model=variante` (display honesto no `/jobs`).
+  - **Orquestrador**: `DispatchRequest.mode: String` (`#[serde(default)]` — tolerância forward-compat); matriz `(engine, mode)` → subcomando/artefatos: `(yolo,predict)` → subcomando `predict` + `[predictions.json predictions]` (sem metrics.jsonl — progresso binário honesto).
+  - **Engine**: subcomando `predict` no trainer-yolo (`predict.py`); mock determinístico reusando geradores do autotrack; real `YOLO(weights_path).predict(source=images/, conf, imgsz=640, device=0)` → `predictions.json` com `engine: "yolo"`.
+  - **Spec OpenAPI**: 0.11.0 → **0.12.0** (`packages/contracts/openapi.yaml`). Sem erro novo na enum (reuso de `invalid_request`/`not_found`/`dataset_not_ready`/`queue_unavailable`). Sem migration (`jobs.mode='predict'` nasce na coluna TEXT existente).

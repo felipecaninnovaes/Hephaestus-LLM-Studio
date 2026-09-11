@@ -240,8 +240,7 @@ export default function Sidebar({
           label: "Playground",
           href: "/playground",
           icon: IconPlay,
-          badge: "Roadmap",
-          isAvailable: false,
+          isAvailable: true,
         },
         {
           id: "models",

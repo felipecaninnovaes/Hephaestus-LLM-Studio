@@ -60,7 +60,7 @@ A especificação normativa completa e canônica vive em **`docs/DESIGN.md`**. P
 - **Navegação estruturada em 4 seções temáticas:**
   1. *Estúdio & Dados:* **Painel** (`/dashboard`, ativo como home, ícone `IconHome`), **Datasets** (`/datasets`, ativo, ícone `IconDatabase`).
   2. *Treinamento & Execução:* **Treino YOLO** (`/treino`, rota nova F6.3 — setup de treino YOLO central), **Execuções** (`/jobs`, renomeada F6.3 — fila de trabalho + histórico agrupado ativos primeiro + painel de detalhe; badge numérico de `telemetry.jobsActive` em tempo real).
-     3. *Forja & Engenharia:* **Difusão LoRA** (`/difusao`, badge "Roadmap", desabilitado honesto), **OpenCLIP** (`/openclip`, badge "Roadmap", desabilitado), **Playground** (`/playground`, badge "Roadmap", desabilitado), **Modelos & Pesos** (`/models`, ativo — badge Roadmap removido, Fatia I; ADR-0012 D7).
+     3. *Forja & Engenharia:* **Difusão LoRA** (`/difusao`, badge "Roadmap", desabilitado honesto), **OpenCLIP** (`/openclip`, badge "Roadmap", desabilitado), **Playground** (`/playground`, ativo — badge Roadmap removido, Fatia J; ADR-0013 D7), **Modelos & Pesos** (`/models`, ativo — badge Roadmap removido, Fatia I; ADR-0012 D7).
   4. *Infraestrutura:* **Orquestradores** (`/environments`, ativo — badge Roadmap removido, chip multi-nó "N orquestradores"), **Storage S3** (`/storage`, badge "Roadmap", desabilitado).
   5. *Sistema:* **Registro de Logs** (`/events`, badge "Roadmap", desabilitado), **Configurações** (`/settings`, badge "Roadmap", desabilitado).
 - **Destaque de rota ativa:** derivado dinamicamente via `usePathname()`, aplicando borda violeta `border-brand-500/30 bg-zinc-900/90` com barra lateral indicadora `bg-brand-500`.
@@ -257,6 +257,12 @@ interface BBox { id: number; classId: number; label: string; x: number; y: numbe
   - **Página `/models`** (Fatia I.5; ADR-0012 D7): rota `(studio)/models/page.tsx` com lista GlassCards (nome mono, chip engine, badge origem Treino/Upload/Download, bytes formatados, data, botão Baixar que usa `url` presigned; `url:null` → desabilitado com tooltip), modais Upload e Baixar por URL, empty state ("Nenhum modelo ainda — treine um job YOLO ou importe pesos."), erros mapeados em pt-BR por `code`. Sidebar "Modelos & Pesos" habilitado (badge Roadmap removido, `isAvailable: true`).
   - **Dropdown de pesos em `/treino`** (Fatia I.6; ADR-0012 D7): `ForjaYoloSetup.tsx` ganha seletor "Pesos iniciais" (`listModels()` filtrado por `engine==='yolo'`, rótulo `name · source`; selecionado → envia `weights: id` no `startYoloJob`). TrainYoloModal da galeria INTOCADO.
   - `POST /api/jobs/yolo` (`lib/jobs.ts:startYoloJob`): body `{datasetId,model,epochs,batch,imgsz,lr0,optimizer,augment,weights?}` — `weights?: string` (UUID de `models`, opcional). Erros: 400 `invalid_request` (weights não-UUID), 404 `not_found` (weights inexistente).
+- Playground — IMPLEMENTADO (Fatia J; ADR-0013):
+  - `POST /api/jobs/predict` (`lib/playground.ts:startPredictJob`): body `{modelId, datasetId, conf?}` (conf default 0.65). 202 `{jobId,status:"queued",queuePosition?}`. Erros: 400 `invalid_request`, 404 `not_found`, 409 `dataset_not_ready`, 503 `queue_unavailable`. UI: toast 202 + link "Acompanhar em Execuções" (`/jobs?job=<id>`).
+  - **Página `/playground`** (Fatia J.5; ADR-0013 D7): rota `(studio)/playground/page.tsx` — workspace 2 colunas (DESIGN.md). Coluna de controle (320–384px): seletor Modelo (`listModels()` filtrado por `engine==='yolo'`, rótulo `name · source · variante`), seletor Dataset (`canPredict` = category yolo + imagesCount>0 — classes NÃO obrigatórias), slider conf 0.3–0.95 default 0.65, CTA "Executar Inferência". Coluna de resultado: lista jobs predict (filtro `mode==='predict'` no `GET /api/jobs`); job done → overlay de boxes sobre imagens (match por filename entre predictions.json baixado via proxy de artefato e lista de imagens — `GET /api/datasets/:id/images`; cores por `cls.color` do dataset, fallback zinc #71717a); stats imagens/com detecção/boxes/skips; download predictions.json (proxy `.../artifacts/:id/data`); job failed visível com CTA /jobs; empty states honestos. Card de job sem botão aninhado.
+  - `lib/playground.ts` (`startPredictJob`, `getPredictions`) + `types/studio.ts` (aditivo: `PredictionsData`, `predictErrorMessage`). Erros mapeados em pt-BR por `code` (padrão da casa).
+  - Sidebar "Playground" habilitado (`isAvailable: true`, badge Roadmap removido, Fatia J; ADR-0013 D7).
+  - **Nota:** `POST /runners/{engine}/up`, `POST /runners/:id/{kill,infer}`, `GET /runners` continuam dívida (runners quentes — ADR-0013 D0). O v1 usa job assíncrono na fila + página `/playground` com overlay.
 - Preview/sandbox: `POST /api/preview/{autolabel|autotracker|generate|search}` (efêmero, sem fila).
 - Settings: chaves `hfToken, civitaiKey, openaiKey, anthropicKey, vllmEndpoint` no wire (camelCase global, ADR-0002 D1; colunas `settings` seguem snake_case) — rota ainda **não implementada** (mascaradas no GET quando chegar).
 - Classes e lixeira — IMPLEMENTADO (Fatia 3g, spec 0.4.0, ADR-0005): `putClasses(datasetId, classes)` (`lib/classes.ts` → `PUT /:id/classes`, reconciliação por id, 409 `classes_in_use` mantém o modal aberto); `softDeleteImage` (`DELETE /:id/images/:imageId` → 204, sem sweep) / `restoreImage` (`POST .../restore` → 204 sem conflito | 200 `{filename}` com rename `_restaurado`) / `purgeTrash` (`DELETE /:id/trash` → 204) (`lib/images.ts`; listagem da lixeira via `listImages(id, {deleted:true})`); `Toast.action` (`{label, onClick}`, toast com ação vive 6s — usado pelo Desfazer).
@@ -277,6 +283,7 @@ apps/web/
 │   │   │           └── page.tsx          # Editor visual de BBox YOLO
 │   │   ├── treino/page.tsx               # Setup de treino YOLO (ForjaYoloSetup; F6.3)
 │   │   ├── jobs/page.tsx                 # Execuções — fila de trabalho + histórico + detalhe (F6.3)
+│   │   ├── playground/page.tsx           # Playground — inferência YOLO com overlay de boxes (Fatia J)
 │   │   └── layout.tsx                    # Shell global (Sidebar + Header + ActionCenter + ToastHost)
 │   ├── login/page.tsx                    # Autenticação single-user (AuthAmbient)
 │   ├── globals.css                       # Tokens @theme, classes glass e fontes
@@ -315,6 +322,7 @@ apps/web/
 │   ├── dataset-inspector.ts              # Pré-inspeção inteligente de pastas/ZIPs
 │   ├── datasets.ts, events.ts, format.ts, images.ts, jobs.ts,
 │   ├── monitoring.ts                     # Rotas de monitoramento (orchestrators/models/storage/health; F6.1)
+│   ├── playground.ts                     # Rotas do Playground (startPredictJob, getPredictions; Fatia J)
 │   ├── search.ts
 └── types/
     └── studio.ts                         # Tipagens TypeScript de contratos e dados
@@ -322,7 +330,7 @@ apps/web/
 
 ## 12. Backlog front-end (evolução contínua)
 
-- [x] Rotas reais implementadas (`/dashboard`, `/datasets`, `/datasets/[id]`, `/annotate/[imageId]`, `/jobs` (Execuções), `/treino` (Treino YOLO), `/models` (Modelos & Pesos — Fatia I), `/login`).
+- [x] Rotas reais implementadas (`/dashboard`, `/datasets`, `/datasets/[id]`, `/annotate/[imageId]`, `/jobs` (Execuções), `/treino` (Treino YOLO), `/models` (Modelos & Pesos — Fatia I), `/playground` (Playground — Fatia J), `/login`).
 - [x] Redirecionamento da raiz (`/` → `/dashboard`).
 - [x] Centro de Atividades global (`ActionCenter.tsx`) com gaveta retrátil e monitoramento em tempo real.
 - [x] Ingestão unificada por Drag & Drop na tela de datasets com pré-inspeção imediata de `.zip`/pastas (`dataset-inspector.ts`).

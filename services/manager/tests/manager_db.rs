@@ -3293,3 +3293,304 @@ fn vram_table_parse_ok() {
     // Engine desconhecido → None (permissivo).
     assert_eq!(vt.resolve_required_gb("autotracker", "x", "train"), None);
 }
+
+// ===========================================================================
+// J.2 — Predict: mode no dispatch_body + jobs.model = variante
+// ===========================================================================
+
+/// Helper para criar um request de predict.
+fn predict_job_request(dataset_id: uuid::Uuid) -> CreateJobRequest {
+    CreateJobRequest {
+        kind: "yolo_predict".into(),
+        engine: "yolo".into(),
+        model: "predict".into(),
+        mode: "predict".into(),
+        dataset_id: Some(dataset_id.to_string()),
+        dataset_version_id: Some(uuid::Uuid::new_v4().to_string()),
+        package_ref: Some(PackageRef {
+            version_id: uuid::Uuid::new_v4().to_string(),
+            key: "packages/test/predict-dataset.zip".into(),
+            md5_zip: "d41d8cd98f00b204e9800998ecf8427e".into(),
+            bytes: 2048,
+        }),
+        config_yaml: Some("job_id: predict\ngine: yolo".into()),
+        params: Some(serde_json::json!({
+            "package_ref": {
+                "version_id": uuid::Uuid::new_v4().to_string(),
+                "key": "packages/test/predict-dataset.zip",
+                "md5_zip": "d41d8cd98f00b204e9800998ecf8427e",
+                "bytes": 2048
+            },
+            "conf": 0.65
+        })),
+        vram_min_gb: None,
+        weights_id: None,
+    }
+}
+
+/// Insere um modelo yolo com variante e retorna o ID.
+async fn insert_test_model(pool: &PgPool, variant: Option<&str>) -> uuid::Uuid {
+    let model_id = uuid::Uuid::new_v4();
+    let req = CreateModelRequest {
+        id: model_id,
+        engine: "yolo".into(),
+        name: "best.pt".into(),
+        model: variant.map(|v| v.to_string()),
+        s3_key: format!("models/yolo/predict/{}/best.pt", model_id),
+        source: "upload".into(),
+        url: None,
+        hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
+        bytes: 4096,
+        job_id: None,
+    };
+    manager::create_model(pool, req)
+        .await
+        .expect("insert test model");
+    model_id
+}
+
+/// create_job predict com weights_id válido e variante → jobs.model = variante.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn predict_com_variante_grava_modelo_variante() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let model_id = insert_test_model(&p, Some("yolo11m")).await;
+
+    let mut req = predict_job_request(ds_id);
+    req.weights_id = Some(model_id);
+
+    let resp = manager::create_job(&p, req)
+        .await
+        .expect("create predict job");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    // Verifica jobs.model = variante ("yolo11m", não "predict").
+    let job = manager::get_job(&p, job_id).await.expect("get predict job");
+    assert_eq!(
+        job.model, "yolo11m",
+        "jobs.model deve ser a variante do modelo"
+    );
+    assert_eq!(job.mode, "predict");
+    assert_eq!(job.kind, "yolo_predict");
+    assert_eq!(job.engine, "yolo");
+}
+
+/// create_job predict com weights_id sem variante → jobs.model = "predict" literal.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn predict_sem_variante_grava_predict_literal() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let model_id = insert_test_model(&p, None).await;
+
+    let mut req = predict_job_request(ds_id);
+    req.weights_id = Some(model_id);
+
+    let resp = manager::create_job(&p, req)
+        .await
+        .expect("create predict job no variant");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    // Sem variante → jobs.model = "predict" (literal).
+    let job = manager::get_job(&p, job_id).await.expect("get predict job");
+    assert_eq!(
+        job.model, "predict",
+        "sem variante, jobs.model deve ser 'predict'"
+    );
+}
+
+/// create_job predict com weights_id válido → params.weights_ref gravado.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn predict_com_weights_grava_params_weights_ref() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let model_id = insert_test_model(&p, Some("yolo11n")).await;
+
+    let mut req = predict_job_request(ds_id);
+    req.weights_id = Some(model_id);
+
+    let resp = manager::create_job(&p, req)
+        .await
+        .expect("create predict job");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    // Verifica params.weights_ref gravado.
+    let row: (serde_json::Value,) = sqlx::query_as("SELECT params FROM jobs WHERE id = $1")
+        .bind(job_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    let wr = row.0.get("weights_ref").expect("weights_ref presente");
+    assert_eq!(
+        wr["s3_key"],
+        format!("models/yolo/predict/{}/best.pt", model_id)
+    );
+    assert_eq!(wr["md5"], "d41d8cd98f00b204e9800998ecf8427e");
+
+    // conf preservado.
+    assert_eq!(row.0["conf"], 0.65);
+}
+
+/// create_job predict com weights_id inexistente → 404.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn predict_weights_inexistente_404() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let fake_id = uuid::Uuid::new_v4();
+    let mut req = predict_job_request(ds_id);
+    req.weights_id = Some(fake_id);
+
+    let result = manager::create_job(&p, req).await;
+    assert!(matches!(result, Err(ManagerError::NotFound)));
+}
+
+/// create_job predict com weights_id válido mas engine não-yolo → 400.
+/// NOTA: A tabela `models` tem CHECK `engine IN ('yolo')` — não é possível
+/// inserir modelo não-yolo. O check em `create_job` é defensivo (D5/ADEQUADO
+/// para o caso de o schema mudar no futuro). Testamos o caminho feliz com
+/// engine=yolo para provar que a validação NÃO rejeita.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn predict_weights_engine_yolo_aceita() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    // Modelo yolo válido — create_job não deve rejeitar.
+    let model_id = insert_test_model(&p, Some("yolo11n")).await;
+
+    let mut req = predict_job_request(ds_id);
+    req.weights_id = Some(model_id);
+
+    let result = manager::create_job(&p, req).await;
+    assert!(
+        result.is_ok(),
+        "predict com weights engine=yolo deve aceitar"
+    );
+}
+
+/// Dispatch de job predict → dispatch_body contém mode:"predict" E weights_ref.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn predict_dispatch_body_contem_mode_e_weights_ref() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+
+    let model_id = insert_test_model(&p, Some("yolo11m")).await;
+
+    let mut req = predict_job_request(ds_id);
+    req.weights_id = Some(model_id);
+
+    let _resp = manager::create_job(&p, req)
+        .await
+        .expect("create predict job");
+
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+
+    // Verifica dispatch_body.
+    let calls = orch.calls();
+    assert!(!calls.is_empty(), "dispatch should have been called");
+    let (_, body) = &calls[0];
+
+    // mode = "predict".
+    assert_eq!(
+        body.get("mode").and_then(|v| v.as_str()),
+        Some("predict"),
+        "dispatch_body deve conter mode:'predict'"
+    );
+
+    // weights_ref presente.
+    let wr = body
+        .get("weights_ref")
+        .expect("dispatch_body deve conter weights_ref");
+    assert_eq!(
+        wr["s3_key"],
+        format!("models/yolo/predict/{}/best.pt", model_id)
+    );
+    assert_eq!(wr["md5"], "d41d8cd98f00b204e9800998ecf8427e");
+
+    // engine = yolo.
+    assert_eq!(body.get("engine").and_then(|v| v.as_str()), Some("yolo"));
+}
+
+/// Dispatch de job train → dispatch_body também contém mode (regressão).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn train_dispatch_body_contem_mode() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+
+    let _resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create train job");
+
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+
+    let calls = orch.calls();
+    assert!(!calls.is_empty());
+    let (_, body) = &calls[0];
+
+    // mode = "train".
+    assert_eq!(
+        body.get("mode").and_then(|v| v.as_str()),
+        Some("train"),
+        "dispatch_body de job train deve conter mode:'train'"
+    );
+}
+
+/// Fine-tune (model != "predict") NÃO substitui variante — preserva req.model.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn fine_tune_nao_substitui_variante() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let model_id = insert_test_model(&p, Some("yolo11m")).await;
+
+    let mut req = test_job_request(ds_id);
+    req.weights_id = Some(model_id);
+    // model = "yolo11m" (fine-tune — NÃO é o literal "predict").
+
+    let resp = manager::create_job(&p, req)
+        .await
+        .expect("create fine-tune job");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    // jobs.model = "yolo11m" (req.model preservado, não substituído).
+    let job = manager::get_job(&p, job_id)
+        .await
+        .expect("get fine-tune job");
+    assert_eq!(job.model, "yolo11m", "fine-tune preserva model do request");
+}

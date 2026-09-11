@@ -1,4 +1,4 @@
-"""trainer-yolo — motor de treino YOLO (mock/real).
+"""trainer-yolo — motor de treino/predict YOLO (mock/real).
 
 Entrypoint para CLI e health check. Delega para trainer_yolo.train.
 """

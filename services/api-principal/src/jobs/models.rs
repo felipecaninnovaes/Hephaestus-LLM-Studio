@@ -556,7 +556,10 @@ pub fn validate_autolabel_request(req: AutolabelJobRequest) -> Result<AutolabelJ
 
 pub fn generate_autolabel_config_yaml(job_id: &str, req: &AutolabelJobRequest) -> String {
     let prompt_line = match &req.prompt {
-        Some(p) => format!("  prompt: \"{p}\"\n"),
+        Some(p) => format!(
+            "  prompt: {}\n",
+            serde_json::to_string(p).unwrap_or_else(|_| "\"\"".into())
+        ),
         None => String::new(),
     };
     format!(

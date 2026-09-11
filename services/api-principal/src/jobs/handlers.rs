@@ -1683,6 +1683,7 @@ pub async fn apply_autolabel_captions(
     // 7. Processa itens com merge dirigido por origem (ADR-0016 D1).
     let mut total_applied: i64 = 0;
     let mut total_skipped: i64 = 0;
+    let mut applied_images: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
 
     for item in items {
         let Some(&image_id) = filename_to_id.get(&item.filename) else {
@@ -1709,25 +1710,31 @@ pub async fn apply_autolabel_captions(
         // UPSERT na tabela captions
         let query_res = sqlx::query(
             "INSERT INTO captions (image_id, text, origin, model, updated_at) \
-             VALUES ($1, $2, 'autolabel', 'mock', now()) \
+             VALUES ($1, $2, 'autolabel', $3, now()) \
              ON CONFLICT (image_id) DO UPDATE SET text = EXCLUDED.text, origin = EXCLUDED.origin, model = EXCLUDED.model, updated_at = now()",
         )
         .bind(image_id)
         .bind(trimmed_caption)
+        .bind(&job.model)
         .execute(&state.pool)
         .await;
 
-        if query_res.is_ok() {
-            total_applied += 1;
-        } else {
-            total_skipped += 1;
+        match query_res {
+            Ok(_) => {
+                total_applied += 1;
+                applied_images.insert(image_id);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, %image_id, "falha ao executar upsert de caption no autolabel apply");
+                total_skipped += 1;
+            }
         }
     }
 
     let resp = models::AutolabelApplyResponse {
         applied: total_applied,
         skipped: total_skipped,
-        images: total_applied,
+        images: applied_images.len() as i64,
     };
     (StatusCode::OK, Json(resp)).into_response()
 }

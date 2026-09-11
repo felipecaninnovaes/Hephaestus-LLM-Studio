@@ -59,6 +59,9 @@ def load_and_validate_autolabel_config(config_path: str | Path) -> dict:
 
 def _read_dataset_images(dataset_path: Path) -> list[str]:
     """Descobre os arquivos de imagem dentro do pacote do dataset."""
+    if not dataset_path.is_dir():
+        _die(f"Dataset path is not a directory: {dataset_path}")
+
     filenames: set[str] = set()
 
     # 1. Checa diretório images/

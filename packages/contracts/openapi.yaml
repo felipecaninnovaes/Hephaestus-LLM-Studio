@@ -2545,6 +2545,10 @@ components:
         true = sobrescreve inclusive anotações de origem manual e import.
         Wire camelCase; `deny_unknown_fields` garante 400 para chaves desconhecidas.
       properties:
+        datasetId:
+          type: [string, "null"]
+          format: uuid
+          description: "ID do dataset para conferência de consistência (opcional)."
         overwrite:
           type: boolean
           default: false

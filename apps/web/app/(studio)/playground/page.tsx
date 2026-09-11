@@ -22,7 +22,6 @@ import type {
 import { predictErrorMessage } from "@/types/studio";
 import { ApiError } from "@/lib/api";
 import { listImages } from "@/lib/images";
-import { formatBytes } from "@/lib/format";
 
 /* ── Cor da box no overlay: vem do dataset.classes, fallback neutro ── */
 function classColor(

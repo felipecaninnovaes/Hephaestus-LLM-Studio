@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Ultralytics 8.3.x — última versão estável da linha 8.3 (8.3.253, Sep 2026).
 # Pin exato para reprodutibilidade; ADR-0010 D5.
-RUN pip install --no-cache-dir "ultralytics==8.3.253"
+RUN pip install --no-cache-dir "ultralytics==8.3.253" "openai-clip"
 
 WORKDIR /app
 

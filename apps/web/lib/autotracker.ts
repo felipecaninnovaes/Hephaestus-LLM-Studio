@@ -6,6 +6,7 @@ export function startAutotrackerJob(params: {
   datasetId: string;
   model?: string;
   conf?: number;
+  modelId?: string;
 }): Promise<{ jobId: string; status: string; queuePosition?: number }> {
   return apiFetch("/api/jobs/autotracker", {
     method: "POST",

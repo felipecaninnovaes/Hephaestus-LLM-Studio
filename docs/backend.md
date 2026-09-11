@@ -61,6 +61,7 @@
 - **Imagens (decisão): uma por engine** (yolo, difusão, clip, autolabel/tracker, runner), **base no estável mais recente testado** (não pinar no 12.4/2.4.1 do protótipo; registrar a versão validada em `engines.yaml`), **build local no compose** (sem registry externo por enquanto; tags `hephaestus/trainer-<engine>:local`).
   - **Emenda G.7 (ADR-0010 D5):** para treino real @gpu, existe **`hephaestus/trainer-yolo:gpu`** — imagem separada (`engines/trainer-yolo/Dockerfile.gpu`) com base PyTorch 2.6.0+CUDA 12.4+cuDNN 9, ultralytics==8.3.253 pinado, `ENV ENGINE_MOCK=0` baked, e peso base `yolo11n.pt` baixado no build (~5MB). Construída no TrueNAS via `docker compose -p gpu --profile build build trainer-gpu`. A imagem `:local` continua mock stdlib pura e não é afetada.
   - **Emenda — AutoTracker v1 (ADR-0008 D2/D6):** o autotracker v1 (mock) reutiliza a imagem `trainer-yolo:local` via subcomando `autotrack` (`python -m trainer_yolo autotrack --config <config.yaml> --output <output_path>`), sem modelo real. Runner/imagem próprios (florence-2/qwen-vl, ADR-0008 D6) são fatia futura.
+  - **Fatia 9 — AutoTracker real (ADR-0014 D0/D3):** o autotracker real usa o **mesmo** subcomando `autotrack` com modelo open-set `yolov8x-worldv2.pt` do ultralytics (~1.3 GB); `model.set_classes(classes do dataset)` mapeia 1:1 (prompts = nomes das classes); `boxes.json` MESMO shape do mock (`seed: 0` sentinela, sem `metrics.jsonl`). Não ganhou runner/imagem próprios — usa a mesma `trainer-yolo:gpu`. florence-2/qwen continuam alternativas futuras (imagem própria).
 - Paralelismo por VRAM, não fixo: com folga (ex. RunPod 80 GB) roda 2+ trainers e enfileira o resto (FIFO + cancel manual). Fila visível no front com posição e motivo (`waiting_vram`).
 - Entrada do trainer: zip do §3 + `config.yaml` gerado pelo principal (hiperparams do front) + mounts de modelos solicitados.
 - **trainer-clip ganhou modo `serve` (Fatia 3f; `engines/trainer-clip/src/trainer_clip/serve.py`, extras `[serve]` no pyproject: `open_clip_torch/torch/pillow`):** mock via `ENGINE_MOCK=1` (vetores hash determinísticos, stdlib puro, sem torch — default do compose); modo real = OpenCLIP `ViT-B-32` (`laion2b_s34b_b79k`, lazy, GPU se disponível) só `@gpu` manual fora do compose. (Nota: não existe seção de engines neste arquivo — o modo serve vive aqui no §4.)
@@ -142,12 +143,16 @@ datasets: GET/POST /api/datasets, GET/DELETE /api/datasets/:id  → implementado
 models:   GET /api/models (pesos da tabela canônica `models`, ordered by created_at DESC)  → implementado (Fatia I; ADR-0012 D2 — fonte trocada de derived para tabela)
           POST /api/models/upload  → implementado (Fatia I; ADR-0012 D3 — multipart file+engine+name?, magic PK\x03\x04, teto 2 GiB, md5)
           POST /api/models/download  → implementado (Fatia I; ADR-0012 D4/E1 — server-side no principal, allow-list fail-closed MODEL_DOWNLOAD_ALLOWED_HOSTS, 502 model_download_failed)
+          Nota Fatia 9: upload/download aceitam `engine='world'` (migration 0008 — ADR-0014 D1; validação `.pt`+magic PK idêntica ao yolo)
 preview:  POST /api/preview/{autolabel,autotracker,generate,search} (job efêmero ou runner quente, sem fila de treino)
 jobs:     POST /api/jobs/yolo  → implementado (Fatia 4; ADR-0007 D7 — spec 0.7.0)
-          POST /api/jobs/autotracker  → implementado (Fatia 5; ADR-0008 D0/D3 — spec 0.8.0)
-            body `{datasetId, model?, conf?}` → 202 `{jobId,status:"queued",queuePosition?}`
-            erros: 400 `invalid_request` (model∉{mock} | conf fora 0..1), 404 `not_found`,
-            409 `dataset_not_ready` (category≠yolo, 0 classes, 0 imagens), 503 `queue_unavailable`
+           POST /api/jobs/autotracker  → implementado (Fatia 5/9; ADR-0008 D0/D3, ADR-0014 — spec 0.13.0)
+             body `{datasetId, model?, conf?, modelId?}` → 202 `{jobId,status:"queued",queuePosition?}`
+             `modelId?`: presente → job REAL (pesos world); ausente → mock (comportamento atual)
+             erros: 400 `invalid_request` (model∉{mock} | conf fora 0..1 | modelId não-UUID |
+             row engine≠world — via manager), 404 `not_found` (dataset não-UUID/inexistente |
+             modelId inexistente — via manager), 409 `dataset_not_ready` (category≠yolo, 0 classes, 0 imagens),
+             503 `queue_unavailable`; compensação do package em TODOS os erros
           POST /api/jobs/predict  → implementado (Fatia J; ADR-0013 D8 — spec 0.12.0)
             body `{modelId, datasetId, conf?}` (conf default 0.65) → 202 `{jobId,status:"queued",queuePosition?}`
             erros: 400 `invalid_request` (modelId não-UUID, conf fora 0..1, body malformado, engine≠yolo da row de models — via manager),
@@ -303,7 +308,7 @@ orchestrators(id UUID PK, name TEXT, endpoint TEXT UNIQUE, kind TEXT,     -- loc
   -- Fatia H (ADR-0011): heartbeat identificado (`endpoint` no `HeartbeatBody`) grava `gpus`/`vram_total_gb` dinamicamente
   -- (round(MiB/1024), GiB). Watchdog: `online → degraded` (15s) → `offline` (60s); re-queue dos jobs do nó morto.
   -- Adopt por token (pairing code single-use, upsert); revoke = tombstone `revoked` (não DELETE).
-models(id UUID PK, engine TEXT NOT NULL CHECK (engine IN ('yolo')),
+models(id UUID PK, engine TEXT NOT NULL CHECK (engine IN ('yolo','world')),
   name TEXT NOT NULL CHECK (char_length(name) BETWEEN 1 AND 255),
   model TEXT,                                              -- variante conhecida (treino); NULL p/ upload/download
   s3_key TEXT NOT NULL UNIQUE,                             -- 'models/<engine>/<id>/<name>' | 'artifacts/<job_id>/<path>'
@@ -318,6 +323,8 @@ models(id UUID PK, engine TEXT NOT NULL CHECK (engine IN ('yolo')),
   -- Escrita: (a) hook no `report_job` do manager — job `done` com artefato `kind='model'` e `path` contendo `best` → INSERT ON CONFLICT (s3_key) DO NOTHING;
   --          (b) `POST /internal/models` — cria row a partir de upload/download do principal (compensação delete se INSERT falhar).
   -- Backfill na migration: INSERT..SELECT dos artefatos `kind='model' AND path LIKE '%best%'` de jobs `done` (idempotente via ON CONFLICT).
+  -- CHECK engine ampliado para `('yolo','world')` na migration `0008_world_models.sql` (ADR-0014 D1):
+  --   engine='world' = pesos open-set (yolov8x-worldv2.pt — autotracker real); fine-tune yolo continua recusando world (400 no manager).
   -- Índices: `models(engine)`, `models(created_at DESC)`.
   -- NOTA: checkpoint de treino vive em `artifacts/<job_id>/` (morre com o job via CASCADE; FK ON DELETE SET NULL no models.job_id preserva o modelo).
   --       Sem rota DELETE de job hoje; sem rota DELETE de modelo no v1 (gestão de modelos = dívida).

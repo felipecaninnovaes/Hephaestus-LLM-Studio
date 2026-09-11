@@ -263,6 +263,7 @@ export interface AutotrackerJobRequest {
   datasetId: string;
   model?: string;
   conf?: number;
+  modelId?: string;
 }
 
 export interface AutotrackerApplyResponse {

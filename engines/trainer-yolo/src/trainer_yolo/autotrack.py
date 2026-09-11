@@ -1,19 +1,22 @@
-"""Modo autotrack mock determinístico (ENGINE_MOCK=1) do trainer-yolo.
+"""Modo autotrack mock determinístico (ENGINE_MOCK=1) e real (ultralytics world) do trainer-yolo.
 
 ADR-0008 D2: gera bounding boxes fake para cada imagem do dataset, com
 coordenadas determinísticas a partir de (seed, filename, class).
+ADR-0014 D3: modo real — YOLO(weights_path) + set_classes(classes do dataset)
+→ boxes.json no mesmo shape (seed: 0 sentinela, sem metrics.jsonl).
 
 Entrypoint: python -m trainer_yolo autotrack --config <config.yaml> --output <dir>
 
 Saída:
   - boxes.json  (formato D1: engine/model/seed/conf + images[].boxes[])
-  - metrics.jsonl (1 linha, 6 keys — compatível com parse_metrics_line do orquestrador)
+  - metrics.jsonl (mock apenas — 1 linha, 6 keys; real não emite)
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import struct
 from pathlib import Path
 
@@ -203,6 +206,25 @@ def _generate_boxes_for_image(
 
 
 # ---------------------------------------------------------------------------
+# xywhn → top-left conversion (reused by real autotrack and predict)
+# ---------------------------------------------------------------------------
+
+def _xywhn_to_topleft_clamped(cx: float, cy: float, w: float, h: float) -> tuple[float, float, float, float]:
+    """Convert normalized center-based (cx, cy, w, h) to top-left (x, y, w, h) with clamp 0..1."""
+    x = cx - w / 2
+    y = cy - h / 2
+    # Clamp to [0, 1]
+    x = max(0.0, min(1.0, x))
+    y = max(0.0, min(1.0, y))
+    w = max(0.0, min(1.0, w))
+    h = max(0.0, min(1.0, h))
+    # Right/bottom edge clamp — prevents box from extending beyond 1.0
+    x = min(x, 1.0 - w)
+    y = min(y, 1.0 - h)
+    return x, y, w, h
+
+
+# ---------------------------------------------------------------------------
 # Mock autotrack
 # ---------------------------------------------------------------------------
 
@@ -260,6 +282,86 @@ def _mock_autotrack(cfg: dict, output: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Real autotrack (ultralytics world, lazy import)
+# ---------------------------------------------------------------------------
+
+def _real_autotrack(cfg: dict, output: Path) -> None:
+    """Real autotrack via ultralytics open-vocab world model (requires GPU + extras [train])."""
+    # Validate config before lazy import (fail fast)
+    at = cfg["autotrack"]
+    conf = at["conf"]
+    weights_path = cfg.get("weights_path")
+    if not weights_path:
+        _die("weights_path required for real autotrack (ENGINE_MOCK=0)")
+
+    dataset_path = Path(cfg["dataset_path"])
+    if not dataset_path.is_dir():
+        _die(f"dataset_path does not exist or is not a directory: {dataset_path}")
+
+    class_names, _ = _read_dataset(dataset_path)
+
+    try:
+        from ultralytics import YOLO  # lazy — torch only on this path
+    except ImportError:
+        _die(
+            "ultralytics not installed. Install with: pip install -e '.[train]'"
+        )
+
+    output.mkdir(parents=True, exist_ok=True)
+
+    # Load world model and restrict output to dataset classes
+    model = YOLO(weights_path)
+    model.set_classes(class_names)
+
+    # Resolve source: prefer <dataset_path>/images if it exists (YOLO package structure)
+    images_dir = dataset_path / "images"
+    if images_dir.is_dir() and any(images_dir.iterdir()):
+        source = str(images_dir)
+    else:
+        source = str(dataset_path)
+
+    results = model.predict(source=source, conf=conf, imgsz=640, device=0)
+
+    # Build boxes from results
+    images_data = []
+    for r in results:
+        fname = Path(r.path).name
+        boxes_out = []
+        if r.boxes is not None and len(r.boxes) > 0:
+            xywhn = r.boxes.xywhn  # shape (N, 4), normalized center-based
+            clss = r.boxes.cls
+            confs = r.boxes.conf
+            for i in range(len(xywhn)):
+                cx, cy, bw, bh = xywhn[i].tolist()
+                x, y, w, h = _xywhn_to_topleft_clamped(cx, cy, bw, bh)
+                class_name = model.names[int(clss[i])]
+                box_conf = float(confs[i])
+                boxes_out.append({
+                    "class": class_name,
+                    "x": round(x, 4),
+                    "y": round(y, 4),
+                    "w": round(w, 4),
+                    "h": round(h, 4),
+                    "conf": round(box_conf, 4),
+                })
+        images_data.append({"filename": fname, "boxes": boxes_out})
+
+    # Write boxes.json — same shape as mock; seed: 0 sentinel (non-deterministic)
+    boxes_obj = {
+        "engine": "autotracker",
+        "model": at["model"],
+        "seed": 0,
+        "conf": conf,
+        "images": images_data,
+    }
+    boxes_path = output / "boxes.json"
+    with open(boxes_path, "w", encoding="utf-8") as f:
+        json.dump(boxes_obj, f, indent=2, ensure_ascii=False)
+
+    # NO metrics.jsonl — real has no epochs/loss (binary progress, ADR-0014 D3)
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -269,7 +371,7 @@ def cmd_autotrack(args: list[str]) -> None:
 
     parser = argparse.ArgumentParser(
         prog="trainer-yolo autotrack",
-        description="AutoTracker mock (ENGINE_MOCK=1) — generates deterministic bounding boxes",
+        description="AutoTracker — mock determinístico (ENGINE_MOCK=1) ou real (ultralytics world)",
     )
     parser.add_argument("--config", required=True, help="Path to config.yaml")
     parser.add_argument("--output", required=True, help="Output directory")
@@ -279,4 +381,8 @@ def cmd_autotrack(args: list[str]) -> None:
     cfg = load_and_validate_autotrack_config(opts.config)
     output = Path(opts.output)
 
-    _mock_autotrack(cfg, output)
+    mock = os.environ.get("ENGINE_MOCK", "1") == "1"
+    if mock:
+        _mock_autotrack(cfg, output)
+    else:
+        _real_autotrack(cfg, output)

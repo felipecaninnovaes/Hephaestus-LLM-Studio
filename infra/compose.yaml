@@ -32,6 +32,7 @@ services:
       EMBEDDING_BACKEND: ${EMBEDDING_BACKEND:-mock}
       EMBEDDER_URL: ${EMBEDDER_URL:-http://embedder:8090}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-ViT-B-32}
+      MODEL_DOWNLOAD_ALLOWED_HOSTS: ${MODEL_DOWNLOAD_ALLOWED_HOSTS:-}
     depends_on:
       db:
         condition: service_started

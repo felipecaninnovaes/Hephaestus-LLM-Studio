@@ -681,7 +681,7 @@ pub async fn submit_autotracker_job(
         Err(_) => return invalid_request(),
     };
 
-    // 2. Validação pura (models.rs).
+    // 2. Validação pura (models.rs) — inclui UUID check do modelId.
     let req = match models::validate_autotrack_request(req) {
         Ok(v) => v,
         Err(_) => return invalid_request(),
@@ -753,8 +753,8 @@ pub async fn submit_autotracker_job(
     let job_id = uuid::Uuid::new_v4().to_string();
     let config_yaml = models::generate_autotrack_config_yaml(&job_id, &req);
 
-    // 8. POST ao manager (ADR-0008 D3 — snake_case interno).
-    let manager_body = serde_json::json!({
+    // 8. POST ao manager (ADR-0008 D3 — snake_case interno; ADR-0014 D6 — weights_id).
+    let mut manager_body = serde_json::json!({
         "kind": "autotracker",
         "engine": "autotracker",
         "model": req.model,
@@ -780,7 +780,14 @@ pub async fn submit_autotracker_job(
         },
         "vram_min_gb": null,
     });
+    // ADR-0014 D2/D6: modelId presente → weights_id (manager resolve weights_ref).
+    if let Some(ref model_id) = req.model_id {
+        manager_body["weights_id"] = serde_json::json!(model_id);
+    }
 
+    // ADR-0014 D6: mapeamento NotFound→404, InvalidRequest→400, Unavailable→503
+    // (padrão predict — NÃO o Err(_)→503 do submit_yolo_job).
+    // Compensação do package em TODOS os braços de erro.
     match state.manager.create_job(&manager_body).await {
         Ok(resp) => {
             let body = SubmitJobResponse {
@@ -790,28 +797,21 @@ pub async fn submit_autotracker_job(
             };
             (StatusCode::ACCEPTED, Json(body)).into_response()
         }
+        Err(ManagerError::NotFound) => {
+            compensate_package(&state, &package.version_id).await;
+            not_found()
+        }
+        Err(ManagerError::InvalidRequest(_)) => {
+            compensate_package(&state, &package.version_id).await;
+            invalid_request()
+        }
         Err(ManagerError::Unavailable(_)) => {
-            // Compensação: remove o package criado se o manager falhar
-            // (operação composta: package sem job = lixo).
-            let _ = state
-                .storage
-                .delete_prefix(&format!("packages/{}/", package.version_id))
-                .await;
-            let _ = sqlx::query("DELETE FROM dataset_versions WHERE id = $1")
-                .bind(package.version_id.parse::<uuid::Uuid>().expect("uuid"))
-                .execute(&state.pool)
-                .await;
+            compensate_package(&state, &package.version_id).await;
             queue_unavailable()
         }
+        // Outros erros do manager → 503 + compensação.
         Err(_) => {
-            let _ = state
-                .storage
-                .delete_prefix(&format!("packages/{}/", package.version_id))
-                .await;
-            let _ = sqlx::query("DELETE FROM dataset_versions WHERE id = $1")
-                .bind(package.version_id.parse::<uuid::Uuid>().expect("uuid"))
-                .execute(&state.pool)
-                .await;
+            compensate_package(&state, &package.version_id).await;
             queue_unavailable()
         }
     }
@@ -1885,6 +1885,136 @@ mod tests {
         )
         .await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // --- POST /api/jobs/autotracker modelId tests (ADR-0014 D2/D6) ---
+
+    #[tokio::test]
+    async fn submit_autotracker_job_202_no_model_id_mock() {
+        // Sem modelId → mock, comportamento atual intocado.
+        // Com pool lazy, vai falhar no DB antes de reach manager (500).
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_autotracker_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"datasetId":"00000000-0000-0000-0000-000000000000"}"#,
+            )),
+        )
+        .await;
+        // Com pool lazy, vai falhar no DB (500) — mas NÃO deve ser 400.
+        assert_ne!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "valid body without modelId should not trigger 400"
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_autotracker_job_202_with_valid_model_id() {
+        // Com modelId válido → passa validação (não retorna 400).
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_autotracker_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"datasetId":"00000000-0000-0000-0000-000000000000","modelId":"550e8400-e29b-41d4-a716-446655440000"}"#,
+            )),
+        )
+        .await;
+        // Com pool lazy, vai falhar no DB (500) — mas NÃO deve ser 400.
+        assert_ne!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "valid body with modelId should not trigger 400"
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_autotracker_job_400_model_id_not_uuid() {
+        // modelId não-UUID → 400 `invalid_request`.
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_autotracker_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"datasetId":"00000000-0000-0000-0000-000000000000","modelId":"not-a-uuid"}"#,
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_autotracker_job_manager_not_found_compensates() {
+        // ADR-0014 D6: manager NotFound → 404 + compensação.
+        // NOTA: test_state usa pool lazy que falha no DB ANTES de reach create_job.
+        // O mapeamento NotFound→404 é coberto pelo test-db; este teste valida o
+        // caminho de falha do pool (500), não o mapeamento do manager.
+        let mut mock = MockManager::default();
+        mock.create_job_not_found = true;
+        let state = test_state(mock);
+        let resp = submit_autotracker_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"datasetId":"00000000-0000-0000-0000-000000000000","modelId":"550e8400-e29b-41d4-a716-446655440000"}"#,
+            )),
+        )
+        .await;
+        // Pool lazy falha no DB → 500 (não 404 nem 400).
+        assert_eq!(
+            resp.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "lazy pool DB failure should return 500"
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_autotracker_job_manager_invalid_request_compensates() {
+        // ADR-0014 D6: manager InvalidRequest → 400 + compensação.
+        // NOTA: test_state usa pool lazy que falha no DB ANTES de reach create_job.
+        // O mapeamento InvalidRequest→400 é coberto pelo test-db; este teste valida o
+        // caminho de falha do pool (500), não o mapeamento do manager.
+        let mut mock = MockManager::default();
+        mock.create_job_invalid_request = Some("engine mismatch".into());
+        let state = test_state(mock);
+        let resp = submit_autotracker_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"datasetId":"00000000-0000-0000-0000-000000000000","modelId":"550e8400-e29b-41d4-a716-446655440000"}"#,
+            )),
+        )
+        .await;
+        // Pool lazy falha no DB → 500 (não 400 nem 503).
+        assert_eq!(
+            resp.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "lazy pool DB failure should return 500"
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_autotracker_job_manager_fail_compensates() {
+        // ADR-0014 D6: manager Unavailable → 503 + compensação.
+        // NOTA: test_state usa pool lazy que falha no DB ANTES de reach create_job.
+        // O mapeamento Unavailable→503 é coberto pelo test-db; este teste valida o
+        // caminho de falha do pool (500), não o mapeamento do manager.
+        let mut mock = MockManager::default();
+        mock.fail = true;
+        let state = test_state(mock);
+        let resp = submit_autotracker_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"datasetId":"00000000-0000-0000-0000-000000000000","modelId":"550e8400-e29b-41d4-a716-446655440000"}"#,
+            )),
+        )
+        .await;
+        // Pool lazy falha no DB → 500 (não 503).
+        assert_eq!(
+            resp.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "lazy pool DB failure should return 500"
+        );
     }
 
     // --- POST /api/jobs/predict unit tests (Fatia J — ADR-0013 D0/D1/D8) ---

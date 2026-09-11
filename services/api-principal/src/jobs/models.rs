@@ -95,9 +95,9 @@ pub fn default_augment_values() -> (bool, bool) {
 /// Models aceitos para AutoTracker v1 (Apenas mock).
 const ALLOWED_AUTOTRACK_MODELS: &[&str] = &["mock"];
 
-/// Body de `POST /api/jobs/autotracker` (wire camelCase — ADR-0008 D3).
+/// Body de `POST /api/jobs/autotracker` (wire camelCase — ADR-0008 D3, ADR-0014 D2/D6).
 ///
-/// `datasetId` é obrigatório; `model` e `conf` são OPCIONAIS com defaults.
+/// `datasetId` é obrigatório; `model`, `conf` e `modelId` são OPCIONAIS com defaults.
 /// `deny_unknown_fields` garante 400 para chaves desconhecidas.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -107,6 +107,9 @@ pub struct AutotrackerJobRequest {
     pub model: String,
     #[serde(default = "default_autotrack_conf")]
     pub conf: f64,
+    /// UUID de modelo existente na tabela `models` (engine='world' — ADR-0014 D2).
+    /// Presente → job REAL (usa pesos); ausente → mock.
+    pub model_id: Option<String>,
 }
 
 fn default_autotrack_model() -> String {
@@ -133,14 +136,33 @@ pub fn validate_autotrack_request(
     if !(0.0..=1.0).contains(&req.conf) {
         return Err("conf must be between 0.0 and 1.0".to_string());
     }
+    // ADR-0014 D6: modelId presente e não-UUID ⇒ 400 `invalid_request`.
+    if let Some(ref mid) = req.model_id {
+        if uuid::Uuid::parse_str(mid).is_err() {
+            return Err("modelId must be a valid UUID".to_string());
+        }
+    }
     Ok(req)
 }
 
-/// Gera `config.yaml` para AutoTracker (ADR-0008 D3).
+/// Gera `config.yaml` para AutoTracker (ADR-0008 D3, ADR-0014 D6).
 ///
 /// Placeholders literais `{dataset_path}` e `{output_path}` — o orquestrador
 /// substitui no spawn; o principal é agnóstico de paths.
+/// Quando `model_id` está presente, emite `weights_path: "{weights_path}"` e
+/// `autotrack.model: "world"` (o model do body permanece "mock" — a derivação
+/// é interna, documentada).
 pub fn generate_autotrack_config_yaml(job_id: &str, req: &AutotrackerJobRequest) -> String {
+    let weights_line = if req.model_id.is_some() {
+        "weights_path: \"{weights_path}\"\n".to_string()
+    } else {
+        String::new()
+    };
+    let at_model = if req.model_id.is_some() {
+        "world"
+    } else {
+        &req.model
+    };
     format!(
         r#"# Configuração de autotrack (gerada pelo api-principal)
 job_id: "{job_id}"
@@ -149,13 +171,15 @@ model: "{model}"
 mode: "autotrack"
 dataset_path: "{{dataset_path}}"
 output_path: "{{output_path}}"
-seed: 42
+{weights_line}seed: 42
 autotrack:
-  model: "{model}"
+  model: "{at_model}"
   conf: {conf}
 "#,
         job_id = job_id,
         model = req.model,
+        weights_line = weights_line,
+        at_model = at_model,
         conf = req.conf,
     )
 }
@@ -783,6 +807,73 @@ mod tests {
         let yaml = generate_autotrack_config_yaml("job-xyz", &req);
 
         assert!(yaml.contains("conf: 0.9"));
+        assert!(yaml.contains("engine: \"autotracker\""));
+        assert!(yaml.contains("mode: \"autotrack\""));
+    }
+
+    // =========================================================================
+    // AutoTracker modelId (ADR-0014 D2/D6) tests
+    // =========================================================================
+
+    #[test]
+    fn autotrack_model_id_none_by_default() {
+        let raw = r#"{"datasetId":"00000000-0000-0000-0000-000000000000"}"#;
+        let req: AutotrackerJobRequest = serde_json::from_str(raw).expect("parse");
+        assert!(req.model_id.is_none());
+    }
+
+    #[test]
+    fn autotrack_model_id_valid_uuid() {
+        let raw = r#"{"datasetId":"00000000-0000-0000-0000-000000000000","modelId":"550e8400-e29b-41d4-a716-446655440000"}"#;
+        let req: AutotrackerJobRequest = serde_json::from_str(raw).expect("parse");
+        assert_eq!(
+            req.model_id.as_deref(),
+            Some("550e8400-e29b-41d4-a716-446655440000")
+        );
+        assert!(validate_autotrack_request(req).is_ok());
+    }
+
+    #[test]
+    fn autotrack_model_id_not_uuid_rejected() {
+        let raw = r#"{"datasetId":"00000000-0000-0000-0000-000000000000","modelId":"not-a-uuid"}"#;
+        let req: AutotrackerJobRequest = serde_json::from_str(raw).expect("parse");
+        assert!(validate_autotrack_request(req).is_err());
+    }
+
+    #[test]
+    fn autotrack_config_yaml_with_model_id() {
+        let raw = r#"{"datasetId":"00000000-0000-0000-0000-000000000000","modelId":"550e8400-e29b-41d4-a716-446655440000"}"#;
+        let req: AutotrackerJobRequest = serde_json::from_str(raw).expect("parse");
+        let yaml = generate_autotrack_config_yaml("test-job-real-001", &req);
+
+        // weights_path presente com placeholder.
+        assert!(yaml.contains("weights_path: \"{weights_path}\""));
+        // autotrack.model = "world" (não "mock").
+        assert!(yaml.contains("autotrack:"));
+        assert!(yaml.contains("model: \"world\""));
+        // Top-level model permanece "mock" (derivação interna).
+        assert!(yaml.contains("engine: \"autotracker\""));
+        assert!(yaml.contains("mode: \"autotrack\""));
+        assert!(yaml.contains("conf: 0.65"));
+        assert!(yaml.contains("seed: 42"));
+
+        // Parseável como YAML.
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml parse");
+        assert_eq!(parsed["autotrack"]["model"].as_str().unwrap(), "world");
+        assert_eq!(parsed["engine"].as_str().unwrap(), "autotracker");
+    }
+
+    #[test]
+    fn autotrack_config_yaml_without_model_id_unchanged() {
+        // Sem modelId → config byte a byte igual ao comportamento atual (mock).
+        let raw = r#"{"datasetId":"00000000-0000-0000-0000-000000000000"}"#;
+        let req: AutotrackerJobRequest = serde_json::from_str(raw).expect("parse");
+        let yaml = generate_autotrack_config_yaml("test-job-mock-001", &req);
+
+        // Sem weights_path.
+        assert!(!yaml.contains("weights_path"));
+        // autotrack.model = "mock" (default).
+        assert!(yaml.contains("model: \"mock\""));
         assert!(yaml.contains("engine: \"autotracker\""));
         assert!(yaml.contains("mode: \"autotrack\""));
     }

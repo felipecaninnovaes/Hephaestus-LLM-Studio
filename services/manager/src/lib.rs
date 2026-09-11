@@ -372,10 +372,18 @@ pub async fn create_job(
         match row {
             None => return Err(ManagerError::NotFound),
             Some((s3_key, hash, engine, variant)) => {
-                if engine != "yolo" {
+                // ADR-0012 D5 / ADR-0014 D5: aceita engine 'yolo' (fine-tune) e
+                // 'world' (autotracker real). Qualquer outro → 400.
+                if engine != "yolo" && engine != "world" {
                     return Err(ManagerError::InvalidRequest(format!(
-                        "weights engine must be 'yolo', got '{engine}'"
+                        "weights engine must be 'yolo' or 'world', got '{engine}'"
                     )));
+                }
+                // Defesa: fine-tune (mode=train) NÃO aceita pesos world (ADR-0014 D5).
+                if engine == "world" && req.mode == "train" {
+                    return Err(ManagerError::InvalidRequest(
+                        "fine-tune weights engine must be 'yolo', got 'world'".into(),
+                    ));
                 }
                 params["weights_ref"] = serde_json::json!({
                     "s3_key": s3_key,
@@ -383,10 +391,19 @@ pub async fn create_job(
                 });
                 // ADR-0012 D5/I.2b: predict com variant → jobs.model = variante (ex.: yolo11m).
                 if req.model == "predict" {
-                    if let Some(v) = variant {
-                        resolved_model = v;
+                    if let Some(v) = variant.as_deref() {
+                        resolved_model = v.to_string();
                     }
                     // Sem variante (upload/download) → resolved_model = "predict" (literal).
+                }
+                // ADR-0014 D5: autotracker com engine=world → jobs.model = variante | "world".
+                // O req.model é sempre "mock" (D2); a resolução é por engine da row.
+                if engine == "world" && req.model != "predict" {
+                    if let Some(v) = variant.as_deref() {
+                        resolved_model = v.to_string();
+                    } else {
+                        resolved_model = "world".into();
+                    }
                 }
             }
         }
@@ -1422,9 +1439,9 @@ pub struct CreateModelRequest {
 
 /// Validação pura do CreateModelRequest (padrão da casa — função testável).
 fn validate_create_model(req: &CreateModelRequest) -> Result<(), ManagerError> {
-    if req.engine != "yolo" {
+    if req.engine != "yolo" && req.engine != "world" {
         return Err(ManagerError::InvalidRequest(format!(
-            "engine must be 'yolo', got '{}'",
+            "engine must be 'yolo' or 'world', got '{}'",
             req.engine
         )));
     }

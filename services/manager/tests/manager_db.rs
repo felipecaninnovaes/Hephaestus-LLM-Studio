@@ -3594,3 +3594,315 @@ async fn fine_tune_nao_substitui_variante() {
         .expect("get fine-tune job");
     assert_eq!(job.model, "yolo11m", "fine-tune preserva model do request");
 }
+
+// ===========================================================================
+// K.2 — AutoTracker real: engine 'world' (ADR-0014 D5)
+// ===========================================================================
+
+/// Helper: insere um modelo com engine world e retorna o ID.
+async fn insert_test_world_model(pool: &PgPool, variant: Option<&str>) -> uuid::Uuid {
+    let model_id = uuid::Uuid::new_v4();
+    let req = CreateModelRequest {
+        id: model_id,
+        engine: "world".into(),
+        name: "yolov8x-worldv2.pt".into(),
+        model: variant.map(|v| v.to_string()),
+        s3_key: format!("models/world/at/{}/yolov8x-worldv2.pt", model_id),
+        source: "upload".into(),
+        url: None,
+        hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
+        bytes: 1_300_000_000,
+        job_id: None,
+    };
+    manager::create_model(pool, req)
+        .await
+        .expect("insert test world model");
+    model_id
+}
+
+/// Helper: cria um request de autotracker (principal sempre manda model="mock" — D2).
+fn autotracker_job_request(dataset_id: uuid::Uuid) -> CreateJobRequest {
+    CreateJobRequest {
+        kind: "autotracker".into(),
+        engine: "autotracker".into(),
+        model: "mock".into(),
+        mode: "autotrack".into(),
+        dataset_id: Some(dataset_id.to_string()),
+        dataset_version_id: Some(uuid::Uuid::new_v4().to_string()),
+        package_ref: Some(PackageRef {
+            version_id: uuid::Uuid::new_v4().to_string(),
+            key: "packages/test/autotracker-dataset.zip".into(),
+            md5_zip: "d41d8cd98f00b204e9800998ecf8427e".into(),
+            bytes: 1024,
+        }),
+        config_yaml: Some("job_id: autotrack\ngine: autotracker".into()),
+        params: Some(serde_json::json!({
+            "package_ref": {
+                "version_id": uuid::Uuid::new_v4().to_string(),
+                "key": "packages/test/autotracker-dataset.zip",
+                "md5_zip": "d41d8cd98f00b204e9800998ecf8427e",
+                "bytes": 1024
+            },
+            "model": "world",
+            "conf": 0.65
+        })),
+        vram_min_gb: None,
+        weights_id: None,
+    }
+}
+
+/// Autotracker com weights engine=world válido → ok, jobs.model=variante, params.weights_ref.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn autotracker_com_world_weights_aceita() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    // Insere modelo world com variante.
+    let model_id = insert_test_world_model(&p, Some("yolov8x-worldv2")).await;
+
+    let mut req = autotracker_job_request(ds_id);
+    req.weights_id = Some(model_id);
+
+    let resp = manager::create_job(&p, req)
+        .await
+        .expect("create autotracker job with world weights");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    // Verifica jobs.model = variante ("yolov8x-worldv2").
+    let job = manager::get_job(&p, job_id)
+        .await
+        .expect("get autotracker job");
+    assert_eq!(
+        job.model, "yolov8x-worldv2",
+        "jobs.model deve ser a variante do modelo world"
+    );
+    assert_eq!(job.kind, "autotracker");
+    assert_eq!(job.engine, "autotracker");
+    assert_eq!(job.mode, "autotrack");
+
+    // Verifica params.weights_ref.
+    let row: (serde_json::Value,) = sqlx::query_as("SELECT params FROM jobs WHERE id = $1")
+        .bind(job_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    let wr = row.0.get("weights_ref").expect("weights_ref presente");
+    assert_eq!(
+        wr["s3_key"],
+        format!("models/world/at/{}/yolov8x-worldv2.pt", model_id)
+    );
+    assert_eq!(wr["md5"], "d41d8cd98f00b204e9800998ecf8427e");
+}
+
+/// Autotracker com weights engine=world SEM variante → jobs.model = "world" literal.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn autotracker_world_sem_variante_grava_world_literal() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let model_id = insert_test_world_model(&p, None).await;
+
+    let mut req = autotracker_job_request(ds_id);
+    req.weights_id = Some(model_id);
+
+    let resp = manager::create_job(&p, req)
+        .await
+        .expect("create autotracker job no variant");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    // Sem variante → jobs.model = "world" (literal).
+    let job = manager::get_job(&p, job_id)
+        .await
+        .expect("get autotracker job");
+    assert_eq!(
+        job.model, "world",
+        "sem variante, jobs.model deve ser 'world'"
+    );
+}
+
+/// Autotracker com weights engine=world → dispatch_body contém mode + weights_ref.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn autotracker_world_dispatch_body_contem_mode_e_weights_ref() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+
+    let model_id = insert_test_world_model(&p, Some("yolov8x-worldv2")).await;
+
+    let mut req = autotracker_job_request(ds_id);
+    req.weights_id = Some(model_id);
+
+    let _resp = manager::create_job(&p, req)
+        .await
+        .expect("create autotracker job");
+
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+
+    let calls = orch.calls();
+    assert!(!calls.is_empty(), "dispatch should have been called");
+    let (_, body) = &calls[0];
+
+    // mode = "autotrack".
+    assert_eq!(
+        body.get("mode").and_then(|v| v.as_str()),
+        Some("autotrack"),
+        "dispatch_body deve conter mode:'autotrack'"
+    );
+
+    // weights_ref presente.
+    let wr = body
+        .get("weights_ref")
+        .expect("dispatch_body deve conter weights_ref");
+    assert_eq!(
+        wr["s3_key"],
+        format!("models/world/at/{}/yolov8x-worldv2.pt", model_id)
+    );
+    assert_eq!(wr["md5"], "d41d8cd98f00b204e9800998ecf8427e");
+
+    // engine = autotracker (NÃO world — world vive só na tabela models).
+    assert_eq!(
+        body.get("engine").and_then(|v| v.as_str()),
+        Some("autotracker")
+    );
+}
+
+/// Autotracker com weights_id inexistente → 404.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn autotracker_world_weights_inexistente_404() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let fake_id = uuid::Uuid::new_v4();
+    let mut req = autotracker_job_request(ds_id);
+    req.weights_id = Some(fake_id);
+
+    let result = manager::create_job(&p, req).await;
+    assert!(matches!(result, Err(ManagerError::NotFound)));
+}
+
+/// Fine-tune (mode=train) com weights engine=world → 400 (defesa mantida).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn fine_tune_com_world_weights_rejeita_400() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let model_id = insert_test_world_model(&p, Some("yolov8x-worldv2")).await;
+
+    let mut req = test_job_request(ds_id);
+    req.weights_id = Some(model_id);
+    // req.mode = "train" (fine-tune).
+
+    let result = manager::create_job(&p, req).await;
+    assert!(
+        matches!(result, Err(ManagerError::InvalidRequest(ref msg)) if msg.contains("fine-tune")),
+        "fine-tune com world weights deve retornar 400"
+    );
+}
+
+/// Autotracker SEM weights_id → jobs.model = "mock" (regressão).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn autotracker_sem_weights_grava_mock() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let req = autotracker_job_request(ds_id);
+    // weights_id = None (mock).
+
+    let resp = manager::create_job(&p, req)
+        .await
+        .expect("create autotracker mock job");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    let job = manager::get_job(&p, job_id)
+        .await
+        .expect("get autotracker mock job");
+    assert_eq!(job.model, "mock", "sem weights, jobs.model deve ser 'mock'");
+    // Sem weights_ref em params.
+    let row: (serde_json::Value,) = sqlx::query_as("SELECT params FROM jobs WHERE id = $1")
+        .bind(job_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert!(
+        row.0.get("weights_ref").is_none(),
+        "sem weights_id, params não deve conter weights_ref"
+    );
+}
+
+/// POST /internal/models com engine=world → 201 (validação aceita).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_model_world_201() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let model_id = uuid::Uuid::new_v4();
+    let req = CreateModelRequest {
+        id: model_id,
+        engine: "world".into(),
+        name: "yolov8x-worldv2.pt".into(),
+        model: None,
+        s3_key: "models/world/test/yolov8x-worldv2.pt".into(),
+        source: "upload".into(),
+        url: None,
+        hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
+        bytes: 1_300_000_000,
+        job_id: None,
+    };
+
+    let item = manager::create_model(&p, req)
+        .await
+        .expect("create model world 201");
+    assert_eq!(item.id, model_id.to_string());
+    assert_eq!(item.engine, "world");
+    assert_eq!(item.name, "yolov8x-worldv2.pt");
+    assert_eq!(item.source, "upload");
+}
+
+/// POST /internal/models com engine inválida (não yolo nem world) → 400.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_model_engine_invalida_400() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let req = CreateModelRequest {
+        id: uuid::Uuid::new_v4(),
+        engine: "diffusion".into(),
+        name: "model.pt".into(),
+        model: None,
+        s3_key: "models/diff/abc/model.pt".into(),
+        source: "upload".into(),
+        url: None,
+        hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
+        bytes: 100,
+        job_id: None,
+    };
+
+    let result = manager::create_model(&p, req).await;
+    assert!(matches!(result, Err(ManagerError::InvalidRequest(_))));
+}

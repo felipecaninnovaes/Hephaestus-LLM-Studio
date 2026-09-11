@@ -2,8 +2,8 @@
 //!
 //! Funções sem I/O nem estado — testáveis sem banco nem S3.
 
-/// Engines suportadas na v1 (D3).
-const ALLOWED_ENGINES: &[&str] = &["yolo"];
+/// Engines suportadas na v1 (D3, ADR-0014 D1 — 'world' entra com migration 0008).
+const ALLOWED_ENGINES: &[&str] = &["yolo", "world"];
 
 /// Extensão obrigatória para yolo na v1 (D3).
 const YOLO_EXTENSION: &str = ".pt";
@@ -187,6 +187,19 @@ mod tests {
         let v = validate_upload("yolo", Some("best.pt")).unwrap();
         assert_eq!(v.engine, "yolo");
         assert_eq!(v.name, "best.pt");
+    }
+
+    #[test]
+    fn validate_upload_world_ok() {
+        let v = validate_upload("world", Some("yolov8x-worldv2.pt")).unwrap();
+        assert_eq!(v.engine, "world");
+        assert_eq!(v.name, "yolov8x-worldv2.pt");
+    }
+
+    #[test]
+    fn validate_upload_world_default_name() {
+        let v = validate_upload("world", None).unwrap();
+        assert_eq!(v.name, "model.pt");
     }
 
     #[test]

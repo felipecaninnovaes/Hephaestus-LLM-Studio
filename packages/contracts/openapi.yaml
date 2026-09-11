@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.12.0
+  version: 0.13.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -1495,9 +1495,11 @@ paths:
       tags: [jobs]
       summary: Submete job de autotrack
       description: |
-        Cria job de autotrack (ADR-0008 D0/D3). Valida modelo (mock apenas),
-        conf (0..1), verifica readiness do dataset (category=yolo, ≥1 classe,
-        ≥1 imagem), materializa package, e envia ao manager.
+        Cria job de autotrack (ADR-0008 D0/D3, ADR-0014 D2/D6). Valida modelo (mock apenas),
+        conf (0..1), modelId opcional (UUID → job real com pesos world), verifica readiness do
+        dataset (category=yolo, ≥1 classe, ≥1 imagem), materializa package, e envia ao manager.
+        Erros mapeados: NotFound→404 (modelId inexistente), InvalidRequest→400 (engine≠world),
+        Unavailable→503; compensação do package em todos os braços de erro.
       requestBody:
         required: true
         content:
@@ -1510,7 +1512,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/SubmitJobResponse" }
         "400":
-          description: "Body malformado, campos desconhecidos ou parâmetros inválidos (`code: invalid_request`)."
+          description: "Body malformado, campos desconhecidos, parâmetros inválidos ou modelId não-UUID (`code: invalid_request`)."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1520,7 +1522,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "404":
-          description: "Dataset inexistente ou datasetId não-UUID (`code: not_found`)."
+          description: "Dataset inexistente, datasetId não-UUID ou modelId inexistente na tabela `models` (`code: not_found`)."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1889,8 +1891,8 @@ paths:
       tags: [jobs]
       summary: Upload de pesos de modelo (multipart)
       description: |
-        Upload de arquivo de pesos via multipart (D3 ADR-0012).
-        Campo `file` (obrigatório) + form fields `engine` (v1: "yolo") + `name?`.
+        Upload de arquivo de pesos via multipart (D3 ADR-0012, ADR-0014 D1).
+        Campo `file` (obrigatório) + form fields `engine` (v1: "yolo" ou "world") + `name?`.
         DefaultBodyLimit 2 GiB+8 MiB envelope; magic bytes `PK\x03\x04` obrigatório;
         md5 hex computado; PUT S3 `models/<engine>/<id>/<name>`; compensação delete
         se INSERT no manager falhar. Erros: 400 `invalid_request` (engine/ext/magic/name),
@@ -1909,8 +1911,8 @@ paths:
                   description: "Arquivo de pesos (.pt, magic PK\\x03\\x04)."
                 engine:
                   type: string
-                  enum: [yolo]
-                  description: "Engine do modelo (v1: apenas yolo)."
+                  enum: [yolo, world]
+                  description: "Engine do modelo (v1: yolo ou world; world = pesos para autotracker real)."
                 name:
                   type: string
                   maxLength: 255
@@ -1969,8 +1971,8 @@ paths:
                   description: "URL do arquivo de pesos (http/https)."
                 engine:
                   type: string
-                  enum: [yolo]
-                  description: "Engine do modelo (v1: apenas yolo)."
+                  enum: [yolo, world]
+                  description: "Engine do modelo (v1: yolo ou world; world = pesos para autotracker real)."
                 name:
                   type: string
                   maxLength: 255
@@ -2284,8 +2286,9 @@ components:
       additionalProperties: false
       required: [datasetId]
       description: |
-        Body de `POST /api/jobs/autotracker` (ADR-0008 D3). `datasetId` é
+        Body de `POST /api/jobs/autotracker` (ADR-0008 D3, ADR-0014 D2/D6). `datasetId` é
         obrigatório; os demais campos são OPCIONAIS com defaults.
+        `modelId` (UUID opcional): presente → job REAL com pesos world; ausente → mock.
         Wire camelCase; `deny_unknown_fields` garante 400 para chaves desconhecidas.
       properties:
         datasetId:
@@ -2296,13 +2299,17 @@ components:
           type: string
           enum: [mock]
           default: mock
-          description: "Modelo a usar (apenas mock na v1)."
+          description: "Modelo a usar (apenas mock na v1). O real é selecionado por modelId."
         conf:
           type: number
           minimum: 0.0
           maximum: 1.0
           default: 0.65
           description: "Limiar de confiança (0..1)."
+        modelId:
+          type: [string, "null"]
+          format: uuid
+          description: "UUID do modelo world na tabela `models`. Presente → job real; ausente → mock. Não-UUID ⇒ 400 `invalid_request`; inexistente ⇒ 404 `not_found` (via manager)."
 
     PredictJobRequest:
       type: object

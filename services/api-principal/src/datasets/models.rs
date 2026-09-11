@@ -494,9 +494,19 @@ pub struct PutCaptionRequest {
 /// com `origin` já resolvida para o default `"manual"`.
 pub type ValidatedBox = (Uuid, f64, f64, f64, f64, Option<f64>, String, Option<i32>);
 
-/// Origens aceitas (CHECK do banco à letra).
-pub fn is_valid_origin(s: &str) -> bool {
+/// Origens aceitas para boxes (CHECK do banco à letra).
+pub fn is_valid_box_origin(s: &str) -> bool {
     matches!(s, "manual" | "autotracker" | "import")
+}
+
+/// Origens aceitas para captions (ADR-0016 D2: inclui 'autolabel').
+pub fn is_valid_caption_origin(s: &str) -> bool {
+    matches!(s, "manual" | "autolabel" | "autotracker" | "import")
+}
+
+/// Origens aceitas (compatibilidade / padrão de boxes).
+pub fn is_valid_origin(s: &str) -> bool {
+    is_valid_box_origin(s)
 }
 
 /// Validação pura do PUT boxes (sem banco, unit-testável): len ≤ 1000;
@@ -521,7 +531,7 @@ pub fn validate_boxes(req: &PutBoxesRequest) -> Result<Vec<ValidatedBox>, ()> {
         }
         let origin = match &b.origin {
             None => "manual".to_string(),
-            Some(s) if is_valid_origin(s) => s.clone(),
+            Some(s) if is_valid_box_origin(s) => s.clone(),
             Some(_) => return Err(()),
         };
         out.push((b.class_id, b.x, b.y, b.w, b.h, b.conf, origin, b.track_id));
@@ -530,7 +540,7 @@ pub fn validate_boxes(req: &PutBoxesRequest) -> Result<Vec<ValidatedBox>, ()> {
 }
 
 /// Validação pura do PUT caption: `text` com 1..=8000 chars (contagem em
-/// chars, igual ao CHECK) e `origin` com o mesmo domínio/default das boxes.
+/// chars, igual ao CHECK) e `origin` com o domínio estendido (inclui 'autolabel').
 /// `Err(())` ⇒ 400. `caption ''` nunca nasce como linha (vira `unlabeled`).
 pub fn validate_caption(
     text: &str,
@@ -543,7 +553,7 @@ pub fn validate_caption(
     }
     let origin = match origin {
         None => "manual".to_string(),
-        Some(s) if is_valid_origin(s) => s.to_string(),
+        Some(s) if is_valid_caption_origin(s) => s.to_string(),
         Some(_) => return Err(()),
     };
     // Revisão 3b.6: `model` entra no banco para sempre — teto de 255 chars
@@ -782,7 +792,7 @@ pub fn validate_import_manifest(m: &super::export::ExportManifest) -> Result<(),
             if !(1..=8000).contains(&n) {
                 return Err(());
             }
-            if !is_valid_origin(&cap.origin) {
+            if !is_valid_caption_origin(&cap.origin) {
                 return Err(());
             }
             if cap
@@ -978,6 +988,7 @@ mod tests {
         assert!(validate_caption("", None, None).is_err());
         assert!(validate_caption("um gato", None, None).expect("ok").1 == "manual");
         assert!(validate_caption("x", Some("hack"), None).is_err());
+        assert!(validate_caption("x", Some("autolabel"), None).is_ok());
         assert!(validate_caption(&"a".repeat(8000), Some("import"), None).is_ok());
         assert!(validate_caption(&"a".repeat(8001), None, None).is_err());
         // modelo com teto (revisão 3b.6): 255 chars ok, 256 -> 400.

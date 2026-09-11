@@ -1742,7 +1742,36 @@ async fn t0003_put_caption() {
         (1, 1, 80, "ready".to_string())
     );
 
-    // GET detail mostra o caption novo.
+    // Upsert com origin "autolabel" (ADR-0016 D2).
+    let (status, _, body) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/images/{img}/caption"),
+            serde_json::json!({"text": "um gato gerado por autolabel", "origin": "autolabel"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let third = json(&body);
+    assert_eq!(third["text"], "um gato gerado por autolabel");
+    assert_eq!(third["origin"], "autolabel");
+
+    // Origin inválida dá 400.
+    let (status, _, _) = call(
+        app.clone(),
+        put_json(
+            &cookie,
+            "PUT",
+            format!("/api/datasets/{ds}/images/{img}/caption"),
+            serde_json::json!({"text": "texto", "origin": "invalido"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // GET detail mostra o caption novo com origin autolabel.
     let (status, _, body) = call(
         app.clone(),
         Request::builder()
@@ -1754,7 +1783,11 @@ async fn t0003_put_caption() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(json(&body)["caption"]["text"], "um gato preto");
+    assert_eq!(
+        json(&body)["caption"]["text"],
+        "um gato gerado por autolabel"
+    );
+    assert_eq!(json(&body)["caption"]["origin"], "autolabel");
 }
 
 #[tokio::test]

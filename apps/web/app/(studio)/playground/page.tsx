@@ -727,15 +727,22 @@ export default function PlaygroundPage() {
               </h3>
               <div className="space-y-1.5">
                 {doneJobs.map((job) => (
-                  <button
+                  <div
                     key={job.id}
-                    type="button"
+                    role="button"
+                    tabIndex={0}
                     onClick={() => setSelectedJobId(job.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setSelectedJobId(job.id);
+                      }
+                    }}
                     className={`group flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left transition-colors ${
                       selectedJobId === job.id
                         ? "border-brand-500/30 bg-brand-500/15"
                         : "border-transparent hover:bg-white/[0.04]"
-                    }`}
+                    } cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70`}
                   >
                     <div className="min-w-0 flex-1">
                       <span className="truncate font-mono text-xs text-zinc-200">
@@ -768,7 +775,7 @@ export default function PlaygroundPage() {
                         done
                       </span>
                     </div>
-                  </button>
+                  </div>
                 ))}
               </div>
             </div>

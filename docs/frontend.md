@@ -242,6 +242,10 @@ interface BBox { id: number; classId: number; label: string; x: number; y: numbe
     - `POST /api/jobs/autotracker` (`lib/autotracker.ts:startAutotrackerJob`): body `{datasetId, model?, conf?, modelId?}`, 202 `{jobId,status:"queued",queuePosition?}`. Modal `AutoTrackerModal` — dropdown "Modelo": Mock determinístico (default, sem modelId) + modelos `engine=world` via `listModels()` filtrado client-side; empty state honesto "Importe pesos world em Modelos & Pesos"; erros 404 com modelId → "Modelo não encontrado — atualize a lista"; 404 sem modelId → "Recurso não encontrado.".
     - `POST /api/jobs/:id/autotracker/apply` (`lib/autotracker.ts:applyAutotrackerBoxes`): body `{overwrite?, imageId?}`, 200 `{applied, skipped, images}`; 409 `job_not_done` (job não está `done`); 400 `invalid_request`; 404 `not_found`; 503 `queue_unavailable`/`storage_unavailable`.
     - `autotrackerErrorMessage` (`types/studio.ts`): compartilhado entre AutoTrackerModal, ActionCenter e /jobs; mantém "Job não encontrado." para o apply (actions em /jobs e ActionCenter).
+  - AutoLabel — IMPLEMENTADO (Fatia AutoLabel v1, ADR-0016, spec 0.15.0):
+    - `POST /api/jobs/autolabel` (`lib/autolabel.ts:startAutolabelJob`): body `{datasetId, model?, prompt?, orchestratorId?}`, 202 `{jobId,status:"queued",queuePosition?}`. Modal `AutoLabelModal` — disparado a partir da Galeria do Dataset quando `imagesCount > 0`. Campo modelo fixo mock ("Mock (determinístico)"), input de prompt livre opcional, seleção de nó com `NodeSelect`.
+    - `POST /api/jobs/:id/autolabel/apply` (`lib/autolabel.ts:applyAutolabelCaptions`): body `{datasetId?, overwrite?}`, 200 `{applied, skipped, images}`; 409 `job_not_done` (job não está `done`); 400 `invalid_request`; 404 `not_found`; 503 `queue_unavailable`/`storage_unavailable`. Botão contextual "Aplicar legendas ao dataset" em `/jobs` e no ActionCenter com checkbox de overwrite.
+    - `autolabelErrorMessage` (`types/studio.ts`): mensagens em pt-BR padronizadas.
   - **Centro de Atividades (`ActionCenter.tsx`):** consome `/api/jobs` e `/api/telemetry` em tempo real em uma gaveta global (`Drawer`), permitindo abortar jobs, baixar artefatos e aplicar anotações do AutoTracker sem sair do contexto de trabalho atual.
   - Telemetria real (polling `getTelemetry()` a cada 3s via `Sidebar.tsx`, `ActionCenter.tsx` e `dashboard/page.tsx`): `Telemetry{measured,cpu,ram,ramTotal,vramUsed,vramTotal,gpus,jobsActive}`. `ramTotal` (bytes, aditivo) = total de RAM do nó; a UI calcula `ramGB = ram / (1024**3)` e `ramPct = ram / ramTotal`. **Emenda H.7 (ADR-0011):** com >1 nó, `cpu/ram/ramTotal` = `null` (não agregáveis); `gpus` = união; `vramUsed/vramTotal` = soma; `measured:true` se ≥1 nó fresco. Dashboard compõe gauges por nó a partir de `/api/orchestrators` enriquecido (regra `items.length===1` morta — ADR-0011 D7).
   - **Monitoring — IMPLEMENTADO (F6.1 + Fatia H; ADR-0009 + ADR-0011):**
@@ -299,6 +303,7 @@ apps/web/
 │   │   └── Toast, TruncatedText, ZoomControl, index.ts, README.md
 │   ├── studio/                           # Componentes de negócio e workspaces do estúdio
 │   │   ├── ActionCenter.tsx              # Gaveta lateral de monitoramento e atalhos
+│   │   ├── AutoLabelModal.tsx            # Diálogo de disparo do AutoLabel (Fatia AutoLabel v1)
 │   │   ├── AutoTrackerModal.tsx          # Diálogo de disparo do AutoTracker
 │   │   ├── ClassesModal.tsx              # Diálogo de gestão de classes do dataset
 │   │   ├── ConfirmDialog.tsx             # Confirmação de exclusões e aborts

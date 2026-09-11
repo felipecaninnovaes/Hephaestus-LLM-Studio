@@ -913,6 +913,99 @@ async fn list_jobs_e_queue() {
     assert_eq!(list_queued.total, 2);
 }
 
+/// Testa campos de orquestrador no wire de list_jobs e get_job (ADR-0015 D1).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn wire_orchestrator_fields_list_e_get() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    // 1. Adota orquestrador para ter linha na tabela orchestrators.
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+    let (orch_id, orch_name, orch_kind): (uuid::Uuid, String, String) =
+        sqlx::query_as("SELECT id, name, kind FROM orchestrators WHERE status = 'online' LIMIT 1")
+            .fetch_one(&p)
+            .await
+            .expect("get orch");
+
+    // 2. Cria job — estado 'queued' (ainda não despachado).
+    let r = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create job");
+    let job_id: uuid::Uuid = r.job_id.parse().unwrap();
+
+    let job_queued = manager::get_job(&p, job_id).await.expect("get job queued");
+    assert_eq!(job_queued.orchestrator_id, None);
+    assert_eq!(job_queued.orchestrator_name, None);
+    assert_eq!(job_queued.orchestrator_kind, None);
+    assert!(!job_queued.orchestrator_fallback);
+
+    let list_queued = manager::list_jobs(&p, None, None)
+        .await
+        .expect("list jobs queued");
+    assert_eq!(list_queued.items[0].orchestrator_id, None);
+    assert_eq!(list_queued.items[0].orchestrator_name, None);
+    assert_eq!(list_queued.items[0].orchestrator_kind, None);
+    assert!(!list_queued.items[0].orchestrator_fallback);
+
+    // 3. Despacha job — deve preencher orchestrator_id, name, kind do JOIN.
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+
+    let job_disp = manager::get_job(&p, job_id).await.expect("get job disp");
+    assert_eq!(job_disp.orchestrator_id, Some(orch_id.to_string()));
+    assert_eq!(job_disp.orchestrator_name, Some(orch_name.clone()));
+    assert_eq!(job_disp.orchestrator_kind, Some(orch_kind.clone()));
+    assert!(!job_disp.orchestrator_fallback);
+
+    let list_disp = manager::list_jobs(&p, None, None)
+        .await
+        .expect("list jobs disp");
+    assert_eq!(
+        list_disp.items[0].orchestrator_id,
+        Some(orch_id.to_string())
+    );
+    assert_eq!(list_disp.items[0].orchestrator_name, Some(orch_name));
+    assert_eq!(list_disp.items[0].orchestrator_kind, Some(orch_kind));
+    assert!(!list_disp.items[0].orchestrator_fallback);
+
+    // 4. Se params contiver orchestrator_fallback = true, a flag deve ser true.
+    sqlx::query("UPDATE jobs SET params = jsonb_set(params, '{orchestrator_fallback}', '\"true\"') WHERE id = $1")
+        .bind(job_id)
+        .execute(&p)
+        .await
+        .expect("update fallback flag");
+
+    let job_fb = manager::get_job(&p, job_id)
+        .await
+        .expect("get job fallback");
+    assert!(job_fb.orchestrator_fallback);
+
+    let list_fb = manager::list_jobs(&p, None, None)
+        .await
+        .expect("list jobs fallback");
+    assert!(list_fb.items[0].orchestrator_fallback);
+
+    // 5. Se o orquestrador for removido (SET NULL), campos viram None mas fallback se mantém.
+    sqlx::query("UPDATE jobs SET orchestrator_id = NULL WHERE id = $1")
+        .bind(job_id)
+        .execute(&p)
+        .await
+        .expect("set orchestrator null");
+
+    let job_null = manager::get_job(&p, job_id)
+        .await
+        .expect("get job null orch");
+    assert_eq!(job_null.orchestrator_id, None);
+    assert_eq!(job_null.orchestrator_name, None);
+    assert_eq!(job_null.orchestrator_kind, None);
+    assert!(job_null.orchestrator_fallback);
+}
+
 /// Testa append incremental de metrics por epoch + dedup (R4).
 /// Cada report do orquestrador envia 1 objeto; o manager deve acumular em array.
 #[tokio::test]

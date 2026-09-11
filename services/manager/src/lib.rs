@@ -7,7 +7,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -98,6 +98,10 @@ pub struct JobRow {
     pub metrics: Option<serde_json::Value>,
     pub vram_min_gb: Option<i32>,
     pub orchestrator_id: Option<String>,
+    pub orchestrator_name: Option<String>,
+    pub orchestrator_kind: Option<String>,
+    #[serde(default)]
+    pub orchestrator_fallback: bool,
     pub created_at: String,
     pub finished_at: Option<String>,
 }
@@ -464,22 +468,30 @@ pub async fn list_jobs(
         .map(|(i, (id,))| (id.to_string(), (i + 1) as i32))
         .collect();
 
-    let mut query = String::from("SELECT id, kind, engine, model, mode, dataset_id, status, queue_reason, progress, epoch, step, metrics, vram_min_gb, orchestrator_id, created_at, finished_at FROM jobs WHERE 1=1");
+    let mut query = String::from(
+        "SELECT j.id, j.kind, j.engine, j.model, j.mode, j.dataset_id, j.status, j.queue_reason, \
+         j.progress, j.epoch, j.step, j.metrics, j.vram_min_gb, j.orchestrator_id, j.created_at, j.finished_at, \
+         o.name AS orchestrator_name, o.kind AS orchestrator_kind, \
+         COALESCE((j.params->>'orchestrator_fallback') = 'true', false) AS orchestrator_fallback \
+         FROM jobs j \
+         LEFT JOIN orchestrators o ON o.id = j.orchestrator_id \
+         WHERE 1=1",
+    );
     let mut count_query = String::from("SELECT COUNT(*) FROM jobs WHERE 1=1");
     let mut bind_idx: u32 = 1;
 
     if status.is_some() {
-        let clause = format!(" AND status = ${bind_idx}");
+        let clause = format!(" AND j.status = ${bind_idx}");
         query.push_str(&clause);
-        count_query.push_str(&clause);
+        count_query.push_str(&format!(" AND status = ${bind_idx}"));
         bind_idx += 1;
     }
     if engine.is_some() {
-        let clause = format!(" AND engine = ${bind_idx}");
+        let clause = format!(" AND j.engine = ${bind_idx}");
         query.push_str(&clause);
-        count_query.push_str(&clause);
+        count_query.push_str(&format!(" AND engine = ${bind_idx}"));
     }
-    query.push_str(" ORDER BY created_at DESC");
+    query.push_str(" ORDER BY j.created_at DESC");
 
     let mut count_q = sqlx::query_as::<_, (i64,)>(&count_query);
     if let Some(s) = status {
@@ -493,51 +505,14 @@ pub async fn list_jobs(
         .await
         .map_err(|e| ManagerError::Internal(format!("count jobs: {e}")))?;
 
-    let mut main_q = sqlx::query_as::<
-        _,
-        (
-            Uuid,
-            String,
-            String,
-            String,
-            String,
-            Option<Uuid>,
-            String,
-            Option<String>,
-            Option<f64>,
-            Option<i32>,
-            Option<i32>,
-            Option<serde_json::Value>,
-            Option<i32>,
-            Option<Uuid>,
-            DateTime<Utc>,
-            Option<DateTime<Utc>>,
-        ),
-    >(&query);
+    let mut main_q = sqlx::query(&query);
     if let Some(s) = status {
         main_q = main_q.bind(s);
     }
     if let Some(e) = engine {
         main_q = main_q.bind(e);
     }
-    let rows: Vec<(
-        Uuid,
-        String,
-        String,
-        String,
-        String,
-        Option<Uuid>,
-        String,
-        Option<String>,
-        Option<f64>,
-        Option<i32>,
-        Option<i32>,
-        Option<serde_json::Value>,
-        Option<i32>,
-        Option<Uuid>,
-        DateTime<Utc>,
-        Option<DateTime<Utc>>,
-    )> = main_q
+    let rows = main_q
         .fetch_all(pool)
         .await
         .map_err(|e| ManagerError::Internal(format!("list jobs: {e}")))?;
@@ -545,30 +520,39 @@ pub async fn list_jobs(
     let items = rows
         .into_iter()
         .map(|r| {
-            let id_str = r.0.to_string();
-            let queue_position = if r.6 == "queued" {
+            let id: Uuid = r.get("id");
+            let id_str = id.to_string();
+            let status: String = r.get("status");
+            let queue_position = if status == "queued" {
                 pos_map.get(&id_str).copied()
             } else {
                 None
             };
+            let dataset_id: Option<Uuid> = r.get("dataset_id");
+            let orchestrator_id: Option<Uuid> = r.get("orchestrator_id");
+            let created_at: DateTime<Utc> = r.get("created_at");
+            let finished_at: Option<DateTime<Utc>> = r.get("finished_at");
             JobRow {
                 id: id_str,
-                kind: r.1,
-                engine: r.2,
-                model: r.3,
-                mode: r.4,
-                dataset_id: r.5.map(|u| u.to_string()),
-                status: r.6,
-                queue_reason: r.7,
+                kind: r.get("kind"),
+                engine: r.get("engine"),
+                model: r.get("model"),
+                mode: r.get("mode"),
+                dataset_id: dataset_id.map(|u| u.to_string()),
+                status,
+                queue_reason: r.get("queue_reason"),
                 queue_position,
-                progress: r.8,
-                epoch: r.9,
-                step: r.10,
-                metrics: r.11,
-                vram_min_gb: r.12,
-                orchestrator_id: r.13.map(|u| u.to_string()),
-                created_at: r.14.to_rfc3339(),
-                finished_at: r.15.map(|t| t.to_rfc3339()),
+                progress: r.get("progress"),
+                epoch: r.get("epoch"),
+                step: r.get("step"),
+                metrics: r.get("metrics"),
+                vram_min_gb: r.get("vram_min_gb"),
+                orchestrator_id: orchestrator_id.map(|u| u.to_string()),
+                orchestrator_name: r.get("orchestrator_name"),
+                orchestrator_kind: r.get("orchestrator_kind"),
+                orchestrator_fallback: r.get("orchestrator_fallback"),
+                created_at: created_at.to_rfc3339(),
+                finished_at: finished_at.map(|t| t.to_rfc3339()),
             }
         })
         .collect();
@@ -593,13 +577,14 @@ pub async fn get_job(pool: &PgPool, id: Uuid) -> Result<JobRow, ManagerError> {
         .map(|(i, (id,))| (id.to_string(), (i + 1) as i32))
         .collect();
 
-    let row: Option<(
-        Uuid, String, String, String, String, Option<Uuid>, String, Option<String>,
-        Option<f64>, Option<i32>, Option<i32>, Option<serde_json::Value>,
-        Option<i32>, Option<Uuid>, DateTime<Utc>, Option<DateTime<Utc>>,
-    )> = sqlx::query_as(
-        "SELECT id, kind, engine, model, mode, dataset_id, status, queue_reason, progress, epoch, step, metrics, vram_min_gb, orchestrator_id, created_at, finished_at \
-         FROM jobs WHERE id = $1",
+    let row = sqlx::query(
+        "SELECT j.id, j.kind, j.engine, j.model, j.mode, j.dataset_id, j.status, j.queue_reason, \
+         j.progress, j.epoch, j.step, j.metrics, j.vram_min_gb, j.orchestrator_id, j.created_at, j.finished_at, \
+         o.name AS orchestrator_name, o.kind AS orchestrator_kind, \
+         COALESCE((j.params->>'orchestrator_fallback') = 'true', false) AS orchestrator_fallback \
+         FROM jobs j \
+         LEFT JOIN orchestrators o ON o.id = j.orchestrator_id \
+         WHERE j.id = $1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -607,31 +592,40 @@ pub async fn get_job(pool: &PgPool, id: Uuid) -> Result<JobRow, ManagerError> {
     .map_err(|e| ManagerError::Internal(format!("get job: {e}")))?;
 
     let r = row.ok_or(ManagerError::NotFound)?;
-    let id_str = r.0.to_string();
-    let queue_position = if r.6 == "queued" {
+    let job_id: Uuid = r.get("id");
+    let id_str = job_id.to_string();
+    let status: String = r.get("status");
+    let queue_position = if status == "queued" {
         pos_map.get(&id_str).copied()
     } else {
         None
     };
+    let dataset_id: Option<Uuid> = r.get("dataset_id");
+    let orchestrator_id: Option<Uuid> = r.get("orchestrator_id");
+    let created_at: DateTime<Utc> = r.get("created_at");
+    let finished_at: Option<DateTime<Utc>> = r.get("finished_at");
 
     Ok(JobRow {
         id: id_str,
-        kind: r.1,
-        engine: r.2,
-        model: r.3,
-        mode: r.4,
-        dataset_id: r.5.map(|u| u.to_string()),
-        status: r.6,
-        queue_reason: r.7,
+        kind: r.get("kind"),
+        engine: r.get("engine"),
+        model: r.get("model"),
+        mode: r.get("mode"),
+        dataset_id: dataset_id.map(|u| u.to_string()),
+        status,
+        queue_reason: r.get("queue_reason"),
         queue_position,
-        progress: r.8,
-        epoch: r.9,
-        step: r.10,
-        metrics: r.11,
-        vram_min_gb: r.12,
-        orchestrator_id: r.13.map(|u| u.to_string()),
-        created_at: r.14.to_rfc3339(),
-        finished_at: r.15.map(|t| t.to_rfc3339()),
+        progress: r.get("progress"),
+        epoch: r.get("epoch"),
+        step: r.get("step"),
+        metrics: r.get("metrics"),
+        vram_min_gb: r.get("vram_min_gb"),
+        orchestrator_id: orchestrator_id.map(|u| u.to_string()),
+        orchestrator_name: r.get("orchestrator_name"),
+        orchestrator_kind: r.get("orchestrator_kind"),
+        orchestrator_fallback: r.get("orchestrator_fallback"),
+        created_at: created_at.to_rfc3339(),
+        finished_at: finished_at.map(|t| t.to_rfc3339()),
     })
 }
 

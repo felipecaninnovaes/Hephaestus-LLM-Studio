@@ -64,6 +64,9 @@ pub struct CreateJobRequest {
     pub vram_min_gb: Option<i32>,
     /// UUID de uma row de `models` para fine-tune (ADR-0012 D5).
     pub weights_id: Option<Uuid>,
+    /// Hint opcional de orquestrador para despacho (ADR-0015 D2).
+    #[serde(default)]
+    pub orchestrator_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -411,6 +414,31 @@ pub async fn create_job(
                 }
             }
         }
+    }
+
+    // Validação de orchestrator_hint (ADR-0015 D2).
+    if let Some(ref hint_str) = req.orchestrator_hint {
+        let hint_uuid = Uuid::parse_str(hint_str).map_err(|_| {
+            ManagerError::InvalidRequest("orchestrator_hint must be a valid UUID".into())
+        })?;
+
+        let orch_status: Option<(String,)> =
+            sqlx::query_as("SELECT status FROM orchestrators WHERE id = $1")
+                .bind(hint_uuid)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| ManagerError::Internal(format!("check orchestrator_hint: {e}")))?;
+
+        match orch_status {
+            None => return Err(ManagerError::NotFound),
+            Some((status,)) if status != "online" => {
+                return Err(ManagerError::InvalidRequest(
+                    "nó de execução indisponível (offline ou revogado) — escolha outro ou Automático".into(),
+                ));
+            }
+            _ => {}
+        }
+        params["orchestrator_hint"] = serde_json::json!(hint_uuid.to_string());
     }
 
     sqlx::query(
@@ -1776,25 +1804,61 @@ pub async fn dispatch_next(
     // 2. Resolve requisito VRAM da vram-table.
     let required_gb: Option<i32> = vram_table.resolve_required_gb(&engine, &model, &mode);
 
-    // 3. Seleciona orquestrador elegível (ADR-0011 D3.2).
-    let orch: Option<(Uuid, String)> = sqlx::query_as(
-        "SELECT o.id, o.endpoint FROM orchestrators o \
-         WHERE o.status = 'online' \
-           AND NOT EXISTS (SELECT 1 FROM jobs j \
-                           WHERE j.orchestrator_id = o.id \
-                             AND j.status IN ('dispatched','preparing','running','cancelling')) \
-           AND ($1::int IS NULL OR o.vram_total_gb IS NULL OR o.vram_total_gb >= $1) \
-         ORDER BY (o.vram_total_gb IS NULL) ASC, \
-                  o.vram_total_gb DESC NULLS LAST, \
-                  o.name ASC \
-         LIMIT 1",
-    )
-    .bind(required_gb)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| ManagerError::Internal(format!("find orchestrator: {e}")))?;
+    // 3. Seleciona orquestrador (ADR-0015 D3).
+    // Se houver orchestrator_hint em params, tenta despachar para ele (D3.2).
+    let hint: Option<Uuid> = params
+        .as_ref()
+        .and_then(|p| p.get("orchestrator_hint"))
+        .and_then(|h| h.as_str())
+        .and_then(|s| s.parse().ok());
 
-    let (orch_id, orch_endpoint) = match orch {
+    let mut selected_orch: Option<(Uuid, String)> = None;
+    let mut fallback_used = false;
+
+    if let Some(hint_id) = hint {
+        let hinted: Option<(Uuid, String)> = sqlx::query_as(
+            "SELECT o.id, o.endpoint FROM orchestrators o \
+             WHERE o.id = $1 AND o.status = 'online' \
+               AND NOT EXISTS (SELECT 1 FROM jobs j \
+                               WHERE j.orchestrator_id = o.id \
+                                 AND j.status IN ('dispatched','preparing','running','cancelling')) \
+               AND ($2::int IS NULL OR o.vram_total_gb IS NULL OR o.vram_total_gb >= $2)",
+        )
+        .bind(hint_id)
+        .bind(required_gb)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("find hinted orchestrator: {e}")))?;
+
+        if let Some(o) = hinted {
+            selected_orch = Some(o);
+        } else {
+            fallback_used = true;
+        }
+    }
+
+    if selected_orch.is_none() {
+        let eligible: Option<(Uuid, String)> = sqlx::query_as(
+            "SELECT o.id, o.endpoint FROM orchestrators o \
+             WHERE o.status = 'online' \
+               AND NOT EXISTS (SELECT 1 FROM jobs j \
+                               WHERE j.orchestrator_id = o.id \
+                                 AND j.status IN ('dispatched','preparing','running','cancelling')) \
+               AND ($1::int IS NULL OR o.vram_total_gb IS NULL OR o.vram_total_gb >= $1) \
+             ORDER BY (o.vram_total_gb IS NULL) ASC, \
+                      o.vram_total_gb DESC NULLS LAST, \
+                      o.name ASC \
+             LIMIT 1",
+        )
+        .bind(required_gb)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("find orchestrator: {e}")))?;
+
+        selected_orch = eligible;
+    }
+
+    let (orch_id, orch_endpoint) = match selected_orch {
         Some(o) => o,
         None => {
             // Sem nó elegível: waiting_vram (se requisito) ou waiting_slot.
@@ -1813,16 +1877,30 @@ pub async fn dispatch_next(
         }
     };
 
-    // 4. Marca dispatched.
-    sqlx::query(
-        "UPDATE jobs SET status = 'dispatched', queue_reason = NULL, orchestrator_id = $2 \
-         WHERE id = $1 AND status = 'queued'",
-    )
-    .bind(job_id)
-    .bind(orch_id)
-    .execute(pool)
-    .await
-    .map_err(|e| ManagerError::Internal(format!("set dispatched: {e}")))?;
+    // 4. Marca dispatched e atualiza flag de fallback em params (ADR-0015 D3.3, D3.5).
+    if fallback_used {
+        sqlx::query(
+            "UPDATE jobs SET status = 'dispatched', queue_reason = NULL, orchestrator_id = $2, \
+             params = jsonb_set(params, '{orchestrator_fallback}', 'true'::jsonb) \
+             WHERE id = $1 AND status = 'queued'",
+        )
+        .bind(job_id)
+        .bind(orch_id)
+        .execute(pool)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("set dispatched (fallback): {e}")))?;
+    } else {
+        sqlx::query(
+            "UPDATE jobs SET status = 'dispatched', queue_reason = NULL, orchestrator_id = $2, \
+             params = params - 'orchestrator_fallback' \
+             WHERE id = $1 AND status = 'queued'",
+        )
+        .bind(job_id)
+        .bind(orch_id)
+        .execute(pool)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("set dispatched: {e}")))?;
+    }
 
     // 5. Monta payload do dispatch (idêntico ao anterior).
     let package_ref = params

@@ -164,6 +164,7 @@ fn test_job_request(dataset_id: uuid::Uuid) -> CreateJobRequest {
         })),
         vram_min_gb: None,
         weights_id: None,
+        orchestrator_hint: None,
     }
 }
 
@@ -2711,6 +2712,7 @@ async fn roteamento_2_nos_requisito_8_vai_para_12gb() {
             params: None,
             vram_min_gb: None,
             weights_id: None,
+            orchestrator_hint: None,
         },
     )
     .await
@@ -2777,6 +2779,7 @@ async fn roteamento_sem_requisito_null_elegivel_order_by_nome() {
             params: None,
             vram_min_gb: None,
             weights_id: None,
+            orchestrator_hint: None,
         },
     )
     .await
@@ -2857,6 +2860,7 @@ async fn roteamento_no_com_job_excluido() {
             params: None,
             vram_min_gb: None,
             weights_id: None,
+            orchestrator_hint: None,
         },
     )
     .await
@@ -2912,6 +2916,7 @@ async fn roteamento_requisito_12_so_6gb_waiting_vram() {
             params: None,
             vram_min_gb: None,
             weights_id: None,
+            orchestrator_hint: None,
         },
     )
     .await
@@ -2954,6 +2959,7 @@ async fn roteamento_sem_requisito_nenhum_online_waiting_slot() {
             params: None,
             vram_min_gb: None,
             weights_id: None,
+            orchestrator_hint: None,
         },
     )
     .await
@@ -3418,6 +3424,7 @@ fn predict_job_request(dataset_id: uuid::Uuid) -> CreateJobRequest {
         })),
         vram_min_gb: None,
         weights_id: None,
+        orchestrator_hint: None,
     }
 }
 
@@ -3741,6 +3748,7 @@ fn autotracker_job_request(dataset_id: uuid::Uuid) -> CreateJobRequest {
         })),
         vram_min_gb: None,
         weights_id: None,
+        orchestrator_hint: None,
     }
 }
 
@@ -3998,4 +4006,366 @@ async fn create_model_engine_invalida_400() {
 
     let result = manager::create_model(&p, req).await;
     assert!(matches!(result, Err(ManagerError::InvalidRequest(_))));
+}
+
+// ===========================================================================
+// N.2 — Seleção de nó: hint no create_job + dispatch com preferência e fallback
+// ===========================================================================
+
+/// Submit com orchestrator_hint não-UUID → 400 invalid_request.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn submit_hint_invalido_400() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let mut req = test_job_request(ds_id);
+    req.orchestrator_hint = Some("nao-eh-uuid".into());
+
+    let result = manager::create_job(&p, req).await;
+    assert!(matches!(result, Err(ManagerError::InvalidRequest(_))));
+}
+
+/// Submit com orchestrator_hint inexistente → 404 not_found.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn submit_hint_inexistente_404() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let mut req = test_job_request(ds_id);
+    req.orchestrator_hint = Some(uuid::Uuid::new_v4().to_string());
+
+    let result = manager::create_job(&p, req).await;
+    assert!(matches!(result, Err(ManagerError::NotFound)));
+}
+
+/// Submit com nó offline ou revogado → 400 invalid_request com mensagem honesta.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn submit_hint_offline_ou_revogado_400() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let orch_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'offline-node', 'http://offline:8082', 'remoto', 'offline')",
+    )
+    .bind(orch_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let mut req = test_job_request(ds_id);
+    req.orchestrator_hint = Some(orch_id.to_string());
+
+    let result = manager::create_job(&p, req).await;
+    match result {
+        Err(ManagerError::InvalidRequest(msg)) => {
+            assert!(msg.contains("indisponível"));
+        }
+        other => panic!("esperava InvalidRequest, obteve {:?}", other),
+    }
+
+    // Revogado também deve retornar 400
+    sqlx::query("UPDATE orchestrators SET status = 'revoked' WHERE id = $1")
+        .bind(orch_id)
+        .execute(&p)
+        .await
+        .unwrap();
+
+    let mut req2 = test_job_request(ds_id);
+    req2.orchestrator_hint = Some(orch_id.to_string());
+
+    let result2 = manager::create_job(&p, req2).await;
+    assert!(matches!(result2, Err(ManagerError::InvalidRequest(_))));
+}
+
+/// Submit com hint válido grava params.orchestrator_hint.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn submit_hint_valido_grava_params() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+    let (orch_id,): (uuid::Uuid,) =
+        sqlx::query_as("SELECT id FROM orchestrators WHERE status = 'online' LIMIT 1")
+            .fetch_one(&p)
+            .await
+            .unwrap();
+
+    let mut req = test_job_request(ds_id);
+    req.orchestrator_hint = Some(orch_id.to_string());
+
+    let resp = manager::create_job(&p, req).await.expect("create job");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    let (params,): (serde_json::Value,) = sqlx::query_as("SELECT params FROM jobs WHERE id = $1")
+        .bind(job_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        params.get("orchestrator_hint").and_then(|v| v.as_str()),
+        Some(orch_id.to_string().as_str())
+    );
+}
+
+/// Dispatch com hint honrado: despacha para o nó solicitado em 1º nível.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn dispatch_hint_honrado() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+    let vt = test_vram_table();
+
+    // 2 nós: 'aaa' e 'bbb'. Por ordem alfabética normal, 'aaa' seria o escolhido.
+    let id_a = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'aaa-node', 'http://aaa:8082', 'local', 'online')",
+    )
+    .bind(id_a)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let id_b = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'bbb-node', 'http://bbb:8082', 'remoto', 'online')",
+    )
+    .bind(id_b)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let mut req = test_job_request(ds_id);
+    req.orchestrator_hint = Some(id_b.to_string());
+
+    let resp = manager::create_job(&p, req).await.expect("create job");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &vt)
+        .await
+        .expect("dispatch");
+
+    let job = manager::get_job(&p, job_id).await.expect("get job");
+    assert_eq!(job.status, "dispatched");
+    assert_eq!(job.orchestrator_id, Some(id_b.to_string()));
+    assert_eq!(job.orchestrator_name, Some("bbb-node".into()));
+    assert_eq!(job.orchestrator_kind, Some("remoto".into()));
+    assert!(!job.orchestrator_fallback);
+}
+
+/// Dispatch com hint ocupado -> fallback automático para o nó livre + flag fallback=true.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn dispatch_hint_fallback_ocupado() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+    let vt = test_vram_table();
+
+    let id_a = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'node-a', 'http://a:8082', 'local', 'online')",
+    )
+    .bind(id_a)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let id_b = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'node-b', 'http://b:8082', 'remoto', 'online')",
+    )
+    .bind(id_b)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    // Node B tem um job ativo (dispatched).
+    let active_job_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO jobs (id, kind, engine, model, mode, dataset_id, status, orchestrator_id) \
+         VALUES ($1, 'yolo_train', 'yolo', 'yolo11n', 'train', $2, 'dispatched', $3)",
+    )
+    .bind(active_job_id)
+    .bind(ds_id)
+    .bind(id_b)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    // Cria novo job com hint para Node B.
+    let mut req = test_job_request(ds_id);
+    req.orchestrator_hint = Some(id_b.to_string());
+
+    let resp = manager::create_job(&p, req).await.expect("create job");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &vt)
+        .await
+        .expect("dispatch");
+
+    let job = manager::get_job(&p, job_id).await.expect("get job");
+    assert_eq!(job.status, "dispatched");
+    assert_eq!(job.orchestrator_id, Some(id_a.to_string()));
+    assert_eq!(job.orchestrator_name, Some("node-a".into()));
+    assert!(job.orchestrator_fallback);
+}
+
+/// Dispatch com hint sem capacidade -> fallback para o nó com capacidade + flag.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn dispatch_hint_fallback_sem_capacidade() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+    let vt = test_vram_table();
+
+    // Node A tem 6GB, Node B tem 12GB.
+    let id_a = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status, vram_total_gb) \
+         VALUES ($1, 'node-6gb', 'http://a:8082', 'local', 'online', 6)",
+    )
+    .bind(id_a)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let id_b = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status, vram_total_gb) \
+         VALUES ($1, 'node-12gb', 'http://b:8082', 'remoto', 'online', 12)",
+    )
+    .bind(id_b)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    // yolo11m train requer 12GB (vram_min=10 + headroom=2).
+    let mut req = test_job_request(ds_id);
+    req.model = "yolo11m".into();
+    req.orchestrator_hint = Some(id_a.to_string()); // Pede nó de 6GB
+
+    let resp = manager::create_job(&p, req).await.expect("create job");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &vt)
+        .await
+        .expect("dispatch");
+
+    let job = manager::get_job(&p, job_id).await.expect("get job");
+    assert_eq!(job.status, "dispatched");
+    assert_eq!(job.orchestrator_id, Some(id_b.to_string()));
+    assert_eq!(job.orchestrator_name, Some("node-12gb".into()));
+    assert!(job.orchestrator_fallback);
+}
+
+/// Recovery/Watchdog re-queue preserva o hint em params, e o re-dispatch limpa a flag se honrado (ADR-0015 D4).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn watchdog_requeue_preserva_hint_e_redispatch() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+    let vt = test_vram_table();
+
+    let id_a = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'node-a', 'http://a:8082', 'local', 'online')",
+    )
+    .bind(id_a)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let id_b = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'node-b', 'http://b:8082', 'remoto', 'online')",
+    )
+    .bind(id_b)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    // 1. Ocupa B inicialmente.
+    let occ_job = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO jobs (id, kind, engine, model, mode, dataset_id, status, orchestrator_id) \
+         VALUES ($1, 'yolo_train', 'yolo', 'yolo11n', 'train', $2, 'dispatched', $3)",
+    )
+    .bind(occ_job)
+    .bind(ds_id)
+    .bind(id_b)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    // 2. Cria job com hint para B.
+    let mut req = test_job_request(ds_id);
+    req.orchestrator_hint = Some(id_b.to_string());
+
+    let resp = manager::create_job(&p, req).await.expect("create job");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    // 3. Dispatch -> B ocupado, vai para A com fallback=true.
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &vt)
+        .await
+        .expect("dispatch");
+
+    let j1 = manager::get_job(&p, job_id).await.expect("get job 1");
+    assert_eq!(j1.orchestrator_id, Some(id_a.to_string()));
+    assert!(j1.orchestrator_fallback);
+
+    // 4. Simula recuperação/watchdog re-queueando o job (voltando a queued).
+    sqlx::query("UPDATE jobs SET status = 'queued', orchestrator_id = NULL WHERE id = $1")
+        .bind(job_id)
+        .execute(&p)
+        .await
+        .unwrap();
+
+    // Libera B.
+    sqlx::query("UPDATE jobs SET status = 'done' WHERE id = $1")
+        .bind(occ_job)
+        .execute(&p)
+        .await
+        .unwrap();
+
+    // 5. Re-dispatch -> agora B está livre, hint é honrado!
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &vt)
+        .await
+        .expect("redispatch");
+
+    let j2 = manager::get_job(&p, job_id).await.expect("get job 2");
+    assert_eq!(j2.orchestrator_id, Some(id_b.to_string()));
+    assert_eq!(j2.orchestrator_name, Some("node-b".into()));
+    assert!(!j2.orchestrator_fallback); // Flag removida!
 }

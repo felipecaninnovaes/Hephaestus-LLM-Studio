@@ -19,9 +19,14 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-11 (FATIA N CONCLUÍDA — VISIBILIDADE E SELEÇÃO DE NÓ)
+## Estado atual — 2026-09-11 (FATIA AUTOLABEL V1 EM ANDAMENTO)
 
-- **FATIA N (VISIBILIDADE E SELEÇÃO DE NÓ) — IMPLEMENTAÇÃO CONCLUÍDA E TESTADA (2026-09-11)** — branch `feat/visibilidade-no`. **Especificação executável: `docs/adr/0015-visibilidade-selecao-no.md`** (D0–D7).
+- **FATIA AUTOLABEL V1 — EM EXECUÇÃO (2026-09-11)** — branch `feat/autolabel-v1`. **Especificação executável: `docs/adr/0016-autolabel-v1.md`** (D0–D5).
+  - **AL.0 (docs/adr)**: ADR-0016 aceita e registrada; plano ativo de commits registrado.
+  - **Próximos passos**: AL.1 (migration 0009 & models) → AL.2 (engine mock) → AL.3 (orquestrador & manager) → AL.4 (rotas submit/apply & OpenAPI 0.15.0) → AL.5 (web galeria & modal) → AL.6 (smoke e2e) → AL.7 (review) → AL.8 (docs-sync).
+
+- **FATIA N (VISIBILIDADE E SELEÇÃO DE NÓ) — MERGEADA NA MAIN (2026-09-11)** — PRs #7 e #8 mergeados.
+
   - **N.1 (Manager wire)**: `JobRow` com `orchestrator_id`, `orchestrator_name`, `orchestrator_kind`, `orchestrator_fallback` via `LEFT JOIN orchestrators`. Testado em `tests/manager_db.rs` (commit `2bb861c`).
   - **N.2 (Manager hint & dispatch)**: `CreateJobRequest` com `orchestrator_hint`. Validação fail-fast (não-UUID ⇒ 400, inexistente ⇒ 404, não-online ⇒ 400). Despacho em 1º nível pelo nó com fallback automático após timeout de 120s gravando honestamente `orchestrator_fallback = true` (limpa caso nó preferencial seja honrado). 8 testes novos em `manager_db.rs` (commit `1dfbe32`).
   - **N.3 (api-principal & OpenAPI 0.14.0)**: `orchestratorId` nos 3 submits públicos (`POST /api/jobs/yolo`, `/autotracker`, `/predict`), validações fail-fast não-UUID ⇒ 400, compensação de pacotes S3/banco no erro do manager, wire de jobs enriquecido com os dados do nó, testes unitários e de contrato (commit `1766bc7`).

@@ -300,6 +300,32 @@ pub fn resolve_class_ids(
         .collect()
 }
 
+/// Resolve o class_id correspondente a uma classe retornada pelo engine,
+/// usando correspondência exata primeiro, com fallback para case-insensitive
+/// e equivalência entre espaço e underscore (ex.: ARMPITS_EXPOSED vs armpits_exposed).
+pub fn match_class_id<'a>(
+    class_name: &str,
+    exact_map: &'a std::collections::HashMap<String, uuid::Uuid>,
+    lower_map: &'a std::collections::HashMap<String, uuid::Uuid>,
+) -> Option<&'a uuid::Uuid> {
+    if let Some(id) = exact_map.get(class_name) {
+        return Some(id);
+    }
+    let lower = class_name.to_lowercase();
+    if let Some(id) = lower_map.get(&lower) {
+        return Some(id);
+    }
+    let with_space = lower.replace('_', " ");
+    if let Some(id) = lower_map.get(&with_space) {
+        return Some(id);
+    }
+    let with_underscore = lower.replace(' ', "_");
+    if let Some(id) = lower_map.get(&with_underscore) {
+        return Some(id);
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Predict (Fatia J — ADR-0013 D0/D1/D2/D8) — body, validação e config.yaml
 // ---------------------------------------------------------------------------
@@ -1013,6 +1039,39 @@ mod tests {
         let map = resolve_class_ids(&classes);
         assert_eq!(map.len(), 2);
         assert_eq!(map["solda_fria"], uuid::Uuid::nil());
+    }
+
+    #[test]
+    fn match_class_id_cases() {
+        let id1 = uuid::Uuid::new_v4();
+        let id2 = uuid::Uuid::new_v4();
+        let classes = vec![
+            (id1, "armpits_exposed".into()),
+            (id2, "female breast exposed".into()),
+        ];
+        let exact_map = resolve_class_ids(&classes);
+        let lower_map: std::collections::HashMap<String, uuid::Uuid> = classes
+            .iter()
+            .map(|(id, name)| (name.to_lowercase(), *id))
+            .collect();
+
+        // Exact match
+        assert_eq!(
+            match_class_id("armpits_exposed", &exact_map, &lower_map),
+            Some(&id1)
+        );
+        // Case-insensitive (UPPERCASE de modelos como NudeNet)
+        assert_eq!(
+            match_class_id("ARMPITS_EXPOSED", &exact_map, &lower_map),
+            Some(&id1)
+        );
+        // Space to underscore
+        assert_eq!(
+            match_class_id("FEMALE_BREAST_EXPOSED", &exact_map, &lower_map),
+            Some(&id2)
+        );
+        // Inexistente
+        assert_eq!(match_class_id("FACE_FEMALE", &exact_map, &lower_map), None);
     }
 
     // =========================================================================

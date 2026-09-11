@@ -1193,6 +1193,10 @@ pub async fn apply_autotracker_boxes(
         }
     };
     let class_map = models::resolve_class_ids(&class_rows);
+    let class_map_lower: std::collections::HashMap<String, Uuid> = class_rows
+        .iter()
+        .map(|(id, name)| (name.to_lowercase(), *id))
+        .collect();
 
     // 7. Processa cada imagem: uma transação por imagem (ADR-0008 D1a).
     let mut total_applied: i64 = 0;
@@ -1217,7 +1221,7 @@ pub async fn apply_autotracker_boxes(
         let mut valid_boxes: Vec<(Uuid, f64, f64, f64, f64, Option<f64>, String, Option<i32>)> =
             Vec::new();
         for eb in &engine_image.boxes {
-            match class_map.get(&eb.class) {
+            match models::match_class_id(&eb.class, &class_map, &class_map_lower) {
                 Some(class_id) => {
                     valid_boxes.push((
                         *class_id,

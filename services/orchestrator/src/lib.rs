@@ -3067,6 +3067,335 @@ also bad, not a number
     }
 
     // =========================================================================
+    // K.4 — autotracker with weights_ref tests (ADR-0014 D4)
+    // =========================================================================
+
+    /// Helper: cria dispatch para autotracker/autotrack com config que inclui {weights_path}.
+    fn make_autotracker_dispatch(job_id: &str) -> DispatchRequest {
+        DispatchRequest {
+            job_id: job_id.to_string(),
+            engine: "autotracker".to_string(),
+            image: "hephaestus/trainer-yolo:local".to_string(),
+            exec_mode: "docker".to_string(),
+            package_ref: PackageRef {
+                key: "packages/test-pkg/dataset.zip".to_string(),
+                md5_zip: String::new(),
+                bytes: 0,
+            },
+            config_yaml: Some(
+                "model: mock\nconf: 0.65\ndataset_path: {dataset_path}\noutput_path: {output_path}\nweights_path: {weights_path}"
+                    .to_string(),
+            ),
+            dataset_version_id: None,
+            workdir: "/tmp".to_string(),
+            mode: "autotrack".to_string(),
+            weights_ref: None,
+        }
+    }
+
+    fn make_autotracker_dispatch_with_valid_md5(job_id: &str, zip_path: &Path) -> DispatchRequest {
+        let md5 = compute_file_md5(zip_path).unwrap();
+        let mut d = make_autotracker_dispatch(job_id);
+        d.package_ref.md5_zip = md5;
+        d
+    }
+
+    // -- K.4 test 1: autotracker + weights_ref → staging + autotrack + config with {weights_path} --
+
+    #[tokio::test]
+    async fn autotracker_weights_ref_stages_and_replaces_config() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let weights_bytes = b"fake world weights data";
+        let weights_md5 = compute_file_md5_bytes(weights_bytes);
+        let s3 = Arc::new(FakeS3WithWeights::new(weights_bytes.to_vec()));
+
+        // Usa o zip_bytes do S3 mock para garantir MD5 consistente
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_autotracker_dispatch_with_valid_md5("job-at-w-001", &zip_path);
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        dispatch.weights_ref = Some(WeightsRef {
+            s3_key: "models/world/abc-123/yolov8x-worldv2.pt".to_string(),
+            md5: weights_md5,
+        });
+
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        // Simula output do engine: boxes.json + metrics.jsonl
+        let mut output_files = HashMap::new();
+        output_files.insert(
+            "boxes.json".to_string(),
+            br#"{"engine":"autotracker","model":"world","seed":0,"conf":0.65,"images":[{"filename":"img1.jpg","boxes":[{"class":"cat","x":0.1,"y":0.2,"w":0.3,"h":0.4,"conf":0.9}]}]}"#.to_vec(),
+        );
+        output_files.insert(
+            "metrics.jsonl".to_string(),
+            br#"{"box_loss":0.1,"cls_loss":0.2,"dfl_loss":0.3,"mAP50":0.9,"mAP50-95":0.7,"epoch":1}"#.to_vec(),
+        );
+        create_fake_outputs(tmp.path(), "job-at-w-001", &output_files);
+
+        let result = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "autotracker with weights_ref should succeed: {:?}",
+            result.err()
+        );
+
+        // 1. Verifica subcomando: autotrack
+        let args = executor.last_args().unwrap();
+        assert_eq!(args[0], "autotrack");
+        assert_eq!(args[1], "--config");
+        assert_eq!(args[3], "--output");
+
+        // 2. Verifica staging de pesos
+        let staged = tmp
+            .path()
+            .join("outputs/job-at-w-001/weights/yolov8x-worldv2.pt");
+        assert!(staged.exists(), "weights should be staged");
+        assert_eq!(std::fs::read(&staged).unwrap(), weights_bytes);
+
+        // 3. Verifica config.yaml com {weights_path} substituído
+        let config_content =
+            std::fs::read_to_string(tmp.path().join("outputs/job-at-w-001/config.yaml")).unwrap();
+        assert!(
+            config_content.contains("/outputs/job-at-w-001/weights/yolov8x-worldv2.pt"),
+            "config should contain replaced weights_path, got: {config_content}"
+        );
+        assert!(
+            !config_content.contains("{weights_path}"),
+            "config should not contain literal {{weights_path}}"
+        );
+
+        // 4. Verifica artefatos: boxes.json + metrics.jsonl
+        let artifacts = report.done_artifacts().unwrap();
+        let filenames: Vec<&str> = artifacts.iter().map(|a| a.path.as_str()).collect();
+        assert!(filenames.contains(&"boxes.json"));
+        assert!(filenames.contains(&"metrics.jsonl"));
+    }
+
+    // -- K.4 test 2: autotracker + weights_ref + only boxes.json (sem metrics.jsonl) → done com skip --
+
+    #[tokio::test]
+    async fn autotracker_weights_ref_only_boxes_json_skips_missing_metrics() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let weights_bytes = b"real world weights";
+        let weights_md5 = compute_file_md5_bytes(weights_bytes);
+        let s3 = Arc::new(FakeS3WithWeights::new(weights_bytes.to_vec()));
+
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_autotracker_dispatch_with_valid_md5("job-at-nom-001", &zip_path);
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        dispatch.weights_ref = Some(WeightsRef {
+            s3_key: "models/world/def-456/yolov8x-worldv2.pt".to_string(),
+            md5: weights_md5,
+        });
+
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        // Apenas boxes.json — SEM metrics.jsonl (como o real faz, D3 da ADR-0014)
+        let mut output_files = HashMap::new();
+        output_files.insert(
+            "boxes.json".to_string(),
+            br#"{"engine":"autotracker","model":"world","seed":0,"conf":0.65,"images":[{"filename":"img1.jpg","boxes":[]}]}"#.to_vec(),
+        );
+        // NOTE: metrics.jsonl deliberately NOT created
+        create_fake_outputs(tmp.path(), "job-at-nom-001", &output_files);
+
+        let result = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "autotracker without metrics.jsonl should succeed (skip): {:?}",
+            result.err()
+        );
+
+        // Verifica done report: sem metrics/epoch (progresso binário)
+        let done_report = report
+            .reports
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|r| r.status == "done")
+            .cloned()
+            .expect("should have done report");
+        assert!(
+            done_report.metrics.is_none(),
+            "done should have no metrics when metrics.jsonl is absent"
+        );
+        assert!(
+            done_report.epoch.is_none(),
+            "done should have no epoch when metrics.jsonl is absent"
+        );
+        assert_eq!(done_report.progress, Some(1.0));
+
+        // Verifica artefatos: SOMENTE boxes.json (sem metrics.jsonl)
+        let artifacts = report.done_artifacts().unwrap();
+        assert_eq!(
+            artifacts.len(),
+            1,
+            "should have exactly 1 artifact (boxes.json only)"
+        );
+        assert_eq!(artifacts[0].path, "boxes.json");
+        assert_eq!(artifacts[0].kind, "boxes");
+
+        // Verifica subcomando correto
+        let args = executor.last_args().unwrap();
+        assert_eq!(args[0], "autotrack");
+    }
+
+    // -- K.4 test 3: autotracker + weights_ref com md5 errado → falha honesta --
+
+    #[tokio::test]
+    async fn autotracker_weights_ref_wrong_md5_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let s3 = Arc::new(FakeS3WithWeights::new(b"real weights".to_vec()));
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_autotracker_dispatch_with_valid_md5("job-at-bad-001", &zip_path);
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        dispatch.weights_ref = Some(WeightsRef {
+            s3_key: "models/world/ghi-789/yolov8x-worldv2.pt".to_string(),
+            md5: "00000000000000000000000000000000".to_string(), // wrong hash
+        });
+
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let result = run_job_inner(
+            &dispatch,
+            s3,
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(PipelineError::Md5Mismatch { .. })),
+            "autotracker with wrong weights md5 should fail with Md5Mismatch: {:?}",
+            result
+        );
+
+        // Executor nunca chamado (falha antes)
+        assert!(executor.last_args().is_none());
+    }
+
+    // -- K.4 test 4: autotracker SEM weights_ref → caminho atual byte-a-byte (regressão) --
+
+    #[tokio::test]
+    async fn autotracker_no_weights_ref_unchanged_behavior() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_autotracker_dispatch_with_valid_md5("job-at-reg-001", &zip_path);
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        dispatch.weights_ref = None; // explícito: sem pesos
+
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let mut output_files = HashMap::new();
+        output_files.insert(
+            "boxes.json".to_string(),
+            br#"{"engine":"autotracker","model":"mock","seed":42,"conf":0.65,"images":[{"filename":"img1.jpg","boxes":[{"class":"cat","x":0.5,"y":0.5,"w":0.1,"h":0.1,"conf":1.0}]}]}"#.to_vec(),
+        );
+        output_files.insert(
+            "metrics.jsonl".to_string(),
+            br#"{"box_loss":0.1,"cls_loss":0.2,"dfl_loss":0.3,"mAP50":0.9,"mAP50-95":0.7,"epoch":1}"#.to_vec(),
+        );
+        create_fake_outputs(tmp.path(), "job-at-reg-001", &output_files);
+
+        let result = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "autotracker without weights_ref should succeed: {:?}",
+            result.err()
+        );
+
+        // Sem weights_ref → NÃO deve haver diretório de weights
+        let weights_dir = tmp.path().join("outputs/job-at-reg-001/weights");
+        assert!(
+            !weights_dir.exists(),
+            "weights dir should not exist without weights_ref"
+        );
+
+        // Config NÃO deve ter {weights_path} substituído — placeholder permanece literal
+        // (trainer mock tolera chave desconhecida — ADR-0012 D5)
+        let config_content =
+            std::fs::read_to_string(tmp.path().join("outputs/job-at-reg-001/config.yaml")).unwrap();
+        assert!(
+            config_content.contains("{weights_path}"),
+            "config should keep literal {{weights_path}} when no weights_ref: {config_content}"
+        );
+        assert!(
+            config_content.contains("output_path: /outputs/job-at-reg-001"),
+            "config should have output_path substituted: {config_content}"
+        );
+
+        // Subcomando correto
+        let args = executor.last_args().unwrap();
+        assert_eq!(args[0], "autotrack");
+
+        // Artefatos: boxes.json + metrics.jsonl (mock produz ambos)
+        let artifacts = report.done_artifacts().unwrap();
+        let filenames: Vec<&str> = artifacts.iter().map(|a| a.path.as_str()).collect();
+        assert!(filenames.contains(&"boxes.json"));
+        assert!(filenames.contains(&"metrics.jsonl"));
+
+        // Downloads: apenas package (sem weights)
+        let downloads = s3.downloads.lock().unwrap();
+        assert!(
+            downloads.iter().any(|k| k.contains("packages/")),
+            "should download package"
+        );
+        assert!(
+            !downloads.iter().any(|k| k.contains("models/")),
+            "should NOT download weights when no weights_ref"
+        );
+    }
+
+    // =========================================================================
     // J.3 — DispatchRequest.mode serde default + matriz (engine, mode)
     // =========================================================================
 

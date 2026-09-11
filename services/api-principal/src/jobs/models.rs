@@ -1071,10 +1071,7 @@ mod tests {
             Some(&id2)
         );
         // Inexistente
-        assert_eq!(
-            match_class_id("FACE_FEMALE", &exact_map, &lower_map),
-            None
-        );
+        assert_eq!(match_class_id("FACE_FEMALE", &exact_map, &lower_map), None);
     }
 
     // =========================================================================

@@ -11,6 +11,7 @@ import { startYoloJob } from "@/lib/jobs";
 import { jobErrorMessage } from "@/types/studio";
 import { showToast } from "@/components/ui/Toast";
 import { openActionCenter } from "@/lib/events";
+import NodeSelect from "./NodeSelect";
 import {
   YoloHyperparameters,
   EPOCHS_MIN,
@@ -46,12 +47,14 @@ export default function TrainYoloModal({
   const router = useRouter();
   const firstRef = useRef<SelectRefHandle>(null);
   const [params, setParams] = useState<YoloHyperparametersValues>(DEFAULT_PARAMS);
+  const [selectedOrchestratorId, setSelectedOrchestratorId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [topError, setTopError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
     setParams(DEFAULT_PARAMS);
+    setSelectedOrchestratorId(null);
     setTopError(null);
     setBusy(false);
     const t = setTimeout(() => firstRef.current?.focus(), 30);
@@ -99,6 +102,7 @@ export default function TrainYoloModal({
         lr0: parsedLr0,
         optimizer: params.optimizer,
         augment: params.augment,
+        orchestratorId: selectedOrchestratorId || null,
       });
       showToast(
         `Job de treino criado (posição ${result.queuePosition ?? "—"} na fila).`,
@@ -159,6 +163,14 @@ export default function TrainYoloModal({
           onChange={handleParamChange}
           disabled={busy}
           firstSelectRef={firstRef}
+        />
+
+        {/* Nó de Execução (ADR-0015 D2) */}
+        <NodeSelect
+          value={selectedOrchestratorId}
+          onChange={setSelectedOrchestratorId}
+          disabled={busy}
+          size="default"
         />
 
         {/* CTA */}

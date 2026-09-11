@@ -20,11 +20,15 @@ export function startYoloJob(params: {
   optimizer: string;
   augment: YoloAugment;
   weights?: string | null;
+  orchestratorId?: string | null;
 }): Promise<{ jobId: string; status: string; queuePosition?: number }> {
-  const { weights, ...rest } = params;
+  const { weights, orchestratorId, ...rest } = params;
+  const body: Record<string, unknown> = { ...rest };
+  if (weights) body.weights = weights;
+  if (orchestratorId) body.orchestratorId = orchestratorId;
   return apiFetch("/api/jobs/yolo", {
     method: "POST",
-    body: weights ? { ...rest, weights } : rest,
+    body,
   });
 }
 

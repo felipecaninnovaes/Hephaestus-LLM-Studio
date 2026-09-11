@@ -147,9 +147,15 @@ export default function ModelsPage() {
                   >
                     {m.name}
                   </h3>
-                  <div className="mt-0.5 flex items-center gap-2">
-                    <span className="font-mono text-[11px] text-zinc-400">
-                      {m.engine}
+                  <div className="mt-1 flex items-center gap-1.5">
+                    <span
+                      className={`inline-flex items-center rounded px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-[0.06em] ${
+                        m.engine === "world"
+                          ? "border border-sky-500/35 bg-sky-500/10 text-sky-400"
+                          : "border border-zinc-700/60 bg-zinc-800/40 text-zinc-300"
+                      }`}
+                    >
+                      {m.engine === "world" ? "YOLO-World" : "YOLO"}
                     </span>
                     {m.model && (
                       <span className="font-mono text-[11px] text-zinc-500">

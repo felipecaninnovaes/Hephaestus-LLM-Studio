@@ -309,9 +309,17 @@ def _real_autotrack(cfg: dict, output: Path) -> None:
 
     output.mkdir(parents=True, exist_ok=True)
 
-    # Load world model and restrict output to dataset classes
+    # Load model: if open-vocabulary (YOLO-World), restrict output to dataset classes
     model = YOLO(weights_path)
-    model.set_classes(class_names)
+    if hasattr(model, "set_classes") and callable(getattr(model, "set_classes")):
+        try:
+            model.set_classes(class_names)
+        except Exception as exc:
+            import sys
+            print(
+                f"INFO: model does not support set_classes ({exc}), using trained classes",
+                file=sys.stderr,
+            )
 
     # Resolve source: prefer <dataset_path>/images if it exists (YOLO package structure)
     images_dir = dataset_path / "images"

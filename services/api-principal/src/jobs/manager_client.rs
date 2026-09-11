@@ -59,6 +59,10 @@ pub struct InternalJob {
     pub metrics: Option<serde_json::Value>,
     pub vram_min_gb: Option<i32>,
     pub orchestrator_id: Option<String>,
+    pub orchestrator_name: Option<String>,
+    pub orchestrator_kind: Option<String>,
+    #[serde(default)]
+    pub orchestrator_fallback: bool,
     pub created_at: String,
     pub finished_at: Option<String>,
 }

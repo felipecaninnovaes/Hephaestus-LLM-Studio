@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import { Button, Modal, showToast } from "@/components/ui";
+import { Button, Modal, SegmentedControl, showToast } from "@/components/ui";
 import { IconDownload } from "@/components/icons";
 import { downloadModel } from "@/lib/models";
 import { modelErrorMessage, type Model } from "@/types/studio";
@@ -12,6 +12,11 @@ interface ModelDownloadModalProps {
   onDownloaded: (model: Model) => void;
 }
 
+const ENGINE_OPTIONS = [
+  { id: "yolo", label: "YOLO (Detecção / Treino)" },
+  { id: "world", label: "YOLO-World (AutoTracker)" },
+];
+
 export default function ModelDownloadModal({
   open,
   onClose,
@@ -19,12 +24,14 @@ export default function ModelDownloadModal({
 }: ModelDownloadModalProps) {
   const [url, setUrl] = useState("");
   const [name, setName] = useState("");
+  const [engine, setEngine] = useState<"yolo" | "world">("yolo");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const reset = useCallback(() => {
     setUrl("");
     setName("");
+    setEngine("yolo");
     setError(null);
   }, []);
 
@@ -42,7 +49,7 @@ export default function ModelDownloadModal({
     try {
       const model = await downloadModel({
         url: trimmedUrl,
-        engine: "yolo",
+        engine,
         name: name.trim() || undefined,
       });
       showToast("Modelo baixado com sucesso.", "success");
@@ -71,6 +78,20 @@ export default function ModelDownloadModal({
       busy={busy}
     >
       <div className="space-y-4">
+        {/* Engine selector */}
+        <div>
+          <label className="mb-1.5 block font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-zinc-400">
+            Engine / Tipo
+          </label>
+          <SegmentedControl
+            options={ENGINE_OPTIONS}
+            value={engine}
+            onChange={(v) => setEngine(v as "yolo" | "world")}
+            ariaLabel="Tipo de modelo"
+            className="w-full justify-start"
+          />
+        </div>
+
         {/* URL */}
         <div>
           <label className="mb-1.5 block font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-zinc-400">
@@ -83,7 +104,11 @@ export default function ModelDownloadModal({
               setUrl(e.target.value);
               setError(null);
             }}
-            placeholder="https://huggingface.co/…/best.pt"
+            placeholder={
+              engine === "world"
+                ? "https://github.com/…/yolov8x-worldv2.pt"
+                : "https://huggingface.co/…/best.pt"
+            }
             disabled={busy}
             className="w-full rounded-lg border border-zinc-700/60 bg-black/40 px-3 py-1.5 text-xs font-mono text-zinc-100 placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:opacity-55"
           />
@@ -98,7 +123,7 @@ export default function ModelDownloadModal({
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="ex: yolo11m_custom.pt"
+            placeholder={engine === "world" ? "ex: yolov8x-worldv2.pt" : "ex: yolo11m_custom.pt"}
             disabled={busy}
             maxLength={255}
             className="w-full rounded-lg border border-zinc-700/60 bg-black/40 px-3 py-1.5 text-xs font-mono text-zinc-100 placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:opacity-55"

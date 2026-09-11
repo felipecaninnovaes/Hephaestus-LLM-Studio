@@ -314,6 +314,7 @@ apps/web/
 │   │   ├── JobLogViewer.tsx              # Terminal de logs estruturado com busca
 │   │   ├── ModelDownloadModal.tsx         # Modal de download de modelo por URL (Fatia I)
 │   │   ├── ModelUploadModal.tsx           # Modal de upload de modelo .pt (Fatia I)
+│   │   ├── NodeSelect.tsx                 # Seletor de nó de execução de jobs (Fatia N — ADR-0015)
 │   │   ├── Sidebar.tsx                   # Barra lateral macro de navegação e telemetria
 │   │   ├── Toast.tsx                     # Hospedeiro e disparador de notificações
 │   │   ├── TrainYoloModal.tsx            # Modal de treino a partir da galeria
@@ -342,6 +343,7 @@ apps/web/
 - [x] Polling contínuo de telemetria e jobs com otimização via `visibilitychange`.
 - [x] Import/export `.zip` estruturado validado (Fatia 3e — galeria + modal + diálogo de substituição 409).
 - [x] AutoTracker v1 integrado (Fatia 5 — modal na galeria + apply de boxes em `/jobs` e no `ActionCenter`).
+- [x] Visibilidade e seleção manual de nós de execução de jobs (Fatia N — ADR-0015: `NodeSelect` em `/playground`, `/treino` e `AutoTrackerModal`, dados de nó e fallback automático em `/jobs`).
 - [ ] Canvas BBox avançado com drag/resize de alta precisão, snap e persistência debounced.
 - [ ] Formulários com validação schema completa (Zod) para hiperparâmetros de treino.
 - [ ] Testes automatizados de componentes e fluxos E2E com Playwright.

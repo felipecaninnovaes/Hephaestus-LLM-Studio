@@ -17,6 +17,7 @@ import {
 } from "@/types/studio";
 import { showToast } from "./Toast";
 import { openActionCenter } from "@/lib/events";
+import NodeSelect from "./NodeSelect";
 
 const CONF_MIN = 0.3;
 const CONF_MAX = 0.95;
@@ -44,10 +45,11 @@ export default function AutoTrackerModal({
   const [topError, setTopError] = useState<string | null>(null);
   const sliderRef = useRef<HTMLInputElement>(null);
 
-  /* ── World models (best-effort) ── */
-  const [worldModels, setWorldModels] = useState<Model[]>([]);
+  /* ── Available models (world + yolo detection) ── */
+  const [availableModels, setAvailableModels] = useState<Model[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [selectedModelId, setSelectedModelId] = useState<string>("");
+  const [selectedOrchestratorId, setSelectedOrchestratorId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -56,13 +58,15 @@ export default function AutoTrackerModal({
     listModels()
       .then((res) => {
         if (active) {
-          setWorldModels(res.items.filter((m) => m.engine === "world"));
+          setAvailableModels(
+            res.items.filter((m) => m.engine === "world" || m.engine === "yolo"),
+          );
           setModelsLoading(false);
         }
       })
       .catch(() => {
         if (active) {
-          setWorldModels([]);
+          setAvailableModels([]);
           setModelsLoading(false);
         }
       });
@@ -75,6 +79,7 @@ export default function AutoTrackerModal({
     if (!open) return;
     setConf(CONF_DEFAULT);
     setSelectedModelId("");
+    setSelectedOrchestratorId(null);
     setTopError(null);
     setBusy(false);
     const t = setTimeout(() => sliderRef.current?.focus(), 30);
@@ -87,22 +92,34 @@ export default function AutoTrackerModal({
       label: "Mock (determinístico)",
       description: "Gera bounding boxes determinísticas — sem modelo real.",
     };
-    const worldOpts: SelectOption<string>[] = worldModels.map((m) => ({
+    const modelOpts: SelectOption<string>[] = availableModels.map((m) => ({
       value: m.id,
       label: m.name,
-      badge:
-        m.source === "train" ? (
-          <span className="rounded-full border border-brand-500/35 bg-brand-500/10 px-1.5 py-0.5 font-mono text-[10px] text-brand-400">
-            Treino
-          </span>
-        ) : (
-          <span className="rounded-full border border-white/15 bg-white/[0.06] px-1.5 py-0.5 font-mono text-[10px] text-zinc-300">
+      badge: (
+        <div className="flex items-center gap-1.5">
+          {m.engine === "world" ? (
+            <span className="rounded-full border border-sky-500/35 bg-sky-500/10 px-1.5 py-0.5 font-mono text-[10px] text-sky-400">
+              World
+            </span>
+          ) : (
+            <span className="rounded-full border border-zinc-700/60 bg-zinc-800/40 px-1.5 py-0.5 font-mono text-[10px] text-zinc-300">
+              YOLO
+            </span>
+          )}
+          <span
+            className={`rounded-full border px-1.5 py-0.5 font-mono text-[10px] ${
+              m.source === "train"
+                ? "border-brand-500/35 bg-brand-500/10 text-brand-400"
+                : "border-white/15 bg-white/[0.06] text-zinc-300"
+            }`}
+          >
             {modelSourceLabel(m.source)}
           </span>
-        ),
+        </div>
+      ),
     }));
-    return [mockOpt, ...worldOpts];
-  }, [worldModels]);
+    return [mockOpt, ...modelOpts];
+  }, [availableModels]);
 
   if (!open) return null;
 
@@ -122,6 +139,7 @@ export default function AutoTrackerModal({
         model: "mock",
         conf,
         ...(selectedModelId ? { modelId: selectedModelId } : {}),
+        ...(selectedOrchestratorId ? { orchestratorId: selectedOrchestratorId } : {}),
       });
       showToast(
         `AutoTracker iniciado (posição ${result.queuePosition ?? "—"} na fila).`,
@@ -196,9 +214,9 @@ export default function AutoTrackerModal({
           size="default"
         />
 
-        {worldModels.length === 0 && !modelsLoading && (
+        {availableModels.length === 0 && !modelsLoading && (
           <p className="font-mono text-[11px] text-zinc-500">
-            Importe pesos world em{" "}
+            Envie ou baixe pesos em{" "}
             <span className="text-zinc-400">Modelos &amp; Pesos</span> para usar
             um modelo real.
           </p>
@@ -216,6 +234,14 @@ export default function AutoTrackerModal({
           onChange={setConf}
           formatValue={(v) => v.toFixed(2)}
           disabled={busy}
+        />
+
+        {/* Nó de Execução (ADR-0015 D2) */}
+        <NodeSelect
+          value={selectedOrchestratorId}
+          onChange={setSelectedOrchestratorId}
+          disabled={busy}
+          size="default"
         />
 
         {/* CTA */}

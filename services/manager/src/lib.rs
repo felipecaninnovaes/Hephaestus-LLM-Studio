@@ -7,7 +7,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -64,6 +64,9 @@ pub struct CreateJobRequest {
     pub vram_min_gb: Option<i32>,
     /// UUID de uma row de `models` para fine-tune (ADR-0012 D5).
     pub weights_id: Option<Uuid>,
+    /// Hint opcional de orquestrador para despacho (ADR-0015 D2).
+    #[serde(default)]
+    pub orchestrator_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -98,6 +101,10 @@ pub struct JobRow {
     pub metrics: Option<serde_json::Value>,
     pub vram_min_gb: Option<i32>,
     pub orchestrator_id: Option<String>,
+    pub orchestrator_name: Option<String>,
+    pub orchestrator_kind: Option<String>,
+    #[serde(default)]
+    pub orchestrator_fallback: bool,
     pub created_at: String,
     pub finished_at: Option<String>,
 }
@@ -409,6 +416,31 @@ pub async fn create_job(
         }
     }
 
+    // Validação de orchestrator_hint (ADR-0015 D2).
+    if let Some(ref hint_str) = req.orchestrator_hint {
+        let hint_uuid = Uuid::parse_str(hint_str).map_err(|_| {
+            ManagerError::InvalidRequest("orchestrator_hint must be a valid UUID".into())
+        })?;
+
+        let orch_status: Option<(String,)> =
+            sqlx::query_as("SELECT status FROM orchestrators WHERE id = $1")
+                .bind(hint_uuid)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| ManagerError::Internal(format!("check orchestrator_hint: {e}")))?;
+
+        match orch_status {
+            None => return Err(ManagerError::NotFound),
+            Some((status,)) if status != "online" => {
+                return Err(ManagerError::InvalidRequest(
+                    "nó de execução indisponível (offline ou revogado) — escolha outro ou Automático".into(),
+                ));
+            }
+            _ => {}
+        }
+        params["orchestrator_hint"] = serde_json::json!(hint_uuid.to_string());
+    }
+
     sqlx::query(
         "INSERT INTO jobs (id, kind, engine, model, mode, dataset_id, params, config_yaml, vram_min_gb, status, queue_reason) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'queued', NULL)",
@@ -464,22 +496,30 @@ pub async fn list_jobs(
         .map(|(i, (id,))| (id.to_string(), (i + 1) as i32))
         .collect();
 
-    let mut query = String::from("SELECT id, kind, engine, model, mode, dataset_id, status, queue_reason, progress, epoch, step, metrics, vram_min_gb, orchestrator_id, created_at, finished_at FROM jobs WHERE 1=1");
+    let mut query = String::from(
+        "SELECT j.id, j.kind, j.engine, j.model, j.mode, j.dataset_id, j.status, j.queue_reason, \
+         j.progress, j.epoch, j.step, j.metrics, j.vram_min_gb, j.orchestrator_id, j.created_at, j.finished_at, \
+         o.name AS orchestrator_name, o.kind AS orchestrator_kind, \
+         COALESCE((j.params->>'orchestrator_fallback') = 'true', false) AS orchestrator_fallback \
+         FROM jobs j \
+         LEFT JOIN orchestrators o ON o.id = j.orchestrator_id \
+         WHERE 1=1",
+    );
     let mut count_query = String::from("SELECT COUNT(*) FROM jobs WHERE 1=1");
     let mut bind_idx: u32 = 1;
 
     if status.is_some() {
-        let clause = format!(" AND status = ${bind_idx}");
+        let clause = format!(" AND j.status = ${bind_idx}");
         query.push_str(&clause);
-        count_query.push_str(&clause);
+        count_query.push_str(&format!(" AND status = ${bind_idx}"));
         bind_idx += 1;
     }
     if engine.is_some() {
-        let clause = format!(" AND engine = ${bind_idx}");
+        let clause = format!(" AND j.engine = ${bind_idx}");
         query.push_str(&clause);
-        count_query.push_str(&clause);
+        count_query.push_str(&format!(" AND engine = ${bind_idx}"));
     }
-    query.push_str(" ORDER BY created_at DESC");
+    query.push_str(" ORDER BY j.created_at DESC");
 
     let mut count_q = sqlx::query_as::<_, (i64,)>(&count_query);
     if let Some(s) = status {
@@ -493,51 +533,14 @@ pub async fn list_jobs(
         .await
         .map_err(|e| ManagerError::Internal(format!("count jobs: {e}")))?;
 
-    let mut main_q = sqlx::query_as::<
-        _,
-        (
-            Uuid,
-            String,
-            String,
-            String,
-            String,
-            Option<Uuid>,
-            String,
-            Option<String>,
-            Option<f64>,
-            Option<i32>,
-            Option<i32>,
-            Option<serde_json::Value>,
-            Option<i32>,
-            Option<Uuid>,
-            DateTime<Utc>,
-            Option<DateTime<Utc>>,
-        ),
-    >(&query);
+    let mut main_q = sqlx::query(&query);
     if let Some(s) = status {
         main_q = main_q.bind(s);
     }
     if let Some(e) = engine {
         main_q = main_q.bind(e);
     }
-    let rows: Vec<(
-        Uuid,
-        String,
-        String,
-        String,
-        String,
-        Option<Uuid>,
-        String,
-        Option<String>,
-        Option<f64>,
-        Option<i32>,
-        Option<i32>,
-        Option<serde_json::Value>,
-        Option<i32>,
-        Option<Uuid>,
-        DateTime<Utc>,
-        Option<DateTime<Utc>>,
-    )> = main_q
+    let rows = main_q
         .fetch_all(pool)
         .await
         .map_err(|e| ManagerError::Internal(format!("list jobs: {e}")))?;
@@ -545,30 +548,39 @@ pub async fn list_jobs(
     let items = rows
         .into_iter()
         .map(|r| {
-            let id_str = r.0.to_string();
-            let queue_position = if r.6 == "queued" {
+            let id: Uuid = r.get("id");
+            let id_str = id.to_string();
+            let status: String = r.get("status");
+            let queue_position = if status == "queued" {
                 pos_map.get(&id_str).copied()
             } else {
                 None
             };
+            let dataset_id: Option<Uuid> = r.get("dataset_id");
+            let orchestrator_id: Option<Uuid> = r.get("orchestrator_id");
+            let created_at: DateTime<Utc> = r.get("created_at");
+            let finished_at: Option<DateTime<Utc>> = r.get("finished_at");
             JobRow {
                 id: id_str,
-                kind: r.1,
-                engine: r.2,
-                model: r.3,
-                mode: r.4,
-                dataset_id: r.5.map(|u| u.to_string()),
-                status: r.6,
-                queue_reason: r.7,
+                kind: r.get("kind"),
+                engine: r.get("engine"),
+                model: r.get("model"),
+                mode: r.get("mode"),
+                dataset_id: dataset_id.map(|u| u.to_string()),
+                status,
+                queue_reason: r.get("queue_reason"),
                 queue_position,
-                progress: r.8,
-                epoch: r.9,
-                step: r.10,
-                metrics: r.11,
-                vram_min_gb: r.12,
-                orchestrator_id: r.13.map(|u| u.to_string()),
-                created_at: r.14.to_rfc3339(),
-                finished_at: r.15.map(|t| t.to_rfc3339()),
+                progress: r.get("progress"),
+                epoch: r.get("epoch"),
+                step: r.get("step"),
+                metrics: r.get("metrics"),
+                vram_min_gb: r.get("vram_min_gb"),
+                orchestrator_id: orchestrator_id.map(|u| u.to_string()),
+                orchestrator_name: r.get("orchestrator_name"),
+                orchestrator_kind: r.get("orchestrator_kind"),
+                orchestrator_fallback: r.get("orchestrator_fallback"),
+                created_at: created_at.to_rfc3339(),
+                finished_at: finished_at.map(|t| t.to_rfc3339()),
             }
         })
         .collect();
@@ -593,13 +605,14 @@ pub async fn get_job(pool: &PgPool, id: Uuid) -> Result<JobRow, ManagerError> {
         .map(|(i, (id,))| (id.to_string(), (i + 1) as i32))
         .collect();
 
-    let row: Option<(
-        Uuid, String, String, String, String, Option<Uuid>, String, Option<String>,
-        Option<f64>, Option<i32>, Option<i32>, Option<serde_json::Value>,
-        Option<i32>, Option<Uuid>, DateTime<Utc>, Option<DateTime<Utc>>,
-    )> = sqlx::query_as(
-        "SELECT id, kind, engine, model, mode, dataset_id, status, queue_reason, progress, epoch, step, metrics, vram_min_gb, orchestrator_id, created_at, finished_at \
-         FROM jobs WHERE id = $1",
+    let row = sqlx::query(
+        "SELECT j.id, j.kind, j.engine, j.model, j.mode, j.dataset_id, j.status, j.queue_reason, \
+         j.progress, j.epoch, j.step, j.metrics, j.vram_min_gb, j.orchestrator_id, j.created_at, j.finished_at, \
+         o.name AS orchestrator_name, o.kind AS orchestrator_kind, \
+         COALESCE((j.params->>'orchestrator_fallback') = 'true', false) AS orchestrator_fallback \
+         FROM jobs j \
+         LEFT JOIN orchestrators o ON o.id = j.orchestrator_id \
+         WHERE j.id = $1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -607,31 +620,40 @@ pub async fn get_job(pool: &PgPool, id: Uuid) -> Result<JobRow, ManagerError> {
     .map_err(|e| ManagerError::Internal(format!("get job: {e}")))?;
 
     let r = row.ok_or(ManagerError::NotFound)?;
-    let id_str = r.0.to_string();
-    let queue_position = if r.6 == "queued" {
+    let job_id: Uuid = r.get("id");
+    let id_str = job_id.to_string();
+    let status: String = r.get("status");
+    let queue_position = if status == "queued" {
         pos_map.get(&id_str).copied()
     } else {
         None
     };
+    let dataset_id: Option<Uuid> = r.get("dataset_id");
+    let orchestrator_id: Option<Uuid> = r.get("orchestrator_id");
+    let created_at: DateTime<Utc> = r.get("created_at");
+    let finished_at: Option<DateTime<Utc>> = r.get("finished_at");
 
     Ok(JobRow {
         id: id_str,
-        kind: r.1,
-        engine: r.2,
-        model: r.3,
-        mode: r.4,
-        dataset_id: r.5.map(|u| u.to_string()),
-        status: r.6,
-        queue_reason: r.7,
+        kind: r.get("kind"),
+        engine: r.get("engine"),
+        model: r.get("model"),
+        mode: r.get("mode"),
+        dataset_id: dataset_id.map(|u| u.to_string()),
+        status,
+        queue_reason: r.get("queue_reason"),
         queue_position,
-        progress: r.8,
-        epoch: r.9,
-        step: r.10,
-        metrics: r.11,
-        vram_min_gb: r.12,
-        orchestrator_id: r.13.map(|u| u.to_string()),
-        created_at: r.14.to_rfc3339(),
-        finished_at: r.15.map(|t| t.to_rfc3339()),
+        progress: r.get("progress"),
+        epoch: r.get("epoch"),
+        step: r.get("step"),
+        metrics: r.get("metrics"),
+        vram_min_gb: r.get("vram_min_gb"),
+        orchestrator_id: orchestrator_id.map(|u| u.to_string()),
+        orchestrator_name: r.get("orchestrator_name"),
+        orchestrator_kind: r.get("orchestrator_kind"),
+        orchestrator_fallback: r.get("orchestrator_fallback"),
+        created_at: created_at.to_rfc3339(),
+        finished_at: finished_at.map(|t| t.to_rfc3339()),
     })
 }
 
@@ -1782,25 +1804,61 @@ pub async fn dispatch_next(
     // 2. Resolve requisito VRAM da vram-table.
     let required_gb: Option<i32> = vram_table.resolve_required_gb(&engine, &model, &mode);
 
-    // 3. Seleciona orquestrador elegível (ADR-0011 D3.2).
-    let orch: Option<(Uuid, String)> = sqlx::query_as(
-        "SELECT o.id, o.endpoint FROM orchestrators o \
-         WHERE o.status = 'online' \
-           AND NOT EXISTS (SELECT 1 FROM jobs j \
-                           WHERE j.orchestrator_id = o.id \
-                             AND j.status IN ('dispatched','preparing','running','cancelling')) \
-           AND ($1::int IS NULL OR o.vram_total_gb IS NULL OR o.vram_total_gb >= $1) \
-         ORDER BY (o.vram_total_gb IS NULL) ASC, \
-                  o.vram_total_gb DESC NULLS LAST, \
-                  o.name ASC \
-         LIMIT 1",
-    )
-    .bind(required_gb)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| ManagerError::Internal(format!("find orchestrator: {e}")))?;
+    // 3. Seleciona orquestrador (ADR-0015 D3).
+    // Se houver orchestrator_hint em params, tenta despachar para ele (D3.2).
+    let hint: Option<Uuid> = params
+        .as_ref()
+        .and_then(|p| p.get("orchestrator_hint"))
+        .and_then(|h| h.as_str())
+        .and_then(|s| s.parse().ok());
 
-    let (orch_id, orch_endpoint) = match orch {
+    let mut selected_orch: Option<(Uuid, String)> = None;
+    let mut fallback_used = false;
+
+    if let Some(hint_id) = hint {
+        let hinted: Option<(Uuid, String)> = sqlx::query_as(
+            "SELECT o.id, o.endpoint FROM orchestrators o \
+             WHERE o.id = $1 AND o.status = 'online' \
+               AND NOT EXISTS (SELECT 1 FROM jobs j \
+                               WHERE j.orchestrator_id = o.id \
+                                 AND j.status IN ('dispatched','preparing','running','cancelling')) \
+               AND ($2::int IS NULL OR o.vram_total_gb IS NULL OR o.vram_total_gb >= $2)",
+        )
+        .bind(hint_id)
+        .bind(required_gb)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("find hinted orchestrator: {e}")))?;
+
+        if let Some(o) = hinted {
+            selected_orch = Some(o);
+        } else {
+            fallback_used = true;
+        }
+    }
+
+    if selected_orch.is_none() {
+        let eligible: Option<(Uuid, String)> = sqlx::query_as(
+            "SELECT o.id, o.endpoint FROM orchestrators o \
+             WHERE o.status = 'online' \
+               AND NOT EXISTS (SELECT 1 FROM jobs j \
+                               WHERE j.orchestrator_id = o.id \
+                                 AND j.status IN ('dispatched','preparing','running','cancelling')) \
+               AND ($1::int IS NULL OR o.vram_total_gb IS NULL OR o.vram_total_gb >= $1) \
+             ORDER BY (o.vram_total_gb IS NULL) ASC, \
+                      o.vram_total_gb DESC NULLS LAST, \
+                      o.name ASC \
+             LIMIT 1",
+        )
+        .bind(required_gb)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("find orchestrator: {e}")))?;
+
+        selected_orch = eligible;
+    }
+
+    let (orch_id, orch_endpoint) = match selected_orch {
         Some(o) => o,
         None => {
             // Sem nó elegível: waiting_vram (se requisito) ou waiting_slot.
@@ -1819,16 +1877,30 @@ pub async fn dispatch_next(
         }
     };
 
-    // 4. Marca dispatched.
-    sqlx::query(
-        "UPDATE jobs SET status = 'dispatched', queue_reason = NULL, orchestrator_id = $2 \
-         WHERE id = $1 AND status = 'queued'",
-    )
-    .bind(job_id)
-    .bind(orch_id)
-    .execute(pool)
-    .await
-    .map_err(|e| ManagerError::Internal(format!("set dispatched: {e}")))?;
+    // 4. Marca dispatched e atualiza flag de fallback em params (ADR-0015 D3.3, D3.5).
+    if fallback_used {
+        sqlx::query(
+            "UPDATE jobs SET status = 'dispatched', queue_reason = NULL, orchestrator_id = $2, \
+             params = jsonb_set(params, '{orchestrator_fallback}', 'true'::jsonb) \
+             WHERE id = $1 AND status = 'queued'",
+        )
+        .bind(job_id)
+        .bind(orch_id)
+        .execute(pool)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("set dispatched (fallback): {e}")))?;
+    } else {
+        sqlx::query(
+            "UPDATE jobs SET status = 'dispatched', queue_reason = NULL, orchestrator_id = $2, \
+             params = params - 'orchestrator_fallback' \
+             WHERE id = $1 AND status = 'queued'",
+        )
+        .bind(job_id)
+        .bind(orch_id)
+        .execute(pool)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("set dispatched: {e}")))?;
+    }
 
     // 5. Monta payload do dispatch (idêntico ao anterior).
     let package_ref = params

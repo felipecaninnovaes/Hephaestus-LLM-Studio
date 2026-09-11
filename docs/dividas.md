@@ -52,8 +52,6 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
 
 **Backend**
 
-- **Seleção manual de nó/GPU na UI — ABERTA 2026-09-10 (decisão do usuário na abertura da fatia I):** o manager roteia automaticamente pelo nó com capacidade (roteamento estático ADR-0011 D3); não existe "escolher orquestrador/GPU" no POST de job nem na UI. Feature nova p/ fatia futura (ex.: campo `orchestratorId?` no create_job + seletor em /treino, com validação de capacidade e fallback honesto quando o nó escolhido não tem slot).
-
 - **Abort races (review F4.8):** abort durante `preparing` pode ser engolido (estado substituído pelo progress report do orquestrador; `is_cancelled` não é consultado no pipeline — dead code); abort em `dispatched` não notifica o orquestrador (o dispatch já foi feito mas o orquestrador pode estar starting); abort em voo termina `failed` (nunca `cancelled` — o orquestrador reporta `failed` com erro "job not found or already finished" quando o container é stopado). Janela de segundos em mock local; conserto exige testes de abort-em-voo.
 - ~~**Watchdog de orquestrador (review F4.8)**~~ **QUITADA 2026-09-10** (Fatia H, ADR-0011 D4: watchdog no worker loop existente, 15s → `degraded`, 60s → `offline` + re-queue dos jobs do nó morto via CTE).
 - **CI: pytest do trainer-yolo (review F4.8):** contrato das 6 keys do `metrics.jsonl` (`epoch, box_loss, cls_loss, dfl_loss, mAP50, mAP50-95`) com o parser do orquestrador (`parse_metrics_line`) não roda em CI — job Python ausente em `.gitea/workflows/ci.yml`. Validado manualmente no E2E.
@@ -191,6 +189,15 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
   diz "3641 linhas", conferido com `wc -l ai-vision-training-studio.html`).
 
 ## Quitadas
+
+- **Seleção manual de nó/GPU na UI — QUITADA 2026-09-11** (Fatia N, ADR-0015:
+  wire com `orchestratorName`, `orchestratorKind` e `orchestratorFallback` no
+  manager e `api-principal`; `orchestratorId` opcional nos 3 submits públicos
+  `/yolo`, `/autotracker`, `/predict`; validação fail-fast 400 não-UUID ou
+  indisponível / 404 inexistente; roteamento de 1º nível com fallback automático
+  após timeout de 120s gravando `orchestrator_fallback = true`; componente
+  `NodeSelect` reutilizável, exibição de nó/fallback no `/jobs` e seleção em
+  `/playground`, `/treino` e `AutoTrackerModal`; spec OpenAPI bumped para 0.14.0).
 
 - **T7 — `autoTracked` derivado — QUITADA 2026-09-06** (`61dc75b` em
   `feat/datasets-gallery`, 3d.1): campo do wire `Dataset` agora deriva de

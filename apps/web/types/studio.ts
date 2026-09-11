@@ -219,6 +219,9 @@ export interface Job {
   metrics: Record<string, unknown> | null;
   vramMinGb: number | null;
   orchestratorId: string | null;
+  orchestratorName?: string | null;
+  orchestratorKind?: "docker" | "slurm" | "local" | "remoto" | null;
+  orchestratorFallback: boolean;
   createdAt: string;
   finishedAt: string | null;
 }
@@ -264,6 +267,7 @@ export interface AutotrackerJobRequest {
   model?: string;
   conf?: number;
   modelId?: string;
+  orchestratorId?: string | null;
 }
 
 export interface AutotrackerApplyResponse {
@@ -372,6 +376,7 @@ export interface PredictJobRequest {
   modelId: string;
   datasetId: string;
   conf?: number;
+  orchestratorId?: string | null;
 }
 
 /** Coordenadas normalizadas 0..1 do predictions.json (snake_case). */

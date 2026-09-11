@@ -193,6 +193,23 @@ export function JobListItem({
             {isActive && (
               <span className="text-brand-300 font-semibold">{pct}%</span>
             )}
+            {job.orchestratorName ? (
+              <span className="flex items-center gap-1.5 text-zinc-300">
+                <span className="text-zinc-600">·</span>
+                <span>
+                  {job.orchestratorName}
+                  {job.orchestratorKind ? ` (${job.orchestratorKind})` : ""}
+                </span>
+                {job.orchestratorFallback && (
+                  <span
+                    className="inline-flex items-center rounded border border-amber-500/30 bg-amber-500/10 px-1 py-0.2 text-[9px] text-amber-400 font-medium"
+                    title="Job sofreu fallback automático após timeout no nó solicitado"
+                  >
+                    fallback
+                  </span>
+                )}
+              </span>
+            ) : null}
           </div>
         </div>
       </div>

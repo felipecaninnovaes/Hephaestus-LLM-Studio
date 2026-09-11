@@ -22,6 +22,7 @@ import type {
 import { predictErrorMessage } from "@/types/studio";
 import { ApiError } from "@/lib/api";
 import { listImages } from "@/lib/images";
+import NodeSelect from "@/components/studio/NodeSelect";
 
 /* ── Cor da box no overlay: vem do dataset.classes, fallback neutro ── */
 function classColor(
@@ -64,6 +65,7 @@ export default function PlaygroundPage() {
   /* ── Selections ── */
   const [selectedModelId, setSelectedModelId] = useState("");
   const [selectedDatasetId, setSelectedDatasetId] = useState("");
+  const [selectedOrchestratorId, setSelectedOrchestratorId] = useState<string | null>(null);
   const [conf, setConf] = useState(0.65);
 
   /* ── Submit state ── */
@@ -271,6 +273,7 @@ export default function PlaygroundPage() {
         modelId: selectedModelId,
         datasetId: selectedDatasetId,
         conf,
+        orchestratorId: selectedOrchestratorId || undefined,
       });
       showToast("Inferência iniciada — acompanhe nas Execuções.", "success", {
         label: "Ver Execuções",
@@ -549,6 +552,14 @@ export default function PlaygroundPage() {
                 <span>0.95</span>
               </div>
             </div>
+
+            {/* ══ Nó de Execução (ADR-0015 D2) ══ */}
+            <NodeSelect
+              value={selectedOrchestratorId}
+              onChange={setSelectedOrchestratorId}
+              disabled={submitting}
+              size="sm"
+            />
 
             {/* ══ CTA Único — One CTA Rule ══ */}
             <Button

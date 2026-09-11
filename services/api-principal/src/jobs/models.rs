@@ -56,6 +56,9 @@ pub struct YoloJobRequest {
     /// UUID de pesos existentes na tabela `models` (fine-tune — D5).
     /// Validação: string não-UUID ⇒ 400 `invalid_request`.
     pub weights: Option<String>,
+    /// UUID de orquestrador preferencial (ADR-0015 D2).
+    /// Validação: string não-UUID ⇒ 400 `invalid_request`.
+    pub orchestrator_id: Option<String>,
 }
 
 fn default_model() -> String {
@@ -110,6 +113,9 @@ pub struct AutotrackerJobRequest {
     /// UUID de modelo existente na tabela `models` (engine='world' — ADR-0014 D2).
     /// Presente → job REAL (usa pesos); ausente → mock.
     pub model_id: Option<String>,
+    /// UUID de orquestrador preferencial (ADR-0015 D2).
+    /// Validação: string não-UUID ⇒ 400 `invalid_request`.
+    pub orchestrator_id: Option<String>,
 }
 
 fn default_autotrack_model() -> String {
@@ -140,6 +146,12 @@ pub fn validate_autotrack_request(
     if let Some(ref mid) = req.model_id {
         if uuid::Uuid::parse_str(mid).is_err() {
             return Err("modelId must be a valid UUID".to_string());
+        }
+    }
+    // ADR-0015 D2: orchestratorId presente e não-UUID ⇒ 400 `invalid_request`.
+    if let Some(ref oid) = req.orchestrator_id {
+        if uuid::Uuid::parse_str(oid).is_err() {
+            return Err("orchestratorId must be a valid UUID".to_string());
         }
     }
     Ok(req)
@@ -305,6 +317,9 @@ pub struct PredictJobRequest {
     pub dataset_id: String,
     #[serde(default = "default_predict_conf")]
     pub conf: f64,
+    /// UUID de orquestrador preferencial (ADR-0015 D2).
+    /// Validação: string não-UUID ⇒ 400 `invalid_request`.
+    pub orchestrator_id: Option<String>,
 }
 
 fn default_predict_conf() -> f64 {
@@ -321,6 +336,12 @@ pub fn validate_predict_request(req: PredictJobRequest) -> Result<PredictJobRequ
     }
     if !(0.0..=1.0).contains(&req.conf) {
         return Err("conf must be between 0.0 and 1.0".to_string());
+    }
+    // ADR-0015 D2: orchestratorId presente e não-UUID ⇒ 400 `invalid_request`.
+    if let Some(ref oid) = req.orchestrator_id {
+        if uuid::Uuid::parse_str(oid).is_err() {
+            return Err("orchestratorId must be a valid UUID".to_string());
+        }
     }
     Ok(req)
 }
@@ -401,6 +422,12 @@ pub fn validate_yolo_request(req: YoloJobRequest) -> Result<YoloJobRequest, Stri
     if let Some(ref w) = req.weights {
         if uuid::Uuid::parse_str(w).is_err() {
             return Err("weights must be a valid UUID".to_string());
+        }
+    }
+    // ADR-0015 D2: orchestratorId presente e não-UUID ⇒ 400 `invalid_request`.
+    if let Some(ref oid) = req.orchestrator_id {
+        if uuid::Uuid::parse_str(oid).is_err() {
+            return Err("orchestratorId must be a valid UUID".to_string());
         }
     }
     Ok(req)
@@ -1099,5 +1126,50 @@ mod tests {
         assert!(yaml.contains("engine: \"yolo\""));
         assert!(yaml.contains("mode: \"predict\""));
         assert!(yaml.contains("weights_path: \"{weights_path}\""));
+    }
+
+    #[test]
+    fn orchestrator_id_validation_in_all_job_requests() {
+        let valid_oid = "550e8400-e29b-41d4-a716-446655440002";
+        let invalid_oid = "not-a-uuid";
+
+        // YoloJobRequest
+        let raw_yolo_ok = format!(
+            r#"{{"datasetId":"550e8400-e29b-41d4-a716-446655440001","epochs":1,"batch":16,"model":"yolo11n","orchestratorId":"{valid_oid}"}}"#
+        );
+        let req_yolo_ok: YoloJobRequest = serde_json::from_str(&raw_yolo_ok).unwrap();
+        assert!(validate_yolo_request(req_yolo_ok).is_ok());
+
+        let raw_yolo_bad = format!(
+            r#"{{"datasetId":"550e8400-e29b-41d4-a716-446655440001","epochs":1,"batch":16,"model":"yolo11n","orchestratorId":"{invalid_oid}"}}"#
+        );
+        let req_yolo_bad: YoloJobRequest = serde_json::from_str(&raw_yolo_bad).unwrap();
+        assert!(validate_yolo_request(req_yolo_bad).is_err());
+
+        // AutotrackerJobRequest
+        let raw_auto_ok = format!(
+            r#"{{"datasetId":"550e8400-e29b-41d4-a716-446655440001","orchestratorId":"{valid_oid}"}}"#
+        );
+        let req_auto_ok: AutotrackerJobRequest = serde_json::from_str(&raw_auto_ok).unwrap();
+        assert!(validate_autotrack_request(req_auto_ok).is_ok());
+
+        let raw_auto_bad = format!(
+            r#"{{"datasetId":"550e8400-e29b-41d4-a716-446655440001","orchestratorId":"{invalid_oid}"}}"#
+        );
+        let req_auto_bad: AutotrackerJobRequest = serde_json::from_str(&raw_auto_bad).unwrap();
+        assert!(validate_autotrack_request(req_auto_bad).is_err());
+
+        // PredictJobRequest
+        let raw_pred_ok = format!(
+            r#"{{"modelId":"550e8400-e29b-41d4-a716-446655440000","datasetId":"550e8400-e29b-41d4-a716-446655440001","orchestratorId":"{valid_oid}"}}"#
+        );
+        let req_pred_ok: PredictJobRequest = serde_json::from_str(&raw_pred_ok).unwrap();
+        assert!(validate_predict_request(req_pred_ok).is_ok());
+
+        let raw_pred_bad = format!(
+            r#"{{"modelId":"550e8400-e29b-41d4-a716-446655440000","datasetId":"550e8400-e29b-41d4-a716-446655440001","orchestratorId":"{invalid_oid}"}}"#
+        );
+        let req_pred_bad: PredictJobRequest = serde_json::from_str(&raw_pred_bad).unwrap();
+        assert!(validate_predict_request(req_pred_bad).is_err());
     }
 }

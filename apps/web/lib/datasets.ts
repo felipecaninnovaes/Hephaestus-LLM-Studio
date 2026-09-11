@@ -40,9 +40,16 @@ export function canAutoTrack(ds: Dataset): boolean {
 
 /** Motivo descritivo para title do AutoTracker. */
 export function autoTrackDisabledReason(ds: Dataset): string {
-  if (!canAutoTrack(ds)) {
-    return "AutoTracker exige dataset yolo com ≥1 classe e ≥1 imagem";
+  if (canAutoTrack(ds)) return "Executar AutoTracker neste dataset";
+  if (ds.category !== "yolo") {
+    return `AutoTracker disponível apenas para datasets YOLO (categoria atual: ${ds.category}).`;
   }
-  return "Executar AutoTracker neste dataset";
+  if (ds.classes.length === 0) {
+    return "AutoTracker exige dataset com ≥1 classe configurada.";
+  }
+  if (ds.imagesCount === 0) {
+    return "AutoTracker exige dataset com ≥1 imagem.";
+  }
+  return "AutoTracker indisponível neste dataset.";
 }
 

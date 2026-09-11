@@ -1577,6 +1577,11 @@ pub async fn apply_autolabel_captions(
         Ok(v) => v,
         Err(_) => return dataset_not_ready(),
     };
+    if let Some(ds_req) = &req.dataset_id {
+        if ds_req != &dataset_id_str {
+            return invalid_request();
+        }
+    }
 
     // 3. Localiza artefato `captions.jsonl` via list_artifacts.
     let artifacts = match state.manager.list_artifacts(&id).await {

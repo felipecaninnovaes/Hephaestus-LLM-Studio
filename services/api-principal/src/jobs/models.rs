@@ -580,6 +580,8 @@ autolabel:
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutolabelApplyRequest {
     #[serde(default)]
+    pub dataset_id: Option<String>,
+    #[serde(default)]
     pub overwrite: bool,
 }
 

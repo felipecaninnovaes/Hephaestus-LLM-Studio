@@ -6889,3 +6889,269 @@ async fn t6_storage_usage_503_manager_offline() {
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(json(&body)["code"], "queue_unavailable");
 }
+
+// ---------------------------------------------------------------------------
+// ADR-0016: AutoLabel v1 Integration Tests
+// ---------------------------------------------------------------------------
+
+fn setup_autolabel_mock(
+    captions_jsonl: &[u8],
+    dataset_id: &str,
+) -> (api_principal::jobs::manager_client::MockManager, String) {
+    let job_id = uuid::Uuid::new_v4().to_string();
+
+    let artifact = api_principal::jobs::manager_client::InternalArtifact {
+        id: uuid::Uuid::new_v4().to_string(),
+        kind: "captions".into(),
+        path: "captions.jsonl".into(),
+        md5: md5_hex(captions_jsonl),
+        bytes: captions_jsonl.len() as i64,
+    };
+
+    let job = api_principal::jobs::manager_client::InternalJob {
+        id: job_id.clone(),
+        kind: "autolabel".into(),
+        engine: "autolabel".into(),
+        model: "mock".into(),
+        mode: "autolabel".into(),
+        dataset_id: Some(dataset_id.to_string()),
+        status: "done".into(),
+        queue_reason: None,
+        queue_position: None,
+        progress: Some(1.0),
+        epoch: None,
+        step: None,
+        metrics: None,
+        vram_min_gb: None,
+        orchestrator_id: None,
+        orchestrator_name: None,
+        orchestrator_kind: None,
+        orchestrator_fallback: false,
+        created_at: "2026-01-01T00:00:00Z".into(),
+        finished_at: Some("2026-01-01T01:00:00Z".into()),
+    };
+
+    let mut mock = api_principal::jobs::manager_client::MockManager::default();
+    mock.jobs_by_id.insert(job_id.clone(), job);
+    mock.artifacts_by_id.insert(job_id.clone(), vec![artifact]);
+
+    (mock, job_id)
+}
+
+async fn call_autolabel_apply(
+    app: &axum::Router,
+    cookie: &str,
+    job_id: &str,
+    body: &serde_json::Value,
+) -> (StatusCode, Vec<u8>) {
+    let (status, _, body_bytes) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/jobs/{job_id}/autolabel/apply"))
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, cookie)
+            .body(Body::from(serde_json::to_vec(body).expect("serialize")))
+            .unwrap(),
+    )
+    .await;
+    (status, body_bytes)
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0016_autolabel_submit_202() {
+    let _guard = SERIAL.lock().await;
+
+    let mock = {
+        let mut m = api_principal::jobs::manager_client::MockManager::default();
+        m.create_job_result = Some(api_principal::jobs::manager_client::CreateJobResponse {
+            job_id: "c1c2c3d4-e5f6-7890-abcd-ef1234567890".into(),
+            status: "queued".into(),
+            queue_position: Some(1),
+        });
+        m
+    };
+    let (st, _storage, mock_mgr) = state_with_manager(mock).await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+
+    let (ds, _ds_id, _, _, _, _) = setup_autotracker_dataset(&app, &cookie).await;
+
+    let (status, _, body) = call(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/api/jobs/autolabel")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::COOKIE, &cookie)
+            .body(Body::from(
+                serde_json::json!({
+                    "datasetId": ds,
+                    "prompt": "descreva a cena",
+                    "model": "mock"
+                })
+                .to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "deve retornar 202");
+    let resp = json(&body);
+    assert_eq!(
+        resp["jobId"].as_str().expect("jobId"),
+        "c1c2c3d4-e5f6-7890-abcd-ef1234567890"
+    );
+    assert_eq!(resp["status"].as_str().expect("status"), "queued");
+
+    let captured = mock_mgr.last_create_job_body().expect("create_job chamado");
+    assert_eq!(captured["kind"].as_str().unwrap(), "autolabel");
+    assert_eq!(captured["engine"].as_str().unwrap(), "autolabel");
+    assert_eq!(captured["mode"].as_str().unwrap(), "autolabel");
+    assert_eq!(captured["model"].as_str().unwrap(), "mock");
+    assert_eq!(
+        captured["params"]["prompt"].as_str().unwrap(),
+        "descreva a cena"
+    );
+    assert!(captured["params"]["package_ref"].is_object());
+    assert!(captured["package_ref"].is_object());
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0016_autolabel_apply_roundtrip() {
+    let _guard = SERIAL.lock().await;
+
+    let cookie = authed_cookie();
+    let (st_base, _, _) =
+        state_with_manager(api_principal::jobs::manager_client::MockManager::default()).await;
+    let app_base = routes::build(st_base.clone());
+    let (ds, ds_id, _, _, img1_name, img2_name) =
+        setup_autotracker_dataset(&app_base, &cookie).await;
+    drop(app_base);
+
+    let jsonl = format!(
+        "{{\"filename\": \"{}\", \"caption\": \"primeira foto gerada\"}}\n{{\"filename\": \"{}\", \"caption\": \"segunda foto gerada\"}}\n",
+        img1_name, img2_name
+    );
+
+    let (mock, job_id) = setup_autolabel_mock(jsonl.as_bytes(), &ds);
+    let storage = std::sync::Arc::new(api_principal::storage::MockStorage::new());
+    let s3_key = format!("artifacts/{job_id}/captions.jsonl");
+    storage.put_bytes(&s3_key, jsonl.into_bytes()).await;
+
+    let st = state_with_seeded_storage(st_base.pool.clone(), storage, mock).await;
+    let app = routes::build(st);
+
+    let (status, body_bytes) = call_autolabel_apply(
+        &app,
+        &cookie,
+        &job_id,
+        &serde_json::json!({ "datasetId": ds, "overwrite": false }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    let resp = json(&body_bytes);
+    assert_eq!(resp["applied"].as_i64().unwrap(), 2);
+    assert_eq!(resp["skipped"].as_i64().unwrap(), 0);
+    assert_eq!(resp["images"].as_i64().unwrap(), 2);
+
+    // Valida no banco que as imagens receberam a caption com origin 'autolabel'
+    let img1_id = image_id_by_filename(&st_base.pool, ds_id, &img1_name).await;
+    let (cap, origin): (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT text, origin FROM captions WHERE image_id = $1")
+            .bind(img1_id)
+            .fetch_one(&st_base.pool)
+            .await
+            .expect("fetch caption");
+
+    assert_eq!(cap.as_deref(), Some("primeira foto gerada"));
+    assert_eq!(origin.as_deref(), Some("autolabel"));
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t0016_autolabel_apply_preserves_manual() {
+    let _guard = SERIAL.lock().await;
+
+    let cookie = authed_cookie();
+    let (st_base, _, _) =
+        state_with_manager(api_principal::jobs::manager_client::MockManager::default()).await;
+    let app_base = routes::build(st_base.clone());
+    let (ds, ds_id, _, _, img1_name, img2_name) =
+        setup_autotracker_dataset(&app_base, &cookie).await;
+    drop(app_base);
+
+    // Seta caption manual na img1
+    let img1_id = image_id_by_filename(&st_base.pool, ds_id, &img1_name).await;
+    sqlx::query(
+        "INSERT INTO captions (image_id, text, origin) VALUES ($1, 'manual caption', 'manual')",
+    )
+    .bind(img1_id)
+    .execute(&st_base.pool)
+    .await
+    .expect("insert manual caption");
+
+    let jsonl = format!(
+        "{{\"filename\": \"{}\", \"caption\": \"nova caption auto\"}}\n{{\"filename\": \"{}\", \"caption\": \"outra auto\"}}\n",
+        img1_name, img2_name
+    );
+
+    let (mock, job_id) = setup_autolabel_mock(jsonl.as_bytes(), &ds);
+    let storage = std::sync::Arc::new(api_principal::storage::MockStorage::new());
+    let s3_key = format!("artifacts/{job_id}/captions.jsonl");
+    storage.put_bytes(&s3_key, jsonl.into_bytes()).await;
+
+    let st = state_with_seeded_storage(st_base.pool.clone(), storage.clone(), mock).await;
+    let app = routes::build(st);
+
+    // 1. overwrite=false: deve pular img1 (manual) e aplicar só img2
+    let (status, body_bytes) = call_autolabel_apply(
+        &app,
+        &cookie,
+        &job_id,
+        &serde_json::json!({ "datasetId": ds, "overwrite": false }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    let resp = json(&body_bytes);
+    assert_eq!(resp["applied"].as_i64().unwrap(), 1);
+    assert_eq!(resp["skipped"].as_i64().unwrap(), 1);
+    assert_eq!(resp["images"].as_i64().unwrap(), 1);
+
+    let (cap, origin): (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT text, origin FROM captions WHERE image_id = $1")
+            .bind(img1_id)
+            .fetch_one(&st_base.pool)
+            .await
+            .expect("fetch caption");
+
+    assert_eq!(cap.as_deref(), Some("manual caption"));
+    assert_eq!(origin.as_deref(), Some("manual"));
+
+    // 2. overwrite=true: agora deve sobrescrever img1 também
+    let (status2, body_bytes2) = call_autolabel_apply(
+        &app,
+        &cookie,
+        &job_id,
+        &serde_json::json!({ "datasetId": ds, "overwrite": true }),
+    )
+    .await;
+
+    assert_eq!(status2, StatusCode::OK);
+    let resp2 = json(&body_bytes2);
+    assert_eq!(resp2["applied"].as_i64().unwrap(), 2);
+    assert_eq!(resp2["skipped"].as_i64().unwrap(), 0);
+
+    let (cap2, origin2): (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT text, origin FROM captions WHERE image_id = $1")
+            .bind(img1_id)
+            .fetch_one(&st_base.pool)
+            .await
+            .expect("fetch caption");
+
+    assert_eq!(cap2.as_deref(), Some("nova caption auto"));
+    assert_eq!(origin2.as_deref(), Some("autolabel"));
+}

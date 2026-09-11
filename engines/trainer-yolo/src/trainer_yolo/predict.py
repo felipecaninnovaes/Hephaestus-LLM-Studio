@@ -21,6 +21,7 @@ import yaml
 from trainer_yolo.autotrack import (
     _generate_boxes_for_image,
     _read_dataset,
+    _xywhn_to_topleft_clamped,
 )
 from trainer_yolo.train import _die
 
@@ -111,21 +112,6 @@ def _mock_predict(cfg: dict, output: Path) -> None:
 # ---------------------------------------------------------------------------
 # Real predict (ultralytics, lazy import)
 # ---------------------------------------------------------------------------
-
-def _xywhn_to_topleft_clamped(cx: float, cy: float, w: float, h: float) -> tuple[float, float, float, float]:
-    """Convert normalized center-based (cx, cy, w, h) to top-left (x, y, w, h) with clamp 0..1."""
-    x = cx - w / 2
-    y = cy - h / 2
-    # Clamp to [0, 1]
-    x = max(0.0, min(1.0, x))
-    y = max(0.0, min(1.0, y))
-    w = max(0.0, min(1.0, w))
-    h = max(0.0, min(1.0, h))
-    # A3: borda direita/inferior — evita box estourar além de 1.0
-    x = min(x, 1.0 - w)
-    y = min(y, 1.0 - h)
-    return x, y, w, h
-
 
 def _real_predict(cfg: dict, output: Path) -> None:
     """Real prediction via ultralytics (requires GPU + extras [train])."""

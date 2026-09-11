@@ -33,8 +33,8 @@ from trainer_yolo.predict import (
     load_and_validate_predict_config,
     _mock_predict,
     _real_predict,
-    _xywhn_to_topleft_clamped,
 )
+from trainer_yolo.autotrack import _xywhn_to_topleft_clamped
 
 
 # ---------------------------------------------------------------------------

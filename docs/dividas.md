@@ -175,11 +175,11 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
   WCAG 2.5.8). Decisão do coordenador: aceito por ora (fidelidade Arcane),
   componente global usado em várias páginas — resolver na fatia de refinamento
   de componentes com medição.
-- **`emerald-400` de marca em `CreateDatasetModal.tsx` — ABERTA 2026-09-09**
+- ~~**`emerald-400` de marca em `CreateDatasetModal.tsx` — ABERTA 2026-09-09**
   (origem: achado do F6.2 fora do escopo, `apps/web/components/studio/
   CreateDatasetModal.tsx` ~L565). Viola a regra Brand-Only do `docs/DESIGN.md`
   (emerald só como semântica literal documentada; classes em emerald em marca
-  são proibidas). Fix trivial em fatia de limpeza web (F6.4+).
+  são proibidas). Fix trivial em fatia de limpeza web (F6.4+).~~ **QUITADA 2026-09-11** (Fatia R1, commit `f1892f1` — trocado por `text-[#34d399]`, token semântico sancionado do DESIGN.md).
 - **"V1.3" hardcoded na página de login — ABERTA 2026-09-09**
   (origem: smoke F6.2, `apps/web/app/login/page.tsx` ~L151). A versão de
   produto real vem de `GET /health` (`version:"0.1.0"`, ADR-0009 D5); o login

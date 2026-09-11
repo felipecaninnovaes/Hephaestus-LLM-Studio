@@ -477,7 +477,7 @@ function JobsPageContent() {
                           · {selectedJob.kind} · {selectedJob.engine}
                         </span>
                       </div>
-                      <div className="mt-1 flex items-center gap-3 font-mono text-[11px] text-zinc-400">
+                      <div className="mt-1 flex flex-wrap items-center gap-3 font-mono text-[11px] text-zinc-400">
                         <span>
                           Duração: {formatDuration(selectedJob.createdAt, selectedJob.finishedAt)}
                         </span>
@@ -489,6 +489,28 @@ function JobsPageContent() {
                             {Math.round((selectedJob.progress ?? 0) * 100)}%
                           </span>
                         )}
+                        {selectedJob.orchestratorName ? (
+                          <span className="flex items-center gap-1.5 text-zinc-300">
+                            <span className="text-zinc-500">·</span>
+                            <span>
+                              Nó: <strong className="font-semibold text-zinc-200">{selectedJob.orchestratorName}</strong>
+                              {selectedJob.orchestratorKind ? ` (${selectedJob.orchestratorKind})` : ""}
+                            </span>
+                            {selectedJob.orchestratorFallback && (
+                              <span
+                                className="inline-flex items-center rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-400 font-medium"
+                                title="Job sofreu fallback automático após timeout no nó solicitado"
+                              >
+                                fallback
+                              </span>
+                            )}
+                          </span>
+                        ) : selectedJob.status === "queued" ? (
+                          <span className="flex items-center gap-1.5 text-zinc-500">
+                            <span>·</span>
+                            <span>Aguardando nó</span>
+                          </span>
+                        ) : null}
                       </div>
                     </div>
 

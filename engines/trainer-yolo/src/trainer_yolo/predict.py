@@ -14,13 +14,11 @@ from __future__ import annotations
 
 import json
 import os
-import struct
 from pathlib import Path
 
 import yaml
 
 from trainer_yolo.autotrack import (
-    _box_for_image,
     _generate_boxes_for_image,
     _read_dataset,
 )
@@ -123,6 +121,9 @@ def _xywhn_to_topleft_clamped(cx: float, cy: float, w: float, h: float) -> tuple
     y = max(0.0, min(1.0, y))
     w = max(0.0, min(1.0, w))
     h = max(0.0, min(1.0, h))
+    # A3: borda direita/inferior — evita box estourar além de 1.0
+    x = min(x, 1.0 - w)
+    y = min(y, 1.0 - h)
     return x, y, w, h
 
 

@@ -1464,7 +1464,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/SubmitJobResponse" }
         "400":
-          description: "Body malformado, campos desconhecidos, modelId não-UUID ou conf fora de 0..1 (`code: invalid_request`)."
+          description: "Body malformado, campos desconhecidos, modelId não-UUID, conf fora de 0..1 ou engine do modelo ≠ yolo (validado no manager) (`code: invalid_request`)."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }

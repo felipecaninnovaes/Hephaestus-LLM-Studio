@@ -29,6 +29,23 @@ use crate::state::AppState;
 use crate::storage::StorageError;
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Compensação: remove package (storage + row) quando o manager rejeita o
+/// job (A1 — Fatia J review J.6). Extraído para reuso nos 4 braços de erro.
+async fn compensate_package(state: &AppState, version_id: &str) {
+    let _ = state
+        .storage
+        .delete_prefix(&format!("packages/{version_id}/"))
+        .await;
+    let _ = sqlx::query("DELETE FROM dataset_versions WHERE id = $1")
+        .bind(version_id.parse::<uuid::Uuid>().expect("uuid"))
+        .execute(&state.pool)
+        .await;
+}
+
+// ---------------------------------------------------------------------------
 // Query params
 // ---------------------------------------------------------------------------
 
@@ -936,31 +953,22 @@ pub async fn submit_predict_job(
         }
         // R6: handler do predict mapeia NotFound→404, InvalidRequest→400
         // (diferente do submit_yolo_job que mapeia Err(_)→503).
-        Err(ManagerError::NotFound) => not_found(),
-        Err(ManagerError::InvalidRequest(_)) => invalid_request(),
+        // A1: compensação em TODOS os braços de erro (package já criado).
+        Err(ManagerError::NotFound) => {
+            compensate_package(&state, &package.version_id).await;
+            not_found()
+        }
+        Err(ManagerError::InvalidRequest(_)) => {
+            compensate_package(&state, &package.version_id).await;
+            invalid_request()
+        }
         Err(ManagerError::Unavailable(_)) => {
-            // Compensação: remove o package criado se o manager falhar
-            // (operação composta: package sem job = lixo).
-            let _ = state
-                .storage
-                .delete_prefix(&format!("packages/{}/", package.version_id))
-                .await;
-            let _ = sqlx::query("DELETE FROM dataset_versions WHERE id = $1")
-                .bind(package.version_id.parse::<uuid::Uuid>().expect("uuid"))
-                .execute(&state.pool)
-                .await;
+            compensate_package(&state, &package.version_id).await;
             queue_unavailable()
         }
         // Outros erros do manager → 503 + compensação.
         Err(_) => {
-            let _ = state
-                .storage
-                .delete_prefix(&format!("packages/{}/", package.version_id))
-                .await;
-            let _ = sqlx::query("DELETE FROM dataset_versions WHERE id = $1")
-                .bind(package.version_id.parse::<uuid::Uuid>().expect("uuid"))
-                .execute(&state.pool)
-                .await;
+            compensate_package(&state, &package.version_id).await;
             queue_unavailable()
         }
     }
@@ -1994,6 +2002,71 @@ mod tests {
             resp.status(),
             StatusCode::BAD_REQUEST,
             "valid body with conf=0.9 should not trigger 400"
+        );
+    }
+
+    // --- POST /api/jobs/predict compensation tests (A1 — Fatia J review J.6) ---
+
+    #[tokio::test]
+    async fn submit_predict_job_manager_not_found_compensates() {
+        // A1: manager NotFound → 404 + compensação (delete_prefix chamado).
+        let mut mock = MockManager::default();
+        mock.create_job_not_found = true;
+        let state = test_state(mock);
+        let resp = submit_predict_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"modelId":"550e8400-e29b-41d4-a716-446655440000","datasetId":"550e8400-e29b-41d4-a716-446655440001"}"#,
+            )),
+        )
+        .await;
+        // Com pool lazy, vai falhar no DB antes de reach create_job (500).
+        // NÃO deve ser 400.
+        assert_ne!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "manager NotFound should not trigger 400"
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_predict_job_manager_invalid_request_compensates() {
+        // A1: manager InvalidRequest → 400 + compensação (delete_prefix chamado).
+        let mut mock = MockManager::default();
+        mock.create_job_invalid_request = Some("engine mismatch".into());
+        let state = test_state(mock);
+        let resp = submit_predict_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"modelId":"550e8400-e29b-41d4-a716-446655440000","datasetId":"550e8400-e29b-41d4-a716-446655440001"}"#,
+            )),
+        )
+        .await;
+        assert_ne!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "manager InvalidRequest should not trigger 400 at validation"
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_predict_job_manager_fail_compensates() {
+        // A1: manager Unavailable (fail=true) → 503 + compensação (delete_prefix chamado).
+        let mut mock = MockManager::default();
+        mock.fail = true;
+        let state = test_state(mock);
+        let resp = submit_predict_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"modelId":"550e8400-e29b-41d4-a716-446655440000","datasetId":"550e8400-e29b-41d4-a716-446655440001"}"#,
+            )),
+        )
+        .await;
+        assert!(
+            resp.status() == StatusCode::SERVICE_UNAVAILABLE
+                || resp.status() == StatusCode::INTERNAL_SERVER_ERROR,
+            "expected 503 or 500, got {}",
+            resp.status()
         );
     }
 

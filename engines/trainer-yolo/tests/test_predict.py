@@ -588,10 +588,10 @@ class TestRealPredict:
         assert h == pytest.approx(0.3)
 
         # Clamp: box goes beyond 1.0
-        # cx=0.95, w=0.2 → x = 0.95 - 0.1 = 0.85 (clamped to 0.85, which is <= 1.0)
+        # cx=0.95, w=0.2 → x = 0.95 - 0.1 = 0.85, but right-edge clamp → min(0.85, 1-0.2) = 0.8
         x, y, w, h = _xywhn_to_topleft_clamped(0.95, 0.95, 0.2, 0.2)
-        assert x == pytest.approx(0.85)
-        assert y == pytest.approx(0.85)
+        assert x == pytest.approx(0.8)
+        assert y == pytest.approx(0.8)
         assert w == pytest.approx(0.2)
         assert h == pytest.approx(0.2)
 

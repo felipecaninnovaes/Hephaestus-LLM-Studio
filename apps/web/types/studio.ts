@@ -356,7 +356,7 @@ export function autotrackerErrorMessage(code: string): string {
     case "queue_unavailable":
       return "Fila de processamento indisponível — tente novamente.";
     case "not_found":
-      return "Modelo não encontrado — atualize a lista.";
+      return "Job não encontrado.";
     case "job_not_done":
       return "O job ainda não terminou — aguarde a conclusão.";
     case "storage_unavailable":

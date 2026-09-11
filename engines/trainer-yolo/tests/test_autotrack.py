@@ -581,7 +581,7 @@ class TestRealAutotrack:
         _real_autotrack(cfg, output)
 
         # YOLO called with weights_path
-        mock_yolo_cls.assert_called_once_with(str(tmp_path / "weights.pt") if "weights.pt" in cfg["weights_path"] else cfg["weights_path"])
+        mock_yolo_cls.assert_called_once_with(cfg["weights_path"])
 
         # set_classes called with dataset class names
         mock_model.set_classes.assert_called_once_with(["solda_fria", "solda_quente"])

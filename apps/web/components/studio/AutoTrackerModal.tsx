@@ -89,7 +89,7 @@ export default function AutoTrackerModal({
     };
     const worldOpts: SelectOption<string>[] = worldModels.map((m) => ({
       value: m.id,
-      label: `${m.name} · ${modelSourceLabel(m.source)}`,
+      label: m.name,
       badge:
         m.source === "train" ? (
           <span className="rounded-full border border-brand-500/35 bg-brand-500/10 px-1.5 py-0.5 font-mono text-[10px] text-brand-400">
@@ -136,7 +136,15 @@ export default function AutoTrackerModal({
           router.replace("/login");
           return;
         }
-        setTopError(autotrackerErrorMessage(err.code));
+        if (err.code === "not_found") {
+          if (selectedModelId) {
+            setTopError("Modelo não encontrado — atualize a lista.");
+          } else {
+            setTopError("Recurso não encontrado.");
+          }
+        } else {
+          setTopError(autotrackerErrorMessage(err.code));
+        }
         return;
       }
       setTopError("Falha ao criar job de AutoTracker.");
@@ -183,7 +191,6 @@ export default function AutoTrackerModal({
           placeholder="Selecione um modelo…"
           loading={modelsLoading}
           loadingText="Carregando modelos…"
-          emptyText="Nenhum modelo world disponível"
           fontMono
           disabled={busy}
           size="default"

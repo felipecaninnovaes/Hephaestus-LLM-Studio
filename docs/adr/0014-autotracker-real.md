@@ -376,7 +376,7 @@ parametrizar no body (superfície de contrato sem uso).
    null`.
 5. **Mapeamento do manager — padrão predict (R6 da ADR-0013), NÃO o
    `Err(_)→503` do submit_yolo_job**: `NotFound → 404` (modelId inexistente),
-   `InvalidRequest → 400` (row com engine≠world — defesa da D5), `Unavailable →
+   `InvalidRequest → 400` (row com engine fora de {yolo,world}), `Unavailable →
    503`; **compensação do package em TODOS os erros** (padrão atual já faz —
    L793-816).
 6. **Apply INTOCADO**: `apply_autotracker_boxes` (L1025-1360) não muda nenhuma

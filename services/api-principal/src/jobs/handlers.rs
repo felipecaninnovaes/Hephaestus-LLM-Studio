@@ -1948,6 +1948,9 @@ mod tests {
     #[tokio::test]
     async fn submit_autotracker_job_manager_not_found_compensates() {
         // ADR-0014 D6: manager NotFound → 404 + compensação.
+        // NOTA: test_state usa pool lazy que falha no DB ANTES de reach create_job.
+        // O mapeamento NotFound→404 é coberto pelo test-db; este teste valida o
+        // caminho de falha do pool (500), não o mapeamento do manager.
         let mut mock = MockManager::default();
         mock.create_job_not_found = true;
         let state = test_state(mock);
@@ -1958,17 +1961,20 @@ mod tests {
             )),
         )
         .await;
-        // Com pool lazy, vai falhar no DB antes de reach create_job (500).
-        assert_ne!(
+        // Pool lazy falha no DB → 500 (não 404 nem 400).
+        assert_eq!(
             resp.status(),
-            StatusCode::BAD_REQUEST,
-            "manager NotFound should not trigger 400"
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "lazy pool DB failure should return 500"
         );
     }
 
     #[tokio::test]
     async fn submit_autotracker_job_manager_invalid_request_compensates() {
         // ADR-0014 D6: manager InvalidRequest → 400 + compensação.
+        // NOTA: test_state usa pool lazy que falha no DB ANTES de reach create_job.
+        // O mapeamento InvalidRequest→400 é coberto pelo test-db; este teste valida o
+        // caminho de falha do pool (500), não o mapeamento do manager.
         let mut mock = MockManager::default();
         mock.create_job_invalid_request = Some("engine mismatch".into());
         let state = test_state(mock);
@@ -1979,16 +1985,20 @@ mod tests {
             )),
         )
         .await;
-        assert_ne!(
+        // Pool lazy falha no DB → 500 (não 400 nem 503).
+        assert_eq!(
             resp.status(),
-            StatusCode::BAD_REQUEST,
-            "manager InvalidRequest should not trigger 400 at validation"
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "lazy pool DB failure should return 500"
         );
     }
 
     #[tokio::test]
     async fn submit_autotracker_job_manager_fail_compensates() {
         // ADR-0014 D6: manager Unavailable → 503 + compensação.
+        // NOTA: test_state usa pool lazy que falha no DB ANTES de reach create_job.
+        // O mapeamento Unavailable→503 é coberto pelo test-db; este teste valida o
+        // caminho de falha do pool (500), não o mapeamento do manager.
         let mut mock = MockManager::default();
         mock.fail = true;
         let state = test_state(mock);
@@ -1999,11 +2009,11 @@ mod tests {
             )),
         )
         .await;
-        assert!(
-            resp.status() == StatusCode::SERVICE_UNAVAILABLE
-                || resp.status() == StatusCode::INTERNAL_SERVER_ERROR,
-            "expected 503 or 500, got {}",
-            resp.status()
+        // Pool lazy falha no DB → 500 (não 503).
+        assert_eq!(
+            resp.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "lazy pool DB failure should return 500"
         );
     }
 

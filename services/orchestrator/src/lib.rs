@@ -35,6 +35,9 @@ pub struct DispatchRequest {
     pub config_yaml: Option<String>,
     pub dataset_version_id: Option<String>,
     pub workdir: String,
+    /// Modo de operação: `train` (default) ou `predict` (ADR-0013 D6).
+    #[serde(default = "default_mode")]
+    pub mode: String,
     /// Pesos de modelo para fine-tune (ADR-0012 D5). `None` = treino do zero.
     #[serde(default)]
     pub weights_ref: Option<WeightsRef>,
@@ -316,6 +319,10 @@ pub fn compute_progress(line: &MetricsLine, total_epochs: i32) -> f64 {
 ///
 /// Quando `weights_path` é `None`, o placeholder `{weights_path}` permanece literal
 /// (trainer mock tolera chave desconhecida — ADR-0012 D5).
+fn default_mode() -> String {
+    "train".to_string()
+}
+
 pub fn replace_config_placeholders(
     config: &str,
     dataset_path: &str,
@@ -1085,23 +1092,34 @@ async fn run_job_inner(
         }
     });
 
-    // Ramifica subcomando e artefatos por engine (A.3 — D2)
-    let subcommand_args: Vec<String> = match dispatch.engine.as_str() {
-        "yolo" => vec![
+    // Ramifica subcomando e artefatos por (engine, mode) — ADR-0013 D6
+    let subcommand_args: Vec<String> = match (dispatch.engine.as_str(), dispatch.mode.as_str()) {
+        ("yolo", "train") => vec![
             "train".to_string(),
             "--config".to_string(),
             format!("/outputs/{job_id}/config.yaml"),
             "--output".to_string(),
             format!("/outputs/{job_id}"),
         ],
-        "autotracker" => vec![
+        ("yolo", "predict") => vec![
+            "predict".to_string(),
+            "--config".to_string(),
+            format!("/outputs/{job_id}/config.yaml"),
+            "--output".to_string(),
+            format!("/outputs/{job_id}"),
+        ],
+        ("autotracker", _) => vec![
             "autotrack".to_string(),
             "--config".to_string(),
             format!("/outputs/{job_id}/config.yaml"),
             "--output".to_string(),
             format!("/outputs/{job_id}"),
         ],
-        other => return Err(PipelineError::Other(format!("unsupported engine: {other}"))),
+        (engine, mode) => {
+            return Err(PipelineError::Other(format!(
+                "unsupported engine/mode: {engine}/{mode}"
+            )))
+        }
     };
 
     let (exit_code, logs) = executor
@@ -1131,20 +1149,17 @@ async fn run_job_inner(
     }
 
     // 9. Upload artifacts para S3 (D8 — artifacts/<job_id>/)
-    let artifact_specs: Vec<(&str, &str)> = match dispatch.engine.as_str() {
-        "yolo" => vec![
+    let artifact_specs: Vec<(&str, &str)> = match (dispatch.engine.as_str(), dispatch.mode.as_str())
+    {
+        ("yolo", "train") => vec![
             ("best.pt", "model"),
             ("last.pt", "model"),
             ("metrics.jsonl", "metrics"),
         ],
-        "autotracker" => vec![("boxes.json", "boxes"), ("metrics.jsonl", "metrics")],
-        // Já validado acima — seguro unwrap
-        _ => {
-            return Err(PipelineError::Other(format!(
-                "unsupported engine: {}",
-                dispatch.engine
-            )))
-        }
+        ("yolo", "predict") => vec![("predictions.json", "predictions")],
+        ("autotracker", _) => vec![("boxes.json", "boxes"), ("metrics.jsonl", "metrics")],
+        // Já validado acima — seguro unreachable
+        _ => unreachable!("unsupported engine/mode validated earlier"),
     };
 
     let mut artifacts = Vec::new();
@@ -1979,6 +1994,7 @@ mod tests {
             ),
             dataset_version_id: None,
             workdir: "/tmp".to_string(),
+            mode: "train".to_string(),
             weights_ref: None,
         }
     }
@@ -3048,5 +3064,288 @@ also bad, not a number
         )
         .await;
         assert!(result.is_err(), "unknown prefix should fail: {:?}", result);
+    }
+
+    // =========================================================================
+    // J.3 — DispatchRequest.mode serde default + matriz (engine, mode)
+    // =========================================================================
+
+    #[test]
+    fn dispatch_request_mode_defaults_to_train_when_absent() {
+        let json = r#"{
+            "job_id": "j1",
+            "engine": "yolo",
+            "image": "img:local",
+            "exec_mode": "docker",
+            "package_ref": {"key": "packages/p/dataset.zip", "md5_zip": "abc", "bytes": 100},
+            "workdir": "/tmp"
+        }"#;
+        let req: DispatchRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.mode, "train");
+    }
+
+    #[test]
+    fn dispatch_request_mode_deserializes_explicit_value() {
+        let json = r#"{
+            "job_id": "j1",
+            "engine": "yolo",
+            "image": "img:local",
+            "exec_mode": "docker",
+            "package_ref": {"key": "packages/p/dataset.zip", "md5_zip": "abc", "bytes": 100},
+            "workdir": "/tmp",
+            "mode": "predict"
+        }"#;
+        let req: DispatchRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.mode, "predict");
+    }
+
+    // -- (yolo, predict) → subcommand predict + artifact predictions.json --
+
+    #[tokio::test]
+    async fn engine_yolo_predict_uses_predict_subcommand_and_predictions_artifact() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_dispatch_with_valid_md5("job-pred-001", "yolo", &zip_path);
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        dispatch.mode = "predict".to_string();
+        // Config with weights_path placeholder (predict always has weights)
+        dispatch.config_yaml = Some(
+            "mode: predict\npredict:\n  conf: 0.65\ndataset_path: {dataset_path}\noutput_path: {output_path}\nweights_path: {weights_path}"
+                .to_string(),
+        );
+
+        let weights_bytes = b"fake weights";
+        let weights_md5 = compute_file_md5_bytes(weights_bytes);
+        dispatch.weights_ref = Some(WeightsRef {
+            s3_key: "models/yolo/abc-123/best.pt".to_string(),
+            md5: weights_md5,
+        });
+
+        let s3w = Arc::new(FakeS3WithWeights::new(weights_bytes.to_vec()));
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        // Pre-cria predictions.json (predict só produz este artefato)
+        let predictions = br#"{"engine":"yolo","model":"predict","conf":0.65,"images":[{"filename":"img_0001.jpg","boxes":[]}]}"#;
+        let mut output_files = HashMap::new();
+        output_files.insert("predictions.json".to_string(), predictions.to_vec());
+        create_fake_outputs(tmp.path(), "job-pred-001", &output_files);
+
+        let result = run_job_inner(
+            &dispatch,
+            s3w.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "yolo predict pipeline should succeed: {:?}",
+            result.err()
+        );
+
+        // Verify subcommand: predict, not train
+        let args = executor.last_args().unwrap();
+        assert_eq!(args[0], "predict");
+        assert_eq!(args[1], "--config");
+        assert_eq!(args[3], "--output");
+
+        // Verify artifact: only predictions.json with kind="predictions"
+        let artifacts = report.done_artifacts().unwrap();
+        assert_eq!(
+            artifacts.len(),
+            1,
+            "predict should produce exactly 1 artifact"
+        );
+        assert_eq!(artifacts[0].path, "predictions.json");
+        assert_eq!(artifacts[0].kind, "predictions");
+
+        // Verify weights were downloaded (staged)
+        let staged = tmp.path().join("outputs/job-pred-001/weights/best.pt");
+        assert!(staged.exists(), "weights should be staged for predict");
+        assert_eq!(std::fs::read(&staged).unwrap(), weights_bytes);
+
+        // Verify config has weights_path replaced
+        let config_content =
+            std::fs::read_to_string(tmp.path().join("outputs/job-pred-001/config.yaml")).unwrap();
+        assert!(
+            config_content.contains("/outputs/job-pred-001/weights/best.pt"),
+            "config should have replaced weights_path, got: {config_content}"
+        );
+    }
+
+    // -- (yolo, unknown mode) → PipelineError::Other --
+
+    #[tokio::test]
+    async fn yolo_unknown_mode_returns_clean_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_dispatch_with_valid_md5("job-bad-mode", "yolo", &zip_path);
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        dispatch.mode = "finetune".to_string(); // unknown mode
+
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let result = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(PipelineError::Other(ref msg)) if msg.contains("unsupported engine/mode")),
+            "should fail with clean error for unknown mode: {:?}",
+            result
+        );
+
+        // Executor never called
+        assert!(executor.last_args().is_none());
+    }
+
+    // -- (yolo, train) regressão intocada --
+
+    #[tokio::test]
+    async fn yolo_train_regression_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_dispatch_with_valid_md5("job-train-reg", "yolo", &zip_path);
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        dispatch.mode = "train".to_string();
+
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let mut output_files = HashMap::new();
+        output_files.insert("best.pt".to_string(), b"fake model".to_vec());
+        output_files.insert("last.pt".to_string(), b"fake model".to_vec());
+        output_files.insert(
+            "metrics.jsonl".to_string(),
+            br#"{"box_loss":0.5,"cls_loss":0.3,"dfl_loss":0.2,"mAP50":0.8,"mAP50-95":0.6,"epoch":1}"#.to_vec(),
+        );
+        create_fake_outputs(tmp.path(), "job-train-reg", &output_files);
+
+        let result = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "yolo train regression should succeed: {:?}",
+            result.err()
+        );
+
+        let args = executor.last_args().unwrap();
+        assert_eq!(args[0], "train");
+
+        let artifacts = report.done_artifacts().unwrap();
+        let filenames: Vec<&str> = artifacts.iter().map(|a| a.path.as_str()).collect();
+        assert!(filenames.contains(&"best.pt"));
+        assert!(filenames.contains(&"last.pt"));
+        assert!(filenames.contains(&"metrics.jsonl"));
+    }
+
+    // -- (yolo, predict) pipeline without metrics.jsonl → done with no metrics/epoch --
+
+    #[tokio::test]
+    async fn predict_pipeline_done_without_metrics_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_dispatch_with_valid_md5("job-pred-no-metrics", "yolo", &zip_path);
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        dispatch.mode = "predict".to_string();
+
+        let weights_bytes = b"fake weights";
+        let weights_md5 = compute_file_md5_bytes(weights_bytes);
+        dispatch.weights_ref = Some(WeightsRef {
+            s3_key: "models/yolo/abc/best.pt".to_string(),
+            md5: weights_md5,
+        });
+        let s3w = Arc::new(FakeS3WithWeights::new(weights_bytes.to_vec()));
+
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        // Only predictions.json — no metrics.jsonl (predict doesn't produce it)
+        let mut output_files = HashMap::new();
+        output_files.insert(
+            "predictions.json".to_string(),
+            br#"{"engine":"yolo","model":"predict","conf":0.65,"images":[]}"#.to_vec(),
+        );
+        create_fake_outputs(tmp.path(), "job-pred-no-metrics", &output_files);
+
+        let result = run_job_inner(
+            &dispatch,
+            s3w.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "predict pipeline without metrics.jsonl should succeed: {:?}",
+            result.err()
+        );
+
+        // Verify done report has no metrics/epoch (predict is binary progress)
+        let statuses = report.statuses();
+        assert!(statuses.contains(&"running".to_string()));
+        assert!(statuses.contains(&"done".to_string()));
+
+        let done_report = report
+            .reports
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|r| r.status == "done")
+            .cloned()
+            .unwrap();
+        assert!(
+            done_report.metrics.is_none(),
+            "predict done should have no metrics"
+        );
+        assert!(
+            done_report.epoch.is_none(),
+            "predict done should have no epoch"
+        );
+        assert_eq!(done_report.progress, Some(1.0));
+
+        // Verify artifact
+        let artifacts = report.done_artifacts().unwrap();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].path, "predictions.json");
+        assert_eq!(artifacts[0].kind, "predictions");
     }
 }

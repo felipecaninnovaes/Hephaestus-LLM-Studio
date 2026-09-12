@@ -1933,7 +1933,7 @@ async fn create_model_400_engine_invalida() {
 
     let req = CreateModelRequest {
         id: uuid::Uuid::new_v4(),
-        engine: "diffusion".into(),
+        engine: "unsupported".into(),
         name: "model.pt".into(),
         model: None,
         s3_key: "models/diff/abc/model.pt".into(),
@@ -3985,7 +3985,7 @@ async fn create_model_world_201() {
     assert_eq!(item.source, "upload");
 }
 
-/// POST /internal/models com engine inválida (não yolo nem world) → 400.
+/// POST /internal/models com engine inválida (não yolo, world, diffusion, clip) → 400.
 #[tokio::test]
 #[ignore = "requer Postgres (bash scripts/test-db.sh)"]
 async fn create_model_engine_invalida_400() {
@@ -3995,10 +3995,10 @@ async fn create_model_engine_invalida_400() {
 
     let req = CreateModelRequest {
         id: uuid::Uuid::new_v4(),
-        engine: "diffusion".into(),
+        engine: "unsupported".into(),
         name: "model.pt".into(),
         model: None,
-        s3_key: "models/diff/abc/model.pt".into(),
+        s3_key: "models/unsupported/abc/model.pt".into(),
         source: "upload".into(),
         url: None,
         hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
@@ -4008,6 +4008,72 @@ async fn create_model_engine_invalida_400() {
 
     let result = manager::create_model(&p, req).await;
     assert!(matches!(result, Err(ManagerError::InvalidRequest(_))));
+}
+
+/// POST /internal/models com engine=diffusion → 201.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_model_engine_diffusion_201() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let model_id = uuid::Uuid::new_v4();
+    let req = CreateModelRequest {
+        id: model_id,
+        engine: "diffusion".into(),
+        name: "sdxl-lora.safetensors".into(),
+        model: None,
+        s3_key: "models/diffusion/abc/sdxl-lora.safetensors".into(),
+        source: "upload".into(),
+        url: None,
+        hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
+        bytes: 1024,
+        job_id: None,
+    };
+
+    let item = manager::create_model(&p, req)
+        .await
+        .expect("create diffusion model");
+    assert_eq!(item.id, model_id.to_string());
+    assert_eq!(item.engine, "diffusion");
+    assert_eq!(item.name, "sdxl-lora.safetensors");
+}
+
+/// DELETE /internal/models/:id → remove com sucesso e retorna item.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn delete_model_success_and_not_found() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let model_id = uuid::Uuid::new_v4();
+    let req = CreateModelRequest {
+        id: model_id,
+        engine: "yolo".into(),
+        name: "test-delete.pt".into(),
+        model: None,
+        s3_key: "models/yolo/del/test-delete.pt".into(),
+        source: "upload".into(),
+        url: None,
+        hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
+        bytes: 1024,
+        job_id: None,
+    };
+
+    manager::create_model(&p, req).await.expect("create model");
+
+    // Deleta o modelo criado
+    let deleted = manager::delete_model(&p, model_id)
+        .await
+        .expect("delete model");
+    assert_eq!(deleted.id, model_id.to_string());
+    assert_eq!(deleted.name, "test-delete.pt");
+
+    // Segunda deleção deve retornar NotFound
+    let err = manager::delete_model(&p, model_id).await.unwrap_err();
+    assert!(matches!(err, ManagerError::NotFound));
 }
 
 // ===========================================================================

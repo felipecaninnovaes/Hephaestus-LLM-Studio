@@ -31,3 +31,9 @@ export async function downloadModel(params: {
     body: params,
   });
 }
+
+/** DELETE /api/models/:id — remove modelo do catálogo e storage. Retorna 204. */
+export async function deleteModel(id: string): Promise<void> {
+  await apiFetch(`/api/models/${id}`, { method: "DELETE" });
+}
+

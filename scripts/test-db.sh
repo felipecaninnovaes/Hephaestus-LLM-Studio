@@ -30,6 +30,9 @@ echo "antes: db_running=$WAS_RUNNING db_container=$HAD_CONTAINER volume_infra_pg
 TEST_CODE=0
 
 cleanup() {
+  # Limpa o banco efêmero de testes.
+  compose exec -T db psql -U studio -d postgres -c "DROP DATABASE IF EXISTS studio_test;" >/dev/null 2>&1 || true
+
   # 5. Sempre: desfaz SÓ o que o script criou.
   if [[ "$WAS_RUNNING" == "0" && "$HAD_CONTAINER" == "0" ]]; then
     compose stop db >/dev/null 2>&1 || true
@@ -72,23 +75,30 @@ if [[ "$ready" != "1" ]]; then
 fi
 echo "db: pg_isready ok"
 
+# Cria banco efêmero studio_test para isolamento absoluto contra o banco do dev.
+compose exec -T db psql -U studio -d postgres \
+  -c "DROP DATABASE IF EXISTS studio_test;" \
+  -c "CREATE DATABASE studio_test;" >/dev/null 2>&1
+echo "db: banco efêmero studio_test criado"
+
 # 4. Roda os testes --ignored, guardando o exit code.
 cd "$ROOT_DIR"
 TEST_CODE=0
 echo ">>> api-principal: datasets_db --ignored"
-DATABASE_URL="postgres://studio:${POSTGRES_PASSWORD:-studio}@localhost:5432/studio" \
+DATABASE_URL="postgres://studio:${POSTGRES_PASSWORD:-studio}@localhost:5432/studio_test" \
   cargo test -p api-principal --test datasets_db -- --ignored || TEST_CODE=$?
 
-# 5. Testes do manager (F4.3) — mesmo banco, MESMO exit code guardado.
+# 5. Testes do manager (F4.3) — banco efêmero studio_test, MESMO exit code guardado.
 echo ">>> manager: manager_db --ignored"
-DATABASE_URL="postgres://studio:${POSTGRES_PASSWORD:-studio}@localhost:5432/studio" \
+DATABASE_URL="postgres://studio:${POSTGRES_PASSWORD:-studio}@localhost:5432/studio_test" \
   cargo test -p manager --test manager_db -- --ignored || TEST_CODE=$?
 
 # 5b. Testes handler do manager (binário) — mesmos critérios.
 echo ">>> manager: bin handler tests --ignored"
-DATABASE_URL="postgres://studio:${POSTGRES_PASSWORD:-studio}@localhost:5432/studio" \
+DATABASE_URL="postgres://studio:${POSTGRES_PASSWORD:-studio}@localhost:5432/studio_test" \
   cargo test -p manager --bin manager -- --ignored || TEST_CODE=$?
 
 # 6. Exit com o código do cargo test (o trap limpa antes).
 echo "test-db.sh: exit_code=$TEST_CODE"
 exit "$TEST_CODE"
+

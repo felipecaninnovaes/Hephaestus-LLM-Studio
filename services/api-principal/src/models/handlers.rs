@@ -270,25 +270,34 @@ pub async fn upload_model(State(state): State<AppState>, mut multipart: Multipar
     let final_name = if let Some(ref n) = name {
         validate::sanitize_model_name(n)
     } else {
-        // Usa o nome do arquivo do form, sanitizado.
-        let stem = raw_filename.rsplit('.').nth(1).unwrap_or("model");
-        format!("{}.pt", validate::sanitize_model_name(stem))
+        // Usa o nome do arquivo do form, preservando a extensão (.safetensors ou .pt).
+        let lower_raw = raw_filename.to_lowercase();
+        let ext = if lower_raw.ends_with(".safetensors") {
+            ".safetensors"
+        } else {
+            ".pt"
+        };
+        let stem = raw_filename.strip_suffix(ext).unwrap_or("model");
+        format!("{}{}", validate::sanitize_model_name(stem), ext)
     };
 
-    if final_name.is_empty() || !final_name.ends_with(".pt") {
+    let lower_final = final_name.to_lowercase();
+    if final_name.is_empty()
+        || (!lower_final.ends_with(".pt") && !lower_final.ends_with(".safetensors"))
+    {
         return invalid_request();
     }
 
-    // Magic bytes check.
+    // Magic bytes check (lê até 16 bytes para cobrir PK\x03\x04 ou safetensors header u64 + '{').
     let head = {
         use tokio::io::AsyncReadExt;
         let mut f = match tokio::fs::File::open(tmp_file.path()).await {
             Ok(f) => f,
             Err(_) => return invalid_request(),
         };
-        let mut buf = [0u8; 4];
+        let mut buf = [0u8; 16];
         let mut n = 0usize;
-        while n < 4 {
+        while n < 16 {
             match f.read(&mut buf[n..]).await {
                 Ok(0) => break,
                 Ok(k) => n += k,
@@ -298,7 +307,7 @@ pub async fn upload_model(State(state): State<AppState>, mut multipart: Multipar
         buf[..n].to_vec()
     };
 
-    if !validate::validate_magic(&head) {
+    if !validate::validate_magic(&head, &final_name) {
         return invalid_request();
     }
 
@@ -445,14 +454,16 @@ pub async fn download_model(
     let final_name = match body.name.as_deref() {
         Some(n) => {
             let s = validate::sanitize_model_name(n);
-            if s.is_empty() || !s.ends_with(".pt") {
+            let lower = s.to_lowercase();
+            if s.is_empty() || (!lower.ends_with(".pt") && !lower.ends_with(".safetensors")) {
                 return invalid_request();
             }
             s
         }
         None => {
             let b = basename_from_url(&body.url).unwrap_or_else(|| "model.pt".to_string());
-            if !b.ends_with(".pt") {
+            let lower = b.to_lowercase();
+            if !lower.ends_with(".pt") && !lower.ends_with(".safetensors") {
                 return invalid_request();
             }
             b
@@ -616,9 +627,9 @@ pub async fn download_model(
                 );
             }
         };
-        let mut buf = [0u8; 4];
+        let mut buf = [0u8; 16];
         let mut n = 0usize;
-        while n < 4 {
+        while n < 16 {
             match f.read(&mut buf[n..]).await {
                 Ok(0) => break,
                 Ok(k) => n += k,
@@ -628,7 +639,7 @@ pub async fn download_model(
         buf[..n].to_vec()
     };
 
-    if !validate::validate_magic(&head) {
+    if !validate::validate_magic(&head, &final_name) {
         return invalid_request();
     }
 
@@ -718,6 +729,40 @@ pub async fn download_model(
     }
 }
 
+/// DELETE /api/models/:id — remove modelo da tabela models e storage se upload/download (ADR-0012 R5).
+pub async fn delete_model(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    let uid = match uuid::Uuid::parse_str(&id) {
+        Ok(u) => u,
+        Err(_) => return err(StatusCode::NOT_FOUND, "not_found", "model not found"),
+    };
+
+    let model = match state.manager.delete_model(&uid.to_string()).await {
+        Ok(m) => m,
+        Err(ManagerError::NotFound) => {
+            return err(StatusCode::NOT_FOUND, "not_found", "model not found");
+        }
+        Err(ManagerError::Unavailable(_)) => return queue_unavailable(),
+        Err(_) => return queue_unavailable(),
+    };
+
+    // Se a origem for upload ou download, remove também do S3/SeaweedFS (D1/R5).
+    // Para checkpoints de treino ('train'), o binário pertence ao histórico de jobs
+    // em artifacts/<job_id>/... e não é destruído.
+    if matches!(model.source.as_str(), "upload" | "download") {
+        if let Err(e) = state.storage.delete(&model.path).await {
+            tracing::warn!(
+                "delete_model: falha ao remover {} do storage: {e}",
+                model.path
+            );
+        }
+    }
+
+    StatusCode::NO_CONTENT.into_response()
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -767,6 +812,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     fn mock_model_response() -> InternalModelResponse {
         InternalModelResponse {
             id: "550e8400-e29b-41d4-a716-446655440000".into(),
@@ -785,11 +831,16 @@ mod tests {
     // --- Upload tests (validation only — multipart handler tested via integration) ---
 
     #[test]
-    fn validate_upload_engine_diffusion_400() {
+    fn validate_upload_engine_unsupported_400() {
         assert_eq!(
-            validate::validate_upload("diffusion", Some("best.pt")),
+            validate::validate_upload("unsupported", Some("best.pt")),
             Err(validate::UploadError::InvalidEngine)
         );
+    }
+
+    #[test]
+    fn validate_upload_engine_diffusion_ok() {
+        assert!(validate::validate_upload("diffusion", Some("model.safetensors")).is_ok());
     }
 
     #[test]
@@ -802,12 +853,12 @@ mod tests {
 
     #[test]
     fn validate_magic_pk_ok() {
-        assert!(validate::validate_magic(b"PK\x03\x04rest"));
+        assert!(validate::validate_magic(b"PK\x03\x04rest", "model.pt"));
     }
 
     #[test]
     fn validate_magic_png_400() {
-        assert!(!validate::validate_magic(b"\x89PNG"));
+        assert!(!validate::validate_magic(b"\x89PNG", "model.pt"));
     }
 
     #[test]
@@ -912,7 +963,7 @@ mod tests {
 
         let body = DownloadRequest {
             url: "https://example.com/model.pt".to_string(),
-            engine: "diffusion".to_string(),
+            engine: "unsupported".to_string(),
             name: None,
         };
 
@@ -957,12 +1008,48 @@ mod tests {
 
     #[test]
     fn download_status_check_code_path() {
-        // A1: valida que o código de checagem de status HTTP existe e mapeia
-        // para 502 model_download_failed. O teste real com servidor local
-        // requer bypass do deny de IP privado (SSRF); validamos o mapeamento
-        // de erro indiretamente — o handler já retornou 502 nos testes de
-        // rede/timeout existentes.
         let err_msg = crate::error::MSG_MODEL_DOWNLOAD_FAILED;
         assert_eq!(err_msg, "model download failed");
+    }
+
+    #[tokio::test]
+    async fn delete_model_204_ok() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let id = uuid::Uuid::new_v4().to_string();
+        let resp = delete_model(axum::extract::State(state), axum::extract::Path(id)).await;
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn delete_model_404_invalid_uuid() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = delete_model(
+            axum::extract::State(state),
+            axum::extract::Path("not-a-uuid".into()),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_model_404_not_found() {
+        let mut mock = MockManager::default();
+        mock.delete_model_not_found = true;
+        let state = test_state(mock);
+        let id = uuid::Uuid::new_v4().to_string();
+        let resp = delete_model(axum::extract::State(state), axum::extract::Path(id)).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_model_503_manager_offline() {
+        let mut mock = MockManager::default();
+        mock.fail = true;
+        let state = test_state(mock);
+        let id = uuid::Uuid::new_v4().to_string();
+        let resp = delete_model(axum::extract::State(state), axum::extract::Path(id)).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }

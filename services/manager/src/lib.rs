@@ -1461,9 +1461,13 @@ pub struct CreateModelRequest {
 
 /// Validação pura do CreateModelRequest (padrão da casa — função testável).
 fn validate_create_model(req: &CreateModelRequest) -> Result<(), ManagerError> {
-    if req.engine != "yolo" && req.engine != "world" {
+    if req.engine != "yolo"
+        && req.engine != "world"
+        && req.engine != "diffusion"
+        && req.engine != "clip"
+    {
         return Err(ManagerError::InvalidRequest(format!(
-            "engine must be 'yolo' or 'world', got '{}'",
+            "engine must be 'yolo', 'world', 'diffusion', or 'clip', got '{}'",
             req.engine
         )));
     }
@@ -1543,6 +1547,46 @@ pub async fn create_model(
                 Err(ManagerError::Internal(format!("insert model: {e}")))
             }
         }
+    }
+}
+
+/// Remove uma row da tabela models (DELETE /internal/models/:id).
+/// Retorna a row deletada (shape = ModelItem) ou NotFound.
+pub async fn delete_model(pool: &PgPool, id: Uuid) -> Result<ModelItem, ManagerError> {
+    let row: Option<(
+        Uuid,
+        String,
+        String,
+        Option<String>,
+        String,
+        String,
+        i64,
+        String,
+        Option<Uuid>,
+        DateTime<Utc>,
+    )> = sqlx::query_as(
+        "DELETE FROM models WHERE id = $1 \
+         RETURNING id, name, engine, model, source, hash, bytes, s3_key, job_id, created_at",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("delete model: {e}")))?;
+
+    match row {
+        Some(r) => Ok(ModelItem {
+            id: r.0.to_string(),
+            name: r.1,
+            engine: r.2,
+            model: r.3,
+            source: r.4,
+            hash: r.5,
+            bytes: r.6,
+            path: r.7,
+            job_id: r.8.map(|u| u.to_string()),
+            created_at: r.9.to_rfc3339(),
+        }),
+        None => Err(ManagerError::NotFound),
     }
 }
 

@@ -146,8 +146,9 @@ datasets: GET/POST /api/datasets, GET/DELETE /api/datasets/:id  → implementado
             POST /api/datasets/:id/package
                → implementado (Fatia 4; ADR-0007 D1 — congela `dataset_versions`, gera zip, PUT `packages/<version_id>/`)
 models:   GET /api/models (pesos da tabela canônica `models`, ordered by created_at DESC)  → implementado (Fatia I; ADR-0012 D2 — fonte trocada de derived para tabela)
-          POST /api/models/upload  → implementado (Fatia I; ADR-0012 D3 — multipart file+engine+name?, magic PK\x03\x04, teto 2 GiB, md5)
-          POST /api/models/download  → implementado (Fatia I; ADR-0012 D4/E1 — server-side no principal, allow-list fail-closed MODEL_DOWNLOAD_ALLOWED_HOSTS, 502 model_download_failed)
+          POST /api/models/upload  → implementado (Fatia I; ADR-0012 D3 — multipart file+engine+name?, magic PK\x03\x04 para .pt ou header JSON para .safetensors, engines yolo/world/diffusion/clip, teto 2 GiB, md5)
+          POST /api/models/download  → implementado (Fatia I; ADR-0012 D4/E1 — server-side no principal, allow-list fail-closed MODEL_DOWNLOAD_ALLOWED_HOSTS, engines yolo/world/diffusion/clip, extensões .pt e .safetensors, 502 model_download_failed)
+          DELETE /api/models/:id  → implementado (Fatia Gestão de Modelos; 204 No Content, 401, 404; remove S3 se upload/download e desvincula no manager)
           Nota Fatia 9: upload/download aceitam `engine='world'` (migration 0008 — ADR-0014 D1; validação `.pt`+magic PK idêntica ao yolo)
 preview:  POST /api/preview/{autolabel,autotracker,generate,search} (job efêmero ou runner quente, sem fila de treino)
 jobs:     POST /api/jobs/yolo  → implementado (Fatia 4; ADR-0007 D7 — spec 0.7.0)
@@ -324,7 +325,7 @@ orchestrators(id UUID PK, name TEXT, endpoint TEXT UNIQUE, kind TEXT,     -- loc
   -- Fatia H (ADR-0011): heartbeat identificado (`endpoint` no `HeartbeatBody`) grava `gpus`/`vram_total_gb` dinamicamente
   -- (round(MiB/1024), GiB). Watchdog: `online → degraded` (15s) → `offline` (60s); re-queue dos jobs do nó morto.
   -- Adopt por token (pairing code single-use, upsert); revoke = tombstone `revoked` (não DELETE).
-models(id UUID PK, engine TEXT NOT NULL CHECK (engine IN ('yolo','world')),
+models(id UUID PK, engine TEXT NOT NULL CHECK (engine IN ('yolo','world','diffusion','clip')),
   name TEXT NOT NULL CHECK (char_length(name) BETWEEN 1 AND 255),
   model TEXT,                                              -- variante conhecida (treino); NULL p/ upload/download
   s3_key TEXT NOT NULL UNIQUE,                             -- 'models/<engine>/<id>/<name>' | 'artifacts/<job_id>/<path>'
@@ -338,12 +339,13 @@ models(id UUID PK, engine TEXT NOT NULL CHECK (engine IN ('yolo','world')),
   -- Dono: manager. Leitura: `GET /internal/models` (rota interna existente — troca a fonte de derived SQL para SELECT da tabela).
   -- Escrita: (a) hook no `report_job` do manager — job `done` com artefato `kind='model'` e `path` contendo `best` → INSERT ON CONFLICT (s3_key) DO NOTHING;
   --          (b) `POST /internal/models` — cria row a partir de upload/download do principal (compensação delete se INSERT falhar).
+  --          (c) `DELETE /internal/models/:id` — remove row do banco (204 No Content, 404).
   -- Backfill na migration: INSERT..SELECT dos artefatos `kind='model' AND path LIKE '%best%'` de jobs `done` (idempotente via ON CONFLICT).
-  -- CHECK engine ampliado para `('yolo','world')` na migration `0008_world_models.sql` (ADR-0014 D1):
-  --   engine='world' = pesos open-set (yolov8x-worldv2.pt — autotracker real); fine-tune yolo continua recusando world (400 no manager).
+  -- CHECK engine ampliado para `('yolo','world')` na migration `0008_world_models.sql` (ADR-0014 D1)
+  -- e para `('yolo','world','diffusion','clip')` na migration `0010_models_engines.sql` (Fatia Gestão de Modelos).
   -- Índices: `models(engine)`, `models(created_at DESC)`.
   -- NOTA: checkpoint de treino vive em `artifacts/<job_id>/` (morre com o job via CASCADE; FK ON DELETE SET NULL no models.job_id preserva o modelo).
-  --       Sem rota DELETE de job hoje; sem rota DELETE de modelo no v1 (gestão de modelos = dívida).
+  --       Exclusão pública via `DELETE /api/models/:id`: remove S3 se upload/download e deleta row no manager.
 jobs(id UUID PK, kind TEXT, dataset_id UUID NULL FK, engine TEXT, model TEXT, mode TEXT,
   params JSONB, config_yaml TEXT, status TEXT, queue_reason TEXT NULL,
   orchestrator_id UUID NULL FK, vram_min_gb INT, progress FLOAT,

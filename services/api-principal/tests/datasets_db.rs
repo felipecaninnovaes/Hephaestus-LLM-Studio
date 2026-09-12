@@ -3616,19 +3616,20 @@ async fn t0004_status_derivado() {
     .await;
     assert_eq!(status, StatusCode::OK);
     let items = json(&body)["items"].as_array().expect("items").clone();
-    let b1_fn = items[0]["filename"].as_str().expect("b1 filename").to_string();
+    let b1_fn = items[0]["filename"]
+        .as_str()
+        .expect("b1 filename")
+        .to_string();
     poll_embeddings(&st.pool, ds_id, 2).await;
     let (_status, got) = get_status(app.clone(), &cookie, &ds).await;
     assert_eq!(got["status"], "ready");
     // Trasha uma das duas: ativas=1, indexed (JOIN ativas)=1 → segue ready.
-    sqlx::query(
-        "UPDATE images SET deleted_at = now() WHERE dataset_id = $1 AND filename = $2",
-    )
-    .bind(ds_id)
-    .bind(&b1_fn)
-    .execute(&st.pool)
-    .await
-    .expect("soft delete");
+    sqlx::query("UPDATE images SET deleted_at = now() WHERE dataset_id = $1 AND filename = $2")
+        .bind(ds_id)
+        .bind(&b1_fn)
+        .execute(&st.pool)
+        .await
+        .expect("soft delete");
     let (_status, got) = get_status(app.clone(), &cookie, &ds).await;
     assert_eq!(got["status"], "ready");
     assert_eq!(got["imagesCount"], 1);
@@ -5190,17 +5191,13 @@ async fn t4_package_zip_autossuficiente_com_imagens() {
 
     // Conteúdo da imagem confere (não-vazio no zip).
     {
-        let mut entry = archive
-            .by_name(&expected_img1)
-            .expect("img1 in zip");
+        let mut entry = archive.by_name(&expected_img1).expect("img1 in zip");
         let mut buf = Vec::new();
         std::io::Read::read_to_end(&mut entry, &mut buf).expect("read entry");
         assert!(!buf.is_empty(), "conteúdo img1 confere");
     }
     {
-        let mut entry = archive
-            .by_name(&expected_img2)
-            .expect("img2 in zip");
+        let mut entry = archive.by_name(&expected_img2).expect("img2 in zip");
         let mut buf = Vec::new();
         std::io::Read::read_to_end(&mut entry, &mut buf).expect("read entry");
         assert!(!buf.is_empty(), "conteúdo img2 confere");

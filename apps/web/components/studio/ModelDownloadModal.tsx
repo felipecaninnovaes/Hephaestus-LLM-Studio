@@ -15,6 +15,8 @@ interface ModelDownloadModalProps {
 const ENGINE_OPTIONS = [
   { id: "yolo", label: "YOLO (Detecção / Treino)" },
   { id: "world", label: "YOLO-World (AutoTracker)" },
+  { id: "diffusion", label: "Difusão (Geração)" },
+  { id: "clip", label: "CLIP (Embeddings)" },
 ];
 
 export default function ModelDownloadModal({
@@ -24,7 +26,7 @@ export default function ModelDownloadModal({
 }: ModelDownloadModalProps) {
   const [url, setUrl] = useState("");
   const [name, setName] = useState("");
-  const [engine, setEngine] = useState<"yolo" | "world">("yolo");
+  const [engine, setEngine] = useState<"yolo" | "world" | "diffusion" | "clip">("yolo");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -72,7 +74,7 @@ export default function ModelDownloadModal({
       open={open}
       onClose={handleClose}
       title="Baixar modelo por URL"
-      description="Download server-side de pesos .pt"
+      description="Download server-side de pesos (.pt ou .safetensors)"
       icon={<IconDownload className="h-4 w-4" />}
       maxWidth="md"
       busy={busy}
@@ -86,7 +88,7 @@ export default function ModelDownloadModal({
           <SegmentedControl
             options={ENGINE_OPTIONS}
             value={engine}
-            onChange={(v) => setEngine(v as "yolo" | "world")}
+            onChange={(v) => setEngine(v as "yolo" | "world" | "diffusion" | "clip")}
             ariaLabel="Tipo de modelo"
             className="w-full justify-start"
           />
@@ -107,6 +109,10 @@ export default function ModelDownloadModal({
             placeholder={
               engine === "world"
                 ? "https://github.com/…/yolov8x-worldv2.pt"
+                : engine === "diffusion"
+                ? "https://huggingface.co/…/diffusion.safetensors"
+                : engine === "clip"
+                ? "https://huggingface.co/…/clip-vit-base.safetensors"
                 : "https://huggingface.co/…/best.pt"
             }
             disabled={busy}

@@ -15,6 +15,8 @@ interface ModelUploadModalProps {
 const ENGINE_OPTIONS = [
   { id: "yolo", label: "YOLO (Detecção / Treino)" },
   { id: "world", label: "YOLO-World (AutoTracker)" },
+  { id: "diffusion", label: "Difusão (Geração)" },
+  { id: "clip", label: "CLIP (Embeddings)" },
 ];
 
 export default function ModelUploadModal({
@@ -24,7 +26,7 @@ export default function ModelUploadModal({
 }: ModelUploadModalProps) {
   const [file, setFile] = useState<File | null>(null);
   const [name, setName] = useState("");
-  const [engine, setEngine] = useState<"yolo" | "world">("yolo");
+  const [engine, setEngine] = useState<"yolo" | "world" | "diffusion" | "clip">("yolo");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -78,7 +80,7 @@ export default function ModelUploadModal({
       open={open}
       onClose={handleClose}
       title="Enviar pesos"
-      description="Upload de arquivo .pt (YOLO)"
+      description="Upload de arquivo .pt ou .safetensors"
       icon={<IconUpload className="h-4 w-4" />}
       maxWidth="md"
       busy={busy}
@@ -96,7 +98,7 @@ export default function ModelUploadModal({
             ref={inputRef}
             id="model-upload-file"
             type="file"
-            accept=".pt"
+            accept=".pt,.safetensors"
             onChange={handleFileChange}
             disabled={busy}
             className="sr-only"
@@ -105,7 +107,7 @@ export default function ModelUploadModal({
             type="button"
             onClick={() => inputRef.current?.click()}
             disabled={busy}
-            aria-label="Selecionar arquivo .pt"
+            aria-label="Selecionar arquivo .pt ou .safetensors"
             className={`flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors cursor-pointer ${
               file
                 ? "border-brand-500/30 bg-brand-500/10"
@@ -125,7 +127,7 @@ export default function ModelUploadModal({
                 </>
               ) : (
                 <div className="text-xs text-zinc-400">
-                  Selecionar arquivo .pt…
+                  Selecionar arquivo .pt ou .safetensors…
                 </div>
               )}
             </div>
@@ -141,7 +143,7 @@ export default function ModelUploadModal({
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="ex: best_v2.pt"
+            placeholder="ex: model.safetensors ou best_v2.pt"
             disabled={busy}
             maxLength={255}
             className="w-full rounded-lg border border-zinc-700/60 bg-black/40 px-3 py-1.5 text-xs font-mono text-zinc-100 placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:opacity-55"
@@ -156,7 +158,7 @@ export default function ModelUploadModal({
           <SegmentedControl
             options={ENGINE_OPTIONS}
             value={engine}
-            onChange={(v) => setEngine(v as "yolo" | "world")}
+            onChange={(v) => setEngine(v as "yolo" | "world" | "diffusion" | "clip")}
             ariaLabel="Tipo de modelo"
             className="w-full justify-start"
           />

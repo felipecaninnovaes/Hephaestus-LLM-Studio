@@ -402,8 +402,11 @@ def main(argv: list[str] | None = None) -> None:
     elif argv[0] == "predict":
         from trainer_yolo.predict import cmd_predict
         cmd_predict(argv[1:])
+    elif argv[0] == "autolabel":
+        from trainer_yolo.autolabel import cmd_autolabel
+        cmd_autolabel(argv[1:])
     else:
-        _die(f"Unknown subcommand: {argv[0]}. Use 'train', 'autotrack', 'predict', or 'health'.")
+        _die(f"Unknown subcommand: {argv[0]}. Use 'train', 'autotrack', 'predict', 'autolabel', or 'health'.")
 
 
 if __name__ == "__main__":

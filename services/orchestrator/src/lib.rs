@@ -1115,6 +1115,13 @@ async fn run_job_inner(
             "--output".to_string(),
             format!("/outputs/{job_id}"),
         ],
+        ("autolabel", _) => vec![
+            "autolabel".to_string(),
+            "--config".to_string(),
+            format!("/outputs/{job_id}/config.yaml"),
+            "--output".to_string(),
+            format!("/outputs/{job_id}"),
+        ],
         (engine, mode) => {
             return Err(PipelineError::Other(format!(
                 "unsupported engine/mode: {engine}/{mode}"
@@ -1158,6 +1165,7 @@ async fn run_job_inner(
         ],
         ("yolo", "predict") => vec![("predictions.json", "predictions")],
         ("autotracker", _) => vec![("boxes.json", "boxes"), ("metrics.jsonl", "metrics")],
+        ("autolabel", _) => vec![("captions.jsonl", "captions"), ("metrics.jsonl", "metrics")],
         // Já validado acima — seguro unreachable
         _ => unreachable!("unsupported engine/mode validated earlier"),
     };
@@ -2132,6 +2140,67 @@ mod tests {
         assert!(kinds.contains(&"metrics")); // metrics.jsonl é kind "metrics"
         assert!(!filenames.contains(&"best.pt")); // autotracker NÃO produz model artifacts
         assert!(!filenames.contains(&"last.pt"));
+    }
+
+    // -- AL.3 test: engine autolabel → subcomando autolabel, artefatos [captions.jsonl, metrics.jsonl] --
+
+    #[tokio::test]
+    async fn engine_autolabel_uses_autolabel_subcommand_and_captions_artifacts() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let s3 = Arc::new(FakeS3::new());
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_dispatch_with_valid_md5("job-al-001", "autolabel", &zip_path);
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let mut output_files = HashMap::new();
+        output_files.insert(
+            "captions.jsonl".to_string(),
+            br#"{"filename":"img.jpg","caption":"uma foto de teste"}"#.to_vec(),
+        );
+        output_files.insert(
+            "metrics.jsonl".to_string(),
+            br#"{"epoch":1,"loss":0.0,"images":1}"#.to_vec(),
+        );
+        create_fake_outputs(tmp.path(), "job-al-001", &output_files);
+
+        let result = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "autolabel pipeline should succeed: {:?}",
+            result.err()
+        );
+
+        // Verifica subcomando: autolabel
+        let args = executor.last_args().unwrap();
+        assert_eq!(args[0], "autolabel");
+        assert_eq!(args[1], "--config");
+        assert_eq!(args[3], "--output");
+
+        // Verifica artefatos: captions.jsonl + metrics.jsonl
+        let artifacts = report.done_artifacts().unwrap();
+        let filenames: Vec<&str> = artifacts.iter().map(|a| a.path.as_str()).collect();
+        let kinds: Vec<&str> = artifacts.iter().map(|a| a.kind.as_str()).collect();
+        assert!(filenames.contains(&"captions.jsonl"));
+        assert!(filenames.contains(&"metrics.jsonl"));
+        assert!(kinds.contains(&"captions"));
+        assert!(kinds.contains(&"metrics"));
+        assert!(!filenames.contains(&"best.pt"));
+        assert!(!filenames.contains(&"boxes.json"));
     }
 
     // -- A.3 test 3: engine desconhecido → falha limpa (via run_job que faz o report "failed") --

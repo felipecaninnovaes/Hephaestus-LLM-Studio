@@ -826,6 +826,153 @@ pub async fn submit_autotracker_job(
 }
 
 // ---------------------------------------------------------------------------
+// POST /api/jobs/autolabel — submit job de autolabel (ADR-0016 D0)
+// ---------------------------------------------------------------------------
+
+/// POST /api/jobs/autolabel — cria job de autolabel (ADR-0016 D0).
+///
+/// Status: 202 | 400 `invalid_request` | 401 | 404 `not_found` |
+/// 409 `dataset_not_ready` | 503 `queue_unavailable`.
+pub async fn submit_autolabel_job(
+    State(state): State<AppState>,
+    body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
+) -> Response {
+    // 1. Parse body.
+    let raw = match body {
+        Ok(b) => b,
+        Err(_) => return invalid_request(),
+    };
+    let req: models::AutolabelJobRequest = match serde_json::from_slice(&raw) {
+        Ok(v) => v,
+        Err(_) => return invalid_request(),
+    };
+
+    // 2. Validação pura.
+    let req = match models::validate_autolabel_request(req) {
+        Ok(v) => v,
+        Err(_) => return invalid_request(),
+    };
+
+    // 3. Parse dataset_id — não-UUID ⇒ 404.
+    let ds_id: uuid::Uuid = match req.dataset_id.parse() {
+        Ok(v) => v,
+        Err(_) => return not_found(),
+    };
+
+    // 4. Dataset existe e está pronto?
+    // ADR-0016 D0: Requer dataset com ao menos 1 imagem ativa (images_count > 0).
+    let image_count: Option<i64> = match sqlx::query_scalar::<_, i64>(
+        "SELECT count(*) FROM images WHERE dataset_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(ds_id)
+    .fetch_optional(&state.pool)
+    .await
+    {
+        Ok(c) => c,
+        Err(_) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "internal server error",
+            )
+        }
+    };
+
+    let ds_exists: bool =
+        match sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM datasets WHERE id = $1)")
+            .bind(ds_id)
+            .fetch_one(&state.pool)
+            .await
+        {
+            Ok(b) => b,
+            Err(_) => {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "internal server error",
+                )
+            }
+        };
+    if !ds_exists {
+        return not_found();
+    }
+
+    let count = image_count.unwrap_or(0);
+    if count == 0 {
+        return dataset_not_ready();
+    }
+
+    // 5. Build package.
+    let package = match crate::datasets::package::build_package(&state, ds_id).await {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+
+    // 6. Config YAML.
+    let job_id = uuid::Uuid::new_v4().to_string();
+    let config_yaml = models::generate_autolabel_config_yaml(&job_id, &req);
+
+    // 7. Body para o Manager.
+    let mut manager_body = serde_json::json!({
+        "kind": "autolabel",
+        "engine": "autolabel",
+        "model": req.model,
+        "mode": "autolabel",
+        "dataset_id": ds_id.to_string(),
+        "dataset_version_id": package.version_id,
+        "package_ref": {
+            "version_id": package.version_id,
+            "key": package.key,
+            "md5_zip": package.md5_zip,
+            "bytes": package.bytes,
+        },
+        "config_yaml": config_yaml,
+        "params": {
+            "model": req.model,
+            "prompt": req.prompt,
+            "package_ref": {
+                "version_id": package.version_id,
+                "key": package.key,
+                "md5_zip": package.md5_zip,
+                "bytes": package.bytes,
+            },
+        },
+        "vram_min_gb": null,
+    });
+
+    if let Some(ref orch_id) = req.orchestrator_id {
+        manager_body["orchestrator_hint"] = serde_json::json!(orch_id);
+    }
+
+    match state.manager.create_job(&manager_body).await {
+        Ok(resp) => {
+            let body = SubmitJobResponse {
+                job_id: resp.job_id,
+                status: resp.status,
+                queue_position: resp.queue_position,
+            };
+            (StatusCode::ACCEPTED, Json(body)).into_response()
+        }
+        Err(ManagerError::NotFound) => {
+            compensate_package(&state, &package.version_id).await;
+            not_found()
+        }
+        Err(ManagerError::InvalidRequest(_)) => {
+            compensate_package(&state, &package.version_id).await;
+            invalid_request()
+        }
+        Err(ManagerError::Unavailable(_)) => {
+            compensate_package(&state, &package.version_id).await;
+            queue_unavailable()
+        }
+        Err(_) => {
+            compensate_package(&state, &package.version_id).await;
+            queue_unavailable()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // POST /api/jobs/predict — submit job de inferência YOLO (ADR-0013 D0/D1/D8)
 // ---------------------------------------------------------------------------
 
@@ -1373,6 +1520,223 @@ pub async fn apply_autotracker_boxes(
         }),
     )
         .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/jobs/:id/autolabel/apply — aplica legendas do autolabel (ADR-0016 D1)
+// ---------------------------------------------------------------------------
+
+/// POST /api/jobs/:id/autolabel/apply — aplica legendas do autolabel (ADR-0016 D1).
+///
+/// Status: 200 | 400 `invalid_request` | 401 | 404 `not_found` |
+/// 409 `job_not_done` | 503 `queue_unavailable` | 503 `storage_unavailable`.
+pub async fn apply_autolabel_captions(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
+) -> Response {
+    // 0. Parse job id — não-UUID ⇒ 404.
+    if parse_uuid(&id).is_none() {
+        return not_found();
+    }
+
+    // 1. Parse body.
+    let raw = match body {
+        Ok(b) => b,
+        Err(_) => return invalid_request(),
+    };
+    let req: models::AutolabelApplyRequest = match serde_json::from_slice(&raw) {
+        Ok(v) => v,
+        Err(_) => return invalid_request(),
+    };
+
+    // 2. Busca job no manager.
+    let job = match state.manager.get_job(&id).await {
+        Ok(j) => j,
+        Err(ManagerError::NotFound) => return not_found(),
+        Err(ManagerError::Unavailable(_)) => return queue_unavailable(),
+        Err(_) => return queue_unavailable(),
+    };
+
+    // 2a. Valida engine == 'autolabel'.
+    if job.engine != "autolabel" {
+        return not_found();
+    }
+
+    // 2b. Valida status == 'done'.
+    if job.status != "done" {
+        return job_not_done();
+    }
+
+    // 2c. Valida dataset_id presente.
+    let dataset_id_str = match &job.dataset_id {
+        Some(s) => s.clone(),
+        None => return dataset_not_ready(),
+    };
+    let dataset_id: Uuid = match dataset_id_str.parse() {
+        Ok(v) => v,
+        Err(_) => return dataset_not_ready(),
+    };
+    if let Some(ds_req) = &req.dataset_id {
+        if ds_req != &dataset_id_str {
+            return invalid_request();
+        }
+    }
+
+    // 3. Localiza artefato `captions.jsonl` via list_artifacts.
+    let artifacts = match state.manager.list_artifacts(&id).await {
+        Ok(a) => a,
+        Err(ManagerError::NotFound) => return not_found(),
+        Err(ManagerError::Unavailable(_)) => return queue_unavailable(),
+        Err(_) => return queue_unavailable(),
+    };
+    let captions_artifact = match artifacts
+        .iter()
+        .find(|a| a.kind == "captions" || a.path == "captions.jsonl")
+    {
+        Some(a) => a,
+        None => return not_found(),
+    };
+
+    if let Err(resp) = validate_artifact_path(&captions_artifact.path) {
+        return resp;
+    }
+
+    // 3b. Lê objeto via StoragePort.
+    let key = format!("artifacts/{id}/{}", captions_artifact.path);
+    let bytes = match state.storage.get(&key).await {
+        Ok(b) => b,
+        Err(StorageError::NotFound) => {
+            return err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "storage_unavailable",
+                MSG_STORAGE_UNAVAILABLE,
+            );
+        }
+        Err(StorageError::Unavailable(_)) => return storage_unavailable(),
+    };
+
+    // 3c. Confere md5.
+    let computed = format!(
+        "{:x}",
+        md5::Digest::finalize({
+            use md5::Digest;
+            let mut h = md5::Md5::new();
+            md5::Digest::update(&mut h, &bytes);
+            h
+        })
+    );
+    if computed != captions_artifact.md5 {
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "storage_unavailable",
+            MSG_STORAGE_UNAVAILABLE,
+        );
+    }
+
+    // 4. Parse do JSONL.
+    let items = match models::parse_captions_jsonl(&bytes) {
+        Ok(it) => it,
+        Err(_) => return invalid_request(),
+    };
+
+    // 5. Busca imagens ativas do dataset (filename → image_id).
+    let image_rows: Vec<(Uuid, String)> = match sqlx::query_as::<_, (Uuid, String)>(
+        "SELECT id, filename FROM images WHERE dataset_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(dataset_id)
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "internal server error",
+            )
+        }
+    };
+    let filename_to_id: std::collections::HashMap<String, Uuid> = image_rows
+        .into_iter()
+        .map(|(id, fname)| (fname, id))
+        .collect();
+
+    // 6. Busca captions existentes para estas imagens (image_id -> origin).
+    let existing_captions: std::collections::HashMap<Uuid, String> = match sqlx::query_as::<_, (Uuid, String)>(
+        "SELECT c.image_id, c.origin FROM captions c JOIN images i ON i.id = c.image_id WHERE i.dataset_id = $1 AND i.deleted_at IS NULL",
+    )
+    .bind(dataset_id)
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(rows) => rows.into_iter().collect(),
+        Err(_) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "internal server error",
+            )
+        }
+    };
+
+    // 7. Processa itens com merge dirigido por origem (ADR-0016 D1).
+    let mut total_applied: i64 = 0;
+    let mut total_skipped: i64 = 0;
+    let mut applied_images: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+
+    for item in items {
+        let Some(&image_id) = filename_to_id.get(&item.filename) else {
+            total_skipped += 1;
+            continue;
+        };
+
+        let trimmed_caption = item.caption.trim();
+        if trimmed_caption.is_empty() || trimmed_caption.chars().count() > 8000 {
+            total_skipped += 1;
+            continue;
+        }
+
+        // Se overwrite=false, só atualiza imagens sem caption ou com origin='autolabel'.
+        if !req.overwrite {
+            if let Some(origin) = existing_captions.get(&image_id) {
+                if origin != "autolabel" {
+                    total_skipped += 1;
+                    continue;
+                }
+            }
+        }
+
+        // UPSERT na tabela captions
+        let query_res = sqlx::query(
+            "INSERT INTO captions (image_id, text, origin, model, updated_at) \
+             VALUES ($1, $2, 'autolabel', $3, now()) \
+             ON CONFLICT (image_id) DO UPDATE SET text = EXCLUDED.text, origin = EXCLUDED.origin, model = EXCLUDED.model, updated_at = now()",
+        )
+        .bind(image_id)
+        .bind(trimmed_caption)
+        .bind(&job.model)
+        .execute(&state.pool)
+        .await;
+
+        match query_res {
+            Ok(_) => {
+                total_applied += 1;
+                applied_images.insert(image_id);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, %image_id, "falha ao executar upsert de caption no autolabel apply");
+                total_skipped += 1;
+            }
+        }
+    }
+
+    let resp = models::AutolabelApplyResponse {
+        applied: total_applied,
+        skipped: total_skipped,
+        images: applied_images.len() as i64,
+    };
+    (StatusCode::OK, Json(resp)).into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -2551,6 +2915,100 @@ mod tests {
             Ok(axum::body::Bytes::from_static(
                 b"{\"imageId\":\"not-uuid\"}",
             )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // --- Autolabel unit tests (ADR-0016 D0/D1) ---
+
+    #[tokio::test]
+    async fn submit_autolabel_job_400_empty_body() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp =
+            submit_autolabel_job(axum::extract::State(state), Ok(axum::body::Bytes::from("")))
+                .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_autolabel_job_400_unknown_fields() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_autolabel_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from_static(
+                br#"{"datasetId":"550e8400-e29b-41d4-a716-446655440000","extra":1}"#,
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_autolabel_job_400_invalid_model() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_autolabel_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from_static(
+                br#"{"datasetId":"550e8400-e29b-41d4-a716-446655440000","model":"gpt-4"}"#,
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_autolabel_job_404_non_uuid() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_autolabel_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from_static(
+                br#"{"datasetId":"nao-eh-uuid"}"#,
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn submit_autolabel_job_400_orchestrator_id_not_uuid() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_autolabel_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from_static(
+                br#"{"datasetId":"550e8400-e29b-41d4-a716-446655440000","orchestratorId":"bad-uuid"}"#,
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn apply_autolabel_captions_404_non_uuid() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = apply_autolabel_captions(
+            axum::extract::State(state),
+            Path("nao-eh-uuid".to_string()),
+            Ok(axum::body::Bytes::from_static(b"{}")),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn apply_autolabel_captions_400_unknown_fields() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = apply_autolabel_captions(
+            axum::extract::State(state),
+            Path("550e8400-e29b-41d4-a716-446655440000".to_string()),
+            Ok(axum::body::Bytes::from_static(b"{\"unknown\":true}")),
         )
         .await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);

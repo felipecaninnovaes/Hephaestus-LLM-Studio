@@ -58,6 +58,7 @@ import ClassesModal from "@/components/studio/ClassesModal";
 import ImportDatasetModal from "@/components/studio/ImportDatasetModal";
 import TrainYoloModal from "@/components/studio/TrainYoloModal";
 import AutoTrackerModal from "@/components/studio/AutoTrackerModal";
+import AutoLabelModal from "@/components/studio/AutoLabelModal";
 import ImageCard from "@/components/studio/ImageCard";
 
 const PAGE_LIMIT = 50;
@@ -94,6 +95,7 @@ export default function DatasetGalleryPage() {
   const [actionsOpen, setActionsOpen] = useState(false);
   const [trainOpen, setTrainOpen] = useState(false);
   const [autoTrackerOpen, setAutoTrackerOpen] = useState(false);
+  const [autoLabelOpen, setAutoLabelOpen] = useState(false);
   const [searchInput, setSearchInput] = useState("");
   const [activeQuery, setActiveQuery] = useState<string | null>(null);
   const [similarFor, setSimilarFor] = useState<string | null>(null);
@@ -795,8 +797,13 @@ export default function DatasetGalleryPage() {
             type="button"
             variant="secondary"
             size="sm"
-            disabled
-            title="Preparo assistido chega numa fatia futura."
+            disabled={dataset.imagesCount === 0}
+            title={
+              dataset.imagesCount === 0
+                ? "Dataset não contém imagens."
+                : "Gerar legendas em lote com AutoLabel"
+            }
+            onClick={() => dataset.imagesCount > 0 && setAutoLabelOpen(true)}
           >
             <IconSparkles className="h-4 w-4" />
             <span>AutoLabel</span>
@@ -874,9 +881,22 @@ export default function DatasetGalleryPage() {
               </button>
               <button
                 type="button"
-                disabled
-                title="Preparo assistido chega numa fatia futura."
-                className="flex h-9 cursor-not-allowed items-center space-x-2 rounded-lg px-3 text-xs font-medium text-zinc-200 opacity-60"
+                disabled={dataset.imagesCount === 0}
+                title={
+                  dataset.imagesCount === 0
+                    ? "Dataset não contém imagens."
+                    : "Gerar legendas em lote com AutoLabel"
+                }
+                onClick={() => {
+                  if (dataset.imagesCount === 0) return;
+                  setActionsOpen(false);
+                  setAutoLabelOpen(true);
+                }}
+                className={`flex h-9 items-center space-x-2 rounded-lg px-3 text-xs font-medium ${
+                  dataset.imagesCount > 0
+                    ? "text-zinc-200 transition-colors hover:bg-brand-500/[0.12] hover:text-brand-300"
+                    : "cursor-not-allowed text-zinc-200 opacity-60"
+                }`}
               >
                 <IconSparkles className="h-4 w-4" />
                 <span>AutoLabel</span>
@@ -1254,6 +1274,15 @@ export default function DatasetGalleryPage() {
           datasetTitle={dataset.title}
           onClose={() => setAutoTrackerOpen(false)}
           onJobCreated={() => setAutoTrackerOpen(false)}
+        />
+      )}
+      {autoLabelOpen && dataset && (
+        <AutoLabelModal
+          open
+          datasetId={dataset.id}
+          datasetTitle={dataset.title}
+          onClose={() => setAutoLabelOpen(false)}
+          onJobCreated={() => setAutoLabelOpen(false)}
         />
       )}
       <ConfirmDialog

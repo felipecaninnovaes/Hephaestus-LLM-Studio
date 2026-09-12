@@ -19,9 +19,22 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-11 (FATIA N CONCLUÍDA — VISIBILIDADE E SELEÇÃO DE NÓ)
+## Estado atual — 2026-09-11 (FATIA AUTOLABEL V1 CONCLUÍDA NA BRANCH)
 
-- **FATIA N (VISIBILIDADE E SELEÇÃO DE NÓ) — IMPLEMENTAÇÃO CONCLUÍDA E TESTADA (2026-09-11)** — branch `feat/visibilidade-no`. **Especificação executável: `docs/adr/0015-visibilidade-selecao-no.md`** (D0–D7).
+- **FATIA AUTOLABEL V1 — CONCLUÍDA NA BRANCH (2026-09-11)** — branch `feat/autolabel-v1`. **Especificação executável: `docs/adr/0016-autolabel-v1.md`** (D0–D5).
+  - **AL.0 (docs/adr)**: ADR-0016 aceita e registrada (commit `0905f1d`).
+  - **AL.1 (migration 0009 & models)**: Constraint `captions_origin_check` expandida para incluir `'autolabel'`; domínio validado em `models.rs` (commit `28ea063`).
+  - **AL.2 (engine trainer-yolo)**: Subcomando `autolabel` determinístico mock sob `ENGINE_MOCK=1` gerando `captions.jsonl`; suite pytest 101/101 verde (commit `bc18e0b`).
+  - **AL.3 (orquestrador & manager)**: Matriz de despacho `("autolabel", "autolabel")` adicionada ao orchestrator; coleta de artefato `captions.jsonl` (`kind='captions'`); teste de ciclo de vida no manager (commit `9e40fb2`).
+  - **AL.4 (api-principal & OpenAPI 0.15.0)**: `POST /api/jobs/autolabel` (202) e `POST /api/jobs/:id/autolabel/apply` (200); validação de request e parsing de JSONL; spec bump para `0.15.0` e 15/15 contract tests verdes (commit `1660744`).
+  - **AL.5 (web frontend)**: Botão "AutoLabel" habilitado na Galeria quando `imagesCount > 0`; `AutoLabelModal.tsx` com `NodeSelect`; ação "Aplicar Legendas" no card de detalhe em `/jobs` e no `ActionCenter.tsx` com toast e checkbox overwrite; Next.js build limpo (commit `490fd4d`).
+  - **AL.6 (testes e2e / smoke)**: Testes de integração em `datasets_db.rs` cobrindo submit 202, apply roundtrip e preservação de legendas manuais (commit `19137cd`).
+  - **AL.7 (code review)**: Auditoria pelo @reviewer; correções aplicadas: escape seguro de YAML contra injeção de prompt, `datasetId` no schema OpenAPI `AutolabelApplyRequest`, binding do modelo do job, contagem distinta de imagens aplicadas e log de erro de banco (commit `9c2c95f`).
+  - **AL.8 (docs-sync)**: `docs/backend.md`, `docs/frontend.md`, `docs/coordenacao.md` e `docs/dividas.md` sincronizados.
+  - **Baterias**: manager `test-db.sh` 83+87+2 testes verdes, engine pytest 101/101 verdes, `api-principal` unitários + 15 de contrato verdes, web build limpo. Branch pronta para merge pelo usuário.
+
+- **FATIA N (VISIBILIDADE E SELEÇÃO DE NÓ) — MERGEADA NA MAIN (2026-09-11)** — PRs #7 e #8 mergeados.
+
   - **N.1 (Manager wire)**: `JobRow` com `orchestrator_id`, `orchestrator_name`, `orchestrator_kind`, `orchestrator_fallback` via `LEFT JOIN orchestrators`. Testado em `tests/manager_db.rs` (commit `2bb861c`).
   - **N.2 (Manager hint & dispatch)**: `CreateJobRequest` com `orchestrator_hint`. Validação fail-fast (não-UUID ⇒ 400, inexistente ⇒ 404, não-online ⇒ 400). Despacho em 1º nível pelo nó com fallback automático após timeout de 120s gravando honestamente `orchestrator_fallback = true` (limpa caso nó preferencial seja honrado). 8 testes novos em `manager_db.rs` (commit `1dfbe32`).
   - **N.3 (api-principal & OpenAPI 0.14.0)**: `orchestratorId` nos 3 submits públicos (`POST /api/jobs/yolo`, `/autotracker`, `/predict`), validações fail-fast não-UUID ⇒ 400, compensação de pacotes S3/banco no erro do manager, wire de jobs enriquecido com os dados do nó, testes unitários e de contrato (commit `1766bc7`).

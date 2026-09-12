@@ -188,7 +188,7 @@ export type JobStatus =
   | "failed"
   | "cancelled";
 
-export type JobKind = "yolo_train" | "autotracker" | "yolo_predict";
+export type JobKind = "yolo_train" | "autotracker" | "yolo_predict" | "autolabel";
 
 export interface JobMetrics {
   epoch: number;
@@ -274,6 +274,45 @@ export interface AutotrackerApplyResponse {
   applied: number;
   skipped: number;
   images: number;
+}
+
+/* ── AutoLabel (ADR-0016) ─────────────────────────────────── */
+
+export interface AutolabelJobRequest {
+  datasetId: string;
+  model?: string;
+  prompt?: string;
+  orchestratorId?: string | null;
+}
+
+export interface AutolabelApplyRequest {
+  datasetId?: string;
+  overwrite?: boolean;
+}
+
+export interface AutolabelApplyResponse {
+  applied: number;
+  skipped: number;
+  images: number;
+}
+
+export function autolabelErrorMessage(code: string): string {
+  switch (code) {
+    case "invalid_request":
+      return "Parâmetros do AutoLabel inválidos.";
+    case "dataset_not_ready":
+      return "O dataset não está pronto — exige ≥1 imagem.";
+    case "queue_unavailable":
+      return "Fila de processamento indisponível — tente novamente.";
+    case "not_found":
+      return "Job não encontrado.";
+    case "job_not_done":
+      return "O job ainda não terminou — aguarde a conclusão.";
+    case "storage_unavailable":
+      return "Armazenamento de artefatos indisponível — tente novamente.";
+    default:
+      return "Falha ao processar AutoLabel.";
+  }
 }
 
 /* ── Toast helpers for jobs ────────────────────────────────── */

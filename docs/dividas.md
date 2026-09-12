@@ -182,13 +182,23 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
   (origem: smoke F6.2, `apps/web/app/login/page.tsx` ~L151). A versão de
   produto real vem de `GET /health` (`version:"0.1.0"`, ADR-0009 D5); o login
   mostra "V1.3" inventado. Alinhar na fatia de limpeza web (mesma da 2).
+- **AutoLabel v2 (modelos reais/VLM e runners GPU) — ABERTA 2026-09-11**
+  (ADR-0016 D5): AutoLabel v1 foi entregue com modelo mock determinístico local
+  reutilizando o subcomando `autolabel` em `trainer-yolo`. A v2 prevê a integração
+  de modelos reais (Florence-2, Qwen-VL, BLIP-2 ou endpoint de API multimodal) e
+  runner dedicado com aceleração GPU.
+
 - **Modal base sem focus-trap/foco inicial — ABERTA 2026-09-10 (review I.8, componente pré-existente):** `apps/web/components/ui/Modal.tsx:50-57` não captura Tab dentro do modal nem move o foco inicial para o primeiro elemento focável; Esc e click-outside funcionam. Modais novos da fatia I herdam. Correção global no componente base numa fatia de refinamento (afeta todos os modais da casa).
-- ~~**Sincronizar `docs/frontend.md` linha 3** — ainda descreve o protótipo como
-  "~2910 linhas"; o do tronco é a regeneração OpenDesign (3641 linhas, com
-  LoginPage).~~ **QUITADA 2026-09-06** (commit 3g.6 docs-sync: linha 3 agora
-  diz "3641 linhas", conferido com `wc -l ai-vision-training-studio.html`).
 
 ## Quitadas
+
+- **AutoLabel v1 (mock, local) — QUITADA 2026-09-11** (Fatia AutoLabel v1, ADR-0016:
+  migration 0009 expandindo `captions.origin` com `'autolabel'`, subcomando
+  `autolabel` determinístico em `trainer-yolo`, matriz de despacho e coleta de
+  `captions.jsonl` no orquestrador/manager, rotas `POST /api/jobs/autolabel` e
+  `POST /api/jobs/:id/autolabel/apply`, `AutoLabelModal` com `NodeSelect` na
+  galeria web, ação de aplicar legendas em `/jobs` e ActionCenter; spec OpenAPI
+  0.15.0).
 
 - **Seleção manual de nó/GPU na UI — QUITADA 2026-09-11** (Fatia N, ADR-0015:
   wire com `orchestratorName`, `orchestratorKind` e `orchestratorFallback` no

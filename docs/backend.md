@@ -168,6 +168,12 @@ jobs:     POST /api/jobs/yolo  → implementado (Fatia 4; ADR-0007 D7 — spec 0
             body `{overwrite?, imageId?}` → 200 `{applied, skipped, images}`
             erros: 400 `invalid_request` (imageId não-UUID), 404 `not_found`, 409 `job_not_done`,
             503 `queue_unavailable`/`storage_unavailable`
+          POST /api/jobs/autolabel  → implementado (Fatia AutoLabel v1; ADR-0016 D0 — spec 0.15.0)
+            body `{datasetId, model?, prompt?, orchestratorId?}` (model default "mock") → 202 `{jobId,status:"queued",queuePosition?}`
+            erros: 400 `invalid_request` (datasetId não-UUID, model≠"mock", orchestratorId não-UUID), 404 `not_found` (dataset inexistente), 409 `dataset_not_ready` (0 imagens ativas), 503 `queue_unavailable` (manager fora — compensação do package)
+          POST /api/jobs/:id/autolabel/apply  → implementado (Fatia AutoLabel v1; ADR-0016 D1 — spec 0.15.0)
+            body `{datasetId?, overwrite?}` → 200 `{applied, skipped, images}`
+            erros: 400 `invalid_request` (datasetId divergente ou malformado), 404 `not_found` (job inexistente | engine≠autolabel | captions.jsonl ausente), 409 `job_not_done` (status≠done), 503 `queue_unavailable`/`storage_unavailable`
           GET /api/jobs         → implementado (Fatia 4; lista `{items,total}`)
           GET /api/jobs/queue   → implementado (Fatia 4; fila `{items:[{jobId,position,queueReason}]}`)
           GET /api/jobs/:id     → implementado (Fatia 4; detalhe do job)
@@ -175,7 +181,7 @@ jobs:     POST /api/jobs/yolo  → implementado (Fatia 4; ADR-0007 D7 — spec 0
           GET /api/jobs/:id/metrics  → implementado (Fatia 4; `{items:[{epoch,boxLoss,clsLoss,dflLoss,map50,map5095}]}`)
           GET /api/jobs/:id/artifacts  → implementado (Fatia 4; `{items:[{id,kind,path,md5,bytes}]}`)
           GET /api/jobs/:id/artifacts/:artifactId/data  → implementado (Fatia 4; proxy do objeto via StoragePort)
-          # Adiados para fatias futuras: pause/resume, samples, WS, runners, difusao/clip/autolabel
+          # Adiados para fatias futuras: pause/resume, samples, WS, runners, difusao/clip, autolabel v2 (modelos reais/VLM)
 runners:  POST /api/runners/{difusao,yolo,clip}/up, POST /api/runners/:id/kill, GET /api/runners
           POST /api/runners/:id/infer {prompt|image|query} (inferência interativa; 409 se preemptado)
 orchestrators (via manager): GET /api/orchestrators  → implementado (F6.1 + Fatia H; leitura da tabela do manager com telemetria por nó; ADR-0009 D1 + ADR-0011 D2)
@@ -209,6 +215,11 @@ ws:       /ws/jobs/:id/logs?since_seq=, /ws/telemetry
   - **`POST /api/jobs/:id/autotracker/apply`** — body `{overwrite?: bool, imageId?: string}` → 200 `AutotrackerApplyResponse{applied, skipped, images}` (`applied` = boxes gravadas, `skipped` = boxes ignoradas (classe/imagem inexistente ou cap), `images` = imagens que receberam ≥1 box). Validação `imageId`: não-UUID ⇒ 400 `invalid_request`; UUID fora do dataset ⇒ 404 `not_found`. Fluxo: job via manager (engine='autotracker', status='done', dataset_id presente) → artefato `boxes.json` via `list_artifacts` (kind='boxes') + path/md5 → `StoragePort.get` → parse → resolve filename→image_id + class name→class_id → transação por imagem DELETE+INSERT. Merge por origem (D1a): `overwrite=false` → DELETE só `origin='autotracker'` (preserva manual/import); `overwrite=true` → DELETE total. Imagem presente no artefato com boxes emitidas (mesmo todas skippadas) → DELETE executado (last-write-wins por origem, código `handlers.rs:1049-1053`). Erros: 400 `invalid_request`, 404 `not_found`, 409 `job_not_done` (job não está `done`), 409 `dataset_not_ready` (dataset_id null/deletado), 503 `queue_unavailable`/`storage_unavailable`.
   - **`queue_unavailable` estendido:** as rotas novas também retornam 503 quando o manager está inalcançável (mesmo mapeamento do Fatia 4).
   - **`boxes.json` (snake_case, transporte):** `{engine, model, seed, conf, images:[{filename, boxes:[{class, x, y, w, h, conf}]}]}`. Keyado por filename (engine não conhece image UUID) e class name (robusto a reordenação).
+- Nota Fatia AutoLabel v1 (ADR-0016, spec 0.15.0, `packages/contracts/openapi.yaml`):
+  - **`POST /api/jobs/autolabel`** — body `{datasetId, model?, prompt?, orchestratorId?}` → 202 `SubmitJobResponse{jobId,status:"queued",queuePosition?}`. Validação: `model` ∈ `{mock}` (default `mock`). Erros: 400 `invalid_request`, 404 `not_found`, 409 `dataset_not_ready` (0 imagens ativas), 503 `queue_unavailable`. Job: `kind='autolabel'`, `engine='autolabel'`, `mode='autolabel'`.
+  - **`POST /api/jobs/:id/autolabel/apply`** — body `{datasetId?, overwrite?}` → 200 `AutolabelApplyResponse{applied, skipped, images}` (`applied` = legendas gravadas, `skipped` = legendas ignoradas por preservação/formato, `images` = imagens distintas atualizadas). Merge por origem (D1): `overwrite=false` → preserva `manual`/`import` (aplica apenas em imagens sem caption ou origin='autolabel'); `overwrite=true` → sobrescreve inclusive manuais.
+  - **`captions.jsonl` (transporte):** linhas JSON `{"filename": "...", "caption": "..."}`. Coleta automática pelo orquestrador como artefato `kind='captions'`.
+  - **Migration 0009 (`0009_captions_autolabel.sql`):** amplia constraint de `captions.origin` para aceitar `'autolabel'`.
 - Nota Fatia 3a (ADR-0002 D1, casing): TODAS as chaves de body/query/response de `/api/*` são camelCase (o teste `json_property_names_are_camel_case` rejeita o resto). **Os nomes listados no §9 são colunas (§10) ou campos de transporte, não chaves JSON** — ex.: settings `{hfToken, …}` no wire vs colunas `hf_token` em `settings`; datasets `sizeBytes/imagesCount/lastModified` no wire vs colunas `size_bytes/images_count/updated_at`. A rota `PUT/GET /api/settings/keys` ainda **não está implementada**; as colunas de `settings` permanecem snake_case.
 - Nota Fatia 3b (ADR-0003, spec 0.3.0 — shapes reais em `services/api-principal/src/datasets/models.rs`, tabela de rotas ≡ `PROTECTED_ROUTES` em `src/auth/routes.rs`):
   ```
@@ -286,7 +297,7 @@ boxes(id UUID PK, image_id UUID FK CASCADE, class_id UUID FK CASCADE,
   x/y/w/h DOUBLE CHECK 0..1, conf DOUBLE NULL, origin TEXT CHECK manual|autotracker|import,
   track_id INT NULL);
   -- ÍNDICES: `boxes(image_id)`, `boxes(class_id)`.
-captions(image_id UUID PK FK CASCADE, text TEXT CHECK 1..8000, origin TEXT CHECK manual|autotracker|import,
+captions(image_id UUID PK FK CASCADE, text TEXT CHECK 1..8000, origin TEXT CHECK manual|autolabel|autotracker|import,
   model TEXT NULL, updated_at TIMESTAMPTZ + trigger tg_set_updated_at da 0002);
 image_embeddings(image_id UUID PK FK images(id) CASCADE, dataset_id UUID FK datasets(id) CASCADE,
   model TEXT CHECK (model IN ('ViT-B-32')), embedding vector(512) NOT NULL, created_at TIMESTAMPTZ);

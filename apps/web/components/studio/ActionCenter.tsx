@@ -32,9 +32,10 @@ import {
   listJobs,
 } from "@/lib/jobs";
 import { applyAutotrackerBoxes } from "@/lib/autotracker";
+import { applyAutolabelCaptions } from "@/lib/autolabel";
 import { ApiError } from "@/lib/api";
 import { formatBytes, formatDuration, formatRelativeTime } from "@/lib/format";
-import { autotrackerErrorMessage } from "@/types/studio";
+import { autotrackerErrorMessage, autolabelErrorMessage } from "@/types/studio";
 import type {
   Job,
   JobArtifact,
@@ -227,6 +228,40 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
         return;
       }
       showToast("Falha ao aplicar boxes ao dataset.", "error");
+    } finally {
+      setApplyBusy(false);
+    }
+  }
+
+  // Ação de aplicar legendas do AutoLabel
+  async function handleApplyCaptions(job: Job) {
+    setApplyBusy(true);
+    try {
+      const result = await applyAutolabelCaptions(job.id, {
+        datasetId: job.datasetId,
+        overwrite: applyOverwrite,
+      });
+      showToast(
+        `${result.applied} legendas aplicadas, ${result.skipped} ignoradas em ${result.images} imagens.`,
+        "success",
+        job.datasetId
+          ? {
+              label: "Abrir dataset",
+              onClick: () => {
+                onClose();
+                router.push(`/datasets/${job.datasetId}`);
+              },
+            }
+          : undefined,
+      );
+      setApplyOverwrite(false);
+      await fetchData();
+    } catch (err) {
+      if (err instanceof ApiError) {
+        showToast(autolabelErrorMessage(err.code), "error");
+        return;
+      }
+      showToast("Falha ao aplicar legendas ao dataset.", "error");
     } finally {
       setApplyBusy(false);
     }
@@ -953,6 +988,30 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                         type="button"
                                         disabled={applyBusy}
                                         onClick={() => handleApplyBoxes(job)}
+                                        className="inline-flex items-center gap-1 rounded-lg border border-[#34d399]/40 bg-[#34d399]/15 px-2.5 py-1 text-[11px] font-medium text-[#a7f3d0] transition hover:bg-[#34d399]/25 active:scale-[0.985] disabled:opacity-50 cursor-pointer"
+                                      >
+                                        <IconCheck className="size-3" />
+                                        <span>{applyBusy ? "Aplicando…" : "Aplicar ao dataset"}</span>
+                                      </button>
+                                    </div>
+                                  )}
+
+                                  {/* AutoLabel: aplicar legendas */}
+                                  {job.kind === "autolabel" && job.status === "done" && (
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <label className="flex items-center gap-1.5 text-[11px] text-zinc-400 cursor-pointer">
+                                        <input
+                                          type="checkbox"
+                                          checked={applyOverwrite}
+                                          onChange={(e) => setApplyOverwrite(e.target.checked)}
+                                          className="rounded border-zinc-700 bg-zinc-800 text-brand-500 focus:ring-brand-500/40 size-3.5"
+                                        />
+                                        <span>Sobrescrever</span>
+                                      </label>
+                                      <button
+                                        type="button"
+                                        disabled={applyBusy}
+                                        onClick={() => handleApplyCaptions(job)}
                                         className="inline-flex items-center gap-1 rounded-lg border border-[#34d399]/40 bg-[#34d399]/15 px-2.5 py-1 text-[11px] font-medium text-[#a7f3d0] transition hover:bg-[#34d399]/25 active:scale-[0.985] disabled:opacity-50 cursor-pointer"
                                       >
                                         <IconCheck className="size-3" />

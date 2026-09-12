@@ -6,6 +6,9 @@ const nextConfig: NextConfig = {
   // e a hidratação não completa: os handlers de /login nunca registram e o
   // submit vira um GET nativo (a senha sai na URL!). Produção não usa este campo.
   allowedDevOrigins: ["10.15.10.3"],
+  experimental: {
+    proxyClientMaxBodySize: "250mb",
+  },
   async rewrites() {
     const apiBase =
       process.env.API_INTERNAL_URL ?? "http://localhost:8080";

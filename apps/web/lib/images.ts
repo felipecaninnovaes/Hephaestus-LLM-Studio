@@ -44,8 +44,8 @@ export function getImage(
 // Chunked upload with progress, cancellation, and per-batch error handling
 // ---------------------------------------------------------------------------
 
-const BATCH_MAX_BYTES = 24 * 1024 * 1024; // 24 MiB per batch
-const BATCH_MAX_FILES = 40; // max files per batch
+const BATCH_MAX_BYTES = 8 * 1024 * 1024; // 8 MiB per batch
+const BATCH_MAX_FILES = 25; // max files per batch
 const PER_FILE_MAX_BYTES = 200 * 1024 * 1024; // 200 MiB per-file cap
 const CONCURRENCY = 2; // max simultaneous batch requests in flight
 

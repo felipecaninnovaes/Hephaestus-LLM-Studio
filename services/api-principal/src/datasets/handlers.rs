@@ -37,11 +37,7 @@ use crate::{
         MSG_STORAGE_UNAVAILABLE,
     },
     state::AppState,
-    storage::{
-        keys,
-        sniff::MediaType,
-        StorageError,
-    },
+    storage::{keys, sniff::MediaType, StorageError},
 };
 
 const MSG_INTERNAL: &str = "internal server error";
@@ -764,7 +760,10 @@ pub async fn upload(
 
         let norm = match super::normalize::normalize_image(&raw_bytes) {
             Ok(n) => n,
-            Err(e @ (super::normalize::NormalizeError::UnsupportedMedia | super::normalize::NormalizeError::DecodeFailed)) => {
+            Err(
+                e @ (super::normalize::NormalizeError::UnsupportedMedia
+                | super::normalize::NormalizeError::DecodeFailed),
+            ) => {
                 tracing::warn!(%ds_id, file = %raw_name, error = %e, "upload: imagem rejeitada por formato invalido ou incompativel");
                 items.push(rejected_item(filename, "unsupported_media"));
                 continue;

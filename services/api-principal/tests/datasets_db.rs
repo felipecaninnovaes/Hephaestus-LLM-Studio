@@ -967,7 +967,10 @@ async fn t0003_upload_stored_duplicate_rejected() {
     let items = json(&body)["items"].clone();
     assert_eq!(items.as_array().expect("items").len(), 1);
     assert_eq!(items[0]["status"], "stored");
-    assert!(items[0]["filename"].as_str().expect("filename").ends_with(".webp"));
+    assert!(items[0]["filename"]
+        .as_str()
+        .expect("filename")
+        .ends_with(".webp"));
 
     // Box na imagem ⇒ gatilho end-to-end pela rota de verdade.
     let class_id: uuid::Uuid =
@@ -1167,7 +1170,11 @@ async fn t0017_upload_normalizado_webp_md5_dedupe() {
     // 1. Cria dataset
     let (status, _, body) = call(
         app.clone(),
-        post_create("Normalizado WebP", &serde_json::json!(["cat", "dog"]), &cookie),
+        post_create(
+            "Normalizado WebP",
+            &serde_json::json!(["cat", "dog"]),
+            &cookie,
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -1177,12 +1184,20 @@ async fn t0017_upload_normalizado_webp_md5_dedupe() {
     // mas com o MESMO form filename "001.jpg" (como ocorreria em subpastas).
     let mut img1_bytes = Vec::new();
     let img1 = image::RgbImage::new(10, 10);
-    img1.write_to(&mut std::io::Cursor::new(&mut img1_bytes), image::ImageFormat::Png).unwrap();
+    img1.write_to(
+        &mut std::io::Cursor::new(&mut img1_bytes),
+        image::ImageFormat::Png,
+    )
+    .unwrap();
 
     let mut img2_bytes = Vec::new();
     let mut img2 = image::RgbImage::new(20, 15);
     img2.put_pixel(0, 0, image::Rgb([255, 0, 0]));
-    img2.write_to(&mut std::io::Cursor::new(&mut img2_bytes), image::ImageFormat::Bmp).unwrap();
+    img2.write_to(
+        &mut std::io::Cursor::new(&mut img2_bytes),
+        image::ImageFormat::Bmp,
+    )
+    .unwrap();
 
     let boundary = "heph-upload-r2";
     let (status, _, body) = call(
@@ -1191,7 +1206,10 @@ async fn t0017_upload_normalizado_webp_md5_dedupe() {
             &cookie,
             &ds,
             boundary,
-            multipart_body(boundary, &[("001.jpg", &img1_bytes), ("001.jpg", &img2_bytes)]),
+            multipart_body(
+                boundary,
+                &[("001.jpg", &img1_bytes), ("001.jpg", &img2_bytes)],
+            ),
         ),
     )
     .await;
@@ -1206,7 +1224,10 @@ async fn t0017_upload_normalizado_webp_md5_dedupe() {
     let f2 = items[1]["filename"].as_str().unwrap().to_string();
     assert!(f1.ends_with(".webp"));
     assert!(f2.ends_with(".webp"));
-    assert_ne!(f1, f2, "Hashes MD5 devem ser diferentes para imagens diferentes");
+    assert_ne!(
+        f1, f2,
+        "Hashes MD5 devem ser diferentes para imagens diferentes"
+    );
 
     // 3. Reenvio do img1: deve ser detectado como duplicate pelo hash MD5 idêntico!
     let (status, _, body) = call(
@@ -1227,11 +1248,12 @@ async fn t0017_upload_normalizado_webp_md5_dedupe() {
     assert_eq!(re_items[0]["imageId"], items[0]["imageId"]);
 
     // 4. Verificação no banco: media_type = 'webp'
-    let media_type: String = sqlx::query_scalar("SELECT media_type FROM images WHERE filename = $1")
-        .bind(&f1)
-        .fetch_one(&st.pool)
-        .await
-        .expect("query media_type");
+    let media_type: String =
+        sqlx::query_scalar("SELECT media_type FROM images WHERE filename = $1")
+            .bind(&f1)
+            .fetch_one(&st.pool)
+            .await
+            .expect("query media_type");
     assert_eq!(media_type, "webp");
 }
 

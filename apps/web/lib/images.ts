@@ -141,7 +141,20 @@ export async function uploadImages(
         );
         allItems.push(...result.items);
         sentCount += batch.length;
+        const stored = result.items.filter((it) => it.status === "stored").length;
+        const dups = result.items.filter((it) => it.status === "duplicate").length;
+        const rejected = result.items.filter((it) => it.status === "rejected").length;
+        const failed = result.items.filter((it) => it.status === "failed").length;
+        console.info(
+          `[upload] Lote ${i + 1}/${batchCount} enviado (${batch.length} arquivos): ` +
+            `${stored} armazenados, ${dups} duplicados, ${rejected} rejeitados, ${failed} falhas`,
+        );
+        if (rejected > 0 || failed > 0) {
+          const problems = result.items.filter((it) => it.status === "rejected" || it.status === "failed");
+          console.warn(`[upload] Detalhes dos problemas no lote ${i + 1}:`, problems);
+        }
       } catch (err: unknown) {
+        console.error(`[upload] Falha crítica no lote ${i + 1}/${batchCount}:`, err);
         const isEnvelopeLimit =
           err instanceof Object && "status" in err && (err as { status: number }).status === 413;
 

@@ -641,6 +641,8 @@ pub async fn upload(
         return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND);
     }
 
+    tracing::info!(%ds_id, "upload: iniciando processamento de lote multipart");
+
     let mut items: Vec<UploadItem> = Vec::new();
     // 2. Loop de fields.
     loop {
@@ -649,12 +651,14 @@ pub async fn upload(
             Ok(None) => break,
             Err(e) => {
                 if is_too_large(&e) {
+                    tracing::warn!(%ds_id, "upload: corpo multipart excede o limite global (PAYLOAD_TOO_LARGE)");
                     return err(
                         StatusCode::PAYLOAD_TOO_LARGE,
                         "invalid_request",
                         MSG_INVALID_REQUEST,
                     );
                 }
+                tracing::warn!(%ds_id, error = ?e, "upload: erro ao ler proximo campo multipart");
                 break;
             }
         };
@@ -670,7 +674,8 @@ pub async fn upload(
         // 3. Spool em tempfile (stream chunk → write_all até EOF).
         let tmp = match tempfile::NamedTempFile::new() {
             Ok(t) => t,
-            Err(_) => {
+            Err(e) => {
+                tracing::error!(%ds_id, file = %raw_name, error = ?e, "upload: falha ao criar tempfile");
                 items.push(failed_item(filename));
                 continue;
             }
@@ -678,7 +683,8 @@ pub async fn upload(
         let tmp_path = tmp.path().to_path_buf();
         let mut out = match tokio::fs::File::create(&tmp_path).await {
             Ok(f) => f,
-            Err(_) => {
+            Err(e) => {
+                tracing::error!(%ds_id, file = %raw_name, error = ?e, "upload: falha ao abrir tempfile para escrita");
                 items.push(failed_item(filename));
                 continue;
             }
@@ -710,6 +716,7 @@ pub async fn upload(
                     Ok(None) => break,
                     Err(e) => {
                         if is_too_large(&e) {
+                            tracing::warn!(%ds_id, file = %raw_name, "upload: limite global excedido durante chunk");
                             return err(
                                 StatusCode::PAYLOAD_TOO_LARGE,
                                 "invalid_request",
@@ -729,14 +736,17 @@ pub async fn upload(
         match spool {
             Ok(()) => {}
             Err("too_large") => {
+                tracing::warn!(%ds_id, file = %raw_name, limit_bytes = MAX_FILE_BYTES, "upload: arquivo rejeitado (too_large)");
                 items.push(rejected_item(filename, "too_large"));
                 continue;
             }
             Err("dead") => {
+                tracing::error!(%ds_id, file = %raw_name, "upload: stream de upload corrompida ou interrompida");
                 items.push(failed_item(filename));
                 break;
             }
             Err(_) => {
+                tracing::error!(%ds_id, file = %raw_name, "upload: erro de I/O no spool temporario");
                 items.push(failed_item(filename));
                 continue;
             }
@@ -745,7 +755,8 @@ pub async fn upload(
         // 4. Normalização para WebP, higienização de metadados e hashing (ADR-0017).
         let raw_bytes = match tokio::fs::read(&tmp_path).await {
             Ok(b) => b,
-            Err(_) => {
+            Err(e) => {
+                tracing::error!(%ds_id, file = %raw_name, error = ?e, "upload: falha ao ler bytes do tempfile");
                 items.push(failed_item(filename));
                 continue;
             }
@@ -753,18 +764,21 @@ pub async fn upload(
 
         let norm = match super::normalize::normalize_image(&raw_bytes) {
             Ok(n) => n,
-            Err(super::normalize::NormalizeError::UnsupportedMedia | super::normalize::NormalizeError::DecodeFailed) => {
+            Err(e @ (super::normalize::NormalizeError::UnsupportedMedia | super::normalize::NormalizeError::DecodeFailed)) => {
+                tracing::warn!(%ds_id, file = %raw_name, error = %e, "upload: imagem rejeitada por formato invalido ou incompativel");
                 items.push(rejected_item(filename, "unsupported_media"));
                 continue;
             }
-            Err(_) => {
+            Err(e) => {
+                tracing::error!(%ds_id, file = %raw_name, error = %e, "upload: falha na normalizacao da imagem");
                 items.push(failed_item(filename));
                 continue;
             }
         };
 
         // Sobrescreve o tempfile com os bytes WebP normalizados.
-        if tokio::fs::write(&tmp_path, &norm.webp_bytes).await.is_err() {
+        if let Err(e) = tokio::fs::write(&tmp_path, &norm.webp_bytes).await {
+            tracing::error!(%ds_id, file = %raw_name, error = ?e, "upload: falha ao sobrescrever tempfile com webp normalizado");
             items.push(failed_item(filename));
             continue;
         }
@@ -773,7 +787,8 @@ pub async fn upload(
         let canonical = norm.filename;
         let image_id = Uuid::new_v4();
         let key = keys::image_object_key(ds_id, image_id, &canonical);
-        if state.storage.put(&key, &tmp_path).await.is_err() {
+        if let Err(e) = state.storage.put(&key, &tmp_path).await {
+            tracing::error!(%ds_id, file = %raw_name, key = %key, error = %e, "upload: falha ao persistir no storage");
             return err(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "storage_unavailable",
@@ -807,13 +822,17 @@ pub async fn upload(
         .await
         {
             Ok(v) => v,
-            Err(_) => {
+            Err(e) => {
+                tracing::error!(%ds_id, file = %raw_name, canonical = %canonical, error = %e, "upload: erro no banco de dados ao registrar imagem");
                 let _ = state.storage.delete(&key).await;
                 return internal();
             }
         };
         match inserted {
-            Some(id) => items.push(stored_item(id, canonical, bytes, width, height)),
+            Some(id) => {
+                tracing::info!(%ds_id, image_id = %id, file = %raw_name, canonical = %canonical, bytes, width, height, "upload: imagem normalizada e armazenada");
+                items.push(stored_item(id, canonical, bytes, width, height));
+            }
             None => {
                 // Compensação D7 best-effort (falha do delete: ignora).
                 let _ = state.storage.delete(&key).await;
@@ -825,14 +844,38 @@ pub async fn upload(
                 .fetch_optional(&state.pool)
                 .await;
                 match existing {
-                    Ok(Some(id)) => items.push(duplicate_item(id, canonical)),
-                    Ok(None) => items.push(failed_item(canonical)),
-                    Err(_) => return internal(),
+                    Ok(Some(id)) => {
+                        tracing::info!(%ds_id, existing_id = %id, file = %raw_name, canonical = %canonical, "upload: imagem duplicada detectada (mesmo hash MD5)");
+                        items.push(duplicate_item(id, canonical));
+                    }
+                    Ok(None) => {
+                        tracing::warn!(%ds_id, file = %raw_name, canonical = %canonical, "upload: conflito de insercao mas registro existente nao foi localizado");
+                        items.push(failed_item(canonical));
+                    }
+                    Err(e) => {
+                        tracing::error!(%ds_id, canonical = %canonical, error = %e, "upload: erro ao consultar imagem duplicada");
+                        return internal();
+                    }
                 }
             }
         }
         // `tmp` morre aqui: drop apaga o spool (D1, disco só efêmero).
     }
+
+    let stored_count = items.iter().filter(|i| i.status == "stored").count();
+    let dup_count = items.iter().filter(|i| i.status == "duplicate").count();
+    let rej_count = items.iter().filter(|i| i.status == "rejected").count();
+    let fail_count = items.iter().filter(|i| i.status == "failed").count();
+
+    tracing::info!(
+        %ds_id,
+        total = items.len(),
+        stored = stored_count,
+        duplicates = dup_count,
+        rejected = rej_count,
+        failed = fail_count,
+        "upload: lote multipart finalizado"
+    );
 
     // 9. Códigos do lote: vazio ⇒ 400; todo-rejected/unsupported ⇒ 400;
     // senão 200 mesmo com `rejected`/`failed` individuais.
@@ -860,7 +903,7 @@ pub async fn upload(
         tokio::spawn(async move {
             let wrote =
                 crate::search::indexer::index_dataset_images(st, ds_id, Some(stored_ids)).await;
-            eprintln!("[indexer] dataset {ds_id} upload: {wrote} embeddings escritos");
+            tracing::info!(%ds_id, wrote, "upload: embeddings indexados");
         });
     }
     (StatusCode::OK, Json(UploadResult { items })).into_response()

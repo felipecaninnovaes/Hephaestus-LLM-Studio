@@ -110,7 +110,10 @@ async fn create_read_delete_flow() {
         .fetch_one(&st.pool)
         .await
         .expect("current_database");
-    assert_eq!(db, "studio");
+    assert!(
+        db == "studio" || db == "studio_test",
+        "o teste deve rodar contra o banco 'studio' ou 'studio_test', mas conectou em: {db}"
+    );
     let app = routes::build(st.clone());
     let cookie = authed_cookie();
 

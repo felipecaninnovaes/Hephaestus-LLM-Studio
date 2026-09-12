@@ -9,7 +9,7 @@ use axum::{
     http::{header, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use serde::Deserialize;
@@ -428,6 +428,20 @@ async fn get_storage_usage_handler(State(state): State<AppState>) -> Response {
     }
 }
 
+/// DELETE /internal/models/:id — remove modelo da tabela models.
+async fn delete_model_handler(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let uid = match id.parse::<uuid::Uuid>() {
+        Ok(u) => u,
+        Err(_) => return bad_request("invalid uuid"),
+    };
+    match manager::delete_model(&state.pool, uid).await {
+        Ok(item) => (StatusCode::OK, Json(item)).into_response(),
+        Err(ManagerError::NotFound) => not_found(),
+        Err(ManagerError::Internal(e)) => internal_error(&e),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -451,6 +465,7 @@ fn build_router(state: AppState) -> Router {
             "/internal/models",
             get(list_models_handler).post(create_model_handler),
         )
+        .route("/internal/models/:id", delete(delete_model_handler))
         .route("/internal/storage/usage", get(get_storage_usage_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),

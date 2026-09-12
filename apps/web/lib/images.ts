@@ -45,8 +45,9 @@ export function getImage(
 // ---------------------------------------------------------------------------
 
 const BATCH_MAX_BYTES = 24 * 1024 * 1024; // 24 MiB per batch
-const BATCH_MAX_FILES = 20; // max files per batch
+const BATCH_MAX_FILES = 40; // max files per batch
 const PER_FILE_MAX_BYTES = 200 * 1024 * 1024; // 200 MiB per-file cap
+const CONCURRENCY = 2; // max simultaneous batch requests in flight
 
 export interface UploadImagesOpts {
   onProgress?: (p: {
@@ -59,7 +60,7 @@ export interface UploadImagesOpts {
 }
 
 /**
- * Split files into batches respecting weight (~24 MiB) and count (max 20)
+ * Split files into batches respecting weight (~24 MiB) and count (max 40)
  * limits. Files already validated (>200 MiB) are excluded beforehand.
  */
 function buildBatches(files: File[]): File[][] {
@@ -82,7 +83,7 @@ function buildBatches(files: File[]): File[][] {
 
 /**
  * Upload images with chunking, progress callbacks, cancellation support,
- * and honest batch-level error handling.
+ * concurrency of up to 2 batches in flight, and honest batch-level error handling.
  *
  * Backward-compatible: calling without `opts` works exactly as before
  * (chunked but no progress/cancel).
@@ -120,70 +121,80 @@ export async function uploadImages(
   let sentCount = 0;
   const totalFiles = validFiles.length;
 
-  // 3. Send batches sequentially
-  for (let i = 0; i < batches.length; i++) {
-    // Check cancellation between batches
-    if (isCancelled?.()) break;
+  // 3. Send batches with concurrency limit (max 2 in flight)
+  let nextBatchIdx = 0;
+  let hasHardStop = false;
+  let completedBatches = 0;
 
-    const batch = batches[i];
-    const form = new FormData();
-    for (const file of batch) form.append("files", file);
+  async function worker() {
+    while (nextBatchIdx < batches.length) {
+      if (isCancelled?.() || hasHardStop) break;
+      const i = nextBatchIdx++;
+      const batch = batches[i];
+      const form = new FormData();
+      for (const file of batch) form.append("files", file);
 
-    try {
-      const result = await apiFetch<{ items: UploadResultItem[] }>(
-        `/api/datasets/${datasetId}/upload`,
-        { method: "POST", body: form },
-      );
-      allItems.push(...result.items);
-      sentCount += batch.length;
-    } catch (err: unknown) {
-      // Determine if this is a recoverable error or a hard stop (413 envelope)
-      const isEnvelopeLimit =
-        err instanceof Object && "status" in err && (err as { status: number }).status === 413;
+      try {
+        const result = await apiFetch<{ items: UploadResultItem[] }>(
+          `/api/datasets/${datasetId}/upload`,
+          { method: "POST", body: form },
+        );
+        allItems.push(...result.items);
+        sentCount += batch.length;
+      } catch (err: unknown) {
+        const isEnvelopeLimit =
+          err instanceof Object && "status" in err && (err as { status: number }).status === 413;
 
-      // Mark every file in this failed batch
-      for (const file of batch) {
+        for (const file of batch) {
+          allItems.push({
+            imageId: null,
+            filename: file.name,
+            status: "failed",
+            reason: isEnvelopeLimit ? "envelope_limit" : "storage_error",
+            bytes: file.size,
+            width: null,
+            height: null,
+          });
+        }
+        sentCount += batch.length;
+
+        if (isEnvelopeLimit) {
+          hasHardStop = true;
+          break;
+        }
+      }
+
+      completedBatches++;
+      onProgress?.({
+        sent: sentCount,
+        total: totalFiles,
+        batchIndex: completedBatches,
+        batchCount,
+      });
+    }
+  }
+
+  const workerCount = Math.min(CONCURRENCY, batches.length);
+  if (workerCount > 0) {
+    const workers = Array.from({ length: workerCount }, () => worker());
+    await Promise.all(workers);
+  }
+
+  // If stopped early by envelope limit, mark remaining unsent batches
+  if (hasHardStop) {
+    for (let r = nextBatchIdx; r < batches.length; r++) {
+      for (const file of batches[r]) {
         allItems.push({
           imageId: null,
           filename: file.name,
           status: "failed",
-          reason: isEnvelopeLimit ? "envelope_limit" : "storage_error",
+          reason: "envelope_limit",
           bytes: file.size,
           width: null,
           height: null,
         });
       }
-      sentCount += batch.length;
-
-      // 413 = envelope too large — subsequent batches would also fail → stop
-      if (isEnvelopeLimit) {
-        // Mark remaining batches' files as failed (not sent)
-        for (let r = i + 1; r < batches.length; r++) {
-          for (const file of batches[r]) {
-            allItems.push({
-              imageId: null,
-              filename: file.name,
-              status: "failed",
-              reason: "envelope_limit",
-              bytes: file.size,
-              width: null,
-              height: null,
-            });
-          }
-        }
-        break;
-      }
-
-      // Other errors (network, 500): continue with remaining batches
     }
-
-    // Report progress after each batch completes
-    onProgress?.({
-      sent: sentCount,
-      total: totalFiles,
-      batchIndex: i + 1,
-      batchCount,
-    });
   }
 
   return { items: allItems };

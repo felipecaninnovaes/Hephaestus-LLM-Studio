@@ -24,11 +24,6 @@ use axum::{
 };
 use uuid::Uuid;
 
-// `md-5 0.10` (digest 0.10) e `sha2 0.11` (digest 0.11) expõem traits
-// `Digest` distintos: imports com alias, um por hasher.
-use md5::Digest as Md5Digest;
-use sha2::Digest as Sha256Digest;
-
 use super::models::{
     color_for, derive, derived_source, normalize_classes, parse_id, plan_classes, slugify,
     validate_boxes, validate_caption, BoxResponse, CaptionResponse, CreateDatasetRequest,
@@ -44,7 +39,7 @@ use crate::{
     state::AppState,
     storage::{
         keys,
-        sniff::{self, MediaType},
+        sniff::MediaType,
         StorageError,
     },
 };
@@ -747,53 +742,20 @@ pub async fn upload(
             }
         }
 
-        // 4. Sniff dos 12 primeiros bytes (canônico = conteúdo, D2/D5).
-        let head: Vec<u8> = {
-            use tokio::io::AsyncReadExt;
-            let mut f = match tokio::fs::File::open(&tmp_path).await {
-                Ok(f) => f,
-                Err(_) => {
-                    items.push(failed_item(filename));
-                    continue;
-                }
-            };
-            let mut buf = [0u8; 12];
-            let mut n = 0usize;
-            while n < 12 {
-                match f.read(&mut buf[n..]).await {
-                    Ok(0) => break,
-                    Ok(k) => n += k,
-                    Err(_) => break,
-                }
-            }
-            buf[..n].to_vec()
-        };
-        let media = match sniff::sniff(&head) {
-            Some(m) => m,
-            None => {
-                items.push(rejected_item(filename, "unsupported_media"));
+        // 4. Normalização para WebP, higienização de metadados e hashing (ADR-0017).
+        let raw_bytes = match tokio::fs::read(&tmp_path).await {
+            Ok(b) => b,
+            Err(_) => {
+                items.push(failed_item(filename));
                 continue;
             }
         };
 
-        // 5. Dimensões (`BufReader`: `ImageReader::new` exige `BufRead`;
-        // `with_guessed_format` no image 0.25 retorna `Result` — desvios da
-        // cadeia da spec, só adaptadores). Falha de decode ⇒ unsupported_media.
-        let (width, height) = match std::fs::File::open(&tmp_path) {
-            Ok(f) => {
-                match image::ImageReader::new(std::io::BufReader::new(f)).with_guessed_format() {
-                    Ok(r) => match r.into_dimensions() {
-                        Ok((w, h)) => (w as i32, h as i32),
-                        Err(_) => {
-                            items.push(rejected_item(filename, "unsupported_media"));
-                            continue;
-                        }
-                    },
-                    Err(_) => {
-                        items.push(rejected_item(filename, "unsupported_media"));
-                        continue;
-                    }
-                }
+        let norm = match super::normalize::normalize_image(&raw_bytes) {
+            Ok(n) => n,
+            Err(super::normalize::NormalizeError::UnsupportedMedia | super::normalize::NormalizeError::DecodeFailed) => {
+                items.push(rejected_item(filename, "unsupported_media"));
+                continue;
             }
             Err(_) => {
                 items.push(failed_item(filename));
@@ -801,57 +763,14 @@ pub async fn upload(
             }
         };
 
-        // 6. Hash em streaming (blocos de 1 MiB) + tamanho real do spool.
-        let hashed: Option<(String, String, i64)> = {
-            use tokio::io::AsyncReadExt;
-            let mut f = match tokio::fs::File::open(&tmp_path).await {
-                Ok(f) => f,
-                Err(_) => {
-                    items.push(failed_item(filename));
-                    continue;
-                }
-            };
-            let mut md5 = md5::Md5::new();
-            let mut sha = sha2::Sha256::new();
-            let mut buf = vec![0u8; 1024 * 1024];
-            let mut total: i64 = 0;
-            let mut ok = true;
-            loop {
-                match f.read(&mut buf).await {
-                    Ok(0) => break,
-                    Ok(k) => {
-                        Md5Digest::update(&mut md5, &buf[..k]);
-                        Sha256Digest::update(&mut sha, &buf[..k]);
-                        total += k as i64;
-                    }
-                    Err(_) => {
-                        ok = false;
-                        break;
-                    }
-                }
-            }
-            if !ok {
-                None
-            } else {
-                Some((
-                    hex::encode(Md5Digest::finalize(md5)),
-                    hex::encode(Sha256Digest::finalize(sha)),
-                    total,
-                ))
-            }
-        };
-        let (md5hex, shahex, bytes) = match hashed {
-            Some(v) => v,
-            None => {
-                items.push(failed_item(filename));
-                continue;
-            }
-        };
+        // Sobrescreve o tempfile com os bytes WebP normalizados.
+        if tokio::fs::write(&tmp_path, &norm.webp_bytes).await.is_err() {
+            items.push(failed_item(filename));
+            continue;
+        }
 
-        // 7. PUT antes do INSERT (D7: chave conhecida antes do objeto).
-        // Nome canônico único (stem sanitizado + extensão do sniff) vai para
-        // a key E para o INSERT; items stored/duplicate reportam o canônico.
-        let canonical = keys::canonical_filename(&raw_name, media);
+        // 5. Chave e Nome Canônico por Hash MD5 ({md5}.webp).
+        let canonical = norm.filename;
         let image_id = Uuid::new_v4();
         let key = keys::image_object_key(ds_id, image_id, &canonical);
         if state.storage.put(&key, &tmp_path).await.is_err() {
@@ -862,7 +781,13 @@ pub async fn upload(
             );
         }
 
-        // 8. INSERT com ON CONFLICT DO NOTHING (reenvio ⇒ duplicate).
+        let bytes = norm.webp_bytes.len() as i64;
+        let width = norm.width;
+        let height = norm.height;
+        let md5hex = norm.md5;
+        let shahex = norm.sha256;
+
+        // 6. INSERT com ON CONFLICT DO NOTHING (reenvio do mesmo hash ⇒ duplicate).
         let inserted: Option<Uuid> = match sqlx::query_scalar::<_, Uuid>(
             "INSERT INTO images (id, dataset_id, filename, object_key, bytes, width, height, md5, sha256, media_type) \
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) \
@@ -877,7 +802,7 @@ pub async fn upload(
         .bind(height)
         .bind(&md5hex)
         .bind(&shahex)
-        .bind(media.as_db())
+        .bind("webp")
         .fetch_optional(&state.pool)
         .await
         {

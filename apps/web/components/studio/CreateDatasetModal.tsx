@@ -21,6 +21,7 @@ import { CLASS_RE, MAX_CLASSES } from "@/lib/classes";
 import {
   inspectDataTransfer,
   inspectZipFile,
+  isImageFile,
   type InspectionResult,
 } from "@/lib/dataset-inspector";
 import { createDataset } from "@/lib/datasets";
@@ -147,6 +148,7 @@ export default function CreateDatasetModal({
 
       for (let i = 0; i < fileList.length; i++) {
         const file = fileList[i];
+        if (!isImageFile(file.name)) continue;
         const path = file.webkitRelativePath || file.name;
         const parts = path.split("/");
         if (!rootDir && parts.length > 1) {

@@ -19,7 +19,14 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-12 (FATIA R2 UPLOAD NORMALIZADO WEBP E MELHORIAS IMPECCABLE OPERATE NA GALERIA CONCLUÍDAS NA BRANCH)
+## Estado atual — 2026-09-12 (FATIA GESTÃO DE MODELOS E ACABAMENTO DE INFRAESTRUTURA CONCLUÍDA NA BRANCH)
+
+- **FATIA GESTÃO DE MODELOS E ACABAMENTO DE INFRAESTRUTURA — CONCLUÍDA NA BRANCH (2026-09-12)** — branch `feat/gestao-modelos-infra`.
+  - **M.1 (Isolamento de banco em test-db.sh — dívida quitada)**: `scripts/test-db.sh` agora cria o banco efêmero isolado `studio_test`, roda todas as migrations, executa a suíte completa de testes de integração (`api-principal` datasets_db + `manager` manager_db + manager bin) e descarta o banco efêmero via trap EXIT sem tocar no banco de produto `studio` nem invalidar o estado do compose.
+  - **M.2 (Backend Manager)**: Handler e rota `DELETE /internal/models/:id` (204 No Content, 404); migration `0010_models_engines.sql` expandindo constraint `models_engine_check` para `('yolo', 'world', 'diffusion', 'clip')`; `validate_create_model` atualizado para novas engines; 89 testes de integração verdes em `manager_db.rs`.
+  - **M.3 (Backend API Principal & OpenAPI 0.16.0)**: Trait `ManagerPort`, `HttpManager` e `MockManager` com `delete_model`; validação de magic header para `.safetensors` e extensões permitidas (`.pt`, `.safetensors`) em `validate.rs`; handler `delete_model` com remoção s3 best-effort para upload/download; rota `DELETE /api/models/:id` protegida; contrato OpenAPI bumped para `0.16.0` (15/15 contract tests verdes).
+  - **M.4 (Web Frontend)**: Função `deleteModel` em `lib/models.ts`; `ModelUploadModal.tsx` e `ModelDownloadModal.tsx` suportando engines `diffusion` e `clip` e formato `.safetensors`; página `/models` com botão de exclusão, modal `ConfirmDialog` de confirmação, badges de novas engines e badge de formato (`safetensors` / `.pt`); `npx tsc --noEmit` limpo com 0 erros.
+  - **M.5 (Verificação & Formatação)**: `scripts/test-db.sh` com exit code 0 (84 + 89 + 2 testes); `cargo test -p api-principal --lib` (316 testes verdes); `cargo fmt --all -- --check` 100% limpo sem hunks divergentes. Branch pronta para merge pelo usuário.
 
 - **FATIA R2 (UPLOAD NORMALIZADO WEBP, HIGIENIZAÇÃO DE METADADOS E DEDUPLICAÇÃO MD5) + MELHORIAS IMPECCABLE OPERATE — CONCLUÍDAS NA BRANCH (2026-09-12)** — branch `feat/upload-normalizado`. **Especificação executável: `docs/adr/0017-upload-normalizado-md5.md`** (D0–D4).
   - **R2.0 (docs/adr)**: ADR-0017 aceita e registrada (`docs/adr/0017-upload-normalizado-md5.md`).

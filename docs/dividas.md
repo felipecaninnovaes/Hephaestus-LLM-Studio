@@ -86,7 +86,7 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
 - **AutoTracker real — QUITADA 2026-09-11** (Fatia K, ADR-0014: yolov8x-worldv2.pt via `set_classes(classes do dataset)`, engine `world` na tabela models, migration 0008, `modelId?` no body de submit, mapeamento rico NotFound→404/InvalidRequest→400, boxes.json com seed:0 sentinela sem metrics.jsonl, AutoTrackerModal com dropdown "Modelo", spec 0.13.0; sessão GPU provada com detecções reais + fix openai-clip no Dockerfile.gpu). **Emenda:** implementado com yolov8x-world na mesma imagem trainer-yolo (regra uma-imagem-por-engine preservada); florence-2/qwen-vl permanecem registrados como alternativas futuras (imagem própria — não quitada).
 - **Apply de boxes do playground (Fatia K — ADR-0013 D4):** o v1 do playground é read-only (overlay + download); aplicar detecções como anotações (`origin='playground'`) exigiria migration nova (CHECK de `boxes.origin` é `manual|autotracker|import` desde 0003), rota de apply nova, e decisão de merge. **NÃO quitada pela Fatia K** (o K reusa o ingest `'autotracker'` existente; o origin playground continua dívida).
 - ~~**Telemetria por orquestrador (ADR-0009 R1)**~~ **QUITADA 2026-09-10** (Fatia H, ADR-0011 D1/D2/D4: heartbeat identificado com `endpoint`, cache por nó `HashMap<Uuid, TelemetryState>`, watchdog `degraded`/`offline` com re-queue, `GET /api/orchestrators` enriquecido com telemetria por nó).
-- **Models real (ADR-0009 R2/D2) — QUITADA 2026-09-10** (Fatia I, ADR-0012: tabela `models` dona do manager, backfill, hook best.pt, upload/download server-side no principal com allow-list fail-closed, fine-tune `weights?: uuid`, página `/models` + dropdown `/treino`, spec 0.11.0). **Pendente (dívida nova):** gestão de modelos (DELETE/rotate/promote artefato→modelo independente — R5 ADR-0012); WS de progresso de download; proxy `GET /api/models/:id/data` como fallback sem `S3_PUBLIC_ENDPOINT_URL`; sniff `.safetensors`/multi-engine (D0); seleção manual de nó/GPU na UI.
+- **Models real (ADR-0009 R2/D2) — QUITADA 2026-09-10** (Fatia I, ADR-0012). **Gestão de modelos & suporte a `.safetensors`/multi-engine QUITADA 2026-09-12** (Fatia Gestão de Modelos & Infra: `DELETE /api/models/:id` e `/internal/models/:id`, remoção física do S3 para upload/download, migration 0010 com engines `diffusion` e `clip`, validação de cabeçalho `.safetensors`, UI de exclusão com `ConfirmDialog`, spec OpenAPI 0.16.0). **Pendente remanescente:** WS de progresso de download; proxy `GET /api/models/:id/data` como fallback sem `S3_PUBLIC_ENDPOINT_URL`.
 - **Reconciliação storage (ADR-0009 R3) — ABERTA 2026-09-09:** reconciliação bucket×banco / storage real via `ListObjectsV2`. Hoje: soma SQL (`datasets.size_bytes` + `SUM(job_artifacts.bytes)`), NÃO ListObjects (StoragePort não tem método de listagem; rejeitado em D3).
 - ~~**POST /api/orchestrators/{adopt,rotate,revoke,enable,disable,remove} + GET /:id/health (ADR-0009 D0)**~~ **PARCIALMENTE QUITADA 2026-09-10** (Fatia H, ADR-0011 D5: adopt/revoke implementados + alias `/api/environments*` implementado). **Pendente:** rotate, enable/disable, GET /:id/health.
 - ~~**Roteamento por capacidade no manager (GPU/VRAM/kind)**~~ **PARCIALMENTE QUITADA 2026-09-10** (Fatia H, ADR-0011 D3: roteamento estático via SQL determinístico com vram-table no manager, `waiting_vram` quando sem capacidade, ORDER BY determinístico). **Pendente:** policy VRAM completa (fila por VRAM livre dinâmica, paralelismo 2+ jobs por nó, preempção de runner, `max_parallel_trainers`).
@@ -100,17 +100,7 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
 
 **Verificação / toolchain**
 
-- **test-db.sh apaga estado de produto quando a stack está de pé — ABERTA 2026-09-08**
-  (causa-raiz achada na fatia 5): o script roda os testes do manager
-  (`manager_db`) no MESMO banco `studio` do compose (localhost:5432), e os
-  fixtures fazem `DELETE FROM orchestrators` (e limpeza de jobs) — cada
-  `bash scripts/test-db.sh` com a stack de pé invalida a auto-adoção e
-  deixa dispatches presos em `waiting_slot` até um restart do manager
-  (que re-adota no boot). Sintoma: `orchestrators` vazio + jobs em
-  `waiting_slot` sem despacho. Conserto certo: isolar os testes-db num
-  banco efêmero próprio (ex.: `studio_test` criado + migrations aplicadas
-  + drop no fim), nunca o banco do produto. Mitigação de curto prazo:
-  restart do manager após rodar test-db.
+- ~~**test-db.sh apaga estado de produto quando a stack está de pé — ABERTA 2026-09-08**~~ **QUITADA 2026-09-12** (Fatia Gestão de Modelos & Infra: `scripts/test-db.sh` agora cria o banco efêmero isolado `studio_test`, roda todas as migrations, executa a suíte de testes de integração e descarta o banco no final via trap EXIT, sem nunca tocar no banco de produto `studio` ou invalidar a stack local).
 - **Teste `@gpu` manual do CLIP real (fatia futura, sem número) — ABERTA 2026-09-06**
   (spike/ADR-0004): o modo real do embedder (`ENGINE_MOCK` desligado,
   `open_clip_torch` ViT-B-32, peso ~600 MB fora do compose) nunca rodou em GPU;

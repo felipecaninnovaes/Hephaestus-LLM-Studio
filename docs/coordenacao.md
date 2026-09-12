@@ -36,7 +36,7 @@ ser interrompido no meio de uma.
     - `ImageQuickLookModal.tsx`: modal lightbox de inspeção com atalhos de teclado (`Space` para abrir/fechar, setas para navegar, `Enter`/`E` para abrir o editor BBox), overlay vetorial de bounding boxes e sidebar de metadados.
     - Scroll infinito nativo via `IntersectionObserver` substituindo o botão pontilhado estático.
     - Drag & drop de pastas na galeria com extração recursiva de todas as imagens.
-  - **R2.6 (testes & build)**: 308 testes unitários + 15 de contrato verdes em `api-principal`, `cargo check --workspace` verde, build Next.js limpo (0 erros de tipagem, compilação estática/dinâmica 11/11). Branch pronta para merge pelo usuário.
+  - **R2.6 (testes & build)**: 308 testes unitários + 15 de contrato + 84 testes de integração de `datasets_db` (`cargo test -p api-principal --test datasets_db -- --ignored`) 100% verdes após alinhamento com normalização WebP e deduplicação MD5; `cargo check --workspace` verde, build Next.js limpo (0 erros de tipagem, compilação estática/dinâmica 11/11). Branch pronta para merge pelo usuário.
 
 - **FATIA AUTOLABEL V1 — CONCLUÍDA NA BRANCH (2026-09-11)** — branch `feat/autolabel-v1`. **Especificação executável: `docs/adr/0016-autolabel-v1.md`** (D0–D5).
   - **AL.0 (docs/adr)**: ADR-0016 aceita e registrada (commit `0905f1d`).

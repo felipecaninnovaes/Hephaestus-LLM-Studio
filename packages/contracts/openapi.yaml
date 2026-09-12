@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.15.0
+  version: 0.16.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -1975,6 +1975,40 @@ paths:
               schema: { $ref: "#/components/schemas/ModelWeightList" }
         "401":
           description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/models/{id}:
+    delete:
+      operationId: deleteModel
+      tags: [jobs]
+      summary: Remove modelo do catálogo e storage
+      description: |
+        Remove o modelo da tabela `models` (ADR-0012 R5).
+        Se a origem for upload ou download, remove também o arquivo binário do S3/SeaweedFS.
+        Se a origem for train, remove apenas a referência no catálogo de modelos,
+        preservando o artefato de histórico de jobs.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: Modelo removido com sucesso.
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Modelo não encontrado (`code: not_found`)."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }

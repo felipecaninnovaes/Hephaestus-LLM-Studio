@@ -245,6 +245,9 @@ pub trait ManagerPort: Send + Sync {
         &self,
         body: &serde_json::Value,
     ) -> Result<InternalModelResponse, ManagerError>;
+
+    /// Deleta um modelo via manager (DELETE /internal/models/:id).
+    async fn delete_model(&self, id: &str) -> Result<InternalModel, ManagerError>;
 }
 
 /// Implementação HTTP real do manager client.
@@ -551,6 +554,36 @@ impl ManagerPort for HttpManager {
             .await
             .map_err(|e| ManagerError::Unavailable(format!("manager body: {e}")))
     }
+
+    async fn delete_model(&self, id: &str) -> Result<InternalModel, ManagerError> {
+        let url = format!("{}/internal/models/{}", self.base_url, id);
+        let resp = self
+            .client
+            .delete(&url)
+            .header("authorization", self.auth_header())
+            .send()
+            .await
+            .map_err(|e| ManagerError::Unavailable(format!("manager request: {e}")))?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(ManagerError::NotFound);
+        }
+        if status == reqwest::StatusCode::BAD_REQUEST {
+            let msg = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "invalid request".into());
+            return Err(ManagerError::InvalidRequest(msg));
+        }
+        if !status.is_success() {
+            return Err(ManagerError::Unavailable(format!(
+                "manager status: {status}"
+            )));
+        }
+        resp.json()
+            .await
+            .map_err(|e| ManagerError::Unavailable(format!("manager body: {e}")))
+    }
 }
 
 /// Mock do manager para testes unitários e de integração.
@@ -586,6 +619,10 @@ pub struct MockManager {
     pub create_model_result: Option<InternalModelResponse>,
     /// Se `true`, `create_model` retorna `Conflict` (para testar 409).
     pub create_model_conflict: bool,
+    /// Resultado de `delete_model` (para testar 200/204).
+    pub delete_model_result: Option<InternalModel>,
+    /// Se `true`, `delete_model` retorna `NotFound` (para testar 404).
+    pub delete_model_not_found: bool,
     /// Se `true`, `create_job` retorna `NotFound` (para testar 404 — Fatia J R6).
     pub create_job_not_found: bool,
     /// Se `Some`, `create_job` retorna `InvalidRequest` com a mensagem (para testar 400 — Fatia J R6).
@@ -639,6 +676,8 @@ impl Default for MockManager {
             revoke_not_found: false,
             create_model_result: None,
             create_model_conflict: false,
+            delete_model_result: None,
+            delete_model_not_found: false,
             create_job_not_found: false,
             create_job_invalid_request: None,
             last_create_model_body: std::sync::Mutex::new(None),
@@ -797,6 +836,30 @@ impl ManagerPort for MockManager {
         self.create_model_result
             .clone()
             .ok_or(ManagerError::Unavailable("no create_model result".into()))
+    }
+
+    async fn delete_model(&self, id: &str) -> Result<InternalModel, ManagerError> {
+        if self.fail {
+            return Err(ManagerError::Unavailable("mock fail".into()));
+        }
+        if self.delete_model_not_found {
+            return Err(ManagerError::NotFound);
+        }
+        if let Some(ref m) = self.delete_model_result {
+            return Ok(m.clone());
+        }
+        Ok(InternalModel {
+            id: id.to_string(),
+            name: "mock-model.pt".to_string(),
+            engine: "yolo".to_string(),
+            model: None,
+            source: "upload".to_string(),
+            md5: "0123456789abcdef0123456789abcdef".to_string(),
+            bytes: 1024,
+            path: format!("models/yolo/{id}/mock-model.pt"),
+            job_id: None,
+            created_at: "2026-09-12T00:00:00Z".to_string(),
+        })
     }
 }
 

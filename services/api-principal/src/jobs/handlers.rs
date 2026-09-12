@@ -2707,6 +2707,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     fn boxes_artifact() -> InternalArtifact {
         let json_data = br#"{"engine":"autotracker","model":"mock","seed":42,"conf":0.65,"images":[{"filename":"img_0001.jpg","boxes":[{"class":"solda_fria","x":0.1,"y":0.2,"w":0.3,"h":0.4,"conf":0.96}]}]}"#;
         let md5 = format!(

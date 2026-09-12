@@ -2,11 +2,14 @@
 //!
 //! Funções sem I/O nem estado — testáveis sem banco nem S3.
 
-/// Engines suportadas na v1 (D3, ADR-0014 D1 — 'world' entra com migration 0008).
-const ALLOWED_ENGINES: &[&str] = &["yolo", "world"];
+/// Engines suportadas (yolo, world, diffusion, clip).
+pub const ALLOWED_ENGINES: &[&str] = &["yolo", "world", "diffusion", "clip"];
 
-/// Extensão obrigatória para yolo na v1 (D3).
-const YOLO_EXTENSION: &str = ".pt";
+/// Extensões aceitas para modelos.
+pub const ALLOWED_EXTENSIONS: &[&str] = &[".pt", ".safetensors"];
+
+/// Extensão obrigatória legada para yolo na v1 (D3).
+pub const YOLO_EXTENSION: &str = ".pt";
 
 /// Magic bytes do torch.save (zip): `PK\x03\x04`.
 pub const MAGIC_PK: &[u8] = b"PK\x03\x04";
@@ -30,11 +33,11 @@ pub struct UploadValidation {
 /// Resultado da validação de upload.
 #[derive(Debug, PartialEq)]
 pub enum UploadError {
-    /// Engine não suportada (v1: só "yolo").
+    /// Engine não suportada.
     InvalidEngine,
-    /// Extensão inválida para a engine (yolo exige `.pt`).
+    /// Extensão inválida para a engine (.pt ou .safetensors).
     InvalidExtension,
-    /// Magic bytes divergem de `PK\x03\x04`.
+    /// Magic bytes divergem do formato esperado.
     InvalidMagic,
     /// Nome sanitizado resultado em vazio.
     InvalidName,
@@ -57,8 +60,8 @@ pub fn validate_upload(engine: &str, name: Option<&str>) -> Result<UploadValidat
         None => "model.pt".to_string(),
     };
 
-    // Extensão .pt obrigatória para yolo (D3).
-    if !name.to_lowercase().ends_with(YOLO_EXTENSION) {
+    let lower = name.to_lowercase();
+    if !ALLOWED_EXTENSIONS.iter().any(|ext| lower.ends_with(ext)) {
         return Err(UploadError::InvalidExtension);
     }
 
@@ -88,9 +91,31 @@ pub fn sanitize_model_name(raw: &str) -> String {
     result
 }
 
-/// Valida magic bytes (primeiros 4 bytes = `PK\x03\x04`).
-pub fn validate_magic(header: &[u8]) -> bool {
-    header.len() >= 4 && header[..4] == *MAGIC_PK
+/// Valida magic bytes de um arquivo de modelo (.pt ou .safetensors).
+pub fn validate_magic(header: &[u8], filename: &str) -> bool {
+    let lower = filename.to_lowercase();
+    if lower.ends_with(".safetensors") {
+        validate_safetensors_header(header)
+    } else if lower.ends_with(".pt") {
+        header.len() >= 4 && header[..4] == *MAGIC_PK
+    } else {
+        false
+    }
+}
+
+/// Valida cabeçalho de arquivo safetensors.
+/// Safetensors começa com 8 bytes indicando o tamanho do header JSON em little-endian,
+/// seguido imediatamente por `{` (JSON).
+pub fn validate_safetensors_header(header: &[u8]) -> bool {
+    if header.len() < 9 {
+        return false;
+    }
+    let size_bytes: [u8; 8] = match header[..8].try_into() {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    let header_size = u64::from_le_bytes(size_bytes);
+    (2..=100 * 1024 * 1024).contains(&header_size) && header[8] == b'{'
 }
 
 /// Valida URL de download (D4): scheme http/https.
@@ -211,9 +236,16 @@ mod tests {
     #[test]
     fn validate_upload_invalid_engine() {
         assert_eq!(
-            validate_upload("diffusion", Some("best.pt")),
+            validate_upload("unsupported", Some("best.pt")),
             Err(UploadError::InvalidEngine)
         );
+    }
+
+    #[test]
+    fn validate_upload_safetensors_ok() {
+        let v = validate_upload("diffusion", Some("flux1-dev.safetensors")).unwrap();
+        assert_eq!(v.engine, "diffusion");
+        assert_eq!(v.name, "flux1-dev.safetensors");
     }
 
     #[test]
@@ -225,19 +257,36 @@ mod tests {
     }
 
     #[test]
-    fn validate_magic_ok() {
-        assert!(validate_magic(b"PK\x03\x04rest"));
-        assert!(validate_magic(b"PK\x03\x04"));
+    fn validate_magic_pt_ok() {
+        assert!(validate_magic(b"PK\x03\x04rest", "best.pt"));
+        assert!(validate_magic(b"PK\x03\x04", "model.pt"));
+    }
+
+    #[test]
+    fn validate_magic_safetensors_ok() {
+        let mut header = vec![0u8; 16];
+        // 10 little-endian u64:
+        header[0] = 10;
+        header[8] = b'{';
+        assert!(validate_magic(&header, "model.safetensors"));
+    }
+
+    #[test]
+    fn validate_magic_safetensors_wrong() {
+        let mut header = vec![0u8; 16];
+        header[0] = 10;
+        header[8] = b'X'; // não é '{'
+        assert!(!validate_magic(&header, "model.safetensors"));
     }
 
     #[test]
     fn validate_magic_too_short() {
-        assert!(!validate_magic(b"PK"));
+        assert!(!validate_magic(b"PK", "model.pt"));
     }
 
     #[test]
     fn validate_magic_wrong() {
-        assert!(!validate_magic(b"\x89PNG"));
+        assert!(!validate_magic(b"\x89PNG", "model.pt"));
     }
 
     #[test]

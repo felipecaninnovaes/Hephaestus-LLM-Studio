@@ -570,7 +570,7 @@ mod tests {
             models_bytes: 200,
         });
         let state = test_state(mock);
-        let resp = get_storage_usage(axum::extract::State(state)).await;
+        let _resp = get_storage_usage(axum::extract::State(state)).await;
         // The handler queries the pool which will fail (lazy, unreachable),
         // so we expect 503. This test only validates the wire shape when
         // the pool succeeds — see test-db for that.
@@ -626,12 +626,6 @@ mod tests {
         let mut mock = MockManager::default();
         mock.adopt_orchestrator_result = Some(mock_orchestrator());
         let state = test_state(mock);
-        let body = serde_json::json!({
-            "name": "orchestrator-remote",
-            "endpoint": "http://10.0.0.1:8082",
-            "kind": "remoto",
-            "pairingCode": "heph_p_test123"
-        });
         let resp = adopt_orchestrator(
             axum::extract::State(state),
             axum::extract::Json(AdoptRequest {

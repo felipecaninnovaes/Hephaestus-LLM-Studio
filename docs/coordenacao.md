@@ -19,16 +19,24 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-12 (FATIA R2 UPLOAD NORMALIZADO WEBP E MD5 CONCLUÍDA NA BRANCH)
+## Estado atual — 2026-09-12 (FATIA R2 UPLOAD NORMALIZADO WEBP E MELHORIAS IMPECCABLE OPERATE NA GALERIA CONCLUÍDAS NA BRANCH)
 
-- **FATIA R2 (UPLOAD NORMALIZADO WEBP, HIGIENIZAÇÃO DE METADADOS E DEDUPLICAÇÃO MD5) — CONCLUÍDA NA BRANCH (2026-09-12)** — branch `feat/upload-normalizado`. **Especificação executável: `docs/adr/0017-upload-normalizado-md5.md`** (D0–D4).
+- **FATIA R2 (UPLOAD NORMALIZADO WEBP, HIGIENIZAÇÃO DE METADADOS E DEDUPLICAÇÃO MD5) + MELHORIAS IMPECCABLE OPERATE — CONCLUÍDAS NA BRANCH (2026-09-12)** — branch `feat/upload-normalizado`. **Especificação executável: `docs/adr/0017-upload-normalizado-md5.md`** (D0–D4).
   - **R2.0 (docs/adr)**: ADR-0017 aceita e registrada (`docs/adr/0017-upload-normalizado-md5.md`).
   - **R2.1 (codecs & normalizer backend)**: `image` crate com features `["jpeg", "png", "webp", "bmp", "tiff", "gif"]`; módulo `normalize.rs` converte qualquer formato aceito para WebP, remove metadados sensíveis (EXIF/GPS/XMP) e calcula MD5/SHA256 em memória.
   - **R2.2 (upload handler & dedupe)**: `POST /api/datasets/:id/upload` grava imagens como `{md5}.webp` com `media_type = 'webp'`. Zero colisão entre imagens com mesmo nome original; deduplicação real por conteúdo em `ON CONFLICT (dataset_id, filename)`.
-  - **R2.3 (web frontend)**: Leitor de pastas em `CreateDatasetModal.tsx` filtra arquivos não-imagem; `uploadImages` em `apps/web/lib/images.ts` com concorrência de até 2 lotes simultâneos, `BATCH_MAX_FILES = 25` e `BATCH_MAX_BYTES = 8 MiB`. Configurado `experimental.proxyClientMaxBodySize: "250mb"` no `next.config.ts` eliminando o teto de 10MB do proxy do Next.js (causa do `socket hang up` / `ECONNRESET` e 500 no proxy). Logs no `console.info`/`console.warn`/`console.error` detalhando o envio de cada lote.
+  - **R2.3 (web frontend & upload proxy fix)**: Leitor de pastas em `CreateDatasetModal.tsx` e drag-drop recursivo em `apps/web/lib/dataset-inspector.ts` (`extractFilesFromDataTransfer`); `uploadImages` em `apps/web/lib/images.ts` com concorrência de até 2 lotes simultâneos, `BATCH_MAX_FILES = 25` e `BATCH_MAX_BYTES = 8 MiB`. Configurado `experimental.proxyClientMaxBodySize: "250mb"` no `next.config.ts` eliminando o teto de 10MB do proxy do Next.js (causa do `socket hang up` / `ECONNRESET` e 500 no proxy).
   - **R2.4 (observabilidade & logs backend)**: Tracing estruturado JSON adicionado ao handler `upload` em `services/api-principal/src/datasets/handlers.rs` cobrindo início de lote multipart, spool temporário, normalização para WebP, persistência no storage, detecção de duplicatas por MD5, rejeições por formato/tamanho e sumário do lote (`total`, `stored`, `duplicates`, `rejected`, `failed`). Imagem Docker `infra-principal` recompilada e container reiniciado.
-  - **R2.5 (testes)**: 4 testes unitários em `normalize.rs` cobrindo PNG, BMP, RGBA, JPEG, GIF e dados inválidos; teste de integração `t0017_upload_normalizado_webp_md5_dedupe` em `tests/datasets_db.rs` cobrindo upload de múltiplos formatos com mesmo nome de form, desambiguação por MD5, deduplicação idêntica e checagem de `media_type = 'webp'` no banco.
-  - **Baterias**: 308 unitários + 15 de contrato verdes em `api-principal`, `cargo check --workspace` verde, `docker compose config` limpo, build Next.js limpo. Branch pronta para merge pelo usuário.
+  - **R2.5 (impeccable operate — upload dock & galeria de alta densidade)**:
+    - `UploadFloatingDock.tsx`: dock persistente no rodapé inferior direito com progresso em tempo real, contagem de lotes (`lote X/Y`), botão de cancelar e CTA para auditoria.
+    - `UploadAuditModal.tsx`: modal de inspeção com abas para amostras armazenadas, duplicadas por MD5 e rejeitadas com motivo explícito, com botão para copiar o hash canônico.
+    - `GalleryOperateToolbar.tsx`: barra de controle de alta densidade com abas por Split (`Todas`, `Treino`, `Validação`, `Teste`, `Lixeira`), filtro de anotação (`Todas`, `Rotuladas`, `Sem rótulo`), seletor de densidade (`Compacto`, `Padrão`, `Tabela`) e ativação de seleção em massa.
+    - `FloatingSelectionBar.tsx`: barra flutuante inferior para ações em lote (selecionar todas da página, limpar seleção, mover selecionadas para lixeira com modal de confirmação).
+    - `ImageTableView.tsx`: visualização em tabela técnica para triagem rápida em massa com metadados detalhados (nome canônico, split, resolução, tamanho em bytes) e atalho de Quick Look.
+    - `ImageQuickLookModal.tsx`: modal lightbox de inspeção com atalhos de teclado (`Space` para abrir/fechar, setas para navegar, `Enter`/`E` para abrir o editor BBox), overlay vetorial de bounding boxes e sidebar de metadados.
+    - Scroll infinito nativo via `IntersectionObserver` substituindo o botão pontilhado estático.
+    - Drag & drop de pastas na galeria com extração recursiva de todas as imagens.
+  - **R2.6 (testes & build)**: 308 testes unitários + 15 de contrato verdes em `api-principal`, `cargo check --workspace` verde, build Next.js limpo (0 erros de tipagem, compilação estática/dinâmica 11/11). Branch pronta para merge pelo usuário.
 
 - **FATIA AUTOLABEL V1 — CONCLUÍDA NA BRANCH (2026-09-11)** — branch `feat/autolabel-v1`. **Especificação executável: `docs/adr/0016-autolabel-v1.md`** (D0–D5).
   - **AL.0 (docs/adr)**: ADR-0016 aceita e registrada (commit `0905f1d`).

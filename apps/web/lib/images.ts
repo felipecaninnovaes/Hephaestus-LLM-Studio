@@ -7,6 +7,8 @@ import type {
   UploadResultItem,
 } from "@/types/studio";
 
+export type { UploadResultItem };
+
 export interface ListImagesOpts {
   limit?: number;
   offset?: number;

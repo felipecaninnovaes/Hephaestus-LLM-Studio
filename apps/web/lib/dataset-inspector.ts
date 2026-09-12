@@ -303,3 +303,16 @@ export async function inspectDataTransfer(dataTransfer: DataTransfer): Promise<I
     sourceLabel: rootDirName ? `Pasta "${rootDirName}"` : `${files.length} imagens`,
   };
 }
+
+export async function extractFilesFromDataTransfer(dataTransfer: DataTransfer): Promise<File[]> {
+  const result = await inspectDataTransfer(dataTransfer);
+  if (result?.folderFiles && result.folderFiles.length > 0) {
+    return result.folderFiles;
+  }
+  const files: File[] = [];
+  for (let i = 0; i < dataTransfer.files.length; i++) {
+    const f = dataTransfer.files[i];
+    if (isImageFile(f.name)) files.push(f);
+  }
+  return files;
+}

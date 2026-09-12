@@ -45,8 +45,10 @@ import {
   restoreImage,
   softDeleteImage,
   uploadImages,
+  type UploadResultItem,
 } from "@/lib/images";
 import { formatBytes } from "@/lib/format";
+import { extractFilesFromDataTransfer } from "@/lib/dataset-inspector";
 import type {
   Dataset,
   ImageItem,
@@ -60,6 +62,16 @@ import TrainYoloModal from "@/components/studio/TrainYoloModal";
 import AutoTrackerModal from "@/components/studio/AutoTrackerModal";
 import AutoLabelModal from "@/components/studio/AutoLabelModal";
 import ImageCard from "@/components/studio/ImageCard";
+import UploadFloatingDock from "@/components/studio/UploadFloatingDock";
+import UploadAuditModal from "@/components/studio/UploadAuditModal";
+import GalleryOperateToolbar, {
+  type GallerySplitView,
+  type GalleryAnnotationFilter,
+  type GalleryDensity,
+} from "@/components/studio/GalleryOperateToolbar";
+import FloatingSelectionBar from "@/components/studio/FloatingSelectionBar";
+import ImageTableView from "@/components/studio/ImageTableView";
+import ImageQuickLookModal from "@/components/studio/ImageQuickLookModal";
 
 const PAGE_LIMIT = 50;
 
@@ -86,6 +98,17 @@ export default function DatasetGalleryPage() {
   const [importOpen, setImportOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [view, setView] = useState<GalleryView>("ativas");
+  const [splitView, setSplitView] = useState<GallerySplitView>("all");
+  const [annotationFilter, setAnnotationFilter] = useState<GalleryAnnotationFilter>("all");
+  const [density, setDensity] = useState<GalleryDensity>("normal");
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [quickLookIndex, setQuickLookIndex] = useState<number | null>(null);
+  const [auditModalOpen, setAuditModalOpen] = useState(false);
+  const [lastUploadResults, setLastUploadResults] = useState<UploadResultItem[] | null>(null);
+  const [batchDeleteBusy, setBatchDeleteBusy] = useState(false);
+  const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
   const [trashTotal, setTrashTotal] = useState(0);
   const [deleting, setDeleting] = useState<ImageItem | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
@@ -108,26 +131,56 @@ export default function DatasetGalleryPage() {
   const pollAbortRef = useRef<AbortController | null>(null);
   const searchTimerRef = useRef<number | null>(null);
   const { isDragging: isDraggingPage, dropProps } = useFileDrop({
-    onDropFiles: async (files) => {
+    onDropFiles: async (files, dataTransfer) => {
+      try {
+        const extracted = await extractFilesFromDataTransfer(dataTransfer);
+        if (extracted.length > 0) {
+          await handleFiles(extracted);
+          return;
+        }
+      } catch {
+        // fallback para arquivos diretos
+      }
       await handleFiles(files);
     },
   });
 
   const load = useCallback(
-    async (id: string) => {
+    async (
+      id: string,
+      currentSplit: GallerySplitView = splitView,
+      currentAnnotation: GalleryAnnotationFilter = annotationFilter,
+    ) => {
       setLoading(true);
       setError(null);
       try {
+        const isTrash = currentSplit === "trash";
+        const splitParam =
+          currentSplit === "all" || currentSplit === "trash"
+            ? undefined
+            : currentSplit;
+        const labeledParam =
+          currentAnnotation === "all"
+            ? undefined
+            : currentAnnotation === "labeled";
+
         const [ds, page, trashPage] = await Promise.all([
           getDataset(id),
-          listImages(id, { limit: PAGE_LIMIT, offset: 0 }),
+          listImages(id, {
+            limit: PAGE_LIMIT,
+            offset: 0,
+            split: splitParam,
+            labeled: labeledParam,
+            deleted: isTrash,
+          }),
           listImages(id, { limit: 1, offset: 0, deleted: true }),
         ]);
         setDataset(ds);
         setItems(page.items);
         setTotal(page.total);
         setTrashTotal(trashPage.total);
-        setView("ativas");
+        setView(isTrash ? "trash" : "ativas");
+        setSelectedIds(new Set());
       } catch (err) {
         if (
           err instanceof ApiError &&
@@ -145,12 +198,12 @@ export default function DatasetGalleryPage() {
         setLoading(false);
       }
     },
-    [router],
+    [router, splitView, annotationFilter],
   );
 
   useEffect(() => {
-    if (datasetId) load(datasetId);
-  }, [datasetId, load]);
+    if (datasetId) load(datasetId, splitView, annotationFilter);
+  }, [datasetId, load, splitView, annotationFilter]);
 
   function stopSearchPolling() {
     if (pollRef.current) {
@@ -245,10 +298,20 @@ export default function DatasetGalleryPage() {
     if (!datasetId || loadingMore) return;
     setLoadingMore(true);
     try {
+      const isTrash = splitView === "trash";
+      const splitParam =
+        splitView === "all" || splitView === "trash" ? undefined : splitView;
+      const labeledParam =
+        annotationFilter === "all"
+          ? undefined
+          : annotationFilter === "labeled";
+
       const page = await listImages(datasetId, {
         limit: PAGE_LIMIT,
         offset: items.length,
-        deleted: view === "trash",
+        split: splitParam,
+        labeled: labeledParam,
+        deleted: isTrash,
       });
       setItems((prev) => [...prev, ...page.items]);
       setTotal(page.total);
@@ -266,8 +329,31 @@ export default function DatasetGalleryPage() {
     }
   }
 
-  async function handleFiles(files: FileList | null) {
-    if (!files || files.length === 0 || !datasetId || uploading) return;
+  // Infinite Scroll via IntersectionObserver no sentinela ao final da lista
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (
+          entries[0]?.isIntersecting &&
+          !loading &&
+          !loadingMore &&
+          items.length < total
+        ) {
+          void loadMore();
+        }
+      },
+      { rootMargin: "350px" },
+    );
+
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [loading, loadingMore, items.length, total]);
+
+  async function handleFiles(files: FileList | File[] | null) {
+    if (!files || (Array.isArray(files) ? files.length === 0 : files.length === 0) || !datasetId || uploading) return;
     const batch = Array.from(files);
     setUploading(true);
     setUploadCount(batch.length);
@@ -282,13 +368,14 @@ export default function DatasetGalleryPage() {
         },
         isCancelled: () => uploadCancelledRef.current,
       });
+      setLastUploadResults(results);
       const stored = results.filter(
         (r) => r.status === "stored" || r.status === "duplicate",
       );
       const problem = results.filter(
         (r) => r.status === "rejected" || r.status === "failed",
       );
-      await load(datasetId);
+      await load(datasetId, splitView, annotationFilter);
 
       const wasCancelled = uploadCancelledRef.current;
       if (wasCancelled) {
@@ -311,6 +398,8 @@ export default function DatasetGalleryPage() {
           `${stored.length} enviadas, ${problem.length} rejeitadas: ${examples}${suffix}`,
           problem.length > stored.length ? "error" : "info",
         );
+        // Abre auditoria se houver rejeições para inspeção detalhada
+        setAuditModalOpen(true);
       }
     } catch (err) {
       const message =
@@ -326,6 +415,69 @@ export default function DatasetGalleryPage() {
       if (fileRef.current) fileRef.current.value = "";
     }
   }
+
+  const handleSplitChange = (nextSplit: GallerySplitView) => {
+    setSplitView(nextSplit);
+    setView(nextSplit === "trash" ? "trash" : "ativas");
+  };
+
+  const handleAnnotationChange = (nextFilter: GalleryAnnotationFilter) => {
+    setAnnotationFilter(nextFilter);
+  };
+
+  const handleSelectToggle = (id: string, selected: boolean) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (selected) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+
+  const handleSelectAll = () => {
+    setSelectedIds(new Set(items.map((i) => i.id)));
+  };
+
+  const handleClearSelection = () => {
+    setSelectedIds(new Set());
+    setSelectionMode(false);
+  };
+
+  const handleConfirmBatchDelete = async () => {
+    if (!datasetId || selectedIds.size === 0) return;
+    setBatchDeleteBusy(true);
+    try {
+      const ids = Array.from(selectedIds);
+      let count = 0;
+      for (const id of ids) {
+        try {
+          await softDeleteImage(datasetId, id);
+          count++;
+        } catch {
+          // segue para a próxima imagem
+        }
+      }
+      showToast(
+        `${count} ${count === 1 ? "imagem movida" : "imagens movidas"} para a lixeira.`,
+        "success",
+      );
+      setSelectedIds(new Set());
+      setSelectionMode(false);
+      setBatchDeleteOpen(false);
+      await load(datasetId, splitView, annotationFilter);
+    } catch {
+      showToast("Erro ao mover imagens para a lixeira.", "error");
+    } finally {
+      setBatchDeleteBusy(false);
+    }
+  };
+
+  const handleOpenQuickLook = (item: ImageItem) => {
+    const idx = items.findIndex((i) => i.id === item.id);
+    if (idx >= 0) {
+      setQuickLookIndex(idx);
+    }
+  };
 
   function handleTileClick(item: ImageItem) {
     if (!dataset || view === "trash") return;
@@ -986,31 +1138,28 @@ export default function DatasetGalleryPage() {
         </span>
       </div>
 
-      {trashTotal > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5">
-          <SubmodulePills<GalleryView>
-            value={view}
-            onChange={(v) => switchView(v)}
-            items={[
-              { id: "ativas", label: "Ativas", count: dataset.imagesCount },
-              { id: "trash", label: "Lixeira", count: trashTotal },
-            ]}
-          />
-          {view === "trash" && (
-            <Button
-              type="button"
-              variant="destructive"
-              size="sm"
-              onClick={() => setPurgeOpen(true)}
-            >
-              <IconTrash className="h-3.5 w-3.5" />
-              <span>Esvaziar lixeira</span>
-            </Button>
-          )}
-        </div>
-      )}
+      <GalleryOperateToolbar
+        currentView={splitView}
+        onViewChange={handleSplitChange}
+        totalActive={dataset.imagesCount}
+        totalTrash={trashTotal}
+        annotationFilter={annotationFilter}
+        onAnnotationFilterChange={handleAnnotationChange}
+        density={density}
+        onDensityChange={setDensity}
+        selectionMode={selectionMode}
+        onToggleSelectionMode={() => {
+          if (selectionMode) {
+            setSelectedIds(new Set());
+            setSelectionMode(false);
+          } else {
+            setSelectionMode(true);
+          }
+        }}
+        selectedCount={selectedIds.size}
+      />
 
-      {view === "ativas" && (
+      {splitView !== "trash" && (
         <div className="flex flex-wrap items-center gap-2">
           <div className="min-w-0 flex-1">
             <SearchInput
@@ -1057,7 +1206,7 @@ export default function DatasetGalleryPage() {
         </div>
       )}
 
-      {view === "trash" ? (
+      {splitView === "trash" ? (
         total === 0 ? (
           <EmptyState
             icon={<IconTrash className="h-5 w-5" />}
@@ -1065,36 +1214,45 @@ export default function DatasetGalleryPage() {
             description="Imagens movidas para a lixeira aparecerão aqui antes da exclusão definitiva."
             className="py-14 border border-zinc-800"
           />
+        ) : density === "table" ? (
+          <ImageTableView
+            items={items}
+            selectedIds={selectedIds}
+            onToggleSelect={handleSelectToggle}
+            onSelectAll={handleSelectAll}
+            onClearSelection={handleClearSelection}
+            onQuickLook={(idx) => setQuickLookIndex(idx)}
+            category={dataset.category}
+          />
         ) : (
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
+          <div
+            className={
+              density === "compact"
+                ? "grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6 xl:grid-cols-8"
+                : "grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4"
+            }
+          >
             {items.map((item) => (
               <ImageCard
                 key={item.id}
                 item={item}
                 variant="trash"
+                density={density}
+                selected={selectedIds.has(item.id)}
+                selectionMode={selectionMode}
+                onSelect={(sel) => handleSelectToggle(item.id, sel)}
                 onRestore={() => handleRestore(item)}
                 isRestoring={restoringId === item.id}
+                onQuickLook={() => handleOpenQuickLook(item)}
               />
             ))}
-            {items.length < total && (
-              <button
-                type="button"
-                onClick={loadMore}
-                disabled={loadingMore}
-                className="flex h-28 sm:h-36 flex-col items-center justify-center space-y-1.5 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 backdrop-blur-sm text-zinc-400 transition-all hover:border-brand-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 disabled:opacity-60 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70"
-              >
-                <span className="font-mono text-[11px]">
-                  {loadingMore ? "Carregando…" : "Carregar mais"}
-                </span>
-              </button>
-            )}
           </div>
         )
       ) : dataset.imagesCount === 0 ? (
         <EmptyState
           icon={<IconFolder className="h-5 w-5" />}
           title="Galeria vazia"
-          description="Este dataset ainda não tem amostras. Envie imagens pelo botão abaixo; o upload é gerido pelo backend."
+          description="Este dataset ainda não tem amostras. Arraste uma pasta ou envie imagens pelo botão abaixo."
           className="py-14 border border-zinc-800"
         >
           <Button
@@ -1165,80 +1323,161 @@ export default function DatasetGalleryPage() {
                   item={result.image}
                   variant="search"
                   searchScore={result.score}
+                  density={density === "compact" ? "compact" : "normal"}
                   onClick={() =>
                     router.push(
                       `/datasets/${datasetId}/annotate/${result.image.id}`,
                     )
                   }
+                  onQuickLook={() => handleOpenQuickLook(result.image)}
                 />
               ))}
             </div>
           )}
         </div>
+      ) : density === "table" ? (
+        <div className="flex flex-col gap-4">
+          <ImageTableView
+            items={items}
+            selectedIds={selectedIds}
+            onToggleSelect={handleSelectToggle}
+            onSelectAll={handleSelectAll}
+            onClearSelection={handleClearSelection}
+            onOpenAnnotate={handleTileClick}
+            onDelete={(img) => setDeleting(img)}
+            onQuickLook={(idx) => setQuickLookIndex(idx)}
+            category={dataset.category}
+          />
+        </div>
       ) : (
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
-            {items.map((item) => (
-              <ImageCard
-                key={item.id}
-                item={item}
-                variant="active"
-                onClick={() => handleTileClick(item)}
-                onDelete={() => setDeleting(item)}
-                onSearchSimilar={() => handleSimilarSearch(item)}
-                actionText={
-                  dataset.category === "yolo" ? "editar bbox →" : "ver caption →"
+        <div
+          className={
+            density === "compact"
+              ? "grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6 xl:grid-cols-8"
+              : "grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4"
+          }
+        >
+          {items.map((item) => (
+            <ImageCard
+              key={item.id}
+              item={item}
+              variant="active"
+              density={density}
+              selected={selectedIds.has(item.id)}
+              selectionMode={selectionMode}
+              onSelect={(sel) => handleSelectToggle(item.id, sel)}
+              onClick={() => handleTileClick(item)}
+              onDelete={() => setDeleting(item)}
+              onSearchSimilar={() => handleSimilarSearch(item)}
+              onQuickLook={() => handleOpenQuickLook(item)}
+              actionText={
+                dataset.category === "yolo" ? "editar bbox →" : "ver caption →"
+              }
+            />
+          ))}
+          <div className="relative inline-flex">
+            <div
+              role="button"
+              tabIndex={uploading ? -1 : 0}
+              onClick={() => { if (!uploading) fileRef.current?.click(); }}
+              onKeyDown={(e) => {
+                if (!uploading && (e.key === "Enter" || e.key === " ")) {
+                  e.preventDefault();
+                  fileRef.current?.click();
                 }
-              />
-            ))}
-            <div className="relative inline-flex">
-              <div
-                role="button"
-                tabIndex={uploading ? -1 : 0}
-                onClick={() => { if (!uploading) fileRef.current?.click(); }}
-                onKeyDown={(e) => {
-                  if (!uploading && (e.key === "Enter" || e.key === " ")) {
-                    e.preventDefault();
-                    fileRef.current?.click();
-                  }
-                }}
-                className={`flex h-28 sm:h-36 flex-col items-center justify-center space-y-1.5 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 text-zinc-400 backdrop-blur-sm transition-all hover:border-brand-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${uploading ? "opacity-60" : ""}`}
-              >
-                <IconPlus className="h-5 w-5" />
-                <span className="font-mono text-[11px]">
-                  {uploading
-                    ? `Enviando ${uploadSent} de ${uploadCount}…`
-                    : "Adicionar imagens"}
+              }}
+              className={`flex ${density === "compact" ? "h-20" : "h-28 sm:h-36"} flex-col items-center justify-center space-y-1 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 text-zinc-400 backdrop-blur-sm transition-all hover:border-brand-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${uploading ? "opacity-60" : ""}`}
+            >
+              <IconPlus className={density === "compact" ? "h-4 w-4" : "h-5 w-5"} />
+              <span className="font-mono text-[10px] sm:text-[11px]">
+                {uploading
+                  ? `Enviando ${uploadSent}/${uploadCount}`
+                  : "Adicionar imagens"}
+              </span>
+              {uploading && uploadBatchInfo && (
+                <span className="font-mono text-[9px] text-zinc-500">
+                  lote {uploadBatchInfo.batchIndex}/{uploadBatchInfo.batchCount}
                 </span>
-                {uploading && uploadBatchInfo && (
-                  <span className="font-mono text-[10px] text-zinc-500">
-                    lote {uploadBatchInfo.batchIndex}/{uploadBatchInfo.batchCount}
-                  </span>
-                )}
-              </div>
-              {uploading && (
-                <button
-                  type="button"
-                  onClick={() => { uploadCancelledRef.current = true; }}
-                  className="absolute bottom-2 right-2 rounded-md border border-[#ef4444]/30 bg-[#ef4444]/[0.12] px-2 py-0.5 font-mono text-[10px] text-rose-300 transition-colors hover:bg-[#ef4444]/[0.20]"
-                >
-                  Cancelar
-                </button>
               )}
             </div>
-            {items.length < total && (
+            {uploading && (
               <button
                 type="button"
-                onClick={loadMore}
-                disabled={loadingMore}
-                className="flex h-28 sm:h-36 flex-col items-center justify-center space-y-1.5 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 text-zinc-400 backdrop-blur-sm transition-all hover:border-brand-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 disabled:opacity-60 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70"
+                onClick={() => { uploadCancelledRef.current = true; }}
+                className="absolute bottom-2 right-2 rounded-md border border-[#ef4444]/30 bg-[#ef4444]/[0.12] px-2 py-0.5 font-mono text-[10px] text-rose-300 transition-colors hover:bg-[#ef4444]/[0.20]"
               >
-                <span className="font-mono text-[11px]">
-                  {loadingMore ? "Carregando…" : "Carregar mais"}
-                </span>
+                Cancelar
               </button>
             )}
           </div>
+        </div>
       )}
+
+      {/* Sentinela do Scroll Infinito */}
+      <div ref={sentinelRef} className="h-10 w-full flex items-center justify-center py-2">
+        {loadingMore && (
+          <div className="flex items-center gap-2 font-mono text-xs text-zinc-500">
+            <span className="h-3 w-3 animate-spin rounded-full border-2 border-brand-500/40 border-t-brand-400" />
+            <span>Carregando mais amostras…</span>
+          </div>
+        )}
+      </div>
+
+      <FloatingSelectionBar
+        selectedCount={selectedIds.size}
+        totalInView={items.length}
+        onSelectAll={handleSelectAll}
+        onClearSelection={handleClearSelection}
+        onBatchDelete={() => setBatchDeleteOpen(true)}
+        busy={batchDeleteBusy}
+      />
+
+      <UploadFloatingDock
+        uploading={uploading}
+        uploadSent={uploadSent}
+        uploadCount={uploadCount}
+        uploadBatchInfo={uploadBatchInfo}
+        lastResults={lastUploadResults}
+        onCancel={() => { uploadCancelledRef.current = true; }}
+        onOpenAudit={() => setAuditModalOpen(true)}
+        onDismiss={() => setLastUploadResults(null)}
+      />
+
+      <UploadAuditModal
+        open={auditModalOpen}
+        results={lastUploadResults ?? []}
+        onClose={() => setAuditModalOpen(false)}
+      />
+
+      <ImageQuickLookModal
+        open={quickLookIndex !== null}
+        dataset={dataset}
+        items={items}
+        currentIndex={quickLookIndex ?? 0}
+        onClose={() => setQuickLookIndex(null)}
+        onNavigate={(idx) => setQuickLookIndex(idx)}
+        onDelete={(img) => setDeleting(img)}
+        onEditImage={(img: ImageItem) => handleTileClick(img)}
+      />
+
+      <ConfirmDialog
+        open={batchDeleteOpen}
+        title="Mover imagens selecionadas para a lixeira"
+        body={
+          <p>
+            Você tem certeza de que deseja mover{" "}
+            <strong className="font-mono text-zinc-100">{selectedIds.size} imagens</strong> para
+            a lixeira? Elas poderão ser restauradas a qualquer momento.
+          </p>
+        }
+        confirmLabel="Mover para a lixeira"
+        danger
+        busy={batchDeleteBusy}
+        onConfirm={handleConfirmBatchDelete}
+        onClose={() => {
+          if (!batchDeleteBusy) setBatchDeleteOpen(false);
+        }}
+      />
 
       <input
         ref={fileRef}

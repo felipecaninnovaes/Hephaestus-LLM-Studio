@@ -11,7 +11,7 @@ export interface InspectionResult {
   sourceLabel: string;
 }
 
-const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp", "bmp"]);
+const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp", "bmp", "tiff", "tif", "gif"]);
 
 export function isImageFile(filename: string): boolean {
   const ext = filename.split(".").pop()?.toLowerCase() ?? "";
@@ -302,4 +302,17 @@ export async function inspectDataTransfer(dataTransfer: DataTransfer): Promise<I
     folderFiles: files,
     sourceLabel: rootDirName ? `Pasta "${rootDirName}"` : `${files.length} imagens`,
   };
+}
+
+export async function extractFilesFromDataTransfer(dataTransfer: DataTransfer): Promise<File[]> {
+  const result = await inspectDataTransfer(dataTransfer);
+  if (result?.folderFiles && result.folderFiles.length > 0) {
+    return result.folderFiles;
+  }
+  const files: File[] = [];
+  for (let i = 0; i < dataTransfer.files.length; i++) {
+    const f = dataTransfer.files[i];
+    if (isImageFile(f.name)) files.push(f);
+  }
+  return files;
 }

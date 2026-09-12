@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { IconSearch, IconTrash } from "@/components/icons";
+import { IconSearch, IconTrash, IconCheck, IconZoomIn } from "@/components/icons";
 import type { ImageItem } from "@/types/studio";
 
 export interface ImageCardProps {
@@ -15,6 +15,11 @@ export interface ImageCardProps {
   searchScore?: number;
   actionText?: string;
   className?: string;
+  selected?: boolean;
+  selectionMode?: boolean;
+  onSelect?: (selected: boolean) => void;
+  onQuickLook?: () => void;
+  density?: "compact" | "normal";
 }
 
 export function ImageCard({
@@ -28,8 +33,14 @@ export function ImageCard({
   searchScore,
   actionText,
   className = "",
+  selected = false,
+  selectionMode = false,
+  onSelect,
+  onQuickLook,
+  density = "normal",
 }: ImageCardProps) {
   const isClickable = Boolean(onClick) && variant !== "trash";
+  const heightClass = density === "compact" ? "h-24 sm:h-28" : "h-28 sm:h-36";
 
   return (
     <div
@@ -37,14 +48,19 @@ export function ImageCard({
       role={isClickable ? "button" : undefined}
       tabIndex={isClickable ? 0 : undefined}
       onKeyDown={(e) => {
-        if (isClickable && (e.key === "Enter" || e.key === " ")) {
+        if (e.code === "Space" && onQuickLook) {
+          e.preventDefault();
+          onQuickLook();
+        } else if (isClickable && (e.key === "Enter")) {
           e.preventDefault();
           onClick?.();
         }
       }}
-      className={`group relative h-28 sm:h-36 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/90 transition-all hover:border-brand-500/60 focus-within:border-brand-500/60 ${
-        isClickable ? "cursor-pointer" : ""
-      } ${className}`}
+      className={`group relative ${heightClass} overflow-hidden rounded-xl border bg-zinc-900/90 transition-all ${
+        selected
+          ? "border-brand-500 ring-2 ring-brand-500/50 bg-brand-500/10"
+          : "border-zinc-800 hover:border-brand-500/60 focus-within:border-brand-500/60"
+      } ${isClickable ? "cursor-pointer" : ""} ${className}`}
     >
       <img
         src={item.url}
@@ -58,7 +74,74 @@ export function ImageCard({
         aria-hidden="true"
       />
 
-      {/* Badge Superior Direito: Split ou Score de Similaridade */}
+      {/* Checkbox de Seleção em Massa (Superior Esquerdo) */}
+      {variant === "active" && onSelect && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onSelect(!selected);
+          }}
+          aria-label={selected ? "Desmarcar amostra" : "Selecionar amostra"}
+          className={`absolute top-2 left-2 z-20 flex size-5 items-center justify-center rounded border transition-all cursor-pointer ${
+            selected
+              ? "border-brand-500 bg-brand-500 text-white opacity-100"
+              : selectionMode
+              ? "border-white/40 bg-black/60 opacity-100 hover:border-white"
+              : "border-white/40 bg-black/60 opacity-0 group-hover:opacity-100 hover:border-white"
+          }`}
+        >
+          {selected && <IconCheck className="size-3 stroke-[2.5]" />}
+        </button>
+      )}
+
+      {/* Botões de Ação Topo (QuickLook / Deletar / Similar) */}
+      <div className={`absolute top-2 ${onSelect ? "left-9" : "left-2"} z-10 flex items-center gap-1`}>
+        {onQuickLook && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onQuickLook();
+            }}
+            aria-label="Inspeção rápida (Espaço)"
+            title="Inspeção rápida (Espaço)"
+            className="rounded-md border border-white/20 bg-zinc-950/90 p-1 text-zinc-300 opacity-0 backdrop-blur-sm transition-all group-hover:opacity-100 focus-visible:opacity-100 hover:bg-white/10 hover:text-white cursor-pointer"
+          >
+            <IconZoomIn className="size-3.5" />
+          </button>
+        )}
+        {variant === "active" && onDelete && !selectionMode && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+            aria-label={`Mover ${item.filename} para a lixeira`}
+            title="Mover para a lixeira"
+            className="rounded-md border border-rose-500/40 bg-zinc-950/90 p-1 text-rose-300 opacity-0 backdrop-blur-sm transition-all group-hover:opacity-100 focus-visible:opacity-100 hover:bg-rose-500/20 cursor-pointer"
+          >
+            <IconTrash className="size-3.5" />
+          </button>
+        )}
+        {variant === "active" && onSearchSimilar && !selectionMode && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onSearchSimilar();
+            }}
+            aria-label={`Buscar similares de ${item.filename}`}
+            title="Buscar similares"
+            className="rounded-md border border-brand-500/40 bg-zinc-950/90 p-1 text-brand-300 opacity-0 backdrop-blur-sm transition-all group-hover:opacity-100 focus-visible:opacity-100 hover:bg-brand-500/20 cursor-pointer"
+          >
+            <IconSearch className="size-3.5" />
+          </button>
+        )}
+      </div>
+
+      {/* Badge Superior Direito: Split ou Score */}
       {variant === "search" && searchScore != null ? (
         <span
           title="Similaridade (cosseno, -1..1)"
@@ -72,47 +155,14 @@ export function ImageCard({
         </span>
       )}
 
-      {/* Ações Superiores Esquerdas */}
-      {variant === "active" && (onDelete || onSearchSimilar) && (
-        <div className="absolute top-2 left-2 flex items-center gap-1.5 z-10">
-          {onDelete && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onDelete();
-              }}
-              aria-label={`Mover ${item.filename} para a lixeira`}
-              title="Mover para a lixeira"
-              className="rounded-lg border border-rose-500/40 bg-zinc-950/90 p-1.5 text-rose-300 opacity-0 backdrop-blur-sm transition-all group-hover:opacity-100 focus-visible:opacity-100 hover:bg-rose-500/20 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
-            >
-              <IconTrash className="h-3.5 w-3.5" />
-            </button>
-          )}
-          {onSearchSimilar && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onSearchSimilar();
-              }}
-              aria-label={`Buscar similares de ${item.filename}`}
-              title="Buscar similares"
-              className="rounded-lg border border-brand-500/40 bg-zinc-950/90 p-1.5 text-brand-300 opacity-0 backdrop-blur-sm transition-all group-hover:opacity-100 focus-visible:opacity-100 hover:bg-brand-500/20 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
-            >
-              <IconSearch className="h-3.5 w-3.5" />
-            </button>
-          )}
-        </div>
-      )}
-
+      {/* Restaurar na Lixeira */}
       {variant === "trash" && onRestore && (
         <button
           type="button"
           onClick={onRestore}
           disabled={isRestoring}
           aria-label={`Restaurar ${item.filename}`}
-          className="absolute top-2 left-2 z-10 rounded-lg border border-[#34d399]/40 bg-zinc-950/90 backdrop-blur-sm px-2 py-1 font-mono text-[11px] font-medium text-[#a7f3d0] transition-colors hover:bg-[#34d399]/20 disabled:opacity-60 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70"
+          className="absolute top-2 left-2 z-10 rounded-lg border border-[#34d399]/40 bg-zinc-950/90 backdrop-blur-sm px-2 py-1 font-mono text-[11px] font-medium text-[#a7f3d0] transition-colors hover:bg-[#34d399]/20 disabled:opacity-60 cursor-pointer"
         >
           {isRestoring ? "Restaurando…" : "Restaurar"}
         </button>

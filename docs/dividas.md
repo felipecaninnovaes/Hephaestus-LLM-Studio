@@ -47,6 +47,11 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
 - **NIT RAM do import (re-auditoria do reviewer da 3e, sem fatia
   marcada)**: `extract_images` lê a imagem inteira em memória para
   sniff/decode (teto 200 MiB/imagem limita; a 3b spoola sem acumular).
+- **Revisão de caption no AutoLabel (fatia futura de curadoria/human-in-the-loop)**:
+  Permitir inspeção, edição e aprovação individual ou em lote das legendas geradas
+  pelos modelos VLM antes de aplicar no dataset. Hoje o apply (`POST /api/jobs/:id/autolabel/apply`)
+  aplica 100% das legendas do `captions.jsonl` de uma vez só sem visualização prévia
+  nem edição das legendas geradas.
 
 ### Sem fatia marcada
 

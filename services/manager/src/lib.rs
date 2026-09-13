@@ -1978,10 +1978,25 @@ pub async fn dispatch_next(
     // Extrai weights_ref do params se presente (ADR-0012 D5/I.2b).
     let weights_ref = params.as_ref().and_then(|p| p.get("weights_ref")).cloned();
 
+    // Resolve imagem do container: se engine for diffusion, usa DIFFUSION_TRAINER_IMAGE
+    // ou substitui trainer-yolo por trainer-difusao mantendo tag (:local ou :gpu).
+    let job_image = match engine.as_str() {
+        "diffusion" => {
+            if let Ok(diff_img) = std::env::var("DIFFUSION_TRAINER_IMAGE") {
+                diff_img
+            } else if image.contains("trainer-yolo") {
+                image.replace("trainer-yolo", "trainer-difusao")
+            } else {
+                image.to_string()
+            }
+        }
+        _ => image.to_string(),
+    };
+
     let mut dispatch_body = serde_json::json!({
         "job_id": job_id.to_string(),
         "engine": engine,
-        "image": image,
+        "image": job_image,
         "exec_mode": exec_mode,
         "package_ref": package_ref,
         "config_yaml": config_yaml,

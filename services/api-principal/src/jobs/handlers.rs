@@ -1196,10 +1196,10 @@ pub async fn submit_diffusion_job(
     let job_id = uuid::Uuid::new_v4().to_string();
     let config_yaml = models::generate_diffusion_config_yaml(&job_id, &req);
 
-    // 7. VRAM mínima por modelo base (ADR-0018 D2).
+    // 7. VRAM mínima por modelo base (ADR-0018 D2 — FLUX.2 Klein 4B requer ~10 GB).
     let vram_min = match req.base_model.as_str() {
         "sd15" => 8,
-        "flux" => 16,
+        "flux" => 10,
         _ => 12, // sdxl e default
     };
 

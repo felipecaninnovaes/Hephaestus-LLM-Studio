@@ -1,8 +1,9 @@
 "use client";
 
 import React from "react";
-import { IconGrid, IconList, IconBoxSelect } from "@/components/icons";
+import { IconGrid, IconList, IconBoxSelect, IconCheck } from "@/components/icons";
 import { SubmodulePills } from "@/components/ui";
+import type { StudioClass } from "@/types/studio";
 
 export type GallerySplitView = "all" | "train" | "val" | "test" | "trash";
 export type GalleryAnnotationFilter = "all" | "labeled" | "unlabeled";
@@ -20,6 +21,12 @@ export interface GalleryOperateToolbarProps {
   selectedCount: number;
   totalActive: number;
   totalTrash: number;
+  classes?: StudioClass[];
+  selectedClassId?: string | null;
+  onClassChange?: (classId: string | null) => void;
+  isAllSelected?: boolean;
+  onSelectAll?: () => void;
+  onClearSelection?: () => void;
 }
 
 export function GalleryOperateToolbar({
@@ -34,6 +41,12 @@ export function GalleryOperateToolbar({
   selectedCount,
   totalActive,
   totalTrash,
+  classes,
+  selectedClassId,
+  onClassChange,
+  isAllSelected = false,
+  onSelectAll,
+  onClearSelection,
 }: GalleryOperateToolbarProps) {
   return (
     <div className="flex flex-col gap-3 rounded-2xl border border-zinc-800/80 bg-zinc-950/70 p-3 shadow-lg backdrop-blur-xl">
@@ -146,6 +159,23 @@ export function GalleryOperateToolbar({
             </button>
           </div>
 
+          {/* Botão Selecionar Todas */}
+          {onSelectAll && (
+            <button
+              type="button"
+              onClick={isAllSelected ? onClearSelection : onSelectAll}
+              title={isAllSelected ? "Desmarcar todas" : "Selecionar todas as amostras"}
+              className={`flex items-center space-x-1.5 rounded-lg border px-2.5 py-1.5 font-mono text-xs transition-colors cursor-pointer ${
+                isAllSelected
+                  ? "border-brand-500/40 bg-brand-500/20 text-brand-300 font-semibold shadow-sm"
+                  : "border-white/10 bg-zinc-900/90 text-zinc-300 hover:bg-white/5 hover:text-white"
+              }`}
+            >
+              <IconCheck className="size-3.5 text-brand-400" />
+              <span>{isAllSelected ? "Desmarcar todas" : "Selecionar todas"}</span>
+            </button>
+          )}
+
           {/* Botão de Modo Seleção */}
           <button
             type="button"
@@ -164,6 +194,40 @@ export function GalleryOperateToolbar({
           </button>
         </div>
       </div>
+
+      {/* Seletor de Classe / Filtro Estrito */}
+      {currentView !== "trash" && classes && classes.length > 0 && (
+        <div className="flex items-center space-x-1.5 overflow-x-auto min-w-0 pt-2 border-t border-white/5">
+          <span className="font-mono text-[10px] text-zinc-500 uppercase tracking-wider shrink-0 mr-1">
+            Classe:
+          </span>
+          <button
+            type="button"
+            onClick={() => onClassChange?.(null)}
+            className={`rounded-lg px-2.5 py-1 font-mono text-[11px] transition-colors shrink-0 cursor-pointer ${
+              !selectedClassId
+                ? "bg-brand-500/20 text-brand-300 font-semibold border border-brand-500/30"
+                : "bg-white/[0.03] text-zinc-400 hover:text-zinc-200 border border-white/5"
+            }`}
+          >
+            Todas
+          </button>
+          {classes.map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              onClick={() => onClassChange?.(selectedClassId === c.id ? null : c.id)}
+              className={`rounded-lg px-2.5 py-1 font-mono text-[11px] transition-colors shrink-0 cursor-pointer ${
+                selectedClassId === c.id
+                  ? "bg-amber-500/25 text-amber-200 font-semibold border border-amber-500/40 shadow-sm"
+                  : "bg-white/[0.03] text-zinc-400 hover:text-zinc-200 border border-white/5"
+              }`}
+            >
+              {c.name}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

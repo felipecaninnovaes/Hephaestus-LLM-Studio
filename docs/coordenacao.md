@@ -19,9 +19,47 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-13 (FATIA PREVIEW E VISUALIZAÇÃO DE LABELS NO DATASET CONCLUÍDA)
+## Estado atual — 2026-09-13 (FATIA FILTRO ESTRITO POR TAG/CLASSE E AUTOLABEL SELETIVO CONCLUÍDAS NA BRANCH)
 
-- **FATIA PREVIEW E VISUALIZAÇÃO DE LABELS NO DATASET (GRID E QUICKLOOK) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/autolabel-caption-review`.
+- **FATIA FILTRO ESTRITO POR TAG E CLASSE NO GRID DE IMAGENS — CONCLUÍDA E VALIDADA (2026-09-13)** — branch `feat/autolabel-selective-dataset`.
+  - **Backend API Principal**:
+    - `services/api-principal/src/datasets/handlers.rs`: query parameters `class_id` (UUID validado, com alias `classId`) e `tag` (1..200 chars) adicionados em `GET /api/datasets/:id/images` (`ImageQuery`).
+    - Filtro estrito via SQL com subqueries `EXISTS`:
+      - `class_id`: filtra imagens com anotação na classe especificada (`EXISTS (SELECT 1 FROM boxes b WHERE b.image_id = i.id AND b.class_id = $cid)`).
+      - `tag`: busca textual `ILIKE` estrita combinando nome de classes anotadas (`boxes JOIN classes`), legendas (`captions.text`) ou nome de arquivo (`images.filename`).
+    - Testes unitários: 325/325 verdes.
+  - **Contrato OpenAPI**:
+    - `packages/contracts/openapi.yaml`: parâmetros de query `classId` e `tag` documentados em `GET /api/datasets/{id}/images`.
+  - **Web Frontend**:
+    - `apps/web/lib/images.ts`: `ListImagesOpts` e `listImages` enriquecidos com `class_id`, `classId` e `tag`.
+    - `apps/web/components/studio/GalleryOperateToolbar.tsx`: pílulas interativas de classes anotadas com estilo ativo, seletor de modo de busca e novo botão de ação direta `"Selecionar todas"` / `"Desmarcar todas"` integrado ao lado do botão de seleção.
+    - `apps/web/components/studio/FloatingSelectionBar.tsx`: padronização do botão para `"Selecionar todas"` / `"Desmarcar todas"`, permitindo marcar todas as imagens filtradas e disparar AutoLabel ou batch delete em 1 clique.
+    - `apps/web/app/(studio)/datasets/[id]/page.tsx`:
+      - Desacoplamento de `activeTag` (filtro estrito de tags/classes no grid) de `activeQuery` (busca vetorial IA/CLIP), corrigindo conflito em que o grid renderizava o array vazio da busca semântica em vez dos `items` filtrados.
+      - Sincronização reativa via `useEffect` único para recarregamento sob troca de classes/tags/splits, eliminando chamadas concorrentes e race conditions.
+      - Integração de `isAllSelected`, `handleSelectAll` (que ativa automaticamente o `selectionMode`) e `handleClearSelection`.
+      - Renderização de Empty State contextual com botão `"Limpar filtros"` quando nenhum item corresponde à busca.
+      - Validação de ponta a ponta em tempo real no browser via Chrome DevTools MCP (busca por tag `armpits`, seleção da classe `buttocks_exposed` retornando 1 imagem, seleção total com 1 clique ativando floating bar com `AutoLabel (1)` / `AutoLabel (50)`, limpeza de filtros retornando as 129 imagens).
+  - **Verificações**: `cargo check --workspace` verde, `cargo test -p api-principal --lib` 325/325 verdes, `cargo fmt --all -- --check` limpo, `npm run build --prefix apps/web` 12/12 páginas compiladas sem erros TS, `graft build` sincronizado.
+
+- **FATIA AUTOLABEL SELETIVO POR CLASSE E SELEÇÃO DE IMAGENS — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/autolabel-selective-dataset`.
+  - **Contrato OpenAPI**: `AutolabelJobRequest` expandido com campos opcionais `filterClassId: Option<Uuid>` e `imageIds: Option<Vec<Uuid>>`.
+  - **Backend API Principal**:
+    - `package.rs`: implementado `build_package_filtered` permitindo empacotar unicamente um subconjunto de imagens ativas (com suporte a empacotamento de dataset sem imagens quando sem filtro explícito, mantendo compatibilidade com os testes de snapshot).
+    - `handlers.rs`: `submit_autolabel_job` com resolução de classe via `filter_class_id` (com checagem de integridade, substituição de template `{class_name}` no prompt e resolução de imagens anotadas com a classe) ou `image_ids` direto / interseção; telemetria no Manager com `image_ids_count` e `filter_class_id`.
+    - `models.rs`: validação de UUIDs em `filter_class_id` e `image_ids` (com teste unitário cobrindo casos válidos, inválidos e listas vazias).
+    - Testes: 325/325 unitários verdes; 84/84 integração de banco (`datasets_db`) 100% verdes.
+  - **Web Frontend**:
+    - `apps/web/types/studio.ts`: interface `AutolabelJobRequest` alinhada com `filterClassId` e `imageIds`.
+    - `apps/web/components/studio/AutoLabelModal.tsx`: novo seletor de "Escopo de Execução" com 3 modos:
+      1. *Dataset Completo*: todas as imagens ativas.
+      2. *Por Classe YOLO*: seletor da classe alvo, chip para inserção da tag dinâmica `{class_name}` no prompt e preset "Foco na Classe YOLO".
+      3. *Selecionadas no Grid*: executa exclusivamente nas imagens marcadas pelo usuário.
+    - `apps/web/components/studio/FloatingSelectionBar.tsx`: adicionado botão de ação rápida "AutoLabel (N)" que abre o modal já pré-configurado no modo de seleção.
+    - `apps/web/lib/images.ts`: remoção de envio duplicado de `class_id` e `classId` no `listImages` (o backend Axum/serde tratava o alias como campo duplicado retornando 400).
+  - **Verificações**: `cargo check --workspace` verde, `cargo test -p api-principal --lib` 325/325 verdes, `cargo fmt --all -- --check` limpo, `npm run build --prefix apps/web` 12/12 páginas estáticas/dinâmicas compiladas sem erros TS, `graft build` sincronizado. Branch pronta para commit.
+
+- **FATIA PREVIEW E VISUALIZAÇÃO DE LABELS NO DATASET (GRID E QUICKLOOK) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/autolabel-caption-review` (mergeada na main via PR #15).
   - **Backend API Principal**:
     - `services/api-principal/src/datasets/models.rs`: `ImageResponse` enriquecido com campos opcionais `boxes_count: Option<i64>` e `caption: Option<String>` (com `skip_serializing_if = "Option::is_none"`).
     - `services/api-principal/src/datasets/handlers.rs`: `list_images` otimizado com subqueries indexadas no Postgres para contar bounding boxes anotadas e trazer o texto da legenda sem requisições adicionais N+1.

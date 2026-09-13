@@ -851,7 +851,7 @@ pub async fn submit_autolabel_job(
     };
 
     // 2. Validação pura.
-    let req = match models::validate_autolabel_request(req) {
+    let mut req = match models::validate_autolabel_request(req) {
         Ok(v) => v,
         Err(_) => return invalid_request(),
     };
@@ -905,8 +905,135 @@ pub async fn submit_autolabel_job(
         return dataset_not_ready();
     }
 
+    // 4.1. Resolução seletiva de imagens (filter_class_id e/ou image_ids)
+    let mut resolved_image_ids: Option<Vec<uuid::Uuid>> = None;
+
+    if let Some(ref fc_str) = req.filter_class_id {
+        let class_id = match uuid::Uuid::parse_str(fc_str) {
+            Ok(u) => u,
+            Err(_) => return invalid_request(),
+        };
+
+        let class_info: Option<(uuid::Uuid, String)> =
+            match sqlx::query_as("SELECT id, name FROM classes WHERE id = $1 AND dataset_id = $2")
+                .bind(class_id)
+                .bind(ds_id)
+                .fetch_optional(&state.pool)
+                .await
+            {
+                Ok(c) => c,
+                Err(_) => {
+                    return err(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        "internal server error",
+                    )
+                }
+            };
+
+        let (_cid, class_name) = match class_info {
+            Some(c) => c,
+            None => {
+                return err(
+                    StatusCode::NOT_FOUND,
+                    "not_found",
+                    "classe informada não encontrada no dataset",
+                )
+            }
+        };
+
+        if let Some(ref mut p) = req.prompt {
+            *p = p.replace("{class_name}", &class_name);
+        }
+
+        let matched_imgs: Vec<uuid::Uuid> = match sqlx::query_scalar(
+            "SELECT DISTINCT b.image_id \
+             FROM boxes b \
+             JOIN images i ON i.id = b.image_id \
+             WHERE i.dataset_id = $1 AND i.deleted_at IS NULL AND b.class_id = $2",
+        )
+        .bind(ds_id)
+        .bind(class_id)
+        .fetch_all(&state.pool)
+        .await
+        {
+            Ok(imgs) => imgs,
+            Err(_) => {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "internal server error",
+                )
+            }
+        };
+
+        if matched_imgs.is_empty() {
+            return err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "dataset_not_ready",
+                "nenhuma imagem ativa possui anotações para a classe selecionada",
+            );
+        }
+
+        resolved_image_ids = Some(matched_imgs);
+    }
+
+    if let Some(ref ids) = req.image_ids {
+        let parsed_ids: Vec<uuid::Uuid> = ids
+            .iter()
+            .filter_map(|s| uuid::Uuid::parse_str(s).ok())
+            .collect();
+
+        if let Some(existing) = resolved_image_ids {
+            let set: std::collections::HashSet<uuid::Uuid> = parsed_ids.into_iter().collect();
+            let intersected: Vec<uuid::Uuid> =
+                existing.into_iter().filter(|id| set.contains(id)).collect();
+            if intersected.is_empty() {
+                return err(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "dataset_not_ready",
+                    "nenhuma das imagens selecionadas possui anotações da classe",
+                );
+            }
+            resolved_image_ids = Some(intersected);
+        } else {
+            let valid_imgs: Vec<uuid::Uuid> = match sqlx::query_scalar(
+                "SELECT id FROM images WHERE dataset_id = $1 AND deleted_at IS NULL AND id = ANY($2)",
+            )
+            .bind(ds_id)
+            .bind(&parsed_ids)
+            .fetch_all(&state.pool)
+            .await
+            {
+                Ok(imgs) => imgs,
+                Err(_) => {
+                    return err(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        "internal server error",
+                    )
+                }
+            };
+
+            if valid_imgs.is_empty() {
+                return err(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "dataset_not_ready",
+                    "nenhuma imagem ativa válida encontrada na seleção",
+                );
+            }
+            resolved_image_ids = Some(valid_imgs);
+        }
+    }
+
     // 5. Build package.
-    let package = match crate::datasets::package::build_package(&state, ds_id).await {
+    let package = match crate::datasets::package::build_package_filtered(
+        &state,
+        ds_id,
+        resolved_image_ids.as_deref(),
+    )
+    .await
+    {
         Ok(p) => p,
         Err(resp) => return resp,
     };
@@ -933,6 +1060,8 @@ pub async fn submit_autolabel_job(
         "params": {
             "model": req.model,
             "prompt": req.prompt,
+            "filter_class_id": req.filter_class_id,
+            "image_ids_count": resolved_image_ids.as_ref().map(|v| v.len()),
             "package_ref": {
                 "version_id": package.version_id,
                 "key": package.key,

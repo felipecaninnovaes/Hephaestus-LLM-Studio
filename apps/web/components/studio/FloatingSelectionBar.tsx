@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { IconTrash, IconX, IconCheck } from "@/components/icons";
+import { IconTrash, IconX, IconCheck, IconSparkles } from "@/components/icons";
 
 export interface FloatingSelectionBarProps {
   selectedCount: number;
@@ -9,6 +9,7 @@ export interface FloatingSelectionBarProps {
   onSelectAll: () => void;
   onClearSelection: () => void;
   onBatchDelete: () => void;
+  onAutoLabel?: () => void;
   busy?: boolean;
 }
 
@@ -18,6 +19,7 @@ export function FloatingSelectionBar({
   onSelectAll,
   onClearSelection,
   onBatchDelete,
+  onAutoLabel,
   busy = false,
 }: FloatingSelectionBarProps) {
   if (selectedCount === 0) return null;
@@ -52,8 +54,20 @@ export function FloatingSelectionBar({
           className="flex items-center space-x-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 font-mono text-xs text-zinc-300 transition-colors hover:bg-white/10 hover:text-white cursor-pointer"
         >
           <IconCheck className="size-3.5 text-brand-400" />
-          <span>{isAllSelected ? "Desmarcar tudo" : "Marcar todas"}</span>
+          <span>{isAllSelected ? "Desmarcar todas" : "Selecionar todas"}</span>
         </button>
+
+        {onAutoLabel && (
+          <button
+            type="button"
+            onClick={onAutoLabel}
+            disabled={busy}
+            className="flex items-center space-x-1.5 rounded-lg border border-brand-500/40 bg-brand-500/15 px-3 py-1 font-mono text-xs font-semibold text-brand-300 transition-colors hover:bg-brand-500/25 disabled:opacity-60 cursor-pointer shadow-sm"
+          >
+            <IconSparkles className="size-3.5 text-brand-400" />
+            <span>AutoLabel ({selectedCount})</span>
+          </button>
+        )}
 
         <button
           type="button"

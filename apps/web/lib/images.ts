@@ -16,6 +16,8 @@ export interface ListImagesOpts {
   split?: string;
   labeled?: boolean;
   deleted?: boolean;
+  classId?: string;
+  tag?: string;
 }
 
 export function listImages(
@@ -28,6 +30,10 @@ export function listImages(
   if (opts?.split !== undefined) params.set("split", opts.split);
   if (opts?.labeled !== undefined) params.set("labeled", String(opts.labeled));
   if (opts?.deleted !== undefined) params.set("deleted", String(opts.deleted));
+  if (opts?.classId !== undefined && opts.classId) {
+    params.set("classId", opts.classId);
+  }
+  if (opts?.tag !== undefined && opts.tag.trim()) params.set("tag", opts.tag.trim());
   const qs = params.toString();
   return apiFetch<ImagePage>(
     `/api/datasets/${datasetId}/images${qs ? `?${qs}` : ""}`,

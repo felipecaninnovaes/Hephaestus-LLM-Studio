@@ -263,6 +263,14 @@ pub struct PackageBuildResult {
 /// Refactor do F4.1: a rota `POST /:id/package` e o job submission
 /// compartilham esta função (ADR-0007 D7).
 pub async fn build_package(state: &AppState, ds_id: Uuid) -> Result<PackageBuildResult, Response> {
+    build_package_filtered(state, ds_id, None).await
+}
+
+pub async fn build_package_filtered(
+    state: &AppState,
+    ds_id: Uuid,
+    filter_image_ids: Option<&[Uuid]>,
+) -> Result<PackageBuildResult, Response> {
     // 1. Dataset existe?
     let ds: Option<(Uuid, String, String, String, String)> = match sqlx::query_as(
         "SELECT id, slug, title, category, type, format FROM datasets WHERE id = $1",
@@ -293,16 +301,44 @@ pub async fn build_package(state: &AppState, ds_id: Uuid) -> Result<PackageBuild
 
     // 3. Imagens ATIVAS com object_key (lixeira fora).
     type ImgTuple = (Uuid, String, String, i32, i32, String);
-    let image_rows: Vec<ImgTuple> = match sqlx::query_as(
-        "SELECT id, filename, object_key, width, height, split FROM images WHERE dataset_id = $1 AND deleted_at IS NULL ORDER BY created_at, id",
-    )
-    .bind(ds_id)
-    .fetch_all(&state.pool)
-    .await
-    {
-        Ok(r) => r,
-        Err(_) => return Err(internal()),
+    let image_rows: Vec<ImgTuple> = if let Some(target_ids) = filter_image_ids {
+        match sqlx::query_as(
+            "SELECT id, filename, object_key, width, height, split \
+             FROM images \
+             WHERE dataset_id = $1 AND deleted_at IS NULL AND id = ANY($2) \
+             ORDER BY created_at, id",
+        )
+        .bind(ds_id)
+        .bind(target_ids)
+        .fetch_all(&state.pool)
+        .await
+        {
+            Ok(r) => r,
+            Err(_) => return Err(internal()),
+        }
+    } else {
+        match sqlx::query_as(
+            "SELECT id, filename, object_key, width, height, split \
+             FROM images \
+             WHERE dataset_id = $1 AND deleted_at IS NULL \
+             ORDER BY created_at, id",
+        )
+        .bind(ds_id)
+        .fetch_all(&state.pool)
+        .await
+        {
+            Ok(r) => r,
+            Err(_) => return Err(internal()),
+        }
     };
+
+    if filter_image_ids.is_some() && image_rows.is_empty() {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "dataset_not_ready",
+            "nenhuma imagem ativa encontrada para empacotar",
+        ));
+    }
 
     // 4. Boxes das imagens ativas.
     type BoxTuple = (Uuid, i32, f64, f64, f64, f64);

@@ -28,7 +28,10 @@ ser interrompido no meio de uma.
     2. **Quantização 4-bit (QLoRA via BitsAndBytes NF4)**: Carregamento do Transformer (`Flux2Transformer2DModel` / `FluxTransformer2DModel`) e do Text Encoder Qwen3 em 4-bit NF4 com compute dtype `bfloat16` nativo da arquitetura Ampere.
     3. **Persistência de Pesos Quantizados em Cache**: Salvamento automático da versão quantizada em `/outputs/.cache/quantized/flux2_klein_4bit/` na primeira execução, permitindo carregamento direto nas execuções subsequentes em 2 a 3 segundos sem re-quantização.
     4. **Loop de Treino Flow Matching**: Interpolação retificada ($x_t = (1-t)x_0 + t\epsilon$), patchification 2x2 do VAE (`_patchify_latents_flux2`), coordenadas RoPE 4D (`img_ids` e `txt_ids` com dimensões T, H, W, L), loss MSE e emissão de métricas em `metrics.jsonl`.
-    5. **Scripts de Build Sem Sudo**: Adicionados `scripts/build-host.sh`, `scripts/build-gpu.sh` e `scripts/build-all.sh` com autodeteção e flags de permissão de grupo docker sem necessitar de `sudo`.
+    5. **Scripts de Build & Start Sem Sudo**:
+       - Compilação: `scripts/build-host.sh`, `scripts/build-gpu.sh` e `scripts/build-all.sh`.
+       - Inicialização Host: `scripts/start-host.sh` (`--no-web` dev e `--with-web` full), `scripts/start-host-dev.sh`, `scripts/start-host-full.sh`, `scripts/stop-host.sh`.
+       - Inicialização TrueNAS: `scripts/start-truenas.sh` (com auto-SSH se chamado do dev host ou local no TrueNAS) e `scripts/stop-truenas.sh`.
     6. **Propagação de HF_TOKEN e FLUX_MODEL_ID**: Orquestrador Rust e compose repassando `HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN` e `FLUX_MODEL_ID` para os containers de execução de forma segura.
     7. **Testes & Grafo**: 7/7 testes unitários passando em `engines/trainer-difusao/tests/test_train.py`, grafo `graft build` atualizado.
 

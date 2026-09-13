@@ -422,6 +422,77 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
     }));
   }, [diffusionModels]);
 
+  const batchOptions = useMemo<SelectOption<number>[]>(
+    () => [
+      { value: 1, label: "1 (Mínima VRAM)" },
+      { value: 2, label: "2" },
+      { value: 4, label: "4" },
+      { value: 8, label: "8 (Alta VRAM)" },
+    ],
+    [],
+  );
+
+  const rankOptions = useMemo<SelectOption<number>[]>(
+    () => [
+      { value: 4, label: "4 (Ultra leve)" },
+      { value: 8, label: "8 (Leve)" },
+      { value: 16, label: "16 (Recomendado)" },
+      { value: 32, label: "32 (Alta capacidade)" },
+      { value: 64, label: "64 (Muito detalhado)" },
+      { value: 128, label: "128 (Máximo detalhe)" },
+    ],
+    [],
+  );
+
+  const resolutionOptions = useMemo<SelectOption<number>[]>(
+    () => [
+      { value: 512, label: "512 x 512 (Padrão SD 1.5 / Menor VRAM)" },
+      { value: 768, label: "768 x 768 (Intermediário)" },
+      { value: 1024, label: "1024 x 1024 (Padrão SDXL / FLUX)" },
+    ],
+    [],
+  );
+
+  const gradAccumOptions = useMemo<SelectOption<number>[]>(
+    () => [
+      { value: 1, label: "1x (Atualização a cada batch)" },
+      { value: 2, label: "2x (Batch efetivo 2x sem VRAM extra)" },
+      { value: 4, label: "4x (Batch efetivo 4x sem VRAM extra)" },
+      { value: 8, label: "8x (Batch efetivo 8x sem VRAM extra)" },
+    ],
+    [],
+  );
+
+  const optimizerOptions = useMemo<SelectOption<"adamw8bit" | "adamw" | "prodigy">[]>(
+    () => [
+      { value: "adamw8bit", label: "AdamW 8-bit (BitsAndBytes - Recomendado)" },
+      { value: "adamw", label: "AdamW FP32 (Padrão PyTorch)" },
+      { value: "prodigy", label: "Prodigy (Taxa adaptativa D-Adaptation)" },
+    ],
+    [],
+  );
+
+  const lrSchedulerOptions = useMemo<
+    SelectOption<"cosine" | "linear" | "constant" | "constant_with_warmup">[]
+  >(
+    () => [
+      { value: "cosine", label: "Cosine (Decaimento suave em cosseno)" },
+      { value: "linear", label: "Linear (Decaimento linear até zero)" },
+      { value: "constant", label: "Constant (Taxa fixa sem decaimento)" },
+      { value: "constant_with_warmup", label: "Constant com Warmup" },
+    ],
+    [],
+  );
+
+  const mixedPrecisionOptions = useMemo<SelectOption<"fp16" | "bf16" | "no">[]>(
+    () => [
+      { value: "fp16", label: "FP16 (Half - Padrão universal GPU)" },
+      { value: "bf16", label: "BF16 (Bfloat16 - Ampere/Ada/Hopper)" },
+      { value: "no", label: "Desativado (FP32 completo - Alto consumo VRAM)" },
+    ],
+    [],
+  );
+
   const parsedLr = parseFloat(params.learningRate);
   const epochsValid =
     Number.isInteger(params.epochs) &&
@@ -893,49 +964,31 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
           </div>
 
           {/* Batch Size */}
-          <div className="space-y-1">
-            <label htmlFor="diffusion-batch" className="block text-[11px] font-mono text-zinc-400">
-              Batch Size
-            </label>
-            <select
-              id="diffusion-batch"
-              value={params.batchSize}
-              onChange={(e) =>
-                setParams((p) => ({ ...p, batchSize: parseInt(e.target.value, 10) || 1 }))
-              }
-              disabled={busy}
-              className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 focus:border-brand-500/50 focus:outline-none focus:ring-1 focus:ring-brand-500/50 transition-colors"
-            >
-              <option value={1}>1 (Mínima VRAM)</option>
-              <option value={2}>2</option>
-              <option value={4}>4</option>
-              <option value={8}>8 (Alta VRAM)</option>
-            </select>
-          </div>
+          <Select
+            id="diffusion-batch"
+            label="Batch Size"
+            options={batchOptions}
+            value={params.batchSize}
+            onChange={(val) => setParams((p) => ({ ...p, batchSize: Number(val) }))}
+            disabled={busy}
+            fontMono
+            size="default"
+          />
 
           {/* LoRA Rank */}
-          <div className="space-y-1">
-            <label htmlFor="diffusion-rank" className="block text-[11px] font-mono text-zinc-400">
-              LoRA Rank (Dimensão)
-            </label>
-            <select
-              id="diffusion-rank"
-              value={params.rank}
-              onChange={(e) => {
-                const val = parseInt(e.target.value, 10) || 16;
-                setParams((p) => ({ ...p, rank: val, alpha: val }));
-              }}
-              disabled={busy}
-              className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 focus:border-brand-500/50 focus:outline-none focus:ring-1 focus:ring-brand-500/50 transition-colors"
-            >
-              <option value={4}>4 (Ultra leve)</option>
-              <option value={8}>8 (Leve)</option>
-              <option value={16}>16 (Recomendado)</option>
-              <option value={32}>32 (Alta capacidade)</option>
-              <option value={64}>64 (Muito detalhado)</option>
-              <option value={128}>128 (Máximo detalhe)</option>
-            </select>
-          </div>
+          <Select
+            id="diffusion-rank"
+            label="LoRA Rank (Dimensão)"
+            options={rankOptions}
+            value={params.rank}
+            onChange={(val) => {
+              const num = Number(val);
+              setParams((p) => ({ ...p, rank: num, alpha: num }));
+            }}
+            disabled={busy}
+            fontMono
+            size="default"
+          />
 
           {/* Learning Rate */}
           <div className="space-y-1">
@@ -993,104 +1046,67 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
           <div id="advanced-diffusion-settings" className="p-4 pt-2 border-t border-white/5 space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {/* Resolução de Treinamento */}
-              <div className="space-y-1">
-                <label htmlFor="diffusion-res" className="block text-[11px] font-mono text-zinc-400">
-                  Resolução de Entrada
-                </label>
-                <select
-                  id="diffusion-res"
-                  value={resolution}
-                  onChange={(e) => setResolution(parseInt(e.target.value, 10) || 1024)}
-                  disabled={busy}
-                  className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 focus:border-brand-500/50 focus:outline-none focus:ring-1 focus:ring-brand-500/50 transition-colors"
-                >
-                  <option value={512}>512 x 512 (Padrão SD 1.5 / Menor VRAM)</option>
-                  <option value={768}>768 x 768 (Intermediário)</option>
-                  <option value={1024}>1024 x 1024 (Padrão SDXL / FLUX)</option>
-                </select>
-                <p className="text-[10px] font-mono text-zinc-500">
-                  Imagens são ajustadas com recorte centrado e aspect ratio seguro.
-                </p>
-              </div>
+              <Select
+                id="diffusion-res"
+                label="Resolução de Entrada"
+                hint="Imagens são ajustadas com recorte centrado e aspect ratio seguro."
+                options={resolutionOptions}
+                value={resolution}
+                onChange={(val) => setResolution(Number(val))}
+                disabled={busy}
+                fontMono
+                size="default"
+              />
 
               {/* Gradient Accumulation */}
-              <div className="space-y-1">
-                <label htmlFor="diffusion-ga" className="block text-[11px] font-mono text-zinc-400">
-                  Gradient Accumulation
-                </label>
-                <select
-                  id="diffusion-ga"
-                  value={gradientAccumulationSteps}
-                  onChange={(e) => setGradientAccumulationSteps(parseInt(e.target.value, 10) || 1)}
-                  disabled={busy}
-                  className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 focus:border-brand-500/50 focus:outline-none focus:ring-1 focus:ring-brand-500/50 transition-colors"
-                >
-                  <option value={1}>1x (Atualização a cada batch)</option>
-                  <option value={2}>2x (Batch efetivo 2x sem VRAM extra)</option>
-                  <option value={4}>4x (Batch efetivo 4x sem VRAM extra)</option>
-                  <option value={8}>8x (Batch efetivo 8x sem VRAM extra)</option>
-                </select>
-                <p className="text-[10px] font-mono text-zinc-500">
-                  Estabiliza gradientes somando N passos antes da atualização de pesos.
-                </p>
-              </div>
+              <Select
+                id="diffusion-ga"
+                label="Gradient Accumulation"
+                hint="Estabiliza gradientes somando N passos antes da atualização de pesos."
+                options={gradAccumOptions}
+                value={gradientAccumulationSteps}
+                onChange={(val) => setGradientAccumulationSteps(Number(val))}
+                disabled={busy}
+                fontMono
+                size="default"
+              />
 
               {/* Otimizador */}
-              <div className="space-y-1">
-                <label htmlFor="diffusion-opt" className="block text-[11px] font-mono text-zinc-400">
-                  Otimizador
-                </label>
-                <select
-                  id="diffusion-opt"
-                  value={optimizer}
-                  onChange={(e) => {
-                    const opt = e.target.value as "adamw8bit" | "adamw" | "prodigy";
-                    setOptimizer(opt);
-                    if (opt === "prodigy" && params.learningRate === "0.0001") {
-                      setParams((p) => ({ ...p, learningRate: "1.0" }));
-                    } else if (opt !== "prodigy" && params.learningRate === "1.0") {
-                      setParams((p) => ({ ...p, learningRate: "0.0001" }));
-                    }
-                  }}
-                  disabled={busy}
-                  className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 focus:border-brand-500/50 focus:outline-none focus:ring-1 focus:ring-brand-500/50 transition-colors"
-                >
-                  <option value="adamw8bit">AdamW 8-bit (BitsAndBytes - Recomendado)</option>
-                  <option value="adamw">AdamW FP32 (Padrão PyTorch)</option>
-                  <option value="prodigy">Prodigy (Taxa de aprendizado adaptativa)</option>
-                </select>
-                <p className="text-[10px] font-mono text-zinc-500">
-                  {optimizer === "prodigy"
+              <Select
+                id="diffusion-opt"
+                label="Otimizador"
+                hint={
+                  optimizer === "prodigy"
                     ? "Requer LR=1.0 para o ajuste automático de D-Adaptation."
-                    : "8-bit economiza ~2 GB de VRAM no estado do otimizador."}
-                </p>
-              </div>
+                    : "8-bit economiza ~2 GB de VRAM no estado do otimizador."
+                }
+                options={optimizerOptions}
+                value={optimizer}
+                onChange={(opt) => {
+                  setOptimizer(opt);
+                  if (opt === "prodigy" && params.learningRate === "0.0001") {
+                    setParams((p) => ({ ...p, learningRate: "1.0" }));
+                  } else if (opt !== "prodigy" && params.learningRate === "1.0") {
+                    setParams((p) => ({ ...p, learningRate: "0.0001" }));
+                  }
+                }}
+                disabled={busy}
+                fontMono
+                size="default"
+              />
 
               {/* LR Scheduler */}
-              <div className="space-y-1">
-                <label htmlFor="diffusion-sched" className="block text-[11px] font-mono text-zinc-400">
-                  LR Scheduler
-                </label>
-                <select
-                  id="diffusion-sched"
-                  value={lrScheduler}
-                  onChange={(e) =>
-                    setLrScheduler(
-                      e.target.value as "cosine" | "linear" | "constant" | "constant_with_warmup",
-                    )
-                  }
-                  disabled={busy}
-                  className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 focus:border-brand-500/50 focus:outline-none focus:ring-1 focus:ring-brand-500/50 transition-colors"
-                >
-                  <option value="cosine">Cosine (Decaimento suave em cosseno)</option>
-                  <option value="linear">Linear (Decaimento linear até zero)</option>
-                  <option value="constant">Constant (Taxa fixa sem decaimento)</option>
-                  <option value="constant_with_warmup">Constant com Warmup</option>
-                </select>
-                <p className="text-[10px] font-mono text-zinc-500">
-                  Controla o decaimento da taxa de aprendizado ao longo dos steps.
-                </p>
-              </div>
+              <Select
+                id="diffusion-sched"
+                label="LR Scheduler"
+                hint="Controla o decaimento da taxa de aprendizado ao longo dos steps."
+                options={lrSchedulerOptions}
+                value={lrScheduler}
+                onChange={(val) => setLrScheduler(val)}
+                disabled={busy}
+                fontMono
+                size="default"
+              />
 
               {/* LR Warmup Steps */}
               <div className="space-y-1">
@@ -1115,27 +1131,17 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
               </div>
 
               {/* Mixed Precision */}
-              <div className="space-y-1">
-                <label htmlFor="diffusion-prec" className="block text-[11px] font-mono text-zinc-400">
-                  Precisão Mista (Mixed Precision)
-                </label>
-                <select
-                  id="diffusion-prec"
-                  value={mixedPrecision}
-                  onChange={(e) =>
-                    setMixedPrecision(e.target.value as "fp16" | "bf16" | "no")
-                  }
-                  disabled={busy}
-                  className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 focus:border-brand-500/50 focus:outline-none focus:ring-1 focus:ring-brand-500/50 transition-colors"
-                >
-                  <option value="fp16">FP16 (Half - Padrão universal GPU)</option>
-                  <option value="bf16">BF16 (Bfloat16 - Ampere/Ada/Hopper)</option>
-                  <option value="no">Desativado (FP32 completo - Alto consumo VRAM)</option>
-                </select>
-                <p className="text-[10px] font-mono text-zinc-500">
-                  FP16/BF16 reduz pela metade o consumo de VRAM e acelera o treino em Tensor Cores.
-                </p>
-              </div>
+              <Select
+                id="diffusion-prec"
+                label="Precisão Mista (Mixed Precision)"
+                hint="FP16/BF16 reduz pela metade o consumo de VRAM e acelera o treino em Tensor Cores."
+                options={mixedPrecisionOptions}
+                value={mixedPrecision}
+                onChange={(val) => setMixedPrecision(val)}
+                disabled={busy}
+                fontMono
+                size="default"
+              />
             </div>
           </div>
         )}

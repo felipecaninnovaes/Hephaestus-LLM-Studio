@@ -15,6 +15,8 @@ interface JobLogViewerProps {
   job: Job;
   metrics?: JobMetrics[];
   artifacts?: JobArtifact[];
+  compact?: boolean;
+  defaultOpen?: boolean;
 }
 
 type LogType = "all" | "stdout" | "stderr";
@@ -22,26 +24,32 @@ type LogType = "all" | "stdout" | "stderr";
 interface LogLine {
   id: string;
   timestamp: string;
-  tag: "ORCH" | "ENGINE" | "TRAIN" | "S3" | "STDERR" | "WARN";
+  tag: "ORCH" | "ENGINE" | "TRAIN" | "AUTOLABEL" | "S3" | "STDERR" | "WARN";
   text: string;
   isError?: boolean;
 }
 
-export function JobLogViewer({ job, metrics = [], artifacts = [] }: JobLogViewerProps) {
+export function JobLogViewer({
+  job,
+  metrics = [],
+  artifacts = [],
+  compact = false,
+  defaultOpen,
+}: JobLogViewerProps) {
   const isActive =
     job.status === "running" ||
     job.status === "queued" ||
     job.status === "cancelling";
 
-  // Expandido automaticamente apenas para jobs ativos; colapsado para jobs concluídos para otimizar espaço vertical
-  const [isOpen, setIsOpen] = useState(isActive);
+  // Expandido por padrão para jobs ativos ou se defaultOpen for fornecido
+  const [isOpen, setIsOpen] = useState(defaultOpen !== undefined ? defaultOpen : isActive);
   const [autoScroll, setAutoScroll] = useState(true);
   const [copied, setCopied] = useState(false);
   const [filter, setFilter] = useState<LogType>("all");
 
   const terminalRef = useRef<HTMLDivElement | null>(null);
 
-  // Sintetiza e formata as linhas reais de log do orquestrador
+  // Sintetiza e formata as linhas reais de log e telemetria do orquestrador
   const lines = useMemo<LogLine[]>(() => {
     const list: LogLine[] = [];
     const baseDate = new Date(job.createdAt);
@@ -51,12 +59,22 @@ export function JobLogViewer({ job, metrics = [], artifacts = [] }: JobLogViewer
       return d.toLocaleTimeString("pt-BR", { hour12: false });
     }
 
-    // 1. Boot do Orquestrador
+    // 1. Boot do Orquestrador e Identificação de Nó
     list.push({
       id: "boot-1",
       timestamp: fmtTime(0),
       tag: "ORCH",
       text: `Dispatching job ${job.id.slice(0, 8)} [kind=${job.kind}, engine=${job.engine}]`,
+    });
+
+    const nodeName = job.orchestratorName || (job.orchestratorId ? job.orchestratorId.slice(0, 8) : "Orquestrador Local");
+    const nodeKind = job.orchestratorKind ? `[${job.orchestratorKind}]` : "[local]";
+    const fallbackNotice = job.orchestratorFallback ? " · Fallback automático ativado" : "";
+    list.push({
+      id: "boot-node",
+      timestamp: fmtTime(1),
+      tag: "ORCH",
+      text: `Nó Executor: ${nodeName} ${nodeKind}${fallbackNotice}`,
     });
 
     list.push({
@@ -66,22 +84,47 @@ export function JobLogViewer({ job, metrics = [], artifacts = [] }: JobLogViewer
       text: `Container montado: /outputs/${job.id} · Dataset: /datasets/${job.datasetId?.slice(0, 8) || "default"}`,
     });
 
+    // Identificação do Engine específico
+    let engineDesc = `YOLO Engine inicializado: modelo=${job.model} | vram_min=${job.vramMinGb || 4}GB`;
+    if (job.kind === "autolabel" || job.engine === "autolabel") {
+      engineDesc = `AutoLabel Engine inicializado: modelo=${job.model} | Pipeline VLM Vision API`;
+    } else if (job.kind === "autotracker" || job.engine === "autotracker") {
+      engineDesc = `AutoTracker Engine inicializado: modelo=${job.model} | Open-Vocab Tracking`;
+    } else if ((job.kind as string) === "diffusion" || job.engine === "diffusion") {
+      engineDesc = `Diffusion LoRA Engine inicializado: modelo=${job.model} | vram_min=${job.vramMinGb || 8}GB`;
+    } else if (job.kind === "yolo_predict" || job.mode === "predict") {
+      engineDesc = `YOLO Predict Engine inicializado: modelo=${job.model}`;
+    }
+
     list.push({
       id: "boot-3",
       timestamp: fmtTime(2),
       tag: "ENGINE",
-      text: `YOLO Engine inicializado: modelo=${job.model} | vram_min=${job.vramMinGb || 4}GB`,
+      text: engineDesc,
     });
 
-    // 2. Telemetria de Treino por Época
+    // 2. Telemetria / Progresso
     if (metrics && metrics.length > 0) {
       metrics.forEach((m, idx) => {
-        list.push({
-          id: `metric-${m.epoch}`,
-          timestamp: fmtTime(3 + idx * 2),
-          tag: "TRAIN",
-          text: `epoch=${m.epoch}/${job.epoch || 100} box_loss=${m.boxLoss.toFixed(4)} cls_loss=${m.clsLoss.toFixed(4)} dfl_loss=${m.dflLoss.toFixed(4)} mAP50=${(m.map50 * 100).toFixed(1)}% mAP50-95=${(m.map5095 * 100).toFixed(1)}%`,
-        });
+        if (job.kind === "autolabel" || job.engine === "autolabel") {
+          const totalExpected = job.step || m.step || undefined;
+          const prog = m.progress !== undefined && m.progress !== null
+            ? `${Math.round(m.progress * 100)}%`
+            : totalExpected ? `${Math.round((m.epoch / totalExpected) * 100)}%` : `item ${m.epoch}`;
+          list.push({
+            id: `metric-${m.epoch}`,
+            timestamp: fmtTime(3 + idx * 2),
+            tag: "AUTOLABEL",
+            text: `Processamento de legendas: item ${m.epoch}${totalExpected ? `/${totalExpected}` : ""} · Progresso: ${prog}`,
+          });
+        } else {
+          list.push({
+            id: `metric-${m.epoch}`,
+            timestamp: fmtTime(3 + idx * 2),
+            tag: "TRAIN",
+            text: `epoch=${m.epoch}/${job.epoch || 100} box_loss=${m.boxLoss.toFixed(4)} cls_loss=${m.clsLoss.toFixed(4)} dfl_loss=${m.dflLoss.toFixed(4)} mAP50=${(m.map50 * 100).toFixed(1)}% mAP50-95=${(m.map5095 * 100).toFixed(1)}%`,
+          });
+        }
       });
     }
 
@@ -108,11 +151,23 @@ export function JobLogViewer({ job, metrics = [], artifacts = [] }: JobLogViewer
           });
         });
       }
+
+      let doneMsg = "Processo finalizado com exit code 0. Status: CONCLUÍDO.";
+      if (job.kind === "autolabel" || job.engine === "autolabel") {
+        doneMsg = "AutoLabel finalizado com sucesso. Legendas geradas e prontas para aplicação.";
+      } else if (job.kind === "autotracker" || job.engine === "autotracker") {
+        doneMsg = "AutoTracker finalizado com sucesso. Caixas delimitadoras geradas e prontas para aplicação.";
+      } else if ((job.kind as string) === "diffusion" || job.engine === "diffusion") {
+        doneMsg = "Treinamento LoRA concluído com sucesso. Adaptador de difusão gerado.";
+      } else if (job.kind === "yolo_predict" || job.mode === "predict") {
+        doneMsg = "Predição finalizada com sucesso. Detecções exportadas.";
+      }
+
       list.push({
         id: "finish-done",
         timestamp: fmtTime(finalSec + 1),
         tag: "ORCH",
-        text: "Treinamento finalizado com exit code 0. Status: CONCLUÍDO.",
+        text: doneMsg,
       });
     } else if (job.status === "failed") {
       const errDetail = job.error || job.queueReason || "Container execution failed";
@@ -176,33 +231,47 @@ export function JobLogViewer({ job, metrics = [], artifacts = [] }: JobLogViewer
   }
 
   return (
-    <div className="rounded-xl border border-zinc-800 bg-black/40 backdrop-blur-sm overflow-hidden">
+    <div
+      className={
+        compact
+          ? "rounded-lg border border-white/10 bg-black/60 backdrop-blur-sm overflow-hidden"
+          : "rounded-xl border border-zinc-800 bg-black/40 backdrop-blur-sm overflow-hidden"
+      }
+    >
       {/* Barra de Título Colapsável */}
-      <div className="flex flex-wrap items-center justify-between gap-2.5 px-4 py-3 border-b border-zinc-800/80 bg-zinc-950/40 backdrop-blur-sm select-none">
+      <div
+        className={`flex flex-wrap items-center justify-between gap-2 border-b bg-zinc-950/40 backdrop-blur-sm select-none ${
+          compact ? "px-3 py-2 border-white/10" : "px-4 py-3 border-zinc-800/80"
+        }`}
+      >
         <button
           type="button"
           onClick={() => setIsOpen(!isOpen)}
-          className="flex items-center gap-2 text-left hover:text-zinc-100 transition group focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-500 rounded shrink-0"
+          className="flex items-center gap-2 text-left hover:text-zinc-100 transition group focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-500 rounded shrink-0 cursor-pointer"
         >
           <span className="text-zinc-400 group-hover:text-zinc-200 transition">
             {isOpen ? (
-              <IconChevronDown className="size-4" />
+              <IconChevronDown className={compact ? "size-3.5" : "size-4"} />
             ) : (
-              <IconChevronRight className="size-4" />
+              <IconChevronRight className={compact ? "size-3.5" : "size-4"} />
             )}
           </span>
-          <div className="flex size-6 shrink-0 items-center justify-center rounded-md bg-zinc-900 border border-zinc-800 text-zinc-300">
-            <IconTerminal className="size-3.5" />
+          <div
+            className={`flex shrink-0 items-center justify-center rounded-md bg-zinc-900 border border-zinc-800 text-zinc-300 ${
+              compact ? "size-5" : "size-6"
+            }`}
+          >
+            <IconTerminal className={compact ? "size-3" : "size-3.5"} />
           </div>
           <span className="font-mono text-[11px] font-semibold uppercase tracking-caps text-zinc-200 whitespace-nowrap">
             Logs do Orquestrador
           </span>
-          <span className="font-mono text-[11px] text-zinc-400 whitespace-nowrap">
-            ({filteredLines.length} linhas)
+          <span className="font-mono text-[10px] text-zinc-400 whitespace-nowrap">
+            ({filteredLines.length})
           </span>
 
           {isActive && (
-            <span className="inline-flex items-center gap-1 font-mono text-[11px] text-brand-400 pl-1 whitespace-nowrap">
+            <span className="inline-flex items-center gap-1 font-mono text-[10px] text-brand-400 pl-1 whitespace-nowrap">
               <span className="size-1.5 rounded-full bg-brand-400 animate-pulse motion-reduce:animate-none" />
               Streaming Ativo
             </span>
@@ -210,7 +279,7 @@ export function JobLogViewer({ job, metrics = [], artifacts = [] }: JobLogViewer
         </button>
 
         {/* Ações da Barra Superior */}
-        <div className="flex items-center gap-2 font-mono text-[11px] shrink-0">
+        <div className="flex items-center gap-1.5 font-mono text-[10px] shrink-0">
           {isOpen && (
             <>
               {/* Filtros */}
@@ -225,24 +294,26 @@ export function JobLogViewer({ job, metrics = [], artifacts = [] }: JobLogViewer
               />
 
               {/* Botão de Auto-scroll */}
-              <button
-                type="button"
-                onClick={() => setAutoScroll(!autoScroll)}
-                className={`hidden lg:inline-flex items-center gap-1 rounded-md border px-2 py-1 transition whitespace-nowrap backdrop-blur-sm cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${
-                  autoScroll
-                    ? "border-brand-500/30 bg-brand-500/10 text-brand-300"
-                    : "border-zinc-800 bg-zinc-900/50 text-zinc-400 hover:text-zinc-300"
-                }`}
-                title="Rolar automaticamente para a última linha"
-              >
-                Auto-scroll: {autoScroll ? "ON" : "OFF"}
-              </button>
+              {!compact && (
+                <button
+                  type="button"
+                  onClick={() => setAutoScroll(!autoScroll)}
+                  className={`hidden lg:inline-flex items-center gap-1 rounded-md border px-2 py-1 transition whitespace-nowrap backdrop-blur-sm cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${
+                    autoScroll
+                      ? "border-brand-500/30 bg-brand-500/10 text-brand-300"
+                      : "border-zinc-800 bg-zinc-900/50 text-zinc-400 hover:text-zinc-300"
+                  }`}
+                  title="Rolar automaticamente para a última linha"
+                >
+                  Auto-scroll: {autoScroll ? "ON" : "OFF"}
+                </button>
+              )}
 
               {/* Botão de Copiar */}
               <button
                 type="button"
                 onClick={handleCopyLogs}
-                className="inline-flex items-center gap-1 rounded-md border border-zinc-800 bg-zinc-900/60 backdrop-blur-sm px-2.5 py-1 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100 transition whitespace-nowrap cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70"
+                className="inline-flex items-center gap-1 rounded-md border border-zinc-800 bg-zinc-900/60 backdrop-blur-sm px-2 py-0.5 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100 transition whitespace-nowrap cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 text-[10px]"
               >
                 {copied ? (
                   <>
@@ -265,10 +336,14 @@ export function JobLogViewer({ job, metrics = [], artifacts = [] }: JobLogViewer
       {isOpen && (
         <div
           ref={terminalRef}
-          className="h-56 sm:h-64 overflow-y-auto bg-black/95 p-3.5 font-mono text-[11px] leading-relaxed select-text space-y-1 scroll-smooth"
+          className={`overflow-y-auto bg-black/95 font-mono leading-relaxed select-text scroll-smooth ${
+            compact
+              ? "h-40 sm:h-48 p-2.5 text-[10px] space-y-0.5"
+              : "h-56 sm:h-64 p-3.5 text-[11px] space-y-1"
+          }`}
         >
           {filteredLines.length === 0 ? (
-            <div className="h-full flex items-center justify-center text-zinc-400">
+            <div className="h-full flex items-center justify-center text-zinc-500 text-xs">
               Nenhuma linha corresponde ao filtro selecionado.
             </div>
           ) : (
@@ -277,6 +352,7 @@ export function JobLogViewer({ job, metrics = [], artifacts = [] }: JobLogViewer
               if (line.tag === "ORCH") tagBadge = "text-brand-400";
               if (line.tag === "ENGINE") tagBadge = "text-cyan-400";
               if (line.tag === "TRAIN") tagBadge = "text-zinc-200";
+              if (line.tag === "AUTOLABEL") tagBadge = "text-sky-400";
               if (line.tag === "S3") tagBadge = "text-purple-400";
               if (line.tag === "WARN") tagBadge = "text-amber-400";
               if (line.tag === "STDERR") tagBadge = "text-rose-400 font-semibold";
@@ -284,11 +360,11 @@ export function JobLogViewer({ job, metrics = [], artifacts = [] }: JobLogViewer
               return (
                 <div
                   key={line.id}
-                  className={`flex items-start gap-2.5 ${
+                  className={`flex items-start gap-2 ${
                     line.isError ? "text-rose-300" : "text-zinc-300"
                   }`}
                 >
-                  <span className="text-zinc-500 shrink-0 select-none">
+                  <span className="text-zinc-600 shrink-0 select-none">
                     {line.timestamp}
                   </span>
                   <span className={`shrink-0 font-medium ${tagBadge}`}>
@@ -302,8 +378,8 @@ export function JobLogViewer({ job, metrics = [], artifacts = [] }: JobLogViewer
 
           {/* Cursor pulsante no fim se ativo */}
           {isActive && (
-            <div className="flex items-center gap-2 pt-1 text-brand-400">
-              <span className="size-2 rounded-full bg-brand-400 animate-ping motion-reduce:animate-none" />
+            <div className="flex items-center gap-2 pt-1 text-brand-400 text-[10px]">
+              <span className="size-1.5 rounded-full bg-brand-400 animate-ping motion-reduce:animate-none" />
               <span className="animate-pulse motion-reduce:animate-none">Aguardando telemetria...</span>
             </div>
           )}

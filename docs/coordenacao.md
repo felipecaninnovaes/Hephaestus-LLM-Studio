@@ -19,7 +19,15 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-12 (FATIA FORJA DE TREINO DE DIFUSÃO LORA CONCLUÍDA NA BRANCH)
+## Estado atual — 2026-09-12 (FATIA AUTOLABEL V2 CONCLUÍDA NA BRANCH)
+
+- **FATIA AUTOLABEL V2 (MODELOS VLM E API OPENAI) — CONCLUÍDA NA BRANCH (2026-09-12)** — branch `feat/autolabel-v2`. **Especificação executável: `docs/adr/0019-autolabel-v2-vlm-openai.md`** (D0–D5).
+  - **AL2.0 (docs/adr)**: ADR-0019 aceita e registrada (`docs/adr/0019-autolabel-v2-vlm-openai.md`).
+  - **AL2.1 (contrato OpenAPI 0.18.0)**: `AutolabelJobRequest` expandido com `model` enum `[mock, florence-2, qwen2-vl, openai]`, `apiKey`, `apiBase` e `openaiModel`; 15/15 contract tests verdes.
+  - **AL2.2 (backend api-principal)**: Validação pura em `models.rs` aceitando novos modelos VLM e endpoints com scheme http/https; serialização de novos parâmetros no `generate_autolabel_config_yaml`; 320 testes unitários verdes.
+  - **AL2.3 (engine trainer-yolo autolabel.py)**: Suporte completo aos modos `florence-2`, `qwen2-vl`, `mock` e `openai` (chamadas HTTP compatíveis com OpenAI Vision com fallback determinístico gracioso); 103 testes pytest verdes.
+  - **AL2.4 (web frontend)**: `AutoLabelModal.tsx` redesenhado com seleção de modelos VLM (Florence-2, Qwen2-VL, OpenAI Vision, Mock), campos para chave de API e URL base compatível (Ollama/vLLM), e presets rápidos de prompt para Difusão LoRA; Next.js build limpo com 0 erros de tipo.
+  - **AL2.5 (verificações & formatação)**: `cargo fmt --all -- --check` 0 hunks; `ruff format --check` e `ruff check` 100% limpos; testes do monorepo verdes. Branch pronta para merge.
 
 - **FATIA FORJA DE TREINO DE DIFUSÃO LORA (`/difusao`) — CONCLUÍDA NA BRANCH (2026-09-12)** — branch `feat/treino-difusao`. **Especificação executável: `docs/adr/0018-treino-difusao-lora.md`** (D0–D4).
   - **D.0 (docs/adr)**: ADR-0018 aceita e registrada (`docs/adr/0018-treino-difusao-lora.md`).

@@ -48,7 +48,7 @@ services:
               count: all
               capabilities: [gpu]
     healthcheck:
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8082 && echo -e 'GET /health HTTP/1.1\\n' >&3 && grep -q 200 <&3"]
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8082 && echo -e \"GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && grep -q 200 <&3'"]
       interval: 10s
       timeout: 5s
       retries: 5

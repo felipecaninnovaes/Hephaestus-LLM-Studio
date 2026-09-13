@@ -5,6 +5,7 @@ description = "Motor de treino YOLO — mock (ENGINE_MOCK=1) e real (@gpu, extra
 requires-python = ">=3.11"
 dependencies = [
     "pyyaml>=6.0",
+    "pillow>=10.0",
 ]
 
 [tool.uv]

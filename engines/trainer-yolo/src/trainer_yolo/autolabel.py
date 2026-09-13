@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import io
 import json
 import os
 import re
@@ -183,6 +184,31 @@ def _normalize_api_base(api_base: str) -> str:
     return url
 
 
+def _prepare_image_for_vision(
+    image_path: Path, max_dimension: int = 1024
+) -> tuple[str, str]:
+    """Prepara a imagem para VLM: redimensiona mantendo aspect ratio se maior que max_dimension e converte para base64 JPEG."""
+    try:
+        from PIL import Image
+
+        with Image.open(image_path) as im:
+            w, h = im.size
+            if max(w, h) > max_dimension:
+                im.thumbnail((max_dimension, max_dimension), Image.Resampling.LANCZOS)
+            if im.mode not in ("RGB", "L"):
+                im = im.convert("RGB")
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG", quality=85, optimize=True)
+            jpeg_bytes = buf.getvalue()
+            b64_img = base64.b64encode(jpeg_bytes).decode("utf-8")
+            return b64_img, "image/jpeg"
+    except Exception:  # noqa: BLE001
+        # Fallback para bytes brutos se Pillow não estiver disponível ou falhar
+        image_bytes = image_path.read_bytes()
+        b64_img = base64.b64encode(image_bytes).decode("utf-8")
+        return b64_img, _get_mime_type(image_path)
+
+
 def _call_openai_vision_api(
     image_path: Path,
     prompt: str | None,
@@ -192,9 +218,7 @@ def _call_openai_vision_api(
 ) -> str:
     """Faz chamada HTTP à API compatível com OpenAI Vision para descrever a imagem."""
     norm_base = _normalize_api_base(api_base)
-    image_bytes = image_path.read_bytes()
-    b64_img = base64.b64encode(image_bytes).decode("utf-8")
-    mime = _get_mime_type(image_path)
+    b64_img, mime = _prepare_image_for_vision(image_path)
 
     instruction = (
         prompt.strip()
@@ -219,7 +243,7 @@ def _call_openai_vision_api(
                 ],
             }
         ],
-        "max_tokens": 500,
+        "max_tokens": 1500,
     }
 
     url = f"{norm_base}/chat/completions"
@@ -266,7 +290,11 @@ def _call_openai_vision_api(
                         if isinstance(p, dict) and p.get("type") == "text"
                     ]
                     content = " ".join(text_parts)
-                return str(content).strip()
+                caption_text = str(content).strip() if content else ""
+                # Suporte a modelos reasoning que gastaram tokens no raciocínio
+                if not caption_text and message.get("reasoning_content"):
+                    caption_text = str(message["reasoning_content"]).strip()
+                return caption_text
         except urllib.error.HTTPError as exc:
             err_body = ""
             try:

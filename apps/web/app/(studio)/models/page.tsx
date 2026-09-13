@@ -29,7 +29,7 @@ function engineBadge(engine: string) {
     case "diffusion":
       return { label: "Difusão", className: "border-purple-500/35 bg-purple-500/10 text-purple-400" };
     case "clip":
-      return { label: "CLIP", className: "border-emerald-500/35 bg-emerald-500/10 text-emerald-400" };
+      return { label: "CLIP", className: "border-[#34d399]/35 bg-[#34d399]/10 text-[#34d399]" };
     default:
       return { label: "YOLO", className: "border-zinc-700/60 bg-zinc-800/40 text-zinc-300" };
   }

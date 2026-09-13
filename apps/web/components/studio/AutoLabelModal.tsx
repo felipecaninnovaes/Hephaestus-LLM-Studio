@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   IconSparkles,
@@ -14,6 +14,7 @@ import {
 import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { Select, type SelectOption } from "@/components/ui/Select";
 import { ApiError } from "@/lib/api";
 import { startAutolabelJob } from "@/lib/autolabel";
 import { autolabelErrorMessage, type AutolabelModel, type StudioClass } from "@/types/studio";
@@ -166,6 +167,14 @@ export default function AutoLabelModal({
   // Escopo de processamento
   const [scopeMode, setScopeMode] = useState<ScopeMode>("all");
   const [selectedClassId, setSelectedClassId] = useState<string>("");
+
+  const classOptions = useMemo<SelectOption<string>[]>(() => {
+    if (!classes) return [];
+    return classes.map((cls) => ({
+      value: cls.id,
+      label: `${cls.name} (idx: ${cls.idx})`,
+    }));
+  }, [classes]);
 
   // Estados principais
   const [model, setModel] = useState<AutolabelModel>("florence-2");
@@ -451,23 +460,17 @@ export default function AutoLabelModal({
           {/* Seletor da classe quando scopeMode === 'class' */}
           {scopeMode === "class" && classes && classes.length > 0 && (
             <div className="mt-2.5 pt-2.5 border-t border-white/5 space-y-2">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <label className="font-mono text-[11px] text-zinc-300">
-                  Classe para Filtragem:
-                </label>
-                <select
-                  value={selectedClassId}
-                  onChange={(e) => setSelectedClassId(e.target.value)}
-                  disabled={busy}
-                  className="rounded-lg border border-white/15 bg-zinc-900 px-2.5 py-1.5 font-mono text-xs text-zinc-100 outline-none focus:border-amber-400"
-                >
-                  {classes.map((cls) => (
-                    <option key={cls.id} value={cls.id}>
-                      {cls.name} (idx: {cls.idx})
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <Select
+                id="autolabel-filter-class"
+                label="Classe para Filtragem"
+                options={classOptions}
+                value={selectedClassId}
+                onChange={(val) => setSelectedClassId(val)}
+                disabled={busy}
+                placeholder="Selecione uma classe para filtrar…"
+                fontMono
+                size="sm"
+              />
               <div className="flex items-center gap-2 text-[11px] text-zinc-400">
                 <span>Tag dinâmica no prompt:</span>
                 <button
@@ -809,7 +812,7 @@ export default function AutoLabelModal({
                   <span className="font-mono text-xs font-medium text-zinc-200">
                     Desativar Raciocínio (Fast Mode)
                   </span>
-                  <span className="rounded border border-emerald-500/30 bg-emerald-500/20 px-1.5 py-0.2 font-mono text-[9px] font-semibold text-emerald-300">
+                  <span className="rounded border border-[#34d399]/30 bg-[#34d399]/20 px-1.5 py-0.2 font-mono text-[9px] font-semibold text-[#34d399]">
                     Recomendado
                   </span>
                 </div>
@@ -829,7 +832,7 @@ export default function AutoLabelModal({
                   }}
                   className="peer sr-only"
                 />
-                <div className="h-5 w-9 rounded-full bg-zinc-700 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-emerald-500/40 peer-checked:bg-emerald-500 peer-checked:after:translate-x-full peer-checked:after:border-white after:absolute after:left-[2px] after:top-[2px] after:h-4 after:w-4 after:rounded-full after:border after:border-zinc-300 after:bg-white after:transition-all after:content-['']"></div>
+                <div className="h-5 w-9 rounded-full bg-zinc-700 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-brand-500/40 peer-checked:bg-brand-500 peer-checked:after:translate-x-full peer-checked:after:border-white after:absolute after:left-[2px] after:top-[2px] after:h-4 after:w-4 after:rounded-full after:border after:border-zinc-300 after:bg-white after:transition-all after:content-['']"></div>
               </label>
             </div>
           </div>

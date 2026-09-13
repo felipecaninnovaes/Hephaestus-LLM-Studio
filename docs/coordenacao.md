@@ -28,6 +28,7 @@ ser interrompido no meio de uma.
   - **Correções Aplicadas**:
     - `engines/trainer-difusao/src/trainer_difusao/train.py`:
       - Carregamento do VAE em `torch.float32` tanto no SDXL quanto no SD 1.5, convertendo apenas os latents resultantes para `torch.float16` (`Latents NaN com float32? False`, Loss medido em `0.0389` na GPU física).
+      - Decodificação de amostras de validação em `_generate_sample_sdxl` e `_generate_sample_sd15` atualizadas com `output_type="latent"` e conversão explícita de `latents.to(dtype=torch.float32) / scaling_factor` antes do `vae.decode()`, eliminando o erro de tipo incompatível (`Input type (c10::Half) and bias type (float) should be the same`) e gerando com sucesso imagens PIL 1024x1024.
       - Adicionado `torch.nn.utils.clip_grad_norm_(unet.parameters(), 1.0)` para estabilidade dos gradientes LoRA.
       - Serialização segura de métricas: em caso de `NaN` ou `Inf`, grava `"loss": null` e nunca o literal inválido `NaN`.
     - `services/orchestrator/src/lib.rs`:

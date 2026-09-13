@@ -19,20 +19,21 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-13 (FATIA TELEMETRIA & LOGS CONCLUÍDA NA BRANCH; FATIA FUTURA: REVISÃO DE CAPTION AUTOLABEL)
+## Estado atual — 2026-09-13 (FATIA REVISÃO DE CAPTION AUTOLABEL CONCLUÍDA NA BRANCH)
+
+- **FATIA REVISÃO E CURADORIA DE CAPTION NO AUTOLABEL — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/autolabel-caption-review`.
+  - **Contrato OpenAPI (0.19.0)**: Rota `GET /api/jobs/{id}/autolabel/preview` adicionada para inspeção prévia das legendas com presigned URLs; campo `items: Option<Vec<AutolabelApplyItem>>` em `AutolabelApplyRequest` permitindo curadoria seletiva e edição de legendas; novos schemas `AutolabelApplyItem`, `AutolabelPreviewItem` e `AutolabelPreviewResponse`.
+  - **Backend API Principal**:
+    - Handler `preview_autolabel_captions`: valida job/artefato `captions.jsonl`, calcula hash MD5, busca imagens ativas e legendas existentes no Postgres, assina URLs via `StoragePort` com fallback para `/data` e devolve lista enriquecida.
+    - Handler `apply_autolabel_captions`: atualizado para aplicar unicamente a lista curada quando `req.items` for fornecido, mantendo retrocompatibilidade total quando omitido (aplica 100% do artefato).
+    - Rota protegida registrada em `auth/routes.rs`. Testes unitários de serialização, validação e handlers 324/324 verdes.
+  - **Web Frontend**:
+    - Cliente HTTP: `getAutolabelPreview(jobId)` implementado em `apps/web/lib/autolabel.ts` e tipos alinhados em `apps/web/types/studio.ts`.
+    - Componente `AutolabelReviewModal.tsx`: modal moderno com contadores em tempo real (Total, Selecionadas, Editadas, Com Legenda Atual), barra de busca rápida, filtros por pílulas, visualizador de imagens com thumbnails, comparador lado a lado com a legenda anterior (identificando origem manual/import/autolabel), editor inline com contador de caracteres (até 8000), ações em massa ("Marcar Todas", "Desmarcar Todas", "Desfazer Edições") e opção de sobrescrita controlada.
+    - Integração de UI: Botão de ação "Revisar Legendas (Curadoria)" adicionado na visualização detalhada de jobs (`apps/web/app/(studio)/jobs/page.tsx`) e nos cards expansíveis do Centro de Atividades (`apps/web/components/studio/ActionCenter.tsx`), mantendo também o atalho de aplicação direta rápida.
+  - **Verificações**: `cargo check --workspace` verde, `cargo test -p api-principal --lib` 324/324 verde, `cargo fmt` 0 hunks, `npm run build` web verde (0 erros TS), `graft build` sincronizado. Branch pronta para commit.
 
 - **FATIA TELEMETRIA & LOGS NO ACTION CENTER — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/telemetria-logs-action` (commit `a213ee5`).
-  - **Terminal de Logs Integrado**: `JobLogViewer` embutido diretamente no card expandido de cada job no Action Center (`ActionCenter.tsx`, modo `compact`), permitindo inspecionar logs de stdout/stderr, tags de engine e streaming ativo em tempo real de qualquer tela do Studio.
-  - **Telemetria de Nó & Fallback**: Exibição do Nó Executor real (`job.orchestratorName`, `job.orchestratorKind`), com badge explicativo para execuções com fallback automático para nós alternativos.
-  - **Desacoplamento de Engines**: `JobLogViewer` identifica dinamicamente o engine (`autolabel`, `diffusion`, `autotracker`, `predict` ou `yolo`), formatando a inicialização e mensagens de conclusão específicas para cada tipo de job.
-  - **Tratamento Robusto de Erros**: Captura completa de traceback em `job.error || job.queueReason`, com quebras de linha preservadas, formatação de tags `[STDERR]` e botão rápido de cópia do erro para a área de transferência.
-  - **Telemetria Incremental no AutoLabel**: `autolabel.py` atualizado para gravar `metrics.jsonl` progressivamente a cada imagem processada; `compute_progress` e `MetricsLine` no orquestrador atualizados para respeitar `progress` explícito emitido por engines, mantendo barra de progresso em tempo real (0–100%) no Action Center.
-  - **Verificações**: `cargo check --workspace` verde, `cargo test -p orchestrator` 82/82 verde, `cargo fmt` 0 hunks, `npm run build` web verde (0 erros TS), lefthook pre-commit e commitlint aprovados. Branch pronta para merge.
-
-- **FATIA FUTURA PLANEJADA — REVISÃO DE CAPTION NO AUTOLABEL (Human-in-the-Loop Review)**:
-  - **Objetivo**: Permitir a inspeção, curadoria e edição humana das legendas geradas pelos modelos VLM (Qwen2-VL, Florence-2, OpenAI/Vision) antes ou depois da aplicação definitiva no dataset.
-  - **Frontend**: Modal / tela de revisão em lote exibindo cada imagem com sua legenda sugerida, permitindo edição inline do texto, aceitação/rejeição individual, seleção em massa e botão de "Aplicar Aprovadas".
-  - **Backend / Contratos**: Parâmetros no endpoint de apply para aceitar seleções parciais de imagens e/ou substituição de textos editados pelo operador.
 
 - **FATIA AUTOLABEL V2 (MODELOS VLM, API OPENAI E ENDPOINTS CUSTOM) — CONCLUÍDA NA BRANCH (2026-09-12)** — branch `feat/autolabel-v2`. **Especificação executável: `docs/adr/0019-autolabel-v2-vlm-openai.md`** (D0–D5).
   - **AL2.0 (docs/adr)**: ADR-0019 aceita e registrada (`docs/adr/0019-autolabel-v2-vlm-openai.md`).

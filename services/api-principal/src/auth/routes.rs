@@ -125,6 +125,11 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
         "/api/jobs/:id/autolabel/apply",
         &[200, 400, 401, 404, 409, 503],
     ),
+    (
+        "GET",
+        "/api/jobs/:id/autolabel/preview",
+        &[200, 401, 404, 409, 503],
+    ),
     ("POST", "/api/jobs/:id/abort", &[200, 401, 404, 409, 503]),
     ("GET", "/api/orchestrators", &[200, 401, 503]),
     (
@@ -357,6 +362,10 @@ pub fn build(state: AppState) -> axum::Router {
         .route(
             "/api/jobs/:id/autolabel/apply",
             post(jobs::handlers::apply_autolabel_captions),
+        )
+        .route(
+            "/api/jobs/:id/autolabel/preview",
+            get(jobs::handlers::preview_autolabel_captions),
         )
         .route("/api/jobs/:id/abort", post(jobs::handlers::abort_job))
         // Monitoramento (F6.1b — ADR-0009 D1/D2/D3).

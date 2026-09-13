@@ -1693,6 +1693,184 @@ pub async fn apply_autotracker_boxes(
 }
 
 // ---------------------------------------------------------------------------
+// GET /api/jobs/:id/autolabel/preview — prévia de legendas do autolabel
+// ---------------------------------------------------------------------------
+
+/// GET /api/jobs/:id/autolabel/preview — retorna prévia das legendas geradas para curadoria humana.
+///
+/// Status: 200 | 401 | 404 `not_found` | 409 `job_not_done` | 503 `queue_unavailable` | 503 `storage_unavailable`.
+pub async fn preview_autolabel_captions(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Response {
+    // 0. Parse job id — não-UUID ⇒ 404.
+    let job_uuid = match parse_uuid(&id) {
+        Some(u) => u,
+        None => return not_found(),
+    };
+
+    // 1. Busca job no manager.
+    let job = match state.manager.get_job(&id).await {
+        Ok(j) => j,
+        Err(ManagerError::NotFound) => return not_found(),
+        Err(ManagerError::Unavailable(_)) => return queue_unavailable(),
+        Err(_) => return queue_unavailable(),
+    };
+
+    // 1a. Valida engine == 'autolabel'.
+    if job.engine != "autolabel" {
+        return not_found();
+    }
+
+    // 1b. Valida status == 'done'.
+    if job.status != "done" {
+        return job_not_done();
+    }
+
+    // 1c. Valida dataset_id presente.
+    let dataset_id_str = match &job.dataset_id {
+        Some(s) => s.clone(),
+        None => return dataset_not_ready(),
+    };
+    let dataset_id: Uuid = match dataset_id_str.parse() {
+        Ok(v) => v,
+        Err(_) => return dataset_not_ready(),
+    };
+
+    // 2. Localiza artefato `captions.jsonl` via list_artifacts.
+    let artifacts = match state.manager.list_artifacts(&id).await {
+        Ok(a) => a,
+        Err(ManagerError::NotFound) => return not_found(),
+        Err(ManagerError::Unavailable(_)) => return queue_unavailable(),
+        Err(_) => return queue_unavailable(),
+    };
+    let captions_artifact = match artifacts
+        .iter()
+        .find(|a| a.kind == "captions" || a.path == "captions.jsonl")
+    {
+        Some(a) => a,
+        None => return not_found(),
+    };
+
+    if let Err(resp) = validate_artifact_path(&captions_artifact.path) {
+        return resp;
+    }
+
+    // 2b. Lê objeto via StoragePort.
+    let key = format!("artifacts/{id}/{}", captions_artifact.path);
+    let bytes = match state.storage.get(&key).await {
+        Ok(b) => b,
+        Err(StorageError::NotFound) => {
+            return err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "storage_unavailable",
+                MSG_STORAGE_UNAVAILABLE,
+            );
+        }
+        Err(StorageError::Unavailable(_)) => return storage_unavailable(),
+    };
+
+    // 2c. Confere md5.
+    let computed = format!(
+        "{:x}",
+        md5::Digest::finalize({
+            use md5::Digest;
+            let mut h = md5::Md5::new();
+            md5::Digest::update(&mut h, &bytes);
+            h
+        })
+    );
+    if computed != captions_artifact.md5 {
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "storage_unavailable",
+            MSG_STORAGE_UNAVAILABLE,
+        );
+    }
+
+    // 3. Parse do JSONL.
+    let items = match models::parse_captions_jsonl(&bytes) {
+        Ok(it) => it,
+        Err(_) => return invalid_request(),
+    };
+
+    // 4. Busca imagens ativas do dataset (filename, id, object_key).
+    let image_rows: Vec<(Uuid, String, String)> = match sqlx::query_as::<_, (Uuid, String, String)>(
+        "SELECT id, filename, object_key FROM images WHERE dataset_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(dataset_id)
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "internal server error",
+            )
+        }
+    };
+    let filename_to_image: std::collections::HashMap<String, (Uuid, String)> = image_rows
+        .into_iter()
+        .map(|(id, fname, okey)| (fname, (id, okey)))
+        .collect();
+
+    // 5. Busca captions existentes para estas imagens (image_id -> (text, origin)).
+    let existing_captions: std::collections::HashMap<Uuid, (String, String)> = match sqlx::query_as::<_, (Uuid, String, String)>(
+        "SELECT c.image_id, c.text, c.origin FROM captions c JOIN images i ON i.id = c.image_id WHERE i.dataset_id = $1 AND i.deleted_at IS NULL",
+    )
+    .bind(dataset_id)
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(rows) => rows.into_iter().map(|(id, text, origin)| (id, (text, origin))).collect(),
+        Err(_) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "internal server error",
+            )
+        }
+    };
+
+    // 6. Constrói items de prévia.
+    let total_generated = items.len() as i64;
+    let mut preview_items = Vec::new();
+
+    for item in items {
+        if let Some((image_id, object_key)) = filename_to_image.get(&item.filename) {
+            let image_url =
+                crate::datasets::handlers::image_url(&state, object_key, dataset_id, *image_id)
+                    .await
+                    .unwrap_or_default();
+            let (curr_text, curr_origin) = match existing_captions.get(image_id) {
+                Some((t, o)) => (Some(t.clone()), Some(o.clone())),
+                None => (None, None),
+            };
+
+            preview_items.push(models::AutolabelPreviewItem {
+                image_id: *image_id,
+                filename: item.filename,
+                image_url,
+                generated_caption: item.caption,
+                current_caption: curr_text,
+                current_origin: curr_origin,
+            });
+        }
+    }
+
+    let resp = models::AutolabelPreviewResponse {
+        job_id: job_uuid,
+        dataset_id,
+        model: Some(job.model),
+        total_generated,
+        items: preview_items,
+    };
+    (StatusCode::OK, Json(resp)).into_response()
+}
+
+// ---------------------------------------------------------------------------
 // POST /api/jobs/:id/autolabel/apply — aplica legendas do autolabel (ADR-0016 D1)
 // ---------------------------------------------------------------------------
 
@@ -1804,10 +1982,22 @@ pub async fn apply_autolabel_captions(
         );
     }
 
-    // 4. Parse do JSONL.
-    let items = match models::parse_captions_jsonl(&bytes) {
-        Ok(it) => it,
-        Err(_) => return invalid_request(),
+    // 4. Determina os itens a aplicar:
+    // Se o cliente forneceu `req.items` curados, usa esses;
+    // senão, faz parse do JSONL original do artefato.
+    let target_items: Vec<models::CaptionsJsonlItem> = if let Some(curated) = req.items {
+        curated
+            .into_iter()
+            .map(|c| models::CaptionsJsonlItem {
+                filename: c.filename,
+                caption: c.caption,
+            })
+            .collect()
+    } else {
+        match models::parse_captions_jsonl(&bytes) {
+            Ok(it) => it,
+            Err(_) => return invalid_request(),
+        }
     };
 
     // 5. Busca imagens ativas do dataset (filename → image_id).
@@ -1855,7 +2045,7 @@ pub async fn apply_autolabel_captions(
     let mut total_skipped: i64 = 0;
     let mut applied_images: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
 
-    for item in items {
+    for item in target_items {
         let Some(&image_id) = filename_to_id.get(&item.filename) else {
             total_skipped += 1;
             continue;
@@ -3185,6 +3375,30 @@ mod tests {
         )
         .await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn preview_autolabel_captions_404_non_uuid() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = preview_autolabel_captions(
+            axum::extract::State(state),
+            Path("nao-eh-uuid".to_string()),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn preview_autolabel_captions_404_job_not_found() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = preview_autolabel_captions(
+            axum::extract::State(state),
+            Path("550e8400-e29b-41d4-a716-446655440000".to_string()),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
     // --- helpers ---

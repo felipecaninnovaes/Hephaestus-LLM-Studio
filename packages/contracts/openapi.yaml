@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.18.0
+  version: 0.19.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -1683,6 +1683,47 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/jobs/{id}/autolabel/preview:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: "PK do job. UUID inválido ⇒ 404 `not_found`."
+    get:
+      operationId: getAutolabelPreview
+      tags: [jobs]
+      summary: Prévia e auditoria das legendas geradas pelo autolabel
+      description: |
+        Retorna a lista de imagens e legendas geradas pelo modelo VLM a partir do artefato
+        `captions.jsonl`, enriquecida com presigned URLs e legendas atuais para curadoria humana.
+      responses:
+        "200":
+          description: Amostras e legendas geradas retornadas com sucesso.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutolabelPreviewResponse" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Job inexistente, não-UUID, não-autolabel ou artefato ausente (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "Job não está `done` (`code: job_not_done`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`) ou storage indisponível (`code: storage_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/jobs/{id}/autolabel/apply:
     parameters:
       - name: id
@@ -2711,6 +2752,77 @@ components:
           type: boolean
           default: false
           description: "true = sobrescreve todas as legendas; false = só atualiza imagens sem legenda ou com origin=autolabel."
+        items:
+          type: array
+          description: "Lista seletiva/curada de legendas para aplicar (opcional). Se omitido, aplica todas as legendas do artefato."
+          items:
+            $ref: "#/components/schemas/AutolabelApplyItem"
+
+    AutolabelApplyItem:
+      type: object
+      required: [filename, caption]
+      additionalProperties: false
+      description: "Item curado/revisado para aplicação de legenda."
+      properties:
+        filename:
+          type: string
+          description: "Nome do arquivo da imagem no dataset."
+        caption:
+          type: string
+          description: "Texto da legenda curada/editada (1 a 8000 caracteres)."
+
+    AutolabelPreviewItem:
+      type: object
+      required: [imageId, filename, imageUrl, generatedCaption]
+      additionalProperties: false
+      description: "Item de prévia de legenda para revisão humana."
+      properties:
+        imageId:
+          type: string
+          format: uuid
+          description: "ID da imagem no dataset."
+        filename:
+          type: string
+          description: "Nome original do arquivo."
+        imageUrl:
+          type: string
+          format: uri
+          description: "Presigned URL para visualização da imagem."
+        generatedCaption:
+          type: string
+          description: "Legenda gerada pelo modelo VLM."
+        currentCaption:
+          type: [string, "null"]
+          description: "Legenda atualmente persistida no dataset (se houver)."
+        currentOrigin:
+          type: [string, "null"]
+          description: "Origem da legenda atual ('manual', 'autolabel', 'import', etc.)."
+
+    AutolabelPreviewResponse:
+      type: object
+      required: [jobId, datasetId, totalGenerated, items]
+      additionalProperties: false
+      description: "Resposta com as prévias de legendas geradas pelo autolabel."
+      properties:
+        jobId:
+          type: string
+          format: uuid
+          description: "ID do job de autolabel."
+        datasetId:
+          type: string
+          format: uuid
+          description: "ID do dataset associado."
+        model:
+          type: [string, "null"]
+          description: "Modelo VLM utilizado."
+        totalGenerated:
+          type: integer
+          minimum: 0
+          description: "Total de legendas geradas no artefato."
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AutolabelPreviewItem"
 
     AutolabelApplyResponse:
       type: object

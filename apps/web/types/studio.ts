@@ -294,9 +294,32 @@ export interface AutolabelJobRequest {
   reasoningEffort?: "none" | "low" | "medium" | "high" | null;
 }
 
+export interface AutolabelApplyItem {
+  filename: string;
+  caption: string;
+}
+
 export interface AutolabelApplyRequest {
   datasetId?: string;
   overwrite?: boolean;
+  items?: AutolabelApplyItem[];
+}
+
+export interface AutolabelPreviewItem {
+  imageId: string;
+  filename: string;
+  imageUrl: string;
+  generatedCaption: string;
+  currentCaption?: string | null;
+  currentOrigin?: string | null;
+}
+
+export interface AutolabelPreviewResponse {
+  jobId: string;
+  datasetId: string;
+  model?: string | null;
+  totalGenerated: number;
+  items: AutolabelPreviewItem[];
 }
 
 export interface AutolabelApplyResponse {

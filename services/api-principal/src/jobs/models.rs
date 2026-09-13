@@ -801,6 +801,13 @@ lora:
     )
 }
 
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AutolabelApplyItem {
+    pub filename: String,
+    pub caption: String,
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutolabelApplyRequest {
@@ -808,6 +815,31 @@ pub struct AutolabelApplyRequest {
     pub dataset_id: Option<String>,
     #[serde(default)]
     pub overwrite: bool,
+    #[serde(default)]
+    pub items: Option<Vec<AutolabelApplyItem>>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AutolabelPreviewItem {
+    pub image_id: uuid::Uuid,
+    pub filename: String,
+    pub image_url: String,
+    pub generated_caption: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_caption: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_origin: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AutolabelPreviewResponse {
+    pub job_id: uuid::Uuid,
+    pub dataset_id: uuid::Uuid,
+    pub model: Option<String>,
+    pub total_generated: i64,
+    pub items: Vec<AutolabelPreviewItem>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1678,5 +1710,47 @@ mod tests {
         let json2 = r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","rank":200}"#;
         let req2: DiffusionJobRequest = serde_json::from_str(json2).unwrap();
         assert!(validate_diffusion_request(req2).is_err());
+    }
+
+    #[test]
+    fn autolabel_apply_request_with_curated_items() {
+        let json = r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","overwrite":true,"items":[{"filename":"photo.webp","caption":"a photo of a cat"}]}"#;
+        let req: AutolabelApplyRequest = serde_json::from_str(json).expect("should parse");
+        assert_eq!(
+            req.dataset_id.as_deref(),
+            Some("550e8400-e29b-41d4-a716-446655440001")
+        );
+        assert!(req.overwrite);
+        let items = req.items.expect("items present");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].filename, "photo.webp");
+        assert_eq!(items[0].caption, "a photo of a cat");
+
+        // unknown fields deve falhar devido a deny_unknown_fields
+        let bad_json = r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","extra":123}"#;
+        assert!(serde_json::from_str::<AutolabelApplyRequest>(bad_json).is_err());
+    }
+
+    #[test]
+    fn autolabel_preview_response_serialization() {
+        let item = AutolabelPreviewItem {
+            image_id: uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440002").unwrap(),
+            filename: "img1.png".into(),
+            image_url: "https://minio.local/img1.png".into(),
+            generated_caption: "a red sports car".into(),
+            current_caption: Some("old caption".into()),
+            current_origin: Some("manual".into()),
+        };
+        let resp = AutolabelPreviewResponse {
+            job_id: uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440003").unwrap(),
+            dataset_id: uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440004").unwrap(),
+            model: Some("florence-2".into()),
+            total_generated: 1,
+            items: vec![item],
+        };
+        let serialized = serde_json::to_string(&resp).expect("serialize");
+        assert!(serialized.contains("generatedCaption"));
+        assert!(serialized.contains("currentCaption"));
+        assert!(serialized.contains("totalGenerated"));
     }
 }

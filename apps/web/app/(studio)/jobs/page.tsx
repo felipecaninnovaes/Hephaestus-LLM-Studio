@@ -43,6 +43,8 @@ import { autotrackerErrorMessage, autolabelErrorMessage } from "@/types/studio";
 import { formatBytes, formatDuration } from "@/lib/format";
 import { openActionCenter } from "@/lib/events";
 import { JobListItem } from "@/components/studio/JobCard";
+import { AutolabelReviewModal } from "@/components/studio/AutolabelReviewModal";
+import { IconSparkles } from "@/components/icons";
 
 const POLL_INTERVAL = 3000;
 
@@ -84,6 +86,7 @@ function JobsPageContent() {
   const [abortBusy, setAbortBusy] = useState(false);
   const [applyBusy, setApplyBusy] = useState(false);
   const [applyOverwrite, setApplyOverwrite] = useState(false);
+  const [reviewJob, setReviewJob] = useState<Job | null>(null);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -740,27 +743,40 @@ function JobsPageContent() {
                     )}
 
                     {selectedJob.kind === "autolabel" && selectedJob.status === "done" && (
-                      <div className="flex items-center gap-3">
-                        <label className="flex items-center gap-2 text-xs text-zinc-400 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={applyOverwrite}
-                            onChange={(e) => setApplyOverwrite(e.target.checked)}
-                            className="rounded border-zinc-700 bg-zinc-800 text-brand-500 focus:ring-brand-500/40"
-                          />
-                          <span>Sobrescrever legendas existentes</span>
-                        </label>
+                      <div className="flex items-center gap-3 flex-wrap">
                         <Button
                           type="button"
                           variant="primary"
                           size="sm"
-                          disabled={applyBusy}
-                          loading={applyBusy}
-                          onClick={() => handleApplyCaptions(selectedJob)}
+                          onClick={() => setReviewJob(selectedJob)}
                         >
-                          <IconCheck className="size-3.5 text-brand-400" />
-                          <span>{applyBusy ? "Aplicando…" : "Aplicar legendas ao dataset"}</span>
+                          <IconSparkles className="size-3.5 text-brand-400" />
+                          <span>Revisar Legendas (Curadoria)</span>
                         </Button>
+
+                        <div className="flex items-center gap-2 border-l border-white/10 pl-3">
+                          <label className="flex items-center gap-2 text-xs text-zinc-400 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={applyOverwrite}
+                              onChange={(e) => setApplyOverwrite(e.target.checked)}
+                              className="rounded border-zinc-700 bg-zinc-800 text-brand-500 focus:ring-brand-500/40"
+                            />
+                            <span>Sobrescrever</span>
+                          </label>
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="sm"
+                            disabled={applyBusy}
+                            loading={applyBusy}
+                            onClick={() => handleApplyCaptions(selectedJob)}
+                            title="Aplica todas as legendas geradas sem inspeção prévia"
+                          >
+                            <IconCheck className="size-3.5 text-zinc-400" />
+                            <span>{applyBusy ? "Aplicando…" : "Aplicar Todas Direto"}</span>
+                          </Button>
+                        </div>
                       </div>
                     )}
 
@@ -821,6 +837,16 @@ function JobsPageContent() {
         busy={abortBusy}
         onConfirm={handleAbort}
         onClose={() => setAbortTarget(null)}
+      />
+
+      <AutolabelReviewModal
+        open={!!reviewJob}
+        onClose={() => setReviewJob(null)}
+        jobId={reviewJob?.id ?? null}
+        datasetId={reviewJob?.datasetId}
+        onApplied={() => {
+          void fetchJobs();
+        }}
       />
     </div>
   );

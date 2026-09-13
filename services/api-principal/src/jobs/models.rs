@@ -973,6 +973,8 @@ pub struct DiffusionGenerateJobRequest {
     pub seed: Option<u64>,
     #[serde(default = "default_diffusion_quantization")]
     pub quantization: String,
+    #[serde(default)]
+    pub distilled: bool,
     pub weights: Option<String>,
     #[serde(default = "default_diffusion_lora_scale")]
     pub lora_scale: f64,
@@ -1094,6 +1096,7 @@ generate:
   guidance_scale: {guidance_scale}
   seed: {seed}
   quantization: "{quantization}"
+  distilled: {distilled}
   lora_scale: {lora_scale}
 "#,
         job_id = job_id,
@@ -1106,6 +1109,7 @@ generate:
         steps = req.steps,
         guidance_scale = req.guidance_scale,
         quantization = req.quantization,
+        distilled = req.distilled,
         lora_scale = req.lora_scale,
     )
 }

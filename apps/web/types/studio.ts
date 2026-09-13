@@ -430,6 +430,7 @@ export interface DiffusionGenerateJobRequest {
   guidanceScale?: number;
   seed?: number;
   quantization?: "none" | "4bit" | "8bit";
+  distilled?: boolean;
   weights?: string | null;
   loraScale?: number;
   orchestratorId?: string | null;

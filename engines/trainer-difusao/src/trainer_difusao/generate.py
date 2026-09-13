@@ -80,6 +80,7 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
 
     weights_path = cfg.get("weights_path") or gen_cfg.get("weights_path")
     negative_prompt = gen_cfg.get("negative_prompt") or ""
+    distilled = bool(gen_cfg.get("distilled", False))
 
     return {
         "job_id": str(job_id),
@@ -92,6 +93,7 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "guidance_scale": guidance_scale,
         "seed": seed,
         "quantization": quantization,
+        "distilled": distilled,
         "weights_path": str(weights_path) if weights_path else None,
         "lora_scale": lora_scale,
     }
@@ -110,6 +112,7 @@ def _mock_generate(params: dict[str, Any], output_dir: Path) -> Path:
     steps = params["steps"]
     cfg = params["guidance_scale"]
     quant = params["quantization"]
+    distilled = params.get("distilled", False)
     weights_path = params["weights_path"]
 
     # Fundo com degradê escuro óptico determinístico baseado na seed
@@ -140,7 +143,9 @@ def _mock_generate(params: dict[str, Any], output_dir: Path) -> Path:
     draw.rectangle(card_box, fill=(18, 18, 22), outline=(131, 80, 242), width=2)
 
     # Textos informativos
-    title_text = f"HEPHAESTUS STUDIO · PLAYGROUND DE DIFUSÃO [{base_model.upper()}]"
+    # Textos informativos
+    variant_label = "DESTILADO (4-8 steps)" if distilled else "BASE (20+ steps)"
+    title_text = f"HEPHAESTUS STUDIO · PLAYGROUND DE DIFUSÃO [{base_model.upper()} · {variant_label}]"
     prompt_line = f"Prompt: {prompt[:70]}{'...' if len(prompt) > 70 else ''}"
     if neg:
         prompt_line += f" | Neg: {neg[:30]}"
@@ -156,7 +161,7 @@ def _mock_generate(params: dict[str, Any], output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     out_file = output_dir / "generated.png"
     img.save(out_file, "PNG")
-    print(f"[MOCK-GEN] Imagem gerada com sucesso ({width}x{height}, seed={seed}): {out_file}", flush=True)
+    print(f"[MOCK-GEN] Imagem gerada com sucesso ({width}x{height}, seed={seed}, {variant_label}): {out_file}", flush=True)
     return out_file
 
 
@@ -173,13 +178,17 @@ def _real_generate(params: dict[str, Any], output_dir: Path) -> Path:
     guidance = params["guidance_scale"]
     seed = params["seed"]
     quant = params["quantization"]
+    distilled = params.get("distilled", False)
     weights_path = params["weights_path"]
     lora_scale = params["lora_scale"]
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     generator = torch.Generator(device=device).manual_seed(seed)
 
-    print(f"[DIFFUSION-GEN] Iniciando geração real: model={base_model}, quant={quant}, seed={seed}, steps={steps}...", flush=True)
+    variant_str = "Destilado (4-8 steps)" if distilled else "Base (20+ steps)"
+    print(f"[DIFFUSION-GEN] Iniciando geração real: model={base_model} [{variant_str}], quant={quant}, seed={seed}, steps={steps}, CFG={guidance}...", flush=True)
+    if distilled and guidance > 2.0:
+        print(f"[DIFFUSION-GEN] [AVISO] Modelo destilado em execução com CFG={guidance}. Recomenda-se CFG 1.0 para evitar saturação/queima.", flush=True)
 
     # Configuração de quantização
     bnb_config = None
@@ -205,7 +214,13 @@ def _real_generate(params: dict[str, Any], output_dir: Path) -> Path:
         pipe_kwargs: dict[str, Any] = {
             "torch_dtype": torch.bfloat16 if device == "cuda" else torch.float32,
         }
-        pipe = Flux2KleinPipeline.from_pretrained("unsloth/FLUX.2-klein-4B", **pipe_kwargs)
+        model_repo = (
+            (os.environ.get("FLUX_DISTILLED_MODEL_ID") or "unsloth/FLUX.2-klein-4B")
+            if distilled
+            else (os.environ.get("FLUX_MODEL_ID") or "unsloth/FLUX.2-klein-4B")
+        )
+        print(f"[DIFFUSION-GEN] Carregando FLUX.2 Klein 4B ({'Destilado' if distilled else 'Base'}): {model_repo}", flush=True)
+        pipe = Flux2KleinPipeline.from_pretrained(model_repo, **pipe_kwargs)
         if bnb_config is None and device == "cuda":
             pipe.to(device)
         else:

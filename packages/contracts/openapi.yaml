@@ -2808,6 +2808,10 @@ components:
           enum: ["none", "4bit", "8bit"]
           default: "4bit"
           description: "Quantização do modelo base (4bit NF4, 8bit BNB ou none FP16 pleno)."
+        distilled:
+          type: boolean
+          default: false
+          description: "Variante destilada em passos (ex: FLUX.2 Klein 4B Schnell / 4-8 passos com CFG 1.0)."
         weights:
           type: [string, "null"]
           format: uuid

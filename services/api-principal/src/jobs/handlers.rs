@@ -1366,6 +1366,7 @@ pub async fn submit_diffusion_generate_job(
             "guidance_scale": req.guidance_scale,
             "seed": req.seed,
             "quantization": req.quantization,
+            "distilled": req.distilled,
             "lora_scale": req.lora_scale,
         },
         "vram_min_gb": vram_min,

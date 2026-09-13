@@ -36,6 +36,7 @@ export interface GeneratedImageItem {
   steps: number;
   guidanceScale: number;
   quantization: string;
+  distilled?: boolean;
   loraName?: string;
   loraScale?: number;
   width: number;
@@ -94,6 +95,7 @@ export default function PlaygroundDiffusion() {
 
   /* ── Form Parameters ── */
   const [baseModel, setBaseModel] = useState<"flux-2-klein-4b" | "sdxl" | "sd15">("flux-2-klein-4b");
+  const [distilled, setDistilled] = useState<boolean>(true);
   const [selectedLoRAId, setSelectedLoRAId] = useState<string>("");
   const [loraScale, setLoraScale] = useState<number>(1.0);
   const [prompt, setPrompt] = useState<string>("");
@@ -101,8 +103,8 @@ export default function PlaygroundDiffusion() {
   const [showNegative, setShowNegative] = useState<boolean>(false);
   const [width, setWidth] = useState<number>(1024);
   const [height, setHeight] = useState<number>(1024);
-  const [steps, setSteps] = useState<number>(20);
-  const [guidanceScale, setGuidanceScale] = useState<number>(3.5);
+  const [steps, setSteps] = useState<number>(4);
+  const [guidanceScale, setGuidanceScale] = useState<number>(1.0);
   const [seed, setSeed] = useState<number>(() => Math.floor(Math.random() * 1000000));
   const [isLockedSeed, setIsLockedSeed] = useState<boolean>(false);
   const [quantization, setQuantization] = useState<"4bit" | "8bit" | "none">("4bit");
@@ -126,6 +128,7 @@ export default function PlaygroundDiffusion() {
     steps: number;
     guidanceScale: number;
     quantization: string;
+    distilled?: boolean;
     loraName?: string;
     loraScale?: number;
     width: number;
@@ -174,8 +177,8 @@ export default function PlaygroundDiffusion() {
     const b = modelVal as "flux-2-klein-4b" | "sdxl" | "sd15";
     setBaseModel(b);
     if (b === "flux-2-klein-4b") {
-      setGuidanceScale(3.5);
-      setSteps(20);
+      setGuidanceScale(distilled ? 1.0 : 3.5);
+      setSteps(distilled ? 4 : 20);
       setWidth(1024);
       setHeight(1024);
     } else if (b === "sdxl") {
@@ -190,6 +193,20 @@ export default function PlaygroundDiffusion() {
       setWidth(512);
       setHeight(512);
       setShowNegative(true);
+    }
+  }, [distilled]);
+
+  /* ── Troca de Variante (Destilado vs Base) ── */
+  const handleVariantChange = useCallback((isDistilled: boolean) => {
+    setDistilled(isDistilled);
+    if (isDistilled) {
+      setSteps((s) => (s > 8 ? 4 : s));
+      setGuidanceScale((g) => (g > 2.0 ? 1.0 : g));
+      showToast("Variante destilada ativada: 4–8 passos com CFG 1.0 (Schnell)", "info");
+    } else {
+      setSteps((s) => (s < 12 ? 20 : s));
+      setGuidanceScale((g) => (g <= 1.5 ? 3.5 : g));
+      showToast("Variante base ativada: 20+ passos com CFG 3.5+", "info");
     }
   }, []);
 
@@ -209,6 +226,7 @@ export default function PlaygroundDiffusion() {
       }
       const effectiveSeed = overrideSeed !== undefined ? overrideSeed : seed;
       const selectedLoRAModel = models.find((m) => m.id === selectedLoRAId);
+      const isDistilledActive = baseModel === "flux-2-klein-4b" ? distilled : false;
 
       submittedParamsRef.current = {
         prompt: prompt.trim(),
@@ -218,6 +236,7 @@ export default function PlaygroundDiffusion() {
         steps,
         guidanceScale,
         quantization,
+        distilled: isDistilledActive,
         loraName: selectedLoRAModel?.name,
         loraScale: selectedLoRAModel ? loraScale : undefined,
         width,
@@ -236,6 +255,7 @@ export default function PlaygroundDiffusion() {
           guidanceScale,
           seed: effectiveSeed,
           quantization,
+          distilled: isDistilledActive,
           weights: selectedLoRAId || null,
           loraScale: selectedLoRAId ? loraScale : undefined,
           orchestratorId: selectedOrchestratorId,
@@ -306,6 +326,7 @@ export default function PlaygroundDiffusion() {
               steps: params?.steps ?? steps,
               guidanceScale: params?.guidanceScale ?? guidanceScale,
               quantization: params?.quantization || quantization,
+              distilled: params?.distilled,
               loraName: params?.loraName,
               loraScale: params?.loraScale,
               width: params?.width || width,
@@ -416,6 +437,51 @@ export default function PlaygroundDiffusion() {
               disabled={submitting || !!activeJobId}
             />
           </div>
+
+          {/* Seletor de Variante: Destilado vs Base Original (apenas FLUX.2 Klein) */}
+          {baseModel === "flux-2-klein-4b" && (
+            <div className="space-y-2 p-3 rounded-lg border border-white/10 bg-white/[0.02]">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-medium text-zinc-300">Variante do Modelo</label>
+                <span className="text-[10px] font-mono text-brand-400 font-semibold">
+                  {distilled ? "4–8 steps · Ultrarrápido" : "20+ steps · Máxima Fidelidade"}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleVariantChange(true)}
+                  disabled={submitting || !!activeJobId}
+                  className={`px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
+                    distilled
+                      ? "bg-brand-500/20 border-brand-500/40 text-brand-300 font-semibold shadow-sm shadow-brand-500/10"
+                      : "bg-zinc-900/80 border-white/5 text-zinc-400 hover:text-zinc-200 hover:border-white/10"
+                  }`}
+                >
+                  <IconZap className="w-3.5 h-3.5" />
+                  <span>Destilado</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleVariantChange(false)}
+                  disabled={submitting || !!activeJobId}
+                  className={`px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all text-center flex items-center justify-center gap-1.5 cursor-pointer ${
+                    !distilled
+                      ? "bg-brand-500/20 border-brand-500/40 text-brand-300 font-semibold shadow-sm shadow-brand-500/10"
+                      : "bg-zinc-900/80 border-white/5 text-zinc-400 hover:text-zinc-200 hover:border-white/10"
+                  }`}
+                >
+                  <IconSliders className="w-3.5 h-3.5" />
+                  <span>Base Original</span>
+                </button>
+              </div>
+              <p className="text-[11px] text-zinc-400 leading-relaxed">
+                {distilled
+                  ? "Versão destilada em passos. Rápida (4 a 8 passos) com CFG 1.0. Compatível com LoRAs do base usando scale reduzido (~0.7x)."
+                  : "Versão base original de fluxo contínuo. Requer 20 a 50 passos com CFG 3.5+."}
+              </p>
+            </div>
+          )}
 
           {/* Pesos LoRA (Opcional) */}
           <div className="space-y-1.5">
@@ -714,6 +780,11 @@ export default function PlaygroundDiffusion() {
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-brand-500/10 border border-brand-500/20 text-brand-300">
                   {currentDisplayItem.baseModel}
                 </span>
+                {currentDisplayItem.distilled !== undefined && (
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-white/5 border border-white/10 text-zinc-300">
+                    {currentDisplayItem.distilled ? "Destilado (4-8 steps)" : "Base (20+ steps)"}
+                  </span>
+                )}
               </div>
 
               <div className="flex items-center gap-1.5">

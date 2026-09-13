@@ -943,25 +943,22 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
           </span>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 items-start">
           {/* Épocas */}
-          <div className="space-y-1">
-            <label htmlFor="diffusion-epochs" className="block text-[11px] font-mono text-zinc-400">
-              Épocas ({DIFFUSION_EPOCHS_MIN}–{DIFFUSION_EPOCHS_MAX})
-            </label>
-            <Input
-              id="diffusion-epochs"
-              type="number"
-              min={DIFFUSION_EPOCHS_MIN}
-              max={DIFFUSION_EPOCHS_MAX}
-              value={params.epochs}
-              onChange={(e) =>
-                setParams((p) => ({ ...p, epochs: parseInt(e.target.value, 10) || 1 }))
-              }
-              disabled={busy}
-              className="font-mono text-xs"
-            />
-          </div>
+          <Input
+            id="diffusion-epochs"
+            label={`Épocas (${DIFFUSION_EPOCHS_MIN}–${DIFFUSION_EPOCHS_MAX})`}
+            type="number"
+            min={DIFFUSION_EPOCHS_MIN}
+            max={DIFFUSION_EPOCHS_MAX}
+            value={params.epochs}
+            onChange={(e) =>
+              setParams((p) => ({ ...p, epochs: parseInt(e.target.value, 10) || 1 }))
+            }
+            disabled={busy}
+            fontMono
+            className="h-[38px] text-xs font-mono"
+          />
 
           {/* Batch Size */}
           <Select
@@ -978,7 +975,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
           {/* LoRA Rank */}
           <Select
             id="diffusion-rank"
-            label="LoRA Rank (Dimensão)"
+            label="LoRA Rank"
             options={rankOptions}
             value={params.rank}
             onChange={(val) => {
@@ -991,24 +988,21 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
           />
 
           {/* Learning Rate */}
-          <div className="space-y-1">
-            <label htmlFor="diffusion-lr" className="block text-[11px] font-mono text-zinc-400">
-              Learning Rate
-            </label>
-            <Input
-              id="diffusion-lr"
-              type="text"
-              value={params.learningRate}
-              onChange={(e) => setParams((p) => ({ ...p, learningRate: e.target.value }))}
-              disabled={busy}
-              className="font-mono text-xs"
-            />
-          </div>
+          <Input
+            id="diffusion-lr"
+            label="Learning Rate"
+            type="text"
+            value={params.learningRate}
+            onChange={(e) => setParams((p) => ({ ...p, learningRate: e.target.value }))}
+            disabled={busy}
+            fontMono
+            className="h-[38px] text-xs font-mono"
+          />
         </div>
       </div>
 
       {/* Configurações Avançadas (Colapsável) */}
-      <div className="rounded-xl border border-white/10 bg-white/[0.01] overflow-hidden transition-colors">
+      <div className="rounded-xl border border-white/10 bg-white/[0.01] transition-colors">
         <button
           type="button"
           aria-expanded={showAdvanced}
@@ -1109,31 +1103,26 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
               />
 
               {/* LR Warmup Steps */}
-              <div className="space-y-1">
-                <label htmlFor="diffusion-warmup" className="block text-[11px] font-mono text-zinc-400">
-                  Warmup Steps
-                </label>
-                <Input
-                  id="diffusion-warmup"
-                  type="number"
-                  min={0}
-                  max={1000}
-                  value={lrWarmupSteps}
-                  onChange={(e) =>
-                    setLrWarmupSteps(Math.max(0, parseInt(e.target.value, 10) || 0))
-                  }
-                  disabled={busy}
-                  className="font-mono text-xs"
-                />
-                <p className="text-[10px] font-mono text-zinc-500">
-                  Passos de aquecimento inicial para evitar choques bruscos no gradiente.
-                </p>
-              </div>
+              <Input
+                id="diffusion-warmup"
+                label="Warmup Steps"
+                hint="Passos iniciais de aquecimento para evitar choques no gradiente."
+                type="number"
+                min={0}
+                max={1000}
+                value={lrWarmupSteps}
+                onChange={(e) =>
+                  setLrWarmupSteps(Math.max(0, parseInt(e.target.value, 10) || 0))
+                }
+                disabled={busy}
+                fontMono
+                className="h-[38px] text-xs font-mono"
+              />
 
               {/* Mixed Precision */}
               <Select
                 id="diffusion-prec"
-                label="Precisão Mista (Mixed Precision)"
+                label="Precisão Mista"
                 hint="FP16/BF16 reduz pela metade o consumo de VRAM e acelera o treino em Tensor Cores."
                 options={mixedPrecisionOptions}
                 value={mixedPrecision}
@@ -1195,73 +1184,51 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
 
         {enableSamples && (
           <div className="space-y-3 pt-1 border-t border-white/5">
-            <div>
-              <label
-                htmlFor="sample-prompt-input"
-                className="block text-[11px] font-mono text-zinc-400 mb-1"
-              >
-                Prompt de Teste para Amostras
-              </label>
-              <Input
-                id="sample-prompt-input"
-                type="text"
-                value={samplePrompt}
-                onChange={(e) => setSamplePrompt(e.target.value)}
-                placeholder={
-                  params.triggerWord.trim()
-                    ? `ex: a photo of ${params.triggerWord.trim()} subject in studio lighting`
-                    : "ex: a photo of a cute robot in cinematic lighting, 8k"
-                }
-                disabled={busy}
-                className="font-mono text-xs"
-              />
-              <p className="mt-1 text-[10px] font-mono text-zinc-400">
-                Uma imagem será sintetizada para você acompanhar a evolução visual no Action Center e página de jobs.
-              </p>
-            </div>
+            <Input
+              id="sample-prompt-input"
+              label="Prompt de Teste para Amostras"
+              hint="Uma imagem será sintetizada para você acompanhar a evolução visual no Action Center e página de jobs."
+              type="text"
+              value={samplePrompt}
+              onChange={(e) => setSamplePrompt(e.target.value)}
+              placeholder={
+                params.triggerWord.trim()
+                  ? `ex: a photo of ${params.triggerWord.trim()} subject in studio lighting`
+                  : "ex: a photo of a cute robot in cinematic lighting, 8k"
+              }
+              disabled={busy}
+              fontMono
+              className="h-[38px] text-xs font-mono"
+            />
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label
-                  htmlFor="sample-interval-input"
-                  className="block text-[11px] font-mono text-zinc-400 mb-1"
-                >
-                  Intervalo (a cada N épocas)
-                </label>
-                <Input
-                  id="sample-interval-input"
-                  type="number"
-                  min={1}
-                  max={params.epochs}
-                  value={sampleInterval}
-                  onChange={(e) =>
-                    setSampleInterval(Math.max(1, parseInt(e.target.value, 10) || 1))
-                  }
-                  disabled={busy}
-                  className="font-mono text-xs"
-                />
-              </div>
-              <div>
-                <label
-                  htmlFor="sample-seed-input"
-                  className="block text-[11px] font-mono text-zinc-400 mb-1"
-                >
-                  Seed da Amostra (Fixa)
-                </label>
-                <Input
-                  id="sample-seed-input"
-                  type="number"
-                  min={0}
-                  value={sampleSeed}
-                  onChange={(e) => setSampleSeed(e.target.value)}
-                  placeholder="42"
-                  disabled={busy}
-                  className="font-mono text-xs"
-                />
-                <p className="mt-1 text-[9px] font-mono text-zinc-500">
-                  Fixa o ruído para comparar a evolução sobre a mesma composição.
-                </p>
-              </div>
+              <Input
+                id="sample-interval-input"
+                label="Intervalo (a cada N épocas)"
+                type="number"
+                min={1}
+                max={params.epochs}
+                value={sampleInterval}
+                onChange={(e) =>
+                  setSampleInterval(Math.max(1, parseInt(e.target.value, 10) || 1))
+                }
+                disabled={busy}
+                fontMono
+                className="h-[38px] text-xs font-mono"
+              />
+              <Input
+                id="sample-seed-input"
+                label="Seed da Amostra (Fixa)"
+                hint="Fixa o ruído para comparar a evolução sobre a mesma composição."
+                type="number"
+                min={0}
+                value={sampleSeed}
+                onChange={(e) => setSampleSeed(e.target.value)}
+                placeholder="42"
+                disabled={busy}
+                fontMono
+                className="h-[38px] text-xs font-mono"
+              />
             </div>
           </div>
         )}

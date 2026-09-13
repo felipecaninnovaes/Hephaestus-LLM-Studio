@@ -145,7 +145,7 @@ export const Select = forwardRef<SelectRefHandle, SelectProps<any>>(function Sel
     } else {
       // Auto: if element is close to the right edge of the viewport, align to right
       const spaceRight = window.innerWidth - rect.right;
-      if (spaceRight < 80) {
+      if (spaceRight < 240) {
         setHorizontalPlacement("right");
       } else {
         setHorizontalPlacement("left");
@@ -291,14 +291,16 @@ export const Select = forwardRef<SelectRefHandle, SelectProps<any>>(function Sel
   const widthClasses =
     menuWidth === "auto"
       ? "w-auto min-w-full max-w-[calc(100vw-32px)]"
-      : menuWidth && menuWidth !== "trigger"
-        ? menuWidth
-        : "w-full min-w-full max-w-full";
+      : menuWidth === "fixed"
+        ? "w-full min-w-full max-w-full"
+        : menuWidth && menuWidth !== "trigger"
+          ? menuWidth
+          : "min-w-full w-max max-w-[min(440px,calc(100vw-32px))]";
 
   return (
     <div
       ref={containerRef}
-      className={`relative w-full ${className}`}
+      className={`relative w-full ${isOpen ? "z-50" : "z-auto"} ${className}`}
       onKeyDown={handleKeyDown}
     >
       {/* Hidden input for standard form submission */}
@@ -389,7 +391,7 @@ export const Select = forwardRef<SelectRefHandle, SelectProps<any>>(function Sel
       {isOpen && (
         <div
           ref={menuRef}
-          className={`glass-menu absolute z-50 rounded-xl p-1.5 shadow-2xl transition-all ${widthClasses} ${
+          className={`glass-menu absolute z-50 rounded-xl p-1.5 shadow-2xl ${widthClasses} ${
             placement === "top" ? "bottom-full mb-1.5" : "top-full mt-1.5"
           } ${
             horizontalPlacement === "right" ? "right-0" : "left-0"
@@ -475,7 +477,7 @@ export const Select = forwardRef<SelectRefHandle, SelectProps<any>>(function Sel
                       )}
 
                       <div className="flex min-w-0 flex-col">
-                        <span className="truncate leading-snug">{opt.label}</span>
+                        <span className="leading-snug">{opt.label}</span>
                         {opt.description && (
                           <span className="truncate text-[11px] text-zinc-500">
                             {opt.description}

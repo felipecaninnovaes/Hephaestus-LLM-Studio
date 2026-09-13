@@ -19,7 +19,23 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-13 (FATIA PERSISTÊNCIA DE CACHE HUGGING FACE / PYTORCH CONCLUÍDA NA BRANCH)
+## Estado atual — 2026-09-13 (FATIA CORREÇÃO NUMÉRICA DE LOSS NAN & TELEMETRIA RESILIENTE CONCLUÍDA NA BRANCH)
+
+- **FATIA CORREÇÃO NUMÉRICA DE LOSS NAN (VAE FLOAT32) & PARSER TOLERANTE NO ORQUESTRADOR — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/engine-difusao-real`.
+  - **Diagnóstico da Causa Raiz de NaN e Logs Vazios**:
+    - *Loss NaN*: O `AutoencoderKL` do SDXL da Stability AI em `torch.float16` sofre overflow numérico interno no `vae.encode()` (valores extrapolam 65504), gerando `NaN` instantaneamente nos latents (`Latents NaN? True` validado na GPU do TrueNAS). Isso corrompia o forward/backward do UNet, gerando `loss = nan`.
+    - *Logs sumidos*: Ao gravar no `metrics.jsonl`, o Python emitia `{"loss": NaN}`. Por violar a especificação RFC 8259 (JSON padrão não aceita literais `NaN`), `serde_json::from_str` no orquestrador Rust falhava silenciosamente e descartava todas as linhas de progresso. Sem métricas chegando ao Manager, `job.metrics` ficava vazio no frontend, impedindo o `JobLogViewer` de renderizar os logs além do boot.
+  - **Correções Aplicadas**:
+    - `engines/trainer-difusao/src/trainer_difusao/train.py`:
+      - Carregamento do VAE em `torch.float32` tanto no SDXL quanto no SD 1.5, convertendo apenas os latents resultantes para `torch.float16` (`Latents NaN com float32? False`, Loss medido em `0.0389` na GPU física).
+      - Adicionado `torch.nn.utils.clip_grad_norm_(unet.parameters(), 1.0)` para estabilidade dos gradientes LoRA.
+      - Serialização segura de métricas: em caso de `NaN` ou `Inf`, grava `"loss": null` e nunca o literal inválido `NaN`.
+    - `services/orchestrator/src/lib.rs`:
+      - Sanitização automática em `parse_metrics_line` substituindo `: NaN` e `: Infinity` por `: null` antes do parse JSON.
+      - Teste unitário `parse_metrics_line_nan_tolerant` adicionado (84/84 testes verdes).
+  - **Sincronização e Deploy**:
+    - Servidor TrueNAS (`10.15.1.2`): `git pull`, imagem `hephaestus/trainer-difusao:gpu` reconstruída e container `gpu-orchestrator-gpu-1` recriado e saudável (`Up (healthy)`).
+    - Host de desenvolvimento: `infra-orchestrator-local-1` reconstruído e rodando.
 
 - **FATIA PERSISTÊNCIA DE CACHE HUGGING FACE / PYTORCH NO VOLUME DE OUTPUTS — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/engine-difusao-real`.
   - **Diagnóstico da Causa Raiz**:

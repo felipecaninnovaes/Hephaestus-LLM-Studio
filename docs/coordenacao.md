@@ -19,7 +19,26 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-13 (FATIA MÉTRICAS DE DIFUSÃO E AMOSTRAS POR ÉPOCA CONCLUÍDA NA BRANCH)
+## Estado atual — 2026-09-13 (FATIA STREAMING DE AMOSTRAS E TELEMETRIA DE DIFUSÃO POR STEP CONCLUÍDA NA BRANCH)
+
+- **FATIA STREAMING DE AMOSTRAS E TELEMETRIA DE DIFUSÃO POR STEP (SEED DETERMINÍSTICA & TEMPO REAL) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/engine-difusao-real`.
+  - **Backend, Manager e Orquestrador**:
+    - `packages/contracts/openapi.yaml`: schema `DiffusionJobRequest` atualizado com propriedade opcional `sampleSeed: Option<u64>` para fixação de semente geradora.
+    - `services/api-principal/src/jobs/models.rs`: `DiffusionJobRequest` com suporte a `sample_seed` e injeção de `seed:` na seção `samples:` do `config.yaml`.
+    - `services/manager/src/lib.rs`: `report_job` atualizado para aceitar e persistir artefatos intermediários (`report.artifacts`) durante status `running`/`preparing` com deduplicação por `(job_id, path)`, permitindo que o frontend descubra novas amostras em tempo de execução via polling de `GET /api/jobs/:id/artifacts`.
+    - `services/orchestrator/src/lib.rs`: loop assíncrono `metrics_handle` enriquecido para escanear `outputs/samples/` a cada 2 segundos, fazendo upload imediato para o S3 de cada nova imagem gerada durante a execução do container e despachando report incremental de artefatos para o Manager.
+    - Testes: 83/83 unitários do orchestrator verdes, 325/325 unitários da api-principal verdes, manager verde.
+  - **Engine `trainer-difusao`**:
+    - `engines/trainer-difusao/src/trainer_difusao/train.py`:
+      - Seed determinística fixa em `_generate_sample_sd15` e `_generate_sample_sdxl` via `torch.Generator.manual_seed(sample_seed)`, garantindo que a composição e o ruído inicial sejam mantidos constantes época a época para comparação visual fidedigna da convergência do LoRA.
+      - Emissão de métricas intermediárias por step a cada 5 passos com `flush()` imediato no `metrics.jsonl` e `print(..., flush=True)` no stdout, eliminando a sensação de processo travado durante épocas longas.
+      - `_generate_mock_sample` e `_mock_train` alinhados para refletir a seed determinística e o flush de métricas.
+    - Testes: 6/6 testes unittest verdes em `tests/test_train.py`.
+  - **Web Frontend**:
+    - `apps/web/lib/jobs.ts`: `startDiffusionJob` com suporte a `sampleSeed`.
+    - `apps/web/components/studio/ForjaDifusaoSetup.tsx`: campo numérico dedicado de `Seed da Amostra (Fixa)` no bloco de amostras visuais de validação, com tooltip explicativo sobre fixação de ruído composicional.
+    - `apps/web/components/studio/JobLogViewer.tsx`: chave de renderização única por `epoch` e `step`, exibindo telemetria progressiva de steps e loss instantâneo em tempo real.
+    - Verificação de build: `npm run build --prefix apps/web` 12/12 páginas compiladas com zero erros TypeScript.
 
 - **FATIA MÉTRICAS DE DIFUSÃO E AMOSTRAS POR ÉPOCA (SAMPLES GALLERY, CONVERGENCE & ACTION CENTER) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/engine-difusao-real`.
   - **Backend & Contratos**:

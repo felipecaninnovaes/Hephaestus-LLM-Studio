@@ -46,8 +46,9 @@ export function startDiffusionJob(params: {
   orchestratorId?: string | null;
   samplePrompt?: string;
   sampleInterval?: number;
+  sampleSeed?: number;
 }): Promise<{ jobId: string; status: string; queuePosition?: number }> {
-  const { weights, orchestratorId, triggerWord, samplePrompt, sampleInterval, ...rest } = params;
+  const { weights, orchestratorId, triggerWord, samplePrompt, sampleInterval, sampleSeed, ...rest } = params;
   const body: Record<string, unknown> = { ...rest };
   if (triggerWord?.trim()) body.triggerWord = triggerWord.trim();
   if (weights) body.weights = weights;
@@ -55,6 +56,7 @@ export function startDiffusionJob(params: {
   if (samplePrompt?.trim()) {
     body.samplePrompt = samplePrompt.trim();
     if (sampleInterval != null) body.sampleInterval = sampleInterval;
+    if (sampleSeed != null) body.sampleSeed = sampleSeed;
   }
   return apiFetch("/api/jobs/diffusion", {
     method: "POST",

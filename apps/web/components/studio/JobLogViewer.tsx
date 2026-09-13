@@ -123,7 +123,7 @@ export function JobLogViewer({
           if (m.lr !== undefined) parts.push(`lr=${m.lr.toExponential(2)}`);
           if (m.step !== undefined) parts.push(`step=${m.step}`);
           list.push({
-            id: `metric-${m.epoch}`,
+            id: `metric-${m.epoch}-${m.step ?? idx}`,
             timestamp: fmtTime(3 + idx * 2),
             tag: "DIFFUSION",
             text: parts.join(" "),

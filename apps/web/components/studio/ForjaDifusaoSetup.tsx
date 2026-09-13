@@ -92,6 +92,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
   const [enableSamples, setEnableSamples] = useState(true);
   const [samplePrompt, setSamplePrompt] = useState("");
   const [sampleInterval, setSampleInterval] = useState(1);
+  const [sampleSeed, setSampleSeed] = useState("42");
 
   const [busy, setBusy] = useState(false);
   const [topError, setTopError] = useState<string | null>(null);
@@ -307,6 +308,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
         orchestratorId: selectedOrchestratorId || null,
         samplePrompt: enableSamples && samplePrompt.trim() ? samplePrompt.trim() : undefined,
         sampleInterval: enableSamples ? sampleInterval : undefined,
+        sampleSeed: enableSamples && sampleSeed.trim() ? parseInt(sampleSeed, 10) : undefined,
       });
 
       showToast(
@@ -675,25 +677,48 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
               </p>
             </div>
 
-            <div className="w-48">
-              <label
-                htmlFor="sample-interval-input"
-                className="block text-[11px] font-mono text-zinc-400 mb-1"
-              >
-                Intervalo (a cada N épocas)
-              </label>
-              <Input
-                id="sample-interval-input"
-                type="number"
-                min={1}
-                max={params.epochs}
-                value={sampleInterval}
-                onChange={(e) =>
-                  setSampleInterval(Math.max(1, parseInt(e.target.value, 10) || 1))
-                }
-                disabled={busy}
-                className="font-mono text-xs"
-              />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label
+                  htmlFor="sample-interval-input"
+                  className="block text-[11px] font-mono text-zinc-400 mb-1"
+                >
+                  Intervalo (a cada N épocas)
+                </label>
+                <Input
+                  id="sample-interval-input"
+                  type="number"
+                  min={1}
+                  max={params.epochs}
+                  value={sampleInterval}
+                  onChange={(e) =>
+                    setSampleInterval(Math.max(1, parseInt(e.target.value, 10) || 1))
+                  }
+                  disabled={busy}
+                  className="font-mono text-xs"
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="sample-seed-input"
+                  className="block text-[11px] font-mono text-zinc-400 mb-1"
+                >
+                  Seed da Amostra (Fixa)
+                </label>
+                <Input
+                  id="sample-seed-input"
+                  type="number"
+                  min={0}
+                  value={sampleSeed}
+                  onChange={(e) => setSampleSeed(e.target.value)}
+                  placeholder="42"
+                  disabled={busy}
+                  className="font-mono text-xs"
+                />
+                <p className="mt-1 text-[9px] font-mono text-zinc-500">
+                  Fixa o ruído para comparar a evolução sobre a mesma composição.
+                </p>
+              </div>
             </div>
           </div>
         )}

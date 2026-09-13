@@ -518,8 +518,10 @@ yolo:
 }
 
 // ---------------------------------------------------------------------------
-// AutoLabel (ADR-0016)
+// AutoLabel (ADR-0016 / ADR-0019 AutoLabel v2)
 // ---------------------------------------------------------------------------
+
+pub const ALLOWED_AUTOLABEL_MODELS: &[&str] = &["mock", "florence-2", "qwen2-vl", "openai"];
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -530,6 +532,12 @@ pub struct AutolabelJobRequest {
     #[serde(default)]
     pub prompt: Option<String>,
     #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub api_base: Option<String>,
+    #[serde(default)]
+    pub openai_model: Option<String>,
+    #[serde(default)]
     pub orchestrator_id: Option<String>,
 }
 
@@ -538,12 +546,33 @@ fn default_autolabel_model() -> String {
 }
 
 pub fn validate_autolabel_request(req: AutolabelJobRequest) -> Result<AutolabelJobRequest, String> {
-    if req.model != "mock" {
-        return Err("model must be 'mock'".to_string());
+    if !ALLOWED_AUTOLABEL_MODELS.contains(&req.model.as_str()) {
+        return Err(format!(
+            "model must be one of {:?}, got '{}'",
+            ALLOWED_AUTOLABEL_MODELS, req.model
+        ));
     }
     if let Some(ref p) = req.prompt {
         if p.chars().count() > 8000 {
             return Err("prompt must not exceed 8000 characters".to_string());
+        }
+    }
+    if let Some(ref ak) = req.api_key {
+        if ak.chars().count() > 512 {
+            return Err("apiKey must not exceed 512 characters".to_string());
+        }
+    }
+    if let Some(ref ab) = req.api_base {
+        if ab.chars().count() > 512 {
+            return Err("apiBase must not exceed 512 characters".to_string());
+        }
+        if !ab.starts_with("http://") && !ab.starts_with("https://") {
+            return Err("apiBase must start with http:// or https://".to_string());
+        }
+    }
+    if let Some(ref om) = req.openai_model {
+        if om.chars().count() > 128 {
+            return Err("openaiModel must not exceed 128 characters".to_string());
         }
     }
     if let Some(ref o) = req.orchestrator_id {
@@ -555,13 +584,31 @@ pub fn validate_autolabel_request(req: AutolabelJobRequest) -> Result<AutolabelJ
 }
 
 pub fn generate_autolabel_config_yaml(job_id: &str, req: &AutolabelJobRequest) -> String {
-    let prompt_line = match &req.prompt {
-        Some(p) => format!(
+    let mut autolabel_lines = String::new();
+    if let Some(p) = &req.prompt {
+        autolabel_lines.push_str(&format!(
             "  prompt: {}\n",
             serde_json::to_string(p).unwrap_or_else(|_| "\"\"".into())
-        ),
-        None => String::new(),
-    };
+        ));
+    }
+    if let Some(ak) = &req.api_key {
+        autolabel_lines.push_str(&format!(
+            "  api_key: {}\n",
+            serde_json::to_string(ak).unwrap_or_else(|_| "\"\"".into())
+        ));
+    }
+    if let Some(ab) = &req.api_base {
+        autolabel_lines.push_str(&format!(
+            "  api_base: {}\n",
+            serde_json::to_string(ab).unwrap_or_else(|_| "\"\"".into())
+        ));
+    }
+    if let Some(om) = &req.openai_model {
+        autolabel_lines.push_str(&format!(
+            "  openai_model: {}\n",
+            serde_json::to_string(om).unwrap_or_else(|_| "\"\"".into())
+        ));
+    }
     format!(
         r#"# Configuração de autolabel (gerada pelo api-principal)
 job_id: "{job_id}"
@@ -572,10 +619,10 @@ dataset_path: "{{dataset_path}}"
 output_path: "{{output_path}}"
 seed: 42
 autolabel:
-{prompt_line}"#,
+{autolabel_lines}"#,
         job_id = job_id,
         model = req.model,
-        prompt_line = prompt_line,
+        autolabel_lines = autolabel_lines,
     )
 }
 
@@ -1490,6 +1537,53 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].filename, "img1.jpg");
         assert_eq!(items[0].caption, "legenda um");
+    }
+
+    #[test]
+    fn autolabel_v2_validation_models_and_openai() {
+        // Modelos válidos
+        for model in &["mock", "florence-2", "qwen2-vl", "openai"] {
+            let json = format!(
+                r#"{{"datasetId":"550e8400-e29b-41d4-a716-446655440001","model":"{model}"}}"#
+            );
+            let req: AutolabelJobRequest = serde_json::from_str(&json).unwrap();
+            assert!(validate_autolabel_request(req).is_ok());
+        }
+
+        // Modelo inválido
+        let bad_model =
+            r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","model":"unknown_vlm"}"#;
+        let req: AutolabelJobRequest = serde_json::from_str(bad_model).unwrap();
+        assert!(validate_autolabel_request(req).is_err());
+
+        // OpenAI com apiBase válida
+        let openai_ok = r#"{
+            "datasetId":"550e8400-e29b-41d4-a716-446655440001",
+            "model":"openai",
+            "apiKey":"sk-test-12345",
+            "apiBase":"https://api.openai.com/v1",
+            "openaiModel":"gpt-4o-mini"
+        }"#;
+        let req_openai: AutolabelJobRequest = serde_json::from_str(openai_ok).unwrap();
+        let validated = validate_autolabel_request(req_openai).expect("valid openai request");
+        assert_eq!(validated.model, "openai");
+        assert_eq!(validated.openai_model.as_deref(), Some("gpt-4o-mini"));
+
+        // OpenAI com apiBase inválida (sem scheme)
+        let openai_bad_scheme = r#"{
+            "datasetId":"550e8400-e29b-41d4-a716-446655440001",
+            "model":"openai",
+            "apiBase":"ftp://invalid.host"
+        }"#;
+        let req_bad: AutolabelJobRequest = serde_json::from_str(openai_bad_scheme).unwrap();
+        assert!(validate_autolabel_request(req_bad).is_err());
+
+        // Geração do YAML
+        let yaml = generate_autolabel_config_yaml("job-al-v2", &validated);
+        assert!(yaml.contains("model: \"openai\""));
+        assert!(yaml.contains("api_key: \"sk-test-12345\""));
+        assert!(yaml.contains("api_base: \"https://api.openai.com/v1\""));
+        assert!(yaml.contains("openai_model: \"gpt-4o-mini\""));
     }
 
     #[test]

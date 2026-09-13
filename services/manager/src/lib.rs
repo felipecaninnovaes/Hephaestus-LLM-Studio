@@ -379,18 +379,22 @@ pub async fn create_job(
         match row {
             None => return Err(ManagerError::NotFound),
             Some((s3_key, hash, engine, variant)) => {
-                // ADR-0012 D5 / ADR-0014 D5: aceita engine 'yolo' (fine-tune) e
-                // 'world' (autotracker real). Qualquer outro → 400.
-                if engine != "yolo" && engine != "world" {
+                if engine != "yolo" && engine != "world" && engine != "diffusion" {
                     return Err(ManagerError::InvalidRequest(format!(
-                        "weights engine must be 'yolo' or 'world', got '{engine}'"
+                        "weights engine must be 'yolo', 'world', or 'diffusion', got '{engine}'"
                     )));
                 }
-                // Defesa: fine-tune (mode=train) NÃO aceita pesos world (ADR-0014 D5).
-                if engine == "world" && req.mode == "train" {
-                    return Err(ManagerError::InvalidRequest(
-                        "fine-tune weights engine must be 'yolo', got 'world'".into(),
-                    ));
+                // Defesa: fine-tune yolo (mode=train) NÃO aceita pesos world nem diffusion.
+                if req.engine == "yolo" && req.mode == "train" && engine != "yolo" {
+                    return Err(ManagerError::InvalidRequest(format!(
+                        "fine-tune weights engine must be 'yolo', got '{engine}'"
+                    )));
+                }
+                // Defesa: treino de difusão exige pesos de difusão.
+                if req.engine == "diffusion" && engine != "diffusion" {
+                    return Err(ManagerError::InvalidRequest(format!(
+                        "diffusion weights engine must be 'diffusion', got '{engine}'"
+                    )));
                 }
                 params["weights_ref"] = serde_json::json!({
                     "s3_key": s3_key,
@@ -927,7 +931,12 @@ pub async fn report_job(
             if let Some(artifacts) = &report.artifacts {
                 let best_models: Vec<_> = artifacts
                     .iter()
-                    .filter(|a| a.kind == "model" && a.path.contains("best"))
+                    .filter(|a| {
+                        a.kind == "model"
+                            && (a.path.contains("best")
+                                || a.path.contains("adapter")
+                                || a.path.ends_with(".safetensors"))
+                    })
                     .collect();
                 if !best_models.is_empty() {
                     // Lê engine/model do job para o INSERT.

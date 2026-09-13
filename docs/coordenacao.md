@@ -19,7 +19,20 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-12 (FATIA GESTÃO DE MODELOS E ACABAMENTO DE INFRAESTRUTURA CONCLUÍDA NA BRANCH)
+## Estado atual — 2026-09-12 (FATIA FORJA DE TREINO DE DIFUSÃO LORA CONCLUÍDA NA BRANCH)
+
+- **FATIA FORJA DE TREINO DE DIFUSÃO LORA (`/difusao`) — CONCLUÍDA NA BRANCH (2026-09-12)** — branch `feat/treino-difusao`. **Especificação executável: `docs/adr/0018-treino-difusao-lora.md`** (D0–D4).
+  - **D.0 (docs/adr)**: ADR-0018 aceita e registrada (`docs/adr/0018-treino-difusao-lora.md`).
+  - **D.1 (contrato OpenAPI & API Principal)**: OpenAPI bumped para `0.17.0` com `POST /api/jobs/diffusion`, `DiffusionJobRequest` e `PackageRequest.engine` admitindo `[yolo, diffusion]`. Empacotamento de dataset em `datasets/package.rs` gerando pares `{stem}.webp` + `{stem}.txt` com legendas lidas da tabela `captions` e prefixo opcional do `trigger_word`. Handler `submit_diffusion_job` em `jobs/handlers.rs` recebendo a requisição, validando domínio, gerando `config.yaml` e compensando pacote em caso de falha de fila. Rota protegida em `auth/routes.rs`. Testes de contrato 15/15 verdes e unitários 319/319 verdes.
+  - **D.2 (Manager Backend)**: Validação de pesos para engine `diffusion` em `create_job`; hook de pós-conclusão do job em `report_job` atualizado para capturar automaticamente artefatos com terminação `.safetensors` ou nome `adapter.safetensors` e registrar no catálogo canônico `models` com `engine='diffusion'`. Testes unitários 12/12 verdes.
+  - **D.3 (Orquestrador Backend)**: Matriz de despacho atualizada para mapear `("diffusion", _)` para subcomando `train --config --output`, coletando `("adapter.safetensors", "model")` e `("metrics.jsonl", "metrics")`. Testes unitários 81/81 verdes.
+  - **D.4 (Engine Python trainer-difusao)**: CLI `train --config --output` implementada com suporte a mock determinístico emitindo `metrics.jsonl` por época e gerando arquivo sintético `adapter.safetensors` com cabeçalho JSON e metadados no formato canônico da HuggingFace. Suíte unittest verde.
+  - **D.5 (Web Frontend)**:
+    - Rota `/difusao` ativada na sidebar com badge `Diffusers Engine` e criada em `apps/web/app/(studio)/difusao/page.tsx`.
+    - Componente `ForjaDifusaoSetup.tsx` no padrão Dark-Only Vidro Óptico: seletor de dataset com tags de contagem e categoria, seletor visual de base model (SDXL 1.0 ~12 GB, Flux.1-dev ~16 GB, SD 1.5 ~8 GB), trigger word, hiperparâmetros LoRA (épocas, batch, rank, lr), seletor de pesos LoRA prévios, seletor de nó `<NodeSelect />`, estimador preditivo de VRAM e alertas de risco OOM com botão de auto-correção para perfil seguro.
+    - Cliente de API `startDiffusionJob` em `lib/jobs.ts` e helpers `canTrainDiffusion` em `lib/datasets.ts`.
+    - `npx tsc --noEmit` e `npm run build` limpos com 0 erros.
+  - **D.6 (Verificações e Formatação)**: `cargo fmt --all -- --check` 0 hunks; `uv run ruff check` e `ruff format` 100% limpos; testes do monorepo verdes. Branch pronta para revisão e merge.
 
 - **FATIA GESTÃO DE MODELOS E ACABAMENTO DE INFRAESTRUTURA — CONCLUÍDA NA BRANCH (2026-09-12)** — branch `feat/gestao-modelos-infra`.
   - **M.1 (Isolamento de banco em test-db.sh — dívida quitada)**: `scripts/test-db.sh` agora cria o banco efêmero isolado `studio_test`, roda todas as migrations, executa a suíte completa de testes de integração (`api-principal` datasets_db + `manager` manager_db + manager bin) e descarta o banco efêmero via trap EXIT sem tocar no banco de produto `studio` nem invalidar o estado do compose.

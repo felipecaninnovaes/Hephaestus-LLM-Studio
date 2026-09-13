@@ -152,10 +152,19 @@ A especificação normativa completa e canônica vive em **`docs/DESIGN.md`**. P
 - Direita: banner status com `training-pulse` + métricas `box_loss / mAP@50 / mAP@50-95` + barra %, 2 gráficos SVG (Loss Treino×Val, mAP), grid "Inferência de Validação" (3 amostras clicáveis com bbox + `Threshold > 0.65`), terminal (`Console de Telemetria`, `Stream WebSocket Ativo`, 36 linhas, `slice(-50)`).
 - Mock loop: `setInterval 3000ms` incrementa epoch, deriva loss/mAP, appenda log `[Epoch N/M] box_loss... dfl_loss... mAP50...`. Substituir por job real + WS.
 
-### 6.2 Difusão LoRA (`difusao-workspace`) — preparo via AutoLabel
+### 6.2 Difusão LoRA (`app/(studio)/difusao/page.tsx` + `ForjaDifusaoSetup.tsx`)
 
-- Esquerda: base (`Flux.1-dev 12B`, `SDXL 1.0`, `SD1.5`, `Wan2.1-t2v`), dataset (só `difusao`, link "Preparar com AutoLabel →"), trigger word (`ohwx_style`), Rank (`8/16/32/64`), Alpha (`16/32/64`), otimizador (`Prodigy/AdamW8bit/Lion`), CTA Iniciar/Pausar.
-- Direita: `Denoise Loss 0.0842`, `Step 450/1500`, `cyberpunk_v1.safetensors`, `Target VRAM 18.2 GB`, sandbox prompt (`{trigger}, portrait...`, CFG 3.5 Steps 24, "Gerar Preview").
+- **Página de Forja Difusão LoRA (`/difusao`):**
+  - Rota ativada na sidebar com badge `Diffusers Engine` e link rápido para a página de execuções (`/jobs`).
+  - Formulário centralizado de setup de treinamento (`ForjaDifusaoSetup.tsx`):
+    - **Dataset Selector:** listagem de datasets elegíveis (com imagens), exibindo badges com contagem de imagens e categoria (`difusao`).
+    - **Seletor de Modelo Base:** cards selecionáveis com indicação preditiva de VRAM: `SDXL 1.0` (~12 GB), `Flux.1-dev` (~16 GB), `Stable Diffusion 1.5` (~8 GB).
+    - **Trigger Word:** input de palavra-chave ou token identificador adicionado ao início de cada legenda de imagem durante o empacotamento.
+    - **Hiperparâmetros LoRA:** épocas (1–100), batch size (1, 2, 4, 8), dimensão do rank LoRA (4, 8, 16, 32, 64, 128) e taxa de aprendizado.
+    - **Pesos Iniciais:** seletor opcional para fine-tune a partir de um adaptador LoRA existente no catálogo de modelos (`engine === 'diffusion'`).
+    - **Nó de Execução:** seletor `<NodeSelect />` para direcionamento explícito do treinamento a um nó/orquestrador.
+    - **Estimador Preditivo de VRAM & Alerta Anti-OOM:** monitor de VRAM estimada comparada com a telemetria em tempo real do nó com botão de auto-correção para perfil seguro.
+    - **Submissão:** chamada à API via `startDiffusionJob(params)` com redirecionamento para `/jobs?job={id}`.
 
 ### 6.3 OpenCLIP (`openclip-workspace`) — preparo via AutoLabel
 

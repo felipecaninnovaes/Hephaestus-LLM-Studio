@@ -973,6 +973,173 @@ pub async fn submit_autolabel_job(
 }
 
 // ---------------------------------------------------------------------------
+// POST /api/jobs/diffusion — submit job de treino de difusão LoRA (ADR-0018 D1)
+// ---------------------------------------------------------------------------
+
+/// POST /api/jobs/diffusion — cria job de treino de difusão LoRA (ADR-0018 D1).
+///
+/// Status: 202 `SubmitJobResponse` | 400 `invalid_request` | 401 gate | 404 `not_found` |
+/// 409 `dataset_not_ready` | 503 `queue_unavailable`.
+pub async fn submit_diffusion_job(
+    State(state): State<AppState>,
+    body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
+) -> Response {
+    // 1. Parse body.
+    let raw = match body {
+        Ok(b) => b,
+        Err(_) => return invalid_request(),
+    };
+    let req: models::DiffusionJobRequest = match serde_json::from_slice(&raw) {
+        Ok(v) => v,
+        Err(_) => return invalid_request(),
+    };
+
+    // 2. Validação pura.
+    let req = match models::validate_diffusion_request(req) {
+        Ok(v) => v,
+        Err(_) => return invalid_request(),
+    };
+
+    // 3. Parse dataset_id — não-UUID ⇒ 404.
+    let ds_id: uuid::Uuid = match req.dataset_id.parse() {
+        Ok(v) => v,
+        Err(_) => return not_found(),
+    };
+
+    // 4. Dataset existe e possui imagens ativas?
+    let ds_exists: bool =
+        match sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM datasets WHERE id = $1)")
+            .bind(ds_id)
+            .fetch_one(&state.pool)
+            .await
+        {
+            Ok(b) => b,
+            Err(_) => {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "internal server error",
+                )
+            }
+        };
+    if !ds_exists {
+        return not_found();
+    }
+
+    let image_count: Option<i64> = match sqlx::query_scalar::<_, i64>(
+        "SELECT count(*) FROM images WHERE dataset_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(ds_id)
+    .fetch_optional(&state.pool)
+    .await
+    {
+        Ok(c) => c,
+        Err(_) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "internal server error",
+            )
+        }
+    };
+
+    let count = image_count.unwrap_or(0);
+    if count == 0 {
+        return dataset_not_ready();
+    }
+
+    // 5. Build package de difusão (imagens + captions em .txt).
+    let package = match crate::datasets::package::build_package_diffusion(
+        &state,
+        ds_id,
+        req.trigger_word.as_deref(),
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+
+    // 6. Config YAML.
+    let job_id = uuid::Uuid::new_v4().to_string();
+    let config_yaml = models::generate_diffusion_config_yaml(&job_id, &req);
+
+    // 7. VRAM mínima por modelo base (ADR-0018 D2).
+    let vram_min = match req.base_model.as_str() {
+        "sd15" => 8,
+        "flux" => 16,
+        _ => 12, // sdxl e default
+    };
+
+    // 8. Body para o Manager.
+    let mut manager_body = serde_json::json!({
+        "kind": "diffusion_train",
+        "engine": "diffusion",
+        "model": req.base_model,
+        "mode": "train",
+        "dataset_id": ds_id.to_string(),
+        "dataset_version_id": package.version_id,
+        "package_ref": {
+            "version_id": package.version_id,
+            "key": package.key,
+            "md5_zip": package.md5_zip,
+            "bytes": package.bytes,
+        },
+        "config_yaml": config_yaml,
+        "params": {
+            "package_ref": {
+                "version_id": package.version_id,
+                "key": package.key,
+                "md5_zip": package.md5_zip,
+                "bytes": package.bytes,
+            },
+            "base_model": req.base_model,
+            "trigger_word": req.trigger_word,
+            "epochs": req.epochs,
+            "batch_size": req.batch_size,
+            "learning_rate": req.learning_rate,
+            "rank": req.rank,
+            "alpha": req.alpha,
+        },
+        "vram_min_gb": vram_min,
+    });
+
+    if let Some(ref w_id) = req.weights {
+        manager_body["weights_id"] = serde_json::json!(w_id);
+    }
+    if let Some(ref orch_id) = req.orchestrator_id {
+        manager_body["orchestrator_hint"] = serde_json::json!(orch_id);
+    }
+
+    match state.manager.create_job(&manager_body).await {
+        Ok(resp) => {
+            let body = SubmitJobResponse {
+                job_id: resp.job_id,
+                status: resp.status,
+                queue_position: resp.queue_position,
+            };
+            (StatusCode::ACCEPTED, Json(body)).into_response()
+        }
+        Err(ManagerError::NotFound) => {
+            compensate_package(&state, &package.version_id).await;
+            not_found()
+        }
+        Err(ManagerError::InvalidRequest(_)) => {
+            compensate_package(&state, &package.version_id).await;
+            invalid_request()
+        }
+        Err(ManagerError::Unavailable(_)) => {
+            compensate_package(&state, &package.version_id).await;
+            queue_unavailable()
+        }
+        Err(_) => {
+            compensate_package(&state, &package.version_id).await;
+            queue_unavailable()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // POST /api/jobs/predict — submit job de inferência YOLO (ADR-0013 D0/D1/D8)
 // ---------------------------------------------------------------------------
 

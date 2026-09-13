@@ -19,7 +19,27 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-13 (FATIA CORREÇÃO NUMÉRICA DE LOSS NAN & TELEMETRIA RESILIENTE CONCLUÍDA NA BRANCH)
+## Estado atual — 2026-09-13 (FATIA OPÇÕES AVANÇADAS DE TREINO DE DIFUSÃO E PRESETS CONCLUÍDA NA BRANCH)
+
+- **FATIA OPÇÕES AVANÇADAS DE TREINO DE DIFUSÃO E PRESETS DE CONFIGURAÇÃO (JSON & QUICK PRESETS) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/diffusion-advanced-training-presets`.
+  - **Motivação**: Oferecer controle granular aos usuários sobre o pipeline de treino de difusão LoRA (resolução dinâmica, acumulação de gradientes para simulação de batch sem aumento de VRAM, seleção de otimizadores incluindo 8-bit AdamW e Prodigy adaptativo, schedulers com warmup e controle de precisão mista), além de facilitar a reproducibilidade através de importação e exportação de presets `.json` e presets rápidos embutidos na interface.
+  - **Contratos e API Principal**:
+    - `packages/contracts/openapi.yaml`: `DiffusionJobRequest` estendido com `resolution` (512, 768, 1024), `gradientAccumulationSteps` (1, 2, 4, 8), `optimizer` (adamw8bit, adamw, prodigy), `lrScheduler` (cosine, linear, constant, constant_with_warmup), `lrWarmupSteps` (0..1000), `mixedPrecision` (fp16, bf16, no).
+    - `services/api-principal/src/jobs/models.rs`: validações estritas em `validate_diffusion_request` e injeção completa na seção `lora:` do `config.yaml`. Testes unitários com cobertura total (326/326 testes verdes).
+  - **Engine Python (`engines/trainer-difusao`)**:
+    - `_create_optimizer`: suporte a 8-bit AdamW (`bitsandbytes`), AdamW padrão PyTorch e Prodigy adaptativo (`D-Adaptation`).
+    - `_create_lr_scheduler`: integração com schedulers da biblioteca Diffusers/Transformers com warmup progressivo e cálculo de taxa de aprendizado efetiva por step.
+    - Suporte a resolução configurável (512x512 a 1024x1024) com aspect-ratio adaptativo e acumulação de gradientes para treinamento estável e eficiente em GPUs de consumo.
+  - **Frontend Web (`apps/web`)**:
+    - `types/studio.ts`: atualizada tipagem `DiffusionJobRequest` e criada interface canônica `DiffusionPreset`.
+    - `lib/jobs.ts`: `startDiffusionJob` propagando os novos parâmetros para a API principal.
+    - `components/studio/ForjaDifusaoSetup.tsx`:
+      - **Barra de Presets**: Presets rápidos em 1 clique ("SDXL Padrão", "Eco 8 GB SD1.5", "Alta Fidelidade Rank 32", "Auto LR Prodigy") e botões de "Importar JSON" / "Exportar JSON" de configurações completas.
+      - **Configurações Avançadas Colapsáveis**: Seção retrátil contendo seleção de resolução de entrada, gradient accumulation, otimizador, LR scheduler, warmup steps e precisão mista (FP16 / BF16 / FP32).
+      - **Estimativa Preditiva de VRAM Refinada**: Cálculo dinâmico considerando resolução, otimizador e precisão com visualizador de risco CUDA OOM em tempo real.
+  - **Sincronização e Deploy**:
+    - Servidor TrueNAS (`10.15.1.2`): `git pull`, rebuild da imagem `hephaestus/trainer-difusao:gpu` finalizado.
+    - Host Local: Rebuild da imagem `infra-principal` e container recriado e ativo.
 
 - **FATIA CORREÇÃO NUMÉRICA DE LOSS NAN (VAE FLOAT32) & PARSER TOLERANTE NO ORQUESTRADOR — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/engine-difusao-real`.
   - **Diagnóstico da Causa Raiz de NaN e Logs Vazios**:

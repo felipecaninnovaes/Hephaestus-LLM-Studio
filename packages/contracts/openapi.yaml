@@ -3209,6 +3209,9 @@ components:
           type: [string, "null"]
           format: date-time
           description: "Momento da finalização (null enquanto ativo)."
+        error:
+          type: [string, "null"]
+          description: "Mensagem ou stacktrace de erro em caso de falha do job."
 
     JobList:
       type: object

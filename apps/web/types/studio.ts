@@ -224,6 +224,7 @@ export interface Job {
   orchestratorFallback: boolean;
   createdAt: string;
   finishedAt: string | null;
+  error?: string | null;
 }
 
 export interface JobListResponse {

@@ -99,6 +99,8 @@ pub struct JobResponse {
     pub orchestrator_fallback: bool,
     pub created_at: String,
     pub finished_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// Job list response.
@@ -299,6 +301,7 @@ fn to_job_response(job: crate::jobs::manager_client::InternalJob) -> JobResponse
         orchestrator_fallback: job.orchestrator_fallback,
         created_at: job.created_at,
         finished_at: job.finished_at,
+        error: job.error,
     }
 }
 
@@ -1997,6 +2000,7 @@ mod tests {
             orchestrator_fallback: true,
             created_at: "2026-01-01T00:00:00Z".into(),
             finished_at: None,
+            error: None,
         };
         let resp = to_job_response(job);
         assert_eq!(resp.id, "550e8400-e29b-41d4-a716-446655440000");
@@ -2871,6 +2875,7 @@ mod tests {
             orchestrator_fallback: false,
             created_at: "2026-01-01T00:00:00Z".into(),
             finished_at: Some("2026-01-01T01:00:00Z".into()),
+            error: None,
         }
     }
 
@@ -3206,6 +3211,7 @@ mod tests {
             orchestrator_fallback: false,
             created_at: "2026-01-01T00:00:00Z".into(),
             finished_at: None,
+            error: None,
         }
     }
 

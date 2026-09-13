@@ -18,7 +18,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-
 from trainer_yolo.autolabel import (
     _mock_autolabel,
     _read_dataset_images,

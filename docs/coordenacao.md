@@ -56,7 +56,7 @@ ser interrompido no meio de uma.
       2. *Por Classe YOLO*: seletor da classe alvo, chip para inserção da tag dinâmica `{class_name}` no prompt e preset "Foco na Classe YOLO".
       3. *Selecionadas no Grid*: executa exclusivamente nas imagens marcadas pelo usuário.
     - `apps/web/components/studio/FloatingSelectionBar.tsx`: adicionado botão de ação rápida "AutoLabel (N)" que abre o modal já pré-configurado no modo de seleção.
-    - `apps/web/app/(studio)/datasets/[id]/page.tsx`: integração completa passando classes, imagens selecionadas e contagens para o modal e barra flutuante.
+    - `apps/web/lib/images.ts`: remoção de envio duplicado de `class_id` e `classId` no `listImages` (o backend Axum/serde tratava o alias como campo duplicado retornando 400).
   - **Verificações**: `cargo check --workspace` verde, `cargo test -p api-principal --lib` 325/325 verdes, `cargo fmt --all -- --check` limpo, `npm run build --prefix apps/web` 12/12 páginas estáticas/dinâmicas compiladas sem erros TS, `graft build` sincronizado. Branch pronta para commit.
 
 - **FATIA PREVIEW E VISUALIZAÇÃO DE LABELS NO DATASET (GRID E QUICKLOOK) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/autolabel-caption-review` (mergeada na main via PR #15).

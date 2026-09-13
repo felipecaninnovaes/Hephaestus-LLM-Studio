@@ -190,15 +190,17 @@ export type JobStatus =
   | "failed"
   | "cancelled";
 
-export type JobKind = "yolo_train" | "autotracker" | "yolo_predict" | "autolabel" | "diffusion";
+export type JobKind = "yolo_train" | "autotracker" | "yolo_predict" | "autolabel" | "diffusion" | "diffusion_train";
 
 export interface JobMetrics {
   epoch: number;
-  boxLoss: number;
-  clsLoss: number;
-  dflLoss: number;
-  map50: number;
-  map5095: number;
+  boxLoss?: number;
+  clsLoss?: number;
+  dflLoss?: number;
+  map50?: number;
+  map5095?: number;
+  loss?: number;
+  lr?: number;
   step?: number;
   progress?: number;
 }

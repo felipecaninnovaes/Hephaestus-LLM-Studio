@@ -152,8 +152,14 @@ export function ConvergenceChart({
       });
     }
 
+    const isDiffusion = metrics.some(
+      (m) => m.loss != null && (m.boxLoss === 0 || m.boxLoss == null),
+    );
+
     // Perdas (Losses) compartilham escala de perda
-    const allLosses = metrics.flatMap((m) => [m.boxLoss, m.clsLoss, m.dflLoss]);
+    const allLosses = isDiffusion
+      ? metrics.map((m) => m.loss ?? 0)
+      : metrics.flatMap((m) => [m.boxLoss ?? 0, m.clsLoss ?? 0, m.dflLoss ?? 0]);
     const minLoss = Math.max(0, Math.min(...allLosses) * 0.9);
     const maxLoss = Math.max(...allLosses, 0.5) * 1.05;
 
@@ -161,31 +167,36 @@ export function ConvergenceChart({
     const minMap = 0;
     const maxMap = Math.max(
       1,
-      Math.max(...metrics.flatMap((m) => [m.map50, m.map5095])) * 1.1,
+      Math.max(...metrics.flatMap((m) => [m.map50 ?? 0, m.map5095 ?? 0])) * 1.1,
     );
 
+    const diffLossCoords = toCoords(
+      metrics.map((m) => m.loss ?? 0),
+      minLoss,
+      maxLoss,
+    );
     const boxLossCoords = toCoords(
-      metrics.map((m) => m.boxLoss),
+      metrics.map((m) => m.boxLoss ?? 0),
       minLoss,
       maxLoss,
     );
     const clsLossCoords = toCoords(
-      metrics.map((m) => m.clsLoss),
+      metrics.map((m) => m.clsLoss ?? 0),
       minLoss,
       maxLoss,
     );
     const dflLossCoords = toCoords(
-      metrics.map((m) => m.dflLoss),
+      metrics.map((m) => m.dflLoss ?? 0),
       minLoss,
       maxLoss,
     );
     const map50Coords = toCoords(
-      metrics.map((m) => m.map50),
+      metrics.map((m) => m.map50 ?? 0),
       minMap,
       maxMap,
     );
     const map5095Coords = toCoords(
-      metrics.map((m) => m.map5095),
+      metrics.map((m) => m.map5095 ?? 0),
       minMap,
       maxMap,
     );
@@ -206,6 +217,8 @@ export function ConvergenceChart({
       maxLoss,
       minMap,
       maxMap,
+      isDiffusion,
+      diffLoss: { coords: diffLossCoords, path: toPath(diffLossCoords) },
       boxLoss: { coords: boxLossCoords, path: toPath(boxLossCoords) },
       clsLoss: { coords: clsLossCoords, path: toPath(clsLossCoords) },
       dflLoss: { coords: dflLossCoords, path: toPath(dflLossCoords) },
@@ -256,42 +269,49 @@ export function ConvergenceChart({
           )}
         </div>
 
-        {/* Tab Switcher Segmentado */}
-        <div className="flex items-center rounded-lg border border-white/10 bg-black/40 backdrop-blur-sm p-0.5">
-          <button
-            type="button"
-            onClick={() => setTab("all")}
-            className={`rounded-md px-2.5 py-1 font-mono text-[11px] transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${
-              tab === "all"
-                ? "bg-zinc-800 text-zinc-100 shadow-sm"
-                : "text-zinc-400 hover:text-zinc-200"
-            }`}
-          >
-            Todas
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab("loss")}
-            className={`rounded-md px-2.5 py-1 font-mono text-[11px] transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${
-              tab === "loss"
-                ? "bg-zinc-800 text-zinc-100 shadow-sm"
-                : "text-zinc-400 hover:text-zinc-200"
-            }`}
-          >
-            Perdas (Loss)
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab("map")}
-            className={`rounded-md px-2.5 py-1 font-mono text-[11px] transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${
-              tab === "map"
-                ? "bg-zinc-800 text-zinc-100 shadow-sm"
-                : "text-zinc-400 hover:text-zinc-200"
-            }`}
-          >
-            Precisão (mAP)
-          </button>
-        </div>
+        {/* Tab Switcher Segmentado ou Badge de Difusão */}
+        {curves?.isDiffusion ? (
+          <div className="flex items-center gap-1.5 rounded-lg border border-indigo-500/20 bg-indigo-500/10 px-2.5 py-1 font-mono text-[11px] text-indigo-300 backdrop-blur-sm">
+            <span className="size-1.5 rounded-full bg-indigo-400" />
+            Curva de Loss Difusão
+          </div>
+        ) : (
+          <div className="flex items-center rounded-lg border border-white/10 bg-black/40 backdrop-blur-sm p-0.5">
+            <button
+              type="button"
+              onClick={() => setTab("all")}
+              className={`rounded-md px-2.5 py-1 font-mono text-[11px] transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${
+                tab === "all"
+                  ? "bg-zinc-800 text-zinc-100 shadow-sm"
+                  : "text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              Todas
+            </button>
+            <button
+              type="button"
+              onClick={() => setTab("loss")}
+              className={`rounded-md px-2.5 py-1 font-mono text-[11px] transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${
+                tab === "loss"
+                  ? "bg-zinc-800 text-zinc-100 shadow-sm"
+                  : "text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              Perdas (Loss)
+            </button>
+            <button
+              type="button"
+              onClick={() => setTab("map")}
+              className={`rounded-md px-2.5 py-1 font-mono text-[11px] transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${
+                tab === "map"
+                  ? "bg-zinc-800 text-zinc-100 shadow-sm"
+                  : "text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              Precisão (mAP)
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Canvas Vetorial do Gráfico */}
@@ -349,8 +369,38 @@ export function ConvergenceChart({
             );
           })}
 
-          {/* Curvas de Perda (Losses) */}
-          {curves && (tab === "all" || tab === "loss") && (
+          {/* Defs para gradientes de preenchimento */}
+          <defs>
+            <linearGradient id="diffLossGradient" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#818cf8" stopOpacity="0.4" />
+              <stop offset="100%" stopColor="#818cf8" stopOpacity="0.0" />
+            </linearGradient>
+          </defs>
+
+          {/* Curva de Perda Difusão LoRA */}
+          {curves && curves.isDiffusion && (
+            <>
+              {/* Preenchimento degradê sob a curva */}
+              {metrics.length > 1 && (
+                <path
+                  d={`${curves.diffLoss.path} L ${curves.diffLoss.coords[curves.diffLoss.coords.length - 1].x} ${padTop + graphHeight} L ${curves.diffLoss.coords[0].x} ${padTop + graphHeight} Z`}
+                  fill="url(#diffLossGradient)"
+                />
+              )}
+              {/* Linha principal de loss */}
+              <path
+                d={curves.diffLoss.path}
+                fill="none"
+                stroke="#818cf8"
+                strokeWidth={2.25}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </>
+          )}
+
+          {/* Curvas de Perda YOLO (Losses) */}
+          {curves && !curves.isDiffusion && (tab === "all" || tab === "loss") && (
             <>
               {/* Box Loss (Sky/Cyan) */}
               <path
@@ -382,8 +432,8 @@ export function ConvergenceChart({
             </>
           )}
 
-          {/* Curvas de Precisão (mAP) */}
-          {curves && (tab === "all" || tab === "map") && (
+          {/* Curvas de Precisão YOLO (mAP) */}
+          {curves && !curves.isDiffusion && (tab === "all" || tab === "map") && (
             <>
               {/* mAP@50 (Brand Green #34d399) */}
               <path
@@ -421,42 +471,53 @@ export function ConvergenceChart({
                 strokeDasharray="3 3"
               />
               {/* Pontos nas interseções */}
-              {(tab === "all" || tab === "loss") && (
+              {curves.isDiffusion ? (
+                <circle
+                  cx={curves.diffLoss.coords[hoverIndex]?.x}
+                  cy={curves.diffLoss.coords[hoverIndex]?.y}
+                  r={4}
+                  fill="#818cf8"
+                />
+              ) : (
                 <>
-                  <circle
-                    cx={curves.boxLoss.coords[hoverIndex]?.x}
-                    cy={curves.boxLoss.coords[hoverIndex]?.y}
-                    r={3.5}
-                    fill="#38bdf8"
-                  />
-                  <circle
-                    cx={curves.clsLoss.coords[hoverIndex]?.x}
-                    cy={curves.clsLoss.coords[hoverIndex]?.y}
-                    r={3.5}
-                    fill="#818cf8"
-                  />
-                  <circle
-                    cx={curves.dflLoss.coords[hoverIndex]?.x}
-                    cy={curves.dflLoss.coords[hoverIndex]?.y}
-                    r={3.5}
-                    fill="#fbbf24"
-                  />
-                </>
-              )}
-              {(tab === "all" || tab === "map") && (
-                <>
-                  <circle
-                    cx={curves.map50.coords[hoverIndex]?.x}
-                    cy={curves.map50.coords[hoverIndex]?.y}
-                    r={4}
-                    fill="#34d399"
-                  />
-                  <circle
-                    cx={curves.map5095.coords[hoverIndex]?.x}
-                    cy={curves.map5095.coords[hoverIndex]?.y}
-                    r={3.5}
-                    fill="#2dd4bf"
-                  />
+                  {(tab === "all" || tab === "loss") && (
+                    <>
+                      <circle
+                        cx={curves.boxLoss.coords[hoverIndex]?.x}
+                        cy={curves.boxLoss.coords[hoverIndex]?.y}
+                        r={3.5}
+                        fill="#38bdf8"
+                      />
+                      <circle
+                        cx={curves.clsLoss.coords[hoverIndex]?.x}
+                        cy={curves.clsLoss.coords[hoverIndex]?.y}
+                        r={3.5}
+                        fill="#818cf8"
+                      />
+                      <circle
+                        cx={curves.dflLoss.coords[hoverIndex]?.x}
+                        cy={curves.dflLoss.coords[hoverIndex]?.y}
+                        r={3.5}
+                        fill="#fbbf24"
+                      />
+                    </>
+                  )}
+                  {(tab === "all" || tab === "map") && (
+                    <>
+                      <circle
+                        cx={curves.map50.coords[hoverIndex]?.x}
+                        cy={curves.map50.coords[hoverIndex]?.y}
+                        r={4}
+                        fill="#34d399"
+                      />
+                      <circle
+                        cx={curves.map5095.coords[hoverIndex]?.x}
+                        cy={curves.map5095.coords[hoverIndex]?.y}
+                        r={3.5}
+                        fill="#2dd4bf"
+                      />
+                    </>
+                  )}
                 </>
               )}
             </g>
@@ -465,35 +526,46 @@ export function ConvergenceChart({
           {/* Marcador único para quando só há 1 checkpoint */}
           {curves && metrics.length === 1 && (
             <g>
-              {(tab === "all" || tab === "loss") && (
-                <>
-                  <circle
-                    cx={curves.boxLoss.coords[0].x}
-                    cy={curves.boxLoss.coords[0].y}
-                    r={4}
-                    fill="#38bdf8"
-                  />
-                  <circle
-                    cx={curves.clsLoss.coords[0].x}
-                    cy={curves.clsLoss.coords[0].y}
-                    r={4}
-                    fill="#818cf8"
-                  />
-                  <circle
-                    cx={curves.dflLoss.coords[0].x}
-                    cy={curves.dflLoss.coords[0].y}
-                    r={4}
-                    fill="#fbbf24"
-                  />
-                </>
-              )}
-              {(tab === "all" || tab === "map") && (
+              {curves.isDiffusion ? (
                 <circle
-                  cx={curves.map50.coords[0].x}
-                  cy={curves.map50.coords[0].y}
+                  cx={curves.diffLoss.coords[0].x}
+                  cy={curves.diffLoss.coords[0].y}
                   r={5}
-                  fill="#34d399"
+                  fill="#818cf8"
                 />
+              ) : (
+                <>
+                  {(tab === "all" || tab === "loss") && (
+                    <>
+                      <circle
+                        cx={curves.boxLoss.coords[0].x}
+                        cy={curves.boxLoss.coords[0].y}
+                        r={4}
+                        fill="#38bdf8"
+                      />
+                      <circle
+                        cx={curves.clsLoss.coords[0].x}
+                        cy={curves.clsLoss.coords[0].y}
+                        r={4}
+                        fill="#818cf8"
+                      />
+                      <circle
+                        cx={curves.dflLoss.coords[0].x}
+                        cy={curves.dflLoss.coords[0].y}
+                        r={4}
+                        fill="#fbbf24"
+                      />
+                    </>
+                  )}
+                  {(tab === "all" || tab === "map") && (
+                    <circle
+                      cx={curves.map50.coords[0].x}
+                      cy={curves.map50.coords[0].y}
+                      r={5}
+                      fill="#34d399"
+                    />
+                  )}
+                </>
               )}
             </g>
           )}
@@ -532,48 +604,80 @@ export function ConvergenceChart({
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          {(tab === "all" || tab === "map") && (
+          {curves?.isDiffusion ? (
             <>
               <div className="flex items-center gap-1.5">
-                <span className="size-2 rounded-full bg-[#34d399]" />
-                <span className="text-zinc-400">mAP@50:</span>
+                <span className="size-2 rounded-full bg-indigo-400" />
+                <span className="text-zinc-400">Diffusion Loss:</span>
                 <span className="font-semibold text-zinc-100">
-                  {(activeHover.map50 * 100).toFixed(1)}%
+                  {activeHover.loss?.toFixed(4) ?? "—"}
                 </span>
               </div>
-              <div className="flex items-center gap-1.5">
-                <span className="size-2 rounded-full bg-[#2dd4bf]" />
-                <span className="text-zinc-400">mAP@50-95:</span>
-                <span className="font-semibold text-zinc-100">
-                  {(activeHover.map5095 * 100).toFixed(1)}%
-                </span>
-              </div>
+              {activeHover.lr != null && (
+                <div className="flex items-center gap-1.5">
+                  <span className="size-2 rounded-full bg-sky-400" />
+                  <span className="text-zinc-400">LR:</span>
+                  <span className="font-semibold text-zinc-100">
+                    {activeHover.lr.toExponential(2)}
+                  </span>
+                </div>
+              )}
+              {activeHover.step != null && (
+                <div className="flex items-center gap-1.5">
+                  <span className="size-2 rounded-full bg-zinc-500" />
+                  <span className="text-zinc-400">Step:</span>
+                  <span className="font-semibold text-zinc-100">
+                    {activeHover.step}
+                  </span>
+                </div>
+              )}
             </>
-          )}
-
-          {(tab === "all" || tab === "loss") && (
+          ) : (
             <>
-              <div className="flex items-center gap-1.5">
-                <span className="size-2 rounded-full bg-[#38bdf8]" />
-                <span className="text-zinc-400">Box Loss:</span>
-                <span className="font-semibold text-zinc-100">
-                  {activeHover.boxLoss.toFixed(4)}
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span className="size-2 rounded-full bg-[#818cf8]" />
-                <span className="text-zinc-400">Cls Loss:</span>
-                <span className="font-semibold text-zinc-100">
-                  {activeHover.clsLoss.toFixed(4)}
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span className="size-2 rounded-full bg-[#fbbf24]" />
-                <span className="text-zinc-400">DFL Loss:</span>
-                <span className="font-semibold text-zinc-100">
-                  {activeHover.dflLoss.toFixed(4)}
-                </span>
-              </div>
+              {(tab === "all" || tab === "map") && (
+                <>
+                  <div className="flex items-center gap-1.5">
+                    <span className="size-2 rounded-full bg-[#34d399]" />
+                    <span className="text-zinc-400">mAP@50:</span>
+                    <span className="font-semibold text-zinc-100">
+                      {((activeHover.map50 ?? 0) * 100).toFixed(1)}%
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="size-2 rounded-full bg-[#2dd4bf]" />
+                    <span className="text-zinc-400">mAP@50-95:</span>
+                    <span className="font-semibold text-zinc-100">
+                      {((activeHover.map5095 ?? 0) * 100).toFixed(1)}%
+                    </span>
+                  </div>
+                </>
+              )}
+
+              {(tab === "all" || tab === "loss") && (
+                <>
+                  <div className="flex items-center gap-1.5">
+                    <span className="size-2 rounded-full bg-[#38bdf8]" />
+                    <span className="text-zinc-400">Box Loss:</span>
+                    <span className="font-semibold text-zinc-100">
+                      {activeHover.boxLoss?.toFixed(4) ?? "—"}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="size-2 rounded-full bg-[#818cf8]" />
+                    <span className="text-zinc-400">Cls Loss:</span>
+                    <span className="font-semibold text-zinc-100">
+                      {activeHover.clsLoss?.toFixed(4) ?? "—"}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="size-2 rounded-full bg-[#fbbf24]" />
+                    <span className="text-zinc-400">DFL Loss:</span>
+                    <span className="font-semibold text-zinc-100">
+                      {activeHover.dflLoss?.toFixed(4) ?? "—"}
+                    </span>
+                  </div>
+                </>
+              )}
             </>
           )}
         </div>

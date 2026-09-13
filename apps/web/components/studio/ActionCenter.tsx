@@ -48,6 +48,7 @@ import type {
 } from "@/types/studio";
 import ConfirmDialog from "@/components/studio/ConfirmDialog";
 import { JOB_STATUS_CONFIG, JobArtifactsList } from "./JobCard";
+import { JobSamplesGallery } from "./JobSamplesGallery";
 import { showToast } from "./Toast";
 
 export interface SystemNotification {
@@ -957,43 +958,90 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                 {latestMetric && (
                                   <div>
                                     <div className="text-[10px] font-mono text-zinc-400 uppercase tracking-caps mb-1.5 flex items-center justify-between">
-                                      <span>Métricas</span>
+                                      <span>
+                                        {job.engine === "diffusion" || (job.kind as string) === "diffusion" || (job.kind as string) === "diffusion_train"
+                                          ? "Métricas Difusão LoRA"
+                                          : "Métricas"}
+                                      </span>
                                       <span className="text-zinc-400">Epoch {latestMetric.epoch}</span>
                                     </div>
-                                    <div className="grid grid-cols-4 gap-1.5 text-center">
-                                      <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
-                                        <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">mAP50</span>
-                                        <span className="text-xs font-semibold text-[#34d399] font-mono tabular-nums">
-                                          {(latestMetric.map50 * 100).toFixed(1)}%
-                                        </span>
+                                    {job.engine === "diffusion" || (job.kind as string) === "diffusion" || (job.kind as string) === "diffusion_train" ? (
+                                      <div className="grid grid-cols-4 gap-1.5 text-center">
+                                        <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
+                                          <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">Loss</span>
+                                          <span className="text-xs font-semibold text-indigo-400 font-mono tabular-nums">
+                                            {latestMetric.loss != null ? latestMetric.loss.toFixed(4) : "—"}
+                                          </span>
+                                        </div>
+                                        <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
+                                          <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">LR</span>
+                                          <span className="text-xs font-semibold text-sky-400 font-mono tabular-nums">
+                                            {latestMetric.lr ? latestMetric.lr.toExponential(1) : "—"}
+                                          </span>
+                                        </div>
+                                        <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
+                                          <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">Step</span>
+                                          <span className="text-xs font-semibold text-zinc-200 font-mono tabular-nums">
+                                            {latestMetric.step ?? latestMetric.epoch * 10}
+                                          </span>
+                                        </div>
+                                        <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
+                                          <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">Época</span>
+                                          <span className="text-xs font-semibold text-zinc-200 font-mono tabular-nums">
+                                            {latestMetric.epoch}
+                                          </span>
+                                        </div>
                                       </div>
-                                      <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
-                                        <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">mAP50-95</span>
-                                        <span className="text-xs font-semibold text-[#34d399] font-mono tabular-nums">
-                                          {(latestMetric.map5095 * 100).toFixed(1)}%
-                                        </span>
+                                    ) : (
+                                      <div className="grid grid-cols-4 gap-1.5 text-center">
+                                        <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
+                                          <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">mAP50</span>
+                                          <span className="text-xs font-semibold text-[#34d399] font-mono tabular-nums">
+                                            {latestMetric.map50 !== undefined ? `${(latestMetric.map50 * 100).toFixed(1)}%` : "—"}
+                                          </span>
+                                        </div>
+                                        <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
+                                          <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">mAP50-95</span>
+                                          <span className="text-xs font-semibold text-[#34d399] font-mono tabular-nums">
+                                            {latestMetric.map5095 !== undefined ? `${(latestMetric.map5095 * 100).toFixed(1)}%` : "—"}
+                                          </span>
+                                        </div>
+                                        <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
+                                          <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">Box Loss</span>
+                                          <span className="text-xs font-semibold text-zinc-200 font-mono tabular-nums">
+                                            {latestMetric.boxLoss?.toFixed(3) ?? "—"}
+                                          </span>
+                                        </div>
+                                        <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
+                                          <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">Cls Loss</span>
+                                          <span className="text-xs font-semibold text-zinc-200 font-mono tabular-nums">
+                                            {latestMetric.clsLoss?.toFixed(3) ?? "—"}
+                                          </span>
+                                        </div>
                                       </div>
-                                      <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
-                                        <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">Box Loss</span>
-                                        <span className="text-xs font-semibold text-zinc-200 font-mono tabular-nums">
-                                          {latestMetric.boxLoss?.toFixed(3) ?? "—"}
-                                        </span>
-                                      </div>
-                                      <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
-                                        <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">Cls Loss</span>
-                                        <span className="text-xs font-semibold text-zinc-200 font-mono tabular-nums">
-                                          {latestMetric.clsLoss?.toFixed(3) ?? "—"}
-                                        </span>
-                                      </div>
-                                    </div>
+                                    )}
                                   </div>
                                 )}
 
-                                {/* Artefatos disponíveis para download */}
+                                {/* Galeria de amostras visuais de validação (difusão) */}
+                                {jobExtraArtifacts && jobExtraArtifacts.length > 0 && (
+                                  <JobSamplesGallery
+                                    jobId={job.id}
+                                    artifacts={jobExtraArtifacts}
+                                    onDownload={(jId, art) => handleDownload(jId, art)}
+                                  />
+                                )}
+
+                                {/* Outros artefatos disponíveis para download */}
                                 {jobExtraArtifacts && jobExtraArtifacts.length > 0 && (
                                   <JobArtifactsList
                                     jobId={job.id}
-                                    artifacts={jobExtraArtifacts}
+                                    artifacts={jobExtraArtifacts.filter(
+                                      (art) =>
+                                        art.kind !== "sample" &&
+                                        !art.path.startsWith("samples/") &&
+                                        !art.path.includes("sample_epoch_"),
+                                    )}
                                     onDownload={(jId, art) => handleDownload(jId, art)}
                                   />
                                 )}

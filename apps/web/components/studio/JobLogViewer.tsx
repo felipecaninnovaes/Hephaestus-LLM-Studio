@@ -24,7 +24,7 @@ type LogType = "all" | "stdout" | "stderr";
 interface LogLine {
   id: string;
   timestamp: string;
-  tag: "ORCH" | "ENGINE" | "TRAIN" | "AUTOLABEL" | "S3" | "STDERR" | "WARN";
+  tag: "ORCH" | "ENGINE" | "TRAIN" | "DIFFUSION" | "AUTOLABEL" | "S3" | "STDERR" | "WARN";
   text: string;
   isError?: boolean;
 }
@@ -90,7 +90,7 @@ export function JobLogViewer({
       engineDesc = `AutoLabel Engine inicializado: modelo=${job.model} | Pipeline VLM Vision API`;
     } else if (job.kind === "autotracker" || job.engine === "autotracker") {
       engineDesc = `AutoTracker Engine inicializado: modelo=${job.model} | Open-Vocab Tracking`;
-    } else if ((job.kind as string) === "diffusion" || job.engine === "diffusion") {
+    } else if (job.kind === "diffusion_train" || (job.kind as string) === "diffusion" || job.engine === "diffusion") {
       engineDesc = `Diffusion LoRA Engine inicializado: modelo=${job.model} | vram_min=${job.vramMinGb || 8}GB`;
     } else if (job.kind === "yolo_predict" || job.mode === "predict") {
       engineDesc = `YOLO Predict Engine inicializado: modelo=${job.model}`;
@@ -117,12 +117,29 @@ export function JobLogViewer({
             tag: "AUTOLABEL",
             text: `Processamento de legendas: item ${m.epoch}${totalExpected ? `/${totalExpected}` : ""} · Progresso: ${prog}`,
           });
+        } else if (job.kind === "diffusion_train" || (job.kind as string) === "diffusion" || job.engine === "diffusion" || m.loss !== undefined) {
+          const parts: string[] = [`epoch=${m.epoch}/${job.epoch || 100}`];
+          if (m.loss !== undefined) parts.push(`loss=${m.loss.toFixed(4)}`);
+          if (m.lr !== undefined) parts.push(`lr=${m.lr.toExponential(2)}`);
+          if (m.step !== undefined) parts.push(`step=${m.step}`);
+          list.push({
+            id: `metric-${m.epoch}`,
+            timestamp: fmtTime(3 + idx * 2),
+            tag: "DIFFUSION",
+            text: parts.join(" "),
+          });
         } else {
+          const parts: string[] = [`epoch=${m.epoch}/${job.epoch || 100}`];
+          if (m.boxLoss !== undefined) parts.push(`box_loss=${m.boxLoss.toFixed(4)}`);
+          if (m.clsLoss !== undefined) parts.push(`cls_loss=${m.clsLoss.toFixed(4)}`);
+          if (m.dflLoss !== undefined) parts.push(`dfl_loss=${m.dflLoss.toFixed(4)}`);
+          if (m.map50 !== undefined) parts.push(`mAP50=${(m.map50 * 100).toFixed(1)}%`);
+          if (m.map5095 !== undefined) parts.push(`mAP50-95=${(m.map5095 * 100).toFixed(1)}%`);
           list.push({
             id: `metric-${m.epoch}`,
             timestamp: fmtTime(3 + idx * 2),
             tag: "TRAIN",
-            text: `epoch=${m.epoch}/${job.epoch || 100} box_loss=${m.boxLoss.toFixed(4)} cls_loss=${m.clsLoss.toFixed(4)} dfl_loss=${m.dflLoss.toFixed(4)} mAP50=${(m.map50 * 100).toFixed(1)}% mAP50-95=${(m.map5095 * 100).toFixed(1)}%`,
+            text: parts.join(" "),
           });
         }
       });
@@ -352,6 +369,7 @@ export function JobLogViewer({
               if (line.tag === "ORCH") tagBadge = "text-brand-400";
               if (line.tag === "ENGINE") tagBadge = "text-cyan-400";
               if (line.tag === "TRAIN") tagBadge = "text-zinc-200";
+              if (line.tag === "DIFFUSION") tagBadge = "text-indigo-400";
               if (line.tag === "AUTOLABEL") tagBadge = "text-sky-400";
               if (line.tag === "S3") tagBadge = "text-purple-400";
               if (line.tag === "WARN") tagBadge = "text-amber-400";

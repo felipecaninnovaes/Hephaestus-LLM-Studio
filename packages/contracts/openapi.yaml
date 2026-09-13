@@ -2583,6 +2583,16 @@ components:
           type: [string, "null"]
           enum: [none, low, medium, high, "null"]
           description: "Esforço de raciocínio para modelos com CoT/reasoning (ex: none para desativar raciocínio e acelerar)."
+        filterClassId:
+          type: [string, "null"]
+          format: uuid
+          description: "ID de classe opcional para filtrar apenas imagens com anotações desta classe."
+        imageIds:
+          type: [array, "null"]
+          items:
+            type: string
+            format: uuid
+          description: "Lista explícita opcional de IDs de imagens para legendagem seletiva."
 
     DiffusionJobRequest:
       type: object

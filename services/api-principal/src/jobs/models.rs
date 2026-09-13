@@ -541,6 +541,10 @@ pub struct AutolabelJobRequest {
     pub orchestrator_id: Option<String>,
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub filter_class_id: Option<String>,
+    #[serde(default)]
+    pub image_ids: Option<Vec<String>>,
 }
 
 fn default_autolabel_model() -> String {
@@ -603,6 +607,21 @@ pub fn validate_autolabel_request(
             return Err(format!(
                 "reasoningEffort must be one of {valid:?}, got '{re}'"
             ));
+        }
+    }
+    if let Some(ref fc) = req.filter_class_id {
+        if uuid::Uuid::parse_str(fc).is_err() {
+            return Err("filterClassId must be a valid UUID".to_string());
+        }
+    }
+    if let Some(ref ids) = req.image_ids {
+        if ids.is_empty() {
+            return Err("imageIds must not be empty if provided".to_string());
+        }
+        for id in ids {
+            if uuid::Uuid::parse_str(id).is_err() {
+                return Err(format!("imageId '{id}' must be a valid UUID"));
+            }
         }
     }
     Ok(req)
@@ -1752,5 +1771,44 @@ mod tests {
         assert!(serialized.contains("generatedCaption"));
         assert!(serialized.contains("currentCaption"));
         assert!(serialized.contains("totalGenerated"));
+    }
+
+    #[test]
+    fn autolabel_request_selective_filters_validation() {
+        let json_ok = r#"{
+            "datasetId": "550e8400-e29b-41d4-a716-446655440000",
+            "model": "openai",
+            "filterClassId": "550e8400-e29b-41d4-a716-446655440001",
+            "imageIds": [
+                "550e8400-e29b-41d4-a716-446655440002",
+                "550e8400-e29b-41d4-a716-446655440003"
+            ]
+        }"#;
+        let req: AutolabelJobRequest = serde_json::from_str(json_ok).expect("parse selective ok");
+        assert!(validate_autolabel_request(req).is_ok());
+
+        // filterClassId não-uuid
+        let json_bad_fc = r#"{
+            "datasetId": "550e8400-e29b-41d4-a716-446655440000",
+            "filterClassId": "not-a-uuid"
+        }"#;
+        let req_bad_fc: AutolabelJobRequest = serde_json::from_str(json_bad_fc).unwrap();
+        assert!(validate_autolabel_request(req_bad_fc).is_err());
+
+        // imageIds vazio
+        let json_empty_ids = r#"{
+            "datasetId": "550e8400-e29b-41d4-a716-446655440000",
+            "imageIds": []
+        }"#;
+        let req_empty_ids: AutolabelJobRequest = serde_json::from_str(json_empty_ids).unwrap();
+        assert!(validate_autolabel_request(req_empty_ids).is_err());
+
+        // imageIds com item inválido
+        let json_bad_item = r#"{
+            "datasetId": "550e8400-e29b-41d4-a716-446655440000",
+            "imageIds": ["not-a-uuid"]
+        }"#;
+        let req_bad_item: AutolabelJobRequest = serde_json::from_str(json_bad_item).unwrap();
+        assert!(validate_autolabel_request(req_bad_item).is_err());
     }
 }

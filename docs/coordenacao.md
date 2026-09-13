@@ -19,9 +19,26 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-13 (FATIA PREVIEW E VISUALIZAÇÃO DE LABELS NO DATASET CONCLUÍDA)
+## Estado atual — 2026-09-13 (FATIA AUTOLABEL SELETIVO POR CLASSE/SELEÇÃO CONCLUÍDA NA BRANCH)
 
-- **FATIA PREVIEW E VISUALIZAÇÃO DE LABELS NO DATASET (GRID E QUICKLOOK) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/autolabel-caption-review`.
+- **FATIA AUTOLABEL SELETIVO POR CLASSE E SELEÇÃO DE IMAGENS — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/autolabel-selective-dataset`.
+  - **Contrato OpenAPI**: `AutolabelJobRequest` expandido com campos opcionais `filterClassId: Option<Uuid>` e `imageIds: Option<Vec<Uuid>>`.
+  - **Backend API Principal**:
+    - `package.rs`: implementado `build_package_filtered` permitindo empacotar unicamente um subconjunto de imagens ativas.
+    - `handlers.rs`: `submit_autolabel_job` com resolução de classe via `filter_class_id` (com checagem de integridade, substituição de template `{class_name}` no prompt e resolução de imagens anotadas com a classe) ou `image_ids` direto / interseção; telemetria no Manager com `image_ids_count` e `filter_class_id`.
+    - `models.rs`: validação de UUIDs em `filter_class_id` e `image_ids` (com teste unitário cobrindo casos válidos, inválidos e listas vazias).
+    - 325/325 testes unitários verdes.
+  - **Web Frontend**:
+    - `apps/web/types/studio.ts`: interface `AutolabelJobRequest` alinhada com `filterClassId` e `imageIds`.
+    - `apps/web/components/studio/AutoLabelModal.tsx`: novo seletor de "Escopo de Execução" com 3 modos:
+      1. *Dataset Completo*: todas as imagens ativas.
+      2. *Por Classe YOLO*: seletor da classe alvo, chip para inserção da tag dinâmica `{class_name}` no prompt e preset "Foco na Classe YOLO".
+      3. *Selecionadas no Grid*: executa exclusivamente nas imagens marcadas pelo usuário.
+    - `apps/web/components/studio/FloatingSelectionBar.tsx`: adicionado botão de ação rápida "AutoLabel (N)" que abre o modal já pré-configurado no modo de seleção.
+    - `apps/web/app/(studio)/datasets/[id]/page.tsx`: integração completa passando classes, imagens selecionadas e contagens para o modal e barra flutuante.
+  - **Verificações**: `cargo check --workspace` verde, `cargo test -p api-principal --lib` 325/325 verdes, `cargo fmt --all -- --check` limpo, `npm run build --prefix apps/web` 12/12 páginas estáticas/dinâmicas compiladas sem erros TS, `graft build` sincronizado. Branch pronta para commit.
+
+- **FATIA PREVIEW E VISUALIZAÇÃO DE LABELS NO DATASET (GRID E QUICKLOOK) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/autolabel-caption-review` (mergeada na main via PR #15).
   - **Backend API Principal**:
     - `services/api-principal/src/datasets/models.rs`: `ImageResponse` enriquecido com campos opcionais `boxes_count: Option<i64>` e `caption: Option<String>` (com `skip_serializing_if = "Option::is_none"`).
     - `services/api-principal/src/datasets/handlers.rs`: `list_images` otimizado com subqueries indexadas no Postgres para contar bounding boxes anotadas e trazer o texto da legenda sem requisições adicionais N+1.

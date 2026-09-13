@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { ApiError } from "@/lib/api";
 import { startAutolabelJob } from "@/lib/autolabel";
-import { autolabelErrorMessage, type AutolabelModel } from "@/types/studio";
+import { autolabelErrorMessage, type AutolabelModel, type StudioClass } from "@/types/studio";
 import { showToast } from "./Toast";
 import { openActionCenter } from "@/lib/events";
 import NodeSelect from "./NodeSelect";
@@ -27,6 +27,10 @@ interface Props {
   datasetTitle: string;
   onClose: () => void;
   onJobCreated: () => void;
+  classes?: StudioClass[];
+  initialFilterClassId?: string | null;
+  selectedImageIds?: string[];
+  totalImagesCount?: number;
 }
 
 export type ApiProviderPreset = "openai" | "ollama" | "openrouter" | "lmstudio" | "custom";
@@ -119,6 +123,10 @@ interface AutoLabelSavedConfig {
 
 const PROMPT_PRESETS = [
   {
+    label: "Foco na Classe YOLO",
+    text: "Descreva em detalhes o(a) {class_name} visível nesta imagem, incluindo cores, acabamento, posição e estado de conservação.",
+  },
+  {
     label: "Difusão LoRA",
     text: "Descreva detalhadamente o sujeito principal, iluminação, cores, textura e composição desta imagem para treinamento de difusão.",
   },
@@ -140,14 +148,24 @@ function sanitizeUrl(val: string): string {
   return val.trim().replace(/^["']+|["']+$/g, "").replace(/\/+$/, "");
 }
 
+export type ScopeMode = "all" | "class" | "selected";
+
 export default function AutoLabelModal({
   open,
   datasetId,
   datasetTitle,
   onClose,
   onJobCreated,
+  classes = [],
+  initialFilterClassId = null,
+  selectedImageIds = [],
+  totalImagesCount,
 }: Props) {
   const router = useRouter();
+
+  // Escopo de processamento
+  const [scopeMode, setScopeMode] = useState<ScopeMode>("all");
+  const [selectedClassId, setSelectedClassId] = useState<string>("");
 
   // Estados principais
   const [model, setModel] = useState<AutolabelModel>("florence-2");
@@ -188,10 +206,31 @@ export default function AutoLabelModal({
     }
   }
 
+  function handleInsertTag(tag: string) {
+    setPrompt((prev) => (prev ? `${prev} ${tag}` : tag));
+  }
+
   useEffect(() => {
     if (!open) return;
     setTopError(null);
     setBusy(false);
+
+    if (selectedImageIds && selectedImageIds.length > 0) {
+      setScopeMode("selected");
+    } else if (initialFilterClassId) {
+      setScopeMode("class");
+      setSelectedClassId(initialFilterClassId);
+    } else {
+      setScopeMode("all");
+    }
+
+    if (classes && classes.length > 0) {
+      if (initialFilterClassId) {
+        setSelectedClassId(initialFilterClassId);
+      } else if (!selectedClassId) {
+        setSelectedClassId(classes[0].id);
+      }
+    }
 
     // Restaura configurações salvas de OpenAI/compatível do localStorage se existirem
     try {
@@ -252,6 +291,12 @@ export default function AutoLabelModal({
         ...(prompt.trim() ? { prompt: prompt.trim() } : {}),
         ...(selectedOrchestratorId ? { orchestratorId: selectedOrchestratorId } : {}),
       };
+
+      if (scopeMode === "class" && selectedClassId) {
+        payload.filterClassId = selectedClassId;
+      } else if (scopeMode === "selected" && selectedImageIds && selectedImageIds.length > 0) {
+        payload.imageIds = selectedImageIds;
+      }
 
       if (model === "openai") {
         const provider = PROVIDER_PRESETS.find((p) => p.id === selectedProvider);
@@ -333,6 +378,113 @@ export default function AutoLabelModal({
             {topError}
           </p>
         )}
+
+        {/* ESCOPO DE PROCESSAMENTO */}
+        <div className="space-y-2 rounded-xl border border-white/10 bg-white/[0.02] p-3">
+          <div className="flex items-center justify-between">
+            <span className="font-mono text-xs font-medium text-zinc-200">
+              Escopo de Execução
+            </span>
+            <span className="font-mono text-[10px] text-zinc-400">
+              {scopeMode === "all" && (totalImagesCount ? `${totalImagesCount} imagens` : "todas as imagens")}
+              {scopeMode === "class" && "filtro por classe YOLO"}
+              {scopeMode === "selected" && `${selectedImageIds?.length ?? 0} imagens selecionadas`}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            {/* Todas */}
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => setScopeMode("all")}
+              className={`flex flex-col text-left p-2.5 rounded-lg border transition ${
+                scopeMode === "all"
+                  ? "border-brand-500/60 bg-brand-500/10 text-white ring-1 ring-brand-500/30"
+                  : "border-white/10 bg-white/[0.02] text-zinc-400 hover:border-white/20 hover:text-zinc-200"
+              }`}
+            >
+              <span className="font-semibold text-xs text-zinc-100">Dataset Completo</span>
+              <span className="font-mono text-[10px] text-zinc-400">Todas as imagens ativas</span>
+            </button>
+
+            {/* Filtrar por Classe */}
+            <button
+              type="button"
+              disabled={busy || !classes || classes.length === 0}
+              onClick={() => {
+                setScopeMode("class");
+                if (!selectedClassId && classes && classes.length > 0) {
+                  setSelectedClassId(classes[0].id);
+                }
+              }}
+              className={`flex flex-col text-left p-2.5 rounded-lg border transition ${
+                scopeMode === "class"
+                  ? "border-amber-500/60 bg-amber-500/10 text-white ring-1 ring-amber-500/30"
+                  : "border-white/10 bg-white/[0.02] text-zinc-400 hover:border-white/20 hover:text-zinc-200 disabled:opacity-40"
+              }`}
+            >
+              <span className="font-semibold text-xs text-zinc-100">Por Classe YOLO</span>
+              <span className="font-mono text-[10px] text-zinc-400">Apenas com a classe anotada</span>
+            </button>
+
+            {/* Selecionadas */}
+            <button
+              type="button"
+              disabled={busy || !selectedImageIds || selectedImageIds.length === 0}
+              onClick={() => setScopeMode("selected")}
+              className={`flex flex-col text-left p-2.5 rounded-lg border transition ${
+                scopeMode === "selected"
+                  ? "border-sky-500/60 bg-sky-500/10 text-white ring-1 ring-sky-500/30"
+                  : "border-white/10 bg-white/[0.02] text-zinc-400 hover:border-white/20 hover:text-zinc-200 disabled:opacity-40"
+              }`}
+            >
+              <span className="font-semibold text-xs text-zinc-100">Selecionadas no Grid</span>
+              <span className="font-mono text-[10px] text-zinc-400">
+                {selectedImageIds && selectedImageIds.length > 0
+                  ? `${selectedImageIds.length} selecionadas`
+                  : "Nenhuma selecionada"}
+              </span>
+            </button>
+          </div>
+
+          {/* Seletor da classe quando scopeMode === 'class' */}
+          {scopeMode === "class" && classes && classes.length > 0 && (
+            <div className="mt-2.5 pt-2.5 border-t border-white/5 space-y-2">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <label className="font-mono text-[11px] text-zinc-300">
+                  Classe para Filtragem:
+                </label>
+                <select
+                  value={selectedClassId}
+                  onChange={(e) => setSelectedClassId(e.target.value)}
+                  disabled={busy}
+                  className="rounded-lg border border-white/15 bg-zinc-900 px-2.5 py-1.5 font-mono text-xs text-zinc-100 outline-none focus:border-amber-400"
+                >
+                  {classes.map((cls) => (
+                    <option key={cls.id} value={cls.id}>
+                      {cls.name} (idx: {cls.idx})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center gap-2 text-[11px] text-zinc-400">
+                <span>Tag dinâmica no prompt:</span>
+                <button
+                  type="button"
+                  onClick={() => handleInsertTag("{class_name}")}
+                  title="Clique para adicionar {class_name} ao prompt"
+                  className="rounded border border-amber-500/30 bg-amber-500/15 px-1.5 py-0.5 font-mono text-[10px] text-amber-300 hover:bg-amber-500/25 transition"
+                >
+                  + &#123;class_name&#125;
+                </button>
+                <span className="text-[10px] text-zinc-500">
+                  (substituída pelo nome da classe na execução)
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
 
         {/* 1. SELETOR DE MODELO VISION */}
         <div className="space-y-2">

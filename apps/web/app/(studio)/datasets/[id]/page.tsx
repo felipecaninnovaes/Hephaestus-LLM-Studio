@@ -1426,6 +1426,7 @@ export default function DatasetGalleryPage() {
         onSelectAll={handleSelectAll}
         onClearSelection={handleClearSelection}
         onBatchDelete={() => setBatchDeleteOpen(true)}
+        onAutoLabel={() => setAutoLabelOpen(true)}
         busy={batchDeleteBusy}
       />
 
@@ -1522,6 +1523,9 @@ export default function DatasetGalleryPage() {
           open
           datasetId={dataset.id}
           datasetTitle={dataset.title}
+          classes={dataset.classes ?? []}
+          selectedImageIds={Array.from(selectedIds)}
+          totalImagesCount={dataset.imagesCount}
           onClose={() => setAutoLabelOpen(false)}
           onJobCreated={() => setAutoLabelOpen(false)}
         />

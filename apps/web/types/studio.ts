@@ -294,6 +294,8 @@ export interface AutolabelJobRequest {
   openaiModel?: string;
   orchestratorId?: string | null;
   reasoningEffort?: "none" | "low" | "medium" | "high" | null;
+  filterClassId?: string | null;
+  imageIds?: string[] | null;
 }
 
 export interface AutolabelApplyItem {

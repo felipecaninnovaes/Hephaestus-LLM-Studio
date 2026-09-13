@@ -1982,8 +1982,13 @@ pub async fn dispatch_next(
     // ou substitui trainer-yolo por trainer-difusao mantendo tag (:local ou :gpu).
     let job_image = match engine.as_str() {
         "diffusion" => {
-            if let Ok(diff_img) = std::env::var("DIFFUSION_TRAINER_IMAGE") {
-                diff_img
+            let env_diff = std::env::var("DIFFUSION_TRAINER_IMAGE").unwrap_or_default();
+            if !env_diff.is_empty() && env_diff != "hephaestus/trainer-difusao:local" {
+                env_diff
+            } else if image.ends_with(":gpu") || image.contains(":gpu") {
+                "hephaestus/trainer-difusao:gpu".to_string()
+            } else if !env_diff.is_empty() {
+                env_diff
             } else if image.contains("trainer-yolo") {
                 image.replace("trainer-yolo", "trainer-difusao")
             } else {

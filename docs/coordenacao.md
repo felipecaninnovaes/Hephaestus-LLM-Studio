@@ -45,10 +45,10 @@ ser interrompido no meio de uma.
 - **FATIA AUTOLABEL SELETIVO POR CLASSE E SELEÇÃO DE IMAGENS — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/autolabel-selective-dataset`.
   - **Contrato OpenAPI**: `AutolabelJobRequest` expandido com campos opcionais `filterClassId: Option<Uuid>` e `imageIds: Option<Vec<Uuid>>`.
   - **Backend API Principal**:
-    - `package.rs`: implementado `build_package_filtered` permitindo empacotar unicamente um subconjunto de imagens ativas.
+    - `package.rs`: implementado `build_package_filtered` permitindo empacotar unicamente um subconjunto de imagens ativas (com suporte a empacotamento de dataset sem imagens quando sem filtro explícito, mantendo compatibilidade com os testes de snapshot).
     - `handlers.rs`: `submit_autolabel_job` com resolução de classe via `filter_class_id` (com checagem de integridade, substituição de template `{class_name}` no prompt e resolução de imagens anotadas com a classe) ou `image_ids` direto / interseção; telemetria no Manager com `image_ids_count` e `filter_class_id`.
     - `models.rs`: validação de UUIDs em `filter_class_id` e `image_ids` (com teste unitário cobrindo casos válidos, inválidos e listas vazias).
-    - 325/325 testes unitários verdes.
+    - Testes: 325/325 unitários verdes; 84/84 integração de banco (`datasets_db`) 100% verdes.
   - **Web Frontend**:
     - `apps/web/types/studio.ts`: interface `AutolabelJobRequest` alinhada com `filterClassId` e `imageIds`.
     - `apps/web/components/studio/AutoLabelModal.tsx`: novo seletor de "Escopo de Execução" com 3 modos:

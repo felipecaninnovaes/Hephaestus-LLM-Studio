@@ -332,7 +332,7 @@ pub async fn build_package_filtered(
         }
     };
 
-    if image_rows.is_empty() {
+    if filter_image_ids.is_some() && image_rows.is_empty() {
         return Err(err(
             StatusCode::BAD_REQUEST,
             "dataset_not_ready",

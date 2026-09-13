@@ -175,6 +175,9 @@ jobs:     POST /api/jobs/yolo  → implementado (Fatia 4; ADR-0007 D7 — spec 0
           POST /api/jobs/:id/autolabel/apply  → implementado (Fatia AutoLabel v1; ADR-0016 D1 — spec 0.15.0)
             body `{datasetId?, overwrite?}` → 200 `{applied, skipped, images}`
             erros: 400 `invalid_request` (datasetId divergente ou malformado), 404 `not_found` (job inexistente | engine≠autolabel | captions.jsonl ausente), 409 `job_not_done` (status≠done), 503 `queue_unavailable`/`storage_unavailable`
+          POST /api/jobs/diffusion  → implementado (Fatia Difusão LoRA; ADR-0018 — spec 0.17.0)
+            body `{datasetId, baseModel, triggerWord?, epochs?, batchSize?, learningRate?, rank?, alpha?, weights?, orchestratorId?}` → 202 `{jobId,status:"queued",queuePosition?}`
+            erros: 400 `invalid_request` (baseModel∉{sdxl,flux,sd15}, hiperparâmetros fora de domínio), 404 `not_found`, 409 `dataset_not_ready` (0 imagens), 503 `queue_unavailable` (manager fora — compensação do package)
           GET /api/jobs         → implementado (Fatia 4; lista `{items,total}`)
           GET /api/jobs/queue   → implementado (Fatia 4; fila `{items:[{jobId,position,queueReason}]}`)
           GET /api/jobs/:id     → implementado (Fatia 4; detalhe do job)
@@ -182,7 +185,7 @@ jobs:     POST /api/jobs/yolo  → implementado (Fatia 4; ADR-0007 D7 — spec 0
           GET /api/jobs/:id/metrics  → implementado (Fatia 4; `{items:[{epoch,boxLoss,clsLoss,dflLoss,map50,map5095}]}`)
           GET /api/jobs/:id/artifacts  → implementado (Fatia 4; `{items:[{id,kind,path,md5,bytes}]}`)
           GET /api/jobs/:id/artifacts/:artifactId/data  → implementado (Fatia 4; proxy do objeto via StoragePort)
-          # Adiados para fatias futuras: pause/resume, samples, WS, runners, difusao/clip, autolabel v2 (modelos reais/VLM)
+          # Adiados para fatias futuras: pause/resume, samples, WS, runners, clip, autolabel v2 (modelos reais/VLM)
 runners:  POST /api/runners/{difusao,yolo,clip}/up, POST /api/runners/:id/kill, GET /api/runners
           POST /api/runners/:id/infer {prompt|image|query} (inferência interativa; 409 se preemptado)
 orchestrators (via manager): GET /api/orchestrators  → implementado (F6.1 + Fatia H; leitura da tabela do manager com telemetria por nó; ADR-0009 D1 + ADR-0011 D2)
@@ -221,6 +224,10 @@ ws:       /ws/jobs/:id/logs?since_seq=, /ws/telemetry
   - **`POST /api/jobs/:id/autolabel/apply`** — body `{datasetId?, overwrite?}` → 200 `AutolabelApplyResponse{applied, skipped, images}` (`applied` = legendas gravadas, `skipped` = legendas ignoradas por preservação/formato, `images` = imagens distintas atualizadas). Merge por origem (D1): `overwrite=false` → preserva `manual`/`import` (aplica apenas em imagens sem caption ou origin='autolabel'); `overwrite=true` → sobrescreve inclusive manuais.
   - **`captions.jsonl` (transporte):** linhas JSON `{"filename": "...", "caption": "..."}`. Coleta automática pelo orquestrador como artefato `kind='captions'`.
   - **Migration 0009 (`0009_captions_autolabel.sql`):** amplia constraint de `captions.origin` para aceitar `'autolabel'`.
+- Nota Fatia Difusão LoRA (ADR-0018, spec 0.17.0, `packages/contracts/openapi.yaml`):
+  - **`POST /api/jobs/diffusion`** — body `{datasetId, baseModel, triggerWord?, epochs?, batchSize?, learningRate?, rank?, alpha?, weights?, orchestratorId?}` → 202 `SubmitJobResponse{jobId,status:"queued",queuePosition?}`. Validação: `baseModel` ∈ `{sdxl, flux, sd15}`, epochs 1..100, batchSize ∈ {1, 2, 4, 8}, lr 1e-6..0.01, rank/alpha 4..128. Erros: 400 `invalid_request`, 404 `not_found`, 409 `dataset_not_ready` (0 imagens ativas), 503 `queue_unavailable`. Job: `kind='diffusion_train'`, `engine='diffusion'`, `mode='train'`.
+  - **Empacotamento `engine="diffusion"`:** gera pares `{stem}.webp` + `{stem}.txt`. Cada arquivo `.txt` contém a legenda da imagem consultada na tabela `captions`, opcionalmente prefixada por `triggerWord`. Se não houver caption, contém apenas o triggerWord ou vazio.
+  - **Orquestrador e Manager:** orquestrador despacha subcomando `train --config --output` e coleta `adapter.safetensors` (`kind='model'`) e `metrics.jsonl` (`kind='metrics'`). O manager registra automaticamente o artefato `.safetensors` no catálogo canônico `models` com `engine='diffusion'`.
 - Nota Fatia 3a (ADR-0002 D1, casing): TODAS as chaves de body/query/response de `/api/*` são camelCase (o teste `json_property_names_are_camel_case` rejeita o resto). **Os nomes listados no §9 são colunas (§10) ou campos de transporte, não chaves JSON** — ex.: settings `{hfToken, …}` no wire vs colunas `hf_token` em `settings`; datasets `sizeBytes/imagesCount/lastModified` no wire vs colunas `size_bytes/images_count/updated_at`. A rota `PUT/GET /api/settings/keys` ainda **não está implementada**; as colunas de `settings` permanecem snake_case.
 - Nota Fatia 3b (ADR-0003, spec 0.3.0 — shapes reais em `services/api-principal/src/datasets/models.rs`, tabela de rotas ≡ `PROTECTED_ROUTES` em `src/auth/routes.rs`):
   ```

@@ -712,6 +712,12 @@ pub struct DiffusionJobRequest {
     pub weights: Option<String>,
     #[serde(default)]
     pub orchestrator_id: Option<String>,
+    #[serde(default)]
+    pub sample_prompt: Option<String>,
+    #[serde(default = "default_diffusion_sample_interval")]
+    pub sample_interval: u32,
+    #[serde(default)]
+    pub sample_seed: Option<u64>,
 }
 
 fn default_diffusion_base_model() -> String {
@@ -731,6 +737,9 @@ fn default_diffusion_rank() -> u32 {
 }
 fn default_diffusion_alpha() -> u32 {
     16
+}
+fn default_diffusion_sample_interval() -> u32 {
+    1
 }
 
 pub fn validate_diffusion_request(req: DiffusionJobRequest) -> Result<DiffusionJobRequest, String> {
@@ -782,6 +791,14 @@ pub fn validate_diffusion_request(req: DiffusionJobRequest) -> Result<DiffusionJ
             return Err("orchestratorId must be a valid UUID".to_string());
         }
     }
+    if let Some(ref sp) = req.sample_prompt {
+        if sp.chars().count() > 500 {
+            return Err("samplePrompt must not exceed 500 characters".to_string());
+        }
+    }
+    if req.sample_interval > 100 {
+        return Err("sampleInterval must be between 0 and 100".to_string());
+    }
     Ok(req)
 }
 
@@ -792,6 +809,20 @@ pub fn generate_diffusion_config_yaml(job_id: &str, req: &DiffusionJobRequest) -
             serde_json::to_string(tw).unwrap_or_else(|_| "\"\"".into())
         ),
         None => "  trigger_word: \"\"\n".to_string(),
+    };
+    let samples_section = match &req.sample_prompt {
+        Some(sp) if !sp.trim().is_empty() => {
+            let seed_line = match req.sample_seed {
+                Some(s) => format!("  seed: {}\n", s),
+                None => "  seed: 42\n".to_string(),
+            };
+            format!(
+                "samples:\n  prompt: {}\n  interval: {}\n{seed_line}",
+                serde_json::to_string(sp.trim()).unwrap_or_else(|_| "\"\"".into()),
+                req.sample_interval
+            )
+        }
+        _ => "".to_string(),
     };
     format!(
         r#"# Configuração de treino Difusão LoRA (gerada pelo api-principal)
@@ -808,7 +839,7 @@ lora:
   learning_rate: {learning_rate}
   rank: {rank}
   alpha: {alpha}
-"#,
+{samples_section}"#,
         job_id = job_id,
         base_model = req.base_model,
         trigger_line = trigger_line,
@@ -817,6 +848,7 @@ lora:
         learning_rate = req.learning_rate,
         rank = req.rank,
         alpha = req.alpha,
+        samples_section = samples_section,
     )
 }
 

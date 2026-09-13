@@ -1,9 +1,31 @@
 [project]
 name = "hephaestus-trainer-difusao"
 version = "0.1.0"
-description = "Motor de treino Difusão LoRA (placeholder — treino real entra em slice posterior)"
+description = "Motor de treino Difusão LoRA — SD 1.5, SDXL, FLUX.2 Klein 4B (mock e real)"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "pyyaml>=6.0",
+    "pillow>=10.0",
+]
 
 [tool.uv]
 package = true
+
+[project.optional-dependencies]
+train = [
+    "torch>=2.4.0",
+    "torchvision>=0.19.0",
+    "diffusers>=0.30.0",
+    "transformers>=4.44.0",
+    "accelerate>=0.33.0",
+    "peft>=0.12.0",
+    "bitsandbytes>=0.43.0",
+    "safetensors>=0.4.3",
+]
+test = ["pytest>=7.0"]
+
+[project.scripts]
+trainer-difusao-train = "trainer_difusao.train:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

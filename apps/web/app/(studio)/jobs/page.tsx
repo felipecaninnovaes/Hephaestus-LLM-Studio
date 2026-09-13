@@ -21,6 +21,7 @@ import {
   ConvergenceChart,
   MetricSparkline,
 } from "@/components/studio/ConvergenceChart";
+import { JobSamplesGallery } from "@/components/studio/JobSamplesGallery";
 import { JobLogViewer } from "@/components/studio/JobLogViewer";
 import {
   IconActivity,
@@ -54,6 +55,9 @@ const SPARK_COLORS: Record<string, string> = {
   boxLoss: "#38bdf8",
   clsLoss: "#818cf8",
   dflLoss: "#fbbf24",
+  loss: "#818cf8",
+  lr: "#38bdf8",
+  step: "#a1a1aa",
   epoch: "#a1a1aa",
 };
 
@@ -617,23 +621,34 @@ function JobsPageContent() {
                               {metrics[selectedJob.id]!.length} checkpoint(s)
                             </span>
                           </div>
-                          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
+                          <div className={`grid gap-2.5 ${
+                            selectedJob.engine === "diffusion" || (selectedJob.kind as string) === "diffusion"
+                              ? "grid-cols-2 sm:grid-cols-4"
+                              : "grid-cols-2 sm:grid-cols-3 lg:grid-cols-6"
+                          }`}>
                             {(
-                              [
-                                ["map50", "mAP@50", true],
-                                ["map5095", "mAP@50-95", true],
-                                ["boxLoss", "Box Loss", false],
-                                ["clsLoss", "Cls Loss", false],
-                                ["dflLoss", "Dfl Loss", false],
-                                ["epoch", "Epochs", false],
-                              ] as const
+                              selectedJob.engine === "diffusion" || (selectedJob.kind as string) === "diffusion"
+                                ? ([
+                                    ["loss", "Diffusion Loss", false],
+                                    ["lr", "Learning Rate", false],
+                                    ["step", "Step", false],
+                                    ["epoch", "Época", false],
+                                  ] as const)
+                                : ([
+                                    ["map50", "mAP@50", true],
+                                    ["map5095", "mAP@50-95", true],
+                                    ["boxLoss", "Box Loss", false],
+                                    ["clsLoss", "Cls Loss", false],
+                                    ["dflLoss", "Dfl Loss", false],
+                                    ["epoch", "Epochs", false],
+                                  ] as const)
                             ).map(([key, label, isPercent]) => {
                               const jobMetrics = metrics[selectedJob.id]!;
                               const last = jobMetrics[jobMetrics.length - 1];
                               const val = last[key as keyof JobMetricsType];
-                              const isPrimary = key === "map50";
+                              const isPrimary = key === "map50" || key === "loss";
                               const series = jobMetrics.map(
-                                (m) => m[key as keyof JobMetricsType] as number,
+                                (m) => (m[key as keyof JobMetricsType] as number) ?? 0,
                               );
                               return (
                                 <div
@@ -655,10 +670,12 @@ function JobsPageContent() {
                                     <span className="block font-mono text-base font-semibold text-zinc-100 mt-1">
                                       {typeof val === "number"
                                         ? isPercent
-                                           ? `${(val * 100).toFixed(1)}%`
-                                           : key === "epoch"
-                                             ? val
-                                             : val.toFixed(4)
+                                          ? `${(val * 100).toFixed(1)}%`
+                                          : key === "lr"
+                                            ? val.toExponential(2)
+                                            : key === "epoch" || key === "step"
+                                              ? val
+                                              : val.toFixed(4)
                                         : "—"}
                                     </span>
                                   </div>
@@ -677,41 +694,70 @@ function JobsPageContent() {
                     </div>
                   )}
 
-                  {/* Artefatos Gerados */}
+                  {/* Artefatos e Amostras Geradas */}
                   {artifacts[selectedJob.id] && artifacts[selectedJob.id].length > 0 && (
-                    <div className="space-y-3 pt-3 border-t border-white/10">
-                      <h3 className="font-mono text-[11px] font-semibold uppercase tracking-caps text-zinc-300">
-                        Artefatos ({artifacts[selectedJob.id].length})
-                      </h3>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-                        {artifacts[selectedJob.id].map((art) => (
-                          <div
-                            key={art.id}
-                            className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.02] p-3 backdrop-blur-sm"
-                          >
-                            <div className="min-w-0 mr-2">
-                              <span
-                                className="block text-xs font-semibold text-zinc-200 truncate"
-                                title={art.path}
-                              >
-                                {art.path.split("/").pop()}
-                              </span>
-                              <span className="block font-mono text-[11px] text-zinc-400">
-                                {formatBytes(art.bytes)} · {art.kind}
-                              </span>
-                            </div>
-                            <Button
-                              type="button"
-                              variant="secondary"
-                              size="sm"
-                              onClick={() => handleDownloadArtifact(selectedJob.id, art)}
-                            >
-                              <IconDownload className="size-3.5" />
-                              <span>Baixar</span>
-                            </Button>
+                    <div className="space-y-4 pt-3 border-t border-white/10">
+                      {/* Galeria de Amostras de Difusão */}
+                      <JobSamplesGallery
+                        jobId={selectedJob.id}
+                        artifacts={artifacts[selectedJob.id]}
+                        onDownload={(jId, art) => handleDownloadArtifact(jId, art)}
+                      />
+
+                      {/* Outros Artefatos Gerados */}
+                      {artifacts[selectedJob.id].filter(
+                        (art) =>
+                          art.kind !== "sample" &&
+                          !art.path.startsWith("samples/") &&
+                          !art.path.includes("sample_epoch_"),
+                      ).length > 0 && (
+                        <div className="space-y-2">
+                          <h3 className="font-mono text-[11px] font-semibold uppercase tracking-caps text-zinc-300">
+                            Artefatos ({artifacts[selectedJob.id].filter(
+                              (art) =>
+                                art.kind !== "sample" &&
+                                !art.path.startsWith("samples/") &&
+                                !art.path.includes("sample_epoch_"),
+                            ).length})
+                          </h3>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                            {artifacts[selectedJob.id]
+                              .filter(
+                                (art) =>
+                                  art.kind !== "sample" &&
+                                  !art.path.startsWith("samples/") &&
+                                  !art.path.includes("sample_epoch_"),
+                              )
+                              .map((art) => (
+                                <div
+                                  key={art.id}
+                                  className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.02] p-3 backdrop-blur-sm"
+                                >
+                                  <div className="min-w-0 mr-2">
+                                    <span
+                                      className="block text-xs font-semibold text-zinc-200 truncate"
+                                      title={art.path}
+                                    >
+                                      {art.path.split("/").pop()}
+                                    </span>
+                                    <span className="block font-mono text-[11px] text-zinc-400">
+                                      {formatBytes(art.bytes)} · {art.kind}
+                                    </span>
+                                  </div>
+                                  <Button
+                                    type="button"
+                                    variant="secondary"
+                                    size="sm"
+                                    onClick={() => handleDownloadArtifact(selectedJob.id, art)}
+                                  >
+                                    <IconDownload className="size-3.5" />
+                                    <span>Baixar</span>
+                                  </Button>
+                                </div>
+                              ))}
                           </div>
-                        ))}
-                      </div>
+                        </div>
+                      )}
                     </div>
                   )}
 

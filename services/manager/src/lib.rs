@@ -887,6 +887,37 @@ pub async fn report_job(
             if let Some(metrics) = &report.metrics {
                 upsert_metrics(pool, id, metrics).await?;
             }
+
+            // Atualiza artifacts intermediários se fornecido (ex.: samples geradas durante o treino).
+            if let Some(artifacts) = &report.artifacts {
+                for art in artifacts {
+                    if is_valid_md5(&art.md5) && art.bytes >= 0 {
+                        let exists: bool = sqlx::query_scalar(
+                            "SELECT EXISTS (SELECT 1 FROM job_artifacts WHERE job_id = $1 AND path = $2)",
+                        )
+                        .bind(id)
+                        .bind(&art.path)
+                        .fetch_one(pool)
+                        .await
+                        .unwrap_or(false);
+
+                        if !exists {
+                            let art_id = Uuid::new_v4();
+                            let _ = sqlx::query(
+                                "INSERT INTO job_artifacts (id, job_id, kind, path, md5, bytes) VALUES ($1, $2, $3, $4, $5, $6)",
+                            )
+                            .bind(art_id)
+                            .bind(id)
+                            .bind(&art.kind)
+                            .bind(&art.path)
+                            .bind(&art.md5)
+                            .bind(art.bytes)
+                            .execute(pool)
+                            .await;
+                        }
+                    }
+                }
+            }
         }
 
         "done" => {
@@ -1978,10 +2009,30 @@ pub async fn dispatch_next(
     // Extrai weights_ref do params se presente (ADR-0012 D5/I.2b).
     let weights_ref = params.as_ref().and_then(|p| p.get("weights_ref")).cloned();
 
+    // Resolve imagem do container: se engine for diffusion, usa DIFFUSION_TRAINER_IMAGE
+    // ou substitui trainer-yolo por trainer-difusao mantendo tag (:local ou :gpu).
+    let job_image = match engine.as_str() {
+        "diffusion" => {
+            let env_diff = std::env::var("DIFFUSION_TRAINER_IMAGE").unwrap_or_default();
+            if !env_diff.is_empty() && env_diff != "hephaestus/trainer-difusao:local" {
+                env_diff
+            } else if image.ends_with(":gpu") || image.contains(":gpu") {
+                "hephaestus/trainer-difusao:gpu".to_string()
+            } else if !env_diff.is_empty() {
+                env_diff
+            } else if image.contains("trainer-yolo") {
+                image.replace("trainer-yolo", "trainer-difusao")
+            } else {
+                image.to_string()
+            }
+        }
+        _ => image.to_string(),
+    };
+
     let mut dispatch_body = serde_json::json!({
         "job_id": job_id.to_string(),
         "engine": engine,
-        "image": image,
+        "image": job_image,
         "exec_mode": exec_mode,
         "package_ref": package_ref,
         "config_yaml": config_yaml,

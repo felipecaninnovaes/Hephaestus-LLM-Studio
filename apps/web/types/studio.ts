@@ -190,15 +190,17 @@ export type JobStatus =
   | "failed"
   | "cancelled";
 
-export type JobKind = "yolo_train" | "autotracker" | "yolo_predict" | "autolabel" | "diffusion";
+export type JobKind = "yolo_train" | "autotracker" | "yolo_predict" | "autolabel" | "diffusion" | "diffusion_train";
 
 export interface JobMetrics {
   epoch: number;
-  boxLoss: number;
-  clsLoss: number;
-  dflLoss: number;
-  map50: number;
-  map5095: number;
+  boxLoss?: number;
+  clsLoss?: number;
+  dflLoss?: number;
+  map50?: number;
+  map5095?: number;
+  loss?: number;
+  lr?: number;
   step?: number;
   progress?: number;
 }
@@ -355,6 +357,7 @@ export function autolabelErrorMessage(code: string): string {
 
 export interface DiffusionJobRequest {
   datasetId: string;
+  /** "flux" (FLUX.2 Klein 4B), "sdxl" (SDXL 1.0) ou "sd15" (Stable Diffusion 1.5) */
   baseModel: "sdxl" | "flux" | "sd15";
   triggerWord?: string;
   epochs?: number;

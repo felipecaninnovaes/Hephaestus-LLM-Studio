@@ -9,6 +9,7 @@ import {
   IconZap,
   IconSettings,
   IconCpu,
+  IconImage,
 } from "@/components/icons";
 import { Button, getButtonClasses } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -51,9 +52,9 @@ export function estimateDiffusionVramGb(
   let baseGb = 12.0;
   if (baseModel === "sd15") baseGb = 8.0;
   if (baseModel === "sdxl") baseGb = 12.0;
-  if (baseModel === "flux") baseGb = 16.0;
+  if (baseModel === "flux") baseGb = 10.0;
 
-  const batchMemory = (batchSize - 1) * (baseModel === "flux" ? 2.5 : baseModel === "sdxl" ? 2.0 : 1.2);
+  const batchMemory = (batchSize - 1) * (baseModel === "flux" ? 1.8 : baseModel === "sdxl" ? 2.0 : 1.2);
   const rankMemory = (rank / 64) * 0.8;
 
   return Math.round((baseGb + batchMemory + rankMemory) * 10) / 10;
@@ -86,6 +87,12 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
     rank: 16,
     alpha: 16,
   });
+
+  // Amostras de validação (samples por época)
+  const [enableSamples, setEnableSamples] = useState(true);
+  const [samplePrompt, setSamplePrompt] = useState("");
+  const [sampleInterval, setSampleInterval] = useState(1);
+  const [sampleSeed, setSampleSeed] = useState("42");
 
   const [busy, setBusy] = useState(false);
   const [topError, setTopError] = useState<string | null>(null);
@@ -299,6 +306,9 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
         alpha: params.alpha,
         weights: selectedWeightId || null,
         orchestratorId: selectedOrchestratorId || null,
+        samplePrompt: enableSamples && samplePrompt.trim() ? samplePrompt.trim() : undefined,
+        sampleInterval: enableSamples ? sampleInterval : undefined,
+        sampleSeed: enableSamples && sampleSeed.trim() ? parseInt(sampleSeed, 10) : undefined,
       });
 
       showToast(
@@ -309,6 +319,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
       // Reset form
       setSelectedWeightId("");
       setSelectedOrchestratorId(null);
+      setSamplePrompt("");
       setParams({
         baseModel: "sdxl",
         triggerWord: "",
@@ -433,7 +444,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
             </p>
           </button>
 
-          {/* Flux.1-dev */}
+          {/* FLUX.2 Klein 4B */}
           <button
             type="button"
             disabled={busy}
@@ -446,14 +457,14 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
           >
             <div className="flex items-center justify-between w-full mb-1.5">
               <span className="font-display font-semibold text-xs text-zinc-100">
-                Flux.1-dev
+                FLUX.2 Klein 4B
               </span>
-              <span className="rounded-full bg-amber-500/20 border border-amber-500/30 px-1.5 py-0.5 font-mono text-[9px] text-amber-300">
-                ~16 GB VRAM
+              <span className="rounded-full bg-emerald-500/20 border border-emerald-500/30 px-1.5 py-0.5 font-mono text-[9px] text-emerald-300">
+                ~10 GB VRAM
               </span>
             </div>
             <p className="font-mono text-[11px] text-zinc-400 leading-snug">
-              Estado da arte em aderência a prompt textual e anatomia detalhada.
+              Modelo leve de 4B parâmetros com Flow Matching, ideal para LoRA rápido em GPUs de 10–12 GB.
             </p>
           </button>
 
@@ -613,6 +624,105 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
         disabled={busy}
         size="default"
       />
+
+      {/* Amostras Visuais de Validação (Samples por Época) */}
+      <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3.5 space-y-3 backdrop-blur-sm">
+        <div className="flex items-center justify-between">
+          <label
+            htmlFor="enable-samples-toggle"
+            className="flex items-center gap-2 cursor-pointer select-none"
+          >
+            <input
+              id="enable-samples-toggle"
+              type="checkbox"
+              checked={enableSamples}
+              onChange={(e) => setEnableSamples(e.target.checked)}
+              disabled={busy}
+              className="size-4 rounded border-white/20 bg-white/5 text-brand-500 focus:ring-brand-500/30"
+            />
+            <span className="font-mono text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
+              <IconImage className="size-3.5 text-indigo-400" />
+              Amostras Visuais de Validação
+            </span>
+          </label>
+          <span className="font-mono text-[10px] text-zinc-400">
+            {enableSamples ? "Ativado" : "Desativado"}
+          </span>
+        </div>
+
+        {enableSamples && (
+          <div className="space-y-3 pt-1 border-t border-white/5">
+            <div>
+              <label
+                htmlFor="sample-prompt-input"
+                className="block text-[11px] font-mono text-zinc-400 mb-1"
+              >
+                Prompt de Teste para Amostras
+              </label>
+              <Input
+                id="sample-prompt-input"
+                type="text"
+                value={samplePrompt}
+                onChange={(e) => setSamplePrompt(e.target.value)}
+                placeholder={
+                  params.triggerWord.trim()
+                    ? `ex: a photo of ${params.triggerWord.trim()} subject in studio lighting`
+                    : "ex: a photo of a cute robot in cinematic lighting, 8k"
+                }
+                disabled={busy}
+                className="font-mono text-xs"
+              />
+              <p className="mt-1 text-[10px] font-mono text-zinc-400">
+                Uma imagem será sintetizada para você acompanhar a evolução visual no Action Center e página de jobs.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label
+                  htmlFor="sample-interval-input"
+                  className="block text-[11px] font-mono text-zinc-400 mb-1"
+                >
+                  Intervalo (a cada N épocas)
+                </label>
+                <Input
+                  id="sample-interval-input"
+                  type="number"
+                  min={1}
+                  max={params.epochs}
+                  value={sampleInterval}
+                  onChange={(e) =>
+                    setSampleInterval(Math.max(1, parseInt(e.target.value, 10) || 1))
+                  }
+                  disabled={busy}
+                  className="font-mono text-xs"
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="sample-seed-input"
+                  className="block text-[11px] font-mono text-zinc-400 mb-1"
+                >
+                  Seed da Amostra (Fixa)
+                </label>
+                <Input
+                  id="sample-seed-input"
+                  type="number"
+                  min={0}
+                  value={sampleSeed}
+                  onChange={(e) => setSampleSeed(e.target.value)}
+                  placeholder="42"
+                  disabled={busy}
+                  className="font-mono text-xs"
+                />
+                <p className="mt-1 text-[9px] font-mono text-zinc-500">
+                  Fixa o ruído para comparar a evolução sobre a mesma composição.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Previsão de VRAM & Alertas Preventivos de CUDA OOM */}
       <div

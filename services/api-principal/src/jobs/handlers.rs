@@ -73,6 +73,12 @@ pub struct MetricsItem {
     pub map50: f64,
     #[serde(rename = "map5095")]
     pub map5095: f64,
+    #[serde(rename = "loss", skip_serializing_if = "Option::is_none")]
+    pub loss: Option<f64>,
+    #[serde(rename = "lr", skip_serializing_if = "Option::is_none")]
+    pub lr: Option<f64>,
+    #[serde(rename = "step", skip_serializing_if = "Option::is_none")]
+    pub step: Option<i64>,
 }
 
 /// Job response (camelCase wire).
@@ -265,6 +271,9 @@ fn remap_metrics(raw: &serde_json::Value) -> Vec<MetricsItem> {
                 .or_else(|| item.get("map5095"))
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.0);
+            let loss = item.get("loss").and_then(|v| v.as_f64());
+            let lr = item.get("lr").and_then(|v| v.as_f64());
+            let step = item.get("step").and_then(|v| v.as_i64());
             Some(MetricsItem {
                 epoch,
                 box_loss,
@@ -272,6 +281,9 @@ fn remap_metrics(raw: &serde_json::Value) -> Vec<MetricsItem> {
                 dfl_loss,
                 map50,
                 map5095,
+                loss,
+                lr,
+                step,
             })
         })
         .collect()
@@ -465,10 +477,19 @@ pub async fn get_artifact_data(
             MSG_STORAGE_UNAVAILABLE,
         );
     }
+    let content_type = if art.path.ends_with(".png") {
+        "image/png"
+    } else if art.path.ends_with(".jpg") || art.path.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if art.path.ends_with(".webp") {
+        "image/webp"
+    } else {
+        "application/octet-stream"
+    };
     (
         StatusCode::OK,
         [
-            (header::CONTENT_TYPE, "application/octet-stream"),
+            (header::CONTENT_TYPE, content_type),
             (
                 header::CACHE_CONTROL,
                 "private, max-age=31536000, immutable",
@@ -1196,10 +1217,10 @@ pub async fn submit_diffusion_job(
     let job_id = uuid::Uuid::new_v4().to_string();
     let config_yaml = models::generate_diffusion_config_yaml(&job_id, &req);
 
-    // 7. VRAM mínima por modelo base (ADR-0018 D2).
+    // 7. VRAM mínima por modelo base (ADR-0018 D2 — FLUX.2 Klein 4B requer ~10 GB).
     let vram_min = match req.base_model.as_str() {
         "sd15" => 8,
-        "flux" => 16,
+        "flux" => 10,
         _ => 12, // sdxl e default
     };
 

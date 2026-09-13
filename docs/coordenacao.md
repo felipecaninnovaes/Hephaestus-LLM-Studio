@@ -19,7 +19,106 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-13 (FATIA FILTRO ESTRITO POR TAG/CLASSE E AUTOLABEL SELETIVO CONCLUÍDAS NA BRANCH)
+## Estado atual — 2026-09-13 (FATIA CORREÇÃO NUMÉRICA DE LOSS NAN & TELEMETRIA RESILIENTE CONCLUÍDA NA BRANCH)
+
+- **FATIA CORREÇÃO NUMÉRICA DE LOSS NAN (VAE FLOAT32) & PARSER TOLERANTE NO ORQUESTRADOR — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/engine-difusao-real`.
+  - **Diagnóstico da Causa Raiz de NaN e Logs Vazios**:
+    - *Loss NaN*: O `AutoencoderKL` do SDXL da Stability AI em `torch.float16` sofre overflow numérico interno no `vae.encode()` (valores extrapolam 65504), gerando `NaN` instantaneamente nos latents (`Latents NaN? True` validado na GPU do TrueNAS). Isso corrompia o forward/backward do UNet, gerando `loss = nan`.
+    - *Logs sumidos*: Ao gravar no `metrics.jsonl`, o Python emitia `{"loss": NaN}`. Por violar a especificação RFC 8259 (JSON padrão não aceita literais `NaN`), `serde_json::from_str` no orquestrador Rust falhava silenciosamente e descartava todas as linhas de progresso. Sem métricas chegando ao Manager, `job.metrics` ficava vazio no frontend, impedindo o `JobLogViewer` de renderizar os logs além do boot.
+  - **Correções Aplicadas**:
+    - `engines/trainer-difusao/src/trainer_difusao/train.py`:
+      - Carregamento do VAE em `torch.float32` tanto no SDXL quanto no SD 1.5, convertendo apenas os latents resultantes para `torch.float16` (`Latents NaN com float32? False`, Loss medido em `0.0389` na GPU física).
+      - Decodificação de amostras de validação em `_generate_sample_sdxl` e `_generate_sample_sd15` atualizadas com `output_type="latent"` e conversão explícita de `latents.to(dtype=torch.float32) / scaling_factor` antes do `vae.decode()`, eliminando o erro de tipo incompatível (`Input type (c10::Half) and bias type (float) should be the same`) e gerando com sucesso imagens PIL 1024x1024.
+      - Adicionado `torch.nn.utils.clip_grad_norm_(unet.parameters(), 1.0)` para estabilidade dos gradientes LoRA.
+      - Serialização segura de métricas: em caso de `NaN` ou `Inf`, grava `"loss": null` e nunca o literal inválido `NaN`.
+    - `services/orchestrator/src/lib.rs`:
+      - Sanitização automática em `parse_metrics_line` substituindo `: NaN` e `: Infinity` por `: null` antes do parse JSON.
+      - Teste unitário `parse_metrics_line_nan_tolerant` adicionado (84/84 testes verdes).
+  - **Sincronização e Deploy**:
+    - Servidor TrueNAS (`10.15.1.2`): `git pull`, imagem `hephaestus/trainer-difusao:gpu` reconstruída e container `gpu-orchestrator-gpu-1` recriado e saudável (`Up (healthy)`).
+    - Host de desenvolvimento: `infra-orchestrator-local-1` reconstruído e rodando.
+
+- **FATIA PERSISTÊNCIA DE CACHE HUGGING FACE / PYTORCH NO VOLUME DE OUTPUTS — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/engine-difusao-real`.
+  - **Diagnóstico da Causa Raiz**:
+    - No container do trainer, `from diffusers import ...` e `from transformers import ...` eram importados no topo do módulo ou antes da função `_setup_cache_dir()`. O pacote `huggingface_hub` congela as variáveis de cache na primeira importação. Consequentemente, o download dos 7 GB do modelo SDXL era gravado na camada efêmera `/root/.cache/huggingface` do container e destruído a cada término de job (`docker run --rm`).
+  - **Implementações**:
+    - `services/orchestrator/src/lib.rs`: injeção no `exec_env` do container Docker das variáveis de ambiente antes da inicialização do Python (`HF_HOME=/outputs/.cache/huggingface`, `HF_HUB_CACHE=/outputs/.cache/huggingface/hub`, `TRANSFORMERS_CACHE=/outputs/.cache/huggingface/hub`, `DIFFUSERS_CACHE=/outputs/.cache/huggingface/hub`, `TORCH_HOME=/outputs/.cache/torch`) quando `dispatch.engine == "diffusion"`.
+    - `engines/trainer-difusao/Dockerfile.gpu`: adicionadas as variáveis `ENV` persistentes apontando para `/outputs/.cache` e `PYTHONUNBUFFERED=1`.
+    - `engines/trainer-difusao/src/trainer_difusao/train.py`:
+      - `_setup_cache_dir()` refatorado para garantir diretórios `hub` e `torch`, retornando o path canônico do hub cache.
+      - `_real_train_sd15`, `_real_train_sdxl` e `_real_train_flux` atualizados para executar `_setup_cache_dir()` antes de qualquer import de `transformers` ou `diffusers`.
+      - Todos os `from_pretrained(...)` (tokenizers, VAE, text encoders, UNet, scheduler) agora recebem explicitamente `cache_dir=hub_cache`.
+  - **Sincronização e Deploy**:
+    - Testes: 83/83 unitários do orchestrator verdes, 6/6 testes python do trainer verdes, `cargo fmt` e `cargo check` limpos.
+    - TrueNAS (`10.15.1.2`): `git pull`, rebuild da imagem `hephaestus/trainer-difusao:gpu` e recreate do container `gpu-orchestrator-gpu-1`.
+    - Local: rebuild e recreate do container `infra-orchestrator-local-1`.
+
+- **FATIA STREAMING DE AMOSTRAS E TELEMETRIA DE DIFUSÃO POR STEP (SEED DETERMINÍSTICA & TEMPO REAL) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/engine-difusao-real`.
+  - **Backend, Manager e Orquestrador**:
+    - `packages/contracts/openapi.yaml`: schema `DiffusionJobRequest` atualizado com propriedade opcional `sampleSeed: Option<u64>` para fixação de semente geradora.
+    - `services/api-principal/src/jobs/models.rs`: `DiffusionJobRequest` com suporte a `sample_seed` e injeção de `seed:` na seção `samples:` do `config.yaml`.
+    - `services/manager/src/lib.rs`: `report_job` atualizado para aceitar e persistir artefatos intermediários (`report.artifacts`) durante status `running`/`preparing` com deduplicação por `(job_id, path)`, permitindo que o frontend descubra novas amostras em tempo de execução via polling de `GET /api/jobs/:id/artifacts`.
+    - `services/orchestrator/src/lib.rs`: loop assíncrono `metrics_handle` enriquecido para escanear `outputs/samples/` a cada 2 segundos, fazendo upload imediato para o S3 de cada nova imagem gerada durante a execução do container e despachando report incremental de artefatos para o Manager.
+    - Testes: 83/83 unitários do orchestrator verdes, 325/325 unitários da api-principal verdes, manager verde.
+  - **Engine `trainer-difusao`**:
+    - `engines/trainer-difusao/src/trainer_difusao/train.py`:
+      - Seed determinística fixa em `_generate_sample_sd15` e `_generate_sample_sdxl` via `torch.Generator.manual_seed(sample_seed)`, garantindo que a composição e o ruído inicial sejam mantidos constantes época a época para comparação visual fidedigna da convergência do LoRA.
+      - Emissão de métricas intermediárias por step a cada 5 passos com `flush()` imediato no `metrics.jsonl` e `print(..., flush=True)` no stdout, eliminando a sensação de processo travado durante épocas longas.
+      - `_generate_mock_sample` e `_mock_train` alinhados para refletir a seed determinística e o flush de métricas.
+    - Testes: 6/6 testes unittest verdes em `tests/test_train.py`.
+  - **Web Frontend**:
+    - `apps/web/lib/jobs.ts`: `startDiffusionJob` com suporte a `sampleSeed`.
+    - `apps/web/components/studio/ForjaDifusaoSetup.tsx`: campo numérico dedicado de `Seed da Amostra (Fixa)` no bloco de amostras visuais de validação, com tooltip explicativo sobre fixação de ruído composicional.
+    - `apps/web/components/studio/JobLogViewer.tsx`: chave de renderização única por `epoch` e `step`, exibindo telemetria progressiva de steps e loss instantâneo em tempo real.
+    - Verificação de build: `npm run build --prefix apps/web` 12/12 páginas compiladas com zero erros TypeScript.
+
+- **FATIA MÉTRICAS DE DIFUSÃO E AMOSTRAS POR ÉPOCA (SAMPLES GALLERY, CONVERGENCE & ACTION CENTER) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/engine-difusao-real`.
+  - **Backend & Contratos**:
+    - `packages/contracts/openapi.yaml`: schemas `MetricsItem` (adicionados `loss`, `lr`, `step`) e `DiffusionJobRequest` (adicionados `samplePrompt` e `sampleInterval`) atualizados.
+    - `services/orchestrator/src/lib.rs`: `MetricsLine` atualizado com `loss: Option<f64>`, `lr: Option<f64>`, `step: Option<i64>`, serialização limpa em `to_report_json()`, parser tolerante a métricas de difusão (`epoch,loss,lr,step`); upload automático para o S3 de imagens em `outputs/samples/` (`.png`, `.jpg`, `.jpeg`, `.webp`) gerando artefatos de kind `"sample"` sob a chave `artifacts/{job_id}/samples/...`.
+    - `services/api-principal/src/jobs/models.rs`: `DiffusionJobRequest` com suporte a validação de `sample_prompt` (até 500 caracteres) e `sample_interval` (1..1000), injetando a seção `samples:` no `config.yaml`.
+    - `services/api-principal/src/jobs/handlers.rs`: `MetricsItem` atualizado com `loss`, `lr`, `step`; `remap_metrics` mapeando os campos para JSON; detecção de MIME type em `get_artifact_data` para servir imagens de amostras (`image/png`, `image/jpeg`, `image/webp`) com Content-Type correto em vez de octet-stream genérico.
+    - Testes: 83/83 unitários do orchestrator verdes, 325/325 unitários da api-principal verdes.
+  - **Engine `trainer-difusao`**:
+    - `engines/trainer-difusao/src/trainer_difusao/train.py`:
+      - Leitura da configuração `samples` (`prompt` e `interval`).
+      - Geração sintética em modo mock (`_generate_mock_sample`) com visualização de ruído progressivo e carimbo de época/prompt para CI e testes locais rápidos.
+      - Geração real com pesos LoRA injetados em pipeline de inferência a cada N épocas (`_generate_sample_sd15` e `_generate_sample_sdxl`) salvando em `outputs/samples/sample_epoch_{epoch}.png`.
+      - Emissão de `loss`, `lr`, `step` e `epoch` no `metrics.jsonl`.
+    - `engines/trainer-difusao/tests/test_train.py`: teste `test_train_mock_produces_sample_images` adicionado (6/6 testes verdes).
+  - **Web Frontend**:
+    - `apps/web/types/studio.ts`: `JobMetrics` enriquecido com `loss?: number; lr?: number; step?: number;`, e `JobKind` incluindo `"diffusion_train"`.
+    - `apps/web/lib/jobs.ts`: `startDiffusionJob` aceitando `samplePrompt` e `sampleInterval`.
+    - `apps/web/components/studio/ForjaDifusaoSetup.tsx`: nova seção interativa "Amostras Visuais de Validação" com switch para habilitar geração periódica, input de prompt de validação e seletor de intervalo de épocas.
+    - `apps/web/components/studio/JobSamplesGallery.tsx`: novo componente visual com grid responsivo de miniaturas com badges de época, modal Lightbox de alta resolução com zoom e botão de download.
+    - `apps/web/components/studio/ConvergenceChart.tsx`: adaptação dinâmica para exibir curva contínua de `Diffusion Loss` (degradê índigo, escala dinâmica sem limite fixo de 0..1, tooltip com LR e step) quando o job for de difusão ou contiver `loss`.
+    - `apps/web/components/studio/ActionCenter.tsx`: cards de métricas adaptativos para difusão (`Loss`, `LR`, `Step`, `Época`), integração da `JobSamplesGallery` e separação das amostras da lista genérica de downloads.
+    - `apps/web/components/studio/JobLogViewer.tsx`: suporte a logs formatados para difusão (`[DIFFUSION] epoch=X/Y loss=... lr=... step=...`) com estilização de badge índigo e tratamento defensivo para métricas opcionais.
+    - `apps/web/app/(studio)/jobs/page.tsx`: cards de métricas de difusão e renderização de galeria de amostras na página de detalhe/histórico de jobs.
+    - Verificação de build: `npm run build --prefix apps/web` 12/12 páginas compiladas com zero erros TypeScript.
+
+- **FATIA ENGINE DE DIFUSÃO REAL E HARNESS (FLUX.2 KLEIN 4B, SDXL, SD 1.5) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/engine-difusao-real`.
+  - **Engine Python `trainer-difusao`**:
+    - `engines/trainer-difusao/pyproject.toml`: dependências declaradas (`pyyaml`, `pillow`, e extras de treino `diffusers`, `transformers`, `accelerate`, `peft`, `bitsandbytes`, `safetensors`).
+    - `engines/trainer-difusao/Dockerfile`: imagem mock com `ENGINE_MOCK=1` para dev e CI.
+    - `engines/trainer-difusao/Dockerfile.gpu`: imagem GPU com base `pytorch:2.6.0-cuda12.4-cudnn9-runtime`, dependências de aceleração e `ENGINE_MOCK=0`.
+    - `engines/trainer-difusao/src/trainer_difusao/train.py`:
+      - Suporte a `ENGINE_MOCK=1` gerando `metrics.jsonl` e `adapter.safetensors` com metadados para FLUX.2 Klein 4B (`base_model: flux-2-klein-4b`), SDXL e SD 1.5.
+      - **Pipelines reais de treino (@gpu)**:
+        - `DiffusionDataset`: leitor dinâmico dos pares `{stem}.webp` + `{stem}.txt` em `images/` ou raiz do dataset, com redimensionamento e normalização `[-1.0, 1.0]`.
+        - `_real_train_sd15`: carregamento com `torch.float16`, VAE e Text Encoder congelados, injeção de LoRA via `peft.LoraConfig` (`to_k, to_q, to_v, to_out.0`), gradient checkpointing, otimizador 8-bit AdamW (`bitsandbytes`), loop de ruído DDPM e emissão progressiva em `metrics.jsonl`.
+        - `_real_train_sdxl`: dual text encoders CLIP (`CLIPTextModel` + `CLIPTextModelWithProjection`), pooled prompt embeddings, micro-condicionamento (`add_time_ids` 1024x1024), resolução nativa 1024, gradient checkpointing, otimizador 8-bit AdamW e exportação canônica com metadados em `adapter.safetensors`.
+        - Cache persistente: `HF_HOME` configurado automaticamente para o volume `/outputs/.cache/huggingface`.
+    - Testes: 5/5 testes unittest verdes em `tests/test_train.py` (cobrindo mock FLUX/SDXL/SD15 e fail-fast do modo real).
+  - **Manager & Despacho de Infra**:
+    - `services/manager/src/lib.rs`: `dispatch_next` agora resolve a imagem do container sob medida para `engine == "diffusion"`, priorizando `DIFFUSION_TRAINER_IMAGE` e mapeando automaticamente `trainer-yolo` para `trainer-difusao` mantendo a tag (`:local` ou `:gpu`).
+    - `infra/compose.yaml` e `infra/compose.gpu.yaml`: definidos `DIFFUSION_TRAINER_IMAGE` e serviços build-only `trainer-difusao` e `trainer-difusao-gpu`.
+    - `packages/policies/vram-table.yaml`: adicionadas entradas para `flux2-klein-4b` / `flux` com `vram_min_gb: 8` (+2GB headroom = 10 GB), `sdxl` (12 GB) e `sd15` (8 GB).
+    - `services/api-principal/src/jobs/handlers.rs`: `vram_min` de FLUX ajustado para 10 GB na submissão de jobs.
+  - **Web Frontend**:
+    - `apps/web/components/studio/ForjaDifusaoSetup.tsx`: seletor de modelo atualizado para **FLUX.2 Klein 4B**, badge de VRAM ajustado para **~10 GB VRAM** (cabendo em GPUs como RTX 3060 12GB), fórmula do estimador de VRAM atualizada e descrição do modelo alinhada à arquitetura de 4B parâmetros com Flow Matching.
+    - `apps/web/types/studio.ts`: anotação documental de `flux` para FLUX.2 Klein 4B.
+  - **Verificações**: `cargo check --workspace` verde, `cargo test -p manager --lib` e `cargo test -p api-principal --lib` 325/325 verdes, `cargo fmt --all -- --check` limpo, `docker compose config -q` limpo, `npm run build` web verde (12/12 páginas compiladas), suite de testes python 4/4 verde.
 
 - **FATIA FILTRO ESTRITO POR TAG E CLASSE NO GRID DE IMAGENS — CONCLUÍDA E VALIDADA (2026-09-13)** — branch `feat/autolabel-selective-dataset`.
   - **Backend API Principal**:

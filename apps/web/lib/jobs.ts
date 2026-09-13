@@ -44,12 +44,20 @@ export function startDiffusionJob(params: {
   alpha?: number;
   weights?: string | null;
   orchestratorId?: string | null;
+  samplePrompt?: string;
+  sampleInterval?: number;
+  sampleSeed?: number;
 }): Promise<{ jobId: string; status: string; queuePosition?: number }> {
-  const { weights, orchestratorId, triggerWord, ...rest } = params;
+  const { weights, orchestratorId, triggerWord, samplePrompt, sampleInterval, sampleSeed, ...rest } = params;
   const body: Record<string, unknown> = { ...rest };
   if (triggerWord?.trim()) body.triggerWord = triggerWord.trim();
   if (weights) body.weights = weights;
   if (orchestratorId) body.orchestratorId = orchestratorId;
+  if (samplePrompt?.trim()) {
+    body.samplePrompt = samplePrompt.trim();
+    if (sampleInterval != null) body.sampleInterval = sampleInterval;
+    if (sampleSeed != null) body.sampleSeed = sampleSeed;
+  }
   return apiFetch("/api/jobs/diffusion", {
     method: "POST",
     body,

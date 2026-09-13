@@ -165,8 +165,8 @@ def _get_mime_type(file_path: Path) -> str:
 
 
 def _normalize_api_base(api_base: str) -> str:
-    """Normaliza api_base e traduz localhost/127.0.0.1 para host.docker.internal quando em container."""
-    url = api_base.strip().rstrip("/")
+    """Normaliza api_base, remove aspas e traduz localhost/127.0.0.1 para host.docker.internal quando em container."""
+    url = api_base.strip().strip("\"'").rstrip("/")
     is_docker = (
         os.path.exists("/.dockerenv") or os.environ.get("RUNNING_IN_DOCKER") == "1"
     )
@@ -335,11 +335,13 @@ def _autolabel_pipeline(cfg: dict, output_dir: Path) -> None:
 
     if isinstance(al_section, dict):
         prompt = al_section.get("prompt")
-        api_key = al_section.get("api_key") or os.environ.get("OPENAI_API_KEY")
+        raw_key = al_section.get("api_key") or os.environ.get("OPENAI_API_KEY")
+        if raw_key:
+            api_key = str(raw_key).strip().strip("\"'")
         if al_section.get("api_base"):
-            api_base = al_section["api_base"]
+            api_base = str(al_section["api_base"]).strip().strip("\"'").rstrip("/")
         if al_section.get("openai_model"):
-            openai_model = al_section["openai_model"]
+            openai_model = str(al_section["openai_model"]).strip().strip("\"'")
 
     image_map = _discover_dataset_images(dataset_path)
     sorted_filenames = sorted(image_map.keys())

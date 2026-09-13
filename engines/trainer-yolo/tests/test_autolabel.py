@@ -334,3 +334,24 @@ def test_autolabel_openai_with_test_mock_fallback_env(tmp_path: Path, monkeypatc
     assert captions_file.is_file()
     data = json.loads(captions_file.read_text(encoding="utf-8").strip())
     assert "OpenAI fallback" in data["caption"]
+
+
+def test_normalize_api_base_strips_quotes_and_trailing_slashes():
+    from trainer_yolo.autolabel import _normalize_api_base
+
+    assert (
+        _normalize_api_base('"https://api.openai.com/v1"')
+        == "https://api.openai.com/v1"
+    )
+    assert (
+        _normalize_api_base("'https://api.openai.com/v1/'")
+        == "https://api.openai.com/v1"
+    )
+    assert (
+        _normalize_api_base('https://llama.felipecncloud.com/v1"')
+        == "https://llama.felipecncloud.com/v1"
+    )
+    assert (
+        _normalize_api_base('  "https://llama.felipecncloud.com/v1/"  ')
+        == "https://llama.felipecncloud.com/v1"
+    )

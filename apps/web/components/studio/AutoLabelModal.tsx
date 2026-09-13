@@ -131,6 +131,14 @@ const PROMPT_PRESETS = [
   },
 ];
 
+function sanitizeParam(val: string): string {
+  return val.trim().replace(/^["']+|["']+$/g, "");
+}
+
+function sanitizeUrl(val: string): string {
+  return val.trim().replace(/^["']+|["']+$/g, "").replace(/\/+$/, "");
+}
+
 export default function AutoLabelModal({
   open,
   datasetId,
@@ -246,16 +254,20 @@ export default function AutoLabelModal({
           return;
         }
 
-        if (apiKey.trim()) payload.apiKey = apiKey.trim();
-        if (apiBase.trim()) payload.apiBase = apiBase.trim();
-        if (openaiModel.trim()) payload.openaiModel = openaiModel.trim();
+        const cleanKey = sanitizeParam(apiKey);
+        const cleanBase = sanitizeUrl(apiBase);
+        const cleanModel = sanitizeParam(openaiModel);
+
+        if (cleanKey) payload.apiKey = cleanKey;
+        if (cleanBase) payload.apiBase = cleanBase;
+        if (cleanModel) payload.openaiModel = cleanModel;
 
         // Salva as configurações utilizadas para conveniência futura
         persistCustomConfig({
           provider: selectedProvider,
-          apiBase: apiBase.trim(),
-          openaiModel: openaiModel.trim(),
-          apiKey: apiKey.trim(),
+          apiBase: cleanBase,
+          openaiModel: cleanModel,
+          apiKey: cleanKey,
           model,
         });
       }
@@ -520,6 +532,13 @@ export default function AutoLabelModal({
                     setApiKey(e.target.value);
                     persistCustomConfig({ apiKey: e.target.value });
                   }}
+                  onBlur={() => {
+                    const cleaned = sanitizeParam(apiKey);
+                    if (cleaned !== apiKey) {
+                      setApiKey(cleaned);
+                      persistCustomConfig({ apiKey: cleaned });
+                    }
+                  }}
                   disabled={busy}
                   className="font-mono text-xs pr-8"
                 />
@@ -548,6 +567,13 @@ export default function AutoLabelModal({
                     setApiBase(val);
                     persistCustomConfig({ apiBase: val });
                   }}
+                  onBlur={() => {
+                    const cleaned = sanitizeUrl(apiBase);
+                    if (cleaned !== apiBase) {
+                      setApiBase(cleaned);
+                      persistCustomConfig({ apiBase: cleaned });
+                    }
+                  }}
                   disabled={busy}
                   className="font-mono text-xs"
                 />
@@ -570,6 +596,13 @@ export default function AutoLabelModal({
                     const val = e.target.value;
                     setOpenaiModel(val);
                     persistCustomConfig({ openaiModel: val });
+                  }}
+                  onBlur={() => {
+                    const cleaned = sanitizeParam(openaiModel);
+                    if (cleaned !== openaiModel) {
+                      setOpenaiModel(cleaned);
+                      persistCustomConfig({ openaiModel: cleaned });
+                    }
                   }}
                   disabled={busy}
                   className="font-mono text-xs"

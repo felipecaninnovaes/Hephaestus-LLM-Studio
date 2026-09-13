@@ -545,35 +545,50 @@ fn default_autolabel_model() -> String {
     "mock".to_string()
 }
 
-pub fn validate_autolabel_request(req: AutolabelJobRequest) -> Result<AutolabelJobRequest, String> {
+pub fn validate_autolabel_request(
+    mut req: AutolabelJobRequest,
+) -> Result<AutolabelJobRequest, String> {
     if !ALLOWED_AUTOLABEL_MODELS.contains(&req.model.as_str()) {
         return Err(format!(
             "model must be one of {:?}, got '{}'",
             ALLOWED_AUTOLABEL_MODELS, req.model
         ));
     }
-    if let Some(ref p) = req.prompt {
-        if p.chars().count() > 8000 {
+    if let Some(ref mut p) = req.prompt {
+        let trimmed = p.trim().to_string();
+        if trimmed.chars().count() > 8000 {
             return Err("prompt must not exceed 8000 characters".to_string());
         }
+        *p = trimmed;
     }
-    if let Some(ref ak) = req.api_key {
-        if ak.chars().count() > 512 {
+    if let Some(ref mut ak) = req.api_key {
+        let clean = ak.trim().trim_matches('"').trim_matches('\'').to_string();
+        if clean.chars().count() > 512 {
             return Err("apiKey must not exceed 512 characters".to_string());
         }
+        *ak = clean;
     }
-    if let Some(ref ab) = req.api_base {
-        if ab.chars().count() > 512 {
+    if let Some(ref mut ab) = req.api_base {
+        let clean = ab
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .trim_end_matches('/')
+            .to_string();
+        if clean.chars().count() > 512 {
             return Err("apiBase must not exceed 512 characters".to_string());
         }
-        if !ab.starts_with("http://") && !ab.starts_with("https://") {
+        if !clean.starts_with("http://") && !clean.starts_with("https://") {
             return Err("apiBase must start with http:// or https://".to_string());
         }
+        *ab = clean;
     }
-    if let Some(ref om) = req.openai_model {
-        if om.chars().count() > 128 {
+    if let Some(ref mut om) = req.openai_model {
+        let clean = om.trim().trim_matches('"').trim_matches('\'').to_string();
+        if clean.chars().count() > 128 {
             return Err("openaiModel must not exceed 128 characters".to_string());
         }
+        *om = clean;
     }
     if let Some(ref o) = req.orchestrator_id {
         if uuid::Uuid::parse_str(o).is_err() {
@@ -592,21 +607,28 @@ pub fn generate_autolabel_config_yaml(job_id: &str, req: &AutolabelJobRequest) -
         ));
     }
     if let Some(ak) = &req.api_key {
+        let clean_ak = ak.trim().trim_matches('"').trim_matches('\'');
         autolabel_lines.push_str(&format!(
             "  api_key: {}\n",
-            serde_json::to_string(ak).unwrap_or_else(|_| "\"\"".into())
+            serde_json::to_string(clean_ak).unwrap_or_else(|_| "\"\"".into())
         ));
     }
     if let Some(ab) = &req.api_base {
+        let clean_ab = ab
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .trim_end_matches('/');
         autolabel_lines.push_str(&format!(
             "  api_base: {}\n",
-            serde_json::to_string(ab).unwrap_or_else(|_| "\"\"".into())
+            serde_json::to_string(clean_ab).unwrap_or_else(|_| "\"\"".into())
         ));
     }
     if let Some(om) = &req.openai_model {
+        let clean_om = om.trim().trim_matches('"').trim_matches('\'');
         autolabel_lines.push_str(&format!(
             "  openai_model: {}\n",
-            serde_json::to_string(om).unwrap_or_else(|_| "\"\"".into())
+            serde_json::to_string(clean_om).unwrap_or_else(|_| "\"\"".into())
         ));
     }
     format!(
@@ -1577,6 +1599,24 @@ mod tests {
         }"#;
         let req_bad: AutolabelJobRequest = serde_json::from_str(openai_bad_scheme).unwrap();
         assert!(validate_autolabel_request(req_bad).is_err());
+
+        // OpenAI com apiBase contendo aspas e trailing slash
+        let openai_quoted = r#"{
+            "datasetId":"550e8400-e29b-41d4-a716-446655440001",
+            "model":"openai",
+            "apiKey":"\"sk-test-quoted\"",
+            "apiBase":"https://llama.felipecncloud.com/v1/\"",
+            "openaiModel":"\"Qwen3.8-9B\""
+        }"#;
+        let req_quoted: AutolabelJobRequest = serde_json::from_str(openai_quoted).unwrap();
+        let validated_quoted =
+            validate_autolabel_request(req_quoted).expect("strips quotes successfully");
+        assert_eq!(
+            validated_quoted.api_base.as_deref(),
+            Some("https://llama.felipecncloud.com/v1")
+        );
+        assert_eq!(validated_quoted.api_key.as_deref(), Some("sk-test-quoted"));
+        assert_eq!(validated_quoted.openai_model.as_deref(), Some("Qwen3.8-9B"));
 
         // Geração do YAML
         let yaml = generate_autolabel_config_yaml("job-al-v2", &validated);

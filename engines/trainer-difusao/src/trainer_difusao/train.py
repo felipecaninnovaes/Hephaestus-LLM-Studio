@@ -163,9 +163,8 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
             f.write(json.dumps(line) + "\n")
             f.flush()
 
-        if sample_prompt and sample_interval > 0:
-            if ep % sample_interval == 0 or ep == epochs:
-                _generate_mock_sample(output, ep, sample_prompt, seed=sample_seed)
+        if sample_prompt and sample_interval > 0 and (ep % sample_interval == 0 or ep == epochs):
+            _generate_mock_sample(output, ep, sample_prompt, seed=sample_seed)
 
         if sleep_ms > 0:
             time.sleep(sleep_ms / 1000.0)
@@ -579,15 +578,14 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
             f.write(json.dumps(metric_line) + "\n")
             f.flush()
 
-        if sample_prompt and sample_interval > 0:
-            if epoch % sample_interval == 0 or epoch == epochs:
-                sample_file = output / "samples" / f"sample_epoch_{epoch:03d}.png"
-                _generate_sample_sd15(
-                    unet,
-                    vae,
-                    text_encoder,
-                    tokenizer,
-                    noise_scheduler,
+        if sample_prompt and sample_interval > 0 and (epoch % sample_interval == 0 or epoch == epochs):
+            sample_file = output / "samples" / f"sample_epoch_{epoch:03d}.png"
+            _generate_sample_sd15(
+                unet,
+                vae,
+                text_encoder,
+                tokenizer,
+                noise_scheduler,
                     sample_prompt,
                     sample_file,
                     seed=sample_seed,
@@ -927,17 +925,16 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
             f.write(json.dumps(metric_line) + "\n")
             f.flush()
 
-        if sample_prompt and sample_interval > 0:
-            if epoch % sample_interval == 0 or epoch == epochs:
-                sample_file = output / "samples" / f"sample_epoch_{epoch:03d}.png"
-                _generate_sample_sdxl(
-                    unet,
-                    vae,
-                    text_encoder_one,
-                    text_encoder_two,
-                    tokenizer_one,
-                    tokenizer_two,
-                    noise_scheduler,
+        if sample_prompt and sample_interval > 0 and (epoch % sample_interval == 0 or epoch == epochs):
+            sample_file = output / "samples" / f"sample_epoch_{epoch:03d}.png"
+            _generate_sample_sdxl(
+                unet,
+                vae,
+                text_encoder_one,
+                text_encoder_two,
+                tokenizer_one,
+                tokenizer_two,
+                noise_scheduler,
                     sample_prompt,
                     sample_file,
                     seed=sample_seed,
@@ -957,21 +954,450 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
     print(f"Treino SDXL finalizado com sucesso! Checkpoint salvo em: {adapter_file}")
 
 
+def _pack_latents(latents: Any) -> Any:
+    """Empacota tensores latentes do VAE no formato patch 2x2 do FLUX: [B, C, H, W] -> [B, (H//2)*(W//2), C*4]."""
+    b, c, h, w = latents.shape
+    latents = latents.view(b, c, h // 2, 2, w // 2, 2)
+    latents = latents.permute(0, 2, 4, 1, 3, 5)
+    latents = latents.reshape(b, (h // 2) * (w // 2), c * 4)
+    return latents
+
+
+def _prepare_latent_image_ids(
+    batch_size: int, height: int, width: int, device: Any, dtype: Any
+) -> Any:
+    """Gera coordenadas de posição 2D para o Rotary Embedding (RoPE) de imagem do FLUX."""
+    import torch
+
+    h = height // 16
+    w = width // 16
+    latent_image_ids = torch.zeros(h, w, 3, device=device, dtype=dtype)
+    latent_image_ids[..., 1] = latent_image_ids[..., 1] + torch.arange(h, device=device)[:, None]
+    latent_image_ids[..., 2] = latent_image_ids[..., 2] + torch.arange(w, device=device)[None, :]
+    latent_image_ids = latent_image_ids.reshape(h * w, 3)
+    return latent_image_ids.repeat(batch_size, 1, 1)
+
+
+def _prepare_text_ids(seq_len: int, device: Any, dtype: Any, batch_size: int = 1) -> Any:
+    """Gera coordenadas 1D de posição para o Rotary Embedding (RoPE) textual do FLUX."""
+    import torch
+
+    txt_ids = torch.zeros(seq_len, 3, device=device, dtype=dtype)
+    return txt_ids.repeat(batch_size, 1, 1)
+
+
+def _generate_sample_flux(
+    transformer: Any,
+    vae: Any,
+    text_encoder_one: Any,
+    text_encoder_two: Any,
+    tokenizer_one: Any,
+    tokenizer_two: Any,
+    scheduler: Any,
+    prompt: str,
+    output_path: Path,
+    seed: int = 42,
+) -> None:
+    """Gera uma imagem de teste para FLUX com os pesos LoRA ativos e seed fixa determinística."""
+    try:
+        import torch
+        from diffusers import FluxPipeline
+
+        pipe = FluxPipeline(
+            scheduler=scheduler,
+            text_encoder=text_encoder_one,
+            text_encoder_2=text_encoder_two,
+            tokenizer=tokenizer_one,
+            tokenizer_2=tokenizer_two,
+            vae=vae,
+            transformer=transformer,
+        )
+        pipe.set_progress_bar_config(disable=True)
+        generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(seed)
+        with torch.inference_mode():
+            image = pipe(
+                prompt=prompt,
+                generator=generator,
+                num_inference_steps=20,
+                guidance_scale=3.5,
+                height=512,
+                width=512,
+            ).images[0]
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            image.save(output_path)
+            print(f"[FLUX] Amostra de validação salva (seed={seed}) em: {output_path}", flush=True)
+    except Exception as e:
+        print(f"[WARN] Falha ao gerar amostra de validação FLUX: {e}", flush=True)
+
+
 def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
-    """Treino real LoRA para FLUX.2 Klein 4B via Diffusers/PEFT."""
-    _setup_cache_dir()
+    """Treino real LoRA para FLUX.2 Klein 4B via Diffusers/PEFT com quantização 4-bit NF4 e persistência em cache."""
+    hub_cache = _setup_cache_dir()
 
     try:
         import torch
-        from diffusers import FluxPipeline  # noqa: F401
-        from peft import LoraConfig, get_peft_model  # noqa: F401
+        import torch.nn.functional as F
+        from diffusers import (
+            AutoencoderKL,
+            FlowMatchEulerDiscreteScheduler,
+            FluxPipeline,  # noqa: F401
+            FluxTransformer2DModel,
+        )
+        from peft import LoraConfig, get_peft_model
+        from torch.utils.data import DataLoader
+        from transformers import (
+            AutoTokenizer,
+            BitsAndBytesConfig,
+            CLIPTextModel,
+            T5EncoderModel,
+        )
     except ImportError as e:
         _die(f"Dependência ausente para treino real FLUX.2 Klein 4B: {e}")
 
     if not torch.cuda.is_available():
         _die("CUDA não disponível para treino real de difusão (ENGINE_MOCK=0)")
 
-    print("Iniciando pipeline de treino LoRA FLUX.2 Klein 4B...")
+    device = torch.device("cuda")
+    target_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+
+    seed = int(cfg.get("seed", 42))
+    model_id = (
+        cfg.get("model_id")
+        or os.environ.get("FLUX_MODEL_ID")
+        or "black-forest-labs/FLUX.1-schnell"
+    )
+    dataset_path = Path(cfg.get("dataset_path", "/datasets"))
+    lora_cfg = cfg.get("lora", {})
+    epochs = int(lora_cfg.get("epochs", 10))
+    batch_size = int(lora_cfg.get("batch_size", 1))
+    learning_rate = float(lora_cfg.get("learning_rate", 1e-4))
+    rank = int(lora_cfg.get("rank", 16))
+    alpha = int(lora_cfg.get("alpha", 16))
+    trigger_word = str(lora_cfg.get("trigger_word", ""))
+
+    samples_cfg = cfg.get("samples", {})
+    sample_prompt = str(samples_cfg.get("prompt", "") or "").strip()
+    sample_interval = int(samples_cfg.get("interval", 1))
+    sample_seed = int(samples_cfg.get("seed", seed))
+
+    resolution = int(lora_cfg.get("resolution", 512))
+    grad_accum = max(1, int(lora_cfg.get("gradient_accumulation_steps", 1)))
+    optimizer_name = str(lora_cfg.get("optimizer", "adamw8bit"))
+    lr_scheduler_name = str(lora_cfg.get("lr_scheduler", "cosine"))
+    lr_warmup_steps = int(lora_cfg.get("lr_warmup_steps", 0))
+
+    # Diretório persistente de cache para pesos pré-quantizados em 4-bit (evita re-quantizar a cada job)
+    quant_base = (
+        Path("/outputs/.cache/quantized/flux_4bit")
+        if Path("/outputs").exists()
+        else Path.home() / ".cache" / "hephaestus" / "quantized" / "flux_4bit"
+    )
+    transformer_cache_dir = quant_base / "transformer"
+    t5_cache_dir = quant_base / "text_encoder_2"
+    quant_base.mkdir(parents=True, exist_ok=True)
+
+    bnb_4bit_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=target_dtype,
+        bnb_4bit_use_double_quant=True,
+    )
+
+    print(
+        f"Carregando modelos base FLUX ({model_id}) [quantização: 4-bit NF4, res: {resolution}, dtype: {target_dtype}]...",
+        flush=True,
+    )
+
+    # 1. Carregamento do Transformer (DiT): do cache quantizado se já existir, senão quantiza e salva
+    if transformer_cache_dir.exists() and (transformer_cache_dir / "config.json").exists():
+        print(
+            f"Carregando Transformer quantizado em 4-bit do cache persistente: {transformer_cache_dir}",
+            flush=True,
+        )
+        transformer = FluxTransformer2DModel.from_pretrained(
+            transformer_cache_dir,
+            torch_dtype=target_dtype,
+        )
+    else:
+        print(
+            f"Carregando e quantizando Transformer FLUX em 4-bit NF4 ({model_id})...",
+            flush=True,
+        )
+        transformer = FluxTransformer2DModel.from_pretrained(
+            model_id,
+            subfolder="transformer",
+            quantization_config=bnb_4bit_config,
+            torch_dtype=target_dtype,
+            cache_dir=hub_cache,
+        )
+        try:
+            transformer_cache_dir.mkdir(parents=True, exist_ok=True)
+            transformer.save_pretrained(transformer_cache_dir)
+            print(
+                f"Transformer 4-bit persistido em cache para execuções futuras: {transformer_cache_dir}",
+                flush=True,
+            )
+        except Exception as e:
+            print(
+                f"[WARN] Não foi possível persistir transformer 4-bit em disco: {e}",
+                flush=True,
+            )
+
+    # 2. Carregamento do Text Encoder T5: do cache quantizado se já existir, senão quantiza e salva
+    if t5_cache_dir.exists() and (t5_cache_dir / "config.json").exists():
+        print(
+            f"Carregando Text Encoder T5 quantizado em 4-bit do cache persistente: {t5_cache_dir}",
+            flush=True,
+        )
+        text_encoder_two = T5EncoderModel.from_pretrained(
+            t5_cache_dir,
+            torch_dtype=target_dtype,
+        )
+    else:
+        print(
+            f"Carregando e quantizando Text Encoder T5 em 4-bit NF4 ({model_id})...",
+            flush=True,
+        )
+        text_encoder_two = T5EncoderModel.from_pretrained(
+            model_id,
+            subfolder="text_encoder_2",
+            quantization_config=bnb_4bit_config,
+            torch_dtype=target_dtype,
+            cache_dir=hub_cache,
+        )
+        try:
+            t5_cache_dir.mkdir(parents=True, exist_ok=True)
+            text_encoder_two.save_pretrained(t5_cache_dir)
+            print(
+                f"Text Encoder T5 4-bit persistido em cache para execuções futuras: {t5_cache_dir}",
+                flush=True,
+            )
+        except Exception as e:
+            print(
+                f"[WARN] Não foi possível persistir Text Encoder T5 4-bit em disco: {e}",
+                flush=True,
+            )
+
+    # 3. Componentes auxiliares (Tokenizers, CLIP, VAE float32, Scheduler Flow Matching)
+    tokenizer_one = AutoTokenizer.from_pretrained(
+        model_id, subfolder="tokenizer", use_fast=False, cache_dir=hub_cache
+    )
+    tokenizer_two = AutoTokenizer.from_pretrained(
+        model_id, subfolder="tokenizer_2", use_fast=False, cache_dir=hub_cache
+    )
+    text_encoder_one = CLIPTextModel.from_pretrained(
+        model_id, subfolder="text_encoder", torch_dtype=target_dtype, cache_dir=hub_cache
+    ).to(device)
+    vae = AutoencoderKL.from_pretrained(
+        model_id, subfolder="vae", torch_dtype=torch.float32, cache_dir=hub_cache
+    ).to(device)
+    noise_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
+        model_id, subfolder="scheduler", cache_dir=hub_cache
+    )
+
+    vae.requires_grad_(False)
+    text_encoder_one.requires_grad_(False)
+    text_encoder_two.requires_grad_(False)
+    transformer.requires_grad_(False)
+
+    # 4. Injeção de adaptadores LoRA via PEFT nas camadas lineares do Transformer FLUX
+    target_modules = [
+        "to_k", "to_q", "to_v", "to_out.0",
+        "linear1", "linear2",
+    ]
+    lora_config = LoraConfig(
+        r=rank,
+        lora_alpha=alpha,
+        init_lora_weights="gaussian",
+        target_modules=target_modules,
+    )
+    transformer = get_peft_model(transformer, lora_config)
+    transformer.enable_gradient_checkpointing()
+    transformer.train()
+
+    # 5. Dataset de treino
+    dataset = DiffusionDataset(
+        dataset_path, resolution=resolution, trigger_word=trigger_word
+    )
+    if len(dataset) == 0:
+        _die(f"Nenhum par imagem+legenda (.txt) encontrado em: {dataset_path}")
+
+    dataloader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        drop_last=False,
+    )
+
+    # 6. Otimizador e LR Scheduler
+    optimizer = _create_optimizer(transformer, optimizer_name, learning_rate)
+    total_train_steps = (len(dataloader) * epochs) // grad_accum
+    lr_scheduler = _create_lr_scheduler(
+        optimizer, lr_scheduler_name, total_train_steps, lr_warmup_steps
+    )
+
+    output.mkdir(parents=True, exist_ok=True)
+    metrics_path = output / "metrics.jsonl"
+    if metrics_path.exists():
+        metrics_path.unlink()
+
+    print(
+        f"Iniciando treino LoRA FLUX (4-bit NF4): {epochs} épocas, {len(dataset)} imagens, "
+        f"rank={rank}, alpha={alpha}, lr={learning_rate}, res={resolution}px, ga={grad_accum}x",
+        flush=True,
+    )
+
+    shift_factor = getattr(vae.config, "shift_factor", 0.0)
+    scaling_factor = getattr(vae.config, "scaling_factor", 0.3611)
+
+    global_step = 0
+    for epoch in range(1, epochs + 1):
+        epoch_loss = 0.0
+        steps_in_epoch = 0
+        optimizer.zero_grad()
+
+        for batch in dataloader:
+            pixel_values = batch["pixel_values"].to(device)
+            captions = batch["prompt"]
+            bsz = pixel_values.shape[0]
+
+            # Codifica imagens com VAE (em float32 para evitar instabilidade numérica)
+            with torch.no_grad():
+                latents = vae.encode(pixel_values.float()).latent_dist.sample()
+                latents = (latents - shift_factor) * scaling_factor
+                latents = latents.to(dtype=target_dtype)
+                packed_latents = _pack_latents(latents)
+
+                # Coordenadas RoPE de imagem e texto
+                img_ids = _prepare_latent_image_ids(bsz, resolution, resolution, device, target_dtype)
+
+                # Codifica texto das legendas (CLIP pooled + T5 prompt_embeds)
+                clip_inputs = tokenizer_one(
+                    captions,
+                    padding="max_length",
+                    max_length=77,
+                    truncation=True,
+                    return_tensors="pt",
+                ).to(device)
+                pooled_prompt_embeds = text_encoder_one(clip_inputs.input_ids).pooler_output
+
+                t5_inputs = tokenizer_two(
+                    captions,
+                    padding="max_length",
+                    max_length=512,
+                    truncation=True,
+                    return_tensors="pt",
+                ).to(device)
+                prompt_embeds = text_encoder_two(t5_inputs.input_ids)[0]
+                txt_ids = _prepare_text_ids(prompt_embeds.shape[1], device, prompt_embeds.dtype, batch_size=bsz)
+
+            # Ruído gaussiano e timesteps aleatórios para Flow Matching
+            noise = torch.randn_like(packed_latents)
+            u = torch.normal(mean=0.0, std=1.0, size=(bsz,), device=device)
+            timesteps = torch.sigmoid(u)
+
+            # Interpolação do fluxo retificado: x_t = (1 - t) * x_0 + t * noise
+            t_expanded = timesteps.view(-1, 1, 1).to(dtype=target_dtype)
+            noisy_latents = (1.0 - t_expanded) * packed_latents + t_expanded * noise
+            target = noise - packed_latents
+
+            # Guidance scale embedding padrão para FLUX
+            guidance = torch.full((bsz,), 3.5, device=device, dtype=target_dtype)
+
+            # Forward no Transformer FLUX com adaptadores LoRA ativos
+            model_pred = transformer(
+                hidden_states=noisy_latents,
+                timestep=timesteps,
+                guidance=guidance,
+                pooled_projections=pooled_prompt_embeds,
+                encoder_hidden_states=prompt_embeds,
+                txt_ids=txt_ids,
+                img_ids=img_ids,
+                return_dict=False,
+            )[0]
+
+            loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+            cur_loss_raw = loss.item()
+            loss = loss / grad_accum
+            loss.backward()
+
+            steps_in_epoch += 1
+            if steps_in_epoch % grad_accum == 0 or steps_in_epoch == len(dataloader):
+                torch.nn.utils.clip_grad_norm_(transformer.parameters(), 1.0)
+                optimizer.step()
+                if lr_scheduler is not None:
+                    lr_scheduler.step()
+                optimizer.zero_grad()
+
+            global_step += 1
+            if not math.isnan(cur_loss_raw) and not math.isinf(cur_loss_raw):
+                epoch_loss += cur_loss_raw
+
+            effective_lr = (
+                lr_scheduler.get_last_lr()[0] if lr_scheduler else learning_rate
+            )
+
+            # Emite métricas intermediárias a cada 5 passos
+            if global_step % 5 == 0 or steps_in_epoch == len(dataloader):
+                safe_loss = (
+                    None
+                    if (math.isnan(cur_loss_raw) or math.isinf(cur_loss_raw))
+                    else round(cur_loss_raw, 4)
+                )
+                print(
+                    f"[FLUX] Época {epoch}/{epochs} · Step {global_step} · Loss: {safe_loss} · LR: {effective_lr:.2e}",
+                    flush=True,
+                )
+
+        avg_loss = epoch_loss / max(1, steps_in_epoch)
+        safe_avg_loss = (
+            None
+            if (math.isnan(avg_loss) or math.isinf(avg_loss))
+            else round(avg_loss, 4)
+        )
+        line = {
+            "epoch": epoch,
+            "step": global_step,
+            "loss": safe_avg_loss,
+            "lr": effective_lr,
+        }
+        with open(metrics_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(line) + "\n")
+            f.flush()
+
+        print(
+            f"[FLUX] Concluída Época {epoch}/{epochs} · Loss Média: {safe_avg_loss} · LR: {effective_lr:.2e}",
+            flush=True,
+        )
+
+        # Geração de amostra visual periódica
+        if sample_prompt and sample_interval > 0 and (epoch % sample_interval == 0 or epoch == epochs):
+            sample_file = output / "samples" / f"sample_epoch_{epoch:03d}.png"
+            _generate_sample_flux(
+                    transformer=transformer,
+                    vae=vae,
+                    text_encoder_one=text_encoder_one,
+                    text_encoder_two=text_encoder_two,
+                    tokenizer_one=tokenizer_one,
+                    tokenizer_two=tokenizer_two,
+                    scheduler=noise_scheduler,
+                    prompt=sample_prompt,
+                    output_path=sample_file,
+                    seed=sample_seed,
+                )
+
+    # Salva adaptador LoRA final em safetensors com metadados
+    adapter_file = output / "adapter.safetensors"
+    metadata = {
+        "format": "pt",
+        "model_type": "lora",
+        "base_model": "flux-2-klein-4b",
+        "lora_rank": str(rank),
+        "lora_alpha": str(alpha),
+        "trigger_word": trigger_word,
+    }
+    _save_lora_safetensors(transformer, adapter_file, metadata)
+    print(f"Treino FLUX finalizado com sucesso! Checkpoint salvo em: {adapter_file}")
 
 
 def _real_train(cfg: dict[str, Any], output: Path) -> None:

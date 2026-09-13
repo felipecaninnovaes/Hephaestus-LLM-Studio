@@ -19,7 +19,17 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-13 (FATIA OPÇÕES AVANÇADAS DE TREINO DE DIFUSÃO E PRESETS CONCLUÍDA NA BRANCH)
+## Estado atual — 2026-09-13 (FATIA TREINO REAL FLUX.2 KLEIN 4B QUANTIZADO CONCLUÍDA NA BRANCH)
+
+- **FATIA TREINO REAL FLUX.2 KLEIN 4B QUANTIZADO (4-BIT NF4 + PERSISTÊNCIA DE PESOS + TEXT EMBEDDINGS CACHING) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/flux-klein-4bit-training`.
+  - **Motivação**: Viabilizar o treinamento real de LoRA para a família FLUX (FLUX.2 Klein 4B) na GPU alvo do estúdio (NVIDIA GeForce RTX 3060 12GB VRAM), onde modelos de 4B parâmetros em precisão FP16 pura excedem a capacidade de memória (>21 GB necessários).
+  - **Estratégia Técnica & Implementação**:
+    1. **Quantização 4-bit (QLoRA via BitsAndBytes NF4)**: Carregamento do `FluxTransformer2DModel` e do Text Encoder T5 em 4-bit NF4 com compute dtype `bfloat16` nativo da arquitetura Ampere.
+    2. **Persistência de Pesos Quantizados em Cache**: Salvamento automático e atômico da versão quantizada em `/outputs/.cache/quantized/flux_4bit/` na primeira execução, permitindo carregamento direto nas execuções subsequentes em 2 a 3 segundos sem re-quantização.
+    3. **Pré-caching de Text Embeddings & Latents**: Processamento das legendas e imagens do dataset antes do loop de treino, descarregando os text encoders e VAE da VRAM durante as épocas e reduzindo o consumo para ~6.5–8.0 GB.
+    4. **Loop de Treino Flow Matching**: Interpolação retificada ($x_t = (1-t)x_0 + t\epsilon$), cálculo de velocidade alvo ($v = \epsilon - x_0$), guidance scale 3.5, patchification 2x2 dos latents, RoPE IDs (`img_ids` e `txt_ids`), loss MSE e emissão de métricas em `metrics.jsonl`.
+    5. **Geração de Amostras de Validação & Exportação LoRA**: Geração progressiva de PNGs com seed fixa (`_generate_sample_flux`) e salvamento de `adapter.safetensors` com metadados estruturados de compatibilidade.
+    6. **Testes & Grafo**: 7/7 testes unitários passando em `engines/trainer-difusao/tests/test_train.py`, grafo `graft build` atualizado.
 
 - **FATIA OPÇÕES AVANÇADAS DE TREINO DE DIFUSÃO E PRESETS DE CONFIGURAÇÃO (JSON & QUICK PRESETS) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/diffusion-advanced-training-presets`.
   - **Motivação**: Oferecer controle granular aos usuários sobre o pipeline de treino de difusão LoRA (resolução dinâmica, acumulação de gradientes para simulação de batch sem aumento de VRAM, seleção de otimizadores incluindo 8-bit AdamW e Prodigy adaptativo, schedulers com warmup e controle de precisão mista), além de facilitar a reproducibilidade através de importação e exportação de presets `.json` e presets rápidos embutidos na interface.

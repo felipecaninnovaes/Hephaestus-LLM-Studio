@@ -202,6 +202,29 @@ class TestTrainerDifusao(unittest.TestCase):
             self.assertGreater(sample2.stat().st_size, 0)
             self.assertGreater(sample4.stat().st_size, 0)
 
+    def test_flux_pack_latents_transformation(self):
+        from unittest.mock import MagicMock
+        from trainer_difusao.train import _pack_latents
+
+        # Simula tensores VAE com formato [B, C, H, W] = [2, 16, 64, 64]
+        mock_latents = MagicMock()
+        mock_latents.shape = (2, 16, 64, 64)
+        mock_view = MagicMock()
+        mock_permute = MagicMock()
+        mock_reshaped = MagicMock()
+
+        mock_latents.view.return_value = mock_view
+        mock_view.permute.return_value = mock_permute
+        mock_permute.reshape.return_value = mock_reshaped
+
+        res = _pack_latents(mock_latents)
+
+        mock_latents.view.assert_called_once_with(2, 16, 32, 2, 32, 2)
+        mock_view.permute.assert_called_once_with(0, 2, 4, 1, 3, 5)
+        mock_permute.reshape.assert_called_once_with(2, 1024, 64)
+        self.assertEqual(res, mock_reshaped)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.17.0
+  version: 0.18.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -2503,7 +2503,7 @@ components:
       additionalProperties: false
       required: [datasetId]
       description: |
-        Body de `POST /api/jobs/autolabel` (ADR-0016 D0). `datasetId` é
+        Body de `POST /api/jobs/autolabel` (ADR-0016 D0, ADR-0019 AutoLabel v2). `datasetId` é
         obrigatório; os demais campos são OPCIONAIS com defaults.
         Wire camelCase; `deny_unknown_fields` garante 400 para chaves desconhecidas.
       properties:
@@ -2513,13 +2513,27 @@ components:
           description: "PK do dataset. Não-UUID ou inexistente ⇒ 404 `not_found`."
         model:
           type: string
-          enum: [mock]
+          enum: [mock, florence-2, qwen2-vl, openai]
           default: mock
-          description: "Modelo a usar (apenas mock na v1)."
+          description: "Modelo VLM local ou provedor de API para legendagem (ADR-0019)."
         prompt:
           type: string
           maxLength: 8000
           description: "Instrução opcional para estilo/contexto da legenda."
+        apiKey:
+          type: string
+          maxLength: 512
+          description: "Chave de autenticação para chamadas ao provedor OpenAI (opcional se configurada via env no nó)."
+        apiBase:
+          type: string
+          maxLength: 512
+          default: "https://api.openai.com/v1"
+          description: "URL base para API compatível com OpenAI (ex: https://api.openai.com/v1 ou http://localhost:11434/v1)."
+        openaiModel:
+          type: string
+          maxLength: 128
+          default: "gpt-4o-mini"
+          description: "Nome do modelo VLM remoto no provedor OpenAI (ex: gpt-4o-mini, gpt-4o)."
         orchestratorId:
           type: [string, "null"]
           format: uuid

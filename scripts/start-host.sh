@@ -80,6 +80,8 @@ fi
 
 BUILD_FLAG=()
 if [[ "$DO_BUILD" == true ]]; then
+  echo "Reconstruindo imagens de serviços e engines locais (profile build)..."
+  "${COMPOSE_CMD[@]}" --profile build build
   BUILD_FLAG+=("--build")
 fi
 

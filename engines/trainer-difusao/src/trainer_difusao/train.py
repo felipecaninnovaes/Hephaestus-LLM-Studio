@@ -97,6 +97,7 @@ def _generate_mock_safetensors(output_file: Path, lora_params: dict[str, Any]) -
     alpha = int(lora_params.get("alpha", 16))
     trigger_word = str(lora_params.get("trigger_word", ""))
 
+    quantization = str(lora_params.get("quantization", "4bit"))
     metadata = {
         "format": "pt",
         "framework": "diffusers",
@@ -104,6 +105,7 @@ def _generate_mock_safetensors(output_file: Path, lora_params: dict[str, Any]) -
         "lora_rank": str(rank),
         "lora_alpha": str(alpha),
         "base_model": str(base_model),
+        "quantization": str(quantization),
     }
     if trigger_word:
         metadata["trigger_word"] = trigger_word
@@ -221,6 +223,7 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
     adapter_path = output / "adapter.safetensors"
     lora_info = dict(lora_cfg)
     lora_info["base_model"] = base_model
+    lora_info["quantization"] = str(lora_cfg.get("quantization") or cfg.get("quantization") or "4bit")
     _generate_mock_safetensors(adapter_path, lora_info)
 
 
@@ -478,6 +481,7 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         if (mixed_precision == "bf16" and torch.cuda.is_bf16_supported())
         else torch.float16
     )
+    quantization = str(lora_cfg.get("quantization") or cfg.get("quantization") or "none").lower().strip()
 
     _emit_metric(
         metrics_path,
@@ -743,6 +747,7 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         "lora_rank": str(rank),
         "lora_alpha": str(alpha),
         "trigger_word": trigger_word,
+        "quantization": quantization,
     }
     _save_lora_safetensors(unet, adapter_file, metadata)
     _emit_metric(
@@ -894,6 +899,7 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         if (mixed_precision == "bf16" and torch.cuda.is_bf16_supported())
         else torch.float16
     )
+    quantization = str(lora_cfg.get("quantization") or cfg.get("quantization") or "none").lower().strip()
 
     _emit_metric(
         metrics_path,
@@ -1185,6 +1191,7 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         "lora_rank": str(rank),
         "lora_alpha": str(alpha),
         "trigger_word": trigger_word,
+        "quantization": quantization,
     }
     _save_lora_safetensors(unet, adapter_file, metadata)
     _emit_metric(
@@ -1466,13 +1473,52 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     )
     is_flux2 = any(k in model_id.lower() for k in ["klein", "flux.2", "flux-2"])
 
+    dataset_path = Path(cfg.get("dataset_path", "/datasets"))
+    lora_cfg = cfg.get("lora", {})
+    epochs = int(lora_cfg.get("epochs", 10))
+    batch_size = int(lora_cfg.get("batch_size", 1))
+    learning_rate = float(lora_cfg.get("learning_rate", 1e-4))
+    rank = int(lora_cfg.get("rank", 16))
+    alpha = int(lora_cfg.get("alpha", 16))
+    trigger_word = str(lora_cfg.get("trigger_word", ""))
+
+    quantization = str(
+        lora_cfg.get("quantization")
+        or cfg.get("quantization")
+        or os.environ.get("FLUX_QUANTIZATION")
+        or "4bit"
+    ).lower().strip()
+    is_4bit = quantization in ("4bit", "4bit-nf4", "nf4")
+    is_8bit = quantization in ("8bit", "8bit-bnb", "int8")
+    is_quantized = is_4bit or is_8bit
+
+    if is_4bit:
+        quant_label = "4-bit NF4"
+        subfolder_quant = "flux2_klein_4bit" if is_flux2 else "flux1_4bit"
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=target_dtype,
+            bnb_4bit_use_double_quant=True,
+        )
+    elif is_8bit:
+        quant_label = "8-bit BitsAndBytes"
+        subfolder_quant = "flux2_klein_8bit" if is_flux2 else "flux1_8bit"
+        bnb_config = BitsAndBytesConfig(
+            load_in_8bit=True,
+        )
+    else:
+        quant_label = "Nenhum (FP16/BF16 pleno)"
+        subfolder_quant = None
+        bnb_config = None
+
     _emit_metric(
         metrics_path,
         epoch=0,
         step=1,
         progress=0.01,
         phase="init",
-        message=f"Inicializando motor FLUX: {model_id} (4-bit NF4)...",
+        message=f"Inicializando motor FLUX: {model_id} ({quant_label})...",
     )
 
     # Classes condicionais para FLUX.2 / Klein se disponíveis no Diffusers instalado
@@ -1490,15 +1536,6 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         except ImportError:
             pass
 
-    dataset_path = Path(cfg.get("dataset_path", "/datasets"))
-    lora_cfg = cfg.get("lora", {})
-    epochs = int(lora_cfg.get("epochs", 10))
-    batch_size = int(lora_cfg.get("batch_size", 1))
-    learning_rate = float(lora_cfg.get("learning_rate", 1e-4))
-    rank = int(lora_cfg.get("rank", 16))
-    alpha = int(lora_cfg.get("alpha", 16))
-    trigger_word = str(lora_cfg.get("trigger_word", ""))
-
     samples_cfg = cfg.get("samples", {})
     sample_prompt = str(samples_cfg.get("prompt", "") or "").strip()
     sample_interval = int(samples_cfg.get("interval", 1))
@@ -1510,41 +1547,37 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     lr_scheduler_name = str(lora_cfg.get("lr_scheduler", "cosine"))
     lr_warmup_steps = int(lora_cfg.get("lr_warmup_steps", 0))
 
-    # Diretório persistente de cache para pesos pré-quantizados em 4-bit (evita re-quantizar a cada job)
-    subfolder_quant = "flux2_klein_4bit" if is_flux2 else "flux1_4bit"
-    quant_base = (
-        Path(f"/outputs/.cache/quantized/{subfolder_quant}")
-        if Path("/outputs").exists()
-        else Path.home() / ".cache" / "hephaestus" / "quantized" / subfolder_quant
-    )
-    transformer_cache_dir = quant_base / "transformer"
-    text_encoder_cache_dir = quant_base / ("text_encoder" if is_flux2 else "text_encoder_2")
-    quant_base.mkdir(parents=True, exist_ok=True)
-
-    bnb_4bit_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=target_dtype,
-        bnb_4bit_use_double_quant=True,
-    )
+    # Diretório persistente de cache para pesos pré-quantizados (evita re-quantizar a cada job)
+    if subfolder_quant:
+        quant_base = (
+            Path(f"/outputs/.cache/quantized/{subfolder_quant}")
+            if Path("/outputs").exists()
+            else Path.home() / ".cache" / "hephaestus" / "quantized" / subfolder_quant
+        )
+        transformer_cache_dir = quant_base / "transformer"
+        text_encoder_cache_dir = quant_base / ("text_encoder" if is_flux2 else "text_encoder_2")
+        quant_base.mkdir(parents=True, exist_ok=True)
+    else:
+        transformer_cache_dir = None
+        text_encoder_cache_dir = None
 
     print(
-        f"Carregando modelos base FLUX ({model_id}) [is_flux2={is_flux2}, quantização: 4-bit NF4, res: {resolution}, dtype: {target_dtype}]...",
+        f"Carregando modelos base FLUX ({model_id}) [is_flux2={is_flux2}, quantização: {quant_label}, res: {resolution}, dtype: {target_dtype}]...",
         flush=True,
     )
 
     # 1. Carregamento do Transformer (DiT): do cache quantizado se já existir, senão quantiza e salva
-    if transformer_cache_dir.exists() and (transformer_cache_dir / "config.json").exists():
+    if transformer_cache_dir and transformer_cache_dir.exists() and (transformer_cache_dir / "config.json").exists():
         _emit_metric(
             metrics_path,
             epoch=0,
             step=2,
             progress=0.03,
             phase="load_transformer",
-            message=f"Carregando Transformer quantizado em 4-bit do cache persistente...",
+            message=f"Carregando Transformer quantizado em {quant_label} do cache persistente...",
         )
         print(
-            f"Carregando Transformer quantizado em 4-bit do cache persistente: {transformer_cache_dir}",
+            f"Carregando Transformer quantizado em {quant_label} do cache persistente: {transformer_cache_dir}",
             flush=True,
         )
         transformer = Flux2Transformer_cls.from_pretrained(
@@ -1552,23 +1585,25 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             torch_dtype=target_dtype,
         )
     else:
+        step_msg_trans = (
+            f"Baixando e quantizando Transformer FLUX em {quant_label} ({model_id})..."
+            if is_quantized
+            else f"Baixando e carregando Transformer FLUX em precisão plena ({model_id})..."
+        )
         _emit_metric(
             metrics_path,
             epoch=0,
             step=2,
             progress=0.02,
-            phase="quantizing_transformer",
-            message=f"Baixando e quantizando Transformer FLUX em 4-bit NF4 ({model_id})...",
+            phase="quantizing_transformer" if is_quantized else "load_transformer",
+            message=step_msg_trans,
         )
-        print(
-            f"Carregando e quantizando Transformer FLUX em 4-bit NF4 ({model_id})...",
-            flush=True,
-        )
+        print(step_msg_trans, flush=True)
         try:
             transformer = Flux2Transformer_cls.from_pretrained(
                 model_id,
                 subfolder="transformer",
-                quantization_config=bnb_4bit_config,
+                quantization_config=bnb_config,
                 torch_dtype=target_dtype,
                 cache_dir=hub_cache,
                 token=hf_token,
@@ -1582,18 +1617,19 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                     f"Erro original: {e}"
                 )
             raise
-        try:
-            transformer_cache_dir.mkdir(parents=True, exist_ok=True)
-            transformer.save_pretrained(transformer_cache_dir)
-            print(
-                f"Transformer 4-bit persistido em cache para execuções futuras: {transformer_cache_dir}",
-                flush=True,
-            )
-        except Exception as e:
-            print(
-                f"[WARN] Não foi possível persistir transformer 4-bit em disco: {e}",
-                flush=True,
-            )
+        if transformer_cache_dir:
+            try:
+                transformer_cache_dir.mkdir(parents=True, exist_ok=True)
+                transformer.save_pretrained(transformer_cache_dir)
+                print(
+                    f"Transformer {quant_label} persistido em cache para execuções futuras: {transformer_cache_dir}",
+                    flush=True,
+                )
+            except Exception as e:
+                print(
+                    f"[WARN] Não foi possível persistir transformer quantizado em disco: {e}",
+                    flush=True,
+                )
 
     _emit_metric(
         metrics_path,
@@ -1601,26 +1637,26 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         step=3,
         progress=0.04,
         phase="transformer_ready",
-        message="Transformer FLUX 4-bit carregado com sucesso.",
+        message=f"Transformer FLUX ({quant_label}) carregado com sucesso.",
     )
 
     # 2. Carregamento do(s) Text Encoder(s)
     if is_flux2:
-        # FLUX.2 Klein: utiliza um único Text Encoder Qwen3 em 4-bit NF4
+        # FLUX.2 Klein: utiliza um único Text Encoder Qwen3
         tokenizer_two = None
         text_encoder_two = None
 
-        if text_encoder_cache_dir.exists() and (text_encoder_cache_dir / "config.json").exists():
+        if text_encoder_cache_dir and text_encoder_cache_dir.exists() and (text_encoder_cache_dir / "config.json").exists():
             _emit_metric(
                 metrics_path,
                 epoch=0,
                 step=4,
                 progress=0.05,
                 phase="load_text_encoder",
-                message="Carregando Text Encoder Qwen3 quantizado em 4-bit do cache persistente...",
+                message=f"Carregando Text Encoder Qwen3 quantizado em {quant_label} do cache persistente...",
             )
             print(
-                f"Carregando Text Encoder Qwen3 quantizado em 4-bit do cache persistente: {text_encoder_cache_dir}",
+                f"Carregando Text Encoder Qwen3 quantizado em {quant_label} do cache persistente: {text_encoder_cache_dir}",
                 flush=True,
             )
             text_encoder_one = AutoModelForCausalLM.from_pretrained(
@@ -1628,55 +1664,58 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                 torch_dtype=target_dtype,
             )
         else:
+            step_msg_enc = (
+                f"Baixando e quantizando Text Encoder Qwen3 em {quant_label} ({model_id})..."
+                if is_quantized
+                else f"Baixando e carregando Text Encoder Qwen3 em precisão plena ({model_id})..."
+            )
             _emit_metric(
                 metrics_path,
                 epoch=0,
                 step=4,
                 progress=0.04,
-                phase="quantizing_text_encoder",
-                message=f"Baixando e quantizando Text Encoder Qwen3 em 4-bit NF4 ({model_id})...",
+                phase="quantizing_text_encoder" if is_quantized else "load_text_encoder",
+                message=step_msg_enc,
             )
-            print(
-                f"Carregando e quantizando Text Encoder Qwen3 em 4-bit NF4 ({model_id})...",
-                flush=True,
-            )
+            print(step_msg_enc, flush=True)
             text_encoder_one = AutoModelForCausalLM.from_pretrained(
                 model_id,
                 subfolder="text_encoder",
-                quantization_config=bnb_4bit_config,
+                quantization_config=bnb_config,
                 torch_dtype=target_dtype,
                 cache_dir=hub_cache,
                 token=hf_token,
             )
-            try:
-                text_encoder_cache_dir.mkdir(parents=True, exist_ok=True)
-                text_encoder_one.save_pretrained(text_encoder_cache_dir)
-                print(
-                    f"Text Encoder Qwen3 4-bit persistido em cache para execuções futuras: {text_encoder_cache_dir}",
-                    flush=True,
-                )
-            except Exception as e:
-                print(
-                    f"[WARN] Não foi possível persistir Text Encoder Qwen3 4-bit em disco: {e}",
-                    flush=True,
-                )
+            if text_encoder_cache_dir:
+                try:
+                    text_encoder_cache_dir.mkdir(parents=True, exist_ok=True)
+                    text_encoder_one.save_pretrained(text_encoder_cache_dir)
+                    print(
+                        f"Text Encoder Qwen3 {quant_label} persistido em cache para execuções futuras: {text_encoder_cache_dir}",
+                        flush=True,
+                    )
+                except Exception as e:
+                    print(
+                        f"[WARN] Não foi possível persistir Text Encoder Qwen3 quantizado em disco: {e}",
+                        flush=True,
+                    )
 
         tokenizer_one = AutoTokenizer.from_pretrained(
             model_id, subfolder="tokenizer", cache_dir=hub_cache, token=hf_token
         )
     else:
-        # FLUX.1: utiliza Text Encoder CLIP + T5-XXL em 4-bit NF4
-        if text_encoder_cache_dir.exists() and (text_encoder_cache_dir / "config.json").exists():
+        # FLUX.1: utiliza Text Encoder CLIP + T5-XXL
+        if text_encoder_cache_dir and text_encoder_cache_dir.exists() and (text_encoder_cache_dir / "config.json").exists():
             _emit_metric(
                 metrics_path,
                 epoch=0,
                 step=4,
                 progress=0.05,
                 phase="load_text_encoder",
-                message="Carregando Text Encoder T5 quantizado em 4-bit do cache persistente...",
+                message=f"Carregando Text Encoder T5 quantizado em {quant_label} do cache persistente...",
             )
             print(
-                f"Carregando Text Encoder T5 quantizado em 4-bit do cache persistente: {text_encoder_cache_dir}",
+                f"Carregando Text Encoder T5 quantizado em {quant_label} do cache persistente: {text_encoder_cache_dir}",
                 flush=True,
             )
             text_encoder_two = T5EncoderModel.from_pretrained(
@@ -1684,38 +1723,41 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                 torch_dtype=target_dtype,
             )
         else:
+            step_msg_t5 = (
+                f"Baixando e quantizando Text Encoder T5 em {quant_label} ({model_id})..."
+                if is_quantized
+                else f"Baixando e carregando Text Encoder T5 em precisão plena ({model_id})..."
+            )
             _emit_metric(
                 metrics_path,
                 epoch=0,
                 step=4,
                 progress=0.04,
-                phase="quantizing_text_encoder",
-                message=f"Baixando e quantizando Text Encoder T5 em 4-bit NF4 ({model_id})...",
+                phase="quantizing_text_encoder" if is_quantized else "load_text_encoder",
+                message=step_msg_t5,
             )
-            print(
-                f"Carregando e quantizando Text Encoder T5 em 4-bit NF4 ({model_id})...",
-                flush=True,
-            )
+            print(step_msg_t5, flush=True)
             text_encoder_two = T5EncoderModel.from_pretrained(
                 model_id,
                 subfolder="text_encoder_2",
-                quantization_config=bnb_4bit_config,
+                quantization_config=bnb_config,
                 torch_dtype=target_dtype,
                 cache_dir=hub_cache,
                 token=hf_token,
             )
-            try:
-                text_encoder_cache_dir.mkdir(parents=True, exist_ok=True)
-                text_encoder_two.save_pretrained(text_encoder_cache_dir)
-                print(
-                    f"Text Encoder T5 4-bit persistido em cache para execuções futuras: {text_encoder_cache_dir}",
-                    flush=True,
-                )
-            except Exception as e:
-                print(
-                    f"[WARN] Não foi possível persistir Text Encoder T5 4-bit em disco: {e}",
-                    flush=True,
-                )
+            if text_encoder_cache_dir:
+                try:
+                    text_encoder_cache_dir.mkdir(parents=True, exist_ok=True)
+                    text_encoder_two.save_pretrained(text_encoder_cache_dir)
+                    print(
+                        f"Text Encoder T5 {quant_label} persistido em cache para execuções futuras: {text_encoder_cache_dir}",
+                        flush=True,
+                    )
+                except Exception as e:
+                    print(
+                        f"[WARN] Não foi possível persistir Text Encoder T5 quantizado em disco: {e}",
+                        flush=True,
+                    )
 
         tokenizer_one = AutoTokenizer.from_pretrained(
             model_id, subfolder="tokenizer", use_fast=False, cache_dir=hub_cache, token=hf_token
@@ -1733,7 +1775,7 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         step=5,
         progress=0.06,
         phase="text_encoder_ready",
-        message="Text Encoder quantizado pronto.",
+        message=f"Text Encoder ({quant_label}) pronto.",
     )
 
     # 3. Componentes auxiliares (VAE float32, Scheduler Flow Matching)
@@ -2049,6 +2091,7 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         "lora_rank": str(rank),
         "lora_alpha": str(alpha),
         "trigger_word": trigger_word,
+        "quantization": quantization,
     }
     _save_lora_safetensors(transformer, adapter_file, metadata)
     _emit_metric(

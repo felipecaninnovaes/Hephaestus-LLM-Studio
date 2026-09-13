@@ -19,7 +19,29 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-13 (FATIA TREINO REAL FLUX.2 KLEIN 4B QUANTIZADO CONCLUÍDA NA BRANCH)
+## Estado atual — 2026-09-13 (FATIA SELEÇÃO E CONFIGURAÇÃO DE QUANTIZAÇÃO DO MODELO BASE CONCLUÍDA NA BRANCH)
+
+- **FATIA SELEÇÃO E CONFIGURAÇÃO DE QUANTIZAÇÃO DO MODELO BASE (4-BIT NF4, 8-BIT BNB E FP16 PLENO) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/flux-klein-4bit-training`.
+  - **Motivação**: Permitir ao usuário escolher livremente o nível de quantização do modelo base (`4bit` NF4 BitsAndBytes, `8bit` BitsAndBytes ou `none` FP16/BF16 pleno) no treinamento LoRA de difusão, equilibrando consumo de VRAM e precisão numérica conforme o hardware disponível (ex: 4-bit para RTX 3060 12GB, 8-bit para GPUs de 16GB+, e precisão plena para nós de 24GB+).
+  - **Contratos & API Principal**:
+    - `packages/contracts/openapi.yaml`: Adicionado campo `quantization` (enum: `none`, `4bit`, `8bit`, default `4bit`) em `DiffusionJobRequest`.
+    - `services/api-principal/src/jobs/models.rs`: Constante `ALLOWED_DIFFUSION_QUANTIZATIONS`, campo `quantization: String` com `#[serde(default = "default_diffusion_quantization")]`, validação estrita em `validate_diffusion_request` e injeção de `quantization: "{quantization}"` na seção `lora:` do `config.yaml`. Testes unitários com cobertura total (5/5 testes de difusão verdes).
+  - **Engine Python (`engines/trainer-difusao`)**:
+    - `train.py`: Leitura de `quantization` em `_real_train_flux`, `_real_train_sdxl`, `_real_train_sd15` e `_mock_train`.
+    - Suporte dinâmico a `BitsAndBytesConfig` (4-bit NF4 com double quantization e bfloat16 compute dtype; 8-bit BNB; ou None para carregamento FP16/BF16 pleno sem quantização).
+    - Cache condicional de pesos quantizados por subpasta (`flux2_klein_4bit`, `flux2_klein_8bit`), ignorando cache se `none`.
+    - Inclusão do campo `quantization` no dicionário `__metadata__` do arquivo de pesos gerado `adapter.safetensors`.
+    - Testes unitários atualizados em `test_train.py` (8/8 testes passando).
+  - **Frontend Web (`apps/web`)**:
+    - `types/studio.ts`: Propriedade `quantization?: "none" | "4bit" | "8bit"` adicionada em `DiffusionJobRequest` e `DiffusionPreset`.
+    - `lib/jobs.ts`: `startDiffusionJob` propagando `quantization` para o endpoint da API.
+    - `components/studio/ForjaDifusaoSetup.tsx`:
+      - Atualização do cálculo preditivo `estimateDiffusionVramGb` para considerar a quantização selecionada (4bit: ~10GB FLUX; 8bit: ~14.5GB; none: ~22GB).
+      - Adição do componente canônico `<Select>` de Quantização nas Configurações Avançadas de Treinamento.
+      - Adição de badge dinâmica de quantização no resumo colapsável do cabeçalho.
+      - Inclusão de `quantization` nos manipuladores de preset (`applyPreset`, `handleExportPreset`, `handleImportPreset`, `handleAutoFixSafeParams`).
+      - Adição do preset rápido `FLUX.2 Klein 4B (4-bit NF4)`.
+    - Verificações estritas: `next build` compilado com 100% de sucesso (12/12 páginas estáticas, 0 erros TypeScript).
 
 - **FATIA TREINO REAL FLUX.2 KLEIN 4B QUANTIZADO (4-BIT NF4 + TELEMETRIA DE PREPARAÇÃO + AMOSTRA BASELINE ÉPOCA 0) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/flux-klein-4bit-training`.
   - **Motivação**: Viabilizar o treinamento real de LoRA para o novo modelo de ponta **FLUX.2 Klein 4B** (`unsloth/FLUX.2-klein-4B`) na GPU do estúdio (NVIDIA GeForce RTX 3060 12GB VRAM), onde parâmetros em precisão FP16 pura excedem a capacidade de memória (>21 GB necessários). Adicionalmente, fornecer **telemetria em tempo real de preparação e quantização**, **geração de amostra baseline pré-treino (Época 0)** e **métricas contínuas por step** no frontend.

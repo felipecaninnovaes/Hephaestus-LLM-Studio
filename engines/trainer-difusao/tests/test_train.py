@@ -72,6 +72,32 @@ class TestTrainerDifusao(unittest.TestCase):
             self.assertEqual(meta["base_model"], "flux-2-klein-4b")
             self.assertEqual(meta["trigger_word"], "ohwx")
             self.assertEqual(meta["lora_rank"], "16")
+            self.assertEqual(meta["quantization"], "4bit")
+
+    def test_train_mock_custom_quantization_propagation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            cfg_path = tmp_path / "config.yaml"
+            out_dir = tmp_path / "output"
+
+            cfg = {
+                "job_id": "test-diff-job-8bit",
+                "model": "flux",
+                "lora": {
+                    "epochs": 1,
+                    "quantization": "8bit",
+                },
+            }
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                yaml.dump(cfg, f)
+
+            main(["train", "--config", str(cfg_path), "--output", str(out_dir)])
+            adapter_file = out_dir / "adapter.safetensors"
+            data = adapter_file.read_bytes()
+            header_len = struct.unpack("<Q", data[:8])[0]
+            header_json = json.loads(data[8 : 8 + header_len].decode("utf-8"))
+            meta = header_json["__metadata__"]
+            self.assertEqual(meta["quantization"], "8bit")
 
     def test_train_mock_produces_artifacts_sdxl(self):
         with tempfile.TemporaryDirectory() as tmpdir:

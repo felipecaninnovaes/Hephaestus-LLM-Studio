@@ -53,6 +53,7 @@ export function startDiffusionJob(params: {
   lrScheduler?: "cosine" | "linear" | "constant" | "constant_with_warmup";
   lrWarmupSteps?: number;
   mixedPrecision?: "fp16" | "bf16" | "no";
+  quantization?: "none" | "4bit" | "8bit";
 }): Promise<{ jobId: string; status: string; queuePosition?: number }> {
   const {
     weights,
@@ -67,6 +68,7 @@ export function startDiffusionJob(params: {
     lrScheduler,
     lrWarmupSteps,
     mixedPrecision,
+    quantization,
     ...rest
   } = params;
   const body: Record<string, unknown> = { ...rest };
@@ -79,6 +81,7 @@ export function startDiffusionJob(params: {
   if (lrScheduler) body.lrScheduler = lrScheduler;
   if (lrWarmupSteps != null) body.lrWarmupSteps = lrWarmupSteps;
   if (mixedPrecision) body.mixedPrecision = mixedPrecision;
+  if (quantization) body.quantization = quantization;
   if (samplePrompt?.trim()) {
     body.samplePrompt = samplePrompt.trim();
     if (sampleInterval != null) body.sampleInterval = sampleInterval;

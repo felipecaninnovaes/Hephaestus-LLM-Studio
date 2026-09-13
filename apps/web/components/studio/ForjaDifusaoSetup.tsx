@@ -56,11 +56,16 @@ export function estimateDiffusionVramGb(
   resolution: number = 1024,
   optimizer: "adamw8bit" | "adamw" | "prodigy" = "adamw8bit",
   mixedPrecision: "fp16" | "bf16" | "no" = "fp16",
+  quantization: "none" | "4bit" | "8bit" = "4bit",
 ): number {
   let baseGb = 12.0;
-  if (baseModel === "sd15") baseGb = 8.0;
-  if (baseModel === "sdxl") baseGb = 12.0;
-  if (baseModel === "flux") baseGb = 10.0;
+  if (baseModel === "sd15") {
+    baseGb = quantization === "4bit" ? 6.0 : quantization === "8bit" ? 7.0 : 8.0;
+  } else if (baseModel === "sdxl") {
+    baseGb = quantization === "4bit" ? 9.5 : quantization === "8bit" ? 11.0 : 12.0;
+  } else if (baseModel === "flux") {
+    baseGb = quantization === "4bit" ? 10.0 : quantization === "8bit" ? 14.5 : 22.0;
+  }
 
   // Ajuste por resolução relativa a 1024
   if (resolution <= 512) {
@@ -113,6 +118,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
   const [lrScheduler, setLrScheduler] = useState<"cosine" | "linear" | "constant" | "constant_with_warmup">("cosine");
   const [lrWarmupSteps, setLrWarmupSteps] = useState<number>(0);
   const [mixedPrecision, setMixedPrecision] = useState<"fp16" | "bf16" | "no">("fp16");
+  const [quantization, setQuantization] = useState<"none" | "4bit" | "8bit">("4bit");
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   // Amostras de validação (samples por época)
@@ -165,8 +171,9 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
         resolution,
         optimizer,
         mixedPrecision,
+        quantization,
       ),
-    [params.baseModel, params.batchSize, params.rank, resolution, optimizer, mixedPrecision],
+    [params.baseModel, params.batchSize, params.rank, resolution, optimizer, mixedPrecision, quantization],
   );
 
   const nodeVramTotalGb = useMemo(() => {
@@ -213,6 +220,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
     if (preset.lrScheduler !== undefined) setLrScheduler(preset.lrScheduler);
     if (preset.lrWarmupSteps !== undefined) setLrWarmupSteps(preset.lrWarmupSteps);
     if (preset.mixedPrecision !== undefined) setMixedPrecision(preset.mixedPrecision);
+    if (preset.quantization !== undefined) setQuantization(preset.quantization);
     if (preset.enableSamples !== undefined) setEnableSamples(preset.enableSamples);
     if (preset.samplePrompt !== undefined) setSamplePrompt(preset.samplePrompt);
     if (preset.sampleInterval !== undefined) setSampleInterval(preset.sampleInterval);
@@ -239,6 +247,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
       lrScheduler,
       lrWarmupSteps,
       mixedPrecision,
+      quantization,
       enableSamples,
       samplePrompt,
       sampleInterval,
@@ -295,6 +304,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
           lrScheduler: parsed.lrScheduler || lrScheduler,
           lrWarmupSteps: typeof parsed.lrWarmupSteps === "number" ? parsed.lrWarmupSteps : lrWarmupSteps,
           mixedPrecision: parsed.mixedPrecision || mixedPrecision,
+          quantization: parsed.quantization || quantization,
           enableSamples: typeof parsed.enableSamples === "boolean" ? parsed.enableSamples : enableSamples,
           samplePrompt: parsed.samplePrompt ?? samplePrompt,
           sampleInterval: typeof parsed.sampleInterval === "number" ? parsed.sampleInterval : sampleInterval,
@@ -323,8 +333,9 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
     setGradientAccumulationSteps(2);
     setOptimizer("adamw8bit");
     setMixedPrecision("fp16");
+    setQuantization("4bit");
     showToast(
-      "Hiperparâmetros ajustados para o perfil leve de VRAM (SD 1.5, 512px, Batch 1, GA 2x, 8-bit AdamW).",
+      "Hiperparâmetros ajustados para o perfil leve de VRAM (SD 1.5, 512px, Batch 1, GA 2x, 8-bit AdamW, 4-bit Quant).",
       "info",
     );
   }
@@ -493,6 +504,15 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
     [],
   );
 
+  const quantizationOptions = useMemo<SelectOption<"none" | "4bit" | "8bit">[]>(
+    () => [
+      { value: "4bit", label: "4-bit NF4 (BitsAndBytes — Recomendado p/ GPUs ≤ 12GB)" },
+      { value: "8bit", label: "8-bit BitsAndBytes (Equilíbrio p/ GPUs ≥ 16GB)" },
+      { value: "none", label: "Nenhum (FP16/BF16 Pleno — GPUs ≥ 24GB)" },
+    ],
+    [],
+  );
+
   const parsedLr = parseFloat(params.learningRate);
   const epochsValid =
     Number.isInteger(params.epochs) &&
@@ -540,6 +560,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
         lrScheduler,
         lrWarmupSteps,
         mixedPrecision,
+        quantization,
       });
 
       showToast(
@@ -566,6 +587,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
       setLrScheduler("cosine");
       setLrWarmupSteps(0);
       setMixedPrecision("fp16");
+      setQuantization("4bit");
       onJobCreated?.(result.jobId);
     } catch (err) {
       if (err instanceof ApiError) {
@@ -677,7 +699,38 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
         </div>
 
         {/* Botões de presets rápidos */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              applyPreset({
+                name: "FLUX.2 Klein 4B (4-bit NF4)",
+                baseModel: "flux",
+                epochs: 10,
+                batchSize: 1,
+                rank: 16,
+                alpha: 16,
+                learningRate: "0.0001",
+                resolution: 1024,
+                gradientAccumulationSteps: 1,
+                optimizer: "adamw8bit",
+                lrScheduler: "cosine",
+                lrWarmupSteps: 0,
+                mixedPrecision: "bf16",
+                quantization: "4bit",
+              })
+            }
+            className="flex flex-col text-left p-2.5 rounded-lg border border-white/10 bg-white/[0.02] hover:border-brand-500/40 hover:bg-white/[0.05] transition-colors text-zinc-300 group focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+          >
+            <span className="font-display text-xs font-medium text-zinc-200 group-hover:text-brand-300 transition-colors">
+              FLUX.2 Klein 4B
+            </span>
+            <span className="font-mono text-[10px] text-zinc-400 mt-0.5">
+              1024px · 4-bit · ~10GB
+            </span>
+          </button>
+
           <button
             type="button"
             disabled={busy}
@@ -696,6 +749,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
                 lrScheduler: "cosine",
                 lrWarmupSteps: 0,
                 mixedPrecision: "fp16",
+                quantization: "4bit",
               })
             }
             className="flex flex-col text-left p-2.5 rounded-lg border border-white/10 bg-white/[0.02] hover:border-brand-500/40 hover:bg-white/[0.05] transition-colors text-zinc-300 group focus:outline-none focus:ring-2 focus:ring-brand-500/40"
@@ -726,6 +780,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
                 lrScheduler: "cosine",
                 lrWarmupSteps: 0,
                 mixedPrecision: "fp16",
+                quantization: "4bit",
               })
             }
             className="flex flex-col text-left p-2.5 rounded-lg border border-white/10 bg-white/[0.02] hover:border-brand-500/40 hover:bg-white/[0.05] transition-colors text-zinc-300 group focus:outline-none focus:ring-2 focus:ring-brand-500/40"
@@ -756,6 +811,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
                 lrScheduler: "cosine",
                 lrWarmupSteps: 50,
                 mixedPrecision: "fp16",
+                quantization: "4bit",
               })
             }
             className="flex flex-col text-left p-2.5 rounded-lg border border-white/10 bg-white/[0.02] hover:border-brand-500/40 hover:bg-white/[0.05] transition-colors text-zinc-300 group focus:outline-none focus:ring-2 focus:ring-brand-500/40"
@@ -786,6 +842,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
                 lrScheduler: "cosine",
                 lrWarmupSteps: 50,
                 mixedPrecision: "fp16",
+                quantization: "4bit",
               })
             }
             className="flex flex-col text-left p-2.5 rounded-lg border border-white/10 bg-white/[0.02] hover:border-brand-500/40 hover:bg-white/[0.05] transition-colors text-zinc-300 group focus:outline-none focus:ring-2 focus:ring-brand-500/40"
@@ -1033,12 +1090,32 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
             <span className="rounded-md bg-white/[0.04] px-2 py-0.5 border border-white/10 text-zinc-300">
               {mixedPrecision.toUpperCase()}
             </span>
+            <span className="rounded-md bg-white/[0.04] px-2 py-0.5 border border-white/10 text-zinc-300">
+              {quantization === "4bit" ? "4-BIT NF4" : quantization === "8bit" ? "8-BIT BNB" : "FP16 PLENO"}
+            </span>
           </div>
         </button>
 
         {showAdvanced && (
           <div id="advanced-diffusion-settings" className="p-4 pt-2 border-t border-white/5 space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {/* Quantização do Modelo Base */}
+              <Select
+                id="diffusion-quant"
+                label="Quantização do Modelo Base"
+                hint={
+                  params.baseModel === "flux"
+                    ? "4-bit NF4 permite rodar em GPUs ≤ 12 GB. 8-bit exige ≥ 16 GB e Nenhum exige ≥ 24 GB."
+                    : "Quantização BitsAndBytes do backbone para redução drástica de memória VRAM."
+                }
+                options={quantizationOptions}
+                value={quantization}
+                onChange={(val) => setQuantization(val as "none" | "4bit" | "8bit")}
+                disabled={busy}
+                fontMono
+                size="default"
+              />
+
               {/* Resolução de Treinamento */}
               <Select
                 id="diffusion-res"

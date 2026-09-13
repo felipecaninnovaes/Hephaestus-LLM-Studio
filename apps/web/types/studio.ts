@@ -378,6 +378,7 @@ export interface DiffusionJobRequest {
   lrScheduler?: "cosine" | "linear" | "constant" | "constant_with_warmup";
   lrWarmupSteps?: number;
   mixedPrecision?: "fp16" | "bf16" | "no";
+  quantization?: "none" | "4bit" | "8bit";
 }
 
 export interface DiffusionPreset {
@@ -397,6 +398,7 @@ export interface DiffusionPreset {
   lrScheduler?: "cosine" | "linear" | "constant" | "constant_with_warmup";
   lrWarmupSteps?: number;
   mixedPrecision?: "fp16" | "bf16" | "no";
+  quantization?: "none" | "4bit" | "8bit";
   enableSamples?: boolean;
   samplePrompt?: string;
   sampleInterval?: number;

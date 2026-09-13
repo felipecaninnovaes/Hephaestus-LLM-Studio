@@ -19,7 +19,22 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-13 (FATIA STREAMING DE AMOSTRAS E TELEMETRIA DE DIFUSÃO POR STEP CONCLUÍDA NA BRANCH)
+## Estado atual — 2026-09-13 (FATIA PERSISTÊNCIA DE CACHE HUGGING FACE / PYTORCH CONCLUÍDA NA BRANCH)
+
+- **FATIA PERSISTÊNCIA DE CACHE HUGGING FACE / PYTORCH NO VOLUME DE OUTPUTS — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/engine-difusao-real`.
+  - **Diagnóstico da Causa Raiz**:
+    - No container do trainer, `from diffusers import ...` e `from transformers import ...` eram importados no topo do módulo ou antes da função `_setup_cache_dir()`. O pacote `huggingface_hub` congela as variáveis de cache na primeira importação. Consequentemente, o download dos 7 GB do modelo SDXL era gravado na camada efêmera `/root/.cache/huggingface` do container e destruído a cada término de job (`docker run --rm`).
+  - **Implementações**:
+    - `services/orchestrator/src/lib.rs`: injeção no `exec_env` do container Docker das variáveis de ambiente antes da inicialização do Python (`HF_HOME=/outputs/.cache/huggingface`, `HF_HUB_CACHE=/outputs/.cache/huggingface/hub`, `TRANSFORMERS_CACHE=/outputs/.cache/huggingface/hub`, `DIFFUSERS_CACHE=/outputs/.cache/huggingface/hub`, `TORCH_HOME=/outputs/.cache/torch`) quando `dispatch.engine == "diffusion"`.
+    - `engines/trainer-difusao/Dockerfile.gpu`: adicionadas as variáveis `ENV` persistentes apontando para `/outputs/.cache` e `PYTHONUNBUFFERED=1`.
+    - `engines/trainer-difusao/src/trainer_difusao/train.py`:
+      - `_setup_cache_dir()` refatorado para garantir diretórios `hub` e `torch`, retornando o path canônico do hub cache.
+      - `_real_train_sd15`, `_real_train_sdxl` e `_real_train_flux` atualizados para executar `_setup_cache_dir()` antes de qualquer import de `transformers` ou `diffusers`.
+      - Todos os `from_pretrained(...)` (tokenizers, VAE, text encoders, UNet, scheduler) agora recebem explicitamente `cache_dir=hub_cache`.
+  - **Sincronização e Deploy**:
+    - Testes: 83/83 unitários do orchestrator verdes, 6/6 testes python do trainer verdes, `cargo fmt` e `cargo check` limpos.
+    - TrueNAS (`10.15.1.2`): `git pull`, rebuild da imagem `hephaestus/trainer-difusao:gpu` e recreate do container `gpu-orchestrator-gpu-1`.
+    - Local: rebuild e recreate do container `infra-orchestrator-local-1`.
 
 - **FATIA STREAMING DE AMOSTRAS E TELEMETRIA DE DIFUSÃO POR STEP (SEED DETERMINÍSTICA & TEMPO REAL) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/engine-difusao-real`.
   - **Backend, Manager e Orquestrador**:

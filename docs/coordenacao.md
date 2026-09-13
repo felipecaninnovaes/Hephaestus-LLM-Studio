@@ -39,9 +39,9 @@ ser interrompido no meio de uma.
     - `lib/jobs.ts`: Adicionado `getJob(jobId: string)`.
     - `lib/playground.ts`: Adicionados `startDiffusionGenerateJob` e `getGeneratedImageUrl`.
     - `components/icons.tsx`: Adicionados `IconSliders` e `IconDice`.
-    - `components/studio/PlaygroundDiffusion.tsx`: Componente completo Text-to-Image com formulário de parâmetros (modelo base, LoRA com slider de escala, prompt com contador de caracteres, prompt negativo colapsável, presets de aspect ratio, steps, CFG, gerador e trava de seed, seletor de quantização de VRAM, seletor de nó de orquestração), visualizador de canvas com zoom e lightbox, histórico de sessão e botão primário com outline violeta no padrão Vidro Óptico sem `emerald`.
+    - `components/studio/PlaygroundDiffusion.tsx`: Componente completo Text-to-Image com formulário de parâmetros (modelo base, seletor de variante Destilada vs Base Original para o FLUX.2 Klein 4B com autocalibração de steps e CFG, LoRA com slider de escala, prompt com contador de caracteres, prompt negativo colapsável, presets de aspect ratio, steps, CFG, gerador e trava de seed, seletor de quantização de VRAM, seletor de nó de orquestração), visualizador de canvas com zoom e lightbox, histórico de sessão e botão primário com outline violeta no padrão Vidro Óptico sem `emerald`.
     - `app/(studio)/playground/page.tsx`: Seletor de modo `SubmodulePills` alternando perfeitamente entre `Geração (Difusão)` e `Detecção (YOLO)`.
-    - Verificação de build: `npm run build` compilado com 100% de sucesso (12/12 páginas estáticas, 0 erros TypeScript).
+    - Verificação de build: `npm run build` compilado com 100% de sucesso (13/13 páginas estáticas, 0 erros TypeScript).
 
 - **FATIA SELEÇÃO E CONFIGURAÇÃO DE QUANTIZAÇÃO DO MODELO BASE (4-BIT NF4, 8-BIT BNB E FP16 PLENO) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/flux-klein-4bit-training`.
   - **Motivação**: Permitir ao usuário escolher livremente o nível de quantização do modelo base (`4bit` NF4 BitsAndBytes, `8bit` BitsAndBytes ou `none` FP16/BF16 pleno) no treinamento LoRA de difusão, equilibrando consumo de VRAM e precisão numérica conforme o hardware disponível (ex: 4-bit para RTX 3060 12GB, 8-bit para GPUs de 16GB+, e precisão plena para nós de 24GB+).

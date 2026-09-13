@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.16.0
+  version: 0.17.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -1442,6 +1442,52 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/jobs/diffusion:
+    post:
+      operationId: submitDiffusionJob
+      tags: [jobs]
+      summary: Submete job de treino de Difusão LoRA
+      description: |
+        Cria job de treino de adaptador LoRA para modelos de difusão (ADR-0018).
+        Valida hiperparâmetros, verifica readiness do dataset (≥1 imagem ativa),
+        materializa package com imagens e captions, e envia ao manager.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DiffusionJobRequest" }
+      responses:
+        "202":
+          description: Job criado e enfileirado.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubmitJobResponse" }
+        "400":
+          description: "Body malformado, campos desconhecidos ou parâmetros inválidos (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Dataset inexistente ou datasetId não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "Dataset não pronto para treino — 0 imagens ativas (`code: dataset_not_ready`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/jobs/predict:
     post:
       operationId: submitPredictJob
@@ -2479,6 +2525,66 @@ components:
           format: uuid
           description: "ID do orquestrador preferencial para execução (ADR-0015 D2). Opcional; ausente ou null = Automático. Não-UUID ⇒ 400 `invalid_request`."
 
+    DiffusionJobRequest:
+      type: object
+      additionalProperties: false
+      required: [datasetId, baseModel]
+      description: |
+        Body de `POST /api/jobs/diffusion` (ADR-0018 D1). `datasetId` e `baseModel` são
+        obrigatórios; os demais campos são opcionais com defaults.
+        Wire camelCase; `deny_unknown_fields` garante 400 para chaves desconhecidas.
+      properties:
+        datasetId:
+          type: string
+          format: uuid
+          description: "PK do dataset com imagens e legendas. Não-UUID ou inexistente ⇒ 404 `not_found`."
+        baseModel:
+          type: string
+          enum: [sdxl, flux, sd15]
+          default: sdxl
+          description: "Modelo de difusão base para treino do adaptador LoRA."
+        triggerWord:
+          type: [string, "null"]
+          maxLength: 100
+          description: "Palavra ou token de ativação (ex: 'ohwx subject')."
+        epochs:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 10
+          description: "Número de épocas de treino."
+        batchSize:
+          type: integer
+          enum: [1, 2, 4, 8]
+          default: 1
+          description: "Tamanho do lote por passo de gradiente."
+        learningRate:
+          type: number
+          minimum: 0.000001
+          maximum: 0.01
+          default: 0.0001
+          description: "Taxa de aprendizado para o LoRA."
+        rank:
+          type: integer
+          minimum: 4
+          maximum: 128
+          default: 16
+          description: "Dimensão da matriz de baixa ordem (LoRA rank)."
+        alpha:
+          type: integer
+          minimum: 4
+          maximum: 128
+          default: 16
+          description: "Fator de escalonamento alpha do LoRA."
+        weights:
+          type: [string, "null"]
+          format: uuid
+          description: "UUID de modelo diffusion na tabela `models` para continuidade de treino."
+        orchestratorId:
+          type: [string, "null"]
+          format: uuid
+          description: "ID do orquestrador preferencial para execução (ADR-0015 D2). Opcional."
+
     PredictJobRequest:
       type: object
       required: [modelId, datasetId]
@@ -2961,12 +3067,12 @@ components:
       type: object
       required: [engine]
       additionalProperties: false
-      description: "Request do package (Fatia 4, ADR-0007 D7)."
+      description: "Request do package (Fatia 4, ADR-0007 D7; ADR-0018 D0)."
       properties:
         engine:
           type: string
-          enum: [yolo]
-          description: "Engine alvo. Na v1 somente `yolo` é suportado; outro valor ⇒ 400 `engine_unsupported`."
+          enum: [yolo, diffusion]
+          description: "Engine alvo (`yolo` ou `diffusion`); outro valor ⇒ 400 `engine_unsupported`."
 
     PackageResponse:
       type: object

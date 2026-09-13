@@ -539,6 +539,8 @@ pub struct AutolabelJobRequest {
     pub openai_model: Option<String>,
     #[serde(default)]
     pub orchestrator_id: Option<String>,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
 }
 
 fn default_autolabel_model() -> String {
@@ -595,6 +597,14 @@ pub fn validate_autolabel_request(
             return Err("orchestratorId must be a valid UUID".to_string());
         }
     }
+    if let Some(ref re) = req.reasoning_effort {
+        let valid = ["none", "low", "medium", "high"];
+        if !valid.contains(&re.as_str()) {
+            return Err(format!(
+                "reasoningEffort must be one of {valid:?}, got '{re}'"
+            ));
+        }
+    }
     Ok(req)
 }
 
@@ -629,6 +639,12 @@ pub fn generate_autolabel_config_yaml(job_id: &str, req: &AutolabelJobRequest) -
         autolabel_lines.push_str(&format!(
             "  openai_model: {}\n",
             serde_json::to_string(clean_om).unwrap_or_else(|_| "\"\"".into())
+        ));
+    }
+    if let Some(re) = &req.reasoning_effort {
+        autolabel_lines.push_str(&format!(
+            "  reasoning_effort: {}\n",
+            serde_json::to_string(re).unwrap_or_else(|_| "\"none\"".into())
         ));
     }
     format!(

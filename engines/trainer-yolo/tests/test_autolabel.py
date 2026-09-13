@@ -355,3 +355,61 @@ def test_normalize_api_base_strips_quotes_and_trailing_slashes():
         _normalize_api_base('  "https://llama.felipecncloud.com/v1/"  ')
         == "https://llama.felipecncloud.com/v1"
     )
+
+
+def test_autolabel_openai_with_reasoning_effort(tmp_path: Path):
+    import http.server
+    import threading
+
+    from trainer_yolo.autolabel import _call_openai_vision_api
+
+    ds = _make_autolabel_dataset(tmp_path, ["sample.png"])
+    img = ds / "images" / "sample.png"
+    received_requests = []
+
+    class MockHandler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
+            received_requests.append(data)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": "Legenda direta sem CoT",
+                                }
+                            }
+                        ],
+                    }
+                ).encode("utf-8")
+            )
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), MockHandler)
+    port = server.server_address[1]
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+
+    try:
+        caption = _call_openai_vision_api(
+            image_path=img,
+            prompt="Descreva a imagem",
+            api_key="token",
+            api_base=f"http://127.0.0.1:{port}/v1",
+            openai_model="test-model",
+            reasoning_effort="none",
+        )
+        assert caption == "Legenda direta sem CoT"
+        assert len(received_requests) == 1
+        assert received_requests[0].get("reasoning_effort") == "none"
+    finally:
+        server.shutdown()
+        server.server_close()

@@ -289,6 +289,7 @@ export interface AutolabelJobRequest {
   apiBase?: string;
   openaiModel?: string;
   orchestratorId?: string | null;
+  reasoningEffort?: "none" | "low" | "medium" | "high" | null;
 }
 
 export interface AutolabelApplyRequest {

@@ -215,6 +215,7 @@ def _call_openai_vision_api(
     api_key: str | None,
     api_base: str,
     openai_model: str,
+    reasoning_effort: str | None = None,
 ) -> str:
     """Faz chamada HTTP à API compatível com OpenAI Vision para descrever a imagem."""
     norm_base = _normalize_api_base(api_base)
@@ -245,6 +246,8 @@ def _call_openai_vision_api(
         ],
         "max_tokens": 1500,
     }
+    if reasoning_effort:
+        payload["reasoning_effort"] = reasoning_effort
 
     url = f"{norm_base}/chat/completions"
     data = json.dumps(payload).encode("utf-8")
@@ -360,6 +363,7 @@ def _autolabel_pipeline(cfg: dict, output_dir: Path) -> None:
     api_key = None
     api_base = "https://api.openai.com/v1"
     openai_model = "gpt-4o-mini"
+    reasoning_effort = None
 
     if isinstance(al_section, dict):
         prompt = al_section.get("prompt")
@@ -370,6 +374,8 @@ def _autolabel_pipeline(cfg: dict, output_dir: Path) -> None:
             api_base = str(al_section["api_base"]).strip().strip("\"'").rstrip("/")
         if al_section.get("openai_model"):
             openai_model = str(al_section["openai_model"]).strip().strip("\"'")
+        if al_section.get("reasoning_effort"):
+            reasoning_effort = str(al_section["reasoning_effort"]).strip().strip("\"'")
 
     image_map = _discover_dataset_images(dataset_path)
     sorted_filenames = sorted(image_map.keys())
@@ -391,7 +397,12 @@ def _autolabel_pipeline(cfg: dict, output_dir: Path) -> None:
                 else:
                     try:
                         caption = _call_openai_vision_api(
-                            img_path, prompt, api_key, api_base, openai_model
+                            img_path,
+                            prompt,
+                            api_key,
+                            api_base,
+                            openai_model,
+                            reasoning_effort=reasoning_effort,
                         )
                     except (RuntimeError, ValueError, OSError) as exc:
                         if os.environ.get("AUTOLABEL_TEST_MOCK_FALLBACK") == "1":

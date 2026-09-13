@@ -114,6 +114,7 @@ interface AutoLabelSavedConfig {
   openaiModel: string;
   apiKey?: string;
   model?: AutolabelModel;
+  disableReasoning?: boolean;
 }
 
 const PROMPT_PRESETS = [
@@ -159,6 +160,7 @@ export default function AutoLabelModal({
   const [showApiKey, setShowApiKey] = useState(false);
   const [apiBase, setApiBase] = useState("https://api.openai.com/v1");
   const [openaiModel, setOpenaiModel] = useState("gpt-4o-mini");
+  const [disableReasoning, setDisableReasoning] = useState(true);
 
   const [busy, setBusy] = useState(false);
   const [topError, setTopError] = useState<string | null>(null);
@@ -175,6 +177,10 @@ export default function AutoLabelModal({
         openaiModel: updates.openaiModel ?? current.openaiModel ?? openaiModel,
         apiKey: updates.apiKey !== undefined ? updates.apiKey : (current.apiKey ?? apiKey),
         model: updates.model ?? current.model ?? model,
+        disableReasoning:
+          updates.disableReasoning !== undefined
+            ? updates.disableReasoning
+            : (current.disableReasoning ?? disableReasoning),
       };
       localStorage.setItem(AUTOLABEL_STORAGE_KEY, JSON.stringify(next));
     } catch {
@@ -197,6 +203,7 @@ export default function AutoLabelModal({
         if (saved.openaiModel) setOpenaiModel(saved.openaiModel);
         if (saved.apiKey !== undefined) setApiKey(saved.apiKey);
         if (saved.model) setModel(saved.model);
+        if (saved.disableReasoning !== undefined) setDisableReasoning(saved.disableReasoning);
       }
     } catch {
       // Falha silenciosa se localStorage corrompido
@@ -261,6 +268,9 @@ export default function AutoLabelModal({
         if (cleanKey) payload.apiKey = cleanKey;
         if (cleanBase) payload.apiBase = cleanBase;
         if (cleanModel) payload.openaiModel = cleanModel;
+        if (disableReasoning) {
+          payload.reasoningEffort = "none";
+        }
 
         // Salva as configurações utilizadas para conveniência futura
         persistCustomConfig({
@@ -268,6 +278,7 @@ export default function AutoLabelModal({
           apiBase: cleanBase,
           openaiModel: cleanModel,
           apiKey: cleanKey,
+          disableReasoning,
           model,
         });
       }
@@ -638,6 +649,37 @@ export default function AutoLabelModal({
                 </div>
               );
             })()}
+
+            {/* Toggle de Desativação de Reasoning (Fast Mode) */}
+            <div className="flex items-center justify-between rounded-lg border border-white/10 bg-white/[0.02] p-2.5 transition hover:border-white/15">
+              <div className="space-y-0.5 pr-3">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-xs font-medium text-zinc-200">
+                    Desativar Raciocínio (Fast Mode)
+                  </span>
+                  <span className="rounded border border-emerald-500/30 bg-emerald-500/20 px-1.5 py-0.2 font-mono text-[9px] font-semibold text-emerald-300">
+                    Recomendado
+                  </span>
+                </div>
+                <p className="text-[11px] text-zinc-400">
+                  Suprime tokens de reflexão interna (<code className="rounded bg-black/40 px-1 py-0.5 font-mono text-[10px] text-zinc-300">&lt;think&gt;</code> / <code className="rounded bg-black/40 px-1 py-0.5 font-mono text-[10px] text-zinc-300">reasoning_effort: none</code>), acelerando a resposta e economizando tokens de contexto.
+                </p>
+              </div>
+              <label className="relative inline-flex shrink-0 cursor-pointer items-center">
+                <input
+                  type="checkbox"
+                  checked={disableReasoning}
+                  disabled={busy}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setDisableReasoning(checked);
+                    persistCustomConfig({ disableReasoning: checked });
+                  }}
+                  className="peer sr-only"
+                />
+                <div className="h-5 w-9 rounded-full bg-zinc-700 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-emerald-500/40 peer-checked:bg-emerald-500 peer-checked:after:translate-x-full peer-checked:after:border-white after:absolute after:left-[2px] after:top-[2px] after:h-4 after:w-4 after:rounded-full after:border after:border-zinc-300 after:bg-white after:transition-all after:content-['']"></div>
+              </label>
+            </div>
           </div>
         )}
 

@@ -2538,6 +2538,10 @@ components:
           type: [string, "null"]
           format: uuid
           description: "ID do orquestrador preferencial para execução (ADR-0015 D2). Opcional; ausente ou null = Automático. Não-UUID ⇒ 400 `invalid_request`."
+        reasoningEffort:
+          type: [string, "null"]
+          enum: [none, low, medium, high, "null"]
+          description: "Esforço de raciocínio para modelos com CoT/reasoning (ex: none para desativar raciocínio e acelerar)."
 
     DiffusionJobRequest:
       type: object

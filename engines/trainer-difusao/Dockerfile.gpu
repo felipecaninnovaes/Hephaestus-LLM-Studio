@@ -1,0 +1,32 @@
+# Engine trainer-difusao GPU: treino real de Difusão LoRA (FLUX.2 Klein 4B, SDXL, SD 1.5).
+# Base: PyTorch 2.6.0 + CUDA 12.4 + cuDNN 9 (runtime).
+FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime@sha256:77f17f843507062875ce8be2a6f76aa6aa3df7f9ef1e31d9d7432f4b0f563dee
+
+# Bibliotecas de sistema para manipulação de imagem e aceleração
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Dependências canônicas do ecossistema Diffusers / PEFT / HuggingFace
+RUN pip install --no-cache-dir \
+      "diffusers>=0.32.0" \
+      "transformers>=4.48.0" \
+      "accelerate>=1.2.0" \
+      "peft>=0.14.0" \
+      "bitsandbytes>=0.45.0" \
+      "safetensors>=0.4.5" \
+      "sentencepiece" \
+      "protobuf" \
+      "pyyaml>=6.0" \
+      "pillow>=10.0"
+
+WORKDIR /app
+
+# Copia pacote trainer_difusao
+COPY src/trainer_difusao/ /app/trainer_difusao/
+
+# Modo de treino real habilitado no container GPU
+ENV ENGINE_MOCK=0
+
+ENTRYPOINT ["python", "-m", "trainer_difusao"]
+CMD ["train", "--config", "/dev/null", "--output", "/dev/null"]

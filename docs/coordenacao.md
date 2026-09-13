@@ -19,7 +19,24 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-13 (FATIA FILTRO ESTRITO POR TAG/CLASSE E AUTOLABEL SELETIVO CONCLUÍDAS NA BRANCH)
+## Estado atual — 2026-09-13 (FATIA ENGINE DE DIFUSÃO REAL E HARNESS FLUX.2 KLEIN 4B / SDXL / SD 1.5 CONCLUÍDA NA BRANCH)
+
+- **FATIA ENGINE DE DIFUSÃO REAL E HARNESS (FLUX.2 KLEIN 4B, SDXL, SD 1.5) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/engine-difusao-real`.
+  - **Engine Python `trainer-difusao`**:
+    - `engines/trainer-difusao/pyproject.toml`: dependências declaradas (`pyyaml`, `pillow`, e extras de treino `diffusers`, `transformers`, `accelerate`, `peft`, `bitsandbytes`, `safetensors`).
+    - `engines/trainer-difusao/Dockerfile`: imagem mock com `ENGINE_MOCK=1` para dev e CI.
+    - `engines/trainer-difusao/Dockerfile.gpu`: imagem GPU com base `pytorch:2.6.0-cuda12.4-cudnn9-runtime`, dependências de aceleração e `ENGINE_MOCK=0`.
+    - `engines/trainer-difusao/src/trainer_difusao/train.py`: suporte a `ENGINE_MOCK=1` gerando `metrics.jsonl` e `adapter.safetensors` com metadados para FLUX.2 Klein 4B (`base_model: flux-2-klein-4b`), SDXL e SD 1.5; modo real `ENGINE_MOCK=0` com fail-fast honesto quando sem CUDA ou dependências de treino.
+    - Testes: 4/4 testes unittest verdes em `tests/test_train.py`.
+  - **Manager & Despacho de Infra**:
+    - `services/manager/src/lib.rs`: `dispatch_next` agora resolve a imagem do container sob medida para `engine == "diffusion"`, priorizando `DIFFUSION_TRAINER_IMAGE` e mapeando automaticamente `trainer-yolo` para `trainer-difusao` mantendo a tag (`:local` ou `:gpu`).
+    - `infra/compose.yaml` e `infra/compose.gpu.yaml`: definidos `DIFFUSION_TRAINER_IMAGE` e serviços build-only `trainer-difusao` e `trainer-difusao-gpu`.
+    - `packages/policies/vram-table.yaml`: adicionadas entradas para `flux2-klein-4b` / `flux` com `vram_min_gb: 8` (+2GB headroom = 10 GB), `sdxl` (12 GB) e `sd15` (8 GB).
+    - `services/api-principal/src/jobs/handlers.rs`: `vram_min` de FLUX ajustado para 10 GB na submissão de jobs.
+  - **Web Frontend**:
+    - `apps/web/components/studio/ForjaDifusaoSetup.tsx`: seletor de modelo atualizado para **FLUX.2 Klein 4B**, badge de VRAM ajustado para **~10 GB VRAM** (cabendo em GPUs como RTX 3060 12GB), fórmula do estimador de VRAM atualizada e descrição do modelo alinhada à arquitetura de 4B parâmetros com Flow Matching.
+    - `apps/web/types/studio.ts`: anotação documental de `flux` para FLUX.2 Klein 4B.
+  - **Verificações**: `cargo check --workspace` verde, `cargo test -p manager --lib` e `cargo test -p api-principal --lib` 325/325 verdes, `cargo fmt --all -- --check` limpo, `docker compose config -q` limpo, `npm run build` web verde (12/12 páginas compiladas), suite de testes python 4/4 verde.
 
 - **FATIA FILTRO ESTRITO POR TAG E CLASSE NO GRID DE IMAGENS — CONCLUÍDA E VALIDADA (2026-09-13)** — branch `feat/autolabel-selective-dataset`.
   - **Backend API Principal**:

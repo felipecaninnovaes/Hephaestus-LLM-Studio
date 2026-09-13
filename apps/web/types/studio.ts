@@ -355,6 +355,7 @@ export function autolabelErrorMessage(code: string): string {
 
 export interface DiffusionJobRequest {
   datasetId: string;
+  /** "flux" (FLUX.2 Klein 4B), "sdxl" (SDXL 1.0) ou "sd15" (Stable Diffusion 1.5) */
   baseModel: "sdxl" | "flux" | "sd15";
   triggerWord?: string;
   epochs?: number;

@@ -51,9 +51,9 @@ export function estimateDiffusionVramGb(
   let baseGb = 12.0;
   if (baseModel === "sd15") baseGb = 8.0;
   if (baseModel === "sdxl") baseGb = 12.0;
-  if (baseModel === "flux") baseGb = 16.0;
+  if (baseModel === "flux") baseGb = 10.0;
 
-  const batchMemory = (batchSize - 1) * (baseModel === "flux" ? 2.5 : baseModel === "sdxl" ? 2.0 : 1.2);
+  const batchMemory = (batchSize - 1) * (baseModel === "flux" ? 1.8 : baseModel === "sdxl" ? 2.0 : 1.2);
   const rankMemory = (rank / 64) * 0.8;
 
   return Math.round((baseGb + batchMemory + rankMemory) * 10) / 10;
@@ -433,7 +433,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
             </p>
           </button>
 
-          {/* Flux.1-dev */}
+          {/* FLUX.2 Klein 4B */}
           <button
             type="button"
             disabled={busy}
@@ -446,14 +446,14 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
           >
             <div className="flex items-center justify-between w-full mb-1.5">
               <span className="font-display font-semibold text-xs text-zinc-100">
-                Flux.1-dev
+                FLUX.2 Klein 4B
               </span>
-              <span className="rounded-full bg-amber-500/20 border border-amber-500/30 px-1.5 py-0.5 font-mono text-[9px] text-amber-300">
-                ~16 GB VRAM
+              <span className="rounded-full bg-emerald-500/20 border border-emerald-500/30 px-1.5 py-0.5 font-mono text-[9px] text-emerald-300">
+                ~10 GB VRAM
               </span>
             </div>
             <p className="font-mono text-[11px] text-zinc-400 leading-snug">
-              Estado da arte em aderência a prompt textual e anatomia detalhada.
+              Modelo leve de 4B parâmetros com Flow Matching, ideal para LoRA rápido em GPUs de 10–12 GB.
             </p>
           </button>
 

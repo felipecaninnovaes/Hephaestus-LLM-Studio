@@ -37,8 +37,12 @@ ser interrompido no meio de uma.
       - **Barra de Presets**: Presets rápidos em 1 clique ("SDXL Padrão", "Eco 8 GB SD1.5", "Alta Fidelidade Rank 32", "Auto LR Prodigy") e botões de "Importar JSON" / "Exportar JSON" de configurações completas.
       - **Configurações Avançadas Colapsáveis**: Seção retrátil contendo seleção de resolução de entrada, gradient accumulation, otimizador, LR scheduler, warmup steps e precisão mista (FP16 / BF16 / FP32).
       - **Estimativa Preditiva de VRAM Refinada**: Cálculo dinâmico considerando resolução, otimizador e precisão com visualizador de risco CUDA OOM em tempo real.
+      - **Padronização Impeccable & Design System**:
+        - Substituição de todos os `<select>` nativos remanescentes pelo componente canônico `<Select>` do Design System (`components/ui/Select.tsx`) em `ForjaDifusaoSetup.tsx`, `AutoLabelModal.tsx` e `playground/page.tsx`.
+        - Eliminação total de classes proibidas `emerald-*` em `NodeSelect.tsx`, `AutoLabelModal.tsx` e `models/page.tsx`, adotando a paleta canônica `brand-500` e semântica `#34d399`.
+        - Verificações estritas: `impeccable detect` zerado (`[]`), `npm run build` compilando 12/12 páginas estáticas com 0 erros TypeScript.
   - **Sincronização e Deploy**:
-    - Servidor TrueNAS (`10.15.1.2`): `git pull`, rebuild da imagem `hephaestus/trainer-difusao:gpu` finalizado.
+    - Servidor TrueNAS (`10.15.1.2`): `git pull` com commits sincronizados (`feat/diffusion-advanced-training-presets`), rebuild da imagem `hephaestus/trainer-difusao:gpu` finalizado.
     - Host Local: Rebuild da imagem `infra-principal` e container recriado e ativo.
 
 - **FATIA CORREÇÃO NUMÉRICA DE LOSS NAN (VAE FLOAT32) & PARSER TOLERANTE NO ORQUESTRADOR — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/engine-difusao-real`.

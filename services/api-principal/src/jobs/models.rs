@@ -579,6 +579,143 @@ autolabel:
     )
 }
 
+// ---------------------------------------------------------------------------
+// Diffusion Job (ADR-0018 D1)
+// ---------------------------------------------------------------------------
+
+const ALLOWED_DIFFUSION_BASE_MODELS: &[&str] = &["sdxl", "flux", "sd15"];
+const ALLOWED_DIFFUSION_BATCH: &[u32] = &[1, 2, 4, 8];
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DiffusionJobRequest {
+    pub dataset_id: String,
+    #[serde(default = "default_diffusion_base_model")]
+    pub base_model: String,
+    #[serde(default)]
+    pub trigger_word: Option<String>,
+    #[serde(default = "default_diffusion_epochs")]
+    pub epochs: u32,
+    #[serde(default = "default_diffusion_batch")]
+    pub batch_size: u32,
+    #[serde(default = "default_diffusion_lr")]
+    pub learning_rate: f64,
+    #[serde(default = "default_diffusion_rank")]
+    pub rank: u32,
+    #[serde(default = "default_diffusion_alpha")]
+    pub alpha: u32,
+    #[serde(default)]
+    pub weights: Option<String>,
+    #[serde(default)]
+    pub orchestrator_id: Option<String>,
+}
+
+fn default_diffusion_base_model() -> String {
+    "sdxl".to_string()
+}
+fn default_diffusion_epochs() -> u32 {
+    10
+}
+fn default_diffusion_batch() -> u32 {
+    1
+}
+fn default_diffusion_lr() -> f64 {
+    0.0001
+}
+fn default_diffusion_rank() -> u32 {
+    16
+}
+fn default_diffusion_alpha() -> u32 {
+    16
+}
+
+pub fn validate_diffusion_request(req: DiffusionJobRequest) -> Result<DiffusionJobRequest, String> {
+    if !ALLOWED_DIFFUSION_BASE_MODELS.contains(&req.base_model.as_str()) {
+        return Err(format!(
+            "baseModel must be one of {:?}, got '{}'",
+            ALLOWED_DIFFUSION_BASE_MODELS, req.base_model
+        ));
+    }
+    if !(1..=100).contains(&req.epochs) {
+        return Err(format!(
+            "epochs must be between 1 and 100, got {}",
+            req.epochs
+        ));
+    }
+    if !ALLOWED_DIFFUSION_BATCH.contains(&req.batch_size) {
+        return Err(format!(
+            "batchSize must be one of {:?}, got {}",
+            ALLOWED_DIFFUSION_BATCH, req.batch_size
+        ));
+    }
+    if !(1e-6..=0.01).contains(&req.learning_rate) || req.learning_rate.is_nan() {
+        return Err(format!(
+            "learningRate must be between 0.000001 and 0.01, got {}",
+            req.learning_rate
+        ));
+    }
+    if !(4..=128).contains(&req.rank) {
+        return Err(format!("rank must be between 4 and 128, got {}", req.rank));
+    }
+    if !(4..=128).contains(&req.alpha) {
+        return Err(format!(
+            "alpha must be between 4 and 128, got {}",
+            req.alpha
+        ));
+    }
+    if let Some(ref tw) = req.trigger_word {
+        if tw.chars().count() > 100 {
+            return Err("triggerWord must not exceed 100 characters".to_string());
+        }
+    }
+    if let Some(ref w) = req.weights {
+        if uuid::Uuid::parse_str(w).is_err() {
+            return Err("weights must be a valid UUID".to_string());
+        }
+    }
+    if let Some(ref o) = req.orchestrator_id {
+        if uuid::Uuid::parse_str(o).is_err() {
+            return Err("orchestratorId must be a valid UUID".to_string());
+        }
+    }
+    Ok(req)
+}
+
+pub fn generate_diffusion_config_yaml(job_id: &str, req: &DiffusionJobRequest) -> String {
+    let trigger_line = match &req.trigger_word {
+        Some(tw) => format!(
+            "  trigger_word: {}\n",
+            serde_json::to_string(tw).unwrap_or_else(|_| "\"\"".into())
+        ),
+        None => "  trigger_word: \"\"\n".to_string(),
+    };
+    format!(
+        r#"# Configuração de treino Difusão LoRA (gerada pelo api-principal)
+job_id: "{job_id}"
+engine: "diffusion"
+model: "{base_model}"
+mode: "train"
+dataset_path: "{{dataset_path}}"
+output_path: "{{output_path}}"
+seed: 42
+lora:
+{trigger_line}  epochs: {epochs}
+  batch_size: {batch_size}
+  learning_rate: {learning_rate}
+  rank: {rank}
+  alpha: {alpha}
+"#,
+        job_id = job_id,
+        base_model = req.base_model,
+        trigger_line = trigger_line,
+        epochs = req.epochs,
+        batch_size = req.batch_size,
+        learning_rate = req.learning_rate,
+        rank = req.rank,
+        alpha = req.alpha,
+    )
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutolabelApplyRequest {
@@ -1353,5 +1490,43 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].filename, "img1.jpg");
         assert_eq!(items[0].caption, "legenda um");
+    }
+
+    #[test]
+    fn diffusion_validate_ok_and_defaults() {
+        let json = r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001"}"#;
+        let req: DiffusionJobRequest = serde_json::from_str(json).unwrap();
+        let validated = validate_diffusion_request(req).expect("should validate");
+        assert_eq!(validated.base_model, "sdxl");
+        assert_eq!(validated.epochs, 10);
+        assert_eq!(validated.batch_size, 1);
+        assert_eq!(validated.rank, 16);
+        assert_eq!(validated.alpha, 16);
+        assert_eq!(validated.learning_rate, 0.0001);
+        assert!(validated.trigger_word.is_none());
+
+        let yaml = generate_diffusion_config_yaml("job-123", &validated);
+        assert!(yaml.contains(r#"engine: "diffusion""#));
+        assert!(yaml.contains(r#"model: "sdxl""#));
+        assert!(yaml.contains(r#"rank: 16"#));
+    }
+
+    #[test]
+    fn diffusion_validate_invalid_base_model_400() {
+        let json =
+            r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","baseModel":"unsupported"}"#;
+        let req: DiffusionJobRequest = serde_json::from_str(json).unwrap();
+        assert!(validate_diffusion_request(req).is_err());
+    }
+
+    #[test]
+    fn diffusion_validate_invalid_epochs_and_rank() {
+        let json = r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","epochs":0}"#;
+        let req: DiffusionJobRequest = serde_json::from_str(json).unwrap();
+        assert!(validate_diffusion_request(req).is_err());
+
+        let json2 = r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","rank":200}"#;
+        let req2: DiffusionJobRequest = serde_json::from_str(json2).unwrap();
+        assert!(validate_diffusion_request(req2).is_err());
     }
 }

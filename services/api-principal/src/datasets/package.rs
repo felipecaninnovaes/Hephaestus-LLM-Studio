@@ -516,6 +516,257 @@ pub async fn build_package(state: &AppState, ds_id: Uuid) -> Result<PackageBuild
     })
 }
 
+/// Materializa pacote para treino de difusão LoRA:
+/// imagens + arquivos de legenda .txt + dataset.yaml indexando o conjunto.
+pub async fn build_package_diffusion(
+    state: &AppState,
+    ds_id: Uuid,
+    trigger_word: Option<&str>,
+) -> Result<PackageBuildResult, Response> {
+    // 1. Dataset existe?
+    let ds: Option<(Uuid, String, String, String, String)> = match sqlx::query_as(
+        "SELECT id, slug, title, category, type, format FROM datasets WHERE id = $1",
+    )
+    .bind(ds_id)
+    .fetch_optional(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return Err(internal()),
+    };
+    let (_ds_id, slug, _title, _category, _format) = match ds {
+        Some(r) => r,
+        None => return Err(err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND)),
+    };
+
+    // 2. Imagens ativas (sem soft delete).
+    type ImgTuple = (Uuid, String, String, i32, i32, String);
+    let image_rows: Vec<ImgTuple> = match sqlx::query_as(
+        "SELECT id, filename, object_key, width, height, split FROM images WHERE dataset_id = $1 AND deleted_at IS NULL ORDER BY created_at, id",
+    )
+    .bind(ds_id)
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return Err(internal()),
+    };
+
+    if image_rows.is_empty() {
+        return Err(err(
+            StatusCode::CONFLICT,
+            "dataset_not_ready",
+            "dataset não possui imagens ativas para empacotar",
+        ));
+    }
+
+    // 3. Consulta captions das imagens.
+    let img_ids: Vec<Uuid> = image_rows.iter().map(|(id, ..)| *id).collect();
+    let caption_rows: Vec<(Uuid, String)> =
+        match sqlx::query_as("SELECT image_id, text FROM captions WHERE image_id = ANY($1)")
+            .bind(&img_ids)
+            .fetch_all(&state.pool)
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => return Err(internal()),
+        };
+    let captions_count = caption_rows.len();
+    let captions_by_img: HashMap<Uuid, String> = caption_rows.into_iter().collect();
+
+    // 4. Tempdir para materializar imagens e textos.
+    let tmp = match tempfile::TempDir::new() {
+        Ok(d) => d,
+        Err(_) => return Err(internal()),
+    };
+    let images_dir = tmp.path().join("images");
+    tokio::fs::create_dir_all(&images_dir)
+        .await
+        .map_err(|_| internal())?;
+
+    // Baixa binários das imagens para tmp/images/<filename>
+    if let Err(resp) = materialize_images_from_storage(state, tmp.path(), &image_rows).await {
+        return Err(resp);
+    }
+
+    // 5. Gera arquivo .txt para cada imagem com a legenda (ou trigger_word).
+    let mut entries: Vec<ZipEntry> = Vec::new();
+    for (img_id, filename, _, _, _, _) in &image_rows {
+        let img_path = images_dir.join(filename);
+        entries.push(ZipEntry {
+            arcname: format!("images/{filename}"),
+            fs_path: img_path,
+            is_text: false,
+        });
+
+        let stem = std::path::Path::new(filename)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(filename);
+        let txt_filename = format!("{stem}.txt");
+        let txt_path = images_dir.join(&txt_filename);
+
+        let base_caption = captions_by_img.get(img_id).map(|s| s.trim()).unwrap_or("");
+        let final_caption = match (trigger_word, base_caption.is_empty()) {
+            (Some(tw), false) => format!("{tw} {base_caption}"),
+            (Some(tw), true) => tw.to_string(),
+            (None, false) => base_caption.to_string(),
+            (None, true) => String::new(),
+        };
+
+        if tokio::fs::write(&txt_path, &final_caption).await.is_err() {
+            return Err(internal());
+        }
+
+        entries.push(ZipEntry {
+            arcname: format!("images/{txt_filename}"),
+            fs_path: txt_path,
+            is_text: true,
+        });
+    }
+
+    // dataset.yaml
+    let dataset_yaml = format!(
+        "name: {}\nengine: diffusion\nimages_count: {}\ntrigger_word: {}\n",
+        slug,
+        image_rows.len(),
+        trigger_word.unwrap_or("")
+    );
+    let yaml_path = tmp.path().join("dataset.yaml");
+    if tokio::fs::write(&yaml_path, &dataset_yaml).await.is_err() {
+        return Err(internal());
+    }
+    entries.push(ZipEntry {
+        arcname: "dataset.yaml".to_string(),
+        fs_path: yaml_path,
+        is_text: true,
+    });
+
+    // 6. Compacta em zip
+    let zip_path = tmp.path().join("dataset.zip");
+    let zip_path_clone = zip_path.clone();
+    let entries_clone: Vec<(String, std::path::PathBuf, bool)> = entries
+        .iter()
+        .map(|e| (e.arcname.clone(), e.fs_path.clone(), e.is_text))
+        .collect();
+
+    let file_entries = tokio::task::spawn_blocking(move || {
+        use md5::Digest;
+        write_zip(&entries, &zip_path_clone)?;
+        let mut file_entries: Vec<ZipFileEntry> = Vec::new();
+        for (arcname, fs_path, is_text) in &entries_clone {
+            let mut f = std::fs::File::open(fs_path)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            if *is_text {
+                let mut content = String::new();
+                f.read_to_string(&mut content)?;
+                let mut hasher = md5::Md5::new();
+                Digest::update(&mut hasher, content.as_bytes());
+                let hash = hex::encode(Digest::finalize(hasher));
+                file_entries.push(ZipFileEntry {
+                    filename: arcname.clone(),
+                    md5: hash,
+                    bytes: content.len() as i64,
+                });
+            } else {
+                let mut hasher = md5::Md5::new();
+                let mut buf = [0u8; 64 * 1024];
+                let mut total: i64 = 0;
+                loop {
+                    let n = f.read(&mut buf)?;
+                    if n == 0 {
+                        break;
+                    }
+                    Digest::update(&mut hasher, &buf[..n]);
+                    total += n as i64;
+                }
+                let hash = hex::encode(Digest::finalize(hasher));
+                file_entries.push(ZipFileEntry {
+                    filename: arcname.clone(),
+                    md5: hash,
+                    bytes: total,
+                });
+            }
+        }
+        Ok::<_, std::io::Error>(file_entries)
+    })
+    .await
+    .map_err(|_| internal())?
+    .map_err(|_| internal())?;
+
+    // 7. Calcula md5 e bytes do zip
+    let zip_bytes = match tokio::fs::read(&zip_path).await {
+        Ok(b) => b,
+        Err(_) => return Err(internal()),
+    };
+    let zip_len = zip_bytes.len() as i64;
+    let zip_md5 = {
+        use md5::Digest;
+        let hash = md5::Md5::digest(&zip_bytes);
+        hex::encode(hash)
+    };
+
+    // 8. PUT zip no storage
+    let version_id = Uuid::new_v4();
+    let zip_key = format!("packages/{version_id}/dataset.zip");
+    if state.storage.put(&zip_key, &zip_path).await.is_err() {
+        let _ = state
+            .storage
+            .delete_prefix(&format!("packages/{version_id}/"))
+            .await;
+        return Err(err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "storage_unavailable",
+            MSG_STORAGE_UNAVAILABLE,
+        ));
+    }
+
+    // 9. INSERT em dataset_versions
+    let manifest_json = serde_json::json!({
+        "dataset_id": ds_id,
+        "engine": "diffusion",
+        "images_count": image_rows.len(),
+        "captions_count": captions_count,
+        "trigger_word": trigger_word,
+    });
+
+    let insert_res = sqlx::query(
+        "INSERT INTO dataset_versions (id, dataset_id, manifest, created_at) \
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(version_id)
+    .bind(ds_id)
+    .bind(&manifest_json)
+    .bind(Utc::now())
+    .execute(&state.pool)
+    .await;
+
+    if insert_res.is_err() {
+        let _ = state
+            .storage
+            .delete_prefix(&format!("packages/{version_id}/"))
+            .await;
+        return Err(internal());
+    }
+
+    let response_files: Vec<TransportFile> = file_entries
+        .into_iter()
+        .map(|fe| TransportFile {
+            filename: fe.filename,
+            md5: fe.md5,
+            bytes: fe.bytes,
+        })
+        .collect();
+
+    Ok(PackageBuildResult {
+        version_id: version_id.to_string(),
+        key: zip_key,
+        bytes: zip_len,
+        md5_zip: zip_md5,
+        files: response_files,
+    })
+}
+
 /// Gera zip do package (Stored para imagens, Deflated para texto).
 /// Retorna o caminho do zip + metadados de cada entrada (md5/bytes por arquivo).
 async fn generate_package_zip(
@@ -695,17 +946,20 @@ pub async fn package_dataset(
         }
     };
 
-    // 3. Validação: engine único suportado é "yolo".
-    if req.engine != "yolo" {
+    // 3. Validação e build: suporta yolo e diffusion.
+    let result = if req.engine == "yolo" {
+        build_package(&state, ds_id).await
+    } else if req.engine == "diffusion" {
+        build_package_diffusion(&state, ds_id, None).await
+    } else {
         return err(
             StatusCode::BAD_REQUEST,
             "engine_unsupported",
             MSG_ENGINE_UNSUPPORTED,
         );
-    }
+    };
 
-    // 4. Build package (função compartilhada com job submission — F4.2b).
-    match build_package(&state, ds_id).await {
+    match result {
         Ok(result) => (
             StatusCode::OK,
             Json(PackageResponse {

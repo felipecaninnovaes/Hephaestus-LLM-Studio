@@ -12,19 +12,16 @@ Covers:
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 import yaml
-
 from trainer_yolo.autolabel import (
-    load_and_validate_autolabel_config,
     _mock_autolabel,
-    _generate_caption,
     _read_dataset_images,
+    load_and_validate_autolabel_config,
 )
 
 
@@ -114,8 +111,12 @@ def test_mock_autolabel_determinism(tmp_path: Path):
     ds = _make_autolabel_dataset(tmp_path, ["img_01.jpg", "img_02.jpg"])
     out1 = tmp_path / "out1"
     out2 = tmp_path / "out2"
-    cfg1 = load_and_validate_autolabel_config(_make_config(tmp_path / "c1", ds, out1, seed=123))
-    cfg2 = load_and_validate_autolabel_config(_make_config(tmp_path / "c2", ds, out2, seed=123))
+    cfg1 = load_and_validate_autolabel_config(
+        _make_config(tmp_path / "c1", ds, out1, seed=123)
+    )
+    cfg2 = load_and_validate_autolabel_config(
+        _make_config(tmp_path / "c2", ds, out2, seed=123)
+    )
 
     _mock_autolabel(cfg1, out1)
     _mock_autolabel(cfg2, out2)
@@ -143,6 +144,89 @@ def test_cli_subcommand_autolabel(tmp_path: Path):
         ],
         capture_output=True,
         text=True,
+        check=False,
     )
     assert res.returncode == 0, f"CLI failed: {res.stderr}"
     assert (out / "captions.jsonl").is_file()
+
+
+def test_autolabel_florence_and_qwen_models(tmp_path: Path):
+    ds = _make_autolabel_dataset(tmp_path, ["sample.webp"])
+
+    # Florence-2
+    out_florence = tmp_path / "florence_out"
+    cfg_florence = {
+        "job_id": "job-florence",
+        "engine": "autolabel",
+        "model": "florence-2",
+        "mode": "autolabel",
+        "dataset_path": str(ds),
+        "output_path": str(out_florence),
+        "seed": 42,
+        "autolabel": {"prompt": "Fotografia botânica"},
+    }
+    cfg_f_path = tmp_path / "florence.yaml"
+    cfg_f_path.write_text(yaml.safe_dump(cfg_florence), encoding="utf-8")
+    _mock_autolabel(cfg_florence, out_florence)
+
+    lines_f = (
+        (out_florence / "captions.jsonl")
+        .read_text(encoding="utf-8")
+        .strip()
+        .splitlines()
+    )
+    assert len(lines_f) == 1
+    data_f = json.loads(lines_f[0])
+    assert "Fotografia botânica" in data_f["caption"]
+    assert "sharp contours" in data_f["caption"]
+
+    # Qwen2-VL
+    out_qwen = tmp_path / "qwen_out"
+    cfg_qwen = {
+        "job_id": "job-qwen",
+        "engine": "autolabel",
+        "model": "qwen2-vl",
+        "mode": "autolabel",
+        "dataset_path": str(ds),
+        "output_path": str(out_qwen),
+        "seed": 42,
+        "autolabel": {"prompt": "Inspeção"},
+    }
+    _mock_autolabel(cfg_qwen, out_qwen)
+
+    lines_q = (
+        (out_qwen / "captions.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    )
+    assert len(lines_q) == 1
+    data_q = json.loads(lines_q[0])
+    assert "Inspeção" in data_q["caption"]
+    assert "high visual definition" in data_q["caption"]
+
+
+def test_autolabel_openai_mock_and_fallback(tmp_path: Path):
+    ds = _make_autolabel_dataset(tmp_path, ["test.png"])
+    out = tmp_path / "openai_out"
+    cfg = {
+        "job_id": "job-openai",
+        "engine": "autolabel",
+        "model": "openai",
+        "mode": "autolabel",
+        "dataset_path": str(ds),
+        "output_path": str(out),
+        "seed": 42,
+        "autolabel": {
+            "prompt": "Descreva em detalhes",
+            "api_key": "sk-dummy-test-key",
+            "api_base": "http://127.0.0.1:9",  # Porta inacessível para testar fallback gracioso
+            "openai_model": "gpt-4o-mini",
+        },
+    }
+    _mock_autolabel(cfg, out)
+
+    captions_file = out / "captions.jsonl"
+    assert captions_file.is_file()
+    lines = captions_file.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    data = json.loads(lines[0])
+    assert "Descreva em detalhes" in data["caption"]
+    assert "OpenAI fallback" in data["caption"]

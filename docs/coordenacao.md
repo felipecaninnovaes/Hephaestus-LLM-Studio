@@ -19,7 +19,26 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-13 (FATIA AUTOLABEL SELETIVO POR CLASSE/SELEÇÃO CONCLUÍDA NA BRANCH)
+## Estado atual — 2026-09-13 (FATIA FILTRO ESTRITO POR TAG/CLASSE E AUTOLABEL SELETIVO CONCLUÍDAS NA BRANCH)
+
+- **FATIA FILTRO ESTRITO POR TAG E CLASSE NO GRID DE IMAGENS — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/autolabel-selective-dataset`.
+  - **Backend API Principal**:
+    - `services/api-principal/src/datasets/handlers.rs`: query parameters `class_id` (UUID validado) e `tag` (1..200 chars) adicionados em `GET /api/datasets/:id/images` (`ImageQuery`).
+    - Filtro estrito via SQL com subqueries `EXISTS`:
+      - `class_id`: filtra imagens com anotação na classe especificada (`EXISTS (SELECT 1 FROM boxes b WHERE b.image_id = i.id AND b.class_id = $cid)`).
+      - `tag`: busca textual `ILIKE` estrita combinando nome de classes anotadas (`boxes JOIN classes`), legendas (`captions.text`) ou nome de arquivo (`images.filename`).
+    - Testes unitários: 325/325 verdes.
+  - **Contrato OpenAPI**:
+    - `packages/contracts/openapi.yaml`: parâmetros de query `classId` e `tag` documentados em `GET /api/datasets/{id}/images`.
+  - **Web Frontend**:
+    - `apps/web/lib/images.ts`: `ListImagesOpts` e `listImages` enriquecidos com `classId` e `tag`.
+    - `apps/web/components/studio/GalleryOperateToolbar.tsx`: pílulas interativas de classes anotadas (`Todas`, `classe1`, `classe2`...) com estilo ativo, seletor de modo de busca e botões de filtro.
+    - `apps/web/app/(studio)/datasets/[id]/page.tsx`:
+      - Suporte a dois modos claros de busca na galeria:
+        1. **Filtro Estrito (Tag/Classe)** (padrão): filtra exatamente as imagens que possuem a tag no nome, classe ou legenda via Postgres, eliminando falsos positivos.
+        2. **Similaridade IA (CLIP)**: busca contínua por embedding semântico via `searchDataset`.
+      - Exibição de barra informativa de filtro ativo com contador de imagens correspondentes e botão para limpar filtros rapidamente.
+  - **Verificações**: `cargo check --workspace` verde, `cargo test -p api-principal --lib` 325/325 verdes, `cargo fmt --all -- --check` limpo, `npm run build --prefix apps/web` 12/12 páginas compiladas sem erros TS, `graft build` sincronizado.
 
 - **FATIA AUTOLABEL SELETIVO POR CLASSE E SELEÇÃO DE IMAGENS — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/autolabel-selective-dataset`.
   - **Contrato OpenAPI**: `AutolabelJobRequest` expandido com campos opcionais `filterClassId: Option<Uuid>` e `imageIds: Option<Vec<Uuid>>`.

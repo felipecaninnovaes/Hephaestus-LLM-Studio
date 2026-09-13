@@ -1221,6 +1221,16 @@ paths:
           required: false
           schema: { type: integer, minimum: 0, default: 0 }
           description: Deslocamento da página (default 0).
+        - name: classId
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+          description: Filtra imagens contendo anotações da classe especificada (YOLO).
+        - name: tag
+          in: query
+          required: false
+          schema: { type: string, maxLength: 200 }
+          description: Filtro estrito por correspondência de tag em classes anotadas, captions ou filename.
       responses:
         "200":
           description: Página de imagens (`ImagePage`).

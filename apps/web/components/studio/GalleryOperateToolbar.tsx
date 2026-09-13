@@ -3,6 +3,7 @@
 import React from "react";
 import { IconGrid, IconList, IconBoxSelect } from "@/components/icons";
 import { SubmodulePills } from "@/components/ui";
+import type { StudioClass } from "@/types/studio";
 
 export type GallerySplitView = "all" | "train" | "val" | "test" | "trash";
 export type GalleryAnnotationFilter = "all" | "labeled" | "unlabeled";
@@ -20,6 +21,9 @@ export interface GalleryOperateToolbarProps {
   selectedCount: number;
   totalActive: number;
   totalTrash: number;
+  classes?: StudioClass[];
+  selectedClassId?: string | null;
+  onClassChange?: (classId: string | null) => void;
 }
 
 export function GalleryOperateToolbar({
@@ -34,6 +38,9 @@ export function GalleryOperateToolbar({
   selectedCount,
   totalActive,
   totalTrash,
+  classes,
+  selectedClassId,
+  onClassChange,
 }: GalleryOperateToolbarProps) {
   return (
     <div className="flex flex-col gap-3 rounded-2xl border border-zinc-800/80 bg-zinc-950/70 p-3 shadow-lg backdrop-blur-xl">
@@ -164,6 +171,40 @@ export function GalleryOperateToolbar({
           </button>
         </div>
       </div>
+
+      {/* Seletor de Classe / Filtro Estrito */}
+      {currentView !== "trash" && classes && classes.length > 0 && (
+        <div className="flex items-center space-x-1.5 overflow-x-auto min-w-0 pt-2 border-t border-white/5">
+          <span className="font-mono text-[10px] text-zinc-500 uppercase tracking-wider shrink-0 mr-1">
+            Classe:
+          </span>
+          <button
+            type="button"
+            onClick={() => onClassChange?.(null)}
+            className={`rounded-lg px-2.5 py-1 font-mono text-[11px] transition-colors shrink-0 cursor-pointer ${
+              !selectedClassId
+                ? "bg-brand-500/20 text-brand-300 font-semibold border border-brand-500/30"
+                : "bg-white/[0.03] text-zinc-400 hover:text-zinc-200 border border-white/5"
+            }`}
+          >
+            Todas
+          </button>
+          {classes.map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              onClick={() => onClassChange?.(selectedClassId === c.id ? null : c.id)}
+              className={`rounded-lg px-2.5 py-1 font-mono text-[11px] transition-colors shrink-0 cursor-pointer ${
+                selectedClassId === c.id
+                  ? "bg-amber-500/25 text-amber-200 font-semibold border border-amber-500/40 shadow-sm"
+                  : "bg-white/[0.03] text-zinc-400 hover:text-zinc-200 border border-white/5"
+              }`}
+            >
+              {c.name}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

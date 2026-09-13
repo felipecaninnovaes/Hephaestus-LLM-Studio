@@ -915,6 +915,8 @@ pub struct ImageQuery {
     limit: Option<String>,
     offset: Option<String>,
     deleted: Option<String>,
+    class_id: Option<String>,
+    tag: Option<String>,
 }
 
 /// URL híbrida D3 (3b.5): com `public_endpoint` configurado é presigned
@@ -993,6 +995,27 @@ pub async fn list_images(
         Some(Ok(v)) if v >= 0 => v,
         _ => return bad(),
     };
+    let class_id: Option<Uuid> = match q.class_id {
+        None => None,
+        Some(ref s) if s.trim().is_empty() => None,
+        Some(ref s) => match s.parse::<Uuid>() {
+            Ok(u) => Some(u),
+            Err(_) => return bad(),
+        },
+    };
+    let tag: Option<String> = match q.tag {
+        None => None,
+        Some(ref s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else if trimmed.chars().count() > 200 {
+                return bad();
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+    };
 
     // Formato do dataset (R9 como no trigger da 0003) + existência (404).
     let format: Option<String> =
@@ -1024,6 +1047,23 @@ pub async fn list_images(
     if let Some(s) = split {
         qb.push(" AND i.split = ");
         qb.push_bind(s);
+    }
+    if let Some(cid) = class_id {
+        qb.push(" AND EXISTS (SELECT 1 FROM boxes b WHERE b.image_id = i.id AND b.class_id = ");
+        qb.push_bind(cid);
+        qb.push(")");
+    }
+    if let Some(t) = tag {
+        let pattern = format!("%{t}%");
+        qb.push(" AND (EXISTS (SELECT 1 FROM boxes b JOIN classes c ON c.id = b.class_id WHERE b.image_id = i.id AND c.name ILIKE ");
+        qb.push_bind(pattern.clone());
+        qb.push(
+            ") OR EXISTS (SELECT 1 FROM captions cap WHERE cap.image_id = i.id AND cap.text ILIKE ",
+        );
+        qb.push_bind(pattern.clone());
+        qb.push(") OR i.filename ILIKE ");
+        qb.push_bind(pattern);
+        qb.push(")");
     }
     if let Some(lab) = labeled {
         // Taxonomia R9 do trigger da 0003: yolo_txt ⇒ boxes, demais ⇒ captions.

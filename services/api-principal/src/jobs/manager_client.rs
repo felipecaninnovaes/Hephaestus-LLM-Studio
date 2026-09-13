@@ -65,6 +65,8 @@ pub struct InternalJob {
     pub orchestrator_fallback: bool,
     pub created_at: String,
     pub finished_at: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// Item da fila (snake_case interno do manager).

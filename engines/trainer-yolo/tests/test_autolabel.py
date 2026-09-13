@@ -12,19 +12,16 @@ Covers:
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 import yaml
-
 from trainer_yolo.autolabel import (
-    load_and_validate_autolabel_config,
     _mock_autolabel,
-    _generate_caption,
     _read_dataset_images,
+    load_and_validate_autolabel_config,
 )
 
 
@@ -114,8 +111,12 @@ def test_mock_autolabel_determinism(tmp_path: Path):
     ds = _make_autolabel_dataset(tmp_path, ["img_01.jpg", "img_02.jpg"])
     out1 = tmp_path / "out1"
     out2 = tmp_path / "out2"
-    cfg1 = load_and_validate_autolabel_config(_make_config(tmp_path / "c1", ds, out1, seed=123))
-    cfg2 = load_and_validate_autolabel_config(_make_config(tmp_path / "c2", ds, out2, seed=123))
+    cfg1 = load_and_validate_autolabel_config(
+        _make_config(tmp_path / "c1", ds, out1, seed=123)
+    )
+    cfg2 = load_and_validate_autolabel_config(
+        _make_config(tmp_path / "c2", ds, out2, seed=123)
+    )
 
     _mock_autolabel(cfg1, out1)
     _mock_autolabel(cfg2, out2)
@@ -143,6 +144,272 @@ def test_cli_subcommand_autolabel(tmp_path: Path):
         ],
         capture_output=True,
         text=True,
+        check=False,
     )
     assert res.returncode == 0, f"CLI failed: {res.stderr}"
     assert (out / "captions.jsonl").is_file()
+
+
+def test_autolabel_florence_and_qwen_models(tmp_path: Path):
+    ds = _make_autolabel_dataset(tmp_path, ["sample.webp"])
+
+    # Florence-2
+    out_florence = tmp_path / "florence_out"
+    cfg_florence = {
+        "job_id": "job-florence",
+        "engine": "autolabel",
+        "model": "florence-2",
+        "mode": "autolabel",
+        "dataset_path": str(ds),
+        "output_path": str(out_florence),
+        "seed": 42,
+        "autolabel": {"prompt": "Fotografia botânica"},
+    }
+    cfg_f_path = tmp_path / "florence.yaml"
+    cfg_f_path.write_text(yaml.safe_dump(cfg_florence), encoding="utf-8")
+    _mock_autolabel(cfg_florence, out_florence)
+
+    lines_f = (
+        (out_florence / "captions.jsonl")
+        .read_text(encoding="utf-8")
+        .strip()
+        .splitlines()
+    )
+    assert len(lines_f) == 1
+    data_f = json.loads(lines_f[0])
+    assert "Fotografia botânica" in data_f["caption"]
+    assert "sharp contours" in data_f["caption"]
+
+    # Qwen2-VL
+    out_qwen = tmp_path / "qwen_out"
+    cfg_qwen = {
+        "job_id": "job-qwen",
+        "engine": "autolabel",
+        "model": "qwen2-vl",
+        "mode": "autolabel",
+        "dataset_path": str(ds),
+        "output_path": str(out_qwen),
+        "seed": 42,
+        "autolabel": {"prompt": "Inspeção"},
+    }
+    _mock_autolabel(cfg_qwen, out_qwen)
+
+    lines_q = (
+        (out_qwen / "captions.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    )
+    assert len(lines_q) == 1
+    data_q = json.loads(lines_q[0])
+    assert "Inspeção" in data_q["caption"]
+    assert "high visual definition" in data_q["caption"]
+
+
+def test_autolabel_openai_fail_fast_on_error(tmp_path: Path):
+    """Verifica que erro de conexão com a API OpenAI causa fail-fast sem mascarar o erro."""
+    ds = _make_autolabel_dataset(tmp_path, ["test.png"])
+    out = tmp_path / "openai_fail_out"
+    cfg = {
+        "job_id": "job-openai-fail",
+        "engine": "autolabel",
+        "model": "openai",
+        "mode": "autolabel",
+        "dataset_path": str(ds),
+        "output_path": str(out),
+        "seed": 42,
+        "autolabel": {
+            "prompt": "Descreva em detalhes",
+            "api_key": "sk-dummy-test-key",
+            "api_base": "http://127.0.0.1:9",  # Porta inacessível
+            "openai_model": "gpt-4o-mini",
+        },
+    }
+    with pytest.raises(SystemExit) as exc_info:
+        _mock_autolabel(cfg, out)
+    assert exc_info.value.code == 1
+
+
+def test_autolabel_openai_mock_server_success(tmp_path: Path):
+    """Verifica chamada bem-sucedida à API compatível com OpenAI usando servidor HTTP mock local."""
+    import http.server
+    import threading
+
+    received_requests = []
+
+    class MockOpenAIHandler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            received_requests.append(json.loads(body.decode("utf-8")))
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            response_payload = {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "Placa de circuito com solda nítida gerada pela API real.",
+                        }
+                    }
+                ]
+            }
+            self.wfile.write(json.dumps(response_payload).encode("utf-8"))
+
+        def log_message(self, format, *args):
+            # Silencia logs de requisição no console do pytest
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), MockOpenAIHandler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        ds = _make_autolabel_dataset(tmp_path, ["sample.png"])
+        out = tmp_path / "openai_success_out"
+        cfg = {
+            "job_id": "job-openai-success",
+            "engine": "autolabel",
+            "model": "openai",
+            "mode": "autolabel",
+            "dataset_path": str(ds),
+            "output_path": str(out),
+            "seed": 42,
+            "autolabel": {
+                "prompt": "Inspecione os componentes",
+                "api_key": "sk-test-token-123",
+                "api_base": f"http://127.0.0.1:{port}/v1",
+                "openai_model": "gpt-4o-mini",
+            },
+        }
+
+        _mock_autolabel(cfg, out)
+
+        captions_file = out / "captions.jsonl"
+        assert captions_file.is_file()
+        lines = captions_file.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 1
+        data = json.loads(lines[0])
+        assert data["filename"] == "sample.png"
+        assert "gerada pela API real" in data["caption"]
+
+        # Verifica que o payload enviado estava no padrão correto da OpenAI
+        assert len(received_requests) == 1
+        req = received_requests[0]
+        assert req["model"] == "gpt-4o-mini"
+        messages = req["messages"]
+        assert len(messages) == 1
+        contents = messages[0]["content"]
+        assert contents[0]["type"] == "text"
+        assert contents[0]["text"] == "Inspecione os componentes"
+        assert contents[1]["type"] == "image_url"
+        assert contents[1]["image_url"]["url"].startswith("data:image/png;base64,")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_autolabel_openai_with_test_mock_fallback_env(tmp_path: Path, monkeypatch):
+    """Verifica que com AUTOLABEL_TEST_MOCK_FALLBACK=1 o fallback é ativado em caso de erro."""
+    monkeypatch.setenv("AUTOLABEL_TEST_MOCK_FALLBACK", "1")
+    ds = _make_autolabel_dataset(tmp_path, ["fallback_img.png"])
+    out = tmp_path / "openai_fallback_out"
+    cfg = {
+        "job_id": "job-openai-fb",
+        "engine": "autolabel",
+        "model": "openai",
+        "mode": "autolabel",
+        "dataset_path": str(ds),
+        "output_path": str(out),
+        "seed": 42,
+        "autolabel": {
+            "prompt": "Prompt de teste",
+            "api_key": "sk-dummy",
+            "api_base": "http://127.0.0.1:9",
+            "openai_model": "gpt-4o-mini",
+        },
+    }
+    _mock_autolabel(cfg, out)
+    captions_file = out / "captions.jsonl"
+    assert captions_file.is_file()
+    data = json.loads(captions_file.read_text(encoding="utf-8").strip())
+    assert "OpenAI fallback" in data["caption"]
+
+
+def test_normalize_api_base_strips_quotes_and_trailing_slashes():
+    from trainer_yolo.autolabel import _normalize_api_base
+
+    assert (
+        _normalize_api_base('"https://api.openai.com/v1"')
+        == "https://api.openai.com/v1"
+    )
+    assert (
+        _normalize_api_base("'https://api.openai.com/v1/'")
+        == "https://api.openai.com/v1"
+    )
+    assert (
+        _normalize_api_base('https://llama.felipecncloud.com/v1"')
+        == "https://llama.felipecncloud.com/v1"
+    )
+    assert (
+        _normalize_api_base('  "https://llama.felipecncloud.com/v1/"  ')
+        == "https://llama.felipecncloud.com/v1"
+    )
+
+
+def test_autolabel_openai_with_reasoning_effort(tmp_path: Path):
+    import http.server
+    import threading
+
+    from trainer_yolo.autolabel import _call_openai_vision_api
+
+    ds = _make_autolabel_dataset(tmp_path, ["sample.png"])
+    img = ds / "images" / "sample.png"
+    received_requests = []
+
+    class MockHandler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
+            received_requests.append(data)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": "Legenda direta sem CoT",
+                                }
+                            }
+                        ],
+                    }
+                ).encode("utf-8")
+            )
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), MockHandler)
+    port = server.server_address[1]
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+
+    try:
+        caption = _call_openai_vision_api(
+            image_path=img,
+            prompt="Descreva a imagem",
+            api_key="token",
+            api_base=f"http://127.0.0.1:{port}/v1",
+            openai_model="test-model",
+            reasoning_effort="none",
+        )
+        assert caption == "Legenda direta sem CoT"
+        assert len(received_requests) == 1
+        assert received_requests[0].get("reasoning_effort") == "none"
+    finally:
+        server.shutdown()
+        server.server_close()

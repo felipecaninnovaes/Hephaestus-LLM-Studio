@@ -432,6 +432,7 @@ name = "hephaestus-trainer-yolo"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "pillow" },
     { name = "pyyaml" },
 ]
 
@@ -445,6 +446,7 @@ train = [
 
 [package.metadata]
 requires-dist = [
+    { name = "pillow", specifier = ">=10.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=7.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ultralytics", marker = "extra == 'train'", specifier = ">=8.3,<8.4" },

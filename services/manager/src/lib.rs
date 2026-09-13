@@ -107,6 +107,8 @@ pub struct JobRow {
     pub orchestrator_fallback: bool,
     pub created_at: String,
     pub finished_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -504,7 +506,8 @@ pub async fn list_jobs(
         "SELECT j.id, j.kind, j.engine, j.model, j.mode, j.dataset_id, j.status, j.queue_reason, \
          j.progress, j.epoch, j.step, j.metrics, j.vram_min_gb, j.orchestrator_id, j.created_at, j.finished_at, \
          o.name AS orchestrator_name, o.kind AS orchestrator_kind, \
-         COALESCE((j.params->>'orchestrator_fallback') = 'true', false) AS orchestrator_fallback \
+         COALESCE((j.params->>'orchestrator_fallback') = 'true', false) AS orchestrator_fallback, \
+         j.params->>'error' AS error \
          FROM jobs j \
          LEFT JOIN orchestrators o ON o.id = j.orchestrator_id \
          WHERE 1=1",
@@ -585,6 +588,7 @@ pub async fn list_jobs(
                 orchestrator_fallback: r.get("orchestrator_fallback"),
                 created_at: created_at.to_rfc3339(),
                 finished_at: finished_at.map(|t| t.to_rfc3339()),
+                error: r.get("error"),
             }
         })
         .collect();
@@ -613,7 +617,8 @@ pub async fn get_job(pool: &PgPool, id: Uuid) -> Result<JobRow, ManagerError> {
         "SELECT j.id, j.kind, j.engine, j.model, j.mode, j.dataset_id, j.status, j.queue_reason, \
          j.progress, j.epoch, j.step, j.metrics, j.vram_min_gb, j.orchestrator_id, j.created_at, j.finished_at, \
          o.name AS orchestrator_name, o.kind AS orchestrator_kind, \
-         COALESCE((j.params->>'orchestrator_fallback') = 'true', false) AS orchestrator_fallback \
+         COALESCE((j.params->>'orchestrator_fallback') = 'true', false) AS orchestrator_fallback, \
+         j.params->>'error' AS error \
          FROM jobs j \
          LEFT JOIN orchestrators o ON o.id = j.orchestrator_id \
          WHERE j.id = $1",
@@ -658,6 +663,7 @@ pub async fn get_job(pool: &PgPool, id: Uuid) -> Result<JobRow, ManagerError> {
         orchestrator_fallback: r.get("orchestrator_fallback"),
         created_at: created_at.to_rfc3339(),
         finished_at: finished_at.map(|t| t.to_rfc3339()),
+        error: r.get("error"),
     })
 }
 

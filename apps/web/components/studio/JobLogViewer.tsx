@@ -115,12 +115,23 @@ export function JobLogViewer({ job, metrics = [], artifacts = [] }: JobLogViewer
         text: "Treinamento finalizado com exit code 0. Status: CONCLUÍDO.",
       });
     } else if (job.status === "failed") {
+      const errDetail = job.error || job.queueReason || "Container execution failed";
+      const errLines = errDetail.split("\n").map((l) => l.trimEnd()).filter(Boolean);
       list.push({
         id: "finish-failed",
         timestamp: fmtTime((metrics.length || 1) * 2 + 4),
         tag: "STDERR",
-        text: `Erro fatal no processo do orquestrador: ${job.queueReason || "Container execution failed"}`,
+        text: `Erro fatal no processo do orquestrador: ${errLines[0] || "Container execution failed"}`,
         isError: true,
+      });
+      errLines.slice(1).forEach((line, idx) => {
+        list.push({
+          id: `finish-failed-detail-${idx}`,
+          timestamp: fmtTime((metrics.length || 1) * 2 + 4),
+          tag: "STDERR",
+          text: line,
+          isError: true,
+        });
       });
     } else if (job.status === "cancelled") {
       list.push({

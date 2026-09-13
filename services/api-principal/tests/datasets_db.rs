@@ -5957,6 +5957,7 @@ fn setup_autotracker_mock(
         orchestrator_fallback: false,
         created_at: "2026-01-01T00:00:00Z".into(),
         finished_at: Some("2026-01-01T01:00:00Z".into()),
+        error: None,
     };
 
     let mut mock = api_principal::jobs::manager_client::MockManager::default();
@@ -6497,6 +6498,7 @@ async fn t5_autotrack_08_dataset_null_409() {
         orchestrator_fallback: false,
         created_at: "2026-01-01T00:00:00Z".into(),
         finished_at: Some("2026-01-01T01:00:00Z".into()),
+        error: None,
     };
     let mut mock = api_principal::jobs::manager_client::MockManager::default();
     mock.jobs_by_id.insert(job_id.clone(), job);
@@ -6544,6 +6546,7 @@ async fn t5_autotrack_09_job_not_done() {
         orchestrator_fallback: false,
         created_at: "2026-01-01T00:00:00Z".into(),
         finished_at: None,
+        error: None,
     };
     let mut mock = api_principal::jobs::manager_client::MockManager::default();
     mock.jobs_by_id.insert(job_id.clone(), job);
@@ -7042,6 +7045,7 @@ fn setup_autolabel_mock(
         orchestrator_fallback: false,
         created_at: "2026-01-01T00:00:00Z".into(),
         finished_at: Some("2026-01-01T01:00:00Z".into()),
+        error: None,
     };
 
     let mut mock = api_principal::jobs::manager_client::MockManager::default();

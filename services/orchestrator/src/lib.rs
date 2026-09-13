@@ -648,6 +648,8 @@ pub fn build_docker_run_args(
     cmd_args.push("--rm".to_string());
     cmd_args.push("--name".to_string());
     cmd_args.push(container_name.to_string());
+    cmd_args.push("--add-host".to_string());
+    cmd_args.push("host.docker.internal:host-gateway".to_string());
 
     for (host, container) in volumes {
         cmd_args.push("-v".to_string());
@@ -2443,6 +2445,9 @@ also bad, not a number
         assert!(!args.contains(&"--gpus".to_string()));
         assert!(!args.contains(&"--shm-size".to_string()));
         assert!(!args.iter().any(|a| a.starts_with("NVIDIA_VISIBLE_DEVICES")));
+        // Host gateway flag present
+        assert!(args.contains(&"--add-host".to_string()));
+        assert!(args.contains(&"host.docker.internal:host-gateway".to_string()));
         // Image and args present
         assert!(args.contains(&"hephaestus/trainer-yolo:local".to_string()));
         assert!(args.contains(&"train".to_string()));

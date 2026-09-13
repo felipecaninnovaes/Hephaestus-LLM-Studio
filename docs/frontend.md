@@ -133,6 +133,7 @@ A especificação normativa completa e canônica vive em **`docs/DESIGN.md`**. P
 - **Ações Principais:**
   - Exportar / Importar backup estruturado (`.zip + dataset.yaml + anotações + captions.jsonl`).
   - AutoTracker modal (`AutoTrackerModal.tsx`): disponível para datasets YOLO com classes e imagens, disparando o job de detecção automática para posterior aplicação.
+  - AutoLabel modal (`AutoLabelModal.tsx`): disponível para datasets com imagens, permitindo legendagem em lote com modelos VLM (Florence-2, Qwen2-VL, OpenAI API Vision ou Mock local), com presets direcionados para Difusão LoRA, suporte a endpoints compatíveis (Ollama/vLLM) e seleção de nó de execução.
   - Treinar este Dataset: abre o modal de configuração de treinamento YOLO (`TrainYoloModal.tsx`).
   - Gestão de classes (`ClassesModal.tsx`) e lixeira restaurável (`softDeleteImage`, `restoreImage`, `purgeTrash`).
   - Painel de busca semântica integrada com OpenCLIP (`searchDataset` e `searchByImage`).

@@ -224,6 +224,7 @@ export interface Job {
   orchestratorFallback: boolean;
   createdAt: string;
   finishedAt: string | null;
+  error?: string | null;
 }
 
 export interface JobListResponse {
@@ -276,13 +277,19 @@ export interface AutotrackerApplyResponse {
   images: number;
 }
 
-/* ── AutoLabel (ADR-0016) ─────────────────────────────────── */
+/* ── AutoLabel (ADR-0016 / ADR-0019 AutoLabel v2) ─────────── */
+
+export type AutolabelModel = "mock" | "florence-2" | "qwen2-vl" | "openai";
 
 export interface AutolabelJobRequest {
   datasetId: string;
-  model?: string;
+  model?: AutolabelModel | string;
   prompt?: string;
+  apiKey?: string;
+  apiBase?: string;
+  openaiModel?: string;
   orchestratorId?: string | null;
+  reasoningEffort?: "none" | "low" | "medium" | "high" | null;
 }
 
 export interface AutolabelApplyRequest {

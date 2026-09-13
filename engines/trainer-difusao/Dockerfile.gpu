@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Dependências canônicas do ecossistema Diffusers / PEFT / HuggingFace
 RUN pip install --no-cache-dir \
-      "diffusers>=0.32.0" \
+      "diffusers>=0.40.0" \
       "transformers>=4.48.0" \
       "accelerate>=1.2.0" \
       "peft>=0.14.0" \

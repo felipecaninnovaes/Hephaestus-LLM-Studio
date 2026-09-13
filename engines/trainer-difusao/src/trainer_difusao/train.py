@@ -966,7 +966,7 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
 
 
 def _pack_latents(latents: Any) -> Any:
-    """Empacota tensores latentes do VAE no formato patch 2x2 do FLUX: [B, C, H, W] -> [B, (H//2)*(W//2), C*4]."""
+    """Empacota tensores latentes do VAE no formato patch 2x2 do FLUX.1: [B, C, H, W] -> [B, (H//2)*(W//2), C*4]."""
     b, c, h, w = latents.shape
     latents = latents.view(b, c, h // 2, 2, w // 2, 2)
     latents = latents.permute(0, 2, 4, 1, 3, 5)
@@ -974,10 +974,23 @@ def _pack_latents(latents: Any) -> Any:
     return latents
 
 
+def _patchify_latents_flux2(latents: Any) -> Any:
+    """Aplica patchify 2x2 nos latentes do FLUX.2 Klein: [B, C, H, W] -> [B, C*4, H//2, W//2]."""
+    b, c, h, w = latents.shape
+    latents = latents.view(b, c, h // 2, 2, w // 2, 2).permute(0, 1, 3, 5, 2, 4)
+    return latents.reshape(b, c * 4, h // 2, w // 2)
+
+
+def _pack_latents_flux2(latents: Any) -> Any:
+    """Empacota latentes patchificados do FLUX.2 Klein para entrada no transformer: [B, C, H, W] -> [B, H*W, C]."""
+    b, c, h, w = latents.shape
+    return latents.reshape(b, c, h * w).permute(0, 2, 1)
+
+
 def _prepare_latent_image_ids(
     batch_size: int, height: int, width: int, device: Any, dtype: Any
 ) -> Any:
-    """Gera coordenadas de posição 2D para o Rotary Embedding (RoPE) de imagem do FLUX."""
+    """Gera coordenadas de posição 2D para o Rotary Embedding (RoPE) de imagem do FLUX.1."""
     import torch
 
     h = height // 16
@@ -990,11 +1003,103 @@ def _prepare_latent_image_ids(
 
 
 def _prepare_text_ids(seq_len: int, device: Any, dtype: Any, batch_size: int = 1) -> Any:
-    """Gera coordenadas 1D de posição para o Rotary Embedding (RoPE) textual do FLUX."""
+    """Gera coordenadas 1D de posição para o Rotary Embedding (RoPE) textual do FLUX.1."""
     import torch
 
     txt_ids = torch.zeros(seq_len, 3, device=device, dtype=dtype)
     return txt_ids.repeat(batch_size, 1, 1)
+
+
+def _prepare_flux2_latent_ids(latents: Any) -> Any:
+    """Gera coordenadas de posição 4D (T, H, W, L) para o Rotary Embedding (RoPE) do FLUX.2 Klein."""
+    import torch
+
+    batch_size, _, height, width = latents.shape
+    t = torch.arange(1, device=latents.device)
+    h = torch.arange(height, device=latents.device)
+    w = torch.arange(width, device=latents.device)
+    l = torch.arange(1, device=latents.device)
+    coords = torch.cartesian_prod(t, h, w, l)
+    return coords.unsqueeze(0).expand(batch_size, -1, -1)
+
+
+def _prepare_flux2_text_ids(prompt_embeds: Any) -> Any:
+    """Gera coordenadas de posição 4D (T, H, W, L) para o Rotary Embedding (RoPE) textual do FLUX.2 Klein."""
+    import torch
+
+    batch_size, seq_len, _ = prompt_embeds.shape
+    t = torch.arange(1, device=prompt_embeds.device)
+    h = torch.arange(1, device=prompt_embeds.device)
+    w = torch.arange(1, device=prompt_embeds.device)
+    l = torch.arange(seq_len, device=prompt_embeds.device)
+    coords = torch.cartesian_prod(t, h, w, l)
+    return coords.unsqueeze(0).expand(batch_size, -1, -1)
+
+
+def _encode_qwen3_prompt(
+    text_encoder: Any,
+    tokenizer: Any,
+    prompts: list[str],
+    device: Any,
+    dtype: Any,
+    max_length: int = 512,
+    hidden_states_layers: tuple[int, ...] = (9, 18, 27),
+) -> Any:
+    """Codifica prompts de texto usando o modelo Qwen3 para FLUX.2 Klein 4B, extraindo e concatenando camadas intermediárias."""
+    import torch
+
+    all_input_ids = []
+    all_attention_masks = []
+    for p in prompts:
+        if hasattr(tokenizer, "apply_chat_template") and getattr(tokenizer, "chat_template", None):
+            messages = [{"role": "user", "content": p}]
+            try:
+                text = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    enable_thinking=False,
+                )
+            except Exception:
+                text = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+        else:
+            text = p
+        inputs = tokenizer(
+            text,
+            return_tensors="pt",
+            padding="max_length",
+            truncation=True,
+            max_length=max_length,
+        )
+        all_input_ids.append(inputs["input_ids"])
+        all_attention_masks.append(inputs["attention_mask"])
+
+    input_ids = torch.cat(all_input_ids, dim=0).to(device)
+    attention_mask = torch.cat(all_attention_masks, dim=0).to(device)
+
+    with torch.no_grad():
+        output = text_encoder(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=True,
+            use_cache=False,
+        )
+        num_layers = len(output.hidden_states)
+        layers_to_use = [k for k in hidden_states_layers if k < num_layers]
+        if not layers_to_use:
+            layers_to_use = [num_layers - 1]
+
+        out = torch.stack([output.hidden_states[k] for k in layers_to_use], dim=1)
+        out = out.to(dtype=dtype, device=device)
+
+        batch_size, num_channels, seq_len, hidden_dim = out.shape
+        prompt_embeds = out.permute(0, 2, 1, 3).reshape(batch_size, seq_len, num_channels * hidden_dim)
+
+    return prompt_embeds
 
 
 def _generate_sample_flux(
@@ -1008,10 +1113,42 @@ def _generate_sample_flux(
     prompt: str,
     output_path: Path,
     seed: int = 42,
+    is_flux2: bool = False,
+    resolution: int = 512,
 ) -> None:
-    """Gera uma imagem de teste para FLUX com os pesos LoRA ativos e seed fixa determinística."""
+    """Gera uma imagem de teste para FLUX.2 Klein ou FLUX.1 com pesos LoRA ativos e seed fixa determinística."""
     try:
         import torch
+
+        if is_flux2:
+            try:
+                from diffusers import Flux2KleinPipeline
+
+                pipe = Flux2KleinPipeline(
+                    scheduler=scheduler,
+                    text_encoder=text_encoder_one,
+                    tokenizer=tokenizer_one,
+                    vae=vae,
+                    transformer=transformer,
+                )
+                pipe.set_progress_bar_config(disable=True)
+                generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(seed)
+                with torch.inference_mode():
+                    image = pipe(
+                        prompt=prompt,
+                        generator=generator,
+                        num_inference_steps=4,
+                        guidance_scale=1.0,
+                        height=resolution,
+                        width=resolution,
+                    ).images[0]
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    image.save(output_path)
+                    print(f"[FLUX-KLEIN] Amostra de validação salva (seed={seed}) em: {output_path}", flush=True)
+                    return
+            except Exception as e:
+                print(f"[WARN] Tentativa com Flux2KleinPipeline: {e}. Tentando fallback...", flush=True)
+
         from diffusers import FluxPipeline
 
         pipe = FluxPipeline(
@@ -1031,8 +1168,8 @@ def _generate_sample_flux(
                 generator=generator,
                 num_inference_steps=20,
                 guidance_scale=3.5,
-                height=512,
-                width=512,
+                height=resolution,
+                width=resolution,
             ).images[0]
             output_path.parent.mkdir(parents=True, exist_ok=True)
             image.save(output_path)
@@ -1066,6 +1203,7 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         from peft import LoraConfig, get_peft_model
         from torch.utils.data import DataLoader
         from transformers import (
+            AutoModelForCausalLM,
             AutoTokenizer,
             BitsAndBytesConfig,
             CLIPTextModel,
@@ -1084,8 +1222,25 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     model_id = (
         cfg.get("model_id")
         or os.environ.get("FLUX_MODEL_ID")
-        or "black-forest-labs/FLUX.1-schnell"
+        or "unsloth/FLUX.2-klein-4B"
     )
+    is_flux2 = any(k in model_id.lower() for k in ["klein", "flux.2", "flux-2"])
+
+    # Classes condicionais para FLUX.2 / Klein se disponíveis no Diffusers instalado
+    Flux2Transformer_cls = FluxTransformer2DModel
+    AutoencoderKL_cls = AutoencoderKL
+    if is_flux2:
+        try:
+            from diffusers import Flux2Transformer2DModel
+            Flux2Transformer_cls = Flux2Transformer2DModel
+        except ImportError:
+            pass
+        try:
+            from diffusers import AutoencoderKLFlux2
+            AutoencoderKL_cls = AutoencoderKLFlux2
+        except ImportError:
+            pass
+
     dataset_path = Path(cfg.get("dataset_path", "/datasets"))
     lora_cfg = cfg.get("lora", {})
     epochs = int(lora_cfg.get("epochs", 10))
@@ -1107,13 +1262,14 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     lr_warmup_steps = int(lora_cfg.get("lr_warmup_steps", 0))
 
     # Diretório persistente de cache para pesos pré-quantizados em 4-bit (evita re-quantizar a cada job)
+    subfolder_quant = "flux2_klein_4bit" if is_flux2 else "flux1_4bit"
     quant_base = (
-        Path("/outputs/.cache/quantized/flux_4bit")
+        Path(f"/outputs/.cache/quantized/{subfolder_quant}")
         if Path("/outputs").exists()
-        else Path.home() / ".cache" / "hephaestus" / "quantized" / "flux_4bit"
+        else Path.home() / ".cache" / "hephaestus" / "quantized" / subfolder_quant
     )
     transformer_cache_dir = quant_base / "transformer"
-    t5_cache_dir = quant_base / "text_encoder_2"
+    text_encoder_cache_dir = quant_base / ("text_encoder" if is_flux2 else "text_encoder_2")
     quant_base.mkdir(parents=True, exist_ok=True)
 
     bnb_4bit_config = BitsAndBytesConfig(
@@ -1124,7 +1280,7 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     )
 
     print(
-        f"Carregando modelos base FLUX ({model_id}) [quantização: 4-bit NF4, res: {resolution}, dtype: {target_dtype}]...",
+        f"Carregando modelos base FLUX ({model_id}) [is_flux2={is_flux2}, quantização: 4-bit NF4, res: {resolution}, dtype: {target_dtype}]...",
         flush=True,
     )
 
@@ -1134,7 +1290,7 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             f"Carregando Transformer quantizado em 4-bit do cache persistente: {transformer_cache_dir}",
             flush=True,
         )
-        transformer = FluxTransformer2DModel.from_pretrained(
+        transformer = Flux2Transformer_cls.from_pretrained(
             transformer_cache_dir,
             torch_dtype=target_dtype,
         )
@@ -1144,7 +1300,7 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             flush=True,
         )
         try:
-            transformer = FluxTransformer2DModel.from_pretrained(
+            transformer = Flux2Transformer_cls.from_pretrained(
                 model_id,
                 subfolder="transformer",
                 quantization_config=bnb_4bit_config,
@@ -1174,53 +1330,99 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                 flush=True,
             )
 
-    # 2. Carregamento do Text Encoder T5: do cache quantizado se já existir, senão quantiza e salva
-    if t5_cache_dir.exists() and (t5_cache_dir / "config.json").exists():
-        print(
-            f"Carregando Text Encoder T5 quantizado em 4-bit do cache persistente: {t5_cache_dir}",
-            flush=True,
-        )
-        text_encoder_two = T5EncoderModel.from_pretrained(
-            t5_cache_dir,
-            torch_dtype=target_dtype,
+    # 2. Carregamento do(s) Text Encoder(s)
+    if is_flux2:
+        # FLUX.2 Klein: utiliza um único Text Encoder Qwen3 em 4-bit NF4
+        tokenizer_two = None
+        text_encoder_two = None
+
+        if text_encoder_cache_dir.exists() and (text_encoder_cache_dir / "config.json").exists():
+            print(
+                f"Carregando Text Encoder Qwen3 quantizado em 4-bit do cache persistente: {text_encoder_cache_dir}",
+                flush=True,
+            )
+            text_encoder_one = AutoModelForCausalLM.from_pretrained(
+                text_encoder_cache_dir,
+                torch_dtype=target_dtype,
+            )
+        else:
+            print(
+                f"Carregando e quantizando Text Encoder Qwen3 em 4-bit NF4 ({model_id})...",
+                flush=True,
+            )
+            text_encoder_one = AutoModelForCausalLM.from_pretrained(
+                model_id,
+                subfolder="text_encoder",
+                quantization_config=bnb_4bit_config,
+                torch_dtype=target_dtype,
+                cache_dir=hub_cache,
+                token=hf_token,
+            )
+            try:
+                text_encoder_cache_dir.mkdir(parents=True, exist_ok=True)
+                text_encoder_one.save_pretrained(text_encoder_cache_dir)
+                print(
+                    f"Text Encoder Qwen3 4-bit persistido em cache para execuções futuras: {text_encoder_cache_dir}",
+                    flush=True,
+                )
+            except Exception as e:
+                print(
+                    f"[WARN] Não foi possível persistir Text Encoder Qwen3 4-bit em disco: {e}",
+                    flush=True,
+                )
+
+        tokenizer_one = AutoTokenizer.from_pretrained(
+            model_id, subfolder="tokenizer", cache_dir=hub_cache, token=hf_token
         )
     else:
-        print(
-            f"Carregando e quantizando Text Encoder T5 em 4-bit NF4 ({model_id})...",
-            flush=True,
-        )
-        text_encoder_two = T5EncoderModel.from_pretrained(
-            model_id,
-            subfolder="text_encoder_2",
-            quantization_config=bnb_4bit_config,
-            torch_dtype=target_dtype,
-            cache_dir=hub_cache,
-            token=hf_token,
-        )
-        try:
-            t5_cache_dir.mkdir(parents=True, exist_ok=True)
-            text_encoder_two.save_pretrained(t5_cache_dir)
+        # FLUX.1: utiliza Text Encoder CLIP + T5-XXL em 4-bit NF4
+        if text_encoder_cache_dir.exists() and (text_encoder_cache_dir / "config.json").exists():
             print(
-                f"Text Encoder T5 4-bit persistido em cache para execuções futuras: {t5_cache_dir}",
+                f"Carregando Text Encoder T5 quantizado em 4-bit do cache persistente: {text_encoder_cache_dir}",
                 flush=True,
             )
-        except Exception as e:
+            text_encoder_two = T5EncoderModel.from_pretrained(
+                text_encoder_cache_dir,
+                torch_dtype=target_dtype,
+            )
+        else:
             print(
-                f"[WARN] Não foi possível persistir Text Encoder T5 4-bit em disco: {e}",
+                f"Carregando e quantizando Text Encoder T5 em 4-bit NF4 ({model_id})...",
                 flush=True,
             )
+            text_encoder_two = T5EncoderModel.from_pretrained(
+                model_id,
+                subfolder="text_encoder_2",
+                quantization_config=bnb_4bit_config,
+                torch_dtype=target_dtype,
+                cache_dir=hub_cache,
+                token=hf_token,
+            )
+            try:
+                text_encoder_cache_dir.mkdir(parents=True, exist_ok=True)
+                text_encoder_two.save_pretrained(text_encoder_cache_dir)
+                print(
+                    f"Text Encoder T5 4-bit persistido em cache para execuções futuras: {text_encoder_cache_dir}",
+                    flush=True,
+                )
+            except Exception as e:
+                print(
+                    f"[WARN] Não foi possível persistir Text Encoder T5 4-bit em disco: {e}",
+                    flush=True,
+                )
 
-    # 3. Componentes auxiliares (Tokenizers, CLIP, VAE float32, Scheduler Flow Matching)
-    tokenizer_one = AutoTokenizer.from_pretrained(
-        model_id, subfolder="tokenizer", use_fast=False, cache_dir=hub_cache, token=hf_token
-    )
-    tokenizer_two = AutoTokenizer.from_pretrained(
-        model_id, subfolder="tokenizer_2", use_fast=False, cache_dir=hub_cache, token=hf_token
-    )
-    text_encoder_one = CLIPTextModel.from_pretrained(
-        model_id, subfolder="text_encoder", torch_dtype=target_dtype, cache_dir=hub_cache, token=hf_token
-    ).to(device)
-    vae = AutoencoderKL.from_pretrained(
+        tokenizer_one = AutoTokenizer.from_pretrained(
+            model_id, subfolder="tokenizer", use_fast=False, cache_dir=hub_cache, token=hf_token
+        )
+        tokenizer_two = AutoTokenizer.from_pretrained(
+            model_id, subfolder="tokenizer_2", use_fast=False, cache_dir=hub_cache, token=hf_token
+        )
+        text_encoder_one = CLIPTextModel.from_pretrained(
+            model_id, subfolder="text_encoder", torch_dtype=target_dtype, cache_dir=hub_cache, token=hf_token
+        ).to(device)
+
+    # 3. Componentes auxiliares (VAE float32, Scheduler Flow Matching)
+    vae = AutoencoderKL_cls.from_pretrained(
         model_id, subfolder="vae", torch_dtype=torch.float32, cache_dir=hub_cache, token=hf_token
     ).to(device)
     noise_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
@@ -1229,12 +1431,15 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
 
     vae.requires_grad_(False)
     text_encoder_one.requires_grad_(False)
-    text_encoder_two.requires_grad_(False)
+    if text_encoder_two is not None:
+        text_encoder_two.requires_grad_(False)
     transformer.requires_grad_(False)
 
     # 4. Injeção de adaptadores LoRA via PEFT nas camadas lineares do Transformer FLUX
     target_modules = [
         "to_k", "to_q", "to_v", "to_out.0",
+        "add_k_proj", "add_v_proj", "add_q_proj", "to_add_out",
+        "to_qkv_mlp_proj", "to_out_mlp_proj",
         "linear1", "linear2",
     ]
     lora_config = LoraConfig(
@@ -1274,7 +1479,7 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         metrics_path.unlink()
 
     print(
-        f"Iniciando treino LoRA FLUX (4-bit NF4): {epochs} épocas, {len(dataset)} imagens, "
+        f"Iniciando treino LoRA FLUX (is_flux2={is_flux2}, 4-bit NF4): {epochs} épocas, {len(dataset)} imagens, "
         f"rank={rank}, alpha={alpha}, lr={learning_rate}, res={resolution}px, ga={grad_accum}x",
         flush=True,
     )
@@ -1296,32 +1501,50 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             # Codifica imagens com VAE (em float32 para evitar instabilidade numérica)
             with torch.no_grad():
                 latents = vae.encode(pixel_values.float()).latent_dist.sample()
-                latents = (latents - shift_factor) * scaling_factor
-                latents = latents.to(dtype=target_dtype)
-                packed_latents = _pack_latents(latents)
 
-                # Coordenadas RoPE de imagem e texto
-                img_ids = _prepare_latent_image_ids(bsz, resolution, resolution, device, target_dtype)
+                if is_flux2:
+                    latents = _patchify_latents_flux2(latents)
+                    if hasattr(vae, "bn") and getattr(vae.bn, "running_mean", None) is not None:
+                        latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(latents.device, latents.dtype)
+                        latents_bn_std = torch.sqrt(
+                            vae.bn.running_var.view(1, -1, 1, 1) + getattr(vae.config, "batch_norm_eps", 1e-5)
+                        ).to(latents.device, latents.dtype)
+                        latents = (latents - latents_bn_mean) / latents_bn_std
+                    else:
+                        latents = (latents - shift_factor) * scaling_factor
+                    latents = latents.to(dtype=target_dtype)
+                    img_ids = _prepare_flux2_latent_ids(latents)
+                    packed_latents = _pack_latents_flux2(latents)
 
-                # Codifica texto das legendas (CLIP pooled + T5 prompt_embeds)
-                clip_inputs = tokenizer_one(
-                    captions,
-                    padding="max_length",
-                    max_length=77,
-                    truncation=True,
-                    return_tensors="pt",
-                ).to(device)
-                pooled_prompt_embeds = text_encoder_one(clip_inputs.input_ids).pooler_output
+                    prompt_embeds = _encode_qwen3_prompt(
+                        text_encoder_one, tokenizer_one, captions, device, target_dtype
+                    )
+                    txt_ids = _prepare_flux2_text_ids(prompt_embeds)
+                    pooled_prompt_embeds = None
+                else:
+                    latents = (latents - shift_factor) * scaling_factor
+                    latents = latents.to(dtype=target_dtype)
+                    packed_latents = _pack_latents(latents)
+                    img_ids = _prepare_latent_image_ids(bsz, resolution, resolution, device, target_dtype)
 
-                t5_inputs = tokenizer_two(
-                    captions,
-                    padding="max_length",
-                    max_length=512,
-                    truncation=True,
-                    return_tensors="pt",
-                ).to(device)
-                prompt_embeds = text_encoder_two(t5_inputs.input_ids)[0]
-                txt_ids = _prepare_text_ids(prompt_embeds.shape[1], device, prompt_embeds.dtype, batch_size=bsz)
+                    clip_inputs = tokenizer_one(
+                        captions,
+                        padding="max_length",
+                        max_length=77,
+                        truncation=True,
+                        return_tensors="pt",
+                    ).to(device)
+                    pooled_prompt_embeds = text_encoder_one(clip_inputs.input_ids).pooler_output
+
+                    t5_inputs = tokenizer_two(
+                        captions,
+                        padding="max_length",
+                        max_length=512,
+                        truncation=True,
+                        return_tensors="pt",
+                    ).to(device)
+                    prompt_embeds = text_encoder_two(t5_inputs.input_ids)[0]
+                    txt_ids = _prepare_text_ids(prompt_embeds.shape[1], device, prompt_embeds.dtype, batch_size=bsz)
 
             # Ruído gaussiano e timesteps aleatórios para Flow Matching
             noise = torch.randn_like(packed_latents)
@@ -1333,20 +1556,28 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             noisy_latents = (1.0 - t_expanded) * packed_latents + t_expanded * noise
             target = noise - packed_latents
 
-            # Guidance scale embedding padrão para FLUX
-            guidance = torch.full((bsz,), 3.5, device=device, dtype=target_dtype)
-
             # Forward no Transformer FLUX com adaptadores LoRA ativos
-            model_pred = transformer(
-                hidden_states=noisy_latents,
-                timestep=timesteps,
-                guidance=guidance,
-                pooled_projections=pooled_prompt_embeds,
-                encoder_hidden_states=prompt_embeds,
-                txt_ids=txt_ids,
-                img_ids=img_ids,
-                return_dict=False,
-            )[0]
+            if is_flux2:
+                model_pred = transformer(
+                    hidden_states=noisy_latents,
+                    timestep=timesteps,
+                    encoder_hidden_states=prompt_embeds,
+                    txt_ids=txt_ids,
+                    img_ids=img_ids,
+                    return_dict=False,
+                )[0]
+            else:
+                guidance = torch.full((bsz,), 3.5, device=device, dtype=target_dtype)
+                model_pred = transformer(
+                    hidden_states=noisy_latents,
+                    timestep=timesteps,
+                    guidance=guidance,
+                    pooled_projections=pooled_prompt_embeds,
+                    encoder_hidden_states=prompt_embeds,
+                    txt_ids=txt_ids,
+                    img_ids=img_ids,
+                    return_dict=False,
+                )[0]
 
             loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
             cur_loss_raw = loss.item()
@@ -1406,24 +1637,26 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         if sample_prompt and sample_interval > 0 and (epoch % sample_interval == 0 or epoch == epochs):
             sample_file = output / "samples" / f"sample_epoch_{epoch:03d}.png"
             _generate_sample_flux(
-                    transformer=transformer,
-                    vae=vae,
-                    text_encoder_one=text_encoder_one,
-                    text_encoder_two=text_encoder_two,
-                    tokenizer_one=tokenizer_one,
-                    tokenizer_two=tokenizer_two,
-                    scheduler=noise_scheduler,
-                    prompt=sample_prompt,
-                    output_path=sample_file,
-                    seed=sample_seed,
-                )
+                transformer=transformer,
+                vae=vae,
+                text_encoder_one=text_encoder_one,
+                text_encoder_two=text_encoder_two,
+                tokenizer_one=tokenizer_one,
+                tokenizer_two=tokenizer_two,
+                scheduler=noise_scheduler,
+                prompt=sample_prompt,
+                output_path=sample_file,
+                seed=sample_seed,
+                is_flux2=is_flux2,
+                resolution=resolution,
+            )
 
     # Salva adaptador LoRA final em safetensors com metadados
     adapter_file = output / "adapter.safetensors"
     metadata = {
         "format": "pt",
         "model_type": "lora",
-        "base_model": "flux-2-klein-4b",
+        "base_model": "flux-2-klein-4b" if is_flux2 else "flux-1",
         "lora_rank": str(rank),
         "lora_alpha": str(alpha),
         "trigger_word": trigger_word,

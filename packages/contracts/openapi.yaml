@@ -2706,6 +2706,11 @@ components:
           enum: [fp16, bf16, "no"]
           default: fp16
           description: "Precisão numérica de ponto flutuante durante o treino (fp16, bf16 ou no). Padrão fp16."
+        quantization:
+          type: string
+          enum: ["none", "4bit", "8bit"]
+          default: "4bit"
+          description: "Nível de quantização do modelo base (4bit = NF4 QLoRA, 8bit = BitsAndBytes int8, none = sem quantização FP16/BF16 pleno)."
 
     PredictJobRequest:
       type: object

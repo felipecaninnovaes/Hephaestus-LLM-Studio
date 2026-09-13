@@ -34,6 +34,9 @@ services:
       ORCH_VOL_DATASETS: gpu_gpu_datasets
       ORCH_VOL_OUTPUTS: gpu_gpu_outputs
       ORCH_GPU_ALLOW_MOCK: ${ORCH_GPU_ALLOW_MOCK:-}
+      HF_TOKEN: ${HF_TOKEN:-}
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+      FLUX_MODEL_ID: ${FLUX_MODEL_ID:-}
       EXEC_MODE: docker
       PORT: '8082'
     volumes:

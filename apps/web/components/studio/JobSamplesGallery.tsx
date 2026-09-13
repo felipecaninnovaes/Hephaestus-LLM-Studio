@@ -35,7 +35,8 @@ export function JobSamplesGallery({
   function formatSampleLabel(path: string): string {
     const match = path.match(/epoch_(\d+)/i);
     if (match) {
-      return `Época ${parseInt(match[1], 10)}`;
+      const ep = parseInt(match[1], 10);
+      return ep === 0 ? "Baseline (Época 0)" : `Época ${ep}`;
     }
     const fname = path.split("/").pop() || path;
     return fname.replace(/\.[^/.]+$/, "");

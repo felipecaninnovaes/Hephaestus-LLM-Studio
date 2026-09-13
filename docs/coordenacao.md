@@ -19,7 +19,49 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-13 (FATIA OPÇÕES AVANÇADAS DE TREINO DE DIFUSÃO E PRESETS CONCLUÍDA NA BRANCH)
+## Estado atual — 2026-09-13 (FATIA SELEÇÃO E CONFIGURAÇÃO DE QUANTIZAÇÃO DO MODELO BASE CONCLUÍDA NA BRANCH)
+
+- **FATIA SELEÇÃO E CONFIGURAÇÃO DE QUANTIZAÇÃO DO MODELO BASE (4-BIT NF4, 8-BIT BNB E FP16 PLENO) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/flux-klein-4bit-training`.
+  - **Motivação**: Permitir ao usuário escolher livremente o nível de quantização do modelo base (`4bit` NF4 BitsAndBytes, `8bit` BitsAndBytes ou `none` FP16/BF16 pleno) no treinamento LoRA de difusão, equilibrando consumo de VRAM e precisão numérica conforme o hardware disponível (ex: 4-bit para RTX 3060 12GB, 8-bit para GPUs de 16GB+, e precisão plena para nós de 24GB+).
+  - **Contratos & API Principal**:
+    - `packages/contracts/openapi.yaml`: Adicionado campo `quantization` (enum: `none`, `4bit`, `8bit`, default `4bit`) em `DiffusionJobRequest`.
+    - `services/api-principal/src/jobs/models.rs`: Constante `ALLOWED_DIFFUSION_QUANTIZATIONS`, campo `quantization: String` com `#[serde(default = "default_diffusion_quantization")]`, validação estrita em `validate_diffusion_request` e injeção de `quantization: "{quantization}"` na seção `lora:` do `config.yaml`. Testes unitários com cobertura total (5/5 testes de difusão verdes).
+  - **Engine Python (`engines/trainer-difusao`)**:
+    - `train.py`: Leitura de `quantization` em `_real_train_flux`, `_real_train_sdxl`, `_real_train_sd15` e `_mock_train`.
+    - Suporte dinâmico a `BitsAndBytesConfig` (4-bit NF4 com double quantization e bfloat16 compute dtype; 8-bit BNB; ou None para carregamento FP16/BF16 pleno sem quantização).
+    - Cache condicional de pesos quantizados por subpasta (`flux2_klein_4bit`, `flux2_klein_8bit`), ignorando cache se `none`.
+    - Inclusão do campo `quantization` no dicionário `__metadata__` do arquivo de pesos gerado `adapter.safetensors`.
+    - Testes unitários atualizados em `test_train.py` (8/8 testes passando).
+  - **Frontend Web (`apps/web`)**:
+    - `types/studio.ts`: Propriedade `quantization?: "none" | "4bit" | "8bit"` adicionada em `DiffusionJobRequest` e `DiffusionPreset`.
+    - `lib/jobs.ts`: `startDiffusionJob` propagando `quantization` para o endpoint da API.
+    - `components/studio/ForjaDifusaoSetup.tsx`:
+      - Atualização do cálculo preditivo `estimateDiffusionVramGb` para considerar a quantização selecionada (4bit: ~10GB FLUX; 8bit: ~14.5GB; none: ~22GB).
+      - Adição do componente canônico `<Select>` de Quantização nas Configurações Avançadas de Treinamento.
+      - Adição de badge dinâmica de quantização no resumo colapsável do cabeçalho.
+      - Inclusão de `quantization` nos manipuladores de preset (`applyPreset`, `handleExportPreset`, `handleImportPreset`, `handleAutoFixSafeParams`).
+      - Adição do preset rápido `FLUX.2 Klein 4B (4-bit NF4)`.
+    - Verificações estritas: `next build` compilado com 100% de sucesso (12/12 páginas estáticas, 0 erros TypeScript).
+
+- **FATIA TREINO REAL FLUX.2 KLEIN 4B QUANTIZADO (4-BIT NF4 + TELEMETRIA DE PREPARAÇÃO + AMOSTRA BASELINE ÉPOCA 0) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/flux-klein-4bit-training`.
+  - **Motivação**: Viabilizar o treinamento real de LoRA para o novo modelo de ponta **FLUX.2 Klein 4B** (`unsloth/FLUX.2-klein-4B`) na GPU do estúdio (NVIDIA GeForce RTX 3060 12GB VRAM), onde parâmetros em precisão FP16 pura excedem a capacidade de memória (>21 GB necessários). Adicionalmente, fornecer **telemetria em tempo real de preparação e quantização**, **geração de amostra baseline pré-treino (Época 0)** e **métricas contínuas por step** no frontend.
+  - **Estratégia Técnica & Implementação**:
+    1. **Modelo Alvo FLUX.2 Klein 4B**: Adoção do modelo aberto `unsloth/FLUX.2-klein-4B` com arquitetura moderna de encoder único baseado em Qwen3 (`Qwen3ForCausalLM` / `AutoModelForCausalLM`), eliminando a necessidade do pesado T5-XXL do Flux.1 e reduzindo drasticamente o consumo de VRAM e latência de encoding.
+    2. **Quantização 4-bit (QLoRA via BitsAndBytes NF4)**: Carregamento do Transformer (`Flux2Transformer2DModel` / `FluxTransformer2DModel`) e do Text Encoder Qwen3 em 4-bit NF4 com compute dtype `bfloat16` nativo da arquitetura Ampere.
+    3. **Persistência de Pesos Quantizados em Cache**: Salvamento automático da versão quantizada em `/outputs/.cache/quantized/flux2_klein_4bit/` na primeira execução, permitindo carregamento direto nas execuções subsequentes em 2 a 3 segundos sem re-quantização.
+    4. **Telemetria de Preparação & Fases Estruturadas**:
+       - Função `_emit_metric` com flush imediato no motor Python (`engines/trainer-difusao/src/trainer_difusao/train.py`), emitindo eventos de fase com `epoch: 0` (`init`, `load_transformer`, `quantizing_transformer`, `load_text_encoder`, `quantizing_text_encoder`, `setup_lora`, `dataset_ready`).
+       - Propagação completa por Orquestrador (`phase`, `message` e fallback em `extract_epochs` para `lora.epochs`), Manager (`metrics_key` composto para não colidir eventos de época 0) e API Principal (`MetricsItem`).
+       - `JobLogViewer.tsx` e `JobSamplesGallery.tsx` atualizados para exibir mensagens com tag de fase e rotular amostra de época 0 como `"Baseline (Época 0)"`.
+    5. **Amostra Baseline Pré-Treino (Época 0)**:
+       - Geração automática de `sample_epoch_000.png` antes do início do loop de treino (FLUX, SDXL, SD1.5 e Mock), permitindo comparação visual direta antes e depois do ajuste fino LoRA.
+    6. **Métricas Contínuas por Step**:
+       - Emissão em `metrics.jsonl` a cada 5 steps e fim de época com cálculo proporcional de `progress` contínuo (0.10 a 0.99), `loss`, `lr` e `step`.
+    7. **Scripts de Build & Start Sem Sudo**:
+       - Compilação: `scripts/build-host.sh`, `scripts/build-gpu.sh` e `scripts/build-all.sh`.
+       - Inicialização Host: `scripts/start-host.sh` (`--no-web` dev e `--with-web` full), `scripts/start-host-dev.sh`, `scripts/start-host-full.sh`, `scripts/stop-host.sh`.
+       - Inicialização TrueNAS: `scripts/start-truenas.sh` (com auto-SSH se chamado do dev host ou local no TrueNAS) e `scripts/stop-truenas.sh`.
+    8. **Testes & Grafo**: 7/7 testes unitários passando em `trainer-difusao`, testes do `orchestrator`, `manager` e `api-principal` passando 100%, `next build` com 12/12 páginas estáticas compiladas, grafo `graft build` atualizado.
 
 - **FATIA OPÇÕES AVANÇADAS DE TREINO DE DIFUSÃO E PRESETS DE CONFIGURAÇÃO (JSON & QUICK PRESETS) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/diffusion-advanced-training-presets`.
   - **Motivação**: Oferecer controle granular aos usuários sobre o pipeline de treino de difusão LoRA (resolução dinâmica, acumulação de gradientes para simulação de batch sem aumento de VRAM, seleção de otimizadores incluindo 8-bit AdamW e Prodigy adaptativo, schedulers com warmup e controle de precisão mista), além de facilitar a reproducibilidade através de importação e exportação de presets `.json` e presets rápidos embutidos na interface.

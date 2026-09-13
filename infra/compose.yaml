@@ -130,6 +130,9 @@ services:
       EXEC_MODE: ${EXEC_MODE:-docker}
       ORCH_VOL_DATASETS: ${COMPOSE_PROJECT_NAME:-infra}_datasets
       ORCH_VOL_OUTPUTS: ${COMPOSE_PROJECT_NAME:-infra}_outputs
+      HF_TOKEN: ${HF_TOKEN:-}
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+      FLUX_MODEL_ID: ${FLUX_MODEL_ID:-}
       PORT: "8082"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

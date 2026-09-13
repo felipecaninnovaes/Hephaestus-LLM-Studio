@@ -776,13 +776,16 @@ fn normalize_metrics_to_array(value: &serde_json::Value) -> Vec<serde_json::Valu
     vec![]
 }
 
-/// Extrai o campo `epoch` (i64) de um objeto de métricas.
-fn metrics_epoch(value: &serde_json::Value) -> Option<i64> {
-    value.get("epoch").and_then(|v| v.as_i64())
+/// Extrai uma chave numérica estável (epoch * 1_000_000 + step) de um objeto de métricas.
+/// Permite rastrear múltiplos passos e fases de preparação dentro da mesma época.
+fn metrics_key(value: &serde_json::Value) -> Option<i64> {
+    let epoch = value.get("epoch").and_then(|v| v.as_i64())?;
+    let step = value.get("step").and_then(|v| v.as_i64()).unwrap_or(0);
+    Some(epoch * 1_000_000 + step)
 }
 
 /// Faz upsert incremental de metrics no banco:
-/// lê array existente, normaliza novos, dedup por epoch (R4), grava como
+/// lê array existente, normaliza novos, dedup por chave (epoch, step), grava como
 /// `{"items": [...]}` (formato esperado por `remap_metrics` no api-principal).
 async fn upsert_metrics(
     pool: &PgPool,
@@ -797,27 +800,27 @@ async fn upsert_metrics(
             .await
             .map_err(|e| ManagerError::Internal(format!("read metrics: {e}")))?;
 
-    // Mapa epoch → objeto (dedup por chave).
-    let mut epoch_map: std::collections::HashMap<i64, serde_json::Value> =
+    // Mapa chave → objeto (dedup por (epoch, step)).
+    let mut metrics_map: std::collections::HashMap<i64, serde_json::Value> =
         std::collections::HashMap::new();
 
     // 1. Itens existentes.
     for item in normalize_metrics_to_array(&existing) {
-        if let Some(ep) = metrics_epoch(&item) {
-            epoch_map.insert(ep, item);
+        if let Some(k) = metrics_key(&item) {
+            metrics_map.insert(k, item);
         }
     }
 
-    // 2. Itens novos (substitui se epoch repetido).
+    // 2. Itens novos (substitui se chave repetida).
     for item in normalize_metrics_to_array(new_metrics) {
-        if let Some(ep) = metrics_epoch(&item) {
-            epoch_map.insert(ep, item);
+        if let Some(k) = metrics_key(&item) {
+            metrics_map.insert(k, item);
         }
     }
 
-    // 3. Ordena por epoch e grava como {"items": [...]}.
-    let mut items: Vec<serde_json::Value> = epoch_map.into_values().collect();
-    items.sort_by_key(|v| metrics_epoch(v).unwrap_or(0));
+    // 3. Ordena por chave cronológica e grava como {"items": [...]}.
+    let mut items: Vec<serde_json::Value> = metrics_map.into_values().collect();
+    items.sort_by_key(|v| metrics_key(v).unwrap_or(0));
 
     let merged = serde_json::json!({"items": items});
     sqlx::query("UPDATE jobs SET metrics = $2 WHERE id = $1")

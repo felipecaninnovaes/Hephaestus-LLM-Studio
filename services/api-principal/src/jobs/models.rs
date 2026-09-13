@@ -695,6 +695,7 @@ const ALLOWED_DIFFUSION_OPTIMIZERS: &[&str] = &["adamw8bit", "adamw", "prodigy"]
 const ALLOWED_DIFFUSION_LR_SCHEDULERS: &[&str] =
     &["cosine", "linear", "constant", "constant_with_warmup"];
 const ALLOWED_DIFFUSION_PRECISION: &[&str] = &["fp16", "bf16", "no"];
+const ALLOWED_DIFFUSION_QUANTIZATIONS: &[&str] = &["none", "4bit", "8bit", "4bit-nf4", "8bit-bnb"];
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -736,10 +737,15 @@ pub struct DiffusionJobRequest {
     pub lr_warmup_steps: u32,
     #[serde(default = "default_diffusion_precision")]
     pub mixed_precision: String,
+    #[serde(default = "default_diffusion_quantization")]
+    pub quantization: String,
 }
 
 fn default_diffusion_base_model() -> String {
     "sdxl".to_string()
+}
+fn default_diffusion_quantization() -> String {
+    "4bit".to_string()
 }
 fn default_diffusion_epochs() -> u32 {
     10
@@ -847,6 +853,12 @@ pub fn validate_diffusion_request(req: DiffusionJobRequest) -> Result<DiffusionJ
             ALLOWED_DIFFUSION_PRECISION, req.mixed_precision
         ));
     }
+    if !ALLOWED_DIFFUSION_QUANTIZATIONS.contains(&req.quantization.as_str()) {
+        return Err(format!(
+            "quantization must be one of {:?}, got '{}'",
+            ALLOWED_DIFFUSION_QUANTIZATIONS, req.quantization
+        ));
+    }
     if let Some(ref tw) = req.trigger_word {
         if tw.chars().count() > 100 {
             return Err("triggerWord must not exceed 100 characters".to_string());
@@ -922,6 +934,7 @@ lora:
   lr_scheduler: "{lr_scheduler}"
   lr_warmup_steps: {lr_warmup_steps}
   mixed_precision: "{mixed_precision}"
+  quantization: "{quantization}"
 {samples_section}"#,
         job_id = job_id,
         base_model = req.base_model,
@@ -937,6 +950,7 @@ lora:
         lr_scheduler = req.lr_scheduler,
         lr_warmup_steps = req.lr_warmup_steps,
         mixed_precision = req.mixed_precision,
+        quantization = req.quantization,
         samples_section = samples_section,
     )
 }
@@ -1825,12 +1839,14 @@ mod tests {
         assert_eq!(validated.rank, 16);
         assert_eq!(validated.alpha, 16);
         assert_eq!(validated.learning_rate, 0.0001);
+        assert_eq!(validated.quantization, "4bit");
         assert!(validated.trigger_word.is_none());
 
         let yaml = generate_diffusion_config_yaml("job-123", &validated);
         assert!(yaml.contains(r#"engine: "diffusion""#));
         assert!(yaml.contains(r#"model: "sdxl""#));
         assert!(yaml.contains(r#"rank: 16"#));
+        assert!(yaml.contains(r#"quantization: "4bit""#));
     }
 
     #[test]
@@ -1850,6 +1866,11 @@ mod tests {
         let json2 = r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","rank":200}"#;
         let req2: DiffusionJobRequest = serde_json::from_str(json2).unwrap();
         assert!(validate_diffusion_request(req2).is_err());
+
+        let json3 =
+            r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","quantization":"invalid"}"#;
+        let req3: DiffusionJobRequest = serde_json::from_str(json3).unwrap();
+        assert!(validate_diffusion_request(req3).is_err());
     }
 
     #[test]
@@ -1862,7 +1883,8 @@ mod tests {
             "optimizer": "adamw8bit",
             "lrScheduler": "cosine",
             "lrWarmupSteps": 50,
-            "mixedPrecision": "bf16"
+            "mixedPrecision": "bf16",
+            "quantization": "8bit"
         }"#;
         let req: DiffusionJobRequest = serde_json::from_str(json).expect("should parse json");
         let validated = validate_diffusion_request(req).expect("should validate advanced params");
@@ -1872,6 +1894,7 @@ mod tests {
         assert_eq!(validated.lr_scheduler, "cosine");
         assert_eq!(validated.lr_warmup_steps, 50);
         assert_eq!(validated.mixed_precision, "bf16");
+        assert_eq!(validated.quantization, "8bit");
 
         let yaml = generate_diffusion_config_yaml("job-adv-1", &validated);
         assert!(yaml.contains("resolution: 1024"));
@@ -1880,6 +1903,7 @@ mod tests {
         assert!(yaml.contains(r#"lr_scheduler: "cosine""#));
         assert!(yaml.contains("lr_warmup_steps: 50"));
         assert!(yaml.contains(r#"mixed_precision: "bf16""#));
+        assert!(yaml.contains(r#"quantization: "8bit""#));
     }
 
     #[test]

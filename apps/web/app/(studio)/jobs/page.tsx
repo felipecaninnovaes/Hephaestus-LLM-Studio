@@ -82,6 +82,7 @@ function JobsPageContent() {
   const searchParams = useSearchParams();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [metrics, setMetrics] = useState<Record<string, JobMetricsType[]>>({});
@@ -107,7 +108,8 @@ function JobsPageContent() {
     setApplyOverwrite(false);
   }, [selectedJobId]);
 
-  const fetchJobs = useCallback(async () => {
+  const fetchJobs = useCallback(async (isManual = false) => {
+    if (isManual) setRefreshing(true);
     try {
       const data = await listJobs();
       setJobs(data.items);
@@ -122,6 +124,7 @@ function JobsPageContent() {
       setError("Falha ao carregar lista de jobs.");
     } finally {
       setLoading(false);
+      if (isManual) setRefreshing(false);
     }
   }, []);
 
@@ -371,11 +374,11 @@ function JobsPageContent() {
             type="button"
             variant="secondary"
             size="sm"
-            onClick={() => void fetchJobs()}
-            disabled={loading}
+            onClick={() => void fetchJobs(true)}
+            disabled={refreshing}
             title="Atualizar lista e status dos jobs"
           >
-            <IconRefresh className={`size-3.5 ${loading ? "animate-spin text-brand-400" : ""}`} />
+            <IconRefresh className={`size-3.5 ${refreshing ? "animate-spin text-brand-400" : ""}`} />
             <span>Atualizar</span>
           </Button>
           <Button

@@ -273,7 +273,7 @@ pub fn scoped_key(scope: S3Scope, key: &str) -> Result<String, ScopedKeyError> {
 // Metrics parsing (D5 — contrato com F4.5, snake_case)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct MetricsLine {
     #[serde(default)]
     pub box_loss: f64,
@@ -294,6 +294,10 @@ pub struct MetricsLine {
     pub epoch: i32,
     #[serde(default)]
     pub progress: Option<f64>,
+    #[serde(default)]
+    pub phase: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 impl MetricsLine {
@@ -314,6 +318,15 @@ impl MetricsLine {
         }
         if let Some(step) = self.step {
             obj["step"] = serde_json::json!(step);
+        }
+        if let Some(p) = self.progress {
+            obj["progress"] = serde_json::json!(p);
+        }
+        if let Some(ref phase) = self.phase {
+            obj["phase"] = serde_json::json!(phase);
+        }
+        if let Some(ref msg) = self.message {
+            obj["message"] = serde_json::json!(msg);
         }
         obj
     }
@@ -337,6 +350,14 @@ pub fn parse_metrics_line(line: &str) -> Option<MetricsLine> {
     };
     let v: serde_json::Value = serde_json::from_str(&clean_line).ok()?;
     let epoch = v.get("epoch")?.as_i64()? as i32;
+    let phase = v
+        .get("phase")
+        .and_then(|p| p.as_str())
+        .map(|s| s.to_string());
+    let message = v
+        .get("message")
+        .and_then(|m| m.as_str())
+        .map(|s| s.to_string());
     Some(MetricsLine {
         box_loss: v.get("box_loss").and_then(|x| x.as_f64()).unwrap_or(0.0),
         cls_loss: v.get("cls_loss").and_then(|x| x.as_f64()).unwrap_or(0.0),
@@ -348,6 +369,8 @@ pub fn parse_metrics_line(line: &str) -> Option<MetricsLine> {
         step: v.get("step").and_then(|x| x.as_i64()),
         epoch,
         progress: v.get("progress").and_then(|p| p.as_f64()),
+        phase,
+        message,
     })
 }
 
@@ -391,12 +414,22 @@ pub fn replace_config_placeholders(
     }
 }
 
-/// Extrai o valor de `epochs` do config.yaml (para计算 progress).
+/// Extrai o valor de `epochs` do config.yaml (para cálculo de progress).
 pub fn extract_epochs(config_yaml: &str) -> i32 {
-    serde_yaml::from_str::<serde_yaml::Value>(config_yaml)
-        .ok()
-        .and_then(|v| v.get("epochs")?.as_i64())
-        .unwrap_or(100) as i32
+    let parsed = serde_yaml::from_str::<serde_yaml::Value>(config_yaml).ok();
+    if let Some(ref v) = parsed {
+        if let Some(ep) = v.get("epochs").and_then(|e| e.as_i64()) {
+            return ep as i32;
+        }
+        if let Some(ep) = v
+            .get("lora")
+            .and_then(|l| l.get("epochs"))
+            .and_then(|e| e.as_i64())
+        {
+            return ep as i32;
+        }
+    }
+    100
 }
 
 // ---------------------------------------------------------------------------
@@ -1119,6 +1152,23 @@ async fn run_job_inner(
             "TORCH_HOME".to_string(),
             "/outputs/.cache/torch".to_string(),
         ));
+    }
+
+    // Repassa token do Hugging Face para download de modelos restritos/gated
+    if let Ok(token) =
+        std::env::var("HF_TOKEN").or_else(|_| std::env::var("HUGGING_FACE_HUB_TOKEN"))
+    {
+        if !token.is_empty() {
+            exec_env.push(("HF_TOKEN".to_string(), token.clone()));
+            exec_env.push(("HUGGING_FACE_HUB_TOKEN".to_string(), token));
+        }
+    }
+
+    // Repassa FLUX_MODEL_ID customizado se definido no nó
+    if let Ok(model_id) = std::env::var("FLUX_MODEL_ID") {
+        if !model_id.is_empty() {
+            exec_env.push(("FLUX_MODEL_ID".to_string(), model_id));
+        }
     }
 
     // Spawn metrics collector & sample streamer (polls metrics.jsonl e outputs/samples durante execução)
@@ -1904,6 +1954,8 @@ mod tests {
             step: None,
             epoch: 5,
             progress: None,
+            phase: None,
+            message: None,
         };
         assert!((compute_progress(&m, 100) - 0.05).abs() < 1e-6);
     }
@@ -1921,6 +1973,8 @@ mod tests {
             step: None,
             epoch: 5,
             progress: None,
+            phase: None,
+            message: None,
         };
         assert!((compute_progress(&m, 0) - 0.0).abs() < 1e-6);
     }
@@ -1938,6 +1992,8 @@ mod tests {
             step: None,
             epoch: 100,
             progress: None,
+            phase: None,
+            message: None,
         };
         assert!((compute_progress(&m, 100) - 1.0).abs() < 1e-6);
     }
@@ -1955,6 +2011,8 @@ mod tests {
             step: None,
             epoch: 3,
             progress: Some(0.65),
+            phase: None,
+            message: None,
         };
         assert!((compute_progress(&m, 100) - 0.65).abs() < 1e-6);
     }

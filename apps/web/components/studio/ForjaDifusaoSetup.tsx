@@ -397,7 +397,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
               {d.imagesCount} imgs
             </span>
             {d.category === "difusao" && (
-              <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-1.5 py-0.5 font-mono text-[10px] text-sky-400">
+              <span className="rounded-full border border-brand-500/30 bg-brand-500/10 px-1.5 py-0.5 font-mono text-[10px] text-brand-400">
                 Difusão
               </span>
             )}
@@ -541,8 +541,8 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
     <form onSubmit={handleSubmit} className="space-y-6 text-xs">
       {/* Cabeçalho do Card */}
       <div className="flex items-center gap-3">
-        <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-sky-500/30 bg-sky-500/10 backdrop-blur-sm text-sky-400">
-          <IconPlay className="h-4 w-4" />
+        <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-brand-500/30 bg-brand-500/15 backdrop-blur-sm text-brand-400">
+          <IconSparkles className="h-4 w-4" />
         </div>
         <div>
           <h2 className="font-display text-sm font-bold text-white tracking-wide">
@@ -567,7 +567,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
       <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3.5 space-y-3 backdrop-blur-sm">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
-            <IconSparkles className="size-3.5 text-amber-400" />
+            <IconSparkles className="size-3.5 text-brand-400" />
             <span className="font-display text-xs font-semibold text-zinc-200">
               Presets de Treinamento
             </span>
@@ -627,13 +627,13 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
                 mixedPrecision: "fp16",
               })
             }
-            className="flex flex-col text-left p-2 rounded-lg border border-white/5 bg-zinc-900/60 hover:bg-zinc-800 hover:border-sky-500/40 transition text-zinc-300 group"
+            className="flex flex-col text-left p-2.5 rounded-lg border border-white/10 bg-white/[0.02] hover:border-brand-500/40 hover:bg-white/[0.05] transition-colors text-zinc-300 group focus:outline-none focus:ring-2 focus:ring-brand-500/40"
           >
-            <span className="font-mono text-[11px] font-semibold text-zinc-200 group-hover:text-sky-400">
+            <span className="font-display text-xs font-medium text-zinc-200 group-hover:text-brand-300 transition-colors">
               SDXL Padrão
             </span>
-            <span className="font-mono text-[9px] text-zinc-400">
-              1024px · Rank 16 · 8-bit AdamW
+            <span className="font-mono text-[10px] text-zinc-400 mt-0.5">
+              1024px · Rank 16 · 8-bit
             </span>
           </button>
 
@@ -657,12 +657,12 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
                 mixedPrecision: "fp16",
               })
             }
-            className="flex flex-col text-left p-2 rounded-lg border border-white/5 bg-zinc-900/60 hover:bg-zinc-800 hover:border-emerald-500/40 transition text-zinc-300 group"
+            className="flex flex-col text-left p-2.5 rounded-lg border border-white/10 bg-white/[0.02] hover:border-brand-500/40 hover:bg-white/[0.05] transition-colors text-zinc-300 group focus:outline-none focus:ring-2 focus:ring-brand-500/40"
           >
-            <span className="font-mono text-[11px] font-semibold text-zinc-200 group-hover:text-emerald-400">
-              Eco 8 GB (SD1.5)
+            <span className="font-display text-xs font-medium text-zinc-200 group-hover:text-brand-300 transition-colors">
+              Eco 8 GB (SD 1.5)
             </span>
-            <span className="font-mono text-[9px] text-zinc-400">
+            <span className="font-mono text-[10px] text-zinc-400 mt-0.5">
               512px · Rank 8 · GA 2x
             </span>
           </button>
@@ -687,12 +687,12 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
                 mixedPrecision: "fp16",
               })
             }
-            className="flex flex-col text-left p-2 rounded-lg border border-white/5 bg-zinc-900/60 hover:bg-zinc-800 hover:border-indigo-500/40 transition text-zinc-300 group"
+            className="flex flex-col text-left p-2.5 rounded-lg border border-white/10 bg-white/[0.02] hover:border-brand-500/40 hover:bg-white/[0.05] transition-colors text-zinc-300 group focus:outline-none focus:ring-2 focus:ring-brand-500/40"
           >
-            <span className="font-mono text-[11px] font-semibold text-zinc-200 group-hover:text-indigo-400">
+            <span className="font-display text-xs font-medium text-zinc-200 group-hover:text-brand-300 transition-colors">
               Alta Fidelidade
             </span>
-            <span className="font-mono text-[9px] text-zinc-400">
+            <span className="font-mono text-[10px] text-zinc-400 mt-0.5">
               1024px · Rank 32 · GA 2x
             </span>
           </button>
@@ -717,13 +717,13 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
                 mixedPrecision: "fp16",
               })
             }
-            className="flex flex-col text-left p-2 rounded-lg border border-white/5 bg-zinc-900/60 hover:bg-zinc-800 hover:border-purple-500/40 transition text-zinc-300 group"
+            className="flex flex-col text-left p-2.5 rounded-lg border border-white/10 bg-white/[0.02] hover:border-brand-500/40 hover:bg-white/[0.05] transition-colors text-zinc-300 group focus:outline-none focus:ring-2 focus:ring-brand-500/40"
           >
-            <span className="font-mono text-[11px] font-semibold text-zinc-200 group-hover:text-purple-400">
+            <span className="font-display text-xs font-medium text-zinc-200 group-hover:text-brand-300 transition-colors">
               Auto LR Prodigy
             </span>
-            <span className="font-mono text-[9px] text-zinc-400">
-              D-Adaptation · LR 1.0 auto
+            <span className="font-mono text-[10px] text-zinc-400 mt-0.5">
+              Adaptativo · LR 1.0 auto
             </span>
           </button>
         </div>
@@ -757,9 +757,9 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
             type="button"
             disabled={busy}
             onClick={() => setParams((p) => ({ ...p, baseModel: "sdxl" }))}
-            className={`flex flex-col text-left p-3.5 rounded-xl border transition duration-150 ${
+            className={`flex flex-col text-left p-3.5 rounded-xl border transition-colors ${
               params.baseModel === "sdxl"
-                ? "border-sky-500/60 bg-sky-500/10 text-white shadow-sm ring-1 ring-sky-500/30"
+                ? "border-brand-500/50 bg-brand-500/[0.08] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] ring-1 ring-brand-500/30"
                 : "border-white/10 bg-white/[0.02] text-zinc-300 hover:border-white/20 hover:bg-white/[0.04]"
             }`}
           >
@@ -767,11 +767,17 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
               <span className="font-display font-semibold text-xs text-zinc-100">
                 SDXL 1.0
               </span>
-              <span className="rounded-full bg-sky-500/20 border border-sky-500/30 px-1.5 py-0.5 font-mono text-[9px] text-sky-300">
+              <span
+                className={`rounded-full px-2 py-0.5 font-mono text-[10px] ${
+                  params.baseModel === "sdxl"
+                    ? "border border-brand-500/30 bg-brand-500/20 text-brand-300"
+                    : "border border-white/10 bg-white/5 text-zinc-400"
+                }`}
+              >
                 ~12 GB VRAM
               </span>
             </div>
-            <p className="font-mono text-[11px] text-zinc-400 leading-snug">
+            <p className="text-[11px] text-zinc-400 leading-snug">
               Equilíbrio ideal entre fidelidade, estilos artísticos e fotorealismo.
             </p>
           </button>
@@ -781,9 +787,9 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
             type="button"
             disabled={busy}
             onClick={() => setParams((p) => ({ ...p, baseModel: "flux" }))}
-            className={`flex flex-col text-left p-3.5 rounded-xl border transition duration-150 ${
+            className={`flex flex-col text-left p-3.5 rounded-xl border transition-colors ${
               params.baseModel === "flux"
-                ? "border-sky-500/60 bg-sky-500/10 text-white shadow-sm ring-1 ring-sky-500/30"
+                ? "border-brand-500/50 bg-brand-500/[0.08] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] ring-1 ring-brand-500/30"
                 : "border-white/10 bg-white/[0.02] text-zinc-300 hover:border-white/20 hover:bg-white/[0.04]"
             }`}
           >
@@ -791,11 +797,17 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
               <span className="font-display font-semibold text-xs text-zinc-100">
                 FLUX.2 Klein 4B
               </span>
-              <span className="rounded-full bg-emerald-500/20 border border-emerald-500/30 px-1.5 py-0.5 font-mono text-[9px] text-emerald-300">
+              <span
+                className={`rounded-full px-2 py-0.5 font-mono text-[10px] ${
+                  params.baseModel === "flux"
+                    ? "border border-brand-500/30 bg-brand-500/20 text-brand-300"
+                    : "border border-white/10 bg-white/5 text-zinc-400"
+                }`}
+              >
                 ~10 GB VRAM
               </span>
             </div>
-            <p className="font-mono text-[11px] text-zinc-400 leading-snug">
+            <p className="text-[11px] text-zinc-400 leading-snug">
               Modelo leve de 4B parâmetros com Flow Matching, ideal para LoRA rápido em GPUs de 10–12 GB.
             </p>
           </button>
@@ -805,9 +817,9 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
             type="button"
             disabled={busy}
             onClick={() => setParams((p) => ({ ...p, baseModel: "sd15" }))}
-            className={`flex flex-col text-left p-3.5 rounded-xl border transition duration-150 ${
+            className={`flex flex-col text-left p-3.5 rounded-xl border transition-colors ${
               params.baseModel === "sd15"
-                ? "border-sky-500/60 bg-sky-500/10 text-white shadow-sm ring-1 ring-sky-500/30"
+                ? "border-brand-500/50 bg-brand-500/[0.08] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] ring-1 ring-brand-500/30"
                 : "border-white/10 bg-white/[0.02] text-zinc-300 hover:border-white/20 hover:bg-white/[0.04]"
             }`}
           >
@@ -815,11 +827,17 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
               <span className="font-display font-semibold text-xs text-zinc-100">
                 SD 1.5
               </span>
-              <span className="rounded-full bg-emerald-500/20 border border-emerald-500/30 px-1.5 py-0.5 font-mono text-[9px] text-emerald-300">
+              <span
+                className={`rounded-full px-2 py-0.5 font-mono text-[10px] ${
+                  params.baseModel === "sd15"
+                    ? "border border-brand-500/30 bg-brand-500/20 text-brand-300"
+                    : "border border-white/10 bg-white/5 text-zinc-400"
+                }`}
+              >
                 ~8 GB VRAM
               </span>
             </div>
-            <p className="font-mono text-[11px] text-zinc-400 leading-snug">
+            <p className="text-[11px] text-zinc-400 leading-snug">
               Mais leve, veloz e compatível com GPUs menores ou ambientes restritos.
             </p>
           </button>
@@ -848,7 +866,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
       {/* Hiperparâmetros LoRA */}
       <div className="rounded-xl border border-white/10 bg-white/[0.01] p-4 space-y-4">
         <div className="flex items-center gap-2 pb-1 border-b border-white/5">
-          <IconSettings className="size-3.5 text-sky-400" />
+          <IconSettings className="size-3.5 text-brand-400" />
           <span className="font-display text-xs font-semibold text-zinc-200">
             Hiperparâmetros LoRA
           </span>
@@ -886,7 +904,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
                 setParams((p) => ({ ...p, batchSize: parseInt(e.target.value, 10) || 1 }))
               }
               disabled={busy}
-              className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 focus:border-sky-500/50 focus:outline-none focus:ring-1 focus:ring-sky-500/50"
+              className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 focus:border-brand-500/50 focus:outline-none focus:ring-1 focus:ring-brand-500/50 transition-colors"
             >
               <option value={1}>1 (Mínima VRAM)</option>
               <option value={2}>2</option>
@@ -908,7 +926,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
                 setParams((p) => ({ ...p, rank: val, alpha: val }));
               }}
               disabled={busy}
-              className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 focus:border-sky-500/50 focus:outline-none focus:ring-1 focus:ring-sky-500/50"
+              className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 focus:border-brand-500/50 focus:outline-none focus:ring-1 focus:ring-brand-500/50 transition-colors"
             >
               <option value={4}>4 (Ultra leve)</option>
               <option value={8}>8 (Leve)</option>
@@ -937,15 +955,17 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
       </div>
 
       {/* Configurações Avançadas (Colapsável) */}
-      <div className="rounded-xl border border-white/10 bg-white/[0.01] overflow-hidden transition">
+      <div className="rounded-xl border border-white/10 bg-white/[0.01] overflow-hidden transition-colors">
         <button
           type="button"
+          aria-expanded={showAdvanced}
+          aria-controls="advanced-diffusion-settings"
           onClick={() => setShowAdvanced((prev) => !prev)}
-          className="w-full flex items-center justify-between p-3.5 text-left hover:bg-white/[0.02] transition"
+          className="w-full flex items-center justify-between p-3.5 text-left hover:bg-white/[0.02] transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500/40"
         >
           <div className="flex items-center gap-2">
             {showAdvanced ? (
-              <IconChevronDown className="size-4 text-sky-400" />
+              <IconChevronDown className="size-4 text-brand-400" />
             ) : (
               <IconChevronRight className="size-4 text-zinc-400" />
             )}
@@ -954,23 +974,23 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
             </span>
           </div>
           <div className="flex flex-wrap items-center gap-1.5 font-mono text-[10px] text-zinc-400">
-            <span className="rounded bg-zinc-800/80 px-1.5 py-0.5 border border-white/5 text-zinc-300">
+            <span className="rounded-md bg-white/[0.04] px-2 py-0.5 border border-white/10 text-zinc-300">
               {resolution}x{resolution}
             </span>
-            <span className="rounded bg-zinc-800/80 px-1.5 py-0.5 border border-white/5 text-zinc-300">
+            <span className="rounded-md bg-white/[0.04] px-2 py-0.5 border border-white/10 text-zinc-300">
               GA: {gradientAccumulationSteps}x
             </span>
-            <span className="rounded bg-zinc-800/80 px-1.5 py-0.5 border border-white/5 text-zinc-300">
+            <span className="rounded-md bg-white/[0.04] px-2 py-0.5 border border-white/10 text-zinc-300">
               {optimizer === "adamw8bit" ? "8-bit AdamW" : optimizer === "prodigy" ? "Prodigy" : "AdamW"}
             </span>
-            <span className="rounded bg-zinc-800/80 px-1.5 py-0.5 border border-white/5 text-zinc-300">
+            <span className="rounded-md bg-white/[0.04] px-2 py-0.5 border border-white/10 text-zinc-300">
               {mixedPrecision.toUpperCase()}
             </span>
           </div>
         </button>
 
         {showAdvanced && (
-          <div className="p-4 pt-2 border-t border-white/5 space-y-4">
+          <div id="advanced-diffusion-settings" className="p-4 pt-2 border-t border-white/5 space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {/* Resolução de Treinamento */}
               <div className="space-y-1">
@@ -982,9 +1002,9 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
                   value={resolution}
                   onChange={(e) => setResolution(parseInt(e.target.value, 10) || 1024)}
                   disabled={busy}
-                  className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 focus:border-sky-500/50 focus:outline-none focus:ring-1 focus:ring-sky-500/50"
+                  className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 focus:border-brand-500/50 focus:outline-none focus:ring-1 focus:ring-brand-500/50 transition-colors"
                 >
-                  <option value={512}>512 x 512 (Padrão SD1.5 / Menor VRAM)</option>
+                  <option value={512}>512 x 512 (Padrão SD 1.5 / Menor VRAM)</option>
                   <option value={768}>768 x 768 (Intermediário)</option>
                   <option value={1024}>1024 x 1024 (Padrão SDXL / FLUX)</option>
                 </select>
@@ -1003,7 +1023,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
                   value={gradientAccumulationSteps}
                   onChange={(e) => setGradientAccumulationSteps(parseInt(e.target.value, 10) || 1)}
                   disabled={busy}
-                  className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 focus:border-sky-500/50 focus:outline-none focus:ring-1 focus:ring-sky-500/50"
+                  className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 focus:border-brand-500/50 focus:outline-none focus:ring-1 focus:ring-brand-500/50 transition-colors"
                 >
                   <option value={1}>1x (Atualização a cada batch)</option>
                   <option value={2}>2x (Batch efetivo 2x sem VRAM extra)</option>
@@ -1033,7 +1053,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
                     }
                   }}
                   disabled={busy}
-                  className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 focus:border-sky-500/50 focus:outline-none focus:ring-1 focus:ring-sky-500/50"
+                  className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 focus:border-brand-500/50 focus:outline-none focus:ring-1 focus:ring-brand-500/50 transition-colors"
                 >
                   <option value="adamw8bit">AdamW 8-bit (BitsAndBytes - Recomendado)</option>
                   <option value="adamw">AdamW FP32 (Padrão PyTorch)</option>
@@ -1060,7 +1080,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
                     )
                   }
                   disabled={busy}
-                  className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 focus:border-sky-500/50 focus:outline-none focus:ring-1 focus:ring-sky-500/50"
+                  className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 focus:border-brand-500/50 focus:outline-none focus:ring-1 focus:ring-brand-500/50 transition-colors"
                 >
                   <option value="cosine">Cosine (Decaimento suave em cosseno)</option>
                   <option value="linear">Linear (Decaimento linear até zero)</option>
@@ -1106,7 +1126,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
                     setMixedPrecision(e.target.value as "fp16" | "bf16" | "no")
                   }
                   disabled={busy}
-                  className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 focus:border-sky-500/50 focus:outline-none focus:ring-1 focus:ring-sky-500/50"
+                  className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 focus:border-brand-500/50 focus:outline-none focus:ring-1 focus:ring-brand-500/50 transition-colors"
                 >
                   <option value="fp16">FP16 (Half - Padrão universal GPU)</option>
                   <option value="bf16">BF16 (Bfloat16 - Ampere/Ada/Hopper)</option>
@@ -1158,7 +1178,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
               className="size-4 rounded border-white/20 bg-white/5 text-brand-500 focus:ring-brand-500/30"
             />
             <span className="font-mono text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
-              <IconImage className="size-3.5 text-indigo-400" />
+              <IconImage className="size-3.5 text-brand-400" />
               Amostras Visuais de Validação
             </span>
           </label>
@@ -1253,7 +1273,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
       >
         <div className="flex items-center justify-between font-mono text-[11px]">
           <span className="tracking-caps font-medium uppercase text-zinc-400 flex items-center gap-1.5">
-            <IconZap className="size-3.5 text-sky-400" />
+            <IconZap className="size-3.5 text-brand-400" />
             VRAM Estimada para Treino
           </span>
           <span
@@ -1270,14 +1290,14 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
         </div>
 
         {/* Barra de Consumo de VRAM */}
-        <div className="h-1.5 w-full overflow-hidden rounded-full bg-black/40 border border-white/10">
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-800/80 border border-white/5">
           <div
             className={`h-full rounded-full transition-all duration-300 motion-reduce:transition-none ${
               oomRisk === "danger"
                 ? "bg-rose-500"
                 : oomRisk === "warning"
                   ? "bg-amber-400"
-                  : "bg-sky-500"
+                  : "bg-brand-500"
             }`}
             style={{
               width: `${Math.min(
@@ -1337,7 +1357,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
               onClick={handleAutoFixSafeParams}
               className="w-full font-mono text-[11px]"
             >
-              Ajustar para Perfil Leve (SD 1.5, Batch 1, Rank 16)
+              Ajustar para Perfil Leve (SD 1.5 · 512px · Batch 1 · GA 2x)
             </Button>
           </div>
         )}

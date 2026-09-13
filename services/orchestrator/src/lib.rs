@@ -1122,6 +1122,13 @@ async fn run_job_inner(
             "--output".to_string(),
             format!("/outputs/{job_id}"),
         ],
+        ("diffusion", _) => vec![
+            "train".to_string(),
+            "--config".to_string(),
+            format!("/outputs/{job_id}/config.yaml"),
+            "--output".to_string(),
+            format!("/outputs/{job_id}"),
+        ],
         (engine, mode) => {
             return Err(PipelineError::Other(format!(
                 "unsupported engine/mode: {engine}/{mode}"
@@ -1166,6 +1173,10 @@ async fn run_job_inner(
         ("yolo", "predict") => vec![("predictions.json", "predictions")],
         ("autotracker", _) => vec![("boxes.json", "boxes"), ("metrics.jsonl", "metrics")],
         ("autolabel", _) => vec![("captions.jsonl", "captions"), ("metrics.jsonl", "metrics")],
+        ("diffusion", _) => vec![
+            ("adapter.safetensors", "model"),
+            ("metrics.jsonl", "metrics"),
+        ],
         // Já validado acima — seguro unreachable
         _ => unreachable!("unsupported engine/mode validated earlier"),
     };
@@ -2213,7 +2224,8 @@ mod tests {
         let zip_path = tmp.path().join("pkg.zip");
         std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
 
-        let mut dispatch = make_dispatch_with_valid_md5("job-bad-001", "diffusion", &zip_path);
+        let mut dispatch =
+            make_dispatch_with_valid_md5("job-bad-001", "unknown_engine_foo", &zip_path);
         dispatch.workdir = tmp.path().to_str().unwrap().to_string();
         let report = Arc::new(FakeReport::new());
         let executor = Arc::new(FakeTrainerExecutor::new());
@@ -2239,6 +2251,61 @@ mod tests {
 
         // Executor nunca foi chamado (engine check falha antes)
         assert!(executor.last_args().is_none());
+    }
+
+    // -- ADR-0018: engine diffusion usa train e coleta adapter.safetensors --
+
+    #[tokio::test]
+    async fn engine_diffusion_uses_train_subcommand_and_adapter_artifacts() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let s3 = Arc::new(FakeS3::new());
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_dispatch_with_valid_md5("job-diff-001", "diffusion", &zip_path);
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let mut output_files = HashMap::new();
+        output_files.insert(
+            "adapter.safetensors".to_string(),
+            b"fake safetensors bytes".to_vec(),
+        );
+        output_files.insert(
+            "metrics.jsonl".to_string(),
+            br#"{"epoch":1,"step":10,"loss":0.42}"#.to_vec(),
+        );
+        create_fake_outputs(tmp.path(), "job-diff-001", &output_files);
+
+        let res = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+        )
+        .await;
+
+        assert!(res.is_ok(), "run_job_inner failed: {:?}", res);
+
+        let args = executor.last_args().unwrap();
+        assert_eq!(args[0], "train");
+        assert_eq!(args[1], "--config");
+        assert_eq!(args[3], "--output");
+
+        // Verifica artefatos coletados: adapter.safetensors + metrics.jsonl
+        let artifacts = report.done_artifacts().unwrap();
+        let filenames: Vec<&str> = artifacts.iter().map(|a| a.path.as_str()).collect();
+        let kinds: Vec<&str> = artifacts.iter().map(|a| a.kind.as_str()).collect();
+        assert!(filenames.contains(&"adapter.safetensors"));
+        assert!(filenames.contains(&"metrics.jsonl"));
+        assert!(kinds.contains(&"model"));
+        assert!(kinds.contains(&"metrics"));
     }
 
     // -- A.3 test 4: parse_metrics_line aceita a linha 1-epoch do autotrack --

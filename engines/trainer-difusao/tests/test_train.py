@@ -6,7 +6,6 @@ import unittest
 from pathlib import Path
 
 import yaml
-
 from trainer_difusao.train import main
 
 
@@ -236,6 +235,7 @@ class TestTrainerDifusao(unittest.TestCase):
 
     def test_flux_pack_latents_transformation(self):
         from unittest.mock import MagicMock
+
         from trainer_difusao.train import _pack_latents
 
         # Simula tensores VAE com formato [B, C, H, W] = [2, 16, 64, 64]
@@ -255,6 +255,58 @@ class TestTrainerDifusao(unittest.TestCase):
         mock_view.permute.assert_called_once_with(0, 2, 4, 1, 3, 5)
         mock_permute.reshape.assert_called_once_with(2, 1024, 64)
         self.assertEqual(res, mock_reshaped)
+
+    def test_generate_mock_produces_image(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            cfg_path = tmp_path / "config.yaml"
+            out_dir = tmp_path / "output"
+
+            cfg = {
+                "job_id": "test-diff-gen-001",
+                "engine": "diffusion",
+                "mode": "generate",
+                "generate": {
+                    "base_model": "flux-2-klein-4b",
+                    "prompt": "a futuristic cyberpunk forge with glowing violet lasers",
+                    "negative_prompt": "blurry, low quality",
+                    "width": 512,
+                    "height": 512,
+                    "steps": 20,
+                    "guidance_scale": 3.5,
+                    "seed": 12345,
+                    "quantization": "4bit",
+                    "lora_scale": 0.8,
+                },
+            }
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                yaml.dump(cfg, f)
+
+            main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+
+            gen_file = out_dir / "generated.png"
+            self.assertTrue(gen_file.exists())
+            self.assertGreater(gen_file.stat().st_size, 0)
+
+            # Valida que é uma imagem PNG válida com as dimensões especificadas
+            with Image.open(gen_file) as img:
+                self.assertEqual(img.size, (512, 512))
+                self.assertEqual(img.format, "PNG")
+
+    def test_generate_validation_fails_without_prompt(self):
+        from trainer_difusao.generate import load_and_validate_generate_config
+
+        cfg = {
+            "job_id": "test-fail",
+            "generate": {
+                "base_model": "sdxl",
+                "prompt": "",
+            },
+        }
+        with self.assertRaises(SystemExit):
+            load_and_validate_generate_config(cfg)
 
 
 if __name__ == "__main__":

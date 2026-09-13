@@ -19,7 +19,29 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-13 (FATIA SELEÇÃO E CONFIGURAÇÃO DE QUANTIZAÇÃO DO MODELO BASE CONCLUÍDA NA BRANCH)
+## Estado atual — 2026-09-13 (FATIA PLAYGROUND DE DIFUSÃO CONCLUÍDA NA BRANCH)
+
+- **FATIA PLAYGROUND DE DIFUSÃO (GERAÇÃO TEXT-TO-IMAGE MULTI-MODELO COM LORA, ASPECT RATIO, SEED RANDOMIZER E QUANTIZAÇÃO) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/playground-difusao`.
+  - **Motivação**: Oferecer um ambiente interativo moderno, ágil e visualmente polido (Vidro Óptico dark-only) para inferência direta Text-to-Image nos modelos de difusão suportados pelo estúdio (FLUX.2 Klein 4B, SDXL 1.0 e SD 1.5), permitindo experimentação imediata com prompts, prompts negativos, seeds travadas/aleatórias, aspect ratios, hiperparâmetros e injeção opcional de adaptadores LoRA treinados no próprio estúdio com escala configurável.
+  - **ADR & Contratos (OpenAPI 0.20.0)**:
+    - Criado `docs/adr/0020-playground-difusao.md`.
+    - Atualizado `packages/contracts/openapi.yaml`: Bump de versão `0.19.0` → `0.20.0`, schema `DiffusionGenerateJobRequest` e endpoint `POST /api/jobs/diffusion/generate` (202, 400, 401, 404, 503).
+  - **Python Engine (`engines/trainer-difusao`)**:
+    - Implementado `src/trainer_difusao/generate.py`: carregamento e validação estrita de configuração (`load_and_validate_generate_config`), gerador sintético determinístico com telemetria visual (`_mock_generate`) e pipeline real de geração (`_real_generate`) com suporte a `FLUX.2 Klein 4B` (4-bit NF4/8-bit BNB), `SDXL` e `SD 1.5`, aplicando pesos de adaptador LoRA quando fornecidos via `load_lora_weights` e salvando `output/generated.png`.
+    - Conexão do subcomando `generate` no CLI de `src/trainer_difusao/train.py`.
+    - Testes unitários cobrindo validação e geração sintética em `tests/test_train.py` (10/10 testes passando).
+  - **Backend Rust (`api-principal`, `manager`, `orchestrator`)**:
+    - `services/api-principal`: Adicionados modelo `DiffusionGenerateJobRequest`, validação `validate_diffusion_generate_request`, gerador de YAML de configuração `generate_diffusion_generate_config_yaml`, handler `submit_diffusion_generate_job`, rota protegida `POST /api/jobs/diffusion/generate` e testes unitários/contrato (327 testes unitários + 15 contract tests passando).
+    - `services/manager`: Ajustada extração de `package_ref` em `dispatch_next` para ser opcional (`filter(|p| !p.is_null() && p.get("key").is_some())`), desacoplando jobs de inferência de texto de zips de dataset.
+    - `services/orchestrator`: `DispatchRequest.package_ref: Option<PackageRef>` condicionalmente pulando download de pacote, mapeamento de `("diffusion", "generate")` para o subcomando `generate` e coleta do artefato `("generated.png", "generated")`. Teste de regressão adicionado (85/85 testes passando).
+  - **Web Frontend (`apps/web`)**:
+    - `types/studio.ts`: Adicionado `diffusion_generate` a `JobKind`, tipos `DiffusionGenerateJobRequest` e `diffusionGenerateErrorMessage`.
+    - `lib/jobs.ts`: Adicionado `getJob(jobId: string)`.
+    - `lib/playground.ts`: Adicionados `startDiffusionGenerateJob` e `getGeneratedImageUrl`.
+    - `components/icons.tsx`: Adicionados `IconSliders` e `IconDice`.
+    - `components/studio/PlaygroundDiffusion.tsx`: Componente completo Text-to-Image com formulário de parâmetros (modelo base, LoRA com slider de escala, prompt com contador de caracteres, prompt negativo colapsável, presets de aspect ratio, steps, CFG, gerador e trava de seed, seletor de quantização de VRAM, seletor de nó de orquestração), visualizador de canvas com zoom e lightbox, histórico de sessão e botão primário com outline violeta no padrão Vidro Óptico sem `emerald`.
+    - `app/(studio)/playground/page.tsx`: Seletor de modo `SubmodulePills` alternando perfeitamente entre `Geração (Difusão)` e `Detecção (YOLO)`.
+    - Verificação de build: `npm run build` compilado com 100% de sucesso (12/12 páginas estáticas, 0 erros TypeScript).
 
 - **FATIA SELEÇÃO E CONFIGURAÇÃO DE QUANTIZAÇÃO DO MODELO BASE (4-BIT NF4, 8-BIT BNB E FP16 PLENO) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/flux-klein-4bit-training`.
   - **Motivação**: Permitir ao usuário escolher livremente o nível de quantização do modelo base (`4bit` NF4 BitsAndBytes, `8bit` BitsAndBytes ou `none` FP16/BF16 pleno) no treinamento LoRA de difusão, equilibrando consumo de VRAM e precisão numérica conforme o hardware disponível (ex: 4-bit para RTX 3060 12GB, 8-bit para GPUs de 16GB+, e precisão plena para nós de 24GB+).

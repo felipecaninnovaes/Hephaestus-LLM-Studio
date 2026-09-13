@@ -1999,8 +1999,8 @@ pub async fn dispatch_next(
     let package_ref = params
         .as_ref()
         .and_then(|p| p.get("package_ref"))
-        .cloned()
-        .unwrap_or(serde_json::json!({}));
+        .filter(|p| !p.is_null() && p.get("key").is_some())
+        .cloned();
 
     let dataset_version_id = params
         .as_ref()
@@ -2037,12 +2037,14 @@ pub async fn dispatch_next(
         "engine": engine,
         "image": job_image,
         "exec_mode": exec_mode,
-        "package_ref": package_ref,
         "config_yaml": config_yaml,
         "dataset_version_id": dataset_version_id,
         "workdir": orch_workdir,
         "mode": mode,
     });
+    if let Some(pr) = package_ref {
+        dispatch_body["package_ref"] = pr;
+    }
 
     // Adiciona weights_ref ao dispatch quando presente (snake_case — casa com WeightsRef do orquestrador).
     if let Some(wr) = weights_ref {

@@ -1311,6 +1311,90 @@ pub async fn submit_diffusion_job(
 }
 
 // ---------------------------------------------------------------------------
+// POST /api/jobs/diffusion/generate — submit job de geração Text-to-Image (ADR-0020)
+// ---------------------------------------------------------------------------
+
+pub async fn submit_diffusion_generate_job(
+    State(state): State<AppState>,
+    body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
+) -> Response {
+    // 1. Parse body.
+    let raw = match body {
+        Ok(b) => b,
+        Err(_) => return invalid_request(),
+    };
+    let req: models::DiffusionGenerateJobRequest = match serde_json::from_slice(&raw) {
+        Ok(v) => v,
+        Err(_) => return invalid_request(),
+    };
+
+    // 2. Validação pura.
+    let req = match models::validate_diffusion_generate_request(req) {
+        Ok(v) => v,
+        Err(_) => return invalid_request(),
+    };
+
+    // 3. ID do job e config.yaml.
+    let job_id = uuid::Uuid::new_v4().to_string();
+    let config_yaml = models::generate_diffusion_generate_config_yaml(&job_id, &req);
+
+    // 4. VRAM mínima estimada conforme quantização e baseModel.
+    let vram_min: u32 = if req.base_model == "sd15" {
+        6
+    } else {
+        match req.quantization.as_str() {
+            "4bit" => 8,
+            "8bit" => 12,
+            _ => 16,
+        }
+    };
+
+    // 5. Body para o Manager.
+    let mut manager_body = serde_json::json!({
+        "kind": "diffusion_generate",
+        "engine": "diffusion",
+        "model": req.base_model,
+        "mode": "generate",
+        "config_yaml": config_yaml,
+        "params": {
+            "base_model": req.base_model,
+            "prompt": req.prompt,
+            "negative_prompt": req.negative_prompt,
+            "width": req.width,
+            "height": req.height,
+            "steps": req.steps,
+            "guidance_scale": req.guidance_scale,
+            "seed": req.seed,
+            "quantization": req.quantization,
+            "lora_scale": req.lora_scale,
+        },
+        "vram_min_gb": vram_min,
+    });
+
+    if let Some(ref w_id) = req.weights {
+        manager_body["weights_id"] = serde_json::json!(w_id);
+    }
+    if let Some(ref orch_id) = req.orchestrator_id {
+        manager_body["orchestrator_hint"] = serde_json::json!(orch_id);
+    }
+
+    match state.manager.create_job(&manager_body).await {
+        Ok(resp) => {
+            let body = SubmitJobResponse {
+                job_id: resp.job_id,
+                status: resp.status,
+                queue_position: resp.queue_position,
+            };
+            (StatusCode::ACCEPTED, Json(body)).into_response()
+        }
+        Err(ManagerError::NotFound) => not_found(),
+        Err(ManagerError::InvalidRequest(_)) => invalid_request(),
+        Err(ManagerError::Unavailable(_)) => queue_unavailable(),
+        Err(_) => queue_unavailable(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // POST /api/jobs/predict — submit job de inferência YOLO (ADR-0013 D0/D1/D8)
 // ---------------------------------------------------------------------------
 

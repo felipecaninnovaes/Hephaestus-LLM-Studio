@@ -177,11 +177,13 @@ async fn dispatch_handler(State(state): State<AppState>, body: Bytes) -> Respons
     if req.workdir.is_empty() {
         return bad_request("workdir is required");
     }
-    if req.package_ref.key.is_empty() {
-        return bad_request("package_ref.key is required");
-    }
-    if req.package_ref.md5_zip.is_empty() {
-        return bad_request("package_ref.md5_zip is required");
+    if let Some(ref pr) = req.package_ref {
+        if pr.key.is_empty() {
+            return bad_request("package_ref.key is required");
+        }
+        if pr.md5_zip.is_empty() {
+            return bad_request("package_ref.md5_zip is required");
+        }
     }
 
     // Idempotência R4: se já existe job com MESMO job_id em memória → 409

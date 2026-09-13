@@ -104,6 +104,11 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
         "/api/jobs/diffusion",
         &[202, 400, 401, 404, 409, 503],
     ),
+    (
+        "POST",
+        "/api/jobs/diffusion/generate",
+        &[202, 400, 401, 404, 503],
+    ),
     ("POST", "/api/jobs/predict", &[202, 400, 401, 404, 409, 503]),
     (
         "POST",
@@ -342,6 +347,10 @@ pub fn build(state: AppState) -> axum::Router {
         .route(
             "/api/jobs/diffusion",
             post(jobs::handlers::submit_diffusion_job),
+        )
+        .route(
+            "/api/jobs/diffusion/generate",
+            post(jobs::handlers::submit_diffusion_generate_job),
         )
         .route(
             "/api/jobs/predict",

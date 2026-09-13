@@ -31,7 +31,8 @@ pub struct DispatchRequest {
     pub engine: String,
     pub image: String,
     pub exec_mode: String,
-    pub package_ref: PackageRef,
+    #[serde(default)]
+    pub package_ref: Option<PackageRef>,
     pub config_yaml: Option<String>,
     pub dataset_version_id: Option<String>,
     pub workdir: String,
@@ -997,27 +998,29 @@ async fn run_job_inner(
         .await
         .map_err(|e| PipelineError::ReportFailed(format!("report preparing: {e}")))?;
 
-    // 2. Download package.zip via S3 (scoped — D2 barreira principal)
-    let zip_path = temp_dir.join("dataset.zip");
-    let key = scoped_key(S3Scope::Packages, &dispatch.package_ref.key)
-        .map_err(|e| PipelineError::S3Download(format!("invalid package key: {e}")))?;
+    // 2. Download package.zip via S3 (scoped — D2 barreira principal) se presente
+    if let Some(ref pr) = dispatch.package_ref {
+        let zip_path = temp_dir.join("dataset.zip");
+        let key = scoped_key(S3Scope::Packages, &pr.key)
+            .map_err(|e| PipelineError::S3Download(format!("invalid package key: {e}")))?;
 
-    s3.get_to_file(&key, &zip_path)
-        .await
-        .map_err(|e| PipelineError::S3Download(format!("download package: {e}")))?;
+        s3.get_to_file(&key, &zip_path)
+            .await
+            .map_err(|e| PipelineError::S3Download(format!("download package: {e}")))?;
 
-    // 3. Verify MD5 (crash do job se divergir — D4)
-    let actual_md5 = compute_file_md5(&zip_path)
-        .map_err(|e| PipelineError::S3Download(format!("compute md5: {e}")))?;
-    if actual_md5 != dispatch.package_ref.md5_zip {
-        return Err(PipelineError::Md5Mismatch {
-            expected: dispatch.package_ref.md5_zip.clone(),
-            actual: actual_md5,
-        });
+        // 3. Verify MD5 (crash do job se divergir — D4)
+        let actual_md5 = compute_file_md5(&zip_path)
+            .map_err(|e| PipelineError::S3Download(format!("compute md5: {e}")))?;
+        if actual_md5 != pr.md5_zip {
+            return Err(PipelineError::Md5Mismatch {
+                expected: pr.md5_zip.clone(),
+                actual: actual_md5,
+            });
+        }
+
+        // 4. Unzip (zip-slip safe, padrão import 3e)
+        unzip_safe(&zip_path, &datasets_cache)?;
     }
-
-    // 4. Unzip (zip-slip safe, padrão import 3e)
-    unzip_safe(&zip_path, &datasets_cache)?;
 
     // 5. Download e staging de pesos (fine-tune — ADR-0012 D5)
     //    Pesos ficam em outputs/<job_id>/weights/<filename> (volume outputs já montado).
@@ -1328,6 +1331,13 @@ async fn run_job_inner(
             "--output".to_string(),
             format!("/outputs/{job_id}"),
         ],
+        ("diffusion", "generate") => vec![
+            "generate".to_string(),
+            "--config".to_string(),
+            format!("/outputs/{job_id}/config.yaml"),
+            "--output".to_string(),
+            format!("/outputs/{job_id}"),
+        ],
         ("diffusion", _) => vec![
             "train".to_string(),
             "--config".to_string(),
@@ -1379,6 +1389,7 @@ async fn run_job_inner(
         ("yolo", "predict") => vec![("predictions.json", "predictions")],
         ("autotracker", _) => vec![("boxes.json", "boxes"), ("metrics.jsonl", "metrics")],
         ("autolabel", _) => vec![("captions.jsonl", "captions"), ("metrics.jsonl", "metrics")],
+        ("diffusion", "generate") => vec![("generated.png", "generated")],
         ("diffusion", _) => vec![
             ("adapter.safetensors", "model"),
             ("metrics.jsonl", "metrics"),
@@ -2308,11 +2319,11 @@ mod tests {
             engine: engine.to_string(),
             image: "hephaestus/trainer-yolo:local".to_string(),
             exec_mode: "docker".to_string(),
-            package_ref: PackageRef {
+            package_ref: Some(PackageRef {
                 key: "packages/test-pkg/dataset.zip".to_string(),
                 md5_zip: String::new(), // será calculado
                 bytes: 0,
-            },
+            }),
             config_yaml: Some(
                 "epochs: 1\ndataset_path: {dataset_path}\noutput_path: {output_path}".to_string(),
             ),
@@ -2331,7 +2342,9 @@ mod tests {
     ) -> DispatchRequest {
         let md5 = compute_file_md5(zip_path).unwrap();
         let mut d = make_dispatch(job_id, engine);
-        d.package_ref.md5_zip = md5;
+        if let Some(ref mut pr) = d.package_ref {
+            pr.md5_zip = md5;
+        }
         d
     }
 
@@ -2611,6 +2624,54 @@ mod tests {
         assert!(filenames.contains(&"metrics.jsonl"));
         assert!(kinds.contains(&"model"));
         assert!(kinds.contains(&"metrics"));
+    }
+
+    // -- ADR-0020: engine diffusion com mode generate usa generate e coleta generated.png sem exigir package --
+
+    #[tokio::test]
+    async fn engine_diffusion_uses_generate_subcommand_and_generated_artifacts() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let s3 = Arc::new(FakeS3::new());
+        let mut dispatch = make_dispatch("job-diff-gen-001", "diffusion");
+        dispatch.mode = "generate".to_string();
+        dispatch.package_ref = None; // Sem package_ref (Text-to-Image puro)
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let mut output_files = HashMap::new();
+        output_files.insert(
+            "generated.png".to_string(),
+            b"fake png image bytes".to_vec(),
+        );
+        create_fake_outputs(tmp.path(), "job-diff-gen-001", &output_files);
+
+        let res = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+        )
+        .await;
+
+        assert!(res.is_ok(), "run_job_inner failed: {:?}", res);
+
+        let args = executor.last_args().unwrap();
+        assert_eq!(args[0], "generate");
+        assert_eq!(args[1], "--config");
+        assert_eq!(args[3], "--output");
+
+        // Verifica artefato coletado: generated.png (kind = generated)
+        let artifacts = report.done_artifacts().unwrap();
+        let filenames: Vec<&str> = artifacts.iter().map(|a| a.path.as_str()).collect();
+        let kinds: Vec<&str> = artifacts.iter().map(|a| a.kind.as_str()).collect();
+        assert!(filenames.contains(&"generated.png"));
+        assert!(kinds.contains(&"generated"));
     }
 
     // -- A.3 test 4: parse_metrics_line aceita a linha 1-epoch do autotrack --
@@ -3521,11 +3582,11 @@ also bad, not a number
             engine: "autotracker".to_string(),
             image: "hephaestus/trainer-yolo:local".to_string(),
             exec_mode: "docker".to_string(),
-            package_ref: PackageRef {
+            package_ref: Some(PackageRef {
                 key: "packages/test-pkg/dataset.zip".to_string(),
                 md5_zip: String::new(),
                 bytes: 0,
-            },
+            }),
             config_yaml: Some(
                 "model: mock\nconf: 0.65\ndataset_path: {dataset_path}\noutput_path: {output_path}\nweights_path: {weights_path}"
                     .to_string(),
@@ -3540,7 +3601,9 @@ also bad, not a number
     fn make_autotracker_dispatch_with_valid_md5(job_id: &str, zip_path: &Path) -> DispatchRequest {
         let md5 = compute_file_md5(zip_path).unwrap();
         let mut d = make_autotracker_dispatch(job_id);
-        d.package_ref.md5_zip = md5;
+        if let Some(ref mut pr) = d.package_ref {
+            pr.md5_zip = md5;
+        }
         d
     }
 

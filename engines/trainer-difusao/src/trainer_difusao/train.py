@@ -2160,11 +2160,14 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if argv[0] in ("-h", "--help"):
-        print("Uso: python -m trainer_difusao [health|train] [args...]")
+        print("Uso: python -m trainer_difusao [health|train|generate] [args...]")
         return
 
     if argv[0] == "train":
         cmd_train(argv[1:])
+    elif argv[0] == "generate":
+        from trainer_difusao.generate import cmd_generate
+        cmd_generate(argv[1:])
     elif argv[0] == "health":
         cmd_health()
     else:

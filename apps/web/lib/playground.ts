@@ -1,8 +1,38 @@
 import { apiFetch, ApiError } from "@/lib/api";
 import type {
+  DiffusionGenerateJobRequest,
   PredictJobRequest,
   PredictionsData,
 } from "@/types/studio";
+
+/**
+ * POST /api/jobs/diffusion/generate — cria job de geração Text-to-Image por Difusão (ADR-0020).
+ * Retorna 202 { jobId, status, queuePosition? }.
+ */
+export function startDiffusionGenerateJob(
+  params: DiffusionGenerateJobRequest,
+): Promise<{ jobId: string; status: string; queuePosition?: number }> {
+  return apiFetch("/api/jobs/diffusion/generate", {
+    method: "POST",
+    body: params,
+  });
+}
+
+/**
+ * Retorna a URL da imagem gerada por um job de difusão a partir dos artefatos.
+ */
+export async function getGeneratedImageUrl(jobId: string): Promise<string | null> {
+  try {
+    const { items } = await apiFetch<{ items: { id: string; kind: string; path: string }[] }>(
+      `/api/jobs/${jobId}/artifacts`,
+    );
+    const artifact = items.find((a) => a.kind === "generated" || a.path.endsWith("generated.png"));
+    if (!artifact) return null;
+    return `/api/jobs/${jobId}/artifacts/${artifact.id}/data`;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * POST /api/jobs/predict — cria job de inferência YOLO.

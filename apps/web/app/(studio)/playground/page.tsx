@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   IconDownload,
@@ -8,7 +8,7 @@ import {
   IconRefresh,
   IconTarget,
 } from "@/components/icons";
-import { Button, EmptyState, GlassCard, showToast } from "@/components/ui";
+import { Button, EmptyState, GlassCard, Select, type SelectOption, showToast } from "@/components/ui";
 import { listDatasets, getDataset } from "@/lib/datasets";
 import { listJobs } from "@/lib/jobs";
 import { listModels } from "@/lib/models";
@@ -67,6 +67,22 @@ export default function PlaygroundPage() {
   const [selectedDatasetId, setSelectedDatasetId] = useState("");
   const [selectedOrchestratorId, setSelectedOrchestratorId] = useState<string | null>(null);
   const [conf, setConf] = useState(0.65);
+
+  const modelOptions = useMemo<SelectOption<string>[]>(() => {
+    return models.map((m) => ({
+      value: m.id,
+      label: modelLabel(m),
+      description: m.source === "train" ? "Modelo treinado no estúdio" : undefined,
+    }));
+  }, [models]);
+
+  const datasetOptions = useMemo<SelectOption<string>[]>(() => {
+    return datasets.map((ds) => ({
+      value: ds.id,
+      label: datasetLabel(ds),
+      description: `${ds.imagesCount} imagens · ${ds.classes?.length ?? 0} classes`,
+    }));
+  }, [datasets]);
 
   /* ── Submit state ── */
   const [submitting, setSubmitting] = useState(false);
@@ -442,83 +458,56 @@ export default function PlaygroundPage() {
         {(models.length > 0 || datasets.length > 0) && (
           <div className="space-y-4">
             {/* ══ Modelo ══ */}
-            <div>
-              <label
-                htmlFor="playground-model"
-                className="mb-1.5 block font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-400"
-              >
-                Modelo
-              </label>
-              <select
-                id="playground-model"
-                value={selectedModelId}
-                onChange={(e) => setSelectedModelId(e.target.value)}
-                disabled={loadingModels || models.length === 0}
-                className="w-full rounded-lg border border-zinc-800 bg-black/40 px-3 py-2 font-mono text-xs text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:opacity-55"
-              >
-                <option value="">
-                  {loadingModels
-                    ? "Carregando modelos…"
-                    : models.length === 0
-                      ? "Nenhum modelo YOLO"
-                      : "Selecione um modelo"}
-                </option>
-                {models.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {modelLabel(m)}
-                  </option>
-                ))}
-              </select>
-              {models.length > 0 && (
-                <p className="mt-1 font-mono text-[11px] text-zinc-500">
-                  {models.length} modelo{models.length !== 1 && "s"} YOLO
-                  {models.some((m) => m.source === "train") && (
-                    <span>
-                      {" "}
-                      ·{" "}
-                      {models.filter((m) => m.source === "train").length} de
-                      treino
-                    </span>
-                  )}
-                </p>
-              )}
-            </div>
+            <Select
+              id="playground-model"
+              label="Modelo"
+              options={modelOptions}
+              value={selectedModelId}
+              onChange={(val) => setSelectedModelId(val)}
+              disabled={loadingModels || models.length === 0}
+              placeholder={
+                loadingModels
+                  ? "Carregando modelos…"
+                  : models.length === 0
+                    ? "Nenhum modelo YOLO"
+                    : "Selecione um modelo"
+              }
+              hint={
+                models.length > 0
+                  ? `${models.length} modelo${models.length !== 1 ? "s" : ""} YOLO${
+                      models.some((m) => m.source === "train")
+                        ? ` · ${models.filter((m) => m.source === "train").length} de treino`
+                        : ""
+                    }`
+                  : undefined
+              }
+              searchable={models.length > 5}
+              fontMono
+            />
 
             {/* ══ Dataset ══ */}
-            <div>
-              <label
-                htmlFor="playground-dataset"
-                className="mb-1.5 block font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-400"
-              >
-                Dataset
-              </label>
-              <select
-                id="playground-dataset"
-                value={selectedDatasetId}
-                onChange={(e) => setSelectedDatasetId(e.target.value)}
-                disabled={loadingDatasets || datasets.length === 0}
-                className="w-full rounded-lg border border-zinc-800 bg-black/40 px-3 py-2 font-mono text-xs text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:opacity-55"
-              >
-                <option value="">
-                  {loadingDatasets
-                    ? "Carregando datasets…"
-                    : datasets.length === 0
-                      ? "Nenhum dataset YOLO"
-                      : "Selecione um dataset"}
-                </option>
-                {datasets.map((ds) => (
-                  <option key={ds.id} value={ds.id}>
-                    {datasetLabel(ds)}
-                  </option>
-                ))}
-              </select>
-              {datasets.length > 0 && (
-                <p className="mt-1 font-mono text-[11px] text-zinc-500">
-                  {datasets.length} dataset{datasets.length !== 1 && "s"} YOLO{" "}
-                  · {datasets.reduce((s, d) => s + d.imagesCount, 0)} imagens
-                </p>
-              )}
-            </div>
+            <Select
+              id="playground-dataset"
+              label="Dataset"
+              options={datasetOptions}
+              value={selectedDatasetId}
+              onChange={(val) => setSelectedDatasetId(val)}
+              disabled={loadingDatasets || datasets.length === 0}
+              placeholder={
+                loadingDatasets
+                  ? "Carregando datasets…"
+                  : datasets.length === 0
+                    ? "Nenhum dataset YOLO"
+                    : "Selecione um dataset"
+              }
+              hint={
+                datasets.length > 0
+                  ? `${datasets.length} dataset${datasets.length !== 1 ? "s" : ""} YOLO · ${datasets.reduce((s, d) => s + d.imagesCount, 0)} imagens`
+                  : undefined
+              }
+              searchable={datasets.length > 5}
+              fontMono
+            />
 
             {/* ══ Confidence Threshold ══ */}
             <div>

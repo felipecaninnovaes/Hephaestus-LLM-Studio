@@ -689,6 +689,12 @@ autolabel:
 
 const ALLOWED_DIFFUSION_BASE_MODELS: &[&str] = &["sdxl", "flux", "sd15"];
 const ALLOWED_DIFFUSION_BATCH: &[u32] = &[1, 2, 4, 8];
+const ALLOWED_DIFFUSION_RESOLUTIONS: &[u32] = &[512, 768, 1024];
+const ALLOWED_DIFFUSION_GRAD_ACCUM: &[u32] = &[1, 2, 4, 8];
+const ALLOWED_DIFFUSION_OPTIMIZERS: &[&str] = &["adamw8bit", "adamw", "prodigy"];
+const ALLOWED_DIFFUSION_LR_SCHEDULERS: &[&str] =
+    &["cosine", "linear", "constant", "constant_with_warmup"];
+const ALLOWED_DIFFUSION_PRECISION: &[&str] = &["fp16", "bf16", "no"];
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -718,6 +724,18 @@ pub struct DiffusionJobRequest {
     pub sample_interval: u32,
     #[serde(default)]
     pub sample_seed: Option<u64>,
+    #[serde(default)]
+    pub resolution: Option<u32>,
+    #[serde(default = "default_diffusion_grad_accum")]
+    pub gradient_accumulation_steps: u32,
+    #[serde(default = "default_diffusion_optimizer")]
+    pub optimizer: String,
+    #[serde(default = "default_diffusion_lr_scheduler")]
+    pub lr_scheduler: String,
+    #[serde(default = "default_diffusion_lr_warmup")]
+    pub lr_warmup_steps: u32,
+    #[serde(default = "default_diffusion_precision")]
+    pub mixed_precision: String,
 }
 
 fn default_diffusion_base_model() -> String {
@@ -740,6 +758,21 @@ fn default_diffusion_alpha() -> u32 {
 }
 fn default_diffusion_sample_interval() -> u32 {
     1
+}
+fn default_diffusion_grad_accum() -> u32 {
+    1
+}
+fn default_diffusion_optimizer() -> String {
+    "adamw8bit".to_string()
+}
+fn default_diffusion_lr_scheduler() -> String {
+    "cosine".to_string()
+}
+fn default_diffusion_lr_warmup() -> u32 {
+    0
+}
+fn default_diffusion_precision() -> String {
+    "fp16".to_string()
 }
 
 pub fn validate_diffusion_request(req: DiffusionJobRequest) -> Result<DiffusionJobRequest, String> {
@@ -776,6 +809,44 @@ pub fn validate_diffusion_request(req: DiffusionJobRequest) -> Result<DiffusionJ
             req.alpha
         ));
     }
+    if let Some(res) = req.resolution {
+        if !ALLOWED_DIFFUSION_RESOLUTIONS.contains(&res) {
+            return Err(format!(
+                "resolution must be one of {:?}, got {}",
+                ALLOWED_DIFFUSION_RESOLUTIONS, res
+            ));
+        }
+    }
+    if !ALLOWED_DIFFUSION_GRAD_ACCUM.contains(&req.gradient_accumulation_steps) {
+        return Err(format!(
+            "gradientAccumulationSteps must be one of {:?}, got {}",
+            ALLOWED_DIFFUSION_GRAD_ACCUM, req.gradient_accumulation_steps
+        ));
+    }
+    if !ALLOWED_DIFFUSION_OPTIMIZERS.contains(&req.optimizer.as_str()) {
+        return Err(format!(
+            "optimizer must be one of {:?}, got '{}'",
+            ALLOWED_DIFFUSION_OPTIMIZERS, req.optimizer
+        ));
+    }
+    if !ALLOWED_DIFFUSION_LR_SCHEDULERS.contains(&req.lr_scheduler.as_str()) {
+        return Err(format!(
+            "lrScheduler must be one of {:?}, got '{}'",
+            ALLOWED_DIFFUSION_LR_SCHEDULERS, req.lr_scheduler
+        ));
+    }
+    if !(0..=1000).contains(&req.lr_warmup_steps) {
+        return Err(format!(
+            "lrWarmupSteps must be between 0 and 1000, got {}",
+            req.lr_warmup_steps
+        ));
+    }
+    if !ALLOWED_DIFFUSION_PRECISION.contains(&req.mixed_precision.as_str()) {
+        return Err(format!(
+            "mixedPrecision must be one of {:?}, got '{}'",
+            ALLOWED_DIFFUSION_PRECISION, req.mixed_precision
+        ));
+    }
     if let Some(ref tw) = req.trigger_word {
         if tw.chars().count() > 100 {
             return Err("triggerWord must not exceed 100 characters".to_string());
@@ -796,8 +867,11 @@ pub fn validate_diffusion_request(req: DiffusionJobRequest) -> Result<DiffusionJ
             return Err("samplePrompt must not exceed 500 characters".to_string());
         }
     }
-    if req.sample_interval > 100 {
-        return Err("sampleInterval must be between 0 and 100".to_string());
+    if !(0..=100).contains(&req.sample_interval) {
+        return Err(format!(
+            "sampleInterval must be between 0 and 100, got {}",
+            req.sample_interval
+        ));
     }
     Ok(req)
 }
@@ -809,6 +883,10 @@ pub fn generate_diffusion_config_yaml(job_id: &str, req: &DiffusionJobRequest) -
             serde_json::to_string(tw).unwrap_or_else(|_| "\"\"".into())
         ),
         None => "  trigger_word: \"\"\n".to_string(),
+    };
+    let resolution_line = match req.resolution {
+        Some(r) => format!("  resolution: {}\n", r),
+        None => String::new(),
     };
     let samples_section = match &req.sample_prompt {
         Some(sp) if !sp.trim().is_empty() => {
@@ -839,6 +917,11 @@ lora:
   learning_rate: {learning_rate}
   rank: {rank}
   alpha: {alpha}
+{resolution_line}  gradient_accumulation_steps: {grad_accum}
+  optimizer: "{optimizer}"
+  lr_scheduler: "{lr_scheduler}"
+  lr_warmup_steps: {lr_warmup_steps}
+  mixed_precision: "{mixed_precision}"
 {samples_section}"#,
         job_id = job_id,
         base_model = req.base_model,
@@ -848,6 +931,12 @@ lora:
         learning_rate = req.learning_rate,
         rank = req.rank,
         alpha = req.alpha,
+        resolution_line = resolution_line,
+        grad_accum = req.gradient_accumulation_steps,
+        optimizer = req.optimizer,
+        lr_scheduler = req.lr_scheduler,
+        lr_warmup_steps = req.lr_warmup_steps,
+        mixed_precision = req.mixed_precision,
         samples_section = samples_section,
     )
 }
@@ -1761,6 +1850,36 @@ mod tests {
         let json2 = r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","rank":200}"#;
         let req2: DiffusionJobRequest = serde_json::from_str(json2).unwrap();
         assert!(validate_diffusion_request(req2).is_err());
+    }
+
+    #[test]
+    fn diffusion_validate_advanced_params_and_yaml() {
+        let json = r#"{
+            "datasetId": "550e8400-e29b-41d4-a716-446655440001",
+            "baseModel": "sdxl",
+            "resolution": 1024,
+            "gradientAccumulationSteps": 4,
+            "optimizer": "adamw8bit",
+            "lrScheduler": "cosine",
+            "lrWarmupSteps": 50,
+            "mixedPrecision": "bf16"
+        }"#;
+        let req: DiffusionJobRequest = serde_json::from_str(json).expect("should parse json");
+        let validated = validate_diffusion_request(req).expect("should validate advanced params");
+        assert_eq!(validated.resolution, Some(1024));
+        assert_eq!(validated.gradient_accumulation_steps, 4);
+        assert_eq!(validated.optimizer, "adamw8bit");
+        assert_eq!(validated.lr_scheduler, "cosine");
+        assert_eq!(validated.lr_warmup_steps, 50);
+        assert_eq!(validated.mixed_precision, "bf16");
+
+        let yaml = generate_diffusion_config_yaml("job-adv-1", &validated);
+        assert!(yaml.contains("resolution: 1024"));
+        assert!(yaml.contains("gradient_accumulation_steps: 4"));
+        assert!(yaml.contains(r#"optimizer: "adamw8bit""#));
+        assert!(yaml.contains(r#"lr_scheduler: "cosine""#));
+        assert!(yaml.contains("lr_warmup_steps: 50"));
+        assert!(yaml.contains(r#"mixed_precision: "bf16""#));
     }
 
     #[test]

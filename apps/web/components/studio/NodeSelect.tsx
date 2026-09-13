@@ -89,7 +89,7 @@ export default function NodeSelect({
           <span
             className={`rounded border px-1.5 py-0.5 text-[10px] font-mono ${
               isOnline
-                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
+                ? "border-[#34d399]/30 bg-[#34d399]/10 text-[#34d399]"
                 : "border-zinc-700/50 bg-zinc-800/40 text-zinc-500"
             }`}
           >
@@ -99,7 +99,7 @@ export default function NodeSelect({
         icon: (
           <IconServer
             className={`w-4 h-4 ${
-              isOnline ? "text-emerald-400" : "text-zinc-500"
+              isOnline ? "text-[#34d399]" : "text-zinc-500"
             }`}
           />
         ),

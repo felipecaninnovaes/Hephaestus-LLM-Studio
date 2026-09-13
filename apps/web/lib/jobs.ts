@@ -47,12 +47,38 @@ export function startDiffusionJob(params: {
   samplePrompt?: string;
   sampleInterval?: number;
   sampleSeed?: number;
+  resolution?: number;
+  gradientAccumulationSteps?: number;
+  optimizer?: "adamw8bit" | "adamw" | "prodigy";
+  lrScheduler?: "cosine" | "linear" | "constant" | "constant_with_warmup";
+  lrWarmupSteps?: number;
+  mixedPrecision?: "fp16" | "bf16" | "no";
 }): Promise<{ jobId: string; status: string; queuePosition?: number }> {
-  const { weights, orchestratorId, triggerWord, samplePrompt, sampleInterval, sampleSeed, ...rest } = params;
+  const {
+    weights,
+    orchestratorId,
+    triggerWord,
+    samplePrompt,
+    sampleInterval,
+    sampleSeed,
+    resolution,
+    gradientAccumulationSteps,
+    optimizer,
+    lrScheduler,
+    lrWarmupSteps,
+    mixedPrecision,
+    ...rest
+  } = params;
   const body: Record<string, unknown> = { ...rest };
   if (triggerWord?.trim()) body.triggerWord = triggerWord.trim();
   if (weights) body.weights = weights;
   if (orchestratorId) body.orchestratorId = orchestratorId;
+  if (resolution) body.resolution = resolution;
+  if (gradientAccumulationSteps != null) body.gradientAccumulationSteps = gradientAccumulationSteps;
+  if (optimizer) body.optimizer = optimizer;
+  if (lrScheduler) body.lrScheduler = lrScheduler;
+  if (lrWarmupSteps != null) body.lrWarmupSteps = lrWarmupSteps;
+  if (mixedPrecision) body.mixedPrecision = mixedPrecision;
   if (samplePrompt?.trim()) {
     body.samplePrompt = samplePrompt.trim();
     if (sampleInterval != null) body.sampleInterval = sampleInterval;

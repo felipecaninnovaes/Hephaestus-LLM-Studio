@@ -270,6 +270,64 @@ def _save_lora_safetensors(
     safetensors.torch.save_file(lora_state_dict, str(output_file), metadata=metadata)
 
 
+def _create_optimizer(unet: Any, optimizer_name: str, lr: float) -> Any:
+    """Cria otimizador selecionado (adamw8bit, adamw, prodigy)."""
+    import torch
+
+    opt_type = optimizer_name.lower().strip()
+    if opt_type == "adamw8bit":
+        try:
+            import bitsandbytes as bnb
+
+            print("Usando otimizador 8-bit AdamW (bitsandbytes).", flush=True)
+            return bnb.optim.AdamW8bit(unet.parameters(), lr=lr)
+        except Exception as e:
+            print(
+                f"[WARN] bitsandbytes não disponível ({e}), fallback para AdamW padrão.",
+                flush=True,
+            )
+            return torch.optim.AdamW(unet.parameters(), lr=lr)
+    elif opt_type == "prodigy":
+        try:
+            import prodigyopt
+
+            print("Usando otimizador adaptativo Prodigy.", flush=True)
+            return prodigyopt.Prodigy(unet.parameters(), lr=lr or 1.0)
+        except Exception as e:
+            print(
+                f"[WARN] Prodigy não instalado ({e}), fallback para AdamW.",
+                flush=True,
+            )
+            return torch.optim.AdamW(unet.parameters(), lr=lr)
+    else:
+        print("Usando otimizador AdamW (PyTorch).", flush=True)
+        return torch.optim.AdamW(unet.parameters(), lr=lr)
+
+
+def _create_lr_scheduler(
+    optimizer: Any,
+    scheduler_name: str,
+    warmup_steps: int,
+    total_steps: int,
+) -> Any:
+    """Cria scheduler de taxa de aprendizado via diffusers ou torch."""
+    try:
+        from diffusers.optimization import get_scheduler
+
+        return get_scheduler(
+            scheduler_name.lower().strip() or "cosine",
+            optimizer=optimizer,
+            num_warmup_steps=warmup_steps,
+            num_training_steps=max(1, total_steps),
+        )
+    except Exception as e:
+        print(
+            f"[WARN] Não foi possível instanciar scheduler '{scheduler_name}': {e}",
+            flush=True,
+        )
+        return None
+
+
 def _generate_sample_sd15(
     unet: Any,
     vae: Any,
@@ -345,17 +403,32 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
     sample_interval = int(samples_cfg.get("interval", 1))
     sample_seed = int(samples_cfg.get("seed", seed))
 
-    print(f"Carregando modelos base SD 1.5 ({model_id}) [cache: {hub_cache}]...", flush=True)
+    resolution = int(lora_cfg.get("resolution", 512))
+    grad_accum = max(1, int(lora_cfg.get("gradient_accumulation_steps", 1)))
+    optimizer_name = str(lora_cfg.get("optimizer", "adamw8bit"))
+    lr_scheduler_name = str(lora_cfg.get("lr_scheduler", "cosine"))
+    lr_warmup_steps = int(lora_cfg.get("lr_warmup_steps", 0))
+    mixed_precision = str(lora_cfg.get("mixed_precision", "fp16")).lower().strip()
+    target_dtype = (
+        torch.bfloat16
+        if (mixed_precision == "bf16" and torch.cuda.is_bf16_supported())
+        else torch.float16
+    )
+
+    print(
+        f"Carregando modelos base SD 1.5 ({model_id}) [cache: {hub_cache}, res: {resolution}, dtype: {target_dtype}]...",
+        flush=True,
+    )
     tokenizer = CLIPTokenizer.from_pretrained(model_id, subfolder="tokenizer", cache_dir=hub_cache)
     text_encoder = CLIPTextModel.from_pretrained(
-        model_id, subfolder="text_encoder", torch_dtype=torch.float16, cache_dir=hub_cache
+        model_id, subfolder="text_encoder", torch_dtype=target_dtype, cache_dir=hub_cache
     ).to(device)
     # VAE em float32 para prevenir underflow/overflow numérico (NaN)
     vae = AutoencoderKL.from_pretrained(
         model_id, subfolder="vae", torch_dtype=torch.float32, cache_dir=hub_cache
     ).to(device)
     unet = UNet2DConditionModel.from_pretrained(
-        model_id, subfolder="unet", torch_dtype=torch.float16, cache_dir=hub_cache
+        model_id, subfolder="unet", torch_dtype=target_dtype, cache_dir=hub_cache
     ).to(device)
     noise_scheduler = DDPMScheduler.from_pretrained(model_id, subfolder="scheduler", cache_dir=hub_cache)
 
@@ -376,19 +449,16 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
     )
     unet = get_peft_model(unet, lora_config)
 
-    # Otimizador 8-bit AdamW para caber confortavelmente na RTX 3060 (12 GB)
-    try:
-        import bitsandbytes as bnb
+    optimizer = _create_optimizer(unet, optimizer_name, learning_rate)
 
-        optimizer = bnb.optim.AdamW8bit(unet.parameters(), lr=learning_rate)
-        print("Usando otimizador 8-bit AdamW (bitsandbytes).", flush=True)
-    except (ImportError, AttributeError, RuntimeError, TypeError) as e:
-        print(f"Bitsandbytes não disponível ({e}); usando AdamW padrão.", flush=True)
-        optimizer = torch.optim.AdamW(unet.parameters(), lr=learning_rate)
-
-    dataset = DiffusionDataset(dataset_path, resolution=512, trigger_word=trigger_word)
+    dataset = DiffusionDataset(dataset_path, resolution=resolution, trigger_word=trigger_word)
     dataloader = DataLoader(
         dataset, batch_size=batch_size, shuffle=True, drop_last=False
+    )
+
+    total_train_steps = max(1, (len(dataloader) * epochs) // grad_accum)
+    lr_scheduler = _create_lr_scheduler(
+        optimizer, lr_scheduler_name, lr_warmup_steps, total_train_steps
     )
 
     output.mkdir(parents=True, exist_ok=True)
@@ -397,7 +467,9 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         metrics_path.unlink()
 
     print(
-        f"Iniciando treino LoRA SD 1.5: {epochs} épocas, {len(dataset)} imagens, rank={rank}, alpha={alpha}, lr={learning_rate}",
+        f"Iniciando treino LoRA SD 1.5: {epochs} épocas, {len(dataset)} imagens, res={resolution}, "
+        f"rank={rank}, alpha={alpha}, lr={learning_rate}, grad_accum={grad_accum}, opt={optimizer_name}, "
+        f"scheduler={lr_scheduler_name}",
         flush=True,
     )
     global_step = 0
@@ -411,9 +483,9 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
             pixel_values = batch["pixel_values"].to(device, dtype=torch.float32)
             captions = batch["prompt"]
 
-            # Codifica imagens no espaço latente via VAE em float32, convertendo latents para fp16
+            # Codifica imagens no espaço latente via VAE em float32, convertendo latents para target_dtype
             with torch.no_grad():
-                latents = (vae.encode(pixel_values).latent_dist.sample() * 0.18215).to(dtype=torch.float16)
+                latents = (vae.encode(pixel_values).latent_dist.sample() * 0.18215).to(dtype=target_dtype)
 
             # Adiciona ruído gaussiano aos latents
             noise = torch.randn_like(latents)
@@ -440,36 +512,58 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
             model_pred = unet(noisy_latents, timesteps, encoder_hidden_states).sample
             loss = F.mse_loss(model_pred.float(), noise.float(), reduction="mean")
 
+            cur_loss_raw = loss.item()
+            loss = loss / grad_accum
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(unet.parameters(), 1.0)
-            optimizer.step()
-            optimizer.zero_grad()
+
+            steps_in_epoch += 1
+            if steps_in_epoch % grad_accum == 0 or steps_in_epoch == len(dataloader):
+                torch.nn.utils.clip_grad_norm_(unet.parameters(), 1.0)
+                optimizer.step()
+                if lr_scheduler is not None:
+                    lr_scheduler.step()
+                optimizer.zero_grad()
 
             global_step += 1
-            cur_loss_val = loss.item()
-            if not math.isnan(cur_loss_val) and not math.isinf(cur_loss_val):
-                epoch_loss += cur_loss_val
-            steps_in_epoch += 1
+            if not math.isnan(cur_loss_raw) and not math.isinf(cur_loss_raw):
+                epoch_loss += cur_loss_raw
+
+            effective_lr = (
+                lr_scheduler.get_last_lr()[0] if lr_scheduler else learning_rate
+            )
 
             # Emite métricas intermediárias por step para streaming em tempo real
             if global_step % 5 == 0 or steps_in_epoch == len(dataloader):
-                safe_loss = None if (math.isnan(cur_loss_val) or math.isinf(cur_loss_val)) else round(cur_loss_val, 4)
+                safe_loss = (
+                    None
+                    if (math.isnan(cur_loss_raw) or math.isinf(cur_loss_raw))
+                    else round(cur_loss_raw, 4)
+                )
                 step_metric = {
                     "epoch": epoch,
                     "step": global_step,
                     "loss": safe_loss,
-                    "lr": learning_rate,
+                    "lr": effective_lr,
                 }
                 with open(metrics_path, "a", encoding="utf-8") as f:
                     f.write(json.dumps(step_metric) + "\n")
                     f.flush()
                 print(
-                    f"[SD 1.5] Época {epoch}/{epochs} · Step {global_step} · Loss: {cur_loss_val:.4f}",
+                    f"[SD 1.5] Época {epoch}/{epochs} · Step {global_step} · Loss: {cur_loss_raw:.4f} · LR: {effective_lr:.2e}",
                     flush=True,
                 )
 
-        avg_loss = round(epoch_loss / max(1, steps_in_epoch), 4) if steps_in_epoch > 0 else 0.0
-        safe_avg_loss = None if (math.isnan(avg_loss) or math.isinf(avg_loss)) else avg_loss
+        avg_loss = (
+            round(epoch_loss / max(1, steps_in_epoch), 4)
+            if steps_in_epoch > 0
+            else 0.0
+        )
+        safe_avg_loss = (
+            None if (math.isnan(avg_loss) or math.isinf(avg_loss)) else avg_loss
+        )
+        effective_lr = (
+            lr_scheduler.get_last_lr()[0] if lr_scheduler else learning_rate
+        )
         print(
             f"[SD 1.5] Época {epoch}/{epochs} concluída - Step {global_step} - Loss Médio: {avg_loss}",
             flush=True,
@@ -479,7 +573,7 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
             "epoch": epoch,
             "step": global_step,
             "loss": safe_avg_loss,
-            "lr": learning_rate,
+            "lr": effective_lr,
         }
         with open(metrics_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(metric_line) + "\n")
@@ -634,7 +728,22 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
     sample_interval = int(samples_cfg.get("interval", 1))
     sample_seed = int(samples_cfg.get("seed", seed))
 
-    print(f"Carregando modelos base SDXL ({model_id})...", flush=True)
+    resolution = int(lora_cfg.get("resolution", 1024))
+    grad_accum = max(1, int(lora_cfg.get("gradient_accumulation_steps", 1)))
+    optimizer_name = str(lora_cfg.get("optimizer", "adamw8bit"))
+    lr_scheduler_name = str(lora_cfg.get("lr_scheduler", "cosine"))
+    lr_warmup_steps = int(lora_cfg.get("lr_warmup_steps", 0))
+    mixed_precision = str(lora_cfg.get("mixed_precision", "fp16")).lower().strip()
+    target_dtype = (
+        torch.bfloat16
+        if (mixed_precision == "bf16" and torch.cuda.is_bf16_supported())
+        else torch.float16
+    )
+
+    print(
+        f"Carregando modelos base SDXL ({model_id}) [cache: {hub_cache}, res: {resolution}, dtype: {target_dtype}]...",
+        flush=True,
+    )
     tokenizer_one = AutoTokenizer.from_pretrained(
         model_id, subfolder="tokenizer", use_fast=False, cache_dir=hub_cache
     )
@@ -642,17 +751,17 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         model_id, subfolder="tokenizer_2", use_fast=False, cache_dir=hub_cache
     )
     text_encoder_one = CLIPTextModel.from_pretrained(
-        model_id, subfolder="text_encoder", torch_dtype=torch.float16, cache_dir=hub_cache
+        model_id, subfolder="text_encoder", torch_dtype=target_dtype, cache_dir=hub_cache
     ).to(device)
     text_encoder_two = CLIPTextModelWithProjection.from_pretrained(
-        model_id, subfolder="text_encoder_2", torch_dtype=torch.float16, cache_dir=hub_cache
+        model_id, subfolder="text_encoder_2", torch_dtype=target_dtype, cache_dir=hub_cache
     ).to(device)
     # VAE em float32 para prevenir underflow/overflow numérico (NaN) conhecido no SDXL em fp16
     vae = AutoencoderKL.from_pretrained(
         model_id, subfolder="vae", torch_dtype=torch.float32, cache_dir=hub_cache
     ).to(device)
     unet = UNet2DConditionModel.from_pretrained(
-        model_id, subfolder="unet", torch_dtype=torch.float16, cache_dir=hub_cache
+        model_id, subfolder="unet", torch_dtype=target_dtype, cache_dir=hub_cache
     ).to(device)
     noise_scheduler = DDPMScheduler.from_pretrained(
         model_id, subfolder="scheduler", cache_dir=hub_cache
@@ -673,21 +782,18 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
     )
     unet = get_peft_model(unet, lora_config)
 
-    try:
-        import bitsandbytes as bnb
+    optimizer = _create_optimizer(unet, optimizer_name, learning_rate)
 
-        optimizer = bnb.optim.AdamW8bit(unet.parameters(), lr=learning_rate)
-        print("Usando otimizador 8-bit AdamW (bitsandbytes).", flush=True)
-    except (ImportError, AttributeError, RuntimeError, TypeError) as e:
-        print(f"Bitsandbytes não disponível ({e}); usando AdamW padrão.", flush=True)
-        optimizer = torch.optim.AdamW(unet.parameters(), lr=learning_rate)
-
-    # SDXL usa resolução padrão 1024x1024
     dataset = DiffusionDataset(
-        dataset_path, resolution=1024, trigger_word=trigger_word
+        dataset_path, resolution=resolution, trigger_word=trigger_word
     )
     dataloader = DataLoader(
         dataset, batch_size=batch_size, shuffle=True, drop_last=False
+    )
+
+    total_train_steps = max(1, (len(dataloader) * epochs) // grad_accum)
+    lr_scheduler = _create_lr_scheduler(
+        optimizer, lr_scheduler_name, lr_warmup_steps, total_train_steps
     )
 
     output.mkdir(parents=True, exist_ok=True)
@@ -695,13 +801,17 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
     if metrics_path.exists():
         metrics_path.unlink()
 
-    # Time IDs padrão para SDXL (resolução nativa 1024x1024)
+    # Time IDs padrão para SDXL dimensionados pela resolução configurada
     add_time_ids = torch.tensor(
-        [[1024, 1024, 0, 0, 1024, 1024]], dtype=torch.float16, device=device
+        [[resolution, resolution, 0, 0, resolution, resolution]],
+        dtype=target_dtype,
+        device=device,
     )
 
     print(
-        f"Iniciando treino LoRA SDXL: {epochs} épocas, {len(dataset)} imagens, rank={rank}, alpha={alpha}, lr={learning_rate}",
+        f"Iniciando treino LoRA SDXL: {epochs} épocas, {len(dataset)} imagens, res={resolution}, "
+        f"rank={rank}, alpha={alpha}, lr={learning_rate}, grad_accum={grad_accum}, opt={optimizer_name}, "
+        f"scheduler={lr_scheduler_name}",
         flush=True,
     )
     global_step = 0
@@ -720,7 +830,7 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
                 latents = (
                     vae.encode(pixel_values).latent_dist.sample()
                     * vae.config.scaling_factor
-                ).to(dtype=torch.float16)
+                ).to(dtype=target_dtype)
 
             noise = torch.randn_like(latents)
             timesteps = torch.randint(
@@ -750,36 +860,58 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
             ).sample
             loss = F.mse_loss(model_pred.float(), noise.float(), reduction="mean")
 
+            cur_loss_raw = loss.item()
+            loss = loss / grad_accum
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(unet.parameters(), 1.0)
-            optimizer.step()
-            optimizer.zero_grad()
+
+            steps_in_epoch += 1
+            if steps_in_epoch % grad_accum == 0 or steps_in_epoch == len(dataloader):
+                torch.nn.utils.clip_grad_norm_(unet.parameters(), 1.0)
+                optimizer.step()
+                if lr_scheduler is not None:
+                    lr_scheduler.step()
+                optimizer.zero_grad()
 
             global_step += 1
-            cur_loss_val = loss.item()
-            if not math.isnan(cur_loss_val) and not math.isinf(cur_loss_val):
-                epoch_loss += cur_loss_val
-            steps_in_epoch += 1
+            if not math.isnan(cur_loss_raw) and not math.isinf(cur_loss_raw):
+                epoch_loss += cur_loss_raw
+
+            effective_lr = (
+                lr_scheduler.get_last_lr()[0] if lr_scheduler else learning_rate
+            )
 
             # Emite métricas intermediárias por step para streaming em tempo real
             if global_step % 5 == 0 or steps_in_epoch == len(dataloader):
-                safe_loss = None if (math.isnan(cur_loss_val) or math.isinf(cur_loss_val)) else round(cur_loss_val, 4)
+                safe_loss = (
+                    None
+                    if (math.isnan(cur_loss_raw) or math.isinf(cur_loss_raw))
+                    else round(cur_loss_raw, 4)
+                )
                 step_metric = {
                     "epoch": epoch,
                     "step": global_step,
                     "loss": safe_loss,
-                    "lr": learning_rate,
+                    "lr": effective_lr,
                 }
                 with open(metrics_path, "a", encoding="utf-8") as f:
                     f.write(json.dumps(step_metric) + "\n")
                     f.flush()
                 print(
-                    f"[SDXL] Época {epoch}/{epochs} · Step {global_step} · Loss: {cur_loss_val:.4f}",
+                    f"[SDXL] Época {epoch}/{epochs} · Step {global_step} · Loss: {cur_loss_raw:.4f} · LR: {effective_lr:.2e}",
                     flush=True,
                 )
 
-        avg_loss = round(epoch_loss / max(1, steps_in_epoch), 4) if steps_in_epoch > 0 else 0.0
-        safe_avg_loss = None if (math.isnan(avg_loss) or math.isinf(avg_loss)) else avg_loss
+        avg_loss = (
+            round(epoch_loss / max(1, steps_in_epoch), 4)
+            if steps_in_epoch > 0
+            else 0.0
+        )
+        safe_avg_loss = (
+            None if (math.isnan(avg_loss) or math.isinf(avg_loss)) else avg_loss
+        )
+        effective_lr = (
+            lr_scheduler.get_last_lr()[0] if lr_scheduler else learning_rate
+        )
         print(
             f"[SDXL] Época {epoch}/{epochs} concluída - Step {global_step} - Loss Médio: {avg_loss}",
             flush=True,
@@ -789,7 +921,7 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
             "epoch": epoch,
             "step": global_step,
             "loss": safe_avg_loss,
-            "lr": learning_rate,
+            "lr": effective_lr,
         }
         with open(metrics_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(metric_line) + "\n")

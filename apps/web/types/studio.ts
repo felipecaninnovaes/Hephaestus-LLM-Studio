@@ -367,6 +367,38 @@ export interface DiffusionJobRequest {
   alpha?: number;
   weights?: string | null;
   orchestratorId?: string | null;
+  samplePrompt?: string;
+  sampleInterval?: number;
+  sampleSeed?: number;
+  resolution?: number;
+  gradientAccumulationSteps?: number;
+  optimizer?: "adamw8bit" | "adamw" | "prodigy";
+  lrScheduler?: "cosine" | "linear" | "constant" | "constant_with_warmup";
+  lrWarmupSteps?: number;
+  mixedPrecision?: "fp16" | "bf16" | "no";
+}
+
+export interface DiffusionPreset {
+  name: string;
+  description?: string;
+  version?: string;
+  baseModel: "sdxl" | "flux" | "sd15";
+  triggerWord?: string;
+  epochs: number;
+  batchSize: number;
+  learningRate: string;
+  rank: number;
+  alpha: number;
+  resolution?: number;
+  gradientAccumulationSteps?: number;
+  optimizer?: "adamw8bit" | "adamw" | "prodigy";
+  lrScheduler?: "cosine" | "linear" | "constant" | "constant_with_warmup";
+  lrWarmupSteps?: number;
+  mixedPrecision?: "fp16" | "bf16" | "no";
+  enableSamples?: boolean;
+  samplePrompt?: string;
+  sampleInterval?: number;
+  sampleSeed?: string;
 }
 
 export function diffusionErrorMessage(code: string): string {

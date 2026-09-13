@@ -1010,7 +1010,10 @@ pub async fn list_images(
     };
 
     let mut qb = sqlx::QueryBuilder::new(format!(
-        "SELECT {ICOLS}, count(*) OVER() AS total__ FROM images i WHERE i.dataset_id = "
+        "SELECT {ICOLS}, count(*) OVER() AS total__, \
+         (SELECT count(*) FROM boxes b WHERE b.image_id = i.id) AS boxes_count__, \
+         (SELECT c.text FROM captions c WHERE c.image_id = i.id) AS caption__ \
+         FROM images i WHERE i.dataset_id = "
     ));
     qb.push_bind(ds_id);
     qb.push(if deleted {
@@ -1060,6 +1063,8 @@ pub async fn list_images(
         String,
         chrono::DateTime<chrono::Utc>,
         i64,
+        Option<i64>,
+        Option<String>,
     );
     let rows: Vec<ImgTuple> = match qb.build_query_as().fetch_all(&state.pool).await {
         Ok(r) => r,
@@ -1078,6 +1083,8 @@ pub async fn list_images(
         split,
         created_at,
         _total,
+        boxes_count,
+        caption,
     ) in rows
     {
         let url = match image_url(&state, &object_key, ds_id, img_id).await {
@@ -1096,6 +1103,8 @@ pub async fn list_images(
             created_at,
         });
         resp.url = url;
+        resp.boxes_count = boxes_count;
+        resp.caption = caption;
         out.push(resp);
     }
     (

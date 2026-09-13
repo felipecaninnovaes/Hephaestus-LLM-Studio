@@ -19,7 +19,36 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-12 (FATIA AUTOLABEL V2 CONCLUÍDA NA BRANCH COM CUSTOM API FIX)
+## Estado atual — 2026-09-13 (FATIA PREVIEW E VISUALIZAÇÃO DE LABELS NO DATASET CONCLUÍDA)
+
+- **FATIA PREVIEW E VISUALIZAÇÃO DE LABELS NO DATASET (GRID E QUICKLOOK) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/autolabel-caption-review`.
+  - **Backend API Principal**:
+    - `services/api-principal/src/datasets/models.rs`: `ImageResponse` enriquecido com campos opcionais `boxes_count: Option<i64>` e `caption: Option<String>` (com `skip_serializing_if = "Option::is_none"`).
+    - `services/api-principal/src/datasets/handlers.rs`: `list_images` otimizado com subqueries indexadas no Postgres para contar bounding boxes anotadas e trazer o texto da legenda sem requisições adicionais N+1.
+    - Testes unitários 324/324 verdes.
+  - **Contrato OpenAPI**:
+    - `packages/contracts/openapi.yaml`: Propriedades `boxesCount` e `caption` adicionadas ao schema `Image`.
+  - **Web Frontend**:
+    - `apps/web/types/studio.ts`: Tipos `ImageItem` atualizados com `boxesCount` e `caption`.
+    - `apps/web/lib/images.ts`: Função `putCaption` adicionada para salvar/editar legendas manuais (`PUT /api/datasets/{dataset_id}/images/{image_id}/caption`).
+    - `apps/web/components/studio/ImageCard.tsx`: Exibição de badges com contagem de bounding boxes anotadas (`N boxes`) e badge de legenda com tooltip; preview da legenda em itálico com aspas na barra inferior do card; botão de ação contextual (`"editar bbox →"` para YOLO vs `"ver legenda →"` para datasets de legendas/difusão).
+    - `apps/web/components/studio/ImageQuickLookModal.tsx`: Visualização completa de Legenda/Caption com badge de origem (`autolabel`, `manual`, `import`) e modelo VLM utilizado; botão de cópia com feedback visual; editor inline com contagem de caracteres (até 8000) e salvamento reativo via `putCaption`; callback `onCaptionUpdated` sincronizando o grid pai em tempo real.
+    - `apps/web/app/(studio)/datasets/[id]/page.tsx`: Clique no card em datasets de caption/difusão abre diretamente o `ImageQuickLookModal` para inspeção e edição imediata sem necessidade de telas externas.
+  - **Verificações**: `cargo check --workspace` verde, `cargo test -p api-principal --lib` 324/324 verdes, `cargo fmt --all -- --check` limpo, `npm run build --prefix apps/web` 12/12 páginas estáticas/dinâmicas compiladas com 0 erros TS, `graft build` sincronizado.
+
+- **FATIA REVISÃO E CURADORIA DE CAPTION NO AUTOLABEL — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/autolabel-caption-review`.
+  - **Contrato OpenAPI (0.19.0)**: Rota `GET /api/jobs/{id}/autolabel/preview` adicionada para inspeção prévia das legendas com presigned URLs; campo `items: Option<Vec<AutolabelApplyItem>>` em `AutolabelApplyRequest` permitindo curadoria seletiva e edição de legendas; novos schemas `AutolabelApplyItem`, `AutolabelPreviewItem` e `AutolabelPreviewResponse`.
+  - **Backend API Principal**:
+    - Handler `preview_autolabel_captions`: valida job/artefato `captions.jsonl`, calcula hash MD5, busca imagens ativas e legendas existentes no Postgres, assina URLs via `StoragePort` com fallback para `/data` e devolve lista enriquecida.
+    - Handler `apply_autolabel_captions`: atualizado para aplicar unicamente a lista curada quando `req.items` for fornecido, mantendo retrocompatibilidade total quando omitido (aplica 100% do artefato).
+    - Rota protegida registrada em `auth/routes.rs`. Testes unitários de serialização, validação e handlers 324/324 verdes.
+  - **Web Frontend**:
+    - Cliente HTTP: `getAutolabelPreview(jobId)` implementado em `apps/web/lib/autolabel.ts` e tipos alinhados em `apps/web/types/studio.ts`.
+    - Componente `AutolabelReviewModal.tsx`: modal moderno com contadores em tempo real (Total, Selecionadas, Editadas, Com Legenda Atual), barra de busca rápida, filtros por pílulas, visualizador de imagens com thumbnails, comparador lado a lado com a legenda anterior (identificando origem manual/import/autolabel), editor inline com contador de caracteres (até 8000), ações em massa ("Marcar Todas", "Desmarcar Todas", "Desfazer Edições") e opção de sobrescrita controlada.
+    - Integração de UI: Botão de ação "Revisar Legendas (Curadoria)" adicionado na visualização detalhada de jobs (`apps/web/app/(studio)/jobs/page.tsx`) e nos cards expansíveis do Centro de Atividades (`apps/web/components/studio/ActionCenter.tsx`), mantendo também o atalho de aplicação direta rápida.
+  - **Verificações**: `cargo check --workspace` verde, `cargo test -p api-principal --lib` 324/324 verde, `cargo fmt` 0 hunks, `npm run build` web verde (0 erros TS), `graft build` sincronizado. Branch pronta para commit.
+
+- **FATIA TELEMETRIA & LOGS NO ACTION CENTER — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/telemetria-logs-action` (commit `a213ee5`).
 
 - **FATIA AUTOLABEL V2 (MODELOS VLM, API OPENAI E ENDPOINTS CUSTOM) — CONCLUÍDA NA BRANCH (2026-09-12)** — branch `feat/autolabel-v2`. **Especificação executável: `docs/adr/0019-autolabel-v2-vlm-openai.md`** (D0–D5).
   - **AL2.0 (docs/adr)**: ADR-0019 aceita e registrada (`docs/adr/0019-autolabel-v2-vlm-openai.md`).

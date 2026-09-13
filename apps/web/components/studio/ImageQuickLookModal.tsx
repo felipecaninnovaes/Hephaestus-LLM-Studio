@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { getImage } from "@/lib/images";
+import { getImage, putCaption } from "@/lib/images";
 import { Button } from "@/components/ui/Button";
 import {
   IconX,
@@ -11,7 +11,10 @@ import {
   IconBoxSelect,
   IconCopy,
   IconTarget,
+  IconSparkles,
+  IconCheck,
 } from "@/components/icons";
+import { showToast } from "@/components/studio/Toast";
 import type { ImageItem, ImageDetail, Dataset, StudioClass } from "@/types/studio";
 
 export interface ImageQuickLookModalProps {
@@ -23,6 +26,7 @@ export interface ImageQuickLookModalProps {
   onNavigate: (index: number) => void;
   onDelete?: (item: ImageItem) => void;
   onEditImage?: (item: ImageItem) => void;
+  onCaptionUpdated?: (imageId: string, caption: string) => void;
 }
 
 export function ImageQuickLookModal({
@@ -34,6 +38,7 @@ export function ImageQuickLookModal({
   onNavigate,
   onDelete,
   onEditImage,
+  onCaptionUpdated,
 }: ImageQuickLookModalProps) {
   const router = useRouter();
   const currentItem = items[currentIndex];
@@ -41,6 +46,9 @@ export function ImageQuickLookModal({
   const [detail, setDetail] = useState<ImageDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [isEditingCaption, setIsEditingCaption] = useState(false);
+  const [captionInput, setCaptionInput] = useState("");
+  const [savingCaption, setSavingCaption] = useState(false);
 
   const fetchDetail = useCallback(async (item: ImageItem) => {
     if (!dataset) return;
@@ -48,8 +56,12 @@ export function ImageQuickLookModal({
     try {
       const d = await getImage(dataset.id, item.id);
       setDetail(d);
+      setCaptionInput(d.caption?.text ?? "");
+      setIsEditingCaption(false);
     } catch {
       setDetail(null);
+      setCaptionInput("");
+      setIsEditingCaption(false);
     } finally {
       setLoading(false);
     }
@@ -60,6 +72,7 @@ export function ImageQuickLookModal({
       fetchDetail(currentItem);
     } else {
       setDetail(null);
+      setIsEditingCaption(false);
     }
   }, [open, currentItem, fetchDetail]);
 
@@ -102,6 +115,35 @@ export function ImageQuickLookModal({
     setTimeout(() => setCopied(false), 1500);
   }
 
+  async function handleSaveCaption() {
+    if (!dataset || !currentItem) return;
+    const trimmed = captionInput.trim();
+    if (!trimmed) {
+      showToast("A legenda não pode ser vazia.", "info");
+      return;
+    }
+    if (trimmed.length > 8000) {
+      showToast("A legenda não pode exceder 8000 caracteres.", "info");
+      return;
+    }
+    setSavingCaption(true);
+    try {
+      const saved = await putCaption(dataset.id, currentItem.id, {
+        text: trimmed,
+        origin: "manual",
+      });
+      setDetail((prev) => (prev ? { ...prev, caption: saved } : prev));
+      currentItem.caption = saved.text;
+      onCaptionUpdated?.(currentItem.id, saved.text);
+      setIsEditingCaption(false);
+      showToast("Legenda salva com sucesso!", "success");
+    } catch {
+      showToast("Falha ao salvar legenda.", "error");
+    } finally {
+      setSavingCaption(false);
+    }
+  }
+
   function formatBytes(bytes?: number | null) {
     if (!bytes || bytes <= 0) return "—";
     if (bytes < 1024) return `${bytes} B`;
@@ -135,7 +177,7 @@ export function ImageQuickLookModal({
             </span>
             <div className="flex items-center space-x-1.5 pointer-events-auto">
               <span className="hidden sm:inline-flex items-center px-2 py-0.5 rounded border border-white/10 bg-black/60 font-mono text-[10px] text-zinc-400 backdrop-blur-sm">
-                Espaço para fechar · ← → navegar · E editar
+                Espaço para fechar · ← → navegar {dataset?.category === "yolo" ? "· E editar bbox" : ""}
               </span>
               <button
                 type="button"
@@ -225,8 +267,8 @@ export function ImageQuickLookModal({
           )}
         </div>
 
-        {/* Sidebar Técnica de Metadados */}
-        <div className="w-full md:w-80 flex flex-col justify-between border-t md:border-t-0 md:border-l border-zinc-800/80 bg-zinc-950 p-4 sm:p-5 overflow-y-auto">
+        {/* Sidebar Técnica de Metadados e Labels */}
+        <div className="w-full md:w-88 flex flex-col justify-between border-t md:border-t-0 md:border-l border-zinc-800/80 bg-zinc-950 p-4 sm:p-5 overflow-y-auto [scrollbar-width:thin]">
           <div className="space-y-4">
             <div>
               <span className="rounded border border-white/15 bg-zinc-900 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-caps text-zinc-300">
@@ -260,44 +302,179 @@ export function ImageQuickLookModal({
                   {currentItem.mediaType ?? "webp"}
                 </span>
               </div>
-              <div className="flex items-center justify-between text-zinc-400">
-                <span>Anotações:</span>
-                <span className="text-[#34d399] font-medium">
-                  {boxes.length} {boxes.length === 1 ? "box" : "boxes"}
-                </span>
-              </div>
-            </div>
-
-            {/* Classes presentes */}
-            <div>
-              <p className="font-mono text-[11px] text-zinc-400 uppercase tracking-caps font-semibold mb-2">
-                Classes nesta amostra:
-              </p>
-              {loading ? (
-                <p className="font-mono text-xs text-zinc-500">Carregando classes…</p>
-              ) : boxes.length === 0 ? (
-                <p className="font-mono text-xs text-zinc-500 italic">Nenhuma anotação nesta imagem.</p>
-              ) : (
-                <div className="flex flex-wrap gap-1.5">
-                  {Array.from(new Set(boxes.map((b) => b.classId))).map((clsId) => {
-                    const cls = classesMap.get(clsId);
-                    const color = cls?.color ?? "#8350f2";
-                    const count = boxes.filter((b) => b.classId === clsId).length;
-                    return (
-                      <span
-                        key={clsId}
-                        style={{ borderColor: `${color}40`, backgroundColor: `${color}15`, color }}
-                        className="inline-flex items-center space-x-1.5 rounded-md border px-2 py-0.5 font-mono text-[11px] font-medium"
-                      >
-                        <span className="size-1.5 rounded-full" style={{ backgroundColor: color }} />
-                        <span>{cls?.name ?? "tag"}</span>
-                        <span className="opacity-70 text-[10px]">({count})</span>
-                      </span>
-                    );
-                  })}
+              {dataset?.category === "yolo" && (
+                <div className="flex items-center justify-between text-zinc-400">
+                  <span>Bounding Boxes:</span>
+                  <span className="text-[#34d399] font-medium">
+                    {boxes.length} {boxes.length === 1 ? "box" : "boxes"}
+                  </span>
                 </div>
               )}
             </div>
+
+            {/* Bloco de Legenda / Caption (Preview e Edição) */}
+            <div className="space-y-2 rounded-xl border border-white/10 bg-zinc-900/40 p-3">
+              <div className="flex items-center justify-between text-[11px] font-mono">
+                <span className="flex items-center gap-1.5 font-semibold text-zinc-300 uppercase tracking-caps">
+                  <IconSparkles className="size-3.5 text-brand-400" />
+                  Legenda / Caption
+                </span>
+                {detail?.caption && (
+                  <div className="flex items-center gap-1">
+                    <span
+                      className={`rounded px-1.5 py-0.2 text-[10px] uppercase font-semibold ${
+                        detail.caption.origin === "autolabel"
+                          ? "border border-[#34d399]/40 bg-[#34d399]/15 text-[#a7f3d0]"
+                          : detail.caption.origin === "manual"
+                          ? "border border-purple-500/40 bg-purple-500/15 text-purple-300"
+                          : "border border-blue-500/40 bg-blue-500/15 text-blue-300"
+                      }`}
+                    >
+                      {detail.caption.origin}
+                    </span>
+                    {detail.caption.model && (
+                      <span
+                        className="rounded border border-white/10 bg-black/40 px-1.5 py-0.2 text-[10px] text-zinc-400 truncate max-w-[100px]"
+                        title={detail.caption.model}
+                      >
+                        {detail.caption.model}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {loading ? (
+                <p className="font-mono text-xs text-zinc-500">Carregando legenda…</p>
+              ) : isEditingCaption ? (
+                <div className="space-y-2">
+                  <textarea
+                    value={captionInput}
+                    onChange={(e) => setCaptionInput(e.target.value)}
+                    rows={4}
+                    placeholder="Digite a legenda desta imagem…"
+                    className="w-full rounded-lg border border-white/15 bg-black/60 p-2 text-xs text-zinc-100 placeholder:text-zinc-500 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 font-mono leading-relaxed resize-y"
+                    autoFocus
+                  />
+                  <div className="flex items-center justify-between">
+                    <span
+                      className={`font-mono text-[10px] ${
+                        captionInput.length > 8000 ? "text-rose-400 font-bold" : "text-zinc-500"
+                      }`}
+                    >
+                      {captionInput.length} / 8000
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        disabled={savingCaption}
+                        onClick={() => {
+                          setCaptionInput(detail?.caption?.text ?? "");
+                          setIsEditingCaption(false);
+                        }}
+                      >
+                        <span>Cancelar</span>
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="primary"
+                        size="sm"
+                        disabled={savingCaption || !captionInput.trim()}
+                        loading={savingCaption}
+                        onClick={handleSaveCaption}
+                      >
+                        <IconCheck className="size-3 text-brand-400" />
+                        <span>Salvar</span>
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              ) : detail?.caption ? (
+                <div className="space-y-2">
+                  <p className="rounded-lg border border-white/5 bg-black/50 p-2.5 text-xs text-zinc-200 font-mono select-text whitespace-pre-wrap leading-relaxed max-h-36 overflow-y-auto [scrollbar-width:thin]">
+                    &ldquo;{detail.caption.text}&rdquo;
+                  </p>
+                  <div className="flex items-center justify-end gap-1.5">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => copyText(detail.caption!.text)}
+                      title="Copiar texto da legenda"
+                    >
+                      <IconCopy className="size-3" />
+                      <span>Copiar</span>
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => {
+                        setCaptionInput(detail.caption!.text);
+                        setIsEditingCaption(true);
+                      }}
+                      title="Editar texto da legenda"
+                    >
+                      <span>Editar</span>
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <p className="font-mono text-xs text-zinc-500 italic">
+                    Nenhuma legenda vinculada a esta imagem.
+                  </p>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => {
+                      setCaptionInput("");
+                      setIsEditingCaption(true);
+                    }}
+                    className="w-full justify-center"
+                  >
+                    <IconSparkles className="size-3 text-brand-400" />
+                    <span>+ Adicionar Legenda</span>
+                  </Button>
+                </div>
+              )}
+            </div>
+
+            {/* Classes presentes (para datasets YOLO) */}
+            {dataset?.category === "yolo" && (
+              <div>
+                <p className="font-mono text-[11px] text-zinc-400 uppercase tracking-caps font-semibold mb-2">
+                  Classes nesta amostra:
+                </p>
+                {loading ? (
+                  <p className="font-mono text-xs text-zinc-500">Carregando classes…</p>
+                ) : boxes.length === 0 ? (
+                  <p className="font-mono text-xs text-zinc-500 italic">Nenhuma anotação nesta imagem.</p>
+                ) : (
+                  <div className="flex flex-wrap gap-1.5">
+                    {Array.from(new Set(boxes.map((b) => b.classId))).map((clsId) => {
+                      const cls = classesMap.get(clsId);
+                      const color = cls?.color ?? "#8350f2";
+                      const count = boxes.filter((b) => b.classId === clsId).length;
+                      return (
+                        <span
+                          key={clsId}
+                          style={{ borderColor: `${color}40`, backgroundColor: `${color}15`, color }}
+                          className="inline-flex items-center space-x-1.5 rounded-md border px-2 py-0.5 font-mono text-[11px] font-medium"
+                        >
+                          <span className="size-1.5 rounded-full" style={{ backgroundColor: color }} />
+                          <span>{cls?.name ?? "tag"}</span>
+                          <span className="opacity-70 text-[10px]">({count})</span>
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Ação Copiar Nome/Hash */}
             <Button

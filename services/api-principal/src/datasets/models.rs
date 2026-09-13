@@ -300,6 +300,10 @@ pub struct ImageResponse {
     pub split: String,
     pub url: String,
     pub created_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub boxes_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caption: Option<String>,
 }
 
 impl From<ImageRow> for ImageResponse {
@@ -315,6 +319,8 @@ impl From<ImageRow> for ImageResponse {
             split: row.split,
             url: String::new(),
             created_at: row.created_at,
+            boxes_count: None,
+            caption: None,
         }
     }
 }

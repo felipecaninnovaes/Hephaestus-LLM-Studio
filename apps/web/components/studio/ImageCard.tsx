@@ -1,7 +1,14 @@
 "use client";
 
 import React from "react";
-import { IconSearch, IconTrash, IconCheck, IconZoomIn } from "@/components/icons";
+import {
+  IconSearch,
+  IconTrash,
+  IconCheck,
+  IconZoomIn,
+  IconBoxSelect,
+  IconSparkles,
+} from "@/components/icons";
 import type { ImageItem } from "@/types/studio";
 
 export interface ImageCardProps {
@@ -141,19 +148,41 @@ export function ImageCard({
         )}
       </div>
 
-      {/* Badge Superior Direito: Split ou Score */}
-      {variant === "search" && searchScore != null ? (
-        <span
-          title="Similaridade (cosseno, -1..1)"
-          className="absolute top-2 right-2 rounded border border-brand-500/30 bg-zinc-950/90 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-brand-300 backdrop-blur-sm"
-        >
-          {searchScore.toFixed(2)}
-        </span>
-      ) : (
-        <span className="absolute top-2 right-2 rounded border border-white/15 bg-zinc-950/90 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-caps font-semibold text-zinc-300 backdrop-blur-sm">
-          {item.split}
-        </span>
-      )}
+      {/* Badges Superior Direito: Labels + Split ou Score */}
+      <div className="absolute top-2 right-2 z-10 flex items-center gap-1">
+        {item.boxesCount != null && item.boxesCount > 0 && (
+          <span
+            title={`${item.boxesCount} ${item.boxesCount === 1 ? "box anotada" : "boxes anotadas"}`}
+            className="flex items-center gap-1 rounded border border-[#34d399]/40 bg-black/85 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[#a7f3d0] backdrop-blur-sm"
+          >
+            <IconBoxSelect className="size-3 text-[#34d399]" />
+            <span>{item.boxesCount}</span>
+          </span>
+        )}
+
+        {item.caption && (
+          <span
+            title={`Legenda: "${item.caption}"`}
+            className="flex items-center gap-1 rounded border border-brand-500/40 bg-black/85 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-brand-300 backdrop-blur-sm"
+          >
+            <IconSparkles className="size-3 text-brand-400" />
+            <span className="hidden sm:inline">legenda</span>
+          </span>
+        )}
+
+        {variant === "search" && searchScore != null ? (
+          <span
+            title="Similaridade (cosseno, -1..1)"
+            className="rounded border border-brand-500/30 bg-zinc-950/90 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-brand-300 backdrop-blur-sm"
+          >
+            {searchScore.toFixed(2)}
+          </span>
+        ) : (
+          <span className="rounded border border-white/15 bg-zinc-950/90 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-caps font-semibold text-zinc-300 backdrop-blur-sm">
+            {item.split}
+          </span>
+        )}
+      </div>
 
       {/* Restaurar na Lixeira */}
       {variant === "trash" && onRestore && (
@@ -168,17 +197,27 @@ export function ImageCard({
         </button>
       )}
 
-      {/* Barra Inferior com Nome do Arquivo e Ação */}
-      <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 border-t border-zinc-800/80 bg-zinc-950/90 px-2.5 py-1.5 font-mono text-[11px] text-zinc-300 backdrop-blur-sm">
-        <span title={item.filename} className="min-w-0 flex-1 truncate">
-          {item.filename}
-        </span>
-        {actionText && (
+      {/* Barra Inferior com Nome do Arquivo, Preview de Legenda e Ação */}
+      <div className="absolute inset-x-0 bottom-0 flex flex-col border-t border-zinc-800/80 bg-zinc-950/95 px-2.5 py-1.5 font-mono text-[11px] text-zinc-300 backdrop-blur-sm">
+        <div className="flex items-center justify-between gap-2">
+          <span title={item.filename} className="min-w-0 flex-1 truncate font-semibold">
+            {item.filename}
+          </span>
+          {actionText && (
+            <span
+              title={actionText}
+              className="shrink-0 truncate transition-colors group-hover:text-brand-400 text-[10px]"
+            >
+              {actionText}
+            </span>
+          )}
+        </div>
+        {item.caption && density !== "compact" && (
           <span
-            title={actionText}
-            className="shrink-0 truncate transition-colors group-hover:text-brand-400"
+            title={item.caption}
+            className="truncate text-[10px] text-zinc-400 italic mt-0.5 line-clamp-1"
           >
-            {actionText}
+            &ldquo;{item.caption}&rdquo;
           </span>
         )}
       </div>

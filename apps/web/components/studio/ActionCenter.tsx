@@ -17,6 +17,7 @@ import {
   IconPlay,
   IconRefresh,
   IconServer,
+  IconSparkles,
   IconTarget,
   IconTrash,
   IconX,
@@ -24,6 +25,7 @@ import {
 } from "@/components/icons";
 import { SearchInput, SubmodulePills, Badge, ProgressBar, Drawer, jobStatusToBadgeVariant } from "@/components/ui";
 import { JobLogViewer } from "@/components/studio/JobLogViewer";
+import { AutolabelReviewModal } from "@/components/studio/AutolabelReviewModal";
 import {
   abortJob,
   downloadArtifact,
@@ -83,6 +85,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
   const [abortBusy, setAbortBusy] = useState(false);
   const [applyBusy, setApplyBusy] = useState(false);
   const [applyOverwrite, setApplyOverwrite] = useState(false);
+  const [reviewJob, setReviewJob] = useState<Job | null>(null);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -1059,6 +1062,15 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                   {/* AutoLabel: aplicar legendas */}
                                   {job.kind === "autolabel" && job.status === "done" && (
                                     <div className="flex items-center gap-2 flex-wrap">
+                                      <button
+                                        type="button"
+                                        onClick={() => setReviewJob(job)}
+                                        className="inline-flex items-center gap-1 rounded-lg border border-brand-500/40 bg-brand-500/15 px-2.5 py-1 text-[11px] font-medium text-brand-300 transition hover:bg-brand-500/25 active:scale-[0.985] cursor-pointer"
+                                        title="Inspecionar, editar e curar legendas antes de aplicar"
+                                      >
+                                        <IconSparkles className="size-3 text-brand-400" />
+                                        <span>Revisar Legendas</span>
+                                      </button>
                                       <label className="flex items-center gap-1.5 text-[11px] text-zinc-400 cursor-pointer">
                                         <input
                                           type="checkbox"
@@ -1072,10 +1084,11 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                         type="button"
                                         disabled={applyBusy}
                                         onClick={() => handleApplyCaptions(job)}
-                                        className="inline-flex items-center gap-1 rounded-lg border border-[#34d399]/40 bg-[#34d399]/15 px-2.5 py-1 text-[11px] font-medium text-[#a7f3d0] transition hover:bg-[#34d399]/25 active:scale-[0.985] disabled:opacity-50 cursor-pointer"
+                                        className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-medium text-zinc-300 transition hover:bg-white/10 active:scale-[0.985] disabled:opacity-50 cursor-pointer"
+                                        title="Aplicar todas as legendas direto sem inspeção"
                                       >
-                                        <IconCheck className="size-3" />
-                                        <span>{applyBusy ? "Aplicando…" : "Aplicar ao dataset"}</span>
+                                        <IconCheck className="size-3 text-zinc-400" />
+                                        <span>{applyBusy ? "Aplicando…" : "Aplicar Todas"}</span>
                                       </button>
                                     </div>
                                   )}
@@ -1134,6 +1147,17 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
         busy={abortBusy}
         onConfirm={handleAbort}
         onClose={() => setAbortTarget(null)}
+      />
+
+      {/* Modal de Revisão e Curadoria de Legendas (AutoLabel) */}
+      <AutolabelReviewModal
+        open={Boolean(reviewJob)}
+        onClose={() => setReviewJob(null)}
+        jobId={reviewJob?.id ?? null}
+        datasetId={reviewJob?.datasetId}
+        onApplied={() => {
+          void fetchData();
+        }}
       />
     </>
   );

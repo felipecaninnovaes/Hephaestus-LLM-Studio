@@ -915,6 +915,7 @@ pub struct ImageQuery {
     limit: Option<String>,
     offset: Option<String>,
     deleted: Option<String>,
+    #[serde(alias = "classId")]
     class_id: Option<String>,
     tag: Option<String>,
 }

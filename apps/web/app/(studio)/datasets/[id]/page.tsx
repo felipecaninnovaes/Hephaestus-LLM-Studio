@@ -122,6 +122,7 @@ export default function DatasetGalleryPage() {
   const [selectedClassId, setSelectedClassId] = useState<string | null>(null);
   const [searchMode, setSearchMode] = useState<"tag" | "semantic">("tag");
   const [searchInput, setSearchInput] = useState("");
+  const [activeTag, setActiveTag] = useState<string | null>(null);
   const [activeQuery, setActiveQuery] = useState<string | null>(null);
   const [similarFor, setSimilarFor] = useState<string | null>(null);
   const [results, setResults] = useState<SearchItem[]>([]);
@@ -153,7 +154,7 @@ export default function DatasetGalleryPage() {
       currentSplit: GallerySplitView = splitView,
       currentAnnotation: GalleryAnnotationFilter = annotationFilter,
       currentClassId: string | null = selectedClassId,
-      currentTag: string | null = searchInput.trim() ? searchInput.trim() : null,
+      currentTag: string | null = activeTag,
     ) => {
       setLoading(true);
       setError(null);
@@ -204,12 +205,14 @@ export default function DatasetGalleryPage() {
         setLoading(false);
       }
     },
-    [router, splitView, annotationFilter, selectedClassId, searchInput],
+    [router, splitView, annotationFilter, selectedClassId, activeTag],
   );
 
   useEffect(() => {
-    if (datasetId) load(datasetId, splitView, annotationFilter);
-  }, [datasetId, load, splitView, annotationFilter]);
+    if (datasetId && !(searchMode === "semantic" && (activeQuery || similarFor))) {
+      void load(datasetId, splitView, annotationFilter, selectedClassId, activeTag);
+    }
+  }, [datasetId, load, splitView, annotationFilter, selectedClassId, activeTag, searchMode, activeQuery, similarFor]);
 
   function stopSearchPolling() {
     if (pollRef.current) {
@@ -283,8 +286,10 @@ export default function DatasetGalleryPage() {
     }
     const q = searchInput.trim();
     if (!q) {
-      if (activeQuery) {
+      if (searchMode === "semantic" && activeQuery) {
         clearSearch();
+      } else if (searchMode === "tag" && activeTag) {
+        setActiveTag(null);
       }
       return;
     }
@@ -324,7 +329,7 @@ export default function DatasetGalleryPage() {
         labeled: labeledParam,
         deleted: isTrash,
         classId: selectedClassId || undefined,
-        tag: searchMode === "tag" && searchInput.trim() ? searchInput.trim() : undefined,
+        tag: searchMode === "tag" && activeTag ? activeTag : undefined,
       });
       setItems((prev) => [...prev, ...page.items]);
       setTotal(page.total);
@@ -514,12 +519,15 @@ export default function DatasetGalleryPage() {
 
   function clearSearch() {
     setActiveQuery(null);
+    setActiveTag(null);
     setSimilarFor(null);
     setResults([]);
     setSearchInput("");
-    if (datasetId) {
-      void load(datasetId, splitView, annotationFilter, selectedClassId, null);
-    }
+  }
+
+  function clearAllFilters() {
+    clearSearch();
+    setSelectedClassId(null);
   }
 
   async function handleTextSearch(
@@ -534,17 +542,10 @@ export default function DatasetGalleryPage() {
     }
 
     if (mode === "tag") {
-      setSearching(true);
-      try {
-        setResults([]);
-        setSimilarFor(null);
-        setActiveQuery(q);
-        await load(datasetId, splitView, annotationFilter, selectedClassId, q);
-      } catch (err) {
-        showToast(messageForSearch(err), "error");
-      } finally {
-        setSearching(false);
-      }
+      setResults([]);
+      setSimilarFor(null);
+      setActiveQuery(null);
+      setActiveTag(q);
       return;
     }
 
@@ -553,6 +554,7 @@ export default function DatasetGalleryPage() {
       const res = await searchDataset(datasetId, q);
       setResults(res.items);
       setActiveQuery(q);
+      setActiveTag(null);
       setSimilarFor(null);
     } catch (err) {
       if (err instanceof ApiError && err.code === "index_not_ready") {
@@ -1194,15 +1196,6 @@ export default function DatasetGalleryPage() {
         selectedClassId={selectedClassId}
         onClassChange={(clsId) => {
           setSelectedClassId(clsId);
-          if (datasetId) {
-            void load(
-              datasetId,
-              splitView,
-              annotationFilter,
-              clsId,
-              searchMode === "tag" && searchInput.trim() ? searchInput.trim() : null,
-            );
-          }
         }}
       />
 
@@ -1214,8 +1207,10 @@ export default function DatasetGalleryPage() {
               type="button"
               onClick={() => {
                 setSearchMode("tag");
+                setActiveQuery(null);
+                setResults([]);
                 if (searchInput.trim()) {
-                  void handleTextSearch(searchInput, "tag");
+                  setActiveTag(searchInput.trim());
                 }
               }}
               title="Filtro Estrito: busca unicamente imagens que possuem esta tag, classe ou legenda"
@@ -1231,6 +1226,7 @@ export default function DatasetGalleryPage() {
               type="button"
               onClick={() => {
                 setSearchMode("semantic");
+                setActiveTag(null);
                 if (searchInput.trim()) {
                   void handleTextSearch(searchInput, "semantic");
                 }
@@ -1297,13 +1293,13 @@ export default function DatasetGalleryPage() {
       )}
 
       {/* Barra de Filtro Estrito Ativo */}
-      {searchMode === "tag" && (activeQuery || selectedClassId) && (
+      {searchMode === "tag" && (activeTag || selectedClassId) && (
         <div className="flex items-center justify-between gap-2 rounded-xl border border-brand-500/25 bg-brand-500/5 px-3.5 py-2 font-mono text-xs text-zinc-300">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-semibold text-brand-300">Filtro Ativo:</span>
-            {activeQuery && (
+            {activeTag && (
               <span className="rounded bg-brand-500/20 px-2 py-0.5 text-brand-200">
-                Tag &quot;{activeQuery}&quot;
+                Tag &quot;{activeTag}&quot;
               </span>
             )}
             {selectedClassId && (
@@ -1315,10 +1311,7 @@ export default function DatasetGalleryPage() {
           </div>
           <button
             type="button"
-            onClick={() => {
-              setSelectedClassId(null);
-              clearSearch();
-            }}
+            onClick={clearAllFilters}
             className="text-[11px] text-zinc-400 hover:text-white underline cursor-pointer shrink-0"
           >
             Limpar filtros
@@ -1405,11 +1398,11 @@ export default function DatasetGalleryPage() {
             </Button>
           )}
         </EmptyState>
-      ) : activeQuery !== null || similarFor !== null ? (
+      ) : similarFor !== null || (searchMode === "semantic" && activeQuery !== null) ? (
         <div className="flex flex-col gap-3">
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-zinc-800/80 bg-zinc-950/60 backdrop-blur-sm px-4 py-2.5 text-[11px] text-zinc-400">
             <span>
-              Resultados da busca —{" "}
+              Resultados da busca semântica —{" "}
               <span className="font-mono text-zinc-200">
                 {results.length.toLocaleString()}
               </span>{" "}
@@ -1455,6 +1448,35 @@ export default function DatasetGalleryPage() {
             </div>
           )}
         </div>
+      ) : total === 0 ? (
+        <EmptyState
+          icon={activeTag || selectedClassId ? <IconSearch className="h-5 w-5" /> : <IconFolder className="h-5 w-5" />}
+          title={
+            activeTag || selectedClassId
+              ? "Nenhuma imagem encontrada com o filtro aplicado"
+              : annotationFilter !== "all"
+              ? "Nenhuma imagem encontrada com o filtro de rótulo"
+              : "Nenhuma imagem ativa neste conjunto"
+          }
+          description={
+            activeTag || selectedClassId
+              ? "Tente buscar por outro termo ou selecione outra classe."
+              : "Ajuste os filtros da barra de ferramentas ou adicione mais amostras."
+          }
+          className="py-14 border border-zinc-800"
+        >
+          {(activeTag || selectedClassId) && (
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={clearAllFilters}
+              className="mt-2"
+            >
+              Limpar filtros
+            </Button>
+          )}
+        </EmptyState>
       ) : density === "table" ? (
         <div className="flex flex-col gap-4">
           <ImageTableView

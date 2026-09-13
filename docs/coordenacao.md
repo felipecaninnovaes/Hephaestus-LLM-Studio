@@ -21,9 +21,9 @@ ser interrompido no meio de uma.
 
 ## Estado atual — 2026-09-13 (FATIA FILTRO ESTRITO POR TAG/CLASSE E AUTOLABEL SELETIVO CONCLUÍDAS NA BRANCH)
 
-- **FATIA FILTRO ESTRITO POR TAG E CLASSE NO GRID DE IMAGENS — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/autolabel-selective-dataset`.
+- **FATIA FILTRO ESTRITO POR TAG E CLASSE NO GRID DE IMAGENS — CONCLUÍDA E VALIDADA (2026-09-13)** — branch `feat/autolabel-selective-dataset`.
   - **Backend API Principal**:
-    - `services/api-principal/src/datasets/handlers.rs`: query parameters `class_id` (UUID validado) e `tag` (1..200 chars) adicionados em `GET /api/datasets/:id/images` (`ImageQuery`).
+    - `services/api-principal/src/datasets/handlers.rs`: query parameters `class_id` (UUID validado, com alias `classId`) e `tag` (1..200 chars) adicionados em `GET /api/datasets/:id/images` (`ImageQuery`).
     - Filtro estrito via SQL com subqueries `EXISTS`:
       - `class_id`: filtra imagens com anotação na classe especificada (`EXISTS (SELECT 1 FROM boxes b WHERE b.image_id = i.id AND b.class_id = $cid)`).
       - `tag`: busca textual `ILIKE` estrita combinando nome de classes anotadas (`boxes JOIN classes`), legendas (`captions.text`) ou nome de arquivo (`images.filename`).
@@ -31,13 +31,13 @@ ser interrompido no meio de uma.
   - **Contrato OpenAPI**:
     - `packages/contracts/openapi.yaml`: parâmetros de query `classId` e `tag` documentados em `GET /api/datasets/{id}/images`.
   - **Web Frontend**:
-    - `apps/web/lib/images.ts`: `ListImagesOpts` e `listImages` enriquecidos com `classId` e `tag`.
+    - `apps/web/lib/images.ts`: `ListImagesOpts` e `listImages` enriquecidos com `class_id`, `classId` e `tag`.
     - `apps/web/components/studio/GalleryOperateToolbar.tsx`: pílulas interativas de classes anotadas (`Todas`, `classe1`, `classe2`...) com estilo ativo, seletor de modo de busca e botões de filtro.
     - `apps/web/app/(studio)/datasets/[id]/page.tsx`:
-      - Suporte a dois modos claros de busca na galeria:
-        1. **Filtro Estrito (Tag/Classe)** (padrão): filtra exatamente as imagens que possuem a tag no nome, classe ou legenda via Postgres, eliminando falsos positivos.
-        2. **Similaridade IA (CLIP)**: busca contínua por embedding semântico via `searchDataset`.
-      - Exibição de barra informativa de filtro ativo com contador de imagens correspondentes e botão para limpar filtros rapidamente.
+      - Desacoplamento de `activeTag` (filtro estrito de tags/classes no grid) de `activeQuery` (busca vetorial IA/CLIP), corrigindo conflito em que o grid renderizava o array vazio da busca semântica em vez dos `items` filtrados.
+      - Sincronização reativa via `useEffect` único para recarregamento sob troca de classes/tags/splits, eliminando chamadas concorrentes e race conditions.
+      - Renderização de Empty State contextual com botão `"Limpar filtros"` quando nenhum item corresponde à busca.
+      - Validação de ponta a ponta em tempo real no browser via Chrome DevTools MCP (busca por tag `armpits`, seleção da classe `buttocks_exposed` retornando 1 imagem, limpeza de filtros retornando as 129 imagens).
   - **Verificações**: `cargo check --workspace` verde, `cargo test -p api-principal --lib` 325/325 verdes, `cargo fmt --all -- --check` limpo, `npm run build --prefix apps/web` 12/12 páginas compiladas sem erros TS, `graft build` sincronizado.
 
 - **FATIA AUTOLABEL SELETIVO POR CLASSE E SELEÇÃO DE IMAGENS — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/autolabel-selective-dataset`.

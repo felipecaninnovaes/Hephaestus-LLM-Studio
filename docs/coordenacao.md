@@ -26,8 +26,14 @@ ser interrompido no meio de uma.
     - `engines/trainer-difusao/pyproject.toml`: dependências declaradas (`pyyaml`, `pillow`, e extras de treino `diffusers`, `transformers`, `accelerate`, `peft`, `bitsandbytes`, `safetensors`).
     - `engines/trainer-difusao/Dockerfile`: imagem mock com `ENGINE_MOCK=1` para dev e CI.
     - `engines/trainer-difusao/Dockerfile.gpu`: imagem GPU com base `pytorch:2.6.0-cuda12.4-cudnn9-runtime`, dependências de aceleração e `ENGINE_MOCK=0`.
-    - `engines/trainer-difusao/src/trainer_difusao/train.py`: suporte a `ENGINE_MOCK=1` gerando `metrics.jsonl` e `adapter.safetensors` com metadados para FLUX.2 Klein 4B (`base_model: flux-2-klein-4b`), SDXL e SD 1.5; modo real `ENGINE_MOCK=0` com fail-fast honesto quando sem CUDA ou dependências de treino.
-    - Testes: 4/4 testes unittest verdes em `tests/test_train.py`.
+    - `engines/trainer-difusao/src/trainer_difusao/train.py`:
+      - Suporte a `ENGINE_MOCK=1` gerando `metrics.jsonl` e `adapter.safetensors` com metadados para FLUX.2 Klein 4B (`base_model: flux-2-klein-4b`), SDXL e SD 1.5.
+      - **Pipelines reais de treino (@gpu)**:
+        - `DiffusionDataset`: leitor dinâmico dos pares `{stem}.webp` + `{stem}.txt` em `images/` ou raiz do dataset, com redimensionamento e normalização `[-1.0, 1.0]`.
+        - `_real_train_sd15`: carregamento com `torch.float16`, VAE e Text Encoder congelados, injeção de LoRA via `peft.LoraConfig` (`to_k, to_q, to_v, to_out.0`), gradient checkpointing, otimizador 8-bit AdamW (`bitsandbytes`), loop de ruído DDPM e emissão progressiva em `metrics.jsonl`.
+        - `_real_train_sdxl`: dual text encoders CLIP (`CLIPTextModel` + `CLIPTextModelWithProjection`), pooled prompt embeddings, micro-condicionamento (`add_time_ids` 1024x1024), resolução nativa 1024, gradient checkpointing, otimizador 8-bit AdamW e exportação canônica com metadados em `adapter.safetensors`.
+        - Cache persistente: `HF_HOME` configurado automaticamente para o volume `/outputs/.cache/huggingface`.
+    - Testes: 5/5 testes unittest verdes em `tests/test_train.py` (cobrindo mock FLUX/SDXL/SD15 e fail-fast do modo real).
   - **Manager & Despacho de Infra**:
     - `services/manager/src/lib.rs`: `dispatch_next` agora resolve a imagem do container sob medida para `engine == "diffusion"`, priorizando `DIFFUSION_TRAINER_IMAGE` e mapeando automaticamente `trainer-yolo` para `trainer-difusao` mantendo a tag (`:local` ou `:gpu`).
     - `infra/compose.yaml` e `infra/compose.gpu.yaml`: definidos `DIFFUSION_TRAINER_IMAGE` e serviços build-only `trainer-difusao` e `trainer-difusao-gpu`.

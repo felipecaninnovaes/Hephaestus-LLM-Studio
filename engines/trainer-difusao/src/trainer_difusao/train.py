@@ -133,9 +133,460 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
     _generate_mock_safetensors(adapter_path, lora_info)
 
 
+# ==============================================================================
+# PIPELINE REAL DE TREINO (ENGINE_MOCK=0 / @gpu)
+# ==============================================================================
+
+
+def _setup_cache_dir() -> None:
+    """Configura diretório de cache persistente para Hugging Face."""
+    # Se montado em /outputs, usa /outputs/.cache para persistir no volume
+    if Path("/outputs").exists():
+        cache_dir = Path("/outputs/.cache/huggingface")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        os.environ.setdefault("HF_HOME", str(cache_dir))
+
+
+class DiffusionDataset:
+    """Dataset simples para leitura de pares imagem + legenda (.txt)."""
+
+    def __init__(
+        self, dataset_path: Path, resolution: int = 512, trigger_word: str = ""
+    ):
+
+        self.samples: list[tuple[Path, str]] = []
+        self.resolution = resolution
+        self.trigger_word = trigger_word.strip()
+
+        # Busca em images/ ou na raiz do dataset
+        target_dir = dataset_path / "images"
+        if not target_dir.exists():
+            target_dir = dataset_path
+
+        valid_exts = {".webp", ".png", ".jpg", ".jpeg"}
+        if target_dir.exists():
+            for p in sorted(target_dir.iterdir()):
+                if p.suffix.lower() in valid_exts:
+                    txt_path = p.with_suffix(".txt")
+                    caption = ""
+                    if txt_path.exists():
+                        caption = txt_path.read_text(encoding="utf-8").strip()
+                    if not caption and self.trigger_word:
+                        caption = self.trigger_word
+                    self.samples.append((p, caption))
+
+        if not self.samples:
+            _die(f"Nenhuma imagem encontrada para treino em: {target_dir}")
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, idx: int) -> dict[str, Any]:
+        import numpy as np
+        import torch
+        from PIL import Image
+
+        img_path, caption = self.samples[idx]
+        image = Image.open(img_path).convert("RGB")
+        image = image.resize(
+            (self.resolution, self.resolution), Image.Resampling.BILINEAR
+        )
+
+        # Normaliza para [-1.0, 1.0]
+        img_np = (np.array(image, dtype=np.float32) / 127.5) - 1.0
+        # HWC -> CHW
+        img_tensor = torch.from_numpy(img_np).permute(2, 0, 1)
+
+        return {"pixel_values": img_tensor, "prompt": caption}
+
+
+def _save_lora_safetensors(
+    model: Any, output_file: Path, metadata: dict[str, str]
+) -> None:
+    """Salva os pesos do adaptador LoRA em formato .safetensors canônico."""
+    import safetensors.torch
+    from peft import get_peft_model_state_dict
+
+    lora_state_dict = get_peft_model_state_dict(model)
+    safetensors.torch.save_file(lora_state_dict, str(output_file), metadata=metadata)
+
+
+def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
+    """Pipeline real de treino LoRA para Stable Diffusion 1.5 na GPU."""
+    try:
+        import torch
+        import torch.nn.functional as F
+        from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
+        from peft import LoraConfig, get_peft_model
+        from torch.utils.data import DataLoader
+        from transformers import CLIPTextModel, CLIPTokenizer
+    except ImportError as e:
+        _die(f"Dependência ausente para treino real SD 1.5: {e}")
+
+    if not torch.cuda.is_available():
+        _die("CUDA não disponível para treino real de difusão (ENGINE_MOCK=0)")
+
+    device = torch.device("cuda")
+    _setup_cache_dir()
+
+    model_id = cfg.get("model_id") or "runwayml/stable-diffusion-v1-5"
+    dataset_path = Path(cfg.get("dataset_path", "/datasets"))
+    lora_cfg = cfg.get("lora", {})
+    epochs = int(lora_cfg.get("epochs", 10))
+    batch_size = int(lora_cfg.get("batch_size", 1))
+    learning_rate = float(lora_cfg.get("learning_rate", 1e-4))
+    rank = int(lora_cfg.get("rank", 16))
+    alpha = int(lora_cfg.get("alpha", 16))
+    trigger_word = str(lora_cfg.get("trigger_word", ""))
+
+    print(f"Carregando modelos base SD 1.5 ({model_id})...")
+    tokenizer = CLIPTokenizer.from_pretrained(model_id, subfolder="tokenizer")
+    text_encoder = CLIPTextModel.from_pretrained(
+        model_id, subfolder="text_encoder", torch_dtype=torch.float16
+    ).to(device)
+    vae = AutoencoderKL.from_pretrained(
+        model_id, subfolder="vae", torch_dtype=torch.float16
+    ).to(device)
+    unet = UNet2DConditionModel.from_pretrained(
+        model_id, subfolder="unet", torch_dtype=torch.float16
+    ).to(device)
+    noise_scheduler = DDPMScheduler.from_pretrained(model_id, subfolder="scheduler")
+
+    # Congela VAE e Text Encoder
+    vae.requires_grad_(False)
+    text_encoder.requires_grad_(False)
+    unet.requires_grad_(False)
+
+    # Gradient checkpointing economiza ~50% VRAM
+    unet.enable_gradient_checkpointing()
+
+    # Injeta LoRA no UNet
+    lora_config = LoraConfig(
+        r=rank,
+        lora_alpha=alpha,
+        init_lora_weights="gaussian",
+        target_modules=["to_k", "to_q", "to_v", "to_out.0"],
+    )
+    unet = get_peft_model(unet, lora_config)
+
+    # Otimizador 8-bit AdamW para caber confortavelmente na RTX 3060 (12 GB)
+    try:
+        import bitsandbytes as bnb
+
+        optimizer = bnb.optim.AdamW8bit(unet.parameters(), lr=learning_rate)
+        print("Usando otimizador 8-bit AdamW (bitsandbytes).")
+    except (ImportError, AttributeError, RuntimeError, TypeError) as e:
+        print(f"Bitsandbytes não disponível ({e}); usando AdamW padrão.")
+        optimizer = torch.optim.AdamW(unet.parameters(), lr=learning_rate)
+
+    dataset = DiffusionDataset(dataset_path, resolution=512, trigger_word=trigger_word)
+    dataloader = DataLoader(
+        dataset, batch_size=batch_size, shuffle=True, drop_last=False
+    )
+
+    output.mkdir(parents=True, exist_ok=True)
+    metrics_path = output / "metrics.jsonl"
+    if metrics_path.exists():
+        metrics_path.unlink()
+
+    print(
+        f"Iniciando treinamento SD 1.5: {len(dataset)} amostras, {epochs} épocas, batch={batch_size}, lr={learning_rate}..."
+    )
+    global_step = 0
+
+    for epoch in range(1, epochs + 1):
+        unet.train()
+        epoch_loss = 0.0
+        steps_in_epoch = 0
+
+        for batch in dataloader:
+            pixel_values = batch["pixel_values"].to(device, dtype=torch.float16)
+            prompts = batch["prompt"]
+
+            # Codifica imagem para latents pelo VAE
+            with torch.no_grad():
+                latents = vae.encode(pixel_values).latent_dist.sample() * 0.18215
+
+            noise = torch.randn_like(latents)
+            timesteps = torch.randint(
+                0,
+                noise_scheduler.config.num_train_timesteps,
+                (latents.shape[0],),
+                device=device,
+            ).long()
+            noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+
+            # Codifica texto
+            with torch.no_grad():
+                text_inputs = tokenizer(
+                    prompts,
+                    padding="max_length",
+                    max_length=tokenizer.model_max_length,
+                    truncation=True,
+                    return_tensors="pt",
+                ).input_ids.to(device)
+                encoder_hidden_states = text_encoder(text_inputs)[0]
+
+            # Forward no UNet com LoRA
+            model_pred = unet(noisy_latents, timesteps, encoder_hidden_states).sample
+            loss = F.mse_loss(model_pred.float(), noise.float(), reduction="mean")
+
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+
+            global_step += 1
+            epoch_loss += loss.item()
+            steps_in_epoch += 1
+
+        avg_loss = round(epoch_loss / max(1, steps_in_epoch), 4)
+        print(
+            f"[SD 1.5] Época {epoch}/{epochs} concluída - Step {global_step} - Loss: {avg_loss}"
+        )
+
+        metric_line = {
+            "epoch": epoch,
+            "step": global_step,
+            "loss": avg_loss,
+            "lr": learning_rate,
+        }
+        with open(metrics_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(metric_line) + "\n")
+
+    # Salva adapter.safetensors final
+    adapter_file = output / "adapter.safetensors"
+    metadata = {
+        "format": "pt",
+        "framework": "diffusers",
+        "model_type": "lora",
+        "base_model": "sd15",
+        "lora_rank": str(rank),
+        "lora_alpha": str(alpha),
+        "trigger_word": trigger_word,
+    }
+    _save_lora_safetensors(unet, adapter_file, metadata)
+    print(f"Treino SD 1.5 finalizado com sucesso! Checkpoint salvo em: {adapter_file}")
+
+
+def _compute_sdxl_embeddings(
+    prompts: list[str],
+    tokenizer_one: Any,
+    tokenizer_two: Any,
+    text_encoder_one: Any,
+    text_encoder_two: Any,
+    device: Any,
+) -> tuple[Any, Any]:
+    """Codifica texto para SDXL combinando os dois encoders CLIP e extraindo pooled embeddings."""
+    import torch
+
+    with torch.no_grad():
+        tokens_one = tokenizer_one(
+            prompts,
+            padding="max_length",
+            max_length=tokenizer_one.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        ).input_ids.to(device)
+        enc_one = text_encoder_one(tokens_one, output_hidden_states=True)
+        hidden_states_one = enc_one.hidden_states[-2]
+
+        tokens_two = tokenizer_two(
+            prompts,
+            padding="max_length",
+            max_length=tokenizer_two.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        ).input_ids.to(device)
+        enc_two = text_encoder_two(tokens_two, output_hidden_states=True)
+        hidden_states_two = enc_two.hidden_states[-2]
+        pooled_embeds = enc_two.text_embeds
+
+        # Concatena canais de embedding (768 + 1280 = 2048)
+        prompt_embeds = torch.concat([hidden_states_one, hidden_states_two], dim=-1)
+
+    return prompt_embeds, pooled_embeds
+
+
+def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
+    """Pipeline real de treino LoRA para Stable Diffusion XL (SDXL 1.0) na GPU."""
+    try:
+        import torch
+        import torch.nn.functional as F
+        from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
+        from peft import LoraConfig, get_peft_model
+        from torch.utils.data import DataLoader
+        from transformers import (
+            AutoTokenizer,
+            CLIPTextModel,
+            CLIPTextModelWithProjection,
+        )
+    except ImportError as e:
+        _die(f"Dependência ausente para treino real SDXL: {e}")
+
+    if not torch.cuda.is_available():
+        _die("CUDA não disponível para treino real de difusão (ENGINE_MOCK=0)")
+
+    device = torch.device("cuda")
+    _setup_cache_dir()
+
+    model_id = cfg.get("model_id") or "stabilityai/stable-diffusion-xl-base-1.0"
+    dataset_path = Path(cfg.get("dataset_path", "/datasets"))
+    lora_cfg = cfg.get("lora", {})
+    epochs = int(lora_cfg.get("epochs", 10))
+    batch_size = int(lora_cfg.get("batch_size", 1))
+    learning_rate = float(lora_cfg.get("learning_rate", 1e-4))
+    rank = int(lora_cfg.get("rank", 16))
+    alpha = int(lora_cfg.get("alpha", 16))
+    trigger_word = str(lora_cfg.get("trigger_word", ""))
+
+    print(f"Carregando modelos base SDXL ({model_id})...")
+    tokenizer_one = AutoTokenizer.from_pretrained(
+        model_id, subfolder="tokenizer", use_fast=False
+    )
+    tokenizer_two = AutoTokenizer.from_pretrained(
+        model_id, subfolder="tokenizer_2", use_fast=False
+    )
+    text_encoder_one = CLIPTextModel.from_pretrained(
+        model_id, subfolder="text_encoder", torch_dtype=torch.float16
+    ).to(device)
+    text_encoder_two = CLIPTextModelWithProjection.from_pretrained(
+        model_id, subfolder="text_encoder_2", torch_dtype=torch.float16
+    ).to(device)
+    vae = AutoencoderKL.from_pretrained(
+        model_id, subfolder="vae", torch_dtype=torch.float16
+    ).to(device)
+    unet = UNet2DConditionModel.from_pretrained(
+        model_id, subfolder="unet", torch_dtype=torch.float16
+    ).to(device)
+    noise_scheduler = DDPMScheduler.from_pretrained(model_id, subfolder="scheduler")
+
+    vae.requires_grad_(False)
+    text_encoder_one.requires_grad_(False)
+    text_encoder_two.requires_grad_(False)
+    unet.requires_grad_(False)
+
+    unet.enable_gradient_checkpointing()
+
+    lora_config = LoraConfig(
+        r=rank,
+        lora_alpha=alpha,
+        init_lora_weights="gaussian",
+        target_modules=["to_k", "to_q", "to_v", "to_out.0"],
+    )
+    unet = get_peft_model(unet, lora_config)
+
+    try:
+        import bitsandbytes as bnb
+
+        optimizer = bnb.optim.AdamW8bit(unet.parameters(), lr=learning_rate)
+        print("Usando otimizador 8-bit AdamW (bitsandbytes).")
+    except (ImportError, AttributeError, RuntimeError, TypeError) as e:
+        print(f"Bitsandbytes não disponível ({e}); usando AdamW padrão.")
+        optimizer = torch.optim.AdamW(unet.parameters(), lr=learning_rate)
+
+    # SDXL usa resolução padrão 1024x1024
+    dataset = DiffusionDataset(dataset_path, resolution=1024, trigger_word=trigger_word)
+    dataloader = DataLoader(
+        dataset, batch_size=batch_size, shuffle=True, drop_last=False
+    )
+
+    output.mkdir(parents=True, exist_ok=True)
+    metrics_path = output / "metrics.jsonl"
+    if metrics_path.exists():
+        metrics_path.unlink()
+
+    # Time IDs de micro-condicionamento do SDXL (original_size, crop_coords, target_size)
+    add_time_ids = torch.tensor(
+        [[1024, 1024, 0, 0, 1024, 1024]], device=device, dtype=torch.float16
+    )
+
+    print(
+        f"Iniciando treinamento SDXL: {len(dataset)} amostras, {epochs} épocas, batch={batch_size}, lr={learning_rate}..."
+    )
+    global_step = 0
+
+    for epoch in range(1, epochs + 1):
+        unet.train()
+        epoch_loss = 0.0
+        steps_in_epoch = 0
+
+        for batch in dataloader:
+            pixel_values = batch["pixel_values"].to(device, dtype=torch.float16)
+            prompts = batch["prompt"]
+            cur_bs = pixel_values.shape[0]
+
+            with torch.no_grad():
+                latents = (
+                    vae.encode(pixel_values).latent_dist.sample()
+                    * vae.config.scaling_factor
+                )
+
+            noise = torch.randn_like(latents)
+            timesteps = torch.randint(
+                0, noise_scheduler.config.num_train_timesteps, (cur_bs,), device=device
+            ).long()
+            noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+
+            prompt_embeds, pooled_prompt_embeds = _compute_sdxl_embeddings(
+                prompts,
+                tokenizer_one,
+                tokenizer_two,
+                text_encoder_one,
+                text_encoder_two,
+                device,
+            )
+
+            added_cond_kwargs = {
+                "text_embeds": pooled_prompt_embeds,
+                "time_ids": add_time_ids.repeat(cur_bs, 1),
+            }
+
+            model_pred = unet(
+                noisy_latents,
+                timesteps,
+                prompt_embeds,
+                added_cond_kwargs=added_cond_kwargs,
+            ).sample
+            loss = F.mse_loss(model_pred.float(), noise.float(), reduction="mean")
+
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+
+            global_step += 1
+            epoch_loss += loss.item()
+            steps_in_epoch += 1
+
+        avg_loss = round(epoch_loss / max(1, steps_in_epoch), 4)
+        print(
+            f"[SDXL] Época {epoch}/{epochs} concluída - Step {global_step} - Loss: {avg_loss}"
+        )
+
+        metric_line = {
+            "epoch": epoch,
+            "step": global_step,
+            "loss": avg_loss,
+            "lr": learning_rate,
+        }
+        with open(metrics_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(metric_line) + "\n")
+
+    adapter_file = output / "adapter.safetensors"
+    metadata = {
+        "format": "pt",
+        "framework": "diffusers",
+        "model_type": "lora",
+        "base_model": "sdxl",
+        "lora_rank": str(rank),
+        "lora_alpha": str(alpha),
+        "trigger_word": trigger_word,
+    }
+    _save_lora_safetensors(unet, adapter_file, metadata)
+    print(f"Treino SDXL finalizado com sucesso! Checkpoint salvo em: {adapter_file}")
+
+
 def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     """Treino real LoRA para FLUX.2 Klein 4B via Diffusers/PEFT."""
-    # Verificação de ambiente GPU e dependências
     try:
         import torch
         from diffusers import FluxPipeline  # noqa: F401
@@ -146,40 +597,11 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     if not torch.cuda.is_available():
         _die("CUDA não disponível para treino real de difusão (ENGINE_MOCK=0)")
 
-    # Implementação de treino real invocada no container GPU
     print("Iniciando pipeline de treino LoRA FLUX.2 Klein 4B...")
 
 
-def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
-    """Treino real LoRA para SDXL via Diffusers/PEFT."""
-    try:
-        import torch
-        from diffusers import StableDiffusionXLPipeline  # noqa: F401
-    except ImportError as e:
-        _die(f"Dependência ausente para treino real SDXL: {e}")
-
-    if not torch.cuda.is_available():
-        _die("CUDA não disponível para treino real de difusão (ENGINE_MOCK=0)")
-
-    print("Iniciando pipeline de treino LoRA SDXL...")
-
-
-def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
-    """Treino real LoRA para SD 1.5 via Diffusers/PEFT."""
-    try:
-        import torch
-        from diffusers import StableDiffusionPipeline  # noqa: F401
-    except ImportError as e:
-        _die(f"Dependência ausente para treino real SD 1.5: {e}")
-
-    if not torch.cuda.is_available():
-        _die("CUDA não disponível para treino real de difusão (ENGINE_MOCK=0)")
-
-    print("Iniciando pipeline de treino LoRA SD 1.5...")
-
-
 def _real_train(cfg: dict[str, Any], output: Path) -> None:
-    raw_model = cfg.get("model", "flux")
+    raw_model = cfg.get("model", "sdxl")
     base_model = _canonical_model_name(raw_model)
 
     if "flux" in base_model:

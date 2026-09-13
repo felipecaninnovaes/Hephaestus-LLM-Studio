@@ -104,6 +104,39 @@ class TestTrainerDifusao(unittest.TestCase):
             self.assertEqual(meta["base_model"], "sdxl")
             self.assertEqual(meta["lora_rank"], "32")
 
+    def test_train_mock_produces_artifacts_sd15(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            cfg_path = tmp_path / "config.yaml"
+            out_dir = tmp_path / "output"
+
+            cfg = {
+                "job_id": "test-diff-job-sd15",
+                "model": "sd15",
+                "seed": 42,
+                "lora": {
+                    "trigger_word": "sks style",
+                    "epochs": 2,
+                    "batch_size": 1,
+                    "learning_rate": 0.0001,
+                    "rank": 8,
+                    "alpha": 8,
+                },
+            }
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                yaml.dump(cfg, f)
+
+            main(["train", "--config", str(cfg_path), "--output", str(out_dir)])
+
+            adapter_file = out_dir / "adapter.safetensors"
+            data = adapter_file.read_bytes()
+            header_len = struct.unpack("<Q", data[:8])[0]
+            header_json = json.loads(data[8 : 8 + header_len].decode("utf-8"))
+            meta = header_json["__metadata__"]
+            self.assertEqual(meta["base_model"], "sd15")
+            self.assertEqual(meta["lora_rank"], "8")
+            self.assertEqual(meta["trigger_word"], "sks style")
+
     def test_train_real_without_cuda_fails_honestly(self):
         os.environ["ENGINE_MOCK"] = "0"
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -111,17 +144,18 @@ class TestTrainerDifusao(unittest.TestCase):
             cfg_path = tmp_path / "config.yaml"
             out_dir = tmp_path / "output"
 
-            cfg = {
-                "job_id": "test-diff-job-real",
-                "model": "flux",
-                "lora": {"epochs": 1},
-            }
-            with open(cfg_path, "w", encoding="utf-8") as f:
-                yaml.dump(cfg, f)
+            for m in ("flux", "sdxl", "sd15"):
+                cfg = {
+                    "job_id": f"test-diff-job-real-{m}",
+                    "model": m,
+                    "lora": {"epochs": 1},
+                }
+                with open(cfg_path, "w", encoding="utf-8") as f:
+                    yaml.dump(cfg, f)
 
-            with self.assertRaises(SystemExit) as ctx:
-                main(["train", "--config", str(cfg_path), "--output", str(out_dir)])
-            self.assertEqual(ctx.exception.code, 1)
+                with self.assertRaises(SystemExit) as ctx:
+                    main(["train", "--config", str(cfg_path), "--output", str(out_dir)])
+                self.assertEqual(ctx.exception.code, 1)
 
     def test_health_mock(self):
         # health não levanta exceção

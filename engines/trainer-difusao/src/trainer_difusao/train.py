@@ -180,7 +180,7 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
 # ==============================================================================
 
 
-def _setup_cache_dir() -> str:
+def _setup_cache_dir(hf_token: str | None = None) -> str:
     """Configura diretório de cache persistente para Hugging Face e PyTorch no volume /outputs."""
     if Path("/outputs").exists():
         cache_base = Path("/outputs/.cache/huggingface")
@@ -201,6 +201,17 @@ def _setup_cache_dir() -> str:
     os.environ["TRANSFORMERS_CACHE"] = hub_cache_str
     os.environ["DIFFUSERS_CACHE"] = hub_cache_str
     os.environ["TORCH_HOME"] = torch_cache_str
+
+    token = (hf_token or os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN") or "").strip()
+    if token:
+        os.environ["HF_TOKEN"] = token
+        os.environ["HUGGING_FACE_HUB_TOKEN"] = token
+        try:
+            import huggingface_hub
+            huggingface_hub.login(token=token, add_to_git_credential=False)
+            print("[INFO] Autenticado com sucesso no Hugging Face Hub via HF_TOKEN.", flush=True)
+        except Exception as e:
+            print(f"[WARN] Falha ao registrar token no huggingface_hub: {e}", flush=True)
 
     return hub_cache_str
 
@@ -1032,7 +1043,16 @@ def _generate_sample_flux(
 
 def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     """Treino real LoRA para FLUX.2 Klein 4B via Diffusers/PEFT com quantização 4-bit NF4 e persistência em cache."""
-    hub_cache = _setup_cache_dir()
+    hf_token = (
+        cfg.get("hf_token")
+        or os.environ.get("HF_TOKEN")
+        or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+        or None
+    )
+    if hf_token:
+        hf_token = hf_token.strip()
+
+    hub_cache = _setup_cache_dir(hf_token=hf_token)
 
     try:
         import torch
@@ -1123,13 +1143,24 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             f"Carregando e quantizando Transformer FLUX em 4-bit NF4 ({model_id})...",
             flush=True,
         )
-        transformer = FluxTransformer2DModel.from_pretrained(
-            model_id,
-            subfolder="transformer",
-            quantization_config=bnb_4bit_config,
-            torch_dtype=target_dtype,
-            cache_dir=hub_cache,
-        )
+        try:
+            transformer = FluxTransformer2DModel.from_pretrained(
+                model_id,
+                subfolder="transformer",
+                quantization_config=bnb_4bit_config,
+                torch_dtype=target_dtype,
+                cache_dir=hub_cache,
+                token=hf_token,
+            )
+        except Exception as e:
+            if "gated" in str(e).lower() or "401" in str(e) or "403" in str(e) or "not a valid model identifier" in str(e).lower():
+                _die(
+                    f"Falha ao baixar modelo FLUX ({model_id}). Este repositório é restrito no Hugging Face.\n"
+                    f"1. Aceite a licença do modelo em https://huggingface.co/{model_id}\n"
+                    f"2. Defina a variável HF_TOKEN no env.gpu com o seu token de acesso: https://huggingface.co/settings/tokens\n"
+                    f"Erro original: {e}"
+                )
+            raise
         try:
             transformer_cache_dir.mkdir(parents=True, exist_ok=True)
             transformer.save_pretrained(transformer_cache_dir)
@@ -1164,6 +1195,7 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             quantization_config=bnb_4bit_config,
             torch_dtype=target_dtype,
             cache_dir=hub_cache,
+            token=hf_token,
         )
         try:
             t5_cache_dir.mkdir(parents=True, exist_ok=True)
@@ -1180,19 +1212,19 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
 
     # 3. Componentes auxiliares (Tokenizers, CLIP, VAE float32, Scheduler Flow Matching)
     tokenizer_one = AutoTokenizer.from_pretrained(
-        model_id, subfolder="tokenizer", use_fast=False, cache_dir=hub_cache
+        model_id, subfolder="tokenizer", use_fast=False, cache_dir=hub_cache, token=hf_token
     )
     tokenizer_two = AutoTokenizer.from_pretrained(
-        model_id, subfolder="tokenizer_2", use_fast=False, cache_dir=hub_cache
+        model_id, subfolder="tokenizer_2", use_fast=False, cache_dir=hub_cache, token=hf_token
     )
     text_encoder_one = CLIPTextModel.from_pretrained(
-        model_id, subfolder="text_encoder", torch_dtype=target_dtype, cache_dir=hub_cache
+        model_id, subfolder="text_encoder", torch_dtype=target_dtype, cache_dir=hub_cache, token=hf_token
     ).to(device)
     vae = AutoencoderKL.from_pretrained(
-        model_id, subfolder="vae", torch_dtype=torch.float32, cache_dir=hub_cache
+        model_id, subfolder="vae", torch_dtype=torch.float32, cache_dir=hub_cache, token=hf_token
     ).to(device)
     noise_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
-        model_id, subfolder="scheduler", cache_dir=hub_cache
+        model_id, subfolder="scheduler", cache_dir=hub_cache, token=hf_token
     )
 
     vae.requires_grad_(False)

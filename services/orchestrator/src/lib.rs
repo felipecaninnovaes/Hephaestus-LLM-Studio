@@ -1121,6 +1121,21 @@ async fn run_job_inner(
         ));
     }
 
+    // Repassa token do Hugging Face para download de modelos restritos/gated
+    if let Ok(token) = std::env::var("HF_TOKEN").or_else(|_| std::env::var("HUGGING_FACE_HUB_TOKEN")) {
+        if !token.is_empty() {
+            exec_env.push(("HF_TOKEN".to_string(), token.clone()));
+            exec_env.push(("HUGGING_FACE_HUB_TOKEN".to_string(), token));
+        }
+    }
+
+    // Repassa FLUX_MODEL_ID customizado se definido no nó
+    if let Ok(model_id) = std::env::var("FLUX_MODEL_ID") {
+        if !model_id.is_empty() {
+            exec_env.push(("FLUX_MODEL_ID".to_string(), model_id));
+        }
+    }
+
     // Spawn metrics collector & sample streamer (polls metrics.jsonl e outputs/samples durante execução)
     let metrics_path = outputs.join("metrics.jsonl");
     let metrics_path_clone = metrics_path.clone();

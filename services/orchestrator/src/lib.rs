@@ -1088,6 +1088,29 @@ async fn run_job_inner(
     if gpu_devices.is_some() {
         exec_env.push(("ENGINE_MOCK".to_string(), "0".to_string()));
     }
+    // Persistência de cache de modelos (Hugging Face / PyTorch) no volume montado /outputs/.cache
+    if dispatch.engine == "diffusion" {
+        exec_env.push((
+            "HF_HOME".to_string(),
+            "/outputs/.cache/huggingface".to_string(),
+        ));
+        exec_env.push((
+            "HF_HUB_CACHE".to_string(),
+            "/outputs/.cache/huggingface/hub".to_string(),
+        ));
+        exec_env.push((
+            "TRANSFORMERS_CACHE".to_string(),
+            "/outputs/.cache/huggingface/hub".to_string(),
+        ));
+        exec_env.push((
+            "DIFFUSERS_CACHE".to_string(),
+            "/outputs/.cache/huggingface/hub".to_string(),
+        ));
+        exec_env.push((
+            "TORCH_HOME".to_string(),
+            "/outputs/.cache/torch".to_string(),
+        ));
+    }
 
     // Spawn metrics collector & sample streamer (polls metrics.jsonl e outputs/samples durante execução)
     let metrics_path = outputs.join("metrics.jsonl");

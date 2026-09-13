@@ -180,13 +180,29 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
 # ==============================================================================
 
 
-def _setup_cache_dir() -> None:
-    """Configura diretório de cache persistente para Hugging Face."""
-    # Se montado em /outputs, usa /outputs/.cache para persistir no volume
+def _setup_cache_dir() -> str:
+    """Configura diretório de cache persistente para Hugging Face e PyTorch no volume /outputs."""
     if Path("/outputs").exists():
-        cache_dir = Path("/outputs/.cache/huggingface")
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        os.environ.setdefault("HF_HOME", str(cache_dir))
+        cache_base = Path("/outputs/.cache/huggingface")
+    else:
+        cache_base = Path.home() / ".cache" / "huggingface"
+
+    hub_cache = cache_base / "hub"
+    hub_cache.mkdir(parents=True, exist_ok=True)
+    (cache_base.parent / "torch").mkdir(parents=True, exist_ok=True)
+
+    cache_base_str = str(cache_base)
+    hub_cache_str = str(hub_cache)
+    torch_cache_str = str(cache_base.parent / "torch")
+
+    os.environ["HF_HOME"] = cache_base_str
+    os.environ["HF_HUB_CACHE"] = hub_cache_str
+    os.environ["HUGGINGFACE_HUB_CACHE"] = hub_cache_str
+    os.environ["TRANSFORMERS_CACHE"] = hub_cache_str
+    os.environ["DIFFUSERS_CACHE"] = hub_cache_str
+    os.environ["TORCH_HOME"] = torch_cache_str
+
+    return hub_cache_str
 
 
 class DiffusionDataset:
@@ -291,6 +307,7 @@ def _generate_sample_sd15(
 
 def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
     """Pipeline real de treino LoRA para Stable Diffusion 1.5 na GPU."""
+    hub_cache = _setup_cache_dir()
     try:
         import torch
         import torch.nn.functional as F
@@ -305,7 +322,6 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         _die("CUDA não disponível para treino real de difusão (ENGINE_MOCK=0)")
 
     device = torch.device("cuda")
-    _setup_cache_dir()
 
     seed = int(cfg.get("seed", 42))
     model_id = cfg.get("model_id") or "runwayml/stable-diffusion-v1-5"
@@ -323,18 +339,18 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
     sample_interval = int(samples_cfg.get("interval", 1))
     sample_seed = int(samples_cfg.get("seed", seed))
 
-    print(f"Carregando modelos base SD 1.5 ({model_id})...", flush=True)
-    tokenizer = CLIPTokenizer.from_pretrained(model_id, subfolder="tokenizer")
+    print(f"Carregando modelos base SD 1.5 ({model_id}) [cache: {hub_cache}]...", flush=True)
+    tokenizer = CLIPTokenizer.from_pretrained(model_id, subfolder="tokenizer", cache_dir=hub_cache)
     text_encoder = CLIPTextModel.from_pretrained(
-        model_id, subfolder="text_encoder", torch_dtype=torch.float16
+        model_id, subfolder="text_encoder", torch_dtype=torch.float16, cache_dir=hub_cache
     ).to(device)
     vae = AutoencoderKL.from_pretrained(
-        model_id, subfolder="vae", torch_dtype=torch.float16
+        model_id, subfolder="vae", torch_dtype=torch.float16, cache_dir=hub_cache
     ).to(device)
     unet = UNet2DConditionModel.from_pretrained(
-        model_id, subfolder="unet", torch_dtype=torch.float16
+        model_id, subfolder="unet", torch_dtype=torch.float16, cache_dir=hub_cache
     ).to(device)
-    noise_scheduler = DDPMScheduler.from_pretrained(model_id, subfolder="scheduler")
+    noise_scheduler = DDPMScheduler.from_pretrained(model_id, subfolder="scheduler", cache_dir=hub_cache)
 
     # Congela VAE e Text Encoder
     vae.requires_grad_(False)
@@ -565,6 +581,8 @@ def _generate_sample_sdxl(
 
 def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
     """Pipeline real de treino LoRA para Stable Diffusion XL (SDXL 1.0) na GPU."""
+    hub_cache = _setup_cache_dir()
+
     try:
         import torch
         import torch.nn.functional as F
@@ -583,7 +601,6 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         _die("CUDA não disponível para treino real de difusão (ENGINE_MOCK=0)")
 
     device = torch.device("cuda")
-    _setup_cache_dir()
 
     seed = int(cfg.get("seed", 42))
     model_id = cfg.get("model_id") or "stabilityai/stable-diffusion-xl-base-1.0"
@@ -603,24 +620,26 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
 
     print(f"Carregando modelos base SDXL ({model_id})...", flush=True)
     tokenizer_one = AutoTokenizer.from_pretrained(
-        model_id, subfolder="tokenizer", use_fast=False
+        model_id, subfolder="tokenizer", use_fast=False, cache_dir=hub_cache
     )
     tokenizer_two = AutoTokenizer.from_pretrained(
-        model_id, subfolder="tokenizer_2", use_fast=False
+        model_id, subfolder="tokenizer_2", use_fast=False, cache_dir=hub_cache
     )
     text_encoder_one = CLIPTextModel.from_pretrained(
-        model_id, subfolder="text_encoder", torch_dtype=torch.float16
+        model_id, subfolder="text_encoder", torch_dtype=torch.float16, cache_dir=hub_cache
     ).to(device)
     text_encoder_two = CLIPTextModelWithProjection.from_pretrained(
-        model_id, subfolder="text_encoder_2", torch_dtype=torch.float16
+        model_id, subfolder="text_encoder_2", torch_dtype=torch.float16, cache_dir=hub_cache
     ).to(device)
     vae = AutoencoderKL.from_pretrained(
-        model_id, subfolder="vae", torch_dtype=torch.float16
+        model_id, subfolder="vae", torch_dtype=torch.float16, cache_dir=hub_cache
     ).to(device)
     unet = UNet2DConditionModel.from_pretrained(
-        model_id, subfolder="unet", torch_dtype=torch.float16
+        model_id, subfolder="unet", torch_dtype=torch.float16, cache_dir=hub_cache
     ).to(device)
-    noise_scheduler = DDPMScheduler.from_pretrained(model_id, subfolder="scheduler")
+    noise_scheduler = DDPMScheduler.from_pretrained(
+        model_id, subfolder="scheduler", cache_dir=hub_cache
+    )
 
     vae.requires_grad_(False)
     text_encoder_one.requires_grad_(False)
@@ -787,6 +806,8 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
 
 def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     """Treino real LoRA para FLUX.2 Klein 4B via Diffusers/PEFT."""
+    _setup_cache_dir()
+
     try:
         import torch
         from diffusers import FluxPipeline  # noqa: F401

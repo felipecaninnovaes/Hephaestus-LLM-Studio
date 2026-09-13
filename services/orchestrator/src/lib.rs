@@ -350,8 +350,14 @@ pub fn parse_metrics_line(line: &str) -> Option<MetricsLine> {
     };
     let v: serde_json::Value = serde_json::from_str(&clean_line).ok()?;
     let epoch = v.get("epoch")?.as_i64()? as i32;
-    let phase = v.get("phase").and_then(|p| p.as_str()).map(|s| s.to_string());
-    let message = v.get("message").and_then(|m| m.as_str()).map(|s| s.to_string());
+    let phase = v
+        .get("phase")
+        .and_then(|p| p.as_str())
+        .map(|s| s.to_string());
+    let message = v
+        .get("message")
+        .and_then(|m| m.as_str())
+        .map(|s| s.to_string());
     Some(MetricsLine {
         box_loss: v.get("box_loss").and_then(|x| x.as_f64()).unwrap_or(0.0),
         cls_loss: v.get("cls_loss").and_then(|x| x.as_f64()).unwrap_or(0.0),
@@ -415,7 +421,11 @@ pub fn extract_epochs(config_yaml: &str) -> i32 {
         if let Some(ep) = v.get("epochs").and_then(|e| e.as_i64()) {
             return ep as i32;
         }
-        if let Some(ep) = v.get("lora").and_then(|l| l.get("epochs")).and_then(|e| e.as_i64()) {
+        if let Some(ep) = v
+            .get("lora")
+            .and_then(|l| l.get("epochs"))
+            .and_then(|e| e.as_i64())
+        {
             return ep as i32;
         }
     }
@@ -1145,7 +1155,9 @@ async fn run_job_inner(
     }
 
     // Repassa token do Hugging Face para download de modelos restritos/gated
-    if let Ok(token) = std::env::var("HF_TOKEN").or_else(|_| std::env::var("HUGGING_FACE_HUB_TOKEN")) {
+    if let Ok(token) =
+        std::env::var("HF_TOKEN").or_else(|_| std::env::var("HUGGING_FACE_HUB_TOKEN"))
+    {
         if !token.is_empty() {
             exec_env.push(("HF_TOKEN".to_string(), token.clone()));
             exec_env.push(("HUGGING_FACE_HUB_TOKEN".to_string(), token));

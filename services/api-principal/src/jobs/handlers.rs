@@ -281,8 +281,14 @@ fn remap_metrics(raw: &serde_json::Value) -> Vec<MetricsItem> {
             let lr = item.get("lr").and_then(|v| v.as_f64());
             let step = item.get("step").and_then(|v| v.as_i64());
             let progress = item.get("progress").and_then(|v| v.as_f64());
-            let phase = item.get("phase").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let message = item.get("message").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let phase = item
+                .get("phase")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let message = item
+                .get("message")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
             Some(MetricsItem {
                 epoch,
                 box_loss,

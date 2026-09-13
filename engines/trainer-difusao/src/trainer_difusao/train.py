@@ -55,6 +55,41 @@ def _canonical_model_name(raw_model: str) -> str:
     return norm
 
 
+def _emit_metric(
+    metrics_path: Path,
+    epoch: int,
+    step: int,
+    loss: float | None = None,
+    lr: float | None = None,
+    progress: float | None = None,
+    phase: str | None = None,
+    message: str | None = None,
+) -> None:
+    """Emite uma linha estruturada em metrics.jsonl com flush imediato para consumo pelo orquestrador."""
+    try:
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        payload: dict[str, Any] = {
+            "epoch": epoch,
+            "step": step,
+        }
+        if loss is not None:
+            payload["loss"] = loss
+        if lr is not None:
+            payload["lr"] = lr
+        if progress is not None:
+            payload["progress"] = progress
+        if phase is not None:
+            payload["phase"] = phase
+        if message is not None:
+            payload["message"] = message
+
+        with open(metrics_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload) + "\n")
+            f.flush()
+    except Exception as e:
+        print(f"[WARN] Falha ao emitir métrica para {metrics_path}: {e}", file=sys.stderr, flush=True)
+
+
 def _generate_mock_safetensors(output_file: Path, lora_params: dict[str, Any]) -> None:
     """Gera um arquivo .safetensors sintético em conformidade com a especificação HuggingFace."""
     base_model = lora_params.get("base_model", "flux-2-klein-4b")
@@ -151,17 +186,31 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
     if metrics_path.exists():
         metrics_path.unlink()
 
+    # Amostra baseline Época 0 (se configurada)
+    if sample_prompt:
+        _generate_mock_sample(output, 0, sample_prompt, seed=sample_seed)
+        _emit_metric(
+            metrics_path,
+            epoch=0,
+            step=1,
+            progress=0.05,
+            phase="baseline_ready",
+            message="Amostra baseline gerada com sucesso (Época 0).",
+        )
+
     for ep in range(1, epochs + 1):
         loss = _synthetic_loss(seed, ep, epochs)
-        line = {
-            "epoch": ep,
-            "step": ep * 10,
-            "loss": loss,
-            "lr": learning_rate,
-        }
-        with open(metrics_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(line) + "\n")
-            f.flush()
+        progress = round(ep / epochs, 4)
+        _emit_metric(
+            metrics_path,
+            epoch=ep,
+            step=ep * 10,
+            loss=loss,
+            lr=learning_rate,
+            progress=progress,
+            phase="training",
+            message=f"Época {ep}/{epochs} concluída · Loss: {loss}",
+        )
 
         if sample_prompt and sample_interval > 0 and (ep % sample_interval == 0 or ep == epochs):
             _generate_mock_sample(output, ep, sample_prompt, seed=sample_seed)
@@ -381,6 +430,11 @@ def _generate_sample_sd15(
 
 def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
     """Pipeline real de treino LoRA para Stable Diffusion 1.5 na GPU."""
+    output.mkdir(parents=True, exist_ok=True)
+    metrics_path = output / "metrics.jsonl"
+    if metrics_path.exists():
+        metrics_path.unlink()
+
     hub_cache = _setup_cache_dir()
     try:
         import torch
@@ -425,9 +479,26 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         else torch.float16
     )
 
+    _emit_metric(
+        metrics_path,
+        epoch=0,
+        step=1,
+        progress=0.01,
+        phase="init",
+        message=f"Inicializando treino SD 1.5: {model_id}...",
+    )
+
     print(
         f"Carregando modelos base SD 1.5 ({model_id}) [cache: {hub_cache}, res: {resolution}, dtype: {target_dtype}]...",
         flush=True,
+    )
+    _emit_metric(
+        metrics_path,
+        epoch=0,
+        step=2,
+        progress=0.03,
+        phase="loading_models",
+        message=f"Baixando e carregando componentes SD 1.5 ({model_id})...",
     )
     tokenizer = CLIPTokenizer.from_pretrained(model_id, subfolder="tokenizer", cache_dir=hub_cache)
     text_encoder = CLIPTextModel.from_pretrained(
@@ -459,6 +530,15 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
     )
     unet = get_peft_model(unet, lora_config)
 
+    _emit_metric(
+        metrics_path,
+        epoch=0,
+        step=3,
+        progress=0.06,
+        phase="setup_lora",
+        message=f"Adaptadores LoRA injetados no UNet (rank={rank}, alpha={alpha}).",
+    )
+
     optimizer = _create_optimizer(unet, optimizer_name, learning_rate)
 
     dataset = DiffusionDataset(dataset_path, resolution=resolution, trigger_word=trigger_word)
@@ -471,10 +551,53 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         optimizer, lr_scheduler_name, lr_warmup_steps, total_train_steps
     )
 
-    output.mkdir(parents=True, exist_ok=True)
-    metrics_path = output / "metrics.jsonl"
-    if metrics_path.exists():
-        metrics_path.unlink()
+    _emit_metric(
+        metrics_path,
+        epoch=0,
+        step=4,
+        progress=0.08,
+        phase="dataset_ready",
+        message=f"Dataset pronto: {len(dataset)} imagens.",
+    )
+
+    # Amostra baseline (Época 0) pré-treino
+    if sample_prompt:
+        _emit_metric(
+            metrics_path,
+            epoch=0,
+            step=5,
+            progress=0.09,
+            phase="generating_baseline_sample",
+            message=f"Gerando amostra baseline pré-treino (Época 0): '{sample_prompt[:40]}...'",
+        )
+        sample_baseline_file = output / "samples" / "sample_epoch_000.png"
+        _generate_sample_sd15(
+            unet,
+            vae,
+            text_encoder,
+            tokenizer,
+            noise_scheduler,
+            sample_prompt,
+            sample_baseline_file,
+            seed=sample_seed,
+        )
+        _emit_metric(
+            metrics_path,
+            epoch=0,
+            step=6,
+            progress=0.10,
+            phase="baseline_ready",
+            message="Amostra baseline gerada com sucesso (Época 0).",
+        )
+
+    _emit_metric(
+        metrics_path,
+        epoch=0,
+        step=7,
+        progress=0.10,
+        phase="training_started",
+        message=f"Iniciando loop de treino SD 1.5: {epochs} épocas, {total_train_steps} passos totais.",
+    )
 
     print(
         f"Iniciando treino LoRA SD 1.5: {epochs} épocas, {len(dataset)} imagens, res={resolution}, "
@@ -483,6 +606,7 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         flush=True,
     )
     global_step = 0
+    safe_avg_loss = None
 
     for epoch in range(1, epochs + 1):
         unet.train()
@@ -549,15 +673,19 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
                     if (math.isnan(cur_loss_raw) or math.isinf(cur_loss_raw))
                     else round(cur_loss_raw, 4)
                 )
-                step_metric = {
-                    "epoch": epoch,
-                    "step": global_step,
-                    "loss": safe_loss,
-                    "lr": effective_lr,
-                }
-                with open(metrics_path, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(step_metric) + "\n")
-                    f.flush()
+                current_progress = round(
+                    min(0.99, max(0.10, 0.10 + 0.89 * (global_step / max(1, total_train_steps)))), 4
+                )
+                _emit_metric(
+                    metrics_path,
+                    epoch=epoch,
+                    step=global_step,
+                    loss=safe_loss,
+                    lr=effective_lr,
+                    progress=current_progress,
+                    phase="training",
+                    message=f"Época {epoch}/{epochs} · Step {global_step}/{total_train_steps} · Loss: {safe_loss}",
+                )
                 print(
                     f"[SD 1.5] Época {epoch}/{epochs} · Step {global_step} · Loss: {cur_loss_raw:.4f} · LR: {effective_lr:.2e}",
                     flush=True,
@@ -574,20 +702,23 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         effective_lr = (
             lr_scheduler.get_last_lr()[0] if lr_scheduler else learning_rate
         )
+        epoch_progress = round(
+            min(0.99, max(0.10, 0.10 + 0.89 * (epoch / epochs))), 4
+        )
+        _emit_metric(
+            metrics_path,
+            epoch=epoch,
+            step=global_step,
+            loss=safe_avg_loss,
+            lr=effective_lr,
+            progress=epoch_progress,
+            phase="epoch_complete",
+            message=f"Época {epoch}/{epochs} concluída · Loss Médio: {safe_avg_loss}",
+        )
         print(
             f"[SD 1.5] Época {epoch}/{epochs} concluída - Step {global_step} - Loss Médio: {avg_loss}",
             flush=True,
         )
-
-        metric_line = {
-            "epoch": epoch,
-            "step": global_step,
-            "loss": safe_avg_loss,
-            "lr": effective_lr,
-        }
-        with open(metrics_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(metric_line) + "\n")
-            f.flush()
 
         if sample_prompt and sample_interval > 0 and (epoch % sample_interval == 0 or epoch == epochs):
             sample_file = output / "samples" / f"sample_epoch_{epoch:03d}.png"
@@ -597,10 +728,10 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
                 text_encoder,
                 tokenizer,
                 noise_scheduler,
-                    sample_prompt,
-                    sample_file,
-                    seed=sample_seed,
-                )
+                sample_prompt,
+                sample_file,
+                seed=sample_seed,
+            )
 
     # Salva adapter.safetensors final
     adapter_file = output / "adapter.safetensors"
@@ -614,6 +745,16 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         "trigger_word": trigger_word,
     }
     _save_lora_safetensors(unet, adapter_file, metadata)
+    _emit_metric(
+        metrics_path,
+        epoch=epochs,
+        step=global_step,
+        loss=safe_avg_loss,
+        lr=effective_lr,
+        progress=1.0,
+        phase="completed",
+        message="Treino SD 1.5 finalizado com sucesso!",
+    )
     print(f"Treino SD 1.5 finalizado com sucesso! Checkpoint salvo em: {adapter_file}")
 
 
@@ -700,6 +841,11 @@ def _generate_sample_sdxl(
 
 def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
     """Pipeline real de treino LoRA para Stable Diffusion XL (SDXL 1.0) na GPU."""
+    output.mkdir(parents=True, exist_ok=True)
+    metrics_path = output / "metrics.jsonl"
+    if metrics_path.exists():
+        metrics_path.unlink()
+
     hub_cache = _setup_cache_dir()
 
     try:
@@ -749,9 +895,26 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         else torch.float16
     )
 
+    _emit_metric(
+        metrics_path,
+        epoch=0,
+        step=1,
+        progress=0.01,
+        phase="init",
+        message=f"Inicializando treino SDXL: {model_id}...",
+    )
+
     print(
         f"Carregando modelos base SDXL ({model_id}) [cache: {hub_cache}, res: {resolution}, dtype: {target_dtype}]...",
         flush=True,
+    )
+    _emit_metric(
+        metrics_path,
+        epoch=0,
+        step=2,
+        progress=0.03,
+        phase="loading_models",
+        message=f"Baixando e carregando componentes SDXL ({model_id})...",
     )
     tokenizer_one = AutoTokenizer.from_pretrained(
         model_id, subfolder="tokenizer", use_fast=False, cache_dir=hub_cache
@@ -791,6 +954,15 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
     )
     unet = get_peft_model(unet, lora_config)
 
+    _emit_metric(
+        metrics_path,
+        epoch=0,
+        step=3,
+        progress=0.06,
+        phase="setup_lora",
+        message=f"Adaptadores LoRA injetados no UNet SDXL (rank={rank}, alpha={alpha}).",
+    )
+
     optimizer = _create_optimizer(unet, optimizer_name, learning_rate)
 
     dataset = DiffusionDataset(
@@ -805,16 +977,61 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         optimizer, lr_scheduler_name, lr_warmup_steps, total_train_steps
     )
 
-    output.mkdir(parents=True, exist_ok=True)
-    metrics_path = output / "metrics.jsonl"
-    if metrics_path.exists():
-        metrics_path.unlink()
+    _emit_metric(
+        metrics_path,
+        epoch=0,
+        step=4,
+        progress=0.08,
+        phase="dataset_ready",
+        message=f"Dataset pronto: {len(dataset)} imagens.",
+    )
 
     # Time IDs padrão para SDXL dimensionados pela resolução configurada
     add_time_ids = torch.tensor(
         [[resolution, resolution, 0, 0, resolution, resolution]],
         dtype=target_dtype,
         device=device,
+    )
+
+    # Amostra baseline (Época 0) pré-treino
+    if sample_prompt:
+        _emit_metric(
+            metrics_path,
+            epoch=0,
+            step=5,
+            progress=0.09,
+            phase="generating_baseline_sample",
+            message=f"Gerando amostra baseline pré-treino (Época 0): '{sample_prompt[:40]}...'",
+        )
+        sample_baseline_file = output / "samples" / "sample_epoch_000.png"
+        _generate_sample_sdxl(
+            unet,
+            vae,
+            text_encoder_one,
+            text_encoder_two,
+            tokenizer_one,
+            tokenizer_two,
+            noise_scheduler,
+            sample_prompt,
+            sample_baseline_file,
+            seed=sample_seed,
+        )
+        _emit_metric(
+            metrics_path,
+            epoch=0,
+            step=6,
+            progress=0.10,
+            phase="baseline_ready",
+            message="Amostra baseline SDXL gerada com sucesso (Época 0).",
+        )
+
+    _emit_metric(
+        metrics_path,
+        epoch=0,
+        step=7,
+        progress=0.10,
+        phase="training_started",
+        message=f"Iniciando loop de treino SDXL: {epochs} épocas, {total_train_steps} passos totais.",
     )
 
     print(
@@ -824,6 +1041,7 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         flush=True,
     )
     global_step = 0
+    safe_avg_loss = None
 
     for epoch in range(1, epochs + 1):
         unet.train()
@@ -896,15 +1114,19 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
                     if (math.isnan(cur_loss_raw) or math.isinf(cur_loss_raw))
                     else round(cur_loss_raw, 4)
                 )
-                step_metric = {
-                    "epoch": epoch,
-                    "step": global_step,
-                    "loss": safe_loss,
-                    "lr": effective_lr,
-                }
-                with open(metrics_path, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(step_metric) + "\n")
-                    f.flush()
+                current_progress = round(
+                    min(0.99, max(0.10, 0.10 + 0.89 * (global_step / max(1, total_train_steps)))), 4
+                )
+                _emit_metric(
+                    metrics_path,
+                    epoch=epoch,
+                    step=global_step,
+                    loss=safe_loss,
+                    lr=effective_lr,
+                    progress=current_progress,
+                    phase="training",
+                    message=f"Época {epoch}/{epochs} · Step {global_step}/{total_train_steps} · Loss: {safe_loss}",
+                )
                 print(
                     f"[SDXL] Época {epoch}/{epochs} · Step {global_step} · Loss: {cur_loss_raw:.4f} · LR: {effective_lr:.2e}",
                     flush=True,
@@ -921,20 +1143,23 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         effective_lr = (
             lr_scheduler.get_last_lr()[0] if lr_scheduler else learning_rate
         )
+        epoch_progress = round(
+            min(0.99, max(0.10, 0.10 + 0.89 * (epoch / epochs))), 4
+        )
+        _emit_metric(
+            metrics_path,
+            epoch=epoch,
+            step=global_step,
+            loss=safe_avg_loss,
+            lr=effective_lr,
+            progress=epoch_progress,
+            phase="epoch_complete",
+            message=f"Época {epoch}/{epochs} concluída · Loss Médio: {safe_avg_loss}",
+        )
         print(
             f"[SDXL] Época {epoch}/{epochs} concluída - Step {global_step} - Loss Médio: {avg_loss}",
             flush=True,
         )
-
-        metric_line = {
-            "epoch": epoch,
-            "step": global_step,
-            "loss": safe_avg_loss,
-            "lr": effective_lr,
-        }
-        with open(metrics_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(metric_line) + "\n")
-            f.flush()
 
         if sample_prompt and sample_interval > 0 and (epoch % sample_interval == 0 or epoch == epochs):
             sample_file = output / "samples" / f"sample_epoch_{epoch:03d}.png"
@@ -946,10 +1171,10 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
                 tokenizer_one,
                 tokenizer_two,
                 noise_scheduler,
-                    sample_prompt,
-                    sample_file,
-                    seed=sample_seed,
-                )
+                sample_prompt,
+                sample_file,
+                seed=sample_seed,
+            )
 
     adapter_file = output / "adapter.safetensors"
     metadata = {
@@ -962,6 +1187,16 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         "trigger_word": trigger_word,
     }
     _save_lora_safetensors(unet, adapter_file, metadata)
+    _emit_metric(
+        metrics_path,
+        epoch=epochs,
+        step=global_step,
+        loss=safe_avg_loss,
+        lr=effective_lr,
+        progress=1.0,
+        phase="completed",
+        message="Treino SDXL finalizado com sucesso!",
+    )
     print(f"Treino SDXL finalizado com sucesso! Checkpoint salvo em: {adapter_file}")
 
 
@@ -1180,6 +1415,11 @@ def _generate_sample_flux(
 
 def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     """Treino real LoRA para FLUX.2 Klein 4B via Diffusers/PEFT com quantização 4-bit NF4 e persistência em cache."""
+    output.mkdir(parents=True, exist_ok=True)
+    metrics_path = output / "metrics.jsonl"
+    if metrics_path.exists():
+        metrics_path.unlink()
+
     hf_token = (
         cfg.get("hf_token")
         or os.environ.get("HF_TOKEN")
@@ -1225,6 +1465,15 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         or "unsloth/FLUX.2-klein-4B"
     )
     is_flux2 = any(k in model_id.lower() for k in ["klein", "flux.2", "flux-2"])
+
+    _emit_metric(
+        metrics_path,
+        epoch=0,
+        step=1,
+        progress=0.01,
+        phase="init",
+        message=f"Inicializando motor FLUX: {model_id} (4-bit NF4)...",
+    )
 
     # Classes condicionais para FLUX.2 / Klein se disponíveis no Diffusers instalado
     Flux2Transformer_cls = FluxTransformer2DModel
@@ -1286,6 +1535,14 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
 
     # 1. Carregamento do Transformer (DiT): do cache quantizado se já existir, senão quantiza e salva
     if transformer_cache_dir.exists() and (transformer_cache_dir / "config.json").exists():
+        _emit_metric(
+            metrics_path,
+            epoch=0,
+            step=2,
+            progress=0.03,
+            phase="load_transformer",
+            message=f"Carregando Transformer quantizado em 4-bit do cache persistente...",
+        )
         print(
             f"Carregando Transformer quantizado em 4-bit do cache persistente: {transformer_cache_dir}",
             flush=True,
@@ -1295,6 +1552,14 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             torch_dtype=target_dtype,
         )
     else:
+        _emit_metric(
+            metrics_path,
+            epoch=0,
+            step=2,
+            progress=0.02,
+            phase="quantizing_transformer",
+            message=f"Baixando e quantizando Transformer FLUX em 4-bit NF4 ({model_id})...",
+        )
         print(
             f"Carregando e quantizando Transformer FLUX em 4-bit NF4 ({model_id})...",
             flush=True,
@@ -1330,6 +1595,15 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                 flush=True,
             )
 
+    _emit_metric(
+        metrics_path,
+        epoch=0,
+        step=3,
+        progress=0.04,
+        phase="transformer_ready",
+        message="Transformer FLUX 4-bit carregado com sucesso.",
+    )
+
     # 2. Carregamento do(s) Text Encoder(s)
     if is_flux2:
         # FLUX.2 Klein: utiliza um único Text Encoder Qwen3 em 4-bit NF4
@@ -1337,6 +1611,14 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         text_encoder_two = None
 
         if text_encoder_cache_dir.exists() and (text_encoder_cache_dir / "config.json").exists():
+            _emit_metric(
+                metrics_path,
+                epoch=0,
+                step=4,
+                progress=0.05,
+                phase="load_text_encoder",
+                message="Carregando Text Encoder Qwen3 quantizado em 4-bit do cache persistente...",
+            )
             print(
                 f"Carregando Text Encoder Qwen3 quantizado em 4-bit do cache persistente: {text_encoder_cache_dir}",
                 flush=True,
@@ -1346,6 +1628,14 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                 torch_dtype=target_dtype,
             )
         else:
+            _emit_metric(
+                metrics_path,
+                epoch=0,
+                step=4,
+                progress=0.04,
+                phase="quantizing_text_encoder",
+                message=f"Baixando e quantizando Text Encoder Qwen3 em 4-bit NF4 ({model_id})...",
+            )
             print(
                 f"Carregando e quantizando Text Encoder Qwen3 em 4-bit NF4 ({model_id})...",
                 flush=True,
@@ -1377,6 +1667,14 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     else:
         # FLUX.1: utiliza Text Encoder CLIP + T5-XXL em 4-bit NF4
         if text_encoder_cache_dir.exists() and (text_encoder_cache_dir / "config.json").exists():
+            _emit_metric(
+                metrics_path,
+                epoch=0,
+                step=4,
+                progress=0.05,
+                phase="load_text_encoder",
+                message="Carregando Text Encoder T5 quantizado em 4-bit do cache persistente...",
+            )
             print(
                 f"Carregando Text Encoder T5 quantizado em 4-bit do cache persistente: {text_encoder_cache_dir}",
                 flush=True,
@@ -1386,6 +1684,14 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                 torch_dtype=target_dtype,
             )
         else:
+            _emit_metric(
+                metrics_path,
+                epoch=0,
+                step=4,
+                progress=0.04,
+                phase="quantizing_text_encoder",
+                message=f"Baixando e quantizando Text Encoder T5 em 4-bit NF4 ({model_id})...",
+            )
             print(
                 f"Carregando e quantizando Text Encoder T5 em 4-bit NF4 ({model_id})...",
                 flush=True,
@@ -1421,6 +1727,15 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             model_id, subfolder="text_encoder", torch_dtype=target_dtype, cache_dir=hub_cache, token=hf_token
         ).to(device)
 
+    _emit_metric(
+        metrics_path,
+        epoch=0,
+        step=5,
+        progress=0.06,
+        phase="text_encoder_ready",
+        message="Text Encoder quantizado pronto.",
+    )
+
     # 3. Componentes auxiliares (VAE float32, Scheduler Flow Matching)
     vae = AutoencoderKL_cls.from_pretrained(
         model_id, subfolder="vae", torch_dtype=torch.float32, cache_dir=hub_cache, token=hf_token
@@ -1452,6 +1767,15 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     transformer.enable_gradient_checkpointing()
     transformer.train()
 
+    _emit_metric(
+        metrics_path,
+        epoch=0,
+        step=6,
+        progress=0.07,
+        phase="setup_lora",
+        message=f"Adaptadores LoRA injetados no Transformer (rank={rank}, alpha={alpha}).",
+    )
+
     # 5. Dataset de treino
     dataset = DiffusionDataset(
         dataset_path, resolution=resolution, trigger_word=trigger_word
@@ -1466,6 +1790,15 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         drop_last=False,
     )
 
+    _emit_metric(
+        metrics_path,
+        epoch=0,
+        step=7,
+        progress=0.08,
+        phase="dataset_ready",
+        message=f"Dataset carregado com sucesso: {len(dataset)} amostras.",
+    )
+
     # 6. Otimizador e LR Scheduler
     optimizer = _create_optimizer(transformer, optimizer_name, learning_rate)
     total_train_steps = (len(dataloader) * epochs) // grad_accum
@@ -1473,10 +1806,48 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         optimizer, lr_scheduler_name, total_train_steps, lr_warmup_steps
     )
 
-    output.mkdir(parents=True, exist_ok=True)
-    metrics_path = output / "metrics.jsonl"
-    if metrics_path.exists():
-        metrics_path.unlink()
+    # Amostra baseline (Época 0) para comparação pré-treino
+    if sample_prompt:
+        _emit_metric(
+            metrics_path,
+            epoch=0,
+            step=8,
+            progress=0.09,
+            phase="generating_baseline_sample",
+            message=f"Gerando amostra baseline pré-treino (Época 0): '{sample_prompt[:40]}...'",
+        )
+        sample_baseline_file = output / "samples" / "sample_epoch_000.png"
+        _generate_sample_flux(
+            transformer=transformer,
+            vae=vae,
+            text_encoder_one=text_encoder_one,
+            text_encoder_two=text_encoder_two,
+            tokenizer_one=tokenizer_one,
+            tokenizer_two=tokenizer_two,
+            scheduler=noise_scheduler,
+            prompt=sample_prompt,
+            output_path=sample_baseline_file,
+            seed=sample_seed,
+            is_flux2=is_flux2,
+            resolution=resolution,
+        )
+        _emit_metric(
+            metrics_path,
+            epoch=0,
+            step=9,
+            progress=0.10,
+            phase="baseline_ready",
+            message="Amostra baseline gerada com sucesso (Época 0).",
+        )
+
+    _emit_metric(
+        metrics_path,
+        epoch=0,
+        step=10,
+        progress=0.10,
+        phase="training_started",
+        message=f"Iniciando loop de treino LoRA: {epochs} épocas, {total_train_steps} passos totais.",
+    )
 
     print(
         f"Iniciando treino LoRA FLUX (is_flux2={is_flux2}, 4-bit NF4): {epochs} épocas, {len(dataset)} imagens, "
@@ -1488,6 +1859,7 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     scaling_factor = getattr(vae.config, "scaling_factor", 0.3611)
 
     global_step = 0
+    safe_avg_loss = None
     for epoch in range(1, epochs + 1):
         epoch_loss = 0.0
         steps_in_epoch = 0
@@ -1600,15 +1972,28 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                 lr_scheduler.get_last_lr()[0] if lr_scheduler else learning_rate
             )
 
-            # Emite métricas intermediárias a cada 5 passos
+            # Emite métricas intermediárias a cada 5 passos com flush e progresso contínuo
             if global_step % 5 == 0 or steps_in_epoch == len(dataloader):
                 safe_loss = (
                     None
                     if (math.isnan(cur_loss_raw) or math.isinf(cur_loss_raw))
                     else round(cur_loss_raw, 4)
                 )
+                current_progress = round(
+                    min(0.99, max(0.10, 0.10 + 0.89 * (global_step / max(1, total_train_steps)))), 4
+                )
+                _emit_metric(
+                    metrics_path,
+                    epoch=epoch,
+                    step=global_step,
+                    loss=safe_loss,
+                    lr=effective_lr,
+                    progress=current_progress,
+                    phase="training",
+                    message=f"Época {epoch}/{epochs} · Step {global_step}/{total_train_steps} · Loss: {safe_loss}",
+                )
                 print(
-                    f"[FLUX] Época {epoch}/{epochs} · Step {global_step} · Loss: {safe_loss} · LR: {effective_lr:.2e}",
+                    f"[FLUX] Época {epoch}/{epochs} · Step {global_step}/{total_train_steps} · Loss: {safe_loss} · LR: {effective_lr:.2e}",
                     flush=True,
                 )
 
@@ -1618,15 +2003,19 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             if (math.isnan(avg_loss) or math.isinf(avg_loss))
             else round(avg_loss, 4)
         )
-        line = {
-            "epoch": epoch,
-            "step": global_step,
-            "loss": safe_avg_loss,
-            "lr": effective_lr,
-        }
-        with open(metrics_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(line) + "\n")
-            f.flush()
+        epoch_progress = round(
+            min(0.99, max(0.10, 0.10 + 0.89 * (epoch / epochs))), 4
+        )
+        _emit_metric(
+            metrics_path,
+            epoch=epoch,
+            step=global_step,
+            loss=safe_avg_loss,
+            lr=effective_lr,
+            progress=epoch_progress,
+            phase="epoch_complete",
+            message=f"Época {epoch}/{epochs} concluída · Loss Média: {safe_avg_loss}",
+        )
 
         print(
             f"[FLUX] Concluída Época {epoch}/{epochs} · Loss Média: {safe_avg_loss} · LR: {effective_lr:.2e}",
@@ -1662,6 +2051,16 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         "trigger_word": trigger_word,
     }
     _save_lora_safetensors(transformer, adapter_file, metadata)
+    _emit_metric(
+        metrics_path,
+        epoch=epochs,
+        step=global_step,
+        loss=safe_avg_loss,
+        lr=effective_lr,
+        progress=1.0,
+        phase="completed",
+        message="Treino FLUX LoRA finalizado com sucesso!",
+    )
     print(f"Treino FLUX finalizado com sucesso! Checkpoint salvo em: {adapter_file}")
 
 

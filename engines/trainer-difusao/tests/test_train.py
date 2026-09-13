@@ -185,20 +185,26 @@ class TestTrainerDifusao(unittest.TestCase):
 
             main(["train", "--config", str(cfg_path), "--output", str(out_dir)])
 
-            # Verifica métricas com lr
+            # Verifica métricas com lr e evento baseline na época 0
             metrics_file = out_dir / "metrics.jsonl"
             self.assertTrue(metrics_file.exists())
             lines = [json.loads(l) for l in metrics_file.read_text().splitlines() if l.strip()]
-            self.assertEqual(len(lines), 4)
-            self.assertEqual(lines[0]["lr"], 0.0002)
+            self.assertEqual(len(lines), 5)
+            self.assertEqual(lines[0]["epoch"], 0)
+            self.assertEqual(lines[0]["phase"], "baseline_ready")
+            self.assertEqual(lines[1]["epoch"], 1)
+            self.assertEqual(lines[1]["lr"], 0.0002)
 
-            # Verifica amostras geradas nas épocas 2 e 4
+            # Verifica amostra baseline (época 0) e amostras geradas nas épocas 2 e 4
             samples_dir = out_dir / "samples"
             self.assertTrue(samples_dir.is_dir())
+            sample0 = samples_dir / "sample_epoch_000.png"
             sample2 = samples_dir / "sample_epoch_002.png"
             sample4 = samples_dir / "sample_epoch_004.png"
+            self.assertTrue(sample0.exists())
             self.assertTrue(sample2.exists())
             self.assertTrue(sample4.exists())
+            self.assertGreater(sample0.stat().st_size, 0)
             self.assertGreater(sample2.stat().st_size, 0)
             self.assertGreater(sample4.stat().st_size, 0)
 

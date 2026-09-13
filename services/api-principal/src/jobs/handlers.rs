@@ -79,6 +79,12 @@ pub struct MetricsItem {
     pub lr: Option<f64>,
     #[serde(rename = "step", skip_serializing_if = "Option::is_none")]
     pub step: Option<i64>,
+    #[serde(rename = "progress", skip_serializing_if = "Option::is_none")]
+    pub progress: Option<f64>,
+    #[serde(rename = "phase", skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(rename = "message", skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// Job response (camelCase wire).
@@ -274,6 +280,9 @@ fn remap_metrics(raw: &serde_json::Value) -> Vec<MetricsItem> {
             let loss = item.get("loss").and_then(|v| v.as_f64());
             let lr = item.get("lr").and_then(|v| v.as_f64());
             let step = item.get("step").and_then(|v| v.as_i64());
+            let progress = item.get("progress").and_then(|v| v.as_f64());
+            let phase = item.get("phase").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let message = item.get("message").and_then(|v| v.as_str()).map(|s| s.to_string());
             Some(MetricsItem {
                 epoch,
                 box_loss,
@@ -284,6 +293,9 @@ fn remap_metrics(raw: &serde_json::Value) -> Vec<MetricsItem> {
                 loss,
                 lr,
                 step,
+                progress,
+                phase,
+                message,
             })
         })
         .collect()

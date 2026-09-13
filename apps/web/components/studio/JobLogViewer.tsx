@@ -118,16 +118,25 @@ export function JobLogViewer({
             text: `Processamento de legendas: item ${m.epoch}${totalExpected ? `/${totalExpected}` : ""} · Progresso: ${prog}`,
           });
         } else if (job.kind === "diffusion_train" || (job.kind as string) === "diffusion" || job.engine === "diffusion" || m.loss !== undefined) {
-          const parts: string[] = [`epoch=${m.epoch}/${job.epoch || 100}`];
-          if (m.loss !== undefined) parts.push(`loss=${m.loss.toFixed(4)}`);
-          if (m.lr !== undefined) parts.push(`lr=${m.lr.toExponential(2)}`);
-          if (m.step !== undefined) parts.push(`step=${m.step}`);
-          list.push({
-            id: `metric-${m.epoch}-${m.step ?? idx}`,
-            timestamp: fmtTime(3 + idx * 2),
-            tag: "DIFFUSION",
-            text: parts.join(" "),
-          });
+          if (m.message || m.phase) {
+            list.push({
+              id: `metric-phase-${m.epoch}-${m.step ?? idx}`,
+              timestamp: fmtTime(3 + idx * 2),
+              tag: "DIFFUSION",
+              text: m.message || `Fase: ${m.phase}`,
+            });
+          } else {
+            const parts: string[] = [`epoch=${m.epoch}/${job.epoch || 100}`];
+            if (m.loss !== undefined) parts.push(`loss=${m.loss.toFixed(4)}`);
+            if (m.lr !== undefined) parts.push(`lr=${m.lr.toExponential(2)}`);
+            if (m.step !== undefined) parts.push(`step=${m.step}`);
+            list.push({
+              id: `metric-${m.epoch}-${m.step ?? idx}`,
+              timestamp: fmtTime(3 + idx * 2),
+              tag: "DIFFUSION",
+              text: parts.join(" "),
+            });
+          }
         } else {
           const parts: string[] = [`epoch=${m.epoch}/${job.epoch || 100}`];
           if (m.boxLoss !== undefined) parts.push(`box_loss=${m.boxLoss.toFixed(4)}`);

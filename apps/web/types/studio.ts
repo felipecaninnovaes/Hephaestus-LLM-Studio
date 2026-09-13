@@ -203,6 +203,8 @@ export interface JobMetrics {
   lr?: number;
   step?: number;
   progress?: number;
+  phase?: string;
+  message?: string;
 }
 
 export interface JobMetricsResponse {

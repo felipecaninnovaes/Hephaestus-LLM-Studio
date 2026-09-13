@@ -326,7 +326,16 @@ pub fn parse_metrics_line(line: &str) -> Option<MetricsLine> {
     if line.is_empty() {
         return None;
     }
-    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    // Sanitiza literais float não-padrão (ex.: : NaN ou : Infinity emitidos por runtimes legados/Python)
+    let clean_line = if line.contains("NaN") || line.contains("Infinity") {
+        line.replace(": NaN", ": null")
+            .replace(": -NaN", ": null")
+            .replace(": Infinity", ": null")
+            .replace(": -Infinity", ": null")
+    } else {
+        line.to_string()
+    };
+    let v: serde_json::Value = serde_json::from_str(&clean_line).ok()?;
     let epoch = v.get("epoch")?.as_i64()? as i32;
     Some(MetricsLine {
         box_loss: v.get("box_loss").and_then(|x| x.as_f64()).unwrap_or(0.0),
@@ -1740,6 +1749,16 @@ mod tests {
         assert_eq!(parsed.loss, Some(0.0452));
         assert_eq!(parsed.lr, Some(0.0001));
         assert_eq!(parsed.box_loss, 0.0);
+    }
+
+    #[test]
+    fn parse_metrics_line_nan_tolerant() {
+        let nan_line = r#"{"epoch": 1, "step": 5, "loss": NaN, "lr": 0.0001}"#;
+        let parsed = parse_metrics_line(nan_line).expect("should parse line with NaN safely");
+        assert_eq!(parsed.epoch, 1);
+        assert_eq!(parsed.step, Some(5));
+        assert_eq!(parsed.loss, None);
+        assert_eq!(parsed.lr, Some(0.0001));
     }
 
     // -- read_ram_total tests --

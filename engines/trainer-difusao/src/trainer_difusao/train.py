@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import struct
 import sys
@@ -344,8 +345,9 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
     text_encoder = CLIPTextModel.from_pretrained(
         model_id, subfolder="text_encoder", torch_dtype=torch.float16, cache_dir=hub_cache
     ).to(device)
+    # VAE em float32 para prevenir underflow/overflow numérico (NaN)
     vae = AutoencoderKL.from_pretrained(
-        model_id, subfolder="vae", torch_dtype=torch.float16, cache_dir=hub_cache
+        model_id, subfolder="vae", torch_dtype=torch.float32, cache_dir=hub_cache
     ).to(device)
     unet = UNet2DConditionModel.from_pretrained(
         model_id, subfolder="unet", torch_dtype=torch.float16, cache_dir=hub_cache
@@ -401,12 +403,12 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         steps_in_epoch = 0
 
         for batch in dataloader:
-            pixel_values = batch["pixel_values"].to(device, dtype=torch.float16)
+            pixel_values = batch["pixel_values"].to(device, dtype=torch.float32)
             captions = batch["prompt"]
 
-            # Codifica imagens no espaço latente via VAE
+            # Codifica imagens no espaço latente via VAE em float32, convertendo latents para fp16
             with torch.no_grad():
-                latents = vae.encode(pixel_values).latent_dist.sample() * 0.18215
+                latents = (vae.encode(pixel_values).latent_dist.sample() * 0.18215).to(dtype=torch.float16)
 
             # Adiciona ruído gaussiano aos latents
             noise = torch.randn_like(latents)
@@ -434,20 +436,23 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
             loss = F.mse_loss(model_pred.float(), noise.float(), reduction="mean")
 
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(unet.parameters(), 1.0)
             optimizer.step()
             optimizer.zero_grad()
 
             global_step += 1
             cur_loss_val = loss.item()
-            epoch_loss += cur_loss_val
+            if not math.isnan(cur_loss_val) and not math.isinf(cur_loss_val):
+                epoch_loss += cur_loss_val
             steps_in_epoch += 1
 
             # Emite métricas intermediárias por step para streaming em tempo real
             if global_step % 5 == 0 or steps_in_epoch == len(dataloader):
+                safe_loss = None if (math.isnan(cur_loss_val) or math.isinf(cur_loss_val)) else round(cur_loss_val, 4)
                 step_metric = {
                     "epoch": epoch,
                     "step": global_step,
-                    "loss": round(cur_loss_val, 4),
+                    "loss": safe_loss,
                     "lr": learning_rate,
                 }
                 with open(metrics_path, "a", encoding="utf-8") as f:
@@ -458,7 +463,8 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
                     flush=True,
                 )
 
-        avg_loss = round(epoch_loss / max(1, steps_in_epoch), 4)
+        avg_loss = round(epoch_loss / max(1, steps_in_epoch), 4) if steps_in_epoch > 0 else 0.0
+        safe_avg_loss = None if (math.isnan(avg_loss) or math.isinf(avg_loss)) else avg_loss
         print(
             f"[SD 1.5] Época {epoch}/{epochs} concluída - Step {global_step} - Loss Médio: {avg_loss}",
             flush=True,
@@ -467,7 +473,7 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         metric_line = {
             "epoch": epoch,
             "step": global_step,
-            "loss": avg_loss,
+            "loss": safe_avg_loss,
             "lr": learning_rate,
         }
         with open(metrics_path, "a", encoding="utf-8") as f:
@@ -631,8 +637,9 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
     text_encoder_two = CLIPTextModelWithProjection.from_pretrained(
         model_id, subfolder="text_encoder_2", torch_dtype=torch.float16, cache_dir=hub_cache
     ).to(device)
+    # VAE em float32 para prevenir underflow/overflow numérico (NaN) conhecido no SDXL em fp16
     vae = AutoencoderKL.from_pretrained(
-        model_id, subfolder="vae", torch_dtype=torch.float16, cache_dir=hub_cache
+        model_id, subfolder="vae", torch_dtype=torch.float32, cache_dir=hub_cache
     ).to(device)
     unet = UNet2DConditionModel.from_pretrained(
         model_id, subfolder="unet", torch_dtype=torch.float16, cache_dir=hub_cache
@@ -695,7 +702,7 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         steps_in_epoch = 0
 
         for batch in dataloader:
-            pixel_values = batch["pixel_values"].to(device, dtype=torch.float16)
+            pixel_values = batch["pixel_values"].to(device, dtype=torch.float32)
             prompts = batch["prompt"]
             cur_bs = pixel_values.shape[0]
 
@@ -703,7 +710,7 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
                 latents = (
                     vae.encode(pixel_values).latent_dist.sample()
                     * vae.config.scaling_factor
-                )
+                ).to(dtype=torch.float16)
 
             noise = torch.randn_like(latents)
             timesteps = torch.randint(
@@ -734,20 +741,23 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
             loss = F.mse_loss(model_pred.float(), noise.float(), reduction="mean")
 
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(unet.parameters(), 1.0)
             optimizer.step()
             optimizer.zero_grad()
 
             global_step += 1
             cur_loss_val = loss.item()
-            epoch_loss += cur_loss_val
+            if not math.isnan(cur_loss_val) and not math.isinf(cur_loss_val):
+                epoch_loss += cur_loss_val
             steps_in_epoch += 1
 
             # Emite métricas intermediárias por step para streaming em tempo real
             if global_step % 5 == 0 or steps_in_epoch == len(dataloader):
+                safe_loss = None if (math.isnan(cur_loss_val) or math.isinf(cur_loss_val)) else round(cur_loss_val, 4)
                 step_metric = {
                     "epoch": epoch,
                     "step": global_step,
-                    "loss": round(cur_loss_val, 4),
+                    "loss": safe_loss,
                     "lr": learning_rate,
                 }
                 with open(metrics_path, "a", encoding="utf-8") as f:
@@ -758,7 +768,8 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
                     flush=True,
                 )
 
-        avg_loss = round(epoch_loss / max(1, steps_in_epoch), 4)
+        avg_loss = round(epoch_loss / max(1, steps_in_epoch), 4) if steps_in_epoch > 0 else 0.0
+        safe_avg_loss = None if (math.isnan(avg_loss) or math.isinf(avg_loss)) else avg_loss
         print(
             f"[SDXL] Época {epoch}/{epochs} concluída - Step {global_step} - Loss Médio: {avg_loss}",
             flush=True,
@@ -767,7 +778,7 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         metric_line = {
             "epoch": epoch,
             "step": global_step,
-            "loss": avg_loss,
+            "loss": safe_avg_loss,
             "lr": learning_rate,
         }
         with open(metrics_path, "a", encoding="utf-8") as f:

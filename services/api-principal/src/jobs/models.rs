@@ -1867,7 +1867,8 @@ mod tests {
         let req2: DiffusionJobRequest = serde_json::from_str(json2).unwrap();
         assert!(validate_diffusion_request(req2).is_err());
 
-        let json3 = r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","quantization":"invalid"}"#;
+        let json3 =
+            r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","quantization":"invalid"}"#;
         let req3: DiffusionJobRequest = serde_json::from_str(json3).unwrap();
         assert!(validate_diffusion_request(req3).is_err());
     }

@@ -8,6 +8,8 @@ import {
   IconZap,
   IconServer,
   IconLock,
+  IconInfo,
+  IconRefresh,
 } from "@/components/icons";
 import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
@@ -25,6 +27,93 @@ interface Props {
   datasetTitle: string;
   onClose: () => void;
   onJobCreated: () => void;
+}
+
+export type ApiProviderPreset = "openai" | "ollama" | "openrouter" | "lmstudio" | "custom";
+
+interface ProviderConfig {
+  id: ApiProviderPreset;
+  label: string;
+  badge: string;
+  defaultBase: string;
+  defaultModel: string;
+  suggestedModels: string[];
+  keyPlaceholder: string;
+  keyRequired: boolean;
+  hint: string;
+}
+
+const PROVIDER_PRESETS: ProviderConfig[] = [
+  {
+    id: "openai",
+    label: "OpenAI Oficial",
+    badge: "Nuvem",
+    defaultBase: "https://api.openai.com/v1",
+    defaultModel: "gpt-4o-mini",
+    suggestedModels: ["gpt-4o-mini", "gpt-4o", "chatgpt-4o-latest"],
+    keyPlaceholder: "sk-proj-... (obrigatório)",
+    keyRequired: true,
+    hint: "Requer API Key ativa da OpenAI.",
+  },
+  {
+    id: "ollama",
+    label: "Ollama Local",
+    badge: "Host",
+    defaultBase: "http://localhost:11434/v1",
+    defaultModel: "llava",
+    suggestedModels: ["llava", "llama3.2-vision", "bakllava", "minicpm-v"],
+    keyPlaceholder: "Opcional (não exigido pelo Ollama)",
+    keyRequired: false,
+    hint: "Conexão direta com Ollama no host. A resolução de rede é mapeada automaticamente para o container.",
+  },
+  {
+    id: "openrouter",
+    label: "OpenRouter",
+    badge: "Gateway",
+    defaultBase: "https://openrouter.ai/api/v1",
+    defaultModel: "openai/gpt-4o-mini",
+    suggestedModels: [
+      "openai/gpt-4o-mini",
+      "google/gemini-flash-1.5",
+      "anthropic/claude-3-haiku",
+      "meta-llama/llama-3.2-11b-vision-instruct",
+    ],
+    keyPlaceholder: "sk-or-v1-...",
+    keyRequired: true,
+    hint: "Acesso a dezenas de VLMs comerciais e abertos via chave unificada.",
+  },
+  {
+    id: "lmstudio",
+    label: "vLLM / LM Studio",
+    badge: "Local",
+    defaultBase: "http://localhost:1234/v1",
+    defaultModel: "local-model",
+    suggestedModels: ["local-model", "qwen2-vl", "llava-v1.6"],
+    keyPlaceholder: "Opcional ou Bearer Token local",
+    keyRequired: false,
+    hint: "LM Studio em :1234 ou vLLM em :8000 compatível com protocolo OpenAI.",
+  },
+  {
+    id: "custom",
+    label: "Customizado",
+    badge: "Livre",
+    defaultBase: "https://api.openai.com/v1",
+    defaultModel: "gpt-4o-mini",
+    suggestedModels: [],
+    keyPlaceholder: "sk-... (se requerido pelo endpoint)",
+    keyRequired: false,
+    hint: "Endpoint base, ID do modelo e chave totalmente configuráveis.",
+  },
+];
+
+const AUTOLABEL_STORAGE_KEY = "hephaestus_autolabel_custom_config_v1";
+
+interface AutoLabelSavedConfig {
+  provider: ApiProviderPreset;
+  apiBase: string;
+  openaiModel: string;
+  apiKey?: string;
+  model?: AutolabelModel;
 }
 
 const PROMPT_PRESETS = [
@@ -56,7 +145,8 @@ export default function AutoLabelModal({
   const [prompt, setPrompt] = useState("");
   const [selectedOrchestratorId, setSelectedOrchestratorId] = useState<string | null>(null);
 
-  // Estados de OpenAI / Compatível
+  // Estados de Provedor OpenAI / Compatível
+  const [selectedProvider, setSelectedProvider] = useState<ApiProviderPreset>("openai");
   const [apiKey, setApiKey] = useState("");
   const [showApiKey, setShowApiKey] = useState(false);
   const [apiBase, setApiBase] = useState("https://api.openai.com/v1");
@@ -66,19 +156,72 @@ export default function AutoLabelModal({
   const [topError, setTopError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Helper para salvar preferências no localStorage
+  function persistCustomConfig(updates: Partial<AutoLabelSavedConfig>) {
+    try {
+      const raw = localStorage.getItem(AUTOLABEL_STORAGE_KEY);
+      const current = raw ? (JSON.parse(raw) as Partial<AutoLabelSavedConfig>) : {};
+      const next: AutoLabelSavedConfig = {
+        provider: updates.provider ?? current.provider ?? selectedProvider,
+        apiBase: updates.apiBase ?? current.apiBase ?? apiBase,
+        openaiModel: updates.openaiModel ?? current.openaiModel ?? openaiModel,
+        apiKey: updates.apiKey !== undefined ? updates.apiKey : (current.apiKey ?? apiKey),
+        model: updates.model ?? current.model ?? model,
+      };
+      localStorage.setItem(AUTOLABEL_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // Ignora erro em ambientes restritos
+    }
+  }
+
   useEffect(() => {
     if (!open) return;
-    setModel("florence-2");
-    setPrompt("");
-    setSelectedOrchestratorId(null);
-    setApiKey("");
-    setApiBase("https://api.openai.com/v1");
-    setOpenaiModel("gpt-4o-mini");
     setTopError(null);
     setBusy(false);
+
+    // Restaura configurações salvas de OpenAI/compatível do localStorage se existirem
+    try {
+      const raw = localStorage.getItem(AUTOLABEL_STORAGE_KEY);
+      if (raw) {
+        const saved = JSON.parse(raw) as Partial<AutoLabelSavedConfig>;
+        if (saved.provider) setSelectedProvider(saved.provider);
+        if (saved.apiBase) setApiBase(saved.apiBase);
+        if (saved.openaiModel) setOpenaiModel(saved.openaiModel);
+        if (saved.apiKey !== undefined) setApiKey(saved.apiKey);
+        if (saved.model) setModel(saved.model);
+      }
+    } catch {
+      // Falha silenciosa se localStorage corrompido
+    }
+
     const t = setTimeout(() => inputRef.current?.focus(), 40);
     return () => clearTimeout(t);
   }, [open]);
+
+  function handleSelectProvider(p: ProviderConfig) {
+    setSelectedProvider(p.id);
+    if (p.id !== "custom") {
+      setApiBase(p.defaultBase);
+      setOpenaiModel(p.defaultModel);
+      persistCustomConfig({
+        provider: p.id,
+        apiBase: p.defaultBase,
+        openaiModel: p.defaultModel,
+      });
+    } else {
+      persistCustomConfig({ provider: "custom" });
+    }
+  }
+
+  function handleResetProvider() {
+    const p = PROVIDER_PRESETS.find((x) => x.id === selectedProvider) ?? PROVIDER_PRESETS[0];
+    setApiBase(p.defaultBase);
+    setOpenaiModel(p.defaultModel);
+    persistCustomConfig({
+      apiBase: p.defaultBase,
+      openaiModel: p.defaultModel,
+    });
+  }
 
   if (!open) return null;
 
@@ -96,9 +239,25 @@ export default function AutoLabelModal({
       };
 
       if (model === "openai") {
+        const provider = PROVIDER_PRESETS.find((p) => p.id === selectedProvider);
+        if (provider?.keyRequired && !apiKey.trim()) {
+          setTopError(`O provedor ${provider.label} requer uma API Key para autenticação.`);
+          setBusy(false);
+          return;
+        }
+
         if (apiKey.trim()) payload.apiKey = apiKey.trim();
         if (apiBase.trim()) payload.apiBase = apiBase.trim();
         if (openaiModel.trim()) payload.openaiModel = openaiModel.trim();
+
+        // Salva as configurações utilizadas para conveniência futura
+        persistCustomConfig({
+          provider: selectedProvider,
+          apiBase: apiBase.trim(),
+          openaiModel: openaiModel.trim(),
+          apiKey: apiKey.trim(),
+          model,
+        });
       }
 
       const result = await startAutolabelJob(payload);
@@ -262,16 +421,66 @@ export default function AutoLabelModal({
 
         {/* 2. CAMPOS ADICIONAIS QUANDO OPENAI SELECIONADO */}
         {model === "openai" && (
-          <div className="rounded-xl border border-sky-500/25 bg-sky-500/[0.03] p-3.5 space-y-3">
-            <div className="flex items-center justify-between pb-1 border-b border-white/5">
+          <div className="rounded-xl border border-sky-500/25 bg-sky-500/[0.03] p-3.5 space-y-3.5">
+            <div className="flex items-center justify-between pb-2 border-b border-white/5">
               <span className="font-mono text-[11px] font-semibold text-sky-300 uppercase tracking-caps flex items-center gap-1.5">
                 <IconServer className="size-3 text-sky-400" />
-                Configurações da API OpenAI
+                Configurações de Provedor & API Vision
               </span>
-              <span className="font-mono text-[10px] text-zinc-400">
-                HTTPS / Ollama / vLLM
-              </span>
+              <button
+                type="button"
+                onClick={handleResetProvider}
+                title="Restaurar padrões do provedor ativo"
+                className="font-mono text-[10px] text-zinc-400 hover:text-sky-300 flex items-center gap-1 transition"
+              >
+                <IconRefresh className="size-3" />
+                Restaurar padrões
+              </button>
             </div>
+
+            {/* Presets Rápidos de Provedor */}
+            <div className="space-y-1.5">
+              <label className="block font-mono text-[11px] font-medium text-zinc-300">
+                Provedor / Arquitetura de API
+              </label>
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
+                {PROVIDER_PRESETS.map((p) => {
+                  const active = selectedProvider === p.id;
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      disabled={busy}
+                      onClick={() => handleSelectProvider(p)}
+                      className={`flex flex-col items-start p-2 rounded-lg border text-left transition ${
+                        active
+                          ? "border-sky-500/60 bg-sky-500/20 text-white shadow-sm ring-1 ring-sky-500/40"
+                          : "border-white/10 bg-white/[0.02] text-zinc-400 hover:border-white/20 hover:text-zinc-200"
+                      }`}
+                    >
+                      <span className="font-mono font-semibold text-[11px] leading-tight block">
+                        {p.label}
+                      </span>
+                      <span className="font-mono text-[9px] text-zinc-500 mt-0.5">
+                        {p.badge}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Dica / Contexto do Provedor Selecionado */}
+            {(() => {
+              const p = PROVIDER_PRESETS.find((x) => x.id === selectedProvider);
+              if (!p) return null;
+              return (
+                <div className="flex items-start gap-2 rounded-lg border border-sky-500/20 bg-sky-500/10 px-2.5 py-1.5 text-[11px] font-mono text-sky-200">
+                  <IconInfo className="size-3.5 shrink-0 mt-0.5 text-sky-400" />
+                  <span>{p.hint}</span>
+                </div>
+              );
+            })()}
 
             {/* API Key */}
             <div className="space-y-1">
@@ -281,6 +490,14 @@ export default function AutoLabelModal({
                   className="block font-mono text-[11px] text-zinc-300"
                 >
                   API Key
+                  {(() => {
+                    const p = PROVIDER_PRESETS.find((x) => x.id === selectedProvider);
+                    return p?.keyRequired ? (
+                      <span className="text-amber-400 ml-1">*</span>
+                    ) : (
+                      <span className="text-zinc-500 font-normal ml-1">(opcional)</span>
+                    );
+                  })()}
                 </label>
                 <button
                   type="button"
@@ -294,9 +511,15 @@ export default function AutoLabelModal({
                 <Input
                   id="openai-key"
                   type={showApiKey ? "text" : "password"}
-                  placeholder="sk-proj-... (opcional se configurada via env no nó)"
+                  placeholder={
+                    PROVIDER_PRESETS.find((x) => x.id === selectedProvider)?.keyPlaceholder ??
+                    "sk-proj-... (opcional se no nó)"
+                  }
                   value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
+                  onChange={(e) => {
+                    setApiKey(e.target.value);
+                    persistCustomConfig({ apiKey: e.target.value });
+                  }}
                   disabled={busy}
                   className="font-mono text-xs pr-8"
                 />
@@ -320,7 +543,11 @@ export default function AutoLabelModal({
                   type="text"
                   placeholder="https://api.openai.com/v1"
                   value={apiBase}
-                  onChange={(e) => setApiBase(e.target.value)}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setApiBase(val);
+                    persistCustomConfig({ apiBase: val });
+                  }}
                   disabled={busy}
                   className="font-mono text-xs"
                 />
@@ -332,19 +559,52 @@ export default function AutoLabelModal({
                   htmlFor="openai-model"
                   className="block font-mono text-[11px] text-zinc-300"
                 >
-                  Modelo Remoto
+                  Modelo Remoto (Vision)
                 </label>
                 <Input
                   id="openai-model"
                   type="text"
                   placeholder="gpt-4o-mini"
                   value={openaiModel}
-                  onChange={(e) => setOpenaiModel(e.target.value)}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setOpenaiModel(val);
+                    persistCustomConfig({ openaiModel: val });
+                  }}
                   disabled={busy}
                   className="font-mono text-xs"
                 />
               </div>
             </div>
+
+            {/* Chips de Modelos Sugeridos */}
+            {(() => {
+              const p = PROVIDER_PRESETS.find((x) => x.id === selectedProvider);
+              if (!p || p.suggestedModels.length === 0) return null;
+              return (
+                <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                  <span className="font-mono text-[10px] text-zinc-500">Modelos sugeridos:</span>
+                  {p.suggestedModels.map((sm) => (
+                    <button
+                      key={sm}
+                      type="button"
+                      disabled={busy}
+                      onClick={() => {
+                        setOpenaiModel(sm);
+                        persistCustomConfig({ openaiModel: sm });
+                      }}
+                      className={`rounded border px-1.5 py-0.5 font-mono text-[10px] transition ${
+                        openaiModel === sm
+                          ? "border-sky-500/60 bg-sky-500/20 text-sky-200"
+                          : "border-white/10 bg-white/[0.03] text-zinc-400 hover:border-white/20 hover:text-zinc-200"
+                      }`}
+                    >
+                      {sm}
+                    </button>
+                  ))}
+                </div>
+              );
+            })()}
           </div>
         )}
 

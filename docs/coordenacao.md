@@ -19,14 +19,21 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-12 (FATIA AUTOLABEL V2 CONCLUÍDA NA BRANCH)
+## Estado atual — 2026-09-12 (FATIA AUTOLABEL V2 CONCLUÍDA NA BRANCH COM CUSTOM API FIX)
 
-- **FATIA AUTOLABEL V2 (MODELOS VLM E API OPENAI) — CONCLUÍDA NA BRANCH (2026-09-12)** — branch `feat/autolabel-v2`. **Especificação executável: `docs/adr/0019-autolabel-v2-vlm-openai.md`** (D0–D5).
+- **FATIA AUTOLABEL V2 (MODELOS VLM, API OPENAI E ENDPOINTS CUSTOM) — CONCLUÍDA NA BRANCH (2026-09-12)** — branch `feat/autolabel-v2`. **Especificação executável: `docs/adr/0019-autolabel-v2-vlm-openai.md`** (D0–D5).
   - **AL2.0 (docs/adr)**: ADR-0019 aceita e registrada (`docs/adr/0019-autolabel-v2-vlm-openai.md`).
   - **AL2.1 (contrato OpenAPI 0.18.0)**: `AutolabelJobRequest` expandido com `model` enum `[mock, florence-2, qwen2-vl, openai]`, `apiKey`, `apiBase` e `openaiModel`; 15/15 contract tests verdes.
   - **AL2.2 (backend api-principal)**: Validação pura em `models.rs` aceitando novos modelos VLM e endpoints com scheme http/https; serialização de novos parâmetros no `generate_autolabel_config_yaml`; 320 testes unitários verdes.
-  - **AL2.3 (engine trainer-yolo autolabel.py)**: Suporte completo aos modos `florence-2`, `qwen2-vl`, `mock` e `openai` (chamadas HTTP compatíveis com OpenAI Vision com fallback determinístico gracioso); 103 testes pytest verdes.
-  - **AL2.4 (web frontend)**: `AutoLabelModal.tsx` redesenhado com seleção de modelos VLM (Florence-2, Qwen2-VL, OpenAI Vision, Mock), campos para chave de API e URL base compatível (Ollama/vLLM), e presets rápidos de prompt para Difusão LoRA; Next.js build limpo com 0 erros de tipo.
+  - **AL2.3 (engine trainer-yolo autolabel.py & orquestrador)**:
+    - Suporte robusto a chamadas HTTP à API compatível com OpenAI Vision com retries inteligentes (429/5xx), contexto SSL customizável e decodificação estruturada do corpo de erro da OpenAI no stderr.
+    - Ponte de rede host-container: flag `--add-host host.docker.internal:host-gateway` adicionada ao `build_docker_run_args` do orchestrator e normalização automática de `localhost`/`127.0.0.1` para `host.docker.internal` dentro de containers Docker, permitindo conexão com Ollama/LM Studio locais no host sem configuração manual de IP.
+    - Fail-fast sem mascaramento silencioso: erros de conexão, autenticação ou cota agora interrompem a execução com mensagem cristalina e exit code 1, impedindo geração de legendas falsas de mock quando a API falha.
+    - Suíte de 10 testes pytest verdes em `test_autolabel.py`, incluindo servidor HTTP mock local em thread testando o fluxo real de base64 e resposta da API.
+  - **AL2.4 (web frontend & persistência)**:
+    - `AutoLabelModal.tsx` redesenhado com seletor de presets de provedor de API (`OpenAI Oficial`, `Ollama Local`, `OpenRouter`, `vLLM / LM Studio`, `Customizado`), badges de arquitetura, dicas contextuais de rede/autenticação e chips rápidos com modelos sugeridos (`gpt-4o-mini`, `gpt-4o`, `llava`, `llama3.2-vision`, etc.).
+    - Persistência no `localStorage` do navegador (`hephaestus_autolabel_custom_config_v1`): endpoint base, modelo remoto, chave de API e provedor preferido são lembrados entre sessões, com botão de restauração rápida de padrões.
+    - `npx tsc --noEmit` limpo com 0 erros de tipo.
   - **AL2.5 (verificações & formatação)**: `cargo fmt --all -- --check` 0 hunks; `ruff format --check` e `ruff check` 100% limpos; testes do monorepo verdes. Branch pronta para merge.
 
 - **FATIA FORJA DE TREINO DE DIFUSÃO LORA (`/difusao`) — CONCLUÍDA NA BRANCH (2026-09-12)** — branch `feat/treino-difusao`. **Especificação executável: `docs/adr/0018-treino-difusao-lora.md`** (D0–D4).

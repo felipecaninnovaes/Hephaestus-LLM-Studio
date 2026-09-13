@@ -19,7 +19,11 @@ import base64
 import hashlib
 import json
 import os
+import re
+import socket
+import ssl
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -160,14 +164,34 @@ def _get_mime_type(file_path: Path) -> str:
     return "image/jpeg"
 
 
+def _normalize_api_base(api_base: str) -> str:
+    """Normaliza api_base e traduz localhost/127.0.0.1 para host.docker.internal quando em container."""
+    url = api_base.strip().rstrip("/")
+    is_docker = (
+        os.path.exists("/.dockerenv") or os.environ.get("RUNNING_IN_DOCKER") == "1"
+    )
+    if is_docker or ("localhost" in url or "127.0.0.1" in url):
+        try:
+            socket.gethostbyname("host.docker.internal")
+            url = re.sub(
+                r"^(https?://)(?:localhost|127\.0\.0\.1)(:\d+)?",
+                r"\1host.docker.internal\2",
+                url,
+            )
+        except (socket.gaierror, OSError):
+            pass
+    return url
+
+
 def _call_openai_vision_api(
     image_path: Path,
     prompt: str | None,
-    api_key: str,
+    api_key: str | None,
     api_base: str,
     openai_model: str,
 ) -> str:
     """Faz chamada HTTP à API compatível com OpenAI Vision para descrever a imagem."""
+    norm_base = _normalize_api_base(api_base)
     image_bytes = image_path.read_bytes()
     b64_img = base64.b64encode(image_bytes).decode("utf-8")
     mime = _get_mime_type(image_path)
@@ -198,39 +222,102 @@ def _call_openai_vision_api(
         "max_tokens": 500,
     }
 
-    url = f"{api_base.rstrip('/')}/chat/completions"
+    url = f"{norm_base}/chat/completions"
     data = json.dumps(payload).encode("utf-8")
+
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "Hephaestus-Studio-AutoLabel/2.0",
+    }
+    if api_key and api_key.strip():
+        headers["Authorization"] = f"Bearer {api_key.strip()}"
+
+    # Headers recomendados para OpenRouter
+    if "openrouter.ai" in norm_base:
+        headers["HTTP-Referer"] = "https://hephaestus.studio"
+        headers["X-Title"] = "Hephaestus Studio AutoLabel"
+
     req = urllib.request.Request(
         url,
         data=data,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "User-Agent": "Hephaestus-Studio-AutoLabel/2.0",
-        },
+        headers=headers,
         method="POST",
     )
 
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-            content = body["choices"][0]["message"]["content"]
-            return content.strip()
-    except (
-        urllib.error.URLError,
-        TimeoutError,
-        json.JSONDecodeError,
-        KeyError,
-        OSError,
-    ) as exc:
-        # Em caso de falha de conexão ou credencial de teste, loga e faz fallback informativo determinístico
-        print(
-            f"[autolabel-openai] API call failed for {image_path.name}: {exc}",
-            file=sys.stderr,
-        )
-        h = int(hashlib.sha256(image_path.name.encode("utf-8")).hexdigest(), 16)
-        fallback_desc = MOCK_DESCRIPTIONS[h % len(MOCK_DESCRIPTIONS)]
-        return f"{instruction} — [OpenAI fallback]: {fallback_desc}"
+    ctx = ssl.create_default_context()
+    if os.environ.get("AUTOLABEL_INSECURE_SSL") == "1":
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+    max_retries = 2
+    for attempt in range(max_retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=90, context=ctx) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+                choices = body.get("choices")
+                if not choices or not isinstance(choices, list):
+                    raise ValueError(f"Formato de resposta inesperado da API: {body}")
+                message = choices[0].get("message", {})
+                content = message.get("content", "")
+                if isinstance(content, list):
+                    text_parts = [
+                        p.get("text", "")
+                        for p in content
+                        if isinstance(p, dict) and p.get("type") == "text"
+                    ]
+                    content = " ".join(text_parts)
+                return str(content).strip()
+        except urllib.error.HTTPError as exc:
+            err_body = ""
+            try:
+                raw_bytes = exc.read()
+                err_body = raw_bytes.decode("utf-8", errors="replace")
+                parsed = json.loads(err_body)
+                if isinstance(parsed, dict) and "error" in parsed:
+                    err_info = parsed["error"]
+                    if isinstance(err_info, dict):
+                        err_body = err_info.get("message") or str(err_info)
+                    else:
+                        err_body = str(err_info)
+            except (
+                json.JSONDecodeError,
+                UnicodeDecodeError,
+                KeyError,
+                AttributeError,
+            ):
+                pass
+
+            err_msg = f"HTTP {exc.code} {exc.reason}: {err_body or 'Sem detalhes'}"
+            print(
+                f"[autolabel-openai] ERRO na chamada ({url}) para {image_path.name}: {err_msg}",
+                file=sys.stderr,
+            )
+
+            if attempt < max_retries and exc.code in (429, 500, 502, 503, 504):
+                time.sleep(1.5 * (attempt + 1))
+                continue
+
+            raise RuntimeError(f"OpenAI API error ({url}): {err_msg}") from exc
+        except (TimeoutError, urllib.error.URLError, OSError) as exc:
+            err_msg = f"Falha de conexão ({url}): {exc}"
+            print(
+                f"[autolabel-openai] ERRO de conexão para {image_path.name}: {err_msg}",
+                file=sys.stderr,
+            )
+            if attempt < max_retries:
+                time.sleep(1.0)
+                continue
+            raise RuntimeError(f"OpenAI API connection failed ({url}): {exc}") from exc
+        except Exception as exc:
+            print(
+                f"[autolabel-openai] Erro inesperado para {image_path.name}: {exc}",
+                file=sys.stderr,
+            )
+            raise RuntimeError(f"OpenAI API parse error: {exc}") from exc
+
+    raise RuntimeError(
+        f"OpenAI API falhou após {max_retries + 1} tentativas para {image_path.name}"
+    )
 
 
 def _autolabel_pipeline(cfg: dict, output_dir: Path) -> None:
@@ -262,13 +349,36 @@ def _autolabel_pipeline(cfg: dict, output_dir: Path) -> None:
         for fname in sorted_filenames:
             img_path = image_map[fname]
             if model == "openai":
-                if api_key:
-                    caption = _call_openai_vision_api(
-                        img_path, prompt, api_key, api_base, openai_model
-                    )
+                is_official = "api.openai.com" in api_base
+                if is_official and not (api_key and api_key.strip()):
+                    if os.environ.get("AUTOLABEL_TEST_MOCK_FALLBACK") == "1":
+                        caption = _generate_caption_mock(seed, fname, prompt)
+                    else:
+                        _die(
+                            "O modelo 'openai' com endpoint oficial requer uma API Key válida. "
+                            "Forneça a apiKey na requisição ou configure a variável OPENAI_API_KEY no nó."
+                        )
                 else:
-                    # Sem API key no ambiente (CI / mock): gera fallback determinístico
-                    caption = _generate_caption_mock(seed, fname, prompt)
+                    try:
+                        caption = _call_openai_vision_api(
+                            img_path, prompt, api_key, api_base, openai_model
+                        )
+                    except (RuntimeError, ValueError, OSError) as exc:
+                        if os.environ.get("AUTOLABEL_TEST_MOCK_FALLBACK") == "1":
+                            print(
+                                f"[autolabel-openai] Fallback ativado para teste: {exc}",
+                                file=sys.stderr,
+                            )
+                            h = int(
+                                hashlib.sha256(fname.encode("utf-8")).hexdigest(),
+                                16,
+                            )
+                            fallback_desc = MOCK_DESCRIPTIONS[
+                                h % len(MOCK_DESCRIPTIONS)
+                            ]
+                            caption = f"{prompt or 'Desc'} — [OpenAI fallback]: {fallback_desc}"
+                        else:
+                            _die(f"AutoLabel OpenAI falhou na imagem '{fname}': {exc}")
             elif model == "florence-2":
                 caption = _generate_caption_florence(seed, fname, prompt)
             elif model == "qwen2-vl":

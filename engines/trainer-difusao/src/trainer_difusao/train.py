@@ -100,7 +100,9 @@ def _generate_mock_safetensors(output_file: Path, lora_params: dict[str, Any]) -
         f.write(data_bytes)
 
 
-def _generate_mock_sample(output_dir: Path, epoch: int, prompt: str) -> None:
+def _generate_mock_sample(
+    output_dir: Path, epoch: int, prompt: str, seed: int = 42
+) -> None:
     """Gera uma imagem de teste sintética para validação do fluxo de artefatos de sample."""
     samples_dir = output_dir / "samples"
     samples_dir.mkdir(parents=True, exist_ok=True)
@@ -111,7 +113,11 @@ def _generate_mock_sample(output_dir: Path, epoch: int, prompt: str) -> None:
         img = Image.new("RGB", (512, 512), color=(24, 24, 37))
         draw = ImageDraw.Draw(img)
         draw.rectangle([16, 16, 496, 496], outline=(129, 140, 248), width=3)
-        draw.text((32, 210), f"Hephaestus Diffusion Sample\nEpoch: {epoch}\nPrompt: {prompt[:50]}", fill=(240, 240, 250))
+        draw.text(
+            (32, 210),
+            f"Hephaestus Diffusion Sample\nEpoch: {epoch} | Seed: {seed}\nPrompt: {prompt[:50]}",
+            fill=(240, 240, 250),
+        )
         img.save(sample_file, format="PNG")
     except Exception:
         import base64
@@ -127,16 +133,17 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
     output.mkdir(parents=True, exist_ok=True)
     metrics_path = output / "metrics.jsonl"
 
-    seed = cfg.get("seed", 42)
+    seed = int(cfg.get("seed", 42))
     lora_cfg = cfg.get("lora", {})
-    epochs = lora_cfg.get("epochs", 10)
-    learning_rate = lora_cfg.get("learning_rate", 0.0001)
+    epochs = int(lora_cfg.get("epochs", 10))
+    learning_rate = float(lora_cfg.get("learning_rate", 0.0001))
     raw_model = cfg.get("model", "flux")
     base_model = _canonical_model_name(raw_model)
 
     samples_cfg = cfg.get("samples", {})
     sample_prompt = str(samples_cfg.get("prompt", "") or "").strip()
     sample_interval = int(samples_cfg.get("interval", 1))
+    sample_seed = int(samples_cfg.get("seed", seed))
 
     sleep_ms = int(os.environ.get("MOCK_EPOCH_SLEEP_MS", "5"))
 
@@ -153,10 +160,11 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
         }
         with open(metrics_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(line) + "\n")
+            f.flush()
 
         if sample_prompt and sample_interval > 0:
             if ep % sample_interval == 0 or ep == epochs:
-                _generate_mock_sample(output, ep, sample_prompt)
+                _generate_mock_sample(output, ep, sample_prompt, seed=sample_seed)
 
         if sleep_ms > 0:
             time.sleep(sleep_ms / 1000.0)
@@ -253,8 +261,9 @@ def _generate_sample_sd15(
     noise_scheduler: Any,
     prompt: str,
     output_path: Path,
+    seed: int = 42,
 ) -> None:
-    """Gera uma imagem de teste para SD 1.5 com os pesos LoRA ativos."""
+    """Gera uma imagem de teste para SD 1.5 com os pesos LoRA ativos e seed fixa determinística."""
     try:
         import torch
         from diffusers import StableDiffusionPipeline
@@ -270,13 +279,14 @@ def _generate_sample_sd15(
             requires_safety_checker=False,
         )
         pipe.set_progress_bar_config(disable=True)
+        generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(seed)
         with torch.inference_mode():
-            img = pipe(prompt, num_inference_steps=20, guidance_scale=7.5).images[0]
+            img = pipe(prompt, generator=generator, num_inference_steps=20, guidance_scale=7.5).images[0]
             output_path.parent.mkdir(parents=True, exist_ok=True)
             img.save(output_path)
-            print(f"[SD 1.5] Amostra de validação salva em: {output_path}")
+            print(f"[SD 1.5] Amostra de validação salva (seed={seed}) em: {output_path}", flush=True)
     except Exception as e:
-        print(f"[WARN] Falha ao gerar amostra de validação SD 1.5: {e}")
+        print(f"[WARN] Falha ao gerar amostra de validação SD 1.5: {e}", flush=True)
 
 
 def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
@@ -297,6 +307,7 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
     device = torch.device("cuda")
     _setup_cache_dir()
 
+    seed = int(cfg.get("seed", 42))
     model_id = cfg.get("model_id") or "runwayml/stable-diffusion-v1-5"
     dataset_path = Path(cfg.get("dataset_path", "/datasets"))
     lora_cfg = cfg.get("lora", {})
@@ -310,8 +321,9 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
     samples_cfg = cfg.get("samples", {})
     sample_prompt = str(samples_cfg.get("prompt", "") or "").strip()
     sample_interval = int(samples_cfg.get("interval", 1))
+    sample_seed = int(samples_cfg.get("seed", seed))
 
-    print(f"Carregando modelos base SD 1.5 ({model_id})...")
+    print(f"Carregando modelos base SD 1.5 ({model_id})...", flush=True)
     tokenizer = CLIPTokenizer.from_pretrained(model_id, subfolder="tokenizer")
     text_encoder = CLIPTextModel.from_pretrained(
         model_id, subfolder="text_encoder", torch_dtype=torch.float16
@@ -346,9 +358,9 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         import bitsandbytes as bnb
 
         optimizer = bnb.optim.AdamW8bit(unet.parameters(), lr=learning_rate)
-        print("Usando otimizador 8-bit AdamW (bitsandbytes).")
+        print("Usando otimizador 8-bit AdamW (bitsandbytes).", flush=True)
     except (ImportError, AttributeError, RuntimeError, TypeError) as e:
-        print(f"Bitsandbytes não disponível ({e}); usando AdamW padrão.")
+        print(f"Bitsandbytes não disponível ({e}); usando AdamW padrão.", flush=True)
         optimizer = torch.optim.AdamW(unet.parameters(), lr=learning_rate)
 
     dataset = DiffusionDataset(dataset_path, resolution=512, trigger_word=trigger_word)
@@ -362,7 +374,8 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         metrics_path.unlink()
 
     print(
-        f"Iniciando treinamento SD 1.5: {len(dataset)} amostras, {epochs} épocas, batch={batch_size}, lr={learning_rate}..."
+        f"Iniciando treino LoRA SD 1.5: {epochs} épocas, {len(dataset)} imagens, rank={rank}, alpha={alpha}, lr={learning_rate}",
+        flush=True,
     )
     global_step = 0
 
@@ -373,12 +386,13 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
 
         for batch in dataloader:
             pixel_values = batch["pixel_values"].to(device, dtype=torch.float16)
-            prompts = batch["prompt"]
+            captions = batch["prompt"]
 
-            # Codifica imagem para latents pelo VAE
+            # Codifica imagens no espaço latente via VAE
             with torch.no_grad():
                 latents = vae.encode(pixel_values).latent_dist.sample() * 0.18215
 
+            # Adiciona ruído gaussiano aos latents
             noise = torch.randn_like(latents)
             timesteps = torch.randint(
                 0,
@@ -388,10 +402,10 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
             ).long()
             noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
-            # Codifica texto
+            # Codifica texto das legendas
             with torch.no_grad():
                 text_inputs = tokenizer(
-                    prompts,
+                    captions,
                     padding="max_length",
                     max_length=tokenizer.model_max_length,
                     truncation=True,
@@ -408,12 +422,30 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
             optimizer.zero_grad()
 
             global_step += 1
-            epoch_loss += loss.item()
+            cur_loss_val = loss.item()
+            epoch_loss += cur_loss_val
             steps_in_epoch += 1
+
+            # Emite métricas intermediárias por step para streaming em tempo real
+            if global_step % 5 == 0 or steps_in_epoch == len(dataloader):
+                step_metric = {
+                    "epoch": epoch,
+                    "step": global_step,
+                    "loss": round(cur_loss_val, 4),
+                    "lr": learning_rate,
+                }
+                with open(metrics_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(step_metric) + "\n")
+                    f.flush()
+                print(
+                    f"[SD 1.5] Época {epoch}/{epochs} · Step {global_step} · Loss: {cur_loss_val:.4f}",
+                    flush=True,
+                )
 
         avg_loss = round(epoch_loss / max(1, steps_in_epoch), 4)
         print(
-            f"[SD 1.5] Época {epoch}/{epochs} concluída - Step {global_step} - Loss: {avg_loss}"
+            f"[SD 1.5] Época {epoch}/{epochs} concluída - Step {global_step} - Loss Médio: {avg_loss}",
+            flush=True,
         )
 
         metric_line = {
@@ -424,6 +456,7 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         }
         with open(metrics_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(metric_line) + "\n")
+            f.flush()
 
         if sample_prompt and sample_interval > 0:
             if epoch % sample_interval == 0 or epoch == epochs:
@@ -436,6 +469,7 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
                     noise_scheduler,
                     sample_prompt,
                     sample_file,
+                    seed=sample_seed,
                 )
 
     # Salva adapter.safetensors final
@@ -502,8 +536,9 @@ def _generate_sample_sdxl(
     noise_scheduler: Any,
     prompt: str,
     output_path: Path,
+    seed: int = 42,
 ) -> None:
-    """Gera uma imagem de teste para SDXL com os pesos LoRA ativos."""
+    """Gera uma imagem de teste para SDXL com os pesos LoRA ativos e seed fixa determinística."""
     try:
         import torch
         from diffusers import StableDiffusionXLPipeline
@@ -518,13 +553,14 @@ def _generate_sample_sdxl(
             scheduler=noise_scheduler,
         )
         pipe.set_progress_bar_config(disable=True)
+        generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(seed)
         with torch.inference_mode():
-            img = pipe(prompt, num_inference_steps=20, guidance_scale=7.0).images[0]
+            img = pipe(prompt, generator=generator, num_inference_steps=20, guidance_scale=7.0).images[0]
             output_path.parent.mkdir(parents=True, exist_ok=True)
             img.save(output_path)
-            print(f"[SDXL] Amostra de validação salva em: {output_path}")
+            print(f"[SDXL] Amostra de validação salva (seed={seed}) em: {output_path}", flush=True)
     except Exception as e:
-        print(f"[WARN] Falha ao gerar amostra de validação SDXL: {e}")
+        print(f"[WARN] Falha ao gerar amostra de validação SDXL: {e}", flush=True)
 
 
 def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
@@ -549,6 +585,7 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
     device = torch.device("cuda")
     _setup_cache_dir()
 
+    seed = int(cfg.get("seed", 42))
     model_id = cfg.get("model_id") or "stabilityai/stable-diffusion-xl-base-1.0"
     dataset_path = Path(cfg.get("dataset_path", "/datasets"))
     lora_cfg = cfg.get("lora", {})
@@ -562,8 +599,9 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
     samples_cfg = cfg.get("samples", {})
     sample_prompt = str(samples_cfg.get("prompt", "") or "").strip()
     sample_interval = int(samples_cfg.get("interval", 1))
+    sample_seed = int(samples_cfg.get("seed", seed))
 
-    print(f"Carregando modelos base SDXL ({model_id})...")
+    print(f"Carregando modelos base SDXL ({model_id})...", flush=True)
     tokenizer_one = AutoTokenizer.from_pretrained(
         model_id, subfolder="tokenizer", use_fast=False
     )
@@ -603,13 +641,15 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         import bitsandbytes as bnb
 
         optimizer = bnb.optim.AdamW8bit(unet.parameters(), lr=learning_rate)
-        print("Usando otimizador 8-bit AdamW (bitsandbytes).")
+        print("Usando otimizador 8-bit AdamW (bitsandbytes).", flush=True)
     except (ImportError, AttributeError, RuntimeError, TypeError) as e:
-        print(f"Bitsandbytes não disponível ({e}); usando AdamW padrão.")
+        print(f"Bitsandbytes não disponível ({e}); usando AdamW padrão.", flush=True)
         optimizer = torch.optim.AdamW(unet.parameters(), lr=learning_rate)
 
     # SDXL usa resolução padrão 1024x1024
-    dataset = DiffusionDataset(dataset_path, resolution=1024, trigger_word=trigger_word)
+    dataset = DiffusionDataset(
+        dataset_path, resolution=1024, trigger_word=trigger_word
+    )
     dataloader = DataLoader(
         dataset, batch_size=batch_size, shuffle=True, drop_last=False
     )
@@ -619,13 +659,14 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
     if metrics_path.exists():
         metrics_path.unlink()
 
-    # Time IDs de micro-condicionamento do SDXL (original_size, crop_coords, target_size)
+    # Time IDs padrão para SDXL (resolução nativa 1024x1024)
     add_time_ids = torch.tensor(
-        [[1024, 1024, 0, 0, 1024, 1024]], device=device, dtype=torch.float16
+        [[1024, 1024, 0, 0, 1024, 1024]], dtype=torch.float16, device=device
     )
 
     print(
-        f"Iniciando treinamento SDXL: {len(dataset)} amostras, {epochs} épocas, batch={batch_size}, lr={learning_rate}..."
+        f"Iniciando treino LoRA SDXL: {epochs} épocas, {len(dataset)} imagens, rank={rank}, alpha={alpha}, lr={learning_rate}",
+        flush=True,
     )
     global_step = 0
 
@@ -678,12 +719,30 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
             optimizer.zero_grad()
 
             global_step += 1
-            epoch_loss += loss.item()
+            cur_loss_val = loss.item()
+            epoch_loss += cur_loss_val
             steps_in_epoch += 1
+
+            # Emite métricas intermediárias por step para streaming em tempo real
+            if global_step % 5 == 0 or steps_in_epoch == len(dataloader):
+                step_metric = {
+                    "epoch": epoch,
+                    "step": global_step,
+                    "loss": round(cur_loss_val, 4),
+                    "lr": learning_rate,
+                }
+                with open(metrics_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(step_metric) + "\n")
+                    f.flush()
+                print(
+                    f"[SDXL] Época {epoch}/{epochs} · Step {global_step} · Loss: {cur_loss_val:.4f}",
+                    flush=True,
+                )
 
         avg_loss = round(epoch_loss / max(1, steps_in_epoch), 4)
         print(
-            f"[SDXL] Época {epoch}/{epochs} concluída - Step {global_step} - Loss: {avg_loss}"
+            f"[SDXL] Época {epoch}/{epochs} concluída - Step {global_step} - Loss Médio: {avg_loss}",
+            flush=True,
         )
 
         metric_line = {
@@ -694,6 +753,7 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         }
         with open(metrics_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(metric_line) + "\n")
+            f.flush()
 
         if sample_prompt and sample_interval > 0:
             if epoch % sample_interval == 0 or epoch == epochs:
@@ -708,6 +768,7 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
                     noise_scheduler,
                     sample_prompt,
                     sample_file,
+                    seed=sample_seed,
                 )
 
     adapter_file = output / "adapter.safetensors"

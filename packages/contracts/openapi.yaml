@@ -2673,6 +2673,9 @@ components:
           maximum: 100
           default: 1
           description: "Intervalo de épocas para geração de amostras (0 = desativado). Padrão 1."
+        sampleSeed:
+          type: [integer, "null"]
+          description: "Semente determinística fixa para a geração das amostras de validação. Opcional (padrão 42)."
 
     PredictJobRequest:
       type: object

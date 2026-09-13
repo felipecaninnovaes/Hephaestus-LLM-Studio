@@ -887,6 +887,37 @@ pub async fn report_job(
             if let Some(metrics) = &report.metrics {
                 upsert_metrics(pool, id, metrics).await?;
             }
+
+            // Atualiza artifacts intermediários se fornecido (ex.: samples geradas durante o treino).
+            if let Some(artifacts) = &report.artifacts {
+                for art in artifacts {
+                    if is_valid_md5(&art.md5) && art.bytes >= 0 {
+                        let exists: bool = sqlx::query_scalar(
+                            "SELECT EXISTS (SELECT 1 FROM job_artifacts WHERE job_id = $1 AND path = $2)",
+                        )
+                        .bind(id)
+                        .bind(&art.path)
+                        .fetch_one(pool)
+                        .await
+                        .unwrap_or(false);
+
+                        if !exists {
+                            let art_id = Uuid::new_v4();
+                            let _ = sqlx::query(
+                                "INSERT INTO job_artifacts (id, job_id, kind, path, md5, bytes) VALUES ($1, $2, $3, $4, $5, $6)",
+                            )
+                            .bind(art_id)
+                            .bind(id)
+                            .bind(&art.kind)
+                            .bind(&art.path)
+                            .bind(&art.md5)
+                            .bind(art.bytes)
+                            .execute(pool)
+                            .await;
+                        }
+                    }
+                }
+            }
         }
 
         "done" => {

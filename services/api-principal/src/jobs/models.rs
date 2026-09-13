@@ -716,6 +716,8 @@ pub struct DiffusionJobRequest {
     pub sample_prompt: Option<String>,
     #[serde(default = "default_diffusion_sample_interval")]
     pub sample_interval: u32,
+    #[serde(default)]
+    pub sample_seed: Option<u64>,
 }
 
 fn default_diffusion_base_model() -> String {
@@ -809,11 +811,17 @@ pub fn generate_diffusion_config_yaml(job_id: &str, req: &DiffusionJobRequest) -
         None => "  trigger_word: \"\"\n".to_string(),
     };
     let samples_section = match &req.sample_prompt {
-        Some(sp) if !sp.trim().is_empty() => format!(
-            "samples:\n  prompt: {}\n  interval: {}\n",
-            serde_json::to_string(sp.trim()).unwrap_or_else(|_| "\"\"".into()),
-            req.sample_interval
-        ),
+        Some(sp) if !sp.trim().is_empty() => {
+            let seed_line = match req.sample_seed {
+                Some(s) => format!("  seed: {}\n", s),
+                None => "  seed: 42\n".to_string(),
+            };
+            format!(
+                "samples:\n  prompt: {}\n  interval: {}\n{seed_line}",
+                serde_json::to_string(sp.trim()).unwrap_or_else(|_| "\"\"".into()),
+                req.sample_interval
+            )
+        }
         _ => "".to_string(),
     };
     format!(

@@ -1089,44 +1089,129 @@ async fn run_job_inner(
         exec_env.push(("ENGINE_MOCK".to_string(), "0".to_string()));
     }
 
-    // Spawn metrics collector (polls metrics.jsonl durante execução)
+    // Spawn metrics collector & sample streamer (polls metrics.jsonl e outputs/samples durante execução)
     let metrics_path = outputs.join("metrics.jsonl");
     let metrics_path_clone = metrics_path.clone();
+    let samples_dir = outputs.join("samples");
     let metrics_job_id = job_id.to_string();
     let metrics_total = total_epochs;
+    let is_diffusion = dispatch.engine == "diffusion";
 
     let metrics_report_client = Arc::clone(&report_client);
+    let metrics_s3 = Arc::clone(&s3);
     let metrics_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(2));
         let mut lines_read: usize = 0;
+        let mut uploaded_samples = std::collections::HashSet::<String>::new();
         loop {
             interval.tick().await;
-            // Lê metrics.jsonl incrementalmente
+
+            // 1. Escaneia novas amostras de difusão em tempo real
+            let mut new_sample_artifacts: Vec<ArtifactReport> = Vec::new();
+            if is_diffusion && samples_dir.exists() {
+                if let Ok(entries) = std::fs::read_dir(&samples_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_file() {
+                            let is_image = path
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .map(|ext| {
+                                    matches!(
+                                        ext.to_ascii_lowercase().as_str(),
+                                        "png" | "jpg" | "jpeg" | "webp"
+                                    )
+                                })
+                                .unwrap_or(false);
+
+                            if is_image {
+                                if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
+                                    if !uploaded_samples.contains(fname) {
+                                        let bytes = std::fs::metadata(&path)
+                                            .map(|m| m.len() as i64)
+                                            .unwrap_or(0);
+                                        // Aguarda o arquivo ter tamanho > 0 (terminou de salvar)
+                                        if bytes > 0 {
+                                            let rel_path = format!("samples/{fname}");
+                                            let art_key =
+                                                format!("artifacts/{metrics_job_id}/{rel_path}");
+                                            if let Ok(scoped) =
+                                                scoped_key(S3Scope::Artifacts, &art_key)
+                                            {
+                                                if let Ok(md5) = compute_file_md5(&path) {
+                                                    if metrics_s3.put(&scoped, &path).await.is_ok()
+                                                    {
+                                                        uploaded_samples.insert(fname.to_string());
+                                                        new_sample_artifacts.push(ArtifactReport {
+                                                            kind: "sample".to_string(),
+                                                            path: rel_path,
+                                                            md5,
+                                                            bytes,
+                                                        });
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. Lê metrics.jsonl incrementalmente
+            let mut new_metrics: Vec<MetricsLine> = Vec::new();
             if let Ok(content) = tokio::fs::read_to_string(&metrics_path_clone).await {
                 let lines: Vec<&str> = content.lines().collect();
                 if lines.len() > lines_read {
                     for line in &lines[lines_read..] {
                         if let Some(m) = parse_metrics_line(line) {
-                            let progress = compute_progress(&m, metrics_total);
-                            // Report incremental (best-effort)
-                            let _ = metrics_report_client
-                                .report(
-                                    &metrics_job_id,
-                                    &ReportBody {
-                                        status: "running".to_string(),
-                                        progress: Some(progress),
-                                        epoch: Some(m.epoch),
-                                        step: m.step.map(|s| s as i32),
-                                        metrics: Some(m.to_report_json()),
-                                        error: None,
-                                        artifacts: None,
-                                    },
-                                )
-                                .await;
+                            new_metrics.push(m);
                         }
                     }
                     lines_read = lines.len();
                 }
+            }
+
+            // 3. Envia report se houver novas métricas OU novos artefatos de amostra
+            if !new_metrics.is_empty() {
+                for m in new_metrics {
+                    let progress = compute_progress(&m, metrics_total);
+                    let _ = metrics_report_client
+                        .report(
+                            &metrics_job_id,
+                            &ReportBody {
+                                status: "running".to_string(),
+                                progress: Some(progress),
+                                epoch: Some(m.epoch),
+                                step: m.step.map(|s| s as i32),
+                                metrics: Some(m.to_report_json()),
+                                error: None,
+                                artifacts: if new_sample_artifacts.is_empty() {
+                                    None
+                                } else {
+                                    Some(std::mem::take(&mut new_sample_artifacts))
+                                },
+                            },
+                        )
+                        .await;
+                }
+            } else if !new_sample_artifacts.is_empty() {
+                let _ = metrics_report_client
+                    .report(
+                        &metrics_job_id,
+                        &ReportBody {
+                            status: "running".to_string(),
+                            progress: None,
+                            epoch: None,
+                            step: None,
+                            metrics: None,
+                            error: None,
+                            artifacts: Some(new_sample_artifacts),
+                        },
+                    )
+                    .await;
             }
         }
     });

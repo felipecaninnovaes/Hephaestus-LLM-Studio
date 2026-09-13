@@ -2676,6 +2676,36 @@ components:
         sampleSeed:
           type: [integer, "null"]
           description: "Semente determinística fixa para a geração das amostras de validação. Opcional (padrão 42)."
+        resolution:
+          type: integer
+          enum: [512, 768, 1024]
+          description: "Resolução quadrada de treino das imagens (ex: 512 para SD 1.5, 1024 para SDXL/Flux). Opcional."
+        gradientAccumulationSteps:
+          type: integer
+          enum: [1, 2, 4, 8]
+          default: 1
+          description: "Passos de acumulação de gradientes para simular lote maior sem consumir mais VRAM. Padrão 1."
+        optimizer:
+          type: string
+          enum: [adamw8bit, adamw, prodigy]
+          default: adamw8bit
+          description: "Algoritmo otimizador (adamw8bit = 8-bit AdamW bitsandbytes, adamw = standard AdamW, prodigy = D-Adaptation). Padrão adamw8bit."
+        lrScheduler:
+          type: string
+          enum: [cosine, linear, constant, constant_with_warmup]
+          default: cosine
+          description: "Decaimento da taxa de aprendizado. Padrão cosine."
+        lrWarmupSteps:
+          type: integer
+          minimum: 0
+          maximum: 1000
+          default: 0
+          description: "Passos iniciais de aquecimento da taxa de aprendizado. Padrão 0."
+        mixedPrecision:
+          type: string
+          enum: [fp16, bf16, "no"]
+          default: fp16
+          description: "Precisão numérica de ponto flutuante durante o treino (fp16, bf16 ou no). Padrão fp16."
 
     PredictJobRequest:
       type: object

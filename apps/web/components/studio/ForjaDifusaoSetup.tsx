@@ -10,6 +10,11 @@ import {
   IconSettings,
   IconCpu,
   IconImage,
+  IconDownload,
+  IconUpload,
+  IconChevronDown,
+  IconChevronRight,
+  IconSparkles,
 } from "@/components/icons";
 import { Button, getButtonClasses } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -22,7 +27,7 @@ import { ApiError } from "@/lib/api";
 import { diffusionErrorMessage } from "@/types/studio";
 import { showToast } from "./Toast";
 import NodeSelect from "./NodeSelect";
-import type { Dataset, Model, Telemetry } from "@/types/studio";
+import type { Dataset, Model, Telemetry, DiffusionPreset } from "@/types/studio";
 
 export const DIFFUSION_EPOCHS_MIN = 1;
 export const DIFFUSION_EPOCHS_MAX = 100;
@@ -42,22 +47,34 @@ export interface DiffusionHyperparametersValues {
 /**
  * Estimativa preditiva de VRAM em GB para treino de difusão LoRA.
  * Base: SD1.5 (8 GB), SDXL (12 GB), Flux (16 GB).
- * Fator de Batch e Rank adicionam overhead progressivo.
+ * Fator de Batch, Rank, Resolução e Otimizador adicionam overhead ou economia.
  */
 export function estimateDiffusionVramGb(
   baseModel: DiffusionBaseModel,
   batchSize: number,
   rank: number,
+  resolution: number = 1024,
+  optimizer: "adamw8bit" | "adamw" | "prodigy" = "adamw8bit",
+  mixedPrecision: "fp16" | "bf16" | "no" = "fp16",
 ): number {
   let baseGb = 12.0;
   if (baseModel === "sd15") baseGb = 8.0;
   if (baseModel === "sdxl") baseGb = 12.0;
   if (baseModel === "flux") baseGb = 10.0;
 
+  // Ajuste por resolução relativa a 1024
+  if (resolution <= 512) {
+    baseGb -= baseModel === "sd15" ? 2.0 : 3.0;
+  } else if (resolution <= 768) {
+    baseGb -= baseModel === "sd15" ? 1.0 : 1.5;
+  }
+
   const batchMemory = (batchSize - 1) * (baseModel === "flux" ? 1.8 : baseModel === "sdxl" ? 2.0 : 1.2);
   const rankMemory = (rank / 64) * 0.8;
+  const optimMemory = optimizer === "adamw" ? 1.5 : optimizer === "prodigy" ? 0.6 : 0;
+  const precMemory = mixedPrecision === "no" ? 3.5 : 0;
 
-  return Math.round((baseGb + batchMemory + rankMemory) * 10) / 10;
+  return Math.max(4.0, Math.round((baseGb + batchMemory + rankMemory + optimMemory + precMemory) * 10) / 10);
 }
 
 interface Props {
@@ -66,6 +83,7 @@ interface Props {
 
 export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
   const firstRef = useRef<SelectRefHandle>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Datasets
   const [datasets, setDatasets] = useState<Dataset[]>([]);
@@ -87,6 +105,15 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
     rank: 16,
     alpha: 16,
   });
+
+  // Configurações avançadas de treino
+  const [resolution, setResolution] = useState<number>(1024);
+  const [gradientAccumulationSteps, setGradientAccumulationSteps] = useState<number>(1);
+  const [optimizer, setOptimizer] = useState<"adamw8bit" | "adamw" | "prodigy">("adamw8bit");
+  const [lrScheduler, setLrScheduler] = useState<"cosine" | "linear" | "constant" | "constant_with_warmup">("cosine");
+  const [lrWarmupSteps, setLrWarmupSteps] = useState<number>(0);
+  const [mixedPrecision, setMixedPrecision] = useState<"fp16" | "bf16" | "no">("fp16");
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   // Amostras de validação (samples por época)
   const [enableSamples, setEnableSamples] = useState(true);
@@ -130,8 +157,16 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
 
   // Estimativa preditiva de VRAM em GB
   const estimatedVram = useMemo(
-    () => estimateDiffusionVramGb(params.baseModel, params.batchSize, params.rank),
-    [params.baseModel, params.batchSize, params.rank],
+    () =>
+      estimateDiffusionVramGb(
+        params.baseModel,
+        params.batchSize,
+        params.rank,
+        resolution,
+        optimizer,
+        mixedPrecision,
+      ),
+    [params.baseModel, params.batchSize, params.rank, resolution, optimizer, mixedPrecision],
   );
 
   const nodeVramTotalGb = useMemo(() => {
@@ -161,6 +196,121 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
     return "Host CPU (Modo Mock)";
   }, [telemetry?.gpus, nodeVramTotalGb]);
 
+  function applyPreset(preset: Partial<DiffusionPreset> & { name: string }) {
+    if (preset.baseModel) setParams((p) => ({ ...p, baseModel: preset.baseModel! }));
+    if (preset.triggerWord !== undefined) setParams((p) => ({ ...p, triggerWord: preset.triggerWord! }));
+    if (preset.epochs !== undefined) setParams((p) => ({ ...p, epochs: preset.epochs! }));
+    if (preset.batchSize !== undefined) setParams((p) => ({ ...p, batchSize: preset.batchSize! }));
+    if (preset.learningRate !== undefined) setParams((p) => ({ ...p, learningRate: String(preset.learningRate!) }));
+    if (preset.rank !== undefined) {
+      setParams((p) => ({ ...p, rank: preset.rank!, alpha: preset.alpha ?? preset.rank! }));
+    }
+    if (preset.resolution !== undefined) setResolution(preset.resolution);
+    if (preset.gradientAccumulationSteps !== undefined) {
+      setGradientAccumulationSteps(preset.gradientAccumulationSteps);
+    }
+    if (preset.optimizer !== undefined) setOptimizer(preset.optimizer);
+    if (preset.lrScheduler !== undefined) setLrScheduler(preset.lrScheduler);
+    if (preset.lrWarmupSteps !== undefined) setLrWarmupSteps(preset.lrWarmupSteps);
+    if (preset.mixedPrecision !== undefined) setMixedPrecision(preset.mixedPrecision);
+    if (preset.enableSamples !== undefined) setEnableSamples(preset.enableSamples);
+    if (preset.samplePrompt !== undefined) setSamplePrompt(preset.samplePrompt);
+    if (preset.sampleInterval !== undefined) setSampleInterval(preset.sampleInterval);
+    if (preset.sampleSeed !== undefined) setSampleSeed(String(preset.sampleSeed));
+
+    showToast(`Preset aplicado: "${preset.name}"`, "info");
+  }
+
+  function handleExportPreset() {
+    const presetData: DiffusionPreset = {
+      name: `Preset LoRA ${params.baseModel.toUpperCase()} (${new Date().toLocaleDateString()})`,
+      description: "Configurações exportadas do Hephaestus Studio",
+      version: "1.0.0",
+      baseModel: params.baseModel,
+      triggerWord: params.triggerWord,
+      epochs: params.epochs,
+      batchSize: params.batchSize,
+      learningRate: params.learningRate,
+      rank: params.rank,
+      alpha: params.alpha,
+      resolution,
+      gradientAccumulationSteps,
+      optimizer,
+      lrScheduler,
+      lrWarmupSteps,
+      mixedPrecision,
+      enableSamples,
+      samplePrompt,
+      sampleInterval,
+      sampleSeed,
+    };
+
+    const blob = new Blob([JSON.stringify(presetData, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `hephaestus-preset-${params.baseModel}-${params.rank}rank.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast("Preset exportado com sucesso!", "success");
+  }
+
+  function handleImportPreset(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const text = event.target?.result as string;
+        const parsed = JSON.parse(text) as Partial<DiffusionPreset>;
+
+        if (!parsed.baseModel && !parsed.epochs && !parsed.rank) {
+          showToast("Arquivo JSON não é um preset válido do Hephaestus.", "error");
+          return;
+        }
+
+        applyPreset({
+          name: parsed.name || file.name.replace(".json", ""),
+          baseModel: (parsed.baseModel as DiffusionBaseModel) || params.baseModel,
+          triggerWord: parsed.triggerWord ?? params.triggerWord,
+          epochs: typeof parsed.epochs === "number" ? parsed.epochs : params.epochs,
+          batchSize: typeof parsed.batchSize === "number" ? parsed.batchSize : params.batchSize,
+          learningRate:
+            typeof parsed.learningRate === "string"
+              ? parsed.learningRate
+              : typeof parsed.learningRate === "number"
+                ? String(parsed.learningRate)
+                : params.learningRate,
+          rank: typeof parsed.rank === "number" ? parsed.rank : params.rank,
+          alpha: typeof parsed.alpha === "number" ? parsed.alpha : params.alpha,
+          resolution: typeof parsed.resolution === "number" ? parsed.resolution : resolution,
+          gradientAccumulationSteps:
+            typeof parsed.gradientAccumulationSteps === "number"
+              ? parsed.gradientAccumulationSteps
+              : gradientAccumulationSteps,
+          optimizer: parsed.optimizer || optimizer,
+          lrScheduler: parsed.lrScheduler || lrScheduler,
+          lrWarmupSteps: typeof parsed.lrWarmupSteps === "number" ? parsed.lrWarmupSteps : lrWarmupSteps,
+          mixedPrecision: parsed.mixedPrecision || mixedPrecision,
+          enableSamples: typeof parsed.enableSamples === "boolean" ? parsed.enableSamples : enableSamples,
+          samplePrompt: parsed.samplePrompt ?? samplePrompt,
+          sampleInterval: typeof parsed.sampleInterval === "number" ? parsed.sampleInterval : sampleInterval,
+          sampleSeed: parsed.sampleSeed != null ? String(parsed.sampleSeed) : sampleSeed,
+        });
+      } catch {
+        showToast("Erro ao processar o arquivo JSON de preset.", "error");
+      } finally {
+        if (fileInputRef.current) {
+          fileInputRef.current.value = "";
+        }
+      }
+    };
+    reader.readAsText(file);
+  }
+
   function handleAutoFixSafeParams() {
     setParams((prev) => ({
       ...prev,
@@ -169,8 +319,12 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
       rank: 16,
       alpha: 16,
     }));
+    setResolution(512);
+    setGradientAccumulationSteps(2);
+    setOptimizer("adamw8bit");
+    setMixedPrecision("fp16");
     showToast(
-      "Hiperparâmetros ajustados para o perfil leve de VRAM (SD 1.5, Batch 1, Rank 16).",
+      "Hiperparâmetros ajustados para o perfil leve de VRAM (SD 1.5, 512px, Batch 1, GA 2x, 8-bit AdamW).",
       "info",
     );
   }
@@ -309,6 +463,12 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
         samplePrompt: enableSamples && samplePrompt.trim() ? samplePrompt.trim() : undefined,
         sampleInterval: enableSamples ? sampleInterval : undefined,
         sampleSeed: enableSamples && sampleSeed.trim() ? parseInt(sampleSeed, 10) : undefined,
+        resolution,
+        gradientAccumulationSteps,
+        optimizer,
+        lrScheduler,
+        lrWarmupSteps,
+        mixedPrecision,
       });
 
       showToast(
@@ -329,6 +489,12 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
         rank: 16,
         alpha: 16,
       });
+      setResolution(1024);
+      setGradientAccumulationSteps(1);
+      setOptimizer("adamw8bit");
+      setLrScheduler("cosine");
+      setLrWarmupSteps(0);
+      setMixedPrecision("fp16");
       onJobCreated?.(result.jobId);
     } catch (err) {
       if (err instanceof ApiError) {
@@ -396,6 +562,172 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
           {topError}
         </p>
       )}
+
+      {/* Barra de Presets & Importar/Exportar */}
+      <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3.5 space-y-3 backdrop-blur-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <IconSparkles className="size-3.5 text-amber-400" />
+            <span className="font-display text-xs font-semibold text-zinc-200">
+              Presets de Treinamento
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleImportPreset}
+              accept=".json,application/json"
+              className="hidden"
+            />
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={busy}
+              leftIcon={<IconUpload className="size-3" />}
+              className="font-mono text-[11px]"
+            >
+              Importar JSON
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={handleExportPreset}
+              disabled={busy}
+              leftIcon={<IconDownload className="size-3" />}
+              className="font-mono text-[11px]"
+            >
+              Exportar JSON
+            </Button>
+          </div>
+        </div>
+
+        {/* Botões de presets rápidos */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              applyPreset({
+                name: "Equilibrado (SDXL 1024)",
+                baseModel: "sdxl",
+                epochs: 10,
+                batchSize: 1,
+                rank: 16,
+                alpha: 16,
+                learningRate: "0.0001",
+                resolution: 1024,
+                gradientAccumulationSteps: 1,
+                optimizer: "adamw8bit",
+                lrScheduler: "cosine",
+                lrWarmupSteps: 0,
+                mixedPrecision: "fp16",
+              })
+            }
+            className="flex flex-col text-left p-2 rounded-lg border border-white/5 bg-zinc-900/60 hover:bg-zinc-800 hover:border-sky-500/40 transition text-zinc-300 group"
+          >
+            <span className="font-mono text-[11px] font-semibold text-zinc-200 group-hover:text-sky-400">
+              SDXL Padrão
+            </span>
+            <span className="font-mono text-[9px] text-zinc-400">
+              1024px · Rank 16 · 8-bit AdamW
+            </span>
+          </button>
+
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              applyPreset({
+                name: "Eco VRAM (SD 1.5 512)",
+                baseModel: "sd15",
+                epochs: 10,
+                batchSize: 1,
+                rank: 8,
+                alpha: 8,
+                learningRate: "0.0001",
+                resolution: 512,
+                gradientAccumulationSteps: 2,
+                optimizer: "adamw8bit",
+                lrScheduler: "cosine",
+                lrWarmupSteps: 0,
+                mixedPrecision: "fp16",
+              })
+            }
+            className="flex flex-col text-left p-2 rounded-lg border border-white/5 bg-zinc-900/60 hover:bg-zinc-800 hover:border-emerald-500/40 transition text-zinc-300 group"
+          >
+            <span className="font-mono text-[11px] font-semibold text-zinc-200 group-hover:text-emerald-400">
+              Eco 8 GB (SD1.5)
+            </span>
+            <span className="font-mono text-[9px] text-zinc-400">
+              512px · Rank 8 · GA 2x
+            </span>
+          </button>
+
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              applyPreset({
+                name: "Alta Fidelidade (Rank 32)",
+                baseModel: "sdxl",
+                epochs: 15,
+                batchSize: 1,
+                rank: 32,
+                alpha: 32,
+                learningRate: "0.00005",
+                resolution: 1024,
+                gradientAccumulationSteps: 2,
+                optimizer: "adamw8bit",
+                lrScheduler: "cosine",
+                lrWarmupSteps: 50,
+                mixedPrecision: "fp16",
+              })
+            }
+            className="flex flex-col text-left p-2 rounded-lg border border-white/5 bg-zinc-900/60 hover:bg-zinc-800 hover:border-indigo-500/40 transition text-zinc-300 group"
+          >
+            <span className="font-mono text-[11px] font-semibold text-zinc-200 group-hover:text-indigo-400">
+              Alta Fidelidade
+            </span>
+            <span className="font-mono text-[9px] text-zinc-400">
+              1024px · Rank 32 · GA 2x
+            </span>
+          </button>
+
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              applyPreset({
+                name: "Prodigy Adaptativo",
+                baseModel: "sdxl",
+                epochs: 10,
+                batchSize: 1,
+                rank: 16,
+                alpha: 16,
+                learningRate: "1.0",
+                resolution: 1024,
+                gradientAccumulationSteps: 2,
+                optimizer: "prodigy",
+                lrScheduler: "cosine",
+                lrWarmupSteps: 50,
+                mixedPrecision: "fp16",
+              })
+            }
+            className="flex flex-col text-left p-2 rounded-lg border border-white/5 bg-zinc-900/60 hover:bg-zinc-800 hover:border-purple-500/40 transition text-zinc-300 group"
+          >
+            <span className="font-mono text-[11px] font-semibold text-zinc-200 group-hover:text-purple-400">
+              Auto LR Prodigy
+            </span>
+            <span className="font-mono text-[9px] text-zinc-400">
+              D-Adaptation · LR 1.0 auto
+            </span>
+          </button>
+        </div>
+      </div>
 
       {/* Dataset selector */}
       <Select
@@ -602,6 +934,191 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
             />
           </div>
         </div>
+      </div>
+
+      {/* Configurações Avançadas (Colapsável) */}
+      <div className="rounded-xl border border-white/10 bg-white/[0.01] overflow-hidden transition">
+        <button
+          type="button"
+          onClick={() => setShowAdvanced((prev) => !prev)}
+          className="w-full flex items-center justify-between p-3.5 text-left hover:bg-white/[0.02] transition"
+        >
+          <div className="flex items-center gap-2">
+            {showAdvanced ? (
+              <IconChevronDown className="size-4 text-sky-400" />
+            ) : (
+              <IconChevronRight className="size-4 text-zinc-400" />
+            )}
+            <span className="font-display text-xs font-semibold text-zinc-200">
+              Configurações Avançadas de Treinamento
+            </span>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5 font-mono text-[10px] text-zinc-400">
+            <span className="rounded bg-zinc-800/80 px-1.5 py-0.5 border border-white/5 text-zinc-300">
+              {resolution}x{resolution}
+            </span>
+            <span className="rounded bg-zinc-800/80 px-1.5 py-0.5 border border-white/5 text-zinc-300">
+              GA: {gradientAccumulationSteps}x
+            </span>
+            <span className="rounded bg-zinc-800/80 px-1.5 py-0.5 border border-white/5 text-zinc-300">
+              {optimizer === "adamw8bit" ? "8-bit AdamW" : optimizer === "prodigy" ? "Prodigy" : "AdamW"}
+            </span>
+            <span className="rounded bg-zinc-800/80 px-1.5 py-0.5 border border-white/5 text-zinc-300">
+              {mixedPrecision.toUpperCase()}
+            </span>
+          </div>
+        </button>
+
+        {showAdvanced && (
+          <div className="p-4 pt-2 border-t border-white/5 space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {/* Resolução de Treinamento */}
+              <div className="space-y-1">
+                <label htmlFor="diffusion-res" className="block text-[11px] font-mono text-zinc-400">
+                  Resolução de Entrada
+                </label>
+                <select
+                  id="diffusion-res"
+                  value={resolution}
+                  onChange={(e) => setResolution(parseInt(e.target.value, 10) || 1024)}
+                  disabled={busy}
+                  className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 focus:border-sky-500/50 focus:outline-none focus:ring-1 focus:ring-sky-500/50"
+                >
+                  <option value={512}>512 x 512 (Padrão SD1.5 / Menor VRAM)</option>
+                  <option value={768}>768 x 768 (Intermediário)</option>
+                  <option value={1024}>1024 x 1024 (Padrão SDXL / FLUX)</option>
+                </select>
+                <p className="text-[10px] font-mono text-zinc-500">
+                  Imagens são ajustadas com recorte centrado e aspect ratio seguro.
+                </p>
+              </div>
+
+              {/* Gradient Accumulation */}
+              <div className="space-y-1">
+                <label htmlFor="diffusion-ga" className="block text-[11px] font-mono text-zinc-400">
+                  Gradient Accumulation
+                </label>
+                <select
+                  id="diffusion-ga"
+                  value={gradientAccumulationSteps}
+                  onChange={(e) => setGradientAccumulationSteps(parseInt(e.target.value, 10) || 1)}
+                  disabled={busy}
+                  className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 focus:border-sky-500/50 focus:outline-none focus:ring-1 focus:ring-sky-500/50"
+                >
+                  <option value={1}>1x (Atualização a cada batch)</option>
+                  <option value={2}>2x (Batch efetivo 2x sem VRAM extra)</option>
+                  <option value={4}>4x (Batch efetivo 4x sem VRAM extra)</option>
+                  <option value={8}>8x (Batch efetivo 8x sem VRAM extra)</option>
+                </select>
+                <p className="text-[10px] font-mono text-zinc-500">
+                  Estabiliza gradientes somando N passos antes da atualização de pesos.
+                </p>
+              </div>
+
+              {/* Otimizador */}
+              <div className="space-y-1">
+                <label htmlFor="diffusion-opt" className="block text-[11px] font-mono text-zinc-400">
+                  Otimizador
+                </label>
+                <select
+                  id="diffusion-opt"
+                  value={optimizer}
+                  onChange={(e) => {
+                    const opt = e.target.value as "adamw8bit" | "adamw" | "prodigy";
+                    setOptimizer(opt);
+                    if (opt === "prodigy" && params.learningRate === "0.0001") {
+                      setParams((p) => ({ ...p, learningRate: "1.0" }));
+                    } else if (opt !== "prodigy" && params.learningRate === "1.0") {
+                      setParams((p) => ({ ...p, learningRate: "0.0001" }));
+                    }
+                  }}
+                  disabled={busy}
+                  className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 focus:border-sky-500/50 focus:outline-none focus:ring-1 focus:ring-sky-500/50"
+                >
+                  <option value="adamw8bit">AdamW 8-bit (BitsAndBytes - Recomendado)</option>
+                  <option value="adamw">AdamW FP32 (Padrão PyTorch)</option>
+                  <option value="prodigy">Prodigy (Taxa de aprendizado adaptativa)</option>
+                </select>
+                <p className="text-[10px] font-mono text-zinc-500">
+                  {optimizer === "prodigy"
+                    ? "Requer LR=1.0 para o ajuste automático de D-Adaptation."
+                    : "8-bit economiza ~2 GB de VRAM no estado do otimizador."}
+                </p>
+              </div>
+
+              {/* LR Scheduler */}
+              <div className="space-y-1">
+                <label htmlFor="diffusion-sched" className="block text-[11px] font-mono text-zinc-400">
+                  LR Scheduler
+                </label>
+                <select
+                  id="diffusion-sched"
+                  value={lrScheduler}
+                  onChange={(e) =>
+                    setLrScheduler(
+                      e.target.value as "cosine" | "linear" | "constant" | "constant_with_warmup",
+                    )
+                  }
+                  disabled={busy}
+                  className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 focus:border-sky-500/50 focus:outline-none focus:ring-1 focus:ring-sky-500/50"
+                >
+                  <option value="cosine">Cosine (Decaimento suave em cosseno)</option>
+                  <option value="linear">Linear (Decaimento linear até zero)</option>
+                  <option value="constant">Constant (Taxa fixa sem decaimento)</option>
+                  <option value="constant_with_warmup">Constant com Warmup</option>
+                </select>
+                <p className="text-[10px] font-mono text-zinc-500">
+                  Controla o decaimento da taxa de aprendizado ao longo dos steps.
+                </p>
+              </div>
+
+              {/* LR Warmup Steps */}
+              <div className="space-y-1">
+                <label htmlFor="diffusion-warmup" className="block text-[11px] font-mono text-zinc-400">
+                  Warmup Steps
+                </label>
+                <Input
+                  id="diffusion-warmup"
+                  type="number"
+                  min={0}
+                  max={1000}
+                  value={lrWarmupSteps}
+                  onChange={(e) =>
+                    setLrWarmupSteps(Math.max(0, parseInt(e.target.value, 10) || 0))
+                  }
+                  disabled={busy}
+                  className="font-mono text-xs"
+                />
+                <p className="text-[10px] font-mono text-zinc-500">
+                  Passos de aquecimento inicial para evitar choques bruscos no gradiente.
+                </p>
+              </div>
+
+              {/* Mixed Precision */}
+              <div className="space-y-1">
+                <label htmlFor="diffusion-prec" className="block text-[11px] font-mono text-zinc-400">
+                  Precisão Mista (Mixed Precision)
+                </label>
+                <select
+                  id="diffusion-prec"
+                  value={mixedPrecision}
+                  onChange={(e) =>
+                    setMixedPrecision(e.target.value as "fp16" | "bf16" | "no")
+                  }
+                  disabled={busy}
+                  className="w-full rounded-lg border border-white/10 bg-zinc-900 px-3 py-2 text-xs font-mono text-zinc-200 focus:border-sky-500/50 focus:outline-none focus:ring-1 focus:ring-sky-500/50"
+                >
+                  <option value="fp16">FP16 (Half - Padrão universal GPU)</option>
+                  <option value="bf16">BF16 (Bfloat16 - Ampere/Ada/Hopper)</option>
+                  <option value="no">Desativado (FP32 completo - Alto consumo VRAM)</option>
+                </select>
+                <p className="text-[10px] font-mono text-zinc-500">
+                  FP16/BF16 reduz pela metade o consumo de VRAM e acelera o treino em Tensor Cores.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Weights selector (fine-tune previous LoRA) */}

@@ -283,6 +283,8 @@ pub struct MetricsLine {
     #[serde(rename = "mAP50-95")]
     pub map50_95: f64,
     pub epoch: i32,
+    #[serde(default)]
+    pub progress: Option<f64>,
 }
 
 /// Parse tolerante de uma linha de metrics.jsonl.
@@ -300,15 +302,21 @@ pub fn parse_metrics_line(line: &str) -> Option<MetricsLine> {
         map50: v.get("mAP50")?.as_f64()?,
         map50_95: v.get("mAP50-95")?.as_f64()?,
         epoch: v.get("epoch")?.as_i64()? as i32,
+        progress: v.get("progress").and_then(|p| p.as_f64()),
     })
 }
 
-/// Calcula progress (epoch / total_epochs) a partir de uma linha de métricas.
+/// Calcula progress a partir de uma linha de métricas.
+/// Se a linha contiver `progress` explícito (ex.: emitido pelo autolabel ou outro runner),
+/// honra esse valor diretamente; caso contrário calcula (epoch / total_epochs).
 pub fn compute_progress(line: &MetricsLine, total_epochs: i32) -> f64 {
+    if let Some(p) = line.progress {
+        return p.clamp(0.0, 1.0);
+    }
     if total_epochs <= 0 {
         return 0.0;
     }
-    (line.epoch as f64) / (total_epochs as f64)
+    ((line.epoch as f64) / (total_epochs as f64)).clamp(0.0, 1.0)
 }
 
 // ---------------------------------------------------------------------------
@@ -1684,6 +1692,7 @@ mod tests {
             map50: 0.0,
             map50_95: 0.0,
             epoch: 5,
+            progress: None,
         };
         assert!((compute_progress(&m, 100) - 0.05).abs() < 1e-6);
     }
@@ -1697,6 +1706,7 @@ mod tests {
             map50: 0.0,
             map50_95: 0.0,
             epoch: 5,
+            progress: None,
         };
         assert!((compute_progress(&m, 0) - 0.0).abs() < 1e-6);
     }
@@ -1710,8 +1720,23 @@ mod tests {
             map50: 0.0,
             map50_95: 0.0,
             epoch: 100,
+            progress: None,
         };
         assert!((compute_progress(&m, 100) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn compute_progress_explicit() {
+        let m = MetricsLine {
+            box_loss: 0.0,
+            cls_loss: 0.0,
+            dfl_loss: 0.0,
+            map50: 0.0,
+            map50_95: 0.0,
+            epoch: 3,
+            progress: Some(0.65),
+        };
+        assert!((compute_progress(&m, 100) - 0.65).abs() < 1e-6);
     }
 
     // -- executor args test --

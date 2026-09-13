@@ -188,7 +188,7 @@ export type JobStatus =
   | "failed"
   | "cancelled";
 
-export type JobKind = "yolo_train" | "autotracker" | "yolo_predict" | "autolabel";
+export type JobKind = "yolo_train" | "autotracker" | "yolo_predict" | "autolabel" | "diffusion";
 
 export interface JobMetrics {
   epoch: number;
@@ -197,6 +197,8 @@ export interface JobMetrics {
   dflLoss: number;
   map50: number;
   map5095: number;
+  step?: number;
+  progress?: number;
 }
 
 export interface JobMetricsResponse {

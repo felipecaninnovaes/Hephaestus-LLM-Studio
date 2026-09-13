@@ -23,6 +23,7 @@ import {
   IconZap,
 } from "@/components/icons";
 import { SearchInput, SubmodulePills, Badge, ProgressBar, Drawer, jobStatusToBadgeVariant } from "@/components/ui";
+import { JobLogViewer } from "@/components/studio/JobLogViewer";
 import {
   abortJob,
   downloadArtifact,
@@ -864,20 +865,30 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                 value={pct}
                                 variant="brand"
                                 size="md"
-                                label="Progresso do Treinamento"
+                                label={
+                                  job.kind === "autolabel" || job.engine === "autolabel"
+                                    ? `Legendagem Automática VLM · ${pct}%`
+                                    : job.kind === "autotracker" || job.engine === "autotracker"
+                                    ? `Rastreamento & Detecção · ${pct}%`
+                                    : (job.kind as string) === "diffusion" || job.engine === "diffusion"
+                                    ? `Treinamento LoRA Difusão · ${pct}%`
+                                    : job.kind === "yolo_predict" || job.mode === "predict"
+                                    ? `Inferência YOLO · ${pct}%`
+                                    : `Treinamento YOLO · ${pct}%${latestMetric ? ` (Época ${latestMetric.epoch})` : ""}`
+                                }
                                 showPercent
                                 className="mt-2.5"
                               />
                             )}
 
-                            {/* Painel expansível: Detalhes, Métricas, Ações */}
+                            {/* Painel expansível: Detalhes, Métricas, Logs, Ações */}
                             {isExpanded && (
                               <div
                                 className="mt-3 border-t border-white/10 pt-3 text-[11px] font-mono space-y-3 bg-black/40 backdrop-blur-md -mx-3 -mb-3 p-3.5"
                                 onClick={(e) => e.stopPropagation()}
                               >
-                                {/* Info chips */}
-                                <div className="grid grid-cols-2 gap-2 text-[11px]">
+                                {/* Info chips com Nó Executor */}
+                                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[11px]">
                                   <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
                                     <span className="text-zinc-400 block uppercase tracking-caps text-[10px] font-mono">
                                       Job ID
@@ -916,6 +927,27 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                       <span className="text-zinc-300 font-mono text-[11px]">{serviceInfo.categoryLabel}</span>
                                     </div>
                                   )}
+
+                                  <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10 col-span-2 sm:col-span-1">
+                                    <span className="text-zinc-400 block uppercase tracking-caps text-[10px] font-mono">
+                                      Nó Executor
+                                    </span>
+                                    <div className="flex items-center gap-1.5 mt-0.5 min-w-0">
+                                      <span className="text-zinc-200 font-mono truncate block text-[11px]" title={job.orchestratorName || "Local"}>
+                                        {job.orchestratorName || "Orquestrador Local"}
+                                      </span>
+                                      {job.orchestratorKind && (
+                                        <span className="rounded bg-white/10 px-1 py-0.2 text-[9px] font-mono text-zinc-300 uppercase shrink-0">
+                                          {job.orchestratorKind}
+                                        </span>
+                                      )}
+                                      {job.orchestratorFallback && (
+                                        <span className="rounded bg-amber-500/20 px-1 py-0.2 text-[9px] font-mono text-amber-300 shrink-0" title="Fallback automático ativado">
+                                          fb
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
                                 </div>
 
                                 {/* Métricas ao vivo/finais se disponíveis */}
@@ -963,12 +995,40 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                   />
                                 )}
 
-                                {/* Mensagem de Erro se falhou */}
-                                {job.queueReason && job.status === "failed" && (
-                                  <div className="rounded-lg bg-rose-950/40 border border-rose-800/50 p-2.5 text-rose-300 text-[11px] font-mono">
-                                    {job.queueReason}
+                                {/* Mensagem de Erro com cópia rápida e destaque */}
+                                {(job.error || job.queueReason) && job.status === "failed" && (
+                                  <div className="rounded-lg bg-rose-950/40 border border-rose-800/50 p-2.5 text-rose-300 text-[11px] font-mono space-y-1">
+                                    <div className="flex items-center justify-between font-semibold text-rose-200">
+                                      <span className="flex items-center gap-1.5">
+                                        <span className="size-1.5 rounded-full bg-rose-500 animate-pulse" />
+                                        Falha no Orquestrador
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          void navigator.clipboard.writeText(job.error || job.queueReason || "");
+                                          showToast("Traceback copiado para a área de transferência", "info");
+                                        }}
+                                        className="text-[10px] text-rose-400 hover:text-rose-200 underline cursor-pointer"
+                                      >
+                                        Copiar Erro
+                                      </button>
+                                    </div>
+                                    <p className="whitespace-pre-wrap break-all text-[10px] text-rose-300/90 font-mono max-h-32 overflow-y-auto leading-relaxed select-text">
+                                      {job.error || job.queueReason}
+                                    </p>
                                   </div>
                                 )}
+
+                                {/* Terminal de Logs e Telemetria Integrado */}
+                                <div className="pt-1">
+                                  <JobLogViewer
+                                    job={job}
+                                    metrics={metrics[job.id] || (job.metrics ?? [])}
+                                    artifacts={artifacts[job.id] || []}
+                                    compact
+                                  />
+                                </div>
 
                                 {/* Ações contextuais */}
                                 <div className="pt-2.5 border-t border-white/10 flex items-center justify-between gap-2 flex-wrap">

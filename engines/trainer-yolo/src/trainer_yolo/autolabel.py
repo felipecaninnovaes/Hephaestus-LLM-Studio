@@ -379,10 +379,16 @@ def _autolabel_pipeline(cfg: dict, output_dir: Path) -> None:
 
     image_map = _discover_dataset_images(dataset_path)
     sorted_filenames = sorted(image_map.keys())
+    total_imgs = len(sorted_filenames)
 
     captions_path = output_dir / "captions.jsonl"
+    metrics_path = output_dir / "metrics.jsonl"
+
+    # Inicializa metrics.jsonl vazio para permitir leitura limpa pelo coletor
+    metrics_path.write_text("", encoding="utf-8")
+
     with open(captions_path, "w", encoding="utf-8") as f:
-        for fname in sorted_filenames:
+        for idx, fname in enumerate(sorted_filenames):
             img_path = image_map[fname]
             if model == "openai":
                 is_official = "api.openai.com" in api_base
@@ -431,17 +437,48 @@ def _autolabel_pipeline(cfg: dict, output_dir: Path) -> None:
                 {"filename": fname, "caption": caption}, ensure_ascii=False
             )
             f.write(line + "\n")
+            f.flush()
 
-    # Gera metrics.jsonl (1 linha para compatibilidade com orquestrador)
-    metrics_path = output_dir / "metrics.jsonl"
-    with open(metrics_path, "w", encoding="utf-8") as f:
-        metrics = {
-            "epoch": 1,
-            "loss": 0.0,
-            "images": len(sorted_filenames),
-            "model": model,
-        }
-        f.write(json.dumps(metrics) + "\n")
+            # Emite métrica de progresso incremental em tempo real para o coletor do orquestrador
+            progress = (idx + 1) / total_imgs if total_imgs > 0 else 1.0
+            metric_entry = {
+                "epoch": idx + 1,
+                "step": total_imgs,
+                "progress": progress,
+                "box_loss": 0.0,
+                "cls_loss": 0.0,
+                "dfl_loss": 0.0,
+                "mAP50": 0.0,
+                "mAP50-95": 0.0,
+                "images_done": idx + 1,
+                "images_total": total_imgs,
+                "model": model,
+            }
+            with open(metrics_path, "a", encoding="utf-8") as mf:
+                mf.write(json.dumps(metric_entry) + "\n")
+                mf.flush()
+
+    if total_imgs == 0:
+        # Garante ao menos 1 linha se o dataset estava vazio
+        with open(metrics_path, "w", encoding="utf-8") as mf:
+            mf.write(
+                json.dumps(
+                    {
+                        "epoch": 1,
+                        "step": 0,
+                        "progress": 1.0,
+                        "box_loss": 0.0,
+                        "cls_loss": 0.0,
+                        "dfl_loss": 0.0,
+                        "mAP50": 0.0,
+                        "mAP50-95": 0.0,
+                        "images_done": 0,
+                        "images_total": 0,
+                        "model": model,
+                    }
+                )
+                + "\n"
+            )
 
 
 # Aliases de compatibilidade com v1

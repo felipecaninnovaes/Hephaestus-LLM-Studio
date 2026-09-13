@@ -315,6 +315,36 @@ export function autolabelErrorMessage(code: string): string {
   }
 }
 
+/* ── Difusão LoRA (ADR-0018) ─────────────────────────────────── */
+
+export interface DiffusionJobRequest {
+  datasetId: string;
+  baseModel: "sdxl" | "flux" | "sd15";
+  triggerWord?: string;
+  epochs?: number;
+  batchSize?: number;
+  learningRate?: number;
+  rank?: number;
+  alpha?: number;
+  weights?: string | null;
+  orchestratorId?: string | null;
+}
+
+export function diffusionErrorMessage(code: string): string {
+  switch (code) {
+    case "invalid_request":
+      return "Parâmetros do treino de difusão inválidos.";
+    case "dataset_not_ready":
+      return "O dataset não está pronto — exige ≥1 imagem para treino.";
+    case "queue_unavailable":
+      return "Fila de treino indisponível — tente novamente.";
+    case "not_found":
+      return "Job ou modelo não encontrado.";
+    default:
+      return "Falha ao criar job de treino de difusão.";
+  }
+}
+
 /* ── Toast helpers for jobs ────────────────────────────────── */
 /* ── Models (Fatia I — ADR-0012 D6/D7) ──────────────────────── */
 

@@ -32,6 +32,30 @@ export function startYoloJob(params: {
   });
 }
 
+/** POST /api/jobs/diffusion — cria job de treino de difusão LoRA. Retorna 202. */
+export function startDiffusionJob(params: {
+  datasetId: string;
+  baseModel: "sdxl" | "flux" | "sd15";
+  triggerWord?: string;
+  epochs?: number;
+  batchSize?: number;
+  learningRate?: number;
+  rank?: number;
+  alpha?: number;
+  weights?: string | null;
+  orchestratorId?: string | null;
+}): Promise<{ jobId: string; status: string; queuePosition?: number }> {
+  const { weights, orchestratorId, triggerWord, ...rest } = params;
+  const body: Record<string, unknown> = { ...rest };
+  if (triggerWord?.trim()) body.triggerWord = triggerWord.trim();
+  if (weights) body.weights = weights;
+  if (orchestratorId) body.orchestratorId = orchestratorId;
+  return apiFetch("/api/jobs/diffusion", {
+    method: "POST",
+    body,
+  });
+}
+
 /** GET /api/jobs — lista todos os jobs com status/progress. */
 export function listJobs(): Promise<JobListResponse> {
   return apiFetch("/api/jobs");

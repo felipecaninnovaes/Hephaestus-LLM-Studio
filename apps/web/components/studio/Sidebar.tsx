@@ -224,8 +224,7 @@ export default function Sidebar({
           label: "Difusão LoRA",
           href: "/difusao",
           icon: IconImage,
-          badge: "Roadmap",
-          isAvailable: false,
+          isAvailable: true,
         },
         {
           id: "openclip",

@@ -53,3 +53,14 @@ export function autoTrackDisabledReason(ds: Dataset): string {
   return "AutoTracker indisponível neste dataset.";
 }
 
+/** Habilita Treino de Difusão: dataset com ≥1 imagem. */
+export function canTrainDiffusion(ds: Dataset): boolean {
+  return ds.imagesCount > 0;
+}
+
+/** Motivo descritivo para title quando o treino de difusão estiver desabilitado. */
+export function trainDiffusionDisabledReason(ds: Dataset): string {
+  if (ds.imagesCount === 0) return "Treino de difusão exige dataset com ≥1 imagem.";
+  return "Iniciar treino de difusão LoRA";
+}
+

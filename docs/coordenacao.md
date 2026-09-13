@@ -19,7 +19,32 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-13 (FATIA ENGINE DE DIFUSÃO REAL E HARNESS FLUX.2 KLEIN 4B / SDXL / SD 1.5 CONCLUÍDA NA BRANCH)
+## Estado atual — 2026-09-13 (FATIA MÉTRICAS DE DIFUSÃO E AMOSTRAS POR ÉPOCA CONCLUÍDA NA BRANCH)
+
+- **FATIA MÉTRICAS DE DIFUSÃO E AMOSTRAS POR ÉPOCA (SAMPLES GALLERY, CONVERGENCE & ACTION CENTER) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/engine-difusao-real`.
+  - **Backend & Contratos**:
+    - `packages/contracts/openapi.yaml`: schemas `MetricsItem` (adicionados `loss`, `lr`, `step`) e `DiffusionJobRequest` (adicionados `samplePrompt` e `sampleInterval`) atualizados.
+    - `services/orchestrator/src/lib.rs`: `MetricsLine` atualizado com `loss: Option<f64>`, `lr: Option<f64>`, `step: Option<i64>`, serialização limpa em `to_report_json()`, parser tolerante a métricas de difusão (`epoch,loss,lr,step`); upload automático para o S3 de imagens em `outputs/samples/` (`.png`, `.jpg`, `.jpeg`, `.webp`) gerando artefatos de kind `"sample"` sob a chave `artifacts/{job_id}/samples/...`.
+    - `services/api-principal/src/jobs/models.rs`: `DiffusionJobRequest` com suporte a validação de `sample_prompt` (até 500 caracteres) e `sample_interval` (1..1000), injetando a seção `samples:` no `config.yaml`.
+    - `services/api-principal/src/jobs/handlers.rs`: `MetricsItem` atualizado com `loss`, `lr`, `step`; `remap_metrics` mapeando os campos para JSON; detecção de MIME type em `get_artifact_data` para servir imagens de amostras (`image/png`, `image/jpeg`, `image/webp`) com Content-Type correto em vez de octet-stream genérico.
+    - Testes: 83/83 unitários do orchestrator verdes, 325/325 unitários da api-principal verdes.
+  - **Engine `trainer-difusao`**:
+    - `engines/trainer-difusao/src/trainer_difusao/train.py`:
+      - Leitura da configuração `samples` (`prompt` e `interval`).
+      - Geração sintética em modo mock (`_generate_mock_sample`) com visualização de ruído progressivo e carimbo de época/prompt para CI e testes locais rápidos.
+      - Geração real com pesos LoRA injetados em pipeline de inferência a cada N épocas (`_generate_sample_sd15` e `_generate_sample_sdxl`) salvando em `outputs/samples/sample_epoch_{epoch}.png`.
+      - Emissão de `loss`, `lr`, `step` e `epoch` no `metrics.jsonl`.
+    - `engines/trainer-difusao/tests/test_train.py`: teste `test_train_mock_produces_sample_images` adicionado (6/6 testes verdes).
+  - **Web Frontend**:
+    - `apps/web/types/studio.ts`: `JobMetrics` enriquecido com `loss?: number; lr?: number; step?: number;`, e `JobKind` incluindo `"diffusion_train"`.
+    - `apps/web/lib/jobs.ts`: `startDiffusionJob` aceitando `samplePrompt` e `sampleInterval`.
+    - `apps/web/components/studio/ForjaDifusaoSetup.tsx`: nova seção interativa "Amostras Visuais de Validação" com switch para habilitar geração periódica, input de prompt de validação e seletor de intervalo de épocas.
+    - `apps/web/components/studio/JobSamplesGallery.tsx`: novo componente visual com grid responsivo de miniaturas com badges de época, modal Lightbox de alta resolução com zoom e botão de download.
+    - `apps/web/components/studio/ConvergenceChart.tsx`: adaptação dinâmica para exibir curva contínua de `Diffusion Loss` (degradê índigo, escala dinâmica sem limite fixo de 0..1, tooltip com LR e step) quando o job for de difusão ou contiver `loss`.
+    - `apps/web/components/studio/ActionCenter.tsx`: cards de métricas adaptativos para difusão (`Loss`, `LR`, `Step`, `Época`), integração da `JobSamplesGallery` e separação das amostras da lista genérica de downloads.
+    - `apps/web/components/studio/JobLogViewer.tsx`: suporte a logs formatados para difusão (`[DIFFUSION] epoch=X/Y loss=... lr=... step=...`) com estilização de badge índigo e tratamento defensivo para métricas opcionais.
+    - `apps/web/app/(studio)/jobs/page.tsx`: cards de métricas de difusão e renderização de galeria de amostras na página de detalhe/histórico de jobs.
+    - Verificação de build: `npm run build --prefix apps/web` 12/12 páginas compiladas com zero erros TypeScript.
 
 - **FATIA ENGINE DE DIFUSÃO REAL E HARNESS (FLUX.2 KLEIN 4B, SDXL, SD 1.5) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/engine-difusao-real`.
   - **Engine Python `trainer-difusao`**:

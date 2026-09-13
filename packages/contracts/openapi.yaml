@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.19.0
+  version: 0.20.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -1498,6 +1498,47 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/jobs/diffusion/generate:
+    post:
+      operationId: submitDiffusionGenerateJob
+      tags: [jobs]
+      summary: Submete job de geração de imagem por difusão (Playground)
+      description: |
+        Cria job de inferência Text-to-Image para modelos de difusão (ADR-0020).
+        Suporta modelos base FLUX.2 Klein 4B, SDXL e SD 1.5, pesos LoRA opcionais
+        do catálogo de modelos, quantização configurável e controle de seed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DiffusionGenerateJobRequest" }
+      responses:
+        "202":
+          description: Job de geração criado e enfileirado.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubmitJobResponse" }
+        "400":
+          description: "Body malformado, parâmetros inválidos ou engine do modelo incompatível (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Modelo de pesos LoRA inexistente (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/jobs/predict:
     post:
       operationId: submitPredictJob
@@ -2711,6 +2752,80 @@ components:
           enum: ["none", "4bit", "8bit"]
           default: "4bit"
           description: "Nível de quantização do modelo base (4bit = NF4 QLoRA, 8bit = BitsAndBytes int8, none = sem quantização FP16/BF16 pleno)."
+
+    DiffusionGenerateJobRequest:
+      type: object
+      additionalProperties: false
+      required: [baseModel, prompt]
+      description: |
+        Body de `POST /api/jobs/diffusion/generate` (ADR-0020).
+        `baseModel` e `prompt` são obrigatórios; os demais campos são opcionais.
+      properties:
+        baseModel:
+          type: string
+          enum: [sdxl, flux, sd15, flux-2-klein-4b]
+          default: flux-2-klein-4b
+          description: "Modelo base para geração Text-to-Image."
+        prompt:
+          type: string
+          minLength: 1
+          maxLength: 4000
+          description: "Prompt textual descritivo para geração da imagem."
+        negativePrompt:
+          type: [string, "null"]
+          maxLength: 4000
+          description: "Prompt negativo para exclusão de características (aplicável a SDXL e SD 1.5)."
+        width:
+          type: integer
+          minimum: 256
+          maximum: 2048
+          default: 1024
+          description: "Largura da imagem gerada em pixels."
+        height:
+          type: integer
+          minimum: 256
+          maximum: 2048
+          default: 1024
+          description: "Altura da imagem gerada em pixels."
+        steps:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+          description: "Número de passos de inferência/difusão."
+        guidanceScale:
+          type: number
+          minimum: 1.0
+          maximum: 30.0
+          default: 3.5
+          description: "Escala de orientação CFG (Classifier-Free Guidance)."
+        seed:
+          type: [integer, "null"]
+          minimum: 0
+          description: "Semente determinística para geração de ruído inicial. Opcional."
+        quantization:
+          type: string
+          enum: ["none", "4bit", "8bit"]
+          default: "4bit"
+          description: "Quantização do modelo base (4bit NF4, 8bit BNB ou none FP16 pleno)."
+        distilled:
+          type: boolean
+          default: false
+          description: "Variante destilada em passos (ex: FLUX.2 Klein 4B Schnell / 4-8 passos com CFG 1.0)."
+        weights:
+          type: [string, "null"]
+          format: uuid
+          description: "UUID de modelo LoRA diffusion na tabela `models` para estilização."
+        loraScale:
+          type: number
+          minimum: 0.0
+          maximum: 2.0
+          default: 1.0
+          description: "Fator de escala de aplicação dos pesos LoRA."
+        orchestratorId:
+          type: [string, "null"]
+          format: uuid
+          description: "ID do orquestrador preferencial para execução (ADR-0015 D2)."
 
     PredictJobRequest:
       type: object

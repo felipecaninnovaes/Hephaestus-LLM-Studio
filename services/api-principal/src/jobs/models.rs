@@ -687,7 +687,7 @@ autolabel:
 // Diffusion Job (ADR-0018 D1)
 // ---------------------------------------------------------------------------
 
-const ALLOWED_DIFFUSION_BASE_MODELS: &[&str] = &["sdxl", "flux", "sd15"];
+const ALLOWED_DIFFUSION_BASE_MODELS: &[&str] = &["sdxl", "flux", "sd15", "flux-2-klein-4b"];
 const ALLOWED_DIFFUSION_BATCH: &[u32] = &[1, 2, 4, 8];
 const ALLOWED_DIFFUSION_RESOLUTIONS: &[u32] = &[512, 768, 1024];
 const ALLOWED_DIFFUSION_GRAD_ACCUM: &[u32] = &[1, 2, 4, 8];
@@ -952,6 +952,165 @@ lora:
         mixed_precision = req.mixed_precision,
         quantization = req.quantization,
         samples_section = samples_section,
+    )
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DiffusionGenerateJobRequest {
+    #[serde(default = "default_diffusion_generate_base_model")]
+    pub base_model: String,
+    pub prompt: String,
+    pub negative_prompt: Option<String>,
+    #[serde(default = "default_diffusion_generate_dimension")]
+    pub width: u32,
+    #[serde(default = "default_diffusion_generate_dimension")]
+    pub height: u32,
+    #[serde(default = "default_diffusion_generate_steps")]
+    pub steps: u32,
+    #[serde(default = "default_diffusion_generate_guidance")]
+    pub guidance_scale: f64,
+    pub seed: Option<u64>,
+    #[serde(default = "default_diffusion_quantization")]
+    pub quantization: String,
+    #[serde(default)]
+    pub distilled: bool,
+    pub weights: Option<String>,
+    #[serde(default = "default_diffusion_lora_scale")]
+    pub lora_scale: f64,
+    pub orchestrator_id: Option<String>,
+}
+
+fn default_diffusion_generate_base_model() -> String {
+    "flux-2-klein-4b".to_string()
+}
+fn default_diffusion_generate_dimension() -> u32 {
+    1024
+}
+fn default_diffusion_generate_steps() -> u32 {
+    20
+}
+fn default_diffusion_generate_guidance() -> f64 {
+    3.5
+}
+fn default_diffusion_lora_scale() -> f64 {
+    1.0
+}
+
+pub fn validate_diffusion_generate_request(
+    req: DiffusionGenerateJobRequest,
+) -> Result<DiffusionGenerateJobRequest, String> {
+    if !ALLOWED_DIFFUSION_BASE_MODELS.contains(&req.base_model.as_str()) {
+        return Err(format!(
+            "baseModel must be one of {:?}, got '{}'",
+            ALLOWED_DIFFUSION_BASE_MODELS, req.base_model
+        ));
+    }
+    if req.prompt.trim().is_empty() {
+        return Err("prompt cannot be empty".to_string());
+    }
+    if req.prompt.chars().count() > 4000 {
+        return Err("prompt cannot exceed 4000 characters".to_string());
+    }
+    if let Some(ref neg) = req.negative_prompt {
+        if neg.chars().count() > 4000 {
+            return Err("negativePrompt cannot exceed 4000 characters".to_string());
+        }
+    }
+    if !(256..=2048).contains(&req.width) {
+        return Err(format!(
+            "width must be between 256 and 2048, got {}",
+            req.width
+        ));
+    }
+    if !(256..=2048).contains(&req.height) {
+        return Err(format!(
+            "height must be between 256 and 2048, got {}",
+            req.height
+        ));
+    }
+    if !(1..=100).contains(&req.steps) {
+        return Err(format!(
+            "steps must be between 1 and 100, got {}",
+            req.steps
+        ));
+    }
+    if !(1.0..=30.0).contains(&req.guidance_scale) || req.guidance_scale.is_nan() {
+        return Err(format!(
+            "guidanceScale must be between 1.0 and 30.0, got {}",
+            req.guidance_scale
+        ));
+    }
+    if !ALLOWED_DIFFUSION_QUANTIZATIONS.contains(&req.quantization.as_str()) {
+        return Err(format!(
+            "quantization must be one of {:?}, got '{}'",
+            ALLOWED_DIFFUSION_QUANTIZATIONS, req.quantization
+        ));
+    }
+    if !(0.0..=2.0).contains(&req.lora_scale) || req.lora_scale.is_nan() {
+        return Err(format!(
+            "loraScale must be between 0.0 and 2.0, got {}",
+            req.lora_scale
+        ));
+    }
+    if let Some(ref w) = req.weights {
+        if uuid::Uuid::parse_str(w).is_err() {
+            return Err("weights must be a valid UUID".to_string());
+        }
+    }
+    if let Some(ref o) = req.orchestrator_id {
+        if uuid::Uuid::parse_str(o).is_err() {
+            return Err("orchestratorId must be a valid UUID".to_string());
+        }
+    }
+    Ok(req)
+}
+
+pub fn generate_diffusion_generate_config_yaml(
+    job_id: &str,
+    req: &DiffusionGenerateJobRequest,
+) -> String {
+    let neg_line = match &req.negative_prompt {
+        Some(neg) => format!(
+            "  negative_prompt: {}\n",
+            serde_json::to_string(neg).unwrap_or_else(|_| "\"\"".into())
+        ),
+        None => "  negative_prompt: \"\"\n".to_string(),
+    };
+    let seed = req.seed.unwrap_or(42);
+    format!(
+        r#"# Configuração de geração Difusão (Playground)
+job_id: "{job_id}"
+engine: "diffusion"
+model: "{base_model}"
+mode: "generate"
+output_path: "{{output_path}}"
+seed: {seed}
+weights_path: "{{weights_path}}"
+generate:
+  base_model: "{base_model}"
+  prompt: {prompt_json}
+{neg_line}  width: {width}
+  height: {height}
+  steps: {steps}
+  guidance_scale: {guidance_scale}
+  seed: {seed}
+  quantization: "{quantization}"
+  distilled: {distilled}
+  lora_scale: {lora_scale}
+"#,
+        job_id = job_id,
+        base_model = req.base_model,
+        seed = seed,
+        prompt_json = serde_json::to_string(&req.prompt).unwrap_or_else(|_| "\"\"".into()),
+        neg_line = neg_line,
+        width = req.width,
+        height = req.height,
+        steps = req.steps,
+        guidance_scale = req.guidance_scale,
+        quantization = req.quantization,
+        distilled = req.distilled,
+        lora_scale = req.lora_scale,
     )
 }
 
@@ -1985,5 +2144,45 @@ mod tests {
         }"#;
         let req_bad_item: AutolabelJobRequest = serde_json::from_str(json_bad_item).unwrap();
         assert!(validate_autolabel_request(req_bad_item).is_err());
+    }
+
+    #[test]
+    fn diffusion_generate_validate_ok_and_yaml() {
+        let json = r#"{
+            "prompt": "a stunning portrait in neon cyberpunk style",
+            "negativePrompt": "blurry, distorted",
+            "width": 1024,
+            "height": 768,
+            "steps": 25,
+            "guidanceScale": 4.0,
+            "seed": 99999,
+            "quantization": "4bit",
+            "loraScale": 0.9
+        }"#;
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(json).unwrap();
+        let validated = validate_diffusion_generate_request(req).expect("should validate");
+        assert_eq!(validated.base_model, "flux-2-klein-4b");
+        assert_eq!(validated.width, 1024);
+        assert_eq!(validated.height, 768);
+        assert_eq!(validated.steps, 25);
+        assert_eq!(validated.guidance_scale, 4.0);
+        assert_eq!(validated.seed, Some(99999));
+        assert_eq!(validated.quantization, "4bit");
+        assert_eq!(validated.lora_scale, 0.9);
+
+        let yaml = generate_diffusion_generate_config_yaml("job-gen-001", &validated);
+        assert!(yaml.contains(r#"mode: "generate""#));
+        assert!(yaml.contains(r#"base_model: "flux-2-klein-4b""#));
+        assert!(yaml.contains("a stunning portrait in neon cyberpunk style"));
+        assert!(yaml.contains("negative_prompt: \"blurry, distorted\""));
+        assert!(yaml.contains("width: 1024"));
+        assert!(yaml.contains("height: 768"));
+        assert!(yaml.contains("seed: 99999"));
+        assert!(yaml.contains(r#"quantization: "4bit""#));
+
+        // Prompt vazio deve falhar
+        let bad_json = r#"{"prompt": "   "}"#;
+        let bad_req: DiffusionGenerateJobRequest = serde_json::from_str(bad_json).unwrap();
+        assert!(validate_diffusion_generate_request(bad_req).is_err());
     }
 }

@@ -190,7 +190,7 @@ export type JobStatus =
   | "failed"
   | "cancelled";
 
-export type JobKind = "yolo_train" | "autotracker" | "yolo_predict" | "autolabel" | "diffusion" | "diffusion_train";
+export type JobKind = "yolo_train" | "autotracker" | "yolo_predict" | "autolabel" | "diffusion" | "diffusion_train" | "diffusion_generate";
 
 export interface JobMetrics {
   epoch: number;
@@ -417,6 +417,35 @@ export function diffusionErrorMessage(code: string): string {
       return "Job ou modelo não encontrado.";
     default:
       return "Falha ao criar job de treino de difusão.";
+  }
+}
+
+export interface DiffusionGenerateJobRequest {
+  baseModel: "sdxl" | "flux" | "sd15" | "flux-2-klein-4b";
+  prompt: string;
+  negativePrompt?: string;
+  width?: number;
+  height?: number;
+  steps?: number;
+  guidanceScale?: number;
+  seed?: number;
+  quantization?: "none" | "4bit" | "8bit";
+  distilled?: boolean;
+  weights?: string | null;
+  loraScale?: number;
+  orchestratorId?: string | null;
+}
+
+export function diffusionGenerateErrorMessage(code: string): string {
+  switch (code) {
+    case "invalid_request":
+      return "Parâmetros de geração de imagem inválidos.";
+    case "queue_unavailable":
+      return "Fila de geração indisponível — tente novamente.";
+    case "not_found":
+      return "Pesos de modelo LoRA selecionados não encontrados.";
+    default:
+      return "Falha ao submeter job de geração de difusão.";
   }
 }
 

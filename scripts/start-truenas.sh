@@ -97,6 +97,8 @@ COMPOSE_CMD=("docker" "compose" "-p" "gpu" "--env-file" "$ENV_FILE" "-f" "$COMPO
 
 BUILD_FLAG=()
 if [[ "$DO_BUILD" == true ]]; then
+  echo "Reconstruindo imagens do orquestrador e trainers GPU (profile build)..."
+  "${COMPOSE_CMD[@]}" --profile build build
   BUILD_FLAG+=("--build")
 fi
 

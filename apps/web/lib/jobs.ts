@@ -98,6 +98,11 @@ export function listJobs(): Promise<JobListResponse> {
   return apiFetch("/api/jobs");
 }
 
+/** GET /api/jobs/:id — detalhe de um job específico. */
+export function getJob(jobId: string): Promise<Job> {
+  return apiFetch(`/api/jobs/${jobId}`);
+}
+
 /** GET /api/jobs/:id/metrics — série de métricas por epoch. */
 export function getJobMetrics(jobId: string): Promise<JobMetricsResponse> {
   return apiFetch(`/api/jobs/${jobId}/metrics`);

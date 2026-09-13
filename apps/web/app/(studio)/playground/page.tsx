@@ -6,9 +6,19 @@ import {
   IconDownload,
   IconPlay,
   IconRefresh,
+  IconSparkles,
   IconTarget,
 } from "@/components/icons";
-import { Button, EmptyState, GlassCard, Select, type SelectOption, showToast } from "@/components/ui";
+import {
+  Button,
+  EmptyState,
+  GlassCard,
+  Select,
+  SubmodulePills,
+  type SelectOption,
+  type SubmodulePillItem,
+  showToast,
+} from "@/components/ui";
 import { listDatasets, getDataset } from "@/lib/datasets";
 import { listJobs } from "@/lib/jobs";
 import { listModels } from "@/lib/models";
@@ -23,6 +33,7 @@ import { predictErrorMessage } from "@/types/studio";
 import { ApiError } from "@/lib/api";
 import { listImages } from "@/lib/images";
 import NodeSelect from "@/components/studio/NodeSelect";
+import PlaygroundDiffusion from "@/components/studio/PlaygroundDiffusion";
 
 /* ── Cor da box no overlay: vem do dataset.classes, fallback neutro ── */
 function classColor(
@@ -56,6 +67,25 @@ function datasetLabel(ds: Dataset): string {
 
 export default function PlaygroundPage() {
   const router = useRouter();
+
+  /* ── Modo do Playground (Difusão vs YOLO) ── */
+  const [playgroundMode, setPlaygroundMode] = useState<"diffusion" | "yolo">("diffusion");
+
+  const modePills = useMemo<SubmodulePillItem<"diffusion" | "yolo">[]>(
+    () => [
+      {
+        id: "diffusion",
+        label: "Geração (Difusão)",
+        icon: <IconSparkles className="size-3.5 text-brand-400" />,
+      },
+      {
+        id: "yolo",
+        label: "Detecção (YOLO)",
+        icon: <IconTarget className="size-3.5 text-zinc-400" />,
+      },
+    ],
+    [],
+  );
 
   /* ── Data ── */
   const [models, setModels] = useState<Model[]>([]);
@@ -363,20 +393,57 @@ export default function PlaygroundPage() {
     : null;
 
   return (
-    <div className="flex h-full min-h-0 flex-col lg:flex-row">
-      {/* ═══════════════════════════════════════════════════════════════
-          COLUNA ESQUERDA — CONTROLES (320–384px)
-          ═══════════════════════════════════════════════════════════════ */}
-      <div className="w-full shrink-0 border-b border-white/5 p-4 md:p-5 lg:w-96 lg:border-b-0 lg:border-r lg:border-white/5 lg:overflow-y-auto">
-        {/* Header */}
-        <div className="mb-5 flex items-center space-x-2.5 border-b border-white/10 pb-4">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      {/* ── Topbar com título e tabs de modo ── */}
+      <div className="shrink-0 border-b border-white/5 bg-zinc-950/40 px-4 py-3 md:px-6 backdrop-blur-md flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center space-x-2.5">
           <span className="flex size-7 items-center justify-center rounded-lg border border-brand-500/30 bg-brand-500/15 text-brand-400 backdrop-blur-sm">
             <IconPlay className="size-4" />
           </span>
-          <h1 className="font-display text-lg font-bold text-white tracking-tight">
-            Playground
-          </h1>
+          <div>
+            <h1 className="font-display text-base md:text-lg font-bold text-white tracking-tight leading-none">
+              Playground
+            </h1>
+            <p className="text-[11px] text-zinc-400 mt-0.5 font-mono">
+              Ambiente interativo de experimentação e inferência rápida
+            </p>
+          </div>
         </div>
+
+        <SubmodulePills<"diffusion" | "yolo">
+          items={modePills}
+          value={playgroundMode}
+          onChange={setPlaygroundMode}
+          size="sm"
+        />
+      </div>
+
+      {/* ── Conteúdo selecionado ── */}
+      <div className="flex-1 min-h-0 overflow-hidden">
+        {playgroundMode === "diffusion" ? (
+          <div className="h-full overflow-y-auto p-4 md:p-6">
+            <PlaygroundDiffusion />
+          </div>
+        ) : (
+          <div className="flex h-full min-h-0 flex-col lg:flex-row">
+            {/* ═══════════════════════════════════════════════════════════════
+                COLUNA ESQUERDA — CONTROLES (320–384px)
+                ═══════════════════════════════════════════════════════════════ */}
+            <div className="w-full shrink-0 border-b border-white/5 p-4 md:p-5 lg:w-96 lg:border-b-0 lg:border-r lg:border-white/5 lg:overflow-y-auto">
+              {/* Header YOLO */}
+              <div className="mb-5 flex items-center space-x-2.5 border-b border-white/10 pb-4">
+                <span className="flex size-7 items-center justify-center rounded-lg border border-brand-500/30 bg-brand-500/15 text-brand-400 backdrop-blur-sm">
+                  <IconTarget className="size-4" />
+                </span>
+                <div>
+                  <h2 className="font-display text-sm font-bold text-white tracking-tight">
+                    Detecção de Objetos
+                  </h2>
+                  <p className="text-[10px] text-zinc-400 font-mono">
+                    Inferência em lote em datasets
+                  </p>
+                </div>
+              </div>
 
         {/* Erro de rede: modelos */}
         {modelsError && (
@@ -977,6 +1044,9 @@ export default function PlaygroundPage() {
               </div>
             )}
         </div>
+      </div>
+          </div>
+        )}
       </div>
     </div>
   );

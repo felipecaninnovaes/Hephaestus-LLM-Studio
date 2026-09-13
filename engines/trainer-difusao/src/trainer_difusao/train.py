@@ -298,7 +298,12 @@ def _generate_sample_sd15(
         pipe.set_progress_bar_config(disable=True)
         generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(seed)
         with torch.inference_mode():
-            img = pipe(prompt, generator=generator, num_inference_steps=20, guidance_scale=7.5).images[0]
+            latents = pipe(prompt, generator=generator, num_inference_steps=20, guidance_scale=7.5, output_type="latent").images
+            latents = latents.to(dtype=torch.float32) / 0.18215
+            decoded = vae.decode(latents).sample
+            image = (decoded / 2 + 0.5).clamp(0, 1)
+            image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+            img = pipe.numpy_to_pil(image)[0]
             output_path.parent.mkdir(parents=True, exist_ok=True)
             img.save(output_path)
             print(f"[SD 1.5] Amostra de validação salva (seed={seed}) em: {output_path}", flush=True)
@@ -577,7 +582,12 @@ def _generate_sample_sdxl(
         pipe.set_progress_bar_config(disable=True)
         generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(seed)
         with torch.inference_mode():
-            img = pipe(prompt, generator=generator, num_inference_steps=20, guidance_scale=7.0).images[0]
+            latents = pipe(prompt, generator=generator, num_inference_steps=20, guidance_scale=7.0, output_type="latent").images
+            latents = latents.to(dtype=torch.float32) / vae.config.scaling_factor
+            decoded = vae.decode(latents).sample
+            image = (decoded / 2 + 0.5).clamp(0, 1)
+            image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+            img = pipe.numpy_to_pil(image)[0]
             output_path.parent.mkdir(parents=True, exist_ok=True)
             img.save(output_path)
             print(f"[SDXL] Amostra de validação salva (seed={seed}) em: {output_path}", flush=True)

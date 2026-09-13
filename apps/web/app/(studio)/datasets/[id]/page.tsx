@@ -452,8 +452,11 @@ export default function DatasetGalleryPage() {
     });
   };
 
+  const isAllSelected = items.length > 0 && items.every((i) => selectedIds.has(i.id));
+
   const handleSelectAll = () => {
     setSelectedIds(new Set(items.map((i) => i.id)));
+    setSelectionMode(true);
   };
 
   const handleClearSelection = () => {
@@ -1192,6 +1195,9 @@ export default function DatasetGalleryPage() {
           }
         }}
         selectedCount={selectedIds.size}
+        isAllSelected={isAllSelected}
+        onSelectAll={handleSelectAll}
+        onClearSelection={handleClearSelection}
         classes={dataset.classes ?? []}
         selectedClassId={selectedClassId}
         onClassChange={(clsId) => {

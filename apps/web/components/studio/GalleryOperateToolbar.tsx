@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { IconGrid, IconList, IconBoxSelect } from "@/components/icons";
+import { IconGrid, IconList, IconBoxSelect, IconCheck } from "@/components/icons";
 import { SubmodulePills } from "@/components/ui";
 import type { StudioClass } from "@/types/studio";
 
@@ -24,6 +24,9 @@ export interface GalleryOperateToolbarProps {
   classes?: StudioClass[];
   selectedClassId?: string | null;
   onClassChange?: (classId: string | null) => void;
+  isAllSelected?: boolean;
+  onSelectAll?: () => void;
+  onClearSelection?: () => void;
 }
 
 export function GalleryOperateToolbar({
@@ -41,6 +44,9 @@ export function GalleryOperateToolbar({
   classes,
   selectedClassId,
   onClassChange,
+  isAllSelected = false,
+  onSelectAll,
+  onClearSelection,
 }: GalleryOperateToolbarProps) {
   return (
     <div className="flex flex-col gap-3 rounded-2xl border border-zinc-800/80 bg-zinc-950/70 p-3 shadow-lg backdrop-blur-xl">
@@ -152,6 +158,23 @@ export function GalleryOperateToolbar({
               <IconList className="size-4" />
             </button>
           </div>
+
+          {/* Botão Selecionar Todas */}
+          {onSelectAll && (
+            <button
+              type="button"
+              onClick={isAllSelected ? onClearSelection : onSelectAll}
+              title={isAllSelected ? "Desmarcar todas" : "Selecionar todas as amostras"}
+              className={`flex items-center space-x-1.5 rounded-lg border px-2.5 py-1.5 font-mono text-xs transition-colors cursor-pointer ${
+                isAllSelected
+                  ? "border-brand-500/40 bg-brand-500/20 text-brand-300 font-semibold shadow-sm"
+                  : "border-white/10 bg-zinc-900/90 text-zinc-300 hover:bg-white/5 hover:text-white"
+              }`}
+            >
+              <IconCheck className="size-3.5 text-brand-400" />
+              <span>{isAllSelected ? "Desmarcar todas" : "Selecionar todas"}</span>
+            </button>
+          )}
 
           {/* Botão de Modo Seleção */}
           <button

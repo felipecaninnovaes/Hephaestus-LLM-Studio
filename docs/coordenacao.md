@@ -32,12 +32,14 @@ ser interrompido no meio de uma.
     - `packages/contracts/openapi.yaml`: parâmetros de query `classId` e `tag` documentados em `GET /api/datasets/{id}/images`.
   - **Web Frontend**:
     - `apps/web/lib/images.ts`: `ListImagesOpts` e `listImages` enriquecidos com `class_id`, `classId` e `tag`.
-    - `apps/web/components/studio/GalleryOperateToolbar.tsx`: pílulas interativas de classes anotadas (`Todas`, `classe1`, `classe2`...) com estilo ativo, seletor de modo de busca e botões de filtro.
+    - `apps/web/components/studio/GalleryOperateToolbar.tsx`: pílulas interativas de classes anotadas com estilo ativo, seletor de modo de busca e novo botão de ação direta `"Selecionar todas"` / `"Desmarcar todas"` integrado ao lado do botão de seleção.
+    - `apps/web/components/studio/FloatingSelectionBar.tsx`: padronização do botão para `"Selecionar todas"` / `"Desmarcar todas"`, permitindo marcar todas as imagens filtradas e disparar AutoLabel ou batch delete em 1 clique.
     - `apps/web/app/(studio)/datasets/[id]/page.tsx`:
       - Desacoplamento de `activeTag` (filtro estrito de tags/classes no grid) de `activeQuery` (busca vetorial IA/CLIP), corrigindo conflito em que o grid renderizava o array vazio da busca semântica em vez dos `items` filtrados.
       - Sincronização reativa via `useEffect` único para recarregamento sob troca de classes/tags/splits, eliminando chamadas concorrentes e race conditions.
+      - Integração de `isAllSelected`, `handleSelectAll` (que ativa automaticamente o `selectionMode`) e `handleClearSelection`.
       - Renderização de Empty State contextual com botão `"Limpar filtros"` quando nenhum item corresponde à busca.
-      - Validação de ponta a ponta em tempo real no browser via Chrome DevTools MCP (busca por tag `armpits`, seleção da classe `buttocks_exposed` retornando 1 imagem, limpeza de filtros retornando as 129 imagens).
+      - Validação de ponta a ponta em tempo real no browser via Chrome DevTools MCP (busca por tag `armpits`, seleção da classe `buttocks_exposed` retornando 1 imagem, seleção total com 1 clique ativando floating bar com `AutoLabel (1)` / `AutoLabel (50)`, limpeza de filtros retornando as 129 imagens).
   - **Verificações**: `cargo check --workspace` verde, `cargo test -p api-principal --lib` 325/325 verdes, `cargo fmt --all -- --check` limpo, `npm run build --prefix apps/web` 12/12 páginas compiladas sem erros TS, `graft build` sincronizado.
 
 - **FATIA AUTOLABEL SELETIVO POR CLASSE E SELEÇÃO DE IMAGENS — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/autolabel-selective-dataset`.

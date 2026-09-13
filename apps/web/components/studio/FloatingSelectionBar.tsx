@@ -54,7 +54,7 @@ export function FloatingSelectionBar({
           className="flex items-center space-x-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 font-mono text-xs text-zinc-300 transition-colors hover:bg-white/10 hover:text-white cursor-pointer"
         >
           <IconCheck className="size-3.5 text-brand-400" />
-          <span>{isAllSelected ? "Desmarcar tudo" : "Marcar todas"}</span>
+          <span>{isAllSelected ? "Desmarcar todas" : "Selecionar todas"}</span>
         </button>
 
         {onAutoLabel && (

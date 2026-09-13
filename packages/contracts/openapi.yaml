@@ -2663,6 +2663,16 @@ components:
           type: [string, "null"]
           format: uuid
           description: "ID do orquestrador preferencial para execução (ADR-0015 D2). Opcional."
+        samplePrompt:
+          type: [string, "null"]
+          maxLength: 500
+          description: "Prompt de teste para geração de amostras de validação durante o treino. Opcional."
+        sampleInterval:
+          type: integer
+          minimum: 0
+          maximum: 100
+          default: 1
+          description: "Intervalo de épocas para geração de amostras (0 = desativado). Padrão 1."
 
     PredictJobRequest:
       type: object
@@ -3396,6 +3406,15 @@ components:
         map5095:
           type: number
           description: "mAP at IoU=0.50:0.95 (chave `mAP50-95` no JSONB snake_case do manager)."
+        loss:
+          type: number
+          description: "Loss geral contínuo (utilizado por engines de difusão/LLM)."
+        lr:
+          type: number
+          description: "Learning rate corrente."
+        step:
+          type: integer
+          description: "Passo global de otimização."
 
     JobMetrics:
       type: object

@@ -100,6 +100,29 @@ def _generate_mock_safetensors(output_file: Path, lora_params: dict[str, Any]) -
         f.write(data_bytes)
 
 
+def _generate_mock_sample(output_dir: Path, epoch: int, prompt: str) -> None:
+    """Gera uma imagem de teste sintética para validação do fluxo de artefatos de sample."""
+    samples_dir = output_dir / "samples"
+    samples_dir.mkdir(parents=True, exist_ok=True)
+    sample_file = samples_dir / f"sample_epoch_{epoch:03d}.png"
+    try:
+        from PIL import Image, ImageDraw
+
+        img = Image.new("RGB", (512, 512), color=(24, 24, 37))
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([16, 16, 496, 496], outline=(129, 140, 248), width=3)
+        draw.text((32, 210), f"Hephaestus Diffusion Sample\nEpoch: {epoch}\nPrompt: {prompt[:50]}", fill=(240, 240, 250))
+        img.save(sample_file, format="PNG")
+    except Exception:
+        import base64
+
+        # Fallback para PNG mínimo 1x1 se Pillow não estiver instalado
+        tiny_png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkWPjfDwAEeQHzG4L5eAAAAABJRU5ErkJggg=="
+        )
+        sample_file.write_bytes(tiny_png)
+
+
 def _mock_train(cfg: dict[str, Any], output: Path) -> None:
     output.mkdir(parents=True, exist_ok=True)
     metrics_path = output / "metrics.jsonl"
@@ -107,8 +130,13 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
     seed = cfg.get("seed", 42)
     lora_cfg = cfg.get("lora", {})
     epochs = lora_cfg.get("epochs", 10)
+    learning_rate = lora_cfg.get("learning_rate", 0.0001)
     raw_model = cfg.get("model", "flux")
     base_model = _canonical_model_name(raw_model)
+
+    samples_cfg = cfg.get("samples", {})
+    sample_prompt = str(samples_cfg.get("prompt", "") or "").strip()
+    sample_interval = int(samples_cfg.get("interval", 1))
 
     sleep_ms = int(os.environ.get("MOCK_EPOCH_SLEEP_MS", "5"))
 
@@ -121,9 +149,15 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
             "epoch": ep,
             "step": ep * 10,
             "loss": loss,
+            "lr": learning_rate,
         }
         with open(metrics_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(line) + "\n")
+
+        if sample_prompt and sample_interval > 0:
+            if ep % sample_interval == 0 or ep == epochs:
+                _generate_mock_sample(output, ep, sample_prompt)
+
         if sleep_ms > 0:
             time.sleep(sleep_ms / 1000.0)
 
@@ -211,6 +245,40 @@ def _save_lora_safetensors(
     safetensors.torch.save_file(lora_state_dict, str(output_file), metadata=metadata)
 
 
+def _generate_sample_sd15(
+    unet: Any,
+    vae: Any,
+    text_encoder: Any,
+    tokenizer: Any,
+    noise_scheduler: Any,
+    prompt: str,
+    output_path: Path,
+) -> None:
+    """Gera uma imagem de teste para SD 1.5 com os pesos LoRA ativos."""
+    try:
+        import torch
+        from diffusers import StableDiffusionPipeline
+
+        pipe = StableDiffusionPipeline(
+            vae=vae,
+            text_encoder=text_encoder,
+            tokenizer=tokenizer,
+            unet=unet,
+            scheduler=noise_scheduler,
+            safety_checker=None,
+            feature_extractor=None,
+            requires_safety_checker=False,
+        )
+        pipe.set_progress_bar_config(disable=True)
+        with torch.inference_mode():
+            img = pipe(prompt, num_inference_steps=20, guidance_scale=7.5).images[0]
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            img.save(output_path)
+            print(f"[SD 1.5] Amostra de validação salva em: {output_path}")
+    except Exception as e:
+        print(f"[WARN] Falha ao gerar amostra de validação SD 1.5: {e}")
+
+
 def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
     """Pipeline real de treino LoRA para Stable Diffusion 1.5 na GPU."""
     try:
@@ -238,6 +306,10 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
     rank = int(lora_cfg.get("rank", 16))
     alpha = int(lora_cfg.get("alpha", 16))
     trigger_word = str(lora_cfg.get("trigger_word", ""))
+
+    samples_cfg = cfg.get("samples", {})
+    sample_prompt = str(samples_cfg.get("prompt", "") or "").strip()
+    sample_interval = int(samples_cfg.get("interval", 1))
 
     print(f"Carregando modelos base SD 1.5 ({model_id})...")
     tokenizer = CLIPTokenizer.from_pretrained(model_id, subfolder="tokenizer")
@@ -353,6 +425,19 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         with open(metrics_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(metric_line) + "\n")
 
+        if sample_prompt and sample_interval > 0:
+            if epoch % sample_interval == 0 or epoch == epochs:
+                sample_file = output / "samples" / f"sample_epoch_{epoch:03d}.png"
+                _generate_sample_sd15(
+                    unet,
+                    vae,
+                    text_encoder,
+                    tokenizer,
+                    noise_scheduler,
+                    sample_prompt,
+                    sample_file,
+                )
+
     # Salva adapter.safetensors final
     adapter_file = output / "adapter.safetensors"
     metadata = {
@@ -407,6 +492,41 @@ def _compute_sdxl_embeddings(
     return prompt_embeds, pooled_embeds
 
 
+def _generate_sample_sdxl(
+    unet: Any,
+    vae: Any,
+    text_encoder_one: Any,
+    text_encoder_two: Any,
+    tokenizer_one: Any,
+    tokenizer_two: Any,
+    noise_scheduler: Any,
+    prompt: str,
+    output_path: Path,
+) -> None:
+    """Gera uma imagem de teste para SDXL com os pesos LoRA ativos."""
+    try:
+        import torch
+        from diffusers import StableDiffusionXLPipeline
+
+        pipe = StableDiffusionXLPipeline(
+            vae=vae,
+            text_encoder=text_encoder_one,
+            text_encoder_2=text_encoder_two,
+            tokenizer=tokenizer_one,
+            tokenizer_2=tokenizer_two,
+            unet=unet,
+            scheduler=noise_scheduler,
+        )
+        pipe.set_progress_bar_config(disable=True)
+        with torch.inference_mode():
+            img = pipe(prompt, num_inference_steps=20, guidance_scale=7.0).images[0]
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            img.save(output_path)
+            print(f"[SDXL] Amostra de validação salva em: {output_path}")
+    except Exception as e:
+        print(f"[WARN] Falha ao gerar amostra de validação SDXL: {e}")
+
+
 def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
     """Pipeline real de treino LoRA para Stable Diffusion XL (SDXL 1.0) na GPU."""
     try:
@@ -438,6 +558,10 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
     rank = int(lora_cfg.get("rank", 16))
     alpha = int(lora_cfg.get("alpha", 16))
     trigger_word = str(lora_cfg.get("trigger_word", ""))
+
+    samples_cfg = cfg.get("samples", {})
+    sample_prompt = str(samples_cfg.get("prompt", "") or "").strip()
+    sample_interval = int(samples_cfg.get("interval", 1))
 
     print(f"Carregando modelos base SDXL ({model_id})...")
     tokenizer_one = AutoTokenizer.from_pretrained(
@@ -570,6 +694,21 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         }
         with open(metrics_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(metric_line) + "\n")
+
+        if sample_prompt and sample_interval > 0:
+            if epoch % sample_interval == 0 or epoch == epochs:
+                sample_file = output / "samples" / f"sample_epoch_{epoch:03d}.png"
+                _generate_sample_sdxl(
+                    unet,
+                    vae,
+                    text_encoder_one,
+                    text_encoder_two,
+                    tokenizer_one,
+                    tokenizer_two,
+                    noise_scheduler,
+                    sample_prompt,
+                    sample_file,
+                )
 
     adapter_file = output / "adapter.safetensors"
     metadata = {

@@ -161,6 +161,47 @@ class TestTrainerDifusao(unittest.TestCase):
         # health não levanta exceção
         main(["health"])
 
+    def test_train_mock_produces_sample_images(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            cfg_path = tmp_path / "config.yaml"
+            out_dir = tmp_path / "output"
+
+            cfg = {
+                "job_id": "test-diff-job-samples",
+                "model": "sdxl",
+                "seed": 42,
+                "lora": {
+                    "epochs": 4,
+                    "learning_rate": 0.0002,
+                },
+                "samples": {
+                    "prompt": "a cinematic portrait of cybernetic warrior",
+                    "interval": 2,
+                },
+            }
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                yaml.dump(cfg, f)
+
+            main(["train", "--config", str(cfg_path), "--output", str(out_dir)])
+
+            # Verifica métricas com lr
+            metrics_file = out_dir / "metrics.jsonl"
+            self.assertTrue(metrics_file.exists())
+            lines = [json.loads(l) for l in metrics_file.read_text().splitlines() if l.strip()]
+            self.assertEqual(len(lines), 4)
+            self.assertEqual(lines[0]["lr"], 0.0002)
+
+            # Verifica amostras geradas nas épocas 2 e 4
+            samples_dir = out_dir / "samples"
+            self.assertTrue(samples_dir.is_dir())
+            sample2 = samples_dir / "sample_epoch_002.png"
+            sample4 = samples_dir / "sample_epoch_004.png"
+            self.assertTrue(sample2.exists())
+            self.assertTrue(sample4.exists())
+            self.assertGreater(sample2.stat().st_size, 0)
+            self.assertGreater(sample4.stat().st_size, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

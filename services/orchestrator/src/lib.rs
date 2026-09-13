@@ -275,16 +275,48 @@ pub fn scoped_key(scope: S3Scope, key: &str) -> Result<String, ScopedKeyError> {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MetricsLine {
+    #[serde(default)]
     pub box_loss: f64,
+    #[serde(default)]
     pub cls_loss: f64,
+    #[serde(default)]
     pub dfl_loss: f64,
-    #[serde(rename = "mAP50")]
+    #[serde(rename = "mAP50", default)]
     pub map50: f64,
-    #[serde(rename = "mAP50-95")]
+    #[serde(rename = "mAP50-95", default)]
     pub map50_95: f64,
+    #[serde(default)]
+    pub loss: Option<f64>,
+    #[serde(default)]
+    pub lr: Option<f64>,
+    #[serde(default)]
+    pub step: Option<i64>,
     pub epoch: i32,
     #[serde(default)]
     pub progress: Option<f64>,
+}
+
+impl MetricsLine {
+    pub fn to_report_json(&self) -> serde_json::Value {
+        let mut obj = serde_json::json!({
+            "box_loss": self.box_loss,
+            "cls_loss": self.cls_loss,
+            "dfl_loss": self.dfl_loss,
+            "mAP50": self.map50,
+            "mAP50-95": self.map50_95,
+            "epoch": self.epoch,
+        });
+        if let Some(loss) = self.loss {
+            obj["loss"] = serde_json::json!(loss);
+        }
+        if let Some(lr) = self.lr {
+            obj["lr"] = serde_json::json!(lr);
+        }
+        if let Some(step) = self.step {
+            obj["step"] = serde_json::json!(step);
+        }
+        obj
+    }
 }
 
 /// Parse tolerante de uma linha de metrics.jsonl.
@@ -295,13 +327,17 @@ pub fn parse_metrics_line(line: &str) -> Option<MetricsLine> {
         return None;
     }
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    let epoch = v.get("epoch")?.as_i64()? as i32;
     Some(MetricsLine {
-        box_loss: v.get("box_loss")?.as_f64()?,
-        cls_loss: v.get("cls_loss")?.as_f64()?,
-        dfl_loss: v.get("dfl_loss")?.as_f64()?,
-        map50: v.get("mAP50")?.as_f64()?,
-        map50_95: v.get("mAP50-95")?.as_f64()?,
-        epoch: v.get("epoch")?.as_i64()? as i32,
+        box_loss: v.get("box_loss").and_then(|x| x.as_f64()).unwrap_or(0.0),
+        cls_loss: v.get("cls_loss").and_then(|x| x.as_f64()).unwrap_or(0.0),
+        dfl_loss: v.get("dfl_loss").and_then(|x| x.as_f64()).unwrap_or(0.0),
+        map50: v.get("mAP50").and_then(|x| x.as_f64()).unwrap_or(0.0),
+        map50_95: v.get("mAP50-95").and_then(|x| x.as_f64()).unwrap_or(0.0),
+        loss: v.get("loss").and_then(|x| x.as_f64()),
+        lr: v.get("lr").and_then(|x| x.as_f64()),
+        step: v.get("step").and_then(|x| x.as_i64()),
+        epoch,
         progress: v.get("progress").and_then(|p| p.as_f64()),
     })
 }
@@ -1080,15 +1116,8 @@ async fn run_job_inner(
                                         status: "running".to_string(),
                                         progress: Some(progress),
                                         epoch: Some(m.epoch),
-                                        step: None,
-                                        metrics: Some(serde_json::json!({
-                                            "box_loss": m.box_loss,
-                                            "cls_loss": m.cls_loss,
-                                            "dfl_loss": m.dfl_loss,
-                                            "mAP50": m.map50,
-                                            "mAP50-95": m.map50_95,
-                                            "epoch": m.epoch,
-                                        })),
+                                        step: m.step.map(|s| s as i32),
+                                        metrics: Some(m.to_report_json()),
                                         error: None,
                                         artifacts: None,
                                     },
@@ -1218,6 +1247,54 @@ async fn run_job_inner(
         }
     }
 
+    // Se for difusão, escaneia também o subdiretório samples/ (amostras geradas por época)
+    if dispatch.engine == "diffusion" {
+        let samples_dir = outputs.join("samples");
+        if samples_dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&samples_dir) {
+                let mut sample_files: Vec<std::path::PathBuf> = entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        p.is_file()
+                            && p.extension()
+                                .and_then(|e| e.to_str())
+                                .map(|ext| {
+                                    matches!(
+                                        ext.to_ascii_lowercase().as_str(),
+                                        "png" | "jpg" | "jpeg" | "webp"
+                                    )
+                                })
+                                .unwrap_or(false)
+                    })
+                    .collect();
+                sample_files.sort();
+
+                for s_path in sample_files {
+                    if let Some(s_name) = s_path.file_name().and_then(|n| n.to_str()) {
+                        let rel_path = format!("samples/{s_name}");
+                        let art_key = format!("artifacts/{job_id}/{rel_path}");
+                        if let Ok(scoped) = scoped_key(S3Scope::Artifacts, &art_key) {
+                            if let Ok(md5) = compute_file_md5(&s_path) {
+                                let bytes = std::fs::metadata(&s_path)
+                                    .map(|m| m.len() as i64)
+                                    .unwrap_or(0);
+                                if s3.put(&scoped, &s_path).await.is_ok() {
+                                    artifacts.push(ArtifactReport {
+                                        kind: "sample".to_string(),
+                                        path: rel_path,
+                                        md5,
+                                        bytes,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // 10. Lê métricas finais para o report done
     let final_metrics = read_final_metrics(&metrics_path);
 
@@ -1229,17 +1306,10 @@ async fn run_job_inner(
                 status: "done".to_string(),
                 progress: Some(1.0),
                 epoch: final_metrics.as_ref().map(|m| m.epoch),
-                step: None,
-                metrics: final_metrics.as_ref().map(|m| {
-                    serde_json::json!({
-                        "box_loss": m.box_loss,
-                        "cls_loss": m.cls_loss,
-                        "dfl_loss": m.dfl_loss,
-                        "mAP50": m.map50,
-                        "mAP50-95": m.map50_95,
-                        "epoch": m.epoch,
-                    })
-                }),
+                step: final_metrics
+                    .as_ref()
+                    .and_then(|m| m.step.map(|s| s as i32)),
+                metrics: final_metrics.as_ref().map(|m| m.to_report_json()),
                 error: None,
                 artifacts: if artifacts.is_empty() {
                     None
@@ -1553,6 +1623,17 @@ mod tests {
         assert!(parse_metrics_line("{}").is_none());
     }
 
+    #[test]
+    fn parse_metrics_line_diffusion() {
+        let diff_line = r#"{"epoch":3,"step":30,"loss":0.0452,"lr":0.0001}"#;
+        let parsed = parse_metrics_line(diff_line).expect("should parse diffusion line");
+        assert_eq!(parsed.epoch, 3);
+        assert_eq!(parsed.step, Some(30));
+        assert_eq!(parsed.loss, Some(0.0452));
+        assert_eq!(parsed.lr, Some(0.0001));
+        assert_eq!(parsed.box_loss, 0.0);
+    }
+
     // -- read_ram_total tests --
 
     #[test]
@@ -1691,6 +1772,9 @@ mod tests {
             dfl_loss: 0.0,
             map50: 0.0,
             map50_95: 0.0,
+            loss: None,
+            lr: None,
+            step: None,
             epoch: 5,
             progress: None,
         };
@@ -1705,6 +1789,9 @@ mod tests {
             dfl_loss: 0.0,
             map50: 0.0,
             map50_95: 0.0,
+            loss: None,
+            lr: None,
+            step: None,
             epoch: 5,
             progress: None,
         };
@@ -1719,6 +1806,9 @@ mod tests {
             dfl_loss: 0.0,
             map50: 0.0,
             map50_95: 0.0,
+            loss: None,
+            lr: None,
+            step: None,
             epoch: 100,
             progress: None,
         };
@@ -1733,6 +1823,9 @@ mod tests {
             dfl_loss: 0.0,
             map50: 0.0,
             map50_95: 0.0,
+            loss: None,
+            lr: None,
+            step: None,
             epoch: 3,
             progress: Some(0.65),
         };

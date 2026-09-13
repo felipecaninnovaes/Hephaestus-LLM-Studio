@@ -1,6 +1,7 @@
 import { apiFetch } from "@/lib/api";
 import type {
   BoxInput,
+  CaptionData,
   ImageDetail,
   ImagePage,
   PutBoxesResponse,
@@ -223,6 +224,20 @@ export function putBoxes(
   return apiFetch<PutBoxesResponse>(
     `/api/datasets/${datasetId}/images/${imageId}/boxes`,
     { method: "PUT", body: { boxes } },
+  );
+}
+
+export function putCaption(
+  datasetId: string,
+  imageId: string,
+  data: { text: string; origin?: string },
+): Promise<CaptionData> {
+  return apiFetch<CaptionData>(
+    `/api/datasets/${datasetId}/images/${imageId}/caption`,
+    {
+      method: "PUT",
+      body: data,
+    },
   );
 }
 

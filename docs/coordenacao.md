@@ -19,7 +19,22 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-13 (FATIA REVISÃO DE CAPTION AUTOLABEL CONCLUÍDA NA BRANCH)
+## Estado atual — 2026-09-13 (FATIA PREVIEW E VISUALIZAÇÃO DE LABELS NO DATASET CONCLUÍDA)
+
+- **FATIA PREVIEW E VISUALIZAÇÃO DE LABELS NO DATASET (GRID E QUICKLOOK) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/autolabel-caption-review`.
+  - **Backend API Principal**:
+    - `services/api-principal/src/datasets/models.rs`: `ImageResponse` enriquecido com campos opcionais `boxes_count: Option<i64>` e `caption: Option<String>` (com `skip_serializing_if = "Option::is_none"`).
+    - `services/api-principal/src/datasets/handlers.rs`: `list_images` otimizado com subqueries indexadas no Postgres para contar bounding boxes anotadas e trazer o texto da legenda sem requisições adicionais N+1.
+    - Testes unitários 324/324 verdes.
+  - **Contrato OpenAPI**:
+    - `packages/contracts/openapi.yaml`: Propriedades `boxesCount` e `caption` adicionadas ao schema `Image`.
+  - **Web Frontend**:
+    - `apps/web/types/studio.ts`: Tipos `ImageItem` atualizados com `boxesCount` e `caption`.
+    - `apps/web/lib/images.ts`: Função `putCaption` adicionada para salvar/editar legendas manuais (`PUT /api/datasets/{dataset_id}/images/{image_id}/caption`).
+    - `apps/web/components/studio/ImageCard.tsx`: Exibição de badges com contagem de bounding boxes anotadas (`N boxes`) e badge de legenda com tooltip; preview da legenda em itálico com aspas na barra inferior do card; botão de ação contextual (`"editar bbox →"` para YOLO vs `"ver legenda →"` para datasets de legendas/difusão).
+    - `apps/web/components/studio/ImageQuickLookModal.tsx`: Visualização completa de Legenda/Caption com badge de origem (`autolabel`, `manual`, `import`) e modelo VLM utilizado; botão de cópia com feedback visual; editor inline com contagem de caracteres (até 8000) e salvamento reativo via `putCaption`; callback `onCaptionUpdated` sincronizando o grid pai em tempo real.
+    - `apps/web/app/(studio)/datasets/[id]/page.tsx`: Clique no card em datasets de caption/difusão abre diretamente o `ImageQuickLookModal` para inspeção e edição imediata sem necessidade de telas externas.
+  - **Verificações**: `cargo check --workspace` verde, `cargo test -p api-principal --lib` 324/324 verdes, `cargo fmt --all -- --check` limpo, `npm run build --prefix apps/web` 12/12 páginas estáticas/dinâmicas compiladas com 0 erros TS, `graft build` sincronizado.
 
 - **FATIA REVISÃO E CURADORIA DE CAPTION NO AUTOLABEL — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/autolabel-caption-review`.
   - **Contrato OpenAPI (0.19.0)**: Rota `GET /api/jobs/{id}/autolabel/preview` adicionada para inspeção prévia das legendas com presigned URLs; campo `items: Option<Vec<AutolabelApplyItem>>` em `AutolabelApplyRequest` permitindo curadoria seletiva e edição de legendas; novos schemas `AutolabelApplyItem`, `AutolabelPreviewItem` e `AutolabelPreviewResponse`.

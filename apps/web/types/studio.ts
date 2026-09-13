@@ -71,6 +71,8 @@ export interface ImageItem {
   split: string;
   url: string;
   createdAt: string;
+  boxesCount?: number | null;
+  caption?: string | null;
 }
 
 export interface ImagePage {

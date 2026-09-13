@@ -484,10 +484,7 @@ export default function DatasetGalleryPage() {
     if (dataset.category === "yolo") {
       router.push(`/datasets/${datasetId}/annotate/${item.id}`);
     } else {
-      showToast(
-        "Revisão de caption chega no AutoLabel (fatia futura).",
-        "info",
-      );
+      handleOpenQuickLook(item);
     }
   }
 
@@ -1371,7 +1368,7 @@ export default function DatasetGalleryPage() {
               onSearchSimilar={() => handleSimilarSearch(item)}
               onQuickLook={() => handleOpenQuickLook(item)}
               actionText={
-                dataset.category === "yolo" ? "editar bbox →" : "ver caption →"
+                dataset.category === "yolo" ? "editar bbox →" : "ver legenda →"
               }
             />
           ))}
@@ -1458,6 +1455,11 @@ export default function DatasetGalleryPage() {
         onNavigate={(idx) => setQuickLookIndex(idx)}
         onDelete={(img) => setDeleting(img)}
         onEditImage={(img: ImageItem) => handleTileClick(img)}
+        onCaptionUpdated={(imgId, text) => {
+          setItems((prev) =>
+            prev.map((it) => (it.id === imgId ? { ...it, caption: text } : it)),
+          );
+        }}
       />
 
       <ConfirmDialog

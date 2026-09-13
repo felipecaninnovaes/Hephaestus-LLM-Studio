@@ -2917,6 +2917,15 @@ components:
           type: string
           description: Presigned no endpoint público (D3) ou fallback `/data` da 3b.5.
         createdAt: { type: string, format: date-time }
+        boxesCount:
+          type: integer
+          format: int64
+          nullable: true
+          description: "Contagem de bounding boxes anotadas (opcional, enriquecido na listagem)."
+        caption:
+          type: string
+          nullable: true
+          description: "Texto da legenda anotada (opcional, enriquecido na listagem)."
 
     ImagePage:
       type: object

@@ -90,6 +90,7 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
     ("GET", "/api/jobs", &[200, 401, 503]),
     ("GET", "/api/jobs/queue", &[200, 401, 503]),
     ("GET", "/api/jobs/:id", &[200, 401, 404, 503]),
+    ("GET", "/api/jobs/:id/events", &[200, 401, 404, 503]),
     ("GET", "/api/jobs/:id/metrics", &[200, 401, 404, 503]),
     ("GET", "/api/jobs/:id/artifacts", &[200, 401, 404, 503]),
     (
@@ -330,6 +331,10 @@ pub fn build(state: AppState) -> axum::Router {
         .route("/api/jobs", get(jobs::handlers::list_jobs))
         .route("/api/jobs/queue", get(jobs::handlers::list_queue))
         .route("/api/jobs/:id", get(jobs::handlers::get_job))
+        .route(
+            "/api/jobs/:id/events",
+            get(jobs::handlers::stream_job_events),
+        )
         .route(
             "/api/jobs/:id/metrics",
             get(jobs::handlers::get_job_metrics),

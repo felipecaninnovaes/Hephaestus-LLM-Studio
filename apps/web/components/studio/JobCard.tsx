@@ -193,6 +193,16 @@ export function JobListItem({
             {isActive && (
               <span className="text-brand-300 font-semibold">{pct}%</span>
             )}
+            {job.phase && (
+              <span className="text-violet-300 font-medium bg-violet-500/10 px-1.5 py-0.2 rounded border border-violet-500/20">
+                {job.phase}
+              </span>
+            )}
+            {job.vramUsedGb ? (
+              <span className="text-zinc-300">
+                {job.vramUsedGb.toFixed(1)} GB VRAM
+              </span>
+            ) : null}
             {job.orchestratorName ? (
               <span className="flex items-center gap-1.5 text-zinc-300">
                 <span className="text-zinc-600">·</span>

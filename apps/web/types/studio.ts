@@ -211,6 +211,19 @@ export interface JobMetricsResponse {
   items: JobMetrics[];
 }
 
+export interface JobTelemetryEvent {
+  timestamp: string;
+  phase: string;
+  phaseMessage?: string | null;
+  progress: number;
+  step?: number | null;
+  totalSteps?: number | null;
+  epoch?: number | null;
+  totalEpochs?: number | null;
+  vramUsedGb?: number | null;
+  metrics?: Record<string, number | string | boolean | null> | null;
+}
+
 export interface Job {
   id: string;
   kind: JobKind;
@@ -233,6 +246,9 @@ export interface Job {
   createdAt: string;
   finishedAt: string | null;
   error?: string | null;
+  phase?: string | null;
+  phaseMessage?: string | null;
+  vramUsedGb?: number | null;
 }
 
 export interface JobListResponse {

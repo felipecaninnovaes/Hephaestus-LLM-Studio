@@ -60,7 +60,7 @@ pub struct JobsQuery {
 // ---------------------------------------------------------------------------
 
 /// Metric epoch item (camelCase wire). mAP50-95 → `map5095`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct MetricsItem {
     pub epoch: i32,
     #[serde(rename = "boxLoss")]
@@ -85,10 +85,90 @@ pub struct MetricsItem {
     pub phase: Option<String>,
     #[serde(rename = "message", skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    #[serde(rename = "vramUsedGb", skip_serializing_if = "Option::is_none")]
+    pub vram_used_gb: Option<f64>,
+}
+
+/// Evento de telemetria transmitido via SSE ou snapshot (ADR-0021 D0/D3).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobTelemetryEvent {
+    pub timestamp: String,
+    pub phase: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase_message: Option<String>,
+    pub progress: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_steps: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_epochs: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vram_used_gb: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<serde_json::Value>,
+}
+
+impl JobTelemetryEvent {
+    pub fn from_job_response(job: &JobResponse) -> Self {
+        let timestamp = chrono::Utc::now().to_rfc3339();
+        let phase = job
+            .phase
+            .clone()
+            .unwrap_or_else(|| match job.status.as_str() {
+                "queued" => "queued".to_string(),
+                "preparing" => "preparing".to_string(),
+                "running" => "running".to_string(),
+                "done" => "completed".to_string(),
+                "failed" => "error".to_string(),
+                "cancelled" => "cancelled".to_string(),
+                _ => job.status.clone(),
+            });
+        let progress = job
+            .progress
+            .unwrap_or(if job.status == "done" { 1.0 } else { 0.0 });
+        let latest_metric = job.metrics.as_ref().and_then(|m| m.last());
+        let mut m_obj = serde_json::Map::new();
+        if let Some(m) = latest_metric {
+            if let Some(loss) = m.loss {
+                m_obj.insert("loss".to_string(), serde_json::json!(loss));
+            }
+            if let Some(lr) = m.lr {
+                m_obj.insert("lr".to_string(), serde_json::json!(lr));
+            }
+            if m.box_loss > 0.0 {
+                m_obj.insert("boxLoss".to_string(), serde_json::json!(m.box_loss));
+            }
+            if m.map50 > 0.0 {
+                m_obj.insert("map50".to_string(), serde_json::json!(m.map50));
+            }
+        }
+        let metrics = if !m_obj.is_empty() {
+            Some(serde_json::Value::Object(m_obj))
+        } else {
+            None
+        };
+
+        Self {
+            timestamp,
+            phase,
+            phase_message: job.phase_message.clone(),
+            progress,
+            step: job.step.map(|s| s as i64),
+            total_steps: None,
+            epoch: job.epoch,
+            total_epochs: None,
+            vram_used_gb: job.vram_used_gb,
+            metrics,
+        }
+    }
 }
 
 /// Job response (camelCase wire).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct JobResponse {
     pub id: String,
@@ -113,6 +193,12 @@ pub struct JobResponse {
     pub finished_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(rename = "phaseMessage", skip_serializing_if = "Option::is_none")]
+    pub phase_message: Option<String>,
+    #[serde(rename = "vramUsedGb", skip_serializing_if = "Option::is_none")]
+    pub vram_used_gb: Option<f64>,
 }
 
 /// Job list response.
@@ -289,6 +375,10 @@ fn remap_metrics(raw: &serde_json::Value) -> Vec<MetricsItem> {
                 .get("message")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
+            let vram_used_gb = item
+                .get("vramUsedGb")
+                .or_else(|| item.get("vram_used_gb"))
+                .and_then(|v| v.as_f64());
             Some(MetricsItem {
                 epoch,
                 box_loss,
@@ -302,6 +392,7 @@ fn remap_metrics(raw: &serde_json::Value) -> Vec<MetricsItem> {
                 progress,
                 phase,
                 message,
+                vram_used_gb,
             })
         })
         .collect()
@@ -310,6 +401,21 @@ fn remap_metrics(raw: &serde_json::Value) -> Vec<MetricsItem> {
 /// Converte `InternalJob` do manager (snake_case) para `JobResponse` (camelCase).
 fn to_job_response(job: crate::jobs::manager_client::InternalJob) -> JobResponse {
     let metrics = job.metrics.as_ref().map(remap_metrics);
+    let latest_metric = metrics.as_ref().and_then(|m| m.last());
+    let phase = latest_metric
+        .and_then(|m| m.phase.clone())
+        .or_else(|| match job.status.as_str() {
+            "queued" => Some("queued".to_string()),
+            "preparing" => Some("preparing".to_string()),
+            "running" => Some("running".to_string()),
+            "done" => Some("completed".to_string()),
+            "failed" => Some("error".to_string()),
+            "cancelled" => Some("cancelled".to_string()),
+            _ => None,
+        });
+    let phase_message = latest_metric.and_then(|m| m.message.clone());
+    let vram_used_gb = latest_metric.and_then(|m| m.vram_used_gb);
+
     JobResponse {
         id: job.id,
         kind: job.kind,
@@ -332,6 +438,9 @@ fn to_job_response(job: crate::jobs::manager_client::InternalJob) -> JobResponse
         created_at: job.created_at,
         finished_at: job.finished_at,
         error: job.error,
+        phase,
+        phase_message,
+        vram_used_gb,
     }
 }
 
@@ -395,6 +504,102 @@ pub async fn get_job(State(state): State<AppState>, Path(id): Path<String>) -> R
         Err(_) => return queue_unavailable(),
     };
     (StatusCode::OK, Json(to_job_response(job))).into_response()
+}
+
+/// GET /api/jobs/:id/events — stream SSE de telemetria em tempo real (ADR-0021 D3).
+pub async fn stream_job_events(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    if parse_uuid(&id).is_none() {
+        return not_found();
+    }
+    let initial_job = match state.manager.get_job(&id).await {
+        Ok(v) => to_job_response(v),
+        Err(ManagerError::NotFound) => return not_found(),
+        Err(ManagerError::Unavailable(_)) => return queue_unavailable(),
+        Err(_) => return queue_unavailable(),
+    };
+
+    struct StreamContext {
+        id: String,
+        manager: std::sync::Arc<dyn crate::jobs::manager_client::ManagerPort>,
+        first_event_sent: bool,
+        initial_event: JobTelemetryEvent,
+        terminal_sent: bool,
+        last_progress: f64,
+        last_phase: String,
+    }
+
+    let initial_telemetry = JobTelemetryEvent::from_job_response(&initial_job);
+    let initial_terminal = matches!(initial_job.status.as_str(), "done" | "failed" | "cancelled");
+
+    let ctx = StreamContext {
+        id: id.clone(),
+        manager: std::sync::Arc::clone(&state.manager),
+        first_event_sent: false,
+        initial_event: initial_telemetry.clone(),
+        terminal_sent: false,
+        last_progress: initial_telemetry.progress,
+        last_phase: initial_telemetry.phase.clone(),
+    };
+
+    let sse_stream = futures_util::stream::unfold(ctx, move |mut c| async move {
+        if c.terminal_sent {
+            return None;
+        }
+
+        if !c.first_event_sent {
+            c.first_event_sent = true;
+            let event_type = if initial_terminal {
+                "finished"
+            } else {
+                "snapshot"
+            };
+            if initial_terminal {
+                c.terminal_sent = true;
+            }
+            let data = serde_json::to_string(&c.initial_event).unwrap_or_default();
+            let event = axum::response::sse::Event::default()
+                .event(event_type)
+                .data(data);
+            return Some((Ok::<_, std::convert::Infallible>(event), c));
+        }
+
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+
+            let current_job = match c.manager.get_job(&c.id).await {
+                Ok(v) => to_job_response(v),
+                Err(_) => {
+                    continue;
+                }
+            };
+
+            let telemetry = JobTelemetryEvent::from_job_response(&current_job);
+            let is_terminal =
+                matches!(current_job.status.as_str(), "done" | "failed" | "cancelled");
+
+            let has_changed = (telemetry.progress - c.last_progress).abs() > 0.0001
+                || telemetry.phase != c.last_phase
+                || is_terminal;
+
+            if has_changed {
+                c.last_progress = telemetry.progress;
+                c.last_phase = telemetry.phase.clone();
+                let event_type = if is_terminal { "finished" } else { "telemetry" };
+                if is_terminal {
+                    c.terminal_sent = true;
+                }
+                let data = serde_json::to_string(&telemetry).unwrap_or_default();
+                let event = axum::response::sse::Event::default()
+                    .event(event_type)
+                    .data(data);
+                return Some((Ok(event), c));
+            }
+        }
+    });
+
+    axum::response::sse::Sse::new(sse_stream)
+        .keep_alive(axum::response::sse::KeepAlive::default())
+        .into_response()
 }
 
 /// GET /api/jobs/:id/metrics — métricas de um job (re-mapeadas camelCase).

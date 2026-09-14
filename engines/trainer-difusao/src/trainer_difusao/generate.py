@@ -103,6 +103,12 @@ def _mock_generate(params: dict[str, Any], output_dir: Path) -> Path:
     """Gera uma imagem de mock determinística com visual representativo e metadados visuais."""
     from PIL import Image, ImageDraw
 
+    try:
+        from trainer_difusao.telemetry import TelemetryEmitter
+    except ImportError:
+        from telemetry import TelemetryEmitter
+
+    emitter = TelemetryEmitter(output_dir)
     width = params["width"]
     height = params["height"]
     seed = params["seed"]
@@ -115,6 +121,12 @@ def _mock_generate(params: dict[str, Any], output_dir: Path) -> Path:
     distilled = params.get("distilled", False)
     weights_path = params["weights_path"]
 
+    emitter.emit(
+        phase="preparing",
+        message=f"Configurando pipeline Text-to-Image ({base_model})...",
+        progress=0.1,
+    )
+
     # Fundo com degradê escuro óptico determinístico baseado na seed
     h = hashlib.sha256(struct.pack("<q", seed)).digest()
     r_base = 20 + (h[0] % 35)
@@ -123,6 +135,14 @@ def _mock_generate(params: dict[str, Any], output_dir: Path) -> Path:
 
     img = Image.new("RGB", (width, height), (r_base, g_base, b_base))
     draw = ImageDraw.Draw(img)
+
+    emitter.emit(
+        phase="generating",
+        message=f"Sintetizando imagem determinística ({steps} passos)...",
+        progress=0.5,
+        step=steps,
+        total_steps=steps,
+    )
 
     # Desenho de círculos concêntricos e linhas geométricas simulando geração de imagem
     for i in range(12):
@@ -142,8 +162,6 @@ def _mock_generate(params: dict[str, Any], output_dir: Path) -> Path:
     card_box = [pad, height - card_h - pad, width - pad, height - pad]
     draw.rectangle(card_box, fill=(18, 18, 22), outline=(131, 80, 242), width=2)
 
-    # Textos informativos
-    # Textos informativos
     variant_label = "DESTILADO (4-8 steps)" if distilled else "BASE (20+ steps)"
     title_text = f"HEPHAESTUS STUDIO · PLAYGROUND DE DIFUSÃO [{base_model.upper()} · {variant_label}]"
     prompt_line = f"Prompt: {prompt[:70]}{'...' if len(prompt) > 70 else ''}"
@@ -158,16 +176,35 @@ def _mock_generate(params: dict[str, Any], output_dir: Path) -> Path:
     draw.text((pad + 16, height - card_h - pad + 80), meta_line1, fill=(180, 180, 195))
     draw.text((pad + 16, height - card_h - pad + 108), meta_line2, fill=(140, 220, 160))
 
+    emitter.emit(
+        phase="saving",
+        message="Gravando imagem gerada no disco...",
+        progress=0.9,
+    )
+
     output_dir.mkdir(parents=True, exist_ok=True)
     out_file = output_dir / "generated.png"
     img.save(out_file, "PNG")
     print(f"[MOCK-GEN] Imagem gerada com sucesso ({width}x{height}, seed={seed}, {variant_label}): {out_file}", flush=True)
+
+    emitter.emit(
+        phase="completed",
+        message="Imagem gerada com sucesso!",
+        progress=1.0,
+    )
     return out_file
 
 
 def _real_generate(params: dict[str, Any], output_dir: Path) -> Path:
     """Executa a geração Text-to-Image real via Diffusers com aceleração CUDA."""
     import torch
+
+    try:
+        from trainer_difusao.telemetry import TelemetryEmitter
+    except ImportError:
+        from telemetry import TelemetryEmitter
+
+    emitter = TelemetryEmitter(output_dir)
 
     base_model = params["base_model"]
     prompt = params["prompt"]
@@ -186,124 +223,195 @@ def _real_generate(params: dict[str, Any], output_dir: Path) -> Path:
     generator = torch.Generator(device=device).manual_seed(seed)
 
     variant_str = "Destilado (4-8 steps)" if distilled else "Base (20+ steps)"
+    emitter.emit(
+        phase="preparing",
+        message=f"Inicializando pipeline Text-to-Image ({base_model} [{variant_str}])...",
+        progress=0.05,
+    )
     print(f"[DIFFUSION-GEN] Iniciando geração real: model={base_model} [{variant_str}], quant={quant}, seed={seed}, steps={steps}, CFG={guidance}...", flush=True)
     if distilled and guidance > 2.0:
         print(f"[DIFFUSION-GEN] [AVISO] Modelo destilado em execução com CFG={guidance}. Recomenda-se CFG 1.0 para evitar saturação/queima.", flush=True)
 
-    # Configuração de quantização
-    bnb_config = None
-    if quant in ("4bit", "8bit") and device == "cuda":
-        try:
-            from transformers import BitsAndBytesConfig
+    try:
+        # Configuração de quantização
+        bnb_config = None
+        if quant in ("4bit", "8bit") and device == "cuda":
+            try:
+                from transformers import BitsAndBytesConfig
 
-            if quant == "4bit":
-                bnb_config = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_quant_type="nf4",
-                    bnb_4bit_use_double_quant=True,
-                    bnb_4bit_compute_dtype=torch.bfloat16,
+                emitter.emit(
+                    phase="quantizing",
+                    message=f"Configurando quantização {quant} (BitsAndBytes)...",
+                    progress=0.15,
                 )
+                if quant == "4bit":
+                    bnb_config = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_quant_type="nf4",
+                        bnb_4bit_use_double_quant=True,
+                        bnb_4bit_compute_dtype=torch.bfloat16,
+                    )
+                else:
+                    bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+            except (ImportError, RuntimeError, ValueError) as e:
+                print(f"[WARN] Falha ao configurar BitsAndBytes: {e}. Usando precisão padrão.", flush=True)
+
+        emitter.emit(
+            phase="loading_model",
+            message=f"Carregando pesos do modelo {base_model}...",
+            progress=0.25,
+        )
+
+        if base_model == "flux-2-klein-4b":
+            from diffusers import Flux2KleinPipeline
+
+            pipe_kwargs: dict[str, Any] = {
+                "torch_dtype": torch.bfloat16 if device == "cuda" else torch.float32,
+            }
+            model_repo = (
+                (os.environ.get("FLUX_DISTILLED_MODEL_ID") or "unsloth/FLUX.2-klein-4B")
+                if distilled
+                else (os.environ.get("FLUX_MODEL_ID") or "unsloth/FLUX.2-klein-4B")
+            )
+            print(f"[DIFFUSION-GEN] Carregando FLUX.2 Klein 4B ({'Destilado' if distilled else 'Base'}): {model_repo}", flush=True)
+            pipe = Flux2KleinPipeline.from_pretrained(model_repo, **pipe_kwargs)
+            if bnb_config is None and device == "cuda":
+                pipe.to(device)
             else:
-                bnb_config = BitsAndBytesConfig(load_in_8bit=True)
-        except (ImportError, RuntimeError, ValueError) as e:
-            print(f"[WARN] Falha ao configurar BitsAndBytes: {e}. Usando precisão padrão.", flush=True)
+                pipe.enable_model_cpu_offload()
 
-    if base_model == "flux-2-klein-4b":
-        from diffusers import Flux2KleinPipeline
+            if weights_path and os.path.exists(weights_path):
+                emitter.emit(
+                    phase="injecting_lora",
+                    message=f"Injetando adaptador LoRA (escala={lora_scale})...",
+                    progress=0.45,
+                )
+                print(f"[DIFFUSION-GEN] Injetando pesos LoRA: {weights_path} (scale={lora_scale})", flush=True)
+                pipe.load_lora_weights(weights_path)
 
-        pipe_kwargs: dict[str, Any] = {
-            "torch_dtype": torch.bfloat16 if device == "cuda" else torch.float32,
-        }
-        model_repo = (
-            (os.environ.get("FLUX_DISTILLED_MODEL_ID") or "unsloth/FLUX.2-klein-4B")
-            if distilled
-            else (os.environ.get("FLUX_MODEL_ID") or "unsloth/FLUX.2-klein-4B")
-        )
-        print(f"[DIFFUSION-GEN] Carregando FLUX.2 Klein 4B ({'Destilado' if distilled else 'Base'}): {model_repo}", flush=True)
-        pipe = Flux2KleinPipeline.from_pretrained(model_repo, **pipe_kwargs)
-        if bnb_config is None and device == "cuda":
-            pipe.to(device)
+            emitter.emit(
+                phase="generating",
+                message=f"Executando amostragem de difusão ({steps} passos)...",
+                progress=0.55,
+                step=steps,
+                total_steps=steps,
+            )
+
+            with torch.inference_mode():
+                image = pipe(
+                    prompt=prompt,
+                    generator=generator,
+                    num_inference_steps=steps,
+                    guidance_scale=guidance,
+                    width=width,
+                    height=height,
+                ).images[0]
+
+        elif base_model == "sdxl":
+            from diffusers import AutoencoderKL, StableDiffusionXLPipeline
+
+            vae = AutoencoderKL.from_pretrained(
+                "madebyollin/sdxl-vae-fp16-fix",
+                torch_dtype=torch.float32,
+            )
+            pipe = StableDiffusionXLPipeline.from_pretrained(
+                "stabilityai/stable-diffusion-xl-base-1.0",
+                vae=vae,
+                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+                use_safetensors=True,
+            )
+            if device == "cuda":
+                pipe.to(device)
+
+            if weights_path and os.path.exists(weights_path):
+                emitter.emit(
+                    phase="injecting_lora",
+                    message=f"Injetando adaptador LoRA (escala={lora_scale})...",
+                    progress=0.45,
+                )
+                print(f"[DIFFUSION-GEN] Injetando pesos LoRA: {weights_path} (scale={lora_scale})", flush=True)
+                pipe.load_lora_weights(weights_path)
+
+            emitter.emit(
+                phase="generating",
+                message=f"Executando amostragem de difusão ({steps} passos)...",
+                progress=0.55,
+                step=steps,
+                total_steps=steps,
+            )
+
+            with torch.inference_mode():
+                image = pipe(
+                    prompt=prompt,
+                    negative_prompt=neg_prompt,
+                    generator=generator,
+                    num_inference_steps=steps,
+                    guidance_scale=guidance,
+                    width=width,
+                    height=height,
+                ).images[0]
+
+        elif base_model == "sd15":
+            from diffusers import StableDiffusionPipeline
+
+            pipe = StableDiffusionPipeline.from_pretrained(
+                "runwayml/stable-diffusion-v1-5",
+                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+                use_safetensors=True,
+            )
+            if device == "cuda":
+                pipe.to(device)
+
+            if weights_path and os.path.exists(weights_path):
+                emitter.emit(
+                    phase="injecting_lora",
+                    message=f"Injetando adaptador LoRA (escala={lora_scale})...",
+                    progress=0.45,
+                )
+                print(f"[DIFFUSION-GEN] Injetando pesos LoRA: {weights_path} (scale={lora_scale})", flush=True)
+                pipe.load_lora_weights(weights_path)
+
+            emitter.emit(
+                phase="generating",
+                message=f"Executando amostragem de difusão ({steps} passos)...",
+                progress=0.55,
+                step=steps,
+                total_steps=steps,
+            )
+
+            with torch.inference_mode():
+                image = pipe(
+                    prompt=prompt,
+                    negative_prompt=neg_prompt,
+                    generator=generator,
+                    num_inference_steps=steps,
+                    guidance_scale=guidance,
+                    width=width,
+                    height=height,
+                ).images[0]
         else:
-            pipe.enable_model_cpu_offload()
+            _die(f"Modelo não suportado para geração real: {base_model}")
 
-        if weights_path and os.path.exists(weights_path):
-            print(f"[DIFFUSION-GEN] Injetando pesos LoRA: {weights_path} (scale={lora_scale})", flush=True)
-            pipe.load_lora_weights(weights_path)
-
-        with torch.inference_mode():
-            image = pipe(
-                prompt=prompt,
-                generator=generator,
-                num_inference_steps=steps,
-                guidance_scale=guidance,
-                width=width,
-                height=height,
-            ).images[0]
-
-    elif base_model == "sdxl":
-        from diffusers import AutoencoderKL, StableDiffusionXLPipeline
-
-        vae = AutoencoderKL.from_pretrained(
-            "madebyollin/sdxl-vae-fp16-fix",
-            torch_dtype=torch.float32,
+        emitter.emit(
+            phase="saving",
+            message="Salvando artefato de imagem gerado...",
+            progress=0.92,
         )
-        pipe = StableDiffusionXLPipeline.from_pretrained(
-            "stabilityai/stable-diffusion-xl-base-1.0",
-            vae=vae,
-            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-            use_safetensors=True,
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        out_file = output_dir / "generated.png"
+        image.save(out_file, "PNG")
+        print(f"[DIFFUSION-GEN] Geração concluída com sucesso: {out_file}", flush=True)
+
+        emitter.emit(
+            phase="completed",
+            message="Geração finalizada com sucesso!",
+            progress=1.0,
         )
-        if device == "cuda":
-            pipe.to(device)
-
-        if weights_path and os.path.exists(weights_path):
-            print(f"[DIFFUSION-GEN] Injetando pesos LoRA: {weights_path} (scale={lora_scale})", flush=True)
-            pipe.load_lora_weights(weights_path)
-
-        with torch.inference_mode():
-            image = pipe(
-                prompt=prompt,
-                negative_prompt=neg_prompt,
-                generator=generator,
-                num_inference_steps=steps,
-                guidance_scale=guidance,
-                width=width,
-                height=height,
-            ).images[0]
-
-    elif base_model == "sd15":
-        from diffusers import StableDiffusionPipeline
-
-        pipe = StableDiffusionPipeline.from_pretrained(
-            "runwayml/stable-diffusion-v1-5",
-            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-            use_safetensors=True,
-        )
-        if device == "cuda":
-            pipe.to(device)
-
-        if weights_path and os.path.exists(weights_path):
-            print(f"[DIFFUSION-GEN] Injetando pesos LoRA: {weights_path} (scale={lora_scale})", flush=True)
-            pipe.load_lora_weights(weights_path)
-
-        with torch.inference_mode():
-            image = pipe(
-                prompt=prompt,
-                negative_prompt=neg_prompt,
-                generator=generator,
-                num_inference_steps=steps,
-                guidance_scale=guidance,
-                width=width,
-                height=height,
-            ).images[0]
-    else:
-        _die(f"Modelo não suportado para geração real: {base_model}")
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    out_file = output_dir / "generated.png"
-    image.save(out_file, "PNG")
-    print(f"[DIFFUSION-GEN] Geração concluída com sucesso: {out_file}", flush=True)
-    return out_file
+        return out_file
+    except Exception as e:
+        emitter.error(f"Erro na geração de difusão: {e}", exc=e)
+        raise
 
 
 def cmd_generate(args: list[str]) -> None:

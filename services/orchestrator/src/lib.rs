@@ -1572,9 +1572,8 @@ async fn run_job_inner(
                             let art_key = format!("artifacts/{job_id}/{f_name}");
                             if let Ok(scoped) = scoped_key(S3Scope::Artifacts, &art_key) {
                                 if let Ok(md5) = compute_file_md5(&p) {
-                                    let bytes = std::fs::metadata(&p)
-                                        .map(|m| m.len() as i64)
-                                        .unwrap_or(0);
+                                    let bytes =
+                                        std::fs::metadata(&p).map(|m| m.len() as i64).unwrap_or(0);
                                     if s3.put(&scoped, &p).await.is_ok() {
                                         artifacts.push(ArtifactReport {
                                             kind: "model".to_string(),

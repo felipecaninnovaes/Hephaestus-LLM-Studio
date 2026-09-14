@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/Input";
 import { ApiError } from "@/lib/api";
 import { batchUpdateBoxes } from "@/lib/images";
 import { CLASS_RE, MAX_CLASSES, putClasses } from "@/lib/classes";
+import { getDataset } from "@/lib/datasets";
 import type { StudioClass } from "@/types/studio";
 import { showToast } from "./Toast";
 
@@ -111,8 +112,9 @@ export function BatchEditClassesModal({
     }
 
     try {
+      const freshDs = await getDataset(datasetId);
       const payload = [
-        ...datasetClasses.map((c) => ({ id: c.id, name: c.name })),
+        ...freshDs.classes.map((c) => ({ id: c.id, name: c.name })),
         { name: trimmed },
       ];
       const res = await putClasses(datasetId, payload);

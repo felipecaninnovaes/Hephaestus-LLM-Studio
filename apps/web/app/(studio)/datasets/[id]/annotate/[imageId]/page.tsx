@@ -118,6 +118,19 @@ export default function AnnotateImagePage() {
     if (id && imageId) load();
   }, [id, imageId, load]);
 
+  useEffect(() => {
+    function handleDatasetUpdated(e: Event) {
+      const ce = e as CustomEvent<{ datasetId?: string }>;
+      if (!ce.detail || ce.detail.datasetId === id) {
+        load();
+      }
+    }
+    window.addEventListener("hephaestus:dataset-updated", handleDatasetUpdated);
+    return () => {
+      window.removeEventListener("hephaestus:dataset-updated", handleDatasetUpdated);
+    };
+  }, [id, load]);
+
   const classes = useMemo(
     () => (dataset ? [...dataset.classes].sort((a, b) => a.idx - b.idx) : []),
     [dataset],

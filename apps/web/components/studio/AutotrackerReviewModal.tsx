@@ -104,6 +104,13 @@ export function AutotrackerReviewModal({
             }
           : undefined,
       );
+      if (typeof window !== "undefined" && job.datasetId) {
+        window.dispatchEvent(
+          new CustomEvent("hephaestus:dataset-updated", {
+            detail: { datasetId: job.datasetId },
+          }),
+        );
+      }
       onApplied?.();
       onClose();
     } catch (err) {

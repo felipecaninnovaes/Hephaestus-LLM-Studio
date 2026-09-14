@@ -216,6 +216,20 @@ export default function DatasetGalleryPage() {
     }
   }, [datasetId, load, splitView, annotationFilter, selectedClassId, activeTag, searchMode, activeQuery, similarFor]);
 
+  // Atualiza galeria e classes quando jobs em segundo plano (AutoTracker, etc) aplicam alterações
+  useEffect(() => {
+    function handleDatasetUpdated(e: Event) {
+      const ce = e as CustomEvent<{ datasetId?: string }>;
+      if (datasetId && (!ce.detail || ce.detail.datasetId === datasetId)) {
+        void load(datasetId, splitView, annotationFilter, selectedClassId, activeTag);
+      }
+    }
+    window.addEventListener("hephaestus:dataset-updated", handleDatasetUpdated);
+    return () => {
+      window.removeEventListener("hephaestus:dataset-updated", handleDatasetUpdated);
+    };
+  }, [datasetId, load, splitView, annotationFilter, selectedClassId, activeTag]);
+
   function stopSearchPolling() {
     if (pollRef.current) {
       clearInterval(pollRef.current);

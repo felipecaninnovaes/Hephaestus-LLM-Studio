@@ -215,7 +215,8 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         dataset, batch_size=batch_size, shuffle=True, drop_last=False
     )
 
-    total_train_steps = max(1, (len(dataloader) * epochs) // grad_accum)
+    steps_per_epoch = math.ceil(len(dataloader) / grad_accum)
+    total_train_steps = max(1, steps_per_epoch * epochs)
     lr_scheduler = _create_lr_scheduler(
         optimizer, lr_scheduler_name, total_train_steps, lr_warmup_steps
     )
@@ -322,14 +323,15 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
             loss.backward()
 
             steps_in_epoch += 1
-            if steps_in_epoch % grad_accum == 0 or steps_in_epoch == len(dataloader):
+            is_accum_step = (steps_in_epoch % grad_accum == 0) or (steps_in_epoch == len(dataloader))
+            if is_accum_step:
                 torch.nn.utils.clip_grad_norm_(unet.parameters(), 1.0)
                 optimizer.step()
                 if lr_scheduler is not None:
                     lr_scheduler.step()
                 optimizer.zero_grad()
+                global_step += 1
 
-            global_step += 1
             if not math.isnan(cur_loss_raw) and not math.isinf(cur_loss_raw):
                 epoch_loss += cur_loss_raw
 
@@ -338,7 +340,7 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
             )
 
             # Emite métricas intermediárias por step para streaming em tempo real
-            if global_step % 5 == 0 or steps_in_epoch == len(dataloader):
+            if is_accum_step and (global_step % 5 == 0 or steps_in_epoch == len(dataloader)):
                 safe_loss = (
                     None
                     if (math.isnan(cur_loss_raw) or math.isinf(cur_loss_raw))
@@ -365,7 +367,7 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
                     message=f"Época {epoch}/{epochs} · Step {global_step}/{total_train_steps} · Loss: {safe_loss}",
                 )
                 print(
-                    f"[SD 1.5] Época {epoch}/{epochs} · Step {global_step} · Loss: {cur_loss_raw:.4f} · LR: {effective_lr:.2e}",
+                    f"[SD 1.5] Época {epoch}/{epochs} · Step {global_step}/{total_train_steps} · Loss: {cur_loss_raw:.4f} · LR: {effective_lr:.2e}",
                     flush=True,
                 )
 

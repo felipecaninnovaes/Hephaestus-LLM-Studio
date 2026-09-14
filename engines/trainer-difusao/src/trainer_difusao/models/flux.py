@@ -781,7 +781,8 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
 
     # 6. Otimizador e LR Scheduler
     optimizer = _create_optimizer(transformer, optimizer_name, learning_rate)
-    total_train_steps = (len(dataloader) * epochs) // grad_accum
+    steps_per_epoch = math.ceil(len(dataloader) / grad_accum)
+    total_train_steps = max(1, steps_per_epoch * epochs)
     lr_scheduler = _create_lr_scheduler(
         optimizer, lr_scheduler_name, total_train_steps, lr_warmup_steps
     )
@@ -969,14 +970,15 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             loss.backward()
 
             steps_in_epoch += 1
-            if steps_in_epoch % grad_accum == 0 or steps_in_epoch == len(dataloader):
+            is_accum_step = (steps_in_epoch % grad_accum == 0) or (steps_in_epoch == len(dataloader))
+            if is_accum_step:
                 torch.nn.utils.clip_grad_norm_(transformer.parameters(), 1.0)
                 optimizer.step()
                 if lr_scheduler is not None:
                     lr_scheduler.step()
                 optimizer.zero_grad()
+                global_step += 1
 
-            global_step += 1
             if not math.isnan(cur_loss_raw) and not math.isinf(cur_loss_raw):
                 epoch_loss += cur_loss_raw
 
@@ -984,8 +986,8 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                 lr_scheduler.get_last_lr()[0] if lr_scheduler else learning_rate
             )
 
-            # Emite métricas intermediárias a cada 5 passos com flush e progresso contínuo
-            if global_step % 5 == 0 or steps_in_epoch == len(dataloader):
+            # Emite métricas intermediárias a cada 5 passos de otimização ou no fim da época
+            if is_accum_step and (global_step % 5 == 0 or steps_in_epoch == len(dataloader)):
                 safe_loss = (
                     None
                     if (math.isnan(cur_loss_raw) or math.isinf(cur_loss_raw))

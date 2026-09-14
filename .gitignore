@@ -2,6 +2,7 @@
 /graft/
 /temp_redesign
 /.impeccable/
+/tmp
 
 # Rust / Node / Next / Python / env
 target/

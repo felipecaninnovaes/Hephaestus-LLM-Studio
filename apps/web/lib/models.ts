@@ -37,3 +37,11 @@ export async function deleteModel(id: string): Promise<void> {
   await apiFetch(`/api/models/${id}`, { method: "DELETE" });
 }
 
+/** PATCH /api/models/:id — atualiza o nome de um modelo (ADR-0022 D2). Retorna 200 Model. */
+export async function updateModel(id: string, name: string): Promise<Model> {
+  return apiFetch<Model>(`/api/models/${id}`, {
+    method: "PATCH",
+    body: { name },
+  });
+}
+

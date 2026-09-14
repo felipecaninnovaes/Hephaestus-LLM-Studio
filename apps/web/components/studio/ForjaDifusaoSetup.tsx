@@ -127,6 +127,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
   const [sampleInterval, setSampleInterval] = useState(1);
   const [sampleSeed, setSampleSeed] = useState("42");
 
+  const [outputName, setOutputName] = useState("");
   const [busy, setBusy] = useState(false);
   const [topError, setTopError] = useState<string | null>(null);
 
@@ -395,6 +396,19 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
     [datasets],
   );
 
+  const selectedDataset = useMemo(
+    () => datasets.find((d) => d.id === selectedDatasetId),
+    [datasets, selectedDatasetId],
+  );
+
+  const defaultSuggestedOutputName = useMemo(() => {
+    const dsSlug = selectedDataset?.slug || "dataset";
+    const trigger = params.triggerWord.trim()
+      ? params.triggerWord.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-")
+      : "lora";
+    return `${dsSlug}-${params.baseModel}-${trigger}.safetensors`;
+  }, [selectedDataset, params.baseModel, params.triggerWord]);
+
   const datasetOptions = useMemo<SelectOption<string>[]>(() => {
     return datasets.map((d) => {
       const ready = canTrainDiffusion(d);
@@ -551,6 +565,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
         alpha: params.alpha,
         weights: selectedWeightId || null,
         orchestratorId: selectedOrchestratorId || null,
+        outputName: outputName.trim() || undefined,
         samplePrompt: enableSamples && samplePrompt.trim() ? samplePrompt.trim() : undefined,
         sampleInterval: enableSamples ? sampleInterval : undefined,
         sampleSeed: enableSamples && sampleSeed.trim() ? parseInt(sampleSeed, 10) : undefined,
@@ -571,6 +586,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
       // Reset form
       setSelectedWeightId("");
       setSelectedOrchestratorId(null);
+      setOutputName("");
       setSamplePrompt("");
       setParams({
         baseModel: "sdxl",
@@ -988,6 +1004,25 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
         />
         <p className="text-[11px] font-mono text-zinc-500">
           Opcional. Prefixa automaticamente as legendas de cada imagem durante o empacotamento.
+        </p>
+      </div>
+
+      {/* Nome do Adaptador / Modelo (outputName — ADR-0022 D1/D4) */}
+      <div className="space-y-1.5">
+        <label htmlFor="diffusion-output-name" className="block text-xs font-medium text-zinc-300">
+          Nome do Adaptador / Modelo <span className="text-zinc-500 font-normal">(opcional)</span>
+        </label>
+        <Input
+          id="diffusion-output-name"
+          type="text"
+          placeholder={defaultSuggestedOutputName}
+          value={outputName}
+          onChange={(e) => setOutputName(e.target.value)}
+          disabled={busy}
+          className="font-mono text-xs"
+        />
+        <p className="text-[11px] font-mono text-zinc-500">
+          Nome personalizado para o arquivo .safetensors. Se omitido, o estúdio gerará um nome semântico inteligente.
         </p>
       </div>
 

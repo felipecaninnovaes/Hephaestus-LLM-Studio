@@ -763,6 +763,80 @@ pub async fn delete_model(
     StatusCode::NO_CONTENT.into_response()
 }
 
+/// Body para atualização de modelo (ADR-0022 D2).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateModelRequest {
+    pub name: String,
+}
+
+/// PATCH /api/models/:id — renomeia modelo no catálogo (ADR-0022 D2).
+pub async fn update_model(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    axum::extract::Json(req): axum::extract::Json<UpdateModelRequest>,
+) -> Response {
+    let uid = match uuid::Uuid::parse_str(&id) {
+        Ok(u) => u,
+        Err(_) => return err(StatusCode::NOT_FOUND, "not_found", "model not found"),
+    };
+
+    let clean_name = req.name.trim();
+    if clean_name.is_empty() || clean_name.chars().count() > 255 {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "name must be between 1 and 255 characters",
+        );
+    }
+
+    let m = match state
+        .manager
+        .update_model(&uid.to_string(), clean_name)
+        .await
+    {
+        Ok(m) => m,
+        Err(ManagerError::NotFound) => {
+            return err(StatusCode::NOT_FOUND, "not_found", "model not found");
+        }
+        Err(ManagerError::InvalidRequest(_)) => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                MSG_INVALID_REQUEST,
+            );
+        }
+        Err(ManagerError::Unavailable(_)) => return queue_unavailable(),
+        Err(_) => return queue_unavailable(),
+    };
+
+    let url = match state.storage.presign_get(&m.path).await {
+        Ok(u) => Some(u),
+        Err(_) => None,
+    };
+
+    let name = if m.name.is_empty() {
+        m.path.rsplit('/').next().unwrap_or(&m.path).to_string()
+    } else {
+        m.name
+    };
+
+    let resp = ModelResponse {
+        id: m.id,
+        name,
+        engine: m.engine,
+        model: m.model,
+        source: m.source,
+        bytes: m.bytes,
+        md5: m.md5,
+        url,
+        job_id: m.job_id,
+        created_at: m.created_at,
+    };
+
+    (StatusCode::OK, Json(resp)).into_response()
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1050,6 +1124,114 @@ mod tests {
         let state = test_state(mock);
         let id = uuid::Uuid::new_v4().to_string();
         let resp = delete_model(axum::extract::State(state), axum::extract::Path(id)).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn update_model_200_ok() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let id = uuid::Uuid::new_v4().to_string();
+        let req = UpdateModelRequest {
+            name: "cyberpunk-flux2-v1.safetensors".to_string(),
+        };
+        let resp = update_model(
+            axum::extract::State(state),
+            axum::extract::Path(id),
+            axum::Json(req),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["name"], "cyberpunk-flux2-v1.safetensors");
+    }
+
+    #[tokio::test]
+    async fn update_model_400_empty_name() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let id = uuid::Uuid::new_v4().to_string();
+        let req = UpdateModelRequest {
+            name: "   ".to_string(),
+        };
+        let resp = update_model(
+            axum::extract::State(state),
+            axum::extract::Path(id),
+            axum::Json(req),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn update_model_400_too_long() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let id = uuid::Uuid::new_v4().to_string();
+        let req = UpdateModelRequest {
+            name: "a".repeat(256),
+        };
+        let resp = update_model(
+            axum::extract::State(state),
+            axum::extract::Path(id),
+            axum::Json(req),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn update_model_404_invalid_uuid() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let req = UpdateModelRequest {
+            name: "novo-nome.safetensors".to_string(),
+        };
+        let resp = update_model(
+            axum::extract::State(state),
+            axum::extract::Path("not-a-uuid".into()),
+            axum::Json(req),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn update_model_404_not_found() {
+        let mut mock = MockManager::default();
+        mock.update_model_not_found = true;
+        let state = test_state(mock);
+        let id = uuid::Uuid::new_v4().to_string();
+        let req = UpdateModelRequest {
+            name: "novo-nome.safetensors".to_string(),
+        };
+        let resp = update_model(
+            axum::extract::State(state),
+            axum::extract::Path(id),
+            axum::Json(req),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn update_model_503_manager_offline() {
+        let mut mock = MockManager::default();
+        mock.fail = true;
+        let state = test_state(mock);
+        let id = uuid::Uuid::new_v4().to_string();
+        let req = UpdateModelRequest {
+            name: "novo-nome.safetensors".to_string(),
+        };
+        let resp = update_model(
+            axum::extract::State(state),
+            axum::extract::Path(id),
+            axum::Json(req),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }

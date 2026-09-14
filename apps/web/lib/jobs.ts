@@ -21,11 +21,13 @@ export function startYoloJob(params: {
   augment: YoloAugment;
   weights?: string | null;
   orchestratorId?: string | null;
+  outputName?: string | null;
 }): Promise<{ jobId: string; status: string; queuePosition?: number }> {
-  const { weights, orchestratorId, ...rest } = params;
+  const { weights, orchestratorId, outputName, ...rest } = params;
   const body: Record<string, unknown> = { ...rest };
   if (weights) body.weights = weights;
   if (orchestratorId) body.orchestratorId = orchestratorId;
+  if (outputName?.trim()) body.outputName = outputName.trim();
   return apiFetch("/api/jobs/yolo", {
     method: "POST",
     body,
@@ -44,6 +46,7 @@ export function startDiffusionJob(params: {
   alpha?: number;
   weights?: string | null;
   orchestratorId?: string | null;
+  outputName?: string | null;
   samplePrompt?: string;
   sampleInterval?: number;
   sampleSeed?: number;
@@ -58,6 +61,7 @@ export function startDiffusionJob(params: {
   const {
     weights,
     orchestratorId,
+    outputName,
     triggerWord,
     samplePrompt,
     sampleInterval,
@@ -72,6 +76,7 @@ export function startDiffusionJob(params: {
     ...rest
   } = params;
   const body: Record<string, unknown> = { ...rest };
+  if (outputName?.trim()) body.outputName = outputName.trim();
   if (triggerWord?.trim()) body.triggerWord = triggerWord.trim();
   if (weights) body.weights = weights;
   if (orchestratorId) body.orchestratorId = orchestratorId;
@@ -125,12 +130,20 @@ export async function downloadArtifact(
   if (!res.ok) {
     throw new Error(`Falha ao baixar artefato: ${res.status}`);
   }
+  const disposition = res.headers.get("content-disposition");
+  let targetFilename = filename;
+  if (disposition) {
+    const match = disposition.match(/filename="?([^";]+)"?/i);
+    if (match && match[1]) {
+      targetFilename = match[1].trim();
+    }
+  }
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   try {
     const a = document.createElement("a");
     a.href = url;
-    a.download = filename;
+    a.download = targetFilename;
     document.body.appendChild(a);
     a.click();
     a.remove();

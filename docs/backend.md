@@ -149,6 +149,7 @@ models:   GET /api/models (pesos da tabela canônica `models`, ordered by create
           POST /api/models/upload  → implementado (Fatia I; ADR-0012 D3 — multipart file+engine+name?, magic PK\x03\x04 para .pt ou header JSON para .safetensors, engines yolo/world/diffusion/clip, teto 2 GiB, md5)
           POST /api/models/download  → implementado (Fatia I; ADR-0012 D4/E1 — server-side no principal, allow-list fail-closed MODEL_DOWNLOAD_ALLOWED_HOSTS, engines yolo/world/diffusion/clip, extensões .pt e .safetensors, 502 model_download_failed)
           DELETE /api/models/:id  → implementado (Fatia Gestão de Modelos; 204 No Content, 401, 404; remove S3 se upload/download e desvincula no manager)
+          PATCH /api/models/:id  → implementado (ADR-0022 D2; 200 OK com Model, 400, 401, 404; renomeia modelo no catálogo)
           Nota Fatia 9: upload/download aceitam `engine='world'` (migration 0008 — ADR-0014 D1; validação `.pt`+magic PK idêntica ao yolo)
 preview:  POST /api/preview/{autolabel,autotracker,generate,search} (job efêmero ou runner quente, sem fila de treino)
 jobs:     POST /api/jobs/yolo  → implementado (Fatia 4; ADR-0007 D7 — spec 0.7.0)

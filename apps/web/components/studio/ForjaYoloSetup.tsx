@@ -100,6 +100,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
       mixupFlip: true,
     },
   });
+  const [outputName, setOutputName] = useState("");
   const [busy, setBusy] = useState(false);
   const [topError, setTopError] = useState<string | null>(null);
 
@@ -233,6 +234,16 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
   const eligibleDatasets = datasets.filter(canTrainYolo);
   const hasEligibleDataset = eligibleDatasets.length > 0;
 
+  const selectedDataset = useMemo(
+    () => datasets.find((d) => d.id === selectedDatasetId),
+    [datasets, selectedDatasetId],
+  );
+
+  const defaultSuggestedOutputName = useMemo(() => {
+    const dsSlug = selectedDataset?.slug || "dataset";
+    return `${dsSlug}-${params.model}-best.pt`;
+  }, [selectedDataset, params.model]);
+
   const datasetOptions = useMemo<SelectOption<string>[]>(() => {
     return datasets.map((d) => {
       const ready = canTrainYolo(d);
@@ -305,6 +316,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
         augment: params.augment,
         weights: selectedWeightId || null,
         orchestratorId: selectedOrchestratorId || null,
+        outputName: outputName.trim() || undefined,
       });
       showToast(
         `Job de treino criado (posição ${result.queuePosition ?? "—"} na fila).`,
@@ -314,6 +326,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
       setSelectedDatasetId("");
       setSelectedWeightId("");
       setSelectedOrchestratorId(null);
+      setOutputName("");
       setParams({
         model: "yolo11m",
         epochs: 100,
@@ -421,6 +434,25 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
         searchable={yoloModels.length > 5}
         fontMono
       />
+
+      {/* Nome do Modelo (outputName — ADR-0022 D1/D4) */}
+      <div className="space-y-1.5">
+        <label htmlFor="setup-output-name" className="block text-xs font-medium text-zinc-300">
+          Nome do Modelo / Adaptador <span className="text-zinc-500 font-normal">(opcional)</span>
+        </label>
+        <Input
+          id="setup-output-name"
+          type="text"
+          placeholder={defaultSuggestedOutputName}
+          value={outputName}
+          onChange={(e) => setOutputName(e.target.value)}
+          disabled={busy}
+          className="font-mono text-xs"
+        />
+        <p className="text-[11px] font-mono text-zinc-500">
+          Nome personalizado para o arquivo .pt. Se omitido, o estúdio gerará um nome semântico inteligente.
+        </p>
+      </div>
 
       {/* Shared YOLO Hyperparameters Form */}
       <YoloHyperparameters

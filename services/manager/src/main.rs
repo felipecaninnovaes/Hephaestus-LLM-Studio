@@ -442,6 +442,32 @@ async fn delete_model_handler(State(state): State<AppState>, Path(id): Path<Stri
     }
 }
 
+/// PATCH /internal/models/:id — atualiza o nome de um modelo na tabela models (ADR-0022 D2).
+async fn update_model_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Response {
+    let uid = match id.parse::<uuid::Uuid>() {
+        Ok(u) => u,
+        Err(_) => return bad_request("invalid uuid"),
+    };
+    if body.is_empty() {
+        return bad_request("empty body");
+    }
+    let req: manager::UpdateModelRequest = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => return bad_request(&format!("invalid json: {e}")),
+    };
+    match manager::update_model(&state.pool, uid, req).await {
+        Ok(item) => (StatusCode::OK, Json(item)).into_response(),
+        Err(ManagerError::NotFound) => not_found(),
+        Err(ManagerError::InvalidRequest(msg)) => bad_request(&msg),
+        Err(ManagerError::Internal(e)) => internal_error(&e),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -465,7 +491,10 @@ fn build_router(state: AppState) -> Router {
             "/internal/models",
             get(list_models_handler).post(create_model_handler),
         )
-        .route("/internal/models/:id", delete(delete_model_handler))
+        .route(
+            "/internal/models/:id",
+            delete(delete_model_handler).patch(update_model_handler),
+        )
         .route("/internal/storage/usage", get(get_storage_usage_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),

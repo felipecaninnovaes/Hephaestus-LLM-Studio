@@ -202,8 +202,8 @@ def _generate_sample_flux(
                         image = pipe(
                             prompt=prompt,
                             generator=generator,
-                            num_inference_steps=4,
-                            guidance_scale=1.0,
+                            num_inference_steps=20,
+                            guidance_scale=3.5,
                             height=resolution,
                             width=resolution,
                         ).images[0]
@@ -227,20 +227,18 @@ def _generate_sample_flux(
             )
             pipe.set_progress_bar_config(disable=True)
             generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(seed)
-            steps = 4 if is_flux2 else 20
-            guidance = 1.0 if is_flux2 else 3.5
             with torch.inference_mode():
                 image = pipe(
                     prompt=prompt,
                     generator=generator,
-                    num_inference_steps=steps,
-                    guidance_scale=guidance,
+                    num_inference_steps=20,
+                    guidance_scale=3.5,
                     height=resolution,
                     width=resolution,
                 ).images[0]
                 image.save(tmp_path)
                 os.replace(tmp_path, output_path)
-                print(f"[FLUX] Amostra de validação salva (seed={seed}, steps={steps}, cfg={guidance}) em: {output_path}", flush=True)
+                print(f"[FLUX] Amostra de validação salva (seed={seed}, steps=20, cfg=3.5) em: {output_path}", flush=True)
         finally:
             if was_training:
                 transformer.train()

@@ -23,6 +23,8 @@ import {
 } from "@/components/studio/ConvergenceChart";
 import { JobSamplesGallery } from "@/components/studio/JobSamplesGallery";
 import { JobLogViewer } from "@/components/studio/JobLogViewer";
+import { useJobTelemetry } from "@/hooks/useJobTelemetry";
+import { JobProgressLive } from "@/components/studio/JobProgressLive";
 import {
   IconActivity,
   IconCheck,
@@ -182,6 +184,9 @@ function JobsPageContent() {
     // Auto-focus no job ativo mais recente, ou no mais recente terminal
     return activeJobs[0] ?? terminalJobs[0] ?? null;
   }, [jobs, selectedJobId, activeJobs, terminalJobs]);
+
+  const isSelectedActive = selectedJob ? isActive(selectedJob.status) : false;
+  const telemetry = useJobTelemetry(isSelectedActive ? selectedJob?.id : null);
 
   // Carregar métricas e artefatos quando o selectedJob mudar
   useEffect(() => {
@@ -579,26 +584,19 @@ function JobsPageContent() {
                     </div>
                   </div>
 
-                  {/* Barra de progresso para jobs ativos */}
+                  {/* Telemetria Unificada ao Vivo para jobs ativos (ADR-0021) */}
                   {isActive(selectedJob.status) && (
-                    <div className="space-y-1.5 pt-1">
-                      <div className="flex items-center justify-between font-mono text-[11px]">
-                        <span className="text-zinc-400">Progresso</span>
-                        <span className="font-semibold text-brand-300">
-                          {Math.round((selectedJob.progress ?? 0) * 100)}%
-                        </span>
-                      </div>
-                      <div className="h-2 w-full overflow-hidden rounded-full bg-black/40 border border-white/10">
-                        <div
-                          className="h-full rounded-full bg-gradient-to-r from-brand-600 via-brand-500 to-brand-400 transition-all duration-500 motion-reduce:transition-none"
-                          style={{
-                            width: `${Math.min(
-                              100,
-                              Math.max(3, Math.round((selectedJob.progress ?? 0) * 100)),
-                            )}%`,
-                          }}
-                        />
-                      </div>
+                    <div className="pt-2">
+                      <JobProgressLive
+                        phase={telemetry.phase || selectedJob.phase || selectedJob.status}
+                        phaseMessage={telemetry.phaseMessage || selectedJob.phaseMessage}
+                        progress={telemetry.progress || selectedJob.progress || 0}
+                        vramUsedGb={telemetry.vramUsedGb ?? selectedJob.vramUsedGb}
+                        step={telemetry.step ?? selectedJob.step}
+                        epoch={telemetry.epoch ?? selectedJob.epoch}
+                        isLive={telemetry.isLive}
+                        isFinished={telemetry.isFinished}
+                      />
                     </div>
                   )}
 

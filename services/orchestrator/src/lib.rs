@@ -299,6 +299,8 @@ pub struct MetricsLine {
     pub phase: Option<String>,
     #[serde(default)]
     pub message: Option<String>,
+    #[serde(default)]
+    pub vram_used_gb: Option<f64>,
 }
 
 impl MetricsLine {
@@ -329,11 +331,14 @@ impl MetricsLine {
         if let Some(ref msg) = self.message {
             obj["message"] = serde_json::json!(msg);
         }
+        if let Some(vram) = self.vram_used_gb {
+            obj["vram_used_gb"] = serde_json::json!(vram);
+        }
         obj
     }
 }
 
-/// Parse tolerante de uma linha de metrics.jsonl.
+/// Parse tolerante de uma linha de metrics.jsonl ou telemetry.jsonl.
 /// Linhas malformadas são ignoradas (skip silencioso).
 pub fn parse_metrics_line(line: &str) -> Option<MetricsLine> {
     let line = line.trim();
@@ -350,15 +355,29 @@ pub fn parse_metrics_line(line: &str) -> Option<MetricsLine> {
         line.to_string()
     };
     let v: serde_json::Value = serde_json::from_str(&clean_line).ok()?;
-    let epoch = v.get("epoch")?.as_i64()? as i32;
+    let epoch = v
+        .get("epoch")
+        .and_then(|e| e.as_i64())
+        .or_else(|| {
+            if v.get("phase").is_some() || v.get("progress").is_some() {
+                Some(0)
+            } else {
+                None
+            }
+        })? as i32;
     let phase = v
         .get("phase")
         .and_then(|p| p.as_str())
         .map(|s| s.to_string());
     let message = v
-        .get("message")
+        .get("phaseMessage")
+        .or_else(|| v.get("message"))
         .and_then(|m| m.as_str())
         .map(|s| s.to_string());
+    let vram_used_gb = v
+        .get("vramUsedGb")
+        .or_else(|| v.get("vram_used_gb"))
+        .and_then(|x| x.as_f64());
     Some(MetricsLine {
         box_loss: v.get("box_loss").and_then(|x| x.as_f64()).unwrap_or(0.0),
         cls_loss: v.get("cls_loss").and_then(|x| x.as_f64()).unwrap_or(0.0),
@@ -372,6 +391,7 @@ pub fn parse_metrics_line(line: &str) -> Option<MetricsLine> {
         progress: v.get("progress").and_then(|p| p.as_f64()),
         phase,
         message,
+        vram_used_gb,
     })
 }
 
@@ -1967,6 +1987,7 @@ mod tests {
             progress: None,
             phase: None,
             message: None,
+            vram_used_gb: None,
         };
         assert!((compute_progress(&m, 100) - 0.05).abs() < 1e-6);
     }
@@ -1986,6 +2007,7 @@ mod tests {
             progress: None,
             phase: None,
             message: None,
+            vram_used_gb: None,
         };
         assert!((compute_progress(&m, 0) - 0.0).abs() < 1e-6);
     }
@@ -2005,6 +2027,7 @@ mod tests {
             progress: None,
             phase: None,
             message: None,
+            vram_used_gb: None,
         };
         assert!((compute_progress(&m, 100) - 1.0).abs() < 1e-6);
     }
@@ -2024,6 +2047,7 @@ mod tests {
             progress: Some(0.65),
             phase: None,
             message: None,
+            vram_used_gb: None,
         };
         assert!((compute_progress(&m, 100) - 0.65).abs() < 1e-6);
     }

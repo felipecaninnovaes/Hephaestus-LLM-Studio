@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.20.0
+  version: 0.21.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -1966,6 +1966,44 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/jobs/{id}/events:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: "PK do job. UUID inválido ⇒ 404 `not_found`."
+    get:
+      operationId: streamJobEvents
+      tags: [jobs]
+      summary: Stream de eventos de telemetria em tempo real (SSE)
+      description: |
+        Canal Server-Sent Events (ADR-0021 D3) transmitindo eventos de telemetria em tempo real
+        conforme são emitidos pelo motor de execução.
+      responses:
+        "200":
+          description: Stream SSE com eventos de telemetria.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: "Linhas formatadas em SSE contendo data: {...JobTelemetryEvent...}"
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Job inexistente ou id não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/jobs/{id}/artifacts:
     parameters:
       - name: id
@@ -3517,9 +3555,59 @@ components:
           type: [string, "null"]
           format: date-time
           description: "Momento da finalização (null enquanto ativo)."
+        phase:
+          type: [string, "null"]
+          description: "Fase atual da execução (ADR-0021 D0, ex.: downloading, quantizing, training, generating, done, error)."
+        phaseMessage:
+          type: [string, "null"]
+          description: "Mensagem amigável legível da fase atual."
+        vramUsedGb:
+          type: [number, "null"]
+          description: "Uso de VRAM medido em tempo real em GB."
         error:
           type: [string, "null"]
           description: "Mensagem ou stacktrace de erro em caso de falha do job."
+
+    JobTelemetryEvent:
+      type: object
+      required: [timestamp, phase, progress]
+      additionalProperties: false
+      description: "Evento estruturado de telemetria emitido durante a execução de um job (ADR-0021 D0)."
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: "Data/hora RFC3339 UTC da emissão do evento."
+        phase:
+          type: string
+          description: "Identificador da fase atual (ex.: init, downloading, quantizing, generating, training, completed, error)."
+        phaseMessage:
+          type: [string, "null"]
+          description: "Mensagem legível descrevendo o estado da fase atual."
+        progress:
+          type: number
+          minimum: 0.0
+          maximum: 1.0
+          description: "Progresso contínuo normalizado de 0.0 a 1.0."
+        step:
+          type: [integer, "null"]
+          description: "Passo atual dentro da fase ou época."
+        totalSteps:
+          type: [integer, "null"]
+          description: "Total de passos estimado."
+        epoch:
+          type: [integer, "null"]
+          description: "Época atual (para treinos iterativos)."
+        totalEpochs:
+          type: [integer, "null"]
+          description: "Total de épocas."
+        vramUsedGb:
+          type: [number, "null"]
+          description: "Uso de VRAM medido na GPU em GB."
+        metrics:
+          type: [object, "null"]
+          additionalProperties: { type: [number, string, boolean, "null"] }
+          description: "Dicionário flexível com métricas adicionais instantâneas (loss, it_s, lr, etc.)."
 
     JobList:
       type: object

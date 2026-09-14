@@ -86,6 +86,47 @@ def _emit_metric(
         with open(metrics_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(payload) + "\n")
             f.flush()
+
+        # ADR-0021: Espelha em telemetry.jsonl no formato canônico
+        try:
+            import datetime
+            telemetry_path = metrics_path.parent / "telemetry.jsonl"
+            now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            t_phase = phase or ("training" if epoch > 0 else "preparing")
+            t_msg = message or (f"Treinando Época {epoch}, Passo {step}" if epoch > 0 else "Preparando pipeline de difusão...")
+            t_prog = progress if progress is not None else 0.0
+
+            vram_val = None
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    vram_val = round(torch.cuda.memory_allocated() / (1024 ** 3), 2)
+            except Exception:
+                pass
+
+            t_payload: dict[str, Any] = {
+                "timestamp": now_iso,
+                "phase": t_phase,
+                "phaseMessage": t_msg,
+                "progress": round(t_prog, 4),
+                "step": step,
+                "epoch": epoch,
+            }
+            if vram_val is not None:
+                t_payload["vramUsedGb"] = vram_val
+            m_dict: dict[str, Any] = {}
+            if loss is not None:
+                m_dict["loss"] = loss
+            if lr is not None:
+                m_dict["lr"] = lr
+            if m_dict:
+                t_payload["metrics"] = m_dict
+
+            with open(telemetry_path, "a", encoding="utf-8") as tf:
+                tf.write(json.dumps(t_payload) + "\n")
+                tf.flush()
+        except Exception:
+            pass
     except Exception as e:
         print(f"[WARN] Falha ao emitir métrica para {metrics_path}: {e}", file=sys.stderr, flush=True)
 

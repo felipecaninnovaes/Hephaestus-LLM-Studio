@@ -19,7 +19,29 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-13 (FATIA PLAYGROUND DE DIFUSÃO CONCLUÍDA NA BRANCH)
+## Estado atual — 2026-09-13 (FATIA TELEMETRIA UNIFICADA E STREAMING SSE CONCLUÍDA NA BRANCH)
+
+- **FATIA TELEMETRIA UNIFICADA: EVENTOS EM TEMPO REAL, FASES PADRONIZADAS E STREAMING SSE — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/telemetria-unificada`.
+  - **Motivação**: Eliminar a divergência na emissão e visualização de telemetria entre diferentes motores (YOLO, Difusão, Autotracker, Text-to-Image), substituindo o modelo de polling opaco e métricas ad-hoc por um contrato canônico e universal de eventos (`JobTelemetryEvent`), emissor padronizado Python (`TelemetryEmitter`), streaming via Server-Sent Events (`GET /api/jobs/{id}/events`) e componentes visuais modernos no frontend (hook `useJobTelemetry` e componente `JobProgressLive` em Dark-Only Vidro Óptico).
+  - **ADR & Contratos (OpenAPI 0.21.0)**:
+    - Criado `docs/adr/0021-telemetria-unificada.md` (decisões D0–D4).
+    - Atualizado `packages/contracts/openapi.yaml`: Bump de versão `0.20.0` → `0.21.0`, schema `JobTelemetryEvent`, campos `phase`, `phaseMessage`, `vramUsedGb` em `Job`, e endpoint SSE `GET /api/jobs/{id}/events` (200, 401, 404, 503).
+  - **Python Engines (`engines/trainer-difusao` e `engines/trainer-yolo`)**:
+    - Implementado `telemetry.py` com classe `TelemetryEmitter` em `trainer-difusao` e `trainer-yolo`: gravação atômica com flush imediato em `telemetry.jsonl`, medição automática de VRAM via PyTorch CUDA (`torch.cuda.memory_allocated()`), espelhamento transparente em `metrics.jsonl` para compatibilidade com leitores legados e tratamento de erros.
+    - Conexão de `TelemetryEmitter` no subcomando `generate` (`_mock_generate` e `_real_generate`) com emissão de fases `preparing`, `loading_model`, `quantizing`, `injecting_lora`, `generating`, `saving`, `completed` e `error`.
+    - Atualizado helper `_emit_metric` no pipeline de treino de difusão para emitir tanto em `metrics.jsonl` quanto em `telemetry.jsonl`.
+    - Testes unitários passando 100% (10/10 difusão, 107/107 yolo).
+  - **Backend Rust (`api-principal` e `orchestrator`)**:
+    - `services/api-principal`: Adicionados modelo `JobTelemetryEvent`, campos `phase`, `phaseMessage`, `vramUsedGb` em `JobResponse` e `MetricsItem`, mapeamento em `to_job_response` e `remap_metrics`, handler de streaming SSE `stream_job_events` em `handlers.rs` e rota protegida `GET /api/jobs/:id/events` em `routes.rs`. Todos os 327 testes unitários e 15 contract tests passando.
+    - `services/orchestrator`: Adicionado suporte a `vram_used_gb` e tolerância a eventos de telemetria sem `epoch` em `parse_metrics_line` e `MetricsLine`, propagando snapshots no `to_report_json`. Todos os 85 testes passando.
+  - **Web Frontend (`apps/web`)**:
+    - `types/studio.ts`: Adicionado tipo `JobTelemetryEvent` e campos `phase`, `phaseMessage`, `vramUsedGb` na interface `Job`.
+    - `hooks/useJobTelemetry.ts`: Hook universal com conexão SSE nativa (`EventSource`) e fallback automático e transparente para polling (`getJob`) em caso de falha de conexão.
+    - `components/studio/JobProgressLive.tsx`: Componente visual polido em Dark-Only Vidro Óptico com indicador pulsante de fase ativa, pill de VRAM em `font-mono`, contadores de passos/épocas, barra suave de progresso (0–100%) com shimmer animado.
+    - `components/studio/PlaygroundDiffusion.tsx`: Substituição de banner estático por `JobProgressLive` exibindo progresso em tempo real durante a geração Text-to-Image.
+    - `app/(studio)/jobs/page.tsx`: Integração de `JobProgressLive` no painel de monitoramento do job selecionado em execução.
+    - `components/studio/JobCard.tsx`: Exibição de badge de fase e indicador de VRAM no card de job.
+    - Verificação de build: `npm run build` compilado com 100% de sucesso (13/13 páginas estáticas, 0 erros TypeScript).
 
 - **FATIA PLAYGROUND DE DIFUSÃO (GERAÇÃO TEXT-TO-IMAGE MULTI-MODELO COM LORA, ASPECT RATIO, SEED RANDOMIZER E QUANTIZAÇÃO) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/playground-difusao`.
   - **Motivação**: Oferecer um ambiente interativo moderno, ágil e visualmente polido (Vidro Óptico dark-only) para inferência direta Text-to-Image nos modelos de difusão suportados pelo estúdio (FLUX.2 Klein 4B, SDXL 1.0 e SD 1.5), permitindo experimentação imediata com prompts, prompts negativos, seeds travadas/aleatórias, aspect ratios, hiperparâmetros e injeção opcional de adaptadores LoRA treinados no próprio estúdio com escala configurável.

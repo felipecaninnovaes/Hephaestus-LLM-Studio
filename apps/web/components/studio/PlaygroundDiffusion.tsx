@@ -25,6 +25,8 @@ import type { Job, Model } from "@/types/studio";
 import { diffusionGenerateErrorMessage } from "@/types/studio";
 import { ApiError } from "@/lib/api";
 import NodeSelect from "@/components/studio/NodeSelect";
+import { useJobTelemetry } from "@/hooks/useJobTelemetry";
+import { JobProgressLive } from "@/components/studio/JobProgressLive";
 
 export interface GeneratedImageItem {
   jobId: string;
@@ -114,6 +116,7 @@ export default function PlaygroundDiffusion() {
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [activeJob, setActiveJob] = useState<Job | null>(null);
+  const telemetry = useJobTelemetry(activeJobId);
   const [currentDisplayItem, setCurrentDisplayItem] = useState<GeneratedImageItem | null>(null);
   const [history, setHistory] = useState<GeneratedImageItem[]>([]);
   const [copiedPrompt, setCopiedPrompt] = useState<boolean>(false);
@@ -745,26 +748,24 @@ export default function PlaygroundDiffusion() {
           Coluna Direita: Canvas & Histórico de Sessão
           ────────────────────────────────────────────────────────── */}
       <div className="space-y-5">
-        {/* Status de Job em Andamento */}
-        {activeJob && (activeJob.status === "queued" || activeJob.status === "running") && (
-          <GlassCard className="p-4 border-brand-500/30 bg-brand-500/[0.04] flex items-center justify-between animate-pulse">
-            <div className="flex items-center gap-3">
-              <IconRefresh className="w-5 h-5 text-brand-400 animate-spin" />
-              <div>
-                <p className="text-xs font-semibold text-zinc-200">
-                  {activeJob.status === "running"
-                    ? "Geração de imagem em execução na GPU"
-                    : "Job aguardando na fila de execução"}
-                </p>
-                <p className="text-[11px] font-mono text-zinc-400">
-                  Job ID: {activeJob.id} · Modelo: {activeJob.model || baseModel}
-                </p>
-              </div>
-            </div>
-            <span className="text-xs font-mono font-semibold px-2.5 py-1 rounded bg-brand-500/20 text-brand-300 border border-brand-500/30">
-              {activeJob.status.toUpperCase()}
-            </span>
-          </GlassCard>
+        {/* Telemetria Unificada e Status de Job em Andamento (ADR-0021) */}
+        {activeJobId && (
+          <JobProgressLive
+            phase={telemetry.phase || activeJob?.phase || activeJob?.status}
+            phaseMessage={
+              telemetry.phaseMessage ||
+              activeJob?.phaseMessage ||
+              (activeJob?.status === "running"
+                ? "Geração de imagem em execução na GPU..."
+                : "Job aguardando na fila de execução...")
+            }
+            progress={telemetry.progress || activeJob?.progress || 0}
+            vramUsedGb={telemetry.vramUsedGb ?? activeJob?.vramUsedGb}
+            step={telemetry.step ?? activeJob?.step}
+            totalSteps={telemetry.totalSteps ?? steps}
+            isLive={telemetry.isLive}
+            isFinished={telemetry.isFinished}
+          />
         )}
 
         {/* Canvas Principal */}

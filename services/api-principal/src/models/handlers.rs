@@ -790,13 +790,21 @@ pub async fn update_model(
         );
     }
 
-    let m = match state.manager.update_model(&uid.to_string(), clean_name).await {
+    let m = match state
+        .manager
+        .update_model(&uid.to_string(), clean_name)
+        .await
+    {
         Ok(m) => m,
         Err(ManagerError::NotFound) => {
             return err(StatusCode::NOT_FOUND, "not_found", "model not found");
         }
         Err(ManagerError::InvalidRequest(_)) => {
-            return err(StatusCode::BAD_REQUEST, "invalid_request", MSG_INVALID_REQUEST);
+            return err(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                MSG_INVALID_REQUEST,
+            );
         }
         Err(ManagerError::Unavailable(_)) => return queue_unavailable(),
         Err(_) => return queue_unavailable(),

@@ -1672,7 +1672,9 @@ pub fn slugify(s: &str) -> String {
     let mut last_dash = true; // evita dash inicial
     for c in s.chars() {
         let normalized = match c {
-            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'À' | 'Á' | 'Â' | 'Ã' | 'Ä' | 'Å' => 'a',
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'À' | 'Á' | 'Â' | 'Ã' | 'Ä' | 'Å' => {
+                'a'
+            }
             'è' | 'é' | 'ê' | 'ë' | 'È' | 'É' | 'Ê' | 'Ë' => 'e',
             'ì' | 'í' | 'î' | 'ï' | 'Ì' | 'Í' | 'Î' | 'Ï' => 'i',
             'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'Ò' | 'Ó' | 'Ô' | 'Õ' | 'Ö' => 'o',
@@ -1717,7 +1719,9 @@ pub fn compute_model_name(
         let clean = out_name.trim();
         if !clean.is_empty() {
             let (base_name, user_ext) = if let Some((base, user_ext)) = clean.rsplit_once('.') {
-                if user_ext.eq_ignore_ascii_case("safetensors") || user_ext.eq_ignore_ascii_case("pt") {
+                if user_ext.eq_ignore_ascii_case("safetensors")
+                    || user_ext.eq_ignore_ascii_case("pt")
+                {
                     (base, Some(user_ext))
                 } else {
                     (clean, None)
@@ -1740,9 +1744,7 @@ pub fn compute_model_name(
     let job_hex = job_id.to_string();
     let short_id = &job_hex[..8.min(job_hex.len())];
 
-    let ds_slug = dataset_slug
-        .map(slugify)
-        .filter(|s| !s.is_empty());
+    let ds_slug = dataset_slug.map(slugify).filter(|s| !s.is_empty());
 
     let clean_model = match model.to_ascii_lowercase().as_str() {
         "flux" | "flux-2-klein-4b" => "flux2".to_string(),
@@ -2477,7 +2479,10 @@ mod tests {
     fn test_slugify() {
         assert_eq!(slugify("Meu Dataset Incrível!"), "meu-dataset-incrivel");
         assert_eq!(slugify("test__model--v1"), "test-model-v1");
-        assert_eq!(slugify("   leading and trailing   "), "leading-and-trailing");
+        assert_eq!(
+            slugify("   leading and trailing   "),
+            "leading-and-trailing"
+        );
         assert_eq!(slugify("cbr_pnk-123"), "cbr-pnk-123");
     }
 
@@ -2597,4 +2602,3 @@ mod tests {
         assert!(validate_update_model(&too_long).is_err());
     }
 }
-

@@ -70,7 +70,10 @@ pub fn validate_output_name(name: &str) -> Result<(), String> {
     if clean.is_empty() || clean.chars().count() > 100 {
         return Err("outputName must be between 1 and 100 characters".to_string());
     }
-    if !clean.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.' || c == ' ') {
+    if !clean
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.' || c == ' ')
+    {
         return Err("outputName contains invalid characters".to_string());
     }
     Ok(())

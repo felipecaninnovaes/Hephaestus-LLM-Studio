@@ -28,7 +28,8 @@ ser interrompido no meio de uma.
     3. Habilitar persistência de checkpoints periódicos por época (`outputs/checkpoints/{base_name}_epoch_XXX.safetensors`), honrando a nomeação semântica customizada (`output_name` da ADR-0022) com preservação retrocompatível de `adapter.safetensors`.
     4. Desacoplar o motor monolítico `train.py` (~2.270 linhas) em arquitetura modular limpa e extensível por modelo (`models/flux.py`, `models/sdxl.py`, `models/sd15.py`, `models/mock.py`, `optimizers.py`, `dataset.py`, `common.py`).
   - **Correções Matemáticas, Numéricas e Amostragem no FLUX**:
-    - **Amostragem FLUX.2 Klein**: `_generate_sample_flux` encapsulado com `transformer.eval()` e restauração de estado anterior; passos fixados em 4 e guidance em 1.0 (evitando saturação plástica dos latents).
+    - **Modelo Base Oficial de Treino**: Alinhamento estrito com o repositório oficial da Black Forest Labs para treino LoRA: `black-forest-labs/FLUX.2-klein-base-4B` (undistilled foundation model), separando-o da variante destilada para inferência rápida (`black-forest-labs/FLUX.2-klein-4B`).
+    - **Amostragem FLUX.2 Klein**: `_generate_sample_flux` encapsulado com `transformer.eval()` e restauração de estado anterior; passos fixados em 20–28 e guidance scale em 3.5 para o modelo base contínuo (resolvendo a falta de texturas finas/poros que ocorria com saltos grosseiros de 4 passos).
     - **Calibração de Hiperparâmetros no Frontend**: Preset e auto-ajuste de LR para FLUX.2 Klein calibrados para `0.00003` (3e-5) com precisão `bf16` em `ForjaDifusaoSetup.tsx`.
     - **Guidance Embedding de Treino**: Fixado em `1.0` durante o treino de LoRA em FLUX.1-dev.
     - **Time-Shift Schedule**: Implementado shifted logit-normal $t_{\text{shifted}} = \frac{s \cdot t}{1 + (s - 1) \cdot t}$ com $s = 3.0$ do `FlowMatchEulerDiscreteScheduler`.

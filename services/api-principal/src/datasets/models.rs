@@ -485,6 +485,56 @@ pub struct PutBoxesResponse {
     pub boxes: Vec<BoxResponse>,
 }
 
+/// Corpo de `POST /api/datasets/:id/boxes/batch`: atualização ou remoção em lote.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BatchBoxesUpdateRequest {
+    #[serde(default)]
+    pub image_ids: Option<Vec<Uuid>>,
+    pub action: String,
+    pub source_class_id: Uuid,
+    #[serde(default)]
+    pub target_class_id: Option<Uuid>,
+}
+
+/// Resposta de `POST /api/datasets/:id/boxes/batch`.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchBoxesUpdateResponse {
+    pub affected_boxes: i64,
+    pub affected_images: i64,
+}
+
+/// Validação pura do batch update de boxes (sem banco):
+/// - action deve ser "remap" ou "delete"
+/// - se "remap", target_class_id deve ser Some e diferente de source_class_id
+/// - se "delete", target_class_id deve ser None
+/// - se image_ids for Some, deve ter entre 1 e 5000 ids
+pub fn validate_batch_boxes_update(req: &BatchBoxesUpdateRequest) -> Result<(), ()> {
+    match req.action.as_str() {
+        "remap" => {
+            let target = req.target_class_id.ok_or(())?;
+            if target == req.source_class_id {
+                return Err(());
+            }
+        }
+        "delete" => {
+            if req.target_class_id.is_some() {
+                return Err(());
+            }
+        }
+        _ => return Err(()),
+    }
+
+    if let Some(ref ids) = req.image_ids {
+        if ids.is_empty() || ids.len() > 5000 {
+            return Err(());
+        }
+    }
+
+    Ok(())
+}
+
 /// Corpo do `PUT .../caption` (upsert; `deny_unknown_fields` como a casa).
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1218,5 +1268,74 @@ mod tests {
             },
         ];
         assert!(validate_import_manifest(&ok).is_ok());
+    }
+
+    #[test]
+    fn batch_boxes_update_validation() {
+        let src = Uuid::new_v4();
+        let tgt = Uuid::new_v4();
+
+        // remap válido
+        let ok_remap = BatchBoxesUpdateRequest {
+            image_ids: Some(vec![Uuid::new_v4()]),
+            action: "remap".to_string(),
+            source_class_id: src,
+            target_class_id: Some(tgt),
+        };
+        assert!(validate_batch_boxes_update(&ok_remap).is_ok());
+
+        // remap sem target deve falhar
+        let bad_remap_no_target = BatchBoxesUpdateRequest {
+            image_ids: None,
+            action: "remap".to_string(),
+            source_class_id: src,
+            target_class_id: None,
+        };
+        assert!(validate_batch_boxes_update(&bad_remap_no_target).is_err());
+
+        // remap para si mesmo deve falhar
+        let bad_remap_same = BatchBoxesUpdateRequest {
+            image_ids: None,
+            action: "remap".to_string(),
+            source_class_id: src,
+            target_class_id: Some(src),
+        };
+        assert!(validate_batch_boxes_update(&bad_remap_same).is_err());
+
+        // delete válido
+        let ok_delete = BatchBoxesUpdateRequest {
+            image_ids: None,
+            action: "delete".to_string(),
+            source_class_id: src,
+            target_class_id: None,
+        };
+        assert!(validate_batch_boxes_update(&ok_delete).is_ok());
+
+        // delete com target deve falhar
+        let bad_delete_target = BatchBoxesUpdateRequest {
+            image_ids: None,
+            action: "delete".to_string(),
+            source_class_id: src,
+            target_class_id: Some(tgt),
+        };
+        assert!(validate_batch_boxes_update(&bad_delete_target).is_err());
+
+        // action inválida deve falhar
+        let bad_action = BatchBoxesUpdateRequest {
+            image_ids: None,
+            action: "invalid".to_string(),
+            source_class_id: src,
+            target_class_id: None,
+        };
+        assert!(validate_batch_boxes_update(&bad_action).is_err());
+
+        // image_ids vazio deve falhar
+        let bad_empty_ids = BatchBoxesUpdateRequest {
+            image_ids: Some(vec![]),
+            action: "delete".to_string(),
+            source_class_id: src,
+            target_class_id: None,
+        };
+        assert!(validate_batch_boxes_update(&bad_empty_ids).is_err());
     }
 }

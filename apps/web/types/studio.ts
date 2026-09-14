@@ -295,10 +295,40 @@ export interface AutotrackerJobRequest {
   orchestratorId?: string | null;
 }
 
+export interface AutotrackerApplyRequest {
+  overwrite?: boolean;
+  imageId?: string | null;
+  createMissingClasses?: string[] | null;
+}
+
+export interface AutotrackerClassCount {
+  name: string;
+  boxesCount: number;
+}
+
+export interface AutotrackerPreviewResponse {
+  totalImages: number;
+  totalBoxes: number;
+  existingClasses: AutotrackerClassCount[];
+  missingClasses: AutotrackerClassCount[];
+}
+
 export interface AutotrackerApplyResponse {
   applied: number;
   skipped: number;
   images: number;
+}
+
+export interface BatchBoxesUpdateRequest {
+  imageIds?: string[] | null;
+  action: "remap" | "delete";
+  sourceClassId: string;
+  targetClassId?: string | null;
+}
+
+export interface BatchBoxesUpdateResponse {
+  affectedBoxes: number;
+  affectedImages: number;
 }
 
 /* ── AutoLabel (ADR-0016 / ADR-0019 AutoLabel v2) ─────────── */

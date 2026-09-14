@@ -48,6 +48,11 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
         &[200, 400, 401, 404],
     ),
     (
+        "POST",
+        "/api/datasets/:id/boxes/batch",
+        &[200, 400, 401, 404],
+    ),
+    (
         "PUT",
         "/api/datasets/:id/images/:imageId/caption",
         &[200, 400, 401, 404],
@@ -120,6 +125,11 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
         "POST",
         "/api/jobs/:id/autotracker/apply",
         &[200, 400, 401, 404, 409, 503],
+    ),
+    (
+        "GET",
+        "/api/jobs/:id/autotracker/preview",
+        &[200, 401, 404, 409, 503],
     ),
     (
         "POST",
@@ -280,6 +290,10 @@ pub fn build(state: AppState) -> axum::Router {
             put(datasets::handlers::put_boxes),
         )
         .route(
+            "/api/datasets/:id/boxes/batch",
+            post(datasets::handlers::batch_update_boxes),
+        )
+        .route(
             "/api/datasets/:id/images/:imageId/caption",
             put(datasets::handlers::put_caption),
         )
@@ -369,6 +383,10 @@ pub fn build(state: AppState) -> axum::Router {
         .route(
             "/api/jobs/:id/autotracker/apply",
             post(jobs::handlers::apply_autotracker_boxes),
+        )
+        .route(
+            "/api/jobs/:id/autotracker/preview",
+            get(jobs::handlers::preview_autotracker_boxes),
         )
         .route(
             "/api/jobs/autolabel",

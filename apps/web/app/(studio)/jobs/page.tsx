@@ -47,6 +47,7 @@ import { formatBytes, formatDuration } from "@/lib/format";
 import { openActionCenter } from "@/lib/events";
 import { JobListItem } from "@/components/studio/JobCard";
 import { AutolabelReviewModal } from "@/components/studio/AutolabelReviewModal";
+import { AutotrackerReviewModal } from "@/components/studio/AutotrackerReviewModal";
 import { IconSparkles } from "@/components/icons";
 
 const POLL_INTERVAL = 3000;
@@ -94,6 +95,7 @@ function JobsPageContent() {
   const [applyBusy, setApplyBusy] = useState(false);
   const [applyOverwrite, setApplyOverwrite] = useState(false);
   const [reviewJob, setReviewJob] = useState<Job | null>(null);
+  const [autotrackerReviewJob, setAutotrackerReviewJob] = useState<Job | null>(null);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -765,27 +767,39 @@ function JobsPageContent() {
                   {/* Ações do Job */}
                   <div className="flex items-center justify-between gap-3 pt-2">
                     {selectedJob.kind === "autotracker" && selectedJob.status === "done" && (
-                      <div className="flex items-center gap-3">
-                        <label className="flex items-center gap-2 text-xs text-zinc-400 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={applyOverwrite}
-                            onChange={(e) => setApplyOverwrite(e.target.checked)}
-                            className="rounded border-zinc-700 bg-zinc-800 text-brand-500 focus:ring-brand-500/40"
-                          />
-                          <span>Sobrescrever anotações existentes</span>
-                        </label>
+                      <div className="flex items-center gap-3 flex-wrap">
                         <Button
                           type="button"
                           variant="primary"
                           size="sm"
-                          disabled={applyBusy}
-                          loading={applyBusy}
-                          onClick={() => handleApplyBoxes(selectedJob)}
+                          onClick={() => setAutotrackerReviewJob(selectedJob)}
                         >
-                          <IconCheck className="size-3.5 text-brand-400" />
-                          <span>{applyBusy ? "Aplicando…" : "Aplicar boxes ao dataset"}</span>
+                          <IconSparkles className="size-3.5 text-brand-400" />
+                          <span>Revisar e Aplicar</span>
                         </Button>
+
+                        <div className="flex items-center gap-2 border-l border-white/10 pl-3">
+                          <label className="flex items-center gap-2 text-xs text-zinc-400 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={applyOverwrite}
+                              onChange={(e) => setApplyOverwrite(e.target.checked)}
+                              className="rounded border-zinc-700 bg-zinc-800 text-brand-500 focus:ring-brand-500/40"
+                            />
+                            <span>Sobrescrever</span>
+                          </label>
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="sm"
+                            disabled={applyBusy}
+                            loading={applyBusy}
+                            onClick={() => handleApplyBoxes(selectedJob)}
+                          >
+                            <IconCheck className="size-3.5 text-zinc-300" />
+                            <span>{applyBusy ? "Aplicando…" : "Aplicação direta"}</span>
+                          </Button>
+                        </div>
                       </div>
                     )}
 
@@ -895,6 +909,17 @@ function JobsPageContent() {
           void fetchJobs();
         }}
       />
+
+      {autotrackerReviewJob && (
+        <AutotrackerReviewModal
+          open={!!autotrackerReviewJob}
+          job={autotrackerReviewJob}
+          onClose={() => setAutotrackerReviewJob(null)}
+          onApplied={() => {
+            void fetchJobs();
+          }}
+        />
+      )}
     </div>
   );
 }

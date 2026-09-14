@@ -1975,11 +1975,73 @@ pub async fn apply_autotracker_boxes(
             )
         }
     };
-    let class_map = models::resolve_class_ids(&class_rows);
-    let class_map_lower: std::collections::HashMap<String, Uuid> = class_rows
+    let mut class_map = models::resolve_class_ids(&class_rows);
+    let mut class_map_lower: std::collections::HashMap<String, Uuid> = class_rows
         .iter()
         .map(|(id, name)| (name.to_lowercase(), *id))
         .collect();
+
+    // 6a. Se create_missing_classes fornecido, cria as novas classes no dataset.
+    if let Some(ref to_create) = req.create_missing_classes {
+        for name in to_create {
+            let trimmed = name.trim();
+            if !crate::datasets::models::is_valid_class_name(trimmed) {
+                return invalid_request();
+            }
+            let lower = trimmed.to_lowercase();
+            if !class_map_lower.contains_key(&lower) {
+                // Checa teto de 200 classes
+                let current_count: i64 =
+                    match sqlx::query_scalar("SELECT count(*) FROM classes WHERE dataset_id = $1")
+                        .bind(dataset_id)
+                        .fetch_one(&state.pool)
+                        .await
+                    {
+                        Ok(c) => c,
+                        Err(_) => {
+                            return err(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "internal",
+                                "internal server error",
+                            )
+                        }
+                    };
+                if current_count >= 200 {
+                    return invalid_request();
+                }
+                let next_idx: i32 = match sqlx::query_scalar(
+                    "SELECT COALESCE(MAX(idx), -1) + 1 FROM classes WHERE dataset_id = $1",
+                )
+                .bind(dataset_id)
+                .fetch_one(&state.pool)
+                .await
+                {
+                    Ok(i) => i,
+                    Err(_) => {
+                        return err(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "internal",
+                            "internal server error",
+                        )
+                    }
+                };
+                let color = crate::datasets::models::color_for(next_idx as usize);
+                let new_class_id = Uuid::new_v4();
+                if sqlx::query("INSERT INTO classes (id, dataset_id, name, color, idx) VALUES ($1, $2, $3, $4, $5)")
+                    .bind(new_class_id)
+                    .bind(dataset_id)
+                    .bind(trimmed)
+                    .bind(color)
+                    .bind(next_idx)
+                    .execute(&state.pool)
+                    .await.is_err() {
+                        return err(StatusCode::INTERNAL_SERVER_ERROR, "internal", "internal server error");
+                    }
+                class_map.insert(trimmed.to_string(), new_class_id);
+                class_map_lower.insert(lower, new_class_id);
+            }
+        }
+    }
 
     // 7. Processa cada imagem: uma transação por imagem (ADR-0008 D1a).
     let mut total_applied: i64 = 0;
@@ -2156,6 +2218,176 @@ pub async fn apply_autotracker_boxes(
         }),
     )
         .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/jobs/:id/autotracker/preview — prévia e análise de classes do autotracker
+// ---------------------------------------------------------------------------
+
+/// GET /api/jobs/:id/autotracker/preview — retorna resumo de detecções com análise de classes existentes e ausentes.
+///
+/// Status: 200 | 401 | 404 `not_found` | 409 `job_not_done` | 503 `queue_unavailable` | 503 `storage_unavailable`.
+pub async fn preview_autotracker_boxes(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Response {
+    // 0. Parse job id — não-UUID ⇒ 404.
+    if parse_uuid(&id).is_none() {
+        return not_found();
+    }
+
+    // 1. Busca job no manager.
+    let job = match state.manager.get_job(&id).await {
+        Ok(j) => j,
+        Err(ManagerError::NotFound) => return not_found(),
+        Err(ManagerError::Unavailable(_)) => return queue_unavailable(),
+        Err(_) => return queue_unavailable(),
+    };
+
+    // 1a. Valida engine == 'autotracker'.
+    if job.engine != "autotracker" {
+        return not_found();
+    }
+
+    // 1b. Valida status == 'done'.
+    if job.status != "done" {
+        return job_not_done();
+    }
+
+    // 1c. Valida dataset_id presente.
+    let dataset_id_str = match &job.dataset_id {
+        Some(s) => s.clone(),
+        None => return dataset_not_ready(),
+    };
+    let dataset_id: Uuid = match dataset_id_str.parse() {
+        Ok(v) => v,
+        Err(_) => return dataset_not_ready(),
+    };
+
+    // 2. Localiza artefato `boxes.json` via list_artifacts.
+    let artifacts = match state.manager.list_artifacts(&id).await {
+        Ok(a) => a,
+        Err(ManagerError::NotFound) => return not_found(),
+        Err(ManagerError::Unavailable(_)) => return queue_unavailable(),
+        Err(_) => return queue_unavailable(),
+    };
+    let boxes_artifact = match artifacts.iter().find(|a| a.kind == "boxes") {
+        Some(a) => a,
+        None => return not_found(),
+    };
+
+    if let Err(resp) = validate_artifact_path(&boxes_artifact.path) {
+        return resp;
+    }
+
+    // 2b. Lê objeto via StoragePort.
+    let key = format!("artifacts/{id}/{}", boxes_artifact.path);
+    let bytes = match state.storage.get(&key).await {
+        Ok(b) => b,
+        Err(StorageError::NotFound) => {
+            return err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "storage_unavailable",
+                MSG_STORAGE_UNAVAILABLE,
+            );
+        }
+        Err(StorageError::Unavailable(_)) => return storage_unavailable(),
+    };
+
+    // 2c. Confere md5.
+    let computed = format!(
+        "{:x}",
+        md5::Digest::finalize({
+            use md5::Digest;
+            let mut h = md5::Md5::new();
+            md5::Digest::update(&mut h, &bytes);
+            h
+        })
+    );
+    if computed != boxes_artifact.md5 {
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "storage_unavailable",
+            MSG_STORAGE_UNAVAILABLE,
+        );
+    }
+
+    // 3. Parse do JSON.
+    let artifact = match models::parse_boxes_json(&bytes) {
+        Ok(a) => a,
+        Err(_) => return invalid_request(),
+    };
+
+    // 4. Busca classes existentes do dataset.
+    let class_rows: Vec<(Uuid, String)> = match sqlx::query_as::<_, (Uuid, String)>(
+        "SELECT id, name FROM classes WHERE dataset_id = $1",
+    )
+    .bind(dataset_id)
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "internal server error",
+            )
+        }
+    };
+    let class_map = models::resolve_class_ids(&class_rows);
+    let class_map_lower: std::collections::HashMap<String, Uuid> = class_rows
+        .iter()
+        .map(|(id, name)| (name.to_lowercase(), *id))
+        .collect();
+
+    // 5. Agrega contagem de boxes por classe.
+    let mut total_boxes: i64 = 0;
+    let mut class_counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+
+    for img in &artifact.images {
+        for b in &img.boxes {
+            total_boxes += 1;
+            *class_counts.entry(b.class.clone()).or_insert(0) += 1;
+        }
+    }
+
+    let mut existing_classes = Vec::new();
+    let mut missing_classes = Vec::new();
+
+    for (class_name, count) in class_counts {
+        if models::match_class_id(&class_name, &class_map, &class_map_lower).is_some() {
+            existing_classes.push(models::AutotrackerClassCount {
+                name: class_name,
+                boxes_count: count,
+            });
+        } else {
+            missing_classes.push(models::AutotrackerClassCount {
+                name: class_name,
+                boxes_count: count,
+            });
+        }
+    }
+
+    existing_classes.sort_by(|a, b| {
+        b.boxes_count
+            .cmp(&a.boxes_count)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    missing_classes.sort_by(|a, b| {
+        b.boxes_count
+            .cmp(&a.boxes_count)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+
+    let resp = models::AutotrackerPreviewResponse {
+        total_images: artifact.images.len() as i64,
+        total_boxes,
+        existing_classes,
+        missing_classes,
+    };
+
+    (StatusCode::OK, Json(resp)).into_response()
 }
 
 // ---------------------------------------------------------------------------

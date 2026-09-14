@@ -70,6 +70,7 @@ import GalleryOperateToolbar, {
   type GalleryDensity,
 } from "@/components/studio/GalleryOperateToolbar";
 import FloatingSelectionBar from "@/components/studio/FloatingSelectionBar";
+import BatchEditClassesModal from "@/components/studio/BatchEditClassesModal";
 import ImageTableView from "@/components/studio/ImageTableView";
 import ImageQuickLookModal from "@/components/studio/ImageQuickLookModal";
 
@@ -119,6 +120,7 @@ export default function DatasetGalleryPage() {
   const [trainOpen, setTrainOpen] = useState(false);
   const [autoTrackerOpen, setAutoTrackerOpen] = useState(false);
   const [autoLabelOpen, setAutoLabelOpen] = useState(false);
+  const [batchEditClassesOpen, setBatchEditClassesOpen] = useState(false);
   const [selectedClassId, setSelectedClassId] = useState<string | null>(null);
   const [searchMode, setSearchMode] = useState<"tag" | "semantic">("tag");
   const [searchInput, setSearchInput] = useState("");
@@ -1578,6 +1580,7 @@ export default function DatasetGalleryPage() {
         onClearSelection={handleClearSelection}
         onBatchDelete={() => setBatchDeleteOpen(true)}
         onAutoLabel={() => setAutoLabelOpen(true)}
+        onBatchEditClasses={() => setBatchEditClassesOpen(true)}
         busy={batchDeleteBusy}
       />
 
@@ -1679,6 +1682,24 @@ export default function DatasetGalleryPage() {
           totalImagesCount={dataset.imagesCount}
           onClose={() => setAutoLabelOpen(false)}
           onJobCreated={() => setAutoLabelOpen(false)}
+        />
+      )}
+      {batchEditClassesOpen && dataset && (
+        <BatchEditClassesModal
+          open
+          datasetId={dataset.id}
+          datasetClasses={dataset.classes ?? []}
+          selectedImageIds={Array.from(selectedIds)}
+          totalInView={items.length}
+          onClose={() => setBatchEditClassesOpen(false)}
+          onSuccess={() => {
+            if (datasetId) {
+              void load(datasetId, splitView, annotationFilter, selectedClassId, activeTag);
+            }
+          }}
+          onClassesUpdated={(newClasses) => {
+            setDataset({ ...dataset, classes: newClasses });
+          }}
         />
       )}
       <ConfirmDialog

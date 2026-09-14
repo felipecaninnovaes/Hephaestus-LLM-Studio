@@ -70,6 +70,7 @@ import GalleryOperateToolbar, {
   type GalleryDensity,
 } from "@/components/studio/GalleryOperateToolbar";
 import FloatingSelectionBar from "@/components/studio/FloatingSelectionBar";
+import BatchEditClassesModal from "@/components/studio/BatchEditClassesModal";
 import ImageTableView from "@/components/studio/ImageTableView";
 import ImageQuickLookModal from "@/components/studio/ImageQuickLookModal";
 
@@ -119,6 +120,7 @@ export default function DatasetGalleryPage() {
   const [trainOpen, setTrainOpen] = useState(false);
   const [autoTrackerOpen, setAutoTrackerOpen] = useState(false);
   const [autoLabelOpen, setAutoLabelOpen] = useState(false);
+  const [batchEditClassesOpen, setBatchEditClassesOpen] = useState(false);
   const [selectedClassId, setSelectedClassId] = useState<string | null>(null);
   const [searchMode, setSearchMode] = useState<"tag" | "semantic">("tag");
   const [searchInput, setSearchInput] = useState("");
@@ -213,6 +215,20 @@ export default function DatasetGalleryPage() {
       void load(datasetId, splitView, annotationFilter, selectedClassId, activeTag);
     }
   }, [datasetId, load, splitView, annotationFilter, selectedClassId, activeTag, searchMode, activeQuery, similarFor]);
+
+  // Atualiza galeria e classes quando jobs em segundo plano (AutoTracker, etc) aplicam alterações
+  useEffect(() => {
+    function handleDatasetUpdated(e: Event) {
+      const ce = e as CustomEvent<{ datasetId?: string }>;
+      if (datasetId && (!ce.detail || ce.detail.datasetId === datasetId)) {
+        void load(datasetId, splitView, annotationFilter, selectedClassId, activeTag);
+      }
+    }
+    window.addEventListener("hephaestus:dataset-updated", handleDatasetUpdated);
+    return () => {
+      window.removeEventListener("hephaestus:dataset-updated", handleDatasetUpdated);
+    };
+  }, [datasetId, load, splitView, annotationFilter, selectedClassId, activeTag]);
 
   function stopSearchPolling() {
     if (pollRef.current) {
@@ -1578,6 +1594,7 @@ export default function DatasetGalleryPage() {
         onClearSelection={handleClearSelection}
         onBatchDelete={() => setBatchDeleteOpen(true)}
         onAutoLabel={() => setAutoLabelOpen(true)}
+        onBatchEditClasses={() => setBatchEditClassesOpen(true)}
         busy={batchDeleteBusy}
       />
 
@@ -1679,6 +1696,24 @@ export default function DatasetGalleryPage() {
           totalImagesCount={dataset.imagesCount}
           onClose={() => setAutoLabelOpen(false)}
           onJobCreated={() => setAutoLabelOpen(false)}
+        />
+      )}
+      {batchEditClassesOpen && dataset && (
+        <BatchEditClassesModal
+          open
+          datasetId={dataset.id}
+          datasetClasses={dataset.classes ?? []}
+          selectedImageIds={Array.from(selectedIds)}
+          totalInView={items.length}
+          onClose={() => setBatchEditClassesOpen(false)}
+          onSuccess={() => {
+            if (datasetId) {
+              void load(datasetId, splitView, annotationFilter, selectedClassId, activeTag);
+            }
+          }}
+          onClassesUpdated={(newClasses) => {
+            setDataset({ ...dataset, classes: newClasses });
+          }}
         />
       )}
       <ConfirmDialog

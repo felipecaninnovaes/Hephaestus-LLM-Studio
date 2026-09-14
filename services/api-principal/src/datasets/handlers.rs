@@ -26,7 +26,8 @@ use uuid::Uuid;
 
 use super::models::{
     color_for, derive, derived_source, normalize_classes, parse_id, plan_classes, slugify,
-    validate_boxes, validate_caption, BoxResponse, CaptionResponse, CreateDatasetRequest,
+    validate_batch_boxes_update, validate_boxes, validate_caption, BatchBoxesUpdateRequest,
+    BatchBoxesUpdateResponse, BoxResponse, CaptionResponse, CreateDatasetRequest,
     DatasetClassResponse, DatasetResponse, DatasetRow, DatasetType, ImageDetailResponse, ImagePage,
     ImageResponse, ImageRow, PutBoxesRequest, PutBoxesResponse, PutCaptionRequest,
     PutClassesRequest, PutClassesResponse, UploadItem, UploadResult,
@@ -1755,6 +1756,192 @@ pub async fn put_classes(
     };
     let resp = PutClassesResponse {
         classes: rows.into_iter().map(DatasetClassResponse::from).collect(),
+    };
+    (StatusCode::OK, Json(resp)).into_response()
+}
+
+/// POST /api/datasets/:id/boxes/batch — atualização ou remoção em lote de bounding boxes.
+pub async fn batch_update_boxes(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    // (a) uuid antes de tudo (404 not_found)
+    let ds_id: Uuid = match parse_id(&id) {
+        Some(v) => v,
+        None => return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND),
+    };
+    // (b) body no envelope
+    let req: BatchBoxesUpdateRequest = match parse_json_body(body) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    // (c) validação pura
+    if validate_batch_boxes_update(&req).is_err() {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            MSG_INVALID_REQUEST,
+        );
+    }
+    // (d) dataset existe escopado ao id
+    let exists: bool =
+        match sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM datasets WHERE id = $1)")
+            .bind(ds_id)
+            .fetch_one(&state.pool)
+            .await
+        {
+            Ok(v) => v,
+            Err(_) => return internal(),
+        };
+    if !exists {
+        return err(StatusCode::NOT_FOUND, "not_found", MSG_NOT_FOUND);
+    }
+    // (e) classes pertencem ao dataset
+    let source_exists: bool = match sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM classes WHERE id = $1 AND dataset_id = $2)",
+    )
+    .bind(req.source_class_id)
+    .bind(ds_id)
+    .fetch_one(&state.pool)
+    .await
+    {
+        Ok(v) => v,
+        Err(_) => return internal(),
+    };
+    if !source_exists {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            MSG_INVALID_REQUEST,
+        );
+    }
+
+    if let Some(target_id) = req.target_class_id {
+        let target_exists: bool = match sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM classes WHERE id = $1 AND dataset_id = $2)",
+        )
+        .bind(target_id)
+        .bind(ds_id)
+        .fetch_one(&state.pool)
+        .await
+        {
+            Ok(v) => v,
+            Err(_) => return internal(),
+        };
+        if !target_exists {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                MSG_INVALID_REQUEST,
+            );
+        }
+    }
+
+    // (f) se image_ids informado, valida que todas pertencem ao dataset e estão ativas
+    if let Some(ref img_ids) = req.image_ids {
+        let mut distinct = img_ids.clone();
+        distinct.sort();
+        distinct.dedup();
+        let count: i64 = match sqlx::query_scalar(
+            "SELECT count(*) FROM images WHERE dataset_id = $1 AND deleted_at IS NULL AND id = ANY($2)",
+        )
+        .bind(ds_id)
+        .bind(&distinct)
+        .fetch_one(&state.pool)
+        .await
+        {
+            Ok(v) => v,
+            Err(_) => return internal(),
+        };
+        if count != distinct.len() as i64 {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                MSG_INVALID_REQUEST,
+            );
+        }
+    }
+
+    // (g) transação para a mutação
+    let mut tx = match state.pool.begin().await {
+        Ok(t) => t,
+        Err(_) => return internal(),
+    };
+
+    let affected_image_ids: Vec<Uuid> = match (req.action.as_str(), &req.image_ids) {
+        ("remap", Some(ids)) => {
+            let target_id = req.target_class_id.unwrap();
+            match sqlx::query_scalar::<_, Uuid>(
+                "UPDATE boxes SET class_id = $1 WHERE class_id = $2 AND image_id = ANY($3) RETURNING image_id",
+            )
+            .bind(target_id)
+            .bind(req.source_class_id)
+            .bind(ids)
+            .fetch_all(&mut *tx)
+            .await
+            {
+                Ok(r) => r,
+                Err(_) => return internal(),
+            }
+        }
+        ("remap", None) => {
+            let target_id = req.target_class_id.unwrap();
+            match sqlx::query_scalar::<_, Uuid>(
+                "UPDATE boxes SET class_id = $1 WHERE class_id = $2 AND image_id IN (SELECT id FROM images WHERE dataset_id = $3 AND deleted_at IS NULL) RETURNING image_id",
+            )
+            .bind(target_id)
+            .bind(req.source_class_id)
+            .bind(ds_id)
+            .fetch_all(&mut *tx)
+            .await
+            {
+                Ok(r) => r,
+                Err(_) => return internal(),
+            }
+        }
+        ("delete", Some(ids)) => {
+            match sqlx::query_scalar::<_, Uuid>(
+                "DELETE FROM boxes WHERE class_id = $1 AND image_id = ANY($2) RETURNING image_id",
+            )
+            .bind(req.source_class_id)
+            .bind(ids)
+            .fetch_all(&mut *tx)
+            .await
+            {
+                Ok(r) => r,
+                Err(_) => return internal(),
+            }
+        }
+        ("delete", None) => {
+            match sqlx::query_scalar::<_, Uuid>(
+                "DELETE FROM boxes WHERE class_id = $1 AND image_id IN (SELECT id FROM images WHERE dataset_id = $2 AND deleted_at IS NULL) RETURNING image_id",
+            )
+            .bind(req.source_class_id)
+            .bind(ds_id)
+            .fetch_all(&mut *tx)
+            .await
+            {
+                Ok(r) => r,
+                Err(_) => return internal(),
+            }
+        }
+        _ => return internal(),
+    };
+
+    if tx.commit().await.is_err() {
+        return internal();
+    }
+
+    let affected_boxes = affected_image_ids.len() as i64;
+    let mut unique_imgs = affected_image_ids;
+    unique_imgs.sort();
+    unique_imgs.dedup();
+    let affected_images = unique_imgs.len() as i64;
+
+    let resp = BatchBoxesUpdateResponse {
+        affected_boxes,
+        affected_images,
     };
     (StatusCode::OK, Json(resp)).into_response()
 }

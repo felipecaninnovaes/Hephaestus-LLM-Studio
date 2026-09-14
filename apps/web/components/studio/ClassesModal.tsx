@@ -7,6 +7,7 @@ import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { ApiError } from "@/lib/api";
 import { CLASS_RE, MAX_CLASSES, putClasses } from "@/lib/classes";
+import { getDataset } from "@/lib/datasets";
 import type { PutClassInput, StudioClass } from "@/types/studio";
 import { showToast } from "./Toast";
 
@@ -47,6 +48,7 @@ export default function ClassesModal({
   const [rows, setRows] = useState<Row[]>(() => toRows(datasetClasses));
   const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const deletedIdsRef = useRef<Set<string>>(new Set());
   const initialRef = useRef<string>("");
   if (!initialRef.current) {
     initialRef.current = JSON.stringify(
@@ -58,6 +60,39 @@ export default function ClassesModal({
     const t = setTimeout(() => firstRef.current?.focus(), 30);
     return () => clearTimeout(t);
   }, []);
+
+  // Sincroniza classes frescas do servidor em background ao abrir
+  useEffect(() => {
+    let active = true;
+    getDataset(datasetId)
+      .then((ds) => {
+        if (!active) return;
+        const freshRows = toRows(ds.classes);
+        setRows((prev) => {
+          const userAddedRows = prev.filter((r) => !r.id);
+          // Se o usuário não adicionou nem excluiu nada ainda, espelha o servidor
+          if (userAddedRows.length === 0 && deletedIdsRef.current.size === 0) {
+            initialRef.current = JSON.stringify(
+              freshRows.map((r) => ({ id: r.id ?? null, name: r.name })),
+            );
+            return freshRows;
+          }
+          // Caso contrário, mescla classes do servidor que não estejam em prev nem em deletedIdsRef
+          const existingIds = new Set(prev.filter((r) => r.id).map((r) => r.id as string));
+          const missingFromServer = freshRows.filter(
+            (fr) => fr.id && !existingIds.has(fr.id) && !deletedIdsRef.current.has(fr.id),
+          );
+          if (missingFromServer.length > 0) {
+            return [...prev, ...missingFromServer];
+          }
+          return prev;
+        });
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [datasetId]);
 
   const currentSig = useMemo(
     () =>
@@ -73,6 +108,10 @@ export default function ClassesModal({
   }
 
   function removeRow(key: string) {
+    const row = rows.find((r) => r.key === key);
+    if (row?.id) {
+      deletedIdsRef.current.add(row.id);
+    }
     setRows((prev) => prev.filter((r) => r.key !== key));
   }
 
@@ -110,10 +149,28 @@ export default function ClassesModal({
       setFormError("Máximo de 200 classes por dataset.");
       return;
     }
-    const payload: PutClassInput[] = rows.map((r) =>
-      r.id ? { id: r.id, name: r.name.trim() } : { name: r.name.trim() },
-    );
+
     setBusy(true);
+
+    // Consulta classes frescas para não omitir acidentalmente classes criadas em background (ex: autotracker)
+    let extraServerClasses: { id: string; name: string }[] = [];
+    try {
+      const fresh = await getDataset(datasetId);
+      const currentIds = new Set(rows.filter((r) => r.id).map((r) => r.id as string));
+      extraServerClasses = fresh.classes
+        .filter((c) => !currentIds.has(c.id) && !deletedIdsRef.current.has(c.id))
+        .map((c) => ({ id: c.id, name: c.name }));
+    } catch {
+      // Se falhar o reload pré-flight, prossegue com os dados locais
+    }
+
+    const payload: PutClassInput[] = [
+      ...rows.map((r) =>
+        r.id ? { id: r.id, name: r.name.trim() } : { name: r.name.trim() },
+      ),
+      ...extraServerClasses,
+    ];
+
     try {
       const res = await putClasses(datasetId, payload);
       showToast("Classes salvas.", "success");
@@ -122,10 +179,17 @@ export default function ClassesModal({
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.code === "classes_in_use" || err.status === 409) {
-          showToast(
-            "Há anotações usando uma das classes removidas.",
-            "error",
+          setFormError(
+            "Conflito: há anotações usando uma das classes removidas. Sincronizando com o servidor...",
           );
+          try {
+            const fresh = await getDataset(datasetId);
+            setRows(toRows(fresh.classes));
+            deletedIdsRef.current.clear();
+            initialRef.current = JSON.stringify(
+              toRows(fresh.classes).map((r) => ({ id: r.id ?? null, name: r.name })),
+            );
+          } catch {}
           return;
         }
         if (err.code === "unauthorized" || err.status === 401) {

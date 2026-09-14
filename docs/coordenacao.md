@@ -19,7 +19,32 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-13 (FATIA NOMEAÇÃO SEMÂNTICA, CONFIGURAÇÃO DE NOME E RENOMEAÇÃO DE MODELOS CONCLUÍDA NA BRANCH)
+## Estado atual — 2026-09-13 (FATIA ALTERAÇÃO EM LOTE DE CLASSES NO GRID E CURADORIA DE CLASSES AUSENTES NO AUTOTRACKER CONCLUÍDA NA BRANCH)
+
+- **FATIA ALTERAÇÃO EM LOTE DE CLASSES NO GRID E CURADORIA DE CLASSES AUSENTES NO AUTOTRACKER — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/yolo-batch-tags-autotracker-classes`.
+  - **Motivação**: Eliminar a lentidão e o esforço manual repetitivo na correção de anotações em datasets de treino (por exemplo, trocar em massa `female_face` por `male_face` quando o detector confunde o gênero ou purgar tags/classes espúrias de imagens selecionadas) e permitir ao AutoTracker identificar e sugerir de forma interativa a criação de novas classes detectadas no dataset (evitando o descarte silencioso de boxes válidas).
+  - **Contratos (OpenAPI 0.23.0)**:
+    - Bump de versão `0.22.0` → `0.23.0`.
+    - Adicionado endpoint `POST /api/datasets/{id}/boxes/batch` (200, 400, 401, 404, 500) com schemas `BatchBoxesUpdateRequest` e `BatchBoxesUpdateResponse`.
+    - Adicionado endpoint `GET /api/jobs/{id}/autotracker/preview` (200, 401, 404, 409, 503) com schemas `AutotrackerPreviewResponse` e `AutotrackerClassCount`.
+    - Atualizado `AutotrackerApplyRequest` com campo opcional `createMissingClasses: Option<Vec<string>>`.
+  - **Backend Rust (`api-principal`)**:
+    - `datasets/models.rs`: Modelos `BatchBoxesUpdateRequest`, `BatchBoxesUpdateResponse` e função de validação pura `validate_batch_boxes_update` com testes unitários.
+    - `datasets/handlers.rs`: Handler atômico `batch_update_boxes` executando remap ou delete em transação única no Postgres com recálculo automático de contadores via triggers.
+    - `jobs/models.rs`: Modelos `AutotrackerClassCount`, `AutotrackerPreviewResponse` e campo `create_missing_classes` no `AutotrackerApplyRequest`.
+    - `jobs/handlers.rs`: Handlers `preview_autotracker_boxes` (agrupamento e auditoria de classes no artefato `boxes.json`) e suporte a criação automática de novas classes (`create_missing_classes`) com derivação de cor e `idx` antes do ingest em `apply_autotracker_boxes`.
+    - `auth/routes.rs`: Rotas registradas no inventário `PROTECTED_ROUTES` e no router. 334/334 testes unitários e 15/15 contract tests passando.
+  - **Web Frontend (`apps/web`)**:
+    - `types/studio.ts`: Tipos alinhados com o OpenAPI 0.23.0 (`BatchBoxesUpdateRequest`, `BatchBoxesUpdateResponse`, `AutotrackerPreviewResponse`, `AutotrackerClassCount`, `AutotrackerApplyRequest`).
+    - `lib/images.ts`: Função `batchUpdateBoxes`.
+    - `lib/autotracker.ts`: Funções `getAutotrackerPreview` e `applyAutotrackerBoxes` com `createMissingClasses`.
+    - `components/icons.tsx`: Adicionado `IconTag`.
+    - `components/studio/BatchEditClassesModal.tsx`: Modal em Dark-Only Vidro Óptico para remapear ou excluir classes em lote com suporte a criação rápida de novas classes.
+    - `components/studio/FloatingSelectionBar.tsx`: Ação rápida "Editar Classes" na barra flutuante da galeria.
+    - `app/(studio)/datasets/[id]/page.tsx`: Integração com `BatchEditClassesModal` e recarregamento reativo da galeria.
+    - `components/studio/AutotrackerReviewModal.tsx`: Modal de revisão do AutoTracker com estatísticas, detecção de classes ausentes, seleção individual/em massa para criação no dataset e controle de sobrescrita.
+    - `components/studio/ActionCenter.tsx` e `app/(studio)/jobs/page.tsx`: Botão e fluxo "Revisar e Aplicar" integrados.
+    - Verificação de build: `npm run build` compilado com 100% de sucesso (13/13 páginas, 0 erros).
 
 - **FATIA NOMEAÇÃO SEMÂNTICA, CONFIGURAÇÃO DE NOME E RENOMEAÇÃO DE MODELOS — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/nomeacao-modelos`.
   - **Motivação**: Eliminar a confusão causada por múltiplos arquivos de pesos com nomes genéricos idênticos (`adapter.safetensors` para difusão LoRA e `best.pt` para YOLO), fornecendo nomeação automática contextual inteligente baseada no dataset, modelo e trigger word, permitindo ao usuário definir nomes customizados no setup dos treinos, renomear qualquer modelo existente diretamente pelo catálogo e baixar arquivos com nomes semânticos descritivos via `Content-Disposition`.

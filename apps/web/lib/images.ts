@@ -1,5 +1,7 @@
 import { apiFetch } from "@/lib/api";
 import type {
+  BatchBoxesUpdateRequest,
+  BatchBoxesUpdateResponse,
   BoxInput,
   CaptionData,
   ImageDetail,
@@ -230,6 +232,19 @@ export function putBoxes(
   return apiFetch<PutBoxesResponse>(
     `/api/datasets/${datasetId}/images/${imageId}/boxes`,
     { method: "PUT", body: { boxes } },
+  );
+}
+
+export function batchUpdateBoxes(
+  datasetId: string,
+  params: BatchBoxesUpdateRequest,
+): Promise<BatchBoxesUpdateResponse> {
+  return apiFetch<BatchBoxesUpdateResponse>(
+    `/api/datasets/${datasetId}/boxes/batch`,
+    {
+      method: "POST",
+      body: params,
+    },
   );
 }
 

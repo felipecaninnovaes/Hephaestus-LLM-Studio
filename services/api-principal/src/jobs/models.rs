@@ -220,7 +220,7 @@ autotrack:
 
 /// Body de `POST /api/jobs/:id/autotracker/apply` (wire camelCase — ADR-0008 D1).
 ///
-/// `overwrite` (default false) e `imageId` (UUID opcional) — `deny_unknown_fields`.
+/// `overwrite` (default false), `imageId` (UUID opcional) e `createMissingClasses` (array opcional) — `deny_unknown_fields`.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutotrackerApplyRequest {
@@ -228,6 +228,26 @@ pub struct AutotrackerApplyRequest {
     pub overwrite: bool,
     #[serde(default)]
     pub image_id: Option<String>,
+    #[serde(default)]
+    pub create_missing_classes: Option<Vec<String>>,
+}
+
+/// Contagem de boxes por classe no preview do autotracker.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutotrackerClassCount {
+    pub name: String,
+    pub boxes_count: i64,
+}
+
+/// Resposta de `GET /api/jobs/:id/autotracker/preview`.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutotrackerPreviewResponse {
+    pub total_images: i64,
+    pub total_boxes: i64,
+    pub existing_classes: Vec<AutotrackerClassCount>,
+    pub missing_classes: Vec<AutotrackerClassCount>,
 }
 
 /// Box extraída do `boxes.json` do engine (snake_case transporte — ADR-0008 D1).

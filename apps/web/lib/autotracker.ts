@@ -1,5 +1,9 @@
 import { apiFetch } from "@/lib/api";
-import type { AutotrackerApplyResponse } from "@/types/studio";
+import type {
+  AutotrackerApplyRequest,
+  AutotrackerApplyResponse,
+  AutotrackerPreviewResponse,
+} from "@/types/studio";
 
 /** POST /api/jobs/autotracker — cria job de AutoTracker. Retorna 202. */
 export function startAutotrackerJob(params: {
@@ -15,10 +19,19 @@ export function startAutotrackerJob(params: {
   });
 }
 
+/** GET /api/jobs/:id/autotracker/preview — prévia de detecções e análise de classes do autotracker. */
+export function getAutotrackerPreview(
+  jobId: string,
+): Promise<AutotrackerPreviewResponse> {
+  return apiFetch<AutotrackerPreviewResponse>(
+    `/api/jobs/${jobId}/autotracker/preview`,
+  );
+}
+
 /** POST /api/jobs/:id/autotracker/apply — aplica boxes geradas ao dataset. */
 export function applyAutotrackerBoxes(
   jobId: string,
-  params?: { overwrite?: boolean },
+  params?: AutotrackerApplyRequest,
 ): Promise<AutotrackerApplyResponse> {
   return apiFetch(`/api/jobs/${jobId}/autotracker/apply`, {
     method: "POST",

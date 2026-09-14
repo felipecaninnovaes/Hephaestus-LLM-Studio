@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { IconTrash, IconX, IconCheck, IconSparkles } from "@/components/icons";
+import { IconTrash, IconX, IconCheck, IconSparkles, IconTag } from "@/components/icons";
 
 export interface FloatingSelectionBarProps {
   selectedCount: number;
@@ -10,6 +10,7 @@ export interface FloatingSelectionBarProps {
   onClearSelection: () => void;
   onBatchDelete: () => void;
   onAutoLabel?: () => void;
+  onBatchEditClasses?: () => void;
   busy?: boolean;
 }
 
@@ -20,6 +21,7 @@ export function FloatingSelectionBar({
   onClearSelection,
   onBatchDelete,
   onAutoLabel,
+  onBatchEditClasses,
   busy = false,
 }: FloatingSelectionBarProps) {
   if (selectedCount === 0) return null;
@@ -66,6 +68,18 @@ export function FloatingSelectionBar({
           >
             <IconSparkles className="size-3.5 text-brand-400" />
             <span>AutoLabel ({selectedCount})</span>
+          </button>
+        )}
+
+        {onBatchEditClasses && (
+          <button
+            type="button"
+            onClick={onBatchEditClasses}
+            disabled={busy}
+            className="flex items-center space-x-1.5 rounded-lg border border-white/15 bg-white/[0.07] px-3 py-1 font-mono text-xs font-semibold text-zinc-200 transition-colors hover:bg-white/15 disabled:opacity-60 cursor-pointer shadow-sm"
+          >
+            <IconTag className="size-3.5 text-zinc-300" />
+            <span>Editar Classes</span>
           </button>
         )}
 

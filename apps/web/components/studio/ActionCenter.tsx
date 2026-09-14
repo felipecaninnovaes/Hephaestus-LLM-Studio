@@ -26,6 +26,7 @@ import {
 import { SearchInput, SubmodulePills, Badge, ProgressBar, Drawer, jobStatusToBadgeVariant } from "@/components/ui";
 import { JobLogViewer } from "@/components/studio/JobLogViewer";
 import { AutolabelReviewModal } from "@/components/studio/AutolabelReviewModal";
+import { AutotrackerReviewModal } from "@/components/studio/AutotrackerReviewModal";
 import {
   abortJob,
   downloadArtifact,
@@ -87,6 +88,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
   const [applyBusy, setApplyBusy] = useState(false);
   const [applyOverwrite, setApplyOverwrite] = useState(false);
   const [reviewJob, setReviewJob] = useState<Job | null>(null);
+  const [autotrackerReviewJob, setAutotrackerReviewJob] = useState<Job | null>(null);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -225,6 +227,13 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
             }
           : undefined,
       );
+      if (typeof window !== "undefined" && job.datasetId) {
+        window.dispatchEvent(
+          new CustomEvent("hephaestus:dataset-updated", {
+            detail: { datasetId: job.datasetId },
+          }),
+        );
+      }
       setApplyOverwrite(false);
       await fetchData();
     } catch (err) {
@@ -1086,6 +1095,15 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                   {/* AutoTracker: aplicar boxes */}
                                   {job.kind === "autotracker" && job.status === "done" && (
                                     <div className="flex items-center gap-2 flex-wrap">
+                                      <button
+                                        type="button"
+                                        onClick={() => setAutotrackerReviewJob(job)}
+                                        className="inline-flex items-center gap-1 rounded-lg border border-brand-500/40 bg-brand-500/15 px-2.5 py-1 text-[11px] font-medium text-brand-300 transition hover:bg-brand-500/25 active:scale-[0.985] cursor-pointer"
+                                        title="Revisar classes detectadas e aceitar novas classes antes de aplicar"
+                                      >
+                                        <IconSparkles className="size-3 text-brand-400" />
+                                        <span>Revisar e Aplicar</span>
+                                      </button>
                                       <label className="flex items-center gap-1.5 text-[11px] text-zinc-400 cursor-pointer">
                                         <input
                                           type="checkbox"
@@ -1099,10 +1117,10 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                         type="button"
                                         disabled={applyBusy}
                                         onClick={() => handleApplyBoxes(job)}
-                                        className="inline-flex items-center gap-1 rounded-lg border border-[#34d399]/40 bg-[#34d399]/15 px-2.5 py-1 text-[11px] font-medium text-[#a7f3d0] transition hover:bg-[#34d399]/25 active:scale-[0.985] disabled:opacity-50 cursor-pointer"
+                                        className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.06] px-2.5 py-1 text-[11px] font-medium text-zinc-300 transition hover:bg-white/10 active:scale-[0.985] disabled:opacity-50 cursor-pointer"
                                       >
                                         <IconCheck className="size-3" />
-                                        <span>{applyBusy ? "Aplicando…" : "Aplicar ao dataset"}</span>
+                                        <span>{applyBusy ? "Aplicando…" : "Aplicação direta"}</span>
                                       </button>
                                     </div>
                                   )}
@@ -1207,6 +1225,18 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
           void fetchData();
         }}
       />
+
+      {/* Modal de Revisão e Criação de Classes Ausentes (AutoTracker) */}
+      {autotrackerReviewJob && (
+        <AutotrackerReviewModal
+          open={Boolean(autotrackerReviewJob)}
+          job={autotrackerReviewJob}
+          onClose={() => setAutotrackerReviewJob(null)}
+          onApplied={() => {
+            void fetchData();
+          }}
+        />
+      )}
     </>
   );
 }

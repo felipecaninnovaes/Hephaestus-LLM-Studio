@@ -19,29 +19,38 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-14 (FATIA CALIBRAÇÃO VAE FLUX.2 E DESACOPLAMENTO MODULAR DO TRAINER-DIFUSAO CONCLUÍDA NA BRANCH)
+## Estado atual — 2026-09-14 (FATIA CALIBRAÇÃO VAE FLUX.2, DESACOPLAMENTO MODULAR, CHECKPOINTS POR ÉPOCA E SALVAMENTO ATÔMICO CONCLUÍDA NA BRANCH)
 
-- **FATIA CALIBRAÇÃO VAE FLUX.2 E DESACOPLAMENTO MODULAR DO TRAINER-DIFUSAO — CONCLUÍDA NA BRANCH (2026-09-14)** — branch `feat/flux2-vae-modular-trainer`.
+- **FATIA CALIBRAÇÃO VAE FLUX.2, DESACOPLAMENTO MODULAR, CHECKPOINTS POR ÉPOCA E SALVAMENTO ATÔMICO — CONCLUÍDA NA BRANCH (2026-09-14)** — branch `feat/flux2-vae-modular-trainer`.
   - **Motivação**:
-    1. Eliminar viés sistemático e artefatos de degradação em texturas finas no FLUX causados por guidance em 3.5 durante treino, timesteps sem time-shift do Flow Matching, e herança inadequada de parâmetros de normalização VAE da arquitetura FLUX.1 no novo FLUX.2 Klein (o qual emprega VAE redesenhada com 32 canais `AutoencoderKLFlux2` e normalização via Batch Normalization / running stats).
-    2. Desacoplar o motor monolítico `train.py` (~2.270 linhas) em arquitetura modular limpa e extensível por modelo (`models/flux.py`, `models/sdxl.py`, `models/sd15.py`, `models/mock.py`, `optimizers.py`, `dataset.py`, `common.py`).
-  - **Correções Matemáticas e Numéricas no FLUX**:
-    - **Guidance Embedding**: Fixado em `1.0` durante o treino de LoRA em FLUX.1-dev (evitando o super-condicionamento destilado de 3.5 típico de inferência).
+    1. Eliminar viés sistemático e artefatos de degradação em texturas finas (pele plástica/encerada na Época 1) no FLUX.2 Klein causados por amostragem descalibrada (fallback com 20 steps e guidance 3.5 em modelo destilado de 4 passos sem guidance embed), falta de `transformer.eval()`, timesteps sem time-shift do Flow Matching, e LR excessivo de 1e-4 no setup inicial.
+    2. Resolver a race condition de imagens de validação corrompidas ou cortadas pela metade no frontend causadas pela leitura prematura de arquivos PNG parcialmente gravados pelo loop de polling do orquestrador Rust.
+    3. Habilitar persistência de checkpoints periódicos por época (`outputs/checkpoints/{base_name}_epoch_XXX.safetensors`), honrando a nomeação semântica customizada (`output_name` da ADR-0022) com preservação retrocompatível de `adapter.safetensors`.
+    4. Desacoplar o motor monolítico `train.py` (~2.270 linhas) em arquitetura modular limpa e extensível por modelo (`models/flux.py`, `models/sdxl.py`, `models/sd15.py`, `models/mock.py`, `optimizers.py`, `dataset.py`, `common.py`).
+  - **Correções Matemáticas, Numéricas e Amostragem no FLUX**:
+    - **Amostragem FLUX.2 Klein**: `_generate_sample_flux` encapsulado com `transformer.eval()` e restauração de estado anterior; passos fixados em 4 e guidance em 1.0 (evitando saturação plástica dos latents).
+    - **Calibração de Hiperparâmetros no Frontend**: Preset e auto-ajuste de LR para FLUX.2 Klein calibrados para `0.00003` (3e-5) com precisão `bf16` em `ForjaDifusaoSetup.tsx`.
+    - **Guidance Embedding de Treino**: Fixado em `1.0` durante o treino de LoRA em FLUX.1-dev.
     - **Time-Shift Schedule**: Implementado shifted logit-normal $t_{\text{shifted}} = \frac{s \cdot t}{1 + (s - 1) \cdot t}$ com $s = 3.0$ do `FlowMatchEulerDiscreteScheduler`.
-    - **VAE FLUX.2 Klein**: Leitura estrita de `AutoencoderKLFlux2` com extração de parâmetros reais do checkpoint (suporte a Batch Normalization `running_mean`/`running_var` e `latents_mean`/`latents_std` de `vae.config`, desacoplando dos fatores legados `0.1159`/`0.3611` do FLUX.1).
-    - **Otimizadores Estritos**: `_create_optimizer` agora filtra exclusivamente tensores com `p.requires_grad == True`, impedindo alocação indevida de buffers de momento para pesos base congelados.
+    - **VAE FLUX.2 Klein**: Leitura estrita de `AutoencoderKLFlux2` com extração de parâmetros reais do checkpoint (Batch Normalization `running_mean`/`running_var` e `latents_mean`/`latents_std`).
+    - **Otimizadores Estritos**: `_create_optimizer` agora filtra exclusivamente tensores com `p.requires_grad == True`.
+  - **Gravação Atômica e Imunidade a Race Conditions**:
+    - **Motores Python**: `_generate_sample_flux`, `_generate_sample_sdxl`, `_generate_sample_sd15` e `_generate_mock_sample` gravam via `.tmp_{filename}` com atomic swap `os.replace(...)`.
+    - **Orquestrador Rust (`services/orchestrator/src/lib.rs`)**: `metrics_handle` e o coletor final ignoram arquivos ocultos ou terminados em `.tmp`/`.part`, eliminando 100% de uploads parciais e imagens cortadas no S3.
+  - **Checkpoints por Época & Nomeação Semântica (ADR-0022)**:
+    - `common.py`: Função pura `_resolve_output_name(cfg)` que higieniza e padroniza o nome base dos pesos.
+    - Todos os engines (`mock`, `flux`, `sdxl`, `sd15`) gravam a cada época em `outputs/checkpoints/{base_name}_epoch_{epoch:03d}.safetensors` com metadados estruturados.
+    - Gravação final em `outputs/{base_name}.safetensors` com cópia retrocompatível para `outputs/adapter.safetensors`.
+    - `services/api-principal/src/jobs/models.rs`: `generate_diffusion_config_yaml` agora injeta a linha `output_name: ...` quando fornecida.
+    - `services/orchestrator/src/lib.rs`: Upload automático de `outputs/checkpoints/*.safetensors` como `kind: "checkpoint"` e de modelos customizados na raiz como `kind: "model"`.
   - **Modularização do `trainer-difusao`**:
-    - `common.py`: Helpers de métricas, telemetria, cache do Hugging Face e serialização Safetensors.
-    - `optimizers.py`: Fábrica de otimizadores (AdamW8bit, Prodigy, AdamW) e LR schedulers.
-    - `dataset.py`: `DiffusionDataset` com suporte a pares de imagens e legendas.
-    - `models/base.py`: Protocolo abstrato `BaseModelTrainer`.
-    - `models/flux.py`: Pipeline do FLUX.1 e FLUX.2 Klein (Flow Matching, patchify, RoPE, Qwen3).
-    - `models/sdxl.py`: Pipeline do SDXL (Dual CLIP, micro-conditioning time IDs, UNet).
-    - `models/sd15.py`: Pipeline do SD 1.5 (DDPM, CLIPText, UNet).
-    - `models/mock.py`: Pipeline sintético determinístico para CI e dev sem GPU.
-    - `models/__init__.py`: Factory `get_trainer(model_name, is_mock)`.
-    - `train.py`: Despachante CLI enxuto (~160 linhas) com 100% de compatibilidade reversa de imports.
-  - **Testes & Verificações**: 13/13 testes unitários passando em `engines/trainer-difusao`, `cargo check --workspace` limpo.
+    - `common.py`, `optimizers.py`, `dataset.py`, `models/base.py`, `models/flux.py`, `models/sdxl.py`, `models/sd15.py`, `models/mock.py`, `models/__init__.py`, `train.py` (~160 linhas, 100% re-exports).
+  - **Testes & Verificações**:
+    - 15/15 testes unitários passando em `engines/trainer-difusao` (incluindo testes de resolução de nomes e checkpoints por época).
+    - 334/334 testes unitários de `api-principal` passando (incluindo assertions de `output_name` no YAML).
+    - 85/85 testes do `orchestrator` passando.
+    - `npm run build` no `apps/web`: 13/13 páginas compiladas estaticamente com 0 erros TypeScript.
+    - `graft build` sincronizado.
 
 - **FATIA ALTERAÇÃO EM LOTE DE CLASSES NO GRID E CURADORIA DE CLASSES AUSENTES NO AUTOTRACKER — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/yolo-batch-tags-autotracker-classes`.
   - **Motivação**: Eliminar a lentidão e o esforço manual repetitivo na correção de anotações em datasets de treino (por exemplo, trocar em massa `female_face` por `male_face` quando o detector confunde o gênero ou purgar tags/classes espúrias de imagens selecionadas) e permitir ao AutoTracker identificar e sugerir de forma interativa a criação de novas classes detectadas no dataset (evitando o descarte silencioso de boxes válidas).

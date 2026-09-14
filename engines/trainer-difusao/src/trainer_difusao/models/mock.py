@@ -6,12 +6,14 @@ import json
 import os
 import struct
 import time
+import shutil
 from pathlib import Path
 from typing import Any
 
 from trainer_difusao.common import (
     _canonical_model_name,
     _emit_metric,
+    _resolve_output_name,
     _synthetic_loss,
 )
 from trainer_difusao.models.base import BaseModelTrainer
@@ -34,6 +36,8 @@ def _generate_mock_safetensors(output_file: Path, lora_params: dict[str, Any]) -
         "base_model": str(base_model),
         "quantization": str(quantization),
     }
+    if "epoch" in lora_params:
+        metadata["epoch"] = str(lora_params["epoch"])
     if trigger_word:
         metadata["trigger_word"] = trigger_word
 
@@ -68,10 +72,15 @@ def _generate_mock_safetensors(output_file: Path, lora_params: dict[str, Any]) -
 def _generate_mock_sample(
     output_dir: Path, epoch: int, prompt: str, seed: int = 42
 ) -> None:
-    """Gera uma imagem de teste sintética para validação do fluxo de artefatos de sample."""
+    """Gera uma imagem de teste sintética para validação do fluxo de artefatos de sample.
+    
+    Grava de forma atômica via arquivo temporário (.tmp_*) e rename para evitar que
+    leitores assíncronos (como o loop de streaming do orquestrador) leiam imagens incompletas.
+    """
     samples_dir = output_dir / "samples"
     samples_dir.mkdir(parents=True, exist_ok=True)
     sample_file = samples_dir / f"sample_epoch_{epoch:03d}.png"
+    tmp_file = sample_file.with_name(f".tmp_{sample_file.name}")
     try:
         from PIL import Image, ImageDraw
 
@@ -83,18 +92,20 @@ def _generate_mock_sample(
             f"Hephaestus Diffusion Sample\nEpoch: {epoch} | Seed: {seed}\nPrompt: {prompt[:50]}",
             fill=(240, 240, 250),
         )
-        img.save(sample_file, format="PNG")
+        img.save(tmp_file, format="PNG")
+        os.replace(tmp_file, sample_file)
     except Exception:
         import base64
 
         tiny_png = base64.b64decode(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkWPjfDwAEeQHzG4L5eAAAAABJRU5ErkJggg=="
         )
-        sample_file.write_bytes(tiny_png)
+        tmp_file.write_bytes(tiny_png)
+        os.replace(tmp_file, sample_file)
 
 
 def _mock_train(cfg: dict[str, Any], output: Path) -> None:
-    """Loop sintético de treino que emite métricas e gera adapter.safetensors com metadata."""
+    """Loop sintético de treino que emite métricas, checkpoints por época e safetensors final."""
     output.mkdir(parents=True, exist_ok=True)
     metrics_path = output / "metrics.jsonl"
 
@@ -104,6 +115,7 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
     learning_rate = float(lora_cfg.get("learning_rate", 0.0001))
     raw_model = cfg.get("model", "flux")
     base_model = _canonical_model_name(raw_model)
+    base_name = _resolve_output_name(cfg)
 
     samples_cfg = cfg.get("samples", {})
     sample_prompt = str(samples_cfg.get("prompt", "") or "").strip()
@@ -114,6 +126,12 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
 
     if metrics_path.exists():
         metrics_path.unlink()
+
+    lora_info = dict(lora_cfg)
+    lora_info["base_model"] = base_model
+    lora_info["quantization"] = str(
+        lora_cfg.get("quantization") or cfg.get("quantization") or "4bit"
+    )
 
     # Amostra baseline Época 0 (se configurada)
     if sample_prompt:
@@ -126,6 +144,9 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
             phase="baseline_ready",
             message="Amostra baseline gerada com sucesso (Época 0).",
         )
+
+    checkpoints_dir = output / "checkpoints"
+    checkpoints_dir.mkdir(parents=True, exist_ok=True)
 
     for ep in range(1, epochs + 1):
         loss = _synthetic_loss(seed, ep, epochs)
@@ -141,19 +162,24 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
             message=f"Época {ep}/{epochs} concluída · Loss: {loss}",
         )
 
+        # Salva checkpoint da época
+        ckpt_file = checkpoints_dir / f"{base_name}_epoch_{ep:03d}.safetensors"
+        _generate_mock_safetensors(ckpt_file, {**lora_info, "epoch": str(ep)})
+
         if sample_prompt and sample_interval > 0 and (ep % sample_interval == 0 or ep == epochs):
             _generate_mock_sample(output, ep, sample_prompt, seed=sample_seed)
 
         if sleep_ms > 0:
             time.sleep(sleep_ms / 1000.0)
 
-    adapter_path = output / "adapter.safetensors"
-    lora_info = dict(lora_cfg)
-    lora_info["base_model"] = base_model
-    lora_info["quantization"] = str(
-        lora_cfg.get("quantization") or cfg.get("quantization") or "4bit"
-    )
-    _generate_mock_safetensors(adapter_path, lora_info)
+    # Salva adaptador final com nome semântico configurado
+    final_adapter_path = output / f"{base_name}.safetensors"
+    _generate_mock_safetensors(final_adapter_path, lora_info)
+
+    # Compatibilidade retroativa: garante existência de adapter.safetensors
+    if base_name != "adapter":
+        shutil.copy2(final_adapter_path, output / "adapter.safetensors")
+
 
 
 class MockTrainer(BaseModelTrainer):

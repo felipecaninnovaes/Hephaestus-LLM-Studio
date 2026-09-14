@@ -1228,6 +1228,12 @@ async fn run_job_inner(
 
                             if is_image {
                                 if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
+                                    if fname.starts_with('.')
+                                        || fname.ends_with(".tmp")
+                                        || fname.ends_with(".part")
+                                    {
+                                        continue;
+                                    }
                                     if !uploaded_samples.contains(fname) {
                                         let bytes = std::fs::metadata(&path)
                                             .map(|m| m.len() as i64)
@@ -1442,7 +1448,7 @@ async fn run_job_inner(
         }
     }
 
-    // Se for difusão, escaneia também o subdiretório samples/ (amostras geradas por época)
+    // Se for difusão, escaneia também samples/, checkpoints/ por época e modelos safetensors adicionais
     if dispatch.engine == "diffusion" {
         let samples_dir = outputs.join("samples");
         if samples_dir.is_dir() {
@@ -1452,6 +1458,15 @@ async fn run_job_inner(
                     .map(|e| e.path())
                     .filter(|p| {
                         p.is_file()
+                            && !p
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .map(|n| {
+                                    n.starts_with('.')
+                                        || n.ends_with(".tmp")
+                                        || n.ends_with(".part")
+                                })
+                                .unwrap_or(false)
                             && p.extension()
                                 .and_then(|e| e.to_str())
                                 .map(|ext| {
@@ -1481,6 +1496,93 @@ async fn run_job_inner(
                                         md5,
                                         bytes,
                                     });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Escaneia checkpoints por época em outputs/checkpoints/
+        let checkpoints_dir = outputs.join("checkpoints");
+        if checkpoints_dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&checkpoints_dir) {
+                let mut ckpt_files: Vec<std::path::PathBuf> = entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        p.is_file()
+                            && !p
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .map(|n| {
+                                    n.starts_with('.')
+                                        || n.ends_with(".tmp")
+                                        || n.ends_with(".part")
+                                })
+                                .unwrap_or(false)
+                            && p.extension()
+                                .and_then(|e| e.to_str())
+                                .map(|ext| ext.eq_ignore_ascii_case("safetensors"))
+                                .unwrap_or(false)
+                    })
+                    .collect();
+                ckpt_files.sort();
+
+                for c_path in ckpt_files {
+                    if let Some(c_name) = c_path.file_name().and_then(|n| n.to_str()) {
+                        let rel_path = format!("checkpoints/{c_name}");
+                        let art_key = format!("artifacts/{job_id}/{rel_path}");
+                        if let Ok(scoped) = scoped_key(S3Scope::Artifacts, &art_key) {
+                            if let Ok(md5) = compute_file_md5(&c_path) {
+                                let bytes = std::fs::metadata(&c_path)
+                                    .map(|m| m.len() as i64)
+                                    .unwrap_or(0);
+                                if s3.put(&scoped, &c_path).await.is_ok() {
+                                    artifacts.push(ArtifactReport {
+                                        kind: "checkpoint".to_string(),
+                                        path: rel_path,
+                                        md5,
+                                        bytes,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Escaneia qualquer outro *.safetensors na raiz de outputs/ (ex: nome semântico configurado)
+        if let Ok(entries) = std::fs::read_dir(&outputs) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_file() {
+                    if let Some(f_name) = p.file_name().and_then(|n| n.to_str()) {
+                        if !f_name.starts_with('.')
+                            && !f_name.ends_with(".tmp")
+                            && !f_name.ends_with(".part")
+                            && f_name != "adapter.safetensors"
+                            && p.extension()
+                                .and_then(|e| e.to_str())
+                                .map(|ext| ext.eq_ignore_ascii_case("safetensors"))
+                                .unwrap_or(false)
+                        {
+                            let art_key = format!("artifacts/{job_id}/{f_name}");
+                            if let Ok(scoped) = scoped_key(S3Scope::Artifacts, &art_key) {
+                                if let Ok(md5) = compute_file_md5(&p) {
+                                    let bytes = std::fs::metadata(&p)
+                                        .map(|m| m.len() as i64)
+                                        .unwrap_or(0);
+                                    if s3.put(&scoped, &p).await.is_ok() {
+                                        artifacts.push(ArtifactReport {
+                                            kind: "model".to_string(),
+                                            path: f_name.to_string(),
+                                            md5,
+                                            bytes,
+                                        });
+                                    }
                                 }
                             }
                         }

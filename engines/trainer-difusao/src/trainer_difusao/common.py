@@ -45,6 +45,26 @@ def _canonical_model_name(raw_model: str) -> str:
     return norm
 
 
+def _resolve_output_name(cfg: dict[str, Any]) -> str:
+    """Resolve o nome base para os arquivos de pesos (.safetensors).
+
+    Prioriza cfg['output_name'] (ADR-0022), limpando extensão e caracteres inválidos.
+    Fallback para 'adapter'.
+    """
+    raw_name = cfg.get("output_name")
+    if raw_name and isinstance(raw_name, str) and raw_name.strip():
+        name = raw_name.strip()
+        if name.endswith(".safetensors"):
+            name = name[:-12]
+        clean = "".join(c if (c.isalnum() or c in ("-", "_", ".")) else "_" for c in name)
+        clean = clean.strip("._-")
+        if clean:
+            return clean
+
+    return "adapter"
+
+
+
 def _emit_metric(
     metrics_path: Path,
     epoch: int,

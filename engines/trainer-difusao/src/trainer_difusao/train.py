@@ -22,6 +22,7 @@ from trainer_difusao.common import (
     _canonical_model_name,
     _die,
     _emit_metric,
+    _resolve_output_name,
     _save_lora_safetensors,
     _setup_cache_dir,
 )
@@ -152,6 +153,7 @@ __all__ = [
     "_real_train_flux",
     "_real_train_sd15",
     "_real_train_sdxl",
+    "_resolve_output_name",
     "_save_lora_safetensors",
     "_setup_cache_dir",
     "cmd_health",

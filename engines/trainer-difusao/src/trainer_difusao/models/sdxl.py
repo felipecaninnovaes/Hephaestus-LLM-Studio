@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import math
+import os
+import shutil
 from pathlib import Path
 from typing import Any
 
 from trainer_difusao.common import (
     _die,
     _emit_metric,
+    _resolve_output_name,
     _save_lora_safetensors,
     _setup_cache_dir,
 )
@@ -68,43 +71,55 @@ def _generate_sample_sdxl(
     output_path: Path,
     seed: int = 42,
 ) -> None:
-    """Gera uma imagem de teste para SDXL com os pesos LoRA ativos e seed fixa determinística."""
+    """Gera uma imagem de teste para SDXL com os pesos LoRA ativos e seed fixa determinística.
+    
+    Chama unet.eval() durante a inferência e grava atomicamente via arquivo temporário (.tmp_*).
+    """
     try:
         import torch
         from diffusers import StableDiffusionXLPipeline
 
-        pipe = StableDiffusionXLPipeline(
-            vae=vae,
-            text_encoder=text_encoder_one,
-            text_encoder_2=text_encoder_two,
-            tokenizer=tokenizer_one,
-            tokenizer_2=tokenizer_two,
-            unet=unet,
-            scheduler=noise_scheduler,
-        )
-        pipe.set_progress_bar_config(disable=True)
-        generator = torch.Generator(
-            device="cuda" if torch.cuda.is_available() else "cpu"
-        ).manual_seed(seed)
-        with torch.inference_mode():
-            latents = pipe(
-                prompt,
-                generator=generator,
-                num_inference_steps=20,
-                guidance_scale=7.0,
-                output_type="latent",
-            ).images
-            latents = latents.to(dtype=torch.float32) / vae.config.scaling_factor
-            decoded = vae.decode(latents).sample
-            image = (decoded / 2 + 0.5).clamp(0, 1)
-            image = image.cpu().permute(0, 2, 3, 1).float().numpy()
-            img = pipe.numpy_to_pil(image)[0]
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            img.save(output_path)
-            print(
-                f"[SDXL] Amostra de validação salva (seed={seed}) em: {output_path}",
-                flush=True,
+        was_training = getattr(unet, "training", False)
+        unet.eval()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = output_path.with_name(f".tmp_{output_path.name}")
+
+        try:
+            pipe = StableDiffusionXLPipeline(
+                vae=vae,
+                text_encoder=text_encoder_one,
+                text_encoder_2=text_encoder_two,
+                tokenizer=tokenizer_one,
+                tokenizer_2=tokenizer_two,
+                unet=unet,
+                scheduler=noise_scheduler,
             )
+            pipe.set_progress_bar_config(disable=True)
+            generator = torch.Generator(
+                device="cuda" if torch.cuda.is_available() else "cpu"
+            ).manual_seed(seed)
+            with torch.inference_mode():
+                latents = pipe(
+                    prompt,
+                    generator=generator,
+                    num_inference_steps=20,
+                    guidance_scale=7.0,
+                    output_type="latent",
+                ).images
+                latents = latents.to(dtype=torch.float32) / vae.config.scaling_factor
+                decoded = vae.decode(latents).sample
+                image = (decoded / 2 + 0.5).clamp(0, 1)
+                image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+                img = pipe.numpy_to_pil(image)[0]
+                img.save(tmp_path)
+                os.replace(tmp_path, output_path)
+                print(
+                    f"[SDXL] Amostra de validação salva (seed={seed}) em: {output_path}",
+                    flush=True,
+                )
+        finally:
+            if was_training:
+                unet.train()
     except Exception as e:
         print(f"[WARN] Falha ao gerar amostra de validação SDXL: {e}", flush=True)
 
@@ -147,6 +162,7 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
     rank = int(lora_cfg.get("rank", 16))
     alpha = int(lora_cfg.get("alpha", 16))
     trigger_word = str(lora_cfg.get("trigger_word", ""))
+    base_name = _resolve_output_name(cfg)
 
     samples_cfg = cfg.get("samples", {})
     sample_prompt = str(samples_cfg.get("prompt", "") or "").strip()
@@ -447,6 +463,26 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
             flush=True,
         )
 
+        # Salva checkpoint da época
+        checkpoints_dir = output / "checkpoints"
+        checkpoints_dir.mkdir(parents=True, exist_ok=True)
+        ckpt_file = checkpoints_dir / f"{base_name}_epoch_{epoch:03d}.safetensors"
+        _save_lora_safetensors(
+            unet,
+            ckpt_file,
+            metadata={
+                "format": "pt",
+                "framework": "diffusers",
+                "model_type": "lora",
+                "base_model": "sdxl",
+                "lora_rank": str(rank),
+                "lora_alpha": str(alpha),
+                "trigger_word": trigger_word,
+                "quantization": quantization,
+                "epoch": str(epoch),
+            },
+        )
+
         if (
             sample_prompt
             and sample_interval > 0
@@ -466,7 +502,7 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
                 seed=sample_seed,
             )
 
-    adapter_file = output / "adapter.safetensors"
+    final_adapter_file = output / f"{base_name}.safetensors"
     metadata = {
         "format": "pt",
         "framework": "diffusers",
@@ -477,7 +513,10 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         "trigger_word": trigger_word,
         "quantization": quantization,
     }
-    _save_lora_safetensors(unet, adapter_file, metadata)
+    _save_lora_safetensors(unet, final_adapter_file, metadata)
+    if base_name != "adapter":
+        shutil.copy2(final_adapter_file, output / "adapter.safetensors")
+
     _emit_metric(
         metrics_path,
         epoch=epochs,
@@ -488,7 +527,7 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         phase="completed",
         message="Treino SDXL finalizado com sucesso!",
     )
-    print(f"Treino SDXL finalizado com sucesso! Checkpoint salvo em: {adapter_file}")
+    print(f"Treino SDXL finalizado com sucesso! Checkpoint salvo em: {final_adapter_file}")
 
 
 class SDXLTrainer(BaseModelTrainer):

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import math
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
 from trainer_difusao.common import (
     _die,
     _emit_metric,
+    _resolve_output_name,
     _save_lora_safetensors,
     _setup_cache_dir,
 )
@@ -169,64 +171,79 @@ def _generate_sample_flux(
     is_flux2: bool = False,
     resolution: int = 512,
 ) -> None:
-    """Gera uma imagem de teste para FLUX.2 Klein ou FLUX.1 com pesos LoRA ativos e seed fixa determinística."""
+    """Gera uma imagem de teste para FLUX.2 Klein ou FLUX.1 com pesos LoRA ativos e seed fixa determinística.
+    
+    Chama transformer.eval() para evitar dropout/estatísticas de treino e salva atomicamente via .tmp_*.
+    Para FLUX.2 Klein destilado, utiliza 4 passos e guidance 1.0 (evitando saturação plástica de pele).
+    """
     try:
         import torch
 
-        if is_flux2:
-            try:
-                from diffusers import Flux2KleinPipeline
+        was_training = getattr(transformer, "training", False)
+        transformer.eval()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = output_path.with_name(f".tmp_{output_path.name}")
 
-                pipe = Flux2KleinPipeline(
-                    scheduler=scheduler,
-                    text_encoder=text_encoder_one,
-                    tokenizer=tokenizer_one,
-                    vae=vae,
-                    transformer=transformer,
-                )
-                pipe.set_progress_bar_config(disable=True)
-                generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(seed)
-                with torch.inference_mode():
-                    image = pipe(
-                        prompt=prompt,
-                        generator=generator,
-                        num_inference_steps=4,
-                        guidance_scale=1.0,
-                        height=resolution,
-                        width=resolution,
-                    ).images[0]
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    image.save(output_path)
-                    print(f"[FLUX-KLEIN] Amostra de validação salva (seed={seed}) em: {output_path}", flush=True)
-                    return
-            except Exception as e:
-                print(f"[WARN] Tentativa com Flux2KleinPipeline: {e}. Tentando fallback...", flush=True)
+        try:
+            if is_flux2:
+                try:
+                    from diffusers import Flux2KleinPipeline
 
-        from diffusers import FluxPipeline
+                    pipe = Flux2KleinPipeline(
+                        scheduler=scheduler,
+                        text_encoder=text_encoder_one,
+                        tokenizer=tokenizer_one,
+                        vae=vae,
+                        transformer=transformer,
+                    )
+                    pipe.set_progress_bar_config(disable=True)
+                    generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(seed)
+                    with torch.inference_mode():
+                        image = pipe(
+                            prompt=prompt,
+                            generator=generator,
+                            num_inference_steps=4,
+                            guidance_scale=1.0,
+                            height=resolution,
+                            width=resolution,
+                        ).images[0]
+                        image.save(tmp_path)
+                        os.replace(tmp_path, output_path)
+                        print(f"[FLUX-KLEIN] Amostra de validação salva (seed={seed}) em: {output_path}", flush=True)
+                        return
+                except Exception as e:
+                    print(f"[WARN] Tentativa com Flux2KleinPipeline: {e}. Tentando fallback...", flush=True)
 
-        pipe = FluxPipeline(
-            scheduler=scheduler,
-            text_encoder=text_encoder_one,
-            text_encoder_2=text_encoder_two,
-            tokenizer=tokenizer_one,
-            tokenizer_2=tokenizer_two,
-            vae=vae,
-            transformer=transformer,
-        )
-        pipe.set_progress_bar_config(disable=True)
-        generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(seed)
-        with torch.inference_mode():
-            image = pipe(
-                prompt=prompt,
-                generator=generator,
-                num_inference_steps=20,
-                guidance_scale=3.5,
-                height=resolution,
-                width=resolution,
-            ).images[0]
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            image.save(output_path)
-            print(f"[FLUX] Amostra de validação salva (seed={seed}) em: {output_path}", flush=True)
+            from diffusers import FluxPipeline
+
+            pipe = FluxPipeline(
+                scheduler=scheduler,
+                text_encoder=text_encoder_one,
+                text_encoder_2=text_encoder_two,
+                tokenizer=tokenizer_one,
+                tokenizer_2=tokenizer_two,
+                vae=vae,
+                transformer=transformer,
+            )
+            pipe.set_progress_bar_config(disable=True)
+            generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(seed)
+            steps = 4 if is_flux2 else 20
+            guidance = 1.0 if is_flux2 else 3.5
+            with torch.inference_mode():
+                image = pipe(
+                    prompt=prompt,
+                    generator=generator,
+                    num_inference_steps=steps,
+                    guidance_scale=guidance,
+                    height=resolution,
+                    width=resolution,
+                ).images[0]
+                image.save(tmp_path)
+                os.replace(tmp_path, output_path)
+                print(f"[FLUX] Amostra de validação salva (seed={seed}, steps={steps}, cfg={guidance}) em: {output_path}", flush=True)
+        finally:
+            if was_training:
+                transformer.train()
     except Exception as e:
         print(f"[WARN] Falha ao gerar amostra de validação FLUX: {e}", flush=True)
 
@@ -292,6 +309,7 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     rank = int(lora_cfg.get("rank", 16))
     alpha = int(lora_cfg.get("alpha", 16))
     trigger_word = str(lora_cfg.get("trigger_word", ""))
+    base_name = _resolve_output_name(cfg)
 
     quantization = str(
         lora_cfg.get("quantization")
@@ -922,6 +940,25 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             flush=True,
         )
 
+        # Salva checkpoint da época
+        checkpoints_dir = output / "checkpoints"
+        checkpoints_dir.mkdir(parents=True, exist_ok=True)
+        ckpt_file = checkpoints_dir / f"{base_name}_epoch_{epoch:03d}.safetensors"
+        _save_lora_safetensors(
+            transformer,
+            ckpt_file,
+            metadata={
+                "format": "pt",
+                "model_type": "lora",
+                "base_model": "flux-2-klein-4b" if is_flux2 else "flux-1",
+                "lora_rank": str(rank),
+                "lora_alpha": str(alpha),
+                "trigger_word": trigger_word,
+                "quantization": quantization,
+                "epoch": str(epoch),
+            },
+        )
+
         # Geração de amostra visual periódica
         if sample_prompt and sample_interval > 0 and (epoch % sample_interval == 0 or epoch == epochs):
             sample_file = output / "samples" / f"sample_epoch_{epoch:03d}.png"
@@ -941,7 +978,7 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             )
 
     # Salva adaptador LoRA final em safetensors com metadados
-    adapter_file = output / "adapter.safetensors"
+    final_adapter_file = output / f"{base_name}.safetensors"
     metadata = {
         "format": "pt",
         "model_type": "lora",
@@ -951,7 +988,10 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         "trigger_word": trigger_word,
         "quantization": quantization,
     }
-    _save_lora_safetensors(transformer, adapter_file, metadata)
+    _save_lora_safetensors(transformer, final_adapter_file, metadata)
+    if base_name != "adapter":
+        shutil.copy2(final_adapter_file, output / "adapter.safetensors")
+
     _emit_metric(
         metrics_path,
         epoch=epochs,
@@ -962,7 +1002,7 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         phase="completed",
         message="Treino FLUX LoRA finalizado com sucesso!",
     )
-    print(f"Treino FLUX finalizado com sucesso! Checkpoint salvo em: {adapter_file}")
+    print(f"Treino FLUX finalizado com sucesso! Checkpoint salvo em: {final_adapter_file}")
 
 
 class FluxTrainer(BaseModelTrainer):

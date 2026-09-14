@@ -295,7 +295,7 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     model_id = (
         cfg.get("model_id")
         or os.environ.get("FLUX_MODEL_ID")
-        or "unsloth/FLUX.2-klein-4B"
+        or "black-forest-labs/FLUX.2-klein-base-4B"
     )
     is_flux2 = any(k in model_id.lower() for k in ["klein", "flux.2", "flux-2"])
 

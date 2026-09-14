@@ -355,16 +355,13 @@ pub fn parse_metrics_line(line: &str) -> Option<MetricsLine> {
         line.to_string()
     };
     let v: serde_json::Value = serde_json::from_str(&clean_line).ok()?;
-    let epoch = v
-        .get("epoch")
-        .and_then(|e| e.as_i64())
-        .or_else(|| {
-            if v.get("phase").is_some() || v.get("progress").is_some() {
-                Some(0)
-            } else {
-                None
-            }
-        })? as i32;
+    let epoch = v.get("epoch").and_then(|e| e.as_i64()).or_else(|| {
+        if v.get("phase").is_some() || v.get("progress").is_some() {
+            Some(0)
+        } else {
+            None
+        }
+    })? as i32;
     let phase = v
         .get("phase")
         .and_then(|p| p.as_str())

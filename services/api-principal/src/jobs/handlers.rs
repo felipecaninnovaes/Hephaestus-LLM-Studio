@@ -127,7 +127,9 @@ impl JobTelemetryEvent {
                 "cancelled" => "cancelled".to_string(),
                 _ => job.status.clone(),
             });
-        let progress = job.progress.unwrap_or(if job.status == "done" { 1.0 } else { 0.0 });
+        let progress = job
+            .progress
+            .unwrap_or(if job.status == "done" { 1.0 } else { 0.0 });
         let latest_metric = job.metrics.as_ref().and_then(|m| m.last());
         let mut m_obj = serde_json::Map::new();
         if let Some(m) = latest_metric {
@@ -400,8 +402,9 @@ fn remap_metrics(raw: &serde_json::Value) -> Vec<MetricsItem> {
 fn to_job_response(job: crate::jobs::manager_client::InternalJob) -> JobResponse {
     let metrics = job.metrics.as_ref().map(remap_metrics);
     let latest_metric = metrics.as_ref().and_then(|m| m.last());
-    let phase = latest_metric.and_then(|m| m.phase.clone()).or_else(|| {
-        match job.status.as_str() {
+    let phase = latest_metric
+        .and_then(|m| m.phase.clone())
+        .or_else(|| match job.status.as_str() {
             "queued" => Some("queued".to_string()),
             "preparing" => Some("preparing".to_string()),
             "running" => Some("running".to_string()),
@@ -409,8 +412,7 @@ fn to_job_response(job: crate::jobs::manager_client::InternalJob) -> JobResponse
             "failed" => Some("error".to_string()),
             "cancelled" => Some("cancelled".to_string()),
             _ => None,
-        }
-    });
+        });
     let phase_message = latest_metric.and_then(|m| m.message.clone());
     let vram_used_gb = latest_metric.and_then(|m| m.vram_used_gb);
 
@@ -505,10 +507,7 @@ pub async fn get_job(State(state): State<AppState>, Path(id): Path<String>) -> R
 }
 
 /// GET /api/jobs/:id/events — stream SSE de telemetria em tempo real (ADR-0021 D3).
-pub async fn stream_job_events(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Response {
+pub async fn stream_job_events(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     if parse_uuid(&id).is_none() {
         return not_found();
     }
@@ -530,10 +529,7 @@ pub async fn stream_job_events(
     }
 
     let initial_telemetry = JobTelemetryEvent::from_job_response(&initial_job);
-    let initial_terminal = matches!(
-        initial_job.status.as_str(),
-        "done" | "failed" | "cancelled"
-    );
+    let initial_terminal = matches!(initial_job.status.as_str(), "done" | "failed" | "cancelled");
 
     let ctx = StreamContext {
         id: id.clone(),
@@ -552,7 +548,11 @@ pub async fn stream_job_events(
 
         if !c.first_event_sent {
             c.first_event_sent = true;
-            let event_type = if initial_terminal { "finished" } else { "snapshot" };
+            let event_type = if initial_terminal {
+                "finished"
+            } else {
+                "snapshot"
+            };
             if initial_terminal {
                 c.terminal_sent = true;
             }
@@ -574,10 +574,8 @@ pub async fn stream_job_events(
             };
 
             let telemetry = JobTelemetryEvent::from_job_response(&current_job);
-            let is_terminal = matches!(
-                current_job.status.as_str(),
-                "done" | "failed" | "cancelled"
-            );
+            let is_terminal =
+                matches!(current_job.status.as_str(), "done" | "failed" | "cancelled");
 
             let has_changed = (telemetry.progress - c.last_progress).abs() > 0.0001
                 || telemetry.phase != c.last_phase

@@ -1,15 +1,64 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   IconImage,
   IconRefresh,
 } from "@/components/icons";
 import ForjaDifusaoSetup from "@/components/studio/ForjaDifusaoSetup";
 import { Button } from "@/components/ui/Button";
+import type { DiffusionPreset } from "@/types/studio";
 
-export default function DifusaoPage() {
+function DifusaoContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+
+  const [resumeCheckpoint, setResumeCheckpoint] = useState<{
+    id: string;
+    name: string;
+    epoch?: number;
+  } | null>(null);
+  const [epochOffset, setEpochOffset] = useState<number>(0);
+  const [initialPreset, setInitialPreset] = useState<Partial<DiffusionPreset> | undefined>(undefined);
+
+  useEffect(() => {
+    // 1. Tenta carregar dados de retomada passados via sessionStorage
+    try {
+      const stored = sessionStorage.getItem("hephaestus_diffusion_resume");
+      if (stored) {
+        sessionStorage.removeItem("hephaestus_diffusion_resume");
+        const parsed = JSON.parse(stored);
+        if (parsed.resumeCheckpoint) {
+          setResumeCheckpoint(parsed.resumeCheckpoint);
+        }
+        if (typeof parsed.epochOffset === "number") {
+          setEpochOffset(parsed.epochOffset);
+        }
+        if (parsed.initialPreset) {
+          setInitialPreset(parsed.initialPreset);
+        }
+        return;
+      }
+    } catch {
+      // Ignora falha de parse/storage
+    }
+
+    // 2. Fallback para query params da URL
+    const cpId = searchParams.get("checkpointId");
+    const cpName = searchParams.get("checkpointName");
+    const offsetStr = searchParams.get("epochOffset") || searchParams.get("epoch");
+    if (cpId) {
+      setResumeCheckpoint({
+        id: cpId,
+        name: cpName || "Checkpoint",
+        epoch: offsetStr ? parseInt(offsetStr, 10) : undefined,
+      });
+      if (offsetStr) {
+        setEpochOffset(parseInt(offsetStr, 10) || 0);
+      }
+    }
+  }, [searchParams]);
 
   function handleJobCreated(jobId: string) {
     // Navega para Execuções com query param para auto-seleção do job criado.
@@ -59,10 +108,23 @@ export default function DifusaoPage() {
       <div className="flex justify-center">
         <div className="w-full max-w-2xl">
           <div className="glass-card rounded-2xl p-6 border border-white/10 shadow-2xl backdrop-blur-md">
-            <ForjaDifusaoSetup onJobCreated={handleJobCreated} />
+            <ForjaDifusaoSetup
+              onJobCreated={handleJobCreated}
+              initialPreset={initialPreset}
+              resumeCheckpoint={resumeCheckpoint}
+              epochOffset={epochOffset}
+            />
           </div>
         </div>
       </div>
     </div>
+  );
+}
+
+export default function DifusaoPage() {
+  return (
+    <Suspense fallback={null}>
+      <DifusaoContent />
+    </Suspense>
   );
 }

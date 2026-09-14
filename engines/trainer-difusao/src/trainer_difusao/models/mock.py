@@ -63,10 +63,13 @@ def _generate_mock_safetensors(output_file: Path, lora_params: dict[str, Any]) -
 
     data_bytes = b"\x00" * tensor_size
 
-    with open(output_file, "wb") as f:
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    tmp_file = output_file.parent / f".tmp_{output_file.name}"
+    with open(tmp_file, "wb") as f:
         f.write(struct.pack("<Q", header_len))
         f.write(header_json)
         f.write(data_bytes)
+    os.replace(tmp_file, output_file)
 
 
 def _generate_mock_sample(
@@ -117,6 +120,14 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
     base_model = _canonical_model_name(raw_model)
     base_name = _resolve_output_name(cfg)
 
+    checkpoint_interval = max(
+        1, int(cfg.get("checkpoint_interval") or lora_cfg.get("checkpoint_interval") or 1)
+    )
+    epoch_offset = max(
+        0, int(cfg.get("epoch_offset") or lora_cfg.get("epoch_offset") or 0)
+    )
+    weights_path = cfg.get("weights_path")
+
     samples_cfg = cfg.get("samples", {})
     sample_prompt = str(samples_cfg.get("prompt", "") or "").strip()
     sample_interval = int(samples_cfg.get("interval", 1))
@@ -133,8 +144,21 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
         lora_cfg.get("quantization") or cfg.get("quantization") or "4bit"
     )
 
-    # Amostra baseline Época 0 (se configurada)
-    if sample_prompt:
+    if weights_path:
+        w_path = Path(weights_path)
+        if w_path.exists():
+            print(
+                f"[MOCK] Continuando treino a partir de pesos prévios: {w_path} (offset={epoch_offset})",
+                flush=True,
+            )
+        else:
+            print(
+                f"[MOCK] Arquivo de pesos especificado mas não encontrado: {w_path}",
+                flush=True,
+            )
+
+    # Amostra baseline Época 0 (se configurada e sem epoch_offset)
+    if sample_prompt and epoch_offset == 0:
         _generate_mock_sample(output, 0, sample_prompt, seed=sample_seed)
         _emit_metric(
             metrics_path,
@@ -148,25 +172,27 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
     checkpoints_dir = output / "checkpoints"
     checkpoints_dir.mkdir(parents=True, exist_ok=True)
 
-    for ep in range(1, epochs + 1):
-        loss = _synthetic_loss(seed, ep, epochs)
-        progress = round(ep / epochs, 4)
+    for ep_idx in range(1, epochs + 1):
+        ep = ep_idx + epoch_offset
+        loss = _synthetic_loss(seed, ep, epochs + epoch_offset)
+        progress = round(ep_idx / epochs, 4)
         _emit_metric(
             metrics_path,
             epoch=ep,
-            step=ep * 10,
+            step=ep_idx * 10,
             loss=loss,
             lr=learning_rate,
             progress=progress,
             phase="training",
-            message=f"Época {ep}/{epochs} concluída · Loss: {loss}",
+            message=f"Época {ep}/{epochs + epoch_offset} concluída · Loss: {loss}",
         )
 
-        # Salva checkpoint da época
-        ckpt_file = checkpoints_dir / f"{base_name}_epoch_{ep:03d}.safetensors"
-        _generate_mock_safetensors(ckpt_file, {**lora_info, "epoch": str(ep)})
+        # Salva checkpoint da época respeitando checkpoint_interval
+        if ep_idx % checkpoint_interval == 0 or ep_idx == epochs:
+            ckpt_file = checkpoints_dir / f"{base_name}_epoch_{ep:03d}.safetensors"
+            _generate_mock_safetensors(ckpt_file, {**lora_info, "epoch": str(ep)})
 
-        if sample_prompt and sample_interval > 0 and (ep % sample_interval == 0 or ep == epochs):
+        if sample_prompt and sample_interval > 0 and (ep_idx % sample_interval == 0 or ep_idx == epochs):
             _generate_mock_sample(output, ep, sample_prompt, seed=sample_seed)
 
         if sleep_ms > 0:

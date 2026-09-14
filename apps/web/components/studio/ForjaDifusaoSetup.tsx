@@ -15,6 +15,7 @@ import {
   IconChevronDown,
   IconChevronRight,
   IconSparkles,
+  IconX,
 } from "@/components/icons";
 import { Button, getButtonClasses } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -84,9 +85,17 @@ export function estimateDiffusionVramGb(
 
 interface Props {
   onJobCreated?: (jobId: string) => void;
+  initialPreset?: Partial<DiffusionPreset>;
+  resumeCheckpoint?: { id: string; name: string; epoch?: number } | null;
+  epochOffset?: number;
 }
 
-export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
+export default function ForjaDifusaoSetup({
+  onJobCreated,
+  initialPreset,
+  resumeCheckpoint,
+  epochOffset: propEpochOffset = 0,
+}: Props) {
   const firstRef = useRef<SelectRefHandle>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -97,39 +106,75 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
 
   // Models (fine-tune previous LoRA weights)
   const [diffusionModels, setDiffusionModels] = useState<Model[]>([]);
-  const [selectedWeightId, setSelectedWeightId] = useState<string>("");
+  const [selectedWeightId, setSelectedWeightId] = useState<string>(
+    resumeCheckpoint?.id ?? ""
+  );
   const [selectedOrchestratorId, setSelectedOrchestratorId] = useState<string | null>(null);
+
+  // Resume checkpoint state
+  const [currentResumeCheckpoint, setCurrentResumeCheckpoint] = useState<{
+    id: string;
+    name: string;
+    epoch?: number;
+  } | null>(resumeCheckpoint ?? null);
+  const [epochOffset, setEpochOffset] = useState<number>(propEpochOffset);
 
   // Form fields
   const [params, setParams] = useState<DiffusionHyperparametersValues>({
-    baseModel: "sdxl",
-    triggerWord: "",
-    epochs: 10,
-    batchSize: 1,
-    learningRate: "0.0001",
-    rank: 16,
-    alpha: 16,
+    baseModel: initialPreset?.baseModel ?? "sdxl",
+    triggerWord: initialPreset?.triggerWord ?? "",
+    epochs: initialPreset?.epochs ?? 10,
+    batchSize: initialPreset?.batchSize ?? 1,
+    learningRate: initialPreset?.learningRate ?? "0.0001",
+    rank: initialPreset?.rank ?? 16,
+    alpha: initialPreset?.alpha ?? 16,
   });
 
   // Configurações avançadas de treino
-  const [resolution, setResolution] = useState<number>(1024);
-  const [gradientAccumulationSteps, setGradientAccumulationSteps] = useState<number>(1);
-  const [optimizer, setOptimizer] = useState<"adamw8bit" | "adamw" | "prodigy">("adamw8bit");
-  const [lrScheduler, setLrScheduler] = useState<"cosine" | "linear" | "constant" | "constant_with_warmup">("cosine");
-  const [lrWarmupSteps, setLrWarmupSteps] = useState<number>(0);
-  const [mixedPrecision, setMixedPrecision] = useState<"fp16" | "bf16" | "no">("fp16");
-  const [quantization, setQuantization] = useState<"none" | "4bit" | "8bit">("4bit");
+  const [resolution, setResolution] = useState<number>(initialPreset?.resolution ?? 1024);
+  const [gradientAccumulationSteps, setGradientAccumulationSteps] = useState<number>(
+    initialPreset?.gradientAccumulationSteps ?? 1
+  );
+  const [optimizer, setOptimizer] = useState<"adamw8bit" | "adamw" | "prodigy">(
+    initialPreset?.optimizer ?? "adamw8bit"
+  );
+  const [lrScheduler, setLrScheduler] = useState<"cosine" | "linear" | "constant" | "constant_with_warmup">(
+    initialPreset?.lrScheduler ?? "cosine"
+  );
+  const [lrWarmupSteps, setLrWarmupSteps] = useState<number>(initialPreset?.lrWarmupSteps ?? 0);
+  const [mixedPrecision, setMixedPrecision] = useState<"fp16" | "bf16" | "no">(
+    initialPreset?.mixedPrecision ?? "fp16"
+  );
+  const [quantization, setQuantization] = useState<"none" | "4bit" | "8bit">(
+    initialPreset?.quantization ?? "4bit"
+  );
+  const [checkpointInterval, setCheckpointInterval] = useState<number>(
+    initialPreset?.checkpointInterval ?? 1
+  );
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   // Amostras de validação (samples por época)
-  const [enableSamples, setEnableSamples] = useState(true);
-  const [samplePrompt, setSamplePrompt] = useState("");
-  const [sampleInterval, setSampleInterval] = useState(1);
-  const [sampleSeed, setSampleSeed] = useState("42");
+  const [enableSamples, setEnableSamples] = useState(initialPreset?.enableSamples ?? true);
+  const [samplePrompt, setSamplePrompt] = useState(initialPreset?.samplePrompt ?? "");
+  const [sampleInterval, setSampleInterval] = useState(initialPreset?.sampleInterval ?? 1);
+  const [sampleSeed, setSampleSeed] = useState(initialPreset?.sampleSeed ? String(initialPreset.sampleSeed) : "42");
 
   const [outputName, setOutputName] = useState("");
   const [busy, setBusy] = useState(false);
   const [topError, setTopError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (resumeCheckpoint) {
+      setCurrentResumeCheckpoint(resumeCheckpoint);
+      setSelectedWeightId(resumeCheckpoint.id);
+    }
+  }, [resumeCheckpoint]);
+
+  useEffect(() => {
+    if (propEpochOffset != null) {
+      setEpochOffset(propEpochOffset);
+    }
+  }, [propEpochOffset]);
 
   // Telemetria de hardware
   const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
@@ -222,6 +267,8 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
     if (preset.lrWarmupSteps !== undefined) setLrWarmupSteps(preset.lrWarmupSteps);
     if (preset.mixedPrecision !== undefined) setMixedPrecision(preset.mixedPrecision);
     if (preset.quantization !== undefined) setQuantization(preset.quantization);
+    if (preset.checkpointInterval !== undefined) setCheckpointInterval(preset.checkpointInterval);
+    if (preset.epochOffset !== undefined) setEpochOffset(preset.epochOffset);
     if (preset.enableSamples !== undefined) setEnableSamples(preset.enableSamples);
     if (preset.samplePrompt !== undefined) setSamplePrompt(preset.samplePrompt);
     if (preset.sampleInterval !== undefined) setSampleInterval(preset.sampleInterval);
@@ -249,6 +296,8 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
       lrWarmupSteps,
       mixedPrecision,
       quantization,
+      checkpointInterval,
+      epochOffset: epochOffset > 0 ? epochOffset : undefined,
       enableSamples,
       samplePrompt,
       sampleInterval,
@@ -275,41 +324,107 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
     reader.onload = (event) => {
       try {
         const text = event.target?.result as string;
-        const parsed = JSON.parse(text) as Partial<DiffusionPreset>;
+        const parsed = JSON.parse(text) as Record<string, any>;
 
-        if (!parsed.baseModel && !parsed.epochs && !parsed.rank) {
+        if (!parsed.baseModel && !parsed.epochs && !parsed.rank && !parsed.lora && !parsed.model) {
           showToast("Arquivo JSON não é um preset válido do Hephaestus.", "error");
           return;
         }
 
+        const lora = parsed.lora || {};
+        const samples = parsed.samples || {};
+        const model = parsed.model || {};
+
         applyPreset({
           name: parsed.name || file.name.replace(".json", ""),
-          baseModel: (parsed.baseModel as DiffusionBaseModel) || params.baseModel,
-          triggerWord: parsed.triggerWord ?? params.triggerWord,
-          epochs: typeof parsed.epochs === "number" ? parsed.epochs : params.epochs,
-          batchSize: typeof parsed.batchSize === "number" ? parsed.batchSize : params.batchSize,
+          baseModel: (parsed.baseModel || model.base || parsed.base_model || params.baseModel) as DiffusionBaseModel,
+          triggerWord: parsed.triggerWord ?? parsed.trigger_word ?? params.triggerWord,
+          epochs: typeof lora.epochs === "number" ? lora.epochs : typeof parsed.epochs === "number" ? parsed.epochs : params.epochs,
+          batchSize:
+            typeof lora.batch_size === "number"
+              ? lora.batch_size
+              : typeof parsed.batchSize === "number"
+                ? parsed.batchSize
+                : typeof parsed.batch_size === "number"
+                  ? parsed.batch_size
+                  : params.batchSize,
           learningRate:
-            typeof parsed.learningRate === "string"
-              ? parsed.learningRate
-              : typeof parsed.learningRate === "number"
-                ? String(parsed.learningRate)
-                : params.learningRate,
-          rank: typeof parsed.rank === "number" ? parsed.rank : params.rank,
-          alpha: typeof parsed.alpha === "number" ? parsed.alpha : params.alpha,
-          resolution: typeof parsed.resolution === "number" ? parsed.resolution : resolution,
+            lora.learning_rate != null
+              ? String(lora.learning_rate)
+              : typeof parsed.learningRate === "string"
+                ? parsed.learningRate
+                : typeof parsed.learningRate === "number"
+                  ? String(parsed.learningRate)
+                  : parsed.learning_rate != null
+                    ? String(parsed.learning_rate)
+                    : params.learningRate,
+          rank: typeof lora.rank === "number" ? lora.rank : typeof parsed.rank === "number" ? parsed.rank : params.rank,
+          alpha: typeof lora.alpha === "number" ? lora.alpha : typeof parsed.alpha === "number" ? parsed.alpha : params.alpha,
+          resolution:
+            typeof lora.resolution === "number"
+              ? lora.resolution
+              : typeof parsed.resolution === "number"
+                ? parsed.resolution
+                : resolution,
           gradientAccumulationSteps:
-            typeof parsed.gradientAccumulationSteps === "number"
-              ? parsed.gradientAccumulationSteps
-              : gradientAccumulationSteps,
-          optimizer: parsed.optimizer || optimizer,
-          lrScheduler: parsed.lrScheduler || lrScheduler,
-          lrWarmupSteps: typeof parsed.lrWarmupSteps === "number" ? parsed.lrWarmupSteps : lrWarmupSteps,
-          mixedPrecision: parsed.mixedPrecision || mixedPrecision,
-          quantization: parsed.quantization || quantization,
-          enableSamples: typeof parsed.enableSamples === "boolean" ? parsed.enableSamples : enableSamples,
-          samplePrompt: parsed.samplePrompt ?? samplePrompt,
-          sampleInterval: typeof parsed.sampleInterval === "number" ? parsed.sampleInterval : sampleInterval,
-          sampleSeed: parsed.sampleSeed != null ? String(parsed.sampleSeed) : sampleSeed,
+            typeof lora.gradient_accumulation_steps === "number"
+              ? lora.gradient_accumulation_steps
+              : typeof parsed.gradientAccumulationSteps === "number"
+                ? parsed.gradientAccumulationSteps
+                : typeof parsed.gradient_accumulation_steps === "number"
+                  ? parsed.gradient_accumulation_steps
+                  : gradientAccumulationSteps,
+          optimizer: lora.optimizer || parsed.optimizer || optimizer,
+          lrScheduler: lora.lr_scheduler || parsed.lrScheduler || parsed.lr_scheduler || lrScheduler,
+          lrWarmupSteps:
+            typeof lora.lr_warmup_steps === "number"
+              ? lora.lr_warmup_steps
+              : typeof parsed.lrWarmupSteps === "number"
+                ? parsed.lrWarmupSteps
+                : typeof parsed.lr_warmup_steps === "number"
+                  ? parsed.lr_warmup_steps
+                  : lrWarmupSteps,
+          mixedPrecision: lora.mixed_precision || parsed.mixedPrecision || parsed.mixed_precision || mixedPrecision,
+          quantization: lora.quantization || parsed.quantization || quantization,
+          checkpointInterval:
+            typeof lora.checkpoint_interval === "number"
+              ? lora.checkpoint_interval
+              : typeof parsed.checkpointInterval === "number"
+                ? parsed.checkpointInterval
+                : typeof parsed.checkpoint_interval === "number"
+                  ? parsed.checkpoint_interval
+                  : checkpointInterval,
+          epochOffset:
+            typeof lora.epoch_offset === "number"
+              ? lora.epoch_offset
+              : typeof parsed.epochOffset === "number"
+                ? parsed.epochOffset
+                : typeof parsed.epoch_offset === "number"
+                  ? parsed.epoch_offset
+                  : epochOffset,
+          enableSamples:
+            samples.prompt != null
+              ? Boolean(samples.prompt)
+              : typeof parsed.enableSamples === "boolean"
+                ? parsed.enableSamples
+                : enableSamples,
+          samplePrompt: samples.prompt ?? parsed.samplePrompt ?? parsed.sample_prompt ?? samplePrompt,
+          sampleInterval:
+            typeof samples.interval === "number"
+              ? samples.interval
+              : typeof parsed.sampleInterval === "number"
+                ? parsed.sampleInterval
+                : typeof parsed.sample_interval === "number"
+                  ? parsed.sample_interval
+                  : sampleInterval,
+          sampleSeed:
+            samples.seed != null
+              ? String(samples.seed)
+              : parsed.sampleSeed != null
+                ? String(parsed.sampleSeed)
+                : parsed.sample_seed != null
+                  ? String(parsed.sample_seed)
+                  : sampleSeed,
         });
       } catch {
         showToast("Erro ao processar o arquivo JSON de preset.", "error");
@@ -527,6 +642,16 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
     [],
   );
 
+  const checkpointIntervalOptions = useMemo<SelectOption<number>[]>(
+    () => [
+      { value: 1, label: "1 época (Padrão — Checkpoint a cada época)" },
+      { value: 2, label: "2 épocas" },
+      { value: 5, label: "5 épocas" },
+      { value: 10, label: "10 épocas" },
+    ],
+    [],
+  );
+
   const parsedLr = parseFloat(params.learningRate);
   const epochsValid =
     Number.isInteger(params.epochs) &&
@@ -576,6 +701,8 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
         lrWarmupSteps,
         mixedPrecision,
         quantization,
+        checkpointInterval,
+        epochOffset: epochOffset > 0 ? epochOffset : undefined,
       });
 
       showToast(
@@ -586,6 +713,9 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
       // Reset form
       setSelectedWeightId("");
       setSelectedOrchestratorId(null);
+      setCurrentResumeCheckpoint(null);
+      setEpochOffset(0);
+      setCheckpointInterval(1);
       setOutputName("");
       setSamplePrompt("");
       setParams({
@@ -662,6 +792,36 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
           </p>
         </div>
       </div>
+
+      {/* Badge Modo Continuação */}
+      {currentResumeCheckpoint && (
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-sky-500/20 bg-sky-500/[0.06] px-3.5 py-2.5 backdrop-blur-sm">
+          <div className="flex items-center gap-2 min-w-0">
+            <IconSparkles className="size-3.5 text-sky-400 shrink-0" />
+            <span className="text-xs text-zinc-300 truncate">
+              <span className="font-semibold text-white">Modo Continuação:</span> Retomando de{" "}
+              <span className="font-mono text-sky-300 font-medium">{currentResumeCheckpoint.name}</span>
+              {epochOffset > 0 && (
+                <span className="text-zinc-400 font-mono text-[11px] ml-1.5">
+                  (+{epochOffset} épocas anteriores)
+                </span>
+              )}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setCurrentResumeCheckpoint(null);
+              setSelectedWeightId("");
+              setEpochOffset(0);
+            }}
+            className="text-zinc-400 hover:text-zinc-200 transition-colors p-1 rounded hover:bg-white/5 shrink-0 cursor-pointer"
+            title="Cancelar modo de continuação"
+          >
+            <IconX className="size-3.5" />
+          </button>
+        </div>
+      )}
 
       {topError && (
         <p
@@ -1258,6 +1418,19 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
                 options={mixedPrecisionOptions}
                 value={mixedPrecision}
                 onChange={(val) => setMixedPrecision(val)}
+                disabled={busy}
+                fontMono
+                size="default"
+              />
+
+              {/* Intervalo de Checkpoints */}
+              <Select
+                id="diffusion-checkpoint-interval"
+                label="Intervalo de Checkpoints"
+                hint="Frequência de upload ao vivo e gravação de snapshots (.safetensors)."
+                options={checkpointIntervalOptions}
+                value={checkpointInterval}
+                onChange={(val) => setCheckpointInterval(Number(val))}
                 disabled={busy}
                 fontMono
                 size="default"

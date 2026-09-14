@@ -783,6 +783,14 @@ pub struct DiffusionJobRequest {
     pub quantization: String,
     /// Nome customizado opcional do modelo gerado (ADR-0022 D1).
     pub output_name: Option<String>,
+    #[serde(default = "default_diffusion_checkpoint_interval")]
+    pub checkpoint_interval: u32,
+    #[serde(default)]
+    pub epoch_offset: Option<u32>,
+}
+
+fn default_diffusion_checkpoint_interval() -> u32 {
+    1
 }
 
 fn default_diffusion_base_model() -> String {
@@ -929,6 +937,20 @@ pub fn validate_diffusion_request(req: DiffusionJobRequest) -> Result<DiffusionJ
             req.sample_interval
         ));
     }
+    if !(1..=100).contains(&req.checkpoint_interval) {
+        return Err(format!(
+            "checkpointInterval must be between 1 and 100, got {}",
+            req.checkpoint_interval
+        ));
+    }
+    if let Some(offset) = req.epoch_offset {
+        if offset > 1000 {
+            return Err(format!(
+                "epochOffset must be between 0 and 1000, got {}",
+                offset
+            ));
+        }
+    }
     // ADR-0022 D1: valida outputName se fornecido.
     if let Some(ref out_name) = req.output_name {
         validate_output_name(out_name)?;
@@ -945,6 +967,15 @@ pub fn generate_diffusion_config_yaml(job_id: &str, req: &DiffusionJobRequest) -
             )
         }
         _ => String::new(),
+    };
+    let weights_line = if req.weights.is_some() {
+        "weights_path: \"{weights_path}\"\n".to_string()
+    } else {
+        String::new()
+    };
+    let epoch_offset_line = match req.epoch_offset {
+        Some(offset) => format!("epoch_offset: {}\n", offset),
+        None => String::new(),
     };
     let trigger_line = match &req.trigger_word {
         Some(tw) => format!(
@@ -976,10 +1007,11 @@ pub fn generate_diffusion_config_yaml(job_id: &str, req: &DiffusionJobRequest) -
 job_id: "{job_id}"
 engine: "diffusion"
 model: "{base_model}"
-{output_name_line}mode: "train"
+{output_name_line}{weights_line}{epoch_offset_line}mode: "train"
 dataset_path: "{{dataset_path}}"
 output_path: "{{output_path}}"
 seed: 42
+checkpoint_interval: {checkpoint_interval}
 lora:
 {trigger_line}  epochs: {epochs}
   batch_size: {batch_size}
@@ -992,10 +1024,14 @@ lora:
   lr_warmup_steps: {lr_warmup_steps}
   mixed_precision: "{mixed_precision}"
   quantization: "{quantization}"
+  checkpoint_interval: {checkpoint_interval}
 {samples_section}"#,
         job_id = job_id,
         base_model = req.base_model,
         output_name_line = output_name_line,
+        weights_line = weights_line,
+        epoch_offset_line = epoch_offset_line,
+        checkpoint_interval = req.checkpoint_interval,
         trigger_line = trigger_line,
         epochs = req.epochs,
         batch_size = req.batch_size,
@@ -2128,6 +2164,35 @@ mod tests {
         assert!(yaml.contains("lr_warmup_steps: 50"));
         assert!(yaml.contains(r#"mixed_precision: "bf16""#));
         assert!(yaml.contains(r#"quantization: "8bit""#));
+    }
+
+    #[test]
+    fn diffusion_validate_checkpoint_interval_and_epoch_offset_yaml() {
+        let json = r#"{
+            "datasetId": "550e8400-e29b-41d4-a716-446655440001",
+            "baseModel": "flux",
+            "checkpointInterval": 5,
+            "epochOffset": 10,
+            "weights": "550e8400-e29b-41d4-a716-446655440002"
+        }"#;
+        let req: DiffusionJobRequest = serde_json::from_str(json).expect("should parse json");
+        let validated = validate_diffusion_request(req).expect("should validate");
+        assert_eq!(validated.checkpoint_interval, 5);
+        assert_eq!(validated.epoch_offset, Some(10));
+        assert_eq!(
+            validated.weights.as_deref(),
+            Some("550e8400-e29b-41d4-a716-446655440002")
+        );
+
+        let yaml = generate_diffusion_config_yaml("job-resume-1", &validated);
+        assert!(yaml.contains(r#"weights_path: "{weights_path}""#));
+        assert!(yaml.contains("checkpoint_interval: 5"));
+        assert!(yaml.contains("epoch_offset: 10"));
+
+        // Intervalo inválido (0 ou > 100) deve falhar
+        let bad_json = r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","checkpointInterval":0}"#;
+        let bad_req: DiffusionJobRequest = serde_json::from_str(bad_json).unwrap();
+        assert!(validate_diffusion_request(bad_req).is_err());
     }
 
     #[test]

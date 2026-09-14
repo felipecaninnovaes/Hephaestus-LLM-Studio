@@ -377,6 +377,82 @@ class TestTrainerDifusao(unittest.TestCase):
             self.assertEqual(final_file.read_bytes(), adapter_compat_file.read_bytes())
 
 
+    def test_train_mock_checkpoint_interval(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            cfg_path = tmp_path / "config.yaml"
+            out_dir = tmp_path / "output"
+
+            cfg = {
+                "job_id": "test-interval-job",
+                "model": "flux",
+                "output_name": "interval-lora",
+                "checkpoint_interval": 2,
+                "lora": {
+                    "epochs": 5,
+                    "batch_size": 1,
+                    "learning_rate": 0.0001,
+                },
+            }
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                yaml.dump(cfg, f)
+
+            main(["train", "--config", str(cfg_path), "--output", str(out_dir)])
+
+            checkpoints_dir = out_dir / "checkpoints"
+            self.assertTrue(checkpoints_dir.exists())
+
+            # Com interval=2 e 5 épocas, devem existir épocas 2, 4 e 5 (última época sempre salva)
+            self.assertFalse((checkpoints_dir / "interval-lora_epoch_001.safetensors").exists())
+            self.assertTrue((checkpoints_dir / "interval-lora_epoch_002.safetensors").exists())
+            self.assertFalse((checkpoints_dir / "interval-lora_epoch_003.safetensors").exists())
+            self.assertTrue((checkpoints_dir / "interval-lora_epoch_004.safetensors").exists())
+            self.assertTrue((checkpoints_dir / "interval-lora_epoch_005.safetensors").exists())
+
+    def test_train_mock_resume_with_offset_and_weights(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            cfg_path = tmp_path / "config.yaml"
+            out_dir = tmp_path / "output"
+            dummy_weights = tmp_path / "prev_checkpoint.safetensors"
+            dummy_weights.write_bytes(b"dummy_weights_content")
+
+            cfg = {
+                "job_id": "test-resume-job",
+                "model": "flux",
+                "output_name": "resumed-lora",
+                "epoch_offset": 5,
+                "weights_path": str(dummy_weights),
+                "lora": {
+                    "epochs": 3,
+                    "batch_size": 1,
+                    "learning_rate": 0.0001,
+                },
+            }
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                yaml.dump(cfg, f)
+
+            main(["train", "--config", str(cfg_path), "--output", str(out_dir)])
+
+            metrics_file = out_dir / "metrics.jsonl"
+            self.assertTrue(metrics_file.exists())
+            lines = [
+                json.loads(line)
+                for line in metrics_file.read_text().splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len(lines), 3)
+            # As épocas devem ser 6, 7 e 8
+            self.assertEqual(lines[0]["epoch"], 6)
+            self.assertEqual(lines[1]["epoch"], 7)
+            self.assertEqual(lines[2]["epoch"], 8)
+
+            checkpoints_dir = out_dir / "checkpoints"
+            self.assertTrue((checkpoints_dir / "resumed-lora_epoch_006.safetensors").exists())
+            self.assertTrue((checkpoints_dir / "resumed-lora_epoch_007.safetensors").exists())
+            self.assertTrue((checkpoints_dir / "resumed-lora_epoch_008.safetensors").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
 

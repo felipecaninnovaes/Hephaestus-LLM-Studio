@@ -11,6 +11,7 @@ import {
   IconTarget,
   IconTrash,
   IconX,
+  IconSparkles,
 } from "@/components/icons";
 import { formatBytes, formatDuration, formatRelativeTime } from "@/lib/format";
 import type { Job, JobArtifact, JobMetrics, JobStatus } from "@/types/studio";
@@ -73,6 +74,7 @@ export interface JobArtifactsListProps {
   jobId: string;
   artifacts: JobArtifact[];
   onDownload: (jobId: string, art: JobArtifact) => void;
+  onResume?: (jobId: string, art: JobArtifact) => void;
   className?: string;
 }
 
@@ -80,6 +82,7 @@ export function JobArtifactsList({
   jobId,
   artifacts,
   onDownload,
+  onResume,
   className = "",
 }: JobArtifactsListProps) {
   if (artifacts.length === 0) return null;
@@ -101,14 +104,30 @@ export function JobArtifactsList({
             >
               {art.path.split("/").pop()} ({formatBytes(art.bytes)})
             </span>
-            <button
-              type="button"
-              onClick={() => onDownload(jobId, art)}
-              className="inline-flex items-center gap-1 text-brand-400 hover:text-brand-300 font-mono text-[11px] font-medium shrink-0 cursor-pointer"
-            >
-              <IconDownload className="size-3" />
-              <span>Baixar</span>
-            </button>
+            <div className="flex items-center gap-2.5 shrink-0">
+              {onResume &&
+                (art.kind === "checkpoint" ||
+                  art.kind === "model" ||
+                  art.path.endsWith(".safetensors")) && (
+                  <button
+                    type="button"
+                    onClick={() => onResume(jobId, art)}
+                    className="inline-flex items-center gap-1 text-sky-400 hover:text-sky-300 font-mono text-[11px] font-medium cursor-pointer"
+                    title="Retomar treino a partir deste checkpoint"
+                  >
+                    <IconSparkles className="size-3" />
+                    <span>Retomar</span>
+                  </button>
+                )}
+              <button
+                type="button"
+                onClick={() => onDownload(jobId, art)}
+                className="inline-flex items-center gap-1 text-brand-400 hover:text-brand-300 font-mono text-[11px] font-medium cursor-pointer"
+              >
+                <IconDownload className="size-3" />
+                <span>Baixar</span>
+              </button>
+            </div>
           </div>
         ))}
       </div>

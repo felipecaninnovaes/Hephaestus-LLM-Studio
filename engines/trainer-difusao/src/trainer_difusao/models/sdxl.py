@@ -11,6 +11,7 @@ from typing import Any
 from trainer_difusao.common import (
     _die,
     _emit_metric,
+    _load_lora_weights,
     _resolve_output_name,
     _save_lora_safetensors,
     _setup_cache_dir,
@@ -174,6 +175,15 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
     optimizer_name = str(lora_cfg.get("optimizer", "adamw8bit"))
     lr_scheduler_name = str(lora_cfg.get("lr_scheduler", "cosine"))
     lr_warmup_steps = int(lora_cfg.get("lr_warmup_steps", 0))
+
+    checkpoint_interval = max(
+        1, int(cfg.get("checkpoint_interval") or lora_cfg.get("checkpoint_interval") or 1)
+    )
+    epoch_offset = max(
+        0, int(cfg.get("epoch_offset") or lora_cfg.get("epoch_offset") or 0)
+    )
+    weights_path = cfg.get("weights_path")
+
     mixed_precision = str(lora_cfg.get("mixed_precision", "fp16")).lower().strip()
     target_dtype = (
         torch.bfloat16
@@ -248,6 +258,8 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         target_modules=["to_k", "to_q", "to_v", "to_out.0"],
     )
     unet = get_peft_model(unet, lora_config)
+    if weights_path:
+        _load_lora_weights(unet, weights_path)
 
     _emit_metric(
         metrics_path,
@@ -289,8 +301,8 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         device=device,
     )
 
-    # Amostra baseline (Época 0) pré-treino
-    if sample_prompt:
+    # Amostra baseline (Época 0) pré-treino (apenas se não estiver retomando)
+    if sample_prompt and epoch_offset == 0:
         _emit_metric(
             metrics_path,
             epoch=0,
@@ -323,15 +335,15 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
 
     _emit_metric(
         metrics_path,
-        epoch=0,
+        epoch=epoch_offset,
         step=7,
         progress=0.10,
         phase="training_started",
-        message=f"Iniciando loop de treino SDXL: {epochs} épocas, {total_train_steps} passos totais.",
+        message=f"Iniciando loop de treino SDXL: {epochs} épocas (offset={epoch_offset}), {total_train_steps} passos totais.",
     )
 
     print(
-        f"Iniciando treino LoRA SDXL: {epochs} épocas, {len(dataset)} imagens, res={resolution}, "
+        f"Iniciando treino LoRA SDXL: {epochs} épocas (offset={epoch_offset}), {len(dataset)} imagens, res={resolution}, "
         f"rank={rank}, alpha={alpha}, lr={learning_rate}, grad_accum={grad_accum}, opt={optimizer_name}, "
         f"scheduler={lr_scheduler_name}",
         flush=True,
@@ -339,7 +351,8 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
     global_step = 0
     safe_avg_loss = None
 
-    for epoch in range(1, epochs + 1):
+    for epoch_idx in range(1, epochs + 1):
+        epoch = epoch_idx + epoch_offset
         unet.train()
         epoch_loss = 0.0
         steps_in_epoch = 0
@@ -368,28 +381,33 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
                 text_encoder_one,
                 text_encoder_two,
                 device,
+                target_dtype,
             )
 
-            added_cond_kwargs = {
-                "text_embeds": pooled_prompt_embeds,
-                "time_ids": add_time_ids.repeat(cur_bs, 1),
-            }
+            # Micro-conditioning de tamanho original, target e crop
+            batch_time_ids = add_time_ids.repeat(cur_bs, 1)
 
+            # Predição de ruído pelo UNet com adaptadores LoRA ativos
             model_pred = unet(
                 noisy_latents,
                 timesteps,
                 prompt_embeds,
-                added_cond_kwargs=added_cond_kwargs,
-            ).sample
-            loss = F.mse_loss(model_pred.float(), noise.float(), reduction="mean")
+                added_cond_kwargs={
+                    "text_embeds": pooled_prompt_embeds,
+                    "time_ids": batch_time_ids,
+                },
+                return_dict=False,
+            )[0]
 
-            cur_loss_raw = loss.item()
+            # Loss MSE simples contra o ruído gaussiano adicionado
+            loss = F.mse_loss(model_pred.float(), noise.float(), reduction="mean")
             loss = loss / grad_accum
             loss.backward()
 
+            cur_loss_raw = float(loss.item()) * grad_accum
             steps_in_epoch += 1
-            is_accum_step = (steps_in_epoch % grad_accum == 0) or (steps_in_epoch == len(dataloader))
-            if is_accum_step:
+
+            if steps_in_epoch % grad_accum == 0 or steps_in_epoch == len(dataloader):
                 torch.nn.utils.clip_grad_norm_(unet.parameters(), 1.0)
                 optimizer.step()
                 if lr_scheduler is not None:
@@ -404,22 +422,17 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
                 lr_scheduler.get_last_lr()[0] if lr_scheduler else learning_rate
             )
 
-            # Emite métricas intermediárias por step para streaming em tempo real
-            if is_accum_step and (global_step % 5 == 0 or steps_in_epoch == len(dataloader)):
+            # Emite métricas intermediárias
+            if steps_in_epoch % grad_accum == 0 and (
+                global_step % 5 == 0 or steps_in_epoch == len(dataloader)
+            ):
                 safe_loss = (
                     None
                     if (math.isnan(cur_loss_raw) or math.isinf(cur_loss_raw))
                     else round(cur_loss_raw, 4)
                 )
                 current_progress = round(
-                    min(
-                        0.99,
-                        max(
-                            0.10,
-                            0.10 + 0.89 * (global_step / max(1, total_train_steps)),
-                        ),
-                    ),
-                    4,
+                    min(0.99, max(0.10, 0.10 + 0.89 * (global_step / max(1, total_train_steps)))), 4
                 )
                 _emit_metric(
                     metrics_path,
@@ -429,26 +442,17 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
                     lr=effective_lr,
                     progress=current_progress,
                     phase="training",
-                    message=f"Época {epoch}/{epochs} · Step {global_step}/{total_train_steps} · Loss: {safe_loss}",
-                )
-                print(
-                    f"[SDXL] Época {epoch}/{epochs} · Step {global_step}/{total_train_steps} · Loss: {cur_loss_raw:.4f} · LR: {effective_lr:.2e}",
-                    flush=True,
+                    message=f"Época {epoch}/{epochs + epoch_offset} · Step {global_step}/{total_train_steps} · Loss: {safe_loss}",
                 )
 
-        avg_loss = (
-            round(epoch_loss / max(1, steps_in_epoch), 4)
-            if steps_in_epoch > 0
-            else 0.0
-        )
+        avg_loss = epoch_loss / max(1, steps_in_epoch)
         safe_avg_loss = (
-            None if (math.isnan(avg_loss) or math.isinf(avg_loss)) else avg_loss
-        )
-        effective_lr = (
-            lr_scheduler.get_last_lr()[0] if lr_scheduler else learning_rate
+            None
+            if (math.isnan(avg_loss) or math.isinf(avg_loss))
+            else round(avg_loss, 4)
         )
         epoch_progress = round(
-            min(0.99, max(0.10, 0.10 + 0.89 * (epoch / epochs))), 4
+            min(0.99, max(0.10, 0.10 + 0.89 * (epoch_idx / epochs))), 4
         )
         _emit_metric(
             metrics_path,
@@ -458,37 +462,38 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
             lr=effective_lr,
             progress=epoch_progress,
             phase="epoch_complete",
-            message=f"Época {epoch}/{epochs} concluída · Loss Médio: {safe_avg_loss}",
+            message=f"Época {epoch}/{epochs + epoch_offset} concluída · Loss Médio: {safe_avg_loss}",
         )
         print(
-            f"[SDXL] Época {epoch}/{epochs} concluída - Step {global_step} - Loss Médio: {avg_loss}",
+            f"[SDXL] Época {epoch}/{epochs + epoch_offset} concluída - Step {global_step} - Loss Médio: {avg_loss}",
             flush=True,
         )
 
-        # Salva checkpoint da época
-        checkpoints_dir = output / "checkpoints"
-        checkpoints_dir.mkdir(parents=True, exist_ok=True)
-        ckpt_file = checkpoints_dir / f"{base_name}_epoch_{epoch:03d}.safetensors"
-        _save_lora_safetensors(
-            unet,
-            ckpt_file,
-            metadata={
-                "format": "pt",
-                "framework": "diffusers",
-                "model_type": "lora",
-                "base_model": "sdxl",
-                "lora_rank": str(rank),
-                "lora_alpha": str(alpha),
-                "trigger_word": trigger_word,
-                "quantization": quantization,
-                "epoch": str(epoch),
-            },
-        )
+        # Salva checkpoint da época respeitando checkpoint_interval
+        if epoch_idx % checkpoint_interval == 0 or epoch_idx == epochs:
+            checkpoints_dir = output / "checkpoints"
+            checkpoints_dir.mkdir(parents=True, exist_ok=True)
+            ckpt_file = checkpoints_dir / f"{base_name}_epoch_{epoch:03d}.safetensors"
+            _save_lora_safetensors(
+                unet,
+                ckpt_file,
+                metadata={
+                    "format": "pt",
+                    "framework": "diffusers",
+                    "model_type": "lora",
+                    "base_model": "sdxl",
+                    "lora_rank": str(rank),
+                    "lora_alpha": str(alpha),
+                    "trigger_word": trigger_word,
+                    "quantization": quantization,
+                    "epoch": str(epoch),
+                },
+            )
 
         if (
             sample_prompt
             and sample_interval > 0
-            and (epoch % sample_interval == 0 or epoch == epochs)
+            and (epoch_idx % sample_interval == 0 or epoch_idx == epochs)
         ):
             sample_file = output / "samples" / f"sample_epoch_{epoch:03d}.png"
             _generate_sample_sdxl(

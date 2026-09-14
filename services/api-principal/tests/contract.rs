@@ -890,6 +890,7 @@ async fn job_response_keys_are_camel_case() {
             created_at: "2026-01-01T00:00:00Z".into(),
             finished_at: None,
             error: None,
+            params: None,
         };
         m.get_job_result = Some(job.clone());
         m.list_jobs_result = Some((vec![job], 1));

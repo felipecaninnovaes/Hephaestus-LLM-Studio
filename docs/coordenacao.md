@@ -19,7 +19,59 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-14 (FATIA CALIBRAÇÃO VAE FLUX.2, DESACOPLAMENTO MODULAR, CHECKPOINTS POR ÉPOCA E SALVAMENTO ATÔMICO CONCLUÍDA NA BRANCH)
+## Estado atual — 2026-09-14 (FATIA CHECKPOINTS AO VIVO, RETOMADA DE TREINO E DOWNLOAD DE CONFIGURAÇÃO JSON CONCLUÍDA NA BRANCH)
+
+- **FATIA CHECKPOINTS AO VIVO, RETOMADA DE TREINO E DOWNLOAD DE CONFIGURAÇÃO JSON — CONCLUÍDA NA BRANCH (2026-09-14)** — branch `feat/diffusion-live-checkpoints-resume`.
+  - **Motivação**:
+    1. Transmitir checkpoints por época em tempo real para o S3 e interface gráfica durante a execução do treino, evitando perda de progresso se o job for cancelado ou falhar e permitindo ao usuário baixar ou testar checkpoints intermediários enquanto o processo ainda roda.
+    2. Viabilizar a continuação e retomada de treinamentos de difusão a partir de qualquer checkpoint prévio ou modelo concluído, clonando hiperparâmetros, injetando os pesos prévios via PEFT LoRA e mantendo a numeração contínua de épocas (`epoch_offset`).
+    3. Permitir a configuração da frequência de salvamento de checkpoints por época via seletor canônico na interface (`checkpointInterval`: 1, 2, 5, 10 épocas).
+    4. Permitir o download do JSON canônico de configuração do treino tanto como artefato S3 do job (`training_config.json`) quanto por ação direta na UI (compatível com a importação de presets).
+    5. Garantir que todas as adições de interface em `apps/web` sigam estritamente o Design System Dark Arcane e o skill `impeccable` (0 erros detectados pelo `impeccable detect`).
+  - **Contratos (OpenAPI 0.24.0)**:
+    - Bump de versão `0.23.0` → `0.24.0`.
+    - `DiffusionJobRequest`: adicionados `checkpointInterval` (inteiro, 1..=100, default 1) e `epochOffset` (inteiro, 0..=1000, default 0).
+    - `Job`: adicionada propriedade `params: object` (nullable), expondo os parâmetros canônicos de criação do job para inspeção e clonagem.
+  - **Backend Rust (`manager`, `api-principal`, `orchestrator`)**:
+    - `services/manager`:
+      - `JobRow`: adicionado `pub params: Option<serde_json::Value>`, populado em `list_jobs` e `get_job`.
+      - `create_job`: adicionado fallback na resolução de `weights_id` buscando na tabela `job_artifacts` (`WHERE id = $1 AND kind IN ('checkpoint', 'model')`), derivando chave S3 `artifacts/{job_id}/{path}`, engine e model.
+      - 16/16 testes unitários verdes.
+    - `services/api-principal`:
+      - `models.rs`: `DiffusionJobRequest` validando `checkpoint_interval` e `epoch_offset`, e `generate_diffusion_config_yaml` injetando `weights_path`, `checkpoint_interval` e `epoch_offset` no YAML.
+      - `handlers.rs`: `submit_diffusion_job` serializando o payload nos `params` do manager; `JobResponse` expondo `params`.
+      - Testes unitários e de integração atualizados (`tests/contract.rs`, `tests/datasets_db.rs`).
+    - `services/orchestrator`:
+      - Salva `outputs/{job_id}/training_config.json` no boot de jobs de difusão em modo `train`.
+      - Upload periódico ao vivo em `metrics_handle` de `outputs/checkpoints/*.safetensors` para o S3 com notificação incremental `kind: "checkpoint"`.
+      - Upload final inclui `training_config.json` como `kind: "config"`.
+      - 85/85 testes unitários verdes.
+  - **Engine Python (`trainer-difusao`)**:
+    - `common.py`: Gravação atômica de safetensors via `.tmp_{filename}` e `os.replace`; função `_load_lora_weights(model, weights_path)` para injeção de adaptadores prévios via PEFT/safetensors.
+    - `models/flux.py`, `models/sdxl.py`, `models/sd15.py`:
+      - Suporte a `weights_path`, `checkpoint_interval` e `epoch_offset`.
+      - Carregamento de pesos prévios via `_load_lora_weights`.
+      - Loop de treino com cálculo contínuo de época: `epoch = epoch_idx + epoch_offset`.
+      - Frequência de checkpoint respeitando `epoch_idx % checkpoint_interval == 0 or epoch_idx == epochs`.
+      - Amostra baseline Época 0 suprimida quando `epoch_offset > 0`.
+    - `models/mock.py`: Loop sintético e gravação atômica alinhados com o comportamento real.
+    - `tests/test_train.py`: Adicionados testes para intervalo de checkpoints e retomada com pesos e offset. 18/18 testes verdes (`uv run pytest`).
+  - **Web Frontend (`apps/web`) — Impeccable Design System**:
+    - `types/studio.ts`: Propriedades `params` em `Job`, `checkpointInterval` e `epochOffset` em `DiffusionJobRequest` e `DiffusionPreset`.
+    - `lib/jobs.ts`: `startDiffusionJob` propagando os novos parâmetros.
+    - `components/studio/ForjaDifusaoSetup.tsx`:
+      - Seletor canônico `<Select>` para "Intervalo de Checkpoints" nas Configurações Avançadas.
+      - Badge Dark Arcane de contexto "Modo Continuação: Retomando de {nome} (+N épocas)" com botão de cancelar retomada.
+      - Exportação e importação de presets incluindo `checkpointInterval` e `epochOffset`.
+    - `app/(studio)/difusao/page.tsx`:
+      - Wrapped em `<Suspense>` lendo dados de retomada do `sessionStorage` ou query params.
+    - `components/studio/JobCard.tsx` e `app/(studio)/jobs/page.tsx`:
+      - Botão "Retomar" em artefatos de checkpoint/modelo nos cards de jobs e lista de artefatos.
+      - Botões de ação direta no painel do job: "Baixar JSON de Treino" e "Continuar Treino".
+    - `components/studio/ActionCenter.tsx`:
+      - Conexão de ação "Retomar" na lista de artefatos do drawer lateral.
+    - Validação de design: `impeccable detect` com 0 erros e 0 avisos; `npm run build` com 13/13 páginas compiladas estaticamente com sucesso total.
+
 
 - **FATIA CALIBRAÇÃO VAE FLUX.2, DESACOPLAMENTO MODULAR, CHECKPOINTS POR ÉPOCA E SALVAMENTO ATÔMICO — CONCLUÍDA NA BRANCH (2026-09-14)** — branch `feat/flux2-vae-modular-trainer`.
   - **Motivação**:

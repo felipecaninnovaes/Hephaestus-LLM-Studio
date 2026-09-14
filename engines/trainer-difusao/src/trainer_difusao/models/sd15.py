@@ -11,6 +11,7 @@ from typing import Any
 from trainer_difusao.common import (
     _die,
     _emit_metric,
+    _load_lora_weights,
     _resolve_output_name,
     _save_lora_safetensors,
     _setup_cache_dir,
@@ -129,6 +130,15 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
     optimizer_name = str(lora_cfg.get("optimizer", "adamw8bit"))
     lr_scheduler_name = str(lora_cfg.get("lr_scheduler", "cosine"))
     lr_warmup_steps = int(lora_cfg.get("lr_warmup_steps", 0))
+
+    checkpoint_interval = max(
+        1, int(cfg.get("checkpoint_interval") or lora_cfg.get("checkpoint_interval") or 1)
+    )
+    epoch_offset = max(
+        0, int(cfg.get("epoch_offset") or lora_cfg.get("epoch_offset") or 0)
+    )
+    weights_path = cfg.get("weights_path")
+
     mixed_precision = str(lora_cfg.get("mixed_precision", "fp16")).lower().strip()
     target_dtype = (
         torch.bfloat16
@@ -196,6 +206,8 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         target_modules=["to_k", "to_q", "to_v", "to_out.0"],
     )
     unet = get_peft_model(unet, lora_config)
+    if weights_path:
+        _load_lora_weights(unet, weights_path)
 
     _emit_metric(
         metrics_path,
@@ -230,8 +242,8 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         message=f"Dataset pronto: {len(dataset)} imagens.",
     )
 
-    # Amostra baseline (Época 0) pré-treino
-    if sample_prompt:
+    # Amostra baseline (Época 0) pré-treino (apenas se não estiver retomando)
+    if sample_prompt and epoch_offset == 0:
         _emit_metric(
             metrics_path,
             epoch=0,
@@ -262,15 +274,15 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
 
     _emit_metric(
         metrics_path,
-        epoch=0,
+        epoch=epoch_offset,
         step=7,
         progress=0.10,
         phase="training_started",
-        message=f"Iniciando loop de treino SD 1.5: {epochs} épocas, {total_train_steps} passos totais.",
+        message=f"Iniciando loop de treino SD 1.5: {epochs} épocas (offset={epoch_offset}), {total_train_steps} passos totais.",
     )
 
     print(
-        f"Iniciando treino LoRA SD 1.5: {epochs} épocas, {len(dataset)} imagens, res={resolution}, "
+        f"Iniciando treino LoRA SD 1.5: {epochs} épocas (offset={epoch_offset}), {len(dataset)} imagens, res={resolution}, "
         f"rank={rank}, alpha={alpha}, lr={learning_rate}, grad_accum={grad_accum}, opt={optimizer_name}, "
         f"scheduler={lr_scheduler_name}",
         flush=True,
@@ -278,7 +290,8 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
     global_step = 0
     safe_avg_loss = None
 
-    for epoch in range(1, epochs + 1):
+    for epoch_idx in range(1, epochs + 1):
+        epoch = epoch_idx + epoch_offset
         unet.train()
         epoch_loss = 0.0
         steps_in_epoch = 0
@@ -286,36 +299,40 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         for batch in dataloader:
             pixel_values = batch["pixel_values"].to(device, dtype=torch.float32)
             captions = batch["prompt"]
+            cur_bs = pixel_values.shape[0]
 
-            # Codifica imagens no espaço latente via VAE em float32, convertendo latents para target_dtype
             with torch.no_grad():
-                latents = (vae.encode(pixel_values).latent_dist.sample() * 0.18215).to(
-                    dtype=target_dtype
-                )
+                latents = (
+                    vae.encode(pixel_values).latent_dist.sample()
+                    * vae.config.scaling_factor
+                ).to(dtype=target_dtype)
 
-            # Adiciona ruído gaussiano aos latents
             noise = torch.randn_like(latents)
             timesteps = torch.randint(
-                0,
-                noise_scheduler.config.num_train_timesteps,
-                (latents.shape[0],),
-                device=device,
+                0, noise_scheduler.config.num_train_timesteps, (cur_bs,), device=device
             ).long()
             noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
-            # Codifica texto das legendas
-            with torch.no_grad():
-                text_inputs = tokenizer(
-                    captions,
-                    padding="max_length",
-                    max_length=tokenizer.model_max_length,
-                    truncation=True,
-                    return_tensors="pt",
-                ).input_ids.to(device)
-                encoder_hidden_states = text_encoder(text_inputs)[0]
+            inputs = tokenizer(
+                captions,
+                padding="max_length",
+                max_length=tokenizer.model_max_length,
+                truncation=True,
+                return_tensors="pt",
+            ).to(device)
 
-            # Forward no UNet com LoRA
-            model_pred = unet(noisy_latents, timesteps, encoder_hidden_states).sample
+            with torch.no_grad():
+                encoder_hidden_states = text_encoder(inputs.input_ids)[0].to(
+                    dtype=target_dtype
+                )
+
+            model_pred = unet(
+                noisy_latents,
+                timesteps,
+                encoder_hidden_states,
+                return_dict=False,
+            )[0]
+
             loss = F.mse_loss(model_pred.float(), noise.float(), reduction="mean")
 
             cur_loss_raw = loss.item()
@@ -364,10 +381,10 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
                     lr=effective_lr,
                     progress=current_progress,
                     phase="training",
-                    message=f"Época {epoch}/{epochs} · Step {global_step}/{total_train_steps} · Loss: {safe_loss}",
+                    message=f"Época {epoch}/{epochs + epoch_offset} · Step {global_step}/{total_train_steps} · Loss: {safe_loss}",
                 )
                 print(
-                    f"[SD 1.5] Época {epoch}/{epochs} · Step {global_step}/{total_train_steps} · Loss: {cur_loss_raw:.4f} · LR: {effective_lr:.2e}",
+                    f"[SD 1.5] Época {epoch}/{epochs + epoch_offset} · Step {global_step}/{total_train_steps} · Loss: {cur_loss_raw:.4f} · LR: {effective_lr:.2e}",
                     flush=True,
                 )
 
@@ -383,7 +400,7 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
             lr_scheduler.get_last_lr()[0] if lr_scheduler else learning_rate
         )
         epoch_progress = round(
-            min(0.99, max(0.10, 0.10 + 0.89 * (epoch / epochs))), 4
+            min(0.99, max(0.10, 0.10 + 0.89 * (epoch_idx / epochs))), 4
         )
         _emit_metric(
             metrics_path,
@@ -393,37 +410,38 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
             lr=effective_lr,
             progress=epoch_progress,
             phase="epoch_complete",
-            message=f"Época {epoch}/{epochs} concluída · Loss Médio: {safe_avg_loss}",
+            message=f"Época {epoch}/{epochs + epoch_offset} concluída · Loss Médio: {safe_avg_loss}",
         )
         print(
-            f"[SD 1.5] Época {epoch}/{epochs} concluída - Step {global_step} - Loss Médio: {avg_loss}",
+            f"[SD 1.5] Época {epoch}/{epochs + epoch_offset} concluída - Step {global_step} - Loss Médio: {avg_loss}",
             flush=True,
         )
 
-        # Salva checkpoint da época
-        checkpoints_dir = output / "checkpoints"
-        checkpoints_dir.mkdir(parents=True, exist_ok=True)
-        ckpt_file = checkpoints_dir / f"{base_name}_epoch_{epoch:03d}.safetensors"
-        _save_lora_safetensors(
-            unet,
-            ckpt_file,
-            metadata={
-                "format": "pt",
-                "framework": "diffusers",
-                "model_type": "lora",
-                "base_model": "sd15",
-                "lora_rank": str(rank),
-                "lora_alpha": str(alpha),
-                "trigger_word": trigger_word,
-                "quantization": quantization,
-                "epoch": str(epoch),
-            },
-        )
+        # Salva checkpoint da época respeitando checkpoint_interval
+        if epoch_idx % checkpoint_interval == 0 or epoch_idx == epochs:
+            checkpoints_dir = output / "checkpoints"
+            checkpoints_dir.mkdir(parents=True, exist_ok=True)
+            ckpt_file = checkpoints_dir / f"{base_name}_epoch_{epoch:03d}.safetensors"
+            _save_lora_safetensors(
+                unet,
+                ckpt_file,
+                metadata={
+                    "format": "pt",
+                    "framework": "diffusers",
+                    "model_type": "lora",
+                    "base_model": "sd15",
+                    "lora_rank": str(rank),
+                    "lora_alpha": str(alpha),
+                    "trigger_word": trigger_word,
+                    "quantization": quantization,
+                    "epoch": str(epoch),
+                },
+            )
 
         if (
             sample_prompt
             and sample_interval > 0
-            and (epoch % sample_interval == 0 or epoch == epochs)
+            and (epoch_idx % sample_interval == 0 or epoch_idx == epochs)
         ):
             sample_file = output / "samples" / f"sample_epoch_{epoch:03d}.png"
             _generate_sample_sd15(

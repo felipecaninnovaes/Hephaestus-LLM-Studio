@@ -291,6 +291,61 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
     }
   }
 
+  function handleResume(job: Job, art: JobArtifact) {
+    const checkpointName = art.path.split("/").pop() || "checkpoint.safetensors";
+    const match = art.path.match(/epoch_(\d+)/);
+    const epochOffset = match ? parseInt(match[1], 10) : (job.epoch ?? 0);
+
+    const resumeData = {
+      resumeCheckpoint: {
+        id: art.id,
+        name: checkpointName,
+        epoch: epochOffset,
+      },
+      epochOffset,
+      initialPreset: job.params
+        ? {
+            baseModel: (job.params.baseModel || (job.params as any).base_model || job.model) as any,
+            triggerWord: (job.params.triggerWord ?? (job.params as any).trigger_word ?? "") as string,
+            rank: typeof job.params.rank === "number" ? job.params.rank : 16,
+            alpha: typeof job.params.alpha === "number" ? job.params.alpha : 16,
+            resolution:
+              typeof job.params.resolution === "number" ? job.params.resolution : 1024,
+            gradientAccumulationSteps:
+              typeof job.params.gradientAccumulationSteps === "number"
+                ? job.params.gradientAccumulationSteps
+                : typeof (job.params as any).gradient_accumulation_steps === "number"
+                  ? (job.params as any).gradient_accumulation_steps
+                  : 1,
+            optimizer: ((job.params.optimizer || (job.params as any).optimizer) as any) || "adamw8bit",
+            lrScheduler:
+              ((job.params.lrScheduler || (job.params as any).lr_scheduler) as any) || "cosine",
+            mixedPrecision:
+              ((job.params.mixedPrecision || (job.params as any).mixed_precision) as any) || "fp16",
+            quantization:
+              ((job.params.quantization || (job.params as any).quantization) as any) || "4bit",
+            checkpointInterval:
+              typeof job.params.checkpointInterval === "number"
+                ? job.params.checkpointInterval
+                : typeof (job.params as any).checkpoint_interval === "number"
+                  ? (job.params as any).checkpoint_interval
+                  : 1,
+          }
+        : undefined,
+    };
+
+    try {
+      sessionStorage.setItem("hephaestus_diffusion_resume", JSON.stringify(resumeData));
+    } catch {
+      // Best-effort
+    }
+
+    onClose();
+    router.push(
+      `/difusao?checkpointId=${art.id}&checkpointName=${encodeURIComponent(checkpointName)}&epochOffset=${epochOffset}`
+    );
+  }
+
   // Notificações do sistema agnósticas (telemetria, nó orquestrador, alertas de recursos)
   const systemNotifications = useMemo<SystemNotification[]>(() => {
     const list: SystemNotification[] = [];
@@ -1052,6 +1107,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                         !art.path.includes("sample_epoch_"),
                                     )}
                                     onDownload={(jId, art) => handleDownload(jId, art)}
+                                    onResume={(jId, art) => handleResume(job, art)}
                                   />
                                 )}
 

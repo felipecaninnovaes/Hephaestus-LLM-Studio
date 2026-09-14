@@ -374,37 +374,50 @@ def _save_lora_safetensors(
 
 
 def _create_optimizer(unet: Any, optimizer_name: str, lr: float) -> Any:
-    """Cria otimizador selecionado (adamw8bit, adamw, prodigy)."""
+    """Cria otimizador selecionado (adamw8bit, adamw, prodigy) filtrando apenas parâmetros com gradiente ativo."""
     import torch
+
+    trainable_params = [p for p in unet.parameters() if p.requires_grad]
+    if not trainable_params:
+        raise ValueError("Nenhum parâmetro com requires_grad=True encontrado para treinar no otimizador.")
 
     opt_type = optimizer_name.lower().strip()
     if opt_type == "adamw8bit":
         try:
             import bitsandbytes as bnb
 
-            print("Usando otimizador 8-bit AdamW (bitsandbytes).", flush=True)
-            return bnb.optim.AdamW8bit(unet.parameters(), lr=lr)
+            print(
+                f"Usando otimizador 8-bit AdamW (bitsandbytes) para {len(trainable_params)} tensores treináveis.",
+                flush=True,
+            )
+            return bnb.optim.AdamW8bit(trainable_params, lr=lr)
         except Exception as e:
             print(
                 f"[WARN] bitsandbytes não disponível ({e}), fallback para AdamW padrão.",
                 flush=True,
             )
-            return torch.optim.AdamW(unet.parameters(), lr=lr)
+            return torch.optim.AdamW(trainable_params, lr=lr)
     elif opt_type == "prodigy":
         try:
             import prodigyopt
 
-            print("Usando otimizador adaptativo Prodigy.", flush=True)
-            return prodigyopt.Prodigy(unet.parameters(), lr=lr or 1.0)
+            print(
+                f"Usando otimizador adaptativo Prodigy para {len(trainable_params)} tensores treináveis.",
+                flush=True,
+            )
+            return prodigyopt.Prodigy(trainable_params, lr=lr or 1.0)
         except Exception as e:
             print(
                 f"[WARN] Prodigy não instalado ({e}), fallback para AdamW.",
                 flush=True,
             )
-            return torch.optim.AdamW(unet.parameters(), lr=lr)
+            return torch.optim.AdamW(trainable_params, lr=lr)
     else:
-        print("Usando otimizador AdamW (PyTorch).", flush=True)
-        return torch.optim.AdamW(unet.parameters(), lr=lr)
+        print(
+            f"Usando otimizador AdamW (PyTorch) para {len(trainable_params)} tensores treináveis.",
+            flush=True,
+        )
+        return torch.optim.AdamW(trainable_params, lr=lr)
 
 
 def _create_lr_scheduler(
@@ -1850,13 +1863,22 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     transformer.enable_gradient_checkpointing()
     transformer.train()
 
+    # Confirma congelamento dos pesos base e isolamento estrito da LoRA
+    trainable_params_count = sum(p.numel() for p in transformer.parameters() if p.requires_grad)
+    frozen_params_count = sum(p.numel() for p in transformer.parameters() if not p.requires_grad)
+    print(
+        f"[FLUX] Parâmetros treináveis LoRA: {trainable_params_count:,} | "
+        f"Pesos base congelados: {frozen_params_count:,}",
+        flush=True,
+    )
+
     _emit_metric(
         metrics_path,
         epoch=0,
         step=6,
         progress=0.07,
         phase="setup_lora",
-        message=f"Adaptadores LoRA injetados no Transformer (rank={rank}, alpha={alpha}).",
+        message=f"Adaptadores LoRA injetados no Transformer (rank={rank}, alpha={alpha}, treináveis: {trainable_params_count:,}).",
     )
 
     # 5. Dataset de treino
@@ -1938,8 +1960,32 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         flush=True,
     )
 
-    shift_factor = getattr(vae.config, "shift_factor", 0.0)
-    scaling_factor = getattr(vae.config, "scaling_factor", 0.3611)
+    if is_flux2:
+        # FLUX.2 Klein: VAE com 32 canais e espaço latente retreinado (AutoencoderKLFlux2).
+        # Jamais herdar os valores legados do Flux.1 (shift=0.1159 / scaling=0.3611).
+        # Extrai os parâmetros reais da config do checkpoint Klein:
+        shift_factor = getattr(vae.config, "shift_factor", 0.0) or 0.0
+        scaling_factor = getattr(vae.config, "scaling_factor", 1.0) or 1.0
+        latents_mean = getattr(vae.config, "latents_mean", None)
+        latents_std = getattr(vae.config, "latents_std", None)
+    else:
+        # FLUX.1: VAE clássica com 16 canais
+        shift_factor = getattr(vae.config, "shift_factor", None)
+        if shift_factor is None or shift_factor == 0.0:
+            shift_factor = 0.1159
+        scaling_factor = getattr(vae.config, "scaling_factor", None)
+        if scaling_factor is None or scaling_factor == 0.0:
+            scaling_factor = 0.3611
+        latents_mean = None
+        latents_std = None
+
+    print(
+        f"[FLUX] Configuração de normalização da VAE ({vae.__class__.__name__}): "
+        f"is_flux2={is_flux2}, shift_factor={shift_factor}, scaling_factor={scaling_factor}, "
+        f"tem_bn={hasattr(vae, 'bn') and getattr(vae.bn, 'running_mean', None) is not None}, "
+        f"tem_stats_config={latents_mean is not None}",
+        flush=True,
+    )
 
     global_step = 0
     safe_avg_loss = None
@@ -1965,6 +2011,10 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                             vae.bn.running_var.view(1, -1, 1, 1) + getattr(vae.config, "batch_norm_eps", 1e-5)
                         ).to(latents.device, latents.dtype)
                         latents = (latents - latents_bn_mean) / latents_bn_std
+                    elif latents_mean is not None and latents_std is not None:
+                        t_mean = torch.tensor(latents_mean, device=latents.device, dtype=latents.dtype).view(1, -1, 1, 1)
+                        t_std = torch.tensor(latents_std, device=latents.device, dtype=latents.dtype).view(1, -1, 1, 1)
+                        latents = (latents - t_mean) / t_std
                     else:
                         latents = (latents - shift_factor) * scaling_factor
                     latents = latents.to(dtype=target_dtype)
@@ -2001,10 +2051,13 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                     prompt_embeds = text_encoder_two(t5_inputs.input_ids)[0]
                     txt_ids = _prepare_text_ids(prompt_embeds.shape[1], device, prompt_embeds.dtype, batch_size=bsz)
 
-            # Ruído gaussiano e timesteps aleatórios para Flow Matching
+            # Ruído gaussiano e timesteps amostrados com shifted logit-normal para Flow Matching
             noise = torch.randn_like(packed_latents)
             u = torch.normal(mean=0.0, std=1.0, size=(bsz,), device=device)
-            timesteps = torch.sigmoid(u)
+            t_sigmoid = torch.sigmoid(u)
+            # Deslocamento de fluxo (time-shift schedule do Flux)
+            flow_shift = float(getattr(noise_scheduler.config, "shift", 3.0) or 3.0)
+            timesteps = (flow_shift * t_sigmoid) / (1.0 + (flow_shift - 1.0) * t_sigmoid)
 
             # Interpolação do fluxo retificado: x_t = (1 - t) * x_0 + t * noise
             t_expanded = timesteps.view(-1, 1, 1).to(dtype=target_dtype)
@@ -2022,7 +2075,8 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                     return_dict=False,
                 )[0]
             else:
-                guidance = torch.full((bsz,), 3.5, device=device, dtype=target_dtype)
+                # Treino de LoRA em FLUX.1-dev exige guidance=1.0 (não usar 3.5 da inferência)
+                guidance = torch.full((bsz,), 1.0, device=device, dtype=target_dtype)
                 model_pred = transformer(
                     hidden_states=noisy_latents,
                     timestep=timesteps,

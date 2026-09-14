@@ -19,7 +19,29 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-13 (FATIA ALTERAÇÃO EM LOTE DE CLASSES NO GRID E CURADORIA DE CLASSES AUSENTES NO AUTOTRACKER CONCLUÍDA NA BRANCH)
+## Estado atual — 2026-09-14 (FATIA CALIBRAÇÃO VAE FLUX.2 E DESACOPLAMENTO MODULAR DO TRAINER-DIFUSAO CONCLUÍDA NA BRANCH)
+
+- **FATIA CALIBRAÇÃO VAE FLUX.2 E DESACOPLAMENTO MODULAR DO TRAINER-DIFUSAO — CONCLUÍDA NA BRANCH (2026-09-14)** — branch `feat/flux2-vae-modular-trainer`.
+  - **Motivação**:
+    1. Eliminar viés sistemático e artefatos de degradação em texturas finas no FLUX causados por guidance em 3.5 durante treino, timesteps sem time-shift do Flow Matching, e herança inadequada de parâmetros de normalização VAE da arquitetura FLUX.1 no novo FLUX.2 Klein (o qual emprega VAE redesenhada com 32 canais `AutoencoderKLFlux2` e normalização via Batch Normalization / running stats).
+    2. Desacoplar o motor monolítico `train.py` (~2.270 linhas) em arquitetura modular limpa e extensível por modelo (`models/flux.py`, `models/sdxl.py`, `models/sd15.py`, `models/mock.py`, `optimizers.py`, `dataset.py`, `common.py`).
+  - **Correções Matemáticas e Numéricas no FLUX**:
+    - **Guidance Embedding**: Fixado em `1.0` durante o treino de LoRA em FLUX.1-dev (evitando o super-condicionamento destilado de 3.5 típico de inferência).
+    - **Time-Shift Schedule**: Implementado shifted logit-normal $t_{\text{shifted}} = \frac{s \cdot t}{1 + (s - 1) \cdot t}$ com $s = 3.0$ do `FlowMatchEulerDiscreteScheduler`.
+    - **VAE FLUX.2 Klein**: Leitura estrita de `AutoencoderKLFlux2` com extração de parâmetros reais do checkpoint (suporte a Batch Normalization `running_mean`/`running_var` e `latents_mean`/`latents_std` de `vae.config`, desacoplando dos fatores legados `0.1159`/`0.3611` do FLUX.1).
+    - **Otimizadores Estritos**: `_create_optimizer` agora filtra exclusivamente tensores com `p.requires_grad == True`, impedindo alocação indevida de buffers de momento para pesos base congelados.
+  - **Modularização do `trainer-difusao`**:
+    - `common.py`: Helpers de métricas, telemetria, cache do Hugging Face e serialização Safetensors.
+    - `optimizers.py`: Fábrica de otimizadores (AdamW8bit, Prodigy, AdamW) e LR schedulers.
+    - `dataset.py`: `DiffusionDataset` com suporte a pares de imagens e legendas.
+    - `models/base.py`: Protocolo abstrato `BaseModelTrainer`.
+    - `models/flux.py`: Pipeline do FLUX.1 e FLUX.2 Klein (Flow Matching, patchify, RoPE, Qwen3).
+    - `models/sdxl.py`: Pipeline do SDXL (Dual CLIP, micro-conditioning time IDs, UNet).
+    - `models/sd15.py`: Pipeline do SD 1.5 (DDPM, CLIPText, UNet).
+    - `models/mock.py`: Pipeline sintético determinístico para CI e dev sem GPU.
+    - `models/__init__.py`: Factory `get_trainer(model_name, is_mock)`.
+    - `train.py`: Despachante CLI enxuto (~160 linhas) com 100% de compatibilidade reversa de imports.
+  - **Testes & Verificações**: 13/13 testes unitários passando em `engines/trainer-difusao`, `cargo check --workspace` limpo.
 
 - **FATIA ALTERAÇÃO EM LOTE DE CLASSES NO GRID E CURADORIA DE CLASSES AUSENTES NO AUTOTRACKER — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/yolo-batch-tags-autotracker-classes`.
   - **Motivação**: Eliminar a lentidão e o esforço manual repetitivo na correção de anotações em datasets de treino (por exemplo, trocar em massa `female_face` por `male_face` quando o detector confunde o gênero ou purgar tags/classes espúrias de imagens selecionadas) e permitir ao AutoTracker identificar e sugerir de forma interativa a criação de novas classes detectadas no dataset (evitando o descarte silencioso de boxes válidas).

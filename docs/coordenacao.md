@@ -27,8 +27,13 @@ ser interrompido no meio de uma.
     2. Resolver a race condition de imagens de validação corrompidas ou cortadas pela metade no frontend causadas pela leitura prematura de arquivos PNG parcialmente gravados pelo loop de polling do orquestrador Rust.
     3. Habilitar persistência de checkpoints periódicos por época (`outputs/checkpoints/{base_name}_epoch_XXX.safetensors`), honrando a nomeação semântica customizada (`output_name` da ADR-0022) com preservação retrocompatível de `adapter.safetensors`.
     4. Desacoplar o motor monolítico `train.py` (~2.270 linhas) em arquitetura modular limpa e extensível por modelo (`models/flux.py`, `models/sdxl.py`, `models/sd15.py`, `models/mock.py`, `optimizers.py`, `dataset.py`, `common.py`).
+    5. Isolar e invalidar de forma determinística o cache de quantização 4-bit/8-bit nos nodes de GPU (`/outputs/.cache/quantized/`), prevenindo que a troca do modelo base reutilize silenciosamente pesos cacheados de modelos anteriores (ex: unsloth reutilizado em vez do modelo base oficial).
   - **Correções Matemáticas, Numéricas e Amostragem no FLUX**:
     - **Modelo Base Oficial de Treino**: Alinhamento estrito com o repositório oficial da Black Forest Labs para treino LoRA: `black-forest-labs/FLUX.2-klein-base-4B` (undistilled foundation model), separando-o da variante destilada para inferência rápida (`black-forest-labs/FLUX.2-klein-4B`).
+    - **Isolamento e Invalidação Automática de Cache Quantizado nos Nodes**:
+      - `models/flux.py`: Cache estruturado por slug do `model_id` e formato de precisão: `/outputs/.cache/quantized/{model_slug}_{quant_format}` (ex: `black-forest-labs_FLUX.2-klein-base-4B_4bit`).
+      - Gravação de `metadata.json` contendo `model_id`, `quant_format`, `target_dtype` e `is_flux2`.
+      - Validação estrita via `_is_cache_valid`: se o diretório não tiver `config.json` ou se `metadata.json` divergir do modelo solicitado (ou pastas legadas órfãs sem metadados), o cache é descartado e o node baixa e re-quantiza automaticamente os pesos corretos do zero. Suporte a `force_requantize: true` ou env `FLUX_FORCE_REQUANTIZE=1`.
     - **Amostragem FLUX.2 Klein**: `_generate_sample_flux` encapsulado com `transformer.eval()` e restauração de estado anterior; passos fixados em 20–28 e guidance scale em 3.5 para o modelo base contínuo (resolvendo a falta de texturas finas/poros que ocorria com saltos grosseiros de 4 passos).
     - **Calibração de Hiperparâmetros no Frontend**: Preset e auto-ajuste de LR para FLUX.2 Klein calibrados para `0.00003` (3e-5) com precisão `bf16` em `ForjaDifusaoSetup.tsx`.
     - **Guidance Embedding de Treino**: Fixado em `1.0` durante o treino de LoRA em FLUX.1-dev.
@@ -47,7 +52,7 @@ ser interrompido no meio de uma.
   - **Modularização do `trainer-difusao`**:
     - `common.py`, `optimizers.py`, `dataset.py`, `models/base.py`, `models/flux.py`, `models/sdxl.py`, `models/sd15.py`, `models/mock.py`, `models/__init__.py`, `train.py` (~160 linhas, 100% re-exports).
   - **Testes & Verificações**:
-    - 15/15 testes unitários passando em `engines/trainer-difusao` (incluindo testes de resolução de nomes e checkpoints por época).
+    - 16/16 testes unitários passando em `engines/trainer-difusao` (incluindo testes de resolução de nomes, checkpoints por época e validação/invalidação de cache quantizado).
     - 334/334 testes unitários de `api-principal` passando (incluindo assertions de `output_name` no YAML).
     - 85/85 testes do `orchestrator` passando.
     - `npm run build` no `apps/web`: 13/13 páginas compiladas estaticamente com 0 erros TypeScript.

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import math
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -18,6 +20,48 @@ from trainer_difusao.common import (
 from trainer_difusao.dataset import DiffusionDataset
 from trainer_difusao.models.base import BaseModelTrainer
 from trainer_difusao.optimizers import _create_lr_scheduler, _create_optimizer
+
+
+def _is_cache_valid(cache_dir: Path | None, expected_model_id: str, expected_quant: str) -> bool:
+    """Verifica se o diretório em cache existe, contém config.json e pertence exatamente ao model_id e quantização esperados."""
+    if not cache_dir or not cache_dir.exists():
+        return False
+    if not (cache_dir / "config.json").exists():
+        return False
+    meta_path = cache_dir.parent / "metadata.json"
+    if not meta_path.exists():
+        return False
+    try:
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+        return (
+            data.get("model_id") == expected_model_id
+            and data.get("quant_format") == expected_quant
+        )
+    except Exception:
+        return False
+
+
+def _save_quant_metadata(
+    quant_base: Path,
+    model_id: str,
+    quant_label: str,
+    quant_format: str,
+    target_dtype: Any,
+    is_flux2: bool,
+) -> None:
+    """Grava metadados da quantização persistida para garantir integridade e isolamento estrito."""
+    try:
+        quant_base.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "model_id": model_id,
+            "quantization": quant_label,
+            "quant_format": quant_format,
+            "target_dtype": str(target_dtype),
+            "is_flux2": is_flux2,
+        }
+        (quant_base / "metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"[WARN] Não foi possível salvar metadata do cache quantizado: {e}", flush=True)
 
 
 def _pack_latents(latents: Any) -> Any:
@@ -321,7 +365,7 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
 
     if is_4bit:
         quant_label = "4-bit NF4"
-        subfolder_quant = "flux2_klein_4bit" if is_flux2 else "flux1_4bit"
+        quant_format = "4bit"
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
@@ -330,14 +374,19 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         )
     elif is_8bit:
         quant_label = "8-bit BitsAndBytes"
-        subfolder_quant = "flux2_klein_8bit" if is_flux2 else "flux1_8bit"
+        quant_format = "8bit"
         bnb_config = BitsAndBytesConfig(
             load_in_8bit=True,
         )
     else:
         quant_label = "Nenhum (FP16/BF16 pleno)"
-        subfolder_quant = None
+        quant_format = "full"
         bnb_config = None
+
+    force_requantize = bool(
+        cfg.get("force_requantize", False)
+        or os.environ.get("FLUX_FORCE_REQUANTIZE", "0").lower() in ("1", "true", "yes")
+    )
 
     _emit_metric(
         metrics_path,
@@ -376,17 +425,28 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     lr_scheduler_name = str(lora_cfg.get("lr_scheduler", "cosine"))
     lr_warmup_steps = int(lora_cfg.get("lr_warmup_steps", 0))
 
-    # Diretório persistente de cache para pesos pré-quantizados (evita re-quantizar a cada job)
-    if subfolder_quant:
+    # Diretório persistente de cache para pesos pré-quantizados isolado estritamente por model_id e quant_format
+    if is_quantized:
+        model_slug = re.sub(r"[^a-zA-Z0-9_\-\.]", "_", model_id)
+        subfolder_quant = f"{model_slug}_{quant_format}"
         quant_base = (
             Path(f"/outputs/.cache/quantized/{subfolder_quant}")
             if Path("/outputs").exists()
             else Path.home() / ".cache" / "hephaestus" / "quantized" / subfolder_quant
         )
+        if force_requantize and quant_base.exists():
+            print(
+                f"[INFO] Forçando re-quantização (force_requantize=True): expurgando cache existente em {quant_base}...",
+                flush=True,
+            )
+            shutil.rmtree(quant_base, ignore_errors=True)
+
         transformer_cache_dir = quant_base / "transformer"
         text_encoder_cache_dir = quant_base / ("text_encoder" if is_flux2 else "text_encoder_2")
         quant_base.mkdir(parents=True, exist_ok=True)
     else:
+        subfolder_quant = None
+        quant_base = None
         transformer_cache_dir = None
         text_encoder_cache_dir = None
 
@@ -395,8 +455,12 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         flush=True,
     )
 
-    # 1. Carregamento do Transformer (DiT): do cache quantizado se já existir, senão quantiza e salva
-    if transformer_cache_dir and transformer_cache_dir.exists() and (transformer_cache_dir / "config.json").exists():
+    # 1. Carregamento do Transformer (DiT): do cache quantizado se já existir e for válido, senão quantiza e salva
+    transformer_is_cached = (
+        not force_requantize
+        and _is_cache_valid(transformer_cache_dir, expected_model_id=model_id, expected_quant=quant_format)
+    )
+    if transformer_is_cached:
         _emit_metric(
             metrics_path,
             epoch=0,
@@ -406,7 +470,7 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             message=f"Carregando Transformer quantizado em {quant_label} do cache persistente...",
         )
         print(
-            f"Carregando Transformer quantizado em {quant_label} do cache persistente: {transformer_cache_dir}",
+            f"Carregando Transformer quantizado em {quant_label} do cache persistente validado: {transformer_cache_dir}",
             flush=True,
         )
         transformer = Flux2Transformer_cls.from_pretrained(
@@ -414,6 +478,13 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             torch_dtype=target_dtype,
         )
     else:
+        if transformer_cache_dir and transformer_cache_dir.exists():
+            print(
+                f"[INFO] Cache do transformer em {transformer_cache_dir} é inválido ou pertence a outro modelo. Refazendo quantização...",
+                flush=True,
+            )
+            shutil.rmtree(transformer_cache_dir, ignore_errors=True)
+
         step_msg_trans = (
             f"Baixando e quantizando Transformer FLUX em {quant_label} ({model_id})..."
             if is_quantized
@@ -451,10 +522,11 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                     f"Erro original: {e}"
                 )
             raise
-        if transformer_cache_dir:
+        if transformer_cache_dir and quant_base:
             try:
                 transformer_cache_dir.mkdir(parents=True, exist_ok=True)
                 transformer.save_pretrained(transformer_cache_dir)
+                _save_quant_metadata(quant_base, model_id, quant_label, quant_format, target_dtype, is_flux2)
                 print(
                     f"Transformer {quant_label} persistido em cache para execuções futuras: {transformer_cache_dir}",
                     flush=True,
@@ -479,7 +551,11 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         tokenizer_two = None
         text_encoder_two = None
 
-        if text_encoder_cache_dir and text_encoder_cache_dir.exists() and (text_encoder_cache_dir / "config.json").exists():
+        text_enc_is_cached = (
+            not force_requantize
+            and _is_cache_valid(text_encoder_cache_dir, expected_model_id=model_id, expected_quant=quant_format)
+        )
+        if text_enc_is_cached:
             _emit_metric(
                 metrics_path,
                 epoch=0,
@@ -497,6 +573,13 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                 torch_dtype=target_dtype,
             )
         else:
+            if text_encoder_cache_dir and text_encoder_cache_dir.exists():
+                print(
+                    f"[INFO] Cache do text encoder em {text_encoder_cache_dir} é inválido ou pertence a outro modelo. Refazendo quantização...",
+                    flush=True,
+                )
+                shutil.rmtree(text_encoder_cache_dir, ignore_errors=True)
+
             step_msg_enc = (
                 f"Baixando e quantizando Text Encoder Qwen3 em {quant_label} ({model_id})..."
                 if is_quantized
@@ -519,10 +602,11 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                 cache_dir=hub_cache,
                 token=hf_token,
             )
-            if text_encoder_cache_dir:
+            if text_encoder_cache_dir and quant_base:
                 try:
                     text_encoder_cache_dir.mkdir(parents=True, exist_ok=True)
                     text_encoder_one.save_pretrained(text_encoder_cache_dir)
+                    _save_quant_metadata(quant_base, model_id, quant_label, quant_format, target_dtype, is_flux2)
                     print(
                         f"Text Encoder Qwen3 {quant_label} persistido em cache para execuções futuras: {text_encoder_cache_dir}",
                         flush=True,
@@ -538,7 +622,11 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         )
     else:
         # FLUX.1: utiliza Text Encoder CLIP + T5-XXL
-        if text_encoder_cache_dir and text_encoder_cache_dir.exists() and (text_encoder_cache_dir / "config.json").exists():
+        t5_is_cached = (
+            not force_requantize
+            and _is_cache_valid(text_encoder_cache_dir, expected_model_id=model_id, expected_quant=quant_format)
+        )
+        if t5_is_cached:
             _emit_metric(
                 metrics_path,
                 epoch=0,
@@ -556,6 +644,13 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                 torch_dtype=target_dtype,
             )
         else:
+            if text_encoder_cache_dir and text_encoder_cache_dir.exists():
+                print(
+                    f"[INFO] Cache do text encoder T5 em {text_encoder_cache_dir} é inválido ou pertence a outro modelo. Refazendo quantização...",
+                    flush=True,
+                )
+                shutil.rmtree(text_encoder_cache_dir, ignore_errors=True)
+
             step_msg_t5 = (
                 f"Baixando e quantizando Text Encoder T5 em {quant_label} ({model_id})..."
                 if is_quantized
@@ -578,10 +673,11 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                 cache_dir=hub_cache,
                 token=hf_token,
             )
-            if text_encoder_cache_dir:
+            if text_encoder_cache_dir and quant_base:
                 try:
                     text_encoder_cache_dir.mkdir(parents=True, exist_ok=True)
                     text_encoder_two.save_pretrained(text_encoder_cache_dir)
+                    _save_quant_metadata(quant_base, model_id, quant_label, quant_format, target_dtype, is_flux2)
                     print(
                         f"Text Encoder T5 {quant_label} persistido em cache para execuções futuras: {text_encoder_cache_dir}",
                         flush=True,

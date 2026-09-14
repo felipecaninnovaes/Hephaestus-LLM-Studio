@@ -308,7 +308,76 @@ class TestTrainerDifusao(unittest.TestCase):
         with self.assertRaises(SystemExit):
             load_and_validate_generate_config(cfg)
 
+    def test_resolve_output_name(self):
+        from trainer_difusao.common import _resolve_output_name
+
+        self.assertEqual(_resolve_output_name({}), "adapter")
+        self.assertEqual(_resolve_output_name({"output_name": ""}), "adapter")
+        self.assertEqual(_resolve_output_name({"output_name": "  "}), "adapter")
+        self.assertEqual(
+            _resolve_output_name({"output_name": "meu-modelo"}),
+            "meu-modelo",
+        )
+        self.assertEqual(
+            _resolve_output_name({"output_name": "meu-modelo.safetensors"}),
+            "meu-modelo",
+        )
+        self.assertEqual(
+            _resolve_output_name({"output_name": "  custom_model_v1.safetensors  "}),
+            "custom_model_v1",
+        )
+        self.assertEqual(
+            _resolve_output_name({"output_name": "model/with:invalid*chars"}),
+            "model_with_invalid_chars",
+        )
+
+    def test_train_mock_produces_epoch_checkpoints_and_custom_output_name(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            cfg_path = tmp_path / "config.yaml"
+            out_dir = tmp_path / "output"
+
+            cfg = {
+                "job_id": "test-checkpoints-job",
+                "model": "flux",
+                "output_name": "minha-lora-klein.safetensors",
+                "seed": 42,
+                "lora": {
+                    "epochs": 3,
+                    "batch_size": 1,
+                    "learning_rate": 0.00003,
+                    "rank": 16,
+                    "alpha": 16,
+                },
+            }
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                yaml.dump(cfg, f)
+
+            main(["train", "--config", str(cfg_path), "--output", str(out_dir)])
+
+            # Verifica checkpoints por época
+            checkpoints_dir = out_dir / "checkpoints"
+            self.assertTrue(checkpoints_dir.exists())
+
+            for ep in (1, 2, 3):
+                ckpt_file = checkpoints_dir / f"minha-lora-klein_epoch_{ep:03d}.safetensors"
+                self.assertTrue(ckpt_file.exists(), f"Checkpoint da época {ep} deve existir")
+                data = ckpt_file.read_bytes()
+                header_len = struct.unpack("<Q", data[:8])[0]
+                meta = json.loads(data[8 : 8 + header_len].decode("utf-8"))["__metadata__"]
+                self.assertEqual(meta.get("epoch"), str(ep))
+
+            # Verifica adaptador final com nome semântico e cópia retroativa
+            final_file = out_dir / "minha-lora-klein.safetensors"
+            self.assertTrue(final_file.exists())
+            self.assertGreater(final_file.stat().st_size, 0)
+
+            adapter_compat_file = out_dir / "adapter.safetensors"
+            self.assertTrue(adapter_compat_file.exists())
+            self.assertEqual(final_file.read_bytes(), adapter_compat_file.read_bytes())
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

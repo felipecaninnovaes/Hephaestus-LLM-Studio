@@ -269,9 +269,9 @@ def _real_generate(params: dict[str, Any], output_dir: Path) -> Path:
                 "torch_dtype": torch.bfloat16 if device == "cuda" else torch.float32,
             }
             model_repo = (
-                (os.environ.get("FLUX_DISTILLED_MODEL_ID") or "unsloth/FLUX.2-klein-4B")
+                (os.environ.get("FLUX_DISTILLED_MODEL_ID") or "black-forest-labs/FLUX.2-klein-4B")
                 if distilled
-                else (os.environ.get("FLUX_MODEL_ID") or "unsloth/FLUX.2-klein-4B")
+                else (os.environ.get("FLUX_MODEL_ID") or "black-forest-labs/FLUX.2-klein-base-4B")
             )
             print(f"[DIFFUSION-GEN] Carregando FLUX.2 Klein 4B ({'Destilado' if distilled else 'Base'}): {model_repo}", flush=True)
             pipe = Flux2KleinPipeline.from_pretrained(model_repo, **pipe_kwargs)

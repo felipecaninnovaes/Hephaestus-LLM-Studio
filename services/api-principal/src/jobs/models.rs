@@ -937,6 +937,15 @@ pub fn validate_diffusion_request(req: DiffusionJobRequest) -> Result<DiffusionJ
 }
 
 pub fn generate_diffusion_config_yaml(job_id: &str, req: &DiffusionJobRequest) -> String {
+    let output_name_line = match &req.output_name {
+        Some(name) if !name.trim().is_empty() => {
+            format!(
+                "output_name: {}\n",
+                serde_json::to_string(name.trim()).unwrap_or_else(|_| "\"\"".into())
+            )
+        }
+        _ => String::new(),
+    };
     let trigger_line = match &req.trigger_word {
         Some(tw) => format!(
             "  trigger_word: {}\n",
@@ -967,7 +976,7 @@ pub fn generate_diffusion_config_yaml(job_id: &str, req: &DiffusionJobRequest) -
 job_id: "{job_id}"
 engine: "diffusion"
 model: "{base_model}"
-mode: "train"
+{output_name_line}mode: "train"
 dataset_path: "{{dataset_path}}"
 output_path: "{{output_path}}"
 seed: 42
@@ -986,6 +995,7 @@ lora:
 {samples_section}"#,
         job_id = job_id,
         base_model = req.base_model,
+        output_name_line = output_name_line,
         trigger_line = trigger_line,
         epochs = req.epochs,
         batch_size = req.batch_size,
@@ -2054,6 +2064,13 @@ mod tests {
         assert!(yaml.contains(r#"model: "sdxl""#));
         assert!(yaml.contains(r#"rank: 16"#));
         assert!(yaml.contains(r#"quantization: "4bit""#));
+        assert!(!yaml.contains("output_name:"));
+
+        // Com output_name explícito
+        let mut with_name = validated.clone();
+        with_name.output_name = Some("custom-lora-v1".to_string());
+        let yaml2 = generate_diffusion_config_yaml("job-124", &with_name);
+        assert!(yaml2.contains(r#"output_name: "custom-lora-v1""#));
     }
 
     #[test]

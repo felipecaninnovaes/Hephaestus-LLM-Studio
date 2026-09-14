@@ -19,7 +19,44 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-13 (FATIA ALTERAÇÃO EM LOTE DE CLASSES NO GRID E CURADORIA DE CLASSES AUSENTES NO AUTOTRACKER CONCLUÍDA NA BRANCH)
+## Estado atual — 2026-09-14 (FATIA CALIBRAÇÃO VAE FLUX.2, DESACOPLAMENTO MODULAR, CHECKPOINTS POR ÉPOCA E SALVAMENTO ATÔMICO CONCLUÍDA NA BRANCH)
+
+- **FATIA CALIBRAÇÃO VAE FLUX.2, DESACOPLAMENTO MODULAR, CHECKPOINTS POR ÉPOCA E SALVAMENTO ATÔMICO — CONCLUÍDA NA BRANCH (2026-09-14)** — branch `feat/flux2-vae-modular-trainer`.
+  - **Motivação**:
+    1. Eliminar viés sistemático e artefatos de degradação em texturas finas (pele plástica/encerada na Época 1) no FLUX.2 Klein causados por amostragem descalibrada (fallback com 20 steps e guidance 3.5 em modelo destilado de 4 passos sem guidance embed), falta de `transformer.eval()`, timesteps sem time-shift do Flow Matching, e LR excessivo de 1e-4 no setup inicial.
+    2. Resolver a race condition de imagens de validação corrompidas ou cortadas pela metade no frontend causadas pela leitura prematura de arquivos PNG parcialmente gravados pelo loop de polling do orquestrador Rust.
+    3. Habilitar persistência de checkpoints periódicos por época (`outputs/checkpoints/{base_name}_epoch_XXX.safetensors`), honrando a nomeação semântica customizada (`output_name` da ADR-0022) com preservação retrocompatível de `adapter.safetensors`.
+    4. Desacoplar o motor monolítico `train.py` (~2.270 linhas) em arquitetura modular limpa e extensível por modelo (`models/flux.py`, `models/sdxl.py`, `models/sd15.py`, `models/mock.py`, `optimizers.py`, `dataset.py`, `common.py`).
+    5. Isolar e invalidar de forma determinística o cache de quantização 4-bit/8-bit nos nodes de GPU (`/outputs/.cache/quantized/`), prevenindo que a troca do modelo base reutilize silenciosamente pesos cacheados de modelos anteriores (ex: unsloth reutilizado em vez do modelo base oficial).
+  - **Correções Matemáticas, Numéricas e Amostragem no FLUX**:
+    - **Modelo Base Oficial de Treino**: Alinhamento estrito com o repositório oficial da Black Forest Labs para treino LoRA: `black-forest-labs/FLUX.2-klein-base-4B` (undistilled foundation model), separando-o da variante destilada para inferência rápida (`black-forest-labs/FLUX.2-klein-4B`).
+    - **Isolamento e Invalidação Automática de Cache Quantizado nos Nodes**:
+      - `models/flux.py`: Cache estruturado por slug do `model_id` e formato de precisão: `/outputs/.cache/quantized/{model_slug}_{quant_format}` (ex: `black-forest-labs_FLUX.2-klein-base-4B_4bit`).
+      - Gravação de `metadata.json` contendo `model_id`, `quant_format`, `target_dtype` e `is_flux2`.
+      - Validação estrita via `_is_cache_valid`: se o diretório não tiver `config.json` ou se `metadata.json` divergir do modelo solicitado (ou pastas legadas órfãs sem metadados), o cache é descartado e o node baixa e re-quantiza automaticamente os pesos corretos do zero. Suporte a `force_requantize: true` ou env `FLUX_FORCE_REQUANTIZE=1`.
+    - **Amostragem FLUX.2 Klein**: `_generate_sample_flux` encapsulado com `transformer.eval()` e restauração de estado anterior; passos fixados em 20–28 e guidance scale em 3.5 para o modelo base contínuo (resolvendo a falta de texturas finas/poros que ocorria com saltos grosseiros de 4 passos).
+    - **Calibração de Hiperparâmetros no Frontend**: Preset e auto-ajuste de LR para FLUX.2 Klein calibrados para `0.00003` (3e-5) com precisão `bf16` em `ForjaDifusaoSetup.tsx`.
+    - **Guidance Embedding de Treino**: Fixado em `1.0` durante o treino de LoRA em FLUX.1-dev.
+    - **Time-Shift Schedule**: Implementado shifted logit-normal $t_{\text{shifted}} = \frac{s \cdot t}{1 + (s - 1) \cdot t}$ com $s = 3.0$ do `FlowMatchEulerDiscreteScheduler`.
+    - **VAE FLUX.2 Klein**: Leitura estrita de `AutoencoderKLFlux2` com extração de parâmetros reais do checkpoint (Batch Normalization `running_mean`/`running_var` e `latents_mean`/`latents_std`).
+    - **Otimizadores Estritos**: `_create_optimizer` agora filtra exclusivamente tensores com `p.requires_grad == True`.
+  - **Gravação Atômica e Imunidade a Race Conditions**:
+    - **Motores Python**: `_generate_sample_flux`, `_generate_sample_sdxl`, `_generate_sample_sd15` e `_generate_mock_sample` gravam via `.tmp_{filename}` com atomic swap `os.replace(...)`.
+    - **Orquestrador Rust (`services/orchestrator/src/lib.rs`)**: `metrics_handle` e o coletor final ignoram arquivos ocultos ou terminados em `.tmp`/`.part`, eliminando 100% de uploads parciais e imagens cortadas no S3.
+  - **Checkpoints por Época & Nomeação Semântica (ADR-0022)**:
+    - `common.py`: Função pura `_resolve_output_name(cfg)` que higieniza e padroniza o nome base dos pesos.
+    - Todos os engines (`mock`, `flux`, `sdxl`, `sd15`) gravam a cada época em `outputs/checkpoints/{base_name}_epoch_{epoch:03d}.safetensors` com metadados estruturados.
+    - Gravação final em `outputs/{base_name}.safetensors` com cópia retrocompatível para `outputs/adapter.safetensors`.
+    - `services/api-principal/src/jobs/models.rs`: `generate_diffusion_config_yaml` agora injeta a linha `output_name: ...` quando fornecida.
+    - `services/orchestrator/src/lib.rs`: Upload automático de `outputs/checkpoints/*.safetensors` como `kind: "checkpoint"` e de modelos customizados na raiz como `kind: "model"`.
+  - **Modularização do `trainer-difusao`**:
+    - `common.py`, `optimizers.py`, `dataset.py`, `models/base.py`, `models/flux.py`, `models/sdxl.py`, `models/sd15.py`, `models/mock.py`, `models/__init__.py`, `train.py` (~160 linhas, 100% re-exports).
+  - **Testes & Verificações**:
+    - 16/16 testes unitários passando em `engines/trainer-difusao` (incluindo testes de resolução de nomes, checkpoints por época e validação/invalidação de cache quantizado).
+    - 334/334 testes unitários de `api-principal` passando (incluindo assertions de `output_name` no YAML).
+    - 85/85 testes do `orchestrator` passando.
+    - `npm run build` no `apps/web`: 13/13 páginas compiladas estaticamente com 0 erros TypeScript.
+    - `graft build` sincronizado.
 
 - **FATIA ALTERAÇÃO EM LOTE DE CLASSES NO GRID E CURADORIA DE CLASSES AUSENTES NO AUTOTRACKER — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/yolo-batch-tags-autotracker-classes`.
   - **Motivação**: Eliminar a lentidão e o esforço manual repetitivo na correção de anotações em datasets de treino (por exemplo, trocar em massa `female_face` por `male_face` quando o detector confunde o gênero ou purgar tags/classes espúrias de imagens selecionadas) e permitir ao AutoTracker identificar e sugerir de forma interativa a criação de novas classes detectadas no dataset (evitando o descarte silencioso de boxes válidas).

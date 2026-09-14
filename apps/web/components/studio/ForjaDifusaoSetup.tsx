@@ -727,7 +727,7 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
                 batchSize: 1,
                 rank: 16,
                 alpha: 16,
-                learningRate: "0.0001",
+                learningRate: "0.00003",
                 resolution: 1024,
                 gradientAccumulationSteps: 1,
                 optimizer: "adamw8bit",
@@ -900,7 +900,13 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
           <button
             type="button"
             disabled={busy}
-            onClick={() => setParams((p) => ({ ...p, baseModel: "sdxl" }))}
+            onClick={() =>
+              setParams((p) => ({
+                ...p,
+                baseModel: "sdxl",
+                learningRate: p.learningRate === "0.00003" ? "0.0001" : p.learningRate,
+              }))
+            }
             className={`flex flex-col text-left p-3.5 rounded-xl border transition-colors ${
               params.baseModel === "sdxl"
                 ? "border-brand-500/50 bg-brand-500/[0.08] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] ring-1 ring-brand-500/30"
@@ -930,7 +936,14 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
           <button
             type="button"
             disabled={busy}
-            onClick={() => setParams((p) => ({ ...p, baseModel: "flux" }))}
+            onClick={() => {
+              setParams((p) => ({
+                ...p,
+                baseModel: "flux",
+                learningRate: p.learningRate === "0.0001" ? "0.00003" : p.learningRate,
+              }));
+              setMixedPrecision("bf16");
+            }}
             className={`flex flex-col text-left p-3.5 rounded-xl border transition-colors ${
               params.baseModel === "flux"
                 ? "border-brand-500/50 bg-brand-500/[0.08] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] ring-1 ring-brand-500/30"
@@ -960,7 +973,13 @@ export default function ForjaDifusaoSetup({ onJobCreated }: Props) {
           <button
             type="button"
             disabled={busy}
-            onClick={() => setParams((p) => ({ ...p, baseModel: "sd15" }))}
+            onClick={() =>
+              setParams((p) => ({
+                ...p,
+                baseModel: "sd15",
+                learningRate: p.learningRate === "0.00003" ? "0.0001" : p.learningRate,
+              }))
+            }
             className={`flex flex-col text-left p-3.5 rounded-xl border transition-colors ${
               params.baseModel === "sd15"
                 ? "border-brand-500/50 bg-brand-500/[0.08] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] ring-1 ring-brand-500/30"

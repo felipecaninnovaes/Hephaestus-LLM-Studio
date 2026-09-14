@@ -979,10 +979,10 @@ pub async fn report_job(
                     })
                     .collect();
                 if !best_models.is_empty() {
-                    // Lê engine/model do job para o INSERT.
-                    let job_info: Option<(String, String)> =
-                        match sqlx::query_as::<_, (String, String)>(
-                            "SELECT engine, model FROM jobs WHERE id = $1",
+                    // Lê engine, model, dataset_id, params do job para o INSERT (ADR-0022 D0).
+                    let job_info: Option<(String, String, Option<Uuid>, serde_json::Value)> =
+                        match sqlx::query_as::<_, (String, String, Option<Uuid>, serde_json::Value)>(
+                            "SELECT engine, model, dataset_id, params FROM jobs WHERE id = $1",
                         )
                         .bind(id)
                         .fetch_optional(pool)
@@ -991,15 +991,42 @@ pub async fn report_job(
                             Ok(opt) => opt,
                             Err(e) => {
                                 tracing::warn!(
-                                    "hook models: falha ao ler engine/model do job {id}: {e}"
+                                    "hook models: falha ao ler engine/model/dataset_id/params do job {id}: {e}"
                                 );
                                 None
                             }
                         };
-                    if let Some((engine, model)) = job_info {
+                    if let Some((engine, model, dataset_id, job_params)) = job_info {
+                        let dataset_slug: Option<String> = if let Some(ds_id) = dataset_id {
+                            match sqlx::query_scalar::<_, String>(
+                                "SELECT slug FROM datasets WHERE id = $1",
+                            )
+                            .bind(ds_id)
+                            .fetch_optional(pool)
+                            .await
+                            {
+                                Ok(opt) => opt,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "hook models: falha ao ler slug do dataset {ds_id}: {e}"
+                                    );
+                                    None
+                                }
+                            }
+                        } else {
+                            None
+                        };
+
                         for art in best_models {
                             let s3_key = format!("artifacts/{id}/{}", art.path);
-                            let model_name = art.path.rsplit('/').next().unwrap_or(&art.path);
+                            let model_name = compute_model_name(
+                                &art.path,
+                                &engine,
+                                &model,
+                                id,
+                                dataset_slug.as_deref(),
+                                &job_params,
+                            );
                             let result = sqlx::query(
                                 "INSERT INTO models (id, engine, name, model, s3_key, source, hash, bytes, job_id) \
                                  VALUES ($1, $2, $3, $4, $5, 'train', $6, $7, $8) \
@@ -1007,7 +1034,7 @@ pub async fn report_job(
                             )
                             .bind(Uuid::new_v4())
                             .bind(&engine)
-                            .bind(model_name)
+                            .bind(&model_name)
                             .bind(Some(model.clone()))
                             .bind(&s3_key)
                             .bind(&art.md5)
@@ -1621,6 +1648,186 @@ pub async fn delete_model(pool: &PgPool, id: Uuid) -> Result<ModelItem, ManagerE
     .fetch_optional(pool)
     .await
     .map_err(|e| ManagerError::Internal(format!("delete model: {e}")))?;
+
+    match row {
+        Some(r) => Ok(ModelItem {
+            id: r.0.to_string(),
+            name: r.1,
+            engine: r.2,
+            model: r.3,
+            source: r.4,
+            hash: r.5,
+            bytes: r.6,
+            path: r.7,
+            job_id: r.8.map(|u| u.to_string()),
+            created_at: r.9.to_rfc3339(),
+        }),
+        None => Err(ManagerError::NotFound),
+    }
+}
+
+/// Sanitiza uma string para slug seguro (apenas a-z, 0-9 e hífen).
+pub fn slugify(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut last_dash = true; // evita dash inicial
+    for c in s.chars() {
+        let normalized = match c {
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'À' | 'Á' | 'Â' | 'Ã' | 'Ä' | 'Å' => 'a',
+            'è' | 'é' | 'ê' | 'ë' | 'È' | 'É' | 'Ê' | 'Ë' => 'e',
+            'ì' | 'í' | 'î' | 'ï' | 'Ì' | 'Í' | 'Î' | 'Ï' => 'i',
+            'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'Ò' | 'Ó' | 'Ô' | 'Õ' | 'Ö' => 'o',
+            'ù' | 'ú' | 'û' | 'ü' | 'Ù' | 'Ú' | 'Û' | 'Ü' => 'u',
+            'ç' | 'Ç' => 'c',
+            'ñ' | 'Ñ' => 'n',
+            other => other.to_ascii_lowercase(),
+        };
+        if normalized.is_ascii_alphanumeric() {
+            out.push(normalized);
+            last_dash = false;
+        } else if (normalized == '-' || normalized == '_' || normalized == ' ') && !last_dash {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    if out.ends_with('-') {
+        out.pop();
+    }
+    out
+}
+
+/// Deriva o nome do modelo registrado na tabela models (ADR-0022 D0).
+/// - Se `output_name` estiver presente nos params, usa-o garantindo a extensão apropriada.
+/// - Caso contrário, deriva semanticamente:
+///   - Difusão: `{dataset_slug}-{model_slug}-{trigger_or_short_id}.safetensors`
+///   - YOLO: `{dataset_slug}-{model_slug}-best.pt`
+/// - Fallback se sem dataset ou outro artefato: `{art_filename}`.
+pub fn compute_model_name(
+    art_path: &str,
+    engine: &str,
+    model: &str,
+    job_id: Uuid,
+    dataset_slug: Option<&str>,
+    params: &serde_json::Value,
+) -> String {
+    let default_filename = art_path.rsplit('/').next().unwrap_or(art_path);
+    let ext = default_filename.rsplit('.').next().unwrap_or("");
+
+    // 1. Se o usuário forneceu output_name explicitamente (D1)
+    if let Some(out_name) = params.get("output_name").and_then(|v| v.as_str()) {
+        let clean = out_name.trim();
+        if !clean.is_empty() {
+            let (base_name, user_ext) = if let Some((base, user_ext)) = clean.rsplit_once('.') {
+                if user_ext.eq_ignore_ascii_case("safetensors") || user_ext.eq_ignore_ascii_case("pt") {
+                    (base, Some(user_ext))
+                } else {
+                    (clean, None)
+                }
+            } else {
+                (clean, None)
+            };
+            let slugged_base = slugify(base_name);
+            if !slugged_base.is_empty() {
+                let final_ext = user_ext.unwrap_or(ext);
+                if !final_ext.is_empty() {
+                    return format!("{slugged_base}.{final_ext}");
+                }
+                return slugged_base;
+            }
+        }
+    }
+
+    // 2. Derivação semântica inteligente (D0)
+    let job_hex = job_id.to_string();
+    let short_id = &job_hex[..8.min(job_hex.len())];
+
+    let ds_slug = dataset_slug
+        .map(slugify)
+        .filter(|s| !s.is_empty());
+
+    let clean_model = match model.to_ascii_lowercase().as_str() {
+        "flux" | "flux-2-klein-4b" => "flux2".to_string(),
+        "sdxl" => "sdxl".to_string(),
+        "sd15" => "sd15".to_string(),
+        other => slugify(other),
+    };
+
+    if engine == "diffusion" {
+        let trigger = params
+            .get("trigger_word")
+            .and_then(|v| v.as_str())
+            .map(slugify)
+            .filter(|s| !s.is_empty());
+
+        let suffix = trigger.as_deref().unwrap_or(short_id);
+        let ext_str = if ext.is_empty() { "safetensors" } else { ext };
+
+        if let Some(ds) = ds_slug {
+            format!("{ds}-{clean_model}-{suffix}.{ext_str}")
+        } else {
+            format!("{clean_model}-{suffix}.{ext_str}")
+        }
+    } else if engine == "yolo" {
+        let ext_str = if ext.is_empty() { "pt" } else { ext };
+        if let Some(ds) = ds_slug {
+            format!("{ds}-{clean_model}-best.{ext_str}")
+        } else {
+            format!("{clean_model}-{short_id}-best.{ext_str}")
+        }
+    } else {
+        default_filename.to_string()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PATCH /internal/models/:id — renomeia modelo na tabela models (ADR-0022 D2)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateModelRequest {
+    pub name: String,
+}
+
+pub fn validate_update_model(req: &UpdateModelRequest) -> Result<(), ManagerError> {
+    let clean = req.name.trim();
+    if clean.is_empty() || clean.len() > 255 {
+        return Err(ManagerError::InvalidRequest(format!(
+            "name must be between 1 and 255 chars, got {}",
+            clean.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Atualiza o nome de um modelo na tabela models (PATCH /internal/models/:id — ADR-0022 D2).
+/// Retorna a row atualizada (shape = ModelItem) ou NotFound.
+pub async fn update_model(
+    pool: &PgPool,
+    id: Uuid,
+    req: UpdateModelRequest,
+) -> Result<ModelItem, ManagerError> {
+    validate_update_model(&req)?;
+    let clean_name = req.name.trim();
+
+    let row: Option<(
+        Uuid,
+        String,
+        String,
+        Option<String>,
+        String,
+        String,
+        i64,
+        String,
+        Option<Uuid>,
+        DateTime<Utc>,
+    )> = sqlx::query_as(
+        "UPDATE models SET name = $1 WHERE id = $2 \
+         RETURNING id, name, engine, model, source, hash, bytes, s3_key, job_id, created_at",
+    )
+    .bind(clean_name)
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("update model: {e}")))?;
 
     match row {
         Some(r) => Ok(ModelItem {
@@ -2265,4 +2472,129 @@ mod tests {
 
         assert!(!measured, "ambos stale → measured deve ser false");
     }
+
+    #[test]
+    fn test_slugify() {
+        assert_eq!(slugify("Meu Dataset Incrível!"), "meu-dataset-incrivel");
+        assert_eq!(slugify("test__model--v1"), "test-model-v1");
+        assert_eq!(slugify("   leading and trailing   "), "leading-and-trailing");
+        assert_eq!(slugify("cbr_pnk-123"), "cbr-pnk-123");
+    }
+
+    #[test]
+    fn test_compute_model_name_custom_output_name() {
+        let job_id = Uuid::new_v4();
+        let params = serde_json::json!({
+            "output_name": "meu-personagem-v1"
+        });
+        let name = compute_model_name(
+            "adapter.safetensors",
+            "diffusion",
+            "flux",
+            job_id,
+            Some("retratos"),
+            &params,
+        );
+        assert_eq!(name, "meu-personagem-v1.safetensors");
+
+        // Já vem com a extensão
+        let params2 = serde_json::json!({
+            "output_name": "meu-personagem-v1.safetensors"
+        });
+        let name2 = compute_model_name(
+            "adapter.safetensors",
+            "diffusion",
+            "flux",
+            job_id,
+            Some("retratos"),
+            &params2,
+        );
+        assert_eq!(name2, "meu-personagem-v1.safetensors");
+
+        // Custom output para yolo com espaços
+        let params3 = serde_json::json!({
+            "output_name": "detector de pragas v2"
+        });
+        let name3 = compute_model_name(
+            "weights/best.pt",
+            "yolo",
+            "yolo11m",
+            job_id,
+            Some("insetos"),
+            &params3,
+        );
+        assert_eq!(name3, "detector-de-pragas-v2.pt");
+    }
+
+    #[test]
+    fn test_compute_model_name_semantic_defaults() {
+        let job_id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+
+        // Diffusion com trigger word e dataset
+        let params = serde_json::json!({
+            "trigger_word": "cbrpnk"
+        });
+        let name = compute_model_name(
+            "adapter.safetensors",
+            "diffusion",
+            "flux",
+            job_id,
+            Some("cyberpunk-city"),
+            &params,
+        );
+        assert_eq!(name, "cyberpunk-city-flux2-cbrpnk.safetensors");
+
+        // Diffusion sem trigger word (usa prefixo do job id)
+        let params_no_trigger = serde_json::json!({});
+        let name2 = compute_model_name(
+            "adapter.safetensors",
+            "diffusion",
+            "sdxl",
+            job_id,
+            Some("cyberpunk-city"),
+            &params_no_trigger,
+        );
+        assert_eq!(name2, "cyberpunk-city-sdxl-550e8400.safetensors");
+
+        // YOLO com dataset
+        let name_yolo = compute_model_name(
+            "weights/best.pt",
+            "yolo",
+            "yolo11m",
+            job_id,
+            Some("veiculos-urbanos"),
+            &serde_json::json!({}),
+        );
+        assert_eq!(name_yolo, "veiculos-urbanos-yolo11m-best.pt");
+
+        // Fallback sem dataset
+        let name_no_ds = compute_model_name(
+            "adapter.safetensors",
+            "diffusion",
+            "sd15",
+            job_id,
+            None,
+            &serde_json::json!({ "trigger_word": "estilo" }),
+        );
+        assert_eq!(name_no_ds, "sd15-estilo.safetensors");
+    }
+
+    #[test]
+    fn test_validate_update_model() {
+        let ok = UpdateModelRequest {
+            name: "novo-nome.safetensors".to_string(),
+        };
+        assert!(validate_update_model(&ok).is_ok());
+
+        let empty = UpdateModelRequest {
+            name: "   ".to_string(),
+        };
+        assert!(validate_update_model(&empty).is_err());
+
+        let too_long = UpdateModelRequest {
+            name: "a".repeat(256),
+        };
+        assert!(validate_update_model(&too_long).is_err());
+    }
 }
+

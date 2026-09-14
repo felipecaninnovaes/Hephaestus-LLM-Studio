@@ -161,6 +161,7 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
     ),
     ("GET", "/api/models", &[200, 401, 503]),
     ("DELETE", "/api/models/:id", &[204, 401, 404, 503]),
+    ("PATCH", "/api/models/:id", &[200, 400, 401, 404, 503]),
     ("POST", "/api/models/upload", &[201, 400, 401, 413, 503]),
     (
         "POST",
@@ -405,7 +406,8 @@ pub fn build(state: AppState) -> axum::Router {
         .route("/api/models", get(monitoring::get_models))
         .route(
             "/api/models/:id",
-            delete(crate::models::handlers::delete_model),
+            delete(crate::models::handlers::delete_model)
+                .patch(crate::models::handlers::update_model),
         )
         .route(
             "/api/models/upload",

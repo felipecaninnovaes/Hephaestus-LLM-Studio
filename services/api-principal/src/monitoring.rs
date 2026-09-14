@@ -169,7 +169,11 @@ pub async fn get_models(State(state): State<AppState>) -> Response {
         };
         wire_items.push(ModelWeightResponse {
             id: m.id,
-            name: basename(&m.path).to_string(),
+            name: if m.name.is_empty() {
+                basename(&m.path).to_string()
+            } else {
+                m.name
+            },
             engine: m.engine,
             model: m.model,
             source: m.source,

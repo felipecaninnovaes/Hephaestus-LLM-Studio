@@ -879,6 +879,10 @@ pub async fn submit_yolo_job(
     if let Some(ref orch_id) = req.orchestrator_id {
         manager_body["orchestrator_hint"] = serde_json::json!(orch_id);
     }
+    // ADR-0022 D1: insere output_name nos params quando presente.
+    if let Some(ref out_name) = req.output_name {
+        manager_body["params"]["output_name"] = serde_json::json!(out_name);
+    }
 
     match state.manager.create_job(&manager_body).await {
         Ok(resp) => {
@@ -1485,6 +1489,10 @@ pub async fn submit_diffusion_job(
     }
     if let Some(ref orch_id) = req.orchestrator_id {
         manager_body["orchestrator_hint"] = serde_json::json!(orch_id);
+    }
+    // ADR-0022 D1: insere output_name nos params quando presente.
+    if let Some(ref out_name) = req.output_name {
+        manager_body["params"]["output_name"] = serde_json::json!(out_name);
     }
 
     match state.manager.create_job(&manager_body).await {

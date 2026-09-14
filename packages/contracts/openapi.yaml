@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.21.0
+  version: 0.22.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -2193,6 +2193,57 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+    patch:
+      operationId: updateModel
+      tags: [jobs]
+      summary: Atualiza o nome ou metadados de um modelo no catálogo (ADR-0022 D2)
+      description: |
+        Atualiza o nome exibido de um modelo existente na tabela `models`.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              additionalProperties: false
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                  description: "Novo nome do modelo (ex: meu-adaptador-v1.safetensors)."
+      responses:
+        "200":
+          description: Modelo atualizado com sucesso.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Model" }
+        "400":
+          description: "Nome inválido (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Modelo não encontrado (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/models/upload:
     post:
@@ -2581,6 +2632,10 @@ components:
           type: [string, "null"]
           format: uuid
           description: "ID do orquestrador preferencial para execução (ADR-0015 D2). Opcional; ausente ou null = Automático. Não-UUID ⇒ 400 `invalid_request`."
+        outputName:
+          type: [string, "null"]
+          maxLength: 100
+          description: "Nome personalizado para o modelo/pesos finais (sem extensão). Se omitido, derivado semanticamente (ADR-0022 D1)."
 
     YoloAugment:
       type: object
@@ -2790,6 +2845,10 @@ components:
           enum: ["none", "4bit", "8bit"]
           default: "4bit"
           description: "Nível de quantização do modelo base (4bit = NF4 QLoRA, 8bit = BitsAndBytes int8, none = sem quantização FP16/BF16 pleno)."
+        outputName:
+          type: [string, "null"]
+          maxLength: 100
+          description: "Nome personalizado para o adaptador LoRA final (sem extensão). Se omitido, derivado semanticamente (ADR-0022 D1)."
 
     DiffusionGenerateJobRequest:
       type: object

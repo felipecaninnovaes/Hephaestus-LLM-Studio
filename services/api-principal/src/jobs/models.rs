@@ -59,6 +59,21 @@ pub struct YoloJobRequest {
     /// UUID de orquestrador preferencial (ADR-0015 D2).
     /// Validação: string não-UUID ⇒ 400 `invalid_request`.
     pub orchestrator_id: Option<String>,
+    /// Nome customizado opcional do modelo gerado (ADR-0022 D1).
+    pub output_name: Option<String>,
+}
+
+/// Valida outputName customizado (ADR-0022 D1).
+/// 1 a 100 caracteres, slug-safe (alfanumérico, hífen, underscore, ponto, espaços).
+pub fn validate_output_name(name: &str) -> Result<(), String> {
+    let clean = name.trim();
+    if clean.is_empty() || clean.chars().count() > 100 {
+        return Err("outputName must be between 1 and 100 characters".to_string());
+    }
+    if !clean.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.' || c == ' ') {
+        return Err("outputName contains invalid characters".to_string());
+    }
+    Ok(())
 }
 
 fn default_model() -> String {
@@ -456,6 +471,10 @@ pub fn validate_yolo_request(req: YoloJobRequest) -> Result<YoloJobRequest, Stri
             return Err("orchestratorId must be a valid UUID".to_string());
         }
     }
+    // ADR-0022 D1: valida outputName se fornecido.
+    if let Some(ref out_name) = req.output_name {
+        validate_output_name(out_name)?;
+    }
     Ok(req)
 }
 
@@ -739,6 +758,8 @@ pub struct DiffusionJobRequest {
     pub mixed_precision: String,
     #[serde(default = "default_diffusion_quantization")]
     pub quantization: String,
+    /// Nome customizado opcional do modelo gerado (ADR-0022 D1).
+    pub output_name: Option<String>,
 }
 
 fn default_diffusion_base_model() -> String {
@@ -884,6 +905,10 @@ pub fn validate_diffusion_request(req: DiffusionJobRequest) -> Result<DiffusionJ
             "sampleInterval must be between 0 and 100, got {}",
             req.sample_interval
         ));
+    }
+    // ADR-0022 D1: valida outputName se fornecido.
+    if let Some(ref out_name) = req.output_name {
+        validate_output_name(out_name)?;
     }
     Ok(req)
 }

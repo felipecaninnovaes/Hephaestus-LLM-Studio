@@ -395,6 +395,7 @@ export interface DiffusionJobRequest {
   lrWarmupSteps?: number;
   mixedPrecision?: "fp16" | "bf16" | "no";
   quantization?: "none" | "4bit" | "8bit";
+  outputName?: string | null;
 }
 
 export interface DiffusionPreset {

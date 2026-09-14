@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button, ConfirmDialog, EmptyState, GlassCard, showToast } from "@/components/ui";
-import { IconBox, IconDownload, IconPlus, IconTrash, IconUpload } from "@/components/icons";
+import { IconBox, IconDownload, IconPencil, IconPlus, IconTrash, IconUpload, IconX } from "@/components/icons";
 import { ApiError } from "@/lib/api";
-import { deleteModel, listModels } from "@/lib/models";
+import { deleteModel, listModels, updateModel } from "@/lib/models";
 import { formatBytes, formatRelativeTime } from "@/lib/format";
 import ModelUploadModal from "@/components/studio/ModelUploadModal";
 import ModelDownloadModal from "@/components/studio/ModelDownloadModal";
@@ -54,6 +54,9 @@ export default function ModelsPage() {
   const [downloadOpen, setDownloadOpen] = useState(false);
   const [deletingModel, setDeletingModel] = useState<Model | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [renamingModel, setRenamingModel] = useState<Model | null>(null);
+  const [newModelName, setNewModelName] = useState("");
+  const [renameBusy, setRenameBusy] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -110,6 +113,29 @@ export default function ModelsPage() {
       );
     } finally {
       setDeleteBusy(false);
+    }
+  }
+
+  async function handleRenameSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!renamingModel) return;
+    const clean = newModelName.trim();
+    if (!clean) return;
+    setRenameBusy(true);
+    try {
+      const updated = await updateModel(renamingModel.id, clean);
+      setModels((prev) =>
+        prev.map((m) => (m.id === updated.id ? { ...m, name: updated.name } : m)),
+      );
+      showToast("Modelo renomeado com sucesso.", "success");
+      setRenamingModel(null);
+    } catch (err) {
+      showToast(
+        err instanceof ApiError ? modelErrorMessage(err.code) : "Falha ao renomear modelo.",
+        "error",
+      );
+    } finally {
+      setRenameBusy(false);
     }
   }
 
@@ -265,6 +291,20 @@ export default function ModelsPage() {
                     type="button"
                     variant="ghost"
                     size="sm"
+                    className="text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60"
+                    onClick={() => {
+                      setRenamingModel(m);
+                      setNewModelName(m.name);
+                    }}
+                    title={`Renomear ${m.name}`}
+                    aria-label={`Renomear modelo ${m.name}`}
+                  >
+                    <IconPencil className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
                     className="text-zinc-400 hover:text-red-400 hover:bg-red-500/10"
                     onClick={() => setDeletingModel(m)}
                     title={`Excluir ${m.name}`}
@@ -294,6 +334,66 @@ export default function ModelsPage() {
           setModels((prev) => [m, ...prev.filter((x) => x.id !== m.id)])
         }
       />
+
+      {/* Modal de Renomear Modelo */}
+      {renamingModel && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+          <GlassCard className="w-full max-w-md p-6 space-y-4 border border-zinc-700/60 bg-zinc-950/90 shadow-2xl">
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold text-zinc-100 text-base">Renomear Modelo</h3>
+              <button
+                type="button"
+                onClick={() => setRenamingModel(null)}
+                className="text-zinc-400 hover:text-zinc-200"
+              >
+                <IconX className="h-4 w-4" />
+              </button>
+            </div>
+            <p className="text-xs text-zinc-400">
+              Altere o nome do arquivo para fácil identificação nos treinos, catálogo e downloads.
+            </p>
+            <form onSubmit={handleRenameSubmit} className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-zinc-300 mb-1.5">
+                  Novo nome do modelo
+                </label>
+                <input
+                  type="text"
+                  value={newModelName}
+                  onChange={(e) => setNewModelName(e.target.value)}
+                  className="w-full rounded-md border border-zinc-700/80 bg-zinc-900/90 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 focus:border-brand-500 focus:outline-none font-mono"
+                  placeholder="ex: cyberpunk-flux2-cbrpnk.safetensors"
+                  autoFocus
+                  required
+                />
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setRenamingModel(null)}
+                  disabled={renameBusy}
+                >
+                  Cancelar
+                </Button>
+                <Button
+                  type="submit"
+                  variant="primary"
+                  size="sm"
+                  disabled={
+                    renameBusy ||
+                    !newModelName.trim() ||
+                    newModelName.trim() === renamingModel.name
+                  }
+                >
+                  {renameBusy ? "Salvando..." : "Salvar"}
+                </Button>
+              </div>
+            </form>
+          </GlassCard>
+        </div>
+      )}
 
       {/* Confirmação de Exclusão */}
       <ConfirmDialog

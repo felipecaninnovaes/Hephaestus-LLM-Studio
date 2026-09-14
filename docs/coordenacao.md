@@ -19,7 +19,24 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-13 (FATIA TELEMETRIA UNIFICADA E STREAMING SSE CONCLUÍDA NA BRANCH)
+## Estado atual — 2026-09-13 (FATIA NOMEAÇÃO SEMÂNTICA, CONFIGURAÇÃO DE NOME E RENOMEAÇÃO DE MODELOS CONCLUÍDA NA BRANCH)
+
+- **FATIA NOMEAÇÃO SEMÂNTICA, CONFIGURAÇÃO DE NOME E RENOMEAÇÃO DE MODELOS — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/nomeacao-modelos`.
+  - **Motivação**: Eliminar a confusão causada por múltiplos arquivos de pesos com nomes genéricos idênticos (`adapter.safetensors` para difusão LoRA e `best.pt` para YOLO), fornecendo nomeação automática contextual inteligente baseada no dataset, modelo e trigger word, permitindo ao usuário definir nomes customizados no setup dos treinos, renomear qualquer modelo existente diretamente pelo catálogo e baixar arquivos com nomes semânticos descritivos via `Content-Disposition`.
+  - **ADR & Contratos (OpenAPI 0.22.0)**:
+    - Criado `docs/adr/0022-nomeacao-modelos.md` (decisões D0–D4).
+    - Atualizado `packages/contracts/openapi.yaml`: Bump de versão `0.21.0` → `0.22.0`, adição de `outputName` em `YoloJobRequest` e `DiffusionJobRequest`, e endpoint `PATCH /api/models/{id}` (200, 400, 401, 404, 503) para renomear modelos.
+  - **Backend Rust (`manager` e `api-principal`)**:
+    - `services/manager`: Adicionados helper `slugify` com normalização de acentos e função pura `compute_model_name` derivando `{dataset_slug}-{model}-{trigger_or_short_id}.safetensors` ou `{dataset_slug}-{model}-best.pt`, hook `report_job` atualizado para buscar `dataset_slug` e honrar `output_name`, implementação de `update_model` e rota `PATCH /internal/models/:id`. Testes de unidade adicionados (16/16 passando).
+    - `services/api-principal`: Validação de `output_name` em `models.rs`, repasse de `output_name` nos handlers `submit_yolo_job` e `submit_diffusion_job`, cabeçalho `Content-Disposition` em `get_artifact_data` para artefatos de modelo, suporte a `update_model` em `ManagerPort`, `HttpManager` e `MockManager`, handler `update_model` e rota protegida `PATCH /api/models/:id` em `routes.rs`. Todos os testes unitários e contract tests passando.
+  - **Web Frontend (`apps/web`)**:
+    - `types/studio.ts`: Adicionado `outputName?: string | null` a `DiffusionJobRequest`.
+    - `lib/jobs.ts`: Suporte a `outputName` em `startYoloJob` e `startDiffusionJob`, e extração de `Content-Disposition` no `downloadArtifact`.
+    - `lib/models.ts`: Função `updateModel(id, name)`.
+    - `components/icons.tsx`: Adicionado `IconPencil`.
+    - `app/(studio)/models/page.tsx`: Ação e modal em Dark-Only Vidro Óptico para renomear modelos no catálogo com atualização reativa de estado.
+    - `components/studio/ForjaDifusaoSetup.tsx` e `ForjaYoloSetup.tsx`: Campo "Nome do Modelo / Adaptador (opcional)" com placeholder dinâmico inteligente derivado do dataset e modelo selecionados.
+    - Build Next.js verificado: `npm run build` compilado com 100% de sucesso (13/13 páginas, 0 erros).
 
 - **FATIA TELEMETRIA UNIFICADA: EVENTOS EM TEMPO REAL, FASES PADRONIZADAS E STREAMING SSE — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/telemetria-unificada`.
   - **Motivação**: Eliminar a divergência na emissão e visualização de telemetria entre diferentes motores (YOLO, Difusão, Autotracker, Text-to-Image), substituindo o modelo de polling opaco e métricas ad-hoc por um contrato canônico e universal de eventos (`JobTelemetryEvent`), emissor padronizado Python (`TelemetryEmitter`), streaming via Server-Sent Events (`GET /api/jobs/{id}/events`) e componentes visuais modernos no frontend (hook `useJobTelemetry` e componente `JobProgressLive` em Dark-Only Vidro Óptico).

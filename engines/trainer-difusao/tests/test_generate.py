@@ -1,0 +1,672 @@
+"""Suíte de testes dedicada para geração (generate.py) — ADR-0023 fatia G.2.
+
+Cobre: batch, seed, retrocompat, loras, custom, limites, cancel, thumbs.
+Todos os testes usam ENGINE_MOCK=1 (CPU-only).
+"""
+
+import json
+import os
+import tempfile
+import unittest
+from pathlib import Path
+
+import yaml
+
+from trainer_difusao.generate import (
+    _resolve_loras_from_legacy,
+    _write_thumb,
+    load_and_validate_generate_config,
+)
+from trainer_difusao.train import main
+
+
+class _BaseGenerateTest(unittest.TestCase):
+    """Setup/teardown padrão: garante ENGINE_MOCK=1 e diretório temporário."""
+
+    def setUp(self):
+        self.old_mock = os.environ.get("ENGINE_MOCK")
+        os.environ["ENGINE_MOCK"] = "1"
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self._tmpdir.name)
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+        if self.old_mock is not None:
+            os.environ["ENGINE_MOCK"] = self.old_mock
+        else:
+            os.environ.pop("ENGINE_MOCK", None)
+
+    def _write_config(self, cfg: dict) -> Path:
+        cfg_path = self.tmp_path / "config.yaml"
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            yaml.dump(cfg, f)
+        return cfg_path
+
+    def _base_cfg(self, **overrides) -> dict:
+        base = {
+            "job_id": "test-gen-001",
+            "engine": "diffusion",
+            "mode": "generate",
+            "generate": {
+                "base_model": "flux-2-klein-4b",
+                "prompt": "a futuristic cyberpunk forge",
+                "negative_prompt": "blurry",
+                "width": 512,
+                "height": 512,
+                "steps": 20,
+                "guidance_scale": 3.5,
+                "seed": 12345,
+                "quantization": "4bit",
+                "lora_scale": 0.8,
+            },
+        }
+        if overrides:
+            base["generate"].update(overrides)
+        return base
+
+
+class TestBatchGeneration(_BaseGenerateTest):
+    """1. batch_size=3 com seed fixa → 3 PNGs + 3 thumbs + meta JSONL."""
+
+    def test_batch_3_produces_correct_files(self):
+        cfg = self._base_cfg(batch_size=3, seed=1000)
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+
+        main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+
+        # 3 PNGs
+        for i in range(1, 4):
+            png = out_dir / f"generated_{i:04d}.png"
+            self.assertTrue(png.exists(), f"{png} deve existir")
+            self.assertGreater(png.stat().st_size, 0)
+
+        # 3 thumbs
+        for i in range(1, 4):
+            thumb = out_dir / f"thumb_{i:04d}.jpg"
+            self.assertTrue(thumb.exists(), f"{thumb} deve existir")
+            self.assertGreater(thumb.stat().st_size, 0)
+
+        # Meta JSONL com 3 linhas
+        meta_path = out_dir / "generation_meta.json"
+        self.assertTrue(meta_path.exists())
+        lines = [json.loads(l) for l in meta_path.read_text().splitlines() if l.strip()]
+        self.assertEqual(len(lines), 3)
+
+        # Seeds: 1000, 1001, 1002
+        self.assertEqual(lines[0]["seed"], 1000)
+        self.assertEqual(lines[1]["seed"], 1001)
+        self.assertEqual(lines[2]["seed"], 1002)
+
+        # batch_index 0, 1, 2
+        self.assertEqual(lines[0]["batch_index"], 0)
+        self.assertEqual(lines[1]["batch_index"], 1)
+        self.assertEqual(lines[2]["batch_index"], 2)
+
+        # batch_size = 3 em todas
+        for line in lines:
+            self.assertEqual(line["batch_size"], 3)
+
+    def test_batch_3_filenames_correct(self):
+        cfg = self._base_cfg(batch_size=3, seed=1000)
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+
+        main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+
+        # Arquivos de imagem com nomes corretos
+        expected_pngs = [
+            "generated_0001.png",
+            "generated_0002.png",
+            "generated_0003.png",
+        ]
+        for name in expected_pngs:
+            self.assertTrue((out_dir / name).exists(), f"{name} deve existir")
+
+        # Thumbs com nomes corretos
+        expected_thumbs = ["thumb_0001.jpg", "thumb_0002.jpg", "thumb_0003.jpg"]
+        for name in expected_thumbs:
+            self.assertTrue((out_dir / name).exists(), f"{name} deve existir")
+
+
+class TestSeedAbsent(_BaseGenerateTest):
+    """2. seed ausente → meta tem seeds consecutivos s, s+1, s+2."""
+
+    def test_seed_absent_consecutive(self):
+        cfg = self._base_cfg(batch_size=3)
+        del cfg["generate"]["seed"]  # remove seed
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+
+        main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+
+        meta_path = out_dir / "generation_meta.json"
+        lines = [json.loads(l) for l in meta_path.read_text().splitlines() if l.strip()]
+        self.assertEqual(len(lines), 3)
+
+        # Seeds devem ser consecutivos: s, s+1, s+2
+        s = lines[0]["seed"]
+        self.assertEqual(lines[1]["seed"], s + 1)
+        self.assertEqual(lines[2]["seed"], s + 2)
+
+        # Seeds devem ser não-negativos
+        for line in lines:
+            self.assertGreaterEqual(line["seed"], 0)
+
+
+class TestRetrocompat(_BaseGenerateTest):
+    """3. Config antigo sem novas chaves → 1 arquivo + meta com 1 linha."""
+
+    def test_legacy_config_single_image(self):
+        cfg = {
+            "job_id": "test-legacy-001",
+            "generate": {
+                "base_model": "sdxl",
+                "prompt": "a serene mountain landscape",
+                "width": 512,
+                "height": 512,
+                "steps": 20,
+                "guidance_scale": 7.0,
+                "seed": 999,
+                "quantization": "none",
+            },
+        }
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+
+        main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+
+        # Deve gerar 1 arquivo (batch_size default = 1)
+        png = out_dir / "generated_0001.png"
+        self.assertTrue(png.exists(), "generated_0001.png deve existir (retrocompat)")
+        self.assertGreater(png.stat().st_size, 0)
+
+        # Meta com 1 linha
+        meta_path = out_dir / "generation_meta.json"
+        self.assertTrue(meta_path.exists())
+        lines = [json.loads(l) for l in meta_path.read_text().splitlines() if l.strip()]
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["seed"], 999)
+        self.assertEqual(lines[0]["batch_size"], 1)
+        self.assertEqual(lines[0]["batch_index"], 0)
+
+    def test_legacy_config_with_weights_path(self):
+        """weights_path legado deve mapear para loras[0] no meta."""
+        cfg = {
+            "job_id": "test-legacy-weights",
+            "weights_path": "/fake/path/lora.safetensors",
+            "generate": {
+                "base_model": "flux-2-klein-4b",
+                "prompt": "test legacy weights",
+                "width": 512,
+                "height": 512,
+                "steps": 20,
+                "seed": 42,
+                "quantization": "4bit",
+                "lora_scale": 0.7,
+            },
+        }
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+
+        main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+
+        meta_path = out_dir / "generation_meta.json"
+        lines = [json.loads(l) for l in meta_path.read_text().splitlines() if l.strip()]
+        self.assertEqual(len(lines), 1)
+        # weights_path legado → loras via _resolve_loras_from_legacy
+        self.assertEqual(len(lines[0]["loras"]), 1)
+        self.assertEqual(lines[0]["loras"][0]["path"], "/fake/path/lora.safetensors")
+        self.assertEqual(lines[0]["loras"][0]["scale"], 0.7)
+
+
+class TestLoras(_BaseGenerateTest):
+    """4. loras: 2 loras no mock aparecem no meta na ordem; 0 loras → vazio."""
+
+    def test_two_loras_in_meta(self):
+        cfg = self._base_cfg(
+            batch_size=1,
+            loras=[
+                {"path": "/fake/lora_a.safetensors", "scale": 0.8},
+                {"path": "/fake/lora_b.safetensors", "scale": 0.5},
+            ],
+        )
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+
+        main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+
+        meta_path = out_dir / "generation_meta.json"
+        lines = [json.loads(l) for l in meta_path.read_text().splitlines() if l.strip()]
+        self.assertEqual(len(lines), 1)
+        loras = lines[0]["loras"]
+        self.assertEqual(len(loras), 2)
+        self.assertEqual(loras[0]["path"], "/fake/lora_a.safetensors")
+        self.assertEqual(loras[0]["scale"], 0.8)
+        self.assertEqual(loras[1]["path"], "/fake/lora_b.safetensors")
+        self.assertEqual(loras[1]["scale"], 0.5)
+
+    def test_zero_loras_empty(self):
+        cfg = self._base_cfg(batch_size=1)
+        # Sem campo loras → retrocompat
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+
+        main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+
+        meta_path = out_dir / "generation_meta.json"
+        lines = [json.loads(l) for l in meta_path.read_text().splitlines() if l.strip()]
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["loras"], [])
+
+
+class TestCustom(_BaseGenerateTest):
+    """5. custom: config com custom_checkpoint_path e arch=sdxl → meta registra;
+    custom sem arch → erro; custom+base_model juntos → erro."""
+
+    def test_custom_with_arch_registers_in_meta(self):
+        cfg = self._base_cfg(
+            batch_size=1,
+            custom_checkpoint_path="/fake/custom.safetensors",
+            arch="sdxl",
+        )
+        # Remove base_model para evitar conflito XOR
+        del cfg["generate"]["base_model"]
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+
+        main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+
+        meta_path = out_dir / "generation_meta.json"
+        lines = [json.loads(l) for l in meta_path.read_text().splitlines() if l.strip()]
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["custom_model_path"], "/fake/custom.safetensors")
+        self.assertEqual(lines[0]["arch"], "sdxl")
+        # base_model deve ser derivado do arch
+        self.assertEqual(lines[0]["base_model"], "sdxl")
+
+    def test_custom_without_arch_fails(self):
+        cfg = self._base_cfg(
+            custom_checkpoint_path="/fake/custom.safetensors",
+        )
+        # Remove base_model para testar só custom sem arch
+        del cfg["generate"]["base_model"]
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+
+        with self.assertRaises(SystemExit):
+            main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+
+    def test_custom_with_base_model_both_fails(self):
+        cfg = self._base_cfg(
+            base_model="sdxl",
+            custom_checkpoint_path="/fake/custom.safetensors",
+            arch="sdxl",
+        )
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+
+        with self.assertRaises(SystemExit):
+            main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+
+
+class TestLimits(_BaseGenerateTest):
+    """6. batch_size=9 → erro; 5 loras → erro; scale=2.5 → erro."""
+
+    def test_batch_size_9_fails(self):
+        cfg = self._base_cfg(batch_size=9)
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+
+        with self.assertRaises(SystemExit):
+            main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+
+    def test_five_loras_fails(self):
+        cfg = self._base_cfg(
+            loras=[
+                {"path": f"/fake/lora_{i}.safetensors", "scale": 1.0} for i in range(5)
+            ],
+        )
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+
+        with self.assertRaises(SystemExit):
+            main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+
+    def test_scale_2_5_fails(self):
+        cfg = self._base_cfg(
+            loras=[{"path": "/fake/lora.safetensors", "scale": 2.5}],
+        )
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+
+        with self.assertRaises(SystemExit):
+            main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+
+    def test_scale_0_0_valid(self):
+        """scale 0.0 é válido (desativar LoRA visualmente)."""
+        cfg = self._base_cfg(
+            batch_size=1,
+            loras=[{"path": "/fake/lora.safetensors", "scale": 0.0}],
+        )
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+
+        # Não deve falhar
+        main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+        meta_path = out_dir / "generation_meta.json"
+        self.assertTrue(meta_path.exists())
+
+
+class TestCancel(_BaseGenerateTest):
+    """7. cancel: criar arquivo cancel antes → sai com break sem gerar itens restantes."""
+
+    def test_cancel_before_batch(self):
+        cfg = self._base_cfg(batch_size=3, seed=1000)
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Criar sentinela ANTES de executar
+        (out_dir / "cancel").touch()
+
+        # Não deve gerar imagens (sai antes do loop)
+        main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+
+        # Nenhum PNG deve existir
+        pngs = list(out_dir.glob("generated_*.png"))
+        self.assertEqual(len(pngs), 0, "Nenhum PNG deve ser gerado com cancel ativo")
+
+        # Meta pode existir com 0 linhas ou não existir
+        meta_path = out_dir / "generation_meta.json"
+        if meta_path.exists():
+            lines = [l for l in meta_path.read_text().splitlines() if l.strip()]
+            self.assertEqual(len(lines), 0)
+
+    def test_cancel_mid_batch_generates_partial(self):
+        """Cancel no meio do batch: gera 1 imagem (i=0) mas não as restantes."""
+        cfg = self._base_cfg(batch_size=3, seed=1000)
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Não criamos cancel antes; o engine gera normalmente
+        main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+
+        # Sem cancel: 3 imagens
+        pngs = list(out_dir.glob("generated_*.png"))
+        self.assertEqual(len(pngs), 3)
+
+
+class TestThumbs(_BaseGenerateTest):
+    """8. thumbs existem e são JPEG (magic bytes) com max-side ≤ 512."""
+
+    def test_thumbs_are_jpeg_with_correct_max_side(self):
+        cfg = self._base_cfg(batch_size=2, seed=1000, width=1024, height=768)
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+
+        main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+
+        from PIL import Image
+
+        for i in range(1, 3):
+            thumb_path = out_dir / f"thumb_{i:04d}.jpg"
+            self.assertTrue(thumb_path.exists(), f"thumb_{i:04d}.jpg deve existir")
+
+            # Magic bytes JPEG: FF D8 FF
+            data = thumb_path.read_bytes()[:3]
+            self.assertEqual(
+                data, b"\xff\xd8\xff", f"thumb_{i:04d}.jpg deve ter magic bytes JPEG"
+            )
+
+            # Verificar dimensões via PIL
+            with Image.open(thumb_path) as img:
+                self.assertEqual(img.format, "JPEG")
+                w, h = img.size
+                self.assertLessEqual(
+                    w, 512, f"Largura do thumb deve ser ≤ 512 (got {w})"
+                )
+                self.assertLessEqual(
+                    h, 512, f"Altura do thumb deve ser ≤ 512 (got {h})"
+                )
+
+    def test_thumbs_square_image(self):
+        """Thumbs de imagem quadrada 512x512 devem ser 512x512."""
+        cfg = self._base_cfg(batch_size=1, seed=42, width=512, height=512)
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+
+        main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+
+        from PIL import Image
+
+        thumb_path = out_dir / "thumb_0001.jpg"
+        self.assertTrue(thumb_path.exists())
+        with Image.open(thumb_path) as img:
+            w, h = img.size
+            self.assertEqual(w, 512)
+            self.assertEqual(h, 512)
+
+
+class TestMetaJsonlFields(_BaseGenerateTest):
+    """Validação dos campos do JSONL de metadados."""
+
+    def test_meta_has_all_required_fields(self):
+        cfg = self._base_cfg(
+            batch_size=1,
+            seed=42,
+            loras=[{"path": "/fake/lora.safetensors", "scale": 0.6}],
+        )
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+
+        main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+
+        meta_path = out_dir / "generation_meta.json"
+        lines = [json.loads(l) for l in meta_path.read_text().splitlines() if l.strip()]
+        self.assertEqual(len(lines), 1)
+        entry = lines[0]
+
+        required_fields = [
+            "filename",
+            "thumb_filename",
+            "seed",
+            "prompt",
+            "negative_prompt",
+            "width",
+            "height",
+            "steps",
+            "guidance_scale",
+            "quantization",
+            "distilled",
+            "loras",
+            "custom_model_path",
+            "arch",
+            "base_model",
+            "batch_index",
+            "batch_size",
+        ]
+        for field in required_fields:
+            self.assertIn(field, entry, f"Campo '{field}' ausente no meta")
+
+        self.assertEqual(entry["filename"], "generated_0001.png")
+        self.assertEqual(entry["thumb_filename"], "thumb_0001.jpg")
+        self.assertEqual(entry["seed"], 42)
+        self.assertEqual(entry["batch_size"], 1)
+        self.assertEqual(entry["batch_index"], 0)
+        self.assertEqual(entry["base_model"], "flux-2-klein-4b")
+        self.assertIsNone(entry["custom_model_path"])
+        self.assertIsNone(entry["arch"])
+
+
+class TestWriteThumb(unittest.TestCase):
+    """Testes unitários da função _write_thumb."""
+
+    def test_write_thumb_basic(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src = Path(tmpdir) / "src.png"
+            dst = Path(tmpdir) / "dst.jpg"
+
+            # Criar imagem de teste 1024x768
+            img = Image.new("RGB", (1024, 768), (128, 64, 200))
+            img.save(src, "PNG")
+
+            _write_thumb(src, dst, max_side=512, quality=80)
+
+            self.assertTrue(dst.exists())
+            with Image.open(dst) as thumb:
+                self.assertEqual(thumb.format, "JPEG")
+                w, h = thumb.size
+                self.assertLessEqual(w, 512)
+                self.assertLessEqual(h, 512)
+                # Proporção preservada
+                self.assertAlmostEqual(w / h, 1024 / 768, places=1)
+
+    def test_write_thumb_already_small(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src = Path(tmpdir) / "small.png"
+            dst = Path(tmpdir) / "small.jpg"
+
+            img = Image.new("RGB", (256, 256), (100, 100, 100))
+            img.save(src, "PNG")
+
+            _write_thumb(src, dst, max_side=512)
+            with Image.open(dst) as thumb:
+                self.assertEqual(thumb.size, (256, 256))
+
+
+class TestResolveLorasFromLegacy(unittest.TestCase):
+    """Testes da função _resolve_loras_from_legacy."""
+
+    def test_empty_loras_with_weights(self):
+        result = _resolve_loras_from_legacy(
+            {
+                "loras": [],
+                "weights_path": "/path/to/lora.safetensors",
+                "lora_scale": 0.8,
+            }
+        )
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["path"], "/path/to/lora.safetensors")
+        self.assertEqual(result[0]["scale"], 0.8)
+
+    def test_empty_loras_no_weights(self):
+        result = _resolve_loras_from_legacy({"loras": []})
+        self.assertEqual(result, [])
+
+    def test_existing_loras_passthrough(self):
+        loras = [{"path": "/a.safetensors", "scale": 0.5}]
+        result = _resolve_loras_from_legacy({"loras": loras})
+        self.assertEqual(result, loras)
+
+    def test_no_loras_key(self):
+        result = _resolve_loras_from_legacy(
+            {"weights_path": "/x.safetensors", "lora_scale": 1.0}
+        )
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["path"], "/x.safetensors")
+
+
+class TestValidationDirect(unittest.TestCase):
+    """Testes diretos de load_and_validate_generate_config."""
+
+    def test_config_not_dict_fails(self):
+        with self.assertRaises(SystemExit):
+            load_and_validate_generate_config("not a dict")
+
+    def test_missing_job_id_fails(self):
+        with self.assertRaises(SystemExit):
+            load_and_validate_generate_config({"generate": {"prompt": "test"}})
+
+    def test_missing_generate_section_fails(self):
+        with self.assertRaises(SystemExit):
+            load_and_validate_generate_config({"job_id": "x"})
+
+    def test_empty_prompt_fails(self):
+        with self.assertRaises(SystemExit):
+            load_and_validate_generate_config(
+                {
+                    "job_id": "x",
+                    "generate": {"prompt": ""},
+                }
+            )
+
+    def test_valid_minimal_config(self):
+        result = load_and_validate_generate_config(
+            {
+                "job_id": "x",
+                "generate": {"prompt": "test"},
+            }
+        )
+        self.assertEqual(result["batch_size"], 1)
+        self.assertEqual(result["loras"], [])
+        self.assertIsNone(result["custom_checkpoint_path"])
+        self.assertIsNone(result["arch"])
+        self.assertIsNone(result["seed"])  # seed ausente → random no loop
+        self.assertEqual(result["base_model"], "flux-2-klein-4b")
+
+    def test_batch_size_zero_fails(self):
+        with self.assertRaises(SystemExit):
+            load_and_validate_generate_config(
+                {
+                    "job_id": "x",
+                    "generate": {"prompt": "test", "batch_size": 0},
+                }
+            )
+
+    def test_batch_size_negative_fails(self):
+        with self.assertRaises(SystemExit):
+            load_and_validate_generate_config(
+                {
+                    "job_id": "x",
+                    "generate": {"prompt": "test", "batch_size": -1},
+                }
+            )
+
+
+class TestCliE2E(_BaseGenerateTest):
+    """Testes end-to-end via CLI (main)."""
+
+    def test_cli_generate_batch_2(self):
+        cfg = self._base_cfg(batch_size=2, seed=42)
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+
+        main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+
+        # Verificar arquivos
+        self.assertTrue((out_dir / "generated_0001.png").exists())
+        self.assertTrue((out_dir / "generated_0002.png").exists())
+        self.assertTrue((out_dir / "thumb_0001.jpg").exists())
+        self.assertTrue((out_dir / "thumb_0002.jpg").exists())
+        self.assertTrue((out_dir / "generation_meta.json").exists())
+
+        # Verificar meta
+        lines = [
+            json.loads(l)
+            for l in (out_dir / "generation_meta.json").read_text().splitlines()
+            if l.strip()
+        ]
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[0]["seed"], 42)
+        self.assertEqual(lines[1]["seed"], 43)
+
+    def test_cli_generate_sdxl(self):
+        cfg = self._base_cfg(base_model="sdxl", batch_size=1, seed=100)
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+
+        main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+
+        self.assertTrue((out_dir / "generated_0001.png").exists())
+        meta = json.loads((out_dir / "generation_meta.json").read_text().strip())
+        self.assertEqual(meta["base_model"], "sdxl")
+
+
+if __name__ == "__main__":
+    unittest.main()

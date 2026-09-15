@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.25.0
+  version: 0.26.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -3098,6 +3098,10 @@ components:
           enum: ["none", "4bit", "8bit"]
           default: "4bit"
           description: "Nível de quantização do modelo base (4bit = NF4 QLoRA, 8bit = BitsAndBytes int8, none = sem quantização FP16/BF16 pleno)."
+        enableBucket:
+          type: boolean
+          default: true
+          description: "Bucketing por aspect ratio: preserva a proporção original das imagens agrupando-as em buckets de resolução com área ≈ resolução² e lados múltiplos de 64 (evita esticar tudo para o quadrado). Padrão true."
         outputName:
           type: [string, "null"]
           maxLength: 100

@@ -1491,6 +1491,7 @@ pub async fn submit_diffusion_job(
             "lrWarmupSteps": req.lr_warmup_steps,
             "mixedPrecision": req.mixed_precision,
             "quantization": req.quantization,
+            "enableBucket": req.enable_bucket,
             "checkpointInterval": req.checkpoint_interval,
             "epochOffset": req.epoch_offset,
             "samplePrompt": req.sample_prompt,

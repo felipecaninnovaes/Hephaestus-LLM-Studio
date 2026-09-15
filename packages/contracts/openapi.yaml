@@ -1,10 +1,11 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.24.0
+  version: 0.25.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
+    Fatia G.1 (ADR-0023): galeria persistente de gerações + suporte a modelos custom.
     Fonte funcional: `docs/backend.md` §2 (comportamento) e §9 (paths exatos).
     Decisões (hash, segredo JWT, TTL, bootstrap, erros, rate-limit): `docs/adr/0001-auth-single-user.md`.
     Demais grupos do §9 (settings, jobs, ...) entram NESTE mesmo arquivo nas
@@ -38,6 +39,8 @@ tags:
     description: Metadados de dataset no Postgres; blobs em disco e imagens a partir da Fatia 3b.
   - name: jobs
     description: Jobs de treinamento e telemetria (BFF do manager, ADR-0007).
+  - name: generations
+    description: Galeria persistente de imagens geradas (ADR-0023 D5).
 
 # Proteção padrão: rotas exigem o cookie de sessão.
 # Endpoints públicos declaram `security: []` explicitamente (inclusive /api/auth/me,
@@ -2218,6 +2221,159 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/generations:
+    get:
+      operationId: listGenerations
+      tags: [generations]
+      summary: Lista gerações da galeria persistente
+      description: |
+        Lista imagens geradas com metadados (ADR-0023 D5). Paginação via
+        `limit`/`offset`. Manager indisponível ⇒ 503 `queue_unavailable`.
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+          description: "Itens por página (1..200)."
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+          description: "Offset de paginação."
+        - name: baseModel
+          in: query
+          schema: { type: string }
+          description: "Filtro por modelo base."
+        - name: quantization
+          in: query
+          schema: { type: string }
+          description: "Filtro por quantização."
+        - name: deleted
+          in: query
+          schema: { type: boolean, default: false }
+          description: "Incluir gerações soft-deletadas."
+      responses:
+        "200":
+          description: Lista de gerações.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GenerationList" }
+        "400":
+          description: "Filtros inválidos (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/generations/{id}/data:
+    get:
+      operationId: getGenerationData
+      tags: [generations]
+      summary: Proxy binário da imagem gerada
+      description: |
+        Retorna o objeto binário da imagem gerada (ADR-0023 D5). Proxy via
+        StoragePort com headers de cache. ID inexistente ⇒ 404.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Imagem binária (image/png ou image/jpeg).
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Geração inexistente (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/generations/delete:
+    post:
+      operationId: deleteGenerations
+      tags: [generations]
+      summary: Exclui gerações (soft-delete)
+      description: |
+        Marca gerações como deletadas (ADR-0023 D5). IDs inexistentes são
+        ignorados (idempotente). Máximo 100 por requisição.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GenerationIdsRequest" }
+      responses:
+        "204":
+          description: Gerações excluídas (idempotente).
+        "400":
+          description: "Body inválido ou vazio (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/generations/export:
+    post:
+      operationId: exportGenerations
+      tags: [generations]
+      summary: Exporta gerações como ZIP
+      description: |
+        Exporta imagens geradas como arquivo ZIP (ADR-0023 D5). Máximo 100
+        por requisição. Arquivos nomeados `{job_short}_{filename}`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GenerationIdsRequest" }
+      responses:
+        "200":
+          description: Arquivo ZIP com as imagens.
+          content:
+            application/zip:
+              schema: { type: string, format: binary }
+        "400":
+          description: "Body inválido ou vazio (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/models:
     get:
       operationId: listModels
@@ -2336,12 +2492,16 @@ paths:
       tags: [jobs]
       summary: Upload de pesos de modelo (multipart)
       description: |
-        Upload de arquivo de pesos via multipart (D3 ADR-0012, ADR-0014 D1).
-        Campo `file` (obrigatório) + form fields `engine` (v1: "yolo" ou "world") + `name?`.
-        DefaultBodyLimit 2 GiB+8 MiB envelope; magic bytes `PK\x03\x04` obrigatório;
-        md5 hex computado; PUT S3 `models/<engine>/<id>/<name>`; compensação delete
-        se INSERT no manager falhar. Erros: 400 `invalid_request` (engine/ext/magic/name),
-        413 `invalid_request` (envelope), 503 `queue_unavailable` (manager), 503 `storage_unavailable` (S3).
+        Upload de arquivo de pesos via multipart (D3 ADR-0012, ADR-0014 D1, ADR-0023 D4).
+        Campo `file` (obrigatório) + form fields `engine` (yolo, world ou diffusion) + `name?`
+        + `kind?` + `arch?` (hints para diffusion — sniff do servidor é autoritativo).
+        DefaultBodyLimit 8 GiB+8 MiB envelope (ADR-0023 D4); magic bytes obrigatórios;
+        md5 hex computado; PUT S3; compensação delete se INSERT no manager falhar.
+        Para `.safetensors` (diffusion): header JSON inspecionado para classificar
+        kind (lora/checkpoint) e arch (flux-2-klein-4b/sdxl/sd15).
+        Erros: 400 `invalid_request` (engine/ext/magic/name/kind/arch conflito),
+        413 `invalid_request` (envelope), 503 `queue_unavailable` (manager),
+        503 `storage_unavailable` (S3).
       requestBody:
         required: true
         content:
@@ -2353,15 +2513,23 @@ paths:
                 file:
                   type: string
                   format: binary
-                  description: "Arquivo de pesos (.pt, magic PK\\x03\\x04)."
+                  description: "Arquivo de pesos (.pt/.safetensors, magic bytes obrigatório)."
                 engine:
                   type: string
-                  enum: [yolo, world]
-                  description: "Engine do modelo (v1: yolo ou world; world = pesos para autotracker real)."
+                  enum: [yolo, world, diffusion]
+                  description: "Engine do modelo (yolo, world ou diffusion)."
                 name:
                   type: string
                   maxLength: 255
-                  description: "Nome opcional do modelo (deve terminar em .pt; ausente = nome do arquivo)."
+                  description: "Nome opcional do modelo (deve terminar em .pt/.safetensors; ausente = nome do arquivo)."
+                kind:
+                  type: string
+                  enum: [lora, checkpoint]
+                  description: "Hint: tipo do modelo diffusion (lora ou checkpoint). Sniff do servidor é autoritativo."
+                arch:
+                  type: string
+                  enum: [flux-2-klein-4b, sdxl, sd15]
+                  description: "Hint: arquitetura do modelo diffusion. Sniff do servidor é autoritativo."
       responses:
         "201":
           description: Modelo criado com sucesso.
@@ -2369,7 +2537,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Model" }
         "400":
-          description: "Requisição inválida (`code: invalid_request`)."
+          description: "Requisição inválida (`code: invalid_request` ou `code: unsupported_architecture`)."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -2379,7 +2547,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "413":
-          description: "Corpo acima do limite 2 GiB+8 MiB (`code: invalid_request`)."
+          description: "Corpo acima do limite 8 GiB+8 MiB (`code: invalid_request`)."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -2949,16 +3117,17 @@ components:
     DiffusionGenerateJobRequest:
       type: object
       additionalProperties: false
-      required: [baseModel, prompt]
+      required: [prompt]
       description: |
-        Body de `POST /api/jobs/diffusion/generate` (ADR-0020).
-        `baseModel` e `prompt` são obrigatórios; os demais campos são opcionais.
+        Body de `POST /api/jobs/diffusion/generate` (ADR-0020, ADR-0023 D2/D3/D4).
+        `prompt` é obrigatório. `baseModel` e `customModelId` são XOR (exatamente um).
+        `weights`/`loraScale` são deprecated — usar `loras` em seu lugar.
       properties:
         baseModel:
           type: string
           enum: [sdxl, flux, sd15, flux-2-klein-4b]
           default: flux-2-klein-4b
-          description: "Modelo base para geração Text-to-Image."
+          description: "Modelo base para geração Text-to-Image. XOR com customModelId."
         prompt:
           type: string
           minLength: 1
@@ -3008,17 +3177,131 @@ components:
         weights:
           type: [string, "null"]
           format: uuid
-          description: "UUID de modelo LoRA diffusion na tabela `models` para estilização."
+          deprecated: true
+          description: "DEPRECATED — usar `loras`. UUID de modelo LoRA diffusion na tabela `models` para estilização."
         loraScale:
           type: number
           minimum: 0.0
           maximum: 2.0
           default: 1.0
-          description: "Fator de escala de aplicação dos pesos LoRA."
+          deprecated: true
+          description: "DEPRECATED — usar `loras`. Fator de escala de aplicação dos pesos LoRA."
+        batchSize:
+          type: integer
+          minimum: 1
+          maximum: 8
+          default: 1
+          description: "Número de imagens a gerar (batch com seed+i)."
+        loras:
+          type: array
+          maxItems: 4
+          items:
+            $ref: "#/components/schemas/LoraRef"
+          description: "Lista de adaptadores LoRA (máx. 4, aplicados em ordem)."
+        customModelId:
+          type: [string, "null"]
+          format: uuid
+          description: "UUID de checkpoint customizado (tabela `models`, kind=checkpoint). XOR com baseModel."
         orchestratorId:
           type: [string, "null"]
           format: uuid
           description: "ID do orquestrador preferencial para execução (ADR-0015 D2)."
+
+    LoraRef:
+      type: object
+      required: [modelId, scale]
+      additionalProperties: false
+      description: "Referência a adaptador LoRA (ADR-0023 D3)."
+      properties:
+        modelId:
+          type: string
+          format: uuid
+          description: "UUID do modelo LoRA na tabela `models`."
+        scale:
+          type: number
+          minimum: 0
+          maximum: 2
+          description: "Fator de escala de aplicação (0..2)."
+
+    Generation:
+      type: object
+      required: [id, jobId, filename, width, height, seed, prompt, params, createdAt]
+      additionalProperties: false
+      description: "Imagem gerada na galeria persistente (ADR-0023 D5)."
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: "PK da geração."
+        jobId:
+          type: string
+          format: uuid
+          description: "FK do job que gerou a imagem."
+        filename:
+          type: string
+          description: "Nome do arquivo na galeria."
+        url:
+          type: string
+          nullable: true
+          description: "URL presigned GET (null sem S3_PUBLIC_ENDPOINT_URL)."
+        thumbUrl:
+          type: string
+          nullable: true
+          description: "URL presigned GET da miniatura (null sem S3_PUBLIC_ENDPOINT_URL)."
+        width:
+          type: integer
+          description: "Largura da imagem em pixels."
+        height:
+          type: integer
+          description: "Altura da imagem em pixels."
+        seed:
+          type: integer
+          format: int64
+          description: "Semente usada na geração."
+        prompt:
+          type: string
+          description: "Prompt textual."
+        negativePrompt:
+          type: string
+          nullable: true
+          description: "Prompt negativo (null se ausente)."
+        params:
+          type: object
+          description: "Parâmetros brutos da geração (snake_case interno)."
+        createdAt:
+          type: string
+          format: date-time
+          description: "Momento de criação."
+
+    GenerationList:
+      type: object
+      required: [items, total]
+      additionalProperties: false
+      description: "Lista paginada de gerações."
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Generation"
+          description: "Gerações na página."
+        total:
+          type: integer
+          description: "Total de gerações (para paginação)."
+
+    GenerationIdsRequest:
+      type: object
+      required: [ids]
+      additionalProperties: false
+      description: "Body de operações em lote (delete/export) de gerações."
+      properties:
+        ids:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: string
+            format: uuid
+          description: "IDs das gerações (1..100)."
 
     PredictJobRequest:
       type: object
@@ -4182,6 +4465,16 @@ components:
           type: string
           format: date-time
           description: "Momento de criação."
+        kind:
+          type: string
+          nullable: true
+          enum: [lora, checkpoint]
+          description: "Tipo de modelo (ADR-0023 D4). Null para engines não-difusão."
+        arch:
+          type: string
+          nullable: true
+          enum: [flux-2-klein-4b, sdxl, sd15]
+          description: "Arquitetura do modelo (ADR-0023 D4). Null para engines não-difusão."
 
     StorageUsage:
       type: object

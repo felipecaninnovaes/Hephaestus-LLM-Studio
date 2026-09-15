@@ -6,20 +6,42 @@ import type {
 } from "@/types/studio";
 
 /**
- * POST /api/jobs/diffusion/generate — cria job de geração Text-to-Image por Difusão (ADR-0020).
+ * POST /api/jobs/diffusion/generate — cria job de geração Text-to-Image por Difusão (ADR-0020/0023).
+ * Suporta baseModel padrão OU customModelId (XOR), batch e multi-LoRA (v2).
  * Retorna 202 { jobId, status, queuePosition? }.
  */
 export function startDiffusionGenerateJob(
   params: DiffusionGenerateJobRequest,
 ): Promise<{ jobId: string; status: string; queuePosition?: number }> {
+  // Build body: only include baseModel or customModelId (XOR), never legacy weights/loraScale
+  const body: Record<string, unknown> = {};
+  if (params.customModelId) {
+    body.customModelId = params.customModelId;
+  } else if (params.baseModel) {
+    body.baseModel = params.baseModel;
+  }
+  body.prompt = params.prompt;
+  if (params.negativePrompt) body.negativePrompt = params.negativePrompt;
+  if (params.width) body.width = params.width;
+  if (params.height) body.height = params.height;
+  if (params.steps) body.steps = params.steps;
+  if (params.guidanceScale != null) body.guidanceScale = params.guidanceScale;
+  if (params.seed != null) body.seed = params.seed;
+  if (params.quantization) body.quantization = params.quantization;
+  if (params.distilled != null) body.distilled = params.distilled;
+  if (params.batchSize && params.batchSize > 1) body.batchSize = params.batchSize;
+  if (params.loras && params.loras.length > 0) body.loras = params.loras;
+  if (params.orchestratorId) body.orchestratorId = params.orchestratorId;
+
   return apiFetch("/api/jobs/diffusion/generate", {
     method: "POST",
-    body: params,
+    body,
   });
 }
 
 /**
  * Retorna a URL da imagem gerada por um job de difusão a partir dos artefatos.
+ * Para batch (N>1), retorna a primeira imagem found; use getGeneratedBatchUrls para todas.
  */
 export async function getGeneratedImageUrl(jobId: string): Promise<string | null> {
   try {
@@ -32,6 +54,34 @@ export async function getGeneratedImageUrl(jobId: string): Promise<string | null
   } catch {
     return null;
   }
+}
+
+/**
+ * Retorna URLs de todas as imagens e thumbs geradas por um job (batch support).
+ * Cada item: { imageUrl, thumbUrl, seed (from meta), filename }.
+ */
+export async function getGeneratedBatchResults(
+  jobId: string,
+): Promise<{ imageUrl: string; thumbUrl: string | null; filename: string }[]> {
+  const { items } = await apiFetch<{ items: { id: string; kind: string; path: string; md5: string; bytes: number }[] }>(
+    `/api/jobs/${jobId}/artifacts`,
+  );
+
+  // Get all generated images (kind=generated or *.png)
+  const generatedImages = items.filter(
+    (a) => a.kind === "generated" || a.path.endsWith(".png"),
+  );
+
+  // If no batch-style artifacts, fallback to legacy single image
+  if (generatedImages.length === 0) {
+    return [];
+  }
+
+  return generatedImages.map((img) => ({
+    imageUrl: `/api/jobs/${jobId}/artifacts/${img.id}/data`,
+    thumbUrl: null, // thumbs will be resolved via generation_meta.json in the future
+    filename: img.path.split("/").pop() || img.id,
+  }));
 }
 
 /**

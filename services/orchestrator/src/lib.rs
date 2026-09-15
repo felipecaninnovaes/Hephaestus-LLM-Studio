@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+pub mod daemon;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -20,6 +22,26 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WeightsRef {
     /// S3 key do peso: `models/<engine>/<id>/<name>` ou `artifacts/<job_id>/<path>`.
+    pub s3_key: String,
+    /// MD5 hash esperado (hex 32).
+    pub md5: String,
+}
+
+/// Referência a um LoRA para staging multi-ref (D3 — ADR-0023).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LoraRefStage {
+    /// S3 key do LoRA (.safetensors).
+    pub s3_key: String,
+    /// MD5 hash esperado (hex 32).
+    pub md5: String,
+    /// Escala do LoRA (0..2).
+    pub scale: f64,
+}
+
+/// Referência a um checkpoint custom para staging multi-ref (D4 — ADR-0023).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct WeightRef {
+    /// S3 key do checkpoint (.safetensors).
     pub s3_key: String,
     /// MD5 hash esperado (hex 32).
     pub md5: String,
@@ -42,6 +64,12 @@ pub struct DispatchRequest {
     /// Pesos de modelo para fine-tune (ADR-0012 D5). `None` = treino do zero.
     #[serde(default)]
     pub weights_ref: Option<WeightsRef>,
+    /// LoRAs para staging multi-ref (D3 — ADR-0023). Empty = sem LoRAs.
+    #[serde(default)]
+    pub loras: Vec<LoraRefStage>,
+    /// Checkpoint custom para staging multi-ref (D4 — ADR-0023).
+    #[serde(default)]
+    pub custom_checkpoint: Option<WeightRef>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -60,6 +88,10 @@ pub struct ReportBody {
     pub metrics: Option<serde_json::Value>,
     pub error: Option<String>,
     pub artifacts: Option<Vec<ArtifactReport>>,
+    /// Conteúdo textual do generation_meta.json (JSONL) — D5 ADR-0023.
+    /// Campo opcional retrocompat: ausente em jobs legados.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta_content: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -191,6 +223,12 @@ pub enum PipelineError {
     },
     /// Erro genérico (sem variante específica).
     Other(String),
+    /// Daemon de difusão falhou ao subir (D1).
+    DaemonLaunchFailed(String),
+    /// Daemon de difusão não respondeu health a tempo (D1).
+    DaemonHealthTimeout(String),
+    /// Daemon de difusão busy após múltiplas tentativas (D1).
+    DaemonBusy,
 }
 
 impl std::fmt::Display for PipelineError {
@@ -217,6 +255,9 @@ impl std::fmt::Display for PipelineError {
                 )
             }
             Self::Other(e) => write!(f, "{e}"),
+            Self::DaemonLaunchFailed(e) => write!(f, "daemon launch failed: {e}"),
+            Self::DaemonHealthTimeout(e) => write!(f, "daemon health timeout: {e}"),
+            Self::DaemonBusy => write!(f, "daemon busy after retries"),
         }
     }
 }
@@ -409,27 +450,57 @@ pub fn compute_progress(line: &MetricsLine, total_epochs: i32) -> f64 {
 // Config.yaml placeholder replacement (D6)
 // ---------------------------------------------------------------------------
 
-/// Substitui `{dataset_path}`, `{output_path}` e opcionalmente `{weights_path}` no config.yaml.
-///
-/// Quando `weights_path` é `None`, o placeholder `{weights_path}` permanece literal
-/// (trainer mock tolera chave desconhecida — ADR-0012 D5).
 fn default_mode() -> String {
     "train".to_string()
 }
 
+/// Substitui placeholders no config.yaml.
+///
+/// Suporta:
+/// - `{dataset_path}`, `{output_path}` — sempre
+/// - `{weights_path}` — weights legado (fine-tune)
+/// - `{lora_path_0}`...`{lora_path_N}` — LoRAs multi-ref (D3)
+/// - `{custom_checkpoint_path}` — checkpoint custom (D4)
+///
+/// Placeholders absentes no yaml são ignorados (no-op tolerante).
 pub fn replace_config_placeholders(
     config: &str,
     dataset_path: &str,
     output_path: &str,
     weights_path: Option<&str>,
+    lora_paths: &[String],
+    custom_checkpoint_path: Option<&str>,
 ) -> String {
-    let result = config
+    let mut result = config
         .replace("{dataset_path}", dataset_path)
         .replace("{output_path}", output_path);
+
     match weights_path {
-        Some(wp) => result.replace("{weights_path}", wp),
-        None => result,
+        Some(wp) => result = result.replace("{weights_path}", wp),
+        None => {}
     }
+
+    for (i, path) in lora_paths.iter().enumerate() {
+        let placeholder = format!("{{lora_path_{i}}}");
+        result = result.replace(&placeholder, path);
+    }
+
+    if let Some(cp) = custom_checkpoint_path {
+        result = result.replace("{custom_checkpoint_path}", cp);
+    }
+
+    result
+}
+
+/// Substitui placeholders (versão legada — sem multi-ref).
+/// Mantida para compatibilidade interna.
+pub fn replace_config_placeholders_legacy(
+    config: &str,
+    dataset_path: &str,
+    output_path: &str,
+    weights_path: Option<&str>,
+) -> String {
+    replace_config_placeholders(config, dataset_path, output_path, weights_path, &[], None)
 }
 
 /// Extrai o valor de `epochs` do config.yaml (para cálculo de progress).
@@ -910,6 +981,7 @@ pub async fn run_job(
     active_jobs: ActiveJobs,
     gpu_devices: Option<String>,
     gpu_allow_mock: bool,
+    daemon_state: Option<Arc<daemon::DaemonState>>,
 ) {
     let job_id = dispatch.job_id.clone();
     let report_for_error = Arc::clone(&report_client);
@@ -921,6 +993,7 @@ pub async fn run_job(
         &active_jobs,
         gpu_devices.as_deref(),
         gpu_allow_mock,
+        daemon_state.as_deref(),
     )
     .await;
 
@@ -937,6 +1010,7 @@ pub async fn run_job(
                     metrics: None,
                     error: Some(err_msg),
                     artifacts: None,
+                    meta_content: None,
                 },
             )
             .await
@@ -960,6 +1034,7 @@ async fn run_job_inner(
     active_jobs: &ActiveJobs,
     gpu_devices: Option<&str>,
     gpu_allow_mock: bool,
+    daemon_state: Option<&daemon::DaemonState>,
 ) -> Result<(), PipelineError> {
     let job_id = &dispatch.job_id;
     let job_workdir = PathBuf::from(&dispatch.workdir);
@@ -1010,10 +1085,18 @@ async fn run_job_inner(
                 metrics: None,
                 error: None,
                 artifacts: None,
+                meta_content: None,
             },
         )
         .await
         .map_err(|e| PipelineError::ReportFailed(format!("report preparing: {e}")))?;
+
+    // Preempção: ANTES de despachar treino, se daemon idle → kill (D1)
+    if dispatch.mode != "generate" {
+        if let Some(ds) = daemon_state {
+            daemon::maybe_preempt_daemon(ds).await;
+        }
+    }
 
     // 2. Download package.zip via S3 (scoped — D2 barreira principal) se presente
     if let Some(ref pr) = dispatch.package_ref {
@@ -1087,6 +1170,77 @@ async fn run_job_inner(
         weights_staged_path = Some(format!("/outputs/{job_id}/weights/{filename}"));
     }
 
+    // 5b. Download e staging de LoRAs multi-ref (D3 — ADR-0023)
+    //     Pesos ficam em outputs/<job_id>/weights/lora_0.safetensors, lora_1.safetensors, ...
+    let mut lora_staged_paths: Vec<String> = Vec::new();
+    let weights_dir = outputs.join("weights");
+    if !dispatch.loras.is_empty() {
+        tokio::fs::create_dir_all(&weights_dir)
+            .await
+            .map_err(|e| PipelineError::Other(format!("create weights dir: {e}")))?;
+    }
+    for (i, lora) in dispatch.loras.iter().enumerate() {
+        let scope = if lora.s3_key.starts_with("models/") {
+            S3Scope::Models
+        } else if lora.s3_key.starts_with("artifacts/") {
+            S3Scope::Artifacts
+        } else {
+            return Err(PipelineError::S3Download(format!(
+                "lora s3_key must start with models/ or artifacts/, got: {}",
+                lora.s3_key
+            )));
+        };
+        let scoped_key = scoped_key(scope, &lora.s3_key)
+            .map_err(|e| PipelineError::S3Download(format!("invalid lora key: {e}")))?;
+        let lora_file = weights_dir.join(format!("lora_{i}.safetensors"));
+        s3.get_to_file(&scoped_key, &lora_file)
+            .await
+            .map_err(|e| PipelineError::S3Download(format!("download lora {i}: {e}")))?;
+        let actual_md5 = compute_file_md5(&lora_file)
+            .map_err(|e| PipelineError::S3Download(format!("compute lora {i} md5: {e}")))?;
+        if actual_md5 != lora.md5 {
+            return Err(PipelineError::Md5Mismatch {
+                expected: lora.md5.clone(),
+                actual: actual_md5,
+            });
+        }
+        lora_staged_paths.push(format!("/outputs/{job_id}/weights/lora_{i}.safetensors"));
+    }
+
+    // 5c. Download e staging de custom checkpoint (D4 — ADR-0023)
+    //     Pesos ficam em outputs/<job_id>/weights/custom.safetensors
+    let mut custom_staged_path: Option<String> = None;
+    if let Some(ref custom) = dispatch.custom_checkpoint {
+        tokio::fs::create_dir_all(&weights_dir)
+            .await
+            .map_err(|e| PipelineError::Other(format!("create weights dir: {e}")))?;
+        let scope = if custom.s3_key.starts_with("models/") {
+            S3Scope::Models
+        } else if custom.s3_key.starts_with("artifacts/") {
+            S3Scope::Artifacts
+        } else {
+            return Err(PipelineError::S3Download(format!(
+                "custom_checkpoint s3_key must start with models/ or artifacts/, got: {}",
+                custom.s3_key
+            )));
+        };
+        let scoped_key = scoped_key(scope, &custom.s3_key)
+            .map_err(|e| PipelineError::S3Download(format!("invalid custom key: {e}")))?;
+        let custom_file = weights_dir.join("custom.safetensors");
+        s3.get_to_file(&scoped_key, &custom_file)
+            .await
+            .map_err(|e| PipelineError::S3Download(format!("download custom: {e}")))?;
+        let actual_md5 = compute_file_md5(&custom_file)
+            .map_err(|e| PipelineError::S3Download(format!("compute custom md5: {e}")))?;
+        if actual_md5 != custom.md5 {
+            return Err(PipelineError::Md5Mismatch {
+                expected: custom.md5.clone(),
+                actual: actual_md5,
+            });
+        }
+        custom_staged_path = Some(format!("/outputs/{job_id}/weights/custom.safetensors"));
+    }
+
     // 6. Monta config.yaml REAL — substitui placeholders (§8/:102)
     let total_epochs = dispatch
         .config_yaml
@@ -1104,6 +1258,8 @@ async fn run_job_inner(
             &dataset_path,
             &output_path,
             weights_staged_path.as_deref(),
+            &lora_staged_paths,
+            custom_staged_path.as_deref(),
         );
 
         // Valida que é YAML parseável (D6)
@@ -1139,11 +1295,195 @@ async fn run_job_inner(
                 metrics: None,
                 error: None,
                 artifacts: None,
+                meta_content: None,
             },
         )
         .await
         .map_err(|e| PipelineError::ReportFailed(format!("report running: {e}")))?;
 
+    // =========================================================================
+    // DAEMON PATH: Diffusion generate com daemon habilitado (D1)
+    // =========================================================================
+    if dispatch.engine == "diffusion" && dispatch.mode == "generate" && daemon_state.is_some() {
+        let ds = daemon_state.unwrap();
+
+        // Deriva spec-alvo do config yaml (D1: loaded_spec from config)
+        let _target_spec = dispatch.config_yaml.as_deref().unwrap_or("default");
+
+        // (a) Se daemon não está de pé → sobe, aguarda /health 200
+        let _daemon_url = daemon::ensure_daemon_ready(ds, _target_spec)
+            .await
+            .map_err(|e| PipelineError::DaemonLaunchFailed(e))?;
+
+        // Telemetry path (D1)
+        let telemetry_abs = outputs.join("telemetry.jsonl");
+
+        // Config yaml como string JSON para o daemon — usa o real_config
+        // (mesmo config com placeholders substituídos que o one-shot grava em config.yaml)
+        let config_str = dispatch
+            .config_yaml
+            .as_ref()
+            .map(|cy| {
+                replace_config_placeholders(
+                    cy,
+                    &format!("/datasets/datasets-cache/{job_id}"),
+                    &format!("/outputs/{job_id}"),
+                    weights_staged_path.as_deref(),
+                    &lora_staged_paths,
+                    custom_staged_path.as_deref(),
+                )
+            })
+            .unwrap_or_default();
+
+        let body = daemon::GenerateBody {
+            config: config_str,
+            output_dir: outputs.to_str().unwrap_or_default().to_string(),
+            telemetry_path: telemetry_abs.to_str().unwrap_or_default().to_string(),
+        };
+
+        // (c) POST /generate com retry em 409 (D1: 2 retries com backoff curto)
+        let mut last_err = String::new();
+        let mut succeeded = false;
+        for attempt in 0..3 {
+            let client = ds.client.read().unwrap().clone();
+            match client.generate(&body).await {
+                Ok(()) => {
+                    succeeded = true;
+                    ds.touch();
+                    break;
+                }
+                Err(ref e) if e == "busy" => {
+                    if attempt < 2 {
+                        // Backoff curto antes de retry
+                        tokio::time::sleep(Duration::from_millis(500 * (attempt as u64 + 1))).await;
+                        last_err = "busy".to_string();
+                        continue;
+                    } else {
+                        last_err = "busy".to_string();
+                    }
+                }
+                Err(e) => {
+                    // Erro diferente de busy → falha honesta
+                    return Err(PipelineError::Other(format!("daemon generate: {e}")));
+                }
+            }
+        }
+
+        if !succeeded {
+            if last_err == "busy" {
+                return Err(PipelineError::DaemonBusy);
+            }
+            return Err(PipelineError::Other(format!(
+                "daemon generate failed: {last_err}"
+            )));
+        }
+
+        // (d) Coleta artefatos do output_dir igual one-shot (glob)
+        let mut artifacts = Vec::new();
+
+        // Coleta glob: generated_*.png (kind generated), thumb_*.jpg (kind generated_thumb),
+        // generation_meta.json (kind generated_meta) — D2 ADR-0023
+        // Se existir qualquer `generated_*.png`, PULA `generated.png` (symlink legado só vale
+        // para jobs sem numerado).
+        if let Ok(entries) = std::fs::read_dir(&outputs) {
+            let all_files: Vec<std::path::PathBuf> = entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.is_file()
+                        && !p
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .map(|n| {
+                                n.starts_with('.') || n.ends_with(".tmp") || n.ends_with(".part")
+                            })
+                            .unwrap_or(false)
+                })
+                .collect();
+
+            let has_numbered = all_files.iter().any(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with("generated_") && n.ends_with(".png"))
+                    .unwrap_or(false)
+            });
+
+            for path in &all_files {
+                let fname = match path.file_name().and_then(|n| n.to_str()) {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                };
+
+                let kind = if fname.starts_with("generated_") && fname.ends_with(".png") {
+                    Some("generated")
+                } else if fname.starts_with("thumb_")
+                    && (fname.ends_with(".jpg") || fname.ends_with(".jpeg"))
+                {
+                    Some("generated_thumb")
+                } else if fname == "generation_meta.json" {
+                    Some("generated_meta")
+                } else if fname == "generated.png" && !has_numbered {
+                    // Legado: generated.png só coleta se NÃO houver numerados
+                    Some("generated")
+                } else {
+                    None
+                };
+
+                if let Some(k) = kind {
+                    let bytes = std::fs::metadata(path).map(|m| m.len() as i64).unwrap_or(0);
+                    if bytes > 0 {
+                        let art_key = format!("artifacts/{job_id}/{fname}");
+                        if let Ok(scoped) = scoped_key(S3Scope::Artifacts, &art_key) {
+                            if let Ok(md5) = compute_file_md5(path) {
+                                if s3.put(&scoped, path).await.is_ok() {
+                                    artifacts.push(ArtifactReport {
+                                        kind: k.to_string(),
+                                        path: fname,
+                                        md5,
+                                        bytes,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 11. Report done — inclui meta_content se generation_meta.json existe (D5 ADR-0023)
+        let final_metrics = read_final_metrics(&outputs.join("metrics.jsonl"));
+        let meta_content = read_generation_meta_content(&outputs);
+        report_client
+            .report(
+                job_id,
+                &ReportBody {
+                    status: "done".to_string(),
+                    progress: Some(1.0),
+                    epoch: final_metrics.as_ref().map(|m| m.epoch),
+                    step: final_metrics
+                        .as_ref()
+                        .and_then(|m| m.step.map(|s| s as i32)),
+                    metrics: final_metrics.as_ref().map(|m| m.to_report_json()),
+                    error: None,
+                    artifacts: if artifacts.is_empty() {
+                        None
+                    } else {
+                        Some(artifacts)
+                    },
+                    meta_content,
+                },
+            )
+            .await
+            .map_err(|e| PipelineError::ReportFailed(format!("report done: {e}")))?;
+
+        // 12. Cleanup tempdir
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+        return Ok(());
+    }
+
+    // =========================================================================
+    // ONE-SHOT PATH: Executor docker/subprocess (comportamento legado)
+    // =========================================================================
     // 7. Execute trainer (D5 :301–309)
     let container_name = format!("trainer-{}-{}", dispatch.engine, job_id);
     let active_state = ActiveJobState::new(container_name.clone());
@@ -1367,6 +1707,7 @@ async fn run_job_inner(
                                 } else {
                                     Some(std::mem::take(&mut new_live_artifacts))
                                 },
+                                meta_content: None,
                             },
                         )
                         .await;
@@ -1383,6 +1724,7 @@ async fn run_job_inner(
                             metrics: None,
                             error: None,
                             artifacts: Some(new_live_artifacts),
+                            meta_content: None,
                         },
                     )
                     .await;
@@ -1478,7 +1820,7 @@ async fn run_job_inner(
         ("yolo", "predict") => vec![("predictions.json", "predictions")],
         ("autotracker", _) => vec![("boxes.json", "boxes"), ("metrics.jsonl", "metrics")],
         ("autolabel", _) => vec![("captions.jsonl", "captions"), ("metrics.jsonl", "metrics")],
-        ("diffusion", "generate") => vec![("generated.png", "generated")],
+        ("diffusion", "generate") => vec![], // glob abaixo (D2 ADR-0023)
         ("diffusion", _) => vec![
             ("adapter.safetensors", "model"),
             ("metrics.jsonl", "metrics"),
@@ -1511,6 +1853,81 @@ async fn run_job_inner(
                 md5,
                 bytes,
             });
+        }
+    }
+
+    // Coleta glob para diffusion generate (D2 — ADR-0023)
+    // Gera generated_*.png (kind generated), thumb_*.jpg (kind generated_thumb),
+    // generation_meta.json (kind generated_meta). generated.png legado só coleta
+    // se NÃO houver numerados (evita duplicidade em batch=1).
+    if dispatch.engine == "diffusion" && dispatch.mode == "generate" {
+        if let Ok(entries) = std::fs::read_dir(&outputs) {
+            let mut glob_files: Vec<std::path::PathBuf> = entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.is_file()
+                        && !p
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .map(|n| {
+                                n.starts_with('.') || n.ends_with(".tmp") || n.ends_with(".part")
+                            })
+                            .unwrap_or(false)
+                })
+                .collect();
+            glob_files.sort();
+
+            // Verifica se existem arquivos numerados (generated_*.png)
+            let has_numbered = glob_files.iter().any(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with("generated_") && n.ends_with(".png"))
+                    .unwrap_or(false)
+            });
+
+            for gpath in glob_files {
+                let fname = match gpath.file_name().and_then(|n| n.to_str()) {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                };
+
+                let kind = if fname.starts_with("generated_") && fname.ends_with(".png") {
+                    Some("generated")
+                } else if fname.starts_with("thumb_")
+                    && (fname.ends_with(".jpg") || fname.ends_with(".jpeg"))
+                {
+                    Some("generated_thumb")
+                } else if fname == "generation_meta.json" {
+                    Some("generated_meta")
+                } else if fname == "generated.png" && !has_numbered {
+                    // Legado: generated.png só coleta se NÃO houver numerados
+                    Some("generated")
+                } else {
+                    None
+                };
+
+                if let Some(k) = kind {
+                    let bytes = std::fs::metadata(&gpath)
+                        .map(|m| m.len() as i64)
+                        .unwrap_or(0);
+                    if bytes > 0 {
+                        let art_key = format!("artifacts/{job_id}/{fname}");
+                        if let Ok(scoped) = scoped_key(S3Scope::Artifacts, &art_key) {
+                            if let Ok(md5) = compute_file_md5(&gpath) {
+                                if s3.put(&scoped, &gpath).await.is_ok() {
+                                    artifacts.push(ArtifactReport {
+                                        kind: k.to_string(),
+                                        path: fname,
+                                        md5,
+                                        bytes,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1683,7 +2100,8 @@ async fn run_job_inner(
     // 10. Lê métricas finais para o report done
     let final_metrics = read_final_metrics(&metrics_path);
 
-    // 11. Report done
+    // 11. Report done — inclui meta_content se generation_meta.json existe (D5 ADR-0023)
+    let meta_content = read_generation_meta_content(&outputs);
     report_client
         .report(
             job_id,
@@ -1701,6 +2119,7 @@ async fn run_job_inner(
                 } else {
                     Some(artifacts)
                 },
+                meta_content,
             },
         )
         .await
@@ -1722,6 +2141,41 @@ fn read_final_metrics(path: &Path) -> Option<MetricsLine> {
         }
     }
     last
+}
+
+/// Lê o conteúdo textual do generation_meta.json para enviar como `meta_content`
+/// no report done (D5 ADR-0023). Cap: 256 KiB — truncamento honesto com warning.
+const META_CONTENT_MAX_BYTES: usize = 256 * 1024;
+
+fn read_generation_meta_content(outputs: &Path) -> Option<String> {
+    let path = outputs.join("generation_meta.json");
+    if !path.is_file() {
+        return None;
+    }
+    let raw = std::fs::read(&path).ok()?;
+    if raw.is_empty() {
+        return None;
+    }
+    if raw.len() > META_CONTENT_MAX_BYTES {
+        tracing::warn!(
+            path = %path.display(),
+            raw_bytes = raw.len(),
+            cap = META_CONTENT_MAX_BYTES,
+            "generation_meta.json excede 256 KiB — truncando honestamente"
+        );
+        let truncated = &raw[..META_CONTENT_MAX_BYTES];
+        // Recorta até a última quebra de linha para não enviar JSONL cortado no meio
+        let last_nl = truncated.iter().rposition(|&b| b == b'\n');
+        let slice = match last_nl {
+            Some(pos) => &truncated[..=pos],
+            None => truncated,
+        };
+        let mut s = String::from_utf8_lossy(slice).into_owned();
+        s.push_str("\n[TRUNCATED — original excedeu 256 KiB]\n");
+        return Some(s);
+    }
+    // Conteúdo pequeno o suficiente — lê como UTF-8, tolerando invalid bytes
+    Some(String::from_utf8_lossy(&raw).into_owned())
 }
 
 // ---------------------------------------------------------------------------
@@ -1915,6 +2369,7 @@ pub fn parse_nvidia_smi_csv(csv: &str) -> Option<GpuTelemetry> {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::time::Instant;
 
     // -- scoped_key tests --
 
@@ -2053,8 +2508,14 @@ mod tests {
     #[test]
     fn replace_config_placeholders_basic() {
         let config = "dataset_path: {dataset_path}\noutput_path: {output_path}";
-        let result =
-            replace_config_placeholders(config, "/datasets/datasets-cache/j1", "/outputs/j1", None);
+        let result = replace_config_placeholders(
+            config,
+            "/datasets/datasets-cache/j1",
+            "/outputs/j1",
+            None,
+            &[],
+            None,
+        );
         assert_eq!(
             result,
             "dataset_path: /datasets/datasets-cache/j1\noutput_path: /outputs/j1"
@@ -2065,8 +2526,14 @@ mod tests {
     fn replace_config_placeholders_yaml_parseable() {
         let config =
             "dataset_path: {dataset_path}\noutput_path: {output_path}\nepochs: 100\nmodel: yolo11m";
-        let result =
-            replace_config_placeholders(config, "/datasets/datasets-cache/j1", "/outputs/j1", None);
+        let result = replace_config_placeholders(
+            config,
+            "/datasets/datasets-cache/j1",
+            "/outputs/j1",
+            None,
+            &[],
+            None,
+        );
         let parsed: serde_yaml::Value = serde_yaml::from_str(&result).unwrap();
         assert_eq!(parsed["dataset_path"], "/datasets/datasets-cache/j1");
         assert_eq!(parsed["output_path"], "/outputs/j1");
@@ -2466,6 +2933,15 @@ mod tests {
                 .find(|r| r.status == "done")
                 .and_then(|r| r.artifacts.clone())
         }
+
+        fn done_meta_content(&self) -> Option<String> {
+            self.reports
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|r| r.status == "done")
+                .and_then(|r| r.meta_content.clone())
+        }
     }
 
     #[async_trait]
@@ -2542,6 +3018,8 @@ mod tests {
             workdir: "/tmp".to_string(),
             mode: "train".to_string(),
             weights_ref: None,
+            loras: Vec::new(),
+            custom_checkpoint: None,
         }
     }
 
@@ -2594,6 +3072,7 @@ mod tests {
             &active_jobs,
             None,
             false,
+            None,
         )
         .await;
         assert!(
@@ -2656,6 +3135,7 @@ mod tests {
             &active_jobs,
             None,
             false,
+            None,
         )
         .await;
         assert!(
@@ -2717,6 +3197,7 @@ mod tests {
             &active_jobs,
             None,
             false,
+            None,
         )
         .await;
         assert!(
@@ -2769,6 +3250,7 @@ mod tests {
             active_jobs.clone(),
             None,
             false,
+            None,
         )
         .await;
 
@@ -2817,6 +3299,7 @@ mod tests {
             &active_jobs,
             None,
             false,
+            None,
         )
         .await;
 
@@ -2867,6 +3350,7 @@ mod tests {
             &active_jobs,
             None,
             false,
+            None,
         )
         .await;
 
@@ -2883,6 +3367,106 @@ mod tests {
         let kinds: Vec<&str> = artifacts.iter().map(|a| a.kind.as_str()).collect();
         assert!(filenames.contains(&"generated.png"));
         assert!(kinds.contains(&"generated"));
+    }
+
+    // -- D5 ADR-0023: meta_content no report done --
+
+    /// Job generate one-shot com generation_meta.json fake no output
+    /// → report done contém meta_content com o JSONL.
+    #[tokio::test]
+    async fn generate_one_shot_meta_content_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let mut dispatch = make_dispatch("job-meta-present-001", "diffusion");
+        dispatch.mode = "generate".to_string();
+        dispatch.package_ref = None;
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let meta_jsonl = r#"{"filename":"img_001.png","seed":42,"prompt":"a cat","width":512,"height":512}
+{"filename":"img_002.png","seed":43,"prompt":"a dog","width":512,"height":512}
+"#;
+        let mut output_files = HashMap::new();
+        output_files.insert("generated_0001.png".to_string(), b"fake png".to_vec());
+        output_files.insert(
+            "generation_meta.json".to_string(),
+            meta_jsonl.as_bytes().to_vec(),
+        );
+        create_fake_outputs(tmp.path(), "job-meta-present-001", &output_files);
+
+        let res = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+            None,
+        )
+        .await;
+
+        assert!(res.is_ok(), "run_job_inner failed: {:?}", res);
+
+        // Verifica meta_content no report done
+        let meta = report.done_meta_content();
+        assert!(meta.is_some(), "meta_content should be present");
+        let content = meta.unwrap();
+        assert!(
+            content.contains("img_001.png"),
+            "meta_content should contain JSONL data"
+        );
+        assert!(
+            content.contains("\"seed\":42"),
+            "meta_content should contain seed field"
+        );
+
+        // Verifica artefatos
+        let artifacts = report.done_artifacts().unwrap();
+        let kinds: Vec<&str> = artifacts.iter().map(|a| a.kind.as_str()).collect();
+        assert!(kinds.contains(&"generated_meta"));
+    }
+
+    /// Job generate sem generation_meta.json → report done NÃO contém meta_content.
+    #[tokio::test]
+    async fn generate_one_shot_meta_content_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let mut dispatch = make_dispatch("job-meta-absent-001", "diffusion");
+        dispatch.mode = "generate".to_string();
+        dispatch.package_ref = None;
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let mut output_files = HashMap::new();
+        output_files.insert("generated.png".to_string(), b"fake png".to_vec());
+        // Sem generation_meta.json — job legado
+        create_fake_outputs(tmp.path(), "job-meta-absent-001", &output_files);
+
+        let res = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+            None,
+        )
+        .await;
+
+        assert!(res.is_ok(), "run_job_inner failed: {:?}", res);
+
+        // meta_content deve ser None (ausente no report)
+        let meta = report.done_meta_content();
+        assert!(
+            meta.is_none(),
+            "meta_content should be absent for legacy jobs"
+        );
     }
 
     // -- A.3 test 4: parse_metrics_line aceita a linha 1-epoch do autotrack --
@@ -3058,6 +3642,7 @@ also bad, not a number
                 &active_jobs,
                 Some("0"),
                 false,
+                None,
             )
             .await;
             assert!(
@@ -3106,6 +3691,7 @@ also bad, not a number
                 &active_jobs,
                 Some("0"),
                 false,
+                None,
             )
             .await;
             assert!(
@@ -3151,6 +3737,7 @@ also bad, not a number
                 &active_jobs,
                 Some("0"),
                 true, // gpu_allow_mock
+                None, // daemon_state
             )
             .await;
             assert!(
@@ -3196,6 +3783,7 @@ also bad, not a number
                 &active_jobs,
                 None,
                 false,
+                None,
             )
             .await;
             assert!(
@@ -3241,6 +3829,7 @@ also bad, not a number
                 &active_jobs,
                 Some("0"),
                 false,
+                None,
             )
             .await;
             assert!(
@@ -3474,6 +4063,8 @@ also bad, not a number
             "/datasets/j1",
             "/outputs/j1",
             Some("/outputs/j1/weights/best.pt"),
+            &[],
+            None,
         );
         assert_eq!(
             result,
@@ -3484,7 +4075,8 @@ also bad, not a number
     #[test]
     fn replace_config_placeholders_without_weights_keeps_literal() {
         let config = "model: yolo11m\nweights_path: {weights_path}";
-        let result = replace_config_placeholders(config, "/datasets/j1", "/outputs/j1", None);
+        let result =
+            replace_config_placeholders(config, "/datasets/j1", "/outputs/j1", None, &[], None);
         assert_eq!(result, "model: yolo11m\nweights_path: {weights_path}");
     }
 
@@ -3545,6 +4137,7 @@ also bad, not a number
             &active_jobs,
             None,
             false,
+            None,
         )
         .await;
         assert!(
@@ -3621,6 +4214,7 @@ also bad, not a number
             &active_jobs,
             None,
             false,
+            None,
         )
         .await;
         assert!(
@@ -3663,6 +4257,7 @@ also bad, not a number
             &active_jobs,
             None,
             false,
+            None,
         )
         .await;
         assert!(
@@ -3735,6 +4330,7 @@ also bad, not a number
             &active_jobs,
             None,
             false,
+            None,
         )
         .await;
         assert!(
@@ -3777,6 +4373,7 @@ also bad, not a number
             &active_jobs,
             None,
             false,
+            None,
         )
         .await;
         assert!(result.is_err(), "unknown prefix should fail: {:?}", result);
@@ -3806,6 +4403,8 @@ also bad, not a number
             workdir: "/tmp".to_string(),
             mode: "autotrack".to_string(),
             weights_ref: None,
+            loras: Vec::new(),
+            custom_checkpoint: None,
         }
     }
 
@@ -3863,6 +4462,7 @@ also bad, not a number
             &active_jobs,
             None,
             false,
+            None,
         )
         .await;
         assert!(
@@ -3944,6 +4544,7 @@ also bad, not a number
             &active_jobs,
             None,
             false,
+            None,
         )
         .await;
         assert!(
@@ -4015,6 +4616,7 @@ also bad, not a number
             &active_jobs,
             None,
             false,
+            None,
         )
         .await;
         assert!(
@@ -4063,6 +4665,7 @@ also bad, not a number
             &active_jobs,
             None,
             false,
+            None,
         )
         .await;
         assert!(
@@ -4190,6 +4793,7 @@ also bad, not a number
             &active_jobs,
             None,
             false,
+            None,
         )
         .await;
         assert!(
@@ -4253,6 +4857,7 @@ also bad, not a number
             &active_jobs,
             None,
             false,
+            None,
         )
         .await;
         assert!(
@@ -4299,6 +4904,7 @@ also bad, not a number
             &active_jobs,
             None,
             false,
+            None,
         )
         .await;
         assert!(
@@ -4358,6 +4964,7 @@ also bad, not a number
             &active_jobs,
             None,
             false,
+            None,
         )
         .await;
         assert!(
@@ -4394,5 +5001,858 @@ also bad, not a number
         assert_eq!(artifacts.len(), 1);
         assert_eq!(artifacts[0].path, "predictions.json");
         assert_eq!(artifacts[0].kind, "predictions");
+    }
+
+    // =========================================================================
+    // G.4 — Daemon + glob + multi-ref tests (ADR-0023)
+    // =========================================================================
+
+    use daemon::{DaemonClient, DaemonLauncher, DaemonState, GenerateBody, HealthResponse};
+
+    /// Fake DaemonClient para testes.
+    /// Controla health/busy/generate via campos Mutex.
+    struct FakeDaemonClient {
+        health_response: Mutex<Option<HealthResponse>>,
+        generate_results: Mutex<Vec<Result<(), String>>>,
+        generate_call_count: Mutex<usize>,
+        health_call_count: Mutex<usize>,
+    }
+
+    impl FakeDaemonClient {
+        fn new() -> Self {
+            Self {
+                health_response: Mutex::new(Some(HealthResponse {
+                    ok: true,
+                    loaded_spec: Some(serde_json::Value::String("flux-2-klein-4b".to_string())),
+                    busy: false,
+                    _extra: Default::default(),
+                })),
+                generate_results: Mutex::new(Vec::new()),
+                generate_call_count: Mutex::new(0),
+                health_call_count: Mutex::new(0),
+            }
+        }
+
+        fn set_health(&self, resp: Option<HealthResponse>) {
+            *self.health_response.lock().unwrap() = resp;
+        }
+
+        fn set_generate_results(&self, results: Vec<Result<(), String>>) {
+            *self.generate_results.lock().unwrap() = results;
+        }
+
+        fn generate_calls(&self) -> usize {
+            *self.generate_call_count.lock().unwrap()
+        }
+
+        fn health_calls(&self) -> usize {
+            *self.health_call_count.lock().unwrap()
+        }
+    }
+
+    #[async_trait]
+    impl DaemonClient for FakeDaemonClient {
+        async fn health(&self) -> Option<HealthResponse> {
+            *self.health_call_count.lock().unwrap() += 1;
+            self.health_response.lock().unwrap().clone()
+        }
+
+        async fn generate(&self, _body: &GenerateBody) -> Result<(), String> {
+            let mut count = self.generate_call_count.lock().unwrap();
+            let results = self.generate_results.lock().unwrap();
+            let idx = *count;
+            *count += 1;
+            if idx < results.len() {
+                results[idx].clone()
+            } else {
+                panic!("FakeDaemonClient: generate called more times than results provided (call {idx})");
+            }
+        }
+
+        async fn shutdown(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// Fake DaemonLauncher para testes.
+    struct FakeDaemonLauncher {
+        start_call_count: Mutex<usize>,
+        kill_call_count: Mutex<usize>,
+        fail_start: bool,
+    }
+
+    impl FakeDaemonLauncher {
+        fn new() -> Self {
+            Self {
+                start_call_count: Mutex::new(0),
+                kill_call_count: Mutex::new(0),
+                fail_start: false,
+            }
+        }
+
+        fn with_fail_start() -> Self {
+            Self {
+                start_call_count: Mutex::new(0),
+                kill_call_count: Mutex::new(0),
+                fail_start: true,
+            }
+        }
+
+        fn start_calls(&self) -> usize {
+            *self.start_call_count.lock().unwrap()
+        }
+
+        fn kill_calls(&self) -> usize {
+            *self.kill_call_count.lock().unwrap()
+        }
+    }
+
+    #[async_trait]
+    impl DaemonLauncher for FakeDaemonLauncher {
+        async fn start(&self) -> Result<String, String> {
+            *self.start_call_count.lock().unwrap() += 1;
+            if self.fail_start {
+                Err("docker run daemon failed".to_string())
+            } else {
+                Ok("http://localhost:8766".to_string())
+            }
+        }
+
+        async fn kill(&self) -> Result<(), String> {
+            *self.kill_call_count.lock().unwrap() += 1;
+            Ok(())
+        }
+    }
+
+    // -- G.4 test 1: daemon_disabled_one_shot_intacto --
+    /// DIFFUSION_DAEMON_ENABLED=0 → path one-shot exatamente igual ao comportamento legado.
+    #[tokio::test]
+    async fn daemon_disabled_one_shot_intacto() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let mut dispatch = make_dispatch("job-daemon-off-001", "diffusion");
+        dispatch.mode = "generate".to_string();
+        dispatch.package_ref = None;
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let mut output_files = HashMap::new();
+        output_files.insert(
+            "generated.png".to_string(),
+            b"fake png image bytes".to_vec(),
+        );
+        create_fake_outputs(tmp.path(), "job-daemon-off-001", &output_files);
+
+        let result = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+            None, // daemon_state = None → one-shot
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "daemon disabled one-shot should succeed: {:?}",
+            result.err()
+        );
+
+        // Verifica subcomando: generate (one-shot)
+        let args = executor.last_args().unwrap();
+        assert_eq!(args[0], "generate");
+
+        // Verifica artefato coletado via glob: generated.png → kind "generated"
+        let artifacts = report.done_artifacts().unwrap();
+        let filenames: Vec<&str> = artifacts.iter().map(|a| a.path.as_str()).collect();
+        let kinds: Vec<&str> = artifacts.iter().map(|a| a.kind.as_str()).collect();
+        assert!(filenames.contains(&"generated.png"));
+        assert!(kinds.contains(&"generated"));
+    }
+
+    // -- G.4 test 2: glob_coleta_batch --
+    /// outputs com generated_0001.png/generated_0002.png/thumb_0001.jpg/thumb_0002.jpg/generation_meta.json
+    /// → 5 artefatos com kinds corretos.
+    #[tokio::test]
+    async fn glob_coleta_batch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let mut dispatch = make_dispatch("job-glob-batch-001", "diffusion");
+        dispatch.mode = "generate".to_string();
+        dispatch.package_ref = None;
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let mut output_files = HashMap::new();
+        output_files.insert("generated_0001.png".to_string(), b"png1".to_vec());
+        output_files.insert("generated_0002.png".to_string(), b"png2".to_vec());
+        output_files.insert("thumb_0001.jpg".to_string(), b"thumb1".to_vec());
+        output_files.insert("thumb_0002.jpg".to_string(), b"thumb2".to_vec());
+        output_files.insert("generation_meta.json".to_string(), b"{}".to_vec());
+        create_fake_outputs(tmp.path(), "job-glob-batch-001", &output_files);
+
+        let result = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+            None,
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "glob batch should succeed: {:?}",
+            result.err()
+        );
+
+        let artifacts = report.done_artifacts().unwrap();
+        assert_eq!(artifacts.len(), 5, "should collect 5 artifacts from glob");
+        let kinds: Vec<&str> = artifacts.iter().map(|a| a.kind.as_str()).collect();
+        assert!(kinds.contains(&"generated"), "should have 'generated' kind");
+        assert!(
+            kinds.contains(&"generated_thumb"),
+            "should have 'generated_thumb' kind"
+        );
+        assert!(
+            kinds.contains(&"generated_meta"),
+            "should have 'generated_meta' kind"
+        );
+    }
+
+    // -- G.4 test 3: glob_casa_generated_png_legado --
+    /// outputs com apenas generated.png → artefato kind "generated" (retrocompat).
+    #[tokio::test]
+    async fn glob_casa_generated_png_legado() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let mut dispatch = make_dispatch("job-glob-legado-001", "diffusion");
+        dispatch.mode = "generate".to_string();
+        dispatch.package_ref = None;
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let mut output_files = HashMap::new();
+        output_files.insert("generated.png".to_string(), b"legacy png".to_vec());
+        create_fake_outputs(tmp.path(), "job-glob-legado-001", &output_files);
+
+        let result = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+            None,
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "legacy generated.png should succeed: {:?}",
+            result.err()
+        );
+
+        let artifacts = report.done_artifacts().unwrap();
+        assert_eq!(artifacts.len(), 1, "should collect exactly 1 artifact");
+        assert_eq!(artifacts[0].path, "generated.png");
+        assert_eq!(artifacts[0].kind, "generated");
+    }
+
+    // -- G.4 test 3b: glob_dedup_generated_png ---
+    /// outputs com generated.png E generated_0001.png → só coleta generated_0001.png
+    /// (generated.png é symlink legado, pula quando existir numerado).
+    #[tokio::test]
+    async fn glob_dedup_generated_png() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let mut dispatch = make_dispatch("job-glob-dedup-001", "diffusion");
+        dispatch.mode = "generate".to_string();
+        dispatch.package_ref = None;
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let mut output_files = HashMap::new();
+        output_files.insert("generated.png".to_string(), b"legacy symlink".to_vec());
+        output_files.insert("generated_0001.png".to_string(), b"real png".to_vec());
+        create_fake_outputs(tmp.path(), "job-glob-dedup-001", &output_files);
+
+        let result = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+            None,
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "glob dedup should succeed: {:?}",
+            result.err()
+        );
+
+        let artifacts = report.done_artifacts().unwrap();
+        let filenames: Vec<&str> = artifacts.iter().map(|a| a.path.as_str()).collect();
+        // generated_0001.png coletado, generated.png PULADO
+        assert!(
+            filenames.contains(&"generated_0001.png"),
+            "should collect numbered file"
+        );
+        assert!(
+            !filenames.contains(&"generated.png"),
+            "should NOT collect generated.png when numbered exists"
+        );
+    }
+
+    // -- G.4 test 4: daemon_hot_path_sem_docker_run --
+    /// DIFFUSION_DAEMON_ENABLED=1 + fake launcher/client → POST /generate chamado,
+    /// executor one-shot NÃO chamado, artefatos reportados.
+    #[tokio::test]
+    async fn daemon_hot_path_sem_docker_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let mut dispatch = make_dispatch("job-daemon-hot-001", "diffusion");
+        dispatch.mode = "generate".to_string();
+        dispatch.package_ref = None;
+        dispatch.config_yaml =
+            Some("base_model: flux-2-klein-4b\noutput_path: {output_path}".to_string());
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let client = Arc::new(FakeDaemonClient::new());
+        let launcher = Arc::new(FakeDaemonLauncher::new());
+        let daemon_state = Arc::new(DaemonState::new(
+            "hephaestus/trainer-difusao:local",
+            8766,
+            600,
+            client.clone() as Arc<dyn DaemonClient>,
+            launcher.clone() as Arc<dyn DaemonLauncher>,
+        ));
+        daemon_state.set_running(true, Some("http://localhost:8766".to_string()));
+
+        // POST /generate: retorna Ok
+        client.set_generate_results(vec![Ok(())]);
+
+        // Cria artefatos que o daemon "produziria"
+        let mut output_files = HashMap::new();
+        output_files.insert("generated_0001.png".to_string(), b"daemon png".to_vec());
+        output_files.insert("generation_meta.json".to_string(), b"{}".to_vec());
+        create_fake_outputs(tmp.path(), "job-daemon-hot-001", &output_files);
+
+        let result = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+            Some(&daemon_state),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "daemon hot path should succeed: {:?}",
+            result.err()
+        );
+
+        // POST /generate foi chamado
+        assert_eq!(
+            client.generate_calls(),
+            1,
+            "daemon generate should be called once"
+        );
+
+        // Executor one-shot NÃO foi chamado
+        assert!(
+            executor.last_args().is_none(),
+            "one-shot executor should NOT be called"
+        );
+
+        // Artefatos coletados via glob
+        let artifacts = report.done_artifacts().unwrap();
+        let filenames: Vec<&str> = artifacts.iter().map(|a| a.path.as_str()).collect();
+        assert!(filenames.contains(&"generated_0001.png"));
+        assert!(filenames.contains(&"generation_meta.json"));
+    }
+
+    // -- G.4 test 5: daemon_reload_quando_spec_muda --
+    /// 2 jobs sequenciais com specs diferentes → client vê 2 POST /generate e
+    /// health foi consultada entre eles; spec igual → ainda 2 posts.
+    /// Testa apenas que o orchestrator NÃO reinicia o launcher entre jobs da mesma spec.
+    #[tokio::test]
+    async fn daemon_reload_quando_spec_muda() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+
+        let client = Arc::new(FakeDaemonClient::new());
+        let launcher = Arc::new(FakeDaemonLauncher::new());
+        let daemon_state = Arc::new(DaemonState::new(
+            "hephaestus/trainer-difusao:local",
+            8766,
+            600,
+            client.clone() as Arc<dyn DaemonClient>,
+            launcher.clone() as Arc<dyn DaemonLauncher>,
+        ));
+        daemon_state.set_running(true, Some("http://localhost:8766".to_string()));
+
+        // POST /generate: 2 Ok (1 por job)
+        client.set_generate_results(vec![Ok(()), Ok(())]);
+
+        // Job 1
+        let mut dispatch1 = make_dispatch("job-spec-001", "diffusion");
+        dispatch1.mode = "generate".to_string();
+        dispatch1.package_ref = None;
+        dispatch1.config_yaml =
+            Some("base_model: flux-2-klein-4b\noutput_path: {output_path}".to_string());
+        dispatch1.workdir = tmp.path().to_str().unwrap().to_string();
+        let active_jobs1 = new_active_jobs();
+
+        let mut output_files1 = HashMap::new();
+        output_files1.insert("generated.png".to_string(), b"img1".to_vec());
+        create_fake_outputs(tmp.path(), "job-spec-001", &output_files1);
+
+        let result1 = run_job_inner(
+            &dispatch1,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs1,
+            None,
+            false,
+            Some(&daemon_state),
+        )
+        .await;
+        assert!(result1.is_ok(), "job 1 should succeed: {:?}", result1.err());
+
+        let health_after_job1 = client.health_calls();
+        let gen_after_job1 = client.generate_calls();
+        let start_after_job1 = launcher.start_calls();
+
+        // Job 2 (mesma spec)
+        let mut dispatch2 = make_dispatch("job-spec-002", "diffusion");
+        dispatch2.mode = "generate".to_string();
+        dispatch2.package_ref = None;
+        dispatch2.config_yaml =
+            Some("base_model: flux-2-klein-4b\noutput_path: {output_path}".to_string());
+        dispatch2.workdir = tmp.path().to_str().unwrap().to_string();
+        let active_jobs2 = new_active_jobs();
+
+        let mut output_files2 = HashMap::new();
+        output_files2.insert("generated.png".to_string(), b"img2".to_vec());
+        create_fake_outputs(tmp.path(), "job-spec-002", &output_files2);
+
+        let result2 = run_job_inner(
+            &dispatch2,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs2,
+            None,
+            false,
+            Some(&daemon_state),
+        )
+        .await;
+        assert!(result2.is_ok(), "job 2 should succeed: {:?}", result2.err());
+
+        // 2 generates chamados
+        assert_eq!(
+            client.generate_calls(),
+            gen_after_job1 + 1,
+            "should have 2 generate calls total"
+        );
+        // Health consultada (ensure_daemon_ready consulta health)
+        assert!(
+            client.health_calls() > health_after_job1,
+            "health should be consulted between jobs"
+        );
+        // Launcher NÃO reiniciado (daemon já está rodando)
+        assert_eq!(
+            launcher.start_calls(),
+            start_after_job1,
+            "launcher should NOT be called again for same spec"
+        );
+    }
+
+    // -- G.4 test 6: daemon_falha_honesta --
+    /// Launcher falha ao subir / health timeout → job failed com erro claro.
+    #[tokio::test]
+    async fn daemon_falha_honesta() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let mut dispatch = make_dispatch("job-daemon-fail-001", "diffusion");
+        dispatch.mode = "generate".to_string();
+        dispatch.package_ref = None;
+        dispatch.config_yaml =
+            Some("base_model: flux-2-klein-4b\noutput_path: {output_path}".to_string());
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let client = Arc::new(FakeDaemonClient::new());
+        let launcher = Arc::new(FakeDaemonLauncher::with_fail_start()); // falha ao iniciar
+                                                                        // Daemon NÃO está rodando — launcher vai falhar
+
+        // Usa run_job (outer) para testar o caminho completo de falha com report
+        run_job(
+            dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            active_jobs,
+            None,
+            false,
+            Some(Arc::new(DaemonState::new(
+                "hephaestus/trainer-difusao:local",
+                8766,
+                600,
+                client.clone() as Arc<dyn DaemonClient>,
+                launcher.clone() as Arc<dyn DaemonLauncher>,
+            ))),
+        )
+        .await;
+
+        // Executor nunca chamado
+        assert!(executor.last_args().is_none());
+
+        // Reports incluem preparing e failed (via run_job outer)
+        let statuses = report.statuses();
+        assert!(statuses.contains(&"preparing".to_string()));
+        assert!(statuses.contains(&"failed".to_string()));
+    }
+
+    // -- G.4 test 7: 409 daemon_busy --
+    /// Client fake responde 409 2x e depois 200 → job ok;
+    /// 3x → job failed honesto.
+    #[tokio::test]
+    async fn daemon_busy_retry_succeeds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let mut dispatch = make_dispatch("job-busy-001", "diffusion");
+        dispatch.mode = "generate".to_string();
+        dispatch.package_ref = None;
+        dispatch.config_yaml =
+            Some("base_model: flux-2-klein-4b\noutput_path: {output_path}".to_string());
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let client = Arc::new(FakeDaemonClient::new());
+        // 409, 409, 200
+        client.set_generate_results(vec![
+            Err("busy".to_string()),
+            Err("busy".to_string()),
+            Ok(()),
+        ]);
+
+        let launcher = Arc::new(FakeDaemonLauncher::new());
+        let daemon_state = Arc::new(DaemonState::new(
+            "hephaestus/trainer-difusao:local",
+            8766,
+            600,
+            client.clone() as Arc<dyn DaemonClient>,
+            launcher.clone() as Arc<dyn DaemonLauncher>,
+        ));
+        daemon_state.set_running(true, Some("http://localhost:8766".to_string()));
+
+        let mut output_files = HashMap::new();
+        output_files.insert("generated.png".to_string(), b"busy ok".to_vec());
+        create_fake_outputs(tmp.path(), "job-busy-001", &output_files);
+
+        let result = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+            Some(&daemon_state),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "busy retry should eventually succeed: {:?}",
+            result.err()
+        );
+        assert_eq!(
+            client.generate_calls(),
+            3,
+            "should have retried 3 times total"
+        );
+    }
+
+    #[tokio::test]
+    async fn daemon_busy_exhausted_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let mut dispatch = make_dispatch("job-busy-002", "diffusion");
+        dispatch.mode = "generate".to_string();
+        dispatch.package_ref = None;
+        dispatch.config_yaml =
+            Some("base_model: flux-2-klein-4b\noutput_path: {output_path}".to_string());
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let client = Arc::new(FakeDaemonClient::new());
+        // 409, 409, 409 (3x busy → exhausted)
+        client.set_generate_results(vec![
+            Err("busy".to_string()),
+            Err("busy".to_string()),
+            Err("busy".to_string()),
+        ]);
+
+        let launcher = Arc::new(FakeDaemonLauncher::new());
+        let daemon_state = Arc::new(DaemonState::new(
+            "hephaestus/trainer-difusao:local",
+            8766,
+            600,
+            client.clone() as Arc<dyn DaemonClient>,
+            launcher.clone() as Arc<dyn DaemonLauncher>,
+        ));
+        daemon_state.set_running(true, Some("http://localhost:8766".to_string()));
+
+        let result = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+            Some(&daemon_state),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(PipelineError::DaemonBusy)),
+            "should fail with DaemonBusy after 3 retries: {:?}",
+            result
+        );
+    }
+
+    // -- G.4 test 8: staging_loras --
+    /// dispatch com 2 loras + custom → arquivos staged no workdir e config.yaml reescrito.
+    #[tokio::test]
+    async fn staging_loras() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // FakeS3WithWeights serve weights_bytes para models/ e artifacts/.
+        // Todos os downloads recebem o mesmo conteúdo.
+        let weights_bytes = b"fake weights data for all refs";
+        let weights_md5 = compute_file_md5_bytes(weights_bytes);
+        let s3 = Arc::new(FakeS3WithWeights::new(weights_bytes.to_vec()));
+
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_dispatch_with_valid_md5("job-loras-001", "diffusion", &zip_path);
+        dispatch.mode = "generate".to_string();
+        dispatch.package_ref = None; // Sem package para generate
+        dispatch.config_yaml = Some(
+            "base_model: flux-2-klein-4b\noutput_path: {output_path}\nlora_0: {lora_path_0}\nlora_1: {lora_path_1}\ncustom: {custom_checkpoint_path}".to_string()
+        );
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        dispatch.loras = vec![
+            LoraRefStage {
+                s3_key: "models/lora/abc/lora_a.safetensors".to_string(),
+                md5: weights_md5.clone(),
+                scale: 0.8,
+            },
+            LoraRefStage {
+                s3_key: "models/lora/def/lora_b.safetensors".to_string(),
+                md5: weights_md5.clone(),
+                scale: 0.5,
+            },
+        ];
+        dispatch.custom_checkpoint = Some(WeightRef {
+            s3_key: "models/checkpoint/xyz/custom.safetensors".to_string(),
+            md5: weights_md5.clone(), // mesmo conteúdo do FakeS3WithWeights
+        });
+
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        // Pre-cria outputs
+        let outputs = tmp.path().join("outputs/job-loras-001");
+        std::fs::create_dir_all(&outputs).unwrap();
+
+        let result = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+            None,
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "staging loras should succeed: {:?}",
+            result.err()
+        );
+
+        // Verifica staging: 2 LoRAs + 1 custom
+        let weights_dir = tmp.path().join("outputs/job-loras-001/weights");
+        assert!(
+            weights_dir.join("lora_0.safetensors").exists(),
+            "lora_0 should be staged"
+        );
+        assert!(
+            weights_dir.join("lora_1.safetensors").exists(),
+            "lora_1 should be staged"
+        );
+        assert!(
+            weights_dir.join("custom.safetensors").exists(),
+            "custom should be staged"
+        );
+
+        // Verifica config.yaml reescrito com caminhos staged
+        let config_content = std::fs::read_to_string(outputs.join("config.yaml")).unwrap();
+        assert!(
+            config_content.contains("/outputs/job-loras-001/weights/lora_0.safetensors"),
+            "config should have lora_path_0 replaced: {config_content}"
+        );
+        assert!(
+            config_content.contains("/outputs/job-loras-001/weights/lora_1.safetensors"),
+            "config should have lora_path_1 replaced: {config_content}"
+        );
+        assert!(
+            config_content.contains("/outputs/job-loras-001/weights/custom.safetensors"),
+            "config should have custom_checkpoint_path replaced: {config_content}"
+        );
+        assert!(
+            !config_content.contains("{lora_path_0}"),
+            "config should not contain literal {{lora_path_0}}"
+        );
+        assert!(
+            !config_content.contains("{custom_checkpoint_path}"),
+            "config should not contain literal {{custom_checkpoint_path}}"
+        );
+    }
+
+    // -- G.4 test 9: preempção --
+    /// daemon idle + job treino → kill chamado antes do dispatch de treino.
+    #[tokio::test]
+    async fn preemption_kills_idle_daemon_before_training() {
+        let client = Arc::new(FakeDaemonClient::new());
+        let launcher = Arc::new(FakeDaemonLauncher::new());
+        let daemon_state = Arc::new(DaemonState::new(
+            "hephaestus/trainer-difusao:local",
+            8766,
+            600,
+            client.clone() as Arc<dyn DaemonClient>,
+            launcher.clone() as Arc<dyn DaemonLauncher>,
+        ));
+        daemon_state.set_running(true, Some("http://localhost:8766".to_string()));
+        // Simula daemon idle: last_used há 600s (TTL/2 = 300s)
+        *daemon_state.last_used.lock().unwrap() = Instant::now() - Duration::from_secs(600);
+
+        // Health diz busy=false
+        client.set_health(Some(HealthResponse {
+            ok: true,
+            loaded_spec: None,
+            busy: false,
+            _extra: Default::default(),
+        }));
+
+        // Chama preempção diretamente
+        daemon::maybe_preempt_daemon(&daemon_state).await;
+
+        // Verifica que kill foi chamado
+        assert_eq!(
+            launcher.kill_calls(),
+            1,
+            "daemon should be killed before training"
+        );
+        assert!(
+            !daemon_state.is_running(),
+            "daemon should not be running after preemption"
+        );
+    }
+
+    #[tokio::test]
+    async fn preemption_skips_busy_daemon() {
+        let client = Arc::new(FakeDaemonClient::new());
+        let launcher = Arc::new(FakeDaemonLauncher::new());
+        let daemon_state = Arc::new(DaemonState::new(
+            "hephaestus/trainer-difusao:local",
+            8766,
+            600,
+            client.clone() as Arc<dyn DaemonClient>,
+            launcher.clone() as Arc<dyn DaemonLauncher>,
+        ));
+        daemon_state.set_running(true, Some("http://localhost:8766".to_string()));
+        *daemon_state.last_used.lock().unwrap() = Instant::now() - Duration::from_secs(600);
+
+        // Health diz busy=true
+        client.set_health(Some(HealthResponse {
+            ok: true,
+            loaded_spec: None,
+            busy: true,
+            _extra: Default::default(),
+        }));
+
+        daemon::maybe_preempt_daemon(&daemon_state).await;
+
+        // Kill NÃO chamado (daemon busy)
+        assert_eq!(launcher.kill_calls(), 0, "busy daemon should NOT be killed");
+        assert!(daemon_state.is_running(), "daemon should still be running");
+    }
+
+    #[tokio::test]
+    async fn preemption_noop_when_not_running() {
+        let client = Arc::new(FakeDaemonClient::new());
+        let launcher = Arc::new(FakeDaemonLauncher::new());
+        let daemon_state = Arc::new(DaemonState::new(
+            "hephaestus/trainer-difusao:local",
+            8766,
+            600,
+            client.clone() as Arc<dyn DaemonClient>,
+            launcher.clone() as Arc<dyn DaemonLauncher>,
+        ));
+        // Daemon não está rodando
+
+        daemon::maybe_preempt_daemon(&daemon_state).await;
+
+        assert_eq!(launcher.kill_calls(), 0, "should not kill when not running");
+        assert_eq!(
+            client.health_calls(),
+            0,
+            "should not check health when not running"
+        );
     }
 }

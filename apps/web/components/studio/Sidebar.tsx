@@ -19,6 +19,7 @@ import {
   IconServer,
   IconSettings,
   IconShield,
+  IconSparkles,
   IconTarget,
   IconX,
 } from "@/components/icons";
@@ -235,10 +236,18 @@ export default function Sidebar({
           isAvailable: false,
         },
         {
+          id: "geracao",
+          label: "Geração",
+          href: "/geracao",
+          icon: IconSparkles,
+          badge: "Difusão",
+          isAvailable: true,
+        },
+        {
           id: "playground",
-          label: "Playground",
+          label: "Detecção YOLO",
           href: "/playground",
-          icon: IconPlay,
+          icon: IconTarget,
           isAvailable: true,
         },
         {

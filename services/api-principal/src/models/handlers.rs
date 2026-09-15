@@ -27,7 +27,7 @@ use crate::state::AppState;
 // Wire types (camelCase — ADR-0002 D1)
 // ---------------------------------------------------------------------------
 
-/// Resposta de upload/download de modelo (D6 ADR-0012).
+/// Resposta de upload/download de modelo (D6 ADR-0012, ADR-0023 D4).
 #[derive(Debug, serde::Serialize)]
 pub struct ModelResponse {
     pub id: String,
@@ -44,6 +44,10 @@ pub struct ModelResponse {
     pub job_id: Option<String>,
     #[serde(rename = "createdAt")]
     pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arch: Option<String>,
 }
 
 /// Body do download (camelCase, deny_unknown_fields — D4).
@@ -148,13 +152,17 @@ async fn resolve_and_check_private(hostname: &str) -> Result<(), Response> {
 // Handlers
 // ---------------------------------------------------------------------------
 
-/// POST /api/models/upload — multipart `file` + form `engine` + `name?` (D3).
+/// POST /api/models/upload — multipart `file` + form `engine` + `name?` + `kind?` + `arch?` (D3/D4).
 ///
-/// Padrão 3b: DefaultBodyLimit 2 GiB+8 MiB, spool em tempfile, magic PK,
+/// Padrão 3b: DefaultBodyLimit 8 GiB+8 MiB, spool em tempfile, magic PK,
 /// md5 hex, PUT S3, POST /internal/models, compensação delete se INSERT falhar.
+/// Para `.safetensors` com engine=diffusion: sniff do header para classificar
+/// kind+arch (ADR-0023 D4).
 pub async fn upload_model(State(state): State<AppState>, mut multipart: Multipart) -> Response {
     let mut engine: Option<String> = None;
     let mut name: Option<String> = None;
+    let mut kind_hint: Option<String> = None;
+    let mut arch_hint: Option<String> = None;
     let mut file_field: Option<(String, tempfile::NamedTempFile)> = None;
 
     // Loop de fields do multipart.
@@ -241,6 +249,18 @@ pub async fn upload_model(State(state): State<AppState>, mut multipart: Multipar
                 let val = field.text().await.unwrap_or_default();
                 name = Some(val);
             }
+            "kind" => {
+                let val = field.text().await.unwrap_or_default();
+                if !val.is_empty() {
+                    kind_hint = Some(val);
+                }
+            }
+            "arch" => {
+                let val = field.text().await.unwrap_or_default();
+                if !val.is_empty() {
+                    arch_hint = Some(val);
+                }
+            }
             _ => {
                 // Ignora campos desconhecidos.
             }
@@ -266,25 +286,25 @@ pub async fn upload_model(State(state): State<AppState>, mut multipart: Multipar
         Err(validate::UploadError::InvalidName) => return invalid_request(),
     };
 
-    // Validação de nome fornecido pelo usuário (se diferente do default).
-    let final_name = if let Some(ref n) = name {
-        validate::sanitize_model_name(n)
-    } else {
-        // Usa o nome do arquivo do form, preservando a extensão (.safetensors ou .pt).
-        let lower_raw = raw_filename.to_lowercase();
-        let ext = if lower_raw.ends_with(".safetensors") {
-            ".safetensors"
-        } else {
-            ".pt"
-        };
-        let stem = raw_filename.strip_suffix(ext).unwrap_or("model");
-        format!("{}{}", validate::sanitize_model_name(stem), ext)
+    // Validação de extensão: vem do arquivo bruto (multipart filename), não do display name.
+    let file_ext = match validate::validate_raw_filename(&raw_filename) {
+        Ok(ext) => ext,
+        Err(_) => return invalid_request(),
     };
 
-    let lower_final = final_name.to_lowercase();
-    if final_name.is_empty()
-        || (!lower_final.ends_with(".pt") && !lower_final.ends_with(".safetensors"))
-    {
+    // Validação de nome fornecido pelo usuário (se diferente do default).
+    // A extensão do arquivo é anexada automaticamente; se o usuário já digitou
+    // a extensão, não duplica.
+    let final_name = {
+        let sanitized = validate::sanitize_model_name(name.as_deref().unwrap_or(&validation.name));
+        if sanitized.to_lowercase().ends_with(&file_ext) {
+            sanitized
+        } else {
+            format!("{sanitized}{file_ext}")
+        }
+    };
+
+    if final_name.is_empty() {
         return invalid_request();
     }
 
@@ -309,6 +329,63 @@ pub async fn upload_model(State(state): State<AppState>, mut multipart: Multipar
 
     if !validate::validate_magic(&head, &final_name) {
         return invalid_request();
+    }
+
+    // Sniff de safetensors para engine=diffusion (ADR-0023 D4).
+    let mut resolved_kind: Option<String> = None;
+    let mut resolved_arch: Option<String> = None;
+    let lower_final_name = final_name.to_lowercase();
+    if lower_final_name.ends_with(".safetensors") && engine == "diffusion" {
+        // Lê o header do safetensors: 8 bytes LE + JSON.
+        let header_data = {
+            use tokio::io::AsyncReadExt;
+            let mut f = match tokio::fs::File::open(tmp_file.path()).await {
+                Ok(f) => f,
+                Err(_) => return invalid_request(),
+            };
+            let mut buf = vec![0u8; 8 + validate::SAFETENSORS_HEADER_MAX];
+            let mut n = 0usize;
+            while n < buf.len() {
+                match f.read(&mut buf[n..]).await {
+                    Ok(0) => break,
+                    Ok(k) => n += k,
+                    Err(_) => break,
+                }
+            }
+            buf[..n].to_vec()
+        };
+
+        let sniff_result = match validate::parse_safetensors_header(&header_data) {
+            Ok(map) => validate::sniff_safetensors(&map),
+            Err(e) => Err(e),
+        };
+
+        match validate::resolve_kind_arch(sniff_result, kind_hint.as_deref(), arch_hint.as_deref())
+        {
+            Ok((kind, arch)) => {
+                resolved_kind = Some(kind);
+                // LoRA pode ter arch vazio → persistir como None (não Some("")).
+                resolved_arch = if arch.is_empty() { None } else { Some(arch) };
+            }
+            Err(msg) => {
+                return err(StatusCode::BAD_REQUEST, "invalid_request", msg);
+            }
+        }
+    } else if engine == "diffusion" {
+        // Para .pt com engine=diffusion, hints são aceitos diretamente.
+        if let (Some(k), Some(a)) = (&kind_hint, &arch_hint) {
+            if !validate::ALLOWED_KINDS.contains(&k.as_str())
+                || !validate::ALLOWED_ARCHS.contains(&a.as_str())
+            {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "invalid kind or arch",
+                );
+            }
+            resolved_kind = Some(k.clone());
+            resolved_arch = Some(a.clone());
+        }
     }
 
     // md5 do arquivo.
@@ -336,7 +413,7 @@ pub async fn upload_model(State(state): State<AppState>, mut multipart: Multipar
     }
 
     // POST /internal/models (chama o manager).
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "id": model_id,
         "engine": validation.engine,
         "name": final_name,
@@ -347,6 +424,13 @@ pub async fn upload_model(State(state): State<AppState>, mut multipart: Multipar
         "bytes": bytes,
         "job_id": null,
     });
+    // Adiciona kind+arch se sniff/hints resolveram (ADR-0023 D4).
+    if let Some(k) = &resolved_kind {
+        payload["kind"] = serde_json::json!(k);
+    }
+    if let Some(a) = &resolved_arch {
+        payload["arch"] = serde_json::json!(a);
+    }
 
     match state.manager.create_model(&payload).await {
         Ok(resp) => {
@@ -368,6 +452,8 @@ pub async fn upload_model(State(state): State<AppState>, mut multipart: Multipar
                     url,
                     job_id: resp.job_id,
                     created_at: resp.created_at,
+                    kind: resp.kind,
+                    arch: resp.arch,
                 }),
             )
                 .into_response()
@@ -377,14 +463,24 @@ pub async fn upload_model(State(state): State<AppState>, mut multipart: Multipar
             let _ = state.storage.delete(&s3_key).await;
             err(StatusCode::CONFLICT, "conflict", "model already exists")
         }
-        Err(ManagerError::InvalidRequest(_)) => {
+        Err(ManagerError::InvalidRequest(msg)) => {
             // Compensação: delete do objeto S3 (D1).
             let _ = state.storage.delete(&s3_key).await;
-            err(
+            tracing::warn!("upload_model: manager invalid_request: {msg}");
+            // Propaga a mensagem específica do manager no envelope.
+            #[derive(serde::Serialize)]
+            struct ErrorBody {
+                code: &'static str,
+                message: String,
+            }
+            (
                 StatusCode::BAD_REQUEST,
-                "invalid_request",
-                MSG_INVALID_REQUEST,
+                Json(ErrorBody {
+                    code: "invalid_request",
+                    message: msg,
+                }),
             )
+                .into_response()
         }
         Err(ManagerError::Unavailable(_)) => {
             // Compensação: delete do objeto S3 (D1).
@@ -450,25 +546,24 @@ pub async fn download_model(
         return resp;
     }
 
-    // Nome final: `name` do body ou basename sanitizado da URL.
-    let final_name = match body.name.as_deref() {
-        Some(n) => {
-            let s = validate::sanitize_model_name(n);
-            let lower = s.to_lowercase();
-            if s.is_empty() || (!lower.ends_with(".pt") && !lower.ends_with(".safetensors")) {
-                return invalid_request();
-            }
-            s
-        }
-        None => {
-            let b = basename_from_url(&body.url).unwrap_or_else(|| "model.pt".to_string());
-            let lower = b.to_lowercase();
-            if !lower.ends_with(".pt") && !lower.ends_with(".safetensors") {
-                return invalid_request();
-            }
-            b
+    // Nome final: extensão vem do basename da URL; display name do body.name é opcional.
+    let url_basename = basename_from_url(&body.url).unwrap_or_else(|| "model.pt".to_string());
+    let file_ext = match validate::validate_raw_filename(&url_basename) {
+        Ok(ext) => ext,
+        Err(_) => return invalid_request(),
+    };
+    let final_name = {
+        let sanitized =
+            validate::sanitize_model_name(body.name.as_deref().unwrap_or(&url_basename));
+        if sanitized.to_lowercase().ends_with(&file_ext) {
+            sanitized
+        } else {
+            format!("{sanitized}{file_ext}")
         }
     };
+    if final_name.is_empty() {
+        return invalid_request();
+    }
 
     // Baixar com reqwest: stream para tempdir, cap 2 GiB, timeouts.
     let tmp_dir = match tempfile::tempdir() {
@@ -702,6 +797,8 @@ pub async fn download_model(
                     url,
                     job_id: resp.job_id,
                     created_at: resp.created_at,
+                    kind: resp.kind,
+                    arch: resp.arch,
                 }),
             )
                 .into_response()
@@ -710,13 +807,22 @@ pub async fn download_model(
             let _ = state.storage.delete(&s3_key).await;
             err(StatusCode::CONFLICT, "conflict", "model already exists")
         }
-        Err(ManagerError::InvalidRequest(_)) => {
+        Err(ManagerError::InvalidRequest(msg)) => {
             let _ = state.storage.delete(&s3_key).await;
-            err(
+            tracing::warn!("download_model: manager invalid_request: {msg}");
+            #[derive(serde::Serialize)]
+            struct ErrorBody {
+                code: &'static str,
+                message: String,
+            }
+            (
                 StatusCode::BAD_REQUEST,
-                "invalid_request",
-                MSG_INVALID_REQUEST,
+                Json(ErrorBody {
+                    code: "invalid_request",
+                    message: msg,
+                }),
             )
+                .into_response()
         }
         Err(ManagerError::Unavailable(_)) => {
             let _ = state.storage.delete(&s3_key).await;
@@ -832,6 +938,8 @@ pub async fn update_model(
         url,
         job_id: m.job_id,
         created_at: m.created_at,
+        kind: m.kind,
+        arch: m.arch,
     };
 
     (StatusCode::OK, Json(resp)).into_response()
@@ -899,6 +1007,8 @@ mod tests {
             url: None,
             job_id: None,
             created_at: "2026-09-10T12:00:00Z".into(),
+            kind: None,
+            arch: None,
         }
     }
 
@@ -918,9 +1028,26 @@ mod tests {
     }
 
     #[test]
-    fn validate_upload_ext_pth_400() {
+    fn validate_upload_name_without_ext_ok() {
+        // Display name sem extensão é aceito — extensão vem do arquivo.
+        let v = validate::validate_upload("yolo", Some("meu lora v2")).unwrap();
+        assert_eq!(v.engine, "yolo");
+        assert_eq!(v.name, "meu_lora_v2");
+    }
+
+    #[test]
+    fn validate_raw_filename_ext_ok() {
+        assert_eq!(validate::validate_raw_filename("model.pt").unwrap(), ".pt");
         assert_eq!(
-            validate::validate_upload("yolo", Some("best.pth")),
+            validate::validate_raw_filename("model.safetensors").unwrap(),
+            ".safetensors"
+        );
+    }
+
+    #[test]
+    fn validate_raw_filename_pth_400() {
+        assert_eq!(
+            validate::validate_raw_filename("model.pth"),
             Err(validate::UploadError::InvalidExtension)
         );
     }
@@ -1008,9 +1135,56 @@ mod tests {
 
     #[test]
     fn download_name_not_pt_400() {
-        // name sem .pt deve falhar na validação.
-        let v = validate::validate_upload("yolo", Some("model.pth"));
-        assert!(v.is_err());
+        // raw filename sem extensão aceita deve falhar.
+        assert_eq!(
+            validate::validate_raw_filename("model.pth"),
+            Err(validate::UploadError::InvalidExtension)
+        );
+        assert_eq!(
+            validate::validate_raw_filename("model"),
+            Err(validate::UploadError::InvalidExtension)
+        );
+    }
+
+    // --- final_name logic tests (extensão sempre vem do arquivo) ---
+
+    #[test]
+    fn final_name_from_file_ext() {
+        // name "meu-lora" + arquivo x.safetensors → "meu-lora.safetensors"
+        let sanitized = validate::sanitize_model_name("meu-lora");
+        let file_ext = ".safetensors";
+        let final_name = if sanitized.to_lowercase().ends_with(file_ext) {
+            sanitized
+        } else {
+            format!("{sanitized}{file_ext}")
+        };
+        assert_eq!(final_name, "meu-lora.safetensors");
+    }
+
+    #[test]
+    fn final_name_no_duplicate_ext() {
+        // name "lora.safetensors" + arquivo y.safetensors → "lora.safetensors"
+        let sanitized = validate::sanitize_model_name("lora.safetensors");
+        let file_ext = ".safetensors";
+        let final_name = if sanitized.to_lowercase().ends_with(file_ext) {
+            sanitized
+        } else {
+            format!("{sanitized}{file_ext}")
+        };
+        assert_eq!(final_name, "lora.safetensors");
+    }
+
+    #[test]
+    fn final_name_empty_user_uses_file_ext() {
+        // name vazio (default "model") + arquivo model.pt → "model.pt"
+        let sanitized = validate::sanitize_model_name("model");
+        let file_ext = ".pt";
+        let final_name = if sanitized.to_lowercase().ends_with(file_ext) {
+            sanitized
+        } else {
+            format!("{sanitized}{file_ext}")
+        };
+        assert_eq!(final_name, "model.pt");
     }
 
     // --- Download handler tests (E1: allow-list via state) ---

@@ -53,11 +53,11 @@
 
 ## 4. Jobs, trainers sob demanda e cache
 
-- Tipos: `yolo_train | difusao_train | clip_train | autolabel | autotracker | download_model | playground`.
+- Tipos: `yolo_train | difusao_train | clip_train | autolabel | autotracker | download_model | playground | diffusion_generate`.
 - **Emenda Fatia J (ADR-0013):** a inferência YOLO real é implementada como **job na fila** (`kind='yolo_predict'`, `engine='yolo'`, `mode='predict'`), NÃO como o runner quente do §5. O módulo "Playground" da Sidebar ficou habilitado (badge Roadmap removido); `playground`/runners quentes continuam dívida (ADR-0013 D0/D7).
 - Ciclo: `queued → dispatched → preparing(env+dataset) → running → paused? → done|failed|cancelled`, com `POST /api/jobs/:id/{pause,abort}` + `POST /api/jobs/:id/resume`. **Fila central no manager** (posição + motivo `waiting_vram|waiting_slot` visíveis no front); orquestrador só executa o que recebe e reporta `vram_used/total` + heartbeat.
 - **Pause = checkpoint + libera VRAM** (não `docker pause`): `pause` pede `save_checkpoint`, derruba o trainer e mantém `last.ckpt`; `resume` recria do checkpoint. Sem checkpoint do engine, pause é recusado (`409 checkpoint_unsupported`) e só `abort` vale.
-- Orquestrador sobe **um container `trainer-<engine>-<jobid>` por job** a partir de imagens por engine (isola deps: ultralytics vs. diffusers/kohya vs. open_clip). Ao destruir o container, **cache persiste fora**: volumes `models/`, `datasets-cache/`, `outputs/` mapeados no host/remoto.
+- Orquestrador sobe **um container `trainer-<engine>-<jobid>` por job** a partir de imagens por engine (isola deps: ultralytics vs. diffusers/kohya vs. open_clip). **Exceção:** modo daemon de difusão (`DIFFUSION_DAEMON_ENABLED=1`) sobe 1 container `trainer-difusao-daemon` persistente por nó em vez de 1 por job; o daemon processa jobs `generate` sequencialmente via lock local (ADR-0023 D1). Ao destruir o container, **cache persiste fora**: volumes `models/`, `datasets-cache/`, `outputs/` mapeados no host/remoto.
 - **Imagens (decisão): uma por engine** (yolo, difusão, clip, autolabel/tracker, runner), **base no estável mais recente testado** (não pinar no 12.4/2.4.1 do protótipo; registrar a versão validada em `engines.yaml`), **build local no compose** (sem registry externo por enquanto; tags `hephaestus/trainer-<engine>:local`).
   - **Emenda G.7 (ADR-0010 D5):** para treino real @gpu, existe **`hephaestus/trainer-yolo:gpu`** — imagem separada (`engines/trainer-yolo/Dockerfile.gpu`) com base PyTorch 2.6.0+CUDA 12.4+cuDNN 9, ultralytics==8.3.253 pinado, `ENV ENGINE_MOCK=0` baked, e peso base `yolo11n.pt` baixado no build (~5MB). Construída no TrueNAS via `docker compose -p gpu --profile build build trainer-gpu`. A imagem `:local` continua mock stdlib pura e não é afetada.
   - **Emenda — AutoTracker v1 (ADR-0008 D2/D6):** o autotracker v1 (mock) reutiliza a imagem `trainer-yolo:local` via subcomando `autotrack` (`python -m trainer_yolo autotrack --config <config.yaml> --output <output_path>`), sem modelo real. Runner/imagem próprios (florence-2/qwen-vl, ADR-0008 D6) são fatia futura.
@@ -72,6 +72,7 @@
 - Lifecycle: sobe no primeiro uso → fica warm → desliga por (a) botão "Matar runner", (b) idle timeout configurável, (c) **preempção quando treino precisa de VRAM mínima e não há folga**. Front mostra `runner ativo · VRAM X GB · [Matar]` + toast quando preemptado.
 - **TTL (decisão): padrão 15 min** (`difusao: 10 min`, `yolo: 30 min`, `clip: 20 min`, sobrescrevível por ambiente). Contagem só com fila vazia e sem inferência ativa; front mostra countdown + aviso 2 min antes; qualquer uso reseta. Com pressão de VRAM o idle é morto na hora sem esperar o TTL.
 - Nunca dividir container trainer/runner: evita contaminação de deps e permite matar inferência sem tocar no treino.
+- **Emenda ADR-0023 (D1 — daemon quente de difusão):** o orquestrador mantém 1 daemon HTTP de inferência por nó para jobs `generate` (subcomando `serve` do trainer-difusao). O daemon sobe no 1º job `generate` despachado para o nó, mantém 1 pipeline carregado, e é matado por idle TTL (`DIFFUSION_DAEMON_IDLE_TTL_S`, default 600s) ou preempção (treino precisa de VRAM → mata daemon idle primeiro). `DIFFUSION_DAEMON_ENABLED=0` (default no compose mock) desabilita o daemon e cai no caminho one-shot existente (`docker run --rm`). **Parcialmente quitada:** a dívida dos runners quentes é quitada para difusão (daemon interno do orquestrador); a API pública `/runners/*` permanece dívida (§9 runners).
 
 ## 6. Gerência de VRAM — mínima por serviço/modelo (não global)
 
@@ -230,6 +231,17 @@ ws:       /ws/jobs/:id/logs?since_seq=, /ws/telemetry
   - **`POST /api/jobs/diffusion`** — body `{datasetId, baseModel, triggerWord?, epochs?, batchSize?, learningRate?, rank?, alpha?, weights?, orchestratorId?}` → 202 `SubmitJobResponse{jobId,status:"queued",queuePosition?}`. Validação: `baseModel` ∈ `{sdxl, flux, sd15}`, epochs 1..100, batchSize ∈ {1, 2, 4, 8}, lr 1e-6..0.01, rank/alpha 4..128. Erros: 400 `invalid_request`, 404 `not_found`, 409 `dataset_not_ready` (0 imagens ativas), 503 `queue_unavailable`. Job: `kind='diffusion_train'`, `engine='diffusion'`, `mode='train'`.
   - **Empacotamento `engine="diffusion"`:** gera pares `{stem}.webp` + `{stem}.txt`. Cada arquivo `.txt` contém a legenda da imagem consultada na tabela `captions`, opcionalmente prefixada por `triggerWord`. Se não houver caption, contém apenas o triggerWord ou vazio.
   - **Orquestrador e Manager:** orquestrador despacha subcomando `train --config --output` e coleta `adapter.safetensors` (`kind='model'`) e `metrics.jsonl` (`kind='metrics'`). O manager registra automaticamente o artefato `.safetensors` no catálogo canônico `models` com `engine='diffusion'`.
+- Nota Fatia Geração (ADR-0023, spec 0.25.0, `packages/contracts/openapi.yaml`):
+  - **`POST /api/jobs/diffusion/generate`** — body `{baseModel?|customModelId?, prompt, negativePrompt?, width?, height?, steps?, guidanceScale?, seed?, quantization?, distilled?, batchSize?, loras?, orchestratorId?}` → 202 `SubmitJobResponse{jobId,status:"queued",queuePosition?}`. `baseModel` e `customModelId` são **XOR** (exatamente um). `loras`: array ≤4 de `{modelId: uuid, scale: number 0..2}`. `weights`/`loraScale` marcados deprecated (400 se coexistirem com `loras`). `batchSize`: 1..8 (default 1). Validação: prompt ≤ 4000 chars, dimensões 256..2048, `customModelId` válido (row engine='diffusion', kind='checkpoint', arch ∈ {sdxl, sd15}). VRAM mínima por arch+quant: sd15→6; sdxl/flux: 4bit→8, 8bit→12, none→16. Job: `kind='diffusion_generate'`, `engine='diffusion'`, `mode='generate'`.
+  - Erros: 400 `invalid_request` (body malformado, XOR violado, `weights`+`loras` coexistentes, dimensões fora de domínio), 400 `unsupported_architecture` (custom arch fora de {sdxl, sd15}), 404 `not_found` (customModelId inexistente), 503 `queue_unavailable`.
+  - **Orquestrador e Manager (daemon):** modo daemon (`DIFFUSION_DAEMON_ENABLED=1`, default 0) sobe 1 HTTP daemon por nó no 1º job `generate`; idle TTL 600s; lock 1 job por vez; preempção mata daemon idle antes de treino. Fallback one-shot (`docker run --rm`) quando daemon desabilitado ou falho. Artefatos glob: `generated_*.png` (kind `generated`), `thumb_*.jpg` (kind `generated_thumb`), `generation_meta.json` (kind `generated_meta`).
+  - **Hook generations:** manager insere na tabela `generations` por imagem quando job `diffusion_generate` termina `done` com artefato `generated_meta` (idempotente via `ON CONFLICT (s3_key)`).
+  - **`GET /api/generations?limit(1..200,50)&offset&baseModel&quantization&deleted`** → 200 `GenerationList{items,total}`; `url`/`thumbUrl` presigned quando `S3_PUBLIC_ENDPOINT_URL`; 503 `queue_unavailable`.
+  - **`GET /api/generations/:id/data`** → 200 imagem (proxy via StoragePort); 404; 503.
+  - **`POST /api/generations/delete`** (body `GenerationIdsRequest{ids: uuid[], 1..100}`) → 204 soft-delete; 400; 503.
+  - **`POST /api/generations/export`** (body `GenerationIdsRequest`) → 200 `application/zip` stream; 400; 503.
+  - **Schemas novos:** `Generation{id,jobId,filename,url,thumbUrl,width,height,seed,prompt,negativePrompt?,params,createdAt}`, `GenerationList{items,total}`, `GenerationIdsRequest{ids}`, `LoraRef{modelId,scale}`.
+  - **`Model` (aditivo):** `kind: 'lora'|'checkpoint'|null`, `arch: 'flux-2-klein-4b'|'sdxl'|'sd15'|null` (migration 0011).
 - Nota Fatia 3a (ADR-0002 D1, casing): TODAS as chaves de body/query/response de `/api/*` são camelCase (o teste `json_property_names_are_camel_case` rejeita o resto). **Os nomes listados no §9 são colunas (§10) ou campos de transporte, não chaves JSON** — ex.: settings `{hfToken, …}` no wire vs colunas `hf_token` em `settings`; datasets `sizeBytes/imagesCount/lastModified` no wire vs colunas `size_bytes/images_count/updated_at`. A rota `PUT/GET /api/settings/keys` ainda **não está implementada**; as colunas de `settings` permanecem snake_case.
 - Nota Fatia 3b (ADR-0003, spec 0.3.0 — shapes reais em `services/api-principal/src/datasets/models.rs`, tabela de rotas ≡ `PROTECTED_ROUTES` em `src/auth/routes.rs`):
   ```
@@ -337,6 +349,8 @@ orchestrators(id UUID PK, name TEXT, endpoint TEXT UNIQUE, kind TEXT,     -- loc
 models(id UUID PK, engine TEXT NOT NULL CHECK (engine IN ('yolo','world','diffusion','clip')),
   name TEXT NOT NULL CHECK (char_length(name) BETWEEN 1 AND 255),
   model TEXT,                                              -- variante conhecida (treino); NULL p/ upload/download
+  kind TEXT NULL CHECK (kind IS NULL OR kind IN ('lora','checkpoint')),  -- só semântica para engine='diffusion' (ADR-0023 D4)
+  arch TEXT NULL CHECK (arch IS NULL OR arch IN ('flux-2-klein-4b','sdxl','sd15')),  -- checkpoint: arquitetura (ADR-0023 D4)
   s3_key TEXT NOT NULL UNIQUE,                             -- 'models/<engine>/<id>/<name>' | 'artifacts/<job_id>/<path>'
   source TEXT NOT NULL CHECK (source IN ('train','upload','download')),
   url TEXT,                                                -- fonte original do download; NULL p/ upload/train (transporte interno)
@@ -352,6 +366,8 @@ models(id UUID PK, engine TEXT NOT NULL CHECK (engine IN ('yolo','world','diffus
   -- Backfill na migration: INSERT..SELECT dos artefatos `kind='model' AND path LIKE '%best%'` de jobs `done` (idempotente via ON CONFLICT).
   -- CHECK engine ampliado para `('yolo','world')` na migration `0008_world_models.sql` (ADR-0014 D1)
   -- e para `('yolo','world','diffusion','clip')` na migration `0010_models_engines.sql` (Fatia Gestão de Modelos).
+  -- Colunas `kind`/`arch` adicionadas na migration `0011_generations.sql` (ADR-0023 D4): distingue LoRA de checkpoint
+  -- e arquitetura (sdxl/sd15/flux-2-klein-4b); backfill: diffusion existentes → kind='lora'.
   -- Índices: `models(engine)`, `models(created_at DESC)`.
   -- NOTA: checkpoint de treino vive em `artifacts/<job_id>/` (morre com o job via CASCADE; FK ON DELETE SET NULL no models.job_id preserva o modelo).
   --       Exclusão pública via `DELETE /api/models/:id`: remove S3 se upload/download e deleta row no manager.
@@ -378,9 +394,24 @@ job_artifacts(id UUID PK, job_id UUID FK, kind TEXT, path TEXT, md5 TEXT, bytes 
 job_samples(job_id UUID FK, cycle INT, idx INT, image_path TEXT, meta JSONB, PRIMARY KEY(job_id, cycle, idx));
 runners(id UUID PK, engine TEXT, model TEXT, orchestrator_id UUID FK,
   status TEXT, vram_gb INT, last_used TIMESTAMPTZ);
+generations(id UUID PK, job_id UUID NOT NULL FK jobs ON DELETE CASCADE,
+  s3_key TEXT NOT NULL UNIQUE, thumb_s3_key TEXT,
+  filename TEXT NOT NULL CHECK (char_length(filename) BETWEEN 1 AND 255),
+  seed BIGINT NOT NULL CHECK (seed >= 0),
+  prompt TEXT NOT NULL CHECK (char_length(prompt) BETWEEN 1 AND 4000),
+  negative_prompt TEXT CHECK (negative_prompt IS NULL OR char_length(negative_prompt) <= 4000),
+  width INT NOT NULL CHECK (width BETWEEN 256 AND 2048),
+  height INT NOT NULL CHECK (height BETWEEN 256 AND 2048),
+  params JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  deleted_at TIMESTAMPTZ);
+  -- IMPLEMENTADO (Fatia Geração; ADR-0023 D5; migration 0011_generations.sql): galeria persistente de imagens geradas.
+  -- Dono: manager (hook no report_job — job diffusion_generate done com artefato generated_meta → INSERT por imagem).
+  -- Soft-delete: deleted_at (objeto S3 intocado; sweep é dívida); índice parcial WHERE deleted_at IS NOT NULL.
+  -- Índices: `generations(created_at DESC)`, `generations(job_id)`, `generations(deleted_at) WHERE deleted_at IS NOT NULL`.
 ```
 
-- Índices: `images(dataset_id)`, `images(dataset_id, split)`, `images(dataset_id, filename) parcial ativa + images(dataset_id) parcial lixeira (0005)`, `boxes(image_id)`, `boxes(class_id)`, `videos(dataset_id)`, `classes(dataset_id, idx)`, `image_embeddings(dataset_id, model)` + HNSW do embedding (0004), `orchestrators(status)`, `jobs(status)`, `jobs(dataset_id)`, `jobs(created_at)`, `job_artifacts(job_id)`, `dataset_versions(dataset_id, created_at)`.
+- Índices: `images(dataset_id)`, `images(dataset_id, split)`, `images(dataset_id, filename) parcial ativa + images(dataset_id) parcial lixeira (0005)`, `boxes(image_id)`, `boxes(class_id)`, `videos(dataset_id)`, `classes(dataset_id, idx)`, `image_embeddings(dataset_id, model)` + HNSW do embedding (0004), `orchestrators(status)`, `jobs(status)`, `jobs(dataset_id)`, `jobs(created_at)`, `job_artifacts(job_id)`, `dataset_versions(dataset_id, created_at)`, `generations(created_at DESC)`, `generations(job_id)`, `generations(deleted_at) WHERE deleted_at IS NOT NULL`.
 - Nota (ADR-0002 D1, casing — resolvido; era ADR-0001 T3 "a definir antes da Fatia 3"): wire camelCase em `/api/*` (`userId`, `sizeBytes`, `lastModified`, settings `hfToken`…); colunas SQL snake_case; valores de enum, `Error.code` e artefatos de transporte (`manifest.json`, `config.yaml`, SQLite do orquestrador) snake_case.
 - Regra: contadores do dataset recalculados por função única `heph_refresh_dataset_counters(uuid)` — IMPLEMENTADO (Fatia 3b; `migrations/0003_images.sql`, fecha ADR-0002 T2): recalcula `images_count`/`labeled_count`/`size_bytes` e deriva `status` (`needs_labeling`/`in_progress`/`ready`) a partir das tabelas-fato, nunca `+=` (drift impossível; `UPDATE` com guarda `IS DISTINCT FROM` evita churn de `updated_at`); disparada por triggers `AFTER INSERT OR UPDATE OR DELETE` em `images`, `videos` e `boxes`/`captions` (via lookup de `dataset_id`); a ordem trigger-usuário × cascata-RJ do `DELETE FROM images` deixa de importar (o último disparo vê o estado final); `labeled` = imagem com ≥1 box (format `yolo_txt`) **ou** linha em `captions` (demais formats) — taxonomia R9; `size_bytes` soma `images` + `videos`. Chaves externas com `ON DELETE CASCADE` de dataset→filhos. O invariante `labeled_count <= images_count` continua sem `CHECK` (não deferrável) — é obrigação do trigger.
 - **Split:** coluna `images.split (train|val)`; padrão 80/20 estratificado no package com override manual na galeria (seletor train/val por imagem).
@@ -393,7 +424,8 @@ runners(id UUID PK, engine TEXT, model TEXT, orchestrator_id UUID FK,
 - `manifest.json` (transporte orquestrador — IMPLEMENTADO Fatia 4; ADR-0007 D1): `{dataset_id, slug, category, engine, files:[{filename,md5,bytes}], md5_zip, bytes, chunks:null, created_at}`. **Na v1 local:** `files[].key` ausente (não há leitura por objeto — o orquestrador baixa o zip inteiro); `chunks: null` (não há transporte chunked — D9 da ADR-0003, adiado para orquestrador remoto). Snake_case (transporte, fora de `/api/*`). **Não confundir** com o `manifest.json` de backup da Fatia 3e (artefato distinto, D1 da ADR-0006: `schema_version/classes/images/boxes` — fonte da verdade do roundtrip export/import, com `dataset.yaml`/`labels/*.txt`/`captions.jsonl` como derivados ignorados no re-import).
 - `config.yaml` por job — IMPLEMENTADO (Fatia 4; ADR-0007 D6): comum `{job_id, engine, model, mode, dataset_path, output_path, seed}` + específico:
   - yolo: `{model, epochs, batch, imgsz, lr0, optimizer, augment:{mosaic, mixup_flip}}`.
-  - difusao: `{base_model, trigger_word, rank, alpha, optimizer, steps, lr, cfg}` (adiado).
+  - difusao train: `{base_model, trigger_word, rank, alpha, optimizer, steps, lr, cfg}` (adiado).
+  - difusao generate (ADR-0023): `{model, generate:{prompt, negative_prompt, seed, base_model?, width, height, steps, guidance_scale, quantization, distilled, batch_size, loras:[{path, scale}], custom_checkpoint_path?, arch?}}`. Retrocompat: `weights_path` root-level quando modo legado (sem loras, sem custom).
   - clip: `{backbone, embed_dim, loss, lr, warmup, batch, epochs}` (adiado).
   - `dataset_path`/`output_path` são **placeholders** (`{dataset_path}`/`{output_path}`) substituídos pelo orquestrador no momento do spawn do container trainer com os mounts reais. O principal é agnóstico de paths locais.
 - `engines.yaml`: `{engine, image, cuda, torch, validated_at}` — ex. `trainer-difusao: hephaestus/trainer-difusao:local`.

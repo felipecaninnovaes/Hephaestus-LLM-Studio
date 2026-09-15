@@ -108,7 +108,7 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if argv[0] in ("-h", "--help"):
-        print("Uso: python -m trainer_difusao [health|train|generate] [args...]")
+        print("Uso: python -m trainer_difusao [health|train|generate|serve] [args...]")
         return
 
     if argv[0] == "train":
@@ -117,6 +117,10 @@ def main(argv: list[str] | None = None) -> None:
         from trainer_difusao.generate import cmd_generate
 
         cmd_generate(argv[1:])
+    elif argv[0] == "serve":
+        from trainer_difusao.serve import cmd_serve
+
+        cmd_serve(argv[1:])
     elif argv[0] == "health":
         cmd_health()
     else:

@@ -1555,36 +1555,103 @@ pub async fn submit_diffusion_generate_job(
         Err(_) => return invalid_request(),
     };
 
-    // 2. Validação pura.
+    // 2. Validação pura (ADR-0023 D2/D3/D4).
     let req = match models::validate_diffusion_generate_request(req) {
         Ok(v) => v,
         Err(_) => return invalid_request(),
     };
 
-    // 3. ID do job e config.yaml.
-    let job_id = uuid::Uuid::new_v4().to_string();
-    let config_yaml = models::generate_diffusion_generate_config_yaml(&job_id, &req);
-
-    // 4. VRAM mínima estimada conforme quantização e baseModel.
-    let vram_min: u32 = if req.base_model == "sd15" {
-        6
+    // 3. Se custom_model_id presente → busca modelo no manager para obter arch.
+    //    Valida kind=checkpoint e arch ∈ {sdxl, sd15}.
+    let custom_arch: Option<String> = if let Some(ref custom_id) = req.custom_model_id {
+        let models = match state.manager.list_models().await {
+            Ok(m) => m,
+            Err(_) => return queue_unavailable(),
+        };
+        let model = match models.iter().find(|m| m.id == *custom_id) {
+            Some(m) => m,
+            None => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "customModelId not found",
+                );
+            }
+        };
+        // Valida kind=checkpoint (ADR-0023 D4).
+        match model.kind.as_deref() {
+            Some("checkpoint") => {}
+            _ => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "customModelId must reference a checkpoint model",
+                );
+            }
+        }
+        // Valida arch ∈ {sdxl, sd15} (ADR-0023 D4 — Flux custom fora da v1).
+        match model.arch.as_deref() {
+            Some(arch @ ("sdxl" | "sd15")) => Some(arch.to_string()),
+            Some(_other) => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "unsupported_architecture",
+                    "custom checkpoint architecture not supported (use sdxl or sd15)",
+                );
+            }
+            None => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "custom model has no arch metadata",
+                );
+            }
+        }
     } else {
-        match req.quantization.as_str() {
+        None
+    };
+
+    // 4. ID do job e config.yaml (v2 com custom_arch).
+    let job_id = uuid::Uuid::new_v4().to_string();
+    let config_yaml =
+        models::generate_diffusion_generate_config_yaml(&job_id, &req, custom_arch.as_deref());
+
+    // 5. VRAM mínima por (arch_efetiva, quantization).
+    //    Valores atuais exatos (D8): sd15→6; 4bit→8; 8bit→12; none→16.
+    //    Custom: espelha first-class do arch (sdxl/sd15).
+    let effective_arch = custom_arch
+        .as_deref()
+        .unwrap_or_else(|| req.base_model.as_deref().unwrap_or("flux-2-klein-4b"));
+    let vram_min: i32 = match effective_arch {
+        "sd15" => 6,
+        "sdxl" => match req.quantization.as_str() {
             "4bit" => 8,
             "8bit" => 12,
             _ => 16,
-        }
+        },
+        // flux-2-klein-4b e demais: mesmo legado
+        _ => match req.quantization.as_str() {
+            "4bit" => 8,
+            "8bit" => 12,
+            _ => 16,
+        },
     };
 
-    // 5. Body para o Manager.
+    // 6. Body para o Manager — params camelCase (ADR-0023).
+    let loras_json: Vec<serde_json::Value> = req
+        .loras
+        .iter()
+        .map(|l| serde_json::json!({ "modelId": l.model_id, "scale": l.scale }))
+        .collect();
+
     let mut manager_body = serde_json::json!({
         "kind": "diffusion_generate",
         "engine": "diffusion",
-        "model": req.base_model,
+        "model": effective_arch,
         "mode": "generate",
         "config_yaml": config_yaml,
         "params": {
-            "base_model": req.base_model,
+            "base_model": effective_arch,
             "prompt": req.prompt,
             "negative_prompt": req.negative_prompt,
             "width": req.width,
@@ -1595,6 +1662,9 @@ pub async fn submit_diffusion_generate_job(
             "quantization": req.quantization,
             "distilled": req.distilled,
             "lora_scale": req.lora_scale,
+            "batchSize": req.batch_size,
+            "loras": loras_json,
+            "customModelId": req.custom_model_id,
         },
         "vram_min_gb": vram_min,
     });
@@ -2818,7 +2888,9 @@ pub async fn apply_autolabel_captions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::jobs::manager_client::{InternalArtifact, InternalJob, MockManager};
+    use crate::jobs::manager_client::{
+        CreateJobResponse, InternalArtifact, InternalJob, InternalModel, MockManager,
+    };
 
     #[test]
     fn remap_metrics_camel_case() {
@@ -4161,5 +4233,229 @@ mod tests {
             manager: std::sync::Arc::new(manager),
             model_download_allowed_hosts: vec![],
         }
+    }
+
+    // =========================================================================
+    // Diffusion Generate v2 handler tests (ADR-0023 D2/D3/D4)
+    // =========================================================================
+
+    #[tokio::test]
+    async fn submit_diffusion_generate_202_with_batch_and_loras() {
+        let uuid_lora = "550e8400-e29b-41d4-a716-446655440000";
+        let body_json = serde_json::json!({
+            "prompt": "a test prompt",
+            "batchSize": 4,
+            "loras": [{"modelId": uuid_lora, "scale": 0.8}],
+            "baseModel": "sdxl"
+        });
+
+        let mut mock = MockManager::default();
+        mock.create_job_result = Some(CreateJobResponse {
+            job_id: "job-123".into(),
+            status: "queued".into(),
+            queue_position: Some(1),
+        });
+        let state = test_state(mock);
+
+        let resp = submit_diffusion_generate_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                serde_json::to_string(&body_json).unwrap(),
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    }
+
+    #[tokio::test]
+    async fn submit_diffusion_generate_params_contain_batch_size_and_loras() {
+        let uuid_lora = "550e8400-e29b-41d4-a716-446655440000";
+        let body_json = serde_json::json!({
+            "prompt": "test",
+            "batchSize": 2,
+            "loras": [{"modelId": uuid_lora, "scale": 1.0}],
+            "baseModel": "flux-2-klein-4b"
+        });
+
+        let mut mock = MockManager::default();
+        mock.create_job_result = Some(CreateJobResponse {
+            job_id: "job-456".into(),
+            status: "queued".into(),
+            queue_position: None,
+        });
+        // Guarda referência para verificar body depois
+        let mock_arc = std::sync::Arc::new(mock);
+        let mock_ref = std::sync::Arc::clone(&mock_arc);
+        let mut state = test_state(MockManager::default());
+        state.manager = mock_arc;
+
+        let resp = submit_diffusion_generate_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                serde_json::to_string(&body_json).unwrap(),
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+        // Verifica params camelCase no body enviado ao manager
+        let body = mock_ref.last_create_job_body();
+        let body = body.expect("create_job body captured");
+        let params = body["params"].as_object().expect("params object");
+        assert_eq!(params.get("batchSize"), Some(&serde_json::json!(2)));
+        assert!(params.get("loras").is_some(), "missing loras in params");
+        assert!(
+            params.get("customModelId").is_some(),
+            "missing customModelId in params"
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_diffusion_generate_vram_min_custom_sdxl() {
+        use crate::jobs::manager_client::InternalModel;
+
+        let custom_id = "550e8400-e29b-41d4-a716-446655440099";
+        let body_json = serde_json::json!({
+            "prompt": "test",
+            "customModelId": custom_id,
+            "quantization": "4bit"
+        });
+
+        let mut mock = MockManager::default();
+        mock.list_models_result = Some(vec![InternalModel {
+            id: custom_id.into(),
+            name: "my-sdxl.safetensors".into(),
+            engine: "diffusion".into(),
+            model: None,
+            source: "upload".into(),
+            md5: "abc123".into(),
+            bytes: 6_500_000_000,
+            path: "models/diffusion/custom/my-sdxl.safetensors".into(),
+            job_id: None,
+            created_at: "2026-09-15T00:00:00Z".into(),
+            kind: Some("checkpoint".into()),
+            arch: Some("sdxl".into()),
+        }]);
+        mock.create_job_result = Some(CreateJobResponse {
+            job_id: "job-789".into(),
+            status: "queued".into(),
+            queue_position: None,
+        });
+        let mock_arc = std::sync::Arc::new(mock);
+        let mock_ref = std::sync::Arc::clone(&mock_arc);
+        let mut state = test_state(MockManager::default());
+        state.manager = mock_arc;
+
+        let resp = submit_diffusion_generate_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                serde_json::to_string(&body_json).unwrap(),
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+        // vram_min para sdxl + 4bit = 8 (espelhamento first-class)
+        let body = mock_ref.last_create_job_body();
+        let body = body.expect("create_job body captured");
+        assert_eq!(body["vram_min_gb"], 8);
+    }
+
+    #[tokio::test]
+    async fn submit_diffusion_generate_custom_not_found_400() {
+        let body_json = serde_json::json!({
+            "prompt": "test",
+            "customModelId": "550e8400-e29b-41d4-a716-446655440099"
+        });
+
+        let mut mock = MockManager::default();
+        // Lista vazia — modelo não encontrado
+        mock.list_models_result = Some(vec![]);
+        let state = test_state(mock);
+
+        let resp = submit_diffusion_generate_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                serde_json::to_string(&body_json).unwrap(),
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_diffusion_generate_custom_not_checkpoint_400() {
+        let custom_id = "550e8400-e29b-41d4-a716-446655440099";
+        let body_json = serde_json::json!({
+            "prompt": "test",
+            "customModelId": custom_id
+        });
+
+        let mut mock = MockManager::default();
+        mock.list_models_result = Some(vec![InternalModel {
+            id: custom_id.into(),
+            name: "my-lora.safetensors".into(),
+            engine: "diffusion".into(),
+            model: None,
+            source: "upload".into(),
+            md5: "abc123".into(),
+            bytes: 100_000,
+            path: "models/diffusion/lora/my-lora.safetensors".into(),
+            job_id: None,
+            created_at: "2026-09-15T00:00:00Z".into(),
+            kind: Some("lora".into()), // kind=lora, não checkpoint
+            arch: Some("sdxl".into()),
+        }]);
+        let state = test_state(mock);
+
+        let resp = submit_diffusion_generate_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                serde_json::to_string(&body_json).unwrap(),
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn submit_diffusion_generate_custom_unsupported_arch_400() {
+        let custom_id = "550e8400-e29b-41d4-a716-446655440099";
+        let body_json = serde_json::json!({
+            "prompt": "test",
+            "customModelId": custom_id
+        });
+
+        let mut mock = MockManager::default();
+        mock.list_models_result = Some(vec![InternalModel {
+            id: custom_id.into(),
+            name: "my-flux.safetensors".into(),
+            engine: "diffusion".into(),
+            model: None,
+            source: "upload".into(),
+            md5: "abc123".into(),
+            bytes: 6_500_000_000,
+            path: "models/diffusion/custom/my-flux.safetensors".into(),
+            job_id: None,
+            created_at: "2026-09-15T00:00:00Z".into(),
+            kind: Some("checkpoint".into()),
+            arch: Some("flux-2-klein-4b".into()), // arch não suportada para custom
+        }]);
+        let state = test_state(mock);
+
+        let resp = submit_diffusion_generate_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                serde_json::to_string(&body_json).unwrap(),
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        // Verifica code "unsupported_architecture"
+        let (parts, body) = resp.into_parts();
+        let _ = parts;
+        let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(json["code"], "unsupported_architecture");
     }
 }

@@ -6,16 +6,20 @@ export function listModels(): Promise<ModelListResponse> {
   return apiFetch("/api/models");
 }
 
-/** POST /api/models/upload — upload multipart de pesos .pt. Retorna 201 Model. */
+/** POST /api/models/upload — upload multipart de pesos .pt/.safetensors. Retorna 201 Model. */
 export async function uploadModel(params: {
   file: File;
   engine: string;
   name?: string;
+  kind?: string;
+  arch?: string;
 }): Promise<Model> {
   const form = new FormData();
   form.append("file", params.file);
   form.append("engine", params.engine);
   if (params.name) form.append("name", params.name);
+  if (params.kind) form.append("kind", params.kind);
+  if (params.arch) form.append("arch", params.arch);
 
   return apiFetch<Model>("/api/models/upload", { method: "POST", body: form });
 }

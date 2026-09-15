@@ -1049,11 +1049,31 @@ lora:
     )
 }
 
+/// Referência a um LoRA para geração multi-LoRA (ADR-0023 D3).
+///
+/// `model_id` é o UUID do modelo na tabela `models` (kind='lora', engine='diffusion').
+/// `scale` é a escala do adaptador (0.0..=2.0).
+/// Serializa como `camelCase` no wire (`modelId`, `scale`).
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoraRef {
+    pub model_id: String,
+    pub scale: f64,
+}
+
+/// Request v2 de geração Text-to-Image (ADR-0023 D2/D3/D4).
+///
+/// Retrocompat: campos novos (`batch_size`, `loras`, `custom_model_id`) são
+/// opcionais com defaults que reproduzem o comportamento legado.
+/// `base_model` deixou de ser required — XOR com `custom_model_id`.
+/// `weights`/`lora_scale` continuam aceitos (deprecated); enviar ambos com
+/// `loras` não vazio → 400 `invalid_request`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DiffusionGenerateJobRequest {
-    #[serde(default = "default_diffusion_generate_base_model")]
-    pub base_model: String,
+    /// `baseModel` deixou de ser required — XOR com `customModelId`.
+    /// Se ambos ausentes, usa "flux-2-klein-4b" (default legado).
+    pub base_model: Option<String>,
     pub prompt: String,
     pub negative_prompt: Option<String>,
     #[serde(default = "default_diffusion_generate_dimension")]
@@ -1069,14 +1089,25 @@ pub struct DiffusionGenerateJobRequest {
     pub quantization: String,
     #[serde(default)]
     pub distilled: bool,
+    /// UUID de pesos existentes (deprecated — use `loras`).
     pub weights: Option<String>,
+    /// Escala do LoRA legado (deprecated — use `loras`).
     #[serde(default = "default_diffusion_lora_scale")]
     pub lora_scale: f64,
     pub orchestrator_id: Option<String>,
+    /// Batch size (1..8, default 1 — D2).
+    #[serde(default = "default_diffusion_generate_batch_size")]
+    pub batch_size: i64,
+    /// LoRAs a aplicar (max 4 — D3). Aplicação em ordem do array.
+    #[serde(default)]
+    pub loras: Vec<LoraRef>,
+    /// UUID de modelo custom (checkpoint — D4). XOR com `baseModel`.
+    pub custom_model_id: Option<String>,
 }
 
-fn default_diffusion_generate_base_model() -> String {
-    "flux-2-klein-4b".to_string()
+/// Batch size default: 1 (idêntico ao comportamento legado).
+fn default_diffusion_generate_batch_size() -> i64 {
+    1
 }
 fn default_diffusion_generate_dimension() -> u32 {
     1024
@@ -1091,15 +1122,51 @@ fn default_diffusion_lora_scale() -> f64 {
     1.0
 }
 
+/// Valida `POST /api/jobs/diffusion/generate` v2 (ADR-0023 D2/D3/D4).
+///
+/// Validações:
+/// - XOR: exatamente um de `base_model` / `custom_model_id`; se ambos None →
+///   default "flux-2-klein-4b" (retrocompat).
+/// - `batch_size` 1..8.
+/// - `loras.len` <= 4; cada `scale` 0.0..=2.0; cada `model_id` UUID válido.
+/// - `custom_model_id` UUID válido quando Some.
+/// - Se `loras` não vazio E (`weights` Some OU `lora_scale` fornecido) → 400
+///   ("use loras ou weights, não ambos").
+/// - Prompt <= 4000 chars; dimensões 256..2048; steps 1..100; guidance 1.0..30.0.
+/// - Quantização: none/4bit/8bit/4bit-nf4/8bit-bnb (qualquer um; runtime @gpu
+///   valida compatibilidade com arch na sessão GPU).
+/// - Se `custom_model_id` Some → quantization "none" é PERMITIDO (S1 passou;
+///   runtime @gpu valida na sessão GPU — documentado no comentário).
 pub fn validate_diffusion_generate_request(
-    req: DiffusionGenerateJobRequest,
+    mut req: DiffusionGenerateJobRequest,
 ) -> Result<DiffusionGenerateJobRequest, String> {
-    if !ALLOWED_DIFFUSION_BASE_MODELS.contains(&req.base_model.as_str()) {
-        return Err(format!(
-            "baseModel must be one of {:?}, got '{}'",
-            ALLOWED_DIFFUSION_BASE_MODELS, req.base_model
-        ));
+    // --- XOR: base_model / custom_model_id ---
+    let has_custom = req.custom_model_id.is_some();
+    let has_base = req.base_model.is_some();
+    if has_custom && has_base {
+        return Err("use either baseModel or customModelId, not both".to_string());
     }
+    if !has_custom && !has_base {
+        // Retrocompat: client legado não envia baseModel → default.
+        req.base_model = Some("flux-2-klein-4b".to_string());
+    }
+    // Validação de UUID para base_model quando presente (mantém str-list check).
+    if let Some(ref bm) = req.base_model {
+        if !ALLOWED_DIFFUSION_BASE_MODELS.contains(&bm.as_str()) {
+            return Err(format!(
+                "baseModel must be one of {:?}, got '{}'",
+                ALLOWED_DIFFUSION_BASE_MODELS, bm
+            ));
+        }
+    }
+    // Validação de UUID para custom_model_id quando presente.
+    if let Some(ref cm) = req.custom_model_id {
+        if uuid::Uuid::parse_str(cm).is_err() {
+            return Err("customModelId must be a valid UUID".to_string());
+        }
+    }
+
+    // --- Prompt ---
     if req.prompt.trim().is_empty() {
         return Err("prompt cannot be empty".to_string());
     }
@@ -1111,6 +1178,8 @@ pub fn validate_diffusion_generate_request(
             return Err("negativePrompt cannot exceed 4000 characters".to_string());
         }
     }
+
+    // --- Dimensões ---
     if !(256..=2048).contains(&req.width) {
         return Err(format!(
             "width must be between 256 and 2048, got {}",
@@ -1123,6 +1192,8 @@ pub fn validate_diffusion_generate_request(
             req.height
         ));
     }
+
+    // --- Steps / Guidance ---
     if !(1..=100).contains(&req.steps) {
         return Err(format!(
             "steps must be between 1 and 100, got {}",
@@ -1135,18 +1206,56 @@ pub fn validate_diffusion_generate_request(
             req.guidance_scale
         ));
     }
+
+    // --- Quantização ---
     if !ALLOWED_DIFFUSION_QUANTIZATIONS.contains(&req.quantization.as_str()) {
         return Err(format!(
             "quantization must be one of {:?}, got '{}'",
             ALLOWED_DIFFUSION_QUANTIZATIONS, req.quantization
         ));
     }
+
+    // --- Batch size (D2) ---
+    if !(1..=8).contains(&req.batch_size) {
+        return Err(format!(
+            "batchSize must be between 1 and 8, got {}",
+            req.batch_size
+        ));
+    }
+
+    // --- LoRAs (D3) ---
+    if req.loras.len() > 4 {
+        return Err(format!(
+            "loras must have at most 4 entries, got {}",
+            req.loras.len()
+        ));
+    }
+    for (i, lora) in req.loras.iter().enumerate() {
+        if uuid::Uuid::parse_str(&lora.model_id).is_err() {
+            return Err(format!("loras[{i}].modelId must be a valid UUID",));
+        }
+        if !(0.0..=2.0).contains(&lora.scale) || lora.scale.is_nan() {
+            return Err(format!(
+                "loras[{i}].scale must be between 0.0 and 2.0, got {}",
+                lora.scale
+            ));
+        }
+    }
+
+    // --- Retrocompat lora_scale (mantém validação legada) ---
     if !(0.0..=2.0).contains(&req.lora_scale) || req.lora_scale.is_nan() {
         return Err(format!(
             "loraScale must be between 0.0 and 2.0, got {}",
             req.lora_scale
         ));
     }
+
+    // --- Conflito: loras não vazio + (weights OU lora_scale legado) → 400 ---
+    if !req.loras.is_empty() && (req.weights.is_some() || req.lora_scale != 1.0) {
+        return Err("use loras or weights/loraScale, not both".to_string());
+    }
+
+    // --- UUID checks para weights e orchestrator_id ---
     if let Some(ref w) = req.weights {
         if uuid::Uuid::parse_str(w).is_err() {
             return Err("weights must be a valid UUID".to_string());
@@ -1157,12 +1266,28 @@ pub fn validate_diffusion_generate_request(
             return Err("orchestratorId must be a valid UUID".to_string());
         }
     }
+
     Ok(req)
 }
 
+/// Gera `config.yaml` de geração Text-to-Image v2 (ADR-0023 D2/D3/D4).
+///
+/// Placeholders `{output_path}` e `{weights_path}` são substituídos pelo
+/// orquestrador no staging; `{lora_path_i}` são substituídos pelo orquestrador
+/// para cada LoRA; `{custom_checkpoint_path}` é substituído pelo orquestrador
+/// para custom models.
+///
+/// Quando `loras` não vazio: bloco `loras:` com placeholders `{lora_path_i}`.
+/// Quando `loras` vazio E `weights` Some: formato legado `weights_path`/`lora_scale`.
+/// Quando `custom_model_id` Some: `custom_checkpoint_path` + `arch` (resolvidos
+/// pelo handler — `custom_arch` deve ser Some).
+///
+/// Retrocompat byte-compatível: request legado (sem campos novos) gera yaml
+/// IDÊNTICO ao atual (batch_size: 1, sem loras, sem custom).
 pub fn generate_diffusion_generate_config_yaml(
     job_id: &str,
     req: &DiffusionGenerateJobRequest,
+    custom_arch: Option<&str>,
 ) -> String {
     let neg_line = match &req.negative_prompt {
         Some(neg) => format!(
@@ -1171,31 +1296,90 @@ pub fn generate_diffusion_generate_config_yaml(
         ),
         None => "  negative_prompt: \"\"\n".to_string(),
     };
-    let seed = req.seed.unwrap_or(42);
+
+    // Seed: quando None, NÃO emitir seed: no yaml (engine sorteia e reporta no meta — D2).
+    let seed_root_line = match req.seed {
+        Some(s) => format!("seed: {s}\n"),
+        None => String::new(),
+    };
+    let seed_gen_line = match req.seed {
+        Some(s) => format!("  seed: {s}\n"),
+        None => String::new(),
+    };
+
+    // --- Effetive model para a linha `model:` ---
+    // Custom: usa arch resolvido; base: usa base_model.
+    let effective_model =
+        custom_arch.unwrap_or_else(|| req.base_model.as_deref().unwrap_or("flux-2-klein-4b"));
+
+    // --- Regra de pesos (retrocompat + v2) ---
+    // LEGADO (loras vazio, sem custom): `weights_path:` root-level ANTES de
+    // `generate:` (byte-compatível com o formato anterior à ADR-0023) e
+    // `lora_scale:` dentro de generate.
+    // V2 (loras OU custom): SEM weights_path e SEM lora_scale.
+    let is_legacy = req.loras.is_empty() && custom_arch.is_none();
+
+    let weights_path_line = if is_legacy {
+        "weights_path: \"{weights_path}\"\n".to_string()
+    } else {
+        String::new()
+    };
+
+    let loras_block = if req.loras.is_empty() {
+        String::new()
+    } else {
+        let mut block = String::new();
+        for (i, lora) in req.loras.iter().enumerate() {
+            let scale_str = format_lora_scale(lora.scale);
+            block.push_str(&format!(
+                "    - path: \"{{lora_path_{i}}}\"\n      scale: {scale_str}\n"
+            ));
+        }
+        format!("  loras:\n{block}")
+    };
+
+    let custom_block = if let Some(arch) = custom_arch {
+        format!("  custom_checkpoint_path: \"{{custom_checkpoint_path}}\"\n  arch: \"{arch}\"\n")
+    } else {
+        String::new()
+    };
+
+    let lora_scale_line = if is_legacy {
+        format!("  lora_scale: {}\n", req.lora_scale)
+    } else {
+        String::new()
+    };
+
+    // Quando custom_arch está presente, NÃO emitir generate.base_model:
+    // o engine (generate.py L127) faz fallback para root `model:` que já leva o arch.
+    let base_model_line = if custom_arch.is_some() {
+        String::new()
+    } else {
+        format!(
+            "  base_model: \"{}\"\n",
+            req.base_model.as_deref().unwrap_or("flux-2-klein-4b")
+        )
+    };
+
     format!(
         r#"# Configuração de geração Difusão (Playground)
 job_id: "{job_id}"
 engine: "diffusion"
-model: "{base_model}"
+model: "{effective_model}"
 mode: "generate"
 output_path: "{{output_path}}"
-seed: {seed}
-weights_path: "{{weights_path}}"
-generate:
-  base_model: "{base_model}"
-  prompt: {prompt_json}
+{seed_root_line}{weights_path_line}generate:
+{base_model_line}  prompt: {prompt_json}
 {neg_line}  width: {width}
   height: {height}
   steps: {steps}
   guidance_scale: {guidance_scale}
-  seed: {seed}
-  quantization: "{quantization}"
+{seed_gen_line}  quantization: "{quantization}"
   distilled: {distilled}
-  lora_scale: {lora_scale}
-"#,
+  batch_size: {batch_size}
+{loras_block}{custom_block}{lora_scale_line}"#,
         job_id = job_id,
-        base_model = req.base_model,
-        seed = seed,
+        effective_model = effective_model,
         prompt_json = serde_json::to_string(&req.prompt).unwrap_or_else(|_| "\"\"".into()),
         neg_line = neg_line,
         width = req.width,
@@ -1204,8 +1388,49 @@ generate:
         guidance_scale = req.guidance_scale,
         quantization = req.quantization,
         distilled = req.distilled,
-        lora_scale = req.lora_scale,
+        batch_size = req.batch_size,
+        seed_root_line = seed_root_line,
+        seed_gen_line = seed_gen_line,
+        weights_path_line = weights_path_line,
+        base_model_line = base_model_line,
+        loras_block = loras_block,
+        custom_block = custom_block,
+        lora_scale_line = lora_scale_line,
     )
+}
+
+/// Formata scale de LoRA preservando até 2 casas decimais, trim de zeros à direita.
+/// 0.85 → "0.85", 1.0 → "1", 0.50 → "0.5".
+fn format_lora_scale(scale: f64) -> String {
+    let s = format!("{scale:.2}");
+    // Trim de zeros à direita e ponto decimal se inteiro
+    let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+    trimmed.to_string()
+}
+
+#[cfg(test)]
+mod format_lora_scale_tests {
+    use super::*;
+
+    #[test]
+    fn scale_085_preserves_two_decimals() {
+        assert_eq!(format_lora_scale(0.85), "0.85");
+    }
+
+    #[test]
+    fn scale_10_becomes_integer() {
+        assert_eq!(format_lora_scale(1.0), "1");
+    }
+
+    #[test]
+    fn scale_050_trims_one_zero() {
+        assert_eq!(format_lora_scale(0.50), "0.5");
+    }
+
+    #[test]
+    fn scale_035_two_decimals() {
+        assert_eq!(format_lora_scale(0.35), "0.35");
+    }
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
@@ -2292,7 +2517,7 @@ mod tests {
         }"#;
         let req: DiffusionGenerateJobRequest = serde_json::from_str(json).unwrap();
         let validated = validate_diffusion_generate_request(req).expect("should validate");
-        assert_eq!(validated.base_model, "flux-2-klein-4b");
+        assert_eq!(validated.base_model.as_deref(), Some("flux-2-klein-4b"));
         assert_eq!(validated.width, 1024);
         assert_eq!(validated.height, 768);
         assert_eq!(validated.steps, 25);
@@ -2301,7 +2526,7 @@ mod tests {
         assert_eq!(validated.quantization, "4bit");
         assert_eq!(validated.lora_scale, 0.9);
 
-        let yaml = generate_diffusion_generate_config_yaml("job-gen-001", &validated);
+        let yaml = generate_diffusion_generate_config_yaml("job-gen-001", &validated, None);
         assert!(yaml.contains(r#"mode: "generate""#));
         assert!(yaml.contains(r#"base_model: "flux-2-klein-4b""#));
         assert!(yaml.contains("a stunning portrait in neon cyberpunk style"));
@@ -2310,10 +2535,436 @@ mod tests {
         assert!(yaml.contains("height: 768"));
         assert!(yaml.contains("seed: 99999"));
         assert!(yaml.contains(r#"quantization: "4bit""#));
+        // Retrocompat: batch_size 1 (legado) + lora_scale legado + weights_path
+        assert!(yaml.contains("batch_size: 1"));
+        assert!(yaml.contains("lora_scale: 0.9"));
+        assert!(yaml.contains("weights_path: \"{weights_path}\""));
 
         // Prompt vazio deve falhar
         let bad_json = r#"{"prompt": "   "}"#;
         let bad_req: DiffusionGenerateJobRequest = serde_json::from_str(bad_json).unwrap();
         assert!(validate_diffusion_generate_request(bad_req).is_err());
+    }
+
+    // =========================================================================
+    // Diffusion Generate v2 tests (ADR-0023 D2/D3/D4)
+    // =========================================================================
+
+    #[test]
+    fn diffusion_generate_defaults_without_base_model() {
+        // Request legado sem baseModel → default "flux-2-klein-4b"
+        let json = r#"{"prompt": "test"}"#;
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(json).unwrap();
+        assert!(req.base_model.is_none());
+        let validated = validate_diffusion_generate_request(req).expect("should validate");
+        assert_eq!(validated.base_model.as_deref(), Some("flux-2-klein-4b"));
+        assert_eq!(validated.batch_size, 1);
+        assert!(validated.loras.is_empty());
+        assert!(validated.custom_model_id.is_none());
+    }
+
+    #[test]
+    fn diffusion_generate_xor_both_rejected() {
+        // baseModel + customModelId → 400
+        let json = r#"{
+            "prompt": "test",
+            "baseModel": "sdxl",
+            "customModelId": "550e8400-e29b-41d4-a716-446655440000"
+        }"#;
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(json).unwrap();
+        assert!(validate_diffusion_generate_request(req).is_err());
+    }
+
+    #[test]
+    fn diffusion_generate_xor_neither_defaults() {
+        // Sem baseModel nem customModelId → default "flux-2-klein-4b"
+        let json = r#"{"prompt": "test"}"#;
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(json).unwrap();
+        let validated = validate_diffusion_generate_request(req).unwrap();
+        assert_eq!(validated.base_model.as_deref(), Some("flux-2-klein-4b"));
+        assert!(validated.custom_model_id.is_none());
+    }
+
+    #[test]
+    fn diffusion_generate_custom_only() {
+        // Só customModelId → válido
+        let json = r#"{
+            "prompt": "test",
+            "customModelId": "550e8400-e29b-41d4-a716-446655440000"
+        }"#;
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(json).unwrap();
+        let validated = validate_diffusion_generate_request(req).unwrap();
+        assert!(validated.base_model.is_none());
+        assert_eq!(
+            validated.custom_model_id.as_deref(),
+            Some("550e8400-e29b-41d4-a716-446655440000")
+        );
+    }
+
+    #[test]
+    fn diffusion_generate_batch_size_boundary() {
+        // batch_size 1 e 8 → ok
+        for bs in [1, 8] {
+            let json = format!(r#"{{"prompt":"test","batchSize":{bs}}}"#);
+            let req: DiffusionGenerateJobRequest = serde_json::from_str(&json).unwrap();
+            assert!(
+                validate_diffusion_generate_request(req).is_ok(),
+                "batch_size={bs}"
+            );
+        }
+        // batch_size 0 e 9 → 400
+        for bs in [0, 9] {
+            let json = format!(r#"{{"prompt":"test","batchSize":{bs}}}"#);
+            let req: DiffusionGenerateJobRequest = serde_json::from_str(&json).unwrap();
+            assert!(
+                validate_diffusion_generate_request(req).is_err(),
+                "batch_size={bs}"
+            );
+        }
+    }
+
+    #[test]
+    fn diffusion_generate_loras_max_4() {
+        let uuid = "550e8400-e29b-41d4-a716-446655440000";
+        // 4 LoRAs → ok
+        let json = format!(
+            r#"{{"prompt":"test","loras":[{{"modelId":"{uuid}","scale":1.0}},{{"modelId":"{uuid}","scale":0.8}},{{"modelId":"{uuid}","scale":0.5}},{{"modelId":"{uuid}","scale":0.3}}]}}"#
+        );
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(&json).unwrap();
+        assert!(validate_diffusion_generate_request(req).is_ok());
+
+        // 5 LoRAs → 400
+        let json = format!(
+            r#"{{"prompt":"test","loras":[{{"modelId":"{uuid}","scale":1.0}},{{"modelId":"{uuid}","scale":0.8}},{{"modelId":"{uuid}","scale":0.5}},{{"modelId":"{uuid}","scale":0.3}},{{"modelId":"{uuid}","scale":0.1}}]}}"#
+        );
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(&json).unwrap();
+        assert!(validate_diffusion_generate_request(req).is_err());
+    }
+
+    #[test]
+    fn diffusion_generate_loras_scale_boundary() {
+        let uuid = "550e8400-e29b-41d4-a716-446655440000";
+        // scale 0.0 e 2.0 → ok
+        for s in [0.0, 2.0] {
+            let json =
+                format!(r#"{{"prompt":"test","loras":[{{"modelId":"{uuid}","scale":{s}}}]}}"#);
+            let req: DiffusionGenerateJobRequest = serde_json::from_str(&json).unwrap();
+            assert!(
+                validate_diffusion_generate_request(req).is_ok(),
+                "scale={s}"
+            );
+        }
+        // scale 2.5 → 400
+        let json = format!(r#"{{"prompt":"test","loras":[{{"modelId":"{uuid}","scale":2.5}}]}}"#);
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(&json).unwrap();
+        assert!(validate_diffusion_generate_request(req).is_err());
+    }
+
+    #[test]
+    fn diffusion_generate_loras_invalid_uuid() {
+        let json = r#"{"prompt":"test","loras":[{"modelId":"not-a-uuid","scale":1.0}]}"#;
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(json).unwrap();
+        assert!(validate_diffusion_generate_request(req).is_err());
+    }
+
+    #[test]
+    fn diffusion_generate_custom_invalid_uuid() {
+        let json = r#"{"prompt":"test","customModelId":"not-a-uuid"}"#;
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(json).unwrap();
+        assert!(validate_diffusion_generate_request(req).is_err());
+    }
+
+    #[test]
+    fn diffusion_generate_loras_and_weights_conflict() {
+        let uuid = "550e8400-e29b-41d4-a716-446655440000";
+        // loras não vazio + weights → 400
+        let json = format!(
+            r#"{{"prompt":"test","loras":[{{"modelId":"{uuid}","scale":1.0}}],"weights":"{uuid}"}}"#
+        );
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(&json).unwrap();
+        assert!(validate_diffusion_generate_request(req).is_err());
+
+        // loras não vazio + lora_scale != 1.0 (default) → 400
+        let json = format!(
+            r#"{{"prompt":"test","loras":[{{"modelId":"{uuid}","scale":1.0}}],"loraScale":0.8}}"#
+        );
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(&json).unwrap();
+        assert!(validate_diffusion_generate_request(req).is_err());
+
+        // loras não vazio + lora_scale == 1.0 (default) → ok (default não conta)
+        let json = format!(
+            r#"{{"prompt":"test","loras":[{{"modelId":"{uuid}","scale":1.0}}],"loraScale":1.0}}"#
+        );
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(&json).unwrap();
+        assert!(validate_diffusion_generate_request(req).is_ok());
+    }
+
+    #[test]
+    fn diffusion_generate_yaml_loras_block() {
+        let uuid1 = "550e8400-e29b-41d4-a716-446655440000";
+        let uuid2 = "550e8400-e29b-41d4-a716-446655440001";
+        let json = format!(
+            r#"{{"prompt":"test","loras":[{{"modelId":"{uuid1}","scale":1.0}},{{"modelId":"{uuid2}","scale":0.8}}]}}"#
+        );
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(&json).unwrap();
+        let validated = validate_diffusion_generate_request(req).unwrap();
+        let yaml = generate_diffusion_generate_config_yaml("job-lora-1", &validated, None);
+
+        assert!(yaml.contains("batch_size: 1"));
+        assert!(yaml.contains("loras:"));
+        assert!(yaml.contains("{lora_path_0}"));
+        assert!(yaml.contains("{lora_path_1}"));
+        assert!(yaml.contains("scale: 1"));
+        assert!(yaml.contains("scale: 0.8"));
+        // Sem weights_path quando loras não vazio
+        assert!(!yaml.contains("weights_path"));
+        assert!(!yaml.contains("lora_scale"));
+    }
+
+    #[test]
+    fn diffusion_generate_yaml_custom_block() {
+        let json = r#"{
+            "prompt": "test",
+            "customModelId": "550e8400-e29b-41d4-a716-446655440000"
+        }"#;
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(json).unwrap();
+        let validated = validate_diffusion_generate_request(req).unwrap();
+        let yaml =
+            generate_diffusion_generate_config_yaml("job-custom-1", &validated, Some("sdxl"));
+
+        assert!(yaml.contains("custom_checkpoint_path: \"{custom_checkpoint_path}\""));
+        assert!(yaml.contains("arch: \"sdxl\""));
+        assert!(yaml.contains(r#"model: "sdxl""#));
+        assert!(yaml.contains("batch_size: 1"));
+        // XOR: quando custom_arch está presente, NÃO deve haver base_model no generate
+        assert!(
+            !yaml.contains("base_model:"),
+            "custom block must NOT contain base_model: {yaml}"
+        );
+        // Sem weights_path quando custom presente
+        assert!(!yaml.contains("weights_path"));
+        assert!(!yaml.contains("lora_scale"));
+
+        // Validação cruzada: YAML parseável e sem generate.base_model
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml deve ser válido");
+        let gen = parsed["generate"]
+            .as_mapping()
+            .expect("generate deve ser mapping");
+        assert!(
+            !gen.contains_key(&serde_yaml::Value::String("base_model".into())),
+            "generate must NOT contain base_model when custom_arch is present"
+        );
+        assert!(
+            gen.contains_key(&serde_yaml::Value::String("custom_checkpoint_path".into())),
+            "generate must contain custom_checkpoint_path"
+        );
+        assert!(
+            gen.contains_key(&serde_yaml::Value::String("arch".into())),
+            "generate must contain arch"
+        );
+    }
+
+    #[test]
+    fn diffusion_generate_yaml_legacy_byte_compat() {
+        // Request LEGADO (sem campos novos) → weights_path root-level ANTES de
+        // generate: e lora_scale dentro de generate.
+        let json = r#"{
+            "prompt": "a stunning portrait in neon cyberpunk style",
+            "negativePrompt": "blurry, distorted",
+            "width": 1024,
+            "height": 768,
+            "steps": 25,
+            "guidanceScale": 4.0,
+            "seed": 99999,
+            "quantization": "4bit",
+            "loraScale": 0.9,
+            "weights": "550e8400-e29b-41d4-a716-446655440000"
+        }"#;
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(json).unwrap();
+        let validated = validate_diffusion_generate_request(req).unwrap();
+        let yaml = generate_diffusion_generate_config_yaml("job-legado-1", &validated, None);
+
+        // Retrocompat: batch_size 1, weights_path root-level, lora_scale inside generate
+        assert!(yaml.contains("batch_size: 1"));
+        assert!(yaml.contains("weights_path: \"{weights_path}\""));
+        assert!(yaml.contains("lora_scale: 0.9"));
+        assert!(yaml.contains(r#"mode: "generate""#));
+        assert!(yaml.contains(r#"base_model: "flux-2-klein-4b""#));
+        assert!(yaml.contains("a stunning portrait in neon cyberpunk style"));
+        assert!(yaml.contains("negative_prompt: \"blurry, distorted\""));
+
+        // weights_path DEVE estar ANTES de generate: (root-level)
+        let wp_pos = yaml.find("weights_path:").expect("weights_path must exist");
+        let gen_pos = yaml.find("generate:\n").expect("generate: must exist");
+        assert!(
+            wp_pos < gen_pos,
+            "weights_path (pos {wp_pos}) must be BEFORE generate: (pos {gen_pos})"
+        );
+        // lora_scale DEVE estar dentro de generate (depois de batch_size)
+        let bs_pos = yaml.find("batch_size:").expect("batch_size must exist");
+        let ls_pos = yaml.find("lora_scale:").expect("lora_scale must exist");
+        assert!(
+            bs_pos < ls_pos,
+            "batch_size (pos {bs_pos}) must be BEFORE lora_scale (pos {ls_pos})"
+        );
+        // Sem loras block no legado
+        assert!(!yaml.contains("  loras:"));
+
+        // Parse YAML válido
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml deve ser válido");
+        assert_eq!(
+            parsed["weights_path"].as_str(),
+            Some("{weights_path}"),
+            "weights_path deve ser root-level string"
+        );
+        let gen = parsed["generate"]
+            .as_mapping()
+            .expect("generate deve ser mapping");
+        assert!(
+            gen.get(&serde_yaml::Value::String("lora_scale".into()))
+                .is_some(),
+            "lora_scale deve estar dentro de generate"
+        );
+    }
+
+    // =====================================================================
+    // Novos testes: separação de linhas no YAML (batch_size ↔ seções)
+    // =====================================================================
+
+    #[test]
+    fn yaml_batch_size_newline_before_legacy_weights() {
+        // Request legado: weights_path root-level ANTES de generate, lora_scale dentro
+        let json = r#"{
+            "prompt": "test legacy",
+            "width": 512,
+            "height": 512,
+            "steps": 10,
+            "guidanceScale": 7.0,
+            "seed": 42,
+            "quantization": "8bit",
+            "loraScale": 0.7
+        }"#;
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(json).unwrap();
+        let validated = validate_diffusion_generate_request(req).unwrap();
+        let yaml = generate_diffusion_generate_config_yaml("job-legacy-nl", &validated, None);
+
+        // batch_size e weights_path em linhas separadas
+        assert!(
+            yaml.contains("batch_size: 1\n"),
+            "batch_size deve terminar com newline: {yaml}"
+        );
+        assert!(
+            yaml.contains("\nweights_path:"),
+            "weights_path deve estar em linha própria: {yaml}"
+        );
+        // Nunca colado
+        assert!(
+            !yaml.contains("1weights_path"),
+            "batch_size colou com weights_path: {yaml}"
+        );
+        // weights_path ANTES de generate:
+        let wp_pos = yaml.find("weights_path:").expect("weights_path must exist");
+        let gen_pos = yaml.find("generate:\n").expect("generate: must exist");
+        assert!(
+            wp_pos < gen_pos,
+            "weights_path (pos {wp_pos}) must be BEFORE generate: (pos {gen_pos}): {yaml}"
+        );
+        // Estrutura correta do generate
+        assert!(
+            yaml.contains("generate:\n  base_model:"),
+            "generate e base_model em linhas corretas: {yaml}"
+        );
+        // Sem loras block no legado
+        assert!(
+            !yaml.contains("  loras:"),
+            "legado não deve ter loras: {yaml}"
+        );
+
+        // Parse YAML válido — weights_path root-level, lora_scale dentro de generate
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml deve ser válido");
+        assert_eq!(
+            parsed["weights_path"].as_str(),
+            Some("{weights_path}"),
+            "weights_path deve ser root-level"
+        );
+        let gen = parsed["generate"]
+            .as_mapping()
+            .expect("generate deve ser mapping");
+        assert!(
+            gen.get(&serde_yaml::Value::String("lora_scale".into()))
+                .is_some(),
+            "lora_scale deve estar dentro de generate: {yaml}"
+        );
+    }
+
+    #[test]
+    fn yaml_batch_size_newline_before_loras_block() {
+        // Request com 2 loras: batch_size NÃO deve colar com loras:
+        let uuid1 = "550e8400-e29b-41d4-a716-446655440000";
+        let uuid2 = "550e8400-e29b-41d4-a716-446655440001";
+        let json = format!(
+            r#"{{"prompt":"test loras","loras":[{{"modelId":"{uuid1}","scale":1.0}},{{"modelId":"{uuid2}","scale":0.8}}]}}"#
+        );
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(&json).unwrap();
+        let validated = validate_diffusion_generate_request(req).unwrap();
+        let yaml = generate_diffusion_generate_config_yaml("job-loras-nl", &validated, None);
+
+        // batch_size em linha separada de loras
+        assert!(
+            yaml.contains("batch_size: 1\n"),
+            "batch_size deve terminar com newline: {yaml}"
+        );
+        assert!(
+            yaml.contains("\n  loras:\n    - path:"),
+            "loras deve estar em linhas separadas com indent: {yaml}"
+        );
+        assert!(
+            !yaml.contains("1loras"),
+            "batch_size colou com loras: {yaml}"
+        );
+
+        // Parse YAML válido
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml deve ser válido");
+        let loras = parsed["generate"]["loras"]
+            .as_sequence()
+            .expect("loras deve ser sequência");
+        assert_eq!(loras.len(), 2);
+    }
+
+    #[test]
+    fn yaml_batch_size_newline_before_custom_block() {
+        // Request custom: batch_size NÃO deve colar com custom_checkpoint_path
+        let json = r#"{
+            "prompt": "test custom",
+            "customModelId": "550e8400-e29b-41d4-a716-446655440000"
+        }"#;
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(json).unwrap();
+        let validated = validate_diffusion_generate_request(req).unwrap();
+        let yaml =
+            generate_diffusion_generate_config_yaml("job-custom-nl", &validated, Some("sdxl"));
+
+        // batch_size em linha separada de custom_checkpoint_path
+        assert!(
+            yaml.contains("batch_size: 1\n"),
+            "batch_size deve terminar com newline: {yaml}"
+        );
+        assert!(
+            yaml.contains("\n  custom_checkpoint_path:"),
+            "custom_checkpoint_path deve estar em linha própria: {yaml}"
+        );
+        assert!(
+            !yaml.contains("1custom_checkpoint"),
+            "batch_size colou com custom: {yaml}"
+        );
+
+        // Parse YAML válido
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml deve ser válido");
+        let gen = parsed["generate"]
+            .as_mapping()
+            .expect("generate deve ser mapping");
+        assert!(gen
+            .get(&serde_yaml::Value::String("custom_checkpoint_path".into()))
+            .is_some());
+        assert!(gen.get(&serde_yaml::Value::String("arch".into())).is_some());
     }
 }

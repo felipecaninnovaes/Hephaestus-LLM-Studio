@@ -29,7 +29,7 @@ export function SegmentedControl<T extends string = string>({
     <div
       role="group"
       aria-label={ariaLabel}
-      className={`inline-flex rounded-full border border-white/10 bg-black/40 backdrop-blur-sm p-1 ${className}`.trim()}
+      className={`inline-flex gap-1 rounded-full border border-white/10 bg-black/40 backdrop-blur-sm p-1 ${className}`.trim()}
     >
       {options.map((opt) => {
         const active = opt.id === value;

@@ -2,9 +2,6 @@
   "$schema": "https://opencode.ai/config.json",
   "default_agent": "hephaestus",
   "agent": {
-    "build": {
-      "disable": true
-    },
     "plan": {
       "model": "opencode-go/qwen3.8-flash"
     },
@@ -216,10 +213,7 @@
   "mcp": {
     "graft": {
       "type": "local",
-      "command": [
-        "graft",
-        "mcp"
-      ],
+      "command": ["graft", "mcp"],
       "enabled": true
     },
     "chrome-devtools": {

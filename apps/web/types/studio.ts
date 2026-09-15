@@ -473,7 +473,8 @@ export function diffusionErrorMessage(code: string): string {
 }
 
 export interface DiffusionGenerateJobRequest {
-  baseModel: "sdxl" | "flux" | "sd15" | "flux-2-klein-4b";
+  baseModel?: "flux-2-klein-4b" | "sdxl" | "sd15";
+  customModelId?: string | null;
   prompt: string;
   negativePrompt?: string;
   width?: number;
@@ -483,8 +484,8 @@ export interface DiffusionGenerateJobRequest {
   seed?: number;
   quantization?: "none" | "4bit" | "8bit";
   distilled?: boolean;
-  weights?: string | null;
-  loraScale?: number;
+  batchSize?: number;
+  loras?: { modelId: string; scale: number }[];
   orchestratorId?: string | null;
 }
 
@@ -492,10 +493,12 @@ export function diffusionGenerateErrorMessage(code: string): string {
   switch (code) {
     case "invalid_request":
       return "Parâmetros de geração de imagem inválidos.";
+    case "unsupported_architecture":
+      return "Arquitetura de checkpoint custom não suportada no v1 (somente SDXL e SD 1.5).";
     case "queue_unavailable":
       return "Fila de geração indisponível — tente novamente.";
     case "not_found":
-      return "Pesos de modelo LoRA selecionados não encontrados.";
+      return "Pesos de modelo selecionados não encontrados.";
     default:
       return "Falha ao submeter job de geração de difusão.";
   }
@@ -517,6 +520,8 @@ export interface Model {
   url: string | null;
   jobId: string | null;
   createdAt: string;
+  kind?: "lora" | "checkpoint" | null;
+  arch?: "flux-2-klein-4b" | "sdxl" | "sd15" | null;
 }
 
 export interface ModelListResponse {
@@ -534,7 +539,25 @@ export function modelSourceLabel(source: ModelSource): string {
   }
 }
 
-export function modelErrorMessage(code: string): string {
+export function modelErrorMessage(code: string, message?: string): string {
+  // Quando o backend propaga mensagem específica (ADR-0023 D4 — sniff/hint),
+  // usá-la como texto pt-BR canônico com base nas palavras-chave do erro.
+  if (code === "invalid_request" && message) {
+    const lower = message.toLowerCase();
+    if (lower.includes("sniff and hint conflict")) {
+      return "Conflito entre detecção automática e hint manual. Verifique os seletores de kind/arch e tente novamente.";
+    }
+    if (lower.includes("kind/arch could not be determined")) {
+      return "Não foi possível detectar kind/arch automaticamente. Use os seletores manuais (kind + arch) e tente novamente.";
+    }
+    if (lower.includes("invalid kind or arch")) {
+      return "Valores de kind ou arch inválidos. Verifique os seletores e tente novamente.";
+    }
+    if (lower.includes("invalid safetensors header")) {
+      return "Cabeçalho do safetensors inválido ou corrompido. Verifique o arquivo.";
+    }
+  }
+
   switch (code) {
     case "invalid_request":
       return "Parâmetros inválidos.";
@@ -639,5 +662,38 @@ export function predictErrorMessage(code: string): string {
     default:
       return "Falha ao iniciar inferência.";
   }
+}
+
+/* ── Gerações (Galeria — ADR-0023 D5/D6) ──────────────────── */
+
+export interface Generation {
+  id: string;
+  jobId: string;
+  filename: string;
+  url: string | null;
+  thumbUrl: string | null;
+  width: number;
+  height: number;
+  seed: number;
+  prompt: string;
+  negativePrompt?: string | null;
+  params: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface GenerationList {
+  items: Generation[];
+  total: number;
+}
+
+export interface GenerationIdsRequest {
+  ids: string[];
+}
+
+/* ── LoRA Ref (ADR-0023 D3) ────────────────────────────────── */
+
+export interface LoraRef {
+  modelId: string;
+  scale: number;
 }
 

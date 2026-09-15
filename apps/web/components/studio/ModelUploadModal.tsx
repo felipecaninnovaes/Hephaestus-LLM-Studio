@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import { Button, Modal, SegmentedControl, showToast } from "@/components/ui";
+import { Button, Modal, SegmentedControl, Select, showToast } from "@/components/ui";
 import { IconUpload, IconBox } from "@/components/icons";
 import { uploadModel } from "@/lib/models";
 import { modelErrorMessage, type Model } from "@/types/studio";
+import type { SelectOption } from "@/components/ui/Select";
 
 interface ModelUploadModalProps {
   open: boolean;
@@ -19,6 +20,19 @@ const ENGINE_OPTIONS = [
   { id: "clip", label: "CLIP (Embeddings)" },
 ];
 
+const KIND_OPTIONS: SelectOption<string>[] = [
+  { value: "", label: "Detectar automaticamente (recomendado)" },
+  { value: "lora", label: "LoRA (adaptador)" },
+  { value: "checkpoint", label: "Checkpoint (modelo completo)" },
+];
+
+const ARCH_OPTIONS: SelectOption<string>[] = [
+  { value: "", label: "Auto" },
+  { value: "sdxl", label: "SDXL" },
+  { value: "sd15", label: "SD 1.5" },
+  { value: "flux-2-klein-4b", label: "FLUX.2 Klein 4B" },
+];
+
 export default function ModelUploadModal({
   open,
   onClose,
@@ -27,14 +41,23 @@ export default function ModelUploadModal({
   const [file, setFile] = useState<File | null>(null);
   const [name, setName] = useState("");
   const [engine, setEngine] = useState<"yolo" | "world" | "diffusion" | "clip">("yolo");
+  const [kind, setKind] = useState("");
+  const [arch, setArch] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const isDiffusionSafetensors =
+    engine === "diffusion" &&
+    file !== null &&
+    file.name.toLowerCase().endsWith(".safetensors");
 
   const reset = useCallback(() => {
     setFile(null);
     setName("");
     setEngine("yolo");
+    setKind("");
+    setArch("");
     setError(null);
   }, []);
 
@@ -59,6 +82,8 @@ export default function ModelUploadModal({
         file,
         engine,
         name: name.trim() || undefined,
+        kind: isDiffusionSafetensors && kind ? kind : undefined,
+        arch: isDiffusionSafetensors && arch ? arch : undefined,
       });
       showToast("Modelo enviado com sucesso.", "success");
       onUploaded(model);
@@ -69,7 +94,11 @@ export default function ModelUploadModal({
         typeof err === "object" && err !== null && "code" in err
           ? (err as { code: string }).code
           : "";
-      setError(modelErrorMessage(code));
+      const message =
+        typeof err === "object" && err !== null && "message" in err
+          ? (err as { message: string }).message
+          : "";
+      setError(modelErrorMessage(code, message));
     } finally {
       setBusy(false);
     }
@@ -158,11 +187,61 @@ export default function ModelUploadModal({
           <SegmentedControl
             options={ENGINE_OPTIONS}
             value={engine}
-            onChange={(v) => setEngine(v as "yolo" | "world" | "diffusion" | "clip")}
+            onChange={(v) => {
+              setEngine(v as "yolo" | "world" | "diffusion" | "clip");
+              // Limpar classificação ao mudar de engine
+              setKind("");
+              setArch("");
+            }}
             ariaLabel="Tipo de modelo"
             className="w-full justify-start"
           />
         </div>
+
+        {/* Classificação opcional — apenas para difusão + safetensors */}
+        {isDiffusionSafetensors && (
+          <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3.5 space-y-3">
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-zinc-400">
+                Classificação (opcional)
+              </span>
+            </div>
+
+            <Select
+              id="model-upload-kind"
+              label="Kind"
+              options={KIND_OPTIONS}
+              value={kind}
+              onChange={(val) => {
+                setKind(val);
+                // Limpar arch se não faz sentido
+                if (val !== "checkpoint" && arch) {
+                  // Permitir arch para lora também (confirmação), manter valor
+                }
+              }}
+              placeholder="Selecione o kind…"
+              disabled={busy}
+              fontMono
+              size="default"
+            />
+
+            <Select
+              id="model-upload-arch"
+              label="Arquitetura"
+              options={ARCH_OPTIONS}
+              value={arch}
+              onChange={(val) => setArch(val)}
+              placeholder="Selecione a arquitetura…"
+              disabled={busy}
+              fontMono
+              size="default"
+            />
+
+            <p className="font-mono text-[11px] text-zinc-500 leading-normal">
+              O estúdio detecta a arquitetura pelo arquivo. Use os seletores só se o upload falhar com erro de classificação.
+            </p>
+          </div>
+        )}
 
         {/* Erro */}
         {error && (
@@ -171,7 +250,7 @@ export default function ModelUploadModal({
           </div>
         )}
 
-        {/* Ações */}
+        {/* Ações — One CTA */}
         <div className="flex items-center justify-end gap-2 pt-1">
           <Button
             type="button"

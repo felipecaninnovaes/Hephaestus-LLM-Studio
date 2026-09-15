@@ -35,6 +35,7 @@ struct AppState {
     gpu_devices: Option<String>,
     gpu_allow_mock: bool,
     pairing: Arc<PairingState>,
+    daemon_state: Option<Arc<orchestrator::daemon::DaemonState>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -203,6 +204,7 @@ async fn dispatch_handler(State(state): State<AppState>, body: Bytes) -> Respons
     let active_jobs = Arc::clone(&state.active_jobs);
     let gpu_devices = state.gpu_devices.clone();
     let gpu_allow_mock = state.gpu_allow_mock;
+    let daemon_state = state.daemon_state.clone();
 
     // Spawna pipeline assíncrono (D5/D6/D8)
     tokio::spawn(async move {
@@ -214,6 +216,7 @@ async fn dispatch_handler(State(state): State<AppState>, body: Bytes) -> Respons
             active_jobs,
             gpu_devices,
             gpu_allow_mock,
+            daemon_state,
         )
         .await;
     });
@@ -267,6 +270,7 @@ async fn abort_handler(State(state): State<AppState>, body: Bytes) -> Response {
                     metrics: None,
                     error: Some("job not found or already finished".to_string()),
                     artifacts: None,
+                    meta_content: None,
                 },
             )
             .await;
@@ -418,6 +422,132 @@ async fn main() {
         tracing::info!("ORCH_GPU_ALLOW_MOCK=1 — guarda anti-mock desabilitada");
     }
 
+    // Daemon config (D1 — ADR-0023).
+    // Trata string vazia como ausente: compose emite `DIFFUSION_DAEMON_URL=`
+    // (presença + valor vazio) e o unwrap_or vê Ok("") → daemon externo errado.
+    let daemon_enabled = std::env::var("DIFFUSION_DAEMON_ENABLED")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .as_deref()
+        == Some("1");
+    let daemon_port: u16 = std::env::var("DIFFUSION_DAEMON_PORT")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "8766".into())
+        .parse()
+        .unwrap_or(8766);
+    let daemon_idle_ttl: u64 = std::env::var("DIFFUSION_DAEMON_IDLE_TTL_S")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "600".into())
+        .parse()
+        .unwrap_or(600);
+    let daemon_url_override = std::env::var("DIFFUSION_DAEMON_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+
+    let daemon_state = if daemon_enabled {
+        let image = std::env::var("TRAINER_IMAGE_DIFFUSION")
+            .unwrap_or_else(|_| "hephaestus/trainer-difusao:local".into());
+        let client: Arc<dyn orchestrator::daemon::DaemonClient> =
+            if let Some(ref url) = daemon_url_override {
+                Arc::new(orchestrator::daemon::HttpDaemonClient::new(url))
+            } else {
+                Arc::new(orchestrator::daemon::HttpDaemonClient::new(&format!(
+                    "http://localhost:{daemon_port}"
+                )))
+            };
+
+        // Mesmos volumes/mounts do one-shot (build_docker_run_args).
+        let vol_datasets_daemon =
+            std::env::var("ORCH_VOL_DATASETS").unwrap_or_else(|_| "infra_datasets".into());
+        let vol_outputs_daemon =
+            std::env::var("ORCH_VOL_OUTPUTS").unwrap_or_else(|_| "infra_outputs".into());
+        let daemon_volumes: Vec<(String, String)> = vec![
+            (vol_datasets_daemon, "/data/datasets".to_string()),
+            (vol_outputs_daemon, "/data/outputs".to_string()),
+        ];
+
+        // Mesmas envs do one-shot: ENGINE_MOCK=0 quando GPU, HF cache paths, etc.
+        let mut daemon_env: Vec<(String, String)> = Vec::new();
+        if gpu_devices_boot.is_some() {
+            daemon_env.push(("ENGINE_MOCK".to_string(), "0".to_string()));
+        }
+        // HF cache paths para diffusion (igual one-shot L1473-1493)
+        daemon_env.push((
+            "HF_HOME".to_string(),
+            "/data/outputs/.cache/huggingface".to_string(),
+        ));
+        daemon_env.push((
+            "HF_HUB_CACHE".to_string(),
+            "/data/outputs/.cache/huggingface/hub".to_string(),
+        ));
+        daemon_env.push((
+            "TRANSFORMERS_CACHE".to_string(),
+            "/data/outputs/.cache/huggingface/hub".to_string(),
+        ));
+        daemon_env.push((
+            "DIFFUSERS_CACHE".to_string(),
+            "/data/outputs/.cache/huggingface/hub".to_string(),
+        ));
+        daemon_env.push((
+            "TORCH_HOME".to_string(),
+            "/data/outputs/.cache/torch".to_string(),
+        ));
+        if let Ok(token) =
+            std::env::var("HF_TOKEN").or_else(|_| std::env::var("HUGGING_FACE_HUB_TOKEN"))
+        {
+            if !token.is_empty() {
+                daemon_env.push(("HF_TOKEN".to_string(), token.clone()));
+                daemon_env.push(("HUGGING_FACE_HUB_TOKEN".to_string(), token));
+            }
+        }
+        if let Ok(model_id) = std::env::var("FLUX_MODEL_ID") {
+            if !model_id.is_empty() {
+                daemon_env.push(("FLUX_MODEL_ID".to_string(), model_id));
+            }
+        }
+
+        let daemon_network = std::env::var("DIFFUSION_DAEMON_NETWORK")
+            .ok()
+            .filter(|v| !v.trim().is_empty());
+
+        let launcher: Arc<dyn orchestrator::daemon::DaemonLauncher> =
+            Arc::new(orchestrator::daemon::DockerDaemonLauncher::new(
+                &image,
+                "diffusion-daemon",
+                daemon_volumes,
+                daemon_port,
+                gpu_devices_boot.clone(),
+                daemon_env,
+                daemon_network,
+            ));
+        let ds = Arc::new(orchestrator::daemon::DaemonState::new(
+            &image,
+            daemon_port,
+            daemon_idle_ttl,
+            client,
+            launcher,
+        ));
+        tracing::info!(
+            "diffusion daemon habilitado: port={daemon_port}, idle_ttl={daemon_idle_ttl}s"
+        );
+        if let Some(ref url) = daemon_url_override {
+            tracing::info!("DIFFUSION_DAEMON_URL={url} — daemon externo, spawn desabilitado");
+        }
+
+        // Spawn idle TTL housekeeping task (D1)
+        let ds_clone = Arc::clone(&ds);
+        tokio::spawn(async move {
+            orchestrator::daemon::idle_ttl_housekeeping(ds_clone).await;
+        });
+
+        Some(ds)
+    } else {
+        tracing::info!("diffusion daemon desabilitado (DIFFUSION_DAEMON_ENABLED=0) — one-shot");
+        None
+    };
+
     let state = AppState {
         s3: Arc::clone(&s3),
         report_client: Arc::clone(&report_client),
@@ -427,6 +557,7 @@ async fn main() {
         gpu_devices: gpu_devices_boot.clone(),
         gpu_allow_mock: gpu_allow_mock_boot,
         pairing,
+        daemon_state,
     };
 
     // Heartbeat loop (~2s, D4/D9).

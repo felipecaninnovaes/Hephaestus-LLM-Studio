@@ -1,5 +1,7 @@
 # ADR-0020 — Playground de Difusão: geração Text-to-Image com LoRA e quantização
 
+> **Estendido/alterado pela ADR-0023** — ver `docs/adr/0023-aba-geracao.md`. As decisões D0 e D3 abaixo foram superssedadas: a aba Playground virou exclusivamente Detecção YOLO (ADR-0023 D0), e a geração de imagens ganhou aba dedicada `/geracao` com daemon quente, batch, multi-LoRA, custom, galeria persistente e comparador. O payload de D0 foi estendido com `batchSize`, `loras[]` e `customModelId` (ADR-0023 D3/D4), com retrocompat de `weights`/`loraScale` deprecated.
+
 - **Status:** ACEITA
 - **Data:** 2026-09-13
 - **Componentes:** `packages/contracts` (OpenAPI 0.19.0 → 0.20.0), `services/api-principal` (BFF: `POST /api/jobs/diffusion/generate`, validação + `generate_diffusion_generate_config_yaml`), `services/manager` (job `engine='diffusion'`, `mode='generate'`, `kind='diffusion_generate'`, staging de `weights_ref`), `services/orchestrator` (matriz `(diffusion, generate)` despacha subcomando `generate` e coleta artefato `generated.png`), `engines/trainer-difusao` (subcomando `generate` com mock determinístico e pipelines reais FLUX.2 Klein 4B, SDXL e SD 1.5), `apps/web` (página `/playground` com abas de modo Difusão vs YOLO, painel de controle Dark-Only, canvas de visualização e histórico de sessão).

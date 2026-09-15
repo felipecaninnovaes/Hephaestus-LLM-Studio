@@ -34,13 +34,13 @@ export const Slider = forwardRef<HTMLInputElement, SliderProps>(
     return (
       <div className={`w-full ${className}`.trim()}>
         {(label || formatValue) && (
-          <div className="mb-1.5 flex items-center justify-between font-mono text-[11px]">
+          <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 font-mono text-[11px]">
             {label && (
               <span className="tracking-caps font-medium uppercase text-zinc-300">
                 {label}
               </span>
             )}
-            <span className="font-bold text-zinc-100">{formatted}</span>
+            <span className="shrink-0 font-bold text-zinc-100">{formatted}</span>
           </div>
         )}
         <input

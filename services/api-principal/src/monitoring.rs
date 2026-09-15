@@ -76,6 +76,12 @@ pub struct ModelWeightResponse {
     pub job_id: Option<String>,
     #[serde(rename = "createdAt")]
     pub created_at: String,
+    /// Tipo de modelo (ADR-0023 D4): lora ou checkpoint; null para engines não-difusão.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Arquitetura (ADR-0023 D4): flux-2-klein-4b, sdxl ou sd15; null para engines não-difusão.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arch: Option<String>,
 }
 
 /// Lista de modelos/pesos.
@@ -182,6 +188,8 @@ pub async fn get_models(State(state): State<AppState>) -> Response {
             url,
             job_id: m.job_id,
             created_at: m.created_at,
+            kind: m.kind,
+            arch: m.arch,
         });
     }
     (
@@ -387,6 +395,8 @@ mod tests {
             path: "artifacts/550e8400-e29b-41d4-a716-446655440004/best.pt".into(),
             job_id: Some("550e8400-e29b-41d4-a716-446655440004".into()),
             created_at: "2026-09-09T12:00:00Z".into(),
+            kind: None,
+            arch: None,
         }
     }
 
@@ -530,6 +540,8 @@ mod tests {
             path: "models/yolo/550e8400-e29b-41d4-a716-446655440005/custom.pt".into(),
             job_id: None,
             created_at: "2026-09-10T12:00:00Z".into(),
+            kind: None,
+            arch: None,
         };
         mock.list_models_result = Some(vec![model]);
         let state = test_state(mock);

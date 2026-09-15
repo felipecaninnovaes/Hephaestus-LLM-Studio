@@ -131,6 +131,10 @@ pub struct ReportRequest {
     pub metrics: Option<serde_json::Value>,
     pub error: Option<String>,
     pub artifacts: Option<Vec<ArtifactItem>>,
+    /// Conteúdo do generation_meta.json (JSONL) — enviado pelo orquestrador
+    /// para o hook de generations (D5 — ADR-0023). Campo opcional retrocompat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta_content: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -181,6 +185,57 @@ pub struct ListJobsResponse {
 #[derive(Debug, Clone, Serialize)]
 pub struct ArtifactsListResponse {
     pub items: Vec<ArtifactRow>,
+}
+
+// ---------------------------------------------------------------------------
+// LoRA / Custom checkpoint resolution (D3/D4 — ADR-0023)
+// ---------------------------------------------------------------------------
+
+/// Referência resolvida de LoRA para o dispatch (D3).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolvedLora {
+    pub s3_key: String,
+    pub md5: String,
+    pub scale: f64,
+}
+
+/// Referência resolvida de checkpoint custom para o dispatch (D4).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolvedCheckpoint {
+    pub s3_key: String,
+    pub md5: String,
+}
+
+// ---------------------------------------------------------------------------
+// Generations (D5 — ADR-0023)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GenerationRow {
+    pub id: String,
+    pub job_id: String,
+    pub s3_key: String,
+    pub thumb_s3_key: Option<String>,
+    pub filename: String,
+    pub seed: i64,
+    pub prompt: String,
+    pub negative_prompt: Option<String>,
+    pub width: i32,
+    pub height: i32,
+    pub params: serde_json::Value,
+    pub created_at: String,
+    pub deleted_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ListGenerationsResponse {
+    pub items: Vec<GenerationRow>,
+    pub total: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeleteGenerationsRequest {
+    pub ids: Vec<Uuid>,
 }
 
 // ---------------------------------------------------------------------------
@@ -474,6 +529,113 @@ pub async fn create_job(
             _ => {}
         }
         params["orchestrator_hint"] = serde_json::json!(hint_uuid.to_string());
+    }
+
+    // -------------------------------------------------------------------------
+    // Resolução multi-LoRA + custom checkpoint (D3/D4 — ADR-0023).
+    // Params contém `loras: [{modelId, scale}]` e `customModelId` (uuid|null).
+    // Lê de forma tolerante: campos ausentes = legado (sem loras/custom).
+    // -------------------------------------------------------------------------
+    if req.engine == "diffusion" && req.mode == "generate" {
+        // Resolve loras.
+        if let Some(loras_arr) = params.get("loras").and_then(|v| v.as_array()) {
+            if loras_arr.len() > 4 {
+                return Err(ManagerError::InvalidRequest(
+                    "loras must have at most 4 items".into(),
+                ));
+            }
+            let mut resolved_loras: Vec<ResolvedLora> = Vec::with_capacity(loras_arr.len());
+            for (i, lora_entry) in loras_arr.iter().enumerate() {
+                let model_id_str = lora_entry
+                    .get("modelId")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        ManagerError::InvalidRequest(format!("loras[{i}].modelId is required"))
+                    })?;
+                let model_uuid = Uuid::parse_str(model_id_str).map_err(|_| {
+                    ManagerError::InvalidRequest(format!("loras[{i}].modelId must be a valid UUID"))
+                })?;
+                let scale = lora_entry
+                    .get("scale")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(1.0);
+
+                // Resolve model row.
+                let row: Option<(String, String, Option<String>, Option<String>)> =
+                    sqlx::query_as("SELECT s3_key, hash, kind, arch FROM models WHERE id = $1")
+                        .bind(model_uuid)
+                        .fetch_optional(pool)
+                        .await
+                        .map_err(|e| {
+                            ManagerError::Internal(format!("resolve lora model {i}: {e}"))
+                        })?;
+
+                match row {
+                    None => {
+                        return Err(ManagerError::InvalidRequest(format!(
+                            "lora modelId at index {i} not found"
+                        )));
+                    }
+                    Some((s3_key, hash, kind, _arch)) => {
+                        if kind.as_deref() != Some("lora") {
+                            return Err(ManagerError::InvalidRequest(format!(
+                                "lora modelId at index {i} must have kind='lora', got {:?}",
+                                kind
+                            )));
+                        }
+                        resolved_loras.push(ResolvedLora {
+                            s3_key,
+                            md5: hash,
+                            scale,
+                        });
+                    }
+                }
+            }
+            // Grava loras resolvidos em params.
+            if let Ok(v) = serde_json::to_value(&resolved_loras) {
+                params["loras"] = v;
+            }
+        }
+
+        // Resolve customModelId.
+        if let Some(custom_id_str) = params.get("customModelId").and_then(|v| v.as_str()) {
+            let custom_uuid = Uuid::parse_str(custom_id_str).map_err(|_| {
+                ManagerError::InvalidRequest("customModelId must be a valid UUID".into())
+            })?;
+
+            let row: Option<(String, String, Option<String>, Option<String>)> =
+                sqlx::query_as("SELECT s3_key, hash, kind, arch FROM models WHERE id = $1")
+                    .bind(custom_uuid)
+                    .fetch_optional(pool)
+                    .await
+                    .map_err(|e| ManagerError::Internal(format!("resolve custom model: {e}")))?;
+
+            match row {
+                None => {
+                    return Err(ManagerError::InvalidRequest(
+                        "customModelId not found".into(),
+                    ));
+                }
+                Some((s3_key, hash, kind, arch)) => {
+                    if kind.as_deref() != Some("checkpoint") {
+                        return Err(ManagerError::InvalidRequest(format!(
+                            "customModelId must have kind='checkpoint', got {:?}",
+                            kind
+                        )));
+                    }
+                    let arch_val = arch.as_deref().unwrap_or("");
+                    if !matches!(arch_val, "sdxl" | "sd15") {
+                        return Err(ManagerError::InvalidRequest(format!(
+                            "customModelId arch must be 'sdxl' or 'sd15', got '{arch_val}'"
+                        )));
+                    }
+                    let resolved = ResolvedCheckpoint { s3_key, md5: hash };
+                    if let Ok(v) = serde_json::to_value(&resolved) {
+                        params["custom_checkpoint"] = v;
+                    }
+                }
+            }
+        }
     }
 
     sqlx::query(
@@ -1086,6 +1248,158 @@ pub async fn report_job(
                 }
             }
 
+            // Hook generations (D5 — ADR-0023): job diffusion generate done com
+            // artefato generated_meta → parse JSONL → INSERT em generations.
+            // Best-effort: falha de parse/log não impede o report done.
+            {
+                let job_meta: Option<(String, String)> =
+                    match sqlx::query_as::<_, (String, String)>(
+                        "SELECT engine, mode FROM jobs WHERE id = $1",
+                    )
+                    .bind(id)
+                    .fetch_optional(pool)
+                    .await
+                    {
+                        Ok(opt) => opt,
+                        Err(e) => {
+                            tracing::warn!(
+                                "hook generations: falha ao ler engine/mode do job {id}: {e}"
+                            );
+                            None
+                        }
+                    };
+
+                if let Some((engine, mode)) = job_meta {
+                    if engine == "diffusion" && mode == "generate" {
+                        // Procura artefato generated_meta nos artifacts do report.
+                        let meta_artifact = report
+                            .artifacts
+                            .as_ref()
+                            .and_then(|arts| arts.iter().find(|a| a.kind == "generated_meta"));
+
+                        if let Some(_meta_art) = meta_artifact {
+                            // Usa meta_content enviado pelo orquestrador no report.
+                            // Retrocompat: se meta_content não vier, tenta ler de job_artifacts.content.
+                            let content: Option<String> = if report.meta_content.is_some() {
+                                report.meta_content.clone()
+                            } else {
+                                sqlx::query_scalar(
+                                    "SELECT content FROM job_artifacts WHERE job_id = $1 AND kind = 'generated_meta' LIMIT 1",
+                                )
+                                .bind(id)
+                                .fetch_optional(pool)
+                                .await
+                                .ok()
+                                .flatten()
+                            };
+
+                            if let Some(jsonl_content) = content {
+                                for line in jsonl_content.lines() {
+                                    let line = line.trim();
+                                    if line.is_empty() {
+                                        continue;
+                                    }
+                                    match serde_json::from_str::<serde_json::Value>(line) {
+                                        Ok(entry) => {
+                                            let filename = entry
+                                                .get("filename")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("");
+                                            if filename.is_empty() {
+                                                continue;
+                                            }
+                                            let s3_key = format!("artifacts/{id}/{filename}");
+                                            let thumb_s3_key = entry
+                                                .get("thumb_filename")
+                                                .or_else(|| entry.get("thumb"))
+                                                .and_then(|v| v.as_str())
+                                                .map(|t| format!("artifacts/{id}/{t}"));
+                                            let seed = entry
+                                                .get("seed")
+                                                .and_then(|v| v.as_i64())
+                                                .unwrap_or(0);
+                                            let prompt = entry
+                                                .get("prompt")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("");
+                                            let negative_prompt = entry
+                                                .get("negative_prompt")
+                                                .and_then(|v| v.as_str());
+                                            let width = entry
+                                                .get("width")
+                                                .and_then(|v| v.as_i64())
+                                                .unwrap_or(512)
+                                                as i32;
+                                            let height = entry
+                                                .get("height")
+                                                .and_then(|v| v.as_i64())
+                                                .unwrap_or(512)
+                                                as i32;
+
+                                            // Params = RESTO da linha (batch_index, batch_size, etc.)
+                                            let mut gen_params = entry.clone();
+                                            // Remove campos já colunas explícitas.
+                                            if let Some(obj) = gen_params.as_object_mut() {
+                                                obj.remove("filename");
+                                                obj.remove("thumb_filename");
+                                                obj.remove("thumb");
+                                                obj.remove("seed");
+                                                obj.remove("prompt");
+                                                obj.remove("negative_prompt");
+                                                obj.remove("width");
+                                                obj.remove("height");
+                                            }
+
+                                            let result = sqlx::query(
+                                                "INSERT INTO generations \
+                                                 (id, job_id, s3_key, thumb_s3_key, filename, seed, \
+                                                  prompt, negative_prompt, width, height, params) \
+                                                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+                                                 ON CONFLICT (s3_key) DO NOTHING",
+                                            )
+                                            .bind(Uuid::new_v4())
+                                            .bind(id)
+                                            .bind(&s3_key)
+                                            .bind(&thumb_s3_key)
+                                            .bind(filename)
+                                            .bind(seed)
+                                            .bind(prompt)
+                                            .bind(negative_prompt)
+                                            .bind(width)
+                                            .bind(height)
+                                            .bind(&gen_params)
+                                            .execute(pool)
+                                            .await;
+
+                                            if let Err(e) = result {
+                                                tracing::warn!(
+                                                    job_id = %id,
+                                                    s3_key = %s3_key,
+                                                    error = %e,
+                                                    "falha ao inserir generation (best-effort)"
+                                                );
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                job_id = %id,
+                                                error = %e,
+                                                "hook generations: falha ao parsear linha do meta (best-effort)"
+                                            );
+                                        }
+                                    }
+                                }
+                            } else {
+                                tracing::warn!(
+                                    job_id = %id,
+                                    "hook generations: generated_meta sem content em job_artifacts"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
             sqlx::query(
                 "UPDATE jobs SET status = 'done', finished_at = now(), progress = 1.0 WHERE id = $1",
             )
@@ -1501,6 +1815,12 @@ pub struct ModelItem {
     pub path: String,
     pub job_id: Option<String>,
     pub created_at: String,
+    /// Tipo do modelo para engine='diffusion': 'lora' ou 'checkpoint' (D4 — ADR-0023).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Arquitetura do modelo para engine='diffusion': 'flux-2-klein-4b', 'sdxl', 'sd15' (D4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arch: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1521,8 +1841,10 @@ pub async fn list_models(pool: &PgPool) -> Result<ModelsResponse, ManagerError> 
         String,
         Option<Uuid>,
         DateTime<Utc>,
+        Option<String>,
+        Option<String>,
     )> = sqlx::query_as(
-        "SELECT id, name, engine, model, source, hash, bytes, s3_key, job_id, created_at \
+        "SELECT id, name, engine, model, source, hash, bytes, s3_key, job_id, created_at, kind, arch \
          FROM models ORDER BY created_at DESC",
     )
     .fetch_all(pool)
@@ -1542,6 +1864,8 @@ pub async fn list_models(pool: &PgPool) -> Result<ModelsResponse, ManagerError> 
             path: r.7, // s3_key → path (wire compat)
             job_id: r.8.map(|u| u.to_string()),
             created_at: r.9.to_rfc3339(),
+            kind: r.10,
+            arch: r.11,
         })
         .collect();
 
@@ -1564,6 +1888,12 @@ pub struct CreateModelRequest {
     pub hash: String,
     pub bytes: i64,
     pub job_id: Option<Uuid>,
+    /// Tipo do modelo para engine='diffusion': 'lora' ou 'checkpoint'.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Arquitetura do modelo para engine='diffusion': 'flux-2-klein-4b', 'sdxl', 'sd15'.
+    #[serde(default)]
+    pub arch: Option<String>,
 }
 
 /// Validação pura do CreateModelRequest (padrão da casa — função testável).
@@ -1602,6 +1932,37 @@ fn validate_create_model(req: &CreateModelRequest) -> Result<(), ManagerError> {
             req.name.len()
         )));
     }
+    // Validação de kind/arch: só aceitos para engine='diffusion'.
+    if req.kind.is_some() || req.arch.is_some() {
+        if req.engine != "diffusion" {
+            return Err(ManagerError::InvalidRequest(format!(
+                "kind/arch are only allowed for engine='diffusion', got engine='{}'",
+                req.engine
+            )));
+        }
+    }
+    if let Some(ref kind) = req.kind {
+        if kind != "lora" && kind != "checkpoint" {
+            return Err(ManagerError::InvalidRequest(format!(
+                "kind must be 'lora' or 'checkpoint', got '{}'",
+                kind
+            )));
+        }
+    }
+    if let Some(ref arch) = req.arch {
+        if arch != "flux-2-klein-4b" && arch != "sdxl" && arch != "sd15" {
+            return Err(ManagerError::InvalidRequest(format!(
+                "arch must be 'flux-2-klein-4b', 'sdxl', or 'sd15', got '{}'",
+                arch
+            )));
+        }
+    }
+    // kind=checkpoint exige arch (D4 — flux custom fora da v1 no upload).
+    if req.kind.as_deref() == Some("checkpoint") && req.arch.is_none() {
+        return Err(ManagerError::InvalidRequest(
+            "checkpoint requires arch ('flux-2-klein-4b', 'sdxl', or 'sd15')".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -1613,9 +1974,26 @@ pub async fn create_model(
 ) -> Result<ModelItem, ManagerError> {
     validate_create_model(&req)?;
 
-    let result = sqlx::query(
-        "INSERT INTO models (id, engine, name, model, s3_key, source, url, hash, bytes, job_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+    let row: Result<
+        Option<(
+            Uuid,
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+            i64,
+            String,
+            Option<Uuid>,
+            DateTime<Utc>,
+            Option<String>,
+            Option<String>,
+        )>,
+        sqlx::Error,
+    > = sqlx::query_as(
+        "INSERT INTO models (id, engine, name, model, s3_key, source, url, hash, bytes, job_id, kind, arch) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
+         RETURNING id, name, engine, model, source, hash, bytes, s3_key, job_id, created_at, kind, arch",
     )
     .bind(req.id)
     .bind(&req.engine)
@@ -1627,22 +2005,29 @@ pub async fn create_model(
     .bind(&req.hash)
     .bind(req.bytes)
     .bind(req.job_id)
-    .execute(pool)
+    .bind(&req.kind)
+    .bind(&req.arch)
+    .fetch_optional(pool)
     .await;
 
-    match result {
-        Ok(_) => Ok(ModelItem {
-            id: req.id.to_string(),
-            name: req.name,
-            engine: req.engine,
-            model: req.model,
-            source: req.source,
-            hash: req.hash,
-            bytes: req.bytes,
-            path: req.s3_key,
-            job_id: req.job_id.map(|u| u.to_string()),
-            created_at: chrono::Utc::now().to_rfc3339(),
+    match row {
+        Ok(Some(r)) => Ok(ModelItem {
+            id: r.0.to_string(),
+            name: r.1,
+            engine: r.2,
+            model: r.3,
+            source: r.4,
+            hash: r.5,
+            bytes: r.6,
+            path: r.7,
+            job_id: r.8.map(|u| u.to_string()),
+            created_at: r.9.to_rfc3339(),
+            kind: r.10,
+            arch: r.11,
         }),
+        Ok(None) => Err(ManagerError::Internal(
+            "insert model: no row returned".into(),
+        )),
         Err(e) => {
             // A3: checagem robusta de violação de unicidade (sqlx code 23505).
             if e.as_database_error()
@@ -1671,9 +2056,11 @@ pub async fn delete_model(pool: &PgPool, id: Uuid) -> Result<ModelItem, ManagerE
         String,
         Option<Uuid>,
         DateTime<Utc>,
+        Option<String>,
+        Option<String>,
     )> = sqlx::query_as(
         "DELETE FROM models WHERE id = $1 \
-         RETURNING id, name, engine, model, source, hash, bytes, s3_key, job_id, created_at",
+         RETURNING id, name, engine, model, source, hash, bytes, s3_key, job_id, created_at, kind, arch",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -1692,6 +2079,8 @@ pub async fn delete_model(pool: &PgPool, id: Uuid) -> Result<ModelItem, ManagerE
             path: r.7,
             job_id: r.8.map(|u| u.to_string()),
             created_at: r.9.to_rfc3339(),
+            kind: r.10,
+            arch: r.11,
         }),
         None => Err(ManagerError::NotFound),
     }
@@ -1857,9 +2246,11 @@ pub async fn update_model(
         String,
         Option<Uuid>,
         DateTime<Utc>,
+        Option<String>,
+        Option<String>,
     )> = sqlx::query_as(
         "UPDATE models SET name = $1 WHERE id = $2 \
-         RETURNING id, name, engine, model, source, hash, bytes, s3_key, job_id, created_at",
+         RETURNING id, name, engine, model, source, hash, bytes, s3_key, job_id, created_at, kind, arch",
     )
     .bind(clean_name)
     .bind(id)
@@ -1879,6 +2270,8 @@ pub async fn update_model(
             path: r.7,
             job_id: r.8.map(|u| u.to_string()),
             created_at: r.9.to_rfc3339(),
+            kind: r.10,
+            arch: r.11,
         }),
         None => Err(ManagerError::NotFound),
     }
@@ -1922,6 +2315,154 @@ pub async fn recover_jobs(pool: &PgPool) -> Result<u64, ManagerError> {
     .map_err(|e| ManagerError::Internal(format!("recover jobs: {e}")))?;
 
     Ok(result.rows_affected())
+}
+
+// ---------------------------------------------------------------------------
+// Generations (D5 — ADR-0023) — rotas internas
+// ---------------------------------------------------------------------------
+
+/// Lista generations com paginação e filtros (GET /internal/generations).
+pub async fn list_generations(
+    pool: &PgPool,
+    limit: i64,
+    offset: i64,
+    deleted: bool,
+    base_model: Option<&str>,
+) -> Result<ListGenerationsResponse, ManagerError> {
+    let mut where_clauses = Vec::new();
+    let mut bind_idx: u32 = 1;
+
+    if deleted {
+        where_clauses.push("g.deleted_at IS NOT NULL".to_string());
+    } else {
+        where_clauses.push("g.deleted_at IS NULL".to_string());
+    }
+
+    if base_model.is_some() {
+        where_clauses.push(format!("g.params->>'base_model' = ${bind_idx}"));
+        bind_idx += 1;
+    }
+
+    let where_sql = if where_clauses.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", where_clauses.join(" AND "))
+    };
+
+    // Count query.
+    let count_sql = format!("SELECT COUNT(*) FROM generations g {where_sql}");
+    let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
+    if let Some(bm) = base_model {
+        count_q = count_q.bind(bm);
+    }
+    let total: i64 = count_q
+        .fetch_one(pool)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("count generations: {e}")))?;
+
+    // Main query.
+    let limit_idx = bind_idx;
+    let offset_idx = bind_idx + 1;
+    let main_sql = format!(
+        "SELECT g.id, g.job_id, g.s3_key, g.thumb_s3_key, g.filename, g.seed, \
+         g.prompt, g.negative_prompt, g.width, g.height, g.params, g.created_at, g.deleted_at \
+         FROM generations g {where_sql} \
+         ORDER BY g.created_at DESC LIMIT ${limit_idx} OFFSET ${offset_idx}"
+    );
+    let mut main_q = sqlx::query(&main_sql);
+    if let Some(bm) = base_model {
+        main_q = main_q.bind(bm);
+    }
+    main_q = main_q.bind(limit).bind(offset);
+
+    let rows = main_q
+        .fetch_all(pool)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("list generations: {e}")))?;
+
+    let items = rows
+        .into_iter()
+        .map(|r| {
+            let id: Uuid = r.get("id");
+            let job_id: Uuid = r.get("job_id");
+            let created_at: DateTime<Utc> = r.get("created_at");
+            let deleted_at: Option<DateTime<Utc>> = r.get("deleted_at");
+            GenerationRow {
+                id: id.to_string(),
+                job_id: job_id.to_string(),
+                s3_key: r.get("s3_key"),
+                thumb_s3_key: r.get("thumb_s3_key"),
+                filename: r.get("filename"),
+                seed: r.get("seed"),
+                prompt: r.get("prompt"),
+                negative_prompt: r.get("negative_prompt"),
+                width: r.get("width"),
+                height: r.get("height"),
+                params: r.get("params"),
+                created_at: created_at.to_rfc3339(),
+                deleted_at: deleted_at.map(|t| t.to_rfc3339()),
+            }
+        })
+        .collect();
+
+    Ok(ListGenerationsResponse { items, total })
+}
+
+/// Busca uma generation por ID — exclui soft-deletadas (deleted_at IS NULL).
+/// Usado pelo proxy de imagem da api-principal: GET /internal/generations/:id.
+pub async fn get_generation(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<GenerationRow>, ManagerError> {
+    let row = sqlx::query(
+        "SELECT id, job_id, s3_key, thumb_s3_key, filename, seed, prompt, negative_prompt, \
+         width, height, params, created_at, deleted_at \
+         FROM generations WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("get generation: {e}")))?;
+
+    Ok(row.map(|r| {
+        let id: Uuid = r.get("id");
+        let job_id: Uuid = r.get("job_id");
+        let created_at: DateTime<Utc> = r.get("created_at");
+        let deleted_at: Option<DateTime<Utc>> = r.get("deleted_at");
+        GenerationRow {
+            id: id.to_string(),
+            job_id: job_id.to_string(),
+            s3_key: r.get("s3_key"),
+            thumb_s3_key: r.get("thumb_s3_key"),
+            filename: r.get("filename"),
+            seed: r.get("seed"),
+            prompt: r.get("prompt"),
+            negative_prompt: r.get("negative_prompt"),
+            width: r.get("width"),
+            height: r.get("height"),
+            params: r.get("params"),
+            created_at: created_at.to_rfc3339(),
+            deleted_at: deleted_at.map(|t| t.to_rfc3339()),
+        }
+    }))
+}
+
+/// Soft delete de generations por IDs (POST /internal/generations/delete).
+/// Idempotente: IDs inexistentes são ignorados.
+pub async fn soft_delete_generations(pool: &PgPool, ids: &[Uuid]) -> Result<(), ManagerError> {
+    if ids.is_empty() || ids.len() > 100 {
+        return Err(ManagerError::InvalidRequest(
+            "ids must have 1..100 items".into(),
+        ));
+    }
+    sqlx::query(
+        "UPDATE generations SET deleted_at = now() WHERE id = ANY($1) AND deleted_at IS NULL",
+    )
+    .bind(ids)
+    .execute(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("soft delete generations: {e}")))?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -2110,6 +2651,25 @@ pub async fn revoke_orchestrator(pool: &PgPool, id: Uuid) -> Result<(), ManagerE
 /// declarada primeiro, maior GPU primeiro, tie-break por nome.
 ///
 /// Retorna `true` se um job foi despachado, `false` se não havia job na fila.
+
+/// Resolve imagem do container para engine "diffusion".
+///
+/// Regra: env `DIFFUSION_TRAINER_IMAGE` explícito SEMPRE vence.
+/// Quando o env está ausente, herda a tag (:gpu/:local) da `image` base
+/// (TRAINER_IMAGE) — preservando o comportamento TrueNAS com :gpu.
+pub fn resolve_diffusion_image(image: &str) -> String {
+    let env_diff = std::env::var("DIFFUSION_TRAINER_IMAGE").unwrap_or_default();
+    if !env_diff.is_empty() {
+        env_diff
+    } else if image.ends_with(":gpu") || image.contains(":gpu") {
+        "hephaestus/trainer-difusao:gpu".to_string()
+    } else if image.contains("trainer-yolo") {
+        image.replace("trainer-yolo", "trainer-difusao")
+    } else {
+        image.to_string()
+    }
+}
+
 pub async fn dispatch_next(
     pool: &PgPool,
     orch_client: &dyn OrchestratorClient,
@@ -2257,23 +2817,23 @@ pub async fn dispatch_next(
     // Extrai weights_ref do params se presente (ADR-0012 D5/I.2b).
     let weights_ref = params.as_ref().and_then(|p| p.get("weights_ref")).cloned();
 
+    // Extrai loras resolvidos do params (D3 — ADR-0023).
+    let resolved_loras = params
+        .as_ref()
+        .and_then(|p| p.get("loras"))
+        .cloned()
+        .filter(|v| v.is_array() && !v.as_array().map_or(true, |a| a.is_empty()));
+
+    // Extrai custom_checkpoint resolvido do params (D4 — ADR-0023).
+    let custom_checkpoint = params
+        .as_ref()
+        .and_then(|p| p.get("custom_checkpoint"))
+        .cloned();
+
     // Resolve imagem do container: se engine for diffusion, usa DIFFUSION_TRAINER_IMAGE
-    // ou substitui trainer-yolo por trainer-difusao mantendo tag (:local ou :gpu).
+    // (env explícito SEMPRE vence) ou herda tag de TRAINER_IMAGE (fallback p/ TrueNAS :gpu).
     let job_image = match engine.as_str() {
-        "diffusion" => {
-            let env_diff = std::env::var("DIFFUSION_TRAINER_IMAGE").unwrap_or_default();
-            if !env_diff.is_empty() && env_diff != "hephaestus/trainer-difusao:local" {
-                env_diff
-            } else if image.ends_with(":gpu") || image.contains(":gpu") {
-                "hephaestus/trainer-difusao:gpu".to_string()
-            } else if !env_diff.is_empty() {
-                env_diff
-            } else if image.contains("trainer-yolo") {
-                image.replace("trainer-yolo", "trainer-difusao")
-            } else {
-                image.to_string()
-            }
-        }
+        "diffusion" => resolve_diffusion_image(image),
         _ => image.to_string(),
     };
 
@@ -2294,6 +2854,18 @@ pub async fn dispatch_next(
     // Adiciona weights_ref ao dispatch quando presente (snake_case — casa com WeightsRef do orquestrador).
     if let Some(wr) = weights_ref {
         dispatch_body["weights_ref"] = wr;
+    }
+
+    // Adiciona loras ao dispatch quando presente (D3 — ADR-0023).
+    // snake_case: `loras: [{s3_key, md5, scale}]` — casa com LoraRefStage do orquestrador.
+    if let Some(loras) = resolved_loras {
+        dispatch_body["loras"] = loras;
+    }
+
+    // Adiciona custom_checkpoint ao dispatch quando presente (D4 — ADR-0023).
+    // snake_case: `custom_checkpoint: {s3_key, md5}` — casa com WeightRef do orquestrador.
+    if let Some(cc) = custom_checkpoint {
+        dispatch_body["custom_checkpoint"] = cc;
     }
 
     let url = format!("{}/internal/dispatch", orch_endpoint);
@@ -2636,5 +3208,52 @@ mod tests {
             name: "a".repeat(256),
         };
         assert!(validate_update_model(&too_long).is_err());
+    }
+
+    // ── resolve_diffusion_image ──────────────────────────────────────────
+
+    /// Serializa testes que manipulam env global (DIFFUSION_TRAINER_IMAGE).
+    use std::sync::Mutex;
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Teste 1: env explícito `:local` com image `:gpu` → env vence.
+    #[test]
+    fn resolve_diffusion_image_env_local_vence_sobre_gpu() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var(
+            "DIFFUSION_TRAINER_IMAGE",
+            "hephaestus/trainer-difusao:local",
+        );
+        let result = super::resolve_diffusion_image("hephaestus/trainer-yolo:gpu");
+        assert_eq!(result, "hephaestus/trainer-difusao:local");
+        std::env::remove_var("DIFFUSION_TRAINER_IMAGE");
+    }
+
+    /// Teste 2: env ausente + image `:gpu` → herança :gpu (TrueNAS preservado).
+    #[test]
+    fn resolve_diffusion_image_sem_env_herda_gpu() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("DIFFUSION_TRAINER_IMAGE");
+        let result = super::resolve_diffusion_image("hephaestus/trainer-yolo:gpu");
+        assert_eq!(result, "hephaestus/trainer-difusao:gpu");
+    }
+
+    /// Teste 3: env ausente + image `:local` → herança :local.
+    #[test]
+    fn resolve_diffusion_image_sem_env_herda_local() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("DIFFUSION_TRAINER_IMAGE");
+        let result = super::resolve_diffusion_image("hephaestus/trainer-yolo:local");
+        assert_eq!(result, "hephaestus/trainer-difusao:local");
+    }
+
+    /// Teste 4: env customizado → usa exatamente o env.
+    #[test]
+    fn resolve_diffusion_image_env_custom() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("DIFFUSION_TRAINER_IMAGE", "meu-registry/exemplo:tag");
+        let result = super::resolve_diffusion_image("hephaestus/trainer-yolo:gpu");
+        assert_eq!(result, "meu-registry/exemplo:tag");
+        std::env::remove_var("DIFFUSION_TRAINER_IMAGE");
     }
 }

@@ -1,15 +1,21 @@
-"""Módulo de inferência/geração Text-to-Image para o Playground de Difusão.
+"""Módulo de inferência/geração Text-to-Image para o Hephaestus Studio.
 
-Suporta FLUX.2 Klein 4B, SDXL e Stable Diffusion 1.5, com aplicação opcional de adaptadores LoRA.
+Suporta FLUX.2 Klein 4B, SDXL e Stable Diffusion 1.5, com aplicação opcional de
+adaptadores LoRA (multi-LoRA), checkpoints custom e geração em lote (batch).
+
 ENGINE_MOCK=1 (default no dev) → geração sintética determinística com Pillow.
 ENGINE_MOCK=0 (@gpu)           → pipeline real Diffusers com aceleração CUDA e quantização.
+
+ADR-0023 — Fatia G.2: batch + multi-LoRA + custom + meta + thumbs.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
+import random
 import struct
 import sys
 from pathlib import Path
@@ -34,8 +40,28 @@ def _canonical_model_name(raw_model: str) -> str:
     return norm
 
 
+def _write_thumb(
+    src_path: Path, dst_path: Path, max_side: int = 512, quality: int = 80
+) -> None:
+    """Salva thumbnail JPEG com max-side preservando proporção (PIL.Image.thumbnail)."""
+    from PIL import Image
+
+    with Image.open(src_path) as img:
+        img.thumbnail((max_side, max_side), Image.LANCZOS)
+        img.convert("RGB").save(dst_path, "JPEG", quality=quality)
+
+
+def _is_cancelled(output_dir: Path) -> bool:
+    """Checa se existe sentinela de cancelamento no output_dir."""
+    return (output_dir / "cancel").exists()
+
+
 def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
-    """Valida o dicionário de configuração de geração Text-to-Image."""
+    """Valida o dicionário de configuração de geração Text-to-Image.
+
+    Retrocompatível: chaves novas (batch_size, loras, custom_checkpoint_path, arch)
+    são opcionais e possuem defaults que reproduzem o comportamento legado.
+    """
     if not isinstance(cfg, dict):
         _die("Configuração raiz deve ser um dicionário YAML.")
 
@@ -51,9 +77,65 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
     if not prompt or not str(prompt).strip():
         _die("Campo 'prompt' é obrigatório e não pode ser vazio.")
 
+    # --- batch_size (1..8, default 1) ---
+    batch_size = int(gen_cfg.get("batch_size", 1))
+    if batch_size < 1 or batch_size > 8:
+        _die(f"batch_size inválido: {batch_size}. Deve estar entre 1 e 8.")
+
+    # --- loras (lista de {path, scale}, max 4) ---
+    raw_loras = gen_cfg.get("loras", [])
+    if not isinstance(raw_loras, list):
+        _die("Campo 'loras' deve ser uma lista.")
+    if len(raw_loras) > 4:
+        _die(f"Máximo de 4 LoRAs permitido. Recebido: {len(raw_loras)}.")
+    loras: list[dict[str, Any]] = []
+    for i, entry in enumerate(raw_loras):
+        if not isinstance(entry, dict):
+            _die(f"LoRA [{i}] deve ser um dicionário {{path, scale}}.")
+        lora_path = entry.get("path")
+        if not lora_path or not str(lora_path).strip():
+            _die(f"LoRA [{i}] requer campo 'path'.")
+        lora_scale = float(entry.get("scale", 1.0))
+        if lora_scale < 0.0 or lora_scale > 2.0:
+            _die(
+                f"LoRA [{i}] scale inválido: {lora_scale}. Deve estar entre 0.0 e 2.0."
+            )
+        loras.append({"path": str(lora_path).strip(), "scale": lora_scale})
+
+    # --- custom_checkpoint_path + arch (D4) ---
+    custom_checkpoint_path = gen_cfg.get("custom_checkpoint_path")
+    arch = gen_cfg.get("arch")
+    if custom_checkpoint_path:
+        if (
+            not isinstance(custom_checkpoint_path, str)
+            or not custom_checkpoint_path.strip()
+        ):
+            _die("custom_checkpoint_path deve ser uma string não vazia.")
+        custom_checkpoint_path = custom_checkpoint_path.strip()
+        if not arch or str(arch).strip().lower() not in ("sdxl", "sd15"):
+            _die("custom_checkpoint_path exige campo 'arch' válido ('sdxl' ou 'sd15').")
+        arch = str(arch).strip().lower()
+    else:
+        custom_checkpoint_path = None
+        arch = str(arch).strip().lower() if arch else None
+
+    # --- base_model (XOR com custom_checkpoint_path) ---
     raw_base_model = gen_cfg.get("base_model") or cfg.get("model") or "flux-2-klein-4b"
     base_model = _canonical_model_name(str(raw_base_model))
-    if base_model not in ("flux-2-klein-4b", "sdxl", "sd15"):
+
+    if custom_checkpoint_path and gen_cfg.get("base_model"):
+        # XOR: quando custom está presente, base_model não deve ser especificado
+        _die(
+            "Campos 'custom_checkpoint_path' e 'base_model' são mutuamente exclusivos. "
+            "Use apenas um deles."
+        )
+
+    if custom_checkpoint_path:
+        # Para custom, aceita apenas sdxl/sd15
+        if arch not in ("sdxl", "sd15"):
+            _die(f"Arquitetura custom não suportada: {arch}. Use 'sdxl' ou 'sd15'.")
+        base_model = arch  # custom força base_model = arch
+    elif base_model not in ("flux-2-klein-4b", "sdxl", "sd15"):
         _die(f"Modelo base de difusão não suportado: {raw_base_model}")
 
     width = int(gen_cfg.get("width", 1024))
@@ -65,15 +147,22 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
     if steps < 1 or steps > 100:
         _die(f"Steps inválido: {steps}. Deve estar entre 1 e 100.")
 
-    guidance_scale = float(gen_cfg.get("guidance_scale", 3.5 if "flux" in base_model else 7.0))
+    guidance_scale = float(
+        gen_cfg.get("guidance_scale", 3.5 if "flux" in base_model else 7.0)
+    )
     if guidance_scale < 1.0 or guidance_scale > 30.0:
         _die(f"Guidance scale inválido: {guidance_scale}. Deve estar entre 1.0 e 30.0.")
 
     quantization = str(gen_cfg.get("quantization", "4bit")).strip().lower()
     if quantization not in ("none", "4bit", "8bit"):
-        _die(f"Nível de quantização inválido: {quantization}. Use 'none', '4bit' ou '8bit'.")
+        _die(
+            f"Nível de quantização inválido: {quantization}. Use 'none', '4bit' ou '8bit'."
+        )
 
-    seed = int(gen_cfg.get("seed", 42))
+    # Seed: ausente será resolvido no loop (random base)
+    seed_raw = gen_cfg.get("seed")
+    seed = int(seed_raw) if seed_raw is not None else None
+
     lora_scale = float(gen_cfg.get("lora_scale", 1.0))
     if lora_scale < 0.0 or lora_scale > 2.0:
         _die(f"lora_scale inválido: {lora_scale}. Deve estar entre 0.0 e 2.0.")
@@ -96,107 +185,318 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "distilled": distilled,
         "weights_path": str(weights_path) if weights_path else None,
         "lora_scale": lora_scale,
+        "batch_size": batch_size,
+        "loras": loras,
+        "custom_checkpoint_path": custom_checkpoint_path,
+        "arch": arch,
     }
 
 
-def _mock_generate(params: dict[str, Any], output_dir: Path) -> Path:
-    """Gera uma imagem de mock determinística com visual representativo e metadados visuais."""
+# ---------------------------------------------------------------------------
+# Legado: weights_path / lora_scale → loras[] (quando seção loras vazia)
+# ---------------------------------------------------------------------------
+def _resolve_loras_from_legacy(params: dict[str, Any]) -> list[dict[str, Any]]:
+    """Converte weights_path+lora_scale legado para lista loras[] padrão.
+
+    Quando a seção 'loras' já tem entradas, valida cada path no disco:
+    paths inexistentes são descartados com warning (não derruba o job).
+    Caso contrário, mapeia weights_path → [{path, scale}] somente se
+    o arquivo existir no disco (restaurando o guard do engine antigo).
+    """
+    loras = params.get("loras", [])
+    if loras:
+        valid: list[dict[str, Any]] = []
+        for i, entry in enumerate(loras):
+            path = entry.get("path", "")
+            if path and os.path.exists(path):
+                valid.append(entry)
+            else:
+                print(
+                    f"[DIFFUSION-GEN] lora[{i}] path não existe: {path} — descartando",
+                    flush=True,
+                )
+        return valid
+
+    weights_path = params.get("weights_path")
+    lora_scale = params.get("lora_scale", 1.0)
+    if weights_path:
+        if os.path.exists(weights_path):
+            return [{"path": weights_path, "scale": lora_scale}]
+        print(
+            f"[DIFFUSION-GEN] weights_path informado ({weights_path}) "
+            f"mas arquivo não encontrado — geração com base puro",
+            flush=True,
+        )
+    return []
+
+
+def pipeline_cache_key(params: dict[str, Any]) -> tuple:
+    """Extrai chave de cache do pipeline a partir dos params validados.
+
+    Chave: (base_model|custom_checkpoint_path+arch, quantization, distilled).
+    """
+    custom_cp = params.get("custom_checkpoint_path")
+    return (
+        custom_cp or params.get("base_model"),
+        params.get("quantization"),
+        params.get("distilled", False),
+    )
+
+
+def ensure_pipeline(
+    params: dict[str, Any], cache: dict[tuple, object]
+) -> tuple[object | None, tuple]:
+    """Verifica cache de pipeline e devolve (pipeline|None, key).
+
+    Se cache hit → (pipeline_obj, key).
+    Se cache miss → (None, key) — caller deve chamar _real_generate sem pipeline.
+    """
+    key = pipeline_cache_key(params)
+    if key in cache:
+        print(f"[DIFFUSION-GEN] Cache hit para spec {key}.", flush=True)
+        return cache[key], key
+    return None, key
+
+
+def _build_generation_meta(
+    params: dict[str, Any],
+    filename: str,
+    thumb_filename: str,
+    seed: int,
+    batch_index: int,
+    batch_size: int,
+    loras_effective: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Constrói o dict de metadados para uma imagem do batch (JSONL)."""
+    return {
+        "filename": filename,
+        "thumb_filename": thumb_filename,
+        "seed": seed,
+        "prompt": params["prompt"],
+        "negative_prompt": params["negative_prompt"],
+        "width": params["width"],
+        "height": params["height"],
+        "steps": params["steps"],
+        "guidance_scale": params["guidance_scale"],
+        "quantization": params["quantization"],
+        "distilled": params["distilled"],
+        "loras": loras_effective,
+        "custom_model_path": params.get("custom_checkpoint_path"),
+        "arch": params.get("arch"),
+        "base_model": params["base_model"],
+        "batch_index": batch_index,
+        "batch_size": batch_size,
+    }
+
+
+# ---------------------------------------------------------------------------
+# MOCK — geração sintética determinística
+# ---------------------------------------------------------------------------
+def _mock_generate(params: dict[str, Any], output_dir: Path, emitter=None) -> None:
+    """Gera imagens de mock determinísticas com visual representativo, thumbs e meta JSONL."""
     from PIL import Image, ImageDraw
 
-    try:
-        from trainer_difusao.telemetry import TelemetryEmitter
-    except ImportError:
-        from telemetry import TelemetryEmitter
+    if emitter is None:
+        try:
+            from trainer_difusao.telemetry import TelemetryEmitter
+        except ImportError:
+            from telemetry import TelemetryEmitter
 
-    emitter = TelemetryEmitter(output_dir)
-    width = params["width"]
-    height = params["height"]
-    seed = params["seed"]
+        emitter = TelemetryEmitter(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    batch_size = params["batch_size"]
+    seed_base = (
+        params["seed"] if params["seed"] is not None else random.randint(0, 2**31 - 1)
+    )
+    loras_effective = _resolve_loras_from_legacy(params)
+    custom_cp = params.get("custom_checkpoint_path")
+    arch = params.get("arch")
     base_model = params["base_model"]
-    prompt = params["prompt"]
-    neg = params["negative_prompt"]
-    steps = params["steps"]
-    cfg = params["guidance_scale"]
-    quant = params["quantization"]
-    distilled = params.get("distilled", False)
-    weights_path = params["weights_path"]
 
     emitter.emit(
         phase="preparing",
         message=f"Configurando pipeline Text-to-Image ({base_model})...",
-        progress=0.1,
+        progress=0.05,
     )
 
-    # Fundo com degradê escuro óptico determinístico baseado na seed
-    h = hashlib.sha256(struct.pack("<q", seed)).digest()
-    r_base = 20 + (h[0] % 35)
-    g_base = 15 + (h[1] % 30)
-    b_base = 35 + (h[2] % 50)
+    meta_lines: list[dict[str, Any]] = []
 
-    img = Image.new("RGB", (width, height), (r_base, g_base, b_base))
-    draw = ImageDraw.Draw(img)
+    for i in range(batch_size):
+        # --- abort check ---
+        if _is_cancelled(output_dir):
+            print(f"[MOCK-GEN] Cancel detectado antes do item {i}. Saindo.", flush=True)
+            break
 
-    emitter.emit(
-        phase="generating",
-        message=f"Sintetizando imagem determinística ({steps} passos)...",
-        progress=0.5,
-        step=steps,
-        total_steps=steps,
-    )
+        current_seed = seed_base + i
+        h = hashlib.sha256(struct.pack("<q", current_seed)).digest()
+        width = params["width"]
+        height = params["height"]
 
-    # Desenho de círculos concêntricos e linhas geométricas simulando geração de imagem
-    for i in range(12):
-        radius = int(min(width, height) * (0.08 * (i + 1)))
-        cx = int(width / 2 + ((h[i % len(h)] - 128) / 256.0) * (width * 0.15))
-        cy = int(height / 2 + ((h[(i + 4) % len(h)] - 128) / 256.0) * (height * 0.15))
-        alpha_color = (
-            min(255, r_base + i * 15 + (h[i] % 40)),
-            min(255, g_base + i * 10 + (h[(i + 1) % len(h)] % 40)),
-            min(255, b_base + i * 18 + (h[(i + 2) % len(h)] % 50)),
+        # Fases de telemetria por item
+        progressPreparing = 0.05 + (0.4 * i / batch_size)
+        emitter.emit(
+            phase="preparing",
+            message=f"Preparando imagem {i + 1}/{batch_size}...",
+            progress=progressPreparing,
         )
-        draw.ellipse([cx - radius, cy - radius, cx + radius, cy + radius], outline=alpha_color, width=2)
 
-    # Card de informações e metadados no rodapé
-    pad = 24
-    card_h = 160
-    card_box = [pad, height - card_h - pad, width - pad, height - pad]
-    draw.rectangle(card_box, fill=(18, 18, 22), outline=(131, 80, 242), width=2)
+        # Fundo com degradê escuro óptico determinístico baseado na seed
+        r_base = 20 + (h[0] % 35)
+        g_base = 15 + (h[1] % 30)
+        b_base = 35 + (h[2] % 50)
 
-    variant_label = "DESTILADO (4-8 steps)" if distilled else "BASE (20+ steps)"
-    title_text = f"HEPHAESTUS STUDIO · PLAYGROUND DE DIFUSÃO [{base_model.upper()} · {variant_label}]"
-    prompt_line = f"Prompt: {prompt[:70]}{'...' if len(prompt) > 70 else ''}"
-    if neg:
-        prompt_line += f" | Neg: {neg[:30]}"
-    meta_line1 = f"Seed: {seed} | Steps: {steps} | CFG: {cfg} | Quant: {quant}"
-    lora_label = f"LoRA: {Path(weights_path).name}" if weights_path else "LoRA: Nenhum (Base Puro)"
-    meta_line2 = f"{lora_label} | Res: {width}x{height} | Mode: MOCK DETERMINÍSTICO"
+        img = Image.new("RGB", (width, height), (r_base, g_base, b_base))
+        draw = ImageDraw.Draw(img)
 
-    draw.text((pad + 16, height - card_h - pad + 16), title_text, fill=(200, 180, 255))
-    draw.text((pad + 16, height - card_h - pad + 48), prompt_line, fill=(255, 255, 255))
-    draw.text((pad + 16, height - card_h - pad + 80), meta_line1, fill=(180, 180, 195))
-    draw.text((pad + 16, height - card_h - pad + 108), meta_line2, fill=(140, 220, 160))
+        progressGen = 0.5
+        emitter.emit(
+            phase="generating",
+            message=f"Sintetizando imagem determinística ({params['steps']} passos, item {i + 1}/{batch_size})...",
+            progress=progressGen,
+            step=i,
+            total_steps=batch_size,
+        )
 
-    emitter.emit(
-        phase="saving",
-        message="Gravando imagem gerada no disco...",
-        progress=0.9,
+        # Desenho de círculos concêntricos e linhas geométricas simulando geração
+        for ci in range(12):
+            radius = int(min(width, height) * (0.08 * (ci + 1)))
+            cx = int(width / 2 + ((h[ci % len(h)] - 128) / 256.0) * (width * 0.15))
+            cy = int(
+                height / 2 + ((h[(ci + 4) % len(h)] - 128) / 256.0) * (height * 0.15)
+            )
+            alpha_color = (
+                min(255, r_base + ci * 15 + (h[ci] % 40)),
+                min(255, g_base + ci * 10 + (h[(ci + 1) % len(h)] % 40)),
+                min(255, b_base + ci * 18 + (h[(ci + 2) % len(h)] % 50)),
+            )
+            draw.ellipse(
+                [cx - radius, cy - radius, cx + radius, cy + radius],
+                outline=alpha_color,
+                width=2,
+            )
+
+        # Card de informações e metadados no rodapé
+        pad = 24
+        card_h = 160
+        card_box = [pad, height - card_h - pad, width - pad, height - pad]
+        draw.rectangle(card_box, fill=(18, 18, 22), outline=(131, 80, 242), width=2)
+
+        distilled = params.get("distilled", False)
+        variant_label = "DESTILADO (4-8 steps)" if distilled else "BASE (20+ steps)"
+        title_text = (
+            f"HEPHAESTUS STUDIO · GERAÇÃO [{base_model.upper()} · {variant_label}]"
+        )
+        prompt_line = f"Prompt: {params['prompt'][:70]}{'...' if len(params['prompt']) > 70 else ''}"
+        if params["negative_prompt"]:
+            prompt_line += f" | Neg: {params['negative_prompt'][:30]}"
+        meta_line1 = f"Seed: {current_seed} | Steps: {params['steps']} | CFG: {params['guidance_scale']} | Quant: {params['quantization']}"
+        if loras_effective:
+            lora_names = [Path(l["path"]).name for l in loras_effective]
+            lora_label = f"LoRA(s): {', '.join(lora_names)}"
+        elif params.get("weights_path") and os.path.exists(params["weights_path"]):
+            lora_label = f"LoRA: {Path(params['weights_path']).name}"
+        else:
+            lora_label = "LoRA: Nenhum (Base Puro)"
+        if custom_cp:
+            lora_label += f" | Custom: {Path(custom_cp).name} ({arch})"
+        meta_line2 = f"{lora_label} | Res: {width}x{height} | Mode: MOCK DETERMINÍSTICO"
+        batch_line = f"Batch: {i + 1}/{batch_size} (index={i})"
+
+        draw.text(
+            (pad + 16, height - card_h - pad + 16), title_text, fill=(200, 180, 255)
+        )
+        draw.text(
+            (pad + 16, height - card_h - pad + 48), prompt_line, fill=(255, 255, 255)
+        )
+        draw.text(
+            (pad + 16, height - card_h - pad + 80), meta_line1, fill=(180, 180, 195)
+        )
+        draw.text(
+            (pad + 16, height - card_h - pad + 108), meta_line2, fill=(140, 220, 160)
+        )
+        draw.text(
+            (pad + 16, height - card_h - pad + 136), batch_line, fill=(160, 160, 180)
+        )
+
+        # Salvar imagem
+        emitter.emit(
+            phase="saving",
+            message=f"Gravando imagem {i + 1}/{batch_size} no disco...",
+            progress=0.9,
+        )
+
+        filename = f"generated_{i + 1:04d}.png"
+        out_file = output_dir / filename
+        img.save(out_file, "PNG")
+        print(
+            f"[MOCK-GEN] Imagem {i + 1}/{batch_size} gerada ({width}x{height}, seed={current_seed}): {out_file}",
+            flush=True,
+        )
+
+        # Thumbnail
+        thumb_filename = f"thumb_{i + 1:04d}.jpg"
+        thumb_path = output_dir / thumb_filename
+        _write_thumb(out_file, thumb_path)
+
+        # Meta entry
+        meta_entry = _build_generation_meta(
+            params=params,
+            filename=filename,
+            thumb_filename=thumb_filename,
+            seed=current_seed,
+            batch_index=i,
+            batch_size=batch_size,
+            loras_effective=loras_effective,
+        )
+        meta_lines.append(meta_entry)
+
+    # Retrocompat: symlink generated.png → generated_0001.png (batch=1)
+    if batch_size == 1:
+        legacy_png = output_dir / "generated.png"
+        new_png = output_dir / "generated_0001.png"
+        if not legacy_png.exists():
+            try:
+                legacy_png.symlink_to(new_png.name)
+            except OSError:
+                # Fallback: copiar arquivo
+                import shutil
+
+                shutil.copy2(new_png, legacy_png)
+
+    # Salvar generation_meta.json (JSONL)
+    meta_path = output_dir / "generation_meta.json"
+    with open(meta_path, "w", encoding="utf-8") as f:
+        f.writelines(
+            json.dumps(entry, ensure_ascii=False) + "\n" for entry in meta_lines
+        )
+    print(
+        f"[MOCK-GEN] Metadados salvos: {meta_path} ({len(meta_lines)} entradas)",
+        flush=True,
     )
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    out_file = output_dir / "generated.png"
-    img.save(out_file, "PNG")
-    print(f"[MOCK-GEN] Imagem gerada com sucesso ({width}x{height}, seed={seed}, {variant_label}): {out_file}", flush=True)
 
     emitter.emit(
         phase="completed",
-        message="Imagem gerada com sucesso!",
+        message=f"Geração concluída com sucesso! {len(meta_lines)}/{batch_size} imagens.",
         progress=1.0,
     )
-    return out_file
 
 
-def _real_generate(params: dict[str, Any], output_dir: Path) -> Path:
-    """Executa a geração Text-to-Image real via Diffusers com aceleração CUDA."""
+# ---------------------------------------------------------------------------
+# REAL — geração via Diffusers com aceleração CUDA
+# ---------------------------------------------------------------------------
+def _real_generate(
+    params: dict[str, Any], output_dir: Path, pipeline: object | None = None
+) -> object | None:
+    """Executa a geração Text-to-Image real via Diffusers com aceleração CUDA.
+
+    Suporta batch (loop sequencial), multi-LoRA (com fallback para Flux2 via peft),
+    e checkpoints custom (SDXL/SD15 via from_single_file).
+
+    Se *pipeline* for fornecido (cache hit), pula a fase de carregamento e usa o
+    pipeline diretamente — caso contrário, carrega como antes (cache miss).
+    Retorna o pipeline carregado (para caching pelo caller).
+    """
     import torch
 
     try:
@@ -205,6 +505,7 @@ def _real_generate(params: dict[str, Any], output_dir: Path) -> Path:
         from telemetry import TelemetryEmitter
 
     emitter = TelemetryEmitter(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     base_model = params["base_model"]
     prompt = params["prompt"]
@@ -213,99 +514,136 @@ def _real_generate(params: dict[str, Any], output_dir: Path) -> Path:
     height = params["height"]
     steps = params["steps"]
     guidance = params["guidance_scale"]
-    seed = params["seed"]
     quant = params["quantization"]
     distilled = params.get("distilled", False)
-    weights_path = params["weights_path"]
-    lora_scale = params["lora_scale"]
+    batch_size = params["batch_size"]
+    loras_effective = _resolve_loras_from_legacy(params)
+    custom_cp = params.get("custom_checkpoint_path")
+    arch = params.get("arch")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    generator = torch.Generator(device=device).manual_seed(seed)
 
-    variant_str = "Destilado (4-8 steps)" if distilled else "Base (20+ steps)"
+    # --- FASE: preparar pipeline ---
     emitter.emit(
         phase="preparing",
-        message=f"Inicializando pipeline Text-to-Image ({base_model} [{variant_str}])...",
+        message=f"Inicializando pipeline Text-to-Image ({base_model})...",
         progress=0.05,
     )
-    print(f"[DIFFUSION-GEN] Iniciando geração real: model={base_model} [{variant_str}], quant={quant}, seed={seed}, steps={steps}, CFG={guidance}...", flush=True)
+    print(
+        f"[DIFFUSION-GEN] Iniciando geração: model={base_model}, quant={quant}, batch={batch_size}, "
+        f"loras={len(loras_effective)}, custom={'sim' if custom_cp else 'não'}...",
+        flush=True,
+    )
+
     if distilled and guidance > 2.0:
-        print(f"[DIFFUSION-GEN] [AVISO] Modelo destilado em execução com CFG={guidance}. Recomenda-se CFG 1.0 para evitar saturação/queima.", flush=True)
+        print(
+            f"[DIFFUSION-GEN] [AVISO] Modelo destilado com CFG={guidance}. Recomenda-se CFG 1.0.",
+            flush=True,
+        )
 
-    try:
-        # Configuração de quantização
-        bnb_config = None
-        if quant in ("4bit", "8bit") and device == "cuda":
-            try:
-                from transformers import BitsAndBytesConfig
+    # --- Configuração de quantização ---
+    bnb_config = None
+    if quant in ("4bit", "8bit") and device == "cuda":
+        try:
+            from transformers import BitsAndBytesConfig
 
-                emitter.emit(
-                    phase="quantizing",
-                    message=f"Configurando quantização {quant} (BitsAndBytes)...",
-                    progress=0.15,
+            emitter.emit(
+                phase="quantizing",
+                message=f"Configurando quantização {quant} (BitsAndBytes)...",
+                progress=0.15,
+            )
+            if quant == "4bit":
+                bnb_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_use_double_quant=True,
+                    bnb_4bit_compute_dtype=torch.bfloat16,
                 )
-                if quant == "4bit":
-                    bnb_config = BitsAndBytesConfig(
-                        load_in_4bit=True,
-                        bnb_4bit_quant_type="nf4",
-                        bnb_4bit_use_double_quant=True,
-                        bnb_4bit_compute_dtype=torch.bfloat16,
-                    )
-                else:
-                    bnb_config = BitsAndBytesConfig(load_in_8bit=True)
-            except (ImportError, RuntimeError, ValueError) as e:
-                print(f"[WARN] Falha ao configurar BitsAndBytes: {e}. Usando precisão padrão.", flush=True)
+            else:
+                bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+        except (ImportError, RuntimeError, ValueError) as e:
+            print(
+                f"[WARN] Falha ao configurar BitsAndBytes: {e}. Usando precisão padrão.",
+                flush=True,
+            )
 
+    # --- Carregar pipeline (ou usar cache) ---
+    if pipeline is not None:
+        # Cache hit: pipeline fornecido pelo caller (serve.py)
+        pipe = pipeline
+        print("[DIFFUSION-GEN] Usando pipeline do cache (hot path).", flush=True)
+    else:
         emitter.emit(
             phase="loading_model",
             message=f"Carregando pesos do modelo {base_model}...",
             progress=0.25,
         )
 
-        if base_model == "flux-2-klein-4b":
+        pipe = None
+
+        if custom_cp and arch in ("sdxl", "sd15"):
+            # D4 — Modelo custom via from_single_file
+            print(
+                f"[DIFFUSION-GEN] Carregando checkpoint custom: {custom_cp} (arch={arch})",
+                flush=True,
+            )
+            if arch == "sdxl":
+                from diffusers import StableDiffusionXLPipeline
+
+                load_kwargs: dict[str, Any] = {
+                    "torch_dtype": (
+                        torch.float16 if device == "cuda" else torch.float32
+                    ),
+                }
+                if bnb_config and device == "cuda":
+                    load_kwargs["quantization_config"] = bnb_config
+                pipe = StableDiffusionXLPipeline.from_single_file(
+                    custom_cp, **load_kwargs
+                )
+            elif arch == "sd15":
+                from diffusers import StableDiffusionPipeline
+
+                load_kwargs_sd15: dict[str, Any] = {
+                    "torch_dtype": (
+                        torch.float16 if device == "cuda" else torch.float32
+                    ),
+                }
+                if bnb_config and device == "cuda":
+                    load_kwargs_sd15["quantization_config"] = bnb_config
+                pipe = StableDiffusionPipeline.from_single_file(
+                    custom_cp, **load_kwargs_sd15
+                )
+
+            if pipe and device == "cuda" and not bnb_config:
+                pipe.to(device)
+
+        elif base_model == "flux-2-klein-4b":
             from diffusers import Flux2KleinPipeline
 
-            pipe_kwargs: dict[str, Any] = {
-                "torch_dtype": torch.bfloat16 if device == "cuda" else torch.float32,
-            }
             model_repo = (
-                (os.environ.get("FLUX_DISTILLED_MODEL_ID") or "black-forest-labs/FLUX.2-klein-4B")
+                (
+                    os.environ.get("FLUX_DISTILLED_MODEL_ID")
+                    or "black-forest-labs/FLUX.2-klein-4B"
+                )
                 if distilled
-                else (os.environ.get("FLUX_MODEL_ID") or "black-forest-labs/FLUX.2-klein-base-4B")
+                else (
+                    os.environ.get("FLUX_MODEL_ID")
+                    or "black-forest-labs/FLUX.2-klein-base-4B"
+                )
             )
-            print(f"[DIFFUSION-GEN] Carregando FLUX.2 Klein 4B ({'Destilado' if distilled else 'Base'}): {model_repo}", flush=True)
-            pipe = Flux2KleinPipeline.from_pretrained(model_repo, **pipe_kwargs)
+            print(
+                f"[DIFFUSION-GEN] Carregando FLUX.2 Klein 4B "
+                f"({'Destilado' if distilled else 'Base'}): {model_repo}",
+                flush=True,
+            )
+            pipe = Flux2KleinPipeline.from_pretrained(
+                model_repo,
+                torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
+            )
             if bnb_config is None and device == "cuda":
                 pipe.to(device)
             else:
                 pipe.enable_model_cpu_offload()
-
-            if weights_path and os.path.exists(weights_path):
-                emitter.emit(
-                    phase="injecting_lora",
-                    message=f"Injetando adaptador LoRA (escala={lora_scale})...",
-                    progress=0.45,
-                )
-                print(f"[DIFFUSION-GEN] Injetando pesos LoRA: {weights_path} (scale={lora_scale})", flush=True)
-                pipe.load_lora_weights(weights_path)
-
-            emitter.emit(
-                phase="generating",
-                message=f"Executando amostragem de difusão ({steps} passos)...",
-                progress=0.55,
-                step=steps,
-                total_steps=steps,
-            )
-
-            with torch.inference_mode():
-                image = pipe(
-                    prompt=prompt,
-                    generator=generator,
-                    num_inference_steps=steps,
-                    guidance_scale=guidance,
-                    width=width,
-                    height=height,
-                ).images[0]
 
         elif base_model == "sdxl":
             from diffusers import AutoencoderKL, StableDiffusionXLPipeline
@@ -323,34 +661,6 @@ def _real_generate(params: dict[str, Any], output_dir: Path) -> Path:
             if device == "cuda":
                 pipe.to(device)
 
-            if weights_path and os.path.exists(weights_path):
-                emitter.emit(
-                    phase="injecting_lora",
-                    message=f"Injetando adaptador LoRA (escala={lora_scale})...",
-                    progress=0.45,
-                )
-                print(f"[DIFFUSION-GEN] Injetando pesos LoRA: {weights_path} (scale={lora_scale})", flush=True)
-                pipe.load_lora_weights(weights_path)
-
-            emitter.emit(
-                phase="generating",
-                message=f"Executando amostragem de difusão ({steps} passos)...",
-                progress=0.55,
-                step=steps,
-                total_steps=steps,
-            )
-
-            with torch.inference_mode():
-                image = pipe(
-                    prompt=prompt,
-                    negative_prompt=neg_prompt,
-                    generator=generator,
-                    num_inference_steps=steps,
-                    guidance_scale=guidance,
-                    width=width,
-                    height=height,
-                ).images[0]
-
         elif base_model == "sd15":
             from diffusers import StableDiffusionPipeline
 
@@ -362,23 +672,121 @@ def _real_generate(params: dict[str, Any], output_dir: Path) -> Path:
             if device == "cuda":
                 pipe.to(device)
 
-            if weights_path and os.path.exists(weights_path):
-                emitter.emit(
-                    phase="injecting_lora",
-                    message=f"Injetando adaptador LoRA (escala={lora_scale})...",
-                    progress=0.45,
+        else:
+            _die(f"Modelo não suportado para geração real: {base_model}")
+
+    # --- Multi-LoRA (D3) ---
+    if loras_effective:
+        emitter.emit(
+            phase="injecting_lora",
+            message=f"Carregando {len(loras_effective)} adaptador(es) LoRA...",
+            progress=0.40,
+        )
+        # Flux2: load_lora_weights por adapter_name + peft set_adapters no transformer
+        # SDXL/SD15: load_lora_weights + set_adapters canônico
+        if base_model == "flux-2-klein-4b":
+            # Flux2KleinPipeline não tem set_adapters — usar peft no transformer
+            adapter_names = []
+            adapter_scales = []
+            for idx, lora in enumerate(loras_effective):
+                name = f"lora_{idx}"
+                print(
+                    f"[DIFFUSION-GEN] Carregando LoRA {idx}: {lora['path']} (scale={lora['scale']})",
+                    flush=True,
                 )
-                print(f"[DIFFUSION-GEN] Injetando pesos LoRA: {weights_path} (scale={lora_scale})", flush=True)
-                pipe.load_lora_weights(weights_path)
+                pipe.load_lora_weights(lora["path"], adapter_name=name)
+                adapter_names.append(name)
+                adapter_scales.append(lora["scale"])
 
-            emitter.emit(
-                phase="generating",
-                message=f"Executando amostragem de difusão ({steps} passos)...",
-                progress=0.55,
-                step=steps,
-                total_steps=steps,
+            # Aplicar escala multi via peft no transformer
+            # Ref: diffusers 0.40.0 loaders/peft.py:437 — PeftAdapterMixin
+            # O mixin Flux2LoraLoaderMixin NÃO tem set_adapters (verificado no spike S1).
+            # Fallback documentado: se transformer.set_adapters falhar, aplica só 1 LoRA.
+            try:
+                pipe.transformer.set_adapters(adapter_names, adapter_scales)
+                print(
+                    f"[DIFFUSION-GEN] Multi-LoRA aplicado via transformer.set_adapters: "
+                    f"{adapter_names}",
+                    flush=True,
+                )
+            except (AttributeError, RuntimeError, OSError) as exc:
+                # Fallback: aplica só o primeiro LoRA via transformer (peft)
+                print(
+                    f"[DIFFUSION-GEN] [AVISO] transformer.set_adapters falhou ({exc}). "
+                    f"Fallback: aplicando apenas o primeiro LoRA ({adapter_names[0]}). "
+                    f"Ref: ADR-0023 spike S1.",
+                    flush=True,
+                )
+                try:
+                    pipe.transformer.set_adapters(
+                        [adapter_names[0]], [adapter_scales[0]]
+                    )
+                except (AttributeError, RuntimeError, OSError) as exc2:
+                    # Último recurso: decaimento honesto — sem set_adapters
+                    print(
+                        f"[DIFFUSION-GEN] [ERRO] transformer.set_adapters(1 LoRA) "
+                        f"também falhou ({exc2}). LoRA não aplicada.",
+                        flush=True,
+                    )
+        else:
+            # SDXL / SD15 — set_adapters canônico do diffusers
+            adapter_names = []
+            adapter_scales = []
+            for idx, lora in enumerate(loras_effective):
+                name = f"lora_{idx}"
+                print(
+                    f"[DIFFUSION-GEN] Carregando LoRA {idx}: {lora['path']} (scale={lora['scale']})",
+                    flush=True,
+                )
+                pipe.load_lora_weights(lora["path"], adapter_name=name)
+                adapter_names.append(name)
+                adapter_scales.append(lora["scale"])
+
+            pipe.set_adapters(adapter_names, adapter_scales)
+            print(f"[DIFFUSION-GEN] Multi-LoRA aplicado: {adapter_names}", flush=True)
+
+    # --- LOOP DE BATCH ---
+    seed_base = (
+        params["seed"] if params["seed"] is not None else random.randint(0, 2**31 - 1)
+    )
+    meta_lines: list[dict[str, Any]] = []
+
+    for i in range(batch_size):
+        # --- abort check ---
+        if _is_cancelled(output_dir):
+            print(
+                f"[DIFFUSION-GEN] Cancel detectado antes do item {i}. Saindo.",
+                flush=True,
             )
+            break
 
+        current_seed = seed_base + i
+        generator = torch.Generator(device=device).manual_seed(current_seed)
+
+        emitter.emit(
+            phase="generating",
+            message=f"Executando amostragem de difusão (item {i + 1}/{batch_size}, seed={current_seed})...",
+            progress=0.55 + (0.35 * i / batch_size),
+            step=i,
+            total_steps=batch_size,
+        )
+        print(
+            f"[DIFFUSION-GEN] Gerando imagem {i + 1}/{batch_size} (seed={current_seed})...",
+            flush=True,
+        )
+
+        # Inference
+        if base_model == "flux-2-klein-4b":
+            with torch.inference_mode():
+                image = pipe(
+                    prompt=prompt,
+                    generator=generator,
+                    num_inference_steps=steps,
+                    guidance_scale=guidance,
+                    width=width,
+                    height=height,
+                ).images[0]
+        elif base_model in ("sdxl", "sd15"):
             with torch.inference_mode():
                 image = pipe(
                     prompt=prompt,
@@ -390,34 +798,78 @@ def _real_generate(params: dict[str, Any], output_dir: Path) -> Path:
                     height=height,
                 ).images[0]
         else:
-            _die(f"Modelo não suportado para geração real: {base_model}")
+            _die(f"Modelo não suportado para inferência: {base_model}")
 
+        # Salvar imagem
         emitter.emit(
             phase="saving",
-            message="Salvando artefato de imagem gerado...",
+            message=f"Salvando artefato de imagem {i + 1}/{batch_size}...",
             progress=0.92,
         )
 
-        output_dir.mkdir(parents=True, exist_ok=True)
-        out_file = output_dir / "generated.png"
+        filename = f"generated_{i + 1:04d}.png"
+        out_file = output_dir / filename
         image.save(out_file, "PNG")
-        print(f"[DIFFUSION-GEN] Geração concluída com sucesso: {out_file}", flush=True)
-
-        emitter.emit(
-            phase="completed",
-            message="Geração finalizada com sucesso!",
-            progress=1.0,
+        print(
+            f"[DIFFUSION-GEN] Imagem {i + 1}/{batch_size} salva: {out_file}", flush=True
         )
-        return out_file
-    except Exception as e:
-        emitter.error(f"Erro na geração de difusão: {e}", exc=e)
-        raise
+
+        # Thumbnail
+        thumb_filename = f"thumb_{i + 1:04d}.jpg"
+        thumb_path = output_dir / thumb_filename
+        _write_thumb(out_file, thumb_path)
+
+        # Meta entry
+        meta_entry = _build_generation_meta(
+            params=params,
+            filename=filename,
+            thumb_filename=thumb_filename,
+            seed=current_seed,
+            batch_index=i,
+            batch_size=batch_size,
+            loras_effective=loras_effective,
+        )
+        meta_lines.append(meta_entry)
+
+    # Retrocompat: symlink generated.png → generated_0001.png (batch=1)
+    if batch_size == 1:
+        legacy_png = output_dir / "generated.png"
+        new_png = output_dir / "generated_0001.png"
+        if not legacy_png.exists():
+            try:
+                legacy_png.symlink_to(new_png.name)
+            except OSError:
+                import shutil
+
+                shutil.copy2(new_png, legacy_png)
+
+    # Salvar generation_meta.json (JSONL)
+    meta_path = output_dir / "generation_meta.json"
+    with open(meta_path, "w", encoding="utf-8") as f:
+        f.writelines(
+            json.dumps(entry, ensure_ascii=False) + "\n" for entry in meta_lines
+        )
+    print(
+        f"[DIFFUSION-GEN] Metadados salvos: {meta_path} ({len(meta_lines)} entradas)",
+        flush=True,
+    )
+
+    emitter.emit(
+        phase="completed",
+        message=f"Geração finalizada com sucesso! {len(meta_lines)}/{batch_size} imagens.",
+        progress=1.0,
+    )
+
+    return pipe
 
 
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 def cmd_generate(args: list[str]) -> None:
     parser = argparse.ArgumentParser(
         prog="trainer-difusao generate",
-        description="Geração Text-to-Image para Playground de Difusão (FLUX.2 Klein, SDXL, SD 1.5)",
+        description="Geração Text-to-Image (FLUX.2 Klein, SDXL, SD 1.5, batch, multi-LoRA, custom)",
     )
     parser.add_argument("--config", required=True, help="Caminho para config.yaml")
     parser.add_argument("--output", required=True, help="Diretório de saída")

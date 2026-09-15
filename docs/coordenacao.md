@@ -19,7 +19,18 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-15 (FATIA CI REGISTRY PUSH — FECHADA, PIPELINE 100% VERDE)
+## Estado atual — 2026-09-15 (FATIA ABA GERAÇÃO — ADR-0023 ACEITO, SPIKES PROVADOS, EM CURSO)
+
+- **FATIA ABA GERAÇÃO (branch `feat/aba-geracao`) — EM CURSO.** Especificação executável: **`docs/adr/0023-aba-geracao.md`** (Status ACEITA; ler antes de qualquer despacho). Usuário aprovou o design em 2026-09-15 ("Concordo").
+  - **Pedidos cobertos**: aba `/geracao` (playground vira YOLO-only), servidor de inferência quente (daemon por nó, sem re-boot de container por geração), batch com seed+i (1..8), multi-LoRA `loras[]` ≤4, modelos custom SDXL/SD15 com sniff (Flux custom fora da v1), galeria persistente (tabela `generations` no manager + BFF listar/excluir/exportar zip ≤100), comparador de 2 imagens, mobile (375/768/1280).
+  - **Spikes PROVADOS (2026-09-15, dev host)**:
+    - **S1 PASS com nota**: diffusers 0.40.0 — SDXL `from_single_file` + `quantization_config` suportado (single_file_model.py:361); Flux2Klein = `Flux2LoraLoaderMixin.load_lora_weights(adapter_name)` + escala multi via `pipe.transformer.set_adapters` (peft, loaders/peft.py:437) — `set_adapters` NÃO existe no mixin de pipeline do Flux2. Validação runtime @gpu manual pendente (doutrina).
+    - **S2 PASS**: PUT único 6,5 GiB → HTTP 200 no SeaweedFS local (SigV4); cap 8 GiB de upload custom confirmado, sem multipart.
+  - **Plano de commits G.1–G.9** (1 commit/despacho cada): G.1 contrato OpenAPI 0.25.0 + migration 0011 (`models.kind/arch` + `generations`) + contract tests → G.2 engine one-shot v2 (batch/multi-LoRA/custom/meta/thumbs, mock pytest) → G.3 engine `serve` (daemon HTTP) → G.4 orchestrator daemon.rs + glob artefatos + staging multi-ref → G.5 manager (loras/custom + hook generations + rotas internas) → G.6 principal BFF (validação XOR, config.yaml v2, endpoints galeria, sniff 8 GiB) → G.7 UI `/geracao` + sidebar + `/playground` YOLO-only → G.8 UI galeria + CompareSlider + mobile → G.9 docs-sync + vram-table + review.
+  - **Pendências manuais @gpu**: validar caminho real (a) `from_single_file` quantizado e (b) multi-LoRA peft no Flux2Klein na próxima sessão GPU; sem GPU local (mock path apenas).
+  - Spike script: `~/.cache/tmp/opencode/spike-s1-s2.sh` (não versionado).
+
+## Estado anterior — 2026-09-15 (FATIA CI REGISTRY PUSH — FECHADA, PIPELINE 100% VERDE)
 
 - **FATIA CI REGISTRY PUSH — FECHADA (2026-09-15)** — pipeline de release 100% verde: as **9 imagens × 2 tags** publicadas em `git.felipecncloud.com/felipe/hephaestus/<nome>` (principal, manager, orchestrator, web, embedder, trainer-yolo, trainer-difusao, trainer-yolo-gpu, trainer-difusao-gpu; tags `<sha>`+`latest` host e `gpu-<sha>`+`gpu` GPU). Pull provado no TrueNAS (dívida M8 parcialmente validada — pull com login funciona; package continua privado).
   - **Run 2 (fix dockerfile paths, PR #27)**: engines buildam mas as 2 GPU falham no push — camada grande (~9GB pip) em retry infinito com `unknown: Client Closed Request`.

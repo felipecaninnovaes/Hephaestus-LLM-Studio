@@ -539,7 +539,25 @@ export function modelSourceLabel(source: ModelSource): string {
   }
 }
 
-export function modelErrorMessage(code: string): string {
+export function modelErrorMessage(code: string, message?: string): string {
+  // Quando o backend propaga mensagem específica (ADR-0023 D4 — sniff/hint),
+  // usá-la como texto pt-BR canônico com base nas palavras-chave do erro.
+  if (code === "invalid_request" && message) {
+    const lower = message.toLowerCase();
+    if (lower.includes("sniff and hint conflict")) {
+      return "Conflito entre detecção automática e hint manual. Verifique os seletores de kind/arch e tente novamente.";
+    }
+    if (lower.includes("kind/arch could not be determined")) {
+      return "Não foi possível detectar kind/arch automaticamente. Use os seletores manuais (kind + arch) e tente novamente.";
+    }
+    if (lower.includes("invalid kind or arch")) {
+      return "Valores de kind ou arch inválidos. Verifique os seletores e tente novamente.";
+    }
+    if (lower.includes("invalid safetensors header")) {
+      return "Cabeçalho do safetensors inválido ou corrompido. Verifique o arquivo.";
+    }
+  }
+
   switch (code) {
     case "invalid_request":
       return "Parâmetros inválidos.";

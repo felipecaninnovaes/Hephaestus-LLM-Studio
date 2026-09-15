@@ -245,16 +245,17 @@ def _build_generation_meta(
 # ---------------------------------------------------------------------------
 # MOCK — geração sintética determinística
 # ---------------------------------------------------------------------------
-def _mock_generate(params: dict[str, Any], output_dir: Path) -> None:
+def _mock_generate(params: dict[str, Any], output_dir: Path, emitter=None) -> None:
     """Gera imagens de mock determinísticas com visual representativo, thumbs e meta JSONL."""
     from PIL import Image, ImageDraw
 
-    try:
-        from trainer_difusao.telemetry import TelemetryEmitter
-    except ImportError:
-        from telemetry import TelemetryEmitter
+    if emitter is None:
+        try:
+            from trainer_difusao.telemetry import TelemetryEmitter
+        except ImportError:
+            from telemetry import TelemetryEmitter
 
-    emitter = TelemetryEmitter(output_dir)
+        emitter = TelemetryEmitter(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     batch_size = params["batch_size"]

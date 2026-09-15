@@ -200,10 +200,11 @@ pub const PUBLIC_ROUTES: &[(&str, &str, &[u16])] = &[
 /// descoberta da revisão 3b.3).
 pub const UPLOAD_BODY_LIMIT_BYTES: usize = 200 * 1024 * 1024 + 8 * 1024 * 1024;
 
-/// Limite do CORPO TOTAL do zip de import: 200 MiB de pacote + 8 MiB de
+/// Limite do CORPO TOTAL do zip de import: 8 GiB de pacote + 8 MiB de
 /// folga p/ envelope multipart (P4, mesmo padrão do upload 3b — o limite
-/// mora na camada de roteamento, nunca no handler).
-pub const IMPORT_BODY_LIMIT_BYTES: usize = 200 * 1024 * 1024 + 8 * 1024 * 1024;
+/// mora na camada de roteamento, nunca no handler; teto alinhado com
+/// `MAX_GLOBAL_BYTES`/`MAX_DECLARED_TOTAL` do reader do import).
+pub const IMPORT_BODY_LIMIT_BYTES: usize = 8 * 1024 * 1024 * 1024 + 8 * 1024 * 1024;
 
 /// Contrato total (inventário D8): união REAL de `PUBLIC_ROUTES` +
 /// `PROTECTED_ROUTES`. É função justamente para não existir alias esquecido —

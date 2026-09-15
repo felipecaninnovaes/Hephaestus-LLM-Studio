@@ -72,7 +72,7 @@ async fn cleanup_failed_import(state: &AppState, new_id: Uuid) {
 
 /// Teto do spool do zip (defesa extra — o teto de CORPO mora na rota,
 /// `IMPORT_BODY_LIMIT_BYTES`; excedeu aqui ⇒ 413 no envelope).
-pub const MAX_IMPORT_SPOOL_BYTES: i64 = 200 * 1024 * 1024;
+pub const MAX_IMPORT_SPOOL_BYTES: i64 = 8 * 1024 * 1024 * 1024;
 /// Tetos do pré-scan (D4): entradas e soma declarada do central directory.
 const MAX_ENTRIES: usize = 100_000;
 const MAX_DECLARED_TOTAL: u64 = 8 * 1024 * 1024 * 1024;

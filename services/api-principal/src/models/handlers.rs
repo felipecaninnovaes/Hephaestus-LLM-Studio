@@ -286,25 +286,25 @@ pub async fn upload_model(State(state): State<AppState>, mut multipart: Multipar
         Err(validate::UploadError::InvalidName) => return invalid_request(),
     };
 
-    // Validação de nome fornecido pelo usuário (se diferente do default).
-    let final_name = if let Some(ref n) = name {
-        validate::sanitize_model_name(n)
-    } else {
-        // Usa o nome do arquivo do form, preservando a extensão (.safetensors ou .pt).
-        let lower_raw = raw_filename.to_lowercase();
-        let ext = if lower_raw.ends_with(".safetensors") {
-            ".safetensors"
-        } else {
-            ".pt"
-        };
-        let stem = raw_filename.strip_suffix(ext).unwrap_or("model");
-        format!("{}{}", validate::sanitize_model_name(stem), ext)
+    // Validação de extensão: vem do arquivo bruto (multipart filename), não do display name.
+    let file_ext = match validate::validate_raw_filename(&raw_filename) {
+        Ok(ext) => ext,
+        Err(_) => return invalid_request(),
     };
 
-    let lower_final = final_name.to_lowercase();
-    if final_name.is_empty()
-        || (!lower_final.ends_with(".pt") && !lower_final.ends_with(".safetensors"))
-    {
+    // Validação de nome fornecido pelo usuário (se diferente do default).
+    // A extensão do arquivo é anexada automaticamente; se o usuário já digitou
+    // a extensão, não duplica.
+    let final_name = {
+        let sanitized = validate::sanitize_model_name(name.as_deref().unwrap_or(&validation.name));
+        if sanitized.to_lowercase().ends_with(&file_ext) {
+            sanitized
+        } else {
+            format!("{sanitized}{file_ext}")
+        }
+    };
+
+    if final_name.is_empty() {
         return invalid_request();
     }
 
@@ -364,7 +364,8 @@ pub async fn upload_model(State(state): State<AppState>, mut multipart: Multipar
         {
             Ok((kind, arch)) => {
                 resolved_kind = Some(kind);
-                resolved_arch = Some(arch);
+                // LoRA pode ter arch vazio → persistir como None (não Some("")).
+                resolved_arch = if arch.is_empty() { None } else { Some(arch) };
             }
             Err(msg) => {
                 return err(StatusCode::BAD_REQUEST, "invalid_request", msg);
@@ -462,14 +463,24 @@ pub async fn upload_model(State(state): State<AppState>, mut multipart: Multipar
             let _ = state.storage.delete(&s3_key).await;
             err(StatusCode::CONFLICT, "conflict", "model already exists")
         }
-        Err(ManagerError::InvalidRequest(_)) => {
+        Err(ManagerError::InvalidRequest(msg)) => {
             // Compensação: delete do objeto S3 (D1).
             let _ = state.storage.delete(&s3_key).await;
-            err(
+            tracing::warn!("upload_model: manager invalid_request: {msg}");
+            // Propaga a mensagem específica do manager no envelope.
+            #[derive(serde::Serialize)]
+            struct ErrorBody {
+                code: &'static str,
+                message: String,
+            }
+            (
                 StatusCode::BAD_REQUEST,
-                "invalid_request",
-                MSG_INVALID_REQUEST,
+                Json(ErrorBody {
+                    code: "invalid_request",
+                    message: msg,
+                }),
             )
+                .into_response()
         }
         Err(ManagerError::Unavailable(_)) => {
             // Compensação: delete do objeto S3 (D1).
@@ -535,25 +546,24 @@ pub async fn download_model(
         return resp;
     }
 
-    // Nome final: `name` do body ou basename sanitizado da URL.
-    let final_name = match body.name.as_deref() {
-        Some(n) => {
-            let s = validate::sanitize_model_name(n);
-            let lower = s.to_lowercase();
-            if s.is_empty() || (!lower.ends_with(".pt") && !lower.ends_with(".safetensors")) {
-                return invalid_request();
-            }
-            s
-        }
-        None => {
-            let b = basename_from_url(&body.url).unwrap_or_else(|| "model.pt".to_string());
-            let lower = b.to_lowercase();
-            if !lower.ends_with(".pt") && !lower.ends_with(".safetensors") {
-                return invalid_request();
-            }
-            b
+    // Nome final: extensão vem do basename da URL; display name do body.name é opcional.
+    let url_basename = basename_from_url(&body.url).unwrap_or_else(|| "model.pt".to_string());
+    let file_ext = match validate::validate_raw_filename(&url_basename) {
+        Ok(ext) => ext,
+        Err(_) => return invalid_request(),
+    };
+    let final_name = {
+        let sanitized =
+            validate::sanitize_model_name(body.name.as_deref().unwrap_or(&url_basename));
+        if sanitized.to_lowercase().ends_with(&file_ext) {
+            sanitized
+        } else {
+            format!("{sanitized}{file_ext}")
         }
     };
+    if final_name.is_empty() {
+        return invalid_request();
+    }
 
     // Baixar com reqwest: stream para tempdir, cap 2 GiB, timeouts.
     let tmp_dir = match tempfile::tempdir() {
@@ -797,13 +807,22 @@ pub async fn download_model(
             let _ = state.storage.delete(&s3_key).await;
             err(StatusCode::CONFLICT, "conflict", "model already exists")
         }
-        Err(ManagerError::InvalidRequest(_)) => {
+        Err(ManagerError::InvalidRequest(msg)) => {
             let _ = state.storage.delete(&s3_key).await;
-            err(
+            tracing::warn!("download_model: manager invalid_request: {msg}");
+            #[derive(serde::Serialize)]
+            struct ErrorBody {
+                code: &'static str,
+                message: String,
+            }
+            (
                 StatusCode::BAD_REQUEST,
-                "invalid_request",
-                MSG_INVALID_REQUEST,
+                Json(ErrorBody {
+                    code: "invalid_request",
+                    message: msg,
+                }),
             )
+                .into_response()
         }
         Err(ManagerError::Unavailable(_)) => {
             let _ = state.storage.delete(&s3_key).await;
@@ -1009,9 +1028,26 @@ mod tests {
     }
 
     #[test]
-    fn validate_upload_ext_pth_400() {
+    fn validate_upload_name_without_ext_ok() {
+        // Display name sem extensão é aceito — extensão vem do arquivo.
+        let v = validate::validate_upload("yolo", Some("meu lora v2")).unwrap();
+        assert_eq!(v.engine, "yolo");
+        assert_eq!(v.name, "meu_lora_v2");
+    }
+
+    #[test]
+    fn validate_raw_filename_ext_ok() {
+        assert_eq!(validate::validate_raw_filename("model.pt").unwrap(), ".pt");
         assert_eq!(
-            validate::validate_upload("yolo", Some("best.pth")),
+            validate::validate_raw_filename("model.safetensors").unwrap(),
+            ".safetensors"
+        );
+    }
+
+    #[test]
+    fn validate_raw_filename_pth_400() {
+        assert_eq!(
+            validate::validate_raw_filename("model.pth"),
             Err(validate::UploadError::InvalidExtension)
         );
     }
@@ -1099,9 +1135,56 @@ mod tests {
 
     #[test]
     fn download_name_not_pt_400() {
-        // name sem .pt deve falhar na validação.
-        let v = validate::validate_upload("yolo", Some("model.pth"));
-        assert!(v.is_err());
+        // raw filename sem extensão aceita deve falhar.
+        assert_eq!(
+            validate::validate_raw_filename("model.pth"),
+            Err(validate::UploadError::InvalidExtension)
+        );
+        assert_eq!(
+            validate::validate_raw_filename("model"),
+            Err(validate::UploadError::InvalidExtension)
+        );
+    }
+
+    // --- final_name logic tests (extensão sempre vem do arquivo) ---
+
+    #[test]
+    fn final_name_from_file_ext() {
+        // name "meu-lora" + arquivo x.safetensors → "meu-lora.safetensors"
+        let sanitized = validate::sanitize_model_name("meu-lora");
+        let file_ext = ".safetensors";
+        let final_name = if sanitized.to_lowercase().ends_with(file_ext) {
+            sanitized
+        } else {
+            format!("{sanitized}{file_ext}")
+        };
+        assert_eq!(final_name, "meu-lora.safetensors");
+    }
+
+    #[test]
+    fn final_name_no_duplicate_ext() {
+        // name "lora.safetensors" + arquivo y.safetensors → "lora.safetensors"
+        let sanitized = validate::sanitize_model_name("lora.safetensors");
+        let file_ext = ".safetensors";
+        let final_name = if sanitized.to_lowercase().ends_with(file_ext) {
+            sanitized
+        } else {
+            format!("{sanitized}{file_ext}")
+        };
+        assert_eq!(final_name, "lora.safetensors");
+    }
+
+    #[test]
+    fn final_name_empty_user_uses_file_ext() {
+        // name vazio (default "model") + arquivo model.pt → "model.pt"
+        let sanitized = validate::sanitize_model_name("model");
+        let file_ext = ".pt";
+        let final_name = if sanitized.to_lowercase().ends_with(file_ext) {
+            sanitized
+        } else {
+            format!("{sanitized}{file_ext}")
+        };
+        assert_eq!(final_name, "model.pt");
     }
 
     // --- Download handler tests (E1: allow-list via state) ---

@@ -44,6 +44,10 @@ pub enum UploadError {
 }
 
 /// Valida engine + nome para upload (D3).
+///
+/// O `name` é o display name do usuário — NÃO precisa conter extensão.
+/// A extensão é validada separadamente em [`validate_raw_filename`] sobre o
+/// arquivo real.
 pub fn validate_upload(engine: &str, name: Option<&str>) -> Result<UploadValidation, UploadError> {
     if !ALLOWED_ENGINES.contains(&engine) {
         return Err(UploadError::InvalidEngine);
@@ -57,18 +61,26 @@ pub fn validate_upload(engine: &str, name: Option<&str>) -> Result<UploadValidat
             }
             sanitized
         }
-        None => "model.pt".to_string(),
+        None => "model".to_string(),
     };
-
-    let lower = name.to_lowercase();
-    if !ALLOWED_EXTENSIONS.iter().any(|ext| lower.ends_with(ext)) {
-        return Err(UploadError::InvalidExtension);
-    }
 
     Ok(UploadValidation {
         engine: engine.to_string(),
         name,
     })
+}
+
+/// Valida extensão do nome de arquivo bruto (multipart `filename` ou basename
+/// de URL de download).
+///
+/// Retorna a extensão autorizada (lowercase, com ponto) ou `Err(InvalidExtension)`.
+pub fn validate_raw_filename(filename: &str) -> Result<String, UploadError> {
+    let lower = filename.to_lowercase();
+    if let Some(ext) = ALLOWED_EXTENSIONS.iter().find(|ext| lower.ends_with(*ext)) {
+        Ok(ext.to_string())
+    } else {
+        Err(UploadError::InvalidExtension)
+    }
 }
 
 /// Sanitiza nome de modelo: mantém `[A-Za-z0-9_.-]`, colapsa runs, trunca 255.
@@ -415,7 +427,8 @@ pub fn resolve_kind_arch(
             } else {
                 s.arch
             };
-            if arch.is_empty() {
+            // LoRA aceita arch vazio (o manager só exige arch para checkpoint).
+            if arch.is_empty() && s.kind != "lora" {
                 return Err("arch could not be determined; provide kind+arch hints");
             }
             Ok((s.kind, arch))
@@ -457,13 +470,13 @@ mod tests {
     #[test]
     fn validate_upload_world_default_name() {
         let v = validate_upload("world", None).unwrap();
-        assert_eq!(v.name, "model.pt");
+        assert_eq!(v.name, "model");
     }
 
     #[test]
     fn validate_upload_yolo_default_name() {
         let v = validate_upload("yolo", None).unwrap();
-        assert_eq!(v.name, "model.pt");
+        assert_eq!(v.name, "model");
     }
 
     #[test]
@@ -482,9 +495,46 @@ mod tests {
     }
 
     #[test]
-    fn validate_upload_invalid_extension() {
+    fn validate_upload_name_without_ext_ok() {
+        // Nome de exibição sem extensão é aceito (extensão vem do arquivo).
+        let v = validate_upload("yolo", Some("meu lora v2")).unwrap();
+        assert_eq!(v.engine, "yolo");
+        assert_eq!(v.name, "meu_lora_v2");
+    }
+
+    #[test]
+    fn validate_upload_empty_name_after_sanitize() {
         assert_eq!(
-            validate_upload("yolo", Some("best.pth")),
+            validate_upload("yolo", Some("...")),
+            Err(UploadError::InvalidName)
+        );
+    }
+
+    #[test]
+    fn validate_raw_filename_pt_ok() {
+        assert_eq!(validate_raw_filename("model.pt").unwrap(), ".pt");
+    }
+
+    #[test]
+    fn validate_raw_filename_safetensors_ok() {
+        assert_eq!(
+            validate_raw_filename("model.safetensors").unwrap(),
+            ".safetensors"
+        );
+    }
+
+    #[test]
+    fn validate_raw_filename_pth_rejected() {
+        assert_eq!(
+            validate_raw_filename("model.pth"),
+            Err(UploadError::InvalidExtension)
+        );
+    }
+
+    #[test]
+    fn validate_raw_filename_no_ext_rejected() {
+        assert_eq!(
+            validate_raw_filename("model"),
             Err(UploadError::InvalidExtension)
         );
     }
@@ -775,6 +825,31 @@ mod tests {
         let (kind, arch) = resolve_kind_arch(sniff, None, Some("sdxl")).unwrap();
         assert_eq!(kind, "lora");
         assert_eq!(arch, "sdxl");
+    }
+
+    #[test]
+    fn resolve_lora_without_arch_ok() {
+        // LoRA clássica sem prefixo determinístico → arch vazio é aceito.
+        let sniff = Ok(SafetensorsSniff {
+            kind: "lora".to_string(),
+            arch: String::new(),
+            confidence: 0.9,
+        });
+        let (kind, arch) = resolve_kind_arch(sniff, None, None).unwrap();
+        assert_eq!(kind, "lora");
+        assert_eq!(arch, "");
+    }
+
+    #[test]
+    fn resolve_checkpoint_without_arch_err() {
+        // Checkpoint sem arch ainda dá erro.
+        let sniff = Ok(SafetensorsSniff {
+            kind: "checkpoint".to_string(),
+            arch: String::new(),
+            confidence: 0.9,
+        });
+        let result = resolve_kind_arch(sniff, None, None);
+        assert!(result.is_err());
     }
 
     #[test]

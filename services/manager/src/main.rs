@@ -523,6 +523,21 @@ async fn delete_generations_handler(State(state): State<AppState>, body: Bytes) 
     }
 }
 
+/// GET /internal/generations/:id — retorna uma generation por ID (proxy de imagem da api-principal).
+/// Soft-deletadas retornam 404.
+async fn get_generation_handler(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let uid = match id.parse::<uuid::Uuid>() {
+        Ok(u) => u,
+        Err(_) => return bad_request("invalid uuid"),
+    };
+    match manager::get_generation(&state.pool, uid).await {
+        Ok(Some(row)) => (StatusCode::OK, Json(row)).into_response(),
+        Ok(None) => not_found(),
+        Err(ManagerError::Internal(e)) => internal_error(&e),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -552,6 +567,7 @@ fn build_router(state: AppState) -> Router {
         )
         .route("/internal/storage/usage", get(get_storage_usage_handler))
         .route("/internal/generations", get(list_generations_handler))
+        .route("/internal/generations/:id", get(get_generation_handler))
         .route(
             "/internal/generations/delete",
             post(delete_generations_handler),

@@ -1886,6 +1886,12 @@ pub struct CreateModelRequest {
     pub hash: String,
     pub bytes: i64,
     pub job_id: Option<Uuid>,
+    /// Tipo do modelo para engine='diffusion': 'lora' ou 'checkpoint'.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Arquitetura do modelo para engine='diffusion': 'flux-2-klein-4b', 'sdxl', 'sd15'.
+    #[serde(default)]
+    pub arch: Option<String>,
 }
 
 /// Validação pura do CreateModelRequest (padrão da casa — função testável).
@@ -1924,6 +1930,37 @@ fn validate_create_model(req: &CreateModelRequest) -> Result<(), ManagerError> {
             req.name.len()
         )));
     }
+    // Validação de kind/arch: só aceitos para engine='diffusion'.
+    if req.kind.is_some() || req.arch.is_some() {
+        if req.engine != "diffusion" {
+            return Err(ManagerError::InvalidRequest(format!(
+                "kind/arch are only allowed for engine='diffusion', got engine='{}'",
+                req.engine
+            )));
+        }
+    }
+    if let Some(ref kind) = req.kind {
+        if kind != "lora" && kind != "checkpoint" {
+            return Err(ManagerError::InvalidRequest(format!(
+                "kind must be 'lora' or 'checkpoint', got '{}'",
+                kind
+            )));
+        }
+    }
+    if let Some(ref arch) = req.arch {
+        if arch != "flux-2-klein-4b" && arch != "sdxl" && arch != "sd15" {
+            return Err(ManagerError::InvalidRequest(format!(
+                "arch must be 'flux-2-klein-4b', 'sdxl', or 'sd15', got '{}'",
+                arch
+            )));
+        }
+    }
+    // kind=checkpoint exige arch (D4 — flux custom fora da v1 no upload).
+    if req.kind.as_deref() == Some("checkpoint") && req.arch.is_none() {
+        return Err(ManagerError::InvalidRequest(
+            "checkpoint requires arch ('flux-2-klein-4b', 'sdxl', or 'sd15')".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -1935,9 +1972,26 @@ pub async fn create_model(
 ) -> Result<ModelItem, ManagerError> {
     validate_create_model(&req)?;
 
-    let result = sqlx::query(
-        "INSERT INTO models (id, engine, name, model, s3_key, source, url, hash, bytes, job_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+    let row: Result<
+        Option<(
+            Uuid,
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+            i64,
+            String,
+            Option<Uuid>,
+            DateTime<Utc>,
+            Option<String>,
+            Option<String>,
+        )>,
+        sqlx::Error,
+    > = sqlx::query_as(
+        "INSERT INTO models (id, engine, name, model, s3_key, source, url, hash, bytes, job_id, kind, arch) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
+         RETURNING id, name, engine, model, source, hash, bytes, s3_key, job_id, created_at, kind, arch",
     )
     .bind(req.id)
     .bind(&req.engine)
@@ -1949,24 +2003,29 @@ pub async fn create_model(
     .bind(&req.hash)
     .bind(req.bytes)
     .bind(req.job_id)
-    .execute(pool)
+    .bind(&req.kind)
+    .bind(&req.arch)
+    .fetch_optional(pool)
     .await;
 
-    match result {
-        Ok(_) => Ok(ModelItem {
-            id: req.id.to_string(),
-            name: req.name,
-            engine: req.engine,
-            model: req.model,
-            source: req.source,
-            hash: req.hash,
-            bytes: req.bytes,
-            path: req.s3_key,
-            job_id: req.job_id.map(|u| u.to_string()),
-            created_at: chrono::Utc::now().to_rfc3339(),
-            kind: None,
-            arch: None,
+    match row {
+        Ok(Some(r)) => Ok(ModelItem {
+            id: r.0.to_string(),
+            name: r.1,
+            engine: r.2,
+            model: r.3,
+            source: r.4,
+            hash: r.5,
+            bytes: r.6,
+            path: r.7,
+            job_id: r.8.map(|u| u.to_string()),
+            created_at: r.9.to_rfc3339(),
+            kind: r.10,
+            arch: r.11,
         }),
+        Ok(None) => Err(ManagerError::Internal(
+            "insert model: no row returned".into(),
+        )),
         Err(e) => {
             // A3: checagem robusta de violação de unicidade (sqlx code 23505).
             if e.as_database_error()
@@ -2344,6 +2403,45 @@ pub async fn list_generations(
         .collect();
 
     Ok(ListGenerationsResponse { items, total })
+}
+
+/// Busca uma generation por ID — exclui soft-deletadas (deleted_at IS NULL).
+/// Usado pelo proxy de imagem da api-principal: GET /internal/generations/:id.
+pub async fn get_generation(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<GenerationRow>, ManagerError> {
+    let row = sqlx::query(
+        "SELECT id, job_id, s3_key, thumb_s3_key, filename, seed, prompt, negative_prompt, \
+         width, height, params, created_at, deleted_at \
+         FROM generations WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("get generation: {e}")))?;
+
+    Ok(row.map(|r| {
+        let id: Uuid = r.get("id");
+        let job_id: Uuid = r.get("job_id");
+        let created_at: DateTime<Utc> = r.get("created_at");
+        let deleted_at: Option<DateTime<Utc>> = r.get("deleted_at");
+        GenerationRow {
+            id: id.to_string(),
+            job_id: job_id.to_string(),
+            s3_key: r.get("s3_key"),
+            thumb_s3_key: r.get("thumb_s3_key"),
+            filename: r.get("filename"),
+            seed: r.get("seed"),
+            prompt: r.get("prompt"),
+            negative_prompt: r.get("negative_prompt"),
+            width: r.get("width"),
+            height: r.get("height"),
+            params: r.get("params"),
+            created_at: created_at.to_rfc3339(),
+            deleted_at: deleted_at.map(|t| t.to_rfc3339()),
+        }
+    }))
 }
 
 /// Soft delete de generations por IDs (POST /internal/generations/delete).

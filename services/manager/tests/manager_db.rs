@@ -1983,6 +1983,8 @@ async fn create_model_201_com_id_dado() {
         hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
         bytes: 1024,
         job_id: None,
+        kind: None,
+        arch: None,
     };
 
     let item = manager::create_model(&p, req)
@@ -2018,6 +2020,8 @@ async fn create_model_400_engine_invalida() {
         hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
         bytes: 100,
         job_id: None,
+        kind: None,
+        arch: None,
     };
 
     let result = manager::create_model(&p, req).await;
@@ -2043,6 +2047,8 @@ async fn create_model_400_hash_curto() {
         hash: "abc123".into(),
         bytes: 100,
         job_id: None,
+        kind: None,
+        arch: None,
     };
 
     let result = manager::create_model(&p, req).await;
@@ -2068,6 +2074,8 @@ async fn create_model_400_source_invalida() {
         hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
         bytes: 100,
         job_id: None,
+        kind: None,
+        arch: None,
     };
 
     let result = manager::create_model(&p, req).await;
@@ -2093,6 +2101,8 @@ async fn create_model_409_s3_key_duplicado() {
         hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
         bytes: 100,
         job_id: None,
+        kind: None,
+        arch: None,
     };
     manager::create_model(&p, req1).await.expect("first insert");
 
@@ -2107,6 +2117,8 @@ async fn create_model_409_s3_key_duplicado() {
         hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
         bytes: 100,
         job_id: None,
+        kind: None,
+        arch: None,
     };
     let result = manager::create_model(&p, req2).await;
     match result {
@@ -2154,6 +2166,8 @@ async fn create_job_weights_valido_grava_params() {
         hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
         bytes: 2048,
         job_id: None,
+        kind: None,
+        arch: None,
     };
     manager::create_model(&p, model_req)
         .await
@@ -2233,6 +2247,8 @@ async fn create_job_com_weights_dispatch_contem_weights_ref() {
         hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
         bytes: 2048,
         job_id: None,
+        kind: None,
+        arch: None,
     };
     manager::create_model(&p, model_req)
         .await
@@ -3520,6 +3536,8 @@ async fn insert_test_model(pool: &PgPool, variant: Option<&str>) -> uuid::Uuid {
         hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
         bytes: 4096,
         job_id: None,
+        kind: None,
+        arch: None,
     };
     manager::create_model(pool, req)
         .await
@@ -3791,6 +3809,8 @@ async fn insert_test_world_model(pool: &PgPool, variant: Option<&str>) -> uuid::
         hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
         bytes: 1_300_000_000,
         job_id: None,
+        kind: None,
+        arch: None,
     };
     manager::create_model(pool, req)
         .await
@@ -4050,6 +4070,8 @@ async fn create_model_world_201() {
         hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
         bytes: 1_300_000_000,
         job_id: None,
+        kind: None,
+        arch: None,
     };
 
     let item = manager::create_model(&p, req)
@@ -4080,6 +4102,8 @@ async fn create_model_engine_invalida_400() {
         hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
         bytes: 100,
         job_id: None,
+        kind: None,
+        arch: None,
     };
 
     let result = manager::create_model(&p, req).await;
@@ -4106,6 +4130,8 @@ async fn create_model_engine_diffusion_201() {
         hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
         bytes: 1024,
         job_id: None,
+        kind: None,
+        arch: None,
     };
 
     let item = manager::create_model(&p, req)
@@ -4136,6 +4162,8 @@ async fn delete_model_success_and_not_found() {
         hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
         bytes: 1024,
         job_id: None,
+        kind: None,
+        arch: None,
     };
 
     manager::create_model(&p, req).await.expect("create model");
@@ -5190,4 +5218,253 @@ async fn list_models_inclui_kind_arch() {
         .unwrap();
     assert_eq!(ckpt.kind.as_deref(), Some("checkpoint"));
     assert_eq!(ckpt.arch.as_deref(), Some("sdxl"));
+}
+
+// ===========================================================================
+// G.6b — create_model kind/arch + GET /internal/generations/:id
+// ===========================================================================
+
+/// create_model diffusion com kind=lora + arch → persistido e retornado no list/get.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_model_diffusion_kind_lora_arch_persistido() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let model_id = uuid::Uuid::new_v4();
+    let req = CreateModelRequest {
+        id: model_id,
+        engine: "diffusion".into(),
+        name: "style-lora.safetensors".into(),
+        model: None,
+        s3_key: "models/diffusion/lora/test/style-lora.safetensors".into(),
+        source: "upload".into(),
+        url: None,
+        hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
+        bytes: 2048,
+        job_id: None,
+        kind: Some("lora".into()),
+        arch: Some("sdxl".into()),
+    };
+
+    let item = manager::create_model(&p, req)
+        .await
+        .expect("create diffusion lora model");
+    assert_eq!(item.id, model_id.to_string());
+    assert_eq!(item.kind.as_deref(), Some("lora"));
+    assert_eq!(item.arch.as_deref(), Some("sdxl"));
+
+    // list_models inclui kind/arch.
+    let models = manager::list_models(&p).await.expect("list models");
+    let found = models
+        .items
+        .iter()
+        .find(|m| m.id == model_id.to_string())
+        .unwrap();
+    assert_eq!(found.kind.as_deref(), Some("lora"));
+    assert_eq!(found.arch.as_deref(), Some("sdxl"));
+}
+
+/// create_model engine yolo com kind Some → 400.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_model_yolo_com_kind_400() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let req = CreateModelRequest {
+        id: uuid::Uuid::new_v4(),
+        engine: "yolo".into(),
+        name: "best.pt".into(),
+        model: None,
+        s3_key: "models/yolo/test/best.pt".into(),
+        source: "upload".into(),
+        url: None,
+        hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
+        bytes: 1024,
+        job_id: None,
+        kind: Some("lora".into()),
+        arch: None,
+    };
+
+    let result = manager::create_model(&p, req).await;
+    assert!(matches!(result, Err(ManagerError::InvalidRequest(_))));
+}
+
+/// create_model diffusion kind='checkpoint' arch='sdxl' → ok; kind='checkpoint' sem arch → 400.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_model_diffusion_checkpoint_com_arch_e_sem_arch() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    // checkpoint com arch → ok.
+    let model_id = uuid::Uuid::new_v4();
+    let req = CreateModelRequest {
+        id: model_id,
+        engine: "diffusion".into(),
+        name: "real.safetensors".into(),
+        model: None,
+        s3_key: "models/diffusion/ckpt/test/real.safetensors".into(),
+        source: "upload".into(),
+        url: None,
+        hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
+        bytes: 4096,
+        job_id: None,
+        kind: Some("checkpoint".into()),
+        arch: Some("sdxl".into()),
+    };
+
+    let item = manager::create_model(&p, req)
+        .await
+        .expect("create checkpoint with arch");
+    assert_eq!(item.kind.as_deref(), Some("checkpoint"));
+    assert_eq!(item.arch.as_deref(), Some("sdxl"));
+
+    // checkpoint sem arch → 400.
+    let req_no_arch = CreateModelRequest {
+        id: uuid::Uuid::new_v4(),
+        engine: "diffusion".into(),
+        name: "no-arch.safetensors".into(),
+        model: None,
+        s3_key: "models/diffusion/ckpt/test/no-arch.safetensors".into(),
+        source: "upload".into(),
+        url: None,
+        hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
+        bytes: 4096,
+        job_id: None,
+        kind: Some("checkpoint".into()),
+        arch: None,
+    };
+    let result = manager::create_model(&p, req_no_arch).await;
+    assert!(matches!(result, Err(ManagerError::InvalidRequest(_))));
+}
+
+/// create_model diffusion kind inválido → 400; arch inválido → 400.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_model_diffusion_kind_arch_invalidos_400() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    // kind inválido.
+    let req_bad_kind = CreateModelRequest {
+        id: uuid::Uuid::new_v4(),
+        engine: "diffusion".into(),
+        name: "bad-kind.safetensors".into(),
+        model: None,
+        s3_key: "models/diffusion/test/bad-kind.safetensors".into(),
+        source: "upload".into(),
+        url: None,
+        hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
+        bytes: 1024,
+        job_id: None,
+        kind: Some("invalid".into()),
+        arch: None,
+    };
+    let result = manager::create_model(&p, req_bad_kind).await;
+    assert!(matches!(result, Err(ManagerError::InvalidRequest(_))));
+
+    // arch inválido.
+    let req_bad_arch = CreateModelRequest {
+        id: uuid::Uuid::new_v4(),
+        engine: "diffusion".into(),
+        name: "bad-arch.safetensors".into(),
+        model: None,
+        s3_key: "models/diffusion/test/bad-arch.safetensors".into(),
+        source: "upload".into(),
+        url: None,
+        hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
+        bytes: 1024,
+        job_id: None,
+        kind: Some("lora".into()),
+        arch: Some("invalid-arch".into()),
+    };
+    let result = manager::create_model(&p, req_bad_arch).await;
+    assert!(matches!(result, Err(ManagerError::InvalidRequest(_))));
+}
+
+/// GET /internal/generations/:id — existente → 200; inexistente → 404; soft-deletada → 404.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn get_generation_by_id_200_404_soft_delete() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    // Insere uma generation.
+    let job_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO jobs (id, kind, engine, model, mode, status) VALUES ($1, 'diffusion_generate', 'diffusion', 'flux', 'generate', 'done')")
+        .bind(job_id)
+        .execute(&p)
+        .await
+        .unwrap();
+
+    let gen_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO generations (id, job_id, s3_key, filename, seed, prompt, width, height) VALUES ($1, $2, $3, 'test.png', 42, 'a prompt', 512, 512)")
+        .bind(gen_id)
+        .bind(job_id)
+        .bind(format!("artifacts/{job_id}/test.png"))
+        .execute(&p)
+        .await
+        .unwrap();
+
+    // GET existente → 200.
+    let row = manager::get_generation(&p, gen_id)
+        .await
+        .expect("get generation exists");
+    assert!(row.is_some());
+    let row = row.unwrap();
+    assert_eq!(row.id, gen_id.to_string());
+    assert_eq!(row.filename, "test.png");
+
+    // GET inexistente → None.
+    let missing = manager::get_generation(&p, uuid::Uuid::new_v4())
+        .await
+        .expect("get generation missing");
+    assert!(missing.is_none());
+
+    // Soft delete → None.
+    manager::soft_delete_generations(&p, &[gen_id])
+        .await
+        .expect("soft delete");
+    let after_delete = manager::get_generation(&p, gen_id)
+        .await
+        .expect("get generation after soft delete");
+    assert!(after_delete.is_none());
+}
+
+/// create_model diffusion kind=None, arch=None → ok (upload existente não quebra).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_model_diffusion_sem_kind_arch_persiste_none() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let model_id = uuid::Uuid::new_v4();
+    let req = CreateModelRequest {
+        id: model_id,
+        engine: "diffusion".into(),
+        name: "plain.safetensors".into(),
+        model: None,
+        s3_key: "models/diffusion/test/plain.safetensors".into(),
+        source: "upload".into(),
+        url: None,
+        hash: "d41d8cd98f00b204e9800998ecf8427e".into(),
+        bytes: 1024,
+        job_id: None,
+        kind: None,
+        arch: None,
+    };
+
+    let item = manager::create_model(&p, req)
+        .await
+        .expect("create diffusion without kind/arch");
+    assert!(item.kind.is_none());
+    assert!(item.arch.is_none());
 }

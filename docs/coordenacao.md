@@ -19,6 +19,17 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
+## Estado atual — 2026-09-15 (FATIA CI REGISTRY PUSH — FECHADA, PIPELINE 100% VERDE)
+
+- **FATIA CI REGISTRY PUSH — FECHADA (2026-09-15)** — pipeline de release 100% verde: as **9 imagens × 2 tags** publicadas em `git.felipecncloud.com/felipe/hephaestus/<nome>` (principal, manager, orchestrator, web, embedder, trainer-yolo, trainer-difusao, trainer-yolo-gpu, trainer-difusao-gpu; tags `<sha>`+`latest` host e `gpu-<sha>`+`gpu` GPU). Pull provado no TrueNAS (dívida M8 parcialmente validada — pull com login funciona; package continua privado).
+  - **Run 2 (fix dockerfile paths, PR #27)**: engines buildam mas as 2 GPU falham no push — camada grande (~9GB pip) em retry infinito com `unknown: Client Closed Request`.
+  - **Causa raiz provada em logs do gitea**: `PATCH /v2/.../blobs/uploads/... 500 unexpected EOF em 60000.0ms` — **readTimeout default de 60s do traefik v3** no entrypoint `websecure` corta uploads >60s. Cloudflare descartado como causa (DNS-only, grey cloud, `dig` → IP direto).
+  - **Fix (TrueNAS, fora do repo)**: traefik recriado com `--entrypoints.websecure.transport.respondingTimeouts.readTimeout=3600s`. Compose novo em `/mnt/NVME/appdata/traefik/compose.yaml` (o compose original nos labels apontava para `/app/...` read-only e não existia mais). Outage ~2s. Rollback: `/mnt/NVME/appdata/traefik/docker-inspect-traefik.bak-ci-readtimeout.json`. Uma flag órfã do container antigo (`acme.dnschallenge.propagation.delaybeforechecks=0s`) foi descartada — a traefik v3.1 rejeita o campo e o valor era default.
+  - **Validação**: re-run do run 176 (attempt 2 via API) — 9/9 jobs success; GPU push conclui em <1min com o timeout novo.
+  - **Setup do runner que ficou de pé** (referência): `.gitea/workflows/release.yml` (só main, matrix 9 imagens, docker CLI puro, socket montado via `container.valid_volumes` no `/mnt/NVME/appdata/gitea/runner/config.yaml` do runner v3.3.2, secret `REGISTRY_TOKEN` PAT `write:package`). Backup do compose do runner: `compose.yaml.bak-ci`.
+  - **Dívidas restantes (do review v1)**: M3 sem `concurrency` (2 pushes seguidos competem nas tags rolling); M4 `capacity: 1` compartilhado (release de horas enfileira o `ci.yml`); M7 web com ARG defaults (localhost); M8 lado pull — package PRIVADO, consumidores remotos precisam login com escopo `read:package` (pull via 443 provado no TrueNAS); M10 prune de disco do daemon de produção é manual; M11 `.dockerignore` sem `target/`/`.git`; M12 mapear `embedder` ↔ `trainer-clip` na doc.
+  - **Operação**: re-run de run específico via API `POST /repos/{owner}/{repo}/actions/runs/{id}/rerun` (o endpoint por task `actions/tasks/{id}/rerun` dá 404 nesta versão).
+
 ## Estado atual — 2026-09-15 (FATIA CI REGISTRY PUSH — PRONTA NA BRANCH, PENDENTE MERGE NA MAIN)
 
 - **FATIA CI REGISTRY PUSH — CONCLUÍDA NA BRANCH (2026-09-15)** — branch `feat/ci-registry-push`, commit `3ee804b` (`chore(ci): build de todas as imagens docker e push nos packages da gitea na main`). Pendente: push + merge na `main` pelo usuário → dispara o primeiro run real (validação ponta a ponta).

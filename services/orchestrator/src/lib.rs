@@ -88,6 +88,10 @@ pub struct ReportBody {
     pub metrics: Option<serde_json::Value>,
     pub error: Option<String>,
     pub artifacts: Option<Vec<ArtifactReport>>,
+    /// Conteúdo textual do generation_meta.json (JSONL) — D5 ADR-0023.
+    /// Campo opcional retrocompat: ausente em jobs legados.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta_content: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1006,6 +1010,7 @@ pub async fn run_job(
                     metrics: None,
                     error: Some(err_msg),
                     artifacts: None,
+                    meta_content: None,
                 },
             )
             .await
@@ -1080,6 +1085,7 @@ async fn run_job_inner(
                 metrics: None,
                 error: None,
                 artifacts: None,
+                meta_content: None,
             },
         )
         .await
@@ -1289,6 +1295,7 @@ async fn run_job_inner(
                 metrics: None,
                 error: None,
                 artifacts: None,
+                meta_content: None,
             },
         )
         .await
@@ -1413,8 +1420,9 @@ async fn run_job_inner(
             }
         }
 
-        // 11. Report done
+        // 11. Report done — inclui meta_content se generation_meta.json existe (D5 ADR-0023)
         let final_metrics = read_final_metrics(&outputs.join("metrics.jsonl"));
+        let meta_content = read_generation_meta_content(&outputs);
         report_client
             .report(
                 job_id,
@@ -1432,6 +1440,7 @@ async fn run_job_inner(
                     } else {
                         Some(artifacts)
                     },
+                    meta_content,
                 },
             )
             .await
@@ -1668,6 +1677,7 @@ async fn run_job_inner(
                                 } else {
                                     Some(std::mem::take(&mut new_live_artifacts))
                                 },
+                                meta_content: None,
                             },
                         )
                         .await;
@@ -1684,6 +1694,7 @@ async fn run_job_inner(
                             metrics: None,
                             error: None,
                             artifacts: Some(new_live_artifacts),
+                            meta_content: None,
                         },
                     )
                     .await;
@@ -2051,7 +2062,8 @@ async fn run_job_inner(
     // 10. Lê métricas finais para o report done
     let final_metrics = read_final_metrics(&metrics_path);
 
-    // 11. Report done
+    // 11. Report done — inclui meta_content se generation_meta.json existe (D5 ADR-0023)
+    let meta_content = read_generation_meta_content(&outputs);
     report_client
         .report(
             job_id,
@@ -2069,6 +2081,7 @@ async fn run_job_inner(
                 } else {
                     Some(artifacts)
                 },
+                meta_content,
             },
         )
         .await
@@ -2090,6 +2103,41 @@ fn read_final_metrics(path: &Path) -> Option<MetricsLine> {
         }
     }
     last
+}
+
+/// Lê o conteúdo textual do generation_meta.json para enviar como `meta_content`
+/// no report done (D5 ADR-0023). Cap: 256 KiB — truncamento honesto com warning.
+const META_CONTENT_MAX_BYTES: usize = 256 * 1024;
+
+fn read_generation_meta_content(outputs: &Path) -> Option<String> {
+    let path = outputs.join("generation_meta.json");
+    if !path.is_file() {
+        return None;
+    }
+    let raw = std::fs::read(&path).ok()?;
+    if raw.is_empty() {
+        return None;
+    }
+    if raw.len() > META_CONTENT_MAX_BYTES {
+        tracing::warn!(
+            path = %path.display(),
+            raw_bytes = raw.len(),
+            cap = META_CONTENT_MAX_BYTES,
+            "generation_meta.json excede 256 KiB — truncando honestamente"
+        );
+        let truncated = &raw[..META_CONTENT_MAX_BYTES];
+        // Recorta até a última quebra de linha para não enviar JSONL cortado no meio
+        let last_nl = truncated.iter().rposition(|&b| b == b'\n');
+        let slice = match last_nl {
+            Some(pos) => &truncated[..=pos],
+            None => truncated,
+        };
+        let mut s = String::from_utf8_lossy(slice).into_owned();
+        s.push_str("\n[TRUNCATED — original excedeu 256 KiB]\n");
+        return Some(s);
+    }
+    // Conteúdo pequeno o suficiente — lê como UTF-8, tolerando invalid bytes
+    Some(String::from_utf8_lossy(&raw).into_owned())
 }
 
 // ---------------------------------------------------------------------------
@@ -2847,6 +2895,15 @@ mod tests {
                 .find(|r| r.status == "done")
                 .and_then(|r| r.artifacts.clone())
         }
+
+        fn done_meta_content(&self) -> Option<String> {
+            self.reports
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|r| r.status == "done")
+                .and_then(|r| r.meta_content.clone())
+        }
     }
 
     #[async_trait]
@@ -3272,6 +3329,106 @@ mod tests {
         let kinds: Vec<&str> = artifacts.iter().map(|a| a.kind.as_str()).collect();
         assert!(filenames.contains(&"generated.png"));
         assert!(kinds.contains(&"generated"));
+    }
+
+    // -- D5 ADR-0023: meta_content no report done --
+
+    /// Job generate one-shot com generation_meta.json fake no output
+    /// → report done contém meta_content com o JSONL.
+    #[tokio::test]
+    async fn generate_one_shot_meta_content_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let mut dispatch = make_dispatch("job-meta-present-001", "diffusion");
+        dispatch.mode = "generate".to_string();
+        dispatch.package_ref = None;
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let meta_jsonl = r#"{"filename":"img_001.png","seed":42,"prompt":"a cat","width":512,"height":512}
+{"filename":"img_002.png","seed":43,"prompt":"a dog","width":512,"height":512}
+"#;
+        let mut output_files = HashMap::new();
+        output_files.insert("generated_0001.png".to_string(), b"fake png".to_vec());
+        output_files.insert(
+            "generation_meta.json".to_string(),
+            meta_jsonl.as_bytes().to_vec(),
+        );
+        create_fake_outputs(tmp.path(), "job-meta-present-001", &output_files);
+
+        let res = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+            None,
+        )
+        .await;
+
+        assert!(res.is_ok(), "run_job_inner failed: {:?}", res);
+
+        // Verifica meta_content no report done
+        let meta = report.done_meta_content();
+        assert!(meta.is_some(), "meta_content should be present");
+        let content = meta.unwrap();
+        assert!(
+            content.contains("img_001.png"),
+            "meta_content should contain JSONL data"
+        );
+        assert!(
+            content.contains("\"seed\":42"),
+            "meta_content should contain seed field"
+        );
+
+        // Verifica artefatos
+        let artifacts = report.done_artifacts().unwrap();
+        let kinds: Vec<&str> = artifacts.iter().map(|a| a.kind.as_str()).collect();
+        assert!(kinds.contains(&"generated_meta"));
+    }
+
+    /// Job generate sem generation_meta.json → report done NÃO contém meta_content.
+    #[tokio::test]
+    async fn generate_one_shot_meta_content_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let mut dispatch = make_dispatch("job-meta-absent-001", "diffusion");
+        dispatch.mode = "generate".to_string();
+        dispatch.package_ref = None;
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let mut output_files = HashMap::new();
+        output_files.insert("generated.png".to_string(), b"fake png".to_vec());
+        // Sem generation_meta.json — job legado
+        create_fake_outputs(tmp.path(), "job-meta-absent-001", &output_files);
+
+        let res = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+            None,
+        )
+        .await;
+
+        assert!(res.is_ok(), "run_job_inner failed: {:?}", res);
+
+        // meta_content deve ser None (ausente no report)
+        let meta = report.done_meta_content();
+        assert!(
+            meta.is_none(),
+            "meta_content should be absent for legacy jobs"
+        );
     }
 
     // -- A.3 test 4: parse_metrics_line aceita a linha 1-epoch do autotrack --

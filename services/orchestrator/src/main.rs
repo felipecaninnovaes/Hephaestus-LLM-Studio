@@ -270,6 +270,7 @@ async fn abort_handler(State(state): State<AppState>, body: Bytes) -> Response {
                     metrics: None,
                     error: Some("job not found or already finished".to_string()),
                     artifacts: None,
+                    meta_content: None,
                 },
             )
             .await;

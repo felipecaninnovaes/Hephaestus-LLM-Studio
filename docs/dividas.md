@@ -102,6 +102,12 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
 - **Credenciais por nó `heph_o_*` + rotação + TLS com pin (ADR-0011 D5, dívida) — ABERTA 2026-09-10:** colunas `token_hash`/`fingerprint` existem e ficam NULL; transporte continua com `MANAGER_TOKEN` compartilhado. Rate-limit de 5 tentativas (§8) também pendente.
 - **Detecção de dupla execução / reconciliação de report pós-re-queue (ADR-0011 R3) — ABERTA 2026-09-10:** re-queue do watchdog assume nó morto; sem detecção de "ainda vivo mas isolado" (partição de rede). Artefatos last-write-wins por `job_id` (benigno na prática).
 - **Rate-limit / TTL do pairing code (ADR-0011 R2) — ABERTA 2026-09-10:** single-use em memória, mas código via env não tem TTL e o flag reseta no restart do orquestrador. Aceito para LAN caseira; dívida para uso externo.
+- **D1 — daemon difusão: integração @gpu real (ADR-0023 D1) — ABERTA 2026-09-15:** wire validado em mock (daemon HTTP sobe, responde health/generate/shutdown, sentinela de cancel funciona); sessão GPU pendente para validar: `from_single_file` quantizado (SDXL 4bit/8bit), multi-LoRA peft no Flux2Klein (`pipe.transformer.set_adapters`), e daemon quente real (pipeline carregado, 2 gerações sequenciais sem reload).
+- **Prova runtime de checkpoint custom (ADR-0023 D4) — ABERTA 2026-09-15:** `from_single_file` + quantização para SDXL/SD15 requer safetensors real; spike S1 provou API suportada no diffusers 0.40.0 mas não rodou @gpu com pesos reais.
+- **Filtro quantization da galeria quebra total (ADR-0023 D5) — ABERTA 2026-09-15:** `GET /api/generations` filtra quantization em memória no BFF (push-down no manager pendente); com muitas gerações, total retornado é honesto mas performance degrada.
+- **Restore/lixeira de gerações + sweep S3 de soft-deletados (ADR-0023 D5) — ABERTA 2026-09-15:** `generations.deleted_at` dá o soft-delete mas não há restore nem sweep de objetos S3 (segue o padrão da lixeira de imagens — dívida pré-existente generalizada).
+- **NIT: nome custom_model_path vs custom_model_id no meta do engine (ADR-0023 D4) — ABERTA 2026-09-15:** engine python usa `custom_checkpoint_path` no config.yaml mas o meta reportado usa `custom_model_id`; alinhar na próxima iteração.
+- **Yaml legado inclui `batch_size: 1` (ADR-0023 D2) — ABERTA 2026-09-15:** quando modo legado (sem loras, sem custom), o config.yaml emite `batch_size: 1` mesmo para batch único — funcionalmente inócuo mas polui o yaml; limpar na iteração seguinte.
 
 **Verificação / toolchain**
 

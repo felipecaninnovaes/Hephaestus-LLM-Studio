@@ -60,7 +60,7 @@ A especificação normativa completa e canônica vive em **`docs/DESIGN.md`**. P
 - **Navegação estruturada em 4 seções temáticas:**
   1. *Estúdio & Dados:* **Painel** (`/dashboard`, ativo como home, ícone `IconHome`), **Datasets** (`/datasets`, ativo, ícone `IconDatabase`).
   2. *Treinamento & Execução:* **Treino YOLO** (`/treino`, rota nova F6.3 — setup de treino YOLO central), **Execuções** (`/jobs`, renomeada F6.3 — fila de trabalho + histórico agrupado ativos primeiro + painel de detalhe; badge numérico de `telemetry.jobsActive` em tempo real).
-     3. *Forja & Engenharia:* **Difusão LoRA** (`/difusao`, badge "Roadmap", desabilitado honesto), **OpenCLIP** (`/openclip`, badge "Roadmap", desabilitado), **Playground** (`/playground`, ativo — badge Roadmap removido, Fatia J; ADR-0013 D7), **Modelos & Pesos** (`/models`, ativo — badge Roadmap removido, Fatia I; ADR-0012 D7).
+     3. *Forja & Engenharia:* **Difusão LoRA** (`/difusao`, badge "Roadmap", desabilitado honesto), **OpenCLIP** (`/openclip`, badge "Roadmap", desabilitado), **Geração** (`/geracao`, ativo — novo, ADR-0023 D0), **Detecção YOLO** (`/playground`, ativo — renomeado ADR-0023 D0, badge Roadmap removido Fatia J; ADR-0013 D7), **Modelos & Pesos** (`/models`, ativo — badge Roadmap removido, Fatia I; ADR-0012 D7).
   4. *Infraestrutura:* **Orquestradores** (`/environments`, ativo — badge Roadmap removido, chip multi-nó "N orquestradores"), **Storage S3** (`/storage`, badge "Roadmap", desabilitado).
   5. *Sistema:* **Registro de Logs** (`/events`, badge "Roadmap", desabilitado), **Configurações** (`/settings`, badge "Roadmap", desabilitado).
 - **Destaque de rota ativa:** derivado dinamicamente via `usePathname()`, aplicando borda violeta `border-brand-500/30 bg-zinc-900/90` com barra lateral indicadora `bg-brand-500`.
@@ -72,7 +72,7 @@ A especificação normativa completa e canônica vive em **`docs/DESIGN.md`**. P
 ### 4.2 Header do shell (`app/(studio)/layout.tsx`)
 
 - Botão hambúrguer móvel para abertura da Sidebar (`lg:hidden`).
-- **Breadcrumbs dinâmicos:** gerados automaticamente via `usePathname()` com mapeamento amigável (`SEGMENT_LABELS`: dashboard → "Painel", datasets → "Datasets", annotate → "Anotar", treino → "Treino YOLO", jobs → "Execuções", models → "Modelos", login → "Login"), com truncamento intermediário em `max-w-[140px]` e destaque semi-bold no item ativo.
+- **Breadcrumbs dinâmicos:** gerados automaticamente via `usePathname()` com mapeamento amigável (`SEGMENT_LABELS`: dashboard → "Painel", datasets → "Datasets", annotate → "Anotar", treino → "Treino YOLO", jobs → "Execuções", models → "Modelos", geracao → "Geração", login → "Login"), com truncamento intermediário em `max-w-[140px]` e destaque semi-bold no item ativo.
 - **Botão do Centro de Atividades:** atalho de alta visibilidade no canto superior direito com ícone de raio (`IconZap` em `text-brand-400`), abrindo o drawer lateral de operações e monitoramento.
 - **Chip de Ambiente / Nó:** cápsula de status `Badge` variante `telemetry` com ponto luminoso pulsante exibindo "Local" (`title="Nó local — ambiente único nesta fatia"`).
 
@@ -274,13 +274,23 @@ interface BBox { id: number; classId: number; label: string; x: number; y: numbe
   - **Página `/models`** (Fatia I.5; ADR-0012 D7; atualizada em Gestão de Modelos): rota `(studio)/models/page.tsx` com lista GlassCards (nome mono, badges de engine YOLO/YOLO-World/Difusão/CLIP, badge de formato .safetensors/.pt, badge origem Treino/Upload/Download, bytes formatados, data, botão Baixar via URL presigned e botão Excluir com `ConfirmDialog`), modais Upload e Baixar por URL suportando `.pt` e `.safetensors`, empty state, erros mapeados em pt-BR por `code`. Sidebar "Modelos & Pesos" habilitado (`isAvailable: true`).
   - **Dropdown de pesos em `/treino`** (Fatia I.6; ADR-0012 D7): `ForjaYoloSetup.tsx` ganha seletor "Pesos iniciais" (`listModels()` filtrado por `engine==='yolo'`, rótulo `name · source`; selecionado → envia `weights: id` no `startYoloJob`). TrainYoloModal da galeria INTOCADO.
   - `POST /api/jobs/yolo` (`lib/jobs.ts:startYoloJob`): body `{datasetId,model,epochs,batch,imgsz,lr0,optimizer,augment,weights?}` — `weights?: string` (UUID de `models`, opcional). Erros: 400 `invalid_request` (weights não-UUID), 404 `not_found` (weights inexistente).
-- Playground — IMPLEMENTADO (Fatia J; ADR-0013):
+- Playground — IMPLEMENTADO (Fatia J; ADR-0013, Atualizado ADR-0023 D0 — YOLO-only):
   - `POST /api/jobs/predict` (`lib/playground.ts:startPredictJob`): body `{modelId, datasetId, conf?}` (conf default 0.65). 202 `{jobId,status:"queued",queuePosition?}`. Erros: 400 `invalid_request`, 404 `not_found`, 409 `dataset_not_ready`, 503 `queue_unavailable`. UI: toast 202 + link "Acompanhar em Execuções" (`/jobs?job=<id>`).
-  - **Página `/playground`** (Fatia J.5; ADR-0013 D7): rota `(studio)/playground/page.tsx` — workspace 2 colunas (DESIGN.md). Coluna de controle (320–384px): seletor Modelo (`listModels()` filtrado por `engine==='yolo'`, rótulo `name · source · variante`), seletor Dataset (`canPredict` = category yolo + imagesCount>0 — classes NÃO obrigatórias), slider conf 0.3–0.95 default 0.65, CTA "Executar Inferência". Coluna de resultado: lista jobs predict (filtro `mode==='predict'` no `GET /api/jobs`); job done → overlay de boxes sobre imagens (match por filename entre predictions.json baixado via proxy de artefato e lista de imagens — `GET /api/datasets/:id/images`; cores por `cls.color` do dataset, fallback zinc #71717a); stats imagens/com detecção/boxes/skips; download predictions.json (proxy `.../artifacts/:id/data`); job failed visível com CTA /jobs; empty states honestos. Card de job sem botão aninhado.
+  - **Página `/playground`** (Fatia J.5; ADR-0013 D7, Atualizado ADR-0023 D0 — YOLO-only): rota `(studio)/playground/page.tsx` — workspace 2 colunas (DESIGN.md). Sem pills de modo; página é exclusivamente Detecção YOLO. Coluna de controle (320–384px): seletor Modelo (`listModels()` filtrado por `engine==='yolo'`, rótulo `name · source · variante`), seletor Dataset (`canPredict` = category yolo + imagesCount>0 — classes NÃO obrigatórias), slider conf 0.3–0.95 default 0.65, CTA "Executar Inferência". Coluna de resultado: lista jobs predict (filtro `mode==='predict'` no `GET /api/jobs`); job done → overlay de boxes sobre imagens (match por filename entre predictions.json baixado via proxy de artefato e lista de imagens — `GET /api/datasets/:id/images`; cores por `cls.color` do dataset, fallback zinc #71717a); stats imagens/com detecção/boxes/skips; download predictions.json (proxy `.../artifacts/:id/data`); job failed visível com CTA /jobs; empty states honestos. Card de job sem botão aninhado.
   - `lib/playground.ts` (`startPredictJob`, `getPredictions`) + `types/studio.ts` (aditivo: `PredictionsData`, `predictErrorMessage`). Erros mapeados em pt-BR por `code` (padrão da casa).
-  - Sidebar "Playground" habilitado (`isAvailable: true`, badge Roadmap removido, Fatia J; ADR-0013 D7).
+  - Sidebar "Detecção YOLO" habilitado (`isAvailable: true`, badge Roadmap removido, Fatia J; ADR-0013 D7).
   - **Nota:** `POST /runners/{engine}/up`, `POST /runners/:id/{kill,infer}`, `GET /runners` continuam dívida (runners quentes — ADR-0013 D0). O v1 usa job assíncrono na fila + página `/playground` com overlay.
 - Preview/sandbox: `POST /api/preview/{autolabel|autotracker|generate|search}` (efêmero, sem fila).
+- Geração — IMPLEMENTADO (Fatia Geração; ADR-0023):
+  - Rota `/geracao` (`app/(studio)/geracao/page.tsx`): pills internas **Gerar | Galeria** (SubmodulePills). Aba Gerar: painel de geração com modelo base (pills FLUX.2 Klein 4B / SDXL / SD 1.5 / Custom), variante destilada, quantização, editor multi-LoRA (`LoRAEditor.tsx`), prompt, negative, resolução, steps, CFG, seed, batchSize, NodeSelect, CTA "Gerar". Aba Galeria: grade de thumbs com seleção, paginação infinita, delete/export em lote, comparador 2 imagens (`CompareSlider.tsx`).
+  - `POST /api/jobs/diffusion/generate` (`lib/playground.ts:startDiffusionGenerateJob`): body `{baseModel?, customModelId?, prompt, negativePrompt?, width?, height?, steps?, guidanceScale?, seed?, quantization?, distilled?, batchSize?, loras?, orchestratorId?}`. `baseModel` e `customModelId` XOR. `loras`: array ≤4 de `{modelId, scale}`. 202 `{jobId,status:"queued",queuePosition?}`. Erros: 400 `invalid_request`, 400 `unsupported_architecture`, 404 `not_found`, 503 `queue_unavailable`. `diffusionGenerateErrorMessage` (`types/studio.ts`): mensagens em pt-BR.
+  - `GET /api/generations` (`lib/generations.ts:listGenerations`): `GenerationList{items: Generation[], total}`. Parâmetros: `limit`, `offset`, `baseModel`, `quantization`, `deleted`. Paginação infinita na galeria.
+  - `GET /api/generations/:id/data` (`lib/generations.ts:getGenerationDataUrl`): proxy da imagem.
+  - `POST /api/generations/delete` (`lib/generations.ts:deleteGenerations`): body `{ids: string[]}` (≤100). 204.
+  - `POST /api/generations/export` (`lib/generations.ts:exportGenerations`): body `{ids: string[]}` (≤100). 200 `application/zip` stream.
+  - Componentes: `GenerationPanel.tsx` (painel de controle + resultado), `GenerationGallery.tsx` (grade com seleção/delete/export/comparador), `LoRAEditor.tsx` (editor de linhas multi-LoRA), `CompareSlider.tsx` (modal comparador 2 imagens com clip-path reveal).
+  - Sidebar "Geração" habilitado (`isAvailable: true`, ícone `IconSparkles`, rota `/geracao`).
+  - **Nota:** `/playground` perdeu as pills de modo Difusão e o componente `PlaygroundDiffusion`; agora é exclusivamente Detecção YOLO.
 - Settings: chaves `hfToken, civitaiKey, openaiKey, anthropicKey, vllmEndpoint` no wire (camelCase global, ADR-0002 D1; colunas `settings` seguem snake_case) — rota ainda **não implementada** (mascaradas no GET quando chegar).
 - Classes e lixeira — IMPLEMENTADO (Fatia 3g, spec 0.4.0, ADR-0005): `putClasses(datasetId, classes)` (`lib/classes.ts` → `PUT /:id/classes`, reconciliação por id, 409 `classes_in_use` mantém o modal aberto); `softDeleteImage` (`DELETE /:id/images/:imageId` → 204, sem sweep) / `restoreImage` (`POST .../restore` → 204 sem conflito | 200 `{filename}` com rename `_restaurado`) / `purgeTrash` (`DELETE /:id/trash` → 204) (`lib/images.ts`; listagem da lixeira via `listImages(id, {deleted:true})`); `Toast.action` (`{label, onClick}`, toast com ação vive 6s — usado pelo Desfazer).
 - Busca semântica — IMPLEMENTADO (Fatia 3f, spec 0.5.0, ADR-0004): `searchDataset(datasetId, q, {k?, classId?, split?})` (`lib/search.ts` → `GET /:id/search?q&k&classId&split`, 200 `SearchResponse` | 400 inválida | 409 `index_not_ready` | 503 `embedding_unavailable`), `searchByImage(datasetId, imageId, {k?, threshold?})` (`lib/search.ts` → `POST /:id/search/by-image {imageId,k?,threshold?}`, 200 `SearchResponse` | 400 corpo inválido | 404 imagem fora do dataset | 409 `index_not_ready`), `getSearchStatus(datasetId)` (`lib/search.ts` → `GET /:id/search/status`, 200 `SearchStatus{status,imagesCount,indexedCount,model,dim}`), `triggerSearchIndex(datasetId)` (`lib/search.ts` → `POST /:id/search/index`, 202 `{status:indexing|not_indexed}`) (`types/studio.ts`: `SearchIndexStatus = "not_indexed"|"indexing"|"ready"|"stale"`, `SearchStatus`, `SearchItem{image,score}`, `SearchResponse{items}`); campo da imagem nos resultados é `url` (o mesmo `Image.url` do list — nunca `thumbUrl`).
@@ -300,7 +310,8 @@ apps/web/
 │   │   │           └── page.tsx          # Editor visual de BBox YOLO
 │   │   ├── treino/page.tsx               # Setup de treino YOLO (ForjaYoloSetup; F6.3)
 │   │   ├── jobs/page.tsx                 # Execuções — fila de trabalho + histórico + detalhe (F6.3)
-│   │   ├── playground/page.tsx           # Playground — inferência YOLO com overlay de boxes (Fatia J)
+│   │   ├── geracao/page.tsx              # Geração — pills Gerar|Galeria (ADR-0023)
+│   │   ├── playground/page.tsx           # Detecção YOLO — inferência com overlay de boxes (Fatia J)
 │   │   └── layout.tsx                    # Shell global (Sidebar + Header + ActionCenter + ToastHost)
 │   ├── login/page.tsx                    # Autenticação single-user (AuthAmbient)
 │   ├── globals.css                       # Tokens @theme, classes glass e fontes
@@ -317,6 +328,7 @@ apps/web/
 │   │   ├── AutoLabelModal.tsx            # Diálogo de disparo do AutoLabel (Fatia AutoLabel v1)
 │   │   ├── AutoTrackerModal.tsx          # Diálogo de disparo do AutoTracker
 │   │   ├── ClassesModal.tsx              # Diálogo de gestão de classes do dataset
+│   │   ├── CompareSlider.tsx             # Comparador de 2 imagens com clip-path reveal (ADR-0023)
 │   │   ├── ConfirmDialog.tsx             # Confirmação de exclusões e aborts
 │   │   ├── ConvergenceChart.tsx          # Gráficos de convergência Loss e mAP
 │   │   ├── CreateDatasetModal.tsx        # Criação e ingestão com inspeção de pacotes
@@ -324,10 +336,13 @@ apps/web/
 │   │   ├── DatasetMenu.tsx               # Menu contextual de ações de dataset
 │   │   ├── DatasetTable.tsx              # Visão de datasets em lista tabular
 │   │   ├── ForjaYoloSetup.tsx            # Painel central de configuração de treino
+│   │   ├── GenerationGallery.tsx         # Galeria de gerações com seleção/delete/export/comparador (ADR-0023)
+│   │   ├── GenerationPanel.tsx           # Painel de controle de geração (ADR-0023)
 │   │   ├── ImageCard.tsx                 # Card modular de imagem com BBoxes/captions
 │   │   ├── ImportDatasetModal.tsx        # Diálogo de importação de backup ZIP
 │   │   ├── JobCard.tsx                   # Item de histórico e status de job
 │   │   ├── JobLogViewer.tsx              # Terminal de logs estruturado com busca
+│   │   ├── LoRAEditor.tsx                # Editor multi-LoRA com N linhas (ADR-0023)
 │   │   ├── ModelDownloadModal.tsx         # Modal de download de modelo por URL (Fatia I)
 │   │   ├── ModelUploadModal.tsx           # Modal de upload de modelo .pt (Fatia I)
 │   │   ├── NodeSelect.tsx                 # Seletor de nó de execução de jobs (Fatia N — ADR-0015)
@@ -339,9 +354,9 @@ apps/web/
 ├── lib/
 │   ├── api.ts, autotracker.ts, backup.ts, classes.ts,
 │   ├── dataset-inspector.ts              # Pré-inspeção inteligente de pastas/ZIPs
-│   ├── datasets.ts, events.ts, format.ts, images.ts, jobs.ts,
+│   ├── datasets.ts, events.ts, format.ts, generations.ts, images.ts, jobs.ts,
 │   ├── monitoring.ts                     # Rotas de monitoramento (orchestrators/models/storage/health; F6.1)
-│   ├── playground.ts                     # Rotas do Playground (startPredictJob, getPredictions; Fatia J)
+│   ├── playground.ts                     # Rotas do Playground + Geração (startPredictJob, getPredictions, startDiffusionGenerateJob; Fatia J + ADR-0023)
 │   ├── search.ts
 └── types/
     └── studio.ts                         # Tipagens TypeScript de contratos e dados
@@ -349,7 +364,7 @@ apps/web/
 
 ## 12. Backlog front-end (evolução contínua)
 
-- [x] Rotas reais implementadas (`/dashboard`, `/datasets`, `/datasets/[id]`, `/annotate/[imageId]`, `/jobs` (Execuções), `/treino` (Treino YOLO), `/models` (Modelos & Pesos — Fatia I), `/playground` (Playground — Fatia J), `/login`).
+- [x] Rotas reais implementadas (`/dashboard`, `/datasets`, `/datasets/[id]`, `/annotate/[imageId]`, `/jobs` (Execuções), `/treino` (Treino YOLO), `/models` (Modelos & Pesos — Fatia I), `/playground` (Detecção YOLO — Fatia J, ADR-0023 D0), `/geracao` (Geração — ADR-0023 D0), `/login`).
 - [x] Redirecionamento da raiz (`/` → `/dashboard`).
 - [x] Centro de Atividades global (`ActionCenter.tsx`) com gaveta retrátil e monitoramento em tempo real.
 - [x] Ingestão unificada por Drag & Drop na tela de datasets com pré-inspeção imediata de `.zip`/pastas (`dataset-inspector.ts`).

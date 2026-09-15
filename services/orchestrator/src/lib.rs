@@ -1314,7 +1314,8 @@ async fn run_job_inner(
                                                 if let Ok(md5) = compute_file_md5(&path) {
                                                     if metrics_s3.put(&scoped, &path).await.is_ok()
                                                     {
-                                                        uploaded_checkpoints.insert(fname.to_string());
+                                                        uploaded_checkpoints
+                                                            .insert(fname.to_string());
                                                         new_live_artifacts.push(ArtifactReport {
                                                             kind: "checkpoint".to_string(),
                                                             path: rel_path,

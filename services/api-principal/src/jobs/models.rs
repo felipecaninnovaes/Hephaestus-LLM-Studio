@@ -2190,7 +2190,8 @@ mod tests {
         assert!(yaml.contains("epoch_offset: 10"));
 
         // Intervalo inválido (0 ou > 100) deve falhar
-        let bad_json = r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","checkpointInterval":0}"#;
+        let bad_json =
+            r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","checkpointInterval":0}"#;
         let bad_req: DiffusionJobRequest = serde_json::from_str(bad_json).unwrap();
         assert!(validate_diffusion_request(bad_req).is_err());
     }

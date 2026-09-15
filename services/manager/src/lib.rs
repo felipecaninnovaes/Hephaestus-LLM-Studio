@@ -373,40 +373,39 @@ pub async fn create_job(
     // Para predict: também resolve variante do modelo para jobs.model (D5).
     let mut resolved_model = req.model.clone();
     if let Some(weights_id) = req.weights_id {
-        let row: Option<(String, String, String, Option<String>)> = match sqlx::query_as(
-            "SELECT s3_key, hash, engine, model FROM models WHERE id = $1",
-        )
-        .bind(weights_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| ManagerError::Internal(format!("resolve weights from models: {e}")))?
-        {
-            Some(r) => Some(r),
-            None => {
-                // Fallback: busca em job_artifacts (ex.: checkpoints periódicos por época ou modelos intermediários)
-                let art_row: Option<(Uuid, String, String, String, String)> = sqlx::query_as(
-                    "SELECT a.job_id, a.path, a.md5, j.engine, j.model \
-                     FROM job_artifacts a \
-                     JOIN jobs j ON j.id = a.job_id \
-                     WHERE a.id = $1 AND a.kind IN ('checkpoint', 'model')",
-                )
+        let row: Option<(String, String, String, Option<String>)> =
+            match sqlx::query_as("SELECT s3_key, hash, engine, model FROM models WHERE id = $1")
                 .bind(weights_id)
                 .fetch_optional(pool)
                 .await
-                .map_err(|e| {
-                    ManagerError::Internal(format!("resolve weights from artifacts: {e}"))
-                })?;
-
-                art_row.map(|(job_id, path, md5, engine, model)| {
-                    (
-                        format!("artifacts/{job_id}/{path}"),
-                        md5,
-                        engine,
-                        Some(model),
+                .map_err(|e| ManagerError::Internal(format!("resolve weights from models: {e}")))?
+            {
+                Some(r) => Some(r),
+                None => {
+                    // Fallback: busca em job_artifacts (ex.: checkpoints periódicos por época ou modelos intermediários)
+                    let art_row: Option<(Uuid, String, String, String, String)> = sqlx::query_as(
+                        "SELECT a.job_id, a.path, a.md5, j.engine, j.model \
+                     FROM job_artifacts a \
+                     JOIN jobs j ON j.id = a.job_id \
+                     WHERE a.id = $1 AND a.kind IN ('checkpoint', 'model')",
                     )
-                })
-            }
-        };
+                    .bind(weights_id)
+                    .fetch_optional(pool)
+                    .await
+                    .map_err(|e| {
+                        ManagerError::Internal(format!("resolve weights from artifacts: {e}"))
+                    })?;
+
+                    art_row.map(|(job_id, path, md5, engine, model)| {
+                        (
+                            format!("artifacts/{job_id}/{path}"),
+                            md5,
+                            engine,
+                            Some(model),
+                        )
+                    })
+                }
+            };
 
         match row {
             None => return Err(ManagerError::NotFound),

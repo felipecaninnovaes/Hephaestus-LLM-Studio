@@ -842,13 +842,6 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     )
 
     flow_shift = float(getattr(noise_scheduler.config, "shift", 3.0) or 3.0)
-    print(
-        f"[FLUX] Iniciando treino: {epochs} épocas (offset={epoch_offset}), {total_train_steps} passos totais, lr={learning_rate}, "
-        f"is_flux2={is_flux2}, shift_factor={shift_factor}, scaling_factor={scaling_factor}, "
-        f"tem_bn={hasattr(vae, 'bn') and getattr(vae.bn, 'running_mean', None) is not None}, "
-        f"tem_stats_config={latents_mean is not None}",
-        flush=True,
-    )
 
     if is_flux2:
         # FLUX.2 Klein: VAE com 32 canais e espaço latente retreinado (AutoencoderKLFlux2).
@@ -870,7 +863,7 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         latents_std = None
 
     print(
-        f"[FLUX] Configuração de normalização da VAE ({vae.__class__.__name__}): "
+        f"[FLUX] Iniciando treino: {epochs} épocas (offset={epoch_offset}), {total_train_steps} passos totais, lr={learning_rate}, "
         f"is_flux2={is_flux2}, shift_factor={shift_factor}, scaling_factor={scaling_factor}, "
         f"tem_bn={hasattr(vae, 'bn') and getattr(vae.bn, 'running_mean', None) is not None}, "
         f"tem_stats_config={latents_mean is not None}",

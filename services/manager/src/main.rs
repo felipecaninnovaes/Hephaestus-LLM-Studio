@@ -18,9 +18,9 @@ use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 
 use manager::{
-    self, AbortResponse, AdoptRequest, ArtifactsListResponse, HeartbeatRequest,
-    HttpOrchestratorClient, ManagerError, OrchestratorClient, ReportRequest, TelemetryCache,
-    VramTable,
+    self, AbortResponse, AdoptRequest, ArtifactsListResponse, DeleteGenerationsRequest,
+    HeartbeatRequest, HttpOrchestratorClient, ManagerError, OrchestratorClient, ReportRequest,
+    TelemetryCache, VramTable,
 };
 
 // ---------------------------------------------------------------------------
@@ -47,6 +47,21 @@ struct AppState {
 struct ListJobsQuery {
     status: Option<String>,
     engine: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct ListGenerationsQuery {
+    #[serde(default = "default_limit")]
+    limit: i64,
+    #[serde(default)]
+    offset: i64,
+    #[serde(default)]
+    deleted: bool,
+    base_model: Option<String>,
+}
+
+fn default_limit() -> i64 {
+    50
 }
 
 // ---------------------------------------------------------------------------
@@ -468,6 +483,46 @@ async fn update_model_handler(
     }
 }
 
+/// GET /internal/generations — lista generations com paginação e filtros.
+async fn list_generations_handler(
+    State(state): State<AppState>,
+    Query(params): Query<ListGenerationsQuery>,
+) -> Response {
+    let limit = params.limit.clamp(1, 200);
+    let offset = params.offset.max(0);
+    match manager::list_generations(
+        &state.pool,
+        limit,
+        offset,
+        params.deleted,
+        params.base_model.as_deref(),
+    )
+    .await
+    {
+        Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
+        Err(ManagerError::InvalidRequest(msg)) => bad_request(&msg),
+        Err(ManagerError::Internal(e)) => internal_error(&e),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+/// POST /internal/generations/delete — soft delete de generations.
+async fn delete_generations_handler(State(state): State<AppState>, body: Bytes) -> Response {
+    if body.is_empty() {
+        return bad_request("empty body");
+    }
+    let req: DeleteGenerationsRequest = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => return bad_request(&format!("invalid json: {e}")),
+    };
+    match manager::soft_delete_generations(&state.pool, &req.ids).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(ManagerError::InvalidRequest(msg)) => bad_request(&msg),
+        Err(ManagerError::Internal(e)) => internal_error(&e),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -496,6 +551,11 @@ fn build_router(state: AppState) -> Router {
             delete(delete_model_handler).patch(update_model_handler),
         )
         .route("/internal/storage/usage", get(get_storage_usage_handler))
+        .route("/internal/generations", get(list_generations_handler))
+        .route(
+            "/internal/generations/delete",
+            post(delete_generations_handler),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,

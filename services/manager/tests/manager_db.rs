@@ -96,6 +96,10 @@ impl manager::OrchestratorClient for FailingOrchestratorClient {
 
 /// Limpa tabelas do manager.
 async fn cleanup(pool: &PgPool) {
+    sqlx::query("DELETE FROM generations")
+        .execute(pool)
+        .await
+        .unwrap();
     sqlx::query("DELETE FROM models")
         .execute(pool)
         .await
@@ -260,6 +264,8 @@ async fn ciclo_queued_done() {
             metrics: None,
             error: None,
             artifacts: None,
+
+            meta_content: None,
         },
     )
     .await
@@ -282,6 +288,8 @@ async fn ciclo_queued_done() {
             metrics: None,
             error: None,
             artifacts: None,
+
+            meta_content: None,
         },
     )
     .await
@@ -325,6 +333,8 @@ async fn ciclo_queued_done() {
             metrics: Some(metrics.clone()),
             error: None,
             artifacts: None,
+
+            meta_content: None,
         },
     )
     .await
@@ -367,6 +377,8 @@ async fn ciclo_queued_done() {
                     bytes: 256,
                 },
             ]),
+
+            meta_content: None,
         },
     )
     .await
@@ -404,6 +416,8 @@ async fn ciclo_queued_done() {
                 md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
                 bytes: 100,
             }]),
+
+            meta_content: None,
         },
     )
     .await
@@ -448,6 +462,8 @@ async fn abort_em_voo_e_terminal() {
             metrics: None,
             error: None,
             artifacts: None,
+
+            meta_content: None,
         },
     )
     .await
@@ -485,6 +501,8 @@ async fn abort_em_voo_e_terminal() {
             metrics: None,
             error: None,
             artifacts: None,
+
+            meta_content: None,
         },
     )
     .await
@@ -702,6 +720,8 @@ async fn report_failed_grava_error_em_params() {
             metrics: None,
             error: Some("CUDA out of memory".into()),
             artifacts: None,
+
+            meta_content: None,
         },
     )
     .await
@@ -750,6 +770,8 @@ async fn report_invalid_md5_rejeita() {
                 md5: "invalid-md5-not-hex32".into(),
                 bytes: 100,
             }]),
+
+            meta_content: None,
         },
     )
     .await;
@@ -862,6 +884,8 @@ async fn report_job_inexistente_404() {
             metrics: None,
             error: None,
             artifacts: None,
+
+            meta_content: None,
         },
     )
     .await;
@@ -1071,6 +1095,8 @@ async fn metrics_append_e_dedup_por_epoch() {
             })),
             error: None,
             artifacts: None,
+
+            meta_content: None,
         },
     )
     .await
@@ -1107,6 +1133,8 @@ async fn metrics_append_e_dedup_por_epoch() {
             })),
             error: None,
             artifacts: None,
+
+            meta_content: None,
         },
     )
     .await
@@ -1146,6 +1174,8 @@ async fn metrics_append_e_dedup_por_epoch() {
             })),
             error: None,
             artifacts: None,
+
+            meta_content: None,
         },
     )
     .await
@@ -1302,6 +1332,8 @@ async fn list_models_job_done_com_artifacts() {
                     bytes: 256,
                 },
             ]),
+
+            meta_content: None,
         },
     )
     .await
@@ -1364,6 +1396,8 @@ async fn list_models_cada_job_best_uma_linha() {
                     bytes: 100,
                 },
             ]),
+
+            meta_content: None,
         },
     )
     .await
@@ -1393,6 +1427,8 @@ async fn list_models_cada_job_best_uma_linha() {
                 md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
                 bytes: 200,
             }]),
+
+            meta_content: None,
         },
     )
     .await
@@ -1466,6 +1502,8 @@ async fn list_models_exclui_autotracker_boxes() {
                     bytes: 128,
                 },
             ]),
+
+            meta_content: None,
         },
     )
     .await
@@ -1546,6 +1584,8 @@ async fn storage_usage_soma_esperada() {
                     bytes: 256,
                 },
             ]),
+
+            meta_content: None,
         },
     )
     .await
@@ -1591,6 +1631,8 @@ async fn storage_usage_soma_esperada() {
                     bytes: 100,
                 },
             ]),
+
+            meta_content: None,
         },
     )
     .await
@@ -1653,6 +1695,8 @@ async fn backfill_best_pt_para_models() {
                     bytes: 512,
                 },
             ]),
+
+            meta_content: None,
         },
     )
     .await
@@ -1742,6 +1786,8 @@ async fn backfill_idempotente_2x_sem_duplicar() {
                 md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
                 bytes: 512,
             }]),
+
+            meta_content: None,
         },
     )
     .await
@@ -1806,6 +1852,8 @@ async fn hook_best_pt_idempotente_report_2x() {
                 md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
                 bytes: 512,
             }]),
+
+            meta_content: None,
         },
     )
     .await
@@ -1835,6 +1883,8 @@ async fn hook_best_pt_idempotente_report_2x() {
                 md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
                 bytes: 512,
             }]),
+
+            meta_content: None,
         },
     )
     .await
@@ -1895,6 +1945,8 @@ async fn hook_sem_best_pt_nao_insere() {
                     bytes: 256,
                 },
             ]),
+
+            meta_content: None,
         },
     )
     .await
@@ -4499,4 +4551,643 @@ async fn autolabel_job_lifecycle_and_dispatch() {
     assert_eq!(job.engine, "autolabel");
     assert_eq!(job.mode, "autolabel");
     assert_eq!(job.status, "queued");
+}
+
+// ===========================================================================
+// G.5 — Multi-LoRA / Custom / Generations / Rotas internas
+// ===========================================================================
+
+/// Helper: cria um modelo diffusion lora no banco e retorna o ID.
+async fn insert_diffusion_lora(pool: &PgPool, name: &str) -> uuid::Uuid {
+    let model_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO models (id, engine, name, s3_key, source, hash, bytes, job_id, kind, arch) \
+         VALUES ($1, 'diffusion', $2, $3, 'upload', 'd41d8cd98f00b204e9800998ecf8427e', 1024, NULL, 'lora', NULL)",
+    )
+    .bind(model_id)
+    .bind(name)
+    .bind(format!("models/diffusion/lora/{model_id}/{name}"))
+    .execute(pool)
+    .await
+    .expect("insert diffusion lora");
+    model_id
+}
+
+/// Helper: cria um modelo diffusion checkpoint no banco e retorna o ID.
+async fn insert_diffusion_checkpoint(pool: &PgPool, name: &str, arch: &str) -> uuid::Uuid {
+    let model_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO models (id, engine, name, s3_key, source, hash, bytes, job_id, kind, arch) \
+         VALUES ($1, 'diffusion', $2, $3, 'upload', 'd41d8cd98f00b204e9800998ecf8427e', 4096, NULL, 'checkpoint', $4)",
+    )
+    .bind(model_id)
+    .bind(name)
+    .bind(format!("models/diffusion/ckpt/{model_id}/{name}"))
+    .bind(arch)
+    .execute(pool)
+    .await
+    .expect("insert diffusion checkpoint");
+    model_id
+}
+
+/// Helper: cria um request de diffusion generate.
+fn diffusion_generate_request() -> CreateJobRequest {
+    CreateJobRequest {
+        kind: "diffusion_generate".into(),
+        engine: "diffusion".into(),
+        model: "flux".into(),
+        mode: "generate".into(),
+        dataset_id: None,
+        dataset_version_id: None,
+        package_ref: None,
+        config_yaml: Some("engine: diffusion\nmodel: flux".into()),
+        params: Some(serde_json::json!({
+            "prompt": "a cyberpunk city at night",
+            "width": 1024,
+            "height": 1024,
+            "steps": 20,
+            "guidance_scale": 7.5,
+            "seed": 42
+        })),
+        vram_min_gb: None,
+        weights_id: None,
+        orchestrator_hint: None,
+    }
+}
+
+/// create_job com params loras 2x → ok; dispatch com loras, sem custom_checkpoint.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_job_com_2_loras_e_dispatch() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+
+    let lora1 = insert_diffusion_lora(&p, "style-lora.safetensors").await;
+    let lora2 = insert_diffusion_lora(&p, "detail-lora.safetensors").await;
+
+    let mut req = diffusion_generate_request();
+    req.params = Some(serde_json::json!({
+        "prompt": "a cyberpunk city",
+        "width": 1024, "height": 1024, "steps": 20, "guidance_scale": 7.5, "seed": 42,
+        "loras": [
+            {"modelId": lora1.to_string(), "scale": 0.8},
+            {"modelId": lora2.to_string(), "scale": 0.5}
+        ]
+    }));
+
+    let resp = manager::create_job(&p, req)
+        .await
+        .expect("create job with 2 loras");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    // params.loras gravado com s3_key resolvido.
+    let row: (serde_json::Value,) = sqlx::query_as("SELECT params FROM jobs WHERE id = $1")
+        .bind(job_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    let loras = row.0.get("loras").expect("loras presente");
+    let arr = loras.as_array().expect("loras é array");
+    assert_eq!(arr.len(), 2);
+    assert_eq!(arr[0]["scale"], 0.8);
+
+    // Dispatch.
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+
+    let calls = orch.calls();
+    let (_, body) = &calls[0];
+    let dl = body
+        .get("loras")
+        .expect("loras no dispatch")
+        .as_array()
+        .unwrap();
+    assert_eq!(dl.len(), 2);
+    assert_eq!(
+        dl[0]["s3_key"],
+        format!("models/diffusion/lora/{lora1}/style-lora.safetensors")
+    );
+    assert_eq!(dl[0]["md5"], "d41d8cd98f00b204e9800998ecf8427e");
+    assert_eq!(dl[0]["scale"], 0.8);
+    assert!(
+        body.get("custom_checkpoint").is_none(),
+        "sem custom_checkpoint"
+    );
+}
+
+/// create_job com customModelId kind='checkpoint' arch=sdxl → dispatch com custom_checkpoint.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_job_com_custom_checkpoint_sdxl() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+    let ckpt = insert_diffusion_checkpoint(&p, "realistic-v1.safetensors", "sdxl").await;
+
+    let mut req = diffusion_generate_request();
+    req.params = Some(serde_json::json!({
+        "prompt": "a landscape", "width": 1024, "height": 1024, "steps": 30, "seed": 123,
+        "customModelId": ckpt.to_string()
+    }));
+
+    let resp = manager::create_job(&p, req)
+        .await
+        .expect("create job with custom checkpoint");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    let row: (serde_json::Value,) = sqlx::query_as("SELECT params FROM jobs WHERE id = $1")
+        .bind(job_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    let cc = row
+        .0
+        .get("custom_checkpoint")
+        .expect("custom_checkpoint presente");
+    assert_eq!(
+        cc["s3_key"],
+        format!("models/diffusion/ckpt/{ckpt}/realistic-v1.safetensors")
+    );
+
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+    let (_, body) = &orch.calls()[0];
+    let dcc = body
+        .get("custom_checkpoint")
+        .expect("custom_checkpoint no dispatch");
+    assert_eq!(
+        dcc["s3_key"],
+        format!("models/diffusion/ckpt/{ckpt}/realistic-v1.safetensors")
+    );
+    assert!(body.get("loras").is_none() || body["loras"].as_array().map_or(true, |a| a.is_empty()));
+}
+
+/// lora inexistente → falha honesta.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_job_lora_inexistente_falha() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let fake_id = uuid::Uuid::new_v4();
+    let mut req = diffusion_generate_request();
+    req.params = Some(
+        serde_json::json!({"prompt": "test", "loras": [{"modelId": fake_id.to_string(), "scale": 1.0}]}),
+    );
+    let result = manager::create_job(&p, req).await;
+    assert!(
+        matches!(result, Err(ManagerError::InvalidRequest(ref msg)) if msg.contains("not found"))
+    );
+}
+
+/// custom de kind lora → falha.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_job_custom_kind_lora_falha() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let lora = insert_diffusion_lora(&p, "not-a-checkpoint.safetensors").await;
+    let mut req = diffusion_generate_request();
+    req.params = Some(serde_json::json!({"prompt": "test", "customModelId": lora.to_string()}));
+    let result = manager::create_job(&p, req).await;
+    assert!(
+        matches!(result, Err(ManagerError::InvalidRequest(ref msg)) if msg.contains("checkpoint"))
+    );
+}
+
+/// 5 loras → falha.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_job_5_loras_falha() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let mut lora_ids = Vec::new();
+    for i in 0..5 {
+        let id = uuid::Uuid::new_v4();
+        let name = format!("lora{i}.safetensors");
+        let s3 = format!("models/diffusion/lora/{id}/{name}");
+        sqlx::query("INSERT INTO models (id, engine, name, s3_key, source, hash, bytes, kind) VALUES ($1, 'diffusion', $2, $3, 'upload', 'd41d8cd98f00b204e9800998ecf8427e', 1024, 'lora')").bind(id).bind(&name).bind(&s3).execute(&p).await.unwrap();
+        lora_ids.push(id);
+    }
+    let loras: Vec<_> = lora_ids
+        .iter()
+        .enumerate()
+        .map(
+            |(i, id)| serde_json::json!({"modelId": id.to_string(), "scale": 0.5 + i as f64 * 0.1}),
+        )
+        .collect();
+    let mut req = diffusion_generate_request();
+    req.params = Some(serde_json::json!({"prompt": "test", "loras": loras}));
+    let result = manager::create_job(&p, req).await;
+    assert!(
+        matches!(result, Err(ManagerError::InvalidRequest(ref msg)) if msg.contains("at most 4"))
+    );
+}
+
+/// Params legado sem loras/customModelId → retrocompat.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_job_legado_sem_loras_custom_ok() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let mut req = diffusion_generate_request();
+    req.params = Some(serde_json::json!({"prompt": "legacy job", "width": 512, "height": 512}));
+    let resp = manager::create_job(&p, req)
+        .await
+        .expect("create legacy job should work");
+    assert!(!resp.job_id.is_empty());
+}
+
+/// Report done com generated_meta content → 3 rows em generations.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn hook_generations_3_linhas_meta() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+    let resp = manager::create_job(&p, diffusion_generate_request())
+        .await
+        .expect("create diffusion job");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+
+    let meta_content = "\
+{\"filename\":\"generated_0001.png\",\"thumb\":\"thumb_0001.jpg\",\"seed\":42,\"prompt\":\"a cyberpunk city\",\"negative_prompt\":\"blurry\",\"width\":1024,\"height\":1024,\"batch_index\":0,\"batch_size\":3,\"base_model\":\"flux-2-klein-4b\",\"steps\":20,\"guidance_scale\":7.5}
+{\"filename\":\"generated_0002.png\",\"thumb\":\"thumb_0002.jpg\",\"seed\":43,\"prompt\":\"a cyberpunk city\",\"negative_prompt\":null,\"width\":1024,\"height\":1024,\"batch_index\":1,\"batch_size\":3,\"base_model\":\"flux-2-klein-4b\",\"steps\":20,\"guidance_scale\":7.5}
+{\"filename\":\"generated_0003.png\",\"seed\":44,\"prompt\":\"a cyberpunk city\",\"width\":1024,\"height\":1024,\"batch_index\":2,\"batch_size\":3,\"base_model\":\"flux-2-klein-4b\",\"steps\":20}";
+
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "done".into(),
+            progress: Some(1.0),
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: Some(vec![
+                ArtifactItem {
+                    kind: "generated".into(),
+                    path: "generated_0001.png".into(),
+                    md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                    bytes: 1024,
+                },
+                ArtifactItem {
+                    kind: "generated".into(),
+                    path: "generated_0002.png".into(),
+                    md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                    bytes: 1024,
+                },
+                ArtifactItem {
+                    kind: "generated".into(),
+                    path: "generated_0003.png".into(),
+                    md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                    bytes: 1024,
+                },
+                ArtifactItem {
+                    kind: "generated_thumb".into(),
+                    path: "thumb_0001.jpg".into(),
+                    md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                    bytes: 512,
+                },
+                ArtifactItem {
+                    kind: "generated_meta".into(),
+                    path: "generation_meta.json".into(),
+                    md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                    bytes: 512,
+                },
+            ]),
+            meta_content: Some(meta_content.into()),
+        },
+    )
+    .await
+    .expect("report done with meta");
+
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM generations WHERE job_id = $1")
+        .bind(job_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(count.0, 3, "deve haver 3 generations");
+
+    let row: (String, String, Option<String>, i64, String, Option<String>, i32, i32, serde_json::Value) =
+        sqlx::query_as("SELECT s3_key, filename, thumb_s3_key, seed, prompt, negative_prompt, width, height, params FROM generations WHERE job_id = $1 ORDER BY seed LIMIT 1").bind(job_id).fetch_one(&p).await.unwrap();
+    assert_eq!(row.0, format!("artifacts/{job_id}/generated_0001.png"));
+    assert_eq!(row.1, "generated_0001.png");
+    assert_eq!(row.2, Some(format!("artifacts/{job_id}/thumb_0001.jpg")));
+    assert_eq!(row.3, 42);
+    assert_eq!(row.4, "a cyberpunk city");
+    assert_eq!(row.5, Some("blurry".to_string()));
+    assert_eq!(row.8["batch_index"], 0);
+    assert_eq!(row.8["base_model"], "flux-2-klein-4b");
+}
+
+/// Re-report idempotente → continua 1 row.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn hook_generations_idempotente_re_report() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+    let resp = manager::create_job(&p, diffusion_generate_request())
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+
+    let meta = "{\"filename\":\"gen_0001.png\",\"seed\":10,\"prompt\":\"test\",\"width\":512,\"height\":512}";
+
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "done".into(),
+            progress: Some(1.0),
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: Some(vec![
+                ArtifactItem {
+                    kind: "generated".into(),
+                    path: "gen_0001.png".into(),
+                    md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                    bytes: 1024,
+                },
+                ArtifactItem {
+                    kind: "generated_meta".into(),
+                    path: "generation_meta.json".into(),
+                    md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                    bytes: 100,
+                },
+            ]),
+            meta_content: Some(meta.into()),
+        },
+    )
+    .await
+    .expect("report done 1");
+
+    let count1: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM generations WHERE job_id = $1")
+        .bind(job_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(count1.0, 1);
+
+    // 2º report (job já terminal → ignorado, generations não duplica).
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "done".into(),
+            progress: Some(1.0),
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: None,
+            meta_content: Some(meta.into()),
+        },
+    )
+    .await
+    .expect("report done 2");
+
+    let count2: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM generations WHERE job_id = $1")
+        .bind(job_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(count2.0, 1, "idempotência: continua 1 row");
+}
+
+/// Meta corrupto → best-effort, 1 válida inserida.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn hook_generations_meta_corrupto_best_effort() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+    let resp = manager::create_job(&p, diffusion_generate_request())
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+
+    let meta = "not json at all\n{\"filename\":\"ok.png\",\"seed\":1,\"prompt\":\"test\",\"width\":512,\"height\":512}\n";
+
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "done".into(),
+            progress: Some(1.0),
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: Some(vec![
+                ArtifactItem {
+                    kind: "generated".into(),
+                    path: "ok.png".into(),
+                    md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                    bytes: 1024,
+                },
+                ArtifactItem {
+                    kind: "generated_meta".into(),
+                    path: "generation_meta.json".into(),
+                    md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                    bytes: 100,
+                },
+            ]),
+            meta_content: Some(meta.into()),
+        },
+    )
+    .await
+    .expect("report done with corrupt meta");
+
+    let job = manager::get_job(&p, job_id).await.expect("get job");
+    assert_eq!(job.status, "done");
+
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM generations WHERE job_id = $1")
+        .bind(job_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(count.0, 1, "linha corrupta ignorada, 1 válida inserida");
+}
+
+/// GET /internal/generations com paginação e filtros.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn list_generations_paginacao_e_filtros() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let job_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO jobs (id, kind, engine, model, mode, status) VALUES ($1, 'diffusion_generate', 'diffusion', 'flux', 'generate', 'done')").bind(job_id).execute(&p).await.unwrap();
+
+    for i in 0..5 {
+        let gen_id = uuid::Uuid::new_v4();
+        let s3_key = format!("artifacts/{job_id}/gen_{i:04}.png");
+        sqlx::query("INSERT INTO generations (id, job_id, s3_key, filename, seed, prompt, width, height, params) VALUES ($1, $2, $3, $4, $5, $6, 1024, 1024, $7::jsonb)")
+            .bind(gen_id).bind(job_id).bind(&s3_key).bind(format!("gen_{i:04}.png")).bind(i as i64).bind(format!("prompt {i}"))
+            .bind(serde_json::json!({"base_model": if i < 3 { "sdxl" } else { "sd15" }}))
+            .execute(&p).await.unwrap();
+    }
+
+    let resp = manager::list_generations(&p, 50, 0, false, None)
+        .await
+        .expect("list all");
+    assert_eq!(resp.total, 5);
+
+    let resp_sdxl = manager::list_generations(&p, 50, 0, false, Some("sdxl"))
+        .await
+        .expect("list sdxl");
+    assert_eq!(resp_sdxl.total, 3);
+
+    let resp_page = manager::list_generations(&p, 2, 0, false, None)
+        .await
+        .expect("list page");
+    assert_eq!(resp_page.total, 5);
+    assert_eq!(resp_page.items.len(), 2);
+
+    let resp_del = manager::list_generations(&p, 50, 0, true, None)
+        .await
+        .expect("list deleted");
+    assert_eq!(resp_del.total, 0);
+
+    let ids: Vec<uuid::Uuid> = resp.items[..2]
+        .iter()
+        .map(|g| g.id.parse().unwrap())
+        .collect();
+    manager::soft_delete_generations(&p, &ids)
+        .await
+        .expect("soft delete");
+
+    let resp_after = manager::list_generations(&p, 50, 0, false, None)
+        .await
+        .expect("list after delete");
+    assert_eq!(resp_after.total, 3);
+
+    let resp_del2 = manager::list_generations(&p, 50, 0, true, None)
+        .await
+        .expect("list deleted after");
+    assert_eq!(resp_del2.total, 2);
+}
+
+/// POST /internal/generations/delete → 204 + idempotência.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn delete_generations_204_e_idempotencia() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let job_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO jobs (id, kind, engine, model, mode, status) VALUES ($1, 'diffusion_generate', 'diffusion', 'flux', 'generate', 'done')").bind(job_id).execute(&p).await.unwrap();
+
+    let gen1 = uuid::Uuid::new_v4();
+    let gen2 = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO generations (id, job_id, s3_key, filename, seed, prompt, width, height) VALUES ($1, $2, $3, 'a.png', 1, 'test', 512, 512)").bind(gen1).bind(job_id).bind(format!("artifacts/{job_id}/a.png")).execute(&p).await.unwrap();
+    sqlx::query("INSERT INTO generations (id, job_id, s3_key, filename, seed, prompt, width, height) VALUES ($1, $2, $3, 'b.png', 2, 'test', 512, 512)").bind(gen2).bind(job_id).bind(format!("artifacts/{job_id}/b.png")).execute(&p).await.unwrap();
+
+    manager::soft_delete_generations(&p, &[gen1, gen2])
+        .await
+        .expect("soft delete");
+
+    let rows: Vec<(Option<chrono::DateTime<chrono::Utc>>,)> =
+        sqlx::query_as("SELECT deleted_at FROM generations WHERE id = $1 OR id = $2 ORDER BY id")
+            .bind(gen1)
+            .bind(gen2)
+            .fetch_all(&p)
+            .await
+            .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows[0].0.is_some());
+    assert!(rows[1].0.is_some());
+
+    // Idempotência.
+    manager::soft_delete_generations(&p, &[gen1])
+        .await
+        .expect("idempotent delete");
+
+    let resp = manager::list_generations(&p, 50, 0, true, None)
+        .await
+        .expect("list deleted");
+    assert_eq!(resp.total, 2);
+
+    // IDs inexistentes ignorados.
+    manager::soft_delete_generations(&p, &[uuid::Uuid::new_v4()])
+        .await
+        .expect("delete nonexistent");
+}
+
+/// GET /internal/models inclui kind/arch; yolo models kind NULL.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn list_models_inclui_kind_arch() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let yolo_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO models (id, engine, name, s3_key, source, hash, bytes) VALUES ($1, 'yolo', 'best.pt', 'models/yolo/test/best.pt', 'upload', 'd41d8cd98f00b204e9800998ecf8427e', 1024)").bind(yolo_id).execute(&p).await.unwrap();
+
+    let lora_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO models (id, engine, name, s3_key, source, hash, bytes, kind) VALUES ($1, 'diffusion', 'style.safetensors', 'models/diffusion/lora/test/style.safetensors', 'upload', 'd41d8cd98f00b204e9800998ecf8427e', 1024, 'lora')").bind(lora_id).execute(&p).await.unwrap();
+
+    let ckpt_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO models (id, engine, name, s3_key, source, hash, bytes, kind, arch) VALUES ($1, 'diffusion', 'real.safetensors', 'models/diffusion/ckpt/test/real.safetensors', 'upload', 'd41d8cd98f00b204e9800998ecf8427e', 4096, 'checkpoint', 'sdxl')").bind(ckpt_id).execute(&p).await.unwrap();
+
+    let models = manager::list_models(&p).await.expect("list models");
+    assert_eq!(models.items.len(), 3);
+
+    let yolo = models.items.iter().find(|m| m.engine == "yolo").unwrap();
+    assert!(yolo.kind.is_none());
+    assert!(yolo.arch.is_none());
+
+    let lora = models
+        .items
+        .iter()
+        .find(|m| m.name == "style.safetensors")
+        .unwrap();
+    assert_eq!(lora.kind.as_deref(), Some("lora"));
+    assert!(lora.arch.is_none());
+
+    let ckpt = models
+        .items
+        .iter()
+        .find(|m| m.name == "real.safetensors")
+        .unwrap();
+    assert_eq!(ckpt.kind.as_deref(), Some("checkpoint"));
+    assert_eq!(ckpt.arch.as_deref(), Some("sdxl"));
 }

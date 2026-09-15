@@ -1,0 +1,114 @@
+# Release — build de todas as imagens Docker e push no registry de packages
+# da Gitea (https://docs.gitea.com/usage/packages/container). Somente main.
+#
+# Desenho v1 (mesmas restrições do ci.yml):
+# - ZERO ações externas — act_runner v3.3.2 não injeta node (prova no
+#   cabeçalho do ci.yml). Checkout = git clone manual com o token
+#   automático (basic x-access-token). Build/push = docker CLI puro.
+# - O daemon usado é o do HOST do runner (TrueNAS): o job docker:29-cli
+#   monta /var/run/docker.sock via container.options — permitido porque
+#   o config.yaml do runner (TrueNAS) lista /var/run/docker.sock em
+#   container.valid_volumes. Sem essa config o mount é descartado.
+#   Cache de camadas persiste no daemon do host entre runs.
+# - Registry: git.felipecncloud.com/felipe/hephaestus/<nome> (owner em
+#   minúsculas no caminho; package aparece sob "Felipe"). Auth: secret
+#   REGISTRY_TOKEN (PAT com write:package). GITEA_TOKEN não publica
+#   packages (limitação conhecida, ver docs Gitea "Compared to GitHub
+#   Actions" → Package repository authorization).
+# - Tags: imagens host/mock → <sha-curto> + latest; variantes GPU →
+#   gpu-<sha-curto> + gpu.
+# - Matrix roda sequencial (runner capacity: 1); fail-fast false para
+#   um build não derrubar os outros.
+# - GPU detectada por flag gpu: true na matrix (não por nome).
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+env:
+  REGISTRY: git.felipecncloud.com
+  IMAGE_OWNER: felipe
+  NAMESPACE: hephaestus
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: principal
+            context: .
+            dockerfile: services/api-principal/Dockerfile
+          - name: manager
+            context: .
+            dockerfile: services/manager/Dockerfile
+          - name: orchestrator
+            context: .
+            dockerfile: services/orchestrator/Dockerfile
+          - name: web
+            context: .
+            dockerfile: apps/web/Dockerfile
+          - name: embedder
+            context: engines/trainer-clip
+            dockerfile: Dockerfile
+          - name: trainer-yolo
+            context: engines/trainer-yolo
+            dockerfile: Dockerfile
+          - name: trainer-difusao
+            context: engines/trainer-difusao
+            dockerfile: Dockerfile
+          - name: trainer-yolo-gpu
+            context: engines/trainer-yolo
+            dockerfile: Dockerfile.gpu
+            gpu: true
+          - name: trainer-difusao-gpu
+            context: engines/trainer-difusao
+            dockerfile: Dockerfile.gpu
+            gpu: true
+    container:
+      image: docker:29-cli@sha256:eccaacfeed644c7de222ff047483568cb988dde95476fbaaf10ea2d04921bb66
+      options: >-
+        --volume /var/run/docker.sock:/var/run/docker.sock
+    env:
+      HEPH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      # docker:29-cli é alpine: git via apk; busybox base64 não quebra linha.
+      - name: git
+        run: apk add --no-cache git ca-certificates
+      - name: checkout manual (clone completo — repo pequeno)
+        run: |
+          git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$HEPH_TOKEN" | base64)" clone "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" .
+          git checkout "$GITHUB_SHA"
+      - name: resolve SHA curto
+        run: echo "SHA_SHORT=$(git rev-parse --short "$GITHUB_SHA")" >> "$GITHUB_ENV"
+      - name: login no registry de packages
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: echo "$REGISTRY_TOKEN" | docker login "$REGISTRY" --username felipe --password-stdin
+      - name: pre-flight do daemon (socket acessível — falha rápido se valid_volumes for descartado)
+        run: docker version --format 'daemon v{{.Server.Version}}'
+      - name: build
+        run: |
+          set -euo pipefail
+          IMAGE="$REGISTRY/$IMAGE_OWNER/$NAMESPACE/${{ matrix.name }}"
+          if [ "${{ matrix.gpu }}" = "true" ]; then
+            TAGS="$IMAGE:gpu $IMAGE:gpu-$SHA_SHORT"
+          else
+            TAGS="$IMAGE:latest $IMAGE:$SHA_SHORT"
+          fi
+          BUILD_ARGS=""
+          for t in $TAGS; do BUILD_ARGS="$BUILD_ARGS -t $t"; done
+          docker build $BUILD_ARGS -f "${{ matrix.dockerfile }}" "${{ matrix.context }}"
+      - name: push
+        run: |
+          set -euo pipefail
+          IMAGE="$REGISTRY/$IMAGE_OWNER/$NAMESPACE/${{ matrix.name }}"
+          if [ "${{ matrix.gpu }}" = "true" ]; then
+            docker push "$IMAGE:gpu"
+            docker push "$IMAGE:gpu-$SHA_SHORT"
+          else
+            docker push "$IMAGE:latest"
+            docker push "$IMAGE:$SHA_SHORT"
+          fi

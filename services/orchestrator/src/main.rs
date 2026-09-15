@@ -35,6 +35,7 @@ struct AppState {
     gpu_devices: Option<String>,
     gpu_allow_mock: bool,
     pairing: Arc<PairingState>,
+    daemon_state: Option<Arc<orchestrator::daemon::DaemonState>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -203,6 +204,7 @@ async fn dispatch_handler(State(state): State<AppState>, body: Bytes) -> Respons
     let active_jobs = Arc::clone(&state.active_jobs);
     let gpu_devices = state.gpu_devices.clone();
     let gpu_allow_mock = state.gpu_allow_mock;
+    let daemon_state = state.daemon_state.clone();
 
     // Spawna pipeline assíncrono (D5/D6/D8)
     tokio::spawn(async move {
@@ -214,6 +216,7 @@ async fn dispatch_handler(State(state): State<AppState>, body: Bytes) -> Respons
             active_jobs,
             gpu_devices,
             gpu_allow_mock,
+            daemon_state,
         )
         .await;
     });
@@ -418,6 +421,79 @@ async fn main() {
         tracing::info!("ORCH_GPU_ALLOW_MOCK=1 — guarda anti-mock desabilitada");
     }
 
+    // Daemon config (D1 — ADR-0023).
+    let daemon_enabled =
+        std::env::var("DIFFUSION_DAEMON_ENABLED").unwrap_or_else(|_| "0".into()) == "1";
+    let daemon_port: u16 = std::env::var("DIFFUSION_DAEMON_PORT")
+        .unwrap_or_else(|_| "8766".into())
+        .parse()
+        .unwrap_or(8766);
+    let daemon_idle_ttl: u64 = std::env::var("DIFFUSION_DAEMON_IDLE_TTL_S")
+        .unwrap_or_else(|_| "600".into())
+        .parse()
+        .unwrap_or(600);
+    let daemon_url_override = std::env::var("DIFFUSION_DAEMON_URL").ok();
+
+    let daemon_state = if daemon_enabled {
+        let image = std::env::var("TRAINER_IMAGE_DIFFUSION")
+            .unwrap_or_else(|_| "hephaestus/trainer-difusao:local".into());
+        let client: Arc<dyn orchestrator::daemon::DaemonClient> =
+            if let Some(ref url) = daemon_url_override {
+                Arc::new(orchestrator::daemon::HttpDaemonClient::new(url))
+            } else {
+                Arc::new(orchestrator::daemon::HttpDaemonClient::new(&format!(
+                    "http://localhost:{daemon_port}"
+                )))
+            };
+        let launcher: Arc<dyn orchestrator::daemon::DaemonLauncher> =
+            if daemon_url_override.is_some() {
+                // Se URL override está setada, daemon já existe — não precisamos de launcher real.
+                // Usamos um "noop" launcher que só retorna a URL.
+                // Mas ainda precisamos de kill para preempção.
+                Arc::new(orchestrator::daemon::DockerDaemonLauncher::new(
+                    &image,
+                    "diffusion-daemon",
+                    vec![],
+                    daemon_port,
+                    gpu_devices_boot.clone(),
+                    vec![],
+                ))
+            } else {
+                Arc::new(orchestrator::daemon::DockerDaemonLauncher::new(
+                    &image,
+                    "diffusion-daemon",
+                    vec![],
+                    daemon_port,
+                    gpu_devices_boot.clone(),
+                    vec![],
+                ))
+            };
+        let ds = Arc::new(orchestrator::daemon::DaemonState::new(
+            &image,
+            daemon_port,
+            daemon_idle_ttl,
+            client,
+            launcher,
+        ));
+        tracing::info!(
+            "diffusion daemon habilitado: port={daemon_port}, idle_ttl={daemon_idle_ttl}s"
+        );
+        if let Some(ref url) = daemon_url_override {
+            tracing::info!("DIFFUSION_DAEMON_URL={url} — daemon externo, spawn desabilitado");
+        }
+
+        // Spawn idle TTL housekeeping task (D1)
+        let ds_clone = Arc::clone(&ds);
+        tokio::spawn(async move {
+            orchestrator::daemon::idle_ttl_housekeeping(ds_clone).await;
+        });
+
+        Some(ds)
+    } else {
+        tracing::info!("diffusion daemon desabilitado (DIFFUSION_DAEMON_ENABLED=0) — one-shot");
+        None
+    };
+
     let state = AppState {
         s3: Arc::clone(&s3),
         report_client: Arc::clone(&report_client),
@@ -427,6 +503,7 @@ async fn main() {
         gpu_devices: gpu_devices_boot.clone(),
         gpu_allow_mock: gpu_allow_mock_boot,
         pairing,
+        daemon_state,
     };
 
     // Heartbeat loop (~2s, D4/D9).

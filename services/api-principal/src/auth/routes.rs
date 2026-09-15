@@ -18,7 +18,7 @@ use axum::{
 use serde_json::{json, Value};
 
 use super::{gate, handlers, AppState};
-use crate::{datasets, jobs, monitoring, search};
+use crate::{datasets, generations, jobs, monitoring, search};
 
 /// `(método, path, status_codes)` — espelho exato do contrato (sem `x-reserved`).
 /// Toda rota de negócio nova entra AQUI, montada no sub-router `protected`
@@ -179,6 +179,11 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
         &[201, 400, 401, 403, 502, 503],
     ),
     ("GET", "/api/storage/usage", &[200, 401, 503]),
+    // Galeria de gerações (ADR-0023 D5 — G.1 stubs).
+    ("GET", "/api/generations", &[200, 400, 401, 503]),
+    ("GET", "/api/generations/:id/data", &[200, 401, 404, 503]),
+    ("POST", "/api/generations/delete", &[204, 400, 401, 503]),
+    ("POST", "/api/generations/export", &[200, 400, 401, 503]),
 ];
 
 /// Rotas públicas (sem gate): `/health` + `/ready` + `/api/auth/*`.
@@ -438,6 +443,23 @@ pub fn build(state: AppState) -> axum::Router {
             post(crate::models::handlers::download_model),
         )
         .route("/api/storage/usage", get(monitoring::get_storage_usage))
+        // Galeria de gerações (ADR-0023 D5 — G.1 stubs).
+        .route(
+            "/api/generations",
+            get(generations::handlers::list_generations),
+        )
+        .route(
+            "/api/generations/:id/data",
+            get(generations::handlers::get_generation_data),
+        )
+        .route(
+            "/api/generations/delete",
+            post(generations::handlers::delete_generations),
+        )
+        .route(
+            "/api/generations/export",
+            post(generations::handlers::export_generations),
+        )
         // route_layer DEPOIS dos .route(): aplicado a um router vazio o axum 0.7 panic
         // no boot (path_router.rs, `routes.is_empty()`). Só cobre as rotas deste
         // sub-router — /health e /api/auth/* seguem fora do gate, e o .fallback()

@@ -27,7 +27,7 @@ use crate::state::AppState;
 // Wire types (camelCase — ADR-0002 D1)
 // ---------------------------------------------------------------------------
 
-/// Resposta de upload/download de modelo (D6 ADR-0012).
+/// Resposta de upload/download de modelo (D6 ADR-0012, ADR-0023 D4).
 #[derive(Debug, serde::Serialize)]
 pub struct ModelResponse {
     pub id: String,
@@ -44,6 +44,10 @@ pub struct ModelResponse {
     pub job_id: Option<String>,
     #[serde(rename = "createdAt")]
     pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arch: Option<String>,
 }
 
 /// Body do download (camelCase, deny_unknown_fields — D4).
@@ -368,6 +372,8 @@ pub async fn upload_model(State(state): State<AppState>, mut multipart: Multipar
                     url,
                     job_id: resp.job_id,
                     created_at: resp.created_at,
+                    kind: resp.kind,
+                    arch: resp.arch,
                 }),
             )
                 .into_response()
@@ -702,6 +708,8 @@ pub async fn download_model(
                     url,
                     job_id: resp.job_id,
                     created_at: resp.created_at,
+                    kind: resp.kind,
+                    arch: resp.arch,
                 }),
             )
                 .into_response()
@@ -832,6 +840,8 @@ pub async fn update_model(
         url,
         job_id: m.job_id,
         created_at: m.created_at,
+        kind: m.kind,
+        arch: m.arch,
     };
 
     (StatusCode::OK, Json(resp)).into_response()
@@ -899,6 +909,8 @@ mod tests {
             url: None,
             job_id: None,
             created_at: "2026-09-10T12:00:00Z".into(),
+            kind: None,
+            arch: None,
         }
     }
 

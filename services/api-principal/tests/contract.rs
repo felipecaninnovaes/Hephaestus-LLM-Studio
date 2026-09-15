@@ -188,11 +188,35 @@ fn inventory_matches_openapi() {
         );
     }
 
+    // Schemas novos existem na spec 0.25.0 (ADR-0023 D3/D5).
+    for name in [
+        "LoraRef",
+        "Generation",
+        "GenerationList",
+        "GenerationIdsRequest",
+    ] {
+        assert!(
+            schemas.get(name).is_some(),
+            "missing schema {name} in openapi.yaml (ADR-0023)"
+        );
+    }
+
     // Telemetry inclui `ramTotal` (ADR-0009 D4).
     let telemetry = &yaml["components"]["schemas"]["Telemetry"];
     assert!(
         telemetry["properties"].get("ramTotal").is_some(),
         "Telemetry missing ramTotal property"
+    );
+
+    // Model inclui `kind` e `arch` (ADR-0023 D4).
+    let model = &yaml["components"]["schemas"]["Model"];
+    assert!(
+        model["properties"].get("kind").is_some(),
+        "Model missing kind property (ADR-0023)"
+    );
+    assert!(
+        model["properties"].get("arch").is_some(),
+        "Model missing arch property (ADR-0023)"
     );
 }
 
@@ -1131,6 +1155,8 @@ async fn model_response_keys_are_camel_case() {
             path: "artifacts/550e8400-e29b-41d4-a716-446655440004/best.pt".into(),
             job_id: Some("550e8400-e29b-41d4-a716-446655440004".into()),
             created_at: "2026-09-09T12:00:00Z".into(),
+            kind: None,
+            arch: None,
         }]);
         m
     });

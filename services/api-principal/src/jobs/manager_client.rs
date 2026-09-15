@@ -134,7 +134,7 @@ pub struct InternalOrchestrator {
 }
 
 /// Peso/modelo retornado pelo manager (snake_case interno).
-/// Shape = `ModelItem` do manager (tabela `models` — ADR-0012 D2).
+/// Shape = `ModelItem` do manager (tabela `models` — ADR-0012 D2, ADR-0023 D4).
 #[derive(Debug, Clone, Deserialize)]
 pub struct InternalModel {
     pub id: String,
@@ -150,6 +150,10 @@ pub struct InternalModel {
     #[serde(default)]
     pub job_id: Option<String>,
     pub created_at: String,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub arch: Option<String>,
 }
 
 /// Uso de storage retornado pelo manager (snake_case interno).
@@ -160,7 +164,7 @@ pub struct InternalStorageUsage {
     pub models_bytes: i64,
 }
 
-/// Modelo público retornado pelo manager (camelCase wire — D6 ADR-0012).
+/// Modelo público retornado pelo manager (camelCase wire — D6 ADR-0012, ADR-0023 D4).
 ///
 /// O manager serializa `ModelItem` com o campo `hash` (nome da coluna no DB).
 /// `InternalModel` (list_models) já tem `#[serde(rename = "hash")]`; este
@@ -181,6 +185,10 @@ pub struct InternalModelResponse {
     #[serde(default)]
     pub job_id: Option<String>,
     pub created_at: String,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub arch: Option<String>,
 }
 
 /// Resposta do manager ao criar job (snake_case interno).
@@ -906,6 +914,8 @@ impl ManagerPort for MockManager {
             path: format!("models/yolo/{id}/mock-model.pt"),
             job_id: None,
             created_at: "2026-09-12T00:00:00Z".to_string(),
+            kind: None,
+            arch: None,
         })
     }
 
@@ -933,6 +943,8 @@ impl ManagerPort for MockManager {
             path: format!("artifacts/{id}/adapter.safetensors"),
             job_id: Some(id.to_string()),
             created_at: "2026-09-12T00:00:00Z".to_string(),
+            kind: None,
+            arch: None,
         })
     }
 }

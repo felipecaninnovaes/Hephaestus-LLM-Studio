@@ -1,9 +1,10 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { IconImage, IconSparkles } from "@/components/icons";
-import { EmptyState, SubmodulePills, type SubmodulePillItem } from "@/components/ui";
+import { SubmodulePills, type SubmodulePillItem } from "@/components/ui";
 import GenerationPanel from "@/components/studio/GenerationPanel";
+import GenerationGallery from "@/components/studio/GenerationGallery";
 
 type GeracaoTab = "gerar" | "galeria";
 
@@ -15,6 +16,18 @@ type GeracaoTab = "gerar" | "galeria";
 
 export default function GeracaoPage() {
   const [activeTab, setActiveTab] = useState<GeracaoTab>("gerar");
+
+  /* ── Escuta evento customizado do empty state da galeria ── */
+  useEffect(() => {
+    function handleSwitchTab(e: Event) {
+      const detail = (e as CustomEvent<GeracaoTab>).detail;
+      if (detail === "gerar" || detail === "galeria") {
+        setActiveTab(detail);
+      }
+    }
+    window.addEventListener("hephaestus:switch-tab", handleSwitchTab);
+    return () => window.removeEventListener("hephaestus:switch-tab", handleSwitchTab);
+  }, []);
 
   const tabPills = useMemo<SubmodulePillItem<GeracaoTab>[]>(
     () => [
@@ -63,14 +76,7 @@ export default function GeracaoPage() {
         {activeTab === "gerar" ? (
           <GenerationPanel />
         ) : (
-          /* ── Aba Galeria: placeholder honesto (G.8 implementa) ── */
-          <div className="flex h-full items-center justify-center p-6">
-            <EmptyState
-              icon={<IconImage className="size-8 text-brand-400" />}
-              title="Galeria de gerações"
-              description="Disponível na próxima atualização."
-            />
-          </div>
+          <GenerationGallery />
         )}
       </div>
     </div>

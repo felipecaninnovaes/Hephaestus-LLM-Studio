@@ -1303,20 +1303,30 @@ pub fn generate_diffusion_generate_config_yaml(
     let effective_model =
         custom_arch.unwrap_or_else(|| req.base_model.as_deref().unwrap_or("flux-2-klein-4b"));
 
-    // --- Linhas condicionais ---
+    // --- Regra de pesos (retrocompat + v2) ---
+    // LEGADO (loras vazio, sem custom): `weights_path:` root-level ANTES de
+    // `generate:` (byte-compatível com o formato anterior à ADR-0023) e
+    // `lora_scale:` dentro de generate.
+    // V2 (loras OU custom): SEM weights_path e SEM lora_scale.
+    let is_legacy = req.loras.is_empty() && custom_arch.is_none();
+
+    let weights_path_line = if is_legacy {
+        "weights_path: \"{weights_path}\"\n".to_string()
+    } else {
+        String::new()
+    };
+
     let loras_block = if req.loras.is_empty() {
         String::new()
     } else {
-        let mut block = "  loras:\n".to_string();
+        let mut block = String::new();
         for (i, lora) in req.loras.iter().enumerate() {
-            // Precisão de float simples (1 casa) — o engine aceita f64 mas
-            // o yaml humano usa 1 casa.
             let scale_str = format_lora_scale(lora.scale);
             block.push_str(&format!(
                 "    - path: \"{{lora_path_{i}}}\"\n      scale: {scale_str}\n"
             ));
         }
-        block
+        format!("  loras:\n{block}")
     };
 
     let custom_block = if let Some(arch) = custom_arch {
@@ -1325,14 +1335,8 @@ pub fn generate_diffusion_generate_config_yaml(
         String::new()
     };
 
-    // --- weights_path / lora_scale: retrocompat ---
-    // Se loras vazio E custom ausente → mantém formato legado (byte-compatível).
-    // Se loras não vazio OU custom presente → não inclui weights_path/lora_scale.
-    let legacy_weights_section = if req.loras.is_empty() && custom_arch.is_none() {
-        format!(
-            "weights_path: \"{{weights_path}}\"\n  lora_scale: {lora_scale}\n",
-            lora_scale = req.lora_scale,
-        )
+    let lora_scale_line = if is_legacy {
+        format!("  lora_scale: {}\n", req.lora_scale)
     } else {
         String::new()
     };
@@ -1345,7 +1349,7 @@ model: "{effective_model}"
 mode: "generate"
 output_path: "{{output_path}}"
 seed: {seed}
-generate:
+{weights_path_line}generate:
   base_model: "{base_model}"
   prompt: {prompt_json}
 {neg_line}  width: {width}
@@ -1355,7 +1359,8 @@ generate:
   seed: {seed}
   quantization: "{quantization}"
   distilled: {distilled}
-  batch_size: {batch_size}{legacy_weights_section}{loras_block}{custom_block}"#,
+  batch_size: {batch_size}
+{loras_block}{custom_block}{lora_scale_line}"#,
         job_id = job_id,
         effective_model = effective_model,
         base_model = req.base_model.as_deref().unwrap_or("flux-2-klein-4b"),
@@ -1369,9 +1374,10 @@ generate:
         quantization = req.quantization,
         distilled = req.distilled,
         batch_size = req.batch_size,
-        legacy_weights_section = legacy_weights_section,
+        weights_path_line = weights_path_line,
         loras_block = loras_block,
         custom_block = custom_block,
+        lora_scale_line = lora_scale_line,
     )
 }
 
@@ -2691,7 +2697,8 @@ mod tests {
 
     #[test]
     fn diffusion_generate_yaml_legacy_byte_compat() {
-        // Request LEGADO (sem campos novos) → yaml IDÊNTICO ao formato atual
+        // Request LEGADO (sem campos novos) → weights_path root-level ANTES de
+        // generate: e lora_scale dentro de generate.
         let json = r#"{
             "prompt": "a stunning portrait in neon cyberpunk style",
             "negativePrompt": "blurry, distorted",
@@ -2708,7 +2715,7 @@ mod tests {
         let validated = validate_diffusion_generate_request(req).unwrap();
         let yaml = generate_diffusion_generate_config_yaml("job-legado-1", &validated, None);
 
-        // Retrocompat: batch_size 1, weights_path, lora_scale
+        // Retrocompat: batch_size 1, weights_path root-level, lora_scale inside generate
         assert!(yaml.contains("batch_size: 1"));
         assert!(yaml.contains("weights_path: \"{weights_path}\""));
         assert!(yaml.contains("lora_scale: 0.9"));
@@ -2716,5 +2723,179 @@ mod tests {
         assert!(yaml.contains(r#"base_model: "flux-2-klein-4b""#));
         assert!(yaml.contains("a stunning portrait in neon cyberpunk style"));
         assert!(yaml.contains("negative_prompt: \"blurry, distorted\""));
+
+        // weights_path DEVE estar ANTES de generate: (root-level)
+        let wp_pos = yaml.find("weights_path:").expect("weights_path must exist");
+        let gen_pos = yaml.find("generate:\n").expect("generate: must exist");
+        assert!(
+            wp_pos < gen_pos,
+            "weights_path (pos {wp_pos}) must be BEFORE generate: (pos {gen_pos})"
+        );
+        // lora_scale DEVE estar dentro de generate (depois de batch_size)
+        let bs_pos = yaml.find("batch_size:").expect("batch_size must exist");
+        let ls_pos = yaml.find("lora_scale:").expect("lora_scale must exist");
+        assert!(
+            bs_pos < ls_pos,
+            "batch_size (pos {bs_pos}) must be BEFORE lora_scale (pos {ls_pos})"
+        );
+        // Sem loras block no legado
+        assert!(!yaml.contains("  loras:"));
+
+        // Parse YAML válido
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml deve ser válido");
+        assert_eq!(
+            parsed["weights_path"].as_str(),
+            Some("{weights_path}"),
+            "weights_path deve ser root-level string"
+        );
+        let gen = parsed["generate"]
+            .as_mapping()
+            .expect("generate deve ser mapping");
+        assert!(
+            gen.get(&serde_yaml::Value::String("lora_scale".into()))
+                .is_some(),
+            "lora_scale deve estar dentro de generate"
+        );
+    }
+
+    // =====================================================================
+    // Novos testes: separação de linhas no YAML (batch_size ↔ seções)
+    // =====================================================================
+
+    #[test]
+    fn yaml_batch_size_newline_before_legacy_weights() {
+        // Request legado: weights_path root-level ANTES de generate, lora_scale dentro
+        let json = r#"{
+            "prompt": "test legacy",
+            "width": 512,
+            "height": 512,
+            "steps": 10,
+            "guidanceScale": 7.0,
+            "seed": 42,
+            "quantization": "8bit",
+            "loraScale": 0.7
+        }"#;
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(json).unwrap();
+        let validated = validate_diffusion_generate_request(req).unwrap();
+        let yaml = generate_diffusion_generate_config_yaml("job-legacy-nl", &validated, None);
+
+        // batch_size e weights_path em linhas separadas
+        assert!(
+            yaml.contains("batch_size: 1\n"),
+            "batch_size deve terminar com newline: {yaml}"
+        );
+        assert!(
+            yaml.contains("\nweights_path:"),
+            "weights_path deve estar em linha própria: {yaml}"
+        );
+        // Nunca colado
+        assert!(
+            !yaml.contains("1weights_path"),
+            "batch_size colou com weights_path: {yaml}"
+        );
+        // weights_path ANTES de generate:
+        let wp_pos = yaml.find("weights_path:").expect("weights_path must exist");
+        let gen_pos = yaml.find("generate:\n").expect("generate: must exist");
+        assert!(
+            wp_pos < gen_pos,
+            "weights_path (pos {wp_pos}) must be BEFORE generate: (pos {gen_pos}): {yaml}"
+        );
+        // Estrutura correta do generate
+        assert!(
+            yaml.contains("generate:\n  base_model:"),
+            "generate e base_model em linhas corretas: {yaml}"
+        );
+        // Sem loras block no legado
+        assert!(
+            !yaml.contains("  loras:"),
+            "legado não deve ter loras: {yaml}"
+        );
+
+        // Parse YAML válido — weights_path root-level, lora_scale dentro de generate
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml deve ser válido");
+        assert_eq!(
+            parsed["weights_path"].as_str(),
+            Some("{weights_path}"),
+            "weights_path deve ser root-level"
+        );
+        let gen = parsed["generate"]
+            .as_mapping()
+            .expect("generate deve ser mapping");
+        assert!(
+            gen.get(&serde_yaml::Value::String("lora_scale".into()))
+                .is_some(),
+            "lora_scale deve estar dentro de generate: {yaml}"
+        );
+    }
+
+    #[test]
+    fn yaml_batch_size_newline_before_loras_block() {
+        // Request com 2 loras: batch_size NÃO deve colar com loras:
+        let uuid1 = "550e8400-e29b-41d4-a716-446655440000";
+        let uuid2 = "550e8400-e29b-41d4-a716-446655440001";
+        let json = format!(
+            r#"{{"prompt":"test loras","loras":[{{"modelId":"{uuid1}","scale":1.0}},{{"modelId":"{uuid2}","scale":0.8}}]}}"#
+        );
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(&json).unwrap();
+        let validated = validate_diffusion_generate_request(req).unwrap();
+        let yaml = generate_diffusion_generate_config_yaml("job-loras-nl", &validated, None);
+
+        // batch_size em linha separada de loras
+        assert!(
+            yaml.contains("batch_size: 1\n"),
+            "batch_size deve terminar com newline: {yaml}"
+        );
+        assert!(
+            yaml.contains("\n  loras:\n    - path:"),
+            "loras deve estar em linhas separadas com indent: {yaml}"
+        );
+        assert!(
+            !yaml.contains("1loras"),
+            "batch_size colou com loras: {yaml}"
+        );
+
+        // Parse YAML válido
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml deve ser válido");
+        let loras = parsed["generate"]["loras"]
+            .as_sequence()
+            .expect("loras deve ser sequência");
+        assert_eq!(loras.len(), 2);
+    }
+
+    #[test]
+    fn yaml_batch_size_newline_before_custom_block() {
+        // Request custom: batch_size NÃO deve colar com custom_checkpoint_path
+        let json = r#"{
+            "prompt": "test custom",
+            "customModelId": "550e8400-e29b-41d4-a716-446655440000"
+        }"#;
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(json).unwrap();
+        let validated = validate_diffusion_generate_request(req).unwrap();
+        let yaml =
+            generate_diffusion_generate_config_yaml("job-custom-nl", &validated, Some("sdxl"));
+
+        // batch_size em linha separada de custom_checkpoint_path
+        assert!(
+            yaml.contains("batch_size: 1\n"),
+            "batch_size deve terminar com newline: {yaml}"
+        );
+        assert!(
+            yaml.contains("\n  custom_checkpoint_path:"),
+            "custom_checkpoint_path deve estar em linha própria: {yaml}"
+        );
+        assert!(
+            !yaml.contains("1custom_checkpoint"),
+            "batch_size colou com custom: {yaml}"
+        );
+
+        // Parse YAML válido
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml deve ser válido");
+        let gen = parsed["generate"]
+            .as_mapping()
+            .expect("generate deve ser mapping");
+        assert!(gen
+            .get(&serde_yaml::Value::String("custom_checkpoint_path".into()))
+            .is_some());
+        assert!(gen.get(&serde_yaml::Value::String("arch".into())).is_some());
     }
 }

@@ -511,11 +511,11 @@ export default function GenerationPanel() {
           {/* ══ Variante FLUX (destilada/base) — SegmentedControl canônico ══ */}
           {modelMode === "preset" && baseModel === "flux-2-klein-4b" && (
             <div className="space-y-2 rounded-xl border border-white/8 bg-white/[0.02] p-3">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
                 <span className="font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-zinc-300">
                   Variante
                 </span>
-                <span className="font-mono text-[10px] text-brand-400">
+                <span className="shrink-0 font-mono text-[10px] text-brand-400">
                   {distilled ? "4–8 steps · CFG 1.0" : "20+ steps · CFG 3.5+"}
                 </span>
               </div>
@@ -541,11 +541,11 @@ export default function GenerationPanel() {
 
           {/* ══ Prompt ══ */}
           <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
               <label className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-300">
                 Prompt
               </label>
-              <span className="font-mono text-[10px] text-zinc-500">
+              <span className="shrink-0 font-mono text-[10px] text-zinc-500">
                 {prompt.length}/4000
               </span>
             </div>
@@ -570,7 +570,7 @@ export default function GenerationPanel() {
             </button>
           ) : (
             <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
                 <label className="font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-zinc-300">
                   Prompt Negativo
                 </label>
@@ -596,11 +596,11 @@ export default function GenerationPanel() {
 
           {/* ══ Resolução — SegmentedControl canônico ══ */}
           <div className="space-y-2">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
               <label className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-300">
                 Resolução
               </label>
-              <span className="font-mono text-[10px] text-zinc-400">{width}×{height}</span>
+              <span className="shrink-0 font-mono text-[10px] text-zinc-400">{width}×{height}</span>
             </div>
             <SegmentedControl
               options={ASPECT_RATIO_PRESETS.map((p) => ({
@@ -643,7 +643,7 @@ export default function GenerationPanel() {
 
           {/* ══ Seed — Input canônico + Button canônico ══ */}
           <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
               <label className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-300">
                 Seed
               </label>

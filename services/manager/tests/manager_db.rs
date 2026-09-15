@@ -5468,3 +5468,65 @@ async fn create_model_diffusion_sem_kind_arch_persiste_none() {
     assert!(item.kind.is_none());
     assert!(item.arch.is_none());
 }
+
+/// Paginação real: OFFSET parametrizado — items e total coerentes.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn list_generations_pagination_offset_e_limit() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let job_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO jobs (id, kind, engine, model, mode, status) VALUES ($1, 'diffusion_generate', 'diffusion', 'flux', 'generate', 'done')").bind(job_id).execute(&p).await.unwrap();
+
+    // Insere 3 rows direto (sem dependency no hook de report).
+    for i in 0..3 {
+        let gen_id = uuid::Uuid::new_v4();
+        let s3_key = format!("artifacts/{job_id}/page_gen_{i:04}.png");
+        sqlx::query("INSERT INTO generations (id, job_id, s3_key, filename, seed, prompt, width, height) VALUES ($1, $2, $3, $4, $5, $6, 1024, 1024)")
+            .bind(gen_id).bind(job_id).bind(&s3_key)
+            .bind(format!("page_gen_{i:04}.png")).bind(i as i64)
+            .bind(format!("pagination test {i}"))
+            .execute(&p).await.unwrap();
+    }
+
+    // 1. limit=50, offset=0 → todos os 3.
+    let resp = manager::list_generations(&p, 50, 0, false, None)
+        .await
+        .expect("list page 0");
+    assert_eq!(resp.items.len(), 3, "limit 50 offset 0: 3 items");
+    assert_eq!(resp.total, 3, "limit 50 offset 0: total 3");
+
+    // 2. limit=2, offset=0 → 2 items, total 3 (paginação corta, total intacto).
+    let resp2 = manager::list_generations(&p, 2, 0, false, None)
+        .await
+        .expect("list limit 2");
+    assert_eq!(resp2.items.len(), 2, "limit 2: 2 items");
+    assert_eq!(resp2.total, 3, "limit 2: total 3");
+
+    // 3. limit=50, offset=2 → 1 item (offset real pula 2).
+    let resp3 = manager::list_generations(&p, 50, 2, false, None)
+        .await
+        .expect("list offset 2");
+    assert_eq!(resp3.items.len(), 1, "offset 2: 1 item");
+    assert_eq!(resp3.total, 3, "offset 2: total 3");
+
+    // 4. Soft-delete 1 row → deleted=false → 2 items; deleted=true → 1 item.
+    let del_id: uuid::Uuid = resp.items[0].id.parse().unwrap();
+    manager::soft_delete_generations(&p, &[del_id])
+        .await
+        .expect("soft delete 1");
+
+    let resp_active = manager::list_generations(&p, 50, 0, false, None)
+        .await
+        .expect("list active after delete");
+    assert_eq!(resp_active.items.len(), 2, "active after delete: 2 items");
+    assert_eq!(resp_active.total, 2, "active after delete: total 2");
+
+    let resp_deleted = manager::list_generations(&p, 50, 0, true, None)
+        .await
+        .expect("list deleted after delete");
+    assert_eq!(resp_deleted.items.len(), 1, "deleted after delete: 1 item");
+    assert_eq!(resp_deleted.total, 1, "deleted after delete: total 1");
+}

@@ -2359,12 +2359,13 @@ pub async fn list_generations(
         .map_err(|e| ManagerError::Internal(format!("count generations: {e}")))?;
 
     // Main query.
+    let limit_idx = bind_idx;
+    let offset_idx = bind_idx + 1;
     let main_sql = format!(
         "SELECT g.id, g.job_id, g.s3_key, g.thumb_s3_key, g.filename, g.seed, \
          g.prompt, g.negative_prompt, g.width, g.height, g.params, g.created_at, g.deleted_at \
          FROM generations g {where_sql} \
-         ORDER BY g.created_at DESC LIMIT ${bind_idx} OFFSET {}",
-        bind_idx + 1
+         ORDER BY g.created_at DESC LIMIT ${limit_idx} OFFSET ${offset_idx}"
     );
     let mut main_q = sqlx::query(&main_sql);
     if let Some(bm) = base_model {
@@ -2648,6 +2649,25 @@ pub async fn revoke_orchestrator(pool: &PgPool, id: Uuid) -> Result<(), ManagerE
 /// declarada primeiro, maior GPU primeiro, tie-break por nome.
 ///
 /// Retorna `true` se um job foi despachado, `false` se não havia job na fila.
+
+/// Resolve imagem do container para engine "diffusion".
+///
+/// Regra: env `DIFFUSION_TRAINER_IMAGE` explícito SEMPRE vence.
+/// Quando o env está ausente, herda a tag (:gpu/:local) da `image` base
+/// (TRAINER_IMAGE) — preservando o comportamento TrueNAS com :gpu.
+pub fn resolve_diffusion_image(image: &str) -> String {
+    let env_diff = std::env::var("DIFFUSION_TRAINER_IMAGE").unwrap_or_default();
+    if !env_diff.is_empty() {
+        env_diff
+    } else if image.ends_with(":gpu") || image.contains(":gpu") {
+        "hephaestus/trainer-difusao:gpu".to_string()
+    } else if image.contains("trainer-yolo") {
+        image.replace("trainer-yolo", "trainer-difusao")
+    } else {
+        image.to_string()
+    }
+}
+
 pub async fn dispatch_next(
     pool: &PgPool,
     orch_client: &dyn OrchestratorClient,
@@ -2809,22 +2829,9 @@ pub async fn dispatch_next(
         .cloned();
 
     // Resolve imagem do container: se engine for diffusion, usa DIFFUSION_TRAINER_IMAGE
-    // ou substitui trainer-yolo por trainer-difusao mantendo tag (:local ou :gpu).
+    // (env explícito SEMPRE vence) ou herda tag de TRAINER_IMAGE (fallback p/ TrueNAS :gpu).
     let job_image = match engine.as_str() {
-        "diffusion" => {
-            let env_diff = std::env::var("DIFFUSION_TRAINER_IMAGE").unwrap_or_default();
-            if !env_diff.is_empty() && env_diff != "hephaestus/trainer-difusao:local" {
-                env_diff
-            } else if image.ends_with(":gpu") || image.contains(":gpu") {
-                "hephaestus/trainer-difusao:gpu".to_string()
-            } else if !env_diff.is_empty() {
-                env_diff
-            } else if image.contains("trainer-yolo") {
-                image.replace("trainer-yolo", "trainer-difusao")
-            } else {
-                image.to_string()
-            }
-        }
+        "diffusion" => resolve_diffusion_image(image),
         _ => image.to_string(),
     };
 
@@ -3199,5 +3206,52 @@ mod tests {
             name: "a".repeat(256),
         };
         assert!(validate_update_model(&too_long).is_err());
+    }
+
+    // ── resolve_diffusion_image ──────────────────────────────────────────
+
+    /// Serializa testes que manipulam env global (DIFFUSION_TRAINER_IMAGE).
+    use std::sync::Mutex;
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Teste 1: env explícito `:local` com image `:gpu` → env vence.
+    #[test]
+    fn resolve_diffusion_image_env_local_vence_sobre_gpu() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var(
+            "DIFFUSION_TRAINER_IMAGE",
+            "hephaestus/trainer-difusao:local",
+        );
+        let result = super::resolve_diffusion_image("hephaestus/trainer-yolo:gpu");
+        assert_eq!(result, "hephaestus/trainer-difusao:local");
+        std::env::remove_var("DIFFUSION_TRAINER_IMAGE");
+    }
+
+    /// Teste 2: env ausente + image `:gpu` → herança :gpu (TrueNAS preservado).
+    #[test]
+    fn resolve_diffusion_image_sem_env_herda_gpu() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("DIFFUSION_TRAINER_IMAGE");
+        let result = super::resolve_diffusion_image("hephaestus/trainer-yolo:gpu");
+        assert_eq!(result, "hephaestus/trainer-difusao:gpu");
+    }
+
+    /// Teste 3: env ausente + image `:local` → herança :local.
+    #[test]
+    fn resolve_diffusion_image_sem_env_herda_local() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("DIFFUSION_TRAINER_IMAGE");
+        let result = super::resolve_diffusion_image("hephaestus/trainer-yolo:local");
+        assert_eq!(result, "hephaestus/trainer-difusao:local");
+    }
+
+    /// Teste 4: env customizado → usa exatamente o env.
+    #[test]
+    fn resolve_diffusion_image_env_custom() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("DIFFUSION_TRAINER_IMAGE", "meu-registry/exemplo:tag");
+        let result = super::resolve_diffusion_image("hephaestus/trainer-yolo:gpu");
+        assert_eq!(result, "meu-registry/exemplo:tag");
+        std::env::remove_var("DIFFUSION_TRAINER_IMAGE");
     }
 }

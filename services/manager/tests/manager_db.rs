@@ -140,6 +140,28 @@ async fn insert_test_dataset(pool: &PgPool) -> uuid::Uuid {
     id
 }
 
+/// Deriva o nome semântico canônico de um modelo YOLO para um dataset de teste.
+/// Espelha a lógica de `compute_model_name` em `src/lib.rs` — evita golden string frágil.
+fn expected_yolo_model_name(ds_id: uuid::Uuid, job_id: uuid::Uuid) -> String {
+    let ds_slug = format!("test-ds-{}", &ds_id.to_string()[..8]);
+    let params = serde_json::json!({
+        "package_ref": {
+            "version_id": "v",
+            "key": "packages/test/dataset.zip",
+            "md5_zip": "d41d8cd98f00b204e9800998ecf8427e",
+            "bytes": 1024
+        }
+    });
+    manager::compute_model_name(
+        "best.pt",
+        "yolo",
+        "yolo11m",
+        job_id,
+        Some(&ds_slug),
+        &params,
+    )
+}
+
 /// Helper para criar um job de teste.
 fn test_job_request(dataset_id: uuid::Uuid) -> CreateJobRequest {
     CreateJobRequest {
@@ -1290,7 +1312,8 @@ async fn list_models_job_done_com_artifacts() {
     let m = &models.items[0];
     assert_eq!(m.engine, "yolo");
     assert_eq!(m.model.as_deref(), Some("yolo11m"));
-    assert_eq!(m.name, "best.pt");
+    let expected = expected_yolo_model_name(ds_id, job_id);
+    assert_eq!(m.name, expected);
     assert_eq!(m.source, "train");
     assert_eq!(m.hash, "d41d8cd98f00b204e9800998ecf8427e");
     assert_eq!(m.bytes, 512);
@@ -1452,7 +1475,8 @@ async fn list_models_exclui_autotracker_boxes() {
         .await
         .expect("list models no boxes");
     assert_eq!(models.items.len(), 1, "boxes excluído: 1 item");
-    assert_eq!(models.items[0].name, "best.pt");
+    let expected = expected_yolo_model_name(ds_id, job_id);
+    assert_eq!(models.items[0].name, expected);
 }
 
 #[tokio::test]

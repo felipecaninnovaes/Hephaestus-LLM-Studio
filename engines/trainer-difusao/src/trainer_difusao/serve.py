@@ -23,6 +23,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 # ---------------------------------------------------------------------------
 # Estado global do daemon
 # ---------------------------------------------------------------------------
@@ -36,6 +38,9 @@ _busy = False
 
 # Spec do pipeline residente (dict ou None)
 _loaded_spec: dict[str, Any] | None = None
+
+# Cache de pipeline real por spec — mantém apenas o último spec (eviction para VRAM)
+_pipeline_cache: dict[tuple, object] = {}
 
 # Referência ao server (para shutdown graceful)
 _server: ThreadingHTTPServer | None = None
@@ -139,7 +144,7 @@ class DiffusionHandler(BaseHTTPRequestHandler):
             self._send(404, {"ok": False, "error": "not_found"})
 
     def _handle_generate(self):
-        global _busy, _loaded_spec
+        global _busy, _loaded_spec, _pipeline_cache  # noqa: PLW0602
 
         body = self._read_body()
         if body is None:
@@ -158,13 +163,39 @@ class DiffusionHandler(BaseHTTPRequestHandler):
             return
 
         config = body.get("config")
-        if not isinstance(config, dict):
+        # Aceita config como dict OU string YAML
+        if isinstance(config, str):
+            try:
+                config = yaml.safe_load(config)
+            except (yaml.YAMLError, ValueError) as e:
+                self._send(
+                    400,
+                    {
+                        "ok": False,
+                        "error": "invalid_request",
+                        "message": f"Campo 'config' é uma string YAML inválida: {e}",
+                    },
+                )
+                return
+            if not isinstance(config, dict):
+                self._send(
+                    400,
+                    {
+                        "ok": False,
+                        "error": "invalid_request",
+                        "message": (
+                            "Campo 'config' (string YAML) não parseou para um dicionário."
+                        ),
+                    },
+                )
+                return
+        elif not isinstance(config, dict):
             self._send(
                 400,
                 {
                     "ok": False,
                     "error": "invalid_request",
-                    "message": "Campo 'config' é obrigatório e deve ser um dicionário.",
+                    "message": "Campo 'config' é obrigatório e deve ser dict ou string YAML.",
                 },
             )
             return
@@ -234,9 +265,14 @@ class DiffusionHandler(BaseHTTPRequestHandler):
             if telemetry_path_str:
                 telemetry_path = Path(telemetry_path_str)
 
-            # Spec-aware reload
+            # Spec-aware reload + pipeline cache
+            from trainer_difusao.generate import ensure_pipeline
+
             new_spec = _make_spec(params)
             need_reload = not _spec_matches(_loaded_spec, new_spec)
+
+            # Pipeline cache: chave = (base_model|cp+arch, quantization, distilled)
+            cached_pipeline, cache_key = ensure_pipeline(params, _pipeline_cache)
 
             if need_reload:
                 print(
@@ -244,6 +280,9 @@ class DiffusionHandler(BaseHTTPRequestHandler):
                     f"Antes: {_loaded_spec}, Agora: {new_spec}",
                     flush=True,
                 )
+                # Eviction: descarta cache anterior (mantém só último spec p/ VRAM)
+                _pipeline_cache.clear()
+                cached_pipeline = None
                 # Emite fase loading_model na telemetria
                 if telemetry_path:
                     try:
@@ -293,7 +332,13 @@ class DiffusionHandler(BaseHTTPRequestHandler):
             elif _MOCK:
                 _mock_generate(params, output_dir)
             else:
-                _real_generate(params, output_dir)
+                loaded_pipe = _real_generate(
+                    params, output_dir, pipeline=cached_pipeline
+                )
+                # Atualiza cache de pipeline para hot path (mantém só último spec)
+                if loaded_pipe is not None and cache_key is not None:
+                    _pipeline_cache.clear()
+                    _pipeline_cache[cache_key] = loaded_pipe
 
             # Lê itens do generation_meta.json
             items = []

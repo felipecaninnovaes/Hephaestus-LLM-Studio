@@ -1310,7 +1310,8 @@ pub async fn report_job(
                                             }
                                             let s3_key = format!("artifacts/{id}/{filename}");
                                             let thumb_s3_key = entry
-                                                .get("thumb")
+                                                .get("thumb_filename")
+                                                .or_else(|| entry.get("thumb"))
                                                 .and_then(|v| v.as_str())
                                                 .map(|t| format!("artifacts/{id}/{t}"));
                                             let seed = entry
@@ -1340,6 +1341,7 @@ pub async fn report_job(
                                             // Remove campos já colunas explícitas.
                                             if let Some(obj) = gen_params.as_object_mut() {
                                                 obj.remove("filename");
+                                                obj.remove("thumb_filename");
                                                 obj.remove("thumb");
                                                 obj.remove("seed");
                                                 obj.remove("prompt");

@@ -1318,8 +1318,22 @@ async fn run_job_inner(
         // Telemetry path (D1)
         let telemetry_abs = outputs.join("telemetry.jsonl");
 
-        // Config yaml como string JSON para o daemon
-        let config_str = dispatch.config_yaml.clone().unwrap_or_default();
+        // Config yaml como string JSON para o daemon — usa o real_config
+        // (mesmo config com placeholders substituídos que o one-shot grava em config.yaml)
+        let config_str = dispatch
+            .config_yaml
+            .as_ref()
+            .map(|cy| {
+                replace_config_placeholders(
+                    cy,
+                    &format!("/datasets/datasets-cache/{job_id}"),
+                    &format!("/outputs/{job_id}"),
+                    weights_staged_path.as_deref(),
+                    &lora_staged_paths,
+                    custom_staged_path.as_deref(),
+                )
+            })
+            .unwrap_or_default();
 
         let body = daemon::GenerateBody {
             config: config_str,
@@ -1331,7 +1345,8 @@ async fn run_job_inner(
         let mut last_err = String::new();
         let mut succeeded = false;
         for attempt in 0..3 {
-            match ds.client.generate(&body).await {
+            let client = ds.client.read().unwrap().clone();
+            match client.generate(&body).await {
                 Ok(()) => {
                     succeeded = true;
                     ds.touch();
@@ -1368,19 +1383,36 @@ async fn run_job_inner(
 
         // Coleta glob: generated_*.png (kind generated), thumb_*.jpg (kind generated_thumb),
         // generation_meta.json (kind generated_meta) — D2 ADR-0023
+        // Se existir qualquer `generated_*.png`, PULA `generated.png` (symlink legado só vale
+        // para jobs sem numerado).
         if let Ok(entries) = std::fs::read_dir(&outputs) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if !path.is_file() {
-                    continue;
-                }
+            let all_files: Vec<std::path::PathBuf> = entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.is_file()
+                        && !p
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .map(|n| {
+                                n.starts_with('.') || n.ends_with(".tmp") || n.ends_with(".part")
+                            })
+                            .unwrap_or(false)
+                })
+                .collect();
+
+            let has_numbered = all_files.iter().any(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with("generated_") && n.ends_with(".png"))
+                    .unwrap_or(false)
+            });
+
+            for path in &all_files {
                 let fname = match path.file_name().and_then(|n| n.to_str()) {
                     Some(n) => n.to_string(),
                     None => continue,
                 };
-                if fname.starts_with('.') || fname.ends_with(".tmp") || fname.ends_with(".part") {
-                    continue;
-                }
 
                 let kind = if fname.starts_with("generated_") && fname.ends_with(".png") {
                     Some("generated")
@@ -1390,22 +1422,20 @@ async fn run_job_inner(
                     Some("generated_thumb")
                 } else if fname == "generation_meta.json" {
                     Some("generated_meta")
-                } else if fname == "generated.png" {
-                    // Legado: generated.png continua casando no kind "generated"
+                } else if fname == "generated.png" && !has_numbered {
+                    // Legado: generated.png só coleta se NÃO houver numerados
                     Some("generated")
                 } else {
                     None
                 };
 
                 if let Some(k) = kind {
-                    let bytes = std::fs::metadata(&path)
-                        .map(|m| m.len() as i64)
-                        .unwrap_or(0);
+                    let bytes = std::fs::metadata(path).map(|m| m.len() as i64).unwrap_or(0);
                     if bytes > 0 {
                         let art_key = format!("artifacts/{job_id}/{fname}");
                         if let Ok(scoped) = scoped_key(S3Scope::Artifacts, &art_key) {
-                            if let Ok(md5) = compute_file_md5(&path) {
-                                if s3.put(&scoped, &path).await.is_ok() {
+                            if let Ok(md5) = compute_file_md5(path) {
+                                if s3.put(&scoped, path).await.is_ok() {
                                     artifacts.push(ArtifactReport {
                                         kind: k.to_string(),
                                         path: fname,
@@ -1828,8 +1858,8 @@ async fn run_job_inner(
 
     // Coleta glob para diffusion generate (D2 — ADR-0023)
     // Gera generated_*.png (kind generated), thumb_*.jpg (kind generated_thumb),
-    // generation_meta.json (kind generated_meta). generated.png legado continua
-    // casando no glob quando existir.
+    // generation_meta.json (kind generated_meta). generated.png legado só coleta
+    // se NÃO houver numerados (evita duplicidade em batch=1).
     if dispatch.engine == "diffusion" && dispatch.mode == "generate" {
         if let Ok(entries) = std::fs::read_dir(&outputs) {
             let mut glob_files: Vec<std::path::PathBuf> = entries
@@ -1848,6 +1878,14 @@ async fn run_job_inner(
                 .collect();
             glob_files.sort();
 
+            // Verifica se existem arquivos numerados (generated_*.png)
+            let has_numbered = glob_files.iter().any(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with("generated_") && n.ends_with(".png"))
+                    .unwrap_or(false)
+            });
+
             for gpath in glob_files {
                 let fname = match gpath.file_name().and_then(|n| n.to_str()) {
                     Some(n) => n.to_string(),
@@ -1862,8 +1900,8 @@ async fn run_job_inner(
                     Some("generated_thumb")
                 } else if fname == "generation_meta.json" {
                     Some("generated_meta")
-                } else if fname == "generated.png" {
-                    // Legado: generated.png continua casando no kind "generated"
+                } else if fname == "generated.png" && !has_numbered {
+                    // Legado: generated.png só coleta se NÃO houver numerados
                     Some("generated")
                 } else {
                     None
@@ -4984,9 +5022,10 @@ also bad, not a number
         fn new() -> Self {
             Self {
                 health_response: Mutex::new(Some(HealthResponse {
-                    status: "ready".to_string(),
-                    loaded_spec: Some("flux-2-klein-4b".to_string()),
+                    ok: true,
+                    loaded_spec: Some(serde_json::Value::String("flux-2-klein-4b".to_string())),
                     busy: false,
+                    _extra: Default::default(),
                 })),
                 generate_results: Mutex::new(Vec::new()),
                 generate_call_count: Mutex::new(0),
@@ -5231,6 +5270,57 @@ also bad, not a number
         assert_eq!(artifacts.len(), 1, "should collect exactly 1 artifact");
         assert_eq!(artifacts[0].path, "generated.png");
         assert_eq!(artifacts[0].kind, "generated");
+    }
+
+    // -- G.4 test 3b: glob_dedup_generated_png ---
+    /// outputs com generated.png E generated_0001.png → só coleta generated_0001.png
+    /// (generated.png é symlink legado, pula quando existir numerado).
+    #[tokio::test]
+    async fn glob_dedup_generated_png() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let mut dispatch = make_dispatch("job-glob-dedup-001", "diffusion");
+        dispatch.mode = "generate".to_string();
+        dispatch.package_ref = None;
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let mut output_files = HashMap::new();
+        output_files.insert("generated.png".to_string(), b"legacy symlink".to_vec());
+        output_files.insert("generated_0001.png".to_string(), b"real png".to_vec());
+        create_fake_outputs(tmp.path(), "job-glob-dedup-001", &output_files);
+
+        let result = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+            None,
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "glob dedup should succeed: {:?}",
+            result.err()
+        );
+
+        let artifacts = report.done_artifacts().unwrap();
+        let filenames: Vec<&str> = artifacts.iter().map(|a| a.path.as_str()).collect();
+        // generated_0001.png coletado, generated.png PULADO
+        assert!(
+            filenames.contains(&"generated_0001.png"),
+            "should collect numbered file"
+        );
+        assert!(
+            !filenames.contains(&"generated.png"),
+            "should NOT collect generated.png when numbered exists"
+        );
     }
 
     // -- G.4 test 4: daemon_hot_path_sem_docker_run --
@@ -5693,9 +5783,10 @@ also bad, not a number
 
         // Health diz busy=false
         client.set_health(Some(HealthResponse {
-            status: "ready".to_string(),
+            ok: true,
             loaded_spec: None,
             busy: false,
+            _extra: Default::default(),
         }));
 
         // Chama preempção diretamente
@@ -5729,9 +5820,10 @@ also bad, not a number
 
         // Health diz busy=true
         client.set_health(Some(HealthResponse {
-            status: "ready".to_string(),
+            ok: true,
             loaded_spec: None,
             busy: true,
+            _extra: Default::default(),
         }));
 
         daemon::maybe_preempt_daemon(&daemon_state).await;

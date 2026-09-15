@@ -423,17 +423,28 @@ async fn main() {
     }
 
     // Daemon config (D1 — ADR-0023).
-    let daemon_enabled =
-        std::env::var("DIFFUSION_DAEMON_ENABLED").unwrap_or_else(|_| "0".into()) == "1";
+    // Trata string vazia como ausente: compose emite `DIFFUSION_DAEMON_URL=`
+    // (presença + valor vazio) e o unwrap_or vê Ok("") → daemon externo errado.
+    let daemon_enabled = std::env::var("DIFFUSION_DAEMON_ENABLED")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .as_deref()
+        == Some("1");
     let daemon_port: u16 = std::env::var("DIFFUSION_DAEMON_PORT")
-        .unwrap_or_else(|_| "8766".into())
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "8766".into())
         .parse()
         .unwrap_or(8766);
     let daemon_idle_ttl: u64 = std::env::var("DIFFUSION_DAEMON_IDLE_TTL_S")
-        .unwrap_or_else(|_| "600".into())
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "600".into())
         .parse()
         .unwrap_or(600);
-    let daemon_url_override = std::env::var("DIFFUSION_DAEMON_URL").ok();
+    let daemon_url_override = std::env::var("DIFFUSION_DAEMON_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
 
     let daemon_state = if daemon_enabled {
         let image = std::env::var("TRAINER_IMAGE_DIFFUSION")
@@ -446,29 +457,71 @@ async fn main() {
                     "http://localhost:{daemon_port}"
                 )))
             };
+
+        // Mesmos volumes/mounts do one-shot (build_docker_run_args).
+        let vol_datasets_daemon =
+            std::env::var("ORCH_VOL_DATASETS").unwrap_or_else(|_| "infra_datasets".into());
+        let vol_outputs_daemon =
+            std::env::var("ORCH_VOL_OUTPUTS").unwrap_or_else(|_| "infra_outputs".into());
+        let daemon_volumes: Vec<(String, String)> = vec![
+            (vol_datasets_daemon, "/data/datasets".to_string()),
+            (vol_outputs_daemon, "/data/outputs".to_string()),
+        ];
+
+        // Mesmas envs do one-shot: ENGINE_MOCK=0 quando GPU, HF cache paths, etc.
+        let mut daemon_env: Vec<(String, String)> = Vec::new();
+        if gpu_devices_boot.is_some() {
+            daemon_env.push(("ENGINE_MOCK".to_string(), "0".to_string()));
+        }
+        // HF cache paths para diffusion (igual one-shot L1473-1493)
+        daemon_env.push((
+            "HF_HOME".to_string(),
+            "/data/outputs/.cache/huggingface".to_string(),
+        ));
+        daemon_env.push((
+            "HF_HUB_CACHE".to_string(),
+            "/data/outputs/.cache/huggingface/hub".to_string(),
+        ));
+        daemon_env.push((
+            "TRANSFORMERS_CACHE".to_string(),
+            "/data/outputs/.cache/huggingface/hub".to_string(),
+        ));
+        daemon_env.push((
+            "DIFFUSERS_CACHE".to_string(),
+            "/data/outputs/.cache/huggingface/hub".to_string(),
+        ));
+        daemon_env.push((
+            "TORCH_HOME".to_string(),
+            "/data/outputs/.cache/torch".to_string(),
+        ));
+        if let Ok(token) =
+            std::env::var("HF_TOKEN").or_else(|_| std::env::var("HUGGING_FACE_HUB_TOKEN"))
+        {
+            if !token.is_empty() {
+                daemon_env.push(("HF_TOKEN".to_string(), token.clone()));
+                daemon_env.push(("HUGGING_FACE_HUB_TOKEN".to_string(), token));
+            }
+        }
+        if let Ok(model_id) = std::env::var("FLUX_MODEL_ID") {
+            if !model_id.is_empty() {
+                daemon_env.push(("FLUX_MODEL_ID".to_string(), model_id));
+            }
+        }
+
+        let daemon_network = std::env::var("DIFFUSION_DAEMON_NETWORK")
+            .ok()
+            .filter(|v| !v.trim().is_empty());
+
         let launcher: Arc<dyn orchestrator::daemon::DaemonLauncher> =
-            if daemon_url_override.is_some() {
-                // Se URL override está setada, daemon já existe — não precisamos de launcher real.
-                // Usamos um "noop" launcher que só retorna a URL.
-                // Mas ainda precisamos de kill para preempção.
-                Arc::new(orchestrator::daemon::DockerDaemonLauncher::new(
-                    &image,
-                    "diffusion-daemon",
-                    vec![],
-                    daemon_port,
-                    gpu_devices_boot.clone(),
-                    vec![],
-                ))
-            } else {
-                Arc::new(orchestrator::daemon::DockerDaemonLauncher::new(
-                    &image,
-                    "diffusion-daemon",
-                    vec![],
-                    daemon_port,
-                    gpu_devices_boot.clone(),
-                    vec![],
-                ))
-            };
+            Arc::new(orchestrator::daemon::DockerDaemonLauncher::new(
+                &image,
+                "diffusion-daemon",
+                daemon_volumes,
+                daemon_port,
+                gpu_devices_boot.clone(),
+                daemon_env,
+                daemon_network,
+            ));
         let ds = Arc::new(orchestrator::daemon::DaemonState::new(
             &image,
             daemon_port,

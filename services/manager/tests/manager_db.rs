@@ -4857,8 +4857,8 @@ async fn hook_generations_3_linhas_meta() {
         .expect("dispatch");
 
     let meta_content = "\
-{\"filename\":\"generated_0001.png\",\"thumb\":\"thumb_0001.jpg\",\"seed\":42,\"prompt\":\"a cyberpunk city\",\"negative_prompt\":\"blurry\",\"width\":1024,\"height\":1024,\"batch_index\":0,\"batch_size\":3,\"base_model\":\"flux-2-klein-4b\",\"steps\":20,\"guidance_scale\":7.5}
-{\"filename\":\"generated_0002.png\",\"thumb\":\"thumb_0002.jpg\",\"seed\":43,\"prompt\":\"a cyberpunk city\",\"negative_prompt\":null,\"width\":1024,\"height\":1024,\"batch_index\":1,\"batch_size\":3,\"base_model\":\"flux-2-klein-4b\",\"steps\":20,\"guidance_scale\":7.5}
+{\"filename\":\"generated_0001.png\",\"thumb_filename\":\"thumb_0001.jpg\",\"seed\":42,\"prompt\":\"a cyberpunk city\",\"negative_prompt\":\"blurry\",\"width\":1024,\"height\":1024,\"batch_index\":0,\"batch_size\":3,\"base_model\":\"flux-2-klein-4b\",\"steps\":20,\"guidance_scale\":7.5}
+{\"filename\":\"generated_0002.png\",\"thumb_filename\":\"thumb_0002.jpg\",\"seed\":43,\"prompt\":\"a cyberpunk city\",\"negative_prompt\":null,\"width\":1024,\"height\":1024,\"batch_index\":1,\"batch_size\":3,\"base_model\":\"flux-2-klein-4b\",\"steps\":20,\"guidance_scale\":7.5}
 {\"filename\":\"generated_0003.png\",\"seed\":44,\"prompt\":\"a cyberpunk city\",\"width\":1024,\"height\":1024,\"batch_index\":2,\"batch_size\":3,\"base_model\":\"flux-2-klein-4b\",\"steps\":20}";
 
     manager::report_job(

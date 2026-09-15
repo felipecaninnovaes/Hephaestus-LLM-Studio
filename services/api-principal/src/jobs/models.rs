@@ -1296,7 +1296,16 @@ pub fn generate_diffusion_generate_config_yaml(
         ),
         None => "  negative_prompt: \"\"\n".to_string(),
     };
-    let seed = req.seed.unwrap_or(42);
+
+    // Seed: quando None, NÃO emitir seed: no yaml (engine sorteia e reporta no meta — D2).
+    let seed_root_line = match req.seed {
+        Some(s) => format!("seed: {s}\n"),
+        None => String::new(),
+    };
+    let seed_gen_line = match req.seed {
+        Some(s) => format!("  seed: {s}\n"),
+        None => String::new(),
+    };
 
     // --- Effetive model para a linha `model:` ---
     // Custom: usa arch resolvido; base: usa base_model.
@@ -1341,6 +1350,17 @@ pub fn generate_diffusion_generate_config_yaml(
         String::new()
     };
 
+    // Quando custom_arch está presente, NÃO emitir generate.base_model:
+    // o engine (generate.py L127) faz fallback para root `model:` que já leva o arch.
+    let base_model_line = if custom_arch.is_some() {
+        String::new()
+    } else {
+        format!(
+            "  base_model: \"{}\"\n",
+            req.base_model.as_deref().unwrap_or("flux-2-klein-4b")
+        )
+    };
+
     format!(
         r#"# Configuração de geração Difusão (Playground)
 job_id: "{job_id}"
@@ -1348,23 +1368,18 @@ engine: "diffusion"
 model: "{effective_model}"
 mode: "generate"
 output_path: "{{output_path}}"
-seed: {seed}
-{weights_path_line}generate:
-  base_model: "{base_model}"
-  prompt: {prompt_json}
+{seed_root_line}{weights_path_line}generate:
+{base_model_line}  prompt: {prompt_json}
 {neg_line}  width: {width}
   height: {height}
   steps: {steps}
   guidance_scale: {guidance_scale}
-  seed: {seed}
-  quantization: "{quantization}"
+{seed_gen_line}  quantization: "{quantization}"
   distilled: {distilled}
   batch_size: {batch_size}
 {loras_block}{custom_block}{lora_scale_line}"#,
         job_id = job_id,
         effective_model = effective_model,
-        base_model = req.base_model.as_deref().unwrap_or("flux-2-klein-4b"),
-        seed = seed,
         prompt_json = serde_json::to_string(&req.prompt).unwrap_or_else(|_| "\"\"".into()),
         neg_line = neg_line,
         width = req.width,
@@ -1374,17 +1389,48 @@ seed: {seed}
         quantization = req.quantization,
         distilled = req.distilled,
         batch_size = req.batch_size,
+        seed_root_line = seed_root_line,
+        seed_gen_line = seed_gen_line,
         weights_path_line = weights_path_line,
+        base_model_line = base_model_line,
         loras_block = loras_block,
         custom_block = custom_block,
         lora_scale_line = lora_scale_line,
     )
 }
 
-/// Formata scale de LoRA com 1 casa decimal (engine aceita f64, yaml humano
-/// usa 1 casa).
+/// Formata scale de LoRA preservando até 2 casas decimais, trim de zeros à direita.
+/// 0.85 → "0.85", 1.0 → "1", 0.50 → "0.5".
 fn format_lora_scale(scale: f64) -> String {
-    format!("{scale:.1}")
+    let s = format!("{scale:.2}");
+    // Trim de zeros à direita e ponto decimal se inteiro
+    let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+    trimmed.to_string()
+}
+
+#[cfg(test)]
+mod format_lora_scale_tests {
+    use super::*;
+
+    #[test]
+    fn scale_085_preserves_two_decimals() {
+        assert_eq!(format_lora_scale(0.85), "0.85");
+    }
+
+    #[test]
+    fn scale_10_becomes_integer() {
+        assert_eq!(format_lora_scale(1.0), "1");
+    }
+
+    #[test]
+    fn scale_050_trims_one_zero() {
+        assert_eq!(format_lora_scale(0.50), "0.5");
+    }
+
+    #[test]
+    fn scale_035_two_decimals() {
+        assert_eq!(format_lora_scale(0.35), "0.35");
+    }
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
@@ -2668,7 +2714,7 @@ mod tests {
         assert!(yaml.contains("loras:"));
         assert!(yaml.contains("{lora_path_0}"));
         assert!(yaml.contains("{lora_path_1}"));
-        assert!(yaml.contains("scale: 1.0"));
+        assert!(yaml.contains("scale: 1"));
         assert!(yaml.contains("scale: 0.8"));
         // Sem weights_path quando loras não vazio
         assert!(!yaml.contains("weights_path"));
@@ -2690,9 +2736,32 @@ mod tests {
         assert!(yaml.contains("arch: \"sdxl\""));
         assert!(yaml.contains(r#"model: "sdxl""#));
         assert!(yaml.contains("batch_size: 1"));
+        // XOR: quando custom_arch está presente, NÃO deve haver base_model no generate
+        assert!(
+            !yaml.contains("base_model:"),
+            "custom block must NOT contain base_model: {yaml}"
+        );
         // Sem weights_path quando custom presente
         assert!(!yaml.contains("weights_path"));
         assert!(!yaml.contains("lora_scale"));
+
+        // Validação cruzada: YAML parseável e sem generate.base_model
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml deve ser válido");
+        let gen = parsed["generate"]
+            .as_mapping()
+            .expect("generate deve ser mapping");
+        assert!(
+            !gen.contains_key(&serde_yaml::Value::String("base_model".into())),
+            "generate must NOT contain base_model when custom_arch is present"
+        );
+        assert!(
+            gen.contains_key(&serde_yaml::Value::String("custom_checkpoint_path".into())),
+            "generate must contain custom_checkpoint_path"
+        );
+        assert!(
+            gen.contains_key(&serde_yaml::Value::String("arch".into())),
+            "generate must contain arch"
+        );
     }
 
     #[test]

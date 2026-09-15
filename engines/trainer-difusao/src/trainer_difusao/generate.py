@@ -211,6 +211,34 @@ def _resolve_loras_from_legacy(params: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
+def pipeline_cache_key(params: dict[str, Any]) -> tuple:
+    """Extrai chave de cache do pipeline a partir dos params validados.
+
+    Chave: (base_model|custom_checkpoint_path+arch, quantization, distilled).
+    """
+    custom_cp = params.get("custom_checkpoint_path")
+    return (
+        custom_cp or params.get("base_model"),
+        params.get("quantization"),
+        params.get("distilled", False),
+    )
+
+
+def ensure_pipeline(
+    params: dict[str, Any], cache: dict[tuple, object]
+) -> tuple[object | None, tuple]:
+    """Verifica cache de pipeline e devolve (pipeline|None, key).
+
+    Se cache hit → (pipeline_obj, key).
+    Se cache miss → (None, key) — caller deve chamar _real_generate sem pipeline.
+    """
+    key = pipeline_cache_key(params)
+    if key in cache:
+        print(f"[DIFFUSION-GEN] Cache hit para spec {key}.", flush=True)
+        return cache[key], key
+    return None, key
+
+
 def _build_generation_meta(
     params: dict[str, Any],
     filename: str,
@@ -438,11 +466,17 @@ def _mock_generate(params: dict[str, Any], output_dir: Path, emitter=None) -> No
 # ---------------------------------------------------------------------------
 # REAL — geração via Diffusers com aceleração CUDA
 # ---------------------------------------------------------------------------
-def _real_generate(params: dict[str, Any], output_dir: Path) -> None:
+def _real_generate(
+    params: dict[str, Any], output_dir: Path, pipeline: object | None = None
+) -> object | None:
     """Executa a geração Text-to-Image real via Diffusers com aceleração CUDA.
 
     Suporta batch (loop sequencial), multi-LoRA (com fallback para Flux2 via peft),
     e checkpoints custom (SDXL/SD15 via from_single_file).
+
+    Se *pipeline* for fornecido (cache hit), pula a fase de carregamento e usa o
+    pipeline diretamente — caso contrário, carrega como antes (cache miss).
+    Retorna o pipeline carregado (para caching pelo caller).
     """
     import torch
 
@@ -514,101 +548,113 @@ def _real_generate(params: dict[str, Any], output_dir: Path) -> None:
                 flush=True,
             )
 
-    # --- Carregar pipeline ---
-    emitter.emit(
-        phase="loading_model",
-        message=f"Carregando pesos do modelo {base_model}...",
-        progress=0.25,
-    )
-
-    pipe = None
-
-    if custom_cp and arch in ("sdxl", "sd15"):
-        # D4 — Modelo custom via from_single_file
-        print(
-            f"[DIFFUSION-GEN] Carregando checkpoint custom: {custom_cp} (arch={arch})",
-            flush=True,
+    # --- Carregar pipeline (ou usar cache) ---
+    if pipeline is not None:
+        # Cache hit: pipeline fornecido pelo caller (serve.py)
+        pipe = pipeline
+        print("[DIFFUSION-GEN] Usando pipeline do cache (hot path).", flush=True)
+    else:
+        emitter.emit(
+            phase="loading_model",
+            message=f"Carregando pesos do modelo {base_model}...",
+            progress=0.25,
         )
-        if arch == "sdxl":
-            from diffusers import StableDiffusionXLPipeline
 
-            load_kwargs: dict[str, Any] = {
-                "torch_dtype": torch.float16 if device == "cuda" else torch.float32,
-            }
-            if bnb_config and device == "cuda":
-                load_kwargs["quantization_config"] = bnb_config
-            pipe = StableDiffusionXLPipeline.from_single_file(custom_cp, **load_kwargs)
-        elif arch == "sd15":
+        pipe = None
+
+        if custom_cp and arch in ("sdxl", "sd15"):
+            # D4 — Modelo custom via from_single_file
+            print(
+                f"[DIFFUSION-GEN] Carregando checkpoint custom: {custom_cp} (arch={arch})",
+                flush=True,
+            )
+            if arch == "sdxl":
+                from diffusers import StableDiffusionXLPipeline
+
+                load_kwargs: dict[str, Any] = {
+                    "torch_dtype": (
+                        torch.float16 if device == "cuda" else torch.float32
+                    ),
+                }
+                if bnb_config and device == "cuda":
+                    load_kwargs["quantization_config"] = bnb_config
+                pipe = StableDiffusionXLPipeline.from_single_file(
+                    custom_cp, **load_kwargs
+                )
+            elif arch == "sd15":
+                from diffusers import StableDiffusionPipeline
+
+                load_kwargs_sd15: dict[str, Any] = {
+                    "torch_dtype": (
+                        torch.float16 if device == "cuda" else torch.float32
+                    ),
+                }
+                if bnb_config and device == "cuda":
+                    load_kwargs_sd15["quantization_config"] = bnb_config
+                pipe = StableDiffusionPipeline.from_single_file(
+                    custom_cp, **load_kwargs_sd15
+                )
+
+            if pipe and device == "cuda" and not bnb_config:
+                pipe.to(device)
+
+        elif base_model == "flux-2-klein-4b":
+            from diffusers import Flux2KleinPipeline
+
+            model_repo = (
+                (
+                    os.environ.get("FLUX_DISTILLED_MODEL_ID")
+                    or "black-forest-labs/FLUX.2-klein-4B"
+                )
+                if distilled
+                else (
+                    os.environ.get("FLUX_MODEL_ID")
+                    or "black-forest-labs/FLUX.2-klein-base-4B"
+                )
+            )
+            print(
+                f"[DIFFUSION-GEN] Carregando FLUX.2 Klein 4B "
+                f"({'Destilado' if distilled else 'Base'}): {model_repo}",
+                flush=True,
+            )
+            pipe = Flux2KleinPipeline.from_pretrained(
+                model_repo,
+                torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
+            )
+            if bnb_config is None and device == "cuda":
+                pipe.to(device)
+            else:
+                pipe.enable_model_cpu_offload()
+
+        elif base_model == "sdxl":
+            from diffusers import AutoencoderKL, StableDiffusionXLPipeline
+
+            vae = AutoencoderKL.from_pretrained(
+                "madebyollin/sdxl-vae-fp16-fix",
+                torch_dtype=torch.float32,
+            )
+            pipe = StableDiffusionXLPipeline.from_pretrained(
+                "stabilityai/stable-diffusion-xl-base-1.0",
+                vae=vae,
+                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+                use_safetensors=True,
+            )
+            if device == "cuda":
+                pipe.to(device)
+
+        elif base_model == "sd15":
             from diffusers import StableDiffusionPipeline
 
-            load_kwargs_sd15: dict[str, Any] = {
-                "torch_dtype": torch.float16 if device == "cuda" else torch.float32,
-            }
-            if bnb_config and device == "cuda":
-                load_kwargs_sd15["quantization_config"] = bnb_config
-            pipe = StableDiffusionPipeline.from_single_file(
-                custom_cp, **load_kwargs_sd15
+            pipe = StableDiffusionPipeline.from_pretrained(
+                "runwayml/stable-diffusion-v1-5",
+                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+                use_safetensors=True,
             )
+            if device == "cuda":
+                pipe.to(device)
 
-        if pipe and device == "cuda" and not bnb_config:
-            pipe.to(device)
-
-    elif base_model == "flux-2-klein-4b":
-        from diffusers import Flux2KleinPipeline
-
-        model_repo = (
-            (
-                os.environ.get("FLUX_DISTILLED_MODEL_ID")
-                or "black-forest-labs/FLUX.2-klein-4B"
-            )
-            if distilled
-            else (
-                os.environ.get("FLUX_MODEL_ID")
-                or "black-forest-labs/FLUX.2-klein-base-4B"
-            )
-        )
-        print(
-            f"[DIFFUSION-GEN] Carregando FLUX.2 Klein 4B ({'Destilado' if distilled else 'Base'}): {model_repo}",
-            flush=True,
-        )
-        pipe = Flux2KleinPipeline.from_pretrained(
-            model_repo,
-            torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
-        )
-        if bnb_config is None and device == "cuda":
-            pipe.to(device)
         else:
-            pipe.enable_model_cpu_offload()
-
-    elif base_model == "sdxl":
-        from diffusers import AutoencoderKL, StableDiffusionXLPipeline
-
-        vae = AutoencoderKL.from_pretrained(
-            "madebyollin/sdxl-vae-fp16-fix",
-            torch_dtype=torch.float32,
-        )
-        pipe = StableDiffusionXLPipeline.from_pretrained(
-            "stabilityai/stable-diffusion-xl-base-1.0",
-            vae=vae,
-            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-            use_safetensors=True,
-        )
-        if device == "cuda":
-            pipe.to(device)
-
-    elif base_model == "sd15":
-        from diffusers import StableDiffusionPipeline
-
-        pipe = StableDiffusionPipeline.from_pretrained(
-            "runwayml/stable-diffusion-v1-5",
-            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-            use_safetensors=True,
-        )
-        if device == "cuda":
-            pipe.to(device)
-
-    else:
-        _die(f"Modelo não suportado para geração real: {base_model}")
+            _die(f"Modelo não suportado para geração real: {base_model}")
 
     # --- Multi-LoRA (D3) ---
     if loras_effective:
@@ -636,22 +682,33 @@ def _real_generate(params: dict[str, Any], output_dir: Path) -> None:
             # Aplicar escala multi via peft no transformer
             # Ref: diffusers 0.40.0 loaders/peft.py:437 — PeftAdapterMixin
             # O mixin Flux2LoraLoaderMixin NÃO tem set_adapters (verificado no spike S1).
-            # Fallback documentado: se transformer.set_adapters falhar, aplica só o primeiro LoRA.
+            # Fallback documentado: se transformer.set_adapters falhar, aplica só 1 LoRA.
             try:
                 pipe.transformer.set_adapters(adapter_names, adapter_scales)
                 print(
-                    f"[DIFFUSION-GEN] Multi-LoRA aplicado via transformer.set_adapters: {adapter_names}",
+                    f"[DIFFUSION-GEN] Multi-LoRA aplicado via transformer.set_adapters: "
+                    f"{adapter_names}",
                     flush=True,
                 )
             except (AttributeError, RuntimeError, OSError) as exc:
-                # Fallback: aplica só o primeiro LoRA (documentado no spike S1 do ADR-0023)
+                # Fallback: aplica só o primeiro LoRA via transformer (peft)
                 print(
                     f"[DIFFUSION-GEN] [AVISO] transformer.set_adapters falhou ({exc}). "
                     f"Fallback: aplicando apenas o primeiro LoRA ({adapter_names[0]}). "
                     f"Ref: ADR-0023 spike S1.",
                     flush=True,
                 )
-                pipe.set_adapters([adapter_names[0]], [adapter_scales[0]])
+                try:
+                    pipe.transformer.set_adapters(
+                        [adapter_names[0]], [adapter_scales[0]]
+                    )
+                except (AttributeError, RuntimeError, OSError) as exc2:
+                    # Último recurso: decaimento honesto — sem set_adapters
+                    print(
+                        f"[DIFFUSION-GEN] [ERRO] transformer.set_adapters(1 LoRA) "
+                        f"também falhou ({exc2}). LoRA não aplicada.",
+                        flush=True,
+                    )
         else:
             # SDXL / SD15 — set_adapters canônico do diffusers
             adapter_names = []
@@ -783,6 +840,8 @@ def _real_generate(params: dict[str, Any], output_dir: Path) -> None:
         message=f"Geração finalizada com sucesso! {len(meta_lines)}/{batch_size} imagens.",
         progress=1.0,
     )
+
+    return pipe
 
 
 # ---------------------------------------------------------------------------

@@ -13,6 +13,8 @@ import unittest
 import urllib.request
 from pathlib import Path
 
+import yaml
+
 
 class _BaseServeTest(unittest.TestCase):
     """Setup/teardown padrão: garante ENGINE_MOCK=1 e servidor em porta efêmera."""
@@ -462,6 +464,179 @@ class TestTelemetryPath(_BaseServeTest):
         # Verificar que tem conteúdo
         content = telemetry_file.read_text()
         self.assertTrue(len(content) > 0, "telemetry.jsonl deve ter conteúdo")
+
+
+class TestConfigYamlString(_BaseServeTest):
+    """9. POST /generate com config como STRING YAML válida → 200 e mesmos artefatos."""
+
+    def test_config_as_yaml_string_valid(self):
+        self._start_server()
+        self.assertTrue(self._wait_for_server())
+
+        out_dir = self.tmp_path / "output_yaml"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        config_dict = {
+            "job_id": "test-yaml-string",
+            "generate": {
+                "base_model": "flux-2-klein-4b",
+                "prompt": "a test prompt for yaml string",
+                "negative_prompt": "",
+                "width": 512,
+                "height": 512,
+                "steps": 20,
+                "guidance_scale": 3.5,
+                "seed": 42,
+                "quantization": "4bit",
+                "batch_size": 1,
+            },
+        }
+        yaml_string = yaml.dump(config_dict, default_flow_style=False)
+
+        body = {"config": yaml_string, "output_dir": str(out_dir)}
+
+        status, resp = self._post_generate(body)
+
+        self.assertEqual(status, 200)
+        self.assertTrue(resp["ok"])
+        self.assertEqual(len(resp["items"]), 1)
+        self.assertEqual(resp["items"][0]["seed"], 42)
+
+        # Verificar artefatos
+        self.assertTrue((out_dir / "generated_0001.png").exists())
+        self.assertTrue((out_dir / "generation_meta.json").exists())
+
+    def test_config_as_yaml_string_invalid_yaml(self):
+        """String YAML inválida → 400 invalid_request."""
+        self._start_server()
+        self.assertTrue(self._wait_for_server())
+
+        out_dir = self.tmp_path / "output_bad_yaml"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        body = {
+            "config": "{{invalid yaml structure: [",
+            "output_dir": str(out_dir),
+        }
+
+        status, resp = self._post_generate(body)
+
+        self.assertEqual(status, 400)
+        self.assertFalse(resp["ok"])
+        self.assertEqual(resp["error"], "invalid_request")
+
+    def test_config_as_yaml_string_not_dict(self):
+        """String YAML válida mas que não parseia para dict → 400."""
+        self._start_server()
+        self.assertTrue(self._wait_for_server())
+
+        out_dir = self.tmp_path / "output_yaml_list"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        body = {
+            "config": "- item1\n- item2\n",
+            "output_dir": str(out_dir),
+        }
+
+        status, resp = self._post_generate(body)
+
+        self.assertEqual(status, 400)
+        self.assertFalse(resp["ok"])
+        self.assertEqual(resp["error"], "invalid_request")
+
+
+class TestPipelineCache(_BaseServeTest):
+    """10. Cache de pipeline: ensure_pipeline chamado 1x para spec igual, 2x para spec diferente."""
+
+    def test_ensure_pipeline_called_once_for_same_spec(self):
+        """Mock do ensure_pipeline: 2 requests com mesma spec → chamado 1x (cache hit na 2ª)."""
+        self._start_server()
+        self.assertTrue(self._wait_for_server())
+
+        call_count = {"n": 0}
+        original_ensure = None
+
+        try:
+            from trainer_difusao.generate import ensure_pipeline as orig_ensure
+
+            original_ensure = orig_ensure
+        except ImportError:
+            pass
+
+        def counting_ensure(params, cache):
+            call_count["n"] += 1
+            return original_ensure(params, cache)
+
+        import trainer_difusao.generate as gen_mod
+
+        old_ensure = gen_mod.ensure_pipeline
+        gen_mod.ensure_pipeline = counting_ensure
+
+        try:
+            out_dir1 = self.tmp_path / "cache_out1"
+            out_dir1.mkdir(parents=True, exist_ok=True)
+            body1 = self._make_config(batch_size=1, seed=100)
+            body1["output_dir"] = str(out_dir1)
+            status1, _ = self._post_generate(body1)
+            self.assertEqual(status1, 200)
+            self.assertEqual(call_count["n"], 1, "1ª chamada: cache miss")
+
+            out_dir2 = self.tmp_path / "cache_out2"
+            out_dir2.mkdir(parents=True, exist_ok=True)
+            body2 = self._make_config(batch_size=1, seed=200)
+            body2["output_dir"] = str(out_dir2)
+            status2, _ = self._post_generate(body2)
+            self.assertEqual(status2, 200)
+            self.assertEqual(
+                call_count["n"], 2, "2ª chamada: cache hit (chamada única)"
+            )
+        finally:
+            gen_mod.ensure_pipeline = old_ensure
+
+    def test_ensure_pipeline_called_twice_for_different_spec(self):
+        """2 requests com spec diferente → ensure_pipeline chamado 2x."""
+        self._start_server()
+        self.assertTrue(self._wait_for_server())
+
+        call_count = {"n": 0}
+        original_ensure = None
+
+        try:
+            from trainer_difusao.generate import ensure_pipeline as orig_ensure
+
+            original_ensure = orig_ensure
+        except ImportError:
+            pass
+
+        def counting_ensure(params, cache):
+            call_count["n"] += 1
+            return original_ensure(params, cache)
+
+        import trainer_difusao.generate as gen_mod
+
+        old_ensure = gen_mod.ensure_pipeline
+        gen_mod.ensure_pipeline = counting_ensure
+
+        try:
+            out_dir1 = self.tmp_path / "cache_diff1"
+            out_dir1.mkdir(parents=True, exist_ok=True)
+            body1 = self._make_config(
+                base_model="flux-2-klein-4b", batch_size=1, seed=100
+            )
+            body1["output_dir"] = str(out_dir1)
+            status1, _ = self._post_generate(body1)
+            self.assertEqual(status1, 200)
+
+            out_dir2 = self.tmp_path / "cache_diff2"
+            out_dir2.mkdir(parents=True, exist_ok=True)
+            body2 = self._make_config(base_model="sdxl", batch_size=1, seed=200)
+            body2["output_dir"] = str(out_dir2)
+            status2, _ = self._post_generate(body2)
+            self.assertEqual(status2, 200)
+
+            self.assertEqual(call_count["n"], 2, "Spec diferente: cache miss em ambas")
+        finally:
+            gen_mod.ensure_pipeline = old_ensure
 
 
 if __name__ == "__main__":

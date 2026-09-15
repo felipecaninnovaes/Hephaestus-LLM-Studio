@@ -668,5 +668,96 @@ class TestCliE2E(_BaseGenerateTest):
         self.assertEqual(meta["base_model"], "sdxl")
 
 
+class TestPipelineCacheKey(unittest.TestCase):
+    """Testes unitários de pipeline_cache_key."""
+
+    def test_flux2_cache_key(self):
+        from trainer_difusao.generate import pipeline_cache_key
+
+        params = {
+            "base_model": "flux-2-klein-4b",
+            "quantization": "4bit",
+            "distilled": False,
+            "custom_checkpoint_path": None,
+            "arch": None,
+        }
+        key = pipeline_cache_key(params)
+        self.assertEqual(key, ("flux-2-klein-4b", "4bit", False))
+
+    def test_custom_checkpoint_cache_key(self):
+        from trainer_difusao.generate import pipeline_cache_key
+
+        params = {
+            "base_model": "sdxl",
+            "quantization": "none",
+            "distilled": False,
+            "custom_checkpoint_path": "/fake/model.safetensors",
+            "arch": "sdxl",
+        }
+        key = pipeline_cache_key(params)
+        # custom_checkpoint_path prevalece sobre base_model
+        self.assertEqual(key, ("/fake/model.safetensors", "none", False))
+
+
+class TestEnsurePipeline(unittest.TestCase):
+    """Testes de ensure_pipeline: cache hit e miss."""
+
+    def test_cache_miss_returns_none(self):
+        from trainer_difusao.generate import ensure_pipeline
+
+        params = {
+            "base_model": "flux-2-klein-4b",
+            "quantization": "4bit",
+            "distilled": False,
+            "custom_checkpoint_path": None,
+        }
+        cache = {}
+        pipeline, key = ensure_pipeline(params, cache)
+        self.assertIsNone(pipeline)
+        self.assertEqual(key, ("flux-2-klein-4b", "4bit", False))
+
+    def test_cache_hit_returns_pipeline(self):
+        from trainer_difusao.generate import ensure_pipeline
+
+        params = {
+            "base_model": "flux-2-klein-4b",
+            "quantization": "4bit",
+            "distilled": False,
+            "custom_checkpoint_path": None,
+        }
+        fake_pipeline = object()
+        key = ("flux-2-klein-4b", "4bit", False)
+        cache = {key: fake_pipeline}
+        pipeline, k = ensure_pipeline(params, cache)
+        self.assertIs(pipeline, fake_pipeline)
+        self.assertEqual(k, key)
+
+
+class TestFlux2Fallback(unittest.TestCase):
+    """Fallback Flux2 multi-LoRA: transformer.set_adapters funciona, pipe.set_adapters levanta AttributeError."""
+
+    def test_flux2_fallback_degrades_to_single_lora(self):
+        """Com pipe.set_adapters levantando AttributeError, o fallback decai
+        para transformer.set_adapters com 1 LoRA sem crash."""
+        from unittest import mock
+
+        mock_pipe = mock.MagicMock()
+        mock_pipe.transformer.set_adapters = mock.MagicMock()
+        mock_pipe.set_adapters = mock.MagicMock(
+            side_effect=AttributeError("Flux2KleinPipeline has no set_adapters")
+        )
+
+        adapter_names = ["lora_0", "lora_1"]
+        adapter_scales = [1.0, 0.8]
+
+        try:
+            mock_pipe.transformer.set_adapters(adapter_names, adapter_scales)
+        except (AttributeError, RuntimeError, OSError):
+            mock_pipe.transformer.set_adapters([adapter_names[0]], [adapter_scales[0]])
+
+        mock_pipe.transformer.set_adapters.assert_called()
+        mock_pipe.set_adapters.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

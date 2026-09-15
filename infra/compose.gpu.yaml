@@ -37,12 +37,19 @@ services:
       HF_TOKEN: ${HF_TOKEN:-}
       HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
       FLUX_MODEL_ID: ${FLUX_MODEL_ID:-}
+      DIFFUSION_DAEMON_ENABLED: ${DIFFUSION_DAEMON_ENABLED:-0}
+      DIFFUSION_DAEMON_PORT: ${DIFFUSION_DAEMON_PORT:-8766}
+      DIFFUSION_DAEMON_IDLE_TTL_S: ${DIFFUSION_DAEMON_IDLE_TTL_S:-600}
+      DIFFUSION_DAEMON_URL: ${DIFFUSION_DAEMON_URL:-}
+      DIFFUSION_DAEMON_NETWORK: ${DIFFUSION_DAEMON_NETWORK:-${COMPOSE_PROJECT_NAME:-infra}_default}
       EXEC_MODE: docker
       PORT: '8082'
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - gpu_datasets:/data/datasets
       - gpu_outputs:/data/outputs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     deploy:
       resources:
         reservations:

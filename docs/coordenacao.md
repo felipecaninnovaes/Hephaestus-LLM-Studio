@@ -68,9 +68,10 @@ ser interrompido no meio de uma.
       - Wrapped em `<Suspense>` lendo dados de retomada do `sessionStorage` ou query params.
     - `components/studio/JobCard.tsx` e `app/(studio)/jobs/page.tsx`:
       - Botão "Retomar" em artefatos de checkpoint/modelo nos cards de jobs e lista de artefatos.
-      - Botões de ação direta no painel do job: "Baixar JSON de Treino" e "Continuar Treino".
+      - Botões de ação direta no painel do job: "Repetir Treino", "Baixar JSON de Treino" e "Continuar Treino".
+      - Botão de ação rápida "Repetir" integrado aos cards do histórico no `JobListItem`.
     - `components/studio/ActionCenter.tsx`:
-      - Conexão de ação "Retomar" na lista de artefatos do drawer lateral.
+      - Conexão de ação "Retomar" na lista de artefatos do drawer lateral e botão "Repetir Treino" no rodapé de jobs finalizados.
     - Validação de design: `impeccable detect` com 0 erros e 0 avisos; `npm run build` com 13/13 páginas compiladas estaticamente com sucesso total.
 
 

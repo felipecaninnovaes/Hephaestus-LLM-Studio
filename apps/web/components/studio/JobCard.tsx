@@ -139,6 +139,7 @@ export interface JobListItemProps {
   job: Job;
   isFocused?: boolean;
   onSelect?: (jobId: string) => void;
+  onRerun?: (job: Job) => void;
   actionButton?: React.ReactNode;
 }
 
@@ -146,6 +147,7 @@ export function JobListItem({
   job,
   isFocused = false,
   onSelect,
+  onRerun,
   actionButton,
 }: JobListItemProps) {
   const config = JOB_STATUS_CONFIG[job.status] || JOB_STATUS_CONFIG.queued;
@@ -181,22 +183,31 @@ export function JobListItem({
         }`}
       />
 
-      <div className="flex items-center gap-3.5 min-w-0 flex-1 pl-1">
-        <Badge
-          variant={jobStatusToBadgeVariant(job.status)}
-          pulse={job.status === "running"}
-          className="shrink-0"
+      <div className="flex items-start sm:items-center space-x-3 min-w-0 flex-1">
+        <span
+          className={`flex size-8 shrink-0 items-center justify-center rounded-lg border border-white/10 ${config.iconBg} ${config.iconColor}`}
         >
-          {config.label}
-        </Badge>
+          <IconTarget className="size-4" />
+        </span>
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="text-xs font-semibold text-zinc-100 shrink-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-mono text-xs font-semibold text-white">
               {job.model}
             </span>
             <span
-              className="font-mono text-[11px] text-zinc-400 truncate"
-              title={`${job.kind} · ${job.engine}`}
+              className={`inline-flex items-center rounded-md border px-2 py-0.5 font-mono text-[11px] font-medium ${config.badgeClass}`}
+            >
+              {config.label}
+            </span>
+            <span
+              className="font-mono text-[11px] text-zinc-500"
+              title={`ID completo: ${job.id}`}
+            >
+              #{job.id.slice(0, 8)}
+            </span>
+            <span
+              className="font-mono text-[11px] text-zinc-400 capitalize"
+              title={`Engine: ${job.engine}`}
             >
               · {job.kind} · {job.engine}
             </span>
@@ -243,9 +254,24 @@ export function JobListItem({
         </div>
       </div>
 
-      {actionButton && (
+      {(actionButton || (onRerun && !isActive)) && (
         <div className="flex items-center space-x-2 shrink-0 pl-1 sm:pl-0">
-          {actionButton}
+          {actionButton ? (
+            actionButton
+          ) : (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onRerun?.(job);
+              }}
+              title="Repetir este treino na Forja com os mesmos parâmetros"
+              className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.06] hover:bg-brand-500/15 hover:border-brand-500/30 hover:text-brand-300 px-2 py-1 text-[11px] font-medium text-zinc-300 transition active:scale-[0.985] cursor-pointer"
+            >
+              <IconRefresh className="size-3 text-zinc-400 group-hover:text-brand-400" />
+              <span>Repetir</span>
+            </button>
+          )}
         </div>
       )}
     </div>

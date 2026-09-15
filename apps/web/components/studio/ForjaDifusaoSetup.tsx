@@ -86,6 +86,7 @@ export function estimateDiffusionVramGb(
 interface Props {
   onJobCreated?: (jobId: string) => void;
   initialPreset?: Partial<DiffusionPreset>;
+  initialDatasetId?: string;
   resumeCheckpoint?: { id: string; name: string; epoch?: number } | null;
   epochOffset?: number;
 }
@@ -93,6 +94,7 @@ interface Props {
 export default function ForjaDifusaoSetup({
   onJobCreated,
   initialPreset,
+  initialDatasetId,
   resumeCheckpoint,
   epochOffset: propEpochOffset = 0,
 }: Props) {
@@ -102,7 +104,9 @@ export default function ForjaDifusaoSetup({
   // Datasets
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [datasetsLoading, setDatasetsLoading] = useState(true);
-  const [selectedDatasetId, setSelectedDatasetId] = useState<string>("");
+  const [selectedDatasetId, setSelectedDatasetId] = useState<string>(
+    initialDatasetId ?? ""
+  );
 
   // Models (fine-tune previous LoRA weights)
   const [diffusionModels, setDiffusionModels] = useState<Model[]>([]);
@@ -478,14 +482,18 @@ export default function ForjaDifusaoSetup({
     };
   }, []);
 
-  // Pre-select first eligible dataset
+  // Pre-select initial or first eligible dataset
   useEffect(() => {
+    if (initialDatasetId && datasets.some((d) => d.id === initialDatasetId)) {
+      setSelectedDatasetId(initialDatasetId);
+      return;
+    }
     if (selectedDatasetId) return;
     const firstEligible = datasets.find((d) => canTrainDiffusion(d));
     if (firstEligible) {
       setSelectedDatasetId(firstEligible.id);
     }
-  }, [datasets, selectedDatasetId]);
+  }, [datasets, selectedDatasetId, initialDatasetId]);
 
   // Load existing diffusion models for weights selector
   useEffect(() => {

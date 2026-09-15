@@ -21,6 +21,7 @@ function DifusaoContent() {
   } | null>(null);
   const [epochOffset, setEpochOffset] = useState<number>(0);
   const [initialPreset, setInitialPreset] = useState<Partial<DiffusionPreset> | undefined>(undefined);
+  const [initialDatasetId, setInitialDatasetId] = useState<string>("");
 
   useEffect(() => {
     // 1. Tenta carregar dados de retomada passados via sessionStorage
@@ -38,6 +39,9 @@ function DifusaoContent() {
         if (parsed.initialPreset) {
           setInitialPreset(parsed.initialPreset);
         }
+        if (parsed.datasetId) {
+          setInitialDatasetId(parsed.datasetId);
+        }
         return;
       }
     } catch {
@@ -48,6 +52,10 @@ function DifusaoContent() {
     const cpId = searchParams.get("checkpointId");
     const cpName = searchParams.get("checkpointName");
     const offsetStr = searchParams.get("epochOffset") || searchParams.get("epoch");
+    const dsId = searchParams.get("datasetId");
+    if (dsId) {
+      setInitialDatasetId(dsId);
+    }
     if (cpId) {
       setResumeCheckpoint({
         id: cpId,
@@ -111,6 +119,7 @@ function DifusaoContent() {
             <ForjaDifusaoSetup
               onJobCreated={handleJobCreated}
               initialPreset={initialPreset}
+              initialDatasetId={initialDatasetId}
               resumeCheckpoint={resumeCheckpoint}
               epochOffset={epochOffset}
             />

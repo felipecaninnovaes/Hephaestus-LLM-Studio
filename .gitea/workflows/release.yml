@@ -37,6 +37,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # dockerfile SEMPRE com caminho completo a partir da raiz do repo: o -f do docker CLI é resolvido relativo ao CWD, não ao context.
         include:
           - name: principal
             context: .
@@ -52,20 +53,20 @@ jobs:
             dockerfile: apps/web/Dockerfile
           - name: embedder
             context: engines/trainer-clip
-            dockerfile: Dockerfile
+            dockerfile: engines/trainer-clip/Dockerfile
           - name: trainer-yolo
             context: engines/trainer-yolo
-            dockerfile: Dockerfile
+            dockerfile: engines/trainer-yolo/Dockerfile
           - name: trainer-difusao
             context: engines/trainer-difusao
-            dockerfile: Dockerfile
+            dockerfile: engines/trainer-difusao/Dockerfile
           - name: trainer-yolo-gpu
             context: engines/trainer-yolo
-            dockerfile: Dockerfile.gpu
+            dockerfile: engines/trainer-yolo/Dockerfile.gpu
             gpu: true
           - name: trainer-difusao-gpu
             context: engines/trainer-difusao
-            dockerfile: Dockerfile.gpu
+            dockerfile: engines/trainer-difusao/Dockerfile.gpu
             gpu: true
     container:
       image: docker:29-cli@sha256:eccaacfeed644c7de222ff047483568cb988dde95476fbaaf10ea2d04921bb66

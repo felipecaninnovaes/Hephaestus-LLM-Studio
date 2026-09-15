@@ -54,6 +54,7 @@ ser interrompido no meio de uma.
       - Loop de treino com cálculo contínuo de época: `epoch = epoch_idx + epoch_offset`.
       - Frequência de checkpoint respeitando `epoch_idx % checkpoint_interval == 0 or epoch_idx == epochs`.
       - Amostra baseline Época 0 suprimida quando `epoch_offset > 0`.
+      - Correção de inicialização: variáveis de normalização do VAE (`shift_factor`, `scaling_factor`, `latents_mean`, `latents_std`) inicializadas antes do log de início de treino, eliminando `UnboundLocalError`.
     - `models/mock.py`: Loop sintético e gravação atômica alinhados com o comportamento real.
     - `tests/test_train.py`: Adicionados testes para intervalo de checkpoints e retomada com pesos e offset. 18/18 testes verdes (`uv run pytest`).
   - **Web Frontend (`apps/web`) — Impeccable Design System**:

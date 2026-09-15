@@ -46,10 +46,10 @@ export default function GeracaoPage() {
   );
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+    <div className="flex min-h-full flex-col lg:h-full lg:min-h-0 lg:overflow-hidden">
       {/* ── Topbar com título e pills ── */}
-      <div className="shrink-0 border-b border-white/5 bg-zinc-950/40 px-4 py-3 md:px-6 backdrop-blur-md flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center space-x-2.5">
+      <div className="shrink-0 border-b border-white/5 bg-zinc-950/40 px-4 py-3 md:px-6 backdrop-blur-md flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
+        <div className="flex min-w-0 items-center space-x-2.5">
           <span className="flex size-7 items-center justify-center rounded-lg border border-brand-500/30 bg-brand-500/15 text-brand-400 backdrop-blur-sm">
             <IconSparkles className="size-4" />
           </span>
@@ -63,16 +63,18 @@ export default function GeracaoPage() {
           </div>
         </div>
 
-        <SubmodulePills<GeracaoTab>
-          items={tabPills}
-          value={activeTab}
-          onChange={setActiveTab}
-          size="sm"
-        />
+        <div className="w-full min-w-0 sm:w-auto">
+          <SubmodulePills<GeracaoTab>
+            items={tabPills}
+            value={activeTab}
+            onChange={setActiveTab}
+            size="sm"
+          />
+        </div>
       </div>
 
       {/* ── Conteúdo ── */}
-      <div className="flex-1 min-h-0 overflow-hidden">
+      <div className="flex-1 lg:min-h-0 lg:overflow-hidden">
         {activeTab === "gerar" ? (
           <GenerationPanel />
         ) : (

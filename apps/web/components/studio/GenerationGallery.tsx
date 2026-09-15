@@ -236,7 +236,7 @@ export default function GenerationGallery() {
   /* ── Loading state ── */
   if (loading) {
     return (
-      <div className="h-full overflow-y-auto p-4 md:p-6">
+      <div className="p-4 md:p-6">
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3">
           {Array.from({ length: 12 }).map((_, i) => (
             <div
@@ -284,7 +284,7 @@ export default function GenerationGallery() {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+    <div className="flex min-h-full flex-col lg:h-full lg:min-h-0 lg:overflow-hidden">
       {/* ── Header ── */}
       <div className="shrink-0 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-4 py-3 md:px-6 border-b border-white/5">
         <div className="flex items-baseline gap-x-3 gap-y-0.5 flex-wrap">
@@ -301,7 +301,7 @@ export default function GenerationGallery() {
       </div>
 
       {/* ── Grid ── */}
-      <div className="flex-1 min-h-0 overflow-y-auto p-4 md:p-6">
+      <div className="flex-1 overflow-visible p-4 md:p-6 lg:min-h-0 lg:overflow-y-auto">
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3">
           {items.map((gen) => {
             const isSelected = selectedIds.has(gen.id);
@@ -403,7 +403,7 @@ export default function GenerationGallery() {
         <div
           role="region"
           aria-label="Ações para gerações selecionadas"
-          className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center space-x-3 rounded-2xl border border-brand-500/30 bg-zinc-950/95 px-4 py-2.5 shadow-2xl backdrop-blur-xl animate-in fade-in slide-in-from-bottom-5 max-w-[calc(100vw-2rem)]"
+          className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center overflow-x-auto no-scrollbar space-x-3 rounded-2xl border border-brand-500/30 bg-zinc-950/95 px-4 py-2.5 shadow-2xl backdrop-blur-xl animate-in fade-in slide-in-from-bottom-5 max-w-[calc(100vw-2rem)]"
         >
           {/* Hairline zenital */}
           <div

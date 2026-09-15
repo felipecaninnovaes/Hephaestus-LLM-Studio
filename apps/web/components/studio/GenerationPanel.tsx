@@ -439,7 +439,7 @@ export default function GenerationPanel() {
   const isBusy = submitting || !!activeJobId;
 
   return (
-    <div className="flex h-full min-h-0 flex-col lg:flex-row">
+    <div className="flex flex-col lg:h-full lg:min-h-0 lg:flex-row">
       {/* ═══════════════════════════════════════════════════════════════
           COLUNA ESQUERDA — CONTROLES (320-384px, scrollável)
           Vidro Óptico Nível 1 (glass-card) — NUNCA bg translúcido caseiro
@@ -742,7 +742,7 @@ export default function GenerationPanel() {
       {/* ═══════════════════════════════════════════════════════════════
           COLUNA DIREITA — RESULTADO + TELEMETRIA
           ═══════════════════════════════════════════════════════════════ */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-4 md:p-5">
+      <div className="flex min-h-0 flex-1 flex-col overflow-visible p-4 md:p-5 lg:overflow-hidden">
         {/* Telemetria live */}
         {activeJobId && (
           <div className="mb-4">

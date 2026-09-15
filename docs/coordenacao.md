@@ -19,7 +19,25 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-14 (FATIA CHECKPOINTS AO VIVO, RETOMADA DE TREINO E DOWNLOAD DE CONFIGURAÇÃO JSON CONCLUÍDA NA BRANCH)
+## Estado atual — 2026-09-15 (FATIA CI REGISTRY PUSH — PRONTA NA BRANCH, PENDENTE MERGE NA MAIN)
+
+- **FATIA CI REGISTRY PUSH — CONCLUÍDA NA BRANCH (2026-09-15)** — branch `feat/ci-registry-push`, commit `3ee804b` (`chore(ci): build de todas as imagens docker e push nos packages da gitea na main`). Pendente: push + merge na `main` pelo usuário → dispara o primeiro run real (validação ponta a ponta).
+  - **Objetivo**: workflow Gitea Actions `.gitea/workflows/release.yml` que, **somente em push na `main`**, builda as 9 imagens Docker do monorepo e publica no registry de packages da Gitea.
+  - **Workflow (`.gitea/workflows/release.yml`)**:
+    - Trigger: `on: push: branches: [main]` (exclusivo; o `ci.yml` segue rodando em todo push).
+    - Matrix de 9 imagens (`fail-fast: false`, sequencial — runner `capacity: 1`): `principal`, `manager`, `orchestrator`, `web` (context raiz) + `embedder` (trainer-clip), `trainer-yolo`, `trainer-difusao` (mock) + `trainer-yolo-gpu`, `trainer-difusao-gpu` (flag `gpu: true` na matrix).
+    - Zero ações externas (regra do `ci.yml`): checkout manual, imagem `docker:29-cli` pinada pela MESMA digest do ci.yml, docker CLI puro.
+    - O job monta `/var/run/docker.sock` (daemon do host TrueNAS — cache de camadas persistente entre runs); pre-flight `docker version` falha rápido se o mount for descartado.
+    - Login com secret `REGISTRY_TOKEN` (PAT `write:package` do usuário; escopado no step de login). GITEA_TOKEN não publica packages (limitação da Gitea).
+    - Destino: `git.felipecncloud.com/felipe/hephaestus/<nome>` — tags host: `<sha-curto>` + `latest`; GPU: `gpu-<sha-curto>` + `gpu`.
+    - Steps build/push com `set -euo pipefail`.
+  - **Config do runner (TrueNAS 10.15.1.2, fora do repo)**: criado `/mnt/NVME/appdata/gitea/runner/config.yaml` (montado em `/data/config.yaml`): `container.valid_volumes: [/var/run/docker.sock]` (default `[]` descarta mounts do workflow!), `runner.timeout: 6h` (1º build GPU puxa base CUDA ~9GB), `capacity: 1`, `log.level: info`. Compose `/mnt/NVME/appdata/Arcane/projects/gitea/compose.yaml`: env `CONFIG_FILE=/data/config.yaml` adicionada ao `gitea-runner` (backup `compose.yaml.bak-ci`). Runner recriado, Up, sem erros; `docker inspect` confirma env; gitea healthy.
+  - **Auth token**: `.env` local tem `GIT_TEA_TOKEN` com escopos `write:package, write:issue, write:repository` — foi registrado como secret `REGISTRY_TOKEN` do repo (não versionado).
+  - **Review (@reviewer)**: APROVADO, 0 bloqueios. Melhorias aplicadas: `set -euo pipefail` (M1), flag `gpu` na matrix (M2), pre-flight do daemon (M5), `REGISTRY_TOKEN` escopado no step (M6).
+  - **Dívidas registradas (não-bloqueantes, do review)**: M3 sem `concurrency` (2 pushes em sequência competem nas tags rolling); M4 `capacity: 1` compartilhado com o `ci.yml` (release de horas enfileira CI); M7 web publicada com ARG defaults (`NEXT_PUBLIC_API_URL` localhost — parametrizar quando existir URL de prod); M8 lado pull pendente (package nasce PRIVADO — pull exige login com leitura; próximos slices que consumirem as imagens precisam disso); M9 se push falhar por attestation do buildx, usar `--provenance=false` (verificar no 1º run); M10 disco do daemon de produção acumula imagens/caches por release (planejar prune manual); M11 `.dockerignore` sem `target/`/`.git` (custo aceito); M12 nome `embedder` ↔ `trainer-clip` (documentar mapeamento).
+  - **Risco aceito (documentado)**: `valid_volumes` é global do runner e o `ci.yml` roda em todo push — qualquer branch pode definir workflow montando o socket (root no host). Aceito no modelo de ameaça single-user.
+
+- **FATIA CHECKPOINTS AO VIVO, RETOMADA DE TREINO E DOWNLOAD DE CONFIGURAÇÃO JSON — CONCLUÍDA NA BRANCH (2026-09-14)** — branch `feat/diffusion-live-checkpoints-resume`.
 
 - **FATIA CHECKPOINTS AO VIVO, RETOMADA DE TREINO E DOWNLOAD DE CONFIGURAÇÃO JSON — CONCLUÍDA NA BRANCH (2026-09-14)** — branch `feat/diffusion-live-checkpoints-resume`.
   - **Motivação**:

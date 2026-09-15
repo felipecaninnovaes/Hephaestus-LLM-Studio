@@ -263,6 +263,53 @@ pub trait ManagerPort: Send + Sync {
 
     /// Atualiza o nome de um modelo via manager (PATCH /internal/models/:id — ADR-0022 D2).
     async fn update_model(&self, id: &str, name: &str) -> Result<InternalModel, ManagerError>;
+
+    // -----------------------------------------------------------------------
+    // Generations (G.6b — ADR-0023 D5)
+    // -----------------------------------------------------------------------
+
+    /// Lista generations com paginação e filtros (GET /internal/generations).
+    async fn list_generations(
+        &self,
+        limit: i64,
+        offset: i64,
+        deleted: bool,
+        base_model: Option<&str>,
+    ) -> Result<(Vec<InternalGeneration>, i64), ManagerError>;
+
+    /// Retorna uma generation por ID (GET /internal/generations/:id).
+    ///
+    /// **Pendência:** a rota `GET /internal/generations/:id` no manager ainda
+    /// não existe (micro-fatia do manager). HttpManager aponta para essa rota;
+    /// se o manager responder 404 por rota ausente vs generation ausente, o
+    /// resultado é o mesmo: `ManagerError::NotFound`.
+    async fn get_generation(&self, id: &str) -> Result<InternalGeneration, ManagerError>;
+
+    /// Soft-delete de generations por IDs (POST /internal/generations/delete).
+    /// Idempotente: IDs inexistentes são ignorados.
+    async fn delete_generations(&self, ids: &[String]) -> Result<(), ManagerError>;
+}
+
+/// Generation retornada pelo manager (snake_case interno).
+#[derive(Debug, Clone, Deserialize)]
+pub struct InternalGeneration {
+    pub id: String,
+    pub job_id: String,
+    pub s3_key: String,
+    #[serde(default)]
+    pub thumb_s3_key: Option<String>,
+    pub filename: String,
+    pub seed: i64,
+    pub prompt: String,
+    #[serde(default)]
+    pub negative_prompt: Option<String>,
+    pub width: i32,
+    pub height: i32,
+    #[serde(default)]
+    pub params: serde_json::Value,
+    pub created_at: String,
+    #[serde(default)]
+    pub deleted_at: Option<String>,
 }
 
 /// Implementação HTTP real do manager client.
@@ -630,6 +677,102 @@ impl ManagerPort for HttpManager {
             .await
             .map_err(|e| ManagerError::Unavailable(format!("manager body: {e}")))
     }
+
+    // --- Generations (G.6b) ---
+
+    async fn list_generations(
+        &self,
+        limit: i64,
+        offset: i64,
+        deleted: bool,
+        base_model: Option<&str>,
+    ) -> Result<(Vec<InternalGeneration>, i64), ManagerError> {
+        let mut params = vec![
+            format!("limit={}", limit.clamp(1, 200)),
+            format!("offset={}", offset.max(0)),
+            format!("deleted={}", deleted),
+        ];
+        if let Some(bm) = base_model {
+            params.push(format!("base_model={bm}"));
+        }
+        let url = format!(
+            "{}/internal/generations?{}",
+            self.base_url,
+            params.join("&")
+        );
+        #[derive(Deserialize)]
+        struct ListResponse {
+            items: Vec<InternalGeneration>,
+            total: i64,
+        }
+        let body: ListResponse = self.get_json_raw(&url).await?;
+        Ok((body.items, body.total))
+    }
+
+    async fn get_generation(&self, id: &str) -> Result<InternalGeneration, ManagerError> {
+        // Pendência: rota GET /internal/generations/:id não existe ainda no
+        // manager. HttpManager aponta para ela; se o manager responder 404
+        // (rota ausente ou generation inexistente), tratamos como NotFound.
+        self.get_json(&format!("/internal/generations/{id}")).await
+    }
+
+    async fn delete_generations(&self, ids: &[String]) -> Result<(), ManagerError> {
+        let url = format!("{}/internal/generations/delete", self.base_url);
+        let body = serde_json::json!({ "ids": ids });
+        let resp = self
+            .client
+            .post(&url)
+            .header("authorization", self.auth_header())
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ManagerError::Unavailable(format!("manager request: {e}")))?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(ManagerError::NotFound);
+        }
+        if status == reqwest::StatusCode::BAD_REQUEST {
+            let msg = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "invalid request".into());
+            return Err(ManagerError::InvalidRequest(msg));
+        }
+        if !status.is_success() {
+            return Err(ManagerError::Unavailable(format!(
+                "manager status: {status}"
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Helper do HttpManager que aceita URL completa (para list_generations com query params).
+impl HttpManager {
+    async fn get_json_raw<T: serde::de::DeserializeOwned>(
+        &self,
+        url: &str,
+    ) -> Result<T, ManagerError> {
+        let resp = self
+            .client
+            .get(url)
+            .header("authorization", self.auth_header())
+            .send()
+            .await
+            .map_err(|e| ManagerError::Unavailable(format!("manager request: {e}")))?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(ManagerError::NotFound);
+        }
+        if !status.is_success() {
+            return Err(ManagerError::Unavailable(format!(
+                "manager status: {status}"
+            )));
+        }
+        resp.json()
+            .await
+            .map_err(|e| ManagerError::Unavailable(format!("manager body: {e}")))
+    }
 }
 
 /// Mock do manager para testes unitários e de integração.
@@ -688,6 +831,13 @@ pub struct MockManager {
     /// Artefatos indexados por job_id — `list_artifacts` consulta aqui antes do
     /// resultado fixo.
     pub artifacts_by_id: std::collections::HashMap<String, Vec<InternalArtifact>>,
+    // --- Generations (G.6b) ---
+    /// Generations indexadas por ID — `get_generation` e `delete_generations` consultam aqui.
+    pub generations_by_id: std::sync::RwLock<std::collections::HashMap<String, InternalGeneration>>,
+    /// Se `true`, `list_generations` retorna `Unavailable`.
+    pub fail_list_generations: bool,
+    /// Se `true`, `get_generation` retorna `NotFound` (para testar 404).
+    pub get_generation_not_found: bool,
 }
 
 impl MockManager {
@@ -739,6 +889,9 @@ impl Default for MockManager {
             last_create_job_body: std::sync::Mutex::new(None),
             jobs_by_id: std::collections::HashMap::new(),
             artifacts_by_id: std::collections::HashMap::new(),
+            generations_by_id: std::sync::RwLock::new(std::collections::HashMap::new()),
+            fail_list_generations: false,
+            get_generation_not_found: false,
         }
     }
 }
@@ -946,6 +1099,73 @@ impl ManagerPort for MockManager {
             kind: None,
             arch: None,
         })
+    }
+
+    // --- Generations (G.6b) ---
+
+    async fn list_generations(
+        &self,
+        limit: i64,
+        offset: i64,
+        deleted: bool,
+        base_model: Option<&str>,
+    ) -> Result<(Vec<InternalGeneration>, i64), ManagerError> {
+        if self.fail || self.fail_list_generations {
+            return Err(ManagerError::Unavailable("mock fail".into()));
+        }
+        let gens = self.generations_by_id.read().unwrap();
+        let mut items: Vec<InternalGeneration> = gens
+            .values()
+            .filter(|g| {
+                let is_deleted = g.deleted_at.is_some();
+                if deleted {
+                    is_deleted
+                } else {
+                    !is_deleted
+                }
+            })
+            .filter(|g| {
+                base_model.is_none()
+                    || g.params
+                        .get("base_model")
+                        .and_then(|v| v.as_str())
+                        .map(|bm| bm == base_model.unwrap_or(""))
+                        .unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+        // Sort by created_at DESC (mock: lexicographic is fine for test data).
+        items.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        let total = items.len() as i64;
+        let offset = offset.max(0) as usize;
+        let limit = limit.clamp(1, 200) as usize;
+        items = items.into_iter().skip(offset).take(limit).collect();
+        Ok((items, total))
+    }
+
+    async fn get_generation(&self, id: &str) -> Result<InternalGeneration, ManagerError> {
+        if self.fail {
+            return Err(ManagerError::Unavailable("mock fail".into()));
+        }
+        if self.get_generation_not_found {
+            return Err(ManagerError::NotFound);
+        }
+        let gens = self.generations_by_id.read().unwrap();
+        gens.get(id).cloned().ok_or(ManagerError::NotFound)
+    }
+
+    async fn delete_generations(&self, ids: &[String]) -> Result<(), ManagerError> {
+        if self.fail {
+            return Err(ManagerError::Unavailable("mock fail".into()));
+        }
+        // Idempotent: set deleted_at for each existing generation.
+        let mut gens = self.generations_by_id.write().unwrap();
+        for id in ids {
+            if let Some(gen) = gens.get_mut(id) {
+                gen.deleted_at = Some("2026-09-15T00:00:00Z".to_string());
+            }
+        }
+        Ok(())
     }
 }
 

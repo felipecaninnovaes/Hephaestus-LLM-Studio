@@ -152,13 +152,17 @@ async fn resolve_and_check_private(hostname: &str) -> Result<(), Response> {
 // Handlers
 // ---------------------------------------------------------------------------
 
-/// POST /api/models/upload — multipart `file` + form `engine` + `name?` (D3).
+/// POST /api/models/upload — multipart `file` + form `engine` + `name?` + `kind?` + `arch?` (D3/D4).
 ///
-/// Padrão 3b: DefaultBodyLimit 2 GiB+8 MiB, spool em tempfile, magic PK,
+/// Padrão 3b: DefaultBodyLimit 8 GiB+8 MiB, spool em tempfile, magic PK,
 /// md5 hex, PUT S3, POST /internal/models, compensação delete se INSERT falhar.
+/// Para `.safetensors` com engine=diffusion: sniff do header para classificar
+/// kind+arch (ADR-0023 D4).
 pub async fn upload_model(State(state): State<AppState>, mut multipart: Multipart) -> Response {
     let mut engine: Option<String> = None;
     let mut name: Option<String> = None;
+    let mut kind_hint: Option<String> = None;
+    let mut arch_hint: Option<String> = None;
     let mut file_field: Option<(String, tempfile::NamedTempFile)> = None;
 
     // Loop de fields do multipart.
@@ -245,6 +249,18 @@ pub async fn upload_model(State(state): State<AppState>, mut multipart: Multipar
                 let val = field.text().await.unwrap_or_default();
                 name = Some(val);
             }
+            "kind" => {
+                let val = field.text().await.unwrap_or_default();
+                if !val.is_empty() {
+                    kind_hint = Some(val);
+                }
+            }
+            "arch" => {
+                let val = field.text().await.unwrap_or_default();
+                if !val.is_empty() {
+                    arch_hint = Some(val);
+                }
+            }
             _ => {
                 // Ignora campos desconhecidos.
             }
@@ -315,6 +331,62 @@ pub async fn upload_model(State(state): State<AppState>, mut multipart: Multipar
         return invalid_request();
     }
 
+    // Sniff de safetensors para engine=diffusion (ADR-0023 D4).
+    let mut resolved_kind: Option<String> = None;
+    let mut resolved_arch: Option<String> = None;
+    let lower_final_name = final_name.to_lowercase();
+    if lower_final_name.ends_with(".safetensors") && engine == "diffusion" {
+        // Lê o header do safetensors: 8 bytes LE + JSON.
+        let header_data = {
+            use tokio::io::AsyncReadExt;
+            let mut f = match tokio::fs::File::open(tmp_file.path()).await {
+                Ok(f) => f,
+                Err(_) => return invalid_request(),
+            };
+            let mut buf = vec![0u8; 8 + validate::SAFETENSORS_HEADER_MAX];
+            let mut n = 0usize;
+            while n < buf.len() {
+                match f.read(&mut buf[n..]).await {
+                    Ok(0) => break,
+                    Ok(k) => n += k,
+                    Err(_) => break,
+                }
+            }
+            buf[..n].to_vec()
+        };
+
+        let sniff_result = match validate::parse_safetensors_header(&header_data) {
+            Ok(map) => validate::sniff_safetensors(&map),
+            Err(e) => Err(e),
+        };
+
+        match validate::resolve_kind_arch(sniff_result, kind_hint.as_deref(), arch_hint.as_deref())
+        {
+            Ok((kind, arch)) => {
+                resolved_kind = Some(kind);
+                resolved_arch = Some(arch);
+            }
+            Err(msg) => {
+                return err(StatusCode::BAD_REQUEST, "invalid_request", msg);
+            }
+        }
+    } else if engine == "diffusion" {
+        // Para .pt com engine=diffusion, hints são aceitos diretamente.
+        if let (Some(k), Some(a)) = (&kind_hint, &arch_hint) {
+            if !validate::ALLOWED_KINDS.contains(&k.as_str())
+                || !validate::ALLOWED_ARCHS.contains(&a.as_str())
+            {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "invalid kind or arch",
+                );
+            }
+            resolved_kind = Some(k.clone());
+            resolved_arch = Some(a.clone());
+        }
+    }
+
     // md5 do arquivo.
     let md5_hex = match compute_md5(tmp_file.path()).await {
         Ok(h) => h,
@@ -340,7 +412,7 @@ pub async fn upload_model(State(state): State<AppState>, mut multipart: Multipar
     }
 
     // POST /internal/models (chama o manager).
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "id": model_id,
         "engine": validation.engine,
         "name": final_name,
@@ -351,6 +423,13 @@ pub async fn upload_model(State(state): State<AppState>, mut multipart: Multipar
         "bytes": bytes,
         "job_id": null,
     });
+    // Adiciona kind+arch se sniff/hints resolveram (ADR-0023 D4).
+    if let Some(k) = &resolved_kind {
+        payload["kind"] = serde_json::json!(k);
+    }
+    if let Some(a) = &resolved_arch {
+        payload["arch"] = serde_json::json!(a);
+    }
 
     match state.manager.create_model(&payload).await {
         Ok(resp) => {

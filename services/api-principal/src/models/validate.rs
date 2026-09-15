@@ -14,10 +14,10 @@ pub const YOLO_EXTENSION: &str = ".pt";
 /// Magic bytes do torch.save (zip): `PK\x03\x04`.
 pub const MAGIC_PK: &[u8] = b"PK\x03\x04";
 
-/// Teto por arquivo: 2 GiB (D3).
-pub const MODEL_MAX_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Teto por arquivo: 8 GiB (D4 — ADR-0023 D4, SDXL fp16 ≈ 6.5 GiB).
+pub const MODEL_MAX_FILE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
-/// Limite do corpo total multipart: 2 GiB + 8 MiB de envelope (D3).
+/// Limite do corpo total multipart: 8 GiB + 8 MiB de envelope (D4).
 pub const MODEL_UPLOAD_BODY_LIMIT_BYTES: usize = MODEL_MAX_FILE_BYTES as usize + 8 * 1024 * 1024;
 
 /// Máximo de redirects no download (D4).
@@ -201,6 +201,239 @@ pub fn url_basename(url: &url::Url) -> String {
     // Remove query params que possam ter ficado.
     let base = raw.split('?').next().unwrap_or(raw);
     sanitize_model_name(base)
+}
+
+// ---------------------------------------------------------------------------
+// Safetensors header sniff (ADR-0023 D4)
+// ---------------------------------------------------------------------------
+
+/// Arquiteturas de difusão suportadas.
+pub const ALLOWED_ARCHS: &[&str] = &["flux-2-klein-4b", "sdxl", "sd15"];
+
+/// Kinds de modelo suportados.
+pub const ALLOWED_KINDS: &[&str] = &["lora", "checkpoint"];
+
+/// Teto do header JSON do safetensors: 2 MiB (headers reais de SDXL
+/// são centenas de KB; 2 MiB é generoso).
+pub const SAFETENSORS_HEADER_MAX: usize = 2 * 1024 * 1024;
+
+/// Resultado do sniff de safetensors.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SafetensorsSniff {
+    pub kind: String,    // "lora" ou "checkpoint"
+    pub arch: String,    // "flux-2-klein-4b", "sdxl" ou "sd15"
+    pub confidence: f64, // 0.0 a 1.0 (qualidade do sniff)
+}
+
+/// Erro do sniff.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SniffError {
+    /// Header muito pequeno ou inválido.
+    InvalidHeader,
+    /// JSON do header não parseável.
+    InvalidJson,
+    /// Chaves não encaixam em nenhuma regra conhecida.
+    UnknownClassification,
+}
+
+/// Lê e parseia o header JSON de um safetensors a partir dos primeiros bytes.
+///
+/// Formato safetensors: 8 bytes LE (comprimento N do header) + N bytes JSON.
+/// Retorna o mapa de chaves do JSON (tensor_name → metadata).
+pub fn parse_safetensors_header(
+    header_bytes: &[u8],
+) -> Result<serde_json::Map<String, serde_json::Value>, SniffError> {
+    if header_bytes.len() < 9 {
+        return Err(SniffError::InvalidHeader);
+    }
+    let size_bytes: [u8; 8] = header_bytes[..8]
+        .try_into()
+        .map_err(|_| SniffError::InvalidHeader)?;
+    let header_size = u64::from_le_bytes(size_bytes) as usize;
+
+    if header_size < 2 || header_size > SAFETENSORS_HEADER_MAX {
+        return Err(SniffError::InvalidHeader);
+    }
+    if header_bytes.len() < 8 + header_size {
+        return Err(SniffError::InvalidHeader);
+    }
+    if header_bytes[8] != b'{' {
+        return Err(SniffError::InvalidHeader);
+    }
+
+    let json_slice = &header_bytes[8..8 + header_size];
+    let json: serde_json::Value =
+        serde_json::from_slice(json_slice).map_err(|_| SniffError::InvalidJson)?;
+
+    match json {
+        serde_json::Value::Object(map) => Ok(map),
+        _ => Err(SniffError::InvalidJson),
+    }
+}
+
+/// Classifica o tipo de modelo a partir das chaves do header safetensors.
+///
+/// Regras (ADR-0023 D4):
+/// - Chaves contêm `.lora_` / `lora_A` / `lora_B` / peft patterns → kind=lora
+///   - Prefixo `transformer.*` ou `transformer_blocks.*` → arch flux-2-klein-4b
+///   - Prefixo `conditioner`/`unet` → arch sdxl/sd15 (sdxl se conditioner presente, senão sd15)
+/// - Checkpoint:
+///   - `model.diffusion_model.*` + `conditioner.embedders.*` → sdxl
+///   - `model.diffusion_model.*` sem conditioner → sd15
+///   - Chaves de `transformer`/`guidance_embedder` → flux (checkpoint)
+pub fn sniff_safetensors(
+    keys: &serde_json::Map<String, serde_json::Value>,
+) -> Result<SafetensorsSniff, SniffError> {
+    if keys.is_empty() {
+        return Err(SniffError::UnknownClassification);
+    }
+
+    let key_names: Vec<&str> = keys.keys().map(|s| s.as_str()).collect();
+
+    // Checagem de LoRA: peft patterns.
+    let is_lora = key_names.iter().any(|k| {
+        k.contains(".lora_A")
+            || k.contains(".lora_B")
+            || k.contains("lora_A.")
+            || k.contains("lora_B.")
+            || k.contains(".lora_")
+            || k.contains("lora_down")
+            || k.contains("lora_up")
+            || k.contains("lora_enable")
+            || k.contains("lora_alpha")
+    });
+
+    if is_lora {
+        // Deriva arch a partir dos prefixos das chaves.
+        let has_transformer = key_names
+            .iter()
+            .any(|k| k.starts_with("transformer.") || k.starts_with("transformer_blocks."));
+        let has_guidance = key_names.iter().any(|k| k.contains("guidance_embedder"));
+        let has_conditioner = key_names.iter().any(|k| k.starts_with("conditioner."));
+        let has_unet = key_names.iter().any(|k| k.starts_with("unet."));
+
+        let arch = if has_transformer || has_guidance {
+            // Flux LoRA: transformer.* ou transformer_blocks.* ou guidance_embedder
+            "flux-2-klein-4b".to_string()
+        } else if has_conditioner {
+            // SDXL tem conditioner.embedders
+            "sdxl".to_string()
+        } else if has_unet {
+            // unet.* sem conditioner → padrão para sdxl (mais comum para LoRA)
+            "sdxl".to_string()
+        } else {
+            // Não dá para derivar → retorna vazio (caller deve usar hint).
+            String::new()
+        };
+
+        return Ok(SafetensorsSniff {
+            kind: "lora".to_string(),
+            arch,
+            confidence: 0.9,
+        });
+    }
+
+    // Checkpoint: classificação por padrões de chaves.
+    let has_diffusion_model = key_names
+        .iter()
+        .any(|k| k.starts_with("model.diffusion_model."));
+    let has_transformer = key_names
+        .iter()
+        .any(|k| k.starts_with("transformer.") || k.starts_with("transformer_blocks."));
+    let has_guidance = key_names.iter().any(|k| k.contains("guidance_embedder"));
+    let has_conditioner = key_names
+        .iter()
+        .any(|k| k.starts_with("conditioner.embedders."));
+
+    if has_transformer && has_guidance {
+        // Flux checkpoint.
+        return Ok(SafetensorsSniff {
+            kind: "checkpoint".to_string(),
+            arch: "flux-2-klein-4b".to_string(),
+            confidence: 0.85,
+        });
+    }
+
+    // Flux checkpoint sem guidance explícito mas com transformer.
+    if has_transformer {
+        return Ok(SafetensorsSniff {
+            kind: "checkpoint".to_string(),
+            arch: "flux-2-klein-4b".to_string(),
+            confidence: 0.7,
+        });
+    }
+
+    if has_diffusion_model && has_conditioner {
+        // SDXL: model.diffusion_model.* + conditioner.embedders.*
+        return Ok(SafetensorsSniff {
+            kind: "checkpoint".to_string(),
+            arch: "sdxl".to_string(),
+            confidence: 0.9,
+        });
+    }
+
+    if has_diffusion_model && !has_conditioner {
+        // SD15: model.diffusion_model.* sem conditioner.
+        return Ok(SafetensorsSniff {
+            kind: "checkpoint".to_string(),
+            arch: "sd15".to_string(),
+            confidence: 0.85,
+        });
+    }
+
+    Err(SniffError::UnknownClassification)
+}
+
+/// Resolve kind+arch a partir de hints do cliente e sniff do header.
+///
+/// Regras (ADR-0023 D4):
+/// - Sniff confiante vence hint
+/// - Sniff + hint conflitantes → erro
+/// - Sniff desconhecido + sem hint → erro
+/// - Sniff desconhecido + com hint → aceita hint
+pub fn resolve_kind_arch(
+    sniff: Result<SafetensorsSniff, SniffError>,
+    hint_kind: Option<&str>,
+    hint_arch: Option<&str>,
+) -> Result<(String, String), &'static str> {
+    match sniff {
+        Ok(s) => {
+            // Sniff OK: validar contra hints.
+            if let Some(hk) = hint_kind {
+                if hk != s.kind {
+                    return Err("sniff and hint conflict on kind");
+                }
+            }
+            if let Some(ha) = hint_arch {
+                if !s.arch.is_empty() && ha != s.arch {
+                    return Err("sniff and hint conflict on arch");
+                }
+            }
+            // Arch vazio do sniff → usar hint se disponível.
+            let arch = if s.arch.is_empty() {
+                hint_arch.map(|a| a.to_string()).unwrap_or_default()
+            } else {
+                s.arch
+            };
+            if arch.is_empty() {
+                return Err("arch could not be determined; provide kind+arch hints");
+            }
+            Ok((s.kind, arch))
+        }
+        Err(SniffError::UnknownClassification) => {
+            // Sniff falhou: precisa de hint.
+            match (hint_kind, hint_arch) {
+                (Some(k), Some(a)) => {
+                    if !ALLOWED_KINDS.contains(&k) || !ALLOWED_ARCHS.contains(&a) {
+                        return Err("invalid kind or arch");
+                    }
+                    Ok((k.to_string(), a.to_string()))
+                }
+                _ => Err("kind/arch could not be determined; provide kind+arch hints"),
+            }
+        }
+        Err(_) => Err("invalid safetensors header"),
+    }
 }
 
 #[cfg(test)]
@@ -405,5 +638,162 @@ mod tests {
     #[test]
     fn sanitize_model_name_empty_after() {
         assert_eq!(sanitize_model_name("..."), "");
+    }
+
+    // --- Safetensors sniff tests ---
+
+    /// Constrói bytes de header safetensors sintético com um JSON de chaves.
+    fn build_fake_safetensors_header(keys: &[&str]) -> Vec<u8> {
+        let mut map = serde_json::Map::new();
+        for k in keys {
+            // Cada tensor precisa de um valor mínimo (offsets/tensordata).
+            map.insert(
+                k.to_string(),
+                serde_json::json!({"dtype": "F16", "shape": [1, 1], "data_offsets": [0, 2]}),
+            );
+        }
+        let json = serde_json::Value::Object(map);
+        let json_bytes = serde_json::to_vec(&json).unwrap();
+        let len = json_bytes.len() as u64;
+        let mut header = len.to_le_bytes().to_vec();
+        header.extend_from_slice(&json_bytes);
+        header
+    }
+
+    #[test]
+    fn sniff_sdxl_checkpoint() {
+        let header = build_fake_safetensors_header(&[
+            "model.diffusion_model.unet blocks.0.weight",
+            "conditioner.embedders.0.proj.weight",
+        ]);
+        let map = parse_safetensors_header(&header).unwrap();
+        let sniff = sniff_safetensors(&map).unwrap();
+        assert_eq!(sniff.kind, "checkpoint");
+        assert_eq!(sniff.arch, "sdxl");
+    }
+
+    #[test]
+    fn sniff_sd15_checkpoint() {
+        let header = build_fake_safetensors_header(&["model.diffusion_model.unet blocks.0.weight"]);
+        let map = parse_safetensors_header(&header).unwrap();
+        let sniff = sniff_safetensors(&map).unwrap();
+        assert_eq!(sniff.kind, "checkpoint");
+        assert_eq!(sniff.arch, "sd15");
+    }
+
+    #[test]
+    fn sniff_flux_checkpoint() {
+        let header = build_fake_safetensors_header(&[
+            "transformer_blocks.0.attn.to_q.weight",
+            "guidance_embedder.linear.weight",
+        ]);
+        let map = parse_safetensors_header(&header).unwrap();
+        let sniff = sniff_safetensors(&map).unwrap();
+        assert_eq!(sniff.kind, "checkpoint");
+        assert_eq!(sniff.arch, "flux-2-klein-4b");
+    }
+
+    #[test]
+    fn sniff_flux_lora() {
+        let header = build_fake_safetensors_header(&[
+            "transformer_blocks.0.attn.to_q.lora_A.weight",
+            "transformer_blocks.0.attn.to_q.lora_B.weight",
+        ]);
+        let map = parse_safetensors_header(&header).unwrap();
+        let sniff = sniff_safetensors(&map).unwrap();
+        assert_eq!(sniff.kind, "lora");
+        assert_eq!(sniff.arch, "flux-2-klein-4b");
+    }
+
+    #[test]
+    fn sniff_sdxl_lora() {
+        let header = build_fake_safetensors_header(&[
+            "unet.blocks.0.attention.lora_A.weight",
+            "unet.blocks.0.attention.lora_B.weight",
+        ]);
+        let map = parse_safetensors_header(&header).unwrap();
+        let sniff = sniff_safetensors(&map).unwrap();
+        assert_eq!(sniff.kind, "lora");
+        assert_eq!(sniff.arch, "sdxl");
+    }
+
+    #[test]
+    fn sniff_unknown_keys() {
+        let header = build_fake_safetensors_header(&["something_totally_unknown"]);
+        let map = parse_safetensors_header(&header).unwrap();
+        let result = sniff_safetensors(&map);
+        assert_eq!(result, Err(SniffError::UnknownClassification));
+    }
+
+    #[test]
+    fn resolve_sniff_wins_over_hint() {
+        let sniff = Ok(SafetensorsSniff {
+            kind: "checkpoint".to_string(),
+            arch: "sdxl".to_string(),
+            confidence: 0.9,
+        });
+        let result = resolve_kind_arch(sniff, Some("lora"), Some("sd15"));
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("conflict"));
+    }
+
+    #[test]
+    fn resolve_sniff_ok_hint_agrees() {
+        let sniff = Ok(SafetensorsSniff {
+            kind: "checkpoint".to_string(),
+            arch: "sdxl".to_string(),
+            confidence: 0.9,
+        });
+        let (kind, arch) = resolve_kind_arch(sniff, Some("checkpoint"), Some("sdxl")).unwrap();
+        assert_eq!(kind, "checkpoint");
+        assert_eq!(arch, "sdxl");
+    }
+
+    #[test]
+    fn resolve_unknown_with_hint() {
+        let sniff: Result<SafetensorsSniff, SniffError> = Err(SniffError::UnknownClassification);
+        let (kind, arch) = resolve_kind_arch(sniff, Some("lora"), Some("flux-2-klein-4b")).unwrap();
+        assert_eq!(kind, "lora");
+        assert_eq!(arch, "flux-2-klein-4b");
+    }
+
+    #[test]
+    fn resolve_unknown_without_hint() {
+        let sniff: Result<SafetensorsSniff, SniffError> = Err(SniffError::UnknownClassification);
+        let result = resolve_kind_arch(sniff, None, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_sniff_unknown_arch_uses_hint() {
+        let sniff = Ok(SafetensorsSniff {
+            kind: "lora".to_string(),
+            arch: String::new(), // arch não derivável
+            confidence: 0.9,
+        });
+        let (kind, arch) = resolve_kind_arch(sniff, None, Some("sdxl")).unwrap();
+        assert_eq!(kind, "lora");
+        assert_eq!(arch, "sdxl");
+    }
+
+    #[test]
+    fn parse_safetensors_header_too_short() {
+        assert_eq!(
+            parse_safetensors_header(&[0u8; 4]),
+            Err(SniffError::InvalidHeader)
+        );
+    }
+
+    #[test]
+    fn parse_safetensors_header_not_json() {
+        let mut header = vec![0u8; 16];
+        let len_bytes = 8u64.to_le_bytes();
+        header[..8].copy_from_slice(&len_bytes);
+        header[8] = b'X'; // não é '{'
+        assert_eq!(
+            parse_safetensors_header(&header),
+            Err(SniffError::InvalidHeader)
+        );
     }
 }

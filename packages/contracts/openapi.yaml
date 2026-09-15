@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.23.0
+  version: 0.24.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -2934,6 +2934,17 @@ components:
           type: [string, "null"]
           maxLength: 100
           description: "Nome personalizado para o adaptador LoRA final (sem extensão). Se omitido, derivado semanticamente (ADR-0022 D1)."
+        epochOffset:
+          type: integer
+          minimum: 0
+          default: 0
+          description: "Deslocamento da época inicial para continuação sequencial de treino prévio. Padrão 0."
+        checkpointInterval:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 1
+          description: "Intervalo de épocas para salvamento de checkpoints periódicos no disco e streaming ao S3. Padrão 1."
 
     DiffusionGenerateJobRequest:
       type: object
@@ -3797,6 +3808,9 @@ components:
         error:
           type: [string, "null"]
           description: "Mensagem ou stacktrace de erro em caso de falha do job."
+        params:
+          type: [object, "null"]
+          description: "Parâmetros integrais de configuração do job para reproducibilidade e continuação de treino."
 
     JobTelemetryEvent:
       type: object

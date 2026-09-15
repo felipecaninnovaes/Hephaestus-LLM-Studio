@@ -109,6 +109,8 @@ pub struct JobRow {
     pub finished_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -372,11 +374,38 @@ pub async fn create_job(
     let mut resolved_model = req.model.clone();
     if let Some(weights_id) = req.weights_id {
         let row: Option<(String, String, String, Option<String>)> =
-            sqlx::query_as("SELECT s3_key, hash, engine, model FROM models WHERE id = $1")
+            match sqlx::query_as("SELECT s3_key, hash, engine, model FROM models WHERE id = $1")
                 .bind(weights_id)
                 .fetch_optional(pool)
                 .await
-                .map_err(|e| ManagerError::Internal(format!("resolve weights: {e}")))?;
+                .map_err(|e| ManagerError::Internal(format!("resolve weights from models: {e}")))?
+            {
+                Some(r) => Some(r),
+                None => {
+                    // Fallback: busca em job_artifacts (ex.: checkpoints periódicos por época ou modelos intermediários)
+                    let art_row: Option<(Uuid, String, String, String, String)> = sqlx::query_as(
+                        "SELECT a.job_id, a.path, a.md5, j.engine, j.model \
+                     FROM job_artifacts a \
+                     JOIN jobs j ON j.id = a.job_id \
+                     WHERE a.id = $1 AND a.kind IN ('checkpoint', 'model')",
+                    )
+                    .bind(weights_id)
+                    .fetch_optional(pool)
+                    .await
+                    .map_err(|e| {
+                        ManagerError::Internal(format!("resolve weights from artifacts: {e}"))
+                    })?;
+
+                    art_row.map(|(job_id, path, md5, engine, model)| {
+                        (
+                            format!("artifacts/{job_id}/{path}"),
+                            md5,
+                            engine,
+                            Some(model),
+                        )
+                    })
+                }
+            };
 
         match row {
             None => return Err(ManagerError::NotFound),
@@ -504,7 +533,7 @@ pub async fn list_jobs(
 
     let mut query = String::from(
         "SELECT j.id, j.kind, j.engine, j.model, j.mode, j.dataset_id, j.status, j.queue_reason, \
-         j.progress, j.epoch, j.step, j.metrics, j.vram_min_gb, j.orchestrator_id, j.created_at, j.finished_at, \
+         j.progress, j.epoch, j.step, j.metrics, j.vram_min_gb, j.orchestrator_id, j.created_at, j.finished_at, j.params, \
          o.name AS orchestrator_name, o.kind AS orchestrator_kind, \
          COALESCE((j.params->>'orchestrator_fallback') = 'true', false) AS orchestrator_fallback, \
          j.params->>'error' AS error \
@@ -589,6 +618,7 @@ pub async fn list_jobs(
                 created_at: created_at.to_rfc3339(),
                 finished_at: finished_at.map(|t| t.to_rfc3339()),
                 error: r.get("error"),
+                params: r.get("params"),
             }
         })
         .collect();
@@ -615,7 +645,7 @@ pub async fn get_job(pool: &PgPool, id: Uuid) -> Result<JobRow, ManagerError> {
 
     let row = sqlx::query(
         "SELECT j.id, j.kind, j.engine, j.model, j.mode, j.dataset_id, j.status, j.queue_reason, \
-         j.progress, j.epoch, j.step, j.metrics, j.vram_min_gb, j.orchestrator_id, j.created_at, j.finished_at, \
+         j.progress, j.epoch, j.step, j.metrics, j.vram_min_gb, j.orchestrator_id, j.created_at, j.finished_at, j.params, \
          o.name AS orchestrator_name, o.kind AS orchestrator_kind, \
          COALESCE((j.params->>'orchestrator_fallback') = 'true', false) AS orchestrator_fallback, \
          j.params->>'error' AS error \
@@ -664,6 +694,7 @@ pub async fn get_job(pool: &PgPool, id: Uuid) -> Result<JobRow, ManagerError> {
         created_at: created_at.to_rfc3339(),
         finished_at: finished_at.map(|t| t.to_rfc3339()),
         error: r.get("error"),
+        params: r.get("params"),
     })
 }
 
@@ -1715,7 +1746,11 @@ pub fn compute_model_name(
     let ext = default_filename.rsplit('.').next().unwrap_or("");
 
     // 1. Se o usuário forneceu output_name explicitamente (D1)
-    if let Some(out_name) = params.get("output_name").and_then(|v| v.as_str()) {
+    if let Some(out_name) = params
+        .get("output_name")
+        .or_else(|| params.get("outputName"))
+        .and_then(|v| v.as_str())
+    {
         let clean = out_name.trim();
         if !clean.is_empty() {
             let (base_name, user_ext) = if let Some((base, user_ext)) = clean.rsplit_once('.') {
@@ -1756,6 +1791,7 @@ pub fn compute_model_name(
     if engine == "diffusion" {
         let trigger = params
             .get("trigger_word")
+            .or_else(|| params.get("triggerWord"))
             .and_then(|v| v.as_str())
             .map(slugify)
             .filter(|s| !s.is_empty());

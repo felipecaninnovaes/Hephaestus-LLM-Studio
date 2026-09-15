@@ -67,6 +67,8 @@ pub struct InternalJob {
     pub finished_at: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
+    #[serde(default)]
+    pub params: Option<serde_json::Value>,
 }
 
 /// Item da fila (snake_case interno do manager).

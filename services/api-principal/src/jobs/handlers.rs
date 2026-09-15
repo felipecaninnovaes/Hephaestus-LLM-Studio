@@ -199,6 +199,8 @@ pub struct JobResponse {
     pub phase_message: Option<String>,
     #[serde(rename = "vramUsedGb", skip_serializing_if = "Option::is_none")]
     pub vram_used_gb: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
 }
 
 /// Job list response.
@@ -441,6 +443,7 @@ fn to_job_response(job: crate::jobs::manager_client::InternalJob) -> JobResponse
         phase,
         phase_message,
         vram_used_gb,
+        params: job.params,
     }
 }
 
@@ -1467,19 +1470,34 @@ pub async fn submit_diffusion_job(
         },
         "config_yaml": config_yaml,
         "params": {
-            "package_ref": {
-                "version_id": package.version_id,
+            "packageRef": {
+                "versionId": package.version_id,
                 "key": package.key,
-                "md5_zip": package.md5_zip,
+                "md5Zip": package.md5_zip,
                 "bytes": package.bytes,
             },
-            "base_model": req.base_model,
-            "trigger_word": req.trigger_word,
+            "datasetId": ds_id.to_string(),
+            "baseModel": req.base_model,
+            "triggerWord": req.trigger_word,
             "epochs": req.epochs,
-            "batch_size": req.batch_size,
-            "learning_rate": req.learning_rate,
+            "batchSize": req.batch_size,
+            "learningRate": req.learning_rate,
             "rank": req.rank,
             "alpha": req.alpha,
+            "resolution": req.resolution,
+            "gradientAccumulationSteps": req.gradient_accumulation_steps,
+            "optimizer": req.optimizer,
+            "lrScheduler": req.lr_scheduler,
+            "lrWarmupSteps": req.lr_warmup_steps,
+            "mixedPrecision": req.mixed_precision,
+            "quantization": req.quantization,
+            "checkpointInterval": req.checkpoint_interval,
+            "epochOffset": req.epoch_offset,
+            "samplePrompt": req.sample_prompt,
+            "sampleInterval": req.sample_interval,
+            "sampleSeed": req.sample_seed,
+            "weights": req.weights,
+            "outputName": req.output_name,
         },
         "vram_min_gb": vram_min,
     });
@@ -1489,10 +1507,6 @@ pub async fn submit_diffusion_job(
     }
     if let Some(ref orch_id) = req.orchestrator_id {
         manager_body["orchestrator_hint"] = serde_json::json!(orch_id);
-    }
-    // ADR-0022 D1: insere output_name nos params quando presente.
-    if let Some(ref out_name) = req.output_name {
-        manager_body["params"]["output_name"] = serde_json::json!(out_name);
     }
 
     match state.manager.create_job(&manager_body).await {
@@ -2889,6 +2903,7 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".into(),
             finished_at: None,
             error: None,
+            params: None,
         };
         let resp = to_job_response(job);
         assert_eq!(resp.id, "550e8400-e29b-41d4-a716-446655440000");
@@ -3764,6 +3779,7 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".into(),
             finished_at: Some("2026-01-01T01:00:00Z".into()),
             error: None,
+            params: None,
         }
     }
 
@@ -4124,6 +4140,7 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".into(),
             finished_at: None,
             error: None,
+            params: None,
         }
     }
 

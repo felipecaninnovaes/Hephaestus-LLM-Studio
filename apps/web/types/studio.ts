@@ -249,6 +249,7 @@ export interface Job {
   phase?: string | null;
   phaseMessage?: string | null;
   vramUsedGb?: number | null;
+  params?: Record<string, unknown> | null;
 }
 
 export interface JobListResponse {
@@ -425,6 +426,8 @@ export interface DiffusionJobRequest {
   lrWarmupSteps?: number;
   mixedPrecision?: "fp16" | "bf16" | "no";
   quantization?: "none" | "4bit" | "8bit";
+  checkpointInterval?: number;
+  epochOffset?: number;
   outputName?: string | null;
 }
 
@@ -446,6 +449,8 @@ export interface DiffusionPreset {
   lrWarmupSteps?: number;
   mixedPrecision?: "fp16" | "bf16" | "no";
   quantization?: "none" | "4bit" | "8bit";
+  checkpointInterval?: number;
+  epochOffset?: number;
   enableSamples?: boolean;
   samplePrompt?: string;
   sampleInterval?: number;

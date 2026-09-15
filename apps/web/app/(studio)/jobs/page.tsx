@@ -32,6 +32,7 @@ import {
   IconDownload,
   IconPlay,
   IconRefresh,
+  IconSparkles,
   IconTarget,
   IconTrash,
   IconZap,
@@ -48,7 +49,6 @@ import { openActionCenter } from "@/lib/events";
 import { JobListItem } from "@/components/studio/JobCard";
 import { AutolabelReviewModal } from "@/components/studio/AutolabelReviewModal";
 import { AutotrackerReviewModal } from "@/components/studio/AutotrackerReviewModal";
-import { IconSparkles } from "@/components/icons";
 
 const POLL_INTERVAL = 3000;
 
@@ -349,6 +349,179 @@ function JobsPageContent() {
     }
   }
 
+  function handleResumeFromCheckpoint(job: Job, art: JobArtifact) {
+    const checkpointName = art.path.split("/").pop() || "checkpoint.safetensors";
+    const match = art.path.match(/epoch_(\d+)/);
+    const epochOffset = match ? parseInt(match[1], 10) : (job.epoch ?? 0);
+
+    const resumeData = {
+      resumeCheckpoint: {
+        id: art.id,
+        name: checkpointName,
+        epoch: epochOffset,
+      },
+      epochOffset,
+      initialPreset: job.params
+        ? {
+            baseModel: (job.params.baseModel || (job.params as any).base_model || job.model) as any,
+            triggerWord: (job.params.triggerWord ?? (job.params as any).trigger_word ?? "") as string,
+            rank: typeof job.params.rank === "number" ? job.params.rank : 16,
+            alpha: typeof job.params.alpha === "number" ? job.params.alpha : 16,
+            resolution:
+              typeof job.params.resolution === "number" ? job.params.resolution : 1024,
+            gradientAccumulationSteps:
+              typeof job.params.gradientAccumulationSteps === "number"
+                ? job.params.gradientAccumulationSteps
+                : typeof (job.params as any).gradient_accumulation_steps === "number"
+                  ? (job.params as any).gradient_accumulation_steps
+                  : 1,
+            optimizer: ((job.params.optimizer || (job.params as any).optimizer) as any) || "adamw8bit",
+            lrScheduler:
+              ((job.params.lrScheduler || (job.params as any).lr_scheduler) as any) || "cosine",
+            mixedPrecision:
+              ((job.params.mixedPrecision || (job.params as any).mixed_precision) as any) || "fp16",
+            quantization:
+              ((job.params.quantization || (job.params as any).quantization) as any) || "4bit",
+            checkpointInterval:
+              typeof job.params.checkpointInterval === "number"
+                ? job.params.checkpointInterval
+                : typeof (job.params as any).checkpoint_interval === "number"
+                  ? (job.params as any).checkpoint_interval
+                  : 1,
+          }
+        : undefined,
+    };
+
+    try {
+      sessionStorage.setItem("hephaestus_diffusion_resume", JSON.stringify(resumeData));
+    } catch {
+      // Best-effort
+    }
+
+    router.push(
+      `/difusao?checkpointId=${art.id}&checkpointName=${encodeURIComponent(checkpointName)}&epochOffset=${epochOffset}`
+    );
+  }
+
+  function handleRerunJob(job: Job) {
+    if (job.engine === "diffusion") {
+      const resumeData = {
+        datasetId: job.datasetId,
+        epochOffset: 0,
+        initialPreset: job.params
+          ? {
+              baseModel: (job.params.baseModel || (job.params as any).base_model || job.model) as any,
+              triggerWord: (job.params.triggerWord ?? (job.params as any).trigger_word ?? "") as string,
+              rank: typeof job.params.rank === "number" ? job.params.rank : 16,
+              alpha: typeof job.params.alpha === "number" ? job.params.alpha : 16,
+              resolution:
+                typeof job.params.resolution === "number" ? job.params.resolution : 1024,
+              gradientAccumulationSteps:
+                typeof job.params.gradientAccumulationSteps === "number"
+                  ? job.params.gradientAccumulationSteps
+                  : typeof (job.params as any).gradient_accumulation_steps === "number"
+                    ? (job.params as any).gradient_accumulation_steps
+                    : 1,
+              optimizer: ((job.params.optimizer || (job.params as any).optimizer) as any) || "adamw8bit",
+              lrScheduler:
+                ((job.params.lrScheduler || (job.params as any).lr_scheduler) as any) || "cosine",
+              mixedPrecision:
+                ((job.params.mixedPrecision || (job.params as any).mixed_precision) as any) || "fp16",
+              quantization:
+                ((job.params.quantization || (job.params as any).quantization) as any) || "4bit",
+              checkpointInterval:
+                typeof job.params.checkpointInterval === "number"
+                  ? job.params.checkpointInterval
+                  : typeof (job.params as any).checkpoint_interval === "number"
+                    ? (job.params as any).checkpoint_interval
+                    : 1,
+              epochs:
+                typeof job.params.epochs === "number"
+                  ? job.params.epochs
+                  : typeof (job.params as any).epochs === "number"
+                    ? (job.params as any).epochs
+                    : 10,
+              batchSize:
+                typeof job.params.batchSize === "number"
+                  ? job.params.batchSize
+                  : typeof (job.params as any).batch_size === "number"
+                    ? (job.params as any).batch_size
+                    : 1,
+              learningRate:
+                job.params.learningRate != null
+                  ? String(job.params.learningRate)
+                  : (job.params as any).learning_rate != null
+                    ? String((job.params as any).learning_rate)
+                    : "0.0001",
+              enableSamples:
+                job.params.enableSamples ??
+                (job.params as any).enable_samples ??
+                Boolean(job.params.samplePrompt || (job.params as any).sample_prompt),
+              samplePrompt:
+                job.params.samplePrompt ?? (job.params as any).sample_prompt ?? "",
+              sampleInterval:
+                typeof job.params.sampleInterval === "number"
+                  ? job.params.sampleInterval
+                  : typeof (job.params as any).sample_interval === "number"
+                    ? (job.params as any).sample_interval
+                    : 1,
+              sampleSeed:
+                job.params.sampleSeed != null
+                  ? String(job.params.sampleSeed)
+                  : (job.params as any).sample_seed != null
+                    ? String((job.params as any).sample_seed)
+                    : "42",
+            }
+          : undefined,
+      };
+
+      try {
+        sessionStorage.setItem("hephaestus_diffusion_resume", JSON.stringify(resumeData));
+      } catch {
+        // Best-effort
+      }
+
+      router.push(`/difusao?datasetId=${job.datasetId}`);
+    } else {
+      router.push(`/treino?datasetId=${job.datasetId}`);
+    }
+  }
+
+  function handleDownloadJobConfig(job: Job) {
+    const jobArts = artifacts[job.id] || [];
+    const configArt = jobArts.find(
+      (a) => a.kind === "config" || a.path.endsWith("training_config.json")
+    );
+    if (configArt) {
+      handleDownloadArtifact(job.id, configArt);
+      return;
+    }
+
+    // Fallback gerando direto de job.params ou dados do job
+    const configData = job.params || {
+      jobId: job.id,
+      engine: job.engine,
+      model: job.model,
+      datasetId: job.datasetId,
+      epoch: job.epoch,
+      metrics: job.metrics,
+      createdAt: job.createdAt,
+    };
+
+    const blob = new Blob([JSON.stringify(configData, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `training_config_${job.id.slice(0, 8)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast("Configuração JSON de treino baixada com sucesso.", "success");
+  }
+
   const totalCount = activeJobs.length + terminalJobs.length;
 
   return (
@@ -482,6 +655,7 @@ function JobsPageContent() {
                           job={job}
                           isFocused={selectedJob?.id === job.id}
                           onSelect={(id) => setSelectedJobId(id)}
+                          onRerun={handleRerunJob}
                         />
                       ))}
                     </div>
@@ -747,15 +921,33 @@ function JobsPageContent() {
                                       {formatBytes(art.bytes)} · {art.kind}
                                     </span>
                                   </div>
-                                  <Button
-                                    type="button"
-                                    variant="secondary"
-                                    size="sm"
-                                    onClick={() => handleDownloadArtifact(selectedJob.id, art)}
-                                  >
-                                    <IconDownload className="size-3.5" />
-                                    <span>Baixar</span>
-                                  </Button>
+                                    <div className="flex items-center gap-2 shrink-0">
+                                      {(art.kind === "checkpoint" ||
+                                        art.kind === "model" ||
+                                        art.path.endsWith(".safetensors")) && (
+                                        <Button
+                                          type="button"
+                                          variant="secondary"
+                                          size="sm"
+                                          onClick={() =>
+                                            handleResumeFromCheckpoint(selectedJob, art)
+                                          }
+                                          title="Retomar treino a partir deste checkpoint"
+                                        >
+                                          <IconSparkles className="size-3.5 text-sky-400" />
+                                          <span>Retomar</span>
+                                        </Button>
+                                      )}
+                                      <Button
+                                        type="button"
+                                        variant="secondary"
+                                        size="sm"
+                                        onClick={() => handleDownloadArtifact(selectedJob.id, art)}
+                                      >
+                                        <IconDownload className="size-3.5" />
+                                        <span>Baixar</span>
+                                      </Button>
+                                    </div>
                                 </div>
                               ))}
                           </div>
@@ -838,6 +1030,66 @@ function JobsPageContent() {
                             <span>{applyBusy ? "Aplicando…" : "Aplicar Todas Direto"}</span>
                           </Button>
                         </div>
+                      </div>
+                    )}
+
+                    {/* Ações para jobs finalizados de difusão ou YOLO */}
+                    {!isActive(selectedJob.status) &&
+                      (selectedJob.engine === "diffusion" || selectedJob.engine === "yolo") && (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => handleRerunJob(selectedJob)}
+                          title="Abrir a Forja pré-carregada com todos os parâmetros deste treino para submeter novamente"
+                        >
+                          <IconRefresh className="size-3.5 text-brand-400" />
+                          <span>Repetir Treino</span>
+                        </Button>
+                      )}
+
+                    {selectedJob.engine === "diffusion" && (
+                      <div className="flex items-center gap-2.5 flex-wrap">
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => handleDownloadJobConfig(selectedJob)}
+                          title="Baixar JSON com os parâmetros de configuração deste treino"
+                        >
+                          <IconDownload className="size-3.5 text-zinc-400" />
+                          <span>Baixar JSON de Treino</span>
+                        </Button>
+
+                        {artifacts[selectedJob.id] &&
+                          artifacts[selectedJob.id].some(
+                            (a) =>
+                              a.kind === "checkpoint" ||
+                              a.kind === "model" ||
+                              a.path.endsWith(".safetensors")
+                          ) && (
+                            <Button
+                              type="button"
+                              variant="primary"
+                              size="sm"
+                              onClick={() => {
+                                const ckpts = (artifacts[selectedJob.id] || []).filter(
+                                  (a) =>
+                                    a.kind === "checkpoint" ||
+                                    a.kind === "model" ||
+                                    a.path.endsWith(".safetensors")
+                                );
+                                const lastCkpt = ckpts[ckpts.length - 1];
+                                if (lastCkpt) {
+                                  handleResumeFromCheckpoint(selectedJob, lastCkpt);
+                                }
+                              }}
+                              title="Continuar treinamento adicionando épocas a partir do último checkpoint"
+                            >
+                              <IconSparkles className="size-3.5 text-sky-400" />
+                              <span>Continuar Treino</span>
+                            </Button>
+                          )}
                       </div>
                     )}
 

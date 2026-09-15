@@ -1116,6 +1116,15 @@ async fn run_job_inner(
         tokio::fs::write(&config_path, &real_config)
             .await
             .map_err(|e| PipelineError::ConfigYamlInvalid(format!("write config.yaml: {e}")))?;
+
+        // Grava training_config.json para reproducibilidade e download pelo usuário (apenas treino de difusão)
+        if dispatch.engine == "diffusion" && dispatch.mode == "train" {
+            if let Ok(json_val) = serde_yaml::from_str::<serde_json::Value>(&real_config) {
+                if let Ok(json_str) = serde_json::to_string_pretty(&json_val) {
+                    let _ = tokio::fs::write(outputs.join("training_config.json"), json_str).await;
+                }
+            }
+        }
     }
 
     // 6. Report running
@@ -1195,6 +1204,7 @@ async fn run_job_inner(
     let metrics_path = outputs.join("metrics.jsonl");
     let metrics_path_clone = metrics_path.clone();
     let samples_dir = outputs.join("samples");
+    let checkpoints_dir = outputs.join("checkpoints");
     let metrics_job_id = job_id.to_string();
     let metrics_total = total_epochs;
     let is_diffusion = dispatch.engine == "diffusion";
@@ -1205,11 +1215,13 @@ async fn run_job_inner(
         let mut interval = tokio::time::interval(Duration::from_secs(2));
         let mut lines_read: usize = 0;
         let mut uploaded_samples = std::collections::HashSet::<String>::new();
+        let mut uploaded_checkpoints = std::collections::HashSet::<String>::new();
         loop {
             interval.tick().await;
 
-            // 1. Escaneia novas amostras de difusão em tempo real
-            let mut new_sample_artifacts: Vec<ArtifactReport> = Vec::new();
+            let mut new_live_artifacts: Vec<ArtifactReport> = Vec::new();
+
+            // 1a. Escaneia novas amostras de difusão em tempo real
             if is_diffusion && samples_dir.exists() {
                 if let Ok(entries) = std::fs::read_dir(&samples_dir) {
                     for entry in entries.flatten() {
@@ -1250,8 +1262,62 @@ async fn run_job_inner(
                                                     if metrics_s3.put(&scoped, &path).await.is_ok()
                                                     {
                                                         uploaded_samples.insert(fname.to_string());
-                                                        new_sample_artifacts.push(ArtifactReport {
+                                                        new_live_artifacts.push(ArtifactReport {
                                                             kind: "sample".to_string(),
+                                                            path: rel_path,
+                                                            md5,
+                                                            bytes,
+                                                        });
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 1b. Escaneia novos checkpoints por época em tempo real
+            if is_diffusion && checkpoints_dir.exists() {
+                if let Ok(entries) = std::fs::read_dir(&checkpoints_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_file() {
+                            let is_ckpt = path
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .map(|ext| ext.eq_ignore_ascii_case("safetensors"))
+                                .unwrap_or(false);
+
+                            if is_ckpt {
+                                if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
+                                    if fname.starts_with('.')
+                                        || fname.ends_with(".tmp")
+                                        || fname.ends_with(".part")
+                                    {
+                                        continue;
+                                    }
+                                    if !uploaded_checkpoints.contains(fname) {
+                                        let bytes = std::fs::metadata(&path)
+                                            .map(|m| m.len() as i64)
+                                            .unwrap_or(0);
+                                        if bytes > 0 {
+                                            let rel_path = format!("checkpoints/{fname}");
+                                            let art_key =
+                                                format!("artifacts/{metrics_job_id}/{rel_path}");
+                                            if let Ok(scoped) =
+                                                scoped_key(S3Scope::Artifacts, &art_key)
+                                            {
+                                                if let Ok(md5) = compute_file_md5(&path) {
+                                                    if metrics_s3.put(&scoped, &path).await.is_ok()
+                                                    {
+                                                        uploaded_checkpoints
+                                                            .insert(fname.to_string());
+                                                        new_live_artifacts.push(ArtifactReport {
+                                                            kind: "checkpoint".to_string(),
                                                             path: rel_path,
                                                             md5,
                                                             bytes,
@@ -1282,7 +1348,7 @@ async fn run_job_inner(
                 }
             }
 
-            // 3. Envia report se houver novas métricas OU novos artefatos de amostra
+            // 3. Envia report se houver novas métricas OU novos artefatos (amostras/checkpoints)
             if !new_metrics.is_empty() {
                 for m in new_metrics {
                     let progress = compute_progress(&m, metrics_total);
@@ -1296,16 +1362,16 @@ async fn run_job_inner(
                                 step: m.step.map(|s| s as i32),
                                 metrics: Some(m.to_report_json()),
                                 error: None,
-                                artifacts: if new_sample_artifacts.is_empty() {
+                                artifacts: if new_live_artifacts.is_empty() {
                                     None
                                 } else {
-                                    Some(std::mem::take(&mut new_sample_artifacts))
+                                    Some(std::mem::take(&mut new_live_artifacts))
                                 },
                             },
                         )
                         .await;
                 }
-            } else if !new_sample_artifacts.is_empty() {
+            } else if !new_live_artifacts.is_empty() {
                 let _ = metrics_report_client
                     .report(
                         &metrics_job_id,
@@ -1316,7 +1382,7 @@ async fn run_job_inner(
                             step: None,
                             metrics: None,
                             error: None,
-                            artifacts: Some(new_sample_artifacts),
+                            artifacts: Some(new_live_artifacts),
                         },
                     )
                     .await;
@@ -1585,6 +1651,29 @@ async fn run_job_inner(
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    // Se for treino de difusão e existir training_config.json, inclui nos artefatos com kind "config"
+    if dispatch.engine == "diffusion" && dispatch.mode == "train" {
+        let training_config_path = outputs.join("training_config.json");
+        if training_config_path.is_file() {
+            let art_key = format!("artifacts/{job_id}/training_config.json");
+            if let Ok(scoped) = scoped_key(S3Scope::Artifacts, &art_key) {
+                if let Ok(md5) = compute_file_md5(&training_config_path) {
+                    let bytes = std::fs::metadata(&training_config_path)
+                        .map(|m| m.len() as i64)
+                        .unwrap_or(0);
+                    if s3.put(&scoped, &training_config_path).await.is_ok() {
+                        artifacts.push(ArtifactReport {
+                            kind: "config".to_string(),
+                            path: "training_config.json".to_string(),
+                            md5,
+                            bytes,
+                        });
                     }
                 }
             }

@@ -291,6 +291,147 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
     }
   }
 
+  function handleResume(job: Job, art: JobArtifact) {
+    const checkpointName = art.path.split("/").pop() || "checkpoint.safetensors";
+    const match = art.path.match(/epoch_(\d+)/);
+    const epochOffset = match ? parseInt(match[1], 10) : (job.epoch ?? 0);
+
+    const resumeData = {
+      resumeCheckpoint: {
+        id: art.id,
+        name: checkpointName,
+        epoch: epochOffset,
+      },
+      epochOffset,
+      initialPreset: job.params
+        ? {
+            baseModel: (job.params.baseModel || (job.params as any).base_model || job.model) as any,
+            triggerWord: (job.params.triggerWord ?? (job.params as any).trigger_word ?? "") as string,
+            rank: typeof job.params.rank === "number" ? job.params.rank : 16,
+            alpha: typeof job.params.alpha === "number" ? job.params.alpha : 16,
+            resolution:
+              typeof job.params.resolution === "number" ? job.params.resolution : 1024,
+            gradientAccumulationSteps:
+              typeof job.params.gradientAccumulationSteps === "number"
+                ? job.params.gradientAccumulationSteps
+                : typeof (job.params as any).gradient_accumulation_steps === "number"
+                  ? (job.params as any).gradient_accumulation_steps
+                  : 1,
+            optimizer: ((job.params.optimizer || (job.params as any).optimizer) as any) || "adamw8bit",
+            lrScheduler:
+              ((job.params.lrScheduler || (job.params as any).lr_scheduler) as any) || "cosine",
+            mixedPrecision:
+              ((job.params.mixedPrecision || (job.params as any).mixed_precision) as any) || "fp16",
+            quantization:
+              ((job.params.quantization || (job.params as any).quantization) as any) || "4bit",
+            checkpointInterval:
+              typeof job.params.checkpointInterval === "number"
+                ? job.params.checkpointInterval
+                : typeof (job.params as any).checkpoint_interval === "number"
+                  ? (job.params as any).checkpoint_interval
+                  : 1,
+          }
+        : undefined,
+    };
+
+    try {
+      sessionStorage.setItem("hephaestus_diffusion_resume", JSON.stringify(resumeData));
+    } catch {
+      // Best-effort
+    }
+
+    onClose();
+    router.push(
+      `/difusao?checkpointId=${art.id}&checkpointName=${encodeURIComponent(checkpointName)}&epochOffset=${epochOffset}`
+    );
+  }
+
+  function handleRerun(job: Job) {
+    if (job.engine === "diffusion") {
+      const resumeData = {
+        datasetId: job.datasetId,
+        epochOffset: 0,
+        initialPreset: job.params
+          ? {
+              baseModel: (job.params.baseModel || (job.params as any).base_model || job.model) as any,
+              triggerWord: (job.params.triggerWord ?? (job.params as any).trigger_word ?? "") as string,
+              rank: typeof job.params.rank === "number" ? job.params.rank : 16,
+              alpha: typeof job.params.alpha === "number" ? job.params.alpha : 16,
+              resolution:
+                typeof job.params.resolution === "number" ? job.params.resolution : 1024,
+              gradientAccumulationSteps:
+                typeof job.params.gradientAccumulationSteps === "number"
+                  ? job.params.gradientAccumulationSteps
+                  : typeof (job.params as any).gradient_accumulation_steps === "number"
+                    ? (job.params as any).gradient_accumulation_steps
+                    : 1,
+              optimizer: ((job.params.optimizer || (job.params as any).optimizer) as any) || "adamw8bit",
+              lrScheduler:
+                ((job.params.lrScheduler || (job.params as any).lr_scheduler) as any) || "cosine",
+              mixedPrecision:
+                ((job.params.mixedPrecision || (job.params as any).mixed_precision) as any) || "fp16",
+              quantization:
+                ((job.params.quantization || (job.params as any).quantization) as any) || "4bit",
+              checkpointInterval:
+                typeof job.params.checkpointInterval === "number"
+                  ? job.params.checkpointInterval
+                  : typeof (job.params as any).checkpoint_interval === "number"
+                    ? (job.params as any).checkpoint_interval
+                    : 1,
+              epochs:
+                typeof job.params.epochs === "number"
+                  ? job.params.epochs
+                  : typeof (job.params as any).epochs === "number"
+                    ? (job.params as any).epochs
+                    : 10,
+              batchSize:
+                typeof job.params.batchSize === "number"
+                  ? job.params.batchSize
+                  : typeof (job.params as any).batch_size === "number"
+                    ? (job.params as any).batch_size
+                    : 1,
+              learningRate:
+                job.params.learningRate != null
+                  ? String(job.params.learningRate)
+                  : (job.params as any).learning_rate != null
+                    ? String((job.params as any).learning_rate)
+                    : "0.0001",
+              enableSamples:
+                job.params.enableSamples ??
+                (job.params as any).enable_samples ??
+                Boolean(job.params.samplePrompt || (job.params as any).sample_prompt),
+              samplePrompt:
+                job.params.samplePrompt ?? (job.params as any).sample_prompt ?? "",
+              sampleInterval:
+                typeof job.params.sampleInterval === "number"
+                  ? job.params.sampleInterval
+                  : typeof (job.params as any).sample_interval === "number"
+                    ? (job.params as any).sample_interval
+                    : 1,
+              sampleSeed:
+                job.params.sampleSeed != null
+                  ? String(job.params.sampleSeed)
+                  : (job.params as any).sample_seed != null
+                    ? String((job.params as any).sample_seed)
+                    : "42",
+            }
+          : undefined,
+      };
+
+      try {
+        sessionStorage.setItem("hephaestus_diffusion_resume", JSON.stringify(resumeData));
+      } catch {
+        // Best-effort
+      }
+
+      onClose();
+      router.push(`/difusao?datasetId=${job.datasetId}`);
+    } else {
+      onClose();
+      router.push(`/treino?datasetId=${job.datasetId}`);
+    }
+  }
+
   // Notificações do sistema agnósticas (telemetria, nó orquestrador, alertas de recursos)
   const systemNotifications = useMemo<SystemNotification[]>(() => {
     const list: SystemNotification[] = [];
@@ -1052,6 +1193,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                         !art.path.includes("sample_epoch_"),
                                     )}
                                     onDownload={(jId, art) => handleDownload(jId, art)}
+                                    onResume={(jId, art) => handleResume(job, art)}
                                   />
                                 )}
 
@@ -1157,6 +1299,19 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                         <span>{applyBusy ? "Aplicando…" : "Aplicar Todas"}</span>
                                       </button>
                                     </div>
+                                  )}
+
+                                  {/* Repetir treino para jobs finalizados/falhados */}
+                                  {!isActive && (job.engine === "diffusion" || job.engine === "yolo") && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRerun(job)}
+                                      className="inline-flex items-center gap-1 rounded-lg border border-brand-500/40 bg-brand-500/15 px-2.5 py-1 text-[11px] font-medium text-brand-300 transition hover:bg-brand-500/25 active:scale-[0.985] cursor-pointer"
+                                      title="Abrir a Forja pré-carregada com todos os parâmetros deste treino para submeter novamente"
+                                    >
+                                      <IconRefresh className="size-3 text-brand-400" />
+                                      <span>Repetir Treino</span>
+                                    </button>
                                   )}
 
                                   {/* Cancelar Job ativo */}

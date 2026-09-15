@@ -13,6 +13,7 @@ from typing import Any
 from trainer_difusao.common import (
     _die,
     _emit_metric,
+    _load_lora_weights,
     _resolve_output_name,
     _save_lora_safetensors,
     _setup_cache_dir,
@@ -425,6 +426,14 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     lr_scheduler_name = str(lora_cfg.get("lr_scheduler", "cosine"))
     lr_warmup_steps = int(lora_cfg.get("lr_warmup_steps", 0))
 
+    checkpoint_interval = max(
+        1, int(cfg.get("checkpoint_interval") or lora_cfg.get("checkpoint_interval") or 1)
+    )
+    epoch_offset = max(
+        0, int(cfg.get("epoch_offset") or lora_cfg.get("epoch_offset") or 0)
+    )
+    weights_path = cfg.get("weights_path")
+
     # Diretório persistente de cache para pesos pré-quantizados isolado estritamente por model_id e quant_format
     if is_quantized:
         model_slug = re.sub(r"[^a-zA-Z0-9_\-\.]", "_", model_id)
@@ -735,6 +744,8 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         target_modules=target_modules,
     )
     transformer = get_peft_model(transformer, lora_config)
+    if weights_path:
+        _load_lora_weights(transformer, weights_path)
     transformer.enable_gradient_checkpointing()
     transformer.train()
 
@@ -787,8 +798,8 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         optimizer, lr_scheduler_name, total_train_steps, lr_warmup_steps
     )
 
-    # Amostra baseline (Época 0) para comparação pré-treino
-    if sample_prompt:
+    # Amostra baseline (Época 0) para comparação pré-treino (apenas se não estiver retomando)
+    if sample_prompt and epoch_offset == 0:
         _emit_metric(
             metrics_path,
             epoch=0,
@@ -823,18 +834,14 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
 
     _emit_metric(
         metrics_path,
-        epoch=0,
+        epoch=epoch_offset,
         step=10,
         progress=0.10,
         phase="training_started",
-        message=f"Iniciando loop de treino LoRA: {epochs} épocas, {total_train_steps} passos totais.",
+        message=f"Iniciando loop de treino LoRA: {epochs} épocas (offset={epoch_offset}), {total_train_steps} passos totais.",
     )
 
-    print(
-        f"Iniciando treino LoRA FLUX (is_flux2={is_flux2}, 4-bit NF4): {epochs} épocas, {len(dataset)} imagens, "
-        f"rank={rank}, alpha={alpha}, lr={learning_rate}, res={resolution}px, ga={grad_accum}x",
-        flush=True,
-    )
+    flow_shift = float(getattr(noise_scheduler.config, "shift", 3.0) or 3.0)
 
     if is_flux2:
         # FLUX.2 Klein: VAE com 32 canais e espaço latente retreinado (AutoencoderKLFlux2).
@@ -856,7 +863,7 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         latents_std = None
 
     print(
-        f"[FLUX] Configuração de normalização da VAE ({vae.__class__.__name__}): "
+        f"[FLUX] Iniciando treino: {epochs} épocas (offset={epoch_offset}), {total_train_steps} passos totais, lr={learning_rate}, "
         f"is_flux2={is_flux2}, shift_factor={shift_factor}, scaling_factor={scaling_factor}, "
         f"tem_bn={hasattr(vae, 'bn') and getattr(vae.bn, 'running_mean', None) is not None}, "
         f"tem_stats_config={latents_mean is not None}",
@@ -865,7 +872,8 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
 
     global_step = 0
     safe_avg_loss = None
-    for epoch in range(1, epochs + 1):
+    for epoch_idx in range(1, epochs + 1):
+        epoch = epoch_idx + epoch_offset
         epoch_loss = 0.0
         steps_in_epoch = 0
         optimizer.zero_grad()
@@ -1018,7 +1026,7 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             else round(avg_loss, 4)
         )
         epoch_progress = round(
-            min(0.99, max(0.10, 0.10 + 0.89 * (epoch / epochs))), 4
+            min(0.99, max(0.10, 0.10 + 0.89 * (epoch_idx / epochs))), 4
         )
         _emit_metric(
             metrics_path,
@@ -1028,35 +1036,36 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             lr=effective_lr,
             progress=epoch_progress,
             phase="epoch_complete",
-            message=f"Época {epoch}/{epochs} concluída · Loss Média: {safe_avg_loss}",
+            message=f"Época {epoch}/{epochs + epoch_offset} concluída · Loss Média: {safe_avg_loss}",
         )
 
         print(
-            f"[FLUX] Concluída Época {epoch}/{epochs} · Loss Média: {safe_avg_loss} · LR: {effective_lr:.2e}",
+            f"[FLUX] Concluída Época {epoch}/{epochs + epoch_offset} · Loss Média: {safe_avg_loss} · LR: {effective_lr:.2e}",
             flush=True,
         )
 
-        # Salva checkpoint da época
-        checkpoints_dir = output / "checkpoints"
-        checkpoints_dir.mkdir(parents=True, exist_ok=True)
-        ckpt_file = checkpoints_dir / f"{base_name}_epoch_{epoch:03d}.safetensors"
-        _save_lora_safetensors(
-            transformer,
-            ckpt_file,
-            metadata={
-                "format": "pt",
-                "model_type": "lora",
-                "base_model": "flux-2-klein-4b" if is_flux2 else "flux-1",
-                "lora_rank": str(rank),
-                "lora_alpha": str(alpha),
-                "trigger_word": trigger_word,
-                "quantization": quantization,
-                "epoch": str(epoch),
-            },
-        )
+        # Salva checkpoint da época respeitando checkpoint_interval
+        if epoch_idx % checkpoint_interval == 0 or epoch_idx == epochs:
+            checkpoints_dir = output / "checkpoints"
+            checkpoints_dir.mkdir(parents=True, exist_ok=True)
+            ckpt_file = checkpoints_dir / f"{base_name}_epoch_{epoch:03d}.safetensors"
+            _save_lora_safetensors(
+                transformer,
+                ckpt_file,
+                metadata={
+                    "format": "pt",
+                    "model_type": "lora",
+                    "base_model": "flux-2-klein-4b" if is_flux2 else "flux-1",
+                    "lora_rank": str(rank),
+                    "lora_alpha": str(alpha),
+                    "trigger_word": trigger_word,
+                    "quantization": quantization,
+                    "epoch": str(epoch),
+                },
+            )
 
         # Geração de amostra visual periódica
-        if sample_prompt and sample_interval > 0 and (epoch % sample_interval == 0 or epoch == epochs):
+        if sample_prompt and sample_interval > 0 and (epoch_idx % sample_interval == 0 or epoch_idx == epochs):
             sample_file = output / "samples" / f"sample_epoch_{epoch:03d}.png"
             _generate_sample_flux(
                 transformer=transformer,

@@ -57,6 +57,7 @@ export function startDiffusionJob(params: {
   lrWarmupSteps?: number;
   mixedPrecision?: "fp16" | "bf16" | "no";
   quantization?: "none" | "4bit" | "8bit";
+  enableBucket?: boolean;
   checkpointInterval?: number;
   epochOffset?: number;
 }): Promise<{ jobId: string; status: string; queuePosition?: number }> {
@@ -75,6 +76,7 @@ export function startDiffusionJob(params: {
     lrWarmupSteps,
     mixedPrecision,
     quantization,
+    enableBucket,
     checkpointInterval,
     epochOffset,
     ...rest
@@ -91,6 +93,7 @@ export function startDiffusionJob(params: {
   if (lrWarmupSteps != null) body.lrWarmupSteps = lrWarmupSteps;
   if (mixedPrecision) body.mixedPrecision = mixedPrecision;
   if (quantization) body.quantization = quantization;
+  if (enableBucket != null) body.enableBucket = enableBucket;
   if (checkpointInterval != null) body.checkpointInterval = checkpointInterval;
   if (epochOffset != null) body.epochOffset = epochOffset;
   if (samplePrompt?.trim()) {

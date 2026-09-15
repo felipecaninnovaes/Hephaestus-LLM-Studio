@@ -191,10 +191,12 @@ class TestRetrocompat(_BaseGenerateTest):
         self.assertEqual(lines[0]["batch_index"], 0)
 
     def test_legacy_config_with_weights_path(self):
-        """weights_path legado deve mapear para loras[0] no meta."""
+        """weights_path legado com arquivo existente → loras[0] no meta."""
+        real_lora = self.tmp_path / "real_lora.safetensors"
+        real_lora.touch()
         cfg = {
             "job_id": "test-legacy-weights",
-            "weights_path": "/fake/path/lora.safetensors",
+            "weights_path": str(real_lora),
             "generate": {
                 "base_model": "flux-2-klein-4b",
                 "prompt": "test legacy weights",
@@ -216,19 +218,76 @@ class TestRetrocompat(_BaseGenerateTest):
         self.assertEqual(len(lines), 1)
         # weights_path legado → loras via _resolve_loras_from_legacy
         self.assertEqual(len(lines[0]["loras"]), 1)
-        self.assertEqual(lines[0]["loras"][0]["path"], "/fake/path/lora.safetensors")
+        self.assertEqual(lines[0]["loras"][0]["path"], str(real_lora))
         self.assertEqual(lines[0]["loras"][0]["scale"], 0.7)
+
+    def test_legacy_config_with_weights_path_nonexistent(self):
+        """weights_path legado com arquivo inexistente → loras: [] (base puro)."""
+        cfg = {
+            "job_id": "test-legacy-weights-nonexist",
+            "weights_path": "/nonexistent/path/lora.safetensors",
+            "generate": {
+                "base_model": "flux-2-klein-4b",
+                "prompt": "test legacy weights nonexistent",
+                "width": 512,
+                "height": 512,
+                "steps": 20,
+                "seed": 42,
+                "quantization": "4bit",
+                "lora_scale": 0.7,
+            },
+        }
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+
+        main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+
+        meta_path = out_dir / "generation_meta.json"
+        lines = [json.loads(l) for l in meta_path.read_text().splitlines() if l.strip()]
+        self.assertEqual(len(lines), 1)
+        # weights_path inexistente → loras vazio
+        self.assertEqual(lines[0]["loras"], [])
+
+    def test_legacy_config_with_weights_path_literal_placeholder(self):
+        """weights_path='{weights_path}' (placeholder) → loras: [] (base puro)."""
+        cfg = {
+            "job_id": "test-legacy-weights-placeholder",
+            "weights_path": "{weights_path}",
+            "generate": {
+                "base_model": "flux-2-klein-4b",
+                "prompt": "test legacy weights placeholder",
+                "width": 512,
+                "height": 512,
+                "steps": 20,
+                "seed": 42,
+                "quantization": "4bit",
+                "lora_scale": 1.0,
+            },
+        }
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+
+        main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+
+        meta_path = out_dir / "generation_meta.json"
+        lines = [json.loads(l) for l in meta_path.read_text().splitlines() if l.strip()]
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["loras"], [])
 
 
 class TestLoras(_BaseGenerateTest):
     """4. loras: 2 loras no mock aparecem no meta na ordem; 0 loras → vazio."""
 
     def test_two_loras_in_meta(self):
+        lora_a = self.tmp_path / "lora_a.safetensors"
+        lora_b = self.tmp_path / "lora_b.safetensors"
+        lora_a.touch()
+        lora_b.touch()
         cfg = self._base_cfg(
             batch_size=1,
             loras=[
-                {"path": "/fake/lora_a.safetensors", "scale": 0.8},
-                {"path": "/fake/lora_b.safetensors", "scale": 0.5},
+                {"path": str(lora_a), "scale": 0.8},
+                {"path": str(lora_b), "scale": 0.5},
             ],
         )
         cfg_path = self._write_config(cfg)
@@ -241,9 +300,9 @@ class TestLoras(_BaseGenerateTest):
         self.assertEqual(len(lines), 1)
         loras = lines[0]["loras"]
         self.assertEqual(len(loras), 2)
-        self.assertEqual(loras[0]["path"], "/fake/lora_a.safetensors")
+        self.assertEqual(loras[0]["path"], str(lora_a))
         self.assertEqual(loras[0]["scale"], 0.8)
-        self.assertEqual(loras[1]["path"], "/fake/lora_b.safetensors")
+        self.assertEqual(loras[1]["path"], str(lora_b))
         self.assertEqual(loras[1]["scale"], 0.5)
 
     def test_zero_loras_empty(self):
@@ -544,32 +603,106 @@ class TestResolveLorasFromLegacy(unittest.TestCase):
     """Testes da função _resolve_loras_from_legacy."""
 
     def test_empty_loras_with_weights(self):
-        result = _resolve_loras_from_legacy(
-            {
-                "loras": [],
-                "weights_path": "/path/to/lora.safetensors",
-                "lora_scale": 0.8,
-            }
-        )
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["path"], "/path/to/lora.safetensors")
-        self.assertEqual(result[0]["scale"], 0.8)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            real_path = Path(tmpdir) / "lora.safetensors"
+            real_path.touch()
+            result = _resolve_loras_from_legacy(
+                {
+                    "loras": [],
+                    "weights_path": str(real_path),
+                    "lora_scale": 0.8,
+                }
+            )
+            self.assertEqual(len(result), 1)
+            self.assertEqual(result[0]["path"], str(real_path))
+            self.assertEqual(result[0]["scale"], 0.8)
 
     def test_empty_loras_no_weights(self):
         result = _resolve_loras_from_legacy({"loras": []})
         self.assertEqual(result, [])
 
     def test_existing_loras_passthrough(self):
-        loras = [{"path": "/a.safetensors", "scale": 0.5}]
-        result = _resolve_loras_from_legacy({"loras": loras})
-        self.assertEqual(result, loras)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            real_path = Path(tmpdir) / "a.safetensors"
+            real_path.touch()
+            loras = [{"path": str(real_path), "scale": 0.5}]
+            result = _resolve_loras_from_legacy({"loras": loras})
+            self.assertEqual(result, loras)
 
     def test_no_loras_key(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            real_path = Path(tmpdir) / "x.safetensors"
+            real_path.touch()
+            result = _resolve_loras_from_legacy(
+                {"weights_path": str(real_path), "lora_scale": 1.0}
+            )
+            self.assertEqual(len(result), 1)
+            self.assertEqual(result[0]["path"], str(real_path))
+
+    def test_weights_path_literal_placeholder_returns_empty(self):
+        """weights_path='{weights_path}' (placeholder do orchestrator) → []."""
         result = _resolve_loras_from_legacy(
-            {"weights_path": "/x.safetensors", "lora_scale": 1.0}
+            {"weights_path": "{weights_path}", "lora_scale": 1.0}
         )
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["path"], "/x.safetensors")
+        self.assertEqual(result, [])
+
+    def test_weights_path_nonexistent_returns_empty(self):
+        """weights_path apontando para path inexistente → []."""
+        result = _resolve_loras_from_legacy(
+            {"weights_path": "/nonexistent/path/lora.safetensors", "lora_scale": 0.7}
+        )
+        self.assertEqual(result, [])
+
+    def test_weights_path_real_file_maps_correctly(self):
+        """weights_path apontando para arquivo REAL → [{path, scale}]."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            real_path = Path(tmpdir) / "real_lora.safetensors"
+            real_path.touch()
+            result = _resolve_loras_from_legacy(
+                {"weights_path": str(real_path), "lora_scale": 0.85}
+            )
+            self.assertEqual(len(result), 1)
+            self.assertEqual(result[0]["path"], str(real_path))
+            self.assertEqual(result[0]["scale"], 0.85)
+
+    def test_loras_mixed_existing_nonexistent(self):
+        """Seção loras com 2 entradas, 1 path inexistente → só a existente, ordem preservada."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            real_path = Path(tmpdir) / "real.safetensors"
+            real_path.touch()
+            loras = [
+                {"path": "/nonexistent/first.safetensors", "scale": 0.6},
+                {"path": str(real_path), "scale": 0.9},
+            ]
+            result = _resolve_loras_from_legacy({"loras": loras})
+            self.assertEqual(len(result), 1)
+            self.assertEqual(result[0]["path"], str(real_path))
+            self.assertEqual(result[0]["scale"], 0.9)
+
+    def test_loras_all_nonexistent_returns_empty(self):
+        """Seção loras com paths inexistentes → []."""
+        loras = [
+            {"path": "/fake/a.safetensors", "scale": 0.5},
+            {"path": "/fake/b.safetensors", "scale": 0.7},
+        ]
+        result = _resolve_loras_from_legacy({"loras": loras})
+        self.assertEqual(result, [])
+
+    def test_loras_all_existing_preserves_order(self):
+        """Seção loras com 2 paths existentes → mantém ordem."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path_a = Path(tmpdir) / "a.safetensors"
+            path_b = Path(tmpdir) / "b.safetensors"
+            path_a.touch()
+            path_b.touch()
+            loras = [
+                {"path": str(path_a), "scale": 0.4},
+                {"path": str(path_b), "scale": 0.8},
+            ]
+            result = _resolve_loras_from_legacy({"loras": loras})
+            self.assertEqual(len(result), 2)
+            self.assertEqual(result[0]["path"], str(path_a))
+            self.assertEqual(result[1]["path"], str(path_b))
 
 
 class TestValidationDirect(unittest.TestCase):

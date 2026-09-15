@@ -198,16 +198,35 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
 def _resolve_loras_from_legacy(params: dict[str, Any]) -> list[dict[str, Any]]:
     """Converte weights_path+lora_scale legado para lista loras[] padrão.
 
-    Quando a seção 'loras' já tem entradas, retorna como está.
-    Caso contrário, mapeia weights_path → [{path, scale}].
+    Quando a seção 'loras' já tem entradas, valida cada path no disco:
+    paths inexistentes são descartados com warning (não derruba o job).
+    Caso contrário, mapeia weights_path → [{path, scale}] somente se
+    o arquivo existir no disco (restaurando o guard do engine antigo).
     """
     loras = params.get("loras", [])
     if loras:
-        return loras
+        valid: list[dict[str, Any]] = []
+        for i, entry in enumerate(loras):
+            path = entry.get("path", "")
+            if path and os.path.exists(path):
+                valid.append(entry)
+            else:
+                print(
+                    f"[DIFFUSION-GEN] lora[{i}] path não existe: {path} — descartando",
+                    flush=True,
+                )
+        return valid
+
     weights_path = params.get("weights_path")
     lora_scale = params.get("lora_scale", 1.0)
     if weights_path:
-        return [{"path": weights_path, "scale": lora_scale}]
+        if os.path.exists(weights_path):
+            return [{"path": weights_path, "scale": lora_scale}]
+        print(
+            f"[DIFFUSION-GEN] weights_path informado ({weights_path}) "
+            f"mas arquivo não encontrado — geração com base puro",
+            flush=True,
+        )
     return []
 
 
@@ -375,7 +394,7 @@ def _mock_generate(params: dict[str, Any], output_dir: Path, emitter=None) -> No
         if loras_effective:
             lora_names = [Path(l["path"]).name for l in loras_effective]
             lora_label = f"LoRA(s): {', '.join(lora_names)}"
-        elif params.get("weights_path"):
+        elif params.get("weights_path") and os.path.exists(params["weights_path"]):
             lora_label = f"LoRA: {Path(params['weights_path']).name}"
         else:
             lora_label = "LoRA: Nenhum (Base Puro)"

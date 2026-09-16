@@ -11,7 +11,7 @@ Esta pasta reúne os componentes atômicos e primitivas do Design System, desenv
 
 | Componente | Arquivo | Descrição |
 |---|---|---|
-| **[`Button`](./Button.tsx)** | `Button.tsx` | Botão atômico. Implementa "The One CTA Rule" (outline-violeta translúcido com inset highlight superior), além das variantes secundário glass, ghost, destrutivo e warning nos tamanhos `sm`, `md` e `lg`. |
+| **[`Button`](./Button.tsx)** | `Button.tsx` | Botão atômico. Implementa "The One CTA Rule" (outline-violeta translúcido com inset highlight superior), além das variantes secundário glass, ghost, destrutivo e warning nos tamanhos `sm`, `md` e `lg`. Estado `loading`: desabilita, expõe `aria-busy="true"` e injeta texto `sr-only` "Carregando…" (anunciável); o `Spinner` interno é decorativo (`aria-hidden="true"`). |
 | **[`GlassCard`](./GlassCard.tsx)** | `GlassCard.tsx` | Contêiner de vidro óptico em 3 níveis (`card`, `menu`, `modal`) com `border-top` reflexivo 1.8x a 2.5x mais luminoso. Inclui `GlassCardHeader`, `GlassCardTitle`, `GlassCardDescription`, `GlassCardBody` e `GlassCardFooter`. |
 | **[`Badge`](./Badge.tsx)** | `Badge.tsx` | Cápsulas de status (`ready`, `alert`, `info`, `danger`), cápsula de telemetria, `brand` (studio-badge) e microtags mono. Suporte a ponto luminoso pulsante (`pulse`). |
 | **[`Input`](./Input.tsx)** | `Input.tsx` | Campo de formulário estilizado em vidro escuro (`bg-black/40`), com suporte a `label` mono uppercase, ícones de prefixo/sufixo, mensagens de erro e proteção de fonte 16px no mobile. |
@@ -33,7 +33,7 @@ Esta pasta reúne os componentes atômicos e primitivas do Design System, desenv
 | **[`DropOverlay`](./DropOverlay.tsx)** | `DropOverlay.tsx` | Overlay de drag & drop com borda tracejada violeta e feedback visual em backdrop-blur, acompanhado do hook `useFileDrop`. |
 | **[`ZoomControl`](./ZoomControl.tsx)** | `ZoomControl.tsx` | Barra flutuante em `.glass-menu` para controle de escala e zoom de canvas interativos com indicador percentual mono e reset 100%. |
 | **[`Kbd`](./Kbd.tsx)** | `Kbd.tsx` | Elemento atômico para indicação de atalhos de teclado (hotkeys) com estilo mono padronizado. |
-| **[`Spinner`](./Spinner.tsx)** | `Spinner.tsx` | Indicador circular canônico de carregamento; tamanho livre via `className` (ex.: `size-3`…`size-8`), tom via `tone` (`brand`, `current`, `white`). Usado internamente por `Button` (loading) e `SearchInput`. |
+| **[`Spinner`](./Spinner.tsx)** | `Spinner.tsx` | Indicador circular canônico de carregamento; puramente decorativo (`aria-hidden="true"` explícito — o anúncio fica com o pai). Tamanho livre via `className` (ex.: `size-3`…`size-8`), tom via `tone` (`brand`, `current`, `white`). Usado internamente por `Button` (loading) e `SearchInput`. |
 
 ---
 
@@ -51,13 +51,23 @@ Esta pasta reúne os componentes atômicos e primitivas do Design System, desenv
 
 Aceitam opacidade (`bg-status-alert/15`, `border-status-danger/30`). Tons claros de texto sobre véus (`amber-200/300/400`) são tinturas permitidas; o tom-base `amber-500` foi unificado a `status-alert`.
 
-**Escala micro-tipográfica de dados** — substitui os antigos `text-[11px]/[10px]/[9px]`:
+**Escala micro-tipográfica de dados** — substitui os antigos `text-[11px]/[10px]/[9px]` (cada token define `--text-*--line-height` explícita em `@theme`; `leading-*` nos call-sites sobrescreve o default):
 
-| Utility | Valor | Uso |
+| Utility | Tamanho / line-height | Uso |
 |---|---|---|
-| `text-2xs` | 11px | Captions compactas, logs, labels de toolbars |
-| `text-3xs` | 10px | Micro-caps mono, `Kbd`, badges |
-| `text-4xs` | 9px | Tags de canvas BBox, badges pico |
+| `text-2xs` | 11px / 1.4 | Captions compactas, logs, labels de toolbars |
+| `text-3xs` | 10px / 1.4 | Micro-caps mono, `Kbd`, badges |
+| `text-4xs` | 9px / 1.35 | Tags de canvas BBox, badges pico |
+
+---
+
+## Qualidade (Biome)
+
+```bash
+npm run lint --workspace=web    # cwd = raiz do monorepo; executa `biome lint .` com cwd apps/web (Checked 113 files; follow-up: zerar 116 errors — ver tasks/todo.md; gate futuro = 0 errors)
+```
+
+Config única em `biome.json` (raiz): `recommended` + `a11y`, `tailwindDirectives` ligado para o `@theme` do Tailwind v4. Formatter/assist habilitados mas não bloqueantes (storm de formatação vai em fatia própria — não rodar `--write` de `format`/`check` sem combinar).
 
 ---
 

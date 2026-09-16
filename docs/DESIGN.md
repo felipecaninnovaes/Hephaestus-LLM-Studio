@@ -231,7 +231,7 @@ Cores semânticas canônicas expostas como utilities Tailwind v4 (`text-status-*
 
 Tons claros de alerta/sucesso para texto sobre véus translúcidos permanecem como tinturas da escala padrão (`amber-200/300/400`); o tom-base `amber-500` foi unificado ao token `status-alert`. **Hex literal em `className` é proibido** — todo estado semântico consome um token.
 
-Escala micro-tipográfica de dados (`--text-*` → `text-2xs|3xs|4xs`, px absoluto fiel ao uso corrente): `2xs` = 11px (captions compactas, logs), `3xs` = 10px (micro-caps mono, Kbd, badges), `4xs` = 9px (pico em canvas/tags de BBox).
+Escala micro-tipográfica de dados (`--text-*` → `text-2xs|3xs|4xs`, px absoluto fiel ao uso corrente): `2xs` = 11px/line-height 1.4 (captions compactas, logs), `3xs` = 10px/line-height 1.4 (micro-caps mono, Kbd, badges), `4xs` = 9px/line-height 1.35 (pico em canvas/tags de BBox). Cada token carrega `--text-*--line-height` explícita em `@theme` (`apps/web/app/globals.css`); `leading-*` explícito nos call-sites continua sobrescrevendo o default.
 
 ## Typography
 
@@ -249,7 +249,7 @@ Escala micro-tipográfica de dados (`--text-*` → `text-2xs|3xs|4xs`, px absolu
 - **Title** (SemiBold 600, 0.875rem / 12.25px efetivos, line-height 1.4, Space Grotesk): Títulos de cards de parâmetros e labels de grupos de campos.
 - **Body** (Regular 400, 0.875rem / 12.25px efetivos, line-height 1.6, system sans): Textos de descrição, explicações de status e instruções inline (comprimento máx. 65-75ch).
 - **Label / Micro-Caps** (Medium 500, 0.6875rem / 9.6px efetivos, line-height 1.4, tracking 0.08em uppercase, JetBrains Mono): Rótulos de formulário, identificadores de classes, badges de status, coordenadas e telemetria.
-- **Micro Data** (`text-2xs` 11px / `text-3xs` 10px / `text-4xs` 9px, tokens `--text-*`): corpo compacto de logs e toolbars (2xs), micro-caps e Kbd (3xs), tags de canvas e badges pico (4xs).
+- **Micro Data** (`text-2xs` 11px/lh 1.4 / `text-3xs` 10px/lh 1.4 / `text-4xs` 9px/lh 1.35, tokens `--text-*` + `--text-*--line-height`): corpo compacto de logs e toolbars (2xs), micro-caps e Kbd (3xs), tags de canvas e badges pico (4xs).
 
 ### Named Rules
 **The Monospace Truth Rule.** Todo número representando medição (VRAM, CPU, RAM, latência, tempo de epoch, dimensões em pixels, coordenadas de bounding box e loss), além de telemetria, caminhos de arquivo (paths) e labels técnicos, deve ser renderizado obrigatoriamente em `JetBrains Mono` para garantir alinhamento tabular e evitar oscilações visuais (jittering) durante atualizações ao vivo.
@@ -315,6 +315,7 @@ inline-flex items-center justify-center gap-2 text-sm font-medium whitespace-now
 - **Primary (CTA único, outline-violeta translúcido):** `rounded-lg border border-brand-500/30 bg-brand-500/[0.12] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985]`. Tamanho `lg h-10 px-5` quando CTA principal de tela/painel.
 - **Secondary (Default):** `rounded-lg border border-white/10 bg-white/[0.05] text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_1px_2px_rgba(0,0,0,0.16)] hover:border-white/20 hover:bg-white/[0.10]`. Tamanho `h-9 px-4` (com ícone: `px-3`).
 - **Ghost:** `bg-transparent border-transparent text-zinc-300 hover:bg-white/[0.06] hover:text-white`. Tamanho `h-9 px-3`.
+- **Loading (a11y):** `loading` desabilita o botão, expõe `aria-busy="true"` e injeta texto `sr-only` "Carregando…" anunciável por leitores de tela; o `Spinner` interno é puramente decorativo (`aria-hidden="true"` explícito).
 - **Primary Destructive:** `rounded-lg border border-[#ef4444]/30 bg-[#ef4444]/[0.12] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] hover:border-[#ef4444]/50 hover:bg-[#ef4444]/[0.18]`. Usado para exclusões definitivas e abortos forçados de job.
 - **Segmented Control (Toggle grade/lista e afins):** Container `inline-flex rounded-full border border-white/10 bg-black/40 p-1`; item `h-7 px-2.5 rounded-full [&_svg]:size-4`; item ativo `rounded-full bg-brand-500/[0.18] text-brand-300`; item inativo `text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.05]`.
 - **Pílula de Submódulo / Abas:** Altura `h-9`, texto `text-sm`; ativa `rounded-lg border border-brand-500/30 bg-brand-500/[0.12] text-white` com ícone `brand-400`; inativa `rounded-lg border border-white/8 bg-white/[0.03] text-zinc-400 hover:text-zinc-200` com ícone `zinc-500`.
@@ -344,7 +345,7 @@ inline-flex items-center justify-center gap-2 text-sm font-medium whitespace-now
 - **Slider:** Controle deslizante tátil de precisão com thumb circular de 22px (`#8350f2` com borda branca 2px), trilho de 8px e exibição numérica em mono.
 - **ProgressBar:** Barra de progresso com trilho `zinc-800` e preenchimento semântico via tokens (`status-success`, `brand` violeta, `status-alert`, `status-danger`).
 - **Kbd (Atalho de Teclado):** Elemento atômico para indicação de hotkeys em mono (`px-1.5 py-0.5 rounded border border-white/10 bg-white/[0.04] text-zinc-400 font-mono text-3xs font-semibold`), garantindo legibilidade imediata de atalhos operacionais no estúdio e no canvas.
-- **Spinner:** Indicador circular canônico de carregamento (`animate-spin` com anel `border-2`), tamanho livre via className (ex.: `size-3` a `size-8`) e tom via `tone` (`brand` padrão, `current` herda a cor do texto — usado no estado `loading` do Button —, `white` para CTA escuros). Substitui qualquer span/div de loading feito à mão.
+- **Spinner:** Indicador circular canônico de carregamento (`animate-spin` com anel `border-2`), puramente decorativo com `aria-hidden="true"` explícito (o estado "carregando" é anunciado pelo componente pai — ex.: `aria-busy` + texto `sr-only` no `Button`), tamanho livre via className (ex.: `size-3` a `size-8`) e tom via `tone` (`brand` padrão, `current` herda a cor do texto — usado no estado `loading` do Button —, `white` para CTA escuros). Substitui qualquer span/div de loading feito à mão.
 
 ### Navigation & Utilities
 - **Sidebar Macro:** Barra lateral vertical fixa à esquerda com módulos de sistema, modo pinável com persistência em `localStorage` (68px colapsada / 260px expandida no desktop), drawer móvel em `< lg`, breadcrumbs em linha única e pílulas com fade edge.
@@ -373,6 +374,16 @@ Fundo fixo com 4 camadas óticas:
 - **Controle de Treino:** `Play`, `Pause`, `Stop`, `Refresh`
 - **Ferramentas de Canvas:** `ZoomIn`, `ZoomOut`, `Eye`, `FileText`, `Sliders`
 - **Navegação & Utilidades:** `Search`, `Download`, `Plus`, `Trash`, `X`, `ChevronDown`, `Check`, `MoreVertical`, `Terminal`
+
+## Ferramentas de qualidade (frontend)
+
+Lint canônico do workspace `web` via Biome 2 (config única em `biome.json` na raiz: `recommended` + `a11y`, `css.parser.tailwindDirectives` para o `@theme` do Tailwind v4, formatter/assist habilitados mas não bloqueantes):
+
+```bash
+npm run lint --workspace=web    # biome lint (follow-up: zerar os 116 errors atuais — ver tasks/todo.md; a partir daí, gate = 0 errors, warnings não bloqueantes)
+npm run check --workspace=web   # lint + format + assist (informativo)
+npm run build --workspace=web   # Next.js 16 — verificação final obrigatória
+```
 
 ## Do's and Don'ts
 

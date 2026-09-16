@@ -32,15 +32,25 @@ uma. Manter < 100 linhas; não duplicar docs — referenciar por seção.
   docs `DESIGN.md` + `ui/README.md` v2.2.
   - [x] @reviewer: FECHAR (APROVA COM NITS); nit 4 (docs Spinner) fechado
   - [x] `npm run build` verde (gate final pós-correção docs)
-  - [ ] 4 commits atômicos (fundação → ui primitives → studio → páginas+consolidações)
+  - [x] 4 commits atômicos (fundação → ui primitives → studio A-L → studio C-Y → páginas+consolidações) — fechados
+  - [x] Fatia Biome: config + scripts + 11 autofixes + nits a11y/line-height + docs honestos (@reviewer CORRIGIR-ANTES→fixer→ok; lint 116E/204W = débito da follow-up 3)
 - **Follow-ups desta fatia (não bloqueiam):**
   1. Spinner `aria-hidden` explícito + `aria-busy` no Button (a11y).
   2. `--text-2xs/3xs/4xs` sem line-height própria (herda do contexto) —
      fixar token se introduzirmos `leading-*` nesses tamanhos.
-  3. **Comando fantasma:** `npm run lint --workspace=web` (AGENTS.md §2:23)
-     não existe — `apps/web` (nome `web`) não tem script `lint` e o repo não
-     tem config eslint/biome. Decisão do usuário: toolar lint (slice própria)
-     ou remover a linha do AGENTS.md.
+  3. **Biome toolado; dívida de lint a zerar (fatia follow-up):** 116 errors
+     manuais catalogados — `useExhaustiveDependencies` 32 (12 arqs; pior:
+     `datasets/[id]` 8, `GenerationPanel` 8, `AutoLabelModal` 7 — risco
+     comportamental, revisar 1 por 1), `noLabelWithoutControl` 23,
+     `useKeyWithClickEvents` 16, `noStaticElementInteractions` 15,
+     `useSemanticElements` 9, `noArrayIndexKey` 8, `noSvgWithoutTitle` 7
+     (→ `biome-ignore` justificado p/ decorativos), `noAutofocus` 3,
+     `Select.tsx` a11y 3. Warnings: `noExplicitAny` 90, `noUnusedImports` 46,
+     `noNonNullAssertion` 22, `noImgElement` 19. Também pendente: gate de
+     format/assist Biome (touch ~108 arqs — slice dedicada), alinhar
+     `import React`→type-only em Button, pin $schema vs `^` dep.
+     Comando canônico: `npm run lint --workspace=web` (raiz). **rtk NÃO serve
+     p/ lint** (corrompe saída) — chamar npm direto.
   4. Paleta de séries do ConvergenceChart (1 consumidor) — avaliar tokenização.
   5. Divergências cosméticas canonicadas pelo reviewer: raio CTA /jobs
      (lg→md), ghost DatasetTable (zinc-400→300), tom spinner brand (500→400).

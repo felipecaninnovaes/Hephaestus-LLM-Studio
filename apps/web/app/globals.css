@@ -39,8 +39,11 @@
   /* Escala micro-tipográfica de dados/labels (px absoluto, fiel ao uso corrente).
      2xs ≈ caption compacta, 3xs = micro-caps mono, 4xs = pico em canvas/badges. */
   --text-2xs: 11px;
+  --text-2xs--line-height: 1.4;
   --text-3xs: 10px;
+  --text-3xs--line-height: 1.4;
   --text-4xs: 9px;
+  --text-4xs--line-height: 1.35;
 
   --font-display:
     "Space Grotesk", -apple-system, BlinkMacSystemFont, sans-serif;

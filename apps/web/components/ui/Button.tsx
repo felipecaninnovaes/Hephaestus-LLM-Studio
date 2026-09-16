@@ -85,6 +85,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
       <button
         ref={ref}
         disabled={disabled || loading}
+        aria-busy={loading || undefined}
         className={getButtonClasses({ variant, size, className })}
         {...props}
       >
@@ -93,6 +94,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
         )}
         {children}
         {!loading && rightIcon}
+        {loading && <span className="sr-only">Carregando…</span>}
       </button>
     );
   },

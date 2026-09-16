@@ -1,4 +1,4 @@
-import React from "react";
+import type React from "react";
 
 export type SpinnerTone = "brand" | "current" | "white";
 
@@ -24,7 +24,7 @@ export function Spinner({
 }: SpinnerProps) {
   return (
     <span
-      aria-hidden
+      aria-hidden="true"
       className={`inline-block shrink-0 animate-spin rounded-full border-2 ${TONE_CLASSES[tone]} ${className}`.trim()}
       {...props}
     />

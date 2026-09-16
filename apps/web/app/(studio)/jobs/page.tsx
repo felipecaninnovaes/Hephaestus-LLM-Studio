@@ -36,6 +36,7 @@ import {
   IconSparkles,
   IconTarget,
   IconTrash,
+  IconX,
   IconZap,
 } from "@/components/icons";
 import type {
@@ -100,13 +101,52 @@ function JobsPageContent() {
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Lê query param ?job=jobId para auto-seleção (usado pela navegação de /treino)
+  // Lê query param ?job=jobId para auto-seleção (deep link / navegação do ActionCenter)
   useEffect(() => {
     const qJob = searchParams.get("job");
-    if (qJob) {
+    if (qJob && qJob !== selectedJobId) {
       setSelectedJobId(qJob);
     }
-  }, [searchParams]);
+  }, [searchParams, selectedJobId]);
+
+  // Estado derivado: modo foco = /jobs?job=ID&focus=1
+  const focusMode = searchParams.get("focus") === "1" && Boolean(selectedJobId);
+
+  /** Sincroniza seleção de job com a URL (substitui setSelectedJobId direto). */
+  const selectJob = useCallback(
+    (id: string | null) => {
+      setSelectedJobId(id);
+      const params = new URLSearchParams(window.location.search);
+      if (id) {
+        params.set("job", id);
+      } else {
+        params.delete("job");
+      }
+      params.delete("focus"); // sair de foco ao trocar/clear job
+      const qs = params.toString();
+      router.replace(qs ? `/jobs?${qs}` : "/jobs", { scroll: false });
+    },
+    [router],
+  );
+
+  /** Atualiza o parâmetro ?focus=1 sem trocar o job. */
+  const setFocus = useCallback(
+    (on: boolean, id?: string | null) => {
+      const target = id ?? selectedJobId;
+      if (!target) return;
+      if (target !== selectedJobId) setSelectedJobId(target);
+      const params = new URLSearchParams(window.location.search);
+      params.set("job", target);
+      if (on) {
+        params.set("focus", "1");
+      } else {
+        params.delete("focus");
+      }
+      const qs = params.toString();
+      router.replace(`/jobs?${qs}`, { scroll: false });
+    },
+    [router, selectedJobId],
+  );
 
   // Resetar applyOverwrite ao trocar de job
   useEffect(() => {
@@ -594,7 +634,8 @@ function JobsPageContent() {
           ═══════════════════════════════════════════════ */}
       {!error && (
         <div className="flex flex-col md:flex-row items-start gap-6">
-          {/* Coluna 1: Lista de Execuções (Fixa: w-full md:w-80 lg:w-96 shrink-0) */}
+          {/* Coluna 1: Lista de Execuções — oculta no modo foco */}
+          {!focusMode && (
           <aside className="w-full md:w-80 lg:w-96 shrink-0 md:sticky md:top-4 md:max-h-[calc(100vh-2rem)] md:overflow-y-auto overflow-x-hidden [scrollbar-width:thin] space-y-4">
             {loading ? (
               <div className="glass-card rounded-2xl p-8 text-center text-xs text-zinc-400 font-mono border border-white/10">
@@ -638,7 +679,7 @@ function JobsPageContent() {
                           key={job.id}
                           job={job}
                           isFocused={selectedJob?.id === job.id}
-                          onSelect={(id) => setSelectedJobId(id)}
+                          onSelect={selectJob}
                         />
                       ))}
                     </div>
@@ -662,7 +703,7 @@ function JobsPageContent() {
                           key={job.id}
                           job={job}
                           isFocused={selectedJob?.id === job.id}
-                          onSelect={(id) => setSelectedJobId(id)}
+                          onSelect={selectJob}
                           onRerun={handleRerunJob}
                         />
                       ))}
@@ -672,6 +713,7 @@ function JobsPageContent() {
               </div>
             )}
           </aside>
+          )}
 
           {/* Coluna 2: Painel de Detalhe (flex-1 min-w-0) */}
           <section className="w-full flex-1 min-w-0 space-y-4">
@@ -681,9 +723,11 @@ function JobsPageContent() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <h2 className="font-display text-sm font-semibold text-zinc-200">
-                      {isActive(selectedJob.status)
-                        ? "Execução Ativa"
-                        : "Detalhes da Execução"}
+                      {focusMode
+                        ? "Acompanhando"
+                        : isActive(selectedJob.status)
+                          ? "Execução Ativa"
+                          : "Detalhes da Execução"}
                     </h2>
                     <Badge
                       variant={jobStatusToBadgeVariant(selectedJob.status)}
@@ -692,15 +736,38 @@ function JobsPageContent() {
                       {STATUS_LABEL[selectedJob.status]}
                     </Badge>
                   </div>
-                  {selectedJobId && selectedJobId !== activeJobs[0]?.id && (
-                    <button
-                      type="button"
-                      onClick={() => setSelectedJobId(null)}
-                      className="text-xs text-zinc-400 hover:text-zinc-200 transition underline underline-offset-2"
-                    >
-                      {activeJobs.length > 0 ? "Voltar ao job ativo" : "Ver último job"}
-                    </button>
-                  )}
+                  <div className="flex items-center gap-3">
+                    {focusMode ? (
+                      <button
+                        type="button"
+                        onClick={() => setFocus(false)}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] font-mono text-zinc-300 transition hover:bg-white/[0.06] active:scale-[0.985] cursor-pointer"
+                        title="Sair do modo foco"
+                      >
+                        <IconX className="size-3" />
+                        <span>Sair do foco</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setFocus(true, selectedJob.id)}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] font-mono text-zinc-300 transition hover:bg-white/[0.06] active:scale-[0.985] cursor-pointer"
+                        title="Acompanhar este job em tela cheia"
+                      >
+                        <IconActivity className="size-3" />
+                        <span>Acompanhar</span>
+                      </button>
+                    )}
+                    {selectedJobId && selectedJobId !== activeJobs[0]?.id && (
+                      <button
+                        type="button"
+                        onClick={() => selectJob(null)}
+                        className="text-xs text-zinc-400 hover:text-zinc-200 transition underline underline-offset-2"
+                      >
+                        {activeJobs.length > 0 ? "Voltar ao job ativo" : "Ver último job"}
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {/* Job Hero Card */}

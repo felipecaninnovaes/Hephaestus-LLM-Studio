@@ -486,7 +486,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
         level: "error",
         timestamp: job.finishedAt || job.createdAt,
         actionLabel: "Investigar",
-        actionHref: `/jobs?selected=${job.id}`,
+        actionHref: `/jobs?job=${job.id}`,
       });
     });
 
@@ -581,7 +581,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
         categoryLabel: "Visão Computacional",
         icon: IconTarget,
         actionText: "Ver na Forja →",
-        targetHref: `/jobs?selected=${job.id}`,
+        targetHref: `/jobs?job=${job.id}`,
       };
     }
     if (job.kind === "autotracker") {
@@ -590,7 +590,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
         categoryLabel: "Rastreamento & Vídeo",
         icon: IconLayers,
         actionText: job.datasetId ? "Ver no Dataset →" : "Ver no Studio →",
-        targetHref: job.datasetId ? `/datasets/${job.datasetId}` : `/jobs?selected=${job.id}`,
+        targetHref: job.datasetId ? `/datasets/${job.datasetId}` : `/jobs?job=${job.id}`,
       };
     }
     const kindName = String(job.kind).replace(/_/g, " ");
@@ -599,7 +599,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
       categoryLabel: "Processamento IA",
       icon: IconZap,
       actionText: "Ver Detalhes →",
-      targetHref: `/jobs?selected=${job.id}`,
+      targetHref: `/jobs?job=${job.id}`,
     };
   }
 
@@ -1302,6 +1302,20 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                       <span>Cancelar Job</span>
                                     </button>
                                   )}
+
+                                  {/* Acompanhar (tela cheia / modo foco) */}
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      onClose();
+                                      router.push(`/jobs?job=${job.id}&focus=1`);
+                                    }}
+                                    className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] font-mono text-zinc-300 transition hover:bg-white/[0.06] active:scale-[0.985] cursor-pointer"
+                                    title="Acompanhar este job em tela cheia"
+                                  >
+                                    <IconActivity className="size-3" />
+                                    <span>Acompanhar</span>
+                                  </button>
 
                                   {/* Ver detalhes no studio */}
                                   <button

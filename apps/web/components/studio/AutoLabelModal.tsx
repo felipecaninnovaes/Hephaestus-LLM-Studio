@@ -219,6 +219,7 @@ export default function AutoLabelModal({
     setPrompt((prev) => (prev ? `${prev} ${tag}` : tag));
   }
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: inicialização run-on-open do modal — lê props de abertura (selectedImageIds/initialFilterClassId/classes/selectedClassId) para definir escopo e restaurar prefs; re-executar ao mudar classes/seleção enquanto aberto sobrescreveria escolhas do usuário e resetaria o formulário
   useEffect(() => {
     if (!open) return;
     setTopError(null);

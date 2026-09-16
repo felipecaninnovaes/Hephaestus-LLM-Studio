@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   IconCheck,
@@ -85,6 +85,16 @@ export default function CreateDatasetModal({
   const [uploadProgress, setUploadProgress] = useState<{ sent: number; total: number; batchIndex: number; batchCount: number } | null>(null);
   const cancelledRef = useRef(false);
 
+  const applyInspection = useCallback((res: InspectionResult) => {
+    setInspection(res);
+    setTitle(res.title);
+    setType(res.category);
+    setClassesRaw(res.classes.join(", "));
+    setNameError(null);
+    setClassesError(null);
+    setTopError(null);
+  }, []);
+
   useEffect(() => {
     if (!open) return;
     setPhase("form");
@@ -106,19 +116,9 @@ export default function CreateDatasetModal({
 
     const t = setTimeout(() => nameRef.current?.focus(), 50);
     return () => clearTimeout(t);
-  }, [open, initialMode, initialInspection]);
+  }, [open, initialMode, initialInspection, applyInspection]);
 
   if (!open) return null;
-
-  function applyInspection(res: InspectionResult) {
-    setInspection(res);
-    setTitle(res.title);
-    setType(res.category);
-    setClassesRaw(res.classes.join(", "));
-    setNameError(null);
-    setClassesError(null);
-    setTopError(null);
-  }
 
   async function handleZipSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];

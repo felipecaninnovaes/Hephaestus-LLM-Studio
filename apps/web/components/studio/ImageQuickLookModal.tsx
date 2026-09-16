@@ -100,7 +100,7 @@ export function ImageQuickLookModal({
         }
       }
     },
-    [open, onClose, currentIndex, items.length, onNavigate, currentItem, dataset, router]
+    [open, onClose, currentIndex, items.length, onNavigate, currentItem, dataset, router, onEditImage]
   );
 
   useEffect(() => {

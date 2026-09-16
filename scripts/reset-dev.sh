@@ -8,7 +8,7 @@
 # Exit 0 SÓ com todos PASS. Sem sudo; só volumes infra_* (down -v já cuida).
 # Limitação: orquestradores REMOTOS (TrueNAS) exigem re-adoção manual pós-reset
 # (pairing não automatizado). Sem --yes: lista o que faria e sai 1 (trava).
-# Uso: bash scripts/reset-dev.sh --yes [--skip-smoke] [--build] [--timeout 180]
+# Uso: bash scripts/reset-dev.sh --yes [--skip-smoke] [--build] [--with-web] [--timeout 180]
 # ============================================================================
 set -euo pipefail
 
@@ -17,13 +17,19 @@ COMPOSE_FILE="$ROOT_DIR/infra/compose.yaml"
 ENV_FILE="$ROOT_DIR/infra/.env"
 API="http://localhost:8080"
 
-DO_YES=false; SKIP_SMOKE=false; DO_BUILD=false; TIMEOUT=180
+DO_YES=false; SKIP_SMOKE=false; DO_BUILD=false; WITH_WEB=false; TIMEOUT=180
+
+# Backend explícito (paridade com start-host.sh --no-web): web FORA por
+# default — o dev roda `npm run dev` no host :3000 e o container web quebraria
+# o up com FAIL espúrio. --with-web inclui o web (modo full).
+BACKEND_SERVICES=(db seaweedfs embedder principal manager orchestrator-local)
 
 usage() {
-  echo "Uso: scripts/reset-dev.sh --yes [--skip-smoke] [--build] [--timeout <secs>]"
+  echo "Uso: scripts/reset-dev.sh --yes [--skip-smoke] [--build] [--with-web] [--timeout <secs>]"
   echo "PROVA day-one (destrutiva): down -v + up -d + asserts de bootstrap do zero."
   echo "  --yes  confirma (sem ela: lista e sai 1); --skip-smoke pula smoke final"
-  echo "  --build  up com --build; --timeout <secs> espera total (default 180)"
+  echo "  --build  up com --build; --with-web inclui container web (default: só backend)"
+  echo "  --timeout <secs> espera total (default 180)"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -31,6 +37,7 @@ while [[ $# -gt 0 ]]; do
     --yes) DO_YES=true; shift ;;
     --skip-smoke) SKIP_SMOKE=true; shift ;;
     --build) DO_BUILD=true; shift ;;
+    --with-web) WITH_WEB=true; shift ;;
     --timeout)
       [[ $# -ge 2 ]] || { echo "Erro: --timeout exige valor." >&2; exit 1; }
       TIMEOUT="$2"; shift 2 ;;
@@ -50,7 +57,7 @@ if [[ "$DO_YES" != true ]]; then
   echo "DRY-RUN (nada executado — sem --yes, exit 1 por trava de segurança):"
   echo "  [1] Pré: docker daemon + STUDIO_PASSWORD (gera se ausente)"
   echo "  [2] down -v --remove-orphans (apaga volumes dev infra_*)"
-  echo "  [3] up -d$([[ "$DO_BUILD" == true ]] && echo ' --build' || echo ' (imagens atuais)')"
+  echo "  [3] up -d ${BACKEND_SERVICES[*]}$([[ "$WITH_WEB" == true ]] && echo ' web' || true)$([[ "$DO_BUILD" == true ]] && echo ' --build' || echo ' (imagens atuais)')"
   echo "  [4] s3-init completed + poll $API/health até auth=ready (${TIMEOUT}s)"
   echo "  [5] ASSERTS: health, ensure-bucket.sh, login, restart-loop, smoke e2e"
   exit 1
@@ -80,8 +87,9 @@ DOWN_OUT="$(STUDIO_PASSWORD="$STUDIO_PASSWORD" compose down -v --remove-orphans 
   && report PASS "[2/6]" "down -v --remove-orphans ok" \
   || report FAIL "[2/6]" "down -v falhou: $DOWN_OUT"
 
-# --- [3/6] up -d (imagens atuais; --build só com a flag) ---
+# --- [3/6] up -d só backend (web fora: npm run dev ocupa :3000 no host) ---
 UP_ARGS=(up -d); [[ "$DO_BUILD" == true ]] && UP_ARGS+=(--build)
+UP_ARGS+=("${BACKEND_SERVICES[@]}"); [[ "$WITH_WEB" == true ]] && UP_ARGS+=(web)
 UP_OUT="$(STUDIO_PASSWORD="$STUDIO_PASSWORD" compose "${UP_ARGS[@]}" 2>&1)" \
   && report PASS "[3/6]" "up -d ok" \
   || report FAIL "[3/6]" "up -d falhou: $UP_OUT"

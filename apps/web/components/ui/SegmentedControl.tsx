@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import type React from "react";
 
 export interface SegmentedControlOption<T extends string = string> {
   id: T;

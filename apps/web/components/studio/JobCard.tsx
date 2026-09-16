@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import type React from "react";
 import { Badge, jobStatusToBadgeVariant } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import {

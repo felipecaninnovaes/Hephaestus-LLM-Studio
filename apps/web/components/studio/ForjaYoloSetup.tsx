@@ -58,7 +58,7 @@ export function estimateYoloVramGb(
     activationFactor = 1.5;
   }
 
-  const resFactor = Math.pow(imgsz / 640, 2);
+  const resFactor = (imgsz / 640) ** 2;
   const batchMemory = (batch / 16) * 1.8 * activationFactor * resFactor;
 
   let optOverhead = 0.4;

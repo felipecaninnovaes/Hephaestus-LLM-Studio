@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useMemo } from "react";
+import type React from "react";
+import { useMemo } from "react";
 import { Input } from "@/components/ui/Input";
 import { Select, type SelectOption, type SelectRefHandle } from "@/components/ui/Select";
 import type { YoloAugment } from "@/types/studio";

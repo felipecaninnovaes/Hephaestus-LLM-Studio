@@ -1,4 +1,4 @@
-import React from "react";
+import type React from "react";
 
 export interface KbdProps extends React.HTMLAttributes<HTMLElement> {
   children: React.ReactNode;

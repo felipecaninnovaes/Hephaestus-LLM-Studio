@@ -42,6 +42,13 @@ while [[ $# -gt 0 ]]; do
       echo "  MANAGER_URL      Default http://localhost:8081 (rede do host)"
       echo "  MANAGER_TOKEN    Default changeme (dev local; avisa se usar)"
       echo "  ENGINE_MOCK      Default 1 (CPU-only no dev; respeita exportado)"
+      echo "  STORAGE_BACKEND  Default s3 (paridade com compose; 'mock' = RAM efêmera)"
+      echo "  S3_ENDPOINT_URL  Default http://localhost:8333 (rede do host)"
+      echo "  S3_BUCKET        Default heph-data"
+      echo "  S3_ACCESS_KEY    Default heph (LOCAL-DEV; rotacione se expor)"
+      echo "  S3_SECRET_KEY    Default heph-local-dev (LOCAL-DEV; rotacione se expor)"
+      echo "  S3_PUBLIC_ENDPOINT_URL  Default http://localhost:8333 (presigned p/ browser dev)"
+      echo "  S3_URL_TTL_SECS  Default 3600"
       echo ""
       echo "Requer Linux + bash + coreutils (timeout)."
       exit 0
@@ -74,6 +81,19 @@ fi
 # CPU-only é inegociável no dev; respeita valor exportado pelo usuário.
 export ENGINE_MOCK="${ENGINE_MOCK:-1}"
 
+# Paridade com compose (bloco principal): nativo e compose servem o MESMO
+# bucket S3 — sem isso a galeria mente (nativo em mock não vê objetos que nós
+# remotos enviaram ao S3, e o aviso "uploads NÃO sobrevivem a restart" dispara
+# sozinho). Rede do HOST (localhost:8333), não DNS de container; tudo
+# sobrescrevível por env exportado antes da chamada, como os demais.
+export STORAGE_BACKEND="${STORAGE_BACKEND:-s3}"
+export S3_ENDPOINT_URL="${S3_ENDPOINT_URL:-http://localhost:8333}"
+export S3_BUCKET="${S3_BUCKET:-heph-data}"
+export S3_ACCESS_KEY="${S3_ACCESS_KEY:-heph}"
+export S3_SECRET_KEY="${S3_SECRET_KEY:-heph-local-dev}"
+export S3_PUBLIC_ENDPOINT_URL="${S3_PUBLIC_ENDPOINT_URL:-http://localhost:8333}"
+export S3_URL_TTL_SECS="${S3_URL_TTL_SECS:-3600}"
+
 # URL nunca logada: contém credencial do Postgres (padrão main.rs:105-107).
 # Versão mascarada p/ banner e erros; o export real acima permanece intacto.
 DATABASE_URL_MASKED="$(printf '%s' "$DATABASE_URL" | sed -E 's|^([a-z+]+://)[^@]*@|\1***@|')"
@@ -82,6 +102,7 @@ echo "=== [Hephaestus Studio] api-principal nativo ==="
 echo "DATABASE_URL : $DATABASE_URL_MASKED"
 echo "MANAGER_URL  : $MANAGER_URL"
 echo "ENGINE_MOCK  : $ENGINE_MOCK"
+echo "STORAGE_BACKEND : $STORAGE_BACKEND"
 
 # Preflight 1: Postgres alcançável. Método portável sem psql/pg_isready/nc no
 # host: probe TCP via /dev/tcp (builtin do bash) no host/porta extraídos da

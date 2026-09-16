@@ -42,7 +42,9 @@ remove a sintoma na UI, mas o banco continua poluído e a colisão (2) persiste.
   colunas `jobs.phase TEXT` e `jobs.message TEXT` (snapshot, não histórico — eventos
   históricos ficam fora de escopo v1). `report_job` (ramo `preparing|running`) grava
   `COALESCE($n, phase)`; `JobRow` expõe `phase`/`message`. O array `jobs.metrics` passa
-  a conter **apenas pontos de dados** ⇒ colisão D0.2 eliminada.
+  a conter **apenas pontos de dados** ⇒ colisão D0.2 eliminada. Reports terminais
+  carregam phase/message e são persistidos via COALESCE (job done mostra `completed`,
+  failed mostra `error` + mensagem).
 - **D4 — Principal lê o status das colunas.** `to_job_response` deriva
   `phase`/`phaseMessage` dos campos topo do `InternalJob` (colunas D3),
   com o fallback de status-para-fase atual; a derivação a partir do último item do

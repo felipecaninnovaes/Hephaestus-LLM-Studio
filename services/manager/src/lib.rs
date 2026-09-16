@@ -1427,9 +1427,11 @@ pub async fn report_job(
             }
 
             sqlx::query(
-                "UPDATE jobs SET status = 'done', finished_at = now(), progress = 1.0 WHERE id = $1",
+                "UPDATE jobs SET status = 'done', finished_at = now(), progress = 1.0, phase = COALESCE($2, phase), message = COALESCE($3, message) WHERE id = $1",
             )
             .bind(id)
+            .bind(&report.phase)
+            .bind(&report.message)
             .execute(pool)
             .await
             .map_err(|e| ManagerError::Internal(format!("set done: {e}")))?;
@@ -1446,8 +1448,10 @@ pub async fn report_job(
                     .map_err(|e| ManagerError::Internal(format!("merge error: {e}")))?;
             }
 
-            sqlx::query("UPDATE jobs SET status = 'failed', finished_at = now() WHERE id = $1")
+            sqlx::query("UPDATE jobs SET status = 'failed', finished_at = now(), phase = COALESCE($2, phase), message = COALESCE($3, message) WHERE id = $1")
                 .bind(id)
+                .bind(&report.phase)
+                .bind(&report.message)
                 .execute(pool)
                 .await
                 .map_err(|e| ManagerError::Internal(format!("set failed: {e}")))?;

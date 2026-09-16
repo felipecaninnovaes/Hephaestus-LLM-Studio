@@ -5914,6 +5914,125 @@ async fn t6_ac006a_status_report_persists_phase_and_message() {
 
 #[tokio::test]
 #[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t7_ac006a_terminal_report_persiste_phase_message() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    // (a) done com phase/message atualiza as colunas (não congela no "running").
+    let ds_id = insert_test_dataset(&p).await;
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create job");
+    let job_id = uuid::Uuid::parse_str(&resp.job_id).unwrap();
+
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "running".to_string(),
+            progress: Some(0.3),
+            epoch: Some(2),
+            step: Some(50),
+            metrics: None,
+            error: None,
+            artifacts: None,
+            meta_content: None,
+            phase: Some("training".to_string()),
+            message: Some("Treinando época 2".to_string()),
+        },
+    )
+    .await
+    .expect("report running");
+
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "done".to_string(),
+            progress: Some(1.0),
+            epoch: Some(2),
+            step: Some(50),
+            metrics: None,
+            error: None,
+            artifacts: None,
+            meta_content: None,
+            phase: Some("completed".to_string()),
+            message: Some("Treino concluído".to_string()),
+        },
+    )
+    .await
+    .expect("report done");
+
+    let job = manager::get_job(&p, job_id)
+        .await
+        .expect("get job after done");
+    assert_eq!(job.status, "done");
+    assert_eq!(job.phase.as_deref(), Some("completed"));
+    assert_eq!(job.message.as_deref(), Some("Treino concluído"));
+
+    // (b) done com phase/message None NÃO pisa as colunas (COALESCE segura).
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create job 2");
+    let job_id = uuid::Uuid::parse_str(&resp.job_id).unwrap();
+
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "running".to_string(),
+            progress: Some(0.1),
+            epoch: Some(0),
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: None,
+            meta_content: None,
+            phase: Some("loading_model".to_string()),
+            message: Some("Carregando FLUX".to_string()),
+        },
+    )
+    .await
+    .expect("report running 2");
+
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "done".to_string(),
+            progress: Some(1.0),
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: None,
+            meta_content: None,
+            phase: None,
+            message: None,
+        },
+    )
+    .await
+    .expect("report done 2");
+
+    let job = manager::get_job(&p, job_id)
+        .await
+        .expect("get job 2 after done");
+    assert_eq!(job.status, "done");
+    assert_eq!(
+        job.phase.as_deref(),
+        Some("loading_model"),
+        "COALESCE must preserve phase on terminal report with None"
+    );
+    assert_eq!(
+        job.message.as_deref(),
+        Some("Carregando FLUX"),
+        "COALESCE must preserve message on terminal report with None"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
 async fn delete_job_sweep_inclui_models_orfaos() {
     let _guard = SERIAL.lock().await;
     let p = pool().await;

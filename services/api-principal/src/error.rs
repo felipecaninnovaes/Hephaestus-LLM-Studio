@@ -55,3 +55,5 @@ pub const MSG_PAIRING_INVALID: &str = "pairing code invalid or orchestrator unre
 pub const MSG_MODEL_DOWNLOAD_FAILED: &str = "model download failed";
 /// 403 de download por URL com MODEL_DOWNLOAD_ALLOWED_HOSTS ausente/vazio (I.4a, ADR-0012 D4/E1).
 pub const MSG_MODEL_DOWNLOAD_DISABLED: &str = "model download disabled";
+/// 409 de job em estado não-terminal, delete não possível (AC-003).
+pub const MSG_JOB_NOT_TERMINAL: &str = "only terminal jobs (done|failed|cancelled) can be deleted";

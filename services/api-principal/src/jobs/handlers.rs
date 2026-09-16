@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 use crate::error::{
     err, MSG_DATASET_NOT_READY, MSG_INVALID_REQUEST, MSG_JOB_NOT_ABORTABLE, MSG_JOB_NOT_DONE,
-    MSG_NOT_FOUND, MSG_QUEUE_UNAVAILABLE, MSG_STORAGE_UNAVAILABLE,
+    MSG_JOB_NOT_TERMINAL, MSG_NOT_FOUND, MSG_QUEUE_UNAVAILABLE, MSG_STORAGE_UNAVAILABLE,
 };
 use crate::jobs::manager_client::ManagerError;
 use crate::jobs::models::{self, AutotrackerJobRequest, PredictJobRequest, YoloJobRequest};
@@ -328,6 +328,14 @@ fn job_not_abortable() -> Response {
         StatusCode::CONFLICT,
         "job_not_abortable",
         MSG_JOB_NOT_ABORTABLE,
+    )
+}
+
+fn job_not_terminal() -> Response {
+    err(
+        StatusCode::CONFLICT,
+        "job_not_terminal",
+        MSG_JOB_NOT_TERMINAL,
     )
 }
 
@@ -1879,10 +1887,137 @@ pub async fn abort_job(State(state): State<AppState>, Path(id): Path<String>) ->
         Err(ManagerError::NotFound) => not_found(),
         Err(ManagerError::NotAbortable) => job_not_abortable(),
         Err(ManagerError::Unavailable(_)) => queue_unavailable(),
-        // PairingInvalid/Conflict/InvalidRequest não são esperados no abort; mapeia para 503.
+        // PairingInvalid/Conflict/InvalidRequest/NotDeletable não são esperados no abort; mapeia para 503.
         Err(ManagerError::PairingInvalid) => queue_unavailable(),
         Err(ManagerError::Conflict) => queue_unavailable(),
         Err(ManagerError::InvalidRequest(_)) => queue_unavailable(),
+        Err(ManagerError::NotDeletable) => queue_unavailable(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sweep de artifacts (best-effort — falha só loga, nunca 500)
+// ---------------------------------------------------------------------------
+
+/// Sweep best-effort de uma lista EXATA de chaves S3 (vieram do manager em
+/// `DeletedJob.object_keys`, já sem as chaves das gerações preservadas).
+/// Usar a lista exata (e não `delete_prefix(artifacts/{job}/)`) é o que
+/// garante que a galeria sobreviva ao job, pois os bytes das gerações vivem
+/// sob o MESMO prefixo. Nunca retorna erro — cada falha é logada (idiom D7).
+async fn sweep_object_keys(state: &AppState, keys: &[String]) {
+    for key in keys {
+        match state.storage.delete(key).await {
+            Ok(()) => {}
+            Err(StorageError::NotFound) => {} // já não existia — ok
+            Err(e) => {
+                eprintln!("aviso: sweep {key} falhou ({e}) — objeto reaproveitável");
+            }
+        }
+    }
+}
+
+/// Extrai `object_keys` (string[]) de um `DeletedJob` ou `CleanupResult` JSON.
+/// Ambos expõem `object_keys` no topo (por job / agregado, já sem gerações).
+fn extract_object_keys(v: &serde_json::Value) -> Vec<String> {
+    v.get("object_keys")
+        .and_then(|x| x.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|k| k.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Remapeia um `DeletedJob` snake_case (manager) → wire camelCase (ADR-0002 D1).
+fn job_deleted_to_wire(v: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "id": v.get("id").cloned().unwrap_or(serde_json::Value::Null),
+        "status": v.get("status").cloned().unwrap_or(serde_json::Value::Null),
+        "artifacts": v.get("artifacts").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "objectKeys": v.get("object_keys").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "modelsDeleted": v.get("models_deleted").cloned().unwrap_or_else(|| serde_json::json!(0)),
+        "generationsPreserved": v.get("generations_preserved").cloned().unwrap_or_else(|| serde_json::json!(0)),
+    })
+}
+
+/// Remapeia um `CleanupResult` snake_case → wire camelCase (jobs aninhados incl.).
+fn cleanup_result_to_wire(v: &serde_json::Value) -> serde_json::Value {
+    let jobs = v
+        .get("jobs")
+        .and_then(|x| x.as_array())
+        .map(|arr| arr.iter().map(job_deleted_to_wire).collect::<Vec<_>>())
+        .unwrap_or_default();
+    serde_json::json!({
+        "deleted": v.get("deleted").cloned().unwrap_or_else(|| serde_json::json!(0)),
+        "jobs": jobs,
+        "objectKeys": v.get("object_keys").cloned().unwrap_or_else(|| serde_json::json!([])),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// DELETE /api/jobs/:id — exclui job terminal
+// ---------------------------------------------------------------------------
+
+/// DELETE /api/jobs/:id — exclui um job terminal via manager.
+///
+/// Sweep best-effort das `object_keys` retornadas (não-varre a galeria
+/// preservada — decisão AC-003). Status: 200 | 401 | 404 `not_found`
+/// | 409 `job_not_terminal` | 503 `queue_unavailable`.
+pub async fn delete_job(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    // 1. Parse id — não-UUID ⇒ 404.
+    if parse_uuid(&id).is_none() {
+        return not_found();
+    }
+
+    // 2. Proxy ao manager.
+    match state.manager.delete_job(&id).await {
+        Ok(v) => {
+            let keys = extract_object_keys(&v);
+            let wire = job_deleted_to_wire(&v);
+            sweep_object_keys(&state, &keys).await;
+            (StatusCode::OK, Json(wire)).into_response()
+        }
+        Err(ManagerError::NotFound) => not_found(),
+        Err(ManagerError::NotDeletable) => job_not_terminal(),
+        Err(ManagerError::Unavailable(_)) => queue_unavailable(),
+        // NotAbortable/PairingInvalid/Conflict/InvalidRequest não são esperados no delete; mapeia para 503.
+        Err(ManagerError::NotAbortable) => queue_unavailable(),
+        Err(ManagerError::PairingInvalid) => queue_unavailable(),
+        Err(ManagerError::Conflict) => queue_unavailable(),
+        Err(ManagerError::InvalidRequest(_)) => queue_unavailable(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/jobs/cleanup — limpa jobs antigos
+// ---------------------------------------------------------------------------
+
+/// POST /api/jobs/cleanup — limpa jobs antigos via manager.
+///
+/// Status: 200 | 400 `invalid_request` | 401 | 503 `queue_unavailable`.
+pub async fn cleanup_jobs(
+    State(state): State<AppState>,
+    body: Result<Json<serde_json::Value>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    // 1. Parse body — JSON inválido ⇒ 400.
+    let v = match body {
+        Ok(Json(v)) => v,
+        Err(_) => return invalid_request(),
+    };
+
+    // 2. Proxy ao manager.
+    match state.manager.cleanup_jobs(&v).await {
+        Ok(result) => {
+            // Sweep best-effort das chaves agregadas (já exclui galeria viva).
+            let keys = extract_object_keys(&result);
+            let wire = cleanup_result_to_wire(&result);
+            sweep_object_keys(&state, &keys).await;
+            (StatusCode::OK, Json(wire)).into_response()
+        }
+        Err(ManagerError::InvalidRequest(_)) => invalid_request(),
+        Err(ManagerError::Unavailable(_)) => queue_unavailable(),
+        Err(_) => queue_unavailable(),
     }
 }
 
@@ -4458,5 +4593,149 @@ mod tests {
         let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(json["code"], "unsupported_architecture");
+    }
+
+    // =========================================================================
+    // DELETE /api/jobs/:id unit tests (AC-003)
+    // =========================================================================
+
+    #[tokio::test]
+    async fn delete_job_404_non_uuid() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = delete_job(axum::extract::State(state), Path("not-a-uuid".to_string())).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_job_200() {
+        let mut mock = MockManager::default();
+        mock.delete_job_result = Some(serde_json::json!({
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "status": "done",
+            "artifacts": ["best.pt"],
+            "object_keys": ["artifacts/550e8400-e29b-41d4-a716-446655440000/best.pt"],
+            "models_deleted": 1,
+            "generations_preserved": 0
+        }));
+        let state = test_state(mock);
+        let resp = delete_job(
+            axum::extract::State(state),
+            Path("550e8400-e29b-41d4-a716-446655440000".to_string()),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["id"], "550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(json["status"], "done");
+        assert!(json["artifacts"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("best.pt")));
+        // wire deve ser camelCase (contract D1), nunca snake_case do manager.
+        assert_eq!(json["objectKeys"].as_array().unwrap().len(), 1);
+        assert_eq!(json["modelsDeleted"], 1);
+        assert_eq!(json["generationsPreserved"], 0);
+        assert!(
+            json.get("object_keys").is_none(),
+            "snake_case não deve vazar no wire"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_job_404_manager_not_found() {
+        let mock = MockManager::default(); // delete_job_result = None → NotFound
+        let state = test_state(mock);
+        let resp = delete_job(
+            axum::extract::State(state),
+            Path("550e8400-e29b-41d4-a716-446655440000".to_string()),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_job_409_not_terminal() {
+        let mut mock = MockManager::default();
+        mock.delete_not_terminal = true;
+        let state = test_state(mock);
+        let resp = delete_job(
+            axum::extract::State(state),
+            Path("550e8400-e29b-41d4-a716-446655440000".to_string()),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], "job_not_terminal");
+    }
+
+    #[tokio::test]
+    async fn delete_job_503_manager_offline() {
+        let mut mock = MockManager::default();
+        mock.fail = true;
+        let state = test_state(mock);
+        let resp = delete_job(
+            axum::extract::State(state),
+            Path("550e8400-e29b-41d4-a716-446655440000".to_string()),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    // =========================================================================
+    // POST /api/jobs/cleanup unit tests (AC-003)
+    // =========================================================================
+
+    #[tokio::test]
+    async fn cleanup_jobs_200() {
+        let mut mock = MockManager::default();
+        mock.cleanup_result = Some(serde_json::json!({
+            "deleted": 2,
+            "jobs": [
+                {"id": "550e8400-e29b-41d4-a716-446655440000", "status": "done", "artifacts": []},
+                {"id": "550e8400-e29b-41d4-a716-446655440001", "status": "failed", "artifacts": []}
+            ]
+        }));
+        let state = test_state(mock);
+        let resp = cleanup_jobs(
+            axum::extract::State(state),
+            Ok(Json(serde_json::json!({"olderThanDays": 30}))),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["deleted"], 2);
+        assert!(json["jobs"].as_array().unwrap().len() == 2);
+    }
+
+    #[tokio::test]
+    async fn cleanup_jobs_400_invalid_request() {
+        let mut mock = MockManager::default();
+        mock.cleanup_invalid_request = Some("invalid statuses".into());
+        let state = test_state(mock);
+        let resp = cleanup_jobs(
+            axum::extract::State(state),
+            Ok(Json(serde_json::json!({"statuses": ["invalid"]}))),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn cleanup_jobs_503_manager_offline() {
+        let mut mock = MockManager::default();
+        mock.fail = true;
+        let state = test_state(mock);
+        let resp = cleanup_jobs(axum::extract::State(state), Ok(Json(serde_json::json!({})))).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }

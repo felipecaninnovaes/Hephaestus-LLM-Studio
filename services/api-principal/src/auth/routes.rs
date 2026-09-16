@@ -147,6 +147,8 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
         &[200, 401, 404, 409, 503],
     ),
     ("POST", "/api/jobs/:id/abort", &[200, 401, 404, 409, 503]),
+    ("DELETE", "/api/jobs/:id", &[200, 401, 404, 409, 503]),
+    ("POST", "/api/jobs/cleanup", &[200, 400, 401, 503]),
     ("GET", "/api/orchestrators", &[200, 401, 503]),
     (
         "POST",
@@ -351,7 +353,10 @@ pub fn build(state: AppState) -> axum::Router {
         // Jobs (ADR-0007 D3: BFF do manager, 7 rotas de leitura).
         .route("/api/jobs", get(jobs::handlers::list_jobs))
         .route("/api/jobs/queue", get(jobs::handlers::list_queue))
-        .route("/api/jobs/:id", get(jobs::handlers::get_job))
+        .route(
+            "/api/jobs/:id",
+            get(jobs::handlers::get_job).delete(jobs::handlers::delete_job),
+        )
         .route(
             "/api/jobs/:id/events",
             get(jobs::handlers::stream_job_events),
@@ -407,6 +412,7 @@ pub fn build(state: AppState) -> axum::Router {
             get(jobs::handlers::preview_autolabel_captions),
         )
         .route("/api/jobs/:id/abort", post(jobs::handlers::abort_job))
+        .route("/api/jobs/cleanup", post(jobs::handlers::cleanup_jobs))
         // Monitoramento (F6.1b — ADR-0009 D1/D2/D3).
         .route("/api/orchestrators", get(monitoring::get_orchestrators))
         .route(

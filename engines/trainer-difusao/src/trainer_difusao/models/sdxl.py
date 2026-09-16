@@ -16,7 +16,7 @@ from trainer_difusao.common import (
     _save_lora_safetensors,
     _setup_cache_dir,
 )
-from trainer_difusao.dataset import DiffusionDataset
+from trainer_difusao.dataset import DiffusionDataset, build_dataloader
 from trainer_difusao.models.base import BaseModelTrainer
 from trainer_difusao.optimizers import _create_lr_scheduler, _create_optimizer
 
@@ -139,7 +139,6 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         import torch.nn.functional as F
         from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
         from peft import LoraConfig, get_peft_model
-        from torch.utils.data import DataLoader
         from transformers import (
             AutoTokenizer,
             CLIPTextModel,
@@ -171,6 +170,7 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
     sample_seed = int(samples_cfg.get("seed", seed))
 
     resolution = int(lora_cfg.get("resolution", 1024))
+    enable_bucket = bool(lora_cfg.get("enable_bucket", True))
     grad_accum = max(1, int(lora_cfg.get("gradient_accumulation_steps", 1)))
     optimizer_name = str(lora_cfg.get("optimizer", "adamw8bit"))
     lr_scheduler_name = str(lora_cfg.get("lr_scheduler", "cosine"))
@@ -273,11 +273,12 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
     optimizer = _create_optimizer(unet, optimizer_name, learning_rate)
 
     dataset = DiffusionDataset(
-        dataset_path, resolution=resolution, trigger_word=trigger_word
+        dataset_path,
+        resolution=resolution,
+        trigger_word=trigger_word,
+        enable_bucket=enable_bucket,
     )
-    dataloader = DataLoader(
-        dataset, batch_size=batch_size, shuffle=True, drop_last=False
-    )
+    dataloader = build_dataloader(dataset, batch_size, seed=seed)
 
     steps_per_epoch = math.ceil(len(dataloader) / grad_accum)
     total_train_steps = max(1, steps_per_epoch * epochs)
@@ -385,7 +386,16 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
             )
 
             # Micro-conditioning de tamanho original, target e crop
-            batch_time_ids = add_time_ids.repeat(cur_bs, 1)
+            # Com bucketing ativo as dims reais do batch (bucket) substituem a resolução configurada.
+            if enable_bucket:
+                bh, bw = pixel_values.shape[2], pixel_values.shape[3]
+                batch_time_ids = torch.tensor(
+                    [[bh, bw, 0, 0, bh, bw]],
+                    dtype=target_dtype,
+                    device=device,
+                ).repeat(cur_bs, 1)
+            else:
+                batch_time_ids = add_time_ids.repeat(cur_bs, 1)
 
             # Predição de ruído pelo UNet com adaptadores LoRA ativos
             model_pred = unet(

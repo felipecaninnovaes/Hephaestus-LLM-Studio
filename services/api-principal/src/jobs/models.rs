@@ -781,6 +781,9 @@ pub struct DiffusionJobRequest {
     pub mixed_precision: String,
     #[serde(default = "default_diffusion_quantization")]
     pub quantization: String,
+    /// Bucketing por aspect ratio (ADR-0018): preserva a proporção das imagens.
+    #[serde(default = "default_diffusion_enable_bucket")]
+    pub enable_bucket: bool,
     /// Nome customizado opcional do modelo gerado (ADR-0022 D1).
     pub output_name: Option<String>,
     #[serde(default = "default_diffusion_checkpoint_interval")]
@@ -831,6 +834,10 @@ fn default_diffusion_lr_warmup() -> u32 {
 }
 fn default_diffusion_precision() -> String {
     "fp16".to_string()
+}
+
+fn default_diffusion_enable_bucket() -> bool {
+    true
 }
 
 pub fn validate_diffusion_request(req: DiffusionJobRequest) -> Result<DiffusionJobRequest, String> {
@@ -988,6 +995,11 @@ pub fn generate_diffusion_config_yaml(job_id: &str, req: &DiffusionJobRequest) -
         Some(r) => format!("  resolution: {}\n", r),
         None => String::new(),
     };
+    let enable_bucket_line = if req.enable_bucket {
+        "  enable_bucket: true\n".to_string()
+    } else {
+        "  enable_bucket: false\n".to_string()
+    };
     let samples_section = match &req.sample_prompt {
         Some(sp) if !sp.trim().is_empty() => {
             let seed_line = match req.sample_seed {
@@ -1024,7 +1036,7 @@ lora:
   lr_warmup_steps: {lr_warmup_steps}
   mixed_precision: "{mixed_precision}"
   quantization: "{quantization}"
-  checkpoint_interval: {checkpoint_interval}
+{enable_bucket_line}  checkpoint_interval: {checkpoint_interval}
 {samples_section}"#,
         job_id = job_id,
         base_model = req.base_model,
@@ -1045,6 +1057,7 @@ lora:
         lr_warmup_steps = req.lr_warmup_steps,
         mixed_precision = req.mixed_precision,
         quantization = req.quantization,
+        enable_bucket_line = enable_bucket_line,
         samples_section = samples_section,
     )
 }
@@ -2318,6 +2331,7 @@ mod tests {
         assert_eq!(validated.alpha, 16);
         assert_eq!(validated.learning_rate, 0.0001);
         assert_eq!(validated.quantization, "4bit");
+        assert!(validated.enable_bucket);
         assert!(validated.trigger_word.is_none());
 
         let yaml = generate_diffusion_config_yaml("job-123", &validated);
@@ -2325,7 +2339,15 @@ mod tests {
         assert!(yaml.contains(r#"model: "sdxl""#));
         assert!(yaml.contains(r#"rank: 16"#));
         assert!(yaml.contains(r#"quantization: "4bit""#));
+        assert!(yaml.contains("  enable_bucket: true"));
         assert!(!yaml.contains("output_name:"));
+
+        // Desabilitar bucketing injeta `enable_bucket: false` no yaml
+        let mut no_bucket = validated.clone();
+        no_bucket.enable_bucket = false;
+        let yaml3 = generate_diffusion_config_yaml("job-125", &no_bucket);
+        assert!(yaml3.contains("  enable_bucket: false"));
+        assert!(!yaml3.contains("  enable_bucket: true"));
 
         // Com output_name explícito
         let mut with_name = validated.clone();

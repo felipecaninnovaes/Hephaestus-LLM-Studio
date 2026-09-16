@@ -152,6 +152,7 @@ export default function ForjaDifusaoSetup({
   const [quantization, setQuantization] = useState<"none" | "4bit" | "8bit">(
     initialPreset?.quantization ?? "4bit"
   );
+  const [enableBucket, setEnableBucket] = useState(initialPreset?.enableBucket ?? true);
   const [checkpointInterval, setCheckpointInterval] = useState<number>(
     initialPreset?.checkpointInterval ?? 1
   );
@@ -271,6 +272,7 @@ export default function ForjaDifusaoSetup({
     if (preset.lrWarmupSteps !== undefined) setLrWarmupSteps(preset.lrWarmupSteps);
     if (preset.mixedPrecision !== undefined) setMixedPrecision(preset.mixedPrecision);
     if (preset.quantization !== undefined) setQuantization(preset.quantization);
+    if (preset.enableBucket !== undefined) setEnableBucket(preset.enableBucket);
     if (preset.checkpointInterval !== undefined) setCheckpointInterval(preset.checkpointInterval);
     if (preset.epochOffset !== undefined) setEpochOffset(preset.epochOffset);
     if (preset.enableSamples !== undefined) setEnableSamples(preset.enableSamples);
@@ -300,6 +302,7 @@ export default function ForjaDifusaoSetup({
       lrWarmupSteps,
       mixedPrecision,
       quantization,
+      enableBucket,
       checkpointInterval,
       epochOffset: epochOffset > 0 ? epochOffset : undefined,
       enableSamples,
@@ -390,6 +393,12 @@ export default function ForjaDifusaoSetup({
                   : lrWarmupSteps,
           mixedPrecision: lora.mixed_precision || parsed.mixedPrecision || parsed.mixed_precision || mixedPrecision,
           quantization: lora.quantization || parsed.quantization || quantization,
+          enableBucket:
+            typeof lora.enable_bucket === "boolean"
+              ? lora.enable_bucket
+              : typeof parsed.enableBucket === "boolean"
+                ? parsed.enableBucket
+                : enableBucket,
           checkpointInterval:
             typeof lora.checkpoint_interval === "number"
               ? lora.checkpoint_interval
@@ -709,6 +718,7 @@ export default function ForjaDifusaoSetup({
         lrWarmupSteps,
         mixedPrecision,
         quantization,
+        enableBucket,
         checkpointInterval,
         epochOffset: epochOffset > 0 ? epochOffset : undefined,
       });
@@ -1315,6 +1325,9 @@ export default function ForjaDifusaoSetup({
             <span className="rounded-md bg-white/[0.04] px-2 py-0.5 border border-white/10 text-zinc-300">
               {quantization === "4bit" ? "4-BIT NF4" : quantization === "8bit" ? "8-BIT BNB" : "FP16 PLENO"}
             </span>
+            <span className="rounded-md bg-white/[0.04] px-2 py-0.5 border border-white/10 text-zinc-300">
+              {enableBucket ? "ASPECT RATIO" : "QUADRADO"}
+            </span>
           </div>
         </button>
 
@@ -1341,8 +1354,8 @@ export default function ForjaDifusaoSetup({
               {/* Resolução de Treinamento */}
               <Select
                 id="diffusion-res"
-                label="Resolução de Entrada"
-                hint="Imagens são ajustadas com recorte centrado e aspect ratio seguro."
+                label="Resolução Base de Entrada"
+                hint="Área alvo dos buckets. Com bucketing ativo, a proporção original das imagens é preservada."
                 options={resolutionOptions}
                 value={resolution}
                 onChange={(val) => setResolution(Number(val))}
@@ -1350,6 +1363,32 @@ export default function ForjaDifusaoSetup({
                 fontMono
                 size="default"
               />
+
+              {/* Bucketing por Aspect Ratio */}
+              <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3 space-y-2">
+                <label
+                  htmlFor="enable-bucket-toggle"
+                  className="flex items-start gap-2 cursor-pointer select-none"
+                >
+                  <input
+                    id="enable-bucket-toggle"
+                    type="checkbox"
+                    checked={enableBucket}
+                    onChange={(e) => setEnableBucket(e.target.checked)}
+                    disabled={busy}
+                    className="mt-0.5 size-4 rounded border-white/20 bg-white/5 text-brand-500 focus:ring-brand-500/30"
+                  />
+                  <span className="font-mono text-xs font-semibold text-zinc-200 leading-tight">
+                    Bucketing por Aspect Ratio
+                  </span>
+                </label>
+                <p className="text-[10px] leading-relaxed text-zinc-400 pl-6">
+                  Agrupa as imagens por proporção em buckets de resolução
+                  múltipla de 64 (área ≈ resolução²), evitando esticar tudo
+                  para o quadrado. Recomendado para datasets com fotos em
+                  retrato/paisagem.
+                </p>
+              </div>
 
               {/* Gradient Accumulation */}
               <Select

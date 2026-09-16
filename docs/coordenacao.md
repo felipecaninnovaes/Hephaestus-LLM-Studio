@@ -19,7 +19,17 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-15 (FATIA ABA GERAÇÃO — IMPLEMENTADA NA BRANCH, AGUARDA MERGE DO USUÁRIO)
+## Estado atual — 2026-09-15 (FATIA BUCKETING POR ASPECT RATIO — IMPLEMENTADA NA BRANCH, AGUARDA REVISÃO)
+
+- **FATIA ENABLE BUCKET (branch `feat/enable-bucket`, criada a partir de `feat/aba-geracao`).** Pedido do usuário: implementar `enable_bucket: true` (padrão) no treino de LoRA de difusão (flux2) e na UI. Antes da fatia a opção não existia — todas as imagens eram esticadas para quadrado `resolução×resolução`.
+  - **Engine (`engines/trainer-difusao`)**: `dataset.py` ganhou `_resolve_bucket_reso` (área ≈ `base_res²`, lados múltiplos de 64, min `base_res//2`, max `base_res*2`), agrupamento por bucket (`DiffusionDataset.buckets`/`bucket_dims`), `BucketBatchSampler` (batches uniformes por bucket, nada descartado, RNG com seed) e `build_dataloader`. Wiring em `flux.py`/`sd15.py`/`sdxl.py` (default `enable_bucket=True`); flux1 passou a derivar `img_ids` das dims reais do batch e o micro-conditioning do SDXL usa as dims do bucket quando ativo. Mock não usa dataset (inalterado). **84 testes pytest** (3 novos).
+  - **Contrato**: OpenAPI 0.25.0 → **0.26.0**, `enableBucket: boolean` (default true) em `DiffusionJobRequest`.
+  - **api-principal**: `enable_bucket` no struct (default true), yaml sempre emite `  enable_bucket: true|false` na seção `lora:`, e `enableBucket` incluído nos `params` canônicos (clone "Repetir/Continuar treino"). **402 lib + 15 contract + 7 search_embed verdes**; `cargo check --workspace` limpo.
+  - **UI**: toggle "Bucketing por Aspect Ratio" nas Configurações Avançadas do `ForjaDifusaoSetup.tsx` (default ON), badge `ASPECT RATIO`/`QUADRADO` no resumo, propagação em `types/studio.ts`, `lib/jobs.ts` e presets (export/import/apply). `npm run build` ok.
+  - **Pendência docs-sync**: campo novo de contrato (sem rota nova); docs/backend.md e frontend.md não enumeram os campos do request — sync opcional.
+  - **Pendência @gpu**: validar treino real com bucketing na GPU do TrueNAS (dimensões não-quadradas no VAE Flux2/SDXL).
+
+## Estado anterior — 2026-09-15 (FATIA ABA GERAÇÃO — IMPLEMENTADA NA BRANCH, AGUARDA MERGE DO USUÁRIO)
 
 - **FATIA ABA GERAÇÃO — CONCLUÍDA NA BRANCH `feat/aba-geracao` (18 commits, `6be4639`..`0a3008d`).** Especificação: `docs/adr/0023-aba-geracao.md` (ACEITA). Docs sincronizados (0a3008d), graft build sincronizado.
   - **Entregue**: aba `/geracao` (pills Gerar|Galeria) + `/playground` YOLO-only; OpenAPI 0.25.0 + migration 0011 (`models.kind/arch` + tabela `generations`); engine v2 (batch seed+i 1..8, multi-LoRA ≤4 via set_adapters/peft, custom SDXL/SD15 via from_single_file, thumbs 512px, meta JSONL, sentinela de cancel); daemon quente por nó (serve HTTP, spec-aware reload, idle TTL 600s, preempção, fallback one-shot, `DIFFUSION_DAEMON_ENABLED=0` default); manager hook generations (idempotente, best-effort) + rotas internas; principal BFF da galeria (listar/presigned condicional/excluir/exportar zip ≤100) + sniff de safetensors + cap 8 GiB; UI GenerationPanel/LoRAEditor/GenerationGallery/CompareSlider; mobile 1 coluna (375px) com bottom-sheet e touch ≥40px.

@@ -426,6 +426,8 @@ export interface DiffusionJobRequest {
   lrWarmupSteps?: number;
   mixedPrecision?: "fp16" | "bf16" | "no";
   quantization?: "none" | "4bit" | "8bit";
+  /** Bucketing por aspect ratio: preserva a proporção das imagens (padrão true). */
+  enableBucket?: boolean;
   checkpointInterval?: number;
   epochOffset?: number;
   outputName?: string | null;
@@ -449,6 +451,7 @@ export interface DiffusionPreset {
   lrWarmupSteps?: number;
   mixedPrecision?: "fp16" | "bf16" | "no";
   quantization?: "none" | "4bit" | "8bit";
+  enableBucket?: boolean;
   checkpointInterval?: number;
   epochOffset?: number;
   enableSamples?: boolean;

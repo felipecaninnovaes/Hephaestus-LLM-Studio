@@ -10,6 +10,7 @@ import {
   IconTerminal,
 } from "@/components/icons";
 import { SegmentedControl } from "@/components/ui";
+import { copyToClipboard } from "@/lib/clipboard";
 
 interface JobLogViewerProps {
   job: Job;
@@ -248,7 +249,7 @@ export function JobLogViewer({
       const fullText = lines
         .map((l) => `[${l.timestamp}] [${l.tag}] ${l.text}`)
         .join("\n");
-      await navigator.clipboard.writeText(fullText);
+      await copyToClipboard(fullText);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {

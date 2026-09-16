@@ -453,6 +453,81 @@ class TestTrainerDifusao(unittest.TestCase):
             self.assertTrue((checkpoints_dir / "resumed-lora_epoch_008.safetensors").exists())
 
 
+    def test_resolve_bucket_reso_preserves_aspect_ratio(self):
+        from trainer_difusao.dataset import _resolve_bucket_reso
+
+        # Paisagem 16:9 -> bucket largo (w > h), lados múltiplos de 64
+        bw, bh = _resolve_bucket_reso(1920, 1080, base_res=512)
+        self.assertGreater(bw, bh)
+        self.assertEqual(bw % 64, 0)
+        self.assertEqual(bh % 64, 0)
+        self.assertAlmostEqual(bw / bh, 1920 / 1080, delta=0.5)
+
+        # Retrato 3:4 -> bucket alto (h > w)
+        w2, h2 = _resolve_bucket_reso(768, 1024, base_res=512)
+        self.assertGreater(h2, w2)
+        self.assertEqual(w2 % 64, 0)
+        self.assertEqual(h2 % 64, 0)
+
+        # Quadrado -> bucket quadrado
+        w3, h3 = _resolve_bucket_reso(1024, 1024, base_res=512)
+        self.assertEqual(w3, h3)
+        self.assertEqual(w3, 512)
+
+    def test_diffusion_dataset_enable_bucket_groups_by_aspect_ratio(self):
+        from PIL import Image
+
+        from trainer_difusao.dataset import DiffusionDataset
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            images_dir = tmp_path / "images"
+            images_dir.mkdir()
+            for name, size in (("a.png", (1920, 1080)), ("b.png", (768, 1024)), ("c.jpg", (512, 512))):
+                Image.new("RGB", size, (120, 120, 120)).save(images_dir / name)
+
+            ds = DiffusionDataset(tmp_path, resolution=512, enable_bucket=True)
+            self.assertEqual(len(ds), 3)
+            self.assertGreaterEqual(len(ds.buckets), 2)  # ao menos paisagem e retrato/quadrado
+
+            # Amostras do mesmo bucket compartilham exatamente as mesmas dims
+            for bucket, idxs in ds.buckets.items():
+                dims = {ds.bucket_dims[i] for i in idxs}
+                self.assertEqual(dims, {bucket})
+
+            # Sem bucketing: tudo quadrado na resolução base
+            ds_sq = DiffusionDataset(tmp_path, resolution=512, enable_bucket=False)
+            self.assertEqual(len(ds_sq.buckets), 0)
+            self.assertTrue(all(d == (512, 512) for d in ds_sq.bucket_dims))
+
+    def test_bucket_batch_sampler_keeps_uniform_batches(self):
+        from PIL import Image
+
+        from trainer_difusao.dataset import (
+            BucketBatchSampler,
+            DiffusionDataset,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            images_dir = tmp_path / "images"
+            images_dir.mkdir()
+            sizes = [(1920, 1080)] * 5 + [(768, 1024)] * 3 + [(512, 512)] * 2
+            for i, size in enumerate(sizes):
+                Image.new("RGB", size, (100, 100, 100)).save(images_dir / f"img_{i}.png")
+
+            ds = DiffusionDataset(tmp_path, resolution=512, enable_bucket=True)
+            sampler = BucketBatchSampler(ds, batch_size=4, seed=42)
+
+            seen = set()
+            for batch in sampler:
+                self.assertLessEqual(len(batch), 4)
+                self.assertEqual(len({ds.bucket_dims[i] for i in batch}), 1)  # batch uniforme
+                seen.update(batch)
+            self.assertEqual(seen, set(range(len(ds))))
+            self.assertEqual(len(sampler), 4)  # ceil(5/4) + ceil(3/4) + ceil(2/4) = 2+1+1
+
+
 if __name__ == "__main__":
     unittest.main()
 

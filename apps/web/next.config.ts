@@ -7,7 +7,7 @@ const nextConfig: NextConfig = {
   // submit vira um GET nativo (a senha sai na URL!). Produção não usa este campo.
   allowedDevOrigins: ["10.15.10.3"],
   experimental: {
-    proxyClientMaxBodySize: "250mb",
+    proxyClientMaxBodySize: "8200mb",
   },
   async rewrites() {
     const apiBase =

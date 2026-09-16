@@ -5911,3 +5911,139 @@ async fn t6_ac006a_status_report_persists_phase_and_message() {
         "message must NOT be overwritten by metric report"
     );
 }
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn delete_job_sweep_inclui_models_orfaos() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create job");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+    set_terminal(&p, job_id, "done", 1).await;
+
+    // artifact comum (vai p/ sweep).
+    insert_artifact(&p, job_id, "outputs/common.pt").await;
+
+    // geração viva sob artifacts/{job}/... → bytes preservados.
+    let gen_s3 = format!("artifacts/{job_id}/gen.png");
+    let gen_thumb = format!("artifacts/{job_id}/gen_thumb.png");
+    sqlx::query(
+        "INSERT INTO generations (id, job_id, s3_key, thumb_s3_key, filename, seed, prompt, width, height) \
+         VALUES ($1, $2, $3, $4, 'gen.png', 1, 'p', 512, 512)",
+    )
+    .bind(uuid::Uuid::new_v4())
+    .bind(job_id)
+    .bind(&gen_s3)
+    .bind(&gen_thumb)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    // linha `models` com s3_key FORA do conjunto de artifacts (órfão de bytes).
+    let orphan_key = format!(
+        "models/yolo/{}/peso-upload.safetensors",
+        uuid::Uuid::new_v4()
+    );
+    sqlx::query(
+        "INSERT INTO models (id, engine, name, model, s3_key, source, hash, bytes, job_id) \
+         VALUES ($1, 'yolo', 'peso-upload.safetensors', 'yolo11m', $2, 'upload', 'd41d8cd98f00b204e9800998ecf8427e', 10, $3)",
+    )
+    .bind(uuid::Uuid::new_v4())
+    .bind(&orphan_key)
+    .bind(job_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let deleted = manager::delete_job(&p, job_id).await.expect("delete");
+    assert_eq!(deleted.models_deleted, 1);
+    assert_eq!(deleted.generations_preserved, 1);
+    assert!(
+        deleted
+            .object_keys
+            .contains(&format!("artifacts/{job_id}/outputs/common.pt")),
+        "artifact comum no sweep, veio {:?}",
+        deleted.object_keys
+    );
+    assert!(
+        deleted.object_keys.contains(&orphan_key),
+        "model órfão no sweep, veio {:?}",
+        deleted.object_keys
+    );
+    assert!(
+        !deleted.object_keys.contains(&gen_s3),
+        "s3_key da geração preservada fora do sweep"
+    );
+    assert!(
+        !deleted.object_keys.contains(&gen_thumb),
+        "thumb da geração preservada fora do sweep"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn delete_job_preserva_geracoes_trash() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create job");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+    set_terminal(&p, job_id, "done", 1).await;
+
+    insert_artifact(&p, job_id, "outputs/common.pt").await;
+
+    // geração do job já na lixeira (deleted_at preenchido) → bytes preservados.
+    let gen_id = uuid::Uuid::new_v4();
+    let gen_s3 = format!("artifacts/{job_id}/trash.png");
+    let gen_thumb = format!("artifacts/{job_id}/trash_thumb.png");
+    sqlx::query(
+        "INSERT INTO generations (id, job_id, s3_key, thumb_s3_key, filename, seed, prompt, width, height, deleted_at) \
+         VALUES ($1, $2, $3, $4, 'trash.png', 1, 'p', 512, 512, NOW())",
+    )
+    .bind(gen_id)
+    .bind(job_id)
+    .bind(&gen_s3)
+    .bind(&gen_thumb)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let deleted = manager::delete_job(&p, job_id).await.expect("delete");
+    assert_eq!(
+        deleted.generations_preserved, 1,
+        "geração trash também conta como preservada"
+    );
+    assert!(
+        !deleted.object_keys.contains(&gen_s3),
+        "s3_key da geração trash fora do sweep"
+    );
+    assert!(
+        !deleted.object_keys.contains(&gen_thumb),
+        "thumb da geração trash fora do sweep"
+    );
+    assert!(
+        deleted
+            .object_keys
+            .contains(&format!("artifacts/{job_id}/outputs/common.pt")),
+        "artifact comum no sweep, veio {:?}",
+        deleted.object_keys
+    );
+
+    // linha trash sobrevive órfã (job_id NULL).
+    let (g_job,): (Option<uuid::Uuid>,) =
+        sqlx::query_as("SELECT job_id FROM generations WHERE id = $1")
+            .bind(gen_id)
+            .fetch_one(&p)
+            .await
+            .unwrap();
+    assert!(g_job.is_none(), "geração trash preservada com job_id NULL");
+}

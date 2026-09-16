@@ -3461,12 +3461,12 @@ components:
         generationsPreserved:
           type: integer
           minimum: 0
-          description: "Gerações da galeria preservadas (FK SET NULL, 0012)."
+          description: "Linhas generations preservadas — todas as do job, incl. trash/soft-delete (FK SET NULL, 0012)."
 
     JobCleanupRequest:
       type: object
       additionalProperties: false
-      description: "Body de POST /api/jobs/cleanup (AC-003)."
+      description: "Body de POST /api/jobs/cleanup (AC-003). Exige pelo menos um critério (`olderThanDays` ou `statuses` não-vazio); sem critério ⇒ 400 `invalid_request`."
       properties:
         olderThanDays:
           type: integer

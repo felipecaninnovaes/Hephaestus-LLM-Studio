@@ -2150,17 +2150,21 @@ pub struct CleanupResult {
 /// Estados terminais — os únicos apagáveis.
 pub const TERMINAL_STATUSES: [&str; 3] = ["done", "failed", "cancelled"];
 
-/// Monta a lista exata de chaves S3 a varrer num job (exclui chaves de
-/// gerações vivas) + conta modelos expurgados/gerações preservadas. Deve
-/// rodar DENTRO da transação, ANTES do `DELETE FROM jobs`.
+/// Monta a lista exata de chaves S3 a varrer num job (origem dupla:
+/// artifacts + `models.s3_key` de órfãos de bytes, excluindo chaves de
+/// gerações de todas as linhas do job, incl. trash) + conta modelos
+/// expurgados/gerações preservadas. Deve rodar DENTRO da transação,
+/// ANTES do `DELETE FROM jobs`.
 async fn plan_job_sweep(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     id: Uuid,
 ) -> Result<(Vec<String>, Vec<String>, i64, i64), ManagerError> {
-    // Chaves de gerações vivas a PRESERVAR (s3_key + thumb_s3_key).
+    // Chaves de gerações a PRESERVAR (s3_key + thumb_s3_key) — todas as linhas
+    // do job, incl. trash (deleted_at preenchido; as linhas sobrevivem via
+    // SET NULL da 0012 e continuam referenciando s3_key/thumb_s3_key).
     let gen_rows: Vec<(String, Option<String>)> = sqlx::query_as(
         "SELECT s3_key, thumb_s3_key FROM generations \
-         WHERE job_id = $1 AND deleted_at IS NULL",
+         WHERE job_id = $1",
     )
     .bind(id)
     .fetch_all(&mut **tx)
@@ -2185,11 +2189,31 @@ async fn plan_job_sweep(
             .fetch_all(&mut **tx)
             .await
             .map_err(|e| ManagerError::Internal(format!("list artifacts before delete: {e}")))?;
-    let object_keys: Vec<String> = paths
-        .iter()
-        .map(|p| format!("artifacts/{id}/{p}"))
-        .filter(|k| !preserved.contains(k))
-        .collect();
+
+    // Chaves órfãs de bytes do catálogo `models` (s3_key NOT NULL, 0007) —
+    // capturadas ANTES do DELETE, pois vivem fora do prefixo artifacts/{job}/.
+    let model_keys: Vec<String> = sqlx::query_scalar("SELECT s3_key FROM models WHERE job_id = $1")
+        .bind(id)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("list models before delete: {e}")))?;
+
+    // União deduplicada e ordenada (artifacts + models), sem as preservadas.
+    let object_keys: Vec<String> = {
+        let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for p in &paths {
+            let k = format!("artifacts/{id}/{p}");
+            if !preserved.contains(&k) {
+                set.insert(k);
+            }
+        }
+        for k in &model_keys {
+            if !preserved.contains(k) {
+                set.insert(k.clone());
+            }
+        }
+        set.into_iter().collect()
+    };
 
     // Expurga linhas do catálogo de modelos derivadas deste job (D-a: sim).
     let models_deleted = sqlx::query("DELETE FROM models WHERE job_id = $1")

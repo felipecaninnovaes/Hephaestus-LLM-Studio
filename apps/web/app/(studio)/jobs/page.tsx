@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
   abortJob,
+  deleteJob,
   downloadArtifact,
   getJobArtifacts,
   getJobMetrics,
@@ -49,6 +50,7 @@ import { openActionCenter } from "@/lib/events";
 import { JobListItem } from "@/components/studio/JobCard";
 import { AutolabelReviewModal } from "@/components/studio/AutolabelReviewModal";
 import { AutotrackerReviewModal } from "@/components/studio/AutotrackerReviewModal";
+import { CleanupJobsModal } from "@/components/studio/CleanupJobsModal";
 
 const POLL_INTERVAL = 3000;
 
@@ -92,6 +94,9 @@ function JobsPageContent() {
   const [artifacts, setArtifacts] = useState<Record<string, JobArtifact[]>>({});
   const [abortTarget, setAbortTarget] = useState<Job | null>(null);
   const [abortBusy, setAbortBusy] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Job | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [cleanupOpen, setCleanupOpen] = useState(false);
   const [applyBusy, setApplyBusy] = useState(false);
   const [applyOverwrite, setApplyOverwrite] = useState(false);
   const [reviewJob, setReviewJob] = useState<Job | null>(null);
@@ -263,6 +268,34 @@ function JobsPageContent() {
       showToast("Falha ao cancelar job.", "error");
     } finally {
       setAbortBusy(false);
+    }
+  }
+
+  async function handleDelete() {
+    if (!deleteTarget) return;
+    const targetId = deleteTarget.id;
+    setDeleteBusy(true);
+    try {
+      const res = await deleteJob(targetId);
+      showToast(
+        `${res.modelsDeleted} modelo(s) removidos do catálogo · ${res.generationsPreserved} geração(ões) preservadas.`,
+        "success",
+      );
+      setDeleteTarget(null);
+      setSelectedJobId((cur) => (cur === targetId ? null : cur));
+      await fetchJobs();
+    } catch (err) {
+      if (
+        err instanceof ApiError &&
+        (err.code === "job_not_terminal" || err.status === 409)
+      ) {
+        showToast("Este job ainda está em execução — cancele-o antes de excluir.", "info");
+        setDeleteTarget(null);
+        return;
+      }
+      showToast("Falha ao excluir job.", "error");
+    } finally {
+      setDeleteBusy(false);
     }
   }
 
@@ -560,6 +593,16 @@ function JobsPageContent() {
           >
             <IconRefresh className={`size-3.5 ${refreshing ? "animate-spin text-brand-400" : ""}`} />
             <span>Atualizar</span>
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => setCleanupOpen(true)}
+            title="Limpar jobs terminais antigos"
+          >
+            <IconTrash className="size-3.5 text-zinc-400" />
+            <span className="hidden sm:inline">Limpar antigos</span>
           </Button>
           <Button
             type="button"
@@ -957,7 +1000,7 @@ function JobsPageContent() {
                   )}
 
                   {/* Ações do Job */}
-                  <div className="flex items-center justify-between gap-3 pt-2">
+                  <div className="flex items-center justify-between gap-3 pt-2 flex-wrap">
                     {selectedJob.kind === "autotracker" && selectedJob.status === "done" && (
                       <div className="flex items-center gap-3 flex-wrap">
                         <Button
@@ -1104,6 +1147,19 @@ function JobsPageContent() {
                         <span>Cancelar Execução</span>
                       </Button>
                     )}
+
+                    {!isActive(selectedJob.status) && (
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => setDeleteTarget(selectedJob)}
+                        title="Excluir job e seus artefatos (a galeria de gerações é preservada)"
+                      >
+                        <IconTrash className="size-3.5" />
+                        <span>Excluir</span>
+                      </Button>
+                    )}
                   </div>
                 </div>
 
@@ -1150,6 +1206,36 @@ function JobsPageContent() {
         busy={abortBusy}
         onConfirm={handleAbort}
         onClose={() => setAbortTarget(null)}
+      />
+
+      {/* Confirmação de Exclusão */}
+      <ConfirmDialog
+        open={Boolean(deleteTarget)}
+        title="Excluir job"
+        body={
+          <p className="text-xs text-zinc-300">
+            Tem certeza de que deseja excluir o job{" "}
+            <strong className="text-white font-mono">{deleteTarget?.model}</strong> (
+            {deleteTarget?.id.slice(0, 8)}…)? Os artefatos e os pesos derivados no
+            catálogo serão removidos permanentemente. A galeria de gerações é
+            preservada.
+          </p>
+        }
+        confirmLabel="Sim, excluir job"
+        danger
+        busy={deleteBusy}
+        onConfirm={handleDelete}
+        onClose={() => setDeleteTarget(null)}
+      />
+
+      <CleanupJobsModal
+        open={cleanupOpen}
+        onClose={() => setCleanupOpen(false)}
+        onSuccess={(res) => {
+          const removedIds = new Set(res.jobs.map((j) => j.id));
+          setSelectedJobId((cur) => (cur && removedIds.has(cur) ? null : cur));
+          void fetchJobs();
+        }}
       />
 
       <AutolabelReviewModal

@@ -1911,7 +1911,7 @@ async fn sweep_object_keys(state: &AppState, keys: &[String]) {
             Ok(()) => {}
             Err(StorageError::NotFound) => {} // já não existia — ok
             Err(e) => {
-                eprintln!("aviso: sweep {key} falhou ({e}) — objeto reaproveitável");
+                tracing::warn!("sweep {key} falhou ({e}) — objeto reaproveitável");
             }
         }
     }
@@ -4705,8 +4705,26 @@ mod tests {
         mock.cleanup_result = Some(serde_json::json!({
             "deleted": 2,
             "jobs": [
-                {"id": "550e8400-e29b-41d4-a716-446655440000", "status": "done", "artifacts": []},
-                {"id": "550e8400-e29b-41d4-a716-446655440001", "status": "failed", "artifacts": []}
+                {
+                    "id": "550e8400-e29b-41d4-a716-446655440000",
+                    "status": "done",
+                    "artifacts": ["a.bin"],
+                    "object_keys": ["artifacts/550e8400-e29b-41d4-a716-446655440000/a.bin"],
+                    "models_deleted": 1,
+                    "generations_preserved": 0
+                },
+                {
+                    "id": "550e8400-e29b-41d4-a716-446655440001",
+                    "status": "failed",
+                    "artifacts": [],
+                    "object_keys": ["models/yolo/550e8400-e29b-41d4-a716-446655440001/p.pt"],
+                    "models_deleted": 1,
+                    "generations_preserved": 2
+                }
+            ],
+            "object_keys": [
+                "artifacts/550e8400-e29b-41d4-a716-446655440000/a.bin",
+                "models/yolo/550e8400-e29b-41d4-a716-446655440001/p.pt"
             ]
         }));
         let state = test_state(mock);
@@ -4722,6 +4740,37 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["deleted"], 2);
         assert!(json["jobs"].as_array().unwrap().len() == 2);
+        // wire aninhado em camelCase (contract D1): objectKeys agregado + por job.
+        let top_keys = json["objectKeys"].as_array().expect("objectKeys presente");
+        assert!(!top_keys.is_empty(), "objectKeys agregado não-vazio");
+        assert!(top_keys.contains(&serde_json::json!(
+            "artifacts/550e8400-e29b-41d4-a716-446655440000/a.bin"
+        )));
+        assert!(top_keys.contains(&serde_json::json!(
+            "models/yolo/550e8400-e29b-41d4-a716-446655440001/p.pt"
+        )));
+        assert!(
+            json["jobs"][0]["modelsDeleted"].is_number(),
+            "modelsDeleted numérico no job aninhado"
+        );
+        assert_eq!(json["jobs"][0]["modelsDeleted"], 1);
+        assert!(
+            json["jobs"][0]["objectKeys"].is_array(),
+            "objectKeys presente no job aninhado"
+        );
+        assert_eq!(json["jobs"][1]["generationsPreserved"], 2);
+        assert!(
+            json["jobs"][1]["objectKeys"].is_array(),
+            "objectKeys presente no segundo job aninhado"
+        );
+        assert!(
+            json.get("object_keys").is_none(),
+            "snake_case não deve vazar no wire"
+        );
+        assert!(
+            json["jobs"][0].get("models_deleted").is_none(),
+            "snake_case não deve vazar no job aninhado"
+        );
     }
 
     #[tokio::test]

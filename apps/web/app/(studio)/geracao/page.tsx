@@ -1,12 +1,25 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { IconImage, IconSparkles } from "@/components/icons";
 import { SubmodulePills, type SubmodulePillItem } from "@/components/ui";
 import GenerationPanel from "@/components/studio/GenerationPanel";
 import GenerationGallery from "@/components/studio/GenerationGallery";
 
 type GeracaoTab = "gerar" | "galeria";
+
+/* Key de persistência da aba ativa (Slice F1/001). Hidratação via
+   useEffect para não causar hydration mismatch (SSR renderiza "gerar"). */
+const GERACAO_TAB_KEY = "geracao:activeTab";
+
+function readStoredTab(): GeracaoTab | null {
+  try {
+    const raw = window.localStorage.getItem(GERACAO_TAB_KEY);
+    return raw === "gerar" || raw === "galeria" ? raw : null;
+  } catch {
+    return null;
+  }
+}
 
 /* ═══════════════════════════════════════════════════════════════════
    Página /geracao — Aba dedicada de geração de imagens (ADR-0023 D0/D6)
@@ -17,17 +30,32 @@ type GeracaoTab = "gerar" | "galeria";
 export default function GeracaoPage() {
   const [activeTab, setActiveTab] = useState<GeracaoTab>("gerar");
 
+  /* ── Persiste + restaura a aba ativa (refresh não perde o contexto) ── */
+  const handleTabChange = useCallback((tab: GeracaoTab) => {
+    setActiveTab(tab);
+    try {
+      window.localStorage.setItem(GERACAO_TAB_KEY, tab);
+    } catch {
+      /* storage indisponível — aba segue viva só em memória */
+    }
+  }, []);
+
+  useEffect(() => {
+    const stored = readStoredTab();
+    if (stored) setActiveTab(stored);
+  }, []);
+
   /* ── Escuta evento customizado do empty state da galeria ── */
   useEffect(() => {
     function handleSwitchTab(e: Event) {
       const detail = (e as CustomEvent<GeracaoTab>).detail;
       if (detail === "gerar" || detail === "galeria") {
-        setActiveTab(detail);
+        handleTabChange(detail);
       }
     }
     window.addEventListener("hephaestus:switch-tab", handleSwitchTab);
     return () => window.removeEventListener("hephaestus:switch-tab", handleSwitchTab);
-  }, []);
+  }, [handleTabChange]);
 
   const tabPills = useMemo<SubmodulePillItem<GeracaoTab>[]>(
     () => [
@@ -67,7 +95,7 @@ export default function GeracaoPage() {
           <SubmodulePills<GeracaoTab>
             items={tabPills}
             value={activeTab}
-            onChange={setActiveTab}
+            onChange={handleTabChange}
             size="sm"
           />
         </div>

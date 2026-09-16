@@ -348,22 +348,30 @@ export default function GenerationPanel() {
           if (cancelled) return;
 
           const params = submittedParamsRef.current;
+          // NOTA: usa SOMENTE os params submetidos (ref capturada no submit).
+          // Sem params não há histórico confiável — pula a escrita (sem defaults
+          // fabricados); ler o form vivo aqui criaria stale closure e reiniciaria
+          // o polling a cada tecla (deps instáveis).
+          if (params == null) {
+            console.warn("generation history: parâmetros do submit ausentes", job.id);
+            return;
+          }
           const newItems: GeneratedImageItem[] = batchItems.map((item, idx) => ({
             jobId: job.id,
             imageUrl: item.imageUrl,
             thumbUrl: item.thumbUrl,
-            prompt: params?.prompt || prompt,
-            negativePrompt: params?.negativePrompt,
-            baseModel: params?.baseModel || baseModel,
-            customModelId: params?.customModelId,
-            seed: (params?.seed ?? seed) + idx,
-            steps: params?.steps ?? steps,
-            guidanceScale: params?.guidanceScale ?? guidanceScale,
-            quantization: params?.quantization || quantization,
-            distilled: params?.distilled,
-            loras: params?.loras || [],
-            width: params?.width || width,
-            height: params?.height || height,
+            prompt: params.prompt,
+            negativePrompt: params.negativePrompt,
+            baseModel: params.baseModel,
+            customModelId: params.customModelId,
+            seed: params.seed + idx,
+            steps: params.steps,
+            guidanceScale: params.guidanceScale,
+            quantization: params.quantization,
+            distilled: params.distilled,
+            loras: params.loras,
+            width: params.width,
+            height: params.height,
             batchIndex: idx,
             createdAt: job.finishedAt || new Date().toISOString(),
           }));
@@ -382,18 +390,18 @@ export default function GenerationPanel() {
               const singleItem: GeneratedImageItem = {
                 jobId: job.id,
                 imageUrl: imgUrl,
-                prompt: params?.prompt || prompt,
-                negativePrompt: params?.negativePrompt,
-                baseModel: params?.baseModel || baseModel,
-                customModelId: params?.customModelId,
-                seed: params?.seed ?? seed,
-                steps: params?.steps ?? steps,
-                guidanceScale: params?.guidanceScale ?? guidanceScale,
-                quantization: params?.quantization || quantization,
-                distilled: params?.distilled,
-                loras: params?.loras || [],
-                width: params?.width || width,
-                height: params?.height || height,
+                prompt: params.prompt,
+                negativePrompt: params.negativePrompt,
+                baseModel: params.baseModel,
+                customModelId: params.customModelId,
+                seed: params.seed,
+                steps: params.steps,
+                guidanceScale: params.guidanceScale,
+                quantization: params.quantization,
+                distilled: params.distilled,
+                loras: params.loras,
+                width: params.width,
+                height: params.height,
                 createdAt: job.finishedAt || new Date().toISOString(),
               };
               setBatchResults([singleItem]);

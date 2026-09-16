@@ -69,6 +69,7 @@ export default function Sidebar({
   const userMenuRef = useRef<HTMLDivElement>(null);
 
   // Fecha o menu de perfil ao trocar de rota ou fechar o drawer
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset intencional on-change — re-executa em pathname/open sem ler valores; reabriria condições de corrida ler estado do menu aqui
   useEffect(() => {
     setUserMenuOpen(false);
     setConfirmingLogout(false);
@@ -337,6 +338,7 @@ export default function Sidebar({
   return (
     <>
       {/* Mobile Backdrop */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: backdrop suplementar com role="presentation" — há botão fechar explícito e o backdrop usa pointer-events-none quando fechado, ficando fora da tab-order de propósito. */}
       <div
         role="presentation"
         aria-label="Fechar menu lateral"
@@ -384,11 +386,11 @@ export default function Sidebar({
                   <span className="font-display text-sm font-semibold tracking-tight text-white">
                     Hephaestus
                   </span>
-                  <span className="rounded border border-brand-500/30 bg-brand-500/15 backdrop-blur-sm px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-caps text-brand-300">
+                  <span className="rounded border border-brand-500/30 bg-brand-500/15 backdrop-blur-sm px-1.5 py-0.5 font-mono text-2xs uppercase tracking-caps text-brand-300">
                     Studio
                   </span>
                 </div>
-                <div className="font-mono text-[11px] text-zinc-400 whitespace-nowrap">
+                <div className="font-mono text-2xs text-zinc-400 whitespace-nowrap">
                   <span title={productVersion ? `v${productVersion}` : "Carregando versão"}>
                     {productVersion ? `v${productVersion}` : "…"}
                   </span>
@@ -459,7 +461,7 @@ export default function Sidebar({
                       <div className="truncate text-xs font-semibold text-zinc-200 group-hover:text-white">
                         {orchestrators.length === 1 ? orchestrators[0].name : orchestrators.length > 1 ? `${orchestrators.length} orquestradores` : "Orquestrador"}
                       </div>
-                      <div className="truncate font-mono text-[11px] text-zinc-400">
+                      <div className="truncate font-mono text-2xs text-zinc-400">
                         {orchestrators.length === 1 ? orchestrators[0].endpoint : "—"}
                       </div>
                     </div>
@@ -499,14 +501,14 @@ export default function Sidebar({
                         Centro de Atividades
                       </span>
                     </div>
-                    <span className="rounded-full border border-brand-500/30 bg-brand-500/20 px-1.5 py-0.5 font-mono text-[11px] text-brand-300 shrink-0">
+                    <span className="rounded-full border border-brand-500/30 bg-brand-500/20 px-1.5 py-0.5 font-mono text-2xs text-brand-300 shrink-0">
                       {telemetry?.jobsActive ?? 0}
                     </span>
                   </>
                 ) : (
                   <>
                     <IconActivity className="size-4.5 text-brand-400 group-hover:scale-110 transition-transform" />
-                    <span className="absolute -top-1 -right-1 flex size-4 items-center justify-center rounded-full bg-brand-500 font-mono text-[11px] font-bold text-white shadow-sm">
+                    <span className="absolute -top-1 -right-1 flex size-4 items-center justify-center rounded-full bg-brand-500 font-mono text-2xs font-bold text-white shadow-sm">
                       {telemetry?.jobsActive ?? 0}
                     </span>
                   </>
@@ -525,7 +527,7 @@ export default function Sidebar({
                 <div className="w-6 h-px bg-white/5 my-1.5 shrink-0" aria-hidden="true" />
               )}
               {isExpanded && (
-                <div className="mb-1 px-3 font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-400 whitespace-nowrap">
+                <div className="mb-1 px-3 font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-400 whitespace-nowrap">
                   {section.title}
                 </div>
               )}
@@ -560,7 +562,7 @@ export default function Sidebar({
                             <span className="min-w-0 flex-1 truncate text-xs font-medium text-zinc-300">
                               {item.label}
                             </span>
-                            <span className="rounded border border-zinc-800 bg-zinc-900/60 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-zinc-400 shrink-0">
+                            <span className="rounded border border-zinc-800 bg-zinc-900/60 px-1.5 py-0.5 font-mono text-3xs uppercase tracking-wider text-zinc-400 shrink-0">
                               Roadmap
                             </span>
                           </>
@@ -614,7 +616,7 @@ export default function Sidebar({
                             {item.label}
                           </span>
                           {item.badge && (
-                            <span className="rounded-full border border-brand-500/30 bg-brand-500/15 px-1.5 py-0.5 font-mono text-[11px] text-brand-300 shrink-0">
+                            <span className="rounded-full border border-brand-500/30 bg-brand-500/15 px-1.5 py-0.5 font-mono text-2xs text-brand-300 shrink-0">
                               {item.badge}
                             </span>
                           )}
@@ -651,20 +653,20 @@ export default function Sidebar({
           {isExpanded ? (
             <div className={`flex items-center justify-between rounded-xl border backdrop-blur-sm px-2.5 py-2 text-xs ${
               orchStatus === "online"
-                ? "border-[#34d399]/25 bg-[#34d399]/[0.05]"
+                ? "border-status-success/25 bg-status-success/[0.05]"
                 : orchStatus === "offline"
-                  ? "border-[#f59e0b]/25 bg-[#f59e0b]/[0.05]"
+                  ? "border-status-alert/25 bg-status-alert/[0.05]"
                   : "border-white/10 bg-white/[0.03]"
             }`}>
               <div className="flex items-center space-x-2">
                 {orchStatus === "online" ? (
                   <span className="relative flex h-2 w-2">
-                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#34d399] opacity-75 motion-reduce:animate-none" />
-                    <span className="relative inline-flex h-2 w-2 rounded-full bg-[#34d399]" />
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-status-success opacity-75 motion-reduce:animate-none" />
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-status-success" />
                   </span>
                 ) : orchStatus === "offline" ? (
                   <span className="flex h-2 w-2">
-                    <span className="relative inline-flex h-2 w-2 rounded-full bg-[#f59e0b]" />
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-status-alert" />
                   </span>
                 ) : (
                   <span className="flex h-2 w-2">
@@ -680,7 +682,7 @@ export default function Sidebar({
                 </span>
               </div>
               {productVersion && (
-                <span className="rounded-md border border-[#34d399]/30 bg-[#34d399]/10 backdrop-blur-sm px-1.5 py-0.5 font-mono text-[11px] text-[#34d399]">
+                <span className="rounded-md border border-status-success/30 bg-status-success/10 backdrop-blur-sm px-1.5 py-0.5 font-mono text-2xs text-status-success">
                   v{productVersion}
                 </span>
               )}
@@ -690,17 +692,17 @@ export default function Sidebar({
               title={orchestrators.length === 1 ? `${orchestrators[0].name} (${orchestrators[0].status})` : orchestrators.length > 1 ? `${orchestrators.length} orquestradores` : "Orquestrador"}
               className={`relative flex size-10 items-center justify-center rounded-xl backdrop-blur-sm ${
                 orchStatus === "online"
-                  ? "border border-[#34d399]/25 bg-[#34d399]/[0.05] text-[#34d399]"
+                  ? "border border-status-success/25 bg-status-success/[0.05] text-status-success"
                   : orchStatus === "offline"
-                    ? "border border-[#f59e0b]/25 bg-[#f59e0b]/[0.05] text-[#f59e0b]"
+                    ? "border border-status-alert/25 bg-status-alert/[0.05] text-status-alert"
                     : "border border-white/10 bg-white/[0.03] text-zinc-500"
               }`}
             >
               <IconServer className="size-4" />
               {orchStatus === "online" && (
                 <span className="absolute top-1 right-1 flex h-2 w-2">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#34d399] opacity-75 motion-reduce:animate-none" />
-                  <span className="relative inline-flex h-2 w-2 rounded-full bg-[#34d399]" />
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-status-success opacity-75 motion-reduce:animate-none" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-status-success" />
                 </span>
               )}
             </div>
@@ -739,20 +741,20 @@ export default function Sidebar({
                 {/* Metadados da Sessão e Ambiente */}
                 <div className="py-2.5 space-y-1.5 text-xs">
                   <div className="rounded-xl border border-white/5 bg-white/[0.02] p-2 space-y-1">
-                    <div className="flex items-center justify-between text-[11px]">
+                    <div className="flex items-center justify-between text-2xs">
                       <span className="text-zinc-400">Nó</span>
                       <span className="font-mono text-zinc-200">
                         {orchestrators.length === 1 ? orchestrators[0].name : orchestrators.length > 1 ? `${orchestrators.length} nós` : "—"}
                       </span>
                     </div>
-                    <div className="flex items-center justify-between text-[11px]">
+                    <div className="flex items-center justify-between text-2xs">
                       <span className="text-zinc-400">Endpoint</span>
                       <span className="font-mono text-zinc-400">
                         {orchestrators.length === 1 ? orchestrators[0].endpoint : "—"}
                       </span>
                     </div>
                     {productVersion && (
-                      <div className="flex items-center justify-between text-[11px]">
+                      <div className="flex items-center justify-between text-2xs">
                         <span className="text-zinc-400">Versão</span>
                         <span className="font-mono text-zinc-400">v{productVersion}</span>
                       </div>
@@ -874,7 +876,7 @@ export default function Sidebar({
 
           {/* Versão centralizada no rodapé */}
           {isExpanded && productVersion && (
-            <div className="text-center font-mono text-[11px] text-zinc-400">
+            <div className="text-center font-mono text-2xs text-zinc-400">
               Hephaestus Studio v{productVersion}
             </div>
           )}

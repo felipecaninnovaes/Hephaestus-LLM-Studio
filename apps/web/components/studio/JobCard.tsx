@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import type React from "react";
 import { Badge, jobStatusToBadgeVariant } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import {
@@ -27,9 +27,9 @@ export const JOB_STATUS_CONFIG: Record<
   }
 > = {
   queued: {
-    borderClass: "bg-amber-500",
-    badgeClass: "bg-amber-500/15 text-amber-300 border-amber-500/30 backdrop-blur-sm",
-    iconBg: "bg-amber-500/15 backdrop-blur-sm",
+    borderClass: "bg-status-alert",
+    badgeClass: "bg-status-alert/15 text-amber-300 border-status-alert/30 backdrop-blur-sm",
+    iconBg: "bg-status-alert/15 backdrop-blur-sm",
     iconColor: "text-amber-400",
     label: "Na fila",
   },
@@ -41,17 +41,17 @@ export const JOB_STATUS_CONFIG: Record<
     label: "Executando",
   },
   cancelling: {
-    borderClass: "bg-amber-500",
-    badgeClass: "bg-amber-500/15 text-amber-300 border-amber-500/30 backdrop-blur-sm",
-    iconBg: "bg-amber-500/15 backdrop-blur-sm",
+    borderClass: "bg-status-alert",
+    badgeClass: "bg-status-alert/15 text-amber-300 border-status-alert/30 backdrop-blur-sm",
+    iconBg: "bg-status-alert/15 backdrop-blur-sm",
     iconColor: "text-amber-400",
     label: "Cancelando",
   },
   done: {
-    borderClass: "bg-[#34d399]",
-    badgeClass: "bg-[#34d399]/15 text-[#34d399] border-[#34d399]/30 backdrop-blur-sm",
-    iconBg: "bg-[#34d399]/15 backdrop-blur-sm",
-    iconColor: "text-[#34d399]",
+    borderClass: "bg-status-success",
+    badgeClass: "bg-status-success/15 text-status-success border-status-success/30 backdrop-blur-sm",
+    iconBg: "bg-status-success/15 backdrop-blur-sm",
+    iconColor: "text-status-success",
     label: "Concluído",
   },
   failed: {
@@ -89,17 +89,17 @@ export function JobArtifactsList({
 
   return (
     <div className={`space-y-1.5 ${className}`}>
-      <div className="text-[10px] font-mono text-zinc-400 uppercase tracking-caps mb-1.5">
+      <div className="text-3xs font-mono text-zinc-400 uppercase tracking-caps mb-1.5">
         Artefatos Gerados ({artifacts.length})
       </div>
       <div className="space-y-1.5">
         {artifacts.map((art) => (
           <div
             key={art.id}
-            className="flex items-center justify-between rounded-lg border border-white/10 bg-white/[0.03] backdrop-blur-sm px-3 py-1.5 text-[11px]"
+            className="flex items-center justify-between rounded-lg border border-white/10 bg-white/[0.03] backdrop-blur-sm px-3 py-1.5 text-2xs"
           >
             <span
-              className="truncate text-zinc-300 mr-2 font-mono text-[11px]"
+              className="truncate text-zinc-300 mr-2 font-mono text-2xs"
               title={art.path}
             >
               {art.path.split("/").pop()} ({formatBytes(art.bytes)})
@@ -112,7 +112,7 @@ export function JobArtifactsList({
                   <button
                     type="button"
                     onClick={() => onResume(jobId, art)}
-                    className="inline-flex items-center gap-1 text-sky-400 hover:text-sky-300 font-mono text-[11px] font-medium cursor-pointer"
+                    className="inline-flex items-center gap-1 text-sky-400 hover:text-sky-300 font-mono text-2xs font-medium cursor-pointer"
                     title="Retomar treino a partir deste checkpoint"
                   >
                     <IconSparkles className="size-3" />
@@ -122,7 +122,7 @@ export function JobArtifactsList({
               <button
                 type="button"
                 onClick={() => onDownload(jobId, art)}
-                className="inline-flex items-center gap-1 text-brand-400 hover:text-brand-300 font-mono text-[11px] font-medium cursor-pointer"
+                className="inline-flex items-center gap-1 text-brand-400 hover:text-brand-300 font-mono text-2xs font-medium cursor-pointer"
               >
                 <IconDownload className="size-3" />
                 <span>Baixar</span>
@@ -159,15 +159,6 @@ export function JobListItem({
 
   return (
     <div
-      onClick={() => onSelect?.(job.id)}
-      role={onSelect ? "button" : undefined}
-      tabIndex={onSelect ? 0 : undefined}
-      onKeyDown={(e) => {
-        if (onSelect && (e.key === "Enter" || e.key === " ")) {
-          e.preventDefault();
-          onSelect(job.id);
-        }
-      }}
       className={`glass-card group relative flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 rounded-xl p-4 transition-all duration-200 border ${
         onSelect ? "cursor-pointer" : ""
       } ${
@@ -176,9 +167,18 @@ export function JobListItem({
           : "border-white/10 hover:border-brand-500/30 hover:bg-white/[0.04]"
       }`}
     >
+      {onSelect && (
+        <button
+          type="button"
+          onClick={() => onSelect(job.id)}
+          aria-label={`Selecionar job ${job.model}`}
+          className="absolute inset-0 z-0 rounded-xl cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-500/70"
+        />
+      )}
       {/* Indicador de foco lateral óptico */}
       <div
-        className={`absolute left-0 inset-y-2.5 w-1 rounded-r-full bg-brand-500 transition-opacity ${
+        aria-hidden="true"
+        className={`pointer-events-none absolute left-0 inset-y-2.5 w-1 rounded-r-full bg-brand-500 transition-opacity ${
           isFocused ? "opacity-100" : "opacity-0 group-hover:opacity-40"
         }`}
       />
@@ -195,29 +195,29 @@ export function JobListItem({
               {job.model}
             </span>
             <span
-              className={`inline-flex items-center rounded-md border px-2 py-0.5 font-mono text-[11px] font-medium ${config.badgeClass}`}
+              className={`inline-flex items-center rounded-md border px-2 py-0.5 font-mono text-2xs font-medium ${config.badgeClass}`}
             >
               {config.label}
             </span>
             <span
-              className="font-mono text-[11px] text-zinc-500"
+              className="font-mono text-2xs text-zinc-500"
               title={`ID completo: ${job.id}`}
             >
               #{job.id.slice(0, 8)}
             </span>
             <span
-              className="font-mono text-[11px] text-zinc-400 capitalize"
+              className="font-mono text-2xs text-zinc-400 capitalize"
               title={`Engine: ${job.engine}`}
             >
               · {job.kind} · {job.engine}
             </span>
             {isFocused && (
-              <span className="hidden sm:inline-flex shrink-0 items-center rounded-md border border-brand-500/30 bg-brand-500/15 px-2 py-0.5 font-mono text-[11px] font-medium text-brand-300 backdrop-blur-sm">
+              <span className="hidden sm:inline-flex shrink-0 items-center rounded-md border border-brand-500/30 bg-brand-500/15 px-2 py-0.5 font-mono text-2xs font-medium text-brand-300 backdrop-blur-sm">
                 Ativo no monitor
               </span>
             )}
           </div>
-          <div className="mt-1 flex flex-wrap items-center gap-3 font-mono text-[11px] text-zinc-400">
+          <div className="mt-1 flex flex-wrap items-center gap-3 font-mono text-2xs text-zinc-400">
             <span>{formatRelativeTime(job.createdAt)}</span>
             <span>Duração: {formatDuration(job.createdAt, job.finishedAt)}</span>
             {isActive && (
@@ -242,7 +242,7 @@ export function JobListItem({
                 </span>
                 {job.orchestratorFallback && (
                   <span
-                    className="inline-flex items-center rounded border border-amber-500/30 bg-amber-500/10 px-1 py-0.2 text-[9px] text-amber-400 font-medium"
+                    className="inline-flex items-center rounded border border-status-alert/30 bg-status-alert/10 px-1 py-0.2 text-4xs text-amber-400 font-medium"
                     title="Job sofreu fallback automático após timeout no nó solicitado"
                   >
                     fallback
@@ -255,18 +255,17 @@ export function JobListItem({
       </div>
 
       {(actionButton || (onRerun && !isActive)) && (
-        <div className="flex items-center space-x-2 shrink-0 pl-1 sm:pl-0">
+        <div className="relative z-10 flex items-center space-x-2 shrink-0 pl-1 sm:pl-0">
           {actionButton ? (
             actionButton
           ) : (
             <button
               type="button"
-              onClick={(e) => {
-                e.stopPropagation();
+              onClick={() => {
                 onRerun?.(job);
               }}
               title="Repetir este treino na Forja com os mesmos parâmetros"
-              className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.06] hover:bg-brand-500/15 hover:border-brand-500/30 hover:text-brand-300 px-2 py-1 text-[11px] font-medium text-zinc-300 transition active:scale-[0.985] cursor-pointer"
+              className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.06] hover:bg-brand-500/15 hover:border-brand-500/30 hover:text-brand-300 px-2 py-1 text-2xs font-medium text-zinc-300 transition active:scale-[0.985] cursor-pointer"
             >
               <IconRefresh className="size-3 text-zinc-400 group-hover:text-brand-400" />
               <span>Repetir</span>

@@ -30,7 +30,7 @@ export default function TreinoPage() {
             <h1 className="font-display text-lg font-bold text-white tracking-tight">
               Treino YOLO
             </h1>
-            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-[11px] uppercase tracking-caps text-zinc-400 backdrop-blur-sm">
+            <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-2xs uppercase tracking-caps text-zinc-400 backdrop-blur-sm">
               Ultralytics Engine
             </span>
           </div>

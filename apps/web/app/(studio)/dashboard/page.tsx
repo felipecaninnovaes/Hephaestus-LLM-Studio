@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useCallback, useEffect, useState, useTransition } from "react";
 import {
   IconDatabase,
   IconGrid,
@@ -42,7 +42,7 @@ export default function DashboardPage() {
   const [modelsUnavailable, setModelsUnavailable] = useState(false);
   const [isRefreshing, startTransition] = useTransition();
 
-  const fetchDashboardData = async () => {
+  const fetchDashboardData = useCallback(async () => {
     if (typeof document !== "undefined" && document.visibilityState === "hidden") {
       return;
     }
@@ -86,7 +86,7 @@ export default function DashboardPage() {
     } catch {
       // Mantém dados em caso de flutuação
     }
-  };
+  }, []);
 
   useEffect(() => {
     fetchDashboardData();
@@ -101,7 +101,7 @@ export default function DashboardPage() {
       clearInterval(interval);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, []);
+  }, [fetchDashboardData]);
 
   const handleManualRefresh = () => {
     startTransition(async () => {
@@ -127,7 +127,7 @@ export default function DashboardPage() {
       {/* Top Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <div className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-400">
+          <div className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-400">
             Painel de Controle
           </div>
           <h1 className="font-display text-2xl font-bold tracking-tight text-white sm:text-3xl">
@@ -188,7 +188,7 @@ export default function DashboardPage() {
           value={activeJobsCount > 0 ? `${activeJobsCount} Ativo` : `${completedJobsCount} Executados`}
           subtext={activeJobsCount > 0 ? "Treino em andamento" : `${completedJobsCount} concluídos`}
           icon={<IconLayers className="size-4" />}
-          iconColor="text-[#34d399]"
+          iconColor="text-status-success"
         />
         <StatCard
           label="Modelos & Pesos"
@@ -201,14 +201,14 @@ export default function DashboardPage() {
                 : "Sem pesos gerados"
           }
           icon={<IconImage className="size-4" />}
-          iconColor="text-[#06b6d4]"
+          iconColor="text-status-telemetry"
         />
         <StatCard
           label="Storage Canônico"
           value={storageUsage ? formatBytes(storageUsage.totalBytes) : "—"}
           subtext="rastreados pelo banco · Bucket S3"
           icon={<IconHardDrive className="size-4" />}
-          iconColor="text-[#f59e0b]"
+          iconColor="text-status-alert"
         />
       </div>
 
@@ -229,12 +229,12 @@ export default function DashboardPage() {
                         </div>
 
                         {/* Badge Kind */}
-                        <span className="inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden whitespace-nowrap rounded-lg border font-medium text-brand-300 bg-brand-500/15 border-brand-500/30 backdrop-blur-sm px-2 py-0.5 text-[11px]">
+                        <span className="inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden whitespace-nowrap rounded-lg border font-medium text-brand-300 bg-brand-500/15 border-brand-500/30 backdrop-blur-sm px-2 py-0.5 text-2xs">
                           {node.kind === "local" ? "Local" : "Remoto"}
                         </span>
 
                         {/* Status badge */}
-                        <div className={`inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden whitespace-nowrap rounded-lg border font-medium backdrop-blur-sm px-2 py-0.5 text-[11px] font-mono ${
+                        <div className={`inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden whitespace-nowrap rounded-lg border font-medium backdrop-blur-sm px-2 py-0.5 text-2xs font-mono ${
                           STATUS_CLASSES[node.status] ?? STATUS_CLASSES.unknown
                         }`}>
                           <span>{STATUS_LABELS[node.status] ?? node.status}</span>
@@ -242,12 +242,12 @@ export default function DashboardPage() {
                             <span className="relative ml-1.5 flex h-2 w-2">
                               <span
                                 className={`absolute inline-flex h-full w-full animate-ping rounded-full opacity-75 motion-reduce:animate-none ${
-                                  node.status === "online" ? "bg-[#34d399]" : "bg-[#f59e0b]"
+                                  node.status === "online" ? "bg-status-success" : "bg-status-alert"
                                 }`}
                               />
                               <span
                                 className={`relative inline-flex h-2 w-2 rounded-full ${
-                                  node.status === "online" ? "bg-[#34d399]" : "bg-[#f59e0b]"
+                                  node.status === "online" ? "bg-status-success" : "bg-status-alert"
                                 }`}
                               />
                             </span>
@@ -255,7 +255,7 @@ export default function DashboardPage() {
                         </div>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-zinc-400">
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-2xs text-zinc-400">
                         <TruncatedText
                           text={node.endpoint}
                           className="font-mono"
@@ -341,7 +341,7 @@ export default function DashboardPage() {
           {orchestrators.length === 0 && (
             <GlassCard className="p-5 text-center text-sm">
               {orchsUnavailable ? (
-                <span className="text-[#f59e0b]">Indisponível (manager fora)</span>
+                <span className="text-status-alert">Indisponível (manager fora)</span>
               ) : (
                 <span className="text-zinc-400">Nenhum orquestrador registrado no sistema.</span>
               )}
@@ -353,7 +353,7 @@ export default function DashboardPage() {
         <div className="glass-card overflow-hidden rounded-2xl shadow-2xl">
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
-              <thead className="border-b border-white/10 bg-white/[0.03] font-mono text-[11px] text-zinc-400 uppercase tracking-[0.08em]">
+              <thead className="border-b border-white/10 bg-white/[0.03] font-mono text-2xs text-zinc-400 uppercase tracking-[0.08em]">
                 <tr>
                   <th className="px-5 py-3.5">Orquestrador</th>
                   <th className="px-5 py-3.5">Status</th>
@@ -381,14 +381,14 @@ export default function DashboardPage() {
                             <div className="font-semibold text-white">
                               {orch.name}
                             </div>
-                            <div className="font-mono text-[11px] text-zinc-400">
+                            <div className="font-mono text-2xs text-zinc-400">
                               {orch.endpoint}
                             </div>
                           </div>
                         </div>
                       </td>
                       <td className="px-5 py-4">
-                        <span className={`inline-flex items-center rounded-lg border backdrop-blur-sm px-2 py-0.5 font-medium text-[11px] font-mono ${
+                        <span className={`inline-flex items-center rounded-lg border backdrop-blur-sm px-2 py-0.5 font-medium text-2xs font-mono ${
                           STATUS_CLASSES[orch.status] ?? STATUS_CLASSES.unknown
                         }`}>
                           {STATUS_LABELS[orch.status] ?? orch.status}
@@ -397,7 +397,7 @@ export default function DashboardPage() {
                       <td className="px-5 py-4 font-mono text-zinc-300">
                         {orch.lastHeartbeat ? formatRelativeTime(orch.lastHeartbeat) : "—"}
                       </td>
-                      <td className="px-5 py-4 text-zinc-300 font-mono text-[11px]">
+                      <td className="px-5 py-4 text-zinc-300 font-mono text-2xs">
                         <TruncatedText text={orch.endpoint} as="span" />
                       </td>
                       <td className="px-5 py-4 font-mono">
@@ -427,7 +427,7 @@ export default function DashboardPage() {
                       className="px-5 py-8 text-center text-sm"
                     >
                       {orchsUnavailable ? (
-                        <span className="text-[#f59e0b]">Indisponível (manager fora)</span>
+                        <span className="text-status-alert">Indisponível (manager fora)</span>
                       ) : (
                         <span className="text-zinc-400">Nenhum orquestrador registrado.</span>
                       )}

@@ -59,10 +59,11 @@ export function Modal({
   if (!open) return null;
 
   return (
+    // biome-ignore lint/a11y/useKeyWithClickEvents lint/a11y/noStaticElementInteractions: backdrop suplementar — o fechamento por teclado é global (Escape) e há botão fechar explícito; o backdrop fica fora da tab-order de propósito.
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
-      onClick={() => {
-        if (!busy) onClose();
+      onClick={(e) => {
+        if (e.target === e.currentTarget && !busy) onClose();
       }}
     >
       <div
@@ -73,7 +74,6 @@ export function Modal({
         onDragLeave={onDragLeave}
         onDrop={onDrop}
         className={`glass-modal relative w-full ${MAX_WIDTH_CLASSES[maxWidth]} rounded-2xl p-6 text-zinc-100 shadow-2xl overflow-hidden max-h-[90vh] flex flex-col ${className}`.trim()}
-        onClick={(e) => e.stopPropagation()}
       >
         {/* Hairline zenital com gradiente violeta no topo */}
         <span

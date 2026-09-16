@@ -38,6 +38,22 @@ import CompareSlider from "./CompareSlider";
 
 const PAGE_LIMIT = 50;
 
+/** Chaves estáveis dos 12 placeholders de skeleton (lista estática — nunca reordena). */
+const GALLERY_SKELETON_KEYS = [
+  "gallery-skeleton-01",
+  "gallery-skeleton-02",
+  "gallery-skeleton-03",
+  "gallery-skeleton-04",
+  "gallery-skeleton-05",
+  "gallery-skeleton-06",
+  "gallery-skeleton-07",
+  "gallery-skeleton-08",
+  "gallery-skeleton-09",
+  "gallery-skeleton-10",
+  "gallery-skeleton-11",
+  "gallery-skeleton-12",
+];
+
 /* ═══════════════════════════════════════════════════════════════════
    GenerationGallery — galeria persistente de imagens geradas (G.8)
    Grade responsiva com seleção, delete/export em lote, comparador.
@@ -238,9 +254,9 @@ export default function GenerationGallery() {
     return (
       <div className="p-4 md:p-6">
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3">
-          {Array.from({ length: 12 }).map((_, i) => (
+          {GALLERY_SKELETON_KEYS.map((skeletonKey) => (
             <div
-              key={i}
+              key={skeletonKey}
               className="aspect-square rounded-xl bg-zinc-900/60 border border-white/5 animate-pulse"
             />
           ))}
@@ -289,12 +305,12 @@ export default function GenerationGallery() {
       <div className="shrink-0 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-4 py-3 md:px-6 border-b border-white/5">
         <div className="flex items-baseline gap-x-3 gap-y-0.5 flex-wrap">
           <h2 className="font-display text-sm font-bold text-white">Galeria</h2>
-          <span className="font-mono text-[11px] text-zinc-400 shrink-0">
+          <span className="font-mono text-2xs text-zinc-400 shrink-0">
             {total} {total === 1 ? "geração" : "gerações"}
           </span>
         </div>
         {selectedCount > 0 && (
-          <span className="font-mono text-[11px] text-brand-400">
+          <span className="font-mono text-2xs text-brand-400">
             {selectedCount} selecionada{selectedCount > 1 ? "s" : ""}
           </span>
         )}
@@ -353,7 +369,7 @@ export default function GenerationGallery() {
                     text={gen.prompt}
                     lines={2}
                     as="p"
-                    className="text-[10px] text-zinc-200 leading-tight"
+                    className="text-3xs text-zinc-200 leading-tight"
                   />
                 </div>
 
@@ -391,7 +407,7 @@ export default function GenerationGallery() {
             </div>
           )}
           {items.length >= total && items.length > 0 && (
-            <span className="text-[10px] font-mono text-zinc-600">
+            <span className="text-3xs font-mono text-zinc-600">
               {total} {total === 1 ? "geração" : "gerações"} no total
             </span>
           )}
@@ -400,8 +416,7 @@ export default function GenerationGallery() {
 
       {/* ── Floating Selection Bar ── */}
       {selectedCount > 0 && (
-        <div
-          role="region"
+        <section
           aria-label="Ações para gerações selecionadas"
           className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center overflow-x-auto no-scrollbar space-x-3 rounded-2xl border border-brand-500/30 bg-zinc-950/95 px-4 py-2.5 shadow-2xl backdrop-blur-xl animate-in fade-in slide-in-from-bottom-5 max-w-[calc(100vw-2rem)]"
         >
@@ -471,7 +486,7 @@ export default function GenerationGallery() {
               <IconX className="size-4" />
             </button>
           </div>
-        </div>
+        </section>
       )}
 
       {/* ── Delete Confirm Dialog ── */}
@@ -578,7 +593,7 @@ function MetaRow({
 }) {
   return (
     <div className="flex flex-col gap-0.5">
-      <span className="font-mono text-[10px] uppercase tracking-caps text-zinc-500">
+      <span className="font-mono text-3xs uppercase tracking-caps text-zinc-500">
         {label}
       </span>
       <TruncatedText

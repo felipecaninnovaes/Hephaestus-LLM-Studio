@@ -28,6 +28,23 @@
   --color-zinc-900: #1f1b26;
   --color-zinc-950: #0d0d0d;
 
+  /* Cores semânticas de status (DESIGN.md §Colors / Secondary).
+     Única fonte canônica — proibido hex literal solto em className. */
+  --color-status-success: #34d399;
+  --color-status-alert: #f59e0b;
+  --color-status-danger: #ef4444;
+  --color-status-telemetry: #06b6d4;
+  --color-status-runtime: #eab308;
+
+  /* Escala micro-tipográfica de dados/labels (px absoluto, fiel ao uso corrente).
+     2xs ≈ caption compacta, 3xs = micro-caps mono, 4xs = pico em canvas/badges. */
+  --text-2xs: 11px;
+  --text-2xs--line-height: 1.4;
+  --text-3xs: 10px;
+  --text-3xs--line-height: 1.4;
+  --text-4xs: 9px;
+  --text-4xs--line-height: 1.35;
+
   --font-display:
     "Space Grotesk", -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: "JetBrains Mono", "IBM Plex Mono", ui-monospace, monospace;

@@ -20,4 +20,5 @@ export * from "./ZoomControl";
 export * from "./Drawer";
 export * from "./StatCard";
 export * from "./Kbd";
+export * from "./Spinner";
 

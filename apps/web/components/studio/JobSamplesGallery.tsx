@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { IconChevronDown, IconChevronRight, IconDownload, IconImage, IconX, IconZoomIn } from "@/components/icons";
 import { formatBytes } from "@/lib/format";
 import type { JobArtifact } from "@/types/studio";
@@ -38,6 +38,15 @@ export function JobSamplesGallery({
 }: JobSamplesGalleryProps) {
   const [selectedSample, setSelectedSample] = useState<JobArtifact | null>(null);
   const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    if (!selectedSample) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setSelectedSample(null);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedSample]);
 
   // Filtra apenas artefatos que são amostras geradas (kind === 'sample' ou path com 'samples/')
   // e ordena por época crescente: baseline (Época 0) primeiro, amostras sem época por último
@@ -98,7 +107,7 @@ export function JobSamplesGallery({
 
         {/* Header com badge de época */}
         <div className="relative z-10 p-2 flex items-center justify-between">
-          <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-black/60 border border-white/20 text-[10px] font-mono font-medium text-indigo-300 backdrop-blur-md">
+          <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-black/60 border border-white/20 text-3xs font-mono font-medium text-indigo-300 backdrop-blur-md">
             {label}
           </span>
           <button
@@ -112,7 +121,7 @@ export function JobSamplesGallery({
         </div>
 
         {/* Rodapé com tamanho e botão de download */}
-        <div className="relative z-10 p-2 flex items-center justify-between text-[10px] font-mono">
+        <div className="relative z-10 p-2 flex items-center justify-between text-3xs font-mono">
           <span className="text-zinc-400">{formatBytes(art.bytes)}</span>
           {onDownload && (
             <button
@@ -132,18 +141,18 @@ export function JobSamplesGallery({
   return (
     <div className={`space-y-2 ${className}`}>
       <div className="flex items-center justify-between">
-        <span className="text-[10px] font-mono text-zinc-400 uppercase tracking-caps flex items-center gap-1.5">
+        <span className="text-3xs font-mono text-zinc-400 uppercase tracking-caps flex items-center gap-1.5">
           <IconImage className="size-3.5 text-indigo-400" />
           Amostras de Validação ({total})
         </span>
-        <span className="text-[10px] font-mono text-zinc-400">
+        <span className="text-3xs font-mono text-zinc-400">
           LoRA Diffusion Previews
         </span>
       </div>
 
       {baselines.length > 0 && (
         <div className="space-y-1.5">
-          <span className="block text-[10px] font-mono text-zinc-500 uppercase tracking-caps">
+          <span className="block text-3xs font-mono text-zinc-500 uppercase tracking-caps">
             Baseline (pré-treino)
           </span>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
@@ -155,7 +164,7 @@ export function JobSamplesGallery({
       {(visibleEpochSamples.length > 0 || untaggedSamples.length > 0) && (
         <div className="space-y-1.5">
           {epochSamples.length > 0 && (
-            <span className="block text-[10px] font-mono text-zinc-500 uppercase tracking-caps">
+            <span className="block text-3xs font-mono text-zinc-500 uppercase tracking-caps">
               Amostras por época ({epochSamples.length})
             </span>
           )}
@@ -169,7 +178,7 @@ export function JobSamplesGallery({
         <button
           type="button"
           onClick={() => setExpanded((prev) => !prev)}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] font-mono text-zinc-300 transition hover:border-indigo-500/40 hover:bg-white/[0.06] hover:text-white cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 text-2xs font-mono text-zinc-300 transition hover:border-indigo-500/40 hover:bg-white/[0.06] hover:text-white cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70"
           aria-expanded={expanded}
         >
           {expanded ? (
@@ -183,22 +192,24 @@ export function JobSamplesGallery({
 
       {/* Lightbox Modal para ampliação de alta resolução */}
       {selectedSample && (
+        // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop suplementar — há botão fechar explícito e focável; o backdrop fica fora da tab-order de propósito.
         <div
           role="dialog"
           aria-modal="true"
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fadeIn"
-          onClick={() => setSelectedSample(null)}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setSelectedSample(null);
+          }}
         >
           <div
             className="relative max-w-2xl w-full bg-zinc-900/95 border border-white/15 rounded-2xl overflow-hidden shadow-2xl space-y-3 p-4 backdrop-blur-xl"
-            onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-white/10 pb-3">
               <div className="flex items-center gap-2">
                 <span className="font-mono text-sm font-semibold text-zinc-100">
                   {formatSampleLabel(selectedSample.path)}
                 </span>
-                <span className="font-mono text-[11px] text-zinc-400">
+                <span className="font-mono text-2xs text-zinc-400">
                   · {selectedSample.path.split("/").pop()} · {formatBytes(selectedSample.bytes)}
                 </span>
               </div>
@@ -221,7 +232,7 @@ export function JobSamplesGallery({
             </div>
 
             <div className="flex items-center justify-between pt-2">
-              <span className="text-[11px] font-mono text-zinc-400">
+              <span className="text-2xs font-mono text-zinc-400">
                 Amostra sintetizada por Diffusers LoRA
               </span>
               {onDownload && (

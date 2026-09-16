@@ -1,6 +1,7 @@
 "use client";
 
 import React, { forwardRef, type ButtonHTMLAttributes } from "react";
+import { Spinner } from "./Spinner";
 
 export type ButtonVariant =
   | "primary"
@@ -31,10 +32,10 @@ const VARIANT_CLASSES: Record<ButtonVariant, string> = {
     "border border-transparent bg-transparent text-zinc-300 hover:bg-white/[0.06] hover:text-white",
   // Destrutivo com borda e véu vermelho translúcido
   destructive:
-    "border border-[#ef4444]/30 bg-[#ef4444]/[0.12] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] hover:border-[#ef4444]/50 hover:bg-[#ef4444]/[0.18]",
+    "border border-status-danger/30 bg-status-danger/[0.12] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] hover:border-status-danger/50 hover:bg-status-danger/[0.18]",
   // Warning / Alerta com borda e véu âmbar
   warning:
-    "border border-amber-500/30 bg-amber-500/[0.12] text-amber-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] hover:border-amber-500/50 hover:bg-amber-500/[0.18]",
+    "border border-status-alert/30 bg-status-alert/[0.12] text-amber-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] hover:border-status-alert/50 hover:bg-status-alert/[0.18]",
 };
 
 const SIZE_CLASSES: Record<ButtonSize, string> = {
@@ -84,19 +85,16 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
       <button
         ref={ref}
         disabled={disabled || loading}
+        aria-busy={loading || undefined}
         className={getButtonClasses({ variant, size, className })}
         {...props}
       >
-        {loading ? (
-          <span
-            className="size-4 animate-spin rounded-full border-2 border-current border-t-transparent"
-            aria-hidden="true"
-          />
-        ) : (
+        {loading ? <Spinner tone="current" className="size-4" /> : (
           leftIcon
         )}
         {children}
         {!loading && rightIcon}
+        {loading && <span className="sr-only">Carregando…</span>}
       </button>
     );
   },

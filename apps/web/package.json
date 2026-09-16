@@ -5,7 +5,10 @@
   "scripts": {
     "dev": "next dev -p 3000",
     "build": "next build",
-    "start": "next start -p 3000"
+    "start": "next start -p 3000",
+    "lint": "biome lint .",
+    "check": "biome check .",
+    "format": "biome format ."
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.3.3",
@@ -16,6 +19,7 @@
     "tailwindcss": "^4.3.3"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.14",
     "@types/node": "^22.10.2",
     "@types/react": "^19.0.7",
     "@types/react-dom": "^19.0.3",

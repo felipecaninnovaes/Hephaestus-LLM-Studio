@@ -80,11 +80,11 @@ export function LoRAEditor({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <label className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-300">
+        <span className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-300">
           Adaptadores LoRA
-        </label>
+        </span>
         {value.length > 0 && (
-          <span className="font-mono text-[10px] text-brand-400">
+          <span className="font-mono text-3xs text-brand-400">
             {value.length}/{maxItems}
           </span>
         )}
@@ -93,6 +93,7 @@ export function LoRAEditor({
       {/* Linhas de LoRA */}
       {value.map((lora, index) => (
         <div
+          // biome-ignore lint/suspicious/noArrayIndexKey: linhas LoRA dinâmicas sem id natural (LoraRef só tem modelId/scale; modelId "" repete) — posição é a identidade usada pelos handlers
           key={index}
           className="rounded-xl border border-white/8 bg-white/[0.02] p-2.5 space-y-2"
         >
@@ -157,7 +158,7 @@ export function LoRAEditor({
 
       {/* Hint quando vazio */}
       {value.length === 0 && (
-        <p className="font-mono text-[11px] text-zinc-500 text-center py-1">
+        <p className="font-mono text-2xs text-zinc-500 text-center py-1">
           Nenhum LoRA — geração com pesos base puros.
         </p>
       )}

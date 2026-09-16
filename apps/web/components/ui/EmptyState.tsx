@@ -1,4 +1,4 @@
-import React from "react";
+import type React from "react";
 import Button, { type ButtonVariant } from "./Button";
 
 export interface EmptyStateProps {

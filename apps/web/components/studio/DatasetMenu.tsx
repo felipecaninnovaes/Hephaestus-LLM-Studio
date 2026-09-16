@@ -53,6 +53,7 @@ export default function DatasetMenu({ dataset, x, y, onClose, onDelete, onTrain 
 
   return (
     <>
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents lint/a11y/noStaticElementInteractions: backdrop suplementar do menu — o fechamento por teclado é global (Escape) e os menuitems são nativos; o backdrop fica fora da tab-order de propósito. */}
       <div
         className="fixed inset-0 z-40 bg-transparent"
         onClick={onClose}
@@ -68,7 +69,7 @@ export default function DatasetMenu({ dataset, x, y, onClose, onDelete, onTrain 
         className="glass-menu fixed z-50 min-w-[230px] rounded-2xl p-1.5 text-xs shadow-2xl"
         style={{ top: `${pos.top}px`, left: `${pos.left}px` }}
       >
-        <div className="tracking-caps mb-1 border-b border-white/10 px-3 py-1 font-mono text-[11px] uppercase text-zinc-400">
+        <div className="tracking-caps mb-1 border-b border-white/10 px-3 py-1 font-mono text-2xs uppercase text-zinc-400">
           Ações de Contexto
         </div>
         <button

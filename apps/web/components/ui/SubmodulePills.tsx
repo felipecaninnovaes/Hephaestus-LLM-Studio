@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useEffect, useRef } from "react";
+import type React from "react";
+import { useEffect, useRef } from "react";
 
 export interface SubmodulePillItem<T extends string = string> {
   id: T;
@@ -26,7 +27,10 @@ export function SubmodulePills<T extends string = string>({
 }: SubmodulePillsProps<T>) {
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Rola a pílula ativa para a vista quando value muda (trigger intencional;
+  // a leitura via DOM query não é visível ao linter — void explicita o uso)
   useEffect(() => {
+    void value;
     containerRef.current
       ?.querySelector('[data-active="true"]')
       ?.scrollIntoView({ inline: "nearest", block: "nearest" });
@@ -67,7 +71,7 @@ export function SubmodulePills<T extends string = string>({
               {item.icon}
               <span className="truncate">{item.label}</span>
               {item.count != null && (
-                <span className="font-mono text-[11px] opacity-70">
+                <span className="font-mono text-2xs opacity-70">
                   {item.count}
                 </span>
               )}

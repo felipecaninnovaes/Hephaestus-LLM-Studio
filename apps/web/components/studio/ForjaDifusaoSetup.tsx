@@ -550,11 +550,11 @@ export default function ForjaDifusaoSetup({
         label: d.title,
         badge: (
           <span className="flex items-center gap-1.5">
-            <span className="rounded-full border border-zinc-700/60 bg-zinc-800/60 px-1.5 py-0.5 font-mono text-[10px] text-zinc-300">
+            <span className="rounded-full border border-zinc-700/60 bg-zinc-800/60 px-1.5 py-0.5 font-mono text-3xs text-zinc-300">
               {d.imagesCount} imgs
             </span>
             {d.category === "difusao" && (
-              <span className="rounded-full border border-brand-500/30 bg-brand-500/10 px-1.5 py-0.5 font-mono text-[10px] text-brand-400">
+              <span className="rounded-full border border-brand-500/30 bg-brand-500/10 px-1.5 py-0.5 font-mono text-3xs text-brand-400">
                 Difusão
               </span>
             )}
@@ -572,7 +572,7 @@ export default function ForjaDifusaoSetup({
       value: m.id,
       label: `${m.name} · ${formatBytes(m.bytes)}`,
       badge: (
-        <span className="rounded-full border border-brand-500/30 bg-brand-500/10 px-1.5 py-0.5 font-mono text-[10px] text-brand-400">
+        <span className="rounded-full border border-brand-500/30 bg-brand-500/10 px-1.5 py-0.5 font-mono text-3xs text-brand-400">
           LoRA
         </span>
       ),
@@ -805,7 +805,7 @@ export default function ForjaDifusaoSetup({
           <h2 className="font-display text-sm font-bold text-white tracking-wide">
             Forja Difusão LoRA
           </h2>
-          <p className="font-mono text-[11px] text-zinc-400">
+          <p className="font-mono text-2xs text-zinc-400">
             Ajuste fino de adaptadores para geração de imagem
           </p>
         </div>
@@ -820,7 +820,7 @@ export default function ForjaDifusaoSetup({
               <span className="font-semibold text-white">Modo Continuação:</span> Retomando de{" "}
               <span className="font-mono text-sky-300 font-medium">{currentResumeCheckpoint.name}</span>
               {epochOffset > 0 && (
-                <span className="text-zinc-400 font-mono text-[11px] ml-1.5">
+                <span className="text-zinc-400 font-mono text-2xs ml-1.5">
                   (+{epochOffset} épocas anteriores)
                 </span>
               )}
@@ -874,7 +874,7 @@ export default function ForjaDifusaoSetup({
               onClick={() => fileInputRef.current?.click()}
               disabled={busy}
               leftIcon={<IconUpload className="size-3" />}
-              className="font-mono text-[11px]"
+              className="font-mono text-2xs"
             >
               Importar JSON
             </Button>
@@ -885,7 +885,7 @@ export default function ForjaDifusaoSetup({
               onClick={handleExportPreset}
               disabled={busy}
               leftIcon={<IconDownload className="size-3" />}
-              className="font-mono text-[11px]"
+              className="font-mono text-2xs"
             >
               Exportar JSON
             </Button>
@@ -920,7 +920,7 @@ export default function ForjaDifusaoSetup({
             <span className="font-display text-xs font-medium text-zinc-200 group-hover:text-brand-300 transition-colors">
               FLUX.2 Klein 4B
             </span>
-            <span className="font-mono text-[10px] text-zinc-400 mt-0.5">
+            <span className="font-mono text-3xs text-zinc-400 mt-0.5">
               1024px · 4-bit · ~10GB
             </span>
           </button>
@@ -951,7 +951,7 @@ export default function ForjaDifusaoSetup({
             <span className="font-display text-xs font-medium text-zinc-200 group-hover:text-brand-300 transition-colors">
               SDXL Padrão
             </span>
-            <span className="font-mono text-[10px] text-zinc-400 mt-0.5">
+            <span className="font-mono text-3xs text-zinc-400 mt-0.5">
               1024px · Rank 16 · 8-bit
             </span>
           </button>
@@ -982,7 +982,7 @@ export default function ForjaDifusaoSetup({
             <span className="font-display text-xs font-medium text-zinc-200 group-hover:text-brand-300 transition-colors">
               Eco 8 GB (SD 1.5)
             </span>
-            <span className="font-mono text-[10px] text-zinc-400 mt-0.5">
+            <span className="font-mono text-3xs text-zinc-400 mt-0.5">
               512px · Rank 8 · GA 2x
             </span>
           </button>
@@ -1013,7 +1013,7 @@ export default function ForjaDifusaoSetup({
             <span className="font-display text-xs font-medium text-zinc-200 group-hover:text-brand-300 transition-colors">
               Alta Fidelidade
             </span>
-            <span className="font-mono text-[10px] text-zinc-400 mt-0.5">
+            <span className="font-mono text-3xs text-zinc-400 mt-0.5">
               1024px · Rank 32 · GA 2x
             </span>
           </button>
@@ -1044,7 +1044,7 @@ export default function ForjaDifusaoSetup({
             <span className="font-display text-xs font-medium text-zinc-200 group-hover:text-brand-300 transition-colors">
               Auto LR Prodigy
             </span>
-            <span className="font-mono text-[10px] text-zinc-400 mt-0.5">
+            <span className="font-mono text-3xs text-zinc-400 mt-0.5">
               Adaptativo · LR 1.0 auto
             </span>
           </button>
@@ -1070,9 +1070,9 @@ export default function ForjaDifusaoSetup({
 
       {/* Seletor de Modelo Base (Cards Selecionáveis) */}
       <div className="space-y-2">
-        <label className="block text-xs font-medium text-zinc-300">
+        <span className="block text-xs font-medium text-zinc-300">
           Modelo Base
-        </label>
+        </span>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           {/* SDXL 1.0 */}
           <button
@@ -1096,7 +1096,7 @@ export default function ForjaDifusaoSetup({
                 SDXL 1.0
               </span>
               <span
-                className={`rounded-full px-2 py-0.5 font-mono text-[10px] ${
+                className={`rounded-full px-2 py-0.5 font-mono text-3xs ${
                   params.baseModel === "sdxl"
                     ? "border border-brand-500/30 bg-brand-500/20 text-brand-300"
                     : "border border-white/10 bg-white/5 text-zinc-400"
@@ -1105,7 +1105,7 @@ export default function ForjaDifusaoSetup({
                 ~12 GB VRAM
               </span>
             </div>
-            <p className="text-[11px] text-zinc-400 leading-snug">
+            <p className="text-2xs text-zinc-400 leading-snug">
               Equilíbrio ideal entre fidelidade, estilos artísticos e fotorealismo.
             </p>
           </button>
@@ -1133,7 +1133,7 @@ export default function ForjaDifusaoSetup({
                 FLUX.2 Klein 4B
               </span>
               <span
-                className={`rounded-full px-2 py-0.5 font-mono text-[10px] ${
+                className={`rounded-full px-2 py-0.5 font-mono text-3xs ${
                   params.baseModel === "flux"
                     ? "border border-brand-500/30 bg-brand-500/20 text-brand-300"
                     : "border border-white/10 bg-white/5 text-zinc-400"
@@ -1142,7 +1142,7 @@ export default function ForjaDifusaoSetup({
                 ~10 GB VRAM
               </span>
             </div>
-            <p className="text-[11px] text-zinc-400 leading-snug">
+            <p className="text-2xs text-zinc-400 leading-snug">
               Modelo leve de 4B parâmetros com Flow Matching, ideal para LoRA rápido em GPUs de 10–12 GB.
             </p>
           </button>
@@ -1169,7 +1169,7 @@ export default function ForjaDifusaoSetup({
                 SD 1.5
               </span>
               <span
-                className={`rounded-full px-2 py-0.5 font-mono text-[10px] ${
+                className={`rounded-full px-2 py-0.5 font-mono text-3xs ${
                   params.baseModel === "sd15"
                     ? "border border-brand-500/30 bg-brand-500/20 text-brand-300"
                     : "border border-white/10 bg-white/5 text-zinc-400"
@@ -1178,7 +1178,7 @@ export default function ForjaDifusaoSetup({
                 ~8 GB VRAM
               </span>
             </div>
-            <p className="text-[11px] text-zinc-400 leading-snug">
+            <p className="text-2xs text-zinc-400 leading-snug">
               Mais leve, veloz e compatível com GPUs menores ou ambientes restritos.
             </p>
           </button>
@@ -1199,7 +1199,7 @@ export default function ForjaDifusaoSetup({
           disabled={busy}
           className="font-mono text-xs"
         />
-        <p className="text-[11px] font-mono text-zinc-500">
+        <p className="text-2xs font-mono text-zinc-500">
           Opcional. Prefixa automaticamente as legendas de cada imagem durante o empacotamento.
         </p>
       </div>
@@ -1218,7 +1218,7 @@ export default function ForjaDifusaoSetup({
           disabled={busy}
           className="font-mono text-xs"
         />
-        <p className="text-[11px] font-mono text-zinc-500">
+        <p className="text-2xs font-mono text-zinc-500">
           Nome personalizado para o arquivo .safetensors. Se omitido, o estúdio gerará um nome semântico inteligente.
         </p>
       </div>
@@ -1309,7 +1309,7 @@ export default function ForjaDifusaoSetup({
               Configurações Avançadas de Treinamento
             </span>
           </div>
-          <div className="flex flex-wrap items-center gap-1.5 font-mono text-[10px] text-zinc-400">
+          <div className="flex flex-wrap items-center gap-1.5 font-mono text-3xs text-zinc-400">
             <span className="rounded-md bg-white/[0.04] px-2 py-0.5 border border-white/10 text-zinc-300">
               {resolution}x{resolution}
             </span>
@@ -1382,7 +1382,7 @@ export default function ForjaDifusaoSetup({
                     Bucketing por Aspect Ratio
                   </span>
                 </label>
-                <p className="text-[10px] leading-relaxed text-zinc-400 pl-6">
+                <p className="text-3xs leading-relaxed text-zinc-400 pl-6">
                   Agrupa as imagens por proporção em buckets de resolução
                   múltipla de 64 (área ≈ resolução²), evitando esticar tudo
                   para o quadrado. Recomendado para datasets com fotos em
@@ -1528,7 +1528,7 @@ export default function ForjaDifusaoSetup({
               Amostras Visuais de Validação
             </span>
           </label>
-          <span className="font-mono text-[10px] text-zinc-400">
+          <span className="font-mono text-3xs text-zinc-400">
             {enableSamples ? "Ativado" : "Desativado"}
           </span>
         </div>
@@ -1591,11 +1591,11 @@ export default function ForjaDifusaoSetup({
           oomRisk === "danger"
             ? "border-rose-500/40 bg-rose-500/[0.06]"
             : oomRisk === "warning"
-              ? "border-amber-500/35 bg-amber-500/[0.05]"
+              ? "border-status-alert/35 bg-status-alert/[0.05]"
               : "border-white/10 bg-white/[0.02]"
         }`}
       >
-        <div className="flex items-center justify-between font-mono text-[11px]">
+        <div className="flex items-center justify-between font-mono text-2xs">
           <span className="tracking-caps font-medium uppercase text-zinc-400 flex items-center gap-1.5">
             <IconZap className="size-3.5 text-brand-400" />
             VRAM Estimada para Treino
@@ -1633,7 +1633,7 @@ export default function ForjaDifusaoSetup({
         </div>
 
         {/* Dispositivo de Destino */}
-        <div className="flex items-center justify-between font-mono text-[11px] text-zinc-400">
+        <div className="flex items-center justify-between font-mono text-2xs text-zinc-400">
           <span className="flex items-center gap-1">
             <IconCpu className="size-3" /> Dispositivo:
           </span>
@@ -1648,7 +1648,7 @@ export default function ForjaDifusaoSetup({
             className={`rounded-lg border p-2.5 space-y-2 ${
               oomRisk === "danger"
                 ? "border-rose-500/30 bg-rose-950/40 text-rose-200"
-                : "border-amber-500/30 bg-amber-950/40 text-amber-200"
+                : "border-status-alert/30 bg-amber-950/40 text-amber-200"
             }`}
           >
             <div className="flex items-start gap-2">
@@ -1657,7 +1657,7 @@ export default function ForjaDifusaoSetup({
                   oomRisk === "danger" ? "text-rose-400" : "text-amber-400"
                 }`}
               />
-              <div className="space-y-1 font-mono text-[11px]">
+              <div className="space-y-1 font-mono text-2xs">
                 <p className="font-semibold text-white">
                   {oomRisk === "danger"
                     ? "Risco Crítico de Memória de Vídeo (CUDA OOM)"
@@ -1679,7 +1679,7 @@ export default function ForjaDifusaoSetup({
               variant="secondary"
               size="sm"
               onClick={handleAutoFixSafeParams}
-              className="w-full font-mono text-[11px]"
+              className="w-full font-mono text-2xs"
             >
               Ajustar para Perfil Leve (SD 1.5 · 512px · Batch 1 · GA 2x)
             </Button>

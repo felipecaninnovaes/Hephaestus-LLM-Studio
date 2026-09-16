@@ -662,7 +662,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
         headerRight={
           <div className="flex items-center space-x-1.5">
             {totalActiveCount > 0 && (
-              <span className="mr-1 flex items-center space-x-1.5 rounded-full border border-brand-500/30 bg-brand-500/15 backdrop-blur-sm px-2.5 py-0.5 font-mono text-[11px] font-medium text-brand-300">
+              <span className="mr-1 flex items-center space-x-1.5 rounded-full border border-brand-500/30 bg-brand-500/15 backdrop-blur-sm px-2.5 py-0.5 font-mono text-2xs font-medium text-brand-300">
                 <span className="size-1.5 rounded-full bg-brand-400 animate-pulse motion-reduce:animate-none" />
                 <span className="tabular-nums">
                   {totalActiveCount} ativo{totalActiveCount > 1 ? "s" : ""}
@@ -694,8 +694,8 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
         }
         footer={
           <div className="p-3.5 flex flex-col sm:flex-row items-center justify-between gap-3">
-            <div className="flex items-center space-x-2 text-[11px] font-mono text-zinc-400">
-              <span className={`size-2 rounded-full ${telemetry ? "bg-[#34d399] animate-pulse motion-reduce:animate-none" : "bg-zinc-500"}`} />
+            <div className="flex items-center space-x-2 text-2xs font-mono text-zinc-400">
+              <span className={`size-2 rounded-full ${telemetry ? "bg-status-success animate-pulse motion-reduce:animate-none" : "bg-zinc-500"}`} />
               <span>
                 Nó Local:{" "}
                 <strong className="text-zinc-200 font-semibold">
@@ -806,7 +806,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                   >
                     <IconDatabase className="size-4 text-brand-400" />
                     <span className="text-xs font-medium text-zinc-200">Datasets</span>
-                    <span className="text-[10px] text-zinc-400 font-mono">Gerenciar acervo</span>
+                    <span className="text-3xs text-zinc-400 font-mono">Gerenciar acervo</span>
                   </button>
 
                   <button
@@ -819,7 +819,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                   >
                     <IconTarget className="size-4 text-brand-400" />
                     <span className="text-xs font-medium text-zinc-200">Forja do YOLO</span>
-                    <span className="text-[10px] text-zinc-400 font-mono">Treino de visão</span>
+                    <span className="text-3xs text-zinc-400 font-mono">Treino de visão</span>
                   </button>
 
                   <button
@@ -832,7 +832,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                   >
                     <IconServer className="size-4 text-brand-400" />
                     <span className="text-xs font-medium text-zinc-200">Painel do Nó</span>
-                    <span className="text-[10px] text-zinc-400 font-mono">Monitorar nós</span>
+                    <span className="text-3xs text-zinc-400 font-mono">Monitorar nós</span>
                   </button>
                 </div>
               </div>
@@ -843,7 +843,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                   <div className="space-y-2">
                     {tab === "all" && filteredJobs.length > 0 && (
                       <div className="flex items-center justify-between px-1">
-                        <span className="font-mono text-[11px] font-semibold uppercase tracking-caps text-zinc-400">
+                        <span className="font-mono text-2xs font-semibold uppercase tracking-caps text-zinc-400">
                           Notificações do Sistema ({filteredNotifications.length})
                         </span>
                       </div>
@@ -857,15 +857,15 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                           icon: IconInfo,
                         },
                         warning: {
-                          border: "border-amber-500/30",
-                          bg: "bg-amber-500/10",
+                          border: "border-status-alert/30",
+                          bg: "bg-status-alert/10",
                           text: "text-amber-400",
                           icon: IconAlertTriangle,
                         },
                         success: {
-                          border: "border-[#34d399]/30",
-                          bg: "bg-[#34d399]/10",
-                          text: "text-[#34d399]",
+                          border: "border-status-success/30",
+                          bg: "bg-status-success/10",
+                          text: "text-status-success",
                           icon: IconCheck,
                         },
                         error: {
@@ -900,7 +900,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                 <h4 className="text-xs font-semibold text-zinc-100 truncate">
                                   {notif.title}
                                 </h4>
-                                <span className="font-mono text-[10px] text-zinc-400 shrink-0">
+                                <span className="font-mono text-3xs text-zinc-400 shrink-0">
                                   {formatRelativeTime(notif.timestamp)}
                                 </span>
                               </div>
@@ -908,7 +908,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                 {notif.message}
                               </p>
                               <div className="mt-2 flex items-center justify-between gap-2 pt-2 border-t border-white/5">
-                                <span className="rounded border border-white/10 bg-white/[0.03] px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-caps text-zinc-400">
+                                <span className="rounded border border-white/10 bg-white/[0.03] px-1.5 py-0.5 font-mono text-3xs uppercase tracking-caps text-zinc-400">
                                   {categoryName}
                                 </span>
                                 {notif.actionLabel && notif.actionHref && (
@@ -918,7 +918,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                       onClose();
                                       router.push(notif.actionHref!);
                                     }}
-                                    className="text-brand-400 hover:text-brand-300 font-mono text-[11px] underline underline-offset-2 cursor-pointer"
+                                    className="text-brand-400 hover:text-brand-300 font-mono text-2xs underline underline-offset-2 cursor-pointer"
                                   >
                                     {notif.actionLabel} →
                                   </button>
@@ -937,7 +937,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                   <div className="space-y-2">
                     {tab === "all" && filteredNotifications.length > 0 && (
                       <div className="flex items-center justify-between px-1 pt-2">
-                        <span className="font-mono text-[11px] font-semibold uppercase tracking-caps text-zinc-400">
+                        <span className="font-mono text-2xs font-semibold uppercase tracking-caps text-zinc-400">
                           Tarefas & Treinamentos ({filteredJobs.length})
                         </span>
                       </div>
@@ -973,19 +973,12 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                             aria-hidden="true"
                           />
 
-                          <div
-                            className="p-3 pl-4 cursor-pointer select-none"
+                          <button
+                            type="button"
                             onClick={() => toggleExpand(job.id)}
-                            role="button"
-                            tabIndex={0}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter" || e.key === " ") {
-                                e.preventDefault();
-                                toggleExpand(job.id);
-                              }
-                            }}
                             aria-expanded={isExpanded}
                             aria-label={`${job.model} - ${config.label}`}
+                            className="block w-full p-3 pl-4 text-left cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-500/70"
                           >
                             {/* Top row */}
                             <div className="flex items-start justify-between gap-2.5">
@@ -1010,15 +1003,15 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                     <span className="text-xs font-semibold text-zinc-100 truncate">
                                       {job.model}
                                     </span>
-                                    <span className="font-mono text-[11px] text-brand-400 shrink-0">
+                                    <span className="font-mono text-2xs text-brand-400 shrink-0">
                                       · {serviceInfo.serviceTitle}
                                     </span>
-                                    <span className="font-mono text-[11px] text-zinc-500 shrink-0">
+                                    <span className="font-mono text-2xs text-zinc-500 shrink-0">
                                       · {formatRelativeTime(job.createdAt)}
                                     </span>
                                   </div>
 
-                                  <p className="mt-0.5 font-mono text-[11px] text-zinc-400 truncate">
+                                  <p className="mt-0.5 font-mono text-2xs text-zinc-400 truncate">
                                     {job.engine} · Duração: {duration}
                                     {job.queuePosition !== null &&
                                       job.queuePosition !== undefined &&
@@ -1064,20 +1057,20 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                 className="mt-2.5"
                               />
                             )}
+                          </button>
 
                             {/* Painel expansível: Detalhes, Métricas, Logs, Ações */}
                             {isExpanded && (
                               <div
-                                className="mt-3 border-t border-white/10 pt-3 text-[11px] font-mono space-y-3 bg-black/40 backdrop-blur-md -mx-3 -mb-3 p-3.5"
-                                onClick={(e) => e.stopPropagation()}
+                                className="mt-3 border-t border-white/10 pt-3 text-2xs font-mono space-y-3 bg-black/40 backdrop-blur-md -mx-3 -mb-3 p-3.5"
                               >
                                 {/* Info chips com Nó Executor */}
-                                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[11px]">
+                                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-2xs">
                                   <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
-                                    <span className="text-zinc-400 block uppercase tracking-caps text-[10px] font-mono">
+                                    <span className="text-zinc-400 block uppercase tracking-caps text-3xs font-mono">
                                       Job ID
                                     </span>
-                                    <span className="text-zinc-200 font-mono truncate block text-[11px]" title={job.id}>
+                                    <span className="text-zinc-200 font-mono truncate block text-2xs" title={job.id}>
                                       {job.id}
                                     </span>
                                   </div>
@@ -1085,10 +1078,10 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                   {job.datasetId ? (
                                     <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10 flex items-center justify-between">
                                       <div className="min-w-0 flex-1 mr-1">
-                                        <span className="text-zinc-400 block uppercase tracking-caps text-[10px] font-mono">
+                                        <span className="text-zinc-400 block uppercase tracking-caps text-3xs font-mono">
                                           Dataset
                                         </span>
-                                        <span className="text-zinc-200 font-mono truncate block text-[11px]" title={job.datasetId}>
+                                        <span className="text-zinc-200 font-mono truncate block text-2xs" title={job.datasetId}>
                                           {job.datasetId.slice(0, 8)}…
                                         </span>
                                       </div>
@@ -1098,35 +1091,35 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                           onClose();
                                           router.push(`/datasets/${job.datasetId}`);
                                         }}
-                                        className="text-brand-400 hover:text-brand-300 text-[11px] font-mono underline underline-offset-2 shrink-0 cursor-pointer"
+                                        className="text-brand-400 hover:text-brand-300 text-2xs font-mono underline underline-offset-2 shrink-0 cursor-pointer"
                                       >
                                         Abrir
                                       </button>
                                     </div>
                                   ) : (
                                     <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
-                                      <span className="text-zinc-400 block uppercase tracking-caps text-[10px] font-mono">
+                                      <span className="text-zinc-400 block uppercase tracking-caps text-3xs font-mono">
                                         Categoria
                                       </span>
-                                      <span className="text-zinc-300 font-mono text-[11px]">{serviceInfo.categoryLabel}</span>
+                                      <span className="text-zinc-300 font-mono text-2xs">{serviceInfo.categoryLabel}</span>
                                     </div>
                                   )}
 
                                   <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10 col-span-2 sm:col-span-1">
-                                    <span className="text-zinc-400 block uppercase tracking-caps text-[10px] font-mono">
+                                    <span className="text-zinc-400 block uppercase tracking-caps text-3xs font-mono">
                                       Nó Executor
                                     </span>
                                     <div className="flex items-center gap-1.5 mt-0.5 min-w-0">
-                                      <span className="text-zinc-200 font-mono truncate block text-[11px]" title={job.orchestratorName || "Local"}>
+                                      <span className="text-zinc-200 font-mono truncate block text-2xs" title={job.orchestratorName || "Local"}>
                                         {job.orchestratorName || "Orquestrador Local"}
                                       </span>
                                       {job.orchestratorKind && (
-                                        <span className="rounded bg-white/10 px-1 py-0.2 text-[9px] font-mono text-zinc-300 uppercase shrink-0">
+                                        <span className="rounded bg-white/10 px-1 py-0.2 text-4xs font-mono text-zinc-300 uppercase shrink-0">
                                           {job.orchestratorKind}
                                         </span>
                                       )}
                                       {job.orchestratorFallback && (
-                                        <span className="rounded bg-amber-500/20 px-1 py-0.2 text-[9px] font-mono text-amber-300 shrink-0" title="Fallback automático ativado">
+                                        <span className="rounded bg-status-alert/20 px-1 py-0.2 text-4xs font-mono text-amber-300 shrink-0" title="Fallback automático ativado">
                                           fb
                                         </span>
                                       )}
@@ -1138,7 +1131,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                 {caps.metricChips === "progress" && (
                                   <div className="grid grid-cols-1 gap-1.5 text-center">
                                     <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
-                                      <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">Imagens processadas</span>
+                                      <span className="text-3xs font-mono text-zinc-400 block uppercase tracking-caps">Imagens processadas</span>
                                       <span className="text-xs font-semibold text-zinc-200 font-mono tabular-nums">
                                         {imageProgressLabel(job.step, job.progress)}
                                       </span>
@@ -1147,7 +1140,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                 )}
                                 {caps.metricChips !== null && caps.metricChips !== "progress" && latestMetric && (
                                   <div>
-                                    <div className="text-[10px] font-mono text-zinc-400 uppercase tracking-caps mb-1.5 flex items-center justify-between">
+                                    <div className="text-3xs font-mono text-zinc-400 uppercase tracking-caps mb-1.5 flex items-center justify-between">
                                       <span>
                                         {caps.metricChips === "diffusion"
                                           ? "Métricas Difusão LoRA"
@@ -1158,25 +1151,25 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                     {caps.metricChips === "diffusion" ? (
                                       <div className="grid grid-cols-4 gap-1.5 text-center">
                                         <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
-                                          <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">Loss</span>
+                                          <span className="text-3xs font-mono text-zinc-400 block uppercase tracking-caps">Loss</span>
                                           <span className="text-xs font-semibold text-indigo-400 font-mono tabular-nums">
                                             {latestMetric.loss != null ? latestMetric.loss.toFixed(4) : "—"}
                                           </span>
                                         </div>
                                         <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
-                                          <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">LR</span>
+                                          <span className="text-3xs font-mono text-zinc-400 block uppercase tracking-caps">LR</span>
                                           <span className="text-xs font-semibold text-sky-400 font-mono tabular-nums">
                                             {latestMetric.lr ? latestMetric.lr.toExponential(1) : "—"}
                                           </span>
                                         </div>
                                         <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
-                                          <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">Step</span>
+                                          <span className="text-3xs font-mono text-zinc-400 block uppercase tracking-caps">Step</span>
                                           <span className="text-xs font-semibold text-zinc-200 font-mono tabular-nums">
                                             {latestMetric.step ?? latestMetric.epoch * 10}
                                           </span>
                                         </div>
                                         <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
-                                          <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">Época</span>
+                                          <span className="text-3xs font-mono text-zinc-400 block uppercase tracking-caps">Época</span>
                                           <span className="text-xs font-semibold text-zinc-200 font-mono tabular-nums">
                                             {latestMetric.epoch}
                                           </span>
@@ -1185,25 +1178,25 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                     ) : (
                                       <div className="grid grid-cols-4 gap-1.5 text-center">
                                         <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
-                                          <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">mAP50</span>
-                                          <span className="text-xs font-semibold text-[#34d399] font-mono tabular-nums">
+                                          <span className="text-3xs font-mono text-zinc-400 block uppercase tracking-caps">mAP50</span>
+                                          <span className="text-xs font-semibold text-status-success font-mono tabular-nums">
                                             {latestMetric.map50 !== undefined ? `${(latestMetric.map50 * 100).toFixed(1)}%` : "—"}
                                           </span>
                                         </div>
                                         <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
-                                          <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">mAP50-95</span>
-                                          <span className="text-xs font-semibold text-[#34d399] font-mono tabular-nums">
+                                          <span className="text-3xs font-mono text-zinc-400 block uppercase tracking-caps">mAP50-95</span>
+                                          <span className="text-xs font-semibold text-status-success font-mono tabular-nums">
                                             {latestMetric.map5095 !== undefined ? `${(latestMetric.map5095 * 100).toFixed(1)}%` : "—"}
                                           </span>
                                         </div>
                                         <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
-                                          <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">Box Loss</span>
+                                          <span className="text-3xs font-mono text-zinc-400 block uppercase tracking-caps">Box Loss</span>
                                           <span className="text-xs font-semibold text-zinc-200 font-mono tabular-nums">
                                             {latestMetric.boxLoss?.toFixed(3) ?? "—"}
                                           </span>
                                         </div>
                                         <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
-                                          <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">Cls Loss</span>
+                                          <span className="text-3xs font-mono text-zinc-400 block uppercase tracking-caps">Cls Loss</span>
                                           <span className="text-xs font-semibold text-zinc-200 font-mono tabular-nums">
                                             {latestMetric.clsLoss?.toFixed(3) ?? "—"}
                                           </span>
@@ -1239,7 +1232,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
 
                                 {/* Mensagem de Erro com cópia rápida e destaque */}
                                 {(job.error || job.queueReason) && job.status === "failed" && (
-                                  <div className="rounded-lg bg-rose-950/40 border border-rose-800/50 p-2.5 text-rose-300 text-[11px] font-mono space-y-1">
+                                  <div className="rounded-lg bg-rose-950/40 border border-rose-800/50 p-2.5 text-rose-300 text-2xs font-mono space-y-1">
                                     <div className="flex items-center justify-between font-semibold text-rose-200">
                                       <span className="flex items-center gap-1.5">
                                         <span className="size-1.5 rounded-full bg-rose-500 animate-pulse" />
@@ -1251,12 +1244,12 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                           void copyToClipboard(job.error || job.queueReason || "");
                                           showToast("Traceback copiado para a área de transferência", "info");
                                         }}
-                                        className="text-[10px] text-rose-400 hover:text-rose-200 underline cursor-pointer"
+                                        className="text-3xs text-rose-400 hover:text-rose-200 underline cursor-pointer"
                                       >
                                         Copiar Erro
                                       </button>
                                     </div>
-                                    <p className="whitespace-pre-wrap break-all text-[10px] text-rose-300/90 font-mono max-h-32 overflow-y-auto leading-relaxed select-text">
+                                    <p className="whitespace-pre-wrap break-all text-3xs text-rose-300/90 font-mono max-h-32 overflow-y-auto leading-relaxed select-text">
                                       {job.error || job.queueReason}
                                     </p>
                                   </div>
@@ -1280,13 +1273,13 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                       <button
                                         type="button"
                                         onClick={() => setAutotrackerReviewJob(job)}
-                                        className="inline-flex items-center gap-1 rounded-lg border border-brand-500/40 bg-brand-500/15 px-2.5 py-1 text-[11px] font-medium text-brand-300 transition hover:bg-brand-500/25 active:scale-[0.985] cursor-pointer"
+                                        className="inline-flex items-center gap-1 rounded-lg border border-brand-500/40 bg-brand-500/15 px-2.5 py-1 text-2xs font-medium text-brand-300 transition hover:bg-brand-500/25 active:scale-[0.985] cursor-pointer"
                                         title="Revisar classes detectadas e aceitar novas classes antes de aplicar"
                                       >
                                         <IconSparkles className="size-3 text-brand-400" />
                                         <span>Revisar e Aplicar</span>
                                       </button>
-                                      <label className="flex items-center gap-1.5 text-[11px] text-zinc-400 cursor-pointer">
+                                      <label className="flex items-center gap-1.5 text-2xs text-zinc-400 cursor-pointer">
                                         <input
                                           type="checkbox"
                                           checked={applyOverwrite}
@@ -1299,7 +1292,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                         type="button"
                                         disabled={applyBusy}
                                         onClick={() => handleApplyBoxes(job)}
-                                        className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.06] px-2.5 py-1 text-[11px] font-medium text-zinc-300 transition hover:bg-white/10 active:scale-[0.985] disabled:opacity-50 cursor-pointer"
+                                        className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.06] px-2.5 py-1 text-2xs font-medium text-zinc-300 transition hover:bg-white/10 active:scale-[0.985] disabled:opacity-50 cursor-pointer"
                                       >
                                         <IconCheck className="size-3" />
                                         <span>{applyBusy ? "Aplicando…" : "Aplicação direta"}</span>
@@ -1313,13 +1306,13 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                       <button
                                         type="button"
                                         onClick={() => setReviewJob(job)}
-                                        className="inline-flex items-center gap-1 rounded-lg border border-brand-500/40 bg-brand-500/15 px-2.5 py-1 text-[11px] font-medium text-brand-300 transition hover:bg-brand-500/25 active:scale-[0.985] cursor-pointer"
+                                        className="inline-flex items-center gap-1 rounded-lg border border-brand-500/40 bg-brand-500/15 px-2.5 py-1 text-2xs font-medium text-brand-300 transition hover:bg-brand-500/25 active:scale-[0.985] cursor-pointer"
                                         title="Inspecionar, editar e curar legendas antes de aplicar"
                                       >
                                         <IconSparkles className="size-3 text-brand-400" />
                                         <span>Revisar Legendas</span>
                                       </button>
-                                      <label className="flex items-center gap-1.5 text-[11px] text-zinc-400 cursor-pointer">
+                                      <label className="flex items-center gap-1.5 text-2xs text-zinc-400 cursor-pointer">
                                         <input
                                           type="checkbox"
                                           checked={applyOverwrite}
@@ -1332,7 +1325,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                         type="button"
                                         disabled={applyBusy}
                                         onClick={() => handleApplyCaptions(job)}
-                                        className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-medium text-zinc-300 transition hover:bg-white/10 active:scale-[0.985] disabled:opacity-50 cursor-pointer"
+                                        className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-2xs font-medium text-zinc-300 transition hover:bg-white/10 active:scale-[0.985] disabled:opacity-50 cursor-pointer"
                                         title="Aplicar todas as legendas direto sem inspeção"
                                       >
                                         <IconCheck className="size-3 text-zinc-400" />
@@ -1346,7 +1339,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                     <button
                                       type="button"
                                       onClick={() => handleRerun(job)}
-                                      className="inline-flex items-center gap-1 rounded-lg border border-brand-500/40 bg-brand-500/15 px-2.5 py-1 text-[11px] font-medium text-brand-300 transition hover:bg-brand-500/25 active:scale-[0.985] cursor-pointer"
+                                      className="inline-flex items-center gap-1 rounded-lg border border-brand-500/40 bg-brand-500/15 px-2.5 py-1 text-2xs font-medium text-brand-300 transition hover:bg-brand-500/25 active:scale-[0.985] cursor-pointer"
                                       title="Abrir a Forja pré-carregada com todos os parâmetros deste treino para submeter novamente"
                                     >
                                       <IconRefresh className="size-3 text-brand-400" />
@@ -1359,7 +1352,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                     <button
                                       type="button"
                                       onClick={() => setAbortTarget(job)}
-                                      className="inline-flex items-center gap-1 rounded-lg border border-rose-500/40 bg-rose-500/15 px-2.5 py-1 text-[11px] font-medium text-rose-300 transition hover:bg-rose-500/25 active:scale-[0.985] cursor-pointer"
+                                      className="inline-flex items-center gap-1 rounded-lg border border-rose-500/40 bg-rose-500/15 px-2.5 py-1 text-2xs font-medium text-rose-300 transition hover:bg-rose-500/25 active:scale-[0.985] cursor-pointer"
                                     >
                                       <IconTrash className="size-3" />
                                       <span>Cancelar Job</span>
@@ -1373,7 +1366,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                       onClose();
                                       router.push(`/jobs?job=${job.id}&focus=1`);
                                     }}
-                                    className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-[11px] font-mono text-zinc-300 transition hover:bg-white/[0.06] active:scale-[0.985] cursor-pointer"
+                                    className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-2xs font-mono text-zinc-300 transition hover:bg-white/[0.06] active:scale-[0.985] cursor-pointer"
                                     title="Acompanhar este job em tela cheia"
                                   >
                                     <IconActivity className="size-3" />
@@ -1385,7 +1378,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                     <button
                                       type="button"
                                       onClick={() => setDeleteTarget(job)}
-                                      className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-[11px] font-mono text-rose-300 transition hover:border-rose-500/40 hover:bg-rose-500/10 active:scale-[0.985] cursor-pointer"
+                                      className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-2xs font-mono text-rose-300 transition hover:border-rose-500/40 hover:bg-rose-500/10 active:scale-[0.985] cursor-pointer"
                                       aria-label="Excluir job"
                                       title="Excluir este job e seus artefatos"
                                     >
@@ -1401,14 +1394,13 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                       onClose();
                                       router.push(serviceInfo.targetHref);
                                     }}
-                                    className="ml-auto text-zinc-400 hover:text-zinc-200 text-[11px] font-mono underline underline-offset-2 cursor-pointer"
+                                    className="ml-auto text-zinc-400 hover:text-zinc-200 text-2xs font-mono underline underline-offset-2 cursor-pointer"
                                   >
                                     {serviceInfo.actionText}
                                   </button>
                                 </div>
                               </div>
                             )}
-                          </div>
                         </div>
                       );
                     })}

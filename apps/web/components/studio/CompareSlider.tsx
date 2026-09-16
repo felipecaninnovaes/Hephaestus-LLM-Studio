@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import type React from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Modal } from "@/components/ui";
 import { TruncatedText } from "@/components/ui";
 import type { Generation } from "@/types/studio";
@@ -91,6 +92,7 @@ export default function CompareSlider({
   const baseB = String(imageB.params?.base_model || imageB.params?.baseModel || "—");
 
   return (
+    // biome-ignore lint/a11y/useKeyWithClickEvents lint/a11y/noStaticElementInteractions: backdrop suplementar — o fechamento por teclado é global (Escape) e há botão fechar explícito; o backdrop fica fora da tab-order de propósito.
     <div
       className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
       onClick={onClose}
@@ -100,7 +102,7 @@ export default function CompareSlider({
         <span className="font-mono text-xs text-zinc-400">
           seed {seedA} · {baseA}
         </span>
-        <span className="font-mono text-[10px] text-zinc-500">Comparador</span>
+        <span className="font-mono text-3xs text-zinc-500">Comparador</span>
         <span className="font-mono text-xs text-zinc-400">
           seed {seedB} · {baseB}
         </span>
@@ -163,7 +165,7 @@ export default function CompareSlider({
       {/* Prompts below */}
       <div className="flex w-full max-w-4xl gap-4 mt-3 px-2">
         <div className="flex-1 min-w-0">
-          <span className="font-mono text-[10px] text-zinc-500 uppercase tracking-caps block mb-0.5">
+          <span className="font-mono text-3xs text-zinc-500 uppercase tracking-caps block mb-0.5">
             Prompt A (esquerda)
           </span>
           <TruncatedText
@@ -174,7 +176,7 @@ export default function CompareSlider({
           />
         </div>
         <div className="flex-1 min-w-0">
-          <span className="font-mono text-[10px] text-zinc-500 uppercase tracking-caps block mb-0.5">
+          <span className="font-mono text-3xs text-zinc-500 uppercase tracking-caps block mb-0.5">
             Prompt B (direita)
           </span>
           <TruncatedText

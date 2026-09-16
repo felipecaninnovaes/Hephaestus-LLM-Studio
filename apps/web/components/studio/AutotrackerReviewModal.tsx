@@ -155,25 +155,25 @@ export function AutotrackerReviewModal({
             {/* Estatísticas resumidas */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
               <div className="rounded-xl border border-white/10 bg-zinc-900/60 p-3">
-                <span className="text-[11px] text-zinc-400 block font-mono">Imagens</span>
+                <span className="text-2xs text-zinc-400 block font-mono">Imagens</span>
                 <span className="text-lg font-bold font-mono text-zinc-100">
                   {preview.totalImages}
                 </span>
               </div>
               <div className="rounded-xl border border-white/10 bg-zinc-900/60 p-3">
-                <span className="text-[11px] text-zinc-400 block font-mono">Total de Boxes</span>
+                <span className="text-2xs text-zinc-400 block font-mono">Total de Boxes</span>
                 <span className="text-lg font-bold font-mono text-brand-400">
                   {preview.totalBoxes}
                 </span>
               </div>
               <div className="rounded-xl border border-white/10 bg-zinc-900/60 p-3">
-                <span className="text-[11px] text-zinc-400 block font-mono">Classes Existentes</span>
+                <span className="text-2xs text-zinc-400 block font-mono">Classes Existentes</span>
                 <span className="text-lg font-bold font-mono text-zinc-100">
                   {preview.existingClasses.length}
                 </span>
               </div>
               <div className="rounded-xl border border-white/10 bg-zinc-900/60 p-3">
-                <span className="text-[11px] text-zinc-400 block font-mono">Classes Ausentes</span>
+                <span className="text-2xs text-zinc-400 block font-mono">Classes Ausentes</span>
                 <span className={`text-lg font-bold font-mono ${preview.missingClasses.length > 0 ? "text-amber-400" : "text-zinc-500"}`}>
                   {preview.missingClasses.length}
                 </span>
@@ -182,7 +182,7 @@ export function AutotrackerReviewModal({
 
             {/* Seção de Classes Ausentes */}
             {preview.missingClasses.length > 0 ? (
-              <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-3">
+              <div className="rounded-xl border border-status-alert/30 bg-status-alert/5 p-4 space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center space-x-2">
                     <IconSparkles className="size-4 text-amber-400" />
@@ -193,7 +193,7 @@ export function AutotrackerReviewModal({
                   <button
                     type="button"
                     onClick={handleSelectAllMissing}
-                    className="text-[11px] font-mono text-amber-300 hover:text-amber-200 transition-colors cursor-pointer"
+                    className="text-2xs font-mono text-amber-300 hover:text-amber-200 transition-colors cursor-pointer"
                   >
                     {allMissingSelected ? "Desmarcar todas" : "Selecionar todas"}
                   </button>
@@ -208,13 +208,19 @@ export function AutotrackerReviewModal({
                     return (
                       <label
                         key={item.name}
-                        onClick={() => toggleMissingClass(item.name)}
                         className={`flex items-center justify-between p-2.5 rounded-lg border transition-all cursor-pointer ${
                           isChecked
-                            ? "border-amber-500/40 bg-amber-500/15 text-zinc-100"
+                            ? "border-status-alert/40 bg-status-alert/15 text-zinc-100"
                             : "border-white/10 bg-zinc-900/40 text-zinc-400 hover:border-white/20"
                         }`}
                       >
+                        <input
+                          type="checkbox"
+                          className="sr-only"
+                          checked={isChecked}
+                          onChange={() => toggleMissingClass(item.name)}
+                          aria-label={`Incluir classe ${item.name}`}
+                        />
                         <div className="flex items-center space-x-2.5 min-w-0">
                           <div
                             className={`size-4 rounded flex items-center justify-center border transition-colors ${
@@ -229,7 +235,7 @@ export function AutotrackerReviewModal({
                             {item.name}
                           </span>
                         </div>
-                        <span className="font-mono text-[11px] px-2 py-0.5 rounded-md border border-white/10 bg-zinc-900/60 text-zinc-300 shrink-0 ml-2">
+                        <span className="font-mono text-2xs px-2 py-0.5 rounded-md border border-white/10 bg-zinc-900/60 text-zinc-300 shrink-0 ml-2">
                           {item.boxesCount} boxes
                         </span>
                       </label>
@@ -249,7 +255,7 @@ export function AutotrackerReviewModal({
             {/* Resumo de Classes Existentes */}
             {preview.existingClasses.length > 0 && (
               <div className="space-y-1.5">
-                <span className="text-[11px] font-mono text-zinc-400 uppercase tracking-wider block">
+                <span className="text-2xs font-mono text-zinc-400 uppercase tracking-wider block">
                   Classes já existentes no dataset ({preview.existingClasses.length})
                 </span>
                 <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
@@ -259,7 +265,7 @@ export function AutotrackerReviewModal({
                       className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-white/10 bg-zinc-900/60 font-mono text-xs text-zinc-300"
                     >
                       <span>{item.name}</span>
-                      <span className="text-[10px] text-brand-400">({item.boxesCount})</span>
+                      <span className="text-3xs text-brand-400">({item.boxesCount})</span>
                     </span>
                   ))}
                 </div>
@@ -269,9 +275,15 @@ export function AutotrackerReviewModal({
             {/* Opções de Aplicação */}
             <div className="rounded-xl border border-white/10 bg-zinc-900/40 p-3.5 space-y-2">
               <label
-                onClick={() => setOverwrite(!overwrite)}
                 className="flex items-start space-x-2.5 cursor-pointer"
               >
+                <input
+                  type="checkbox"
+                  className="sr-only"
+                  checked={overwrite}
+                  onChange={() => setOverwrite(!overwrite)}
+                  aria-label="Sobrescrever todas as anotações da imagem"
+                />
                 <div
                   className={`mt-0.5 size-4 rounded flex items-center justify-center border transition-colors ${
                     overwrite
@@ -285,7 +297,7 @@ export function AutotrackerReviewModal({
                   <span className="font-semibold text-zinc-200 block">
                     Sobrescrever todas as anotações da imagem (overwrite)
                   </span>
-                  <span className="text-zinc-400 text-[11px] leading-relaxed">
+                  <span className="text-zinc-400 text-2xs leading-relaxed">
                     Se desmarcado, preserva anotações manuais e substitui apenas as de origem AutoTracker.
                   </span>
                 </div>

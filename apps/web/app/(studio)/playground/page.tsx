@@ -14,6 +14,7 @@ import {
   GlassCard,
   Select,
   type SelectOption,
+  Spinner,
   showToast,
 } from "@/components/ui";
 import { listDatasets, getDataset } from "@/lib/datasets";
@@ -382,7 +383,7 @@ export default function PlaygroundPage() {
             <h1 className="font-display text-base md:text-lg font-bold text-white tracking-tight leading-none">
               Detecção YOLO
             </h1>
-            <p className="text-[11px] text-zinc-400 mt-0.5 font-mono">
+            <p className="text-2xs text-zinc-400 mt-0.5 font-mono">
               Inferência em lote em datasets
             </p>
           </div>
@@ -531,7 +532,7 @@ export default function PlaygroundPage() {
                 <div className="mb-1.5 flex items-center justify-between">
                   <label
                     htmlFor="playground-conf"
-                    className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-400"
+                    className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-400"
                   >
                     Confidence
                   </label>
@@ -553,7 +554,7 @@ export default function PlaygroundPage() {
                       [&::-moz-range-thumb]:size-5 [&::-moz-range-thumb]:appearance-none [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-2 [&::-moz-range-thumb]:border-white [&::-moz-range-thumb]:bg-brand-500"
                   />
                 </div>
-                <div className="mt-1 flex justify-between font-mono text-[10px] text-zinc-600">
+                <div className="mt-1 flex justify-between font-mono text-3xs text-zinc-600">
                   <span>0.30</span>
                   <span>0.95</span>
                 </div>
@@ -584,7 +585,7 @@ export default function PlaygroundPage() {
               >
                 {submitting ? (
                   <>
-                    <span className="size-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                    <Spinner tone="white" className="size-4" />
                     Iniciando…
                   </>
                 ) : (
@@ -596,7 +597,7 @@ export default function PlaygroundPage() {
               </Button>
 
               {/* Info */}
-              <p className="text-center text-[11px] text-zinc-500">
+              <p className="text-center text-2xs text-zinc-500">
                 Inferência assíncrona — resultado aparece nas Execuções e aqui
                 ao lado.
               </p>
@@ -616,7 +617,7 @@ export default function PlaygroundPage() {
                 Resultados
               </span>
               {doneJobs.length > 0 && (
-                <span className="rounded-full border border-brand-500/30 bg-brand-500/15 px-1.5 py-0.5 font-mono text-[11px] text-brand-300">
+                <span className="rounded-full border border-brand-500/30 bg-brand-500/15 px-1.5 py-0.5 font-mono text-2xs text-brand-300">
                   {doneJobs.length}
                 </span>
               )}
@@ -650,7 +651,7 @@ export default function PlaygroundPage() {
             {/* Jobs ativos */}
             {activeJobs.length > 0 && (
               <div className="mb-4">
-                <h3 className="mb-2 font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-400">
+                <h3 className="mb-2 font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-400">
                   Em execução
                 </h3>
                 <div className="space-y-2">
@@ -668,12 +669,12 @@ export default function PlaygroundPage() {
                           <span className="truncate font-mono text-xs text-zinc-200">
                             {job.model || "predict"}
                           </span>
-                          <span className="rounded border border-zinc-800 bg-zinc-900/60 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-zinc-400">
+                          <span className="rounded border border-zinc-800 bg-zinc-900/60 px-1.5 py-0.5 font-mono text-3xs uppercase tracking-wider text-zinc-400">
                             {job.status}
                           </span>
                         </div>
                         {job.queuePosition != null && job.queuePosition > 0 && (
-                          <p className="mt-0.5 pl-4 font-mono text-[11px] text-zinc-500">
+                          <p className="mt-0.5 pl-4 font-mono text-2xs text-zinc-500">
                             Posição na fila: {job.queuePosition}
                           </p>
                         )}
@@ -695,7 +696,7 @@ export default function PlaygroundPage() {
             {/* Jobs failed */}
             {failedJobs.length > 0 && (
               <div className="mb-4">
-                <h3 className="mb-2 font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-red-400">
+                <h3 className="mb-2 font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-red-400">
                   Falhou
                 </h3>
                 <div className="space-y-2">
@@ -712,12 +713,12 @@ export default function PlaygroundPage() {
                           <span className="truncate font-mono text-xs text-zinc-200">
                             {job.model || "predict"}
                           </span>
-                          <span className="rounded border border-red-800/40 bg-red-900/30 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-red-400">
+                          <span className="rounded border border-red-800/40 bg-red-900/30 px-1.5 py-0.5 font-mono text-3xs uppercase tracking-wider text-red-400">
                             failed
                           </span>
                         </div>
                         {job.queueReason && (
-                          <p className="mt-0.5 pl-4 font-mono text-[11px] text-zinc-500 truncate">
+                          <p className="mt-0.5 pl-4 font-mono text-2xs text-zinc-500 truncate">
                             {job.queueReason}
                           </p>
                         )}
@@ -739,33 +740,30 @@ export default function PlaygroundPage() {
             {/* Lista de jobs predict concluídos */}
             {doneJobs.length > 0 && (
               <div className="mb-4">
-                <h3 className="mb-2 font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-400">
+                <h3 className="mb-2 font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-400">
                   Concluídos
                 </h3>
                 <div className="space-y-1.5">
                   {doneJobs.map((job) => (
                     <div
                       key={job.id}
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => setSelectedJobId(job.id)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          setSelectedJobId(job.id);
-                        }
-                      }}
-                      className={`group flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left transition-colors ${
+                      className={`group flex w-full items-center justify-between gap-2 rounded-lg border px-3 py-2 text-left transition-colors ${
                         selectedJobId === job.id
                           ? "border-brand-500/30 bg-brand-500/15"
                           : "border-transparent hover:bg-white/[0.04]"
-                      } cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70`}
+                      }`}
                     >
+                      <button
+                        type="button"
+                        onClick={() => setSelectedJobId(job.id)}
+                        aria-pressed={selectedJobId === job.id}
+                        className="flex min-w-0 flex-1 cursor-pointer items-center justify-between gap-2 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70"
+                      >
                       <div className="min-w-0 flex-1">
                         <span className="truncate font-mono text-xs text-zinc-200">
                           {job.model || "predict"}
                         </span>
-                        <span className="ml-2 font-mono text-[10px] text-zinc-500">
+                        <span className="ml-2 font-mono text-3xs text-zinc-500">
                           {new Date(job.createdAt).toLocaleDateString("pt-BR", {
                             day: "2-digit",
                             month: "2-digit",
@@ -774,21 +772,21 @@ export default function PlaygroundPage() {
                           })}
                         </span>
                       </div>
+                      </button>
                       <div className="flex items-center gap-1.5">
                         <Button
                           type="button"
                           variant="ghost"
                           size="sm"
                           className="opacity-0 group-hover:opacity-100"
-                          onClick={(e) => {
-                            e.stopPropagation();
+                          onClick={() => {
                             handleDownloadPredictions(job.id);
                           }}
                           title="Baixar predictions.json"
                         >
                           <IconDownload className="size-3.5" />
                         </Button>
-                        <span className="rounded-full bg-[#34d399]/10 px-1.5 py-0.5 font-mono text-[10px] text-[#34d399]">
+                        <span className="rounded-full bg-status-success/10 px-1.5 py-0.5 font-mono text-3xs text-status-success">
                           done
                         </span>
                       </div>
@@ -801,7 +799,7 @@ export default function PlaygroundPage() {
             {/* Loading predictions */}
             {loadingPredictions && (
               <div className="flex flex-col items-center justify-center py-16 text-center">
-                <span className="mb-3 size-8 animate-spin rounded-full border-2 border-brand-500/30 border-t-brand-400" />
+                <Spinner className="mb-3 size-8" />
                 <p className="font-mono text-xs text-zinc-400">
                   Carregando predições…
                 </p>
@@ -815,7 +813,7 @@ export default function PlaygroundPage() {
                 {overlayStats && (
                   <div className="mb-4 flex flex-wrap gap-3">
                     <div className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2">
-                      <span className="block font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+                      <span className="block font-mono text-3xs uppercase tracking-wider text-zinc-500">
                         Imagens
                       </span>
                       <span className="font-mono text-sm tabular-nums text-zinc-200">
@@ -823,7 +821,7 @@ export default function PlaygroundPage() {
                       </span>
                     </div>
                     <div className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2">
-                      <span className="block font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+                      <span className="block font-mono text-3xs uppercase tracking-wider text-zinc-500">
                         Com detecção
                       </span>
                       <span className="font-mono text-sm tabular-nums text-zinc-200">
@@ -831,7 +829,7 @@ export default function PlaygroundPage() {
                       </span>
                     </div>
                     <div className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2">
-                      <span className="block font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+                      <span className="block font-mono text-3xs uppercase tracking-wider text-zinc-500">
                         Total boxes
                       </span>
                       <span className="font-mono text-sm tabular-nums text-brand-300">
@@ -840,7 +838,7 @@ export default function PlaygroundPage() {
                     </div>
                     {overlayStats.skips > 0 && (
                       <div className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2">
-                        <span className="block font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+                        <span className="block font-mono text-3xs uppercase tracking-wider text-zinc-500">
                           Skips
                         </span>
                         <span className="font-mono text-sm tabular-nums text-amber-400">
@@ -849,7 +847,7 @@ export default function PlaygroundPage() {
                       </div>
                     )}
                     <div className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2">
-                      <span className="block font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+                      <span className="block font-mono text-3xs uppercase tracking-wider text-zinc-500">
                         Conf
                       </span>
                       <span className="font-mono text-sm tabular-nums text-zinc-300">
@@ -903,10 +901,10 @@ export default function PlaygroundPage() {
                             />
                           ) : (
                             <div className="flex aspect-video flex-col items-center justify-center gap-1 text-zinc-600">
-                              <span className="font-mono text-[11px]">
+                              <span className="font-mono text-2xs">
                                 {predImg.filename}
                               </span>
-                              <span className="font-mono text-[10px] text-zinc-500">
+                              <span className="font-mono text-3xs text-zinc-500">
                                 imagem não encontrada no dataset
                               </span>
                             </div>
@@ -914,7 +912,7 @@ export default function PlaygroundPage() {
 
                           {/* Bounding boxes overlay */}
                           {hasBoxes &&
-                            predImg.boxes.map((box, bi) => {
+                            predImg.boxes.map((box) => {
                               const job = jobs.find((j) => j.id === selectedJobId);
                               const classes = job?.datasetId
                                 ? datasetClassesCache.current[job.datasetId]
@@ -922,7 +920,7 @@ export default function PlaygroundPage() {
                               const color = classColor(box.class, classes);
                               return (
                                 <div
-                                  key={bi}
+                                  key={`${box.class}-${box.x}-${box.y}-${box.w}-${box.h}-${box.conf}`}
                                   className="absolute"
                                   style={{
                                     left: `${box.x * 100}%`,
@@ -935,7 +933,7 @@ export default function PlaygroundPage() {
                                 >
                                   {/* Badge de classe */}
                                   <span
-                                    className="absolute -top-2.5 left-0 flex items-center gap-1 rounded-sm px-1 py-px font-mono text-[9px] font-medium leading-tight"
+                                    className="absolute -top-2.5 left-0 flex items-center gap-1 rounded-sm px-1 py-px font-mono text-4xs font-medium leading-tight"
                                     style={{
                                       backgroundColor: `${color}22`,
                                       color,
@@ -955,13 +953,13 @@ export default function PlaygroundPage() {
                         {/* Rodapé do card */}
                         <div className="flex items-center justify-between px-3 py-2">
                           <span
-                            className="min-w-0 truncate font-mono text-[11px] text-zinc-400"
+                            className="min-w-0 truncate font-mono text-2xs text-zinc-400"
                             title={predImg.filename}
                           >
                             {predImg.filename}
                           </span>
                           <span
-                            className={`shrink-0 rounded-full px-1.5 py-0.5 font-mono text-[10px] ${
+                            className={`shrink-0 rounded-full px-1.5 py-0.5 font-mono text-3xs ${
                               hasBoxes
                                 ? "bg-brand-500/15 text-brand-300"
                                 : "bg-white/5 text-zinc-500"

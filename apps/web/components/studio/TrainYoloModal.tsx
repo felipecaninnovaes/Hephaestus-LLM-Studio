@@ -137,7 +137,7 @@ export default function TrainYoloModal({
       title="Treinar YOLO"
       description={
         <span
-          className="truncate font-mono text-[11px] text-zinc-400 block"
+          className="truncate font-mono text-2xs text-zinc-400 block"
           title={datasetTitle}
         >
           {datasetTitle}

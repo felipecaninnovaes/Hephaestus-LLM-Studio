@@ -18,8 +18,9 @@ import { jobCapabilities, imageProgressLabel } from "@/lib/jobCapabilities";
 import { ApiError } from "@/lib/api";
 import { showToast } from "@/components/studio/Toast";
 import ConfirmDialog from "@/components/studio/ConfirmDialog";
-import { Button } from "@/components/ui/Button";
+import { Button, getButtonClasses } from "@/components/ui/Button";
 import { Badge, jobStatusToBadgeVariant } from "@/components/ui/Badge";
+import { Spinner } from "@/components/ui/Spinner";
 import {
   ConvergenceChart,
   MetricSparkline,
@@ -155,6 +156,7 @@ function JobsPageContent() {
   );
 
   // Resetar applyOverwrite ao trocar de job
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset intencional on-change — re-executa quando selectedJobId muda sem ler seu valor; ler seria artificial
   useEffect(() => {
     setApplyOverwrite(false);
   }, [selectedJobId]);
@@ -643,7 +645,7 @@ function JobsPageContent() {
               Execuções
             </h1>
             {totalCount > 0 && (
-              <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-[11px] text-zinc-400 backdrop-blur-sm">
+              <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-2xs text-zinc-400 backdrop-blur-sm">
                 {totalCount} {totalCount === 1 ? "execução" : "execuções"}
               </span>
             )}
@@ -698,7 +700,7 @@ function JobsPageContent() {
           </Button>
           <Link
             href="/treino"
-            className="inline-flex items-center gap-2 h-8 rounded-lg border border-brand-500/30 bg-brand-500/[0.12] px-3 text-xs font-medium text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985] transition focus-visible:ring-2 focus-visible:ring-brand-500/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)]"
+            className={getButtonClasses({ variant: "primary", size: "sm" })}
           >
             <IconPlay className="size-3.5" />
             <span>Novo Treino</span>
@@ -727,7 +729,7 @@ function JobsPageContent() {
                   <p className="text-xs font-semibold text-zinc-200">
                     Nenhuma execução registrada
                   </p>
-                  <p className="text-[11px] text-zinc-400">
+                  <p className="text-2xs text-zinc-400">
                     Inicie um treino em{" "}
                     <Link href="/treino" className="text-brand-400 hover:text-brand-300 underline underline-offset-2">
                       Treino YOLO
@@ -742,10 +744,10 @@ function JobsPageContent() {
                 {activeJobs.length > 0 && (
                   <div className="space-y-2">
                     <div className="flex items-center justify-between px-1">
-                      <h3 className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-400">
+                      <h3 className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-400">
                         Em Execução
                       </h3>
-                      <span className="flex items-center gap-1.5 font-mono text-[11px] text-brand-300">
+                      <span className="flex items-center gap-1.5 font-mono text-2xs text-brand-300">
                         <span className="size-1.5 rounded-full bg-brand-400 animate-pulse motion-reduce:animate-none" />
                         {activeJobs.length}
                       </span>
@@ -767,10 +769,10 @@ function JobsPageContent() {
                 {terminalJobs.length > 0 && (
                   <div className="space-y-2">
                     <div className="flex items-center justify-between px-1">
-                      <h3 className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-400">
+                      <h3 className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-400">
                         Histórico
                       </h3>
-                      <span className="font-mono text-[11px] text-zinc-500">
+                      <span className="font-mono text-2xs text-zinc-500">
                         {terminalJobs.length}
                       </span>
                     </div>
@@ -818,7 +820,7 @@ function JobsPageContent() {
                       <button
                         type="button"
                         onClick={() => setFocus(false)}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-[11px] font-mono text-zinc-300 transition hover:bg-white/[0.06] active:scale-[0.985] cursor-pointer"
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-2xs font-mono text-zinc-300 transition hover:bg-white/[0.06] active:scale-[0.985] cursor-pointer"
                         title="Sair do modo foco"
                       >
                         <IconX className="size-3" />
@@ -828,7 +830,7 @@ function JobsPageContent() {
                       <button
                         type="button"
                         onClick={() => setFocus(true, selectedJob.id)}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-[11px] font-mono text-zinc-300 transition hover:bg-white/[0.06] active:scale-[0.985] cursor-pointer"
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-2xs font-mono text-zinc-300 transition hover:bg-white/[0.06] active:scale-[0.985] cursor-pointer"
                         title="Acompanhar este job em tela cheia"
                       >
                         <IconActivity className="size-3" />
@@ -839,7 +841,7 @@ function JobsPageContent() {
                       <button
                         type="button"
                         onClick={() => setDeleteTarget(selectedJob)}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-[11px] font-mono text-rose-300 transition hover:border-rose-500/40 hover:bg-rose-500/10 active:scale-[0.985] cursor-pointer"
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-2xs font-mono text-rose-300 transition hover:border-rose-500/40 hover:bg-rose-500/10 active:scale-[0.985] cursor-pointer"
                         aria-label="Excluir job"
                         title="Excluir este job e seus artefatos"
                       >
@@ -867,11 +869,11 @@ function JobsPageContent() {
                         <span className="font-display text-base font-semibold text-zinc-100">
                           {selectedJob.model}
                         </span>
-                        <span className="font-mono text-[11px] text-zinc-400">
+                        <span className="font-mono text-2xs text-zinc-400">
                           · {selectedJob.kind} · {selectedJob.engine}
                         </span>
                       </div>
-                      <div className="mt-1 flex flex-wrap items-center gap-3 font-mono text-[11px] text-zinc-400">
+                      <div className="mt-1 flex flex-wrap items-center gap-3 font-mono text-2xs text-zinc-400">
                         <span>
                           Duração: {formatDuration(selectedJob.createdAt, selectedJob.finishedAt)}
                         </span>
@@ -892,7 +894,7 @@ function JobsPageContent() {
                             </span>
                             {selectedJob.orchestratorFallback && (
                               <span
-                                className="inline-flex items-center rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-400 font-medium"
+                                className="inline-flex items-center rounded border border-status-alert/30 bg-status-alert/10 px-1.5 py-0.5 text-3xs text-amber-400 font-medium"
                                 title="Job sofreu fallback automático após timeout no nó solicitado"
                               >
                                 fallback
@@ -908,7 +910,7 @@ function JobsPageContent() {
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2 font-mono text-[11px] text-zinc-400">
+                    <div className="flex items-center gap-2 font-mono text-2xs text-zinc-400">
                       <span title={selectedJob.id}>ID: {selectedJob.id.slice(0, 8)}…</span>
                       {selectedJob.datasetId && (
                         <Button
@@ -952,12 +954,12 @@ function JobsPageContent() {
                       {selectedTrainingMetrics.length > 0 && (
                         <div className="space-y-2">
                           <div className="flex items-center justify-between">
-                            <h3 className="font-mono text-[11px] font-semibold uppercase tracking-caps text-zinc-300">
+                            <h3 className="font-mono text-2xs font-semibold uppercase tracking-caps text-zinc-300">
                               Métricas (Epoch{" "}
                               {selectedTrainingMetrics[selectedTrainingMetrics.length - 1].epoch}
                               )
                             </h3>
-                            <span className="font-mono text-[11px] text-zinc-400">
+                            <span className="font-mono text-2xs text-zinc-400">
                               {selectedTrainingMetrics.length} checkpoint(s)
                             </span>
                           </div>
@@ -1001,7 +1003,7 @@ function JobsPageContent() {
                                 >
                                   <div>
                                     <span
-                                      className={`block font-mono text-[11px] font-medium tracking-caps uppercase ${
+                                      className={`block font-mono text-2xs font-medium tracking-caps uppercase ${
                                         isPrimary ? "text-brand-300" : "text-zinc-400"
                                       }`}
                                     >
@@ -1038,7 +1040,7 @@ function JobsPageContent() {
                   {caps && caps.metricChips === "progress" && (
                     <div className="pt-3 border-t border-white/10">
                       <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10 inline-flex items-center gap-2">
-                        <span className="text-[10px] font-mono text-zinc-400 uppercase tracking-caps">Imagens processadas</span>
+                        <span className="text-3xs font-mono text-zinc-400 uppercase tracking-caps">Imagens processadas</span>
                         <span className="text-xs font-semibold text-zinc-200 font-mono tabular-nums">
                           {imageProgressLabel(selectedJob.step, selectedJob.progress)}
                         </span>
@@ -1066,7 +1068,7 @@ function JobsPageContent() {
                           !art.path.includes("sample_epoch_"),
                       ).length > 0 && (
                         <div className="space-y-2">
-                          <h3 className="font-mono text-[11px] font-semibold uppercase tracking-caps text-zinc-300">
+                          <h3 className="font-mono text-2xs font-semibold uppercase tracking-caps text-zinc-300">
                             Artefatos ({artifacts[selectedJob.id].filter(
                               (art) =>
                                 art.kind !== "sample" &&
@@ -1094,7 +1096,7 @@ function JobsPageContent() {
                                     >
                                       {art.path.split("/").pop()}
                                     </span>
-                                    <span className="block font-mono text-[11px] text-zinc-400">
+                                    <span className="block font-mono text-2xs text-zinc-400">
                                       {formatBytes(art.bytes)} · {art.kind}
                                     </span>
                                   </div>
@@ -1405,7 +1407,7 @@ export default function JobsPage() {
     <Suspense
       fallback={
         <div className="flex h-full items-center justify-center p-8">
-          <div className="size-8 animate-spin rounded-full border-2 border-brand-500 border-t-transparent" />
+          <Spinner className="size-8" />
         </div>
       }
     >

@@ -232,9 +232,9 @@ export function BatchEditClassesModal({
 
         {/* Classe de Origem */}
         <div className="space-y-1.5">
-          <label className="text-xs font-medium text-zinc-300">
+          <span className="text-xs font-medium text-zinc-300">
             Classe de Origem {action === "remap" ? "(a ser substituída)" : "(a ser removida)"}
-          </label>
+          </span>
           {sourceOptions.length > 0 ? (
             <Select
               value={activeSourceId}
@@ -255,16 +255,16 @@ export function BatchEditClassesModal({
         {action === "remap" && (
           <div className="space-y-2 rounded-xl border border-white/10 bg-zinc-900/30 p-3.5">
             <div className="flex items-center justify-between">
-              <label className="text-xs font-medium text-zinc-300">
+              <span className="text-xs font-medium text-zinc-300">
                 Nova Classe de Destino
-              </label>
+              </span>
               <button
                 type="button"
                 onClick={() => {
                   setIsCreatingNewClass(!isCreatingNewClass);
                   setError(null);
                 }}
-                className="text-[11px] font-mono text-brand-400 hover:text-brand-300 flex items-center gap-1 cursor-pointer transition-colors"
+                className="text-2xs font-mono text-brand-400 hover:text-brand-300 flex items-center gap-1 cursor-pointer transition-colors"
               >
                 {isCreatingNewClass ? (
                   "Selecionar classe existente"
@@ -288,7 +288,7 @@ export function BatchEditClassesModal({
                   placeholder="Ex: male_face"
                   autoFocus
                 />
-                <p className="text-[11px] text-zinc-500">
+                <p className="text-2xs text-zinc-500">
                   A classe será adicionada ao dataset e aplicada nas boxes selecionadas.
                 </p>
               </div>

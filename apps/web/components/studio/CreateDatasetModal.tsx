@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   IconCheck,
@@ -85,6 +85,16 @@ export default function CreateDatasetModal({
   const [uploadProgress, setUploadProgress] = useState<{ sent: number; total: number; batchIndex: number; batchCount: number } | null>(null);
   const cancelledRef = useRef(false);
 
+  const applyInspection = useCallback((res: InspectionResult) => {
+    setInspection(res);
+    setTitle(res.title);
+    setType(res.category);
+    setClassesRaw(res.classes.join(", "));
+    setNameError(null);
+    setClassesError(null);
+    setTopError(null);
+  }, []);
+
   useEffect(() => {
     if (!open) return;
     setPhase("form");
@@ -106,19 +116,9 @@ export default function CreateDatasetModal({
 
     const t = setTimeout(() => nameRef.current?.focus(), 50);
     return () => clearTimeout(t);
-  }, [open, initialMode, initialInspection]);
+  }, [open, initialMode, initialInspection, applyInspection]);
 
   if (!open) return null;
-
-  function applyInspection(res: InspectionResult) {
-    setInspection(res);
-    setTitle(res.title);
-    setType(res.category);
-    setClassesRaw(res.classes.join(", "));
-    setNameError(null);
-    setClassesError(null);
-    setTopError(null);
-  }
 
   async function handleZipSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -525,7 +525,7 @@ export default function CreateDatasetModal({
                     <p className="text-xs font-semibold text-zinc-200">
                       Arraste um pacote ZIP ou pasta aqui
                     </p>
-                    <p className="mt-0.5 text-[11px] text-zinc-400">
+                    <p className="mt-0.5 text-2xs text-zinc-400">
                       Autodeteção de classes, anotações e contagem de imagens
                     </p>
 
@@ -536,7 +536,7 @@ export default function CreateDatasetModal({
                         size="sm"
                         onClick={() => zipInputRef.current?.click()}
                         leftIcon={<IconFileArchive className="h-3.5 w-3.5 text-brand-400" />}
-                        className="font-mono text-[11px]"
+                        className="font-mono text-2xs"
                       >
                         Selecionar ZIP
                       </Button>
@@ -546,7 +546,7 @@ export default function CreateDatasetModal({
                         size="sm"
                         onClick={() => folderInputRef.current?.click()}
                         leftIcon={<IconFolder className="h-3.5 w-3.5 text-amber-400" />}
-                        className="font-mono text-[11px]"
+                        className="font-mono text-2xs"
                       >
                         Selecionar Pasta
                       </Button>
@@ -579,7 +579,7 @@ export default function CreateDatasetModal({
                           <p className="truncate font-mono text-xs font-semibold text-zinc-200" title={inspection.sourceLabel}>
                             {inspection.sourceLabel}
                           </p>
-                          <p className="font-mono text-[11px] text-brand-300">
+                          <p className="font-mono text-2xs text-brand-300">
                             {inspection.imagesCount} imagens identificadas
                             {inspection.file && ` · ${formatBytes(inspection.file.size)}`}
                           </p>
@@ -592,7 +592,7 @@ export default function CreateDatasetModal({
                           setTitle("");
                           setClassesRaw("");
                         }}
-                        className="text-[11px] font-mono text-zinc-400 hover:text-white underline px-2 py-1"
+                        className="text-2xs font-mono text-zinc-400 hover:text-white underline px-2 py-1"
                       >
                         Trocar
                       </button>
@@ -601,16 +601,16 @@ export default function CreateDatasetModal({
                     {/* Classes Autodetectadas */}
                     {inspection.classes.length > 0 && (
                       <div className="mt-3 pt-2.5 border-t border-brand-500/20">
-                        <span className="text-[11px] font-mono uppercase tracking-caps text-brand-200 block mb-1.5">
+                        <span className="text-2xs font-mono uppercase tracking-caps text-brand-200 block mb-1.5">
                           Classes Detectadas ({inspection.classes.length}):
                         </span>
                         <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto">
                           {inspection.classes.map((c) => (
                             <span
                               key={c}
-                              className="inline-flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded bg-black/40 text-zinc-200 border border-brand-500/20 backdrop-blur-sm"
+                              className="inline-flex items-center gap-1 text-2xs font-mono px-2 py-0.5 rounded bg-black/40 text-zinc-200 border border-brand-500/20 backdrop-blur-sm"
                             >
-                              <IconCheck className="h-2.5 w-2.5 text-[#34d399]" />
+                              <IconCheck className="h-2.5 w-2.5 text-status-success" />
                               {c}
                             </span>
                           ))}
@@ -624,7 +624,7 @@ export default function CreateDatasetModal({
 
             {/* Campo Nome */}
             <div>
-              <label htmlFor="create-dataset-name" className="tracking-caps mb-1 block font-mono text-[11px] font-medium uppercase text-zinc-300">
+              <label htmlFor="create-dataset-name" className="tracking-caps mb-1 block font-mono text-2xs font-medium uppercase text-zinc-300">
                 Nome do Dataset
               </label>
               <input
@@ -639,13 +639,13 @@ export default function CreateDatasetModal({
                 className="w-full rounded-xl border border-zinc-800 bg-black/40 backdrop-blur-sm px-3 py-2 font-mono text-zinc-200 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500/40"
               />
               {slug && (
-                <p className="mt-1 font-mono text-[11px] text-zinc-400">
+                <p className="mt-1 font-mono text-2xs text-zinc-400">
                   slug: {slug}
                   {showAdjustHint && " · o servidor pode ajustar"}
                 </p>
               )}
               {nameError && (
-                <p role="alert" className="mt-1 text-[11px] text-rose-300">
+                <p role="alert" className="mt-1 text-2xs text-rose-300">
                   {nameError}
                 </p>
               )}
@@ -663,7 +663,7 @@ export default function CreateDatasetModal({
 
             {/* Campo Classes */}
             <div>
-              <label htmlFor="create-dataset-classes" className="tracking-caps mb-1 block font-mono text-[11px] font-medium uppercase text-zinc-300">
+              <label htmlFor="create-dataset-classes" className="tracking-caps mb-1 block font-mono text-2xs font-medium uppercase text-zinc-300">
                 Classes {mode === "import" && inspection?.classes.length ? "(ajustáveis)" : "(opcional)"}
               </label>
               <input
@@ -674,11 +674,11 @@ export default function CreateDatasetModal({
                 onChange={(e) => setClassesRaw(e.target.value)}
                 className="w-full rounded-xl border border-zinc-800 bg-black/40 backdrop-blur-sm px-3 py-2 font-mono text-zinc-200 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500/40"
               />
-              <p className="mt-1 text-[11px] text-zinc-400">
+              <p className="mt-1 text-2xs text-zinc-400">
                 Separadas por vírgula — ordem vira índice YOLO
               </p>
               {classesError && (
-                <p role="alert" className="mt-1 text-[11px] text-rose-300">
+                <p role="alert" className="mt-1 text-2xs text-rose-300">
                   {classesError}
                 </p>
               )}
@@ -694,7 +694,7 @@ export default function CreateDatasetModal({
                     variant="brand"
                     size="sm"
                   />
-                  <p className="font-mono text-[11px] text-zinc-400 text-center">
+                  <p className="font-mono text-2xs text-zinc-400 text-center">
                     {uploadProgress.sent} de {uploadProgress.total} · lote{" "}
                     <span className="text-zinc-200">{uploadProgress.batchIndex}</span>
                     /{uploadProgress.batchCount}
@@ -703,7 +703,7 @@ export default function CreateDatasetModal({
               )}
 
               <div className="flex items-center justify-between">
-                <span className="font-mono text-[11px] text-zinc-400">
+                <span className="font-mono text-2xs text-zinc-400">
                   {busy
                     ? busyText
                     : mode === "import" && inspection

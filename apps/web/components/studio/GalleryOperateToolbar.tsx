@@ -72,7 +72,7 @@ export function GalleryOperateToolbar({
         <div className="flex items-center space-x-2 shrink-0">
           {/* Filtro de Rotação/Anotação (só se não for lixeira) */}
           {currentView !== "trash" && (
-            <div className="hidden sm:flex items-center rounded-lg border border-white/10 bg-zinc-900/90 p-0.5 font-mono text-[11px]">
+            <div className="hidden sm:flex items-center rounded-lg border border-white/10 bg-zinc-900/90 p-0.5 font-mono text-2xs">
               <button
                 type="button"
                 onClick={() => onAnnotationFilterChange("all")}
@@ -89,7 +89,7 @@ export function GalleryOperateToolbar({
                 onClick={() => onAnnotationFilterChange("labeled")}
                 className={`rounded px-2 py-1 transition-colors cursor-pointer ${
                   annotationFilter === "labeled"
-                    ? "bg-[#34d399]/20 text-[#a7f3d0] font-semibold"
+                    ? "bg-status-success/20 text-[#a7f3d0] font-semibold"
                     : "text-zinc-400 hover:text-zinc-200"
                 }`}
               >
@@ -100,7 +100,7 @@ export function GalleryOperateToolbar({
                 onClick={() => onAnnotationFilterChange("unlabeled")}
                 className={`rounded px-2 py-1 transition-colors cursor-pointer ${
                   annotationFilter === "unlabeled"
-                    ? "bg-amber-500/20 text-amber-300 font-semibold"
+                    ? "bg-status-alert/20 text-amber-300 font-semibold"
                     : "text-zinc-400 hover:text-zinc-200"
                 }`}
               >
@@ -121,7 +121,7 @@ export function GalleryOperateToolbar({
                   : "text-zinc-400 hover:text-zinc-200"
               }`}
             >
-              <svg className="size-4" viewBox="0 0 16 16" fill="currentColor">
+              <svg aria-hidden="true" focusable="false" className="size-4" viewBox="0 0 16 16" fill="currentColor">
                 <rect x="1" y="1" width="3.5" height="3.5" rx="0.5" />
                 <rect x="6" y="1" width="3.5" height="3.5" rx="0.5" />
                 <rect x="11" y="1" width="3.5" height="3.5" rx="0.5" />
@@ -198,13 +198,13 @@ export function GalleryOperateToolbar({
       {/* Seletor de Classe / Filtro Estrito */}
       {currentView !== "trash" && classes && classes.length > 0 && (
         <div className="flex items-center space-x-1.5 overflow-x-auto min-w-0 pt-2 border-t border-white/5">
-          <span className="font-mono text-[10px] text-zinc-500 uppercase tracking-wider shrink-0 mr-1">
+          <span className="font-mono text-3xs text-zinc-500 uppercase tracking-wider shrink-0 mr-1">
             Classe:
           </span>
           <button
             type="button"
             onClick={() => onClassChange?.(null)}
-            className={`rounded-lg px-2.5 py-1 font-mono text-[11px] transition-colors shrink-0 cursor-pointer ${
+            className={`rounded-lg px-2.5 py-1 font-mono text-2xs transition-colors shrink-0 cursor-pointer ${
               !selectedClassId
                 ? "bg-brand-500/20 text-brand-300 font-semibold border border-brand-500/30"
                 : "bg-white/[0.03] text-zinc-400 hover:text-zinc-200 border border-white/5"
@@ -217,9 +217,9 @@ export function GalleryOperateToolbar({
               key={c.id}
               type="button"
               onClick={() => onClassChange?.(selectedClassId === c.id ? null : c.id)}
-              className={`rounded-lg px-2.5 py-1 font-mono text-[11px] transition-colors shrink-0 cursor-pointer ${
+              className={`rounded-lg px-2.5 py-1 font-mono text-2xs transition-colors shrink-0 cursor-pointer ${
                 selectedClassId === c.id
-                  ? "bg-amber-500/25 text-amber-200 font-semibold border border-amber-500/40 shadow-sm"
+                  ? "bg-status-alert/25 text-amber-200 font-semibold border border-status-alert/40 shadow-sm"
                   : "bg-white/[0.03] text-zinc-400 hover:text-zinc-200 border border-white/5"
               }`}
             >

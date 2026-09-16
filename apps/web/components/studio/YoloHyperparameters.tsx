@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useMemo } from "react";
+import type React from "react";
+import { useMemo } from "react";
 import { Input } from "@/components/ui/Input";
 import { Select, type SelectOption, type SelectRefHandle } from "@/components/ui/Select";
 import type { YoloAugment } from "@/types/studio";
@@ -60,7 +61,7 @@ export function YoloHyperparameters({
         value: m,
         label: m,
         badge: badgeText ? (
-          <span className="font-mono text-[11px] text-zinc-400">
+          <span className="font-mono text-2xs text-zinc-400">
             {badgeText}
           </span>
         ) : undefined,
@@ -96,7 +97,7 @@ export function YoloHyperparameters({
         <div>
           <label
             htmlFor="yolo-model-select"
-            className="mb-1 block font-mono text-[11px] uppercase tracking-caps text-zinc-400"
+            className="mb-1 block font-mono text-2xs uppercase tracking-caps text-zinc-400"
           >
             Modelo Base
           </label>
@@ -114,7 +115,7 @@ export function YoloHyperparameters({
         <div>
           <label
             htmlFor="yolo-epochs-input"
-            className="mb-1 block font-mono text-[11px] uppercase tracking-caps text-zinc-400"
+            className="mb-1 block font-mono text-2xs uppercase tracking-caps text-zinc-400"
           >
             Épocas ({EPOCHS_MIN}-{EPOCHS_MAX})
           </label>
@@ -139,7 +140,7 @@ export function YoloHyperparameters({
         <div>
           <label
             htmlFor="yolo-batch-select"
-            className="mb-1 block font-mono text-[11px] uppercase tracking-caps text-zinc-400"
+            className="mb-1 block font-mono text-2xs uppercase tracking-caps text-zinc-400"
           >
             Lote (Batch)
           </label>
@@ -156,7 +157,7 @@ export function YoloHyperparameters({
         <div>
           <label
             htmlFor="yolo-imgsz-select"
-            className="mb-1 block font-mono text-[11px] uppercase tracking-caps text-zinc-400"
+            className="mb-1 block font-mono text-2xs uppercase tracking-caps text-zinc-400"
           >
             Resolução (imgsz)
           </label>
@@ -176,7 +177,7 @@ export function YoloHyperparameters({
         <div>
           <label
             htmlFor="yolo-lr0-input"
-            className="mb-1 block font-mono text-[11px] uppercase tracking-caps text-zinc-400"
+            className="mb-1 block font-mono text-2xs uppercase tracking-caps text-zinc-400"
           >
             Taxa Inicial (lr0)
           </label>
@@ -194,7 +195,7 @@ export function YoloHyperparameters({
         <div>
           <label
             htmlFor="yolo-optimizer-select"
-            className="mb-1 block font-mono text-[11px] uppercase tracking-caps text-zinc-400"
+            className="mb-1 block font-mono text-2xs uppercase tracking-caps text-zinc-400"
           >
             Otimizador
           </label>
@@ -211,7 +212,7 @@ export function YoloHyperparameters({
 
       {/* Aumentação de Dados */}
       <div className="rounded-xl border border-white/5 bg-white/[0.02] p-3 space-y-2">
-        <span className="font-mono text-[11px] uppercase tracking-caps text-zinc-400 block font-semibold">
+        <span className="font-mono text-2xs uppercase tracking-caps text-zinc-400 block font-semibold">
           Aumentação de Dados (Data Augmentation)
         </span>
         <div className="grid grid-cols-2 gap-2 text-xs">

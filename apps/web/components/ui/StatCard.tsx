@@ -1,6 +1,6 @@
-import React from "react";
+import type React from "react";
 
-export interface StatCardProps extends React.HTMLAttributes<HTMLDivElement> {
+export interface StatCardProps extends React.HTMLAttributes<HTMLElement> {
   label: string;
   value: string | number;
   subtext?: React.ReactNode;
@@ -22,28 +22,8 @@ export function StatCard({
   className = "",
   ...props
 }: StatCardProps) {
-  return (
-    <div
-      onClick={onClick}
-      role={onClick ? "button" : undefined}
-      tabIndex={onClick ? 0 : undefined}
-      onKeyDown={
-        onClick
-          ? (e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                onClick();
-              }
-            }
-          : undefined
-      }
-      className={`glass-card group rounded-xl p-4 transition-[border-color,box-shadow] hover:border-brand-500/30 ${
-        onClick
-          ? "cursor-pointer active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70"
-          : ""
-      } ${className}`.trim()}
-      {...props}
-    >
+  const content = (
+    <>
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center space-x-2 text-zinc-300 min-w-0">
           {icon && (
@@ -51,7 +31,7 @@ export function StatCard({
               {icon}
             </span>
           )}
-          <span className="font-mono text-[11px] font-semibold tracking-[0.08em] uppercase truncate">
+          <span className="font-mono text-2xs font-semibold tracking-[0.08em] uppercase truncate">
             {label}
           </span>
         </div>
@@ -65,6 +45,28 @@ export function StatCard({
           {subtext}
         </div>
       )}
+    </>
+  );
+
+  if (onClick) {
+    return (
+      <button
+        {...props}
+        type="button"
+        onClick={onClick}
+        className={`glass-card group rounded-xl p-4 text-left block w-full transition-[border-color,box-shadow] hover:border-brand-500/30 cursor-pointer active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${className}`.trim()}
+      >
+        {content}
+      </button>
+    );
+  }
+
+  return (
+    <div
+      className={`glass-card group rounded-xl p-4 transition-[border-color,box-shadow] hover:border-brand-500/30 ${className}`.trim()}
+      {...props}
+    >
+      {content}
     </div>
   );
 }

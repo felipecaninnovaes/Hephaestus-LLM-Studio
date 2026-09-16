@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import type React from "react";
 import { IconTrash, IconX, IconCheck, IconSparkles, IconTag } from "@/components/icons";
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -60,8 +60,7 @@ export function FloatingSelectionBar({
   const isAllSelected = selectedCount === totalInView && totalInView > 0;
 
   return (
-    <div
-      role="region"
+    <section
       aria-label="Ações para itens selecionados"
       className={`
         fixed z-40 flex items-center space-x-3 rounded-2xl border border-brand-500/30 bg-zinc-950/95 px-4 py-2.5 shadow-2xl backdrop-blur-xl animate-in fade-in slide-in-from-bottom-5
@@ -164,7 +163,7 @@ export function FloatingSelectionBar({
           <IconX className="size-4" />
         </button>
       </div>
-    </div>
+    </section>
   );
 }
 

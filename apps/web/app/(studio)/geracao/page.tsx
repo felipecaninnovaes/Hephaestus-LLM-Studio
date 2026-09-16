@@ -57,7 +57,7 @@ export default function GeracaoPage() {
             <h1 className="font-display text-base md:text-lg font-bold text-white tracking-tight leading-none">
               Geração
             </h1>
-            <p className="text-[11px] text-zinc-400 mt-0.5 font-mono">
+            <p className="text-2xs text-zinc-400 mt-0.5 font-mono">
               Ambiente de geração de imagens por difusão
             </p>
           </div>

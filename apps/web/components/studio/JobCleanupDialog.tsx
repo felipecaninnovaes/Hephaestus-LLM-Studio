@@ -107,10 +107,11 @@ export function JobCleanupDialog({
       <div className="space-y-4">
         {/* Input de dias */}
         <div>
-          <label className="block text-[11px] font-mono font-medium text-zinc-400 uppercase tracking-caps mb-1.5">
+          <label htmlFor="job-cleanup-days" className="block text-2xs font-mono font-medium text-zinc-400 uppercase tracking-caps mb-1.5">
             Há mais de N dias
           </label>
           <input
+            id="job-cleanup-days"
             type="number"
             min={0}
             value={days}
@@ -123,7 +124,7 @@ export function JobCleanupDialog({
 
         {/* Checkboxes de status */}
         <div>
-          <span className="block text-[11px] font-mono font-medium text-zinc-400 uppercase tracking-caps mb-2">
+          <span className="block text-2xs font-mono font-medium text-zinc-400 uppercase tracking-caps mb-2">
             Status
           </span>
           <div className="space-y-2">
@@ -162,7 +163,7 @@ export function JobCleanupDialog({
 
         {/* Linha de contexto */}
         {terminalJobs && terminalJobs.length > 0 && (
-          <div className="rounded-lg border border-white/10 bg-white/[0.03] p-2.5 font-mono text-[11px] text-zinc-400 space-y-0.5">
+          <div className="rounded-lg border border-white/10 bg-white/[0.03] p-2.5 font-mono text-2xs text-zinc-400 space-y-0.5">
             <span>{terminalJobs.length} job(s) terminal(is) no histórico</span>
             {matchCount !== null && (
               <span className="block text-zinc-300">

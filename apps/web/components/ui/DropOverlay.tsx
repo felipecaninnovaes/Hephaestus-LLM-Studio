@@ -87,8 +87,7 @@ export function DropOverlay({
   if (!open) return null;
 
   return (
-    <div
-      role="region"
+    <section
       aria-label="Área de soltura de arquivos"
       className={`fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6 backdrop-blur-md transition-all animate-in fade-in ${className}`}
       onDragOver={(e) => e.preventDefault()}
@@ -110,7 +109,7 @@ export function DropOverlay({
           )}
         </div>
       </div>
-    </div>
+    </section>
   );
 }
 

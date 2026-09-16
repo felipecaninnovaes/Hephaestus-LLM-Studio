@@ -9,6 +9,7 @@ import {
   EmptyState,
   SearchInput,
   SubmodulePills,
+  Spinner,
   showToast,
   useFileDrop,
 } from "@/components/ui";
@@ -135,6 +136,10 @@ export default function DatasetGalleryPage() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollAbortRef = useRef<AbortController | null>(null);
   const searchTimerRef = useRef<number | null>(null);
+  // Dedupe do debounce: handleTextSearch seta activeQuery/activeTag (deps do
+  // efeito) e re-armaria o timer causando 2ª busca; guarda o último alvo já
+  // buscado (modo+query) e pula a re-busca igual sem remover as deps do lint.
+  const lastSearchedRef = useRef<string | null>(null);
   const { isDragging: isDraggingPage, dropProps } = useFileDrop({
     onDropFiles: async (files, dataTransfer) => {
       try {
@@ -230,38 +235,109 @@ export default function DatasetGalleryPage() {
     };
   }, [datasetId, load, splitView, annotationFilter, selectedClassId, activeTag]);
 
-  function stopSearchPolling() {
+  const stopSearchPolling = useCallback(function stopSearchPolling() {
     if (pollRef.current) {
       clearInterval(pollRef.current);
       pollRef.current = null;
     }
     pollAbortRef.current?.abort();
     pollAbortRef.current = null;
-  }
+  }, []);
 
   // Arma o polling do status (2s) — ciente de visibilidade da aba
-  function startSearchPolling() {
-    if (pollRef.current) return;
-    const pollCtrl = new AbortController();
-    pollAbortRef.current = pollCtrl;
-    pollRef.current = setInterval(async () => {
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+  const startSearchPolling = useCallback(
+    function startSearchPolling() {
+      if (pollRef.current) return;
+      const pollCtrl = new AbortController();
+      pollAbortRef.current = pollCtrl;
+      pollRef.current = setInterval(async () => {
+        if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+          return;
+        }
+        try {
+          const next = await getSearchStatus(datasetId as string, pollCtrl.signal);
+          if (pollCtrl.signal.aborted) return;
+          setSearchStatus(next);
+          setStatusFailed(false);
+          if (next.status !== "indexing") stopSearchPolling();
+        } catch {
+          if (pollCtrl.signal.aborted) return;
+          // Mantém o polling — falha transitória não trava a página.
+        }
+      }, 2000);
+    },
+    [datasetId, stopSearchPolling],
+  );
+
+  const messageForSearch = useCallback(function messageForSearch(err: unknown): string {
+    if (err instanceof ApiError && err.message) return err.message;
+    return "Falha na busca.";
+  }, []);
+
+  const clearSearch = useCallback(function clearSearch() {
+    setActiveQuery(null);
+    setActiveTag(null);
+    setSimilarFor(null);
+    setResults([]);
+    setSearchInput("");
+  }, []);
+
+  const handleTextSearch = useCallback(
+    async function handleTextSearch(
+      query: string,
+      mode: "tag" | "semantic" = searchMode,
+    ) {
+      if (!datasetId) return;
+      const q = query.trim();
+      if (!q) {
+        clearSearch();
         return;
       }
-      try {
-        const next = await getSearchStatus(datasetId as string, pollCtrl.signal);
-        if (pollCtrl.signal.aborted) return;
-        setSearchStatus(next);
-        setStatusFailed(false);
-        if (next.status !== "indexing") stopSearchPolling();
-      } catch {
-        if (pollCtrl.signal.aborted) return;
-        // Mantém o polling — falha transitória não trava a página.
+
+      if (mode === "tag") {
+        setResults([]);
+        setSimilarFor(null);
+        setActiveQuery(null);
+        setActiveTag(q);
+        return;
       }
-    }, 2000);
-  }
+
+      setSearching(true);
+      try {
+        const res = await searchDataset(datasetId, q);
+        setResults(res.items);
+        setActiveQuery(q);
+        setActiveTag(null);
+        setSimilarFor(null);
+      } catch (err) {
+        if (err instanceof ApiError && err.code === "index_not_ready") {
+          setSearchStatus((prev) =>
+            prev ? { ...prev, status: "not_indexed" } : prev,
+          );
+          showToast("Índice vazio — indexe para buscar.", "info");
+          return;
+        }
+        if (err instanceof ApiError && err.code === "embedding_unavailable") {
+          showToast("Embedder indisponível — tente novamente.", "error");
+          return;
+        }
+        if (
+          err instanceof ApiError &&
+          (err.code === "unauthorized" || err.status === 401)
+        ) {
+          router.replace("/login");
+          return;
+        }
+        showToast(messageForSearch(err), "error");
+      } finally {
+        setSearching(false);
+      }
+    },
+    [datasetId, searchMode, clearSearch, router, messageForSearch],
+  );
 
   // Status do índice + polling a cada 2s enquanto indexa.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: items.length é trigger intencional — re-checa o índice após upload (novas imagens mudam o estado) sem ler seu valor; start/stop estáveis via useCallback
   useEffect(() => {
     if (!datasetId) return;
     const ctrl = new AbortController();
@@ -291,10 +367,11 @@ export default function DatasetGalleryPage() {
       stopSearchPolling();
     };
     // items.length: re-checa o índice após upload (novas imagens mudam o estado).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [datasetId, items.length]);
+  }, [datasetId, items.length, startSearchPolling, stopSearchPolling]);
 
   // Busca dinâmica com debounce (400ms) — dispara quando searchInput ou searchMode muda.
+  // lastSearchedRef evita o 2º disparo: o setState do search re-executa o efeito,
+  // mas o alvo igual ao já buscado é pulado (deps mantidas p/ satisfazer o lint).
   useEffect(() => {
     if (searchTimerRef.current) {
       window.clearTimeout(searchTimerRef.current);
@@ -302,6 +379,7 @@ export default function DatasetGalleryPage() {
     }
     const q = searchInput.trim();
     if (!q) {
+      lastSearchedRef.current = `${searchMode}:`;
       if (searchMode === "semantic" && activeQuery) {
         clearSearch();
       } else if (searchMode === "tag" && activeTag) {
@@ -310,6 +388,9 @@ export default function DatasetGalleryPage() {
       return;
     }
     searchTimerRef.current = window.setTimeout(() => {
+      const target = `${searchMode}:${q}`;
+      if (lastSearchedRef.current === target) return;
+      lastSearchedRef.current = target;
       void handleTextSearch(searchInput, searchMode);
     }, 400);
     return () => {
@@ -318,16 +399,11 @@ export default function DatasetGalleryPage() {
         searchTimerRef.current = null;
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchInput, searchMode]);
+  }, [searchInput, searchMode, activeQuery, activeTag, clearSearch, handleTextSearch]);
 
-  function messageForSearch(err: unknown): string {
-    if (err instanceof ApiError && err.message) return err.message;
-    return "Falha na busca.";
-  }
-
-  async function loadMore() {
-    if (!datasetId || loadingMore) return;
+  const loadMore = useCallback(
+    async function loadMore() {
+      if (!datasetId || loadingMore) return;
     setLoadingMore(true);
     try {
       const isTrash = splitView === "trash";
@@ -361,7 +437,19 @@ export default function DatasetGalleryPage() {
     } finally {
       setLoadingMore(false);
     }
-  }
+    },
+    [
+      datasetId,
+      loadingMore,
+      splitView,
+      annotationFilter,
+      selectedClassId,
+      searchMode,
+      activeTag,
+      items.length,
+      router,
+    ],
+  );
 
   // Infinite Scroll via IntersectionObserver no sentinela ao final da lista
   useEffect(() => {
@@ -384,7 +472,7 @@ export default function DatasetGalleryPage() {
 
     observer.observe(el);
     return () => observer.disconnect();
-  }, [loading, loadingMore, items.length, total]);
+  }, [loading, loadingMore, items.length, total, loadMore]);
 
   async function handleFiles(files: FileList | File[] | null) {
     if (!files || (Array.isArray(files) ? files.length === 0 : files.length === 0) || !datasetId || uploading) return;
@@ -536,68 +624,9 @@ export default function DatasetGalleryPage() {
     }
   }
 
-  function clearSearch() {
-    setActiveQuery(null);
-    setActiveTag(null);
-    setSimilarFor(null);
-    setResults([]);
-    setSearchInput("");
-  }
-
   function clearAllFilters() {
     clearSearch();
     setSelectedClassId(null);
-  }
-
-  async function handleTextSearch(
-    query: string,
-    mode: "tag" | "semantic" = searchMode,
-  ) {
-    if (!datasetId) return;
-    const q = query.trim();
-    if (!q) {
-      clearSearch();
-      return;
-    }
-
-    if (mode === "tag") {
-      setResults([]);
-      setSimilarFor(null);
-      setActiveQuery(null);
-      setActiveTag(q);
-      return;
-    }
-
-    setSearching(true);
-    try {
-      const res = await searchDataset(datasetId, q);
-      setResults(res.items);
-      setActiveQuery(q);
-      setActiveTag(null);
-      setSimilarFor(null);
-    } catch (err) {
-      if (err instanceof ApiError && err.code === "index_not_ready") {
-        setSearchStatus((prev) =>
-          prev ? { ...prev, status: "not_indexed" } : prev,
-        );
-        showToast("Índice vazio — indexe para buscar.", "info");
-        return;
-      }
-      if (err instanceof ApiError && err.code === "embedding_unavailable") {
-        showToast("Embedder indisponível — tente novamente.", "error");
-        return;
-      }
-      if (
-        err instanceof ApiError &&
-        (err.code === "unauthorized" || err.status === 401)
-      ) {
-        router.replace("/login");
-        return;
-      }
-      showToast(messageForSearch(err), "error");
-    } finally {
-      setSearching(false);
-    }
   }
 
   async function handleSimilarSearch(item: ImageItem) {
@@ -962,6 +991,8 @@ export default function DatasetGalleryPage() {
             aria-label="Voltar para a lista de datasets"
           >
             <svg
+              aria-hidden="true"
+              focusable="false"
               className="size-4"
               fill="none"
               stroke="currentColor"
@@ -1173,13 +1204,13 @@ export default function DatasetGalleryPage() {
         </div>
       </div>
 
-      <div className="glass-card flex flex-wrap items-center gap-2 rounded-2xl shadow-lg px-4 py-2.5 font-mono text-[11px] text-zinc-400">
+      <div className="glass-card flex flex-wrap items-center gap-2 rounded-2xl shadow-lg px-4 py-2.5 font-mono text-2xs text-zinc-400">
         <span className="font-semibold text-zinc-200">
           {dataset.imagesCount.toLocaleString()} amostras
         </span>
         <span className="h-3 w-px bg-white/10"></span>
         <span>
-          <span className="text-[#34d399] font-semibold">
+          <span className="text-status-success font-semibold">
             {dataset.labeledCount.toLocaleString()}
           </span>{" "}
           rotuladas por {reviewer}
@@ -1325,7 +1356,7 @@ export default function DatasetGalleryPage() {
               </span>
             )}
             {selectedClassId && (
-              <span className="rounded bg-amber-500/20 px-2 py-0.5 text-amber-200">
+              <span className="rounded bg-status-alert/20 px-2 py-0.5 text-amber-200">
                 Classe: {dataset.classes?.find((c) => c.id === selectedClassId)?.name ?? selectedClassId}
               </span>
             )}
@@ -1334,7 +1365,7 @@ export default function DatasetGalleryPage() {
           <button
             type="button"
             onClick={clearAllFilters}
-            className="text-[11px] text-zinc-400 hover:text-white underline cursor-pointer shrink-0"
+            className="text-2xs text-zinc-400 hover:text-white underline cursor-pointer shrink-0"
           >
             Limpar filtros
           </button>
@@ -1404,7 +1435,7 @@ export default function DatasetGalleryPage() {
               : "Enviar amostras"}
           </Button>
           {uploading && uploadBatchInfo && (
-            <p className="mt-1.5 font-mono text-[11px] text-zinc-400">
+            <p className="mt-1.5 font-mono text-2xs text-zinc-400">
               lote {uploadBatchInfo.batchIndex} de {uploadBatchInfo.batchCount}
             </p>
           )}
@@ -1422,7 +1453,7 @@ export default function DatasetGalleryPage() {
         </EmptyState>
       ) : similarFor !== null || (searchMode === "semantic" && activeQuery !== null) ? (
         <div className="flex flex-col gap-3">
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-zinc-800/80 bg-zinc-950/60 backdrop-blur-sm px-4 py-2.5 text-[11px] text-zinc-400">
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-zinc-800/80 bg-zinc-950/60 backdrop-blur-sm px-4 py-2.5 text-2xs text-zinc-400">
             <span>
               Resultados da busca semântica —{" "}
               <span className="font-mono text-zinc-200">
@@ -1540,35 +1571,29 @@ export default function DatasetGalleryPage() {
             />
           ))}
           <div className="relative inline-flex">
-            <div
-              role="button"
-              tabIndex={uploading ? -1 : 0}
+            <button
+              type="button"
+              disabled={uploading}
               onClick={() => { if (!uploading) fileRef.current?.click(); }}
-              onKeyDown={(e) => {
-                if (!uploading && (e.key === "Enter" || e.key === " ")) {
-                  e.preventDefault();
-                  fileRef.current?.click();
-                }
-              }}
-              className={`flex ${density === "compact" ? "h-20" : "h-28 sm:h-36"} flex-col items-center justify-center space-y-1 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 text-zinc-400 backdrop-blur-sm transition-all hover:border-brand-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${uploading ? "opacity-60" : ""}`}
+              className={`flex ${density === "compact" ? "h-20" : "h-28 sm:h-36"} flex-col items-center justify-center space-y-1 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 text-zinc-400 backdrop-blur-sm transition-all hover:border-brand-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 disabled:cursor-wait ${uploading ? "opacity-60" : ""}`}
             >
               <IconPlus className={density === "compact" ? "h-4 w-4" : "h-5 w-5"} />
-              <span className="font-mono text-[10px] sm:text-[11px]">
+              <span className="font-mono text-3xs sm:text-2xs">
                 {uploading
                   ? `Enviando ${uploadSent}/${uploadCount}`
                   : "Adicionar imagens"}
               </span>
               {uploading && uploadBatchInfo && (
-                <span className="font-mono text-[9px] text-zinc-500">
+                <span className="font-mono text-4xs text-zinc-500">
                   lote {uploadBatchInfo.batchIndex}/{uploadBatchInfo.batchCount}
                 </span>
               )}
-            </div>
+            </button>
             {uploading && (
               <button
                 type="button"
                 onClick={() => { uploadCancelledRef.current = true; }}
-                className="absolute bottom-2 right-2 rounded-md border border-[#ef4444]/30 bg-[#ef4444]/[0.12] px-2 py-0.5 font-mono text-[10px] text-rose-300 transition-colors hover:bg-[#ef4444]/[0.20]"
+                className="absolute bottom-2 right-2 rounded-md border border-status-danger/30 bg-status-danger/[0.12] px-2 py-0.5 font-mono text-3xs text-rose-300 transition-colors hover:bg-status-danger/[0.20]"
               >
                 Cancelar
               </button>
@@ -1581,7 +1606,7 @@ export default function DatasetGalleryPage() {
       <div ref={sentinelRef} className="h-10 w-full flex items-center justify-center py-2">
         {loadingMore && (
           <div className="flex items-center gap-2 font-mono text-xs text-zinc-500">
-            <span className="h-3 w-3 animate-spin rounded-full border-2 border-brand-500/40 border-t-brand-400" />
+            <Spinner className="size-3" />
             <span>Carregando mais amostras…</span>
           </div>
         )}

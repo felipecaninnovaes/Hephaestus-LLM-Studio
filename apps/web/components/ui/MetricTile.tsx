@@ -9,7 +9,7 @@ export interface MetricTileProps extends HTMLAttributes<HTMLDivElement> {
 
 const VALUE_COLORS = {
   default: "text-zinc-200",
-  success: "text-[#34d399]",
+  success: "text-status-success",
   brand: "text-brand-300",
   amber: "text-amber-300",
   rose: "text-rose-300",
@@ -36,14 +36,14 @@ export const MetricTile = forwardRef<HTMLDivElement, MetricTileProps>(
         className={`rounded-xl border border-zinc-800/60 bg-zinc-900/80 backdrop-blur-sm p-2.5 ${className}`.trim()}
         {...props}
       >
-        <p className="tracking-caps font-mono text-[10px] uppercase text-zinc-500 truncate">
+        <p className="tracking-caps font-mono text-3xs uppercase text-zinc-500 truncate">
           {label}
         </p>
         <p className={`font-mono text-sm font-bold truncate ${valueColorClass}`}>
           {value}
         </p>
         {subtext && (
-          <p className="mt-0.5 font-mono text-[10px] text-zinc-500 truncate">
+          <p className="mt-0.5 font-mono text-3xs text-zinc-500 truncate">
             {subtext}
           </p>
         )}

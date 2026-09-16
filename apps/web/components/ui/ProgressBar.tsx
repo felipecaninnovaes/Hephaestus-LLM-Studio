@@ -16,7 +16,7 @@ export interface ProgressBarProps extends HTMLAttributes<HTMLDivElement> {
 }
 
 const VARIANT_FILLS: Record<ProgressVariant, string> = {
-  success: "bg-[#34d399]",
+  success: "bg-status-success",
   brand: "bg-brand-500",
   amber: "bg-amber-400",
   rose: "bg-rose-500",
@@ -49,7 +49,7 @@ export const ProgressBar = forwardRef<HTMLDivElement, ProgressBarProps>(
     return (
       <div ref={ref} className={`w-full ${className}`.trim()} {...props}>
         {(label || showPercent) && (
-          <div className="mb-1 flex items-center justify-between font-mono text-[10px] text-zinc-400">
+          <div className="mb-1 flex items-center justify-between font-mono text-3xs text-zinc-400">
             {label && <span>{label}</span>}
             {showPercent && (
               <span className="text-zinc-200 font-medium">

@@ -42,9 +42,11 @@ import { JobProgressLive } from "@/components/studio/JobProgressLive";
 import {
   clearGeracaoForm,
   createDefaultGeracaoForm,
+  GERACAO_APPLY_FORM_EVENT,
   loadGeracaoForm,
   notifyGeracaoCompleted,
   saveGeracaoForm,
+  type PartialGeracaoForm,
 } from "@/lib/geracao-storage";
 
 /* ── Tipos internos ── */
@@ -205,28 +207,44 @@ export default function GenerationPanel() {
   const skipNextPersistRef = useRef(false);
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  /* Aplica um form parcial validado nos states (mount + evento F4/007). */
+  const applyStoredForm = useCallback((stored: PartialGeracaoForm) => {
+    if (stored.modelMode !== undefined) setModelMode(stored.modelMode);
+    if (stored.baseModel !== undefined) setBaseModel(stored.baseModel);
+    if (stored.customModelId !== undefined) setCustomModelId(stored.customModelId);
+    if (stored.distilled !== undefined) setDistilled(stored.distilled);
+    if (stored.loras !== undefined) setLoras(stored.loras);
+    if (stored.prompt !== undefined) setPrompt(stored.prompt);
+    if (stored.negativePrompt !== undefined) setNegativePrompt(stored.negativePrompt);
+    if (stored.showNegative !== undefined) setShowNegative(stored.showNegative);
+    if (stored.width !== undefined) setWidth(stored.width);
+    if (stored.height !== undefined) setHeight(stored.height);
+    if (stored.steps !== undefined) setSteps(stored.steps);
+    if (stored.guidanceScale !== undefined) setGuidanceScale(stored.guidanceScale);
+    if (stored.seed !== undefined) setSeed(stored.seed);
+    if (stored.isLockedSeed !== undefined) setIsLockedSeed(stored.isLockedSeed);
+    if (stored.quantization !== undefined) setQuantization(stored.quantization);
+    if (stored.batchSize !== undefined) setBatchSize(stored.batchSize);
+  }, []);
+
   useEffect(() => {
     const stored = loadGeracaoForm();
-    if (stored) {
-      if (stored.modelMode !== undefined) setModelMode(stored.modelMode);
-      if (stored.baseModel !== undefined) setBaseModel(stored.baseModel);
-      if (stored.customModelId !== undefined) setCustomModelId(stored.customModelId);
-      if (stored.distilled !== undefined) setDistilled(stored.distilled);
-      if (stored.loras !== undefined) setLoras(stored.loras);
-      if (stored.prompt !== undefined) setPrompt(stored.prompt);
-      if (stored.negativePrompt !== undefined) setNegativePrompt(stored.negativePrompt);
-      if (stored.showNegative !== undefined) setShowNegative(stored.showNegative);
-      if (stored.width !== undefined) setWidth(stored.width);
-      if (stored.height !== undefined) setHeight(stored.height);
-      if (stored.steps !== undefined) setSteps(stored.steps);
-      if (stored.guidanceScale !== undefined) setGuidanceScale(stored.guidanceScale);
-      if (stored.seed !== undefined) setSeed(stored.seed);
-      if (stored.isLockedSeed !== undefined) setIsLockedSeed(stored.isLockedSeed);
-      if (stored.quantization !== undefined) setQuantization(stored.quantization);
-      if (stored.batchSize !== undefined) setBatchSize(stored.batchSize);
-    }
+    if (stored) applyStoredForm(stored);
     hydratedFormRef.current = true;
-  }, []);
+  }, [applyStoredForm]);
+
+  /* ── Aplica configs vindas da galeria (Slice F4/007) ──
+     Evento canônico mesma-aba; cross-tab (Gerar em OUTRA aba) pega na
+     remontagem via storage, sem live-update (limitação documentada em
+     geracao-storage.ts — sem polling permanente). */
+  useEffect(() => {
+    const onApplyForm = () => {
+      const stored = loadGeracaoForm();
+      if (stored) applyStoredForm(stored);
+    };
+    window.addEventListener(GERACAO_APPLY_FORM_EVENT, onApplyForm);
+    return () => window.removeEventListener(GERACAO_APPLY_FORM_EVENT, onApplyForm);
+  }, [applyStoredForm]);
 
   useEffect(() => {
     if (!hydratedFormRef.current) return;

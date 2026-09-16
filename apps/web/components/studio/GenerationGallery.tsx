@@ -9,8 +9,10 @@ import React, {
 } from "react";
 import {
   IconCheck,
+  IconCopy,
   IconDownload,
   IconImage,
+  IconSliders,
   IconTrash,
   IconX,
   IconZoomIn,
@@ -31,7 +33,8 @@ import {
   exportGenerations,
   getGenerationDataUrl,
 } from "@/lib/generations";
-import { GERACAO_COMPLETED_KEY } from "@/lib/geracao-storage";
+import { GERACAO_COMPLETED_KEY, generationConfigsJson, geracaoFormFromGeneration, publishGeracaoForm } from "@/lib/geracao-storage";
+import { copyToClipboard } from "@/lib/clipboard";
 import type { Generation } from "@/types/studio";
 import CompareSlider from "./CompareSlider";
 
@@ -459,6 +462,37 @@ export default function GenerationGallery() {
     return gen.thumbUrl || gen.url || getGenerationDataUrl(gen.id);
   }, []);
 
+  /* ── Copiar configs (Slice F4/007): JSON legível p/ reprodução.
+     Ação explícita — NUNCA sobrecarrega o clique do card (toggle de
+     seleção). Via copyToClipboard (fallback execCommand p/ HTTP em LAN). ── */
+  const handleCopyConfigs = useCallback(async (gen: Generation) => {
+    const ok = await copyToClipboard(generationConfigsJson(gen));
+    showToast(ok ? "Configs copiadas!" : "Falha ao copiar configs.", ok ? "success" : "error");
+  }, []);
+
+  /* ── Copiar prompt (bônus trivial) ── */
+  const handleCopyPrompt = useCallback(async (gen: Generation) => {
+    if (gen.prompt.trim().length === 0) {
+      showToast("Prompt vazio — nada para copiar.", "error");
+      return;
+    }
+    const ok = await copyToClipboard(gen.prompt);
+    showToast(ok ? "Prompt copiado!" : "Falha ao copiar prompt.", ok ? "success" : "error");
+  }, []);
+
+  /* ── Usar configs no gerador: grava `geracao:form:v1` + evento canônico
+     mesma-aba + volta p/ a aba Gerar (o Panel hidrata no mount; se já
+     montado, o listener re-hidrata ao vivo). Resíduos não-reaplicáveis
+     (LoRA sem UUID, checkpoint custom sem UUID) geram aviso explícito —
+     o Toast só tem success|error|info, sem variante warning: usa "error". ── */
+  const handleUseConfigs = useCallback((gen: Generation) => {
+    const { form, warnings } = geracaoFormFromGeneration(gen);
+    publishGeracaoForm(form);
+    window.dispatchEvent(new CustomEvent("hephaestus:switch-tab", { detail: "gerar" }));
+    showToast("Configs aplicadas no gerador.", "success");
+    if (warnings.length > 0) showToast(warnings.join(" "), "error");
+  }, []);
+
   const getFullImageUrl = useCallback((gen: Generation): string => {
     return gen.url || getGenerationDataUrl(gen.id);
   }, []);
@@ -641,18 +675,32 @@ export default function GenerationGallery() {
                   />
                 </div>
 
-                {/* Botão zoom — hover */}
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setLightboxItem(gen);
-                  }}
-                  aria-label="Ampliar geração"
-                  className="absolute bottom-2 right-2 z-10 flex size-10 items-center justify-center rounded-lg bg-black/60 border border-white/20 text-zinc-200 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-black/80 backdrop-blur-md cursor-pointer"
-                >
-                  <IconZoomIn className="size-4" />
-                </button>
+                {/* Ações do card — hover (copiar NÃO toca na seleção) */}
+                <div className="absolute bottom-2 right-2 z-10 flex gap-1.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void handleCopyConfigs(gen);
+                    }}
+                    aria-label={`Copiar configs da geração seed ${gen.seed} em JSON`}
+                    title="Copiar configs (JSON)"
+                    className="flex size-10 items-center justify-center rounded-lg bg-black/60 border border-white/20 text-zinc-200 hover:bg-black/80 backdrop-blur-md cursor-pointer"
+                  >
+                    <IconCopy className="size-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setLightboxItem(gen);
+                    }}
+                    aria-label="Ampliar geração"
+                    className="flex size-10 items-center justify-center rounded-lg bg-black/60 border border-white/20 text-zinc-200 hover:bg-black/80 backdrop-blur-md cursor-pointer"
+                  >
+                    <IconZoomIn className="size-4" />
+                  </button>
+                </div>
 
                 {/* Click no card = toggle | Shift+clique = faixa âncora..atual */}
                 <button
@@ -831,6 +879,39 @@ export default function GenerationGallery() {
                 />
               ) : null}
               <MetaRow label="Criado em" value={new Date(lightboxItem.createdAt).toLocaleString("pt-BR")} />
+            </div>
+
+            {/* Ações F4/007 — copiar configs/prompt, aplicar no gerador */}
+            <div className="flex flex-wrap gap-2 px-1 pb-1">
+              <Button
+                type="button"
+                variant="primary"
+                size="sm"
+                onClick={() => handleUseConfigs(lightboxItem)}
+                aria-label={`Usar configs da geração seed ${lightboxItem.seed} no gerador`}
+              >
+                <IconSliders className="size-3.5" />
+                <span className="ml-1">Usar estas configs</span>
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => void handleCopyConfigs(lightboxItem)}
+                aria-label={`Copiar configs da geração seed ${lightboxItem.seed} em JSON`}
+              >
+                <IconCopy className="size-3.5" />
+                <span className="ml-1">Copiar configs</span>
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => void handleCopyPrompt(lightboxItem)}
+                aria-label={`Copiar prompt da geração seed ${lightboxItem.seed}`}
+              >
+                Copiar prompt
+              </Button>
             </div>
           </div>
         </Modal>

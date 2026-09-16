@@ -9,7 +9,7 @@
    (disponibilidade de nós muda entre sessões) ou estado de execução.
    ═══════════════════════════════════════════════════════════════════ */
 
-import type { LoraRef } from "@/types/studio";
+import type { Generation, LoraRef } from "@/types/studio";
 
 export const GERACAO_FORM_KEY = "geracao:form:v1";
 const GERACAO_FORM_VERSION = 1;
@@ -98,6 +98,26 @@ function sanitizeLoras(v: unknown): LoraRef[] | null {
     if (out.length >= 10) break;
   }
   return out;
+}
+
+/* Primeiro valor presente entre aliases (params mistura snake_case do
+   manager com camelCase do wire — ex.: `base_model`/`baseModel`,
+   `guidance_scale`/`guidanceScale`, `batchSize`/`batch_size`). */
+function firstParam(params: Record<string, unknown>, keys: readonly string[]): unknown {
+  for (const k of keys) {
+    const v = params[k];
+    if (v !== undefined && v !== null) return v;
+  }
+  return undefined;
+}
+
+/* Número defensivo (aceita string numérica de linhas antigas). */
+function numOr(v: unknown, fallback: number): number {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) {
+    return Number(v);
+  }
+  return fallback;
 }
 
 export type PartialGeracaoForm = Partial<GeracaoFormState>;
@@ -212,4 +232,201 @@ export function readGeracaoCompletedMarker(): GeracaoCompletedMarker | null {
   } catch {
     return null;
   }
+}
+
+/* ── Canal Galeria → Gerador (Slice F4/007) ──
+   Evento canônico mesma-aba: `hephaestus:apply-geracao-form`. O Panel
+   escuta e re-hidrata do storage; se desmontado, a hidratação no mount
+   já pega o storage (layout atual monta UMA aba por vez — Galeria grava
+   → switch-tab p/ "gerar" → Panel hidrata no mount).
+   Cross-tab (Gerar aberta em OUTRA aba do navegador, caso F2): o write
+   do storage atualiza na remontagem, SEM live-update cross-tab por aqui
+   (o Panel não escuta `storage` p/ o form; sem polling permanente — mesma
+   decisão do F2). Limitação documentada, não bug. */
+
+export const GERACAO_APPLY_FORM_EVENT = "hephaestus:apply-geracao-form";
+
+/* Snapshot fiel p/ reprodução (clipboard): params vencem, colunas
+   top-level (width/height/seed/prompt) cobrem linhas antigas/incompletas.
+   Sem clamp aqui — fidelidade; o clamp vive em geracaoFormFromGeneration.
+   Mapeamento honesto (F4 fixes): o manager persiste `params.loras` como
+   [{s3_key,md5,scale}] e a engine emite [{path,scale}] — sem UUID. Itens
+   sem `modelId` NÃO são reaplicáveis: vão p/ `lorasRaw` + `hasLoraResidue`
+   (transparência no JSON), e `loras` carrega só UUIDs reaplicáveis.
+   Mesmo p/ custom: `params.custom_checkpoint`/`custom_model_path`+`arch`
+   nunca viram UUID — só `customModelId`/`custom_model_id` legado ativa
+   modelMode="custom"; o resto vira resíduo documental. Ausentes = null
+   (nunca a string "unknown"). */
+export interface GenerationReproSnapshot {
+  baseModel: string | null;
+  customModelId: string | null;
+  customModelPath: string | null;
+  customCheckpoint: unknown;
+  hasCustomResidue: boolean;
+  prompt: string;
+  negativePrompt: string | null;
+  width: number;
+  height: number;
+  steps: number;
+  guidanceScale: number;
+  seed: number;
+  batchSize: number;
+  quantization: string | null;
+  distilled: boolean;
+  loras: LoraRef[];
+  lorasRaw: Record<string, unknown>[];
+  hasLoraResidue: boolean;
+  modelMode: GeracaoModelMode;
+  seedLocked: boolean;
+}
+
+export const GERACAO_LORA_RESIDUE_WARNING =
+  "A geração usava LoRA(s) que não podem ser reaplicados automaticamente; configs aplicadas sem LoRA";
+export const GERACAO_CUSTOM_RESIDUE_WARNING =
+  "Checkpoint custom não reaplicável automaticamente — selecione o modelo em Modelos & Pesos";
+
+/* LoRAs do snapshot: aceita os 3 shapes (modelId UUID reaplicável,
+   path da engine, s3_key do manager) mantendo `scale`. Só `modelId`
+   válido entra em `loras` (form); o resto é resíduo documental. */
+function parseSnapshotLoras(raw: unknown): {
+  loras: LoraRef[];
+  lorasRaw: Record<string, unknown>[];
+  hasLoraResidue: boolean;
+} {
+  if (!Array.isArray(raw)) return { loras: [], lorasRaw: [], hasLoraResidue: false };
+  const loras: LoraRef[] = [];
+  const lorasRaw: Record<string, unknown>[] = [];
+  for (const item of raw) {
+    if (typeof item !== "object" || item === null) continue;
+    const rec = item as Record<string, unknown>;
+    const scale = typeof rec.scale === "number" && Number.isFinite(rec.scale)
+      ? Math.min(2, Math.max(0, rec.scale))
+      : 1;
+    if (typeof rec.modelId === "string" && rec.modelId.length > 0) {
+      if (loras.length < 10) {
+        loras.push({ modelId: rec.modelId.slice(0, 256), scale });
+      }
+    } else {
+      if (lorasRaw.length < 10) lorasRaw.push(rec);
+    }
+  }
+  return { loras, lorasRaw, hasLoraResidue: lorasRaw.length > 0 };
+}
+
+function nonEmptyString(v: unknown, maxLen: number): string | null {
+  const s = asString(v, maxLen);
+  return s !== null && s.length > 0 ? s : null;
+}
+
+export function generationReproSnapshot(gen: Generation): GenerationReproSnapshot {
+  const params: Record<string, unknown> = gen.params ?? {};
+  const customRaw = nonEmptyString(firstParam(params, ["customModelId", "custom_model_id"]), 256);
+  const customModelPath = nonEmptyString(firstParam(params, ["custom_model_path", "customModelPath"]), 1024);
+  const customCheckpointRaw = firstParam(params, ["custom_checkpoint", "customCheckpoint"]);
+  const customCheckpoint = customCheckpointRaw !== undefined && customCheckpointRaw !== null
+    ? customCheckpointRaw
+    : null;
+  const arch = nonEmptyString(firstParam(params, ["arch"]), 64);
+  const hasCustomResidue = customRaw === null
+    && (customModelPath !== null || customCheckpoint !== null || arch !== null);
+  const negTop = typeof gen.negativePrompt === "string" && gen.negativePrompt.length > 0
+    ? gen.negativePrompt
+    : null;
+  const negParam = nonEmptyString(firstParam(params, ["negative_prompt", "negativePrompt"]), 4000);
+  const distilledRaw = firstParam(params, ["distilled"]);
+  const rawBase = nonEmptyString(firstParam(params, ["base_model", "baseModel"]), 64);
+  const baseModel = (BASE_MODELS as readonly string[]).includes(rawBase ?? "")
+    ? rawBase
+    : ((arch !== null && (BASE_MODELS as readonly string[]).includes(arch)) ? arch : null);
+  const quantRaw = nonEmptyString(firstParam(params, ["quantization"]), 16);
+  const { loras, lorasRaw, hasLoraResidue } = parseSnapshotLoras(firstParam(params, ["loras"]));
+  return {
+    baseModel,
+    customModelId: customRaw,
+    customModelPath,
+    customCheckpoint,
+    hasCustomResidue,
+    prompt: gen.prompt,
+    negativePrompt: negTop ?? negParam,
+    width: numOr(firstParam(params, ["width"]), gen.width),
+    height: numOr(firstParam(params, ["height"]), gen.height),
+    steps: numOr(firstParam(params, ["steps"]), 4),
+    guidanceScale: numOr(firstParam(params, ["guidance_scale", "guidanceScale"]), 1),
+    seed: numOr(firstParam(params, ["seed"]), gen.seed),
+    batchSize: numOr(firstParam(params, ["batchSize", "batch_size"]), 1),
+    quantization: quantRaw,
+    distilled: typeof distilledRaw === "boolean" ? distilledRaw : false,
+    loras,
+    lorasRaw,
+    hasLoraResidue,
+    modelMode: customRaw !== null ? "custom" : "preset",
+    seedLocked: true,
+  };
+}
+
+/* JSON legível p/ clipboard ("Copiar configs"). */
+export function generationConfigsJson(gen: Generation): string {
+  return JSON.stringify(generationReproSnapshot(gen), null, 2);
+}
+
+/* Constrói GeracaoFormState a partir de uma geração, com o MESMO
+   clamp/validação da hidratação (loadGeracaoForm). Seed travada p/
+   reproduzir exatamente (usuário pode destravar no panel).
+   customModelId fora da lista atual de checkpoints: mantido com
+   modelMode="custom" — a validação/graciosidade existente do panel
+   lida (placeholder "Faça upload em Modelos & Pesos"). */
+export interface GeracaoFormFromGenerationResult {
+  form: GeracaoFormState;
+  hasLoraResidue: boolean;
+  hasCustomResidue: boolean;
+  warnings: string[];
+}
+
+export function geracaoFormFromGeneration(gen: Generation): GeracaoFormFromGenerationResult {
+  const defaults = createDefaultGeracaoForm();
+  const params: Record<string, unknown> = gen.params ?? {};
+  const snap = generationReproSnapshot(gen);
+  const customModelId = snap.customModelId ?? "";
+  const negativePrompt = snap.negativePrompt ?? "";
+  const quantized = firstParam(params, ["quantization"]);
+  const distilledRaw = firstParam(params, ["distilled"]);
+  const warnings: string[] = [];
+  if (snap.hasLoraResidue) warnings.push(GERACAO_LORA_RESIDUE_WARNING);
+  if (snap.hasCustomResidue) warnings.push(GERACAO_CUSTOM_RESIDUE_WARNING);
+  const form: GeracaoFormState = {
+    modelMode: customModelId.length > 0 ? "custom" : "preset",
+    baseModel: snap.baseModel !== null
+      && (BASE_MODELS as readonly string[]).includes(snap.baseModel)
+      ? (snap.baseModel as GeracaoBaseModel)
+      : defaults.baseModel,
+    customModelId,
+    distilled: typeof distilledRaw === "boolean" ? distilledRaw : defaults.distilled,
+    loras: snap.loras,
+    prompt: snap.prompt.slice(0, 4000),
+    negativePrompt: negativePrompt.slice(0, 4000),
+    showNegative: negativePrompt.length > 0,
+    width: clampInt(snap.width, 256, 2048, defaults.width),
+    height: clampInt(snap.height, 256, 2048, defaults.height),
+    steps: clampInt(snap.steps, 1, 50, defaults.steps),
+    guidanceScale: clampFloat(snap.guidanceScale, 1, 15, defaults.guidanceScale),
+    seed: clampInt(snap.seed, 0, 99_999_999, defaults.seed),
+    isLockedSeed: true,
+    quantization: typeof quantized === "string"
+      && (QUANTIZATIONS as readonly string[]).includes(quantized)
+      ? (quantized as GeracaoQuantization)
+      : defaults.quantization,
+    batchSize: clampInt(snap.batchSize, 1, 8, defaults.batchSize),
+  };
+  return {
+    form,
+    hasLoraResidue: snap.hasLoraResidue,
+    hasCustomResidue: snap.hasCustomResidue,
+    warnings,
+  };
+}
+
+/* Grava o form + despacha o evento canônico (mesma-aba). */
+export function publishGeracaoForm(state: GeracaoFormState): void {
+  saveGeracaoForm(state);
+  window.dispatchEvent(new CustomEvent(GERACAO_APPLY_FORM_EVENT));
 }

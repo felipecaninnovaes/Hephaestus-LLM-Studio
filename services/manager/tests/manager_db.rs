@@ -266,6 +266,8 @@ async fn ciclo_queued_done() {
             artifacts: None,
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -290,6 +292,8 @@ async fn ciclo_queued_done() {
             artifacts: None,
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -335,6 +339,8 @@ async fn ciclo_queued_done() {
             artifacts: None,
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -379,6 +385,8 @@ async fn ciclo_queued_done() {
             ]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -418,6 +426,8 @@ async fn ciclo_queued_done() {
             }]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -464,6 +474,8 @@ async fn abort_em_voo_e_terminal() {
             artifacts: None,
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -503,6 +515,8 @@ async fn abort_em_voo_e_terminal() {
             artifacts: None,
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -722,6 +736,8 @@ async fn report_failed_grava_error_em_params() {
             artifacts: None,
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -772,6 +788,8 @@ async fn report_invalid_md5_rejeita() {
             }]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await;
@@ -886,6 +904,8 @@ async fn report_job_inexistente_404() {
             artifacts: None,
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await;
@@ -1097,6 +1117,8 @@ async fn metrics_append_e_dedup_por_epoch() {
             artifacts: None,
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -1135,6 +1157,8 @@ async fn metrics_append_e_dedup_por_epoch() {
             artifacts: None,
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -1176,6 +1200,8 @@ async fn metrics_append_e_dedup_por_epoch() {
             artifacts: None,
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -1334,6 +1360,8 @@ async fn list_models_job_done_com_artifacts() {
             ]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -1398,6 +1426,8 @@ async fn list_models_cada_job_best_uma_linha() {
             ]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -1429,6 +1459,8 @@ async fn list_models_cada_job_best_uma_linha() {
             }]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -1504,6 +1536,8 @@ async fn list_models_exclui_autotracker_boxes() {
             ]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -1586,6 +1620,8 @@ async fn storage_usage_soma_esperada() {
             ]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -1633,6 +1669,8 @@ async fn storage_usage_soma_esperada() {
             ]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -1697,6 +1735,8 @@ async fn backfill_best_pt_para_models() {
             ]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -1788,6 +1828,8 @@ async fn backfill_idempotente_2x_sem_duplicar() {
             }]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -1854,6 +1896,8 @@ async fn hook_best_pt_idempotente_report_2x() {
             }]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -1885,6 +1929,8 @@ async fn hook_best_pt_idempotente_report_2x() {
             }]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -1947,6 +1993,8 @@ async fn hook_sem_best_pt_nao_insere() {
             ]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -4904,6 +4952,8 @@ async fn hook_generations_3_linhas_meta() {
                 },
             ]),
             meta_content: Some(meta_content.into()),
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -4973,6 +5023,8 @@ async fn hook_generations_idempotente_re_report() {
                 },
             ]),
             meta_content: Some(meta.into()),
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -4998,6 +5050,8 @@ async fn hook_generations_idempotente_re_report() {
             error: None,
             artifacts: None,
             meta_content: Some(meta.into()),
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -5056,6 +5110,8 @@ async fn hook_generations_meta_corrupto_best_effort() {
                 },
             ]),
             meta_content: Some(meta.into()),
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -5756,4 +5812,102 @@ async fn delete_job_preserva_galeria_e_expurga_models() {
         .await
         .unwrap();
     assert_eq!(m_left, 0);
+}
+
+// ---------------------------------------------------------------------------
+// AC-006-A: phase/message persistidos no job (ADR-0024 D3)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t6_ac006a_status_report_persists_phase_and_message() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let ds_id = insert_test_dataset(&p).await;
+    let req = test_job_request(ds_id);
+    let resp = manager::create_job(&p, req).await.expect("create job");
+    let job_id = uuid::Uuid::parse_str(&resp.job_id).unwrap();
+
+    // (a) Report de STATUS sem metrics — phase/message devem ser persistidos.
+    let status_report = ReportRequest {
+        status: "running".to_string(),
+        progress: Some(0.05),
+        epoch: Some(0),
+        step: None,
+        metrics: None,
+        error: None,
+        artifacts: None,
+        meta_content: None,
+        phase: Some("loading_model".to_string()),
+        message: Some("Carregando FLUX".to_string()),
+    };
+    manager::report_job(&p, job_id, status_report)
+        .await
+        .expect("report status");
+
+    // Verifica que phase/message foram gravados.
+    let job = manager::get_job(&p, job_id)
+        .await
+        .expect("get job after status");
+    assert_eq!(job.phase.as_deref(), Some("loading_model"));
+    assert_eq!(job.message.as_deref(), Some("Carregando FLUX"));
+    // Array de metrics permanece VAZIO (status não entra em metrics).
+    let metrics_items = job
+        .metrics
+        .as_ref()
+        .and_then(|v| v.get("items"))
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    assert_eq!(
+        metrics_items, 0,
+        "status report must not pollute metrics array"
+    );
+
+    // (b) Report de MÉTRICA — metrics array tem 1 item, phase/message NÃO são pisados.
+    let metric_report = ReportRequest {
+        status: "running".to_string(),
+        progress: Some(0.3),
+        epoch: Some(3),
+        step: Some(100),
+        metrics: Some(serde_json::json!({
+            "loss": 0.4,
+            "lr": 0.0001,
+            "epoch": 3,
+            "step": 100
+        })),
+        error: None,
+        artifacts: None,
+        meta_content: None,
+        phase: None,
+        message: None,
+    };
+    manager::report_job(&p, job_id, metric_report)
+        .await
+        .expect("report metric");
+
+    // Verifica que metrics tem 1 item E phase/message PRESERVADOS.
+    let job = manager::get_job(&p, job_id)
+        .await
+        .expect("get job after metric");
+    let metrics_items = job
+        .metrics
+        .as_ref()
+        .and_then(|v| v.get("items"))
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    assert_eq!(metrics_items, 1, "metric report should add 1 item");
+    assert_eq!(
+        job.phase.as_deref(),
+        Some("loading_model"),
+        "phase must NOT be overwritten by metric report"
+    );
+    assert_eq!(
+        job.message.as_deref(),
+        Some("Carregando FLUX"),
+        "message must NOT be overwritten by metric report"
+    );
 }

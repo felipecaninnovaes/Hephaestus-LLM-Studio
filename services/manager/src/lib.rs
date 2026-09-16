@@ -114,6 +114,12 @@ pub struct JobRow {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<serde_json::Value>,
+    /// AC-006-A D3: último status de fase do job (snapshot last-write-wins).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    /// AC-006-A D3: última mensagem de status do job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -138,6 +144,13 @@ pub struct ReportRequest {
     /// para o hook de generations (D5 — ADR-0023). Campo opcional retrocompat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meta_content: Option<String>,
+    /// AC-006-A D2/D3: fase/status do job (ex.: "loading_model").
+    /// Campo opcional retrocompat: ausente em orquestradores antigos.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    /// AC-006-A D2/D3: mensagem descritiva da fase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -701,6 +714,7 @@ pub async fn list_jobs(
     let mut query = String::from(
         "SELECT j.id, j.kind, j.engine, j.model, j.mode, j.dataset_id, j.status, j.queue_reason, \
          j.progress, j.epoch, j.step, j.metrics, j.vram_min_gb, j.orchestrator_id, j.created_at, j.finished_at, j.params, \
+         j.phase, j.message, \
          o.name AS orchestrator_name, o.kind AS orchestrator_kind, \
          COALESCE((j.params->>'orchestrator_fallback') = 'true', false) AS orchestrator_fallback, \
          j.params->>'error' AS error \
@@ -786,6 +800,8 @@ pub async fn list_jobs(
                 finished_at: finished_at.map(|t| t.to_rfc3339()),
                 error: r.get("error"),
                 params: r.get("params"),
+                phase: r.get("phase"),
+                message: r.get("message"),
             }
         })
         .collect();
@@ -813,6 +829,7 @@ pub async fn get_job(pool: &PgPool, id: Uuid) -> Result<JobRow, ManagerError> {
     let row = sqlx::query(
         "SELECT j.id, j.kind, j.engine, j.model, j.mode, j.dataset_id, j.status, j.queue_reason, \
          j.progress, j.epoch, j.step, j.metrics, j.vram_min_gb, j.orchestrator_id, j.created_at, j.finished_at, j.params, \
+         j.phase, j.message, \
          o.name AS orchestrator_name, o.kind AS orchestrator_kind, \
          COALESCE((j.params->>'orchestrator_fallback') = 'true', false) AS orchestrator_fallback, \
          j.params->>'error' AS error \
@@ -862,6 +879,8 @@ pub async fn get_job(pool: &PgPool, id: Uuid) -> Result<JobRow, ManagerError> {
         finished_at: finished_at.map(|t| t.to_rfc3339()),
         error: r.get("error"),
         params: r.get("params"),
+        phase: r.get("phase"),
+        message: r.get("message"),
     })
 }
 
@@ -1073,13 +1092,15 @@ pub async fn report_job(
     match report.status.as_str() {
         "preparing" | "running" => {
             sqlx::query(
-                "UPDATE jobs SET status = $2, progress = COALESCE($3, progress), epoch = COALESCE($4, epoch), step = COALESCE($5, step) WHERE id = $1",
+                "UPDATE jobs SET status = $2, progress = COALESCE($3, progress), epoch = COALESCE($4, epoch), step = COALESCE($5, step), phase = COALESCE($6, phase), message = COALESCE($7, message) WHERE id = $1",
             )
             .bind(id)
             .bind(&report.status)
             .bind(report.progress)
             .bind(report.epoch)
             .bind(report.step)
+            .bind(&report.phase)
+            .bind(&report.message)
             .execute(pool)
             .await
             .map_err(|e| ManagerError::Internal(format!("update job status: {e}")))?;

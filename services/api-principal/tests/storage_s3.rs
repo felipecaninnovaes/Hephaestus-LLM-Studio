@@ -141,6 +141,30 @@ async fn s3_delete_prefix_1500() {
     assert_eq!(rest, 0, "prefixo vazio depois do sweep");
 }
 
+/// 6. ensure_bucket idempotente — `#[ignore]` (mesmo regime dos demais:
+/// roda contra o seaweedfs do compose via `bash scripts/test-storage.sh`).
+/// CreateBucket no bucket existente (nosso) = ok nas duas chamadas.
+#[ignore]
+#[tokio::test]
+async fn s3_ensure_bucket_idempotent() {
+    let cfg = StorageConfig {
+        bucket: env_or("S3_BUCKET", "heph-data"),
+        public_endpoint: Some(env_or("S3_PUBLIC_ENDPOINT_URL", "http://localhost:8333")),
+        url_ttl_secs: 3600,
+    };
+    let s = S3Storage::new(
+        &cfg,
+        &env_or("S3_ENDPOINT_URL", "http://localhost:8333"),
+        &env_or("S3_ACCESS_KEY", "heph"),
+        &env_or("S3_SECRET_KEY", "heph-local-dev"),
+    )
+    .expect("S3Storage::new (seaweedfs do compose no ar?)");
+    s.ensure_bucket().await.expect("1º ensure_bucket");
+    s.ensure_bucket()
+        .await
+        .expect("2º ensure_bucket (já existe)");
+}
+
 /// 5. "servidor morto" — SKIP por default; roda com `STORAGE_DEAD=1`
 /// (endpoint fechado, sem precisar parar o compose).
 #[ignore]

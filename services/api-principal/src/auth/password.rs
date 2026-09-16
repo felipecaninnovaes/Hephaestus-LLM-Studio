@@ -4,7 +4,7 @@
 
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
-use rand_core::OsRng;
+use rand_core::{OsRng, RngCore};
 use sqlx::PgPool;
 
 /// Erro do bootstrap: hash (CPU/rng) ou banco. `String` no display para o
@@ -73,6 +73,23 @@ pub async fn ensure_bootstrap_user(
     Ok(exists)
 }
 
+/// Mapeia 16 B → 32 chars hex. Pura e determinística (testável sem RNG;
+/// o boot gera os bytes via `generate_bootstrap_password`).
+pub fn encode_bootstrap_password(bytes: &[u8; 16]) -> String {
+    hex::encode(bytes)
+}
+
+/// Gera a senha de bootstrap day-one: 16 B via `OsRng` (mesma fonte do
+/// `auth::secret`, sem dependência nova) em hex. O chamador loga UMA vez
+/// (precedente: pairing code do orchestrator) e nunca em outro caminho.
+pub fn generate_bootstrap_password() -> Result<String, BootstrapError> {
+    let mut bytes = [0u8; 16];
+    OsRng
+        .try_fill_bytes(&mut bytes)
+        .map_err(|e| BootstrapError::Hash(e.to_string()))?;
+    Ok(encode_bootstrap_password(&bytes))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,5 +111,31 @@ mod tests {
         let phc = hash("x").expect("hash");
         assert!(phc.starts_with("$argon2id$"), "phc: {phc}");
         assert!(!verify("x", "not-a-valid-phc"));
+    }
+
+    #[test]
+    fn encode_bootstrap_password_deterministico() {
+        // 16 B conhecidos → hex conhecido (injetável: sem RNG global).
+        assert_eq!(
+            encode_bootstrap_password(&[0xab; 16]),
+            "ab".repeat(16),
+            "mapeamento byte→hex"
+        );
+        assert_eq!(
+            encode_bootstrap_password(&[
+                0x00, 0x0f, 0xf0, 0xff, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12
+            ]),
+            "000ff0ff0102030405060708090a0b0c",
+            "nibbles altos/baixos e zero-padding"
+        );
+    }
+
+    #[test]
+    fn generate_bootstrap_password_formato() {
+        // Formato, nunca o valor: 32 chars hex (16 B). Sem `{pw}` nas
+        // mensagens — segredo real jamais aparece em log de teste.
+        let pw = generate_bootstrap_password().expect("rng");
+        assert_eq!(pw.len(), 32, "16 bytes em hex têm 32 chars");
+        assert!(pw.chars().all(|c| c.is_ascii_hexdigit()), "só dígitos hex");
     }
 }

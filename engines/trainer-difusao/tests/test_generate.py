@@ -866,6 +866,77 @@ class TestEnsurePipeline(unittest.TestCase):
         self.assertEqual(k, key)
 
 
+class TestPngGenerationMetadata(_BaseGenerateTest):
+    """Item 006: PNG principal carrega `hephaestus.generation` (iTXt JSON)."""
+
+    def _read_png_payload(self, png_path: Path) -> dict:
+        from PIL import Image
+
+        with Image.open(png_path) as img:
+            raw = img.info.get("hephaestus.generation")
+            if raw is None:
+                legacy_text = getattr(img, "text", None)
+                if legacy_text is not None and hasattr(legacy_text, "get"):
+                    raw = legacy_text.get("hephaestus.generation")
+        self.assertIsNotNone(raw, "PNG deve conter chunk hephaestus.generation")
+        return json.loads(raw)
+
+    def test_png_embeds_generation_meta_roundtrip(self):
+        cfg = self._base_cfg(
+            batch_size=1,
+            seed=42,
+            prompt="forja cibernética à beira-mar — 幻",
+            negative_prompt="borrado, baixa qualidade",
+            steps=20,
+            guidance_scale=3.5,
+            loras=[{"path": "/fake/lora.safetensors", "scale": 0.6}],
+        )
+        # LoRA fake seria descartada pelo guard de disco; usa base puro aqui.
+        cfg["generate"].pop("loras")
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+
+        main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+
+        png_path = out_dir / "generated_0001.png"
+        self.assertTrue(png_path.exists())
+        payload = self._read_png_payload(png_path)
+
+        # Campos esperados (round-trip fiel, UTF-8 preservado)
+        self.assertEqual(payload["seed"], 42)
+        self.assertEqual(payload["prompt"], "forja cibernética à beira-mar — 幻")
+        self.assertEqual(payload["negative_prompt"], "borrado, baixa qualidade")
+        self.assertEqual(payload["steps"], 20)
+        self.assertEqual(payload["guidance_scale"], 3.5)
+        self.assertEqual(payload["base_model"], "flux-2-klein-4b")
+        self.assertEqual(payload["loras"], [])
+        self.assertEqual(payload["job_id"], "test-gen-001")
+
+        # Chaves redundantes de arquivo local excluídas do PNG
+        for excluded in ("filename", "thumb_filename", "batch_index"):
+            self.assertNotIn(excluded, payload)
+
+        # Consistência com generation_meta.json (mesmo dict de origem)
+        meta_path = out_dir / "generation_meta.json"
+        entry = json.loads(meta_path.read_text().splitlines()[0])
+        for key, value in payload.items():
+            self.assertEqual(entry[key], value, f"Divergência no campo '{key}'")
+        self.assertEqual(entry["filename"], "generated_0001.png")
+        self.assertEqual(entry["batch_index"], 0)
+
+    def test_png_prompt_fiel_sem_truncamento(self):
+        long_neg = "ruim, " * 500  # >1500 chars, deve ser gravado fiel
+        cfg = self._base_cfg(batch_size=1, seed=7, negative_prompt=long_neg)
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+
+        main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+
+        payload = self._read_png_payload(out_dir / "generated_0001.png")
+        self.assertEqual(payload["negative_prompt"], long_neg.strip())
+        self.assertEqual(payload["seed"], 7)
+
+
 class TestFlux2Fallback(unittest.TestCase):
     """Fallback Flux2 multi-LoRA: transformer.set_adapters funciona, pipe.set_adapters levanta AttributeError."""
 

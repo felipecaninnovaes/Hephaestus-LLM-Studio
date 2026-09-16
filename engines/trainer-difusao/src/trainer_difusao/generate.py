@@ -258,6 +258,40 @@ def ensure_pipeline(
     return None, key
 
 
+HEPHAESTUS_GENERATION_PNG_KEY = "hephaestus.generation"
+
+# Chaves de _build_generation_meta redundantes no PNG (nome do arquivo local).
+_PNG_EXCLUDED_META_KEYS = frozenset({"filename", "thumb_filename", "batch_index"})
+
+
+def _png_payload_for_generation(meta: dict[str, Any]) -> dict[str, Any]:
+    """Deriva o payload JSON embarcado no PNG a partir do dict do JSONL.
+
+    Mesma origem (`meta`) usada em `generation_meta.json`; apenas remove as
+    chaves redundantes de arquivo local. Sem limite artificial de tamanho —
+    prompts (incl. negativo) são gravados fiéis, UTF-8.
+    """
+    return {k: v for k, v in meta.items() if k not in _PNG_EXCLUDED_META_KEYS}
+
+
+def _png_info_for_generation(meta: dict[str, Any]):
+    """Serializa os campos de geração em chunk iTXt do PNG.
+
+    Chave única `hephaestus.generation` com JSON compacto (sort_keys para
+    determinismo). Usa `add_itxt` para suportar prompts UTF-8/com acentos
+    (tEXt é latin-1 por spec).
+    """
+    from PIL.PngImagePlugin import PngInfo
+
+    payload = _png_payload_for_generation(meta)
+    text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    info = PngInfo()
+    info.add_itxt(
+        HEPHAESTUS_GENERATION_PNG_KEY, text, lang="en", tkey=HEPHAESTUS_GENERATION_PNG_KEY
+    )
+    return info
+
+
 def _build_generation_meta(
     params: dict[str, Any],
     filename: str,
@@ -286,6 +320,7 @@ def _build_generation_meta(
         "base_model": params["base_model"],
         "batch_index": batch_index,
         "batch_size": batch_size,
+        "job_id": params.get("job_id"),
     }
 
 
@@ -428,18 +463,8 @@ def _mock_generate(params: dict[str, Any], output_dir: Path, emitter=None) -> No
 
         filename = f"generated_{i + 1:04d}.png"
         out_file = output_dir / filename
-        img.save(out_file, "PNG")
-        print(
-            f"[MOCK-GEN] Imagem {i + 1}/{batch_size} gerada ({width}x{height}, seed={current_seed}): {out_file}",
-            flush=True,
-        )
-
-        # Thumbnail
         thumb_filename = f"thumb_{i + 1:04d}.jpg"
-        thumb_path = output_dir / thumb_filename
-        _write_thumb(out_file, thumb_path)
-
-        # Meta entry
+        # Meta entry (mesma origem do JSONL) — PNG embarca o mesmo dict.
         meta_entry = _build_generation_meta(
             params=params,
             filename=filename,
@@ -449,6 +474,16 @@ def _mock_generate(params: dict[str, Any], output_dir: Path, emitter=None) -> No
             batch_size=batch_size,
             loras_effective=loras_effective,
         )
+        img.save(out_file, "PNG", pnginfo=_png_info_for_generation(meta_entry))
+        print(
+            f"[MOCK-GEN] Imagem {i + 1}/{batch_size} gerada ({width}x{height}, seed={current_seed}): {out_file}",
+            flush=True,
+        )
+
+        # Thumbnail
+        thumb_path = output_dir / thumb_filename
+        _write_thumb(out_file, thumb_path)
+
         meta_lines.append(meta_entry)
 
     # Retrocompat: symlink generated.png → generated_0001.png (batch=1)
@@ -809,17 +844,8 @@ def _real_generate(
 
         filename = f"generated_{i + 1:04d}.png"
         out_file = output_dir / filename
-        image.save(out_file, "PNG")
-        print(
-            f"[DIFFUSION-GEN] Imagem {i + 1}/{batch_size} salva: {out_file}", flush=True
-        )
-
-        # Thumbnail
         thumb_filename = f"thumb_{i + 1:04d}.jpg"
-        thumb_path = output_dir / thumb_filename
-        _write_thumb(out_file, thumb_path)
-
-        # Meta entry
+        # Meta entry (mesma origem do JSONL) — PNG embarca o mesmo dict.
         meta_entry = _build_generation_meta(
             params=params,
             filename=filename,
@@ -829,6 +855,15 @@ def _real_generate(
             batch_size=batch_size,
             loras_effective=loras_effective,
         )
+        image.save(out_file, "PNG", pnginfo=_png_info_for_generation(meta_entry))
+        print(
+            f"[DIFFUSION-GEN] Imagem {i + 1}/{batch_size} salva: {out_file}", flush=True
+        )
+
+        # Thumbnail
+        thumb_path = output_dir / thumb_filename
+        _write_thumb(out_file, thumb_path)
+
         meta_lines.append(meta_entry)
 
     # Retrocompat: symlink generated.png → generated_0001.png (batch=1)

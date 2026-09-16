@@ -269,6 +269,30 @@ export interface JobArtifactsResponse {
   items: JobArtifact[];
 }
 
+/* ── Exclusão e limpeza de jobs (AC-003) ──────────────────── */
+
+export type JobTerminalStatus = "done" | "failed" | "cancelled";
+
+export interface JobDeletedResponse {
+  id: string;
+  status: JobTerminalStatus;
+  artifacts: string[];
+  objectKeys: string[];
+  modelsDeleted: number;
+  generationsPreserved: number;
+}
+
+export interface JobCleanupRequest {
+  olderThanDays?: number | null;
+  statuses?: JobTerminalStatus[] | null;
+}
+
+export interface JobCleanupResponse {
+  deleted: number;
+  jobs: JobDeletedResponse[];
+  objectKeys: string[];
+}
+
 export interface Telemetry {
   measured: boolean;
   cpu: number | null;

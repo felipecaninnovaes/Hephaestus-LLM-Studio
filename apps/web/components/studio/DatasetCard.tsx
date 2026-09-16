@@ -97,16 +97,16 @@ function OpticalShowcase({ dataset }: { dataset: Dataset }) {
         <div className="absolute inset-0 bg-[radial-gradient(#3f3f46_1px,transparent_1px)] opacity-30 [background-size:12px_12px]" />
         
         {/* Retículas ópticas simétricas nos 4 vértices */}
-        <span className="absolute top-1.5 left-2 font-mono text-[11px] leading-none text-zinc-600 pointer-events-none select-none">+</span>
-        <span className="absolute top-1.5 right-2 font-mono text-[11px] leading-none text-zinc-600 pointer-events-none select-none">+</span>
-        <span className="absolute bottom-1.5 left-2 font-mono text-[11px] leading-none text-zinc-600 pointer-events-none select-none">+</span>
-        <span className="absolute bottom-1.5 right-2 font-mono text-[11px] leading-none text-zinc-600 pointer-events-none select-none">+</span>
+        <span className="absolute top-1.5 left-2 font-mono text-2xs leading-none text-zinc-600 pointer-events-none select-none">+</span>
+        <span className="absolute top-1.5 right-2 font-mono text-2xs leading-none text-zinc-600 pointer-events-none select-none">+</span>
+        <span className="absolute bottom-1.5 left-2 font-mono text-2xs leading-none text-zinc-600 pointer-events-none select-none">+</span>
+        <span className="absolute bottom-1.5 right-2 font-mono text-2xs leading-none text-zinc-600 pointer-events-none select-none">+</span>
 
         <IconBoxSelect className="w-5 h-5 text-zinc-600 group-hover:text-zinc-500 transition-colors relative z-10" />
-        <span className="font-mono text-[11px] tracking-caps uppercase text-zinc-400 relative z-10">
+        <span className="font-mono text-2xs tracking-caps uppercase text-zinc-400 relative z-10">
           Sem amostras visuais
         </span>
-        <span className="font-mono text-[11px] text-zinc-400 relative z-10">
+        <span className="font-mono text-2xs text-zinc-400 relative z-10">
           0 imagens · ingestão pendente
         </span>
       </div>
@@ -116,7 +116,7 @@ function OpticalShowcase({ dataset }: { dataset: Dataset }) {
   if (loading) {
     return (
       <div className="relative h-32 w-full overflow-hidden rounded-xl border border-zinc-800/80 bg-zinc-950/80 backdrop-blur-sm animate-pulse flex items-center justify-center">
-        <span className="font-mono text-[11px] text-zinc-400 tracking-caps uppercase">
+        <span className="font-mono text-2xs text-zinc-400 tracking-caps uppercase">
           Carregando ótica…
         </span>
       </div>
@@ -130,8 +130,8 @@ function OpticalShowcase({ dataset }: { dataset: Dataset }) {
   return (
     <div className="relative h-32 w-full overflow-hidden rounded-xl border border-zinc-800/80 bg-zinc-950 group-hover:border-brand-500/40 transition-all flex">
       {/* Retículas zenitais de mira ótica */}
-      <span className="absolute top-1.5 left-2 z-20 font-mono text-[11px] leading-none text-white/60 pointer-events-none select-none drop-shadow-sm">+</span>
-      <span className="absolute top-1.5 right-2 z-20 font-mono text-[11px] leading-none text-white/60 pointer-events-none select-none drop-shadow-sm">+</span>
+      <span className="absolute top-1.5 left-2 z-20 font-mono text-2xs leading-none text-white/60 pointer-events-none select-none drop-shadow-sm">+</span>
+      <span className="absolute top-1.5 right-2 z-20 font-mono text-2xs leading-none text-white/60 pointer-events-none select-none drop-shadow-sm">+</span>
 
       {/* Amostra Principal / Hero com BBoxes */}
       <div
@@ -169,7 +169,7 @@ function OpticalShowcase({ dataset }: { dataset: Dataset }) {
               }}
             >
               <span
-                className={`absolute ${isNearTop ? "top-0.5 left-0.5" : "-top-4 left-0"} px-1 py-0.2 rounded-sm font-mono text-[11px] font-bold text-zinc-950 uppercase tracking-tighter truncate max-w-[80px] shadow-sm`}
+                className={`absolute ${isNearTop ? "top-0.5 left-0.5" : "-top-4 left-0"} px-1 py-0.2 rounded-sm font-mono text-2xs font-bold text-zinc-950 uppercase tracking-tighter truncate max-w-[80px] shadow-sm`}
                 style={{ backgroundColor: color }}
               >
                 {cls?.name ?? "obj"}
@@ -181,13 +181,13 @@ function OpticalShowcase({ dataset }: { dataset: Dataset }) {
         {/* Rodapé técnico da miniatura principal */}
         <div className="absolute inset-x-0 bottom-0 px-1.5 py-1 flex items-center justify-between gap-1 z-10 pointer-events-none">
           <span
-            className="font-mono text-[11px] text-zinc-200 truncate min-w-0 px-1.5 py-0.2 rounded bg-black/80 border border-white/10 backdrop-blur-sm"
+            className="font-mono text-2xs text-zinc-200 truncate min-w-0 px-1.5 py-0.2 rounded bg-black/80 border border-white/10 backdrop-blur-sm"
             title={hero.filename}
           >
             {hero.filename}
           </span>
           {hero.split && (
-            <span className="shrink-0 font-mono text-[11px] uppercase tracking-caps px-1.5 py-0.2 rounded bg-black/80 text-zinc-300 border border-white/15 backdrop-blur-sm">
+            <span className="shrink-0 font-mono text-2xs uppercase tracking-caps px-1.5 py-0.2 rounded bg-black/80 text-zinc-300 border border-white/15 backdrop-blur-sm">
               {hero.split}
             </span>
           )}
@@ -207,13 +207,13 @@ function OpticalShowcase({ dataset }: { dataset: Dataset }) {
           <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-black/20 pointer-events-none" />
           <div className="absolute inset-x-0 bottom-0 px-1.5 py-1 flex items-center justify-between gap-1 z-10 pointer-events-none">
             <span
-              className="font-mono text-[11px] text-zinc-200 truncate min-w-0 px-1.5 py-0.2 rounded bg-black/80 border border-white/10 backdrop-blur-sm"
+              className="font-mono text-2xs text-zinc-200 truncate min-w-0 px-1.5 py-0.2 rounded bg-black/80 border border-white/10 backdrop-blur-sm"
               title={images[1].filename}
             >
               {images[1].filename}
             </span>
             {images[1].split && (
-              <span className="shrink-0 font-mono text-[11px] uppercase tracking-caps px-1.5 py-0.2 rounded bg-black/80 text-zinc-300 border border-white/15 backdrop-blur-sm">
+              <span className="shrink-0 font-mono text-2xs uppercase tracking-caps px-1.5 py-0.2 rounded bg-black/80 text-zinc-300 border border-white/15 backdrop-blur-sm">
                 {images[1].split}
               </span>
             )}
@@ -234,14 +234,14 @@ function OpticalShowcase({ dataset }: { dataset: Dataset }) {
               />
               <div className="absolute inset-0 bg-black/25 pointer-events-none" />
               {img.split && (
-                <span className="absolute top-1 right-1 font-mono text-[11px] uppercase tracking-caps px-1 rounded bg-black/80 text-zinc-300 border border-white/15">
+                <span className="absolute top-1 right-1 font-mono text-2xs uppercase tracking-caps px-1 rounded bg-black/80 text-zinc-300 border border-white/15">
                   {img.split}
                 </span>
               )}
             </div>
           ))}
           {dataset.imagesCount > images.length && (
-            <div className="absolute bottom-1.5 right-1.5 z-20 font-mono text-[11px] px-1.5 py-0.5 rounded-md bg-black/85 text-zinc-300 border border-white/20 backdrop-blur-sm shadow-md">
+            <div className="absolute bottom-1.5 right-1.5 z-20 font-mono text-2xs px-1.5 py-0.5 rounded-md bg-black/85 text-zinc-300 border border-white/20 backdrop-blur-sm shadow-md">
               +{dataset.imagesCount - images.length}
             </div>
           )}
@@ -310,10 +310,10 @@ export default function DatasetCard({
         <p className="truncate text-sm font-semibold text-zinc-100 group-hover:text-white transition-colors" title={dataset.title}>
           {dataset.title}
         </p>
-        <p className="truncate font-mono text-[11px] text-zinc-400 mt-0.5" title={dataset.slug}>
+        <p className="truncate font-mono text-2xs text-zinc-400 mt-0.5" title={dataset.slug}>
           {dataset.slug}
         </p>
-        <p className="tracking-caps mt-1 truncate font-mono text-[11px] uppercase text-zinc-400" title={categoryLabel}>
+        <p className="tracking-caps mt-1 truncate font-mono text-2xs uppercase text-zinc-400" title={categoryLabel}>
           {categoryLabel}
         </p>
       </div>
@@ -326,7 +326,7 @@ export default function DatasetCard({
       {/* 4. Métricas Principais (Sempre alinhadas na mesma linha horizontal) */}
       <div className="relative z-10 pointer-events-none grid grid-cols-2 gap-2 mt-3.5">
         <div className="p-2.5 rounded-xl bg-zinc-900/80 border border-zinc-800/60 backdrop-blur-sm">
-          <p className="tracking-caps font-mono text-[11px] uppercase text-zinc-400">
+          <p className="tracking-caps font-mono text-2xs uppercase text-zinc-400">
             Imagens
           </p>
           <p className="font-mono text-sm font-bold text-zinc-200 mt-0.5">
@@ -334,10 +334,10 @@ export default function DatasetCard({
           </p>
         </div>
         <div className="p-2.5 rounded-xl bg-zinc-900/80 border border-zinc-800/60 backdrop-blur-sm">
-          <p className="tracking-caps font-mono text-[11px] uppercase text-zinc-400">
+          <p className="tracking-caps font-mono text-2xs uppercase text-zinc-400">
             Rotuladas
           </p>
-          <p className="font-mono text-sm font-bold text-[#34d399] mt-0.5">
+          <p className="font-mono text-sm font-bold text-status-success mt-0.5">
             {formatPercent(dataset.labeledCount, dataset.imagesCount)}
           </p>
         </div>
@@ -346,7 +346,7 @@ export default function DatasetCard({
       {/* 5. Seção de Classes (Altura consistente min-h-[64px] garantindo simetria) */}
       <div className="relative z-10 pointer-events-none mt-3.5 min-h-[64px] flex flex-col justify-start">
         <div className="flex items-center justify-between mb-1">
-          <span className="text-[11px] text-zinc-400 font-mono uppercase tracking-caps">
+          <span className="text-2xs text-zinc-400 font-mono uppercase tracking-caps">
             Classes ({dataset.classes.length}):
           </span>
         </div>
@@ -371,7 +371,7 @@ export default function DatasetCard({
                 <span
                   key={c.id}
                   title={`${c.name} (${c.color})`}
-                  className="inline-flex items-center gap-1.5 text-[11px] font-mono px-2 py-0.5 rounded-md bg-zinc-900/90 backdrop-blur-sm text-zinc-300 border border-zinc-800 max-w-full truncate group-hover:border-zinc-700/80 transition-colors"
+                  className="inline-flex items-center gap-1.5 text-2xs font-mono px-2 py-0.5 rounded-md bg-zinc-900/90 backdrop-blur-sm text-zinc-300 border border-zinc-800 max-w-full truncate group-hover:border-zinc-700/80 transition-colors"
                 >
                   <span
                     className="w-2 h-2 rounded-full shrink-0 shadow-sm"
@@ -384,7 +384,7 @@ export default function DatasetCard({
               {extra > 0 && (
                 <span
                   title={`Mais ${extra} classes`}
-                  className="inline-flex items-center text-[11px] font-mono px-2 py-0.5 rounded-md bg-zinc-900/80 backdrop-blur-sm text-zinc-400 border border-zinc-800"
+                  className="inline-flex items-center text-2xs font-mono px-2 py-0.5 rounded-md bg-zinc-900/80 backdrop-blur-sm text-zinc-400 border border-zinc-800"
                 >
                   +{extra}
                 </span>
@@ -395,7 +395,7 @@ export default function DatasetCard({
           <>
             <div className="h-1 w-full rounded-full bg-zinc-900/60 border border-zinc-800/40 mb-2 opacity-50" />
             <div className="flex items-center">
-              <span className="inline-flex items-center gap-1.5 text-[11px] font-mono px-2 py-0.5 rounded-md bg-zinc-900/50 backdrop-blur-sm text-zinc-400 border border-dashed border-zinc-800/80">
+              <span className="inline-flex items-center gap-1.5 text-2xs font-mono px-2 py-0.5 rounded-md bg-zinc-900/50 backdrop-blur-sm text-zinc-400 border border-dashed border-zinc-800/80">
                 Nenhuma classe cadastrada
               </span>
             </div>
@@ -404,7 +404,7 @@ export default function DatasetCard({
       </div>
 
       {/* 6. Rodapé (Ancorado no final com mt-auto, alinhando a linha de base em 100% dos cards) */}
-      <div className="relative z-10 mt-auto pt-3 border-t border-zinc-800/80 flex items-center justify-between gap-2 text-[11px] text-zinc-400 font-mono">
+      <div className="relative z-10 mt-auto pt-3 border-t border-zinc-800/80 flex items-center justify-between gap-2 text-2xs text-zinc-400 font-mono">
         <span className="min-w-0 truncate" title={`${formatBytes(dataset.sizeBytes)} · ${formatRelativeTime(dataset.lastModified)}`}>
           {formatBytes(dataset.sizeBytes)} · {formatRelativeTime(dataset.lastModified)}
         </span>

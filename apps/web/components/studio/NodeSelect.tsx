@@ -60,7 +60,7 @@ export default function NodeSelect({
       label: "Automático (recomendado)",
       description: "O escalonador despacha para o nó com maior capacidade disponível",
       badge: (
-        <span className="rounded border border-brand-500/20 bg-brand-500/10 px-1.5 py-0.5 text-[10px] font-medium text-brand-400">
+        <span className="rounded border border-brand-500/20 bg-brand-500/10 px-1.5 py-0.5 text-3xs font-medium text-brand-400">
           Auto
         </span>
       ),
@@ -87,9 +87,9 @@ export default function NodeSelect({
         disabledReason: isOnline ? undefined : "Nó offline",
         badge: (
           <span
-            className={`rounded border px-1.5 py-0.5 text-[10px] font-mono ${
+            className={`rounded border px-1.5 py-0.5 text-3xs font-mono ${
               isOnline
-                ? "border-[#34d399]/30 bg-[#34d399]/10 text-[#34d399]"
+                ? "border-status-success/30 bg-status-success/10 text-status-success"
                 : "border-zinc-700/50 bg-zinc-800/40 text-zinc-500"
             }`}
           >
@@ -99,7 +99,7 @@ export default function NodeSelect({
         icon: (
           <IconServer
             className={`w-4 h-4 ${
-              isOnline ? "text-[#34d399]" : "text-zinc-500"
+              isOnline ? "text-status-success" : "text-zinc-500"
             }`}
           />
         ),

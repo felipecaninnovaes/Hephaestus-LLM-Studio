@@ -53,8 +53,8 @@ export function UploadFloatingDock({
               uploading
                 ? "border-brand-500/40 bg-brand-500/20 text-brand-300 animate-pulse"
                 : rejectedCount > 0
-                ? "border-amber-500/40 bg-amber-500/20 text-amber-300"
-                : "border-[#34d399]/40 bg-[#34d399]/20 text-[#a7f3d0]"
+                ? "border-status-alert/40 bg-status-alert/20 text-amber-300"
+                : "border-status-success/40 bg-status-success/20 text-[#a7f3d0]"
             }`}
           >
             {uploading ? (
@@ -73,7 +73,7 @@ export function UploadFloatingDock({
                 ? "Upload concluído com avisos"
                 : "Upload concluído com sucesso"}
             </p>
-            <p className="font-mono text-[10px] text-zinc-400">
+            <p className="font-mono text-3xs text-zinc-400">
               {uploading ? (
                 uploadBatchInfo ? (
                   <>
@@ -85,7 +85,7 @@ export function UploadFloatingDock({
                 )
               ) : (
                 <>
-                  <span className="text-[#34d399] font-medium">{storedCount} salvas</span>
+                  <span className="text-status-success font-medium">{storedCount} salvas</span>
                   {duplicateCount > 0 && ` · ${duplicateCount} duplicadas`}
                   {rejectedCount > 0 && ` · ${rejectedCount} rejeitadas`}
                 </>
@@ -100,7 +100,7 @@ export function UploadFloatingDock({
               type="button"
               onClick={onCancel}
               title="Cancelar upload restante"
-              className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-2 py-1 font-mono text-[10px] font-semibold text-rose-300 transition-colors hover:bg-rose-500/20 cursor-pointer"
+              className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-2 py-1 font-mono text-3xs font-semibold text-rose-300 transition-colors hover:bg-rose-500/20 cursor-pointer"
             >
               Cancelar
             </button>
@@ -111,7 +111,7 @@ export function UploadFloatingDock({
                   type="button"
                   onClick={onOpenAudit}
                   title="Abrir relatório detalhado do upload"
-                  className="rounded-lg border border-brand-500/30 bg-brand-500/15 px-2 py-1 font-mono text-[10px] font-semibold text-brand-300 transition-colors hover:bg-brand-500/25 cursor-pointer"
+                  className="rounded-lg border border-brand-500/30 bg-brand-500/15 px-2 py-1 font-mono text-3xs font-semibold text-brand-300 transition-colors hover:bg-brand-500/25 cursor-pointer"
                 >
                   Relatório
                 </button>
@@ -133,7 +133,7 @@ export function UploadFloatingDock({
       {uploading && (
         <div className="mt-2.5 h-1.5 w-full overflow-hidden rounded-full bg-zinc-800/80">
           <div
-            className="h-full bg-gradient-to-r from-brand-500 to-[#34d399] transition-all duration-300 ease-out"
+            className="h-full bg-gradient-to-r from-brand-500 to-status-success transition-all duration-300 ease-out"
             style={{ width: `${percent}%` }}
           />
         </div>

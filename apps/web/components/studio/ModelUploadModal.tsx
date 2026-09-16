@@ -119,7 +119,7 @@ export default function ModelUploadModal({
         <div>
           <label
             htmlFor="model-upload-file"
-            className="mb-1.5 block font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-zinc-400"
+            className="mb-1.5 block font-mono text-2xs font-medium uppercase tracking-[0.08em] text-zinc-400"
           >
             Arquivo
           </label>
@@ -150,7 +150,7 @@ export default function ModelUploadModal({
                   <div className="truncate text-xs font-medium text-zinc-100">
                     {file.name}
                   </div>
-                  <div className="font-mono text-[11px] text-zinc-400">
+                  <div className="font-mono text-2xs text-zinc-400">
                     {(file.size / (1024 * 1024)).toFixed(1)} MB
                   </div>
                 </>
@@ -165,7 +165,7 @@ export default function ModelUploadModal({
 
         {/* Nome opcional */}
         <div>
-          <label className="mb-1.5 block font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-zinc-400">
+          <label className="mb-1.5 block font-mono text-2xs font-medium uppercase tracking-[0.08em] text-zinc-400">
             Nome (opcional)
           </label>
           <input
@@ -181,7 +181,7 @@ export default function ModelUploadModal({
 
         {/* Engine selector */}
         <div>
-          <label className="mb-1.5 block font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-zinc-400">
+          <label className="mb-1.5 block font-mono text-2xs font-medium uppercase tracking-[0.08em] text-zinc-400">
             Engine / Tipo
           </label>
           <SegmentedControl
@@ -202,7 +202,7 @@ export default function ModelUploadModal({
         {isDiffusionSafetensors && (
           <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3.5 space-y-3">
             <div className="flex items-center gap-2">
-              <span className="font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-zinc-400">
+              <span className="font-mono text-2xs font-medium uppercase tracking-[0.08em] text-zinc-400">
                 Classificação (opcional)
               </span>
             </div>
@@ -237,7 +237,7 @@ export default function ModelUploadModal({
               size="default"
             />
 
-            <p className="font-mono text-[11px] text-zinc-500 leading-normal">
+            <p className="font-mono text-2xs text-zinc-500 leading-normal">
               O estúdio detecta a arquitetura pelo arquivo. Use os seletores só se o upload falhar com erro de classificação.
             </p>
           </div>
@@ -245,7 +245,7 @@ export default function ModelUploadModal({
 
         {/* Erro */}
         {error && (
-          <div className="rounded-lg border border-[#ef4444]/30 bg-[#ef4444]/[0.08] px-3 py-2 text-xs text-[#ef4444]">
+          <div className="rounded-lg border border-status-danger/30 bg-status-danger/[0.08] px-3 py-2 text-xs text-status-danger">
             {error}
           </div>
         )}

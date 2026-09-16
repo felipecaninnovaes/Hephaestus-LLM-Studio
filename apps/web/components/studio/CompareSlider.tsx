@@ -100,7 +100,7 @@ export default function CompareSlider({
         <span className="font-mono text-xs text-zinc-400">
           seed {seedA} · {baseA}
         </span>
-        <span className="font-mono text-[10px] text-zinc-500">Comparador</span>
+        <span className="font-mono text-3xs text-zinc-500">Comparador</span>
         <span className="font-mono text-xs text-zinc-400">
           seed {seedB} · {baseB}
         </span>
@@ -163,7 +163,7 @@ export default function CompareSlider({
       {/* Prompts below */}
       <div className="flex w-full max-w-4xl gap-4 mt-3 px-2">
         <div className="flex-1 min-w-0">
-          <span className="font-mono text-[10px] text-zinc-500 uppercase tracking-caps block mb-0.5">
+          <span className="font-mono text-3xs text-zinc-500 uppercase tracking-caps block mb-0.5">
             Prompt A (esquerda)
           </span>
           <TruncatedText
@@ -174,7 +174,7 @@ export default function CompareSlider({
           />
         </div>
         <div className="flex-1 min-w-0">
-          <span className="font-mono text-[10px] text-zinc-500 uppercase tracking-caps block mb-0.5">
+          <span className="font-mono text-3xs text-zinc-500 uppercase tracking-caps block mb-0.5">
             Prompt B (direita)
           </span>
           <TruncatedText

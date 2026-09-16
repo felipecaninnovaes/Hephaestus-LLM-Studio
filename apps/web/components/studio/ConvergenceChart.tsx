@@ -239,7 +239,7 @@ export function ConvergenceChart({
         <h4 className="mt-3 font-display text-sm font-semibold text-zinc-200">
           Aguardando Telemetria de Treino
         </h4>
-        <p className="mt-1 font-mono text-[11px] text-zinc-400">
+        <p className="mt-1 font-mono text-2xs text-zinc-400">
           O orquestrador enviará os primeiros checkpoints assim que a época 1 for
           processada.
         </p>
@@ -258,14 +258,14 @@ export function ConvergenceChart({
           <div className="flex size-6 shrink-0 items-center justify-center rounded-md bg-brand-500/10 text-brand-400 border border-brand-500/20 backdrop-blur-sm">
             <IconTrendingUp className="size-3.5" />
           </div>
-          <span className="font-mono text-[11px] font-semibold tracking-caps uppercase text-zinc-200 whitespace-nowrap">
+          <span className="font-mono text-2xs font-semibold tracking-caps uppercase text-zinc-200 whitespace-nowrap">
             Curvas de Convergência
           </span>
-          <span className="font-mono text-[11px] text-zinc-400 whitespace-nowrap">
+          <span className="font-mono text-2xs text-zinc-400 whitespace-nowrap">
             ({metrics.length} checkpoint{metrics.length > 1 ? "s" : ""})
           </span>
           {isJobActive && (
-            <span className="flex items-center gap-1 font-mono text-[11px] text-brand-400 whitespace-nowrap">
+            <span className="flex items-center gap-1 font-mono text-2xs text-brand-400 whitespace-nowrap">
               <span className="size-1.5 rounded-full bg-brand-400 animate-pulse motion-reduce:animate-none" />
               Live
             </span>
@@ -274,7 +274,7 @@ export function ConvergenceChart({
 
         {/* Tab Switcher Segmentado ou Badge de Difusão */}
         {curves?.isDiffusion ? (
-          <div className="flex items-center gap-1.5 rounded-lg border border-indigo-500/20 bg-indigo-500/10 px-2.5 py-1 font-mono text-[11px] text-indigo-300 backdrop-blur-sm">
+          <div className="flex items-center gap-1.5 rounded-lg border border-indigo-500/20 bg-indigo-500/10 px-2.5 py-1 font-mono text-2xs text-indigo-300 backdrop-blur-sm">
             <span className="size-1.5 rounded-full bg-indigo-400" />
             Curva de Loss Difusão
           </div>
@@ -283,7 +283,7 @@ export function ConvergenceChart({
             <button
               type="button"
               onClick={() => setTab("all")}
-              className={`rounded-md px-2.5 py-1 font-mono text-[11px] transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${
+              className={`rounded-md px-2.5 py-1 font-mono text-2xs transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${
                 tab === "all"
                   ? "bg-zinc-800 text-zinc-100 shadow-sm"
                   : "text-zinc-400 hover:text-zinc-200"
@@ -294,7 +294,7 @@ export function ConvergenceChart({
             <button
               type="button"
               onClick={() => setTab("loss")}
-              className={`rounded-md px-2.5 py-1 font-mono text-[11px] transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${
+              className={`rounded-md px-2.5 py-1 font-mono text-2xs transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${
                 tab === "loss"
                   ? "bg-zinc-800 text-zinc-100 shadow-sm"
                   : "text-zinc-400 hover:text-zinc-200"
@@ -305,7 +305,7 @@ export function ConvergenceChart({
             <button
               type="button"
               onClick={() => setTab("map")}
-              className={`rounded-md px-2.5 py-1 font-mono text-[11px] transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${
+              className={`rounded-md px-2.5 py-1 font-mono text-2xs transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${
                 tab === "map"
                   ? "bg-zinc-800 text-zinc-100 shadow-sm"
                   : "text-zinc-400 hover:text-zinc-200"
@@ -353,7 +353,7 @@ export function ConvergenceChart({
                     x={padLeft - 6}
                     y={y + 3}
                     textAnchor="end"
-                    className="font-mono text-[11px] fill-zinc-400"
+                    className="font-mono text-2xs fill-zinc-400"
                   >
                     {(curves.maxLoss - pct * (curves.maxLoss - curves.minLoss)).toFixed(1)}
                   </text>
@@ -363,7 +363,7 @@ export function ConvergenceChart({
                     x={padLeft - 6}
                     y={y + 3}
                     textAnchor="end"
-                    className="font-mono text-[11px] fill-zinc-400"
+                    className="font-mono text-2xs fill-zinc-400"
                   >
                     {Math.round((1 - pct) * 100)}%
                   </text>
@@ -578,7 +578,7 @@ export function ConvergenceChart({
             x={padLeft}
             y={viewBoxHeight - 6}
             textAnchor="start"
-            className="font-mono text-[11px] fill-zinc-400"
+            className="font-mono text-2xs fill-zinc-400"
           >
             Epoch {metrics[0].epoch}
           </text>
@@ -586,7 +586,7 @@ export function ConvergenceChart({
             x={viewBoxWidth - padRight}
             y={viewBoxHeight - 6}
             textAnchor="end"
-            className="font-mono text-[11px] fill-zinc-400"
+            className="font-mono text-2xs fill-zinc-400"
           >
             Epoch {metrics[metrics.length - 1].epoch}
             {totalEpochs && totalEpochs > metrics[metrics.length - 1].epoch
@@ -597,7 +597,7 @@ export function ConvergenceChart({
       </div>
 
       {/* Legenda Dinâmica com Valores do Ponto Focado / Mais Recente */}
-      <div className="flex flex-wrap items-center justify-between gap-3 pt-1 border-t border-zinc-800/80 font-mono text-[11px]">
+      <div className="flex flex-wrap items-center justify-between gap-3 pt-1 border-t border-zinc-800/80 font-mono text-2xs">
         <div className="text-zinc-400 flex items-center gap-1.5">
           <span>Leitura:</span>
           <span className="text-zinc-200 font-semibold">Epoch {activeHover.epoch}</span>
@@ -640,7 +640,7 @@ export function ConvergenceChart({
               {(tab === "all" || tab === "map") && (
                 <>
                   <div className="flex items-center gap-1.5">
-                    <span className="size-2 rounded-full bg-[#34d399]" />
+                    <span className="size-2 rounded-full bg-status-success" />
                     <span className="text-zinc-400">mAP@50:</span>
                     <span className="font-semibold text-zinc-100">
                       {((activeHover.map50 ?? 0) * 100).toFixed(1)}%

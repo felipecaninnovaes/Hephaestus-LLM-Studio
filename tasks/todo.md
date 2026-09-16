@@ -34,23 +34,25 @@ uma. Manter < 100 linhas; não duplicar docs — referenciar por seção.
   - [x] `npm run build` verde (gate final pós-correção docs)
   - [x] 4 commits atômicos (fundação → ui primitives → studio A-L → studio C-Y → páginas+consolidações) — fechados
   - [x] Fatia Biome: config + scripts + 11 autofixes + nits a11y/line-height + docs honestos (@reviewer CORRIGIR-ANTES→fixer→ok; lint 116E/204W = débito da follow-up 3)
+  - [x] Slice dívida a11y: 66 errors→0 + follow-ups reviewer (StatCard props, Esc lightbox)
+  - [ ] Slice dívida leve: noArrayIndexKey 8 + noSvgWithoutTitle 7 (em voo)
+  - [ ] Slice dívida hooks: useExhaustiveDependencies 32 (1 commit/módulo)
+  - [ ] Decisão UX: noAutofocus 3 (suprimir justificado vs remover)
 - **Follow-ups desta fatia (não bloqueiam):**
   1. Spinner `aria-hidden` explícito + `aria-busy` no Button (a11y).
   2. `--text-2xs/3xs/4xs` sem line-height própria (herda do contexto) —
      fixar token se introduzirmos `leading-*` nesses tamanhos.
-  3. **Biome toolado; dívida de lint a zerar (fatia follow-up):** 116 errors
-     manuais catalogados — `useExhaustiveDependencies` 32 (12 arqs; pior:
-     `datasets/[id]` 8, `GenerationPanel` 8, `AutoLabelModal` 7 — risco
-     comportamental, revisar 1 por 1), `noLabelWithoutControl` 23,
-     `useKeyWithClickEvents` 16, `noStaticElementInteractions` 15,
-     `useSemanticElements` 9, `noArrayIndexKey` 8, `noSvgWithoutTitle` 7
-     (→ `biome-ignore` justificado p/ decorativos), `noAutofocus` 3,
-     `Select.tsx` a11y 3. Warnings: `noExplicitAny` 90, `noUnusedImports` 46,
-     `noNonNullAssertion` 22, `noImgElement` 19. Também pendente: gate de
-     format/assist Biome (touch ~108 arqs — slice dedicada), alinhar
-     `import React`→type-only em Button, pin $schema vs `^` dep.
+  3. **Biome toolado; dívida de lint a zerar:** ~~66 a11y~~ FECHADO (slice
+     a11y + follow-ups M1/M2 do reviewer). Restam 50 errors:
+     `useExhaustiveDependencies` 32 (risco comportamental — um commit por
+     módulo, @reviewer em cada), `noArrayIndexKey` 8 + `noSvgWithoutTitle` 7
+     (slice em andamento), `noAutofocus` 3 (decisão UX: login/busca querem
+     autofocus? → suprimir justificado ou remover). Warnings: `noExplicitAny`
+     90, `noUnusedImports` 46, `noNonNullAssertion` 22, `noImgElement` 19.
+     Pendente pós-0-errors: gate de format/assist (~108 arqs), `import React`
+     →type-only em Button, pin $schema vs `^`.
      Comando canônico: `npm run lint --workspace=web` (raiz). **rtk NÃO serve
-     p/ lint** (corrompe saída) — chamar npm direto.
+     p/ lint** (corrompe saída) — chamar npm direto. Body de commit ≤100 col.
   4. Paleta de séries do ConvergenceChart (1 consumidor) — avaliar tokenização.
   5. Divergências cosméticas canonicadas pelo reviewer: raio CTA /jobs
      (lg→md), ghost DatasetTable (zinc-400→300), tom spinner brand (500→400).

@@ -87,7 +87,7 @@ function DifusaoContent() {
             <h1 className="font-display text-lg font-bold text-white tracking-tight">
               Forja Difusão LoRA
             </h1>
-            <span className="rounded-full border border-sky-500/20 bg-sky-500/10 px-2 py-0.5 font-mono text-[11px] uppercase tracking-caps text-sky-400 backdrop-blur-sm">
+            <span className="rounded-full border border-sky-500/20 bg-sky-500/10 px-2 py-0.5 font-mono text-2xs uppercase tracking-caps text-sky-400 backdrop-blur-sm">
               Diffusers Engine
             </span>
           </div>

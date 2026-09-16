@@ -127,7 +127,7 @@ function AdoptModal({
 
         {/* Kind pills */}
         <div>
-          <label className="tracking-caps mb-1.5 block font-mono text-[11px] font-medium uppercase text-zinc-300">
+          <label className="tracking-caps mb-1.5 block font-mono text-2xs font-medium uppercase text-zinc-300">
             Tipo
           </label>
           <div className="flex gap-2">
@@ -160,7 +160,7 @@ function AdoptModal({
         />
 
         {error && (
-          <p className="rounded-lg border border-[#ef4444]/30 bg-[#ef4444]/[0.08] px-3 py-2 font-mono text-[11px] text-[#ef4444]">
+          <p className="rounded-lg border border-status-danger/30 bg-status-danger/[0.08] px-3 py-2 font-mono text-2xs text-status-danger">
             {error}
           </p>
         )}
@@ -276,7 +276,7 @@ export default function EnvironmentsPage() {
       {/* Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <div className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-400">
+          <div className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-400">
             Infraestrutura
           </div>
           <h1 className="font-display text-2xl font-bold tracking-tight text-white sm:text-3xl">
@@ -350,13 +350,13 @@ export default function EnvironmentsPage() {
                         </div>
 
                         {/* Badge Kind */}
-                        <span className="inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden whitespace-nowrap rounded-lg border font-medium text-brand-300 bg-brand-500/15 border-brand-500/30 backdrop-blur-sm px-2 py-0.5 text-[11px]">
+                        <span className="inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden whitespace-nowrap rounded-lg border font-medium text-brand-300 bg-brand-500/15 border-brand-500/30 backdrop-blur-sm px-2 py-0.5 text-2xs">
                           {node.kind === "local" ? "Local" : "Remoto"}
                         </span>
 
                         {/* Status badge */}
                         <div
-                          className={`inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden whitespace-nowrap rounded-lg border font-medium backdrop-blur-sm px-2 py-0.5 text-[11px] font-mono ${
+                          className={`inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden whitespace-nowrap rounded-lg border font-medium backdrop-blur-sm px-2 py-0.5 text-2xs font-mono ${
                             STATUS_CLASSES[node.status] ?? STATUS_CLASSES.unknown
                           }`}
                         >
@@ -365,12 +365,12 @@ export default function EnvironmentsPage() {
                             <span className="relative ml-1.5 flex h-2 w-2">
                               <span
                                 className={`absolute inline-flex h-full w-full animate-ping rounded-full opacity-75 motion-reduce:animate-none ${
-                                  node.status === "online" ? "bg-[#34d399]" : "bg-[#f59e0b]"
+                                  node.status === "online" ? "bg-status-success" : "bg-status-alert"
                                 }`}
                               />
                               <span
                                 className={`relative inline-flex h-2 w-2 rounded-full ${
-                                  node.status === "online" ? "bg-[#34d399]" : "bg-[#f59e0b]"
+                                  node.status === "online" ? "bg-status-success" : "bg-status-alert"
                                 }`}
                               />
                             </span>
@@ -378,7 +378,7 @@ export default function EnvironmentsPage() {
                         </div>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-zinc-400">
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-2xs text-zinc-400">
                         <TruncatedText
                           text={node.endpoint}
                           className="font-mono"
@@ -487,7 +487,7 @@ export default function EnvironmentsPage() {
                           {node.gpus.map((gpu) => (
                             <span
                               key={gpu}
-                              className="rounded-full border border-white/10 bg-black/40 px-2.5 py-0.5 font-mono text-[11px] text-zinc-300"
+                              className="rounded-full border border-white/10 bg-black/40 px-2.5 py-0.5 font-mono text-2xs text-zinc-300"
                             >
                               {gpu}
                             </span>

@@ -2,6 +2,7 @@
 
 import React, { forwardRef, type InputHTMLAttributes } from "react";
 import { IconSearch, IconX } from "@/components/icons";
+import { Spinner } from "./Spinner";
 
 export interface SearchInputProps
   extends Omit<InputHTMLAttributes<HTMLInputElement>, "size"> {
@@ -32,10 +33,7 @@ export const SearchInput = forwardRef<HTMLInputElement, SearchInputProps>(
         className={`relative flex items-center w-full rounded-xl border border-zinc-800 bg-black/40 backdrop-blur-sm px-3 transition focus-within:border-brand-500/60 focus-within:ring-1 focus-within:ring-brand-500/30 ${heightClass} ${className}`.trim()}
       >
         {loading ? (
-          <span
-            className="size-4 shrink-0 animate-spin rounded-full border-2 border-brand-500/30 border-t-brand-500 mr-2.5"
-            aria-hidden="true"
-          />
+          <Spinner className="size-4 mr-2.5" />
         ) : (
           <IconSearch className="size-4 shrink-0 text-zinc-500 mr-2.5" />
         )}

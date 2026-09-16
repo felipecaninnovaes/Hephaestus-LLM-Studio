@@ -9,6 +9,7 @@ import {
   EmptyState,
   SearchInput,
   SubmodulePills,
+  Spinner,
   showToast,
   useFileDrop,
 } from "@/components/ui";
@@ -1173,13 +1174,13 @@ export default function DatasetGalleryPage() {
         </div>
       </div>
 
-      <div className="glass-card flex flex-wrap items-center gap-2 rounded-2xl shadow-lg px-4 py-2.5 font-mono text-[11px] text-zinc-400">
+      <div className="glass-card flex flex-wrap items-center gap-2 rounded-2xl shadow-lg px-4 py-2.5 font-mono text-2xs text-zinc-400">
         <span className="font-semibold text-zinc-200">
           {dataset.imagesCount.toLocaleString()} amostras
         </span>
         <span className="h-3 w-px bg-white/10"></span>
         <span>
-          <span className="text-[#34d399] font-semibold">
+          <span className="text-status-success font-semibold">
             {dataset.labeledCount.toLocaleString()}
           </span>{" "}
           rotuladas por {reviewer}
@@ -1325,7 +1326,7 @@ export default function DatasetGalleryPage() {
               </span>
             )}
             {selectedClassId && (
-              <span className="rounded bg-amber-500/20 px-2 py-0.5 text-amber-200">
+              <span className="rounded bg-status-alert/20 px-2 py-0.5 text-amber-200">
                 Classe: {dataset.classes?.find((c) => c.id === selectedClassId)?.name ?? selectedClassId}
               </span>
             )}
@@ -1334,7 +1335,7 @@ export default function DatasetGalleryPage() {
           <button
             type="button"
             onClick={clearAllFilters}
-            className="text-[11px] text-zinc-400 hover:text-white underline cursor-pointer shrink-0"
+            className="text-2xs text-zinc-400 hover:text-white underline cursor-pointer shrink-0"
           >
             Limpar filtros
           </button>
@@ -1404,7 +1405,7 @@ export default function DatasetGalleryPage() {
               : "Enviar amostras"}
           </Button>
           {uploading && uploadBatchInfo && (
-            <p className="mt-1.5 font-mono text-[11px] text-zinc-400">
+            <p className="mt-1.5 font-mono text-2xs text-zinc-400">
               lote {uploadBatchInfo.batchIndex} de {uploadBatchInfo.batchCount}
             </p>
           )}
@@ -1422,7 +1423,7 @@ export default function DatasetGalleryPage() {
         </EmptyState>
       ) : similarFor !== null || (searchMode === "semantic" && activeQuery !== null) ? (
         <div className="flex flex-col gap-3">
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-zinc-800/80 bg-zinc-950/60 backdrop-blur-sm px-4 py-2.5 text-[11px] text-zinc-400">
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-zinc-800/80 bg-zinc-950/60 backdrop-blur-sm px-4 py-2.5 text-2xs text-zinc-400">
             <span>
               Resultados da busca semântica —{" "}
               <span className="font-mono text-zinc-200">
@@ -1553,13 +1554,13 @@ export default function DatasetGalleryPage() {
               className={`flex ${density === "compact" ? "h-20" : "h-28 sm:h-36"} flex-col items-center justify-center space-y-1 rounded-xl border-2 border-dashed border-zinc-700 bg-zinc-900/40 text-zinc-400 backdrop-blur-sm transition-all hover:border-brand-500/60 hover:bg-zinc-900/70 hover:text-zinc-200 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${uploading ? "opacity-60" : ""}`}
             >
               <IconPlus className={density === "compact" ? "h-4 w-4" : "h-5 w-5"} />
-              <span className="font-mono text-[10px] sm:text-[11px]">
+              <span className="font-mono text-3xs sm:text-2xs">
                 {uploading
                   ? `Enviando ${uploadSent}/${uploadCount}`
                   : "Adicionar imagens"}
               </span>
               {uploading && uploadBatchInfo && (
-                <span className="font-mono text-[9px] text-zinc-500">
+                <span className="font-mono text-4xs text-zinc-500">
                   lote {uploadBatchInfo.batchIndex}/{uploadBatchInfo.batchCount}
                 </span>
               )}
@@ -1568,7 +1569,7 @@ export default function DatasetGalleryPage() {
               <button
                 type="button"
                 onClick={() => { uploadCancelledRef.current = true; }}
-                className="absolute bottom-2 right-2 rounded-md border border-[#ef4444]/30 bg-[#ef4444]/[0.12] px-2 py-0.5 font-mono text-[10px] text-rose-300 transition-colors hover:bg-[#ef4444]/[0.20]"
+                className="absolute bottom-2 right-2 rounded-md border border-status-danger/30 bg-status-danger/[0.12] px-2 py-0.5 font-mono text-3xs text-rose-300 transition-colors hover:bg-status-danger/[0.20]"
               >
                 Cancelar
               </button>
@@ -1581,7 +1582,7 @@ export default function DatasetGalleryPage() {
       <div ref={sentinelRef} className="h-10 w-full flex items-center justify-center py-2">
         {loadingMore && (
           <div className="flex items-center gap-2 font-mono text-xs text-zinc-500">
-            <span className="h-3 w-3 animate-spin rounded-full border-2 border-brand-500/40 border-t-brand-400" />
+            <Spinner className="size-3" />
             <span>Carregando mais amostras…</span>
           </div>
         )}

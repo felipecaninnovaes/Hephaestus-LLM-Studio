@@ -29,7 +29,7 @@ function engineBadge(engine: string) {
     case "diffusion":
       return { label: "Difusão", className: "border-purple-500/35 bg-purple-500/10 text-purple-400" };
     case "clip":
-      return { label: "CLIP", className: "border-[#34d399]/35 bg-[#34d399]/10 text-[#34d399]" };
+      return { label: "CLIP", className: "border-status-success/35 bg-status-success/10 text-status-success" };
     default:
       return { label: "YOLO", className: "border-zinc-700/60 bg-zinc-800/40 text-zinc-300" };
   }
@@ -220,24 +220,24 @@ export default function ModelsPage() {
                     </h3>
                     <div className="mt-1 flex items-center gap-1.5 flex-wrap">
                       <span
-                        className={`inline-flex items-center rounded px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-[0.06em] border ${badge.className}`}
+                        className={`inline-flex items-center rounded px-1.5 py-0.5 font-mono text-3xs font-medium uppercase tracking-[0.06em] border ${badge.className}`}
                       >
                         {badge.label}
                       </span>
                       {format && (
-                        <span className="inline-flex items-center rounded border border-zinc-700/60 bg-zinc-800/60 px-1.5 py-0.5 font-mono text-[10px] text-zinc-400">
+                        <span className="inline-flex items-center rounded border border-zinc-700/60 bg-zinc-800/60 px-1.5 py-0.5 font-mono text-3xs text-zinc-400">
                           {format}
                         </span>
                       )}
                       {m.model && (
-                        <span className="font-mono text-[11px] text-zinc-500">
+                        <span className="font-mono text-2xs text-zinc-500">
                           · {m.model}
                         </span>
                       )}
                     </div>
                   </div>
                   <span
-                    className={`shrink-0 rounded-full border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.06em] ${SOURCE_BADGE_CLASSES[m.source]}`}
+                    className={`shrink-0 rounded-full border px-2 py-0.5 font-mono text-3xs uppercase tracking-[0.06em] ${SOURCE_BADGE_CLASSES[m.source]}`}
                     title={`Origem: ${modelSourceLabel(m.source)}`}
                   >
                     {modelSourceLabel(m.source)}
@@ -245,7 +245,7 @@ export default function ModelsPage() {
                 </div>
 
                 {/* Metadados */}
-                <div className="space-y-1.5 text-[11px]">
+                <div className="space-y-1.5 text-2xs">
                   <div className="flex items-center justify-between">
                     <span className="text-zinc-500">Tamanho</span>
                     <span className="font-mono text-zinc-300">

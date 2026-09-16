@@ -640,10 +640,10 @@ export default function AnnotateImagePage() {
         </div>
 
         <div className="border-t border-zinc-800 pt-4 font-mono text-xs text-zinc-400">
-          <span className="tracking-caps mb-2 block text-[10px] text-zinc-400 uppercase">
+          <span className="tracking-caps mb-2 block text-3xs text-zinc-400 uppercase">
             Coordenadas YOLO (Norm.)
           </span>
-          <div className="space-y-1 rounded-xl border border-zinc-800 bg-zinc-900 p-2.5 text-[11px]">
+          <div className="space-y-1 rounded-xl border border-zinc-800 bg-zinc-900 p-2.5 text-2xs">
             <div>
               X:{" "}
               <span className="text-zinc-200">
@@ -745,7 +745,7 @@ export default function AnnotateImagePage() {
                 }}
               >
                 <span
-                  className="pointer-events-none absolute -top-5 left-0 rounded px-1.5 py-0.5 font-mono text-[10px] font-bold"
+                  className="pointer-events-none absolute -top-5 left-0 rounded px-1.5 py-0.5 font-mono text-3xs font-bold"
                   style={{ background: color, color: "#09090b" }}
                 >
                   {name} #{i}

@@ -147,7 +147,7 @@ export default function LoginPage() {
               <IconLock className="size-5" />
               Hephaestus Studio
             </span>
-            <span className="font-mono text-[10px] tracking-[0.2em] uppercase text-zinc-400/60">
+            <span className="font-mono text-3xs tracking-[0.2em] uppercase text-zinc-400/60">
               v1.3
             </span>
           </div>
@@ -209,7 +209,7 @@ export default function LoginPage() {
               <p
                 role="status"
                 aria-live="polite"
-                className="m-0 min-h-5 text-sm text-[#ef4444]"
+                className="m-0 min-h-5 text-sm text-status-danger"
               >
                 {error}
               </p>
@@ -232,7 +232,7 @@ export default function LoginPage() {
             className="animate-rise mt-8 text-center"
             style={{ animationDelay: "300ms" }}
           >
-            <span className="font-mono text-[10px] tracking-[0.2em] uppercase text-zinc-400/60">
+            <span className="font-mono text-3xs tracking-[0.2em] uppercase text-zinc-400/60">
               Single-User Local
             </span>
           </div>

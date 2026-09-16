@@ -912,7 +912,7 @@ export default function PlaygroundPage() {
 
                           {/* Bounding boxes overlay */}
                           {hasBoxes &&
-                            predImg.boxes.map((box, bi) => {
+                            predImg.boxes.map((box) => {
                               const job = jobs.find((j) => j.id === selectedJobId);
                               const classes = job?.datasetId
                                 ? datasetClassesCache.current[job.datasetId]
@@ -920,7 +920,7 @@ export default function PlaygroundPage() {
                               const color = classColor(box.class, classes);
                               return (
                                 <div
-                                  key={bi}
+                                  key={`${box.class}-${box.x}-${box.y}-${box.w}-${box.h}-${box.conf}`}
                                   className="absolute"
                                   style={{
                                     left: `${box.x * 100}%`,

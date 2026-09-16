@@ -121,7 +121,7 @@ export function GalleryOperateToolbar({
                   : "text-zinc-400 hover:text-zinc-200"
               }`}
             >
-              <svg className="size-4" viewBox="0 0 16 16" fill="currentColor">
+              <svg aria-hidden="true" focusable="false" className="size-4" viewBox="0 0 16 16" fill="currentColor">
                 <rect x="1" y="1" width="3.5" height="3.5" rx="0.5" />
                 <rect x="6" y="1" width="3.5" height="3.5" rx="0.5" />
                 <rect x="11" y="1" width="3.5" height="3.5" rx="0.5" />

@@ -963,6 +963,8 @@ export default function DatasetGalleryPage() {
             aria-label="Voltar para a lista de datasets"
           >
             <svg
+              aria-hidden="true"
+              focusable="false"
               className="size-4"
               fill="none"
               stroke="currentColor"

@@ -35,7 +35,10 @@ export function Breadcrumbs({
         const isLast = i === lastIndex;
 
         return (
-          <React.Fragment key={`${item.label}-${i}`}>
+          <React.Fragment
+            // biome-ignore lint/suspicious/noArrayIndexKey: crumb pode repetir label/href; ordem é posicional por natureza
+            key={`${item.href ?? item.label}-${i}`}
+          >
             {!isFirst && (
               <span
                 aria-hidden="true"

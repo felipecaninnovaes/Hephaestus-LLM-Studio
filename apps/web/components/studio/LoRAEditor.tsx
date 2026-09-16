@@ -93,6 +93,7 @@ export function LoRAEditor({
       {/* Linhas de LoRA */}
       {value.map((lora, index) => (
         <div
+          // biome-ignore lint/suspicious/noArrayIndexKey: linhas LoRA dinâmicas sem id natural (LoraRef só tem modelId/scale; modelId "" repete) — posição é a identidade usada pelos handlers
           key={index}
           className="rounded-xl border border-white/8 bg-white/[0.02] p-2.5 space-y-2"
         >

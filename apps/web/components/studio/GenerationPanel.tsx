@@ -838,9 +838,9 @@ export default function GenerationPanel() {
                   Batch ({batchResults.length} imagens)
                 </span>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                  {batchResults.map((item, idx) => (
+                  {batchResults.map((item) => (
                     <button
-                      key={`${item.jobId}-${idx}`}
+                      key={`${item.jobId}-${item.seed}`}
                       type="button"
                       onClick={() => setCurrentDisplayItem(item)}
                       className={`group relative rounded-lg overflow-hidden border aspect-square transition-all ${

@@ -1,4 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" fill="none">
+  <title>Hephaestus LLM Studio</title>
   <rect width="32" height="32" rx="8" fill="#09090b"/>
   <rect x="0.5" y="0.5" width="31" height="31" rx="7.5" stroke="#8b5cf6" stroke-opacity="0.3"/>
   <path d="M16 6L20 12H12L16 6Z" fill="#a78bfa" fill-opacity="0.9"/>

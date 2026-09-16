@@ -540,6 +540,8 @@ export default function AnnotateImagePage() {
           className="w-full justify-start"
         >
           <svg
+            aria-hidden="true"
+            focusable="false"
             className="h-3.5 w-3.5 shrink-0"
             fill="none"
             stroke="currentColor"

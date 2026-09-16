@@ -202,6 +202,8 @@ export function ImageQuickLookModal({
             {/* Overlay de Bounding Boxes */}
             {boxes.length > 0 && (
               <svg
+                aria-hidden="true"
+                focusable="false"
                 className="absolute inset-0 size-full pointer-events-none"
                 viewBox={`0 0 ${detail?.width ?? currentItem.width ?? 100} ${
                   detail?.height ?? currentItem.height ?? 100
@@ -249,7 +251,7 @@ export function ImageQuickLookModal({
               aria-label="Imagem anterior"
               className="absolute left-3 top-1/2 -translate-y-1/2 rounded-full border border-white/10 bg-black/70 p-2 text-zinc-300 hover:text-white hover:bg-black/90 transition-all cursor-pointer backdrop-blur-sm"
             >
-              <svg className="size-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg aria-hidden="true" focusable="false" className="size-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <polyline points="15 18 9 12 15 6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             </button>
@@ -261,7 +263,7 @@ export function ImageQuickLookModal({
               aria-label="Próxima imagem"
               className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full border border-white/10 bg-black/70 p-2 text-zinc-300 hover:text-white hover:bg-black/90 transition-all cursor-pointer backdrop-blur-sm"
             >
-              <svg className="size-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg aria-hidden="true" focusable="false" className="size-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <polyline points="9 18 15 12 9 6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             </button>

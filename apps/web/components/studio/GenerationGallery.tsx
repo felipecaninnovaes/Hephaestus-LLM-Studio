@@ -38,6 +38,22 @@ import CompareSlider from "./CompareSlider";
 
 const PAGE_LIMIT = 50;
 
+/** Chaves estáveis dos 12 placeholders de skeleton (lista estática — nunca reordena). */
+const GALLERY_SKELETON_KEYS = [
+  "gallery-skeleton-01",
+  "gallery-skeleton-02",
+  "gallery-skeleton-03",
+  "gallery-skeleton-04",
+  "gallery-skeleton-05",
+  "gallery-skeleton-06",
+  "gallery-skeleton-07",
+  "gallery-skeleton-08",
+  "gallery-skeleton-09",
+  "gallery-skeleton-10",
+  "gallery-skeleton-11",
+  "gallery-skeleton-12",
+];
+
 /* ═══════════════════════════════════════════════════════════════════
    GenerationGallery — galeria persistente de imagens geradas (G.8)
    Grade responsiva com seleção, delete/export em lote, comparador.
@@ -238,9 +254,9 @@ export default function GenerationGallery() {
     return (
       <div className="p-4 md:p-6">
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3">
-          {Array.from({ length: 12 }).map((_, i) => (
+          {GALLERY_SKELETON_KEYS.map((skeletonKey) => (
             <div
-              key={i}
+              key={skeletonKey}
               className="aspect-square rounded-xl bg-zinc-900/60 border border-white/5 animate-pulse"
             />
           ))}

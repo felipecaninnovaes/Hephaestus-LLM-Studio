@@ -109,7 +109,7 @@ export function UploadAuditModal({
           ) : (
             currentList.map((item, idx) => (
               <div
-                key={`${item.filename}-${idx}`}
+                key={item.imageId ?? `${item.filename}-${idx}`}
                 className="flex items-center justify-between gap-3 rounded-lg border border-white/[0.04] bg-white/[0.02] px-3 py-2 text-xs transition-colors hover:bg-white/[0.04]"
               >
                 <div className="flex items-center space-x-2.5 min-w-0">

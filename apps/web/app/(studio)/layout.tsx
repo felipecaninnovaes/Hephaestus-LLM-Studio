@@ -178,6 +178,7 @@ export default function StudioLayout({
                   if (isLast) {
                     return (
                       <span
+                        // biome-ignore lint/suspicious/noArrayIndexKey: segmentos de rota — identidade é a posição no path; segment pode repetir (ex.: id igual ao nome da rota)
                         key={`${segment}-${i}`}
                         title={label}
                         className="font-display truncate font-semibold tracking-tight text-zinc-200"
@@ -187,7 +188,11 @@ export default function StudioLayout({
                     );
                   }
                   return (
-                    <span key={`${segment}-${i}`} className="flex min-w-0 items-center space-x-2">
+                    <span
+                      // biome-ignore lint/suspicious/noArrayIndexKey: segmentos de rota — identidade é a posição no path; segment pode repetir (ex.: id igual ao nome da rota)
+                      key={`${segment}-${i}`}
+                      className="flex min-w-0 items-center space-x-2"
+                    >
                       <span
                         title={label}
                         className="block max-w-[140px] truncate text-zinc-500"

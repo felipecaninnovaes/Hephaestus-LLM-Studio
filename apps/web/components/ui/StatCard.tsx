@@ -1,6 +1,6 @@
 import type React from "react";
 
-export interface StatCardProps extends React.HTMLAttributes<HTMLDivElement> {
+export interface StatCardProps extends React.HTMLAttributes<HTMLElement> {
   label: string;
   value: string | number;
   subtext?: React.ReactNode;
@@ -51,6 +51,7 @@ export function StatCard({
   if (onClick) {
     return (
       <button
+        {...props}
         type="button"
         onClick={onClick}
         className={`glass-card group rounded-xl p-4 text-left block w-full transition-[border-color,box-shadow] hover:border-brand-500/30 cursor-pointer active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${className}`.trim()}

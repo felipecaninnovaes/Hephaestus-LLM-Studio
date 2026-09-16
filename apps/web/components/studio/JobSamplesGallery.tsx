@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { IconChevronDown, IconChevronRight, IconDownload, IconImage, IconX, IconZoomIn } from "@/components/icons";
 import { formatBytes } from "@/lib/format";
 import type { JobArtifact } from "@/types/studio";
@@ -38,6 +38,15 @@ export function JobSamplesGallery({
 }: JobSamplesGalleryProps) {
   const [selectedSample, setSelectedSample] = useState<JobArtifact | null>(null);
   const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    if (!selectedSample) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setSelectedSample(null);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedSample]);
 
   // Filtra apenas artefatos que são amostras geradas (kind === 'sample' ou path com 'samples/')
   // e ordena por época crescente: baseline (Época 0) primeiro, amostras sem época por último

@@ -98,16 +98,16 @@ export default function AutoTrackerModal({
       badge: (
         <div className="flex items-center gap-1.5">
           {m.engine === "world" ? (
-            <span className="rounded-full border border-sky-500/35 bg-sky-500/10 px-1.5 py-0.5 font-mono text-[10px] text-sky-400">
+            <span className="rounded-full border border-sky-500/35 bg-sky-500/10 px-1.5 py-0.5 font-mono text-3xs text-sky-400">
               World
             </span>
           ) : (
-            <span className="rounded-full border border-zinc-700/60 bg-zinc-800/40 px-1.5 py-0.5 font-mono text-[10px] text-zinc-300">
+            <span className="rounded-full border border-zinc-700/60 bg-zinc-800/40 px-1.5 py-0.5 font-mono text-3xs text-zinc-300">
               YOLO
             </span>
           )}
           <span
-            className={`rounded-full border px-1.5 py-0.5 font-mono text-[10px] ${
+            className={`rounded-full border px-1.5 py-0.5 font-mono text-3xs ${
               m.source === "train"
                 ? "border-brand-500/35 bg-brand-500/10 text-brand-400"
                 : "border-white/15 bg-white/[0.06] text-zinc-300"
@@ -178,7 +178,7 @@ export default function AutoTrackerModal({
       title="AutoTracker"
       description={
         <span
-          className="block truncate font-mono text-[10px] text-zinc-400"
+          className="block truncate font-mono text-3xs text-zinc-400"
           title={datasetTitle}
         >
           {datasetTitle}
@@ -215,7 +215,7 @@ export default function AutoTrackerModal({
         />
 
         {availableModels.length === 0 && !modelsLoading && (
-          <p className="font-mono text-[11px] text-zinc-500">
+          <p className="font-mono text-2xs text-zinc-500">
             Envie ou baixe pesos em{" "}
             <span className="text-zinc-400">Modelos &amp; Pesos</span> para usar
             um modelo real.

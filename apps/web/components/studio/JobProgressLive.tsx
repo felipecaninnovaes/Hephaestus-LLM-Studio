@@ -70,7 +70,7 @@ export function JobProgressLive({
               {displayPhase}
             </span>
             {vramUsedGb !== undefined && vramUsedGb !== null && vramUsedGb > 0 && (
-              <span className="font-mono text-[10px] text-zinc-400 bg-white/5 px-1.5 py-0.5 rounded border border-white/10">
+              <span className="font-mono text-3xs text-zinc-400 bg-white/5 px-1.5 py-0.5 rounded border border-white/10">
                 {vramUsedGb.toFixed(1)} GB VRAM
               </span>
             )}
@@ -90,7 +90,7 @@ export function JobProgressLive({
         </div>
 
         {phaseMessage && (
-          <p className="text-[11px] text-zinc-400 truncate">{phaseMessage}</p>
+          <p className="text-2xs text-zinc-400 truncate">{phaseMessage}</p>
         )}
       </div>
     );
@@ -126,7 +126,7 @@ export function JobProgressLive({
 
           {/* VRAM Pill */}
           {vramUsedGb !== undefined && vramUsedGb !== null && vramUsedGb > 0 && (
-            <span className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-0.5 font-mono text-[11px] font-medium text-zinc-300">
+            <span className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-0.5 font-mono text-2xs font-medium text-zinc-300">
               <span className="h-1.5 w-1.5 rounded-full bg-violet-400" />
               {vramUsedGb.toFixed(1)} GB VRAM
             </span>
@@ -134,12 +134,12 @@ export function JobProgressLive({
 
           {/* Step / Epoch Counters */}
           {step !== null && step !== undefined && totalSteps && (
-            <span className="hidden sm:inline-block font-mono text-[11px] text-zinc-400 bg-white/[0.03] border border-white/5 px-2 py-0.5 rounded">
+            <span className="hidden sm:inline-block font-mono text-2xs text-zinc-400 bg-white/[0.03] border border-white/5 px-2 py-0.5 rounded">
               Passo {step}/{totalSteps}
             </span>
           )}
           {epoch !== null && epoch !== undefined && epoch > 0 && (
-            <span className="hidden sm:inline-block font-mono text-[11px] text-zinc-400 bg-white/[0.03] border border-white/5 px-2 py-0.5 rounded">
+            <span className="hidden sm:inline-block font-mono text-2xs text-zinc-400 bg-white/[0.03] border border-white/5 px-2 py-0.5 rounded">
               Época {epoch}
               {totalEpochs ? `/${totalEpochs}` : ""}
             </span>

@@ -456,7 +456,7 @@ export default function GenerationPanel() {
               <IconSliders className="size-4 text-brand-400" />
               Parâmetros
             </span>
-            <span className="font-mono text-[10px] text-zinc-400">
+            <span className="font-mono text-3xs text-zinc-400">
               {paramsOpen ? "Ocultar" : "Mostrar"}
             </span>
           </button>
@@ -465,7 +465,7 @@ export default function GenerationPanel() {
         <div className={`${paramsOpen ? "block" : "hidden"} lg:block p-4 md:p-5 space-y-4`}>
           {/* ══ Modelo Base ══ */}
           <div className="space-y-2">
-            <label className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-300">
+            <label className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-300">
               Modelo
             </label>
             {/* Toggle preset/custom — SegmentedControl canônico */}
@@ -512,10 +512,10 @@ export default function GenerationPanel() {
           {modelMode === "preset" && baseModel === "flux-2-klein-4b" && (
             <div className="space-y-2 rounded-xl border border-white/8 bg-white/[0.02] p-3">
               <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
-                <span className="font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-zinc-300">
+                <span className="font-mono text-2xs font-medium uppercase tracking-[0.08em] text-zinc-300">
                   Variante
                 </span>
-                <span className="shrink-0 font-mono text-[10px] text-brand-400">
+                <span className="shrink-0 font-mono text-3xs text-brand-400">
                   {distilled ? "4–8 steps · CFG 1.0" : "20+ steps · CFG 3.5+"}
                 </span>
               </div>
@@ -542,10 +542,10 @@ export default function GenerationPanel() {
           {/* ══ Prompt ══ */}
           <div className="space-y-1.5">
             <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
-              <label className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-300">
+              <label className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-300">
                 Prompt
               </label>
-              <span className="shrink-0 font-mono text-[10px] text-zinc-500">
+              <span className="shrink-0 font-mono text-3xs text-zinc-500">
                 {prompt.length}/4000
               </span>
             </div>
@@ -564,14 +564,14 @@ export default function GenerationPanel() {
             <button
               type="button"
               onClick={() => setShowNegative(true)}
-              className="font-mono text-[11px] text-zinc-400 hover:text-zinc-200 transition-colors"
+              className="font-mono text-2xs text-zinc-400 hover:text-zinc-200 transition-colors"
             >
               + Prompt Negativo
             </button>
           ) : (
             <div className="space-y-1.5">
               <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
-                <label className="font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-zinc-300">
+                <label className="font-mono text-2xs font-medium uppercase tracking-[0.08em] text-zinc-300">
                   Prompt Negativo
                 </label>
                 <Button
@@ -597,10 +597,10 @@ export default function GenerationPanel() {
           {/* ══ Resolução — SegmentedControl canônico ══ */}
           <div className="space-y-2">
             <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
-              <label className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-300">
+              <label className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-300">
                 Resolução
               </label>
-              <span className="shrink-0 font-mono text-[10px] text-zinc-400">{width}×{height}</span>
+              <span className="shrink-0 font-mono text-3xs text-zinc-400">{width}×{height}</span>
             </div>
             <SegmentedControl
               options={ASPECT_RATIO_PRESETS.map((p) => ({
@@ -644,7 +644,7 @@ export default function GenerationPanel() {
           {/* ══ Seed — Input canônico + Button canônico ══ */}
           <div className="space-y-1.5">
             <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
-              <label className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-300">
+              <label className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-300">
                 Seed
               </label>
               <SegmentedControl
@@ -680,7 +680,7 @@ export default function GenerationPanel() {
 
           {/* ══ Quantização ══ */}
           <div className="space-y-1.5">
-            <label className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-300">
+            <label className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-300">
               Quantização
             </label>
             <Select
@@ -770,10 +770,10 @@ export default function GenerationPanel() {
             <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-white/5 mb-3">
               <div className="flex items-center gap-2">
                 <span className="text-xs font-semibold text-zinc-200">Resultado</span>
-                <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-zinc-800 border border-white/5 text-zinc-400">
+                <span className="font-mono text-3xs px-2 py-0.5 rounded bg-zinc-800 border border-white/5 text-zinc-400">
                   {currentDisplayItem.width}×{currentDisplayItem.height}
                 </span>
-                <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-brand-500/10 border border-brand-500/20 text-brand-300">
+                <span className="font-mono text-3xs px-2 py-0.5 rounded bg-brand-500/10 border border-brand-500/20 text-brand-300">
                   seed {currentDisplayItem.seed}
                 </span>
               </div>
@@ -804,24 +804,24 @@ export default function GenerationPanel() {
 
             {/* Metadados */}
             <div className="mt-3 p-2.5 rounded-lg border border-white/5 bg-zinc-950/60">
-              <p className="text-[11px] text-zinc-300 italic leading-relaxed truncate" title={currentDisplayItem.prompt}>
+              <p className="text-2xs text-zinc-300 italic leading-relaxed truncate" title={currentDisplayItem.prompt}>
                 &ldquo;{currentDisplayItem.prompt}&rdquo;
               </p>
               <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
-                <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-zinc-900 border border-white/5 text-zinc-400">
+                <span className="font-mono text-4xs px-1.5 py-0.5 rounded bg-zinc-900 border border-white/5 text-zinc-400">
                   {currentDisplayItem.baseModel}
                 </span>
-                <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-zinc-900 border border-white/5 text-zinc-400">
+                <span className="font-mono text-4xs px-1.5 py-0.5 rounded bg-zinc-900 border border-white/5 text-zinc-400">
                   steps {currentDisplayItem.steps}
                 </span>
-                <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-zinc-900 border border-white/5 text-zinc-400">
+                <span className="font-mono text-4xs px-1.5 py-0.5 rounded bg-zinc-900 border border-white/5 text-zinc-400">
                   CFG {currentDisplayItem.guidanceScale.toFixed(1)}
                 </span>
-                <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-zinc-900 border border-white/5 text-zinc-400">
+                <span className="font-mono text-4xs px-1.5 py-0.5 rounded bg-zinc-900 border border-white/5 text-zinc-400">
                   {currentDisplayItem.quantization}
                 </span>
                 {currentDisplayItem.loras.length > 0 && (
-                  <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-brand-500/10 border border-brand-500/20 text-brand-300">
+                  <span className="font-mono text-4xs px-1.5 py-0.5 rounded bg-brand-500/10 border border-brand-500/20 text-brand-300">
                     {currentDisplayItem.loras.length} LoRA(s)
                   </span>
                 )}
@@ -831,7 +831,7 @@ export default function GenerationPanel() {
             {/* Batch results grid */}
             {batchResults.length > 1 && (
               <div className="mt-3 space-y-2">
-                <span className="font-mono text-[10px] text-zinc-400 uppercase tracking-wider">
+                <span className="font-mono text-3xs text-zinc-400 uppercase tracking-wider">
                   Batch ({batchResults.length} imagens)
                 </span>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -874,7 +874,7 @@ export default function GenerationPanel() {
         {history.length > 0 && (
           <div className="mt-4 shrink-0">
             <div className="flex items-center justify-between mb-2">
-              <span className="font-mono text-[10px] text-zinc-400 uppercase tracking-wider">
+              <span className="font-mono text-3xs text-zinc-400 uppercase tracking-wider">
                 Sessão ({history.length})
               </span>
             </div>

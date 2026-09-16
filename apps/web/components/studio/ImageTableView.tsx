@@ -39,7 +39,7 @@ export function ImageTableView({
   return (
     <div className="overflow-x-auto rounded-2xl border border-zinc-800/80 bg-zinc-950/80 shadow-lg backdrop-blur-xl">
       <table className="w-full text-left text-xs font-mono">
-        <thead className="border-b border-zinc-800/80 bg-zinc-900/60 text-zinc-400 uppercase tracking-caps text-[10px]">
+        <thead className="border-b border-zinc-800/80 bg-zinc-900/60 text-zinc-400 uppercase tracking-caps text-3xs">
           <tr>
             <th className="py-2.5 pl-4 pr-2 w-8">
               <button
@@ -110,7 +110,7 @@ export function ImageTableView({
                 </td>
 
                 <td className="py-2 px-3">
-                  <span className="rounded border border-white/10 bg-zinc-900 px-1.5 py-0.5 text-[10px] uppercase font-semibold text-zinc-300">
+                  <span className="rounded border border-white/10 bg-zinc-900 px-1.5 py-0.5 text-3xs uppercase font-semibold text-zinc-300">
                     {item.split}
                   </span>
                 </td>

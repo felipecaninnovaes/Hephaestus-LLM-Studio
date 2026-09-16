@@ -289,12 +289,12 @@ export default function GenerationGallery() {
       <div className="shrink-0 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-4 py-3 md:px-6 border-b border-white/5">
         <div className="flex items-baseline gap-x-3 gap-y-0.5 flex-wrap">
           <h2 className="font-display text-sm font-bold text-white">Galeria</h2>
-          <span className="font-mono text-[11px] text-zinc-400 shrink-0">
+          <span className="font-mono text-2xs text-zinc-400 shrink-0">
             {total} {total === 1 ? "geração" : "gerações"}
           </span>
         </div>
         {selectedCount > 0 && (
-          <span className="font-mono text-[11px] text-brand-400">
+          <span className="font-mono text-2xs text-brand-400">
             {selectedCount} selecionada{selectedCount > 1 ? "s" : ""}
           </span>
         )}
@@ -353,7 +353,7 @@ export default function GenerationGallery() {
                     text={gen.prompt}
                     lines={2}
                     as="p"
-                    className="text-[10px] text-zinc-200 leading-tight"
+                    className="text-3xs text-zinc-200 leading-tight"
                   />
                 </div>
 
@@ -391,7 +391,7 @@ export default function GenerationGallery() {
             </div>
           )}
           {items.length >= total && items.length > 0 && (
-            <span className="text-[10px] font-mono text-zinc-600">
+            <span className="text-3xs font-mono text-zinc-600">
               {total} {total === 1 ? "geração" : "gerações"} no total
             </span>
           )}
@@ -578,7 +578,7 @@ function MetaRow({
 }) {
   return (
     <div className="flex flex-col gap-0.5">
-      <span className="font-mono text-[10px] uppercase tracking-caps text-zinc-500">
+      <span className="font-mono text-3xs uppercase tracking-caps text-zinc-500">
         {label}
       </span>
       <TruncatedText

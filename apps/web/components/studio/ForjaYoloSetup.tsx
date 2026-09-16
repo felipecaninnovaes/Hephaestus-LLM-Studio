@@ -252,7 +252,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
         value: d.id,
         label: d.title,
         badge: (
-          <span className="flex items-center gap-1.5 font-mono text-[11px] text-zinc-400">
+          <span className="flex items-center gap-1.5 font-mono text-2xs text-zinc-400">
             <span className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-zinc-300">
               {d.imagesCount} imgs
             </span>
@@ -274,7 +274,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
       value: m.id,
       label: `${m.name} · ${formatBytes(m.bytes)}`,
       badge: m.source === "train" ? (
-        <span className="rounded-full border border-brand-500/30 bg-brand-500/10 px-1.5 py-0.5 font-mono text-[10px] text-brand-400">
+        <span className="rounded-full border border-brand-500/30 bg-brand-500/10 px-1.5 py-0.5 font-mono text-3xs text-brand-400">
           Treino
         </span>
       ) : undefined,
@@ -390,7 +390,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
           <h2 className="font-display text-sm font-bold text-white">
             Setup do Treino YOLO
           </h2>
-          <p className="font-mono text-[11px] text-zinc-400">
+          <p className="font-mono text-2xs text-zinc-400">
             Configure e inicie um novo treinamento
           </p>
         </div>
@@ -449,7 +449,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
           disabled={busy}
           className="font-mono text-xs"
         />
-        <p className="text-[11px] font-mono text-zinc-500">
+        <p className="text-2xs font-mono text-zinc-500">
           Nome personalizado para o arquivo .pt. Se omitido, o estúdio gerará um nome semântico inteligente.
         </p>
       </div>
@@ -475,11 +475,11 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
           oomRisk === "danger"
             ? "border-rose-500/40 bg-rose-500/[0.06]"
             : oomRisk === "warning"
-              ? "border-amber-500/35 bg-amber-500/[0.05]"
+              ? "border-status-alert/35 bg-status-alert/[0.05]"
               : "border-white/10 bg-white/[0.02]"
         }`}
       >
-        <div className="flex items-center justify-between font-mono text-[11px]">
+        <div className="flex items-center justify-between font-mono text-2xs">
           <span className="tracking-caps font-medium uppercase text-zinc-400 flex items-center gap-1.5">
             <IconZap className="size-3.5 text-brand-400" />
             VRAM Estimada
@@ -517,7 +517,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
         </div>
 
         {/* Dispositivo de Destino */}
-        <div className="flex items-center justify-between font-mono text-[11px] text-zinc-400">
+        <div className="flex items-center justify-between font-mono text-2xs text-zinc-400">
           <span>Dispositivo:</span>
           <span className="text-zinc-300 truncate max-w-[180px]" title={deviceLabel}>
             {deviceLabel}
@@ -530,7 +530,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
             className={`rounded-lg border p-2.5 space-y-2 ${
               oomRisk === "danger"
                 ? "border-rose-500/30 bg-rose-950/40 text-rose-200"
-                : "border-amber-500/30 bg-amber-950/40 text-amber-200"
+                : "border-status-alert/30 bg-amber-950/40 text-amber-200"
             }`}
           >
             <div className="flex items-start gap-2">
@@ -539,7 +539,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
                   oomRisk === "danger" ? "text-rose-400" : "text-amber-400"
                 }`}
               />
-              <div className="space-y-1 font-mono text-[11px]">
+              <div className="space-y-1 font-mono text-2xs">
                 <p className="font-semibold text-white">
                   {oomRisk === "danger"
                     ? "Risco Crítico de CUDA OOM"
@@ -561,7 +561,7 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
               variant="secondary"
               size="sm"
               onClick={handleAutoFixSafeParams}
-              className="w-full font-mono text-[11px]"
+              className="w-full font-mono text-2xs"
             >
               Ajustar para Perfil Seguro (Batch 16, ImgSz 640)
             </Button>

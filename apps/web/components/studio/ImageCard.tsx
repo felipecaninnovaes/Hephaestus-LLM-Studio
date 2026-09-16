@@ -153,9 +153,9 @@ export function ImageCard({
         {item.boxesCount != null && item.boxesCount > 0 && (
           <span
             title={`${item.boxesCount} ${item.boxesCount === 1 ? "box anotada" : "boxes anotadas"}`}
-            className="flex items-center gap-1 rounded border border-[#34d399]/40 bg-black/85 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[#a7f3d0] backdrop-blur-sm"
+            className="flex items-center gap-1 rounded border border-status-success/40 bg-black/85 px-1.5 py-0.5 font-mono text-3xs font-semibold text-[#a7f3d0] backdrop-blur-sm"
           >
-            <IconBoxSelect className="size-3 text-[#34d399]" />
+            <IconBoxSelect className="size-3 text-status-success" />
             <span>{item.boxesCount}</span>
           </span>
         )}
@@ -163,7 +163,7 @@ export function ImageCard({
         {item.caption && (
           <span
             title={`Legenda: "${item.caption}"`}
-            className="flex items-center gap-1 rounded border border-brand-500/40 bg-black/85 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-brand-300 backdrop-blur-sm"
+            className="flex items-center gap-1 rounded border border-brand-500/40 bg-black/85 px-1.5 py-0.5 font-mono text-3xs font-semibold text-brand-300 backdrop-blur-sm"
           >
             <IconSparkles className="size-3 text-brand-400" />
             <span className="hidden sm:inline">legenda</span>
@@ -173,12 +173,12 @@ export function ImageCard({
         {variant === "search" && searchScore != null ? (
           <span
             title="Similaridade (cosseno, -1..1)"
-            className="rounded border border-brand-500/30 bg-zinc-950/90 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-brand-300 backdrop-blur-sm"
+            className="rounded border border-brand-500/30 bg-zinc-950/90 px-1.5 py-0.5 font-mono text-2xs font-semibold text-brand-300 backdrop-blur-sm"
           >
             {searchScore.toFixed(2)}
           </span>
         ) : (
-          <span className="rounded border border-white/15 bg-zinc-950/90 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-caps font-semibold text-zinc-300 backdrop-blur-sm">
+          <span className="rounded border border-white/15 bg-zinc-950/90 px-1.5 py-0.5 font-mono text-3xs uppercase tracking-caps font-semibold text-zinc-300 backdrop-blur-sm">
             {item.split}
           </span>
         )}
@@ -191,14 +191,14 @@ export function ImageCard({
           onClick={onRestore}
           disabled={isRestoring}
           aria-label={`Restaurar ${item.filename}`}
-          className="absolute top-2 left-2 z-10 rounded-lg border border-[#34d399]/40 bg-zinc-950/90 backdrop-blur-sm px-2 py-1 font-mono text-[11px] font-medium text-[#a7f3d0] transition-colors hover:bg-[#34d399]/20 disabled:opacity-60 cursor-pointer"
+          className="absolute top-2 left-2 z-10 rounded-lg border border-status-success/40 bg-zinc-950/90 backdrop-blur-sm px-2 py-1 font-mono text-2xs font-medium text-[#a7f3d0] transition-colors hover:bg-status-success/20 disabled:opacity-60 cursor-pointer"
         >
           {isRestoring ? "Restaurando…" : "Restaurar"}
         </button>
       )}
 
       {/* Barra Inferior com Nome do Arquivo, Preview de Legenda e Ação */}
-      <div className="absolute inset-x-0 bottom-0 flex flex-col border-t border-zinc-800/80 bg-zinc-950/95 px-2.5 py-1.5 font-mono text-[11px] text-zinc-300 backdrop-blur-sm">
+      <div className="absolute inset-x-0 bottom-0 flex flex-col border-t border-zinc-800/80 bg-zinc-950/95 px-2.5 py-1.5 font-mono text-2xs text-zinc-300 backdrop-blur-sm">
         <div className="flex items-center justify-between gap-2">
           <span title={item.filename} className="min-w-0 flex-1 truncate font-semibold">
             {item.filename}
@@ -206,7 +206,7 @@ export function ImageCard({
           {actionText && (
             <span
               title={actionText}
-              className="shrink-0 truncate transition-colors group-hover:text-brand-400 text-[10px]"
+              className="shrink-0 truncate transition-colors group-hover:text-brand-400 text-3xs"
             >
               {actionText}
             </span>
@@ -215,7 +215,7 @@ export function ImageCard({
         {item.caption && density !== "compact" && (
           <span
             title={item.caption}
-            className="truncate text-[10px] text-zinc-400 italic mt-0.5 line-clamp-1"
+            className="truncate text-3xs text-zinc-400 italic mt-0.5 line-clamp-1"
           >
             &ldquo;{item.caption}&rdquo;
           </span>

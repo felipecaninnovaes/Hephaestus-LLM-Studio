@@ -264,7 +264,7 @@ export function BatchEditClassesModal({
                   setIsCreatingNewClass(!isCreatingNewClass);
                   setError(null);
                 }}
-                className="text-[11px] font-mono text-brand-400 hover:text-brand-300 flex items-center gap-1 cursor-pointer transition-colors"
+                className="text-2xs font-mono text-brand-400 hover:text-brand-300 flex items-center gap-1 cursor-pointer transition-colors"
               >
                 {isCreatingNewClass ? (
                   "Selecionar classe existente"
@@ -288,7 +288,7 @@ export function BatchEditClassesModal({
                   placeholder="Ex: male_face"
                   autoFocus
                 />
-                <p className="text-[11px] text-zinc-500">
+                <p className="text-2xs text-zinc-500">
                   A classe será adicionada ao dataset e aplicada nas boxes selecionadas.
                 </p>
               </div>

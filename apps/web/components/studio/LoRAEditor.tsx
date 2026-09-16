@@ -80,11 +80,11 @@ export function LoRAEditor({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <label className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-300">
+        <label className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-300">
           Adaptadores LoRA
         </label>
         {value.length > 0 && (
-          <span className="font-mono text-[10px] text-brand-400">
+          <span className="font-mono text-3xs text-brand-400">
             {value.length}/{maxItems}
           </span>
         )}
@@ -157,7 +157,7 @@ export function LoRAEditor({
 
       {/* Hint quando vazio */}
       {value.length === 0 && (
-        <p className="font-mono text-[11px] text-zinc-500 text-center py-1">
+        <p className="font-mono text-2xs text-zinc-500 text-center py-1">
           Nenhum LoRA — geração com pesos base puros.
         </p>
       )}

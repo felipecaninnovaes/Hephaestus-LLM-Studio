@@ -142,7 +142,7 @@ export default function ImportDatasetModal({ onClose }: Props) {
                 className="w-full rounded-xl border border-zinc-700/80 bg-zinc-900 px-3 py-2 font-mono text-zinc-200 file:mr-3 file:rounded-lg file:border-0 file:bg-zinc-800 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-zinc-200 focus:border-brand-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
               />
               {file && (
-                <p className="mt-1 font-mono text-[11px] text-zinc-500">
+                <p className="mt-1 font-mono text-2xs text-zinc-500">
                   {file.name}
                 </p>
               )}
@@ -161,7 +161,7 @@ export default function ImportDatasetModal({ onClose }: Props) {
                 onChange={(e) => setTitle(e.target.value)}
                 className="w-full rounded-xl border border-zinc-700/80 bg-zinc-900 px-3 py-2 font-mono text-zinc-200 focus:border-brand-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
               />
-              <p className="mt-1 text-[11px] text-zinc-500">
+              <p className="mt-1 text-2xs text-zinc-500">
                 Vazio usa o nome do backup — máx 96 caracteres.
               </p>
             </div>

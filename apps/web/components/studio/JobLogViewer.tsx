@@ -269,15 +269,15 @@ export function JobLogViewer({
           >
             <IconTerminal className={compact ? "size-3" : "size-3.5"} />
           </div>
-          <span className="font-mono text-[11px] font-semibold uppercase tracking-caps text-zinc-200 whitespace-nowrap">
+          <span className="font-mono text-2xs font-semibold uppercase tracking-caps text-zinc-200 whitespace-nowrap">
             Logs do Orquestrador
           </span>
-          <span className="font-mono text-[10px] text-zinc-400 whitespace-nowrap">
+          <span className="font-mono text-3xs text-zinc-400 whitespace-nowrap">
             ({filteredLines.length})
           </span>
 
           {isActive && (
-            <span className="inline-flex items-center gap-1 font-mono text-[10px] text-brand-400 pl-1 whitespace-nowrap">
+            <span className="inline-flex items-center gap-1 font-mono text-3xs text-brand-400 pl-1 whitespace-nowrap">
               <span className="size-1.5 rounded-full bg-brand-400 animate-pulse motion-reduce:animate-none" />
               Streaming Ativo
             </span>
@@ -285,7 +285,7 @@ export function JobLogViewer({
         </button>
 
         {/* Ações da Barra Superior */}
-        <div className="flex items-center gap-1.5 font-mono text-[10px] shrink-0">
+        <div className="flex items-center gap-1.5 font-mono text-3xs shrink-0">
           {isOpen && (
             <>
               {/* Filtros */}
@@ -319,7 +319,7 @@ export function JobLogViewer({
               <button
                 type="button"
                 onClick={handleCopyLogs}
-                className="inline-flex items-center gap-1 rounded-md border border-zinc-800 bg-zinc-900/60 backdrop-blur-sm px-2 py-0.5 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100 transition whitespace-nowrap cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 text-[10px]"
+                className="inline-flex items-center gap-1 rounded-md border border-zinc-800 bg-zinc-900/60 backdrop-blur-sm px-2 py-0.5 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100 transition whitespace-nowrap cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 text-3xs"
               >
                 {copied ? (
                   <>
@@ -344,8 +344,8 @@ export function JobLogViewer({
           ref={terminalRef}
           className={`overflow-y-auto bg-black/95 font-mono leading-relaxed select-text scroll-smooth ${
             compact
-              ? "h-40 sm:h-48 p-2.5 text-[10px] space-y-0.5"
-              : "h-56 sm:h-64 p-3.5 text-[11px] space-y-1"
+              ? "h-40 sm:h-48 p-2.5 text-3xs space-y-0.5"
+              : "h-56 sm:h-64 p-3.5 text-2xs space-y-1"
           }`}
         >
           {filteredLines.length === 0 ? (
@@ -388,7 +388,7 @@ export function JobLogViewer({
 
           {/* Cursor pulsante no fim se ativo */}
           {isActive && (
-            <div className="flex items-center gap-2 pt-1 text-brand-400 text-[10px]">
+            <div className="flex items-center gap-2 pt-1 text-brand-400 text-3xs">
               <span className="size-1.5 rounded-full bg-brand-400 animate-ping motion-reduce:animate-none" />
               <span className="animate-pulse motion-reduce:animate-none">Aguardando telemetria...</span>
             </div>

@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
+import { Spinner } from "@/components/ui/Spinner";
 import {
   IconCheck,
   IconX,
@@ -196,7 +197,7 @@ export function AutolabelReviewModal({
         {/* Loading State */}
         {loading && (
           <div className="flex flex-col items-center justify-center p-12 text-center text-xs font-mono text-zinc-400 space-y-3">
-            <span className="size-6 animate-spin rounded-full border-2 border-brand-500 border-t-transparent" />
+            <Spinner className="size-6" />
             <span>Carregando amostras geradas do artefato captions.jsonl…</span>
           </div>
         )}
@@ -256,7 +257,7 @@ export function AutolabelReviewModal({
                 >
                   <IconSparkles className="size-3.5 text-brand-400" />
                   <span>Total Geradas</span>
-                  <span className="rounded bg-black/40 px-1.5 py-0.2 text-[10px] text-zinc-300">
+                  <span className="rounded bg-black/40 px-1.5 py-0.2 text-3xs text-zinc-300">
                     {stats.total}
                   </span>
                 </button>
@@ -266,13 +267,13 @@ export function AutolabelReviewModal({
                   onClick={() => setFilterTab("selected")}
                   className={`flex items-center space-x-1.5 rounded-lg px-2.5 py-1.5 font-mono text-xs font-medium transition-colors cursor-pointer ${
                     filterTab === "selected"
-                      ? "border border-[#34d399]/40 bg-[#34d399]/15 text-[#a7f3d0]"
+                      ? "border border-status-success/40 bg-status-success/15 text-[#a7f3d0]"
                       : "border border-transparent text-zinc-400 hover:bg-white/5 hover:text-zinc-200"
                   }`}
                 >
-                  <IconCheck className="size-3.5 text-[#34d399]" />
+                  <IconCheck className="size-3.5 text-status-success" />
                   <span>Selecionadas</span>
-                  <span className="rounded bg-black/40 px-1.5 py-0.2 text-[10px] text-zinc-300">
+                  <span className="rounded bg-black/40 px-1.5 py-0.2 text-3xs text-zinc-300">
                     {stats.selected} / {stats.total}
                   </span>
                 </button>
@@ -282,13 +283,13 @@ export function AutolabelReviewModal({
                   onClick={() => setFilterTab("modified")}
                   className={`flex items-center space-x-1.5 rounded-lg px-2.5 py-1.5 font-mono text-xs font-medium transition-colors cursor-pointer ${
                     filterTab === "modified"
-                      ? "border border-amber-500/40 bg-amber-500/15 text-amber-300"
+                      ? "border border-status-alert/40 bg-status-alert/15 text-amber-300"
                       : "border border-transparent text-zinc-400 hover:bg-white/5 hover:text-zinc-200"
                   }`}
                 >
                   <IconInfo className="size-3.5 text-amber-400" />
                   <span>Editadas</span>
-                  <span className="rounded bg-black/40 px-1.5 py-0.2 text-[10px] text-zinc-300">
+                  <span className="rounded bg-black/40 px-1.5 py-0.2 text-3xs text-zinc-300">
                     {stats.modified}
                   </span>
                 </button>
@@ -305,7 +306,7 @@ export function AutolabelReviewModal({
                   >
                     <IconImage className="size-3.5 text-blue-400" />
                     <span>Possui Legenda Atual</span>
-                    <span className="rounded bg-black/40 px-1.5 py-0.2 text-[10px] text-zinc-300">
+                    <span className="rounded bg-black/40 px-1.5 py-0.2 text-3xs text-zinc-300">
                       {stats.existing}
                     </span>
                   </button>
@@ -398,7 +399,7 @@ export function AutolabelReviewModal({
                             className="rounded border-zinc-700 bg-zinc-800 text-brand-500 focus:ring-brand-500/40 size-4 cursor-pointer"
                           />
                           <span
-                            className="font-mono text-[11px] font-semibold text-zinc-200 truncate flex-1"
+                            className="font-mono text-2xs font-semibold text-zinc-200 truncate flex-1"
                             title={item.filename}
                           >
                             {item.filename}
@@ -427,8 +428,8 @@ export function AutolabelReviewModal({
                       <div className="flex-1 flex flex-col gap-2 min-w-0">
                         {/* Legenda Atual no Banco (se houver) */}
                         {item.currentCaption && (
-                          <div className="rounded-lg border border-blue-500/20 bg-blue-500/[0.04] p-2 text-[11px] font-mono space-y-1">
-                            <div className="flex items-center justify-between text-[10px] text-blue-300">
+                          <div className="rounded-lg border border-blue-500/20 bg-blue-500/[0.04] p-2 text-2xs font-mono space-y-1">
+                            <div className="flex items-center justify-between text-3xs text-blue-300">
                               <span className="font-semibold uppercase tracking-wider">
                                 Legenda Atual no Dataset
                               </span>
@@ -436,7 +437,7 @@ export function AutolabelReviewModal({
                                 origem: {item.currentOrigin || "manual"}
                               </span>
                             </div>
-                            <p className="text-zinc-300 italic text-[11px] line-clamp-2">
+                            <p className="text-zinc-300 italic text-2xs line-clamp-2">
                               &ldquo;{item.currentCaption}&rdquo;
                             </p>
                           </div>
@@ -444,12 +445,12 @@ export function AutolabelReviewModal({
 
                         {/* Editor de Legenda Gerada */}
                         <div className="space-y-1 flex-1 flex flex-col">
-                          <div className="flex items-center justify-between text-[11px] font-mono">
+                          <div className="flex items-center justify-between text-2xs font-mono">
                             <span className="flex items-center gap-1.5 text-zinc-300 font-semibold">
                               <IconSparkles className="size-3 text-brand-400" />
                               Legenda Gerada pelo VLM
                               {isModified && (
-                                <span className="rounded bg-amber-500/20 text-amber-300 text-[10px] px-1.5 py-0.2">
+                                <span className="rounded bg-status-alert/20 text-amber-300 text-3xs px-1.5 py-0.2">
                                   Editada
                                 </span>
                               )}
@@ -459,13 +460,13 @@ export function AutolabelReviewModal({
                                 <button
                                   type="button"
                                   onClick={() => handleResetCaption(item.filename)}
-                                  className="text-[10px] text-zinc-400 hover:text-brand-300 underline cursor-pointer"
+                                  className="text-3xs text-zinc-400 hover:text-brand-300 underline cursor-pointer"
                                 >
                                   Restaurar original
                                 </button>
                               )}
                               <span
-                                className={`text-[10px] ${
+                                className={`text-3xs ${
                                   charCount > 8000 ? "text-rose-400 font-bold" : "text-zinc-500"
                                 }`}
                               >

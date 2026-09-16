@@ -367,7 +367,7 @@ export default function AutoLabelModal({
       title="AutoLabel v2"
       description={
         <span
-          className="block truncate font-mono text-[11px] text-zinc-400"
+          className="block truncate font-mono text-2xs text-zinc-400"
           title={datasetTitle}
         >
           {datasetTitle}
@@ -394,7 +394,7 @@ export default function AutoLabelModal({
             <span className="font-mono text-xs font-medium text-zinc-200">
               Escopo de Execução
             </span>
-            <span className="font-mono text-[10px] text-zinc-400">
+            <span className="font-mono text-3xs text-zinc-400">
               {scopeMode === "all" && (totalImagesCount ? `${totalImagesCount} imagens` : "todas as imagens")}
               {scopeMode === "class" && "filtro por classe YOLO"}
               {scopeMode === "selected" && `${selectedImageIds?.length ?? 0} imagens selecionadas`}
@@ -414,7 +414,7 @@ export default function AutoLabelModal({
               }`}
             >
               <span className="font-semibold text-xs text-zinc-100">Dataset Completo</span>
-              <span className="font-mono text-[10px] text-zinc-400">Todas as imagens ativas</span>
+              <span className="font-mono text-3xs text-zinc-400">Todas as imagens ativas</span>
             </button>
 
             {/* Filtrar por Classe */}
@@ -429,12 +429,12 @@ export default function AutoLabelModal({
               }}
               className={`flex flex-col text-left p-2.5 rounded-lg border transition ${
                 scopeMode === "class"
-                  ? "border-amber-500/60 bg-amber-500/10 text-white ring-1 ring-amber-500/30"
+                  ? "border-status-alert/60 bg-status-alert/10 text-white ring-1 ring-status-alert/30"
                   : "border-white/10 bg-white/[0.02] text-zinc-400 hover:border-white/20 hover:text-zinc-200 disabled:opacity-40"
               }`}
             >
               <span className="font-semibold text-xs text-zinc-100">Por Classe YOLO</span>
-              <span className="font-mono text-[10px] text-zinc-400">Apenas com a classe anotada</span>
+              <span className="font-mono text-3xs text-zinc-400">Apenas com a classe anotada</span>
             </button>
 
             {/* Selecionadas */}
@@ -449,7 +449,7 @@ export default function AutoLabelModal({
               }`}
             >
               <span className="font-semibold text-xs text-zinc-100">Selecionadas no Grid</span>
-              <span className="font-mono text-[10px] text-zinc-400">
+              <span className="font-mono text-3xs text-zinc-400">
                 {selectedImageIds && selectedImageIds.length > 0
                   ? `${selectedImageIds.length} selecionadas`
                   : "Nenhuma selecionada"}
@@ -471,17 +471,17 @@ export default function AutoLabelModal({
                 fontMono
                 size="sm"
               />
-              <div className="flex items-center gap-2 text-[11px] text-zinc-400">
+              <div className="flex items-center gap-2 text-2xs text-zinc-400">
                 <span>Tag dinâmica no prompt:</span>
                 <button
                   type="button"
                   onClick={() => handleInsertTag("{class_name}")}
                   title="Clique para adicionar {class_name} ao prompt"
-                  className="rounded border border-amber-500/30 bg-amber-500/15 px-1.5 py-0.5 font-mono text-[10px] text-amber-300 hover:bg-amber-500/25 transition"
+                  className="rounded border border-status-alert/30 bg-status-alert/15 px-1.5 py-0.5 font-mono text-3xs text-amber-300 hover:bg-status-alert/25 transition"
                 >
                   + &#123;class_name&#125;
                 </button>
-                <span className="text-[10px] text-zinc-500">
+                <span className="text-3xs text-zinc-500">
                   (substituída pelo nome da classe na execução)
                 </span>
               </div>
@@ -511,11 +511,11 @@ export default function AutoLabelModal({
                   <IconCpu className="size-3.5 text-brand-400" />
                   Florence-2
                 </span>
-                <span className="rounded-full bg-brand-500/20 border border-brand-500/30 px-1.5 py-0.5 font-mono text-[9px] text-brand-300">
+                <span className="rounded-full bg-brand-500/20 border border-brand-500/30 px-1.5 py-0.5 font-mono text-4xs text-brand-300">
                   GPU Local
                 </span>
               </div>
-              <p className="font-mono text-[11px] text-zinc-400 leading-snug">
+              <p className="font-mono text-2xs text-zinc-400 leading-snug">
                 Microsoft Florence-2. Dense captioning rápido e rico em contornos visuais.
               </p>
             </button>
@@ -536,11 +536,11 @@ export default function AutoLabelModal({
                   <IconZap className="size-3.5 text-amber-400" />
                   Qwen2-VL
                 </span>
-                <span className="rounded-full bg-amber-500/20 border border-amber-500/30 px-1.5 py-0.5 font-mono text-[9px] text-amber-300">
+                <span className="rounded-full bg-status-alert/20 border border-status-alert/30 px-1.5 py-0.5 font-mono text-4xs text-amber-300">
                   GPU Local
                 </span>
               </div>
-              <p className="font-mono text-[11px] text-zinc-400 leading-snug">
+              <p className="font-mono text-2xs text-zinc-400 leading-snug">
                 Alibaba Qwen2-VL. Alto raciocínio analítico e aderência a instruções finas.
               </p>
             </button>
@@ -561,11 +561,11 @@ export default function AutoLabelModal({
                   <IconServer className="size-3.5 text-sky-400" />
                   OpenAI / Compatível
                 </span>
-                <span className="rounded-full bg-sky-500/20 border border-sky-500/30 px-1.5 py-0.5 font-mono text-[9px] text-sky-300">
+                <span className="rounded-full bg-sky-500/20 border border-sky-500/30 px-1.5 py-0.5 font-mono text-4xs text-sky-300">
                   API Vision
                 </span>
               </div>
-              <p className="font-mono text-[11px] text-zinc-400 leading-snug">
+              <p className="font-mono text-2xs text-zinc-400 leading-snug">
                 GPT-4o, GPT-4o-mini ou instâncias locais (Ollama, vLLM) via protocolo OpenAI.
               </p>
             </button>
@@ -586,11 +586,11 @@ export default function AutoLabelModal({
                   <IconSparkles className="size-3.5 text-zinc-400" />
                   Mock Determinístico
                 </span>
-                <span className="rounded-full bg-zinc-800 border border-zinc-700 px-1.5 py-0.5 font-mono text-[9px] text-zinc-400">
+                <span className="rounded-full bg-zinc-800 border border-zinc-700 px-1.5 py-0.5 font-mono text-4xs text-zinc-400">
                   Sem GPU
                 </span>
               </div>
-              <p className="font-mono text-[11px] text-zinc-400 leading-snug">
+              <p className="font-mono text-2xs text-zinc-400 leading-snug">
                 Geração sintética rápida para testes de fluxo ou ambientes sem GPU/internet.
               </p>
             </button>
@@ -601,7 +601,7 @@ export default function AutoLabelModal({
         {model === "openai" && (
           <div className="rounded-xl border border-sky-500/25 bg-sky-500/[0.03] p-3.5 space-y-3.5">
             <div className="flex items-center justify-between pb-2 border-b border-white/5">
-              <span className="font-mono text-[11px] font-semibold text-sky-300 uppercase tracking-caps flex items-center gap-1.5">
+              <span className="font-mono text-2xs font-semibold text-sky-300 uppercase tracking-caps flex items-center gap-1.5">
                 <IconServer className="size-3 text-sky-400" />
                 Configurações de Provedor & API Vision
               </span>
@@ -609,7 +609,7 @@ export default function AutoLabelModal({
                 type="button"
                 onClick={handleResetProvider}
                 title="Restaurar padrões do provedor ativo"
-                className="font-mono text-[10px] text-zinc-400 hover:text-sky-300 flex items-center gap-1 transition"
+                className="font-mono text-3xs text-zinc-400 hover:text-sky-300 flex items-center gap-1 transition"
               >
                 <IconRefresh className="size-3" />
                 Restaurar padrões
@@ -618,7 +618,7 @@ export default function AutoLabelModal({
 
             {/* Presets Rápidos de Provedor */}
             <div className="space-y-1.5">
-              <label className="block font-mono text-[11px] font-medium text-zinc-300">
+              <label className="block font-mono text-2xs font-medium text-zinc-300">
                 Provedor / Arquitetura de API
               </label>
               <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
@@ -636,10 +636,10 @@ export default function AutoLabelModal({
                           : "border-white/10 bg-white/[0.02] text-zinc-400 hover:border-white/20 hover:text-zinc-200"
                       }`}
                     >
-                      <span className="font-mono font-semibold text-[11px] leading-tight block">
+                      <span className="font-mono font-semibold text-2xs leading-tight block">
                         {p.label}
                       </span>
-                      <span className="font-mono text-[9px] text-zinc-500 mt-0.5">
+                      <span className="font-mono text-4xs text-zinc-500 mt-0.5">
                         {p.badge}
                       </span>
                     </button>
@@ -653,7 +653,7 @@ export default function AutoLabelModal({
               const p = PROVIDER_PRESETS.find((x) => x.id === selectedProvider);
               if (!p) return null;
               return (
-                <div className="flex items-start gap-2 rounded-lg border border-sky-500/20 bg-sky-500/10 px-2.5 py-1.5 text-[11px] font-mono text-sky-200">
+                <div className="flex items-start gap-2 rounded-lg border border-sky-500/20 bg-sky-500/10 px-2.5 py-1.5 text-2xs font-mono text-sky-200">
                   <IconInfo className="size-3.5 shrink-0 mt-0.5 text-sky-400" />
                   <span>{p.hint}</span>
                 </div>
@@ -665,7 +665,7 @@ export default function AutoLabelModal({
               <div className="flex items-center justify-between">
                 <label
                   htmlFor="openai-key"
-                  className="block font-mono text-[11px] text-zinc-300"
+                  className="block font-mono text-2xs text-zinc-300"
                 >
                   API Key
                   {(() => {
@@ -680,7 +680,7 @@ export default function AutoLabelModal({
                 <button
                   type="button"
                   onClick={() => setShowApiKey(!showApiKey)}
-                  className="text-[10px] font-mono text-zinc-400 hover:text-zinc-200"
+                  className="text-3xs font-mono text-zinc-400 hover:text-zinc-200"
                 >
                   {showApiKey ? "Ocultar" : "Mostrar"}
                 </button>
@@ -719,7 +719,7 @@ export default function AutoLabelModal({
               <div className="space-y-1">
                 <label
                   htmlFor="openai-base"
-                  className="block font-mono text-[11px] text-zinc-300"
+                  className="block font-mono text-2xs text-zinc-300"
                 >
                   Endpoint Base URL
                 </label>
@@ -749,7 +749,7 @@ export default function AutoLabelModal({
               <div className="space-y-1">
                 <label
                   htmlFor="openai-model"
-                  className="block font-mono text-[11px] text-zinc-300"
+                  className="block font-mono text-2xs text-zinc-300"
                 >
                   Modelo Remoto (Vision)
                 </label>
@@ -782,7 +782,7 @@ export default function AutoLabelModal({
               if (!p || p.suggestedModels.length === 0) return null;
               return (
                 <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                  <span className="font-mono text-[10px] text-zinc-500">Modelos sugeridos:</span>
+                  <span className="font-mono text-3xs text-zinc-500">Modelos sugeridos:</span>
                   {p.suggestedModels.map((sm) => (
                     <button
                       key={sm}
@@ -792,7 +792,7 @@ export default function AutoLabelModal({
                         setOpenaiModel(sm);
                         persistCustomConfig({ openaiModel: sm });
                       }}
-                      className={`rounded border px-1.5 py-0.5 font-mono text-[10px] transition ${
+                      className={`rounded border px-1.5 py-0.5 font-mono text-3xs transition ${
                         openaiModel === sm
                           ? "border-sky-500/60 bg-sky-500/20 text-sky-200"
                           : "border-white/10 bg-white/[0.03] text-zinc-400 hover:border-white/20 hover:text-zinc-200"
@@ -812,12 +812,12 @@ export default function AutoLabelModal({
                   <span className="font-mono text-xs font-medium text-zinc-200">
                     Desativar Raciocínio (Fast Mode)
                   </span>
-                  <span className="rounded border border-[#34d399]/30 bg-[#34d399]/20 px-1.5 py-0.2 font-mono text-[9px] font-semibold text-[#34d399]">
+                  <span className="rounded border border-status-success/30 bg-status-success/20 px-1.5 py-0.2 font-mono text-4xs font-semibold text-status-success">
                     Recomendado
                   </span>
                 </div>
-                <p className="text-[11px] text-zinc-400">
-                  Suprime tokens de reflexão interna (<code className="rounded bg-black/40 px-1 py-0.5 font-mono text-[10px] text-zinc-300">&lt;think&gt;</code> / <code className="rounded bg-black/40 px-1 py-0.5 font-mono text-[10px] text-zinc-300">reasoning_effort: none</code>), acelerando a resposta e economizando tokens de contexto.
+                <p className="text-2xs text-zinc-400">
+                  Suprime tokens de reflexão interna (<code className="rounded bg-black/40 px-1 py-0.5 font-mono text-3xs text-zinc-300">&lt;think&gt;</code> / <code className="rounded bg-black/40 px-1 py-0.5 font-mono text-3xs text-zinc-300">reasoning_effort: none</code>), acelerando a resposta e economizando tokens de contexto.
                 </p>
               </div>
               <label className="relative inline-flex shrink-0 cursor-pointer items-center">
@@ -843,11 +843,11 @@ export default function AutoLabelModal({
           <div className="flex items-center justify-between">
             <label
               htmlFor="al-prompt"
-              className="block font-mono text-[11px] font-medium text-zinc-300"
+              className="block font-mono text-2xs font-medium text-zinc-300"
             >
               Instrução / Prompt de Legendagem
             </label>
-            <span className="font-mono text-[10px] text-zinc-500">
+            <span className="font-mono text-3xs text-zinc-500">
               {prompt.length}/8000
             </span>
           </div>
@@ -865,14 +865,14 @@ export default function AutoLabelModal({
 
           {/* Presets rápidos */}
           <div className="flex flex-wrap items-center gap-1.5 pt-1">
-            <span className="font-mono text-[10px] text-zinc-500">Presets:</span>
+            <span className="font-mono text-3xs text-zinc-500">Presets:</span>
             {PROMPT_PRESETS.map((preset) => (
               <button
                 key={preset.label}
                 type="button"
                 disabled={busy}
                 onClick={() => setPrompt(preset.text)}
-                className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-0.5 font-mono text-[10px] text-zinc-300 transition hover:border-brand-500/40 hover:bg-brand-500/10 hover:text-brand-300"
+                className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-0.5 font-mono text-3xs text-zinc-300 transition hover:border-brand-500/40 hover:bg-brand-500/10 hover:text-brand-300"
               >
                 {preset.label}
               </button>
@@ -882,7 +882,7 @@ export default function AutoLabelModal({
                 type="button"
                 disabled={busy}
                 onClick={() => setPrompt("")}
-                className="rounded-md border border-rose-500/20 bg-rose-500/5 px-1.5 py-0.5 font-mono text-[10px] text-rose-400 hover:bg-rose-500/10"
+                className="rounded-md border border-rose-500/20 bg-rose-500/5 px-1.5 py-0.5 font-mono text-3xs text-rose-400 hover:bg-rose-500/10"
               >
                 Limpar
               </button>

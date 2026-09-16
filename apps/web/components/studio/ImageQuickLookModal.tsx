@@ -173,11 +173,11 @@ export function ImageQuickLookModal({
         <div className="relative flex flex-1 flex-col items-center justify-center overflow-hidden bg-black/50 p-4 select-none">
           {/* Top Bar Sobre a Imagem */}
           <div className="absolute top-3 inset-x-3 z-10 flex items-center justify-between pointer-events-none">
-            <span className="rounded-md border border-white/10 bg-black/60 px-2 py-0.5 font-mono text-[11px] text-zinc-300 backdrop-blur-sm pointer-events-auto">
+            <span className="rounded-md border border-white/10 bg-black/60 px-2 py-0.5 font-mono text-2xs text-zinc-300 backdrop-blur-sm pointer-events-auto">
               {currentIndex + 1} / {items.length}
             </span>
             <div className="flex items-center space-x-1.5 pointer-events-auto">
-              <span className="hidden sm:inline-flex items-center px-2 py-0.5 rounded border border-white/10 bg-black/60 font-mono text-[10px] text-zinc-400 backdrop-blur-sm">
+              <span className="hidden sm:inline-flex items-center px-2 py-0.5 rounded border border-white/10 bg-black/60 font-mono text-3xs text-zinc-400 backdrop-blur-sm">
                 Espaço para fechar · ← → navegar {dataset?.category === "yolo" ? "· E editar bbox" : ""}
               </span>
               <button
@@ -272,7 +272,7 @@ export function ImageQuickLookModal({
         <div className="w-full md:w-88 flex flex-col justify-between border-t md:border-t-0 md:border-l border-zinc-800/80 bg-zinc-950 p-4 sm:p-5 overflow-y-auto [scrollbar-width:thin]">
           <div className="space-y-4">
             <div>
-              <span className="rounded border border-white/15 bg-zinc-900 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-caps text-zinc-300">
+              <span className="rounded border border-white/15 bg-zinc-900 px-2 py-0.5 font-mono text-3xs font-semibold uppercase tracking-caps text-zinc-300">
                 Split {currentItem.split}
               </span>
               <h3
@@ -306,7 +306,7 @@ export function ImageQuickLookModal({
               {dataset?.category === "yolo" && (
                 <div className="flex items-center justify-between text-zinc-400">
                   <span>Bounding Boxes:</span>
-                  <span className="text-[#34d399] font-medium">
+                  <span className="text-status-success font-medium">
                     {boxes.length} {boxes.length === 1 ? "box" : "boxes"}
                   </span>
                 </div>
@@ -315,7 +315,7 @@ export function ImageQuickLookModal({
 
             {/* Bloco de Legenda / Caption (Preview e Edição) */}
             <div className="space-y-2 rounded-xl border border-white/10 bg-zinc-900/40 p-3">
-              <div className="flex items-center justify-between text-[11px] font-mono">
+              <div className="flex items-center justify-between text-2xs font-mono">
                 <span className="flex items-center gap-1.5 font-semibold text-zinc-300 uppercase tracking-caps">
                   <IconSparkles className="size-3.5 text-brand-400" />
                   Legenda / Caption
@@ -323,9 +323,9 @@ export function ImageQuickLookModal({
                 {detail?.caption && (
                   <div className="flex items-center gap-1">
                     <span
-                      className={`rounded px-1.5 py-0.2 text-[10px] uppercase font-semibold ${
+                      className={`rounded px-1.5 py-0.2 text-3xs uppercase font-semibold ${
                         detail.caption.origin === "autolabel"
-                          ? "border border-[#34d399]/40 bg-[#34d399]/15 text-[#a7f3d0]"
+                          ? "border border-status-success/40 bg-status-success/15 text-[#a7f3d0]"
                           : detail.caption.origin === "manual"
                           ? "border border-purple-500/40 bg-purple-500/15 text-purple-300"
                           : "border border-blue-500/40 bg-blue-500/15 text-blue-300"
@@ -335,7 +335,7 @@ export function ImageQuickLookModal({
                     </span>
                     {detail.caption.model && (
                       <span
-                        className="rounded border border-white/10 bg-black/40 px-1.5 py-0.2 text-[10px] text-zinc-400 truncate max-w-[100px]"
+                        className="rounded border border-white/10 bg-black/40 px-1.5 py-0.2 text-3xs text-zinc-400 truncate max-w-[100px]"
                         title={detail.caption.model}
                       >
                         {detail.caption.model}
@@ -359,7 +359,7 @@ export function ImageQuickLookModal({
                   />
                   <div className="flex items-center justify-between">
                     <span
-                      className={`font-mono text-[10px] ${
+                      className={`font-mono text-3xs ${
                         captionInput.length > 8000 ? "text-rose-400 font-bold" : "text-zinc-500"
                       }`}
                     >
@@ -447,7 +447,7 @@ export function ImageQuickLookModal({
             {/* Classes presentes (para datasets YOLO) */}
             {dataset?.category === "yolo" && (
               <div>
-                <p className="font-mono text-[11px] text-zinc-400 uppercase tracking-caps font-semibold mb-2">
+                <p className="font-mono text-2xs text-zinc-400 uppercase tracking-caps font-semibold mb-2">
                   Classes nesta amostra:
                 </p>
                 {loading ? (
@@ -464,11 +464,11 @@ export function ImageQuickLookModal({
                         <span
                           key={clsId}
                           style={{ borderColor: `${color}40`, backgroundColor: `${color}15`, color }}
-                          className="inline-flex items-center space-x-1.5 rounded-md border px-2 py-0.5 font-mono text-[11px] font-medium"
+                          className="inline-flex items-center space-x-1.5 rounded-md border px-2 py-0.5 font-mono text-2xs font-medium"
                         >
                           <span className="size-1.5 rounded-full" style={{ backgroundColor: color }} />
                           <span>{cls?.name ?? "tag"}</span>
-                          <span className="opacity-70 text-[10px]">({count})</span>
+                          <span className="opacity-70 text-3xs">({count})</span>
                         </span>
                       );
                     })}

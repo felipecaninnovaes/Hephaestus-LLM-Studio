@@ -38,7 +38,7 @@ uma. Manter < 100 linhas; não duplicar docs — referenciar por seção.
   - [x] @reviewer no diff (APROVA COM NITS — nits P2 fechados: ponteiro ativo
         em `docs/dividas.md` → `tasks/todo.md`)
 - **Pendência desta fatia:** mesclar em `develop` só com ordem do usuário
-  (revisão final humana dos 6 commits).
+  (revisão final humana dos 7 commits).
 
 ## Estado do produto (paralelo, NÃO bloqueado por esta fatia)
 

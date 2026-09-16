@@ -81,6 +81,7 @@ pub struct MetricsItem {
     pub step: Option<i64>,
     #[serde(rename = "progress", skip_serializing_if = "Option::is_none")]
     pub progress: Option<f64>,
+    // legado pré-0013: só jobs antigos têm fase dentro das métricas; Job.phase não lê mais daqui.
     #[serde(rename = "phase", skip_serializing_if = "Option::is_none")]
     pub phase: Option<String>,
     #[serde(rename = "message", skip_serializing_if = "Option::is_none")]
@@ -120,11 +121,14 @@ impl JobTelemetryEvent {
             .clone()
             .unwrap_or_else(|| match job.status.as_str() {
                 "queued" => "queued".to_string(),
+                "dispatched" => "dispatched".to_string(),
                 "preparing" => "preparing".to_string(),
                 "running" => "running".to_string(),
+                "cancelling" => "cancelling".to_string(),
                 "done" => "completed".to_string(),
                 "failed" => "error".to_string(),
                 "cancelled" => "cancelled".to_string(),
+                // espelha to_job_response: status desconhecido ecoa cru.
                 _ => job.status.clone(),
             });
         let progress = job
@@ -412,18 +416,22 @@ fn remap_metrics(raw: &serde_json::Value) -> Vec<MetricsItem> {
 fn to_job_response(job: crate::jobs::manager_client::InternalJob) -> JobResponse {
     let metrics = job.metrics.as_ref().map(remap_metrics);
     let latest_metric = metrics.as_ref().and_then(|m| m.last());
-    let phase = latest_metric
-        .and_then(|m| m.phase.clone())
-        .or_else(|| match job.status.as_str() {
-            "queued" => Some("queued".to_string()),
-            "preparing" => Some("preparing".to_string()),
-            "running" => Some("running".to_string()),
-            "done" => Some("completed".to_string()),
-            "failed" => Some("error".to_string()),
-            "cancelled" => Some("cancelled".to_string()),
-            _ => None,
-        });
-    let phase_message = latest_metric.and_then(|m| m.message.clone());
+    // AC-006-A D4: phase/phase_message vêm das colunas do job (D3),
+    // com fallback de status-para-fase quando job.phase é None.
+    let phase = job.phase.clone().or_else(|| match job.status.as_str() {
+        "queued" => Some("queued".into()),
+        "dispatched" => Some(job.status.clone()),
+        "preparing" => Some("preparing".into()),
+        "running" => Some("running".into()),
+        "cancelling" => Some(job.status.clone()),
+        "done" => Some("completed".into()),
+        "failed" => Some("error".into()),
+        "cancelled" => Some("cancelled".into()),
+        // espelha from_job_response: status desconhecido ecoa cru (CHECK fecha o domínio, sem status real fora dos mapeados).
+        _ => Some(job.status.clone()),
+    });
+    let phase_message = job.message.clone();
+    // AC-006-A D4: vram_used_gb continua derivado da última métrica.
     let vram_used_gb = latest_metric.and_then(|m| m.vram_used_gb);
 
     JobResponse {
@@ -3112,6 +3120,8 @@ mod tests {
             finished_at: None,
             error: None,
             params: None,
+            phase: None,
+            message: None,
         };
         let resp = to_job_response(job);
         assert_eq!(resp.id, "550e8400-e29b-41d4-a716-446655440000");
@@ -3123,6 +3133,50 @@ mod tests {
         assert_eq!(resp.orchestrator_kind.as_deref(), Some("remoto"));
         assert!(resp.orchestrator_fallback);
         assert!(resp.metrics.is_none());
+    }
+
+    #[test]
+    fn to_job_response_phase_from_columns() {
+        // AC-006-A D4: wire phase/phaseMessage vêm das colunas do job.
+        let job = InternalJob {
+            status: "running".into(),
+            phase: Some("loading_model".into()),
+            message: Some("Carregando FLUX".into()),
+            ..mock_job()
+        };
+        let resp = to_job_response(job);
+        assert_eq!(resp.phase.as_deref(), Some("loading_model"));
+        assert_eq!(resp.phase_message.as_deref(), Some("Carregando FLUX"));
+    }
+
+    #[test]
+    fn to_job_response_phase_fallback_status() {
+        // AC-006-A D4: sem fase na coluna → fallback status-para-fase.
+        let job = InternalJob {
+            status: "running".into(),
+            phase: None,
+            message: None,
+            ..mock_job()
+        };
+        let resp = to_job_response(job);
+        assert_eq!(resp.phase.as_deref(), Some("running"));
+        assert!(resp.phase_message.is_none());
+
+        // P2-3: dispatched/cancelling retornam o status cru.
+        let job = InternalJob {
+            status: "dispatched".into(),
+            phase: None,
+            message: None,
+            ..mock_job()
+        };
+        assert_eq!(to_job_response(job).phase.as_deref(), Some("dispatched"));
+        let job = InternalJob {
+            status: "cancelling".into(),
+            phase: None,
+            message: None,
+            ..mock_job()
+        };
+        assert_eq!(to_job_response(job).phase.as_deref(), Some("cancelling"));
     }
 
     #[test]
@@ -3988,6 +4042,8 @@ mod tests {
             finished_at: Some("2026-01-01T01:00:00Z".into()),
             error: None,
             params: None,
+            phase: None,
+            message: None,
         }
     }
 
@@ -4349,6 +4405,8 @@ mod tests {
             finished_at: None,
             error: None,
             params: None,
+            phase: None,
+            message: None,
         }
     }
 

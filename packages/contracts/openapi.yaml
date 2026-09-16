@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.27.0
+  version: 0.28.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -4223,10 +4223,10 @@ components:
           description: "Momento da finalização (null enquanto ativo)."
         phase:
           type: [string, "null"]
-          description: "Fase atual da execução (ADR-0021 D0, ex.: downloading, quantizing, training, generating, done, error)."
+          description: "Fase atual da execução (ADR-0021 D0, ex.: downloading, quantizing, training, generating, completed, error)."
         phaseMessage:
           type: [string, "null"]
-          description: "Mensagem amigável legível da fase atual."
+          description: "Mensagem amigável legível da fase atual. Origem: coluna jobs.message (ADR-0024), não derivada de metrics."
         vramUsedGb:
           type: [number, "null"]
           description: "Uso de VRAM medido em tempo real em GB."

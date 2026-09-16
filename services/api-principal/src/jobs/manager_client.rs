@@ -72,6 +72,12 @@ pub struct InternalJob {
     pub error: Option<String>,
     #[serde(default)]
     pub params: Option<serde_json::Value>,
+    /// AC-006-A D3: último status de fase do job (coluna jobs.phase).
+    #[serde(default)]
+    pub phase: Option<String>,
+    /// AC-006-A D3: última mensagem de status do job (coluna jobs.message).
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 /// Item da fila (snake_case interno do manager).

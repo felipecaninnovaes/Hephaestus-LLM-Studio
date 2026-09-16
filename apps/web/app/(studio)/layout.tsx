@@ -60,6 +60,7 @@ export default function StudioLayout({
     });
   };
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: fecha o drawer a cada troca de rota — trigger intencional on-change sem ler pathname; ler seria artificial
   useEffect(() => {
     setSidebarOpen(false);
   }, [pathname]);

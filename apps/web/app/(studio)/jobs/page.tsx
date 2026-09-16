@@ -156,6 +156,7 @@ function JobsPageContent() {
   );
 
   // Resetar applyOverwrite ao trocar de job
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset intencional on-change — re-executa quando selectedJobId muda sem ler seu valor; ler seria artificial
   useEffect(() => {
     setApplyOverwrite(false);
   }, [selectedJobId]);

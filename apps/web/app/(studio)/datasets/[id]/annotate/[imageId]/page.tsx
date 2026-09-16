@@ -247,6 +247,7 @@ export default function AnnotateImagePage() {
     classesRef.current = classes;
   }, [classes]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: contador intencional de mutações — re-executa quando boxes muda (identidade do array) sem ler seu conteúdo; adicionar leitura seria artificial
   useEffect(() => {
     mutationCountRef.current += 1;
   }, [boxes]);

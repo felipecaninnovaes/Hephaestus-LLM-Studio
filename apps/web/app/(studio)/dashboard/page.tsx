@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useCallback, useEffect, useState, useTransition } from "react";
 import {
   IconDatabase,
   IconGrid,
@@ -42,7 +42,7 @@ export default function DashboardPage() {
   const [modelsUnavailable, setModelsUnavailable] = useState(false);
   const [isRefreshing, startTransition] = useTransition();
 
-  const fetchDashboardData = async () => {
+  const fetchDashboardData = useCallback(async () => {
     if (typeof document !== "undefined" && document.visibilityState === "hidden") {
       return;
     }
@@ -86,7 +86,7 @@ export default function DashboardPage() {
     } catch {
       // Mantém dados em caso de flutuação
     }
-  };
+  }, []);
 
   useEffect(() => {
     fetchDashboardData();
@@ -101,7 +101,7 @@ export default function DashboardPage() {
       clearInterval(interval);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, []);
+  }, [fetchDashboardData]);
 
   const handleManualRefresh = () => {
     startTransition(async () => {

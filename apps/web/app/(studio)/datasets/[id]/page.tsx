@@ -136,6 +136,10 @@ export default function DatasetGalleryPage() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollAbortRef = useRef<AbortController | null>(null);
   const searchTimerRef = useRef<number | null>(null);
+  // Dedupe do debounce: handleTextSearch seta activeQuery/activeTag (deps do
+  // efeito) e re-armaria o timer causando 2ª busca; guarda o último alvo já
+  // buscado (modo+query) e pula a re-busca igual sem remover as deps do lint.
+  const lastSearchedRef = useRef<string | null>(null);
   const { isDragging: isDraggingPage, dropProps } = useFileDrop({
     onDropFiles: async (files, dataTransfer) => {
       try {
@@ -231,38 +235,109 @@ export default function DatasetGalleryPage() {
     };
   }, [datasetId, load, splitView, annotationFilter, selectedClassId, activeTag]);
 
-  function stopSearchPolling() {
+  const stopSearchPolling = useCallback(function stopSearchPolling() {
     if (pollRef.current) {
       clearInterval(pollRef.current);
       pollRef.current = null;
     }
     pollAbortRef.current?.abort();
     pollAbortRef.current = null;
-  }
+  }, []);
 
   // Arma o polling do status (2s) — ciente de visibilidade da aba
-  function startSearchPolling() {
-    if (pollRef.current) return;
-    const pollCtrl = new AbortController();
-    pollAbortRef.current = pollCtrl;
-    pollRef.current = setInterval(async () => {
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+  const startSearchPolling = useCallback(
+    function startSearchPolling() {
+      if (pollRef.current) return;
+      const pollCtrl = new AbortController();
+      pollAbortRef.current = pollCtrl;
+      pollRef.current = setInterval(async () => {
+        if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+          return;
+        }
+        try {
+          const next = await getSearchStatus(datasetId as string, pollCtrl.signal);
+          if (pollCtrl.signal.aborted) return;
+          setSearchStatus(next);
+          setStatusFailed(false);
+          if (next.status !== "indexing") stopSearchPolling();
+        } catch {
+          if (pollCtrl.signal.aborted) return;
+          // Mantém o polling — falha transitória não trava a página.
+        }
+      }, 2000);
+    },
+    [datasetId, stopSearchPolling],
+  );
+
+  const messageForSearch = useCallback(function messageForSearch(err: unknown): string {
+    if (err instanceof ApiError && err.message) return err.message;
+    return "Falha na busca.";
+  }, []);
+
+  const clearSearch = useCallback(function clearSearch() {
+    setActiveQuery(null);
+    setActiveTag(null);
+    setSimilarFor(null);
+    setResults([]);
+    setSearchInput("");
+  }, []);
+
+  const handleTextSearch = useCallback(
+    async function handleTextSearch(
+      query: string,
+      mode: "tag" | "semantic" = searchMode,
+    ) {
+      if (!datasetId) return;
+      const q = query.trim();
+      if (!q) {
+        clearSearch();
         return;
       }
-      try {
-        const next = await getSearchStatus(datasetId as string, pollCtrl.signal);
-        if (pollCtrl.signal.aborted) return;
-        setSearchStatus(next);
-        setStatusFailed(false);
-        if (next.status !== "indexing") stopSearchPolling();
-      } catch {
-        if (pollCtrl.signal.aborted) return;
-        // Mantém o polling — falha transitória não trava a página.
+
+      if (mode === "tag") {
+        setResults([]);
+        setSimilarFor(null);
+        setActiveQuery(null);
+        setActiveTag(q);
+        return;
       }
-    }, 2000);
-  }
+
+      setSearching(true);
+      try {
+        const res = await searchDataset(datasetId, q);
+        setResults(res.items);
+        setActiveQuery(q);
+        setActiveTag(null);
+        setSimilarFor(null);
+      } catch (err) {
+        if (err instanceof ApiError && err.code === "index_not_ready") {
+          setSearchStatus((prev) =>
+            prev ? { ...prev, status: "not_indexed" } : prev,
+          );
+          showToast("Índice vazio — indexe para buscar.", "info");
+          return;
+        }
+        if (err instanceof ApiError && err.code === "embedding_unavailable") {
+          showToast("Embedder indisponível — tente novamente.", "error");
+          return;
+        }
+        if (
+          err instanceof ApiError &&
+          (err.code === "unauthorized" || err.status === 401)
+        ) {
+          router.replace("/login");
+          return;
+        }
+        showToast(messageForSearch(err), "error");
+      } finally {
+        setSearching(false);
+      }
+    },
+    [datasetId, searchMode, clearSearch, router, messageForSearch],
+  );
 
   // Status do índice + polling a cada 2s enquanto indexa.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: items.length é trigger intencional — re-checa o índice após upload (novas imagens mudam o estado) sem ler seu valor; start/stop estáveis via useCallback
   useEffect(() => {
     if (!datasetId) return;
     const ctrl = new AbortController();
@@ -292,10 +367,11 @@ export default function DatasetGalleryPage() {
       stopSearchPolling();
     };
     // items.length: re-checa o índice após upload (novas imagens mudam o estado).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [datasetId, items.length]);
+  }, [datasetId, items.length, startSearchPolling, stopSearchPolling]);
 
   // Busca dinâmica com debounce (400ms) — dispara quando searchInput ou searchMode muda.
+  // lastSearchedRef evita o 2º disparo: o setState do search re-executa o efeito,
+  // mas o alvo igual ao já buscado é pulado (deps mantidas p/ satisfazer o lint).
   useEffect(() => {
     if (searchTimerRef.current) {
       window.clearTimeout(searchTimerRef.current);
@@ -303,6 +379,7 @@ export default function DatasetGalleryPage() {
     }
     const q = searchInput.trim();
     if (!q) {
+      lastSearchedRef.current = `${searchMode}:`;
       if (searchMode === "semantic" && activeQuery) {
         clearSearch();
       } else if (searchMode === "tag" && activeTag) {
@@ -311,6 +388,9 @@ export default function DatasetGalleryPage() {
       return;
     }
     searchTimerRef.current = window.setTimeout(() => {
+      const target = `${searchMode}:${q}`;
+      if (lastSearchedRef.current === target) return;
+      lastSearchedRef.current = target;
       void handleTextSearch(searchInput, searchMode);
     }, 400);
     return () => {
@@ -319,16 +399,11 @@ export default function DatasetGalleryPage() {
         searchTimerRef.current = null;
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchInput, searchMode]);
+  }, [searchInput, searchMode, activeQuery, activeTag, clearSearch, handleTextSearch]);
 
-  function messageForSearch(err: unknown): string {
-    if (err instanceof ApiError && err.message) return err.message;
-    return "Falha na busca.";
-  }
-
-  async function loadMore() {
-    if (!datasetId || loadingMore) return;
+  const loadMore = useCallback(
+    async function loadMore() {
+      if (!datasetId || loadingMore) return;
     setLoadingMore(true);
     try {
       const isTrash = splitView === "trash";
@@ -362,7 +437,19 @@ export default function DatasetGalleryPage() {
     } finally {
       setLoadingMore(false);
     }
-  }
+    },
+    [
+      datasetId,
+      loadingMore,
+      splitView,
+      annotationFilter,
+      selectedClassId,
+      searchMode,
+      activeTag,
+      items.length,
+      router,
+    ],
+  );
 
   // Infinite Scroll via IntersectionObserver no sentinela ao final da lista
   useEffect(() => {
@@ -385,7 +472,7 @@ export default function DatasetGalleryPage() {
 
     observer.observe(el);
     return () => observer.disconnect();
-  }, [loading, loadingMore, items.length, total]);
+  }, [loading, loadingMore, items.length, total, loadMore]);
 
   async function handleFiles(files: FileList | File[] | null) {
     if (!files || (Array.isArray(files) ? files.length === 0 : files.length === 0) || !datasetId || uploading) return;
@@ -537,68 +624,9 @@ export default function DatasetGalleryPage() {
     }
   }
 
-  function clearSearch() {
-    setActiveQuery(null);
-    setActiveTag(null);
-    setSimilarFor(null);
-    setResults([]);
-    setSearchInput("");
-  }
-
   function clearAllFilters() {
     clearSearch();
     setSelectedClassId(null);
-  }
-
-  async function handleTextSearch(
-    query: string,
-    mode: "tag" | "semantic" = searchMode,
-  ) {
-    if (!datasetId) return;
-    const q = query.trim();
-    if (!q) {
-      clearSearch();
-      return;
-    }
-
-    if (mode === "tag") {
-      setResults([]);
-      setSimilarFor(null);
-      setActiveQuery(null);
-      setActiveTag(q);
-      return;
-    }
-
-    setSearching(true);
-    try {
-      const res = await searchDataset(datasetId, q);
-      setResults(res.items);
-      setActiveQuery(q);
-      setActiveTag(null);
-      setSimilarFor(null);
-    } catch (err) {
-      if (err instanceof ApiError && err.code === "index_not_ready") {
-        setSearchStatus((prev) =>
-          prev ? { ...prev, status: "not_indexed" } : prev,
-        );
-        showToast("Índice vazio — indexe para buscar.", "info");
-        return;
-      }
-      if (err instanceof ApiError && err.code === "embedding_unavailable") {
-        showToast("Embedder indisponível — tente novamente.", "error");
-        return;
-      }
-      if (
-        err instanceof ApiError &&
-        (err.code === "unauthorized" || err.status === 401)
-      ) {
-        router.replace("/login");
-        return;
-      }
-      showToast(messageForSearch(err), "error");
-    } finally {
-      setSearching(false);
-    }
   }
 
   async function handleSimilarSearch(item: ImageItem) {

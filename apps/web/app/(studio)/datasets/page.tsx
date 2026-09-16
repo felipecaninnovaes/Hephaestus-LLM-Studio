@@ -285,7 +285,8 @@ export default function DatasetsPage() {
           </Button>
         </div>
       ) : datasets.length === 0 ? (
-        <div
+        <section
+          aria-label="Importar datasets: arraste arquivos para cá ou use os botões abaixo"
           onDragOver={(e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -345,7 +346,7 @@ export default function DatasetsPage() {
               Importar ZIP / Pasta
             </Button>
           </div>
-        </div>
+        </section>
       ) : filtered.length === 0 ? (
         <div className="glass-card flex flex-col items-center gap-3 rounded-2xl p-12 text-center">
           <span className="mx-auto mb-1 flex h-12 w-12 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900 text-zinc-400">

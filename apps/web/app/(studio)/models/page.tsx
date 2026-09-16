@@ -354,10 +354,11 @@ export default function ModelsPage() {
             </p>
             <form onSubmit={handleRenameSubmit} className="space-y-4">
               <div>
-                <label className="block text-xs font-medium text-zinc-300 mb-1.5">
+                <label htmlFor="rename-model-name" className="block text-xs font-medium text-zinc-300 mb-1.5">
                   Novo nome do modelo
                 </label>
                 <input
+                  id="rename-model-name"
                   type="text"
                   value={newModelName}
                   onChange={(e) => setNewModelName(e.target.value)}

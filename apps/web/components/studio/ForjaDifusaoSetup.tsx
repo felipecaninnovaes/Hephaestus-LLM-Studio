@@ -1070,9 +1070,9 @@ export default function ForjaDifusaoSetup({
 
       {/* Seletor de Modelo Base (Cards Selecionáveis) */}
       <div className="space-y-2">
-        <label className="block text-xs font-medium text-zinc-300">
+        <span className="block text-xs font-medium text-zinc-300">
           Modelo Base
-        </label>
+        </span>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           {/* SDXL 1.0 */}
           <button

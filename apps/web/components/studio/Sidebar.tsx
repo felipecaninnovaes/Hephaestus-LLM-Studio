@@ -337,6 +337,7 @@ export default function Sidebar({
   return (
     <>
       {/* Mobile Backdrop */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: backdrop suplementar com role="presentation" — há botão fechar explícito e o backdrop usa pointer-events-none quando fechado, ficando fora da tab-order de propósito. */}
       <div
         role="presentation"
         aria-label="Fechar menu lateral"

@@ -53,6 +53,7 @@ export default function DatasetMenu({ dataset, x, y, onClose, onDelete, onTrain 
 
   return (
     <>
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents lint/a11y/noStaticElementInteractions: backdrop suplementar do menu — o fechamento por teclado é global (Escape) e os menuitems são nativos; o backdrop fica fora da tab-order de propósito. */}
       <div
         className="fixed inset-0 z-40 bg-transparent"
         onClick={onClose}

@@ -82,9 +82,9 @@ export default function ModelDownloadModal({
       <div className="space-y-4">
         {/* Engine selector */}
         <div>
-          <label className="mb-1.5 block font-mono text-2xs font-medium uppercase tracking-[0.08em] text-zinc-400">
+          <span className="mb-1.5 block font-mono text-2xs font-medium uppercase tracking-[0.08em] text-zinc-400">
             Engine / Tipo
-          </label>
+          </span>
           <SegmentedControl
             options={ENGINE_OPTIONS}
             value={engine}
@@ -96,10 +96,11 @@ export default function ModelDownloadModal({
 
         {/* URL */}
         <div>
-          <label className="mb-1.5 block font-mono text-2xs font-medium uppercase tracking-[0.08em] text-zinc-400">
+          <label htmlFor="model-download-url" className="mb-1.5 block font-mono text-2xs font-medium uppercase tracking-[0.08em] text-zinc-400">
             URL do modelo
           </label>
           <input
+            id="model-download-url"
             type="url"
             value={url}
             onChange={(e) => {
@@ -122,10 +123,11 @@ export default function ModelDownloadModal({
 
         {/* Nome opcional */}
         <div>
-          <label className="mb-1.5 block font-mono text-2xs font-medium uppercase tracking-[0.08em] text-zinc-400">
+          <label htmlFor="model-download-name" className="mb-1.5 block font-mono text-2xs font-medium uppercase tracking-[0.08em] text-zinc-400">
             Nome (opcional)
           </label>
           <input
+            id="model-download-name"
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}

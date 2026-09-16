@@ -491,9 +491,9 @@ export default function AutoLabelModal({
 
         {/* 1. SELETOR DE MODELO VISION */}
         <div className="space-y-2">
-          <label className="block text-xs font-medium text-zinc-200">
+          <span className="block text-xs font-medium text-zinc-200">
             Motor de Visão / Modelo VLM
-          </label>
+          </span>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
             {/* Florence-2 */}
             <button
@@ -618,9 +618,9 @@ export default function AutoLabelModal({
 
             {/* Presets Rápidos de Provedor */}
             <div className="space-y-1.5">
-              <label className="block font-mono text-2xs font-medium text-zinc-300">
+              <span className="block font-mono text-2xs font-medium text-zinc-300">
                 Provedor / Arquitetura de API
-              </label>
+              </span>
               <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
                 {PROVIDER_PRESETS.map((p) => {
                   const active = selectedProvider === p.id;

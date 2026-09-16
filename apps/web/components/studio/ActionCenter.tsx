@@ -973,19 +973,12 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                             aria-hidden="true"
                           />
 
-                          <div
-                            className="p-3 pl-4 cursor-pointer select-none"
+                          <button
+                            type="button"
                             onClick={() => toggleExpand(job.id)}
-                            role="button"
-                            tabIndex={0}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter" || e.key === " ") {
-                                e.preventDefault();
-                                toggleExpand(job.id);
-                              }
-                            }}
                             aria-expanded={isExpanded}
                             aria-label={`${job.model} - ${config.label}`}
+                            className="block w-full p-3 pl-4 text-left cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-500/70"
                           >
                             {/* Top row */}
                             <div className="flex items-start justify-between gap-2.5">
@@ -1064,12 +1057,12 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                 className="mt-2.5"
                               />
                             )}
+                          </button>
 
                             {/* Painel expansível: Detalhes, Métricas, Logs, Ações */}
                             {isExpanded && (
                               <div
                                 className="mt-3 border-t border-white/10 pt-3 text-2xs font-mono space-y-3 bg-black/40 backdrop-blur-md -mx-3 -mb-3 p-3.5"
-                                onClick={(e) => e.stopPropagation()}
                               >
                                 {/* Info chips com Nó Executor */}
                                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-2xs">
@@ -1408,7 +1401,6 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                 </div>
                               </div>
                             )}
-                          </div>
                         </div>
                       );
                     })}

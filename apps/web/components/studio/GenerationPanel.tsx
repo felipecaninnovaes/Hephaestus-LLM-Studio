@@ -465,9 +465,9 @@ export default function GenerationPanel() {
         <div className={`${paramsOpen ? "block" : "hidden"} lg:block p-4 md:p-5 space-y-4`}>
           {/* ══ Modelo Base ══ */}
           <div className="space-y-2">
-            <label className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-300">
+            <span className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-300">
               Modelo
-            </label>
+            </span>
             {/* Toggle preset/custom — SegmentedControl canônico */}
             <SegmentedControl
               options={[
@@ -542,7 +542,7 @@ export default function GenerationPanel() {
           {/* ══ Prompt ══ */}
           <div className="space-y-1.5">
             <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
-              <label className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-300">
+              <label htmlFor="gen-prompt" className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-300">
                 Prompt
               </label>
               <span className="shrink-0 font-mono text-3xs text-zinc-500">
@@ -550,6 +550,7 @@ export default function GenerationPanel() {
               </span>
             </div>
             <textarea
+              id="gen-prompt"
               value={prompt}
               onChange={(e) => setPrompt(e.target.value.slice(0, 4000))}
               disabled={isBusy}
@@ -571,7 +572,7 @@ export default function GenerationPanel() {
           ) : (
             <div className="space-y-1.5">
               <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
-                <label className="font-mono text-2xs font-medium uppercase tracking-[0.08em] text-zinc-300">
+                <label htmlFor="gen-negative-prompt" className="font-mono text-2xs font-medium uppercase tracking-[0.08em] text-zinc-300">
                   Prompt Negativo
                 </label>
                 <Button
@@ -584,6 +585,7 @@ export default function GenerationPanel() {
                 </Button>
               </div>
               <textarea
+                id="gen-negative-prompt"
                 value={negativePrompt}
                 onChange={(e) => setNegativePrompt(e.target.value)}
                 disabled={isBusy}
@@ -597,9 +599,9 @@ export default function GenerationPanel() {
           {/* ══ Resolução — SegmentedControl canônico ══ */}
           <div className="space-y-2">
             <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
-              <label className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-300">
+              <span className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-300">
                 Resolução
-              </label>
+              </span>
               <span className="shrink-0 font-mono text-3xs text-zinc-400">{width}×{height}</span>
             </div>
             <SegmentedControl
@@ -644,7 +646,7 @@ export default function GenerationPanel() {
           {/* ══ Seed — Input canônico + Button canônico ══ */}
           <div className="space-y-1.5">
             <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
-              <label className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-300">
+              <label htmlFor="gen-seed" className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-300">
                 Seed
               </label>
               <SegmentedControl
@@ -659,6 +661,7 @@ export default function GenerationPanel() {
             </div>
             <div className="flex items-center gap-2">
               <input
+                id="gen-seed"
                 type="number"
                 value={seed}
                 onChange={(e) => setSeed(parseInt(e.target.value, 10) || 0)}
@@ -680,9 +683,9 @@ export default function GenerationPanel() {
 
           {/* ══ Quantização ══ */}
           <div className="space-y-1.5">
-            <label className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-300">
+            <span className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-300">
               Quantização
-            </label>
+            </span>
             <Select
               options={QUANTIZATION_OPTIONS}
               value={quantization}

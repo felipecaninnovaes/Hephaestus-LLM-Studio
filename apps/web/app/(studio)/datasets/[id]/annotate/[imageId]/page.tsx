@@ -433,17 +433,15 @@ export default function AnnotateImagePage() {
     e.stopPropagation();
     e.preventDefault();
     setSelectedBoxId(box.id);
+    const t = e.target as HTMLElement | null;
+    if (t?.closest?.("[data-resize-handle]")) {
+      resizeRef.current = { id: box.id };
+      return;
+    }
     if (activeToolRef.current !== "select") return; // bbox: só seleciona
     const p = toNorm(e.clientX, e.clientY);
     if (!p) return;
     moveRef.current = { id: box.id, offX: p.x - box.x, offY: p.y - box.y };
-  }
-
-  function onResizeMouseDown(e: React.MouseEvent, box: BBoxData) {
-    e.stopPropagation();
-    e.preventDefault();
-    setSelectedBoxId(box.id);
-    resizeRef.current = { id: box.id };
   }
 
   // 5. Atalhos de teclado.
@@ -694,7 +692,9 @@ export default function AnnotateImagePage() {
 
         <div
           ref={frameRef}
-          className={`relative flex items-center justify-center overflow-hidden rounded-2xl border-2 border-zinc-700/80 border-t-white/20 bg-zinc-900/90 shadow-2xl backdrop-blur-sm transition-transform duration-200 ${
+          role="application"
+          aria-label="Canvas de anotação. Ferramentas B, V, H. Escape limpa a seleção."
+          className={`relative flex items-center justify-center overflow-hidden rounded-2xl border-2 border-zinc-700/80 border-t-white/20 bg-zinc-900/90 shadow-2xl backdrop-blur-sm transition-transform duration-200 focus-visible:outline-none focus-visible:border-brand-500/70 ${
             activeTool === "pan"
               ? "cursor-grab active:cursor-grabbing"
               : activeTool === "bbox"
@@ -709,6 +709,11 @@ export default function AnnotateImagePage() {
           onMouseDown={onFrameMouseDown}
           onClick={() => {
             if (activeTool === "select") setSelectedBoxId(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape" && activeTool === "select") {
+              setSelectedBoxId(null);
+            }
           }}
         >
           <div className="absolute inset-0 bg-[radial-gradient(#ffffff_1px,transparent_1px)] opacity-20 [background-size:18px_18px]"></div>
@@ -725,14 +730,17 @@ export default function AnnotateImagePage() {
             const name = cls?.name ?? "classe";
             const isSelected = selectedBoxId === box.id;
             return (
-              <div
+              <button
+                type="button"
                 key={box.id}
                 onMouseDown={(e) => onBoxMouseDown(e, box)}
                 onClick={(e) => {
                   e.stopPropagation();
                   setSelectedBoxId(box.id);
                 }}
-                className={`absolute cursor-move rounded border-2 transition-all ${
+                aria-label={`${name} ${i + 1} de ${boxes.length}${isSelected ? ", selecionada" : ""}`}
+                aria-pressed={isSelected}
+                className={`absolute cursor-move rounded border-2 p-0 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 ${
                   isSelected ? "shadow-lg ring-2 ring-white/50" : ""
                 }`}
                 style={{
@@ -752,13 +760,13 @@ export default function AnnotateImagePage() {
                 </span>
                 {isSelected && (
                   <span
-                    onMouseDown={(e) => onResizeMouseDown(e, box)}
-                    onClick={(e) => e.stopPropagation()}
+                    data-resize-handle="true"
+                    aria-hidden="true"
                     className="absolute -right-1.5 -bottom-1.5 h-3 w-3 cursor-se-resize rounded-full"
                     style={{ background: "#ffffff", borderColor: color, borderWidth: 1, borderStyle: "solid" }}
                   />
                 )}
-              </div>
+              </button>
             );
           })}
           {draft &&

@@ -747,21 +747,18 @@ export default function PlaygroundPage() {
                   {doneJobs.map((job) => (
                     <div
                       key={job.id}
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => setSelectedJobId(job.id)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          setSelectedJobId(job.id);
-                        }
-                      }}
-                      className={`group flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left transition-colors ${
+                      className={`group flex w-full items-center justify-between gap-2 rounded-lg border px-3 py-2 text-left transition-colors ${
                         selectedJobId === job.id
                           ? "border-brand-500/30 bg-brand-500/15"
                           : "border-transparent hover:bg-white/[0.04]"
-                      } cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70`}
+                      }`}
                     >
+                      <button
+                        type="button"
+                        onClick={() => setSelectedJobId(job.id)}
+                        aria-pressed={selectedJobId === job.id}
+                        className="flex min-w-0 flex-1 cursor-pointer items-center justify-between gap-2 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70"
+                      >
                       <div className="min-w-0 flex-1">
                         <span className="truncate font-mono text-xs text-zinc-200">
                           {job.model || "predict"}
@@ -775,14 +772,14 @@ export default function PlaygroundPage() {
                           })}
                         </span>
                       </div>
+                      </button>
                       <div className="flex items-center gap-1.5">
                         <Button
                           type="button"
                           variant="ghost"
                           size="sm"
                           className="opacity-0 group-hover:opacity-100"
-                          onClick={(e) => {
-                            e.stopPropagation();
+                          onClick={() => {
                             handleDownloadPredictions(job.id);
                           }}
                           title="Baixar predictions.json"

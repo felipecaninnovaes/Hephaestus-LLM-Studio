@@ -92,6 +92,7 @@ export default function CompareSlider({
   const baseB = String(imageB.params?.base_model || imageB.params?.baseModel || "—");
 
   return (
+    // biome-ignore lint/a11y/useKeyWithClickEvents lint/a11y/noStaticElementInteractions: backdrop suplementar — o fechamento por teclado é global (Escape) e há botão fechar explícito; o backdrop fica fora da tab-order de propósito.
     <div
       className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
       onClick={onClose}

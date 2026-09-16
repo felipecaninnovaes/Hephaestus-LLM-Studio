@@ -22,28 +22,8 @@ export function StatCard({
   className = "",
   ...props
 }: StatCardProps) {
-  return (
-    <div
-      onClick={onClick}
-      role={onClick ? "button" : undefined}
-      tabIndex={onClick ? 0 : undefined}
-      onKeyDown={
-        onClick
-          ? (e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                onClick();
-              }
-            }
-          : undefined
-      }
-      className={`glass-card group rounded-xl p-4 transition-[border-color,box-shadow] hover:border-brand-500/30 ${
-        onClick
-          ? "cursor-pointer active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70"
-          : ""
-      } ${className}`.trim()}
-      {...props}
-    >
+  const content = (
+    <>
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center space-x-2 text-zinc-300 min-w-0">
           {icon && (
@@ -65,6 +45,27 @@ export function StatCard({
           {subtext}
         </div>
       )}
+    </>
+  );
+
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        className={`glass-card group rounded-xl p-4 text-left block w-full transition-[border-color,box-shadow] hover:border-brand-500/30 cursor-pointer active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 ${className}`.trim()}
+      >
+        {content}
+      </button>
+    );
+  }
+
+  return (
+    <div
+      className={`glass-card group rounded-xl p-4 transition-[border-color,box-shadow] hover:border-brand-500/30 ${className}`.trim()}
+      {...props}
+    >
+      {content}
     </div>
   );
 }

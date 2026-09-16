@@ -98,7 +98,7 @@ export const Select = forwardRef<SelectRefHandle, SelectProps<any>>(function Sel
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const optionsListRef = useRef<HTMLUListElement>(null);
+  const optionsListRef = useRef<HTMLDivElement>(null);
 
   const isControlled = value !== undefined;
   const currentValue = isControlled ? value : internalValue;
@@ -301,7 +301,6 @@ export const Select = forwardRef<SelectRefHandle, SelectProps<any>>(function Sel
     <div
       ref={containerRef}
       className={`relative w-full ${isOpen ? "z-50" : "z-auto"} ${className}`}
-      onKeyDown={handleKeyDown}
     >
       {/* Hidden input for standard form submission */}
       {name && (
@@ -317,7 +316,6 @@ export const Select = forwardRef<SelectRefHandle, SelectProps<any>>(function Sel
         <label
           id={`${selectId}-label`}
           htmlFor={selectId}
-          onClick={() => triggerRef.current?.focus()}
           className="tracking-caps mb-1.5 block font-mono text-2xs font-medium uppercase text-zinc-300 select-none cursor-pointer"
         >
           {label}
@@ -334,8 +332,14 @@ export const Select = forwardRef<SelectRefHandle, SelectProps<any>>(function Sel
         aria-expanded={isOpen}
         aria-controls={listboxId}
         aria-labelledby={label ? `${selectId}-label` : undefined}
+        aria-activedescendant={
+          isOpen && highlightedIndex >= 0
+            ? `${listboxId}-opt-${highlightedIndex}`
+            : undefined
+        }
         disabled={disabled || loading}
         onClick={() => setIsOpen((prev) => !prev)}
+        onKeyDown={handleKeyDown}
         className={`group flex w-full items-center justify-between gap-2.5 rounded-xl border bg-black/40 backdrop-blur-sm text-left transition-all duration-150 select-none ${
           fontMono ? "font-mono" : "font-sans"
         } ${sizeClasses} ${
@@ -418,6 +422,7 @@ export const Select = forwardRef<SelectRefHandle, SelectProps<any>>(function Sel
                     if (e.key === "Enter") {
                       e.preventDefault();
                     }
+                    handleKeyDown(e);
                   }}
                 />
               </div>
@@ -425,17 +430,18 @@ export const Select = forwardRef<SelectRefHandle, SelectProps<any>>(function Sel
           )}
 
           {/* Options List */}
-          <ul
+          <div
             ref={optionsListRef}
             id={listboxId}
             role="listbox"
             aria-label={label || "Opções"}
+            onKeyDown={handleKeyDown}
             className="max-h-60 overflow-y-auto overscroll-contain py-0.5 space-y-0.5 focus:outline-none scrollbar-thin"
           >
             {filteredOptions.length === 0 ? (
-              <li className="px-3 py-4 text-center font-mono text-2xs text-zinc-500">
+              <div className="px-3 py-4 text-center font-mono text-2xs text-zinc-500">
                 {emptyText}
-              </li>
+              </div>
             ) : (
               filteredOptions.map((opt, idx) => {
                 const isSelected = String(opt.value) === String(currentValue);
@@ -443,13 +449,22 @@ export const Select = forwardRef<SelectRefHandle, SelectProps<any>>(function Sel
                 const isDisabled = !!opt.disabled;
 
                 return (
-                  <li
+                  <div
                     key={String(opt.value)}
+                    id={`${listboxId}-opt-${idx}`}
                     role="option"
                     aria-selected={isSelected}
                     aria-disabled={isDisabled}
+                    tabIndex={isDisabled ? -1 : isHighlighted ? 0 : -1}
                     title={isDisabled && opt.disabledReason ? opt.disabledReason : opt.label}
                     onClick={() => !isDisabled && selectOption(opt)}
+                    onKeyDown={(e) => {
+                      if (isDisabled) return;
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        selectOption(opt);
+                      }
+                    }}
                     onMouseEnter={() => !isDisabled && setHighlightedIndex(idx)}
                     className={`group/item relative flex cursor-pointer items-center justify-between rounded-lg px-2.5 py-2 text-xs transition-all select-none ${
                       fontMono ? "font-mono" : "font-sans"
@@ -499,11 +514,11 @@ export const Select = forwardRef<SelectRefHandle, SelectProps<any>>(function Sel
                         </span>
                       )}
                     </div>
-                  </li>
+                  </div>
                 );
               })
             )}
-          </ul>
+          </div>
         </div>
       )}
 

@@ -35,8 +35,7 @@ export function UploadFloatingDock({
     lastResults?.filter((r) => r.status === "rejected" || r.status === "failed").length ?? 0;
 
   return (
-    <div
-      role="region"
+    <section
       aria-label="Status do upload em andamento"
       className="fixed bottom-5 right-5 z-40 w-80 sm:w-96 rounded-2xl border border-white/10 bg-zinc-950/90 p-3.5 shadow-2xl backdrop-blur-xl transition-all duration-200 animate-in fade-in slide-in-from-bottom-4"
     >
@@ -138,7 +137,7 @@ export function UploadFloatingDock({
           />
         </div>
       )}
-    </div>
+    </section>
   );
 }
 

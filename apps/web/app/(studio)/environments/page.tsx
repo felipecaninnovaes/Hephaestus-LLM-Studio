@@ -127,9 +127,9 @@ function AdoptModal({
 
         {/* Kind pills */}
         <div>
-          <label className="tracking-caps mb-1.5 block font-mono text-2xs font-medium uppercase text-zinc-300">
+          <span className="tracking-caps mb-1.5 block font-mono text-2xs font-medium uppercase text-zinc-300">
             Tipo
-          </label>
+          </span>
           <div className="flex gap-2">
             {(["local", "remoto"] as Kind[]).map((k) => (
               <button
@@ -137,6 +137,7 @@ function AdoptModal({
                 type="button"
                 onClick={() => setKind(k)}
                 disabled={busy}
+                aria-pressed={kind === k}
                 className={`h-8 rounded-lg border px-3 text-xs font-medium transition active:scale-[0.985] cursor-pointer ${
                   kind === k
                     ? "border-brand-500/30 bg-brand-500/[0.12] text-white"

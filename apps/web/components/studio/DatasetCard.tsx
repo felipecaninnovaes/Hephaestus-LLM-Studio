@@ -268,14 +268,6 @@ export default function DatasetCard({
 
   return (
     <div
-      onContextMenu={
-        onContextMenu
-          ? (e) => {
-              e.preventDefault();
-              onContextMenu(dataset, e.clientX, e.clientY);
-            }
-          : undefined
-      }
       className="glass-card relative group rounded-2xl p-5 flex flex-col h-full transition-all hover:border-brand-500/30"
     >
       {/* Stretch link para navegação do card sem aninhamento de botões */}
@@ -283,6 +275,14 @@ export default function DatasetCard({
         href={`/datasets/${dataset.id}`}
         className="absolute inset-0 z-0 rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70"
         aria-label={`Abrir dataset ${dataset.title}`}
+        onContextMenu={
+          onContextMenu
+            ? (e) => {
+                e.preventDefault();
+                onContextMenu(dataset, e.clientX, e.clientY);
+              }
+            : undefined
+        }
       />
 
       {/* 1. Cabeçalho de Categoria e Status (Altura padronizada h-8) */}

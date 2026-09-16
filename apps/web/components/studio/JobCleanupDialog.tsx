@@ -107,10 +107,11 @@ export function JobCleanupDialog({
       <div className="space-y-4">
         {/* Input de dias */}
         <div>
-          <label className="block text-2xs font-mono font-medium text-zinc-400 uppercase tracking-caps mb-1.5">
+          <label htmlFor="job-cleanup-days" className="block text-2xs font-mono font-medium text-zinc-400 uppercase tracking-caps mb-1.5">
             Há mais de N dias
           </label>
           <input
+            id="job-cleanup-days"
             type="number"
             min={0}
             value={days}

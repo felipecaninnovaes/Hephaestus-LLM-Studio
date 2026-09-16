@@ -71,9 +71,9 @@ export function CleanupJobsModal({ open, onClose, onSuccess }: Props) {
     >
       <form onSubmit={handleSubmit} className="space-y-5">
         <div className="space-y-1.5">
-          <label className="text-xs font-medium text-zinc-300">
+          <span className="text-xs font-medium text-zinc-300">
             Idade dos jobs
-          </label>
+          </span>
           <Select
             value={age}
             onChange={(val) => {

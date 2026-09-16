@@ -183,15 +183,17 @@ export function JobSamplesGallery({
 
       {/* Lightbox Modal para ampliação de alta resolução */}
       {selectedSample && (
+        // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop suplementar — há botão fechar explícito e focável; o backdrop fica fora da tab-order de propósito.
         <div
           role="dialog"
           aria-modal="true"
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fadeIn"
-          onClick={() => setSelectedSample(null)}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setSelectedSample(null);
+          }}
         >
           <div
             className="relative max-w-2xl w-full bg-zinc-900/95 border border-white/15 rounded-2xl overflow-hidden shadow-2xl space-y-3 p-4 backdrop-blur-xl"
-            onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-white/10 pb-3">
               <div className="flex items-center gap-2">

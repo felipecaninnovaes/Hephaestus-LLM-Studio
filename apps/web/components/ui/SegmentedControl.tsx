@@ -26,8 +26,7 @@ export function SegmentedControl<T extends string = string>({
   className = "",
 }: SegmentedControlProps<T>) {
   return (
-    <div
-      role="group"
+    <fieldset
       aria-label={ariaLabel}
       className={`inline-flex gap-1 rounded-full border border-white/10 bg-black/40 backdrop-blur-sm p-1 ${className}`.trim()}
     >
@@ -39,8 +38,7 @@ export function SegmentedControl<T extends string = string>({
           <button
             key={opt.id}
             type="button"
-            role="radio"
-            aria-checked={active}
+            aria-pressed={active}
             aria-label={opt.ariaLabel || opt.label || opt.id}
             title={titleText}
             onClick={() => onChange(opt.id)}
@@ -55,7 +53,7 @@ export function SegmentedControl<T extends string = string>({
           </button>
         );
       })}
-    </div>
+    </fieldset>
   );
 }
 

@@ -76,14 +76,14 @@ export function ImageTableView({
               >
                 <td
                   className="py-2 pl-4 pr-2"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onToggleSelect(item.id, !isSelected);
-                  }}
                 >
                   <button
                     type="button"
                     aria-label={isSelected ? "Desmarcar" : "Marcar"}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onToggleSelect(item.id, !isSelected);
+                    }}
                     className={`flex size-4 items-center justify-center rounded border transition-colors cursor-pointer ${
                       isSelected
                         ? "border-brand-500 bg-brand-500 text-white"
@@ -125,12 +125,14 @@ export function ImageTableView({
 
                 <td
                   className="py-2 px-3 text-right pr-4"
-                  onClick={(e) => e.stopPropagation()}
                 >
                   <div className="flex items-center justify-end space-x-1">
                     <button
                       type="button"
-                      onClick={() => onQuickLook(idx)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onQuickLook(idx);
+                      }}
                       title="Inspeção rápida (Espaço)"
                       className="rounded p-1 text-zinc-400 hover:text-zinc-200 hover:bg-white/5 transition-colors cursor-pointer"
                     >
@@ -140,7 +142,10 @@ export function ImageTableView({
                     {category === "yolo" && (
                       <button
                         type="button"
-                        onClick={() => onOpenAnnotate?.(item)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onOpenAnnotate?.(item);
+                        }}
                         title="Abrir editor BBox"
                         className="rounded p-1 text-brand-400 hover:text-brand-300 hover:bg-brand-500/10 transition-colors cursor-pointer"
                       >
@@ -151,7 +156,10 @@ export function ImageTableView({
                     {onDelete && (
                       <button
                         type="button"
-                        onClick={() => onDelete(item)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDelete(item);
+                        }}
                         title="Mover para a lixeira"
                         className="rounded p-1 text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 transition-colors cursor-pointer"
                       >

@@ -165,10 +165,11 @@ export default function ModelUploadModal({
 
         {/* Nome opcional */}
         <div>
-          <label className="mb-1.5 block font-mono text-2xs font-medium uppercase tracking-[0.08em] text-zinc-400">
+          <label htmlFor="model-upload-name" className="mb-1.5 block font-mono text-2xs font-medium uppercase tracking-[0.08em] text-zinc-400">
             Nome (opcional)
           </label>
           <input
+            id="model-upload-name"
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -181,9 +182,9 @@ export default function ModelUploadModal({
 
         {/* Engine selector */}
         <div>
-          <label className="mb-1.5 block font-mono text-2xs font-medium uppercase tracking-[0.08em] text-zinc-400">
+          <span className="mb-1.5 block font-mono text-2xs font-medium uppercase tracking-[0.08em] text-zinc-400">
             Engine / Tipo
-          </label>
+          </span>
           <SegmentedControl
             options={ENGINE_OPTIONS}
             value={engine}

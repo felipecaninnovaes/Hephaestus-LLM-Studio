@@ -159,15 +159,6 @@ export function JobListItem({
 
   return (
     <div
-      onClick={() => onSelect?.(job.id)}
-      role={onSelect ? "button" : undefined}
-      tabIndex={onSelect ? 0 : undefined}
-      onKeyDown={(e) => {
-        if (onSelect && (e.key === "Enter" || e.key === " ")) {
-          e.preventDefault();
-          onSelect(job.id);
-        }
-      }}
       className={`glass-card group relative flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 rounded-xl p-4 transition-all duration-200 border ${
         onSelect ? "cursor-pointer" : ""
       } ${
@@ -176,9 +167,18 @@ export function JobListItem({
           : "border-white/10 hover:border-brand-500/30 hover:bg-white/[0.04]"
       }`}
     >
+      {onSelect && (
+        <button
+          type="button"
+          onClick={() => onSelect(job.id)}
+          aria-label={`Selecionar job ${job.model}`}
+          className="absolute inset-0 z-0 rounded-xl cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-500/70"
+        />
+      )}
       {/* Indicador de foco lateral óptico */}
       <div
-        className={`absolute left-0 inset-y-2.5 w-1 rounded-r-full bg-brand-500 transition-opacity ${
+        aria-hidden="true"
+        className={`pointer-events-none absolute left-0 inset-y-2.5 w-1 rounded-r-full bg-brand-500 transition-opacity ${
           isFocused ? "opacity-100" : "opacity-0 group-hover:opacity-40"
         }`}
       />
@@ -255,14 +255,13 @@ export function JobListItem({
       </div>
 
       {(actionButton || (onRerun && !isActive)) && (
-        <div className="flex items-center space-x-2 shrink-0 pl-1 sm:pl-0">
+        <div className="relative z-10 flex items-center space-x-2 shrink-0 pl-1 sm:pl-0">
           {actionButton ? (
             actionButton
           ) : (
             <button
               type="button"
-              onClick={(e) => {
-                e.stopPropagation();
+              onClick={() => {
                 onRerun?.(job);
               }}
               title="Repetir este treino na Forja com os mesmos parâmetros"

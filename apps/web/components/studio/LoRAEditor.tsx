@@ -80,9 +80,9 @@ export function LoRAEditor({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <label className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-300">
+        <span className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-300">
           Adaptadores LoRA
-        </label>
+        </span>
         {value.length > 0 && (
           <span className="font-mono text-3xs text-brand-400">
             {value.length}/{maxItems}

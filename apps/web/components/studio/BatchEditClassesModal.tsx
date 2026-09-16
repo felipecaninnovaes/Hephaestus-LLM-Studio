@@ -232,9 +232,9 @@ export function BatchEditClassesModal({
 
         {/* Classe de Origem */}
         <div className="space-y-1.5">
-          <label className="text-xs font-medium text-zinc-300">
+          <span className="text-xs font-medium text-zinc-300">
             Classe de Origem {action === "remap" ? "(a ser substituída)" : "(a ser removida)"}
-          </label>
+          </span>
           {sourceOptions.length > 0 ? (
             <Select
               value={activeSourceId}
@@ -255,9 +255,9 @@ export function BatchEditClassesModal({
         {action === "remap" && (
           <div className="space-y-2 rounded-xl border border-white/10 bg-zinc-900/30 p-3.5">
             <div className="flex items-center justify-between">
-              <label className="text-xs font-medium text-zinc-300">
+              <span className="text-xs font-medium text-zinc-300">
                 Nova Classe de Destino
-              </label>
+              </span>
               <button
                 type="button"
                 onClick={() => {

@@ -51,24 +51,26 @@ export function ImageCard({
 
   return (
     <div
-      onClick={onClick}
-      role={isClickable ? "button" : undefined}
-      tabIndex={isClickable ? 0 : undefined}
-      onKeyDown={(e) => {
-        if (e.code === "Space" && onQuickLook) {
-          e.preventDefault();
-          onQuickLook();
-        } else if (isClickable && (e.key === "Enter")) {
-          e.preventDefault();
-          onClick?.();
-        }
-      }}
       className={`group relative ${heightClass} overflow-hidden rounded-xl border bg-zinc-900/90 transition-all ${
         selected
           ? "border-brand-500 ring-2 ring-brand-500/50 bg-brand-500/10"
           : "border-zinc-800 hover:border-brand-500/60 focus-within:border-brand-500/60"
       } ${isClickable ? "cursor-pointer" : ""} ${className}`}
     >
+      {isClickable && (
+        <button
+          type="button"
+          onClick={onClick}
+          onKeyDown={(e) => {
+            if (e.code === "Space" && onQuickLook) {
+              e.preventDefault();
+              onQuickLook();
+            }
+          }}
+          aria-label={`Abrir ${item.filename}`}
+          className="absolute inset-0 z-[1] rounded-xl cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-500/70"
+        />
+      )}
       <img
         src={item.url}
         alt={item.filename}

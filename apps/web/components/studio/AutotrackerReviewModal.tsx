@@ -208,13 +208,19 @@ export function AutotrackerReviewModal({
                     return (
                       <label
                         key={item.name}
-                        onClick={() => toggleMissingClass(item.name)}
                         className={`flex items-center justify-between p-2.5 rounded-lg border transition-all cursor-pointer ${
                           isChecked
                             ? "border-status-alert/40 bg-status-alert/15 text-zinc-100"
                             : "border-white/10 bg-zinc-900/40 text-zinc-400 hover:border-white/20"
                         }`}
                       >
+                        <input
+                          type="checkbox"
+                          className="sr-only"
+                          checked={isChecked}
+                          onChange={() => toggleMissingClass(item.name)}
+                          aria-label={`Incluir classe ${item.name}`}
+                        />
                         <div className="flex items-center space-x-2.5 min-w-0">
                           <div
                             className={`size-4 rounded flex items-center justify-center border transition-colors ${
@@ -269,9 +275,15 @@ export function AutotrackerReviewModal({
             {/* Opções de Aplicação */}
             <div className="rounded-xl border border-white/10 bg-zinc-900/40 p-3.5 space-y-2">
               <label
-                onClick={() => setOverwrite(!overwrite)}
                 className="flex items-start space-x-2.5 cursor-pointer"
               >
+                <input
+                  type="checkbox"
+                  className="sr-only"
+                  checked={overwrite}
+                  onChange={() => setOverwrite(!overwrite)}
+                  aria-label="Sobrescrever todas as anotações da imagem"
+                />
                 <div
                   className={`mt-0.5 size-4 rounded flex items-center justify-center border transition-colors ${
                     overwrite

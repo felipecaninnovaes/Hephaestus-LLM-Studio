@@ -65,7 +65,7 @@ métricas que não existem; o painel não é modular.
 1. Criar `apps/web/lib/jobCapabilities.ts` — mapa kind/engine → painéis:
    | capability | yolo_train | diffusion_train | autolabel | autotracker | yolo_predict | diffusion_generate |
    |---|---|---|---|---|---|---|
-   | progressLive | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+   | ~~progressLive~~ (removido em 8a1475b — campo morto nunca consumido) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
    | metricChips  | mAP/loss | loss/lr/step/época | ✗ (só "N imagens") | ✗ | ✗ | ✗ |
    | convergenceChart | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ |
    | samplesGallery | ✗ | ✓ | ✗ | ✗ | ✓ (predições) | ✓ |

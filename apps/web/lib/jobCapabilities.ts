@@ -72,7 +72,7 @@ export function jobCapabilities(job: Pick<Job, "kind" | "engine">): JobCapabilit
 
 /** Rótulo do chip de progresso de imagens: `step · %` quando ambos, um só quando parcial, "—" quando nada. */
 export function imageProgressLabel(step: number | null | undefined, progress: number | null | undefined): string {
-  const pct = progress != null ? `${Math.round(progress * 100)}%` : null;
+  const pct = Number.isFinite(progress) ? `${Math.round((progress as number) * 100)}%` : null;
   if (step != null && pct) return `${step} · ${pct}`;
   if (step != null) return String(step);
   if (pct) return pct;

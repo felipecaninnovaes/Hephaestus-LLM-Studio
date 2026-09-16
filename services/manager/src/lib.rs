@@ -216,7 +216,9 @@ pub struct ResolvedCheckpoint {
 #[derive(Debug, Clone, Serialize)]
 pub struct GenerationRow {
     pub id: String,
-    pub job_id: String,
+    /// `None` após o job de origem ser expurgado (AC-003: geração sobrevive ao
+    /// job; `s3_key` continua válido para o proxy de imagem).
+    pub job_id: Option<String>,
     pub s3_key: String,
     pub thumb_s3_key: Option<String>,
     pub filename: String,
@@ -2095,13 +2097,24 @@ pub async fn delete_model(pool: &PgPool, id: Uuid) -> Result<ModelItem, ManagerE
 // depois). Estados terminais são os únicos apagáveis (D-a do plano).
 // ---------------------------------------------------------------------------
 
-/// Linha apagada por `delete_job` — paths relativos dos artifacts para o sweep
-/// (a chave S3 completa `artifacts/{job_id}/{path}` é montada pelo principal).
+/// Linha apagada por `delete_job`/`cleanup_jobs` (AC-003).
+///
+/// `object_keys` é a lista EXATA de chaves S3 a varrer no sweep do principal —
+/// já exclui as chaves das gerações preservadas (a galeria sobrevive ao job;
+/// seus bytes vivem sob `artifacts/{job_id}/...`, o mesmo prefixo dos demais
+/// artifacts, daí a necessidade de lista exata em vez de sweep por prefixo).
 #[derive(Debug, Clone, Serialize)]
 pub struct DeletedJob {
     pub id: String,
     pub status: String,
+    /// Paths relativos dos artifacts (informativo p/ UI/toast).
     pub artifacts: Vec<String>,
+    /// Chaves S3 completas a apagar (exclui gerações preservadas).
+    pub object_keys: Vec<String>,
+    /// Linhas do catálogo `models` derivadas deste job e expurgadas (D-a).
+    pub models_deleted: i64,
+    /// Gerações da galeria preservadas pelo SET NULL na FK (0012).
+    pub generations_preserved: i64,
 }
 
 /// Resultado do `cleanup_jobs` (limpeza em lote).
@@ -2109,16 +2122,71 @@ pub struct DeletedJob {
 pub struct CleanupResult {
     pub deleted: i64,
     pub jobs: Vec<DeletedJob>,
+    /// União das `object_keys` de todos os jobs (conveniência p/ o sweep).
+    pub object_keys: Vec<String>,
 }
 
 /// Estados terminais — os únicos apagáveis.
 pub const TERMINAL_STATUSES: [&str; 3] = ["done", "failed", "cancelled"];
 
-/// Apaga um job terminal e retorna a linha + paths dos artifacts.
+/// Monta a lista exata de chaves S3 a varrer num job (exclui chaves de
+/// gerações vivas) + conta modelos expurgados/gerações preservadas. Deve
+/// rodar DENTRO da transação, ANTES do `DELETE FROM jobs`.
+async fn plan_job_sweep(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    id: Uuid,
+) -> Result<(Vec<String>, Vec<String>, i64, i64), ManagerError> {
+    // Chaves de gerações vivas a PRESERVAR (s3_key + thumb_s3_key).
+    let gen_rows: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT s3_key, thumb_s3_key FROM generations \
+         WHERE job_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("list generations to preserve: {e}")))?;
+    let preserved: std::collections::HashSet<String> = gen_rows
+        .iter()
+        .flat_map(|(k, t)| {
+            let mut v = vec![k.clone()];
+            if let Some(th) = t {
+                v.push(th.clone());
+            }
+            v
+        })
+        .collect();
+    let generations_preserved = gen_rows.len() as i64;
+
+    // Chaves dos artifacts, excluindo as preservadas.
+    let paths: Vec<String> =
+        sqlx::query_scalar("SELECT path FROM job_artifacts WHERE job_id = $1 ORDER BY path, id")
+            .bind(id)
+            .fetch_all(&mut **tx)
+            .await
+            .map_err(|e| ManagerError::Internal(format!("list artifacts before delete: {e}")))?;
+    let object_keys: Vec<String> = paths
+        .iter()
+        .map(|p| format!("artifacts/{id}/{p}"))
+        .filter(|k| !preserved.contains(k))
+        .collect();
+
+    // Expurga linhas do catálogo de modelos derivadas deste job (D-a: sim).
+    let models_deleted = sqlx::query("DELETE FROM models WHERE job_id = $1")
+        .bind(id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("delete job models: {e}")))?
+        .rows_affected() as i64;
+
+    Ok((paths, object_keys, models_deleted, generations_preserved))
+}
+
+/// Apaga um job terminal e retorna a linha + as chaves S3 a varrer.
 ///
 /// Guarda: `done|failed|cancelled` → apaga (FK `job_artifacts ON DELETE
-/// CASCADE` remove os artefatos); qualquer outro status →
-/// [`ManagerError::NotDeletable`]; inexistente → [`ManagerError::NotFound`].
+/// CASCADE`; `generations` ficam com `job_id` NULL — galeria preservada);
+/// qualquer outro status → [`ManagerError::NotDeletable`]; inexistente →
+/// [`ManagerError::NotFound`].
 pub async fn delete_job(pool: &PgPool, id: Uuid) -> Result<DeletedJob, ManagerError> {
     let mut tx = pool
         .begin()
@@ -2137,12 +2205,8 @@ pub async fn delete_job(pool: &PgPool, id: Uuid) -> Result<DeletedJob, ManagerEr
         return Err(ManagerError::NotDeletable);
     }
 
-    let artifacts: Vec<String> =
-        sqlx::query_scalar("SELECT path FROM job_artifacts WHERE job_id = $1 ORDER BY path, id")
-            .bind(id)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|e| ManagerError::Internal(format!("list artifacts before delete: {e}")))?;
+    let (artifacts, object_keys, models_deleted, generations_preserved) =
+        plan_job_sweep(&mut tx, id).await?;
 
     sqlx::query("DELETE FROM jobs WHERE id = $1")
         .bind(id)
@@ -2158,6 +2222,9 @@ pub async fn delete_job(pool: &PgPool, id: Uuid) -> Result<DeletedJob, ManagerEr
         id: id.to_string(),
         status,
         artifacts,
+        object_keys,
+        models_deleted,
+        generations_preserved,
     })
 }
 
@@ -2190,8 +2257,8 @@ pub fn normalize_cleanup_statuses(
 /// `older_than_days`: apaga apenas jobs terminais há mais de N dias
 /// (`COALESCE(finished_at, created_at)`); `None` = sem recorte temporal.
 /// Exige pelo menos um critério (dias ou statuses) para não apagar o
-/// histórico inteiro por omissão. Retorna as linhas apagadas com os paths
-/// dos artifacts (prefixos S3 a sweeping pelo principal).
+/// histórico inteiro por omissão. Retorna as linhas apagadas com as chaves
+/// S3 a varrer (exclui gerações preservadas).
 pub async fn cleanup_jobs(
     pool: &PgPool,
     older_than_days: Option<i64>,
@@ -2230,14 +2297,10 @@ pub async fn cleanup_jobs(
     .map_err(|e| ManagerError::Internal(format!("select jobs to cleanup: {e}")))?;
 
     let mut jobs = Vec::with_capacity(rows.len());
+    let mut all_keys: Vec<String> = Vec::new();
     for (id, status) in rows {
-        let artifacts: Vec<String> = sqlx::query_scalar(
-            "SELECT path FROM job_artifacts WHERE job_id = $1 ORDER BY path, id",
-        )
-        .bind(id)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(|e| ManagerError::Internal(format!("list artifacts before cleanup: {e}")))?;
+        let (artifacts, object_keys, models_deleted, generations_preserved) =
+            plan_job_sweep(&mut tx, id).await?;
 
         sqlx::query("DELETE FROM jobs WHERE id = $1")
             .bind(id)
@@ -2245,10 +2308,14 @@ pub async fn cleanup_jobs(
             .await
             .map_err(|e| ManagerError::Internal(format!("delete job in cleanup: {e}")))?;
 
+        all_keys.extend(object_keys.iter().cloned());
         jobs.push(DeletedJob {
             id: id.to_string(),
             status,
             artifacts,
+            object_keys,
+            models_deleted,
+            generations_preserved,
         });
     }
 
@@ -2257,7 +2324,11 @@ pub async fn cleanup_jobs(
         .map_err(|e| ManagerError::Internal(format!("commit cleanup: {e}")))?;
 
     let deleted = jobs.len() as i64;
-    Ok(CleanupResult { deleted, jobs })
+    Ok(CleanupResult {
+        deleted,
+        jobs,
+        object_keys: all_keys,
+    })
 }
 
 /// Sanitiza uma string para slug seguro (apenas a-z, 0-9 e hífen).
@@ -2558,12 +2629,12 @@ pub async fn list_generations(
         .into_iter()
         .map(|r| {
             let id: Uuid = r.get("id");
-            let job_id: Uuid = r.get("job_id");
+            let job_id: Option<Uuid> = r.get("job_id");
             let created_at: DateTime<Utc> = r.get("created_at");
             let deleted_at: Option<DateTime<Utc>> = r.get("deleted_at");
             GenerationRow {
                 id: id.to_string(),
-                job_id: job_id.to_string(),
+                job_id: job_id.map(|u| u.to_string()),
                 s3_key: r.get("s3_key"),
                 thumb_s3_key: r.get("thumb_s3_key"),
                 filename: r.get("filename"),
@@ -2600,12 +2671,12 @@ pub async fn get_generation(
 
     Ok(row.map(|r| {
         let id: Uuid = r.get("id");
-        let job_id: Uuid = r.get("job_id");
+        let job_id: Option<Uuid> = r.get("job_id");
         let created_at: DateTime<Utc> = r.get("created_at");
         let deleted_at: Option<DateTime<Utc>> = r.get("deleted_at");
         GenerationRow {
             id: id.to_string(),
-            job_id: job_id.to_string(),
+            job_id: job_id.map(|u| u.to_string()),
             s3_key: r.get("s3_key"),
             thumb_s3_key: r.get("thumb_s3_key"),
             filename: r.get("filename"),

@@ -5596,6 +5596,16 @@ async fn delete_job_guarda_estado_apaga_cascata() {
     assert_eq!(deleted.id, job_id.to_string());
     assert_eq!(deleted.status, "done");
     assert_eq!(deleted.artifacts.len(), 2, "paths dos artifacts p/ sweep");
+    assert_eq!(
+        deleted.object_keys,
+        vec![
+            format!("artifacts/{job_id}/outputs/best.pt"),
+            format!("artifacts/{job_id}/samples/sample_epoch_001.png"),
+        ],
+        "chaves exatas na ordem dos paths"
+    );
+    assert_eq!(deleted.models_deleted, 0);
+    assert_eq!(deleted.generations_preserved, 0);
 
     assert_eq!(count_jobs(&p).await, 0);
     let arts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM job_artifacts WHERE job_id = $1")
@@ -5672,4 +5682,78 @@ async fn cleanup_jobs_lote_por_idade_e_status() {
         .await
         .unwrap();
     assert_eq!(remaining, vec![d.to_string()], "só o queued D sobrevive");
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn delete_job_preserva_galeria_e_expurga_models() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create job");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+    set_terminal(&p, job_id, "done", 1).await;
+
+    // artifact de modelo (vai p/ sweep) + artifact geradoReferenciado por geração viva.
+    insert_artifact(&p, job_id, "outputs/m.safetensors").await;
+    insert_artifact(&p, job_id, "generated.png").await;
+
+    // linha no catálogo de models derivada do job → deve ser expurgada.
+    let model_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO models (id, engine, name, model, s3_key, source, hash, bytes, job_id, kind) \
+         VALUES ($1, 'diffusion', 'm', 'flux', $2, 'train', 'd41d8cd98f00b204e9800998ecf8427e', 10, $3, 'lora')",
+    )
+    .bind(model_id)
+    .bind(format!("artifacts/{job_id}/outputs/m.safetensors"))
+    .bind(job_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    // geração VIVA referenciando o artifact `generated.png` → bytes preservados,
+    // linha sobrevive com job_id NULL.
+    let gen_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO generations (id, job_id, s3_key, thumb_s3_key, filename, seed, prompt, width, height) \
+         VALUES ($1, $2, $3, $4, 'generated.png', 1, 'p', 512, 512)",
+    )
+    .bind(gen_id)
+    .bind(job_id)
+    .bind(format!("artifacts/{job_id}/generated.png"))
+    .bind(format!("artifacts/{job_id}/generated_thumb.png"))
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let deleted = manager::delete_job(&p, job_id).await.expect("delete");
+    assert_eq!(deleted.generations_preserved, 1);
+    assert_eq!(deleted.models_deleted, 1, "catálogo expurga models do job");
+    // sweep NÃO inclui a chave da geração viva (nem thumb, que nem é artifact).
+    assert_eq!(
+        deleted.object_keys,
+        vec![format!("artifacts/{job_id}/outputs/m.safetensors")],
+        "generated.png preservado (pertence à galeria)"
+    );
+
+    // geração sobrevive órfã (job_id NULL).
+    let (g_job,): (Option<uuid::Uuid>,) =
+        sqlx::query_as("SELECT job_id FROM generations WHERE id = $1")
+            .bind(gen_id)
+            .fetch_one(&p)
+            .await
+            .unwrap();
+    assert!(g_job.is_none(), "galeria preservada com job_id NULL");
+
+    // models do job sumiram do catálogo.
+    let m_left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM models WHERE id = $1")
+        .bind(model_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(m_left, 0);
 }

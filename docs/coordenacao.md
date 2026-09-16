@@ -19,7 +19,27 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-15 (FATIA BUCKETING POR ASPECT RATIO — IMPLEMENTADA NA BRANCH, AGUARDA REVISÃO)
+## Estado atual — 2026-09-16 (ACTION CENTER: plano antecipado em arquivo — NADA implementado)
+
+- Usuário pediu análise+planejamento de 6 pontos do Action Center, sem implementar.
+  Entregue: **`docs/plano-action-center.md`** — causa-raiz provada por file:line para
+  AC-001 (amostras sem ordem/colapso; `get_job_artifacts` sem ORDER BY), AC-002 (painel
+  não-modular; chips zerados em AutoLabel), AC-003 (zero rotas de delete de jobs),
+  AC-004 (seleção fora da URL + deep link `?selected=` morto), AC-005 (notificações e
+  logs fabricados no drawer), AC-006 (mensagens de status do engine difusão fluem pelo
+  mesmo `metrics.jsonl`→orquestrador→manager→gráfico e viram "steps"; colisão
+  potencial `(epoch,step)` no upsert do manager). Sequência AC-1..AC-4 com donos e
+  **5 decisões fechadas pelo usuário (2026-09-16, todas "Sim" ao recomendado)** e
+  item adicional **AC-007** (progresso da sincronização de conteúdo no nó + cache
+  conteudo-endereçado; apurado: dataset/weights/LoRAs/custom são RE-BAIXADOS do
+  S3 a todo job — `orchestrator/src/lib.rs:1102-1242` — sem reuso entre jobs;
+  só o base model HF é cacheado). **Design do cache aprovado pelo usuário
+  (2026-09-16): mapeamento fixo conteudo-endereçado por MD5 no nó, verificação
+  de hash para reaproveitar, re-baixa só em alteração (plano AC-007 §2).**
+  Confirmar rebasing com o
+  branch `feat/enable-bucket`/`feat/aba-geracao` abertos antes de abrir AC-1.
+
+## Estado anterior — 2026-09-15 (FATIA BUCKETING POR ASPECT RATIO — IMPLEMENTADA NA BRANCH, AGUARDA REVISÃO)
 
 - **FATIA ENABLE BUCKET (branch `feat/enable-bucket`, criada a partir de `feat/aba-geracao`).** Pedido do usuário: implementar `enable_bucket: true` (padrão) no treino de LoRA de difusão (flux2) e na UI. Antes da fatia a opção não existia — todas as imagens eram esticadas para quadrado `resolução×resolução`.
   - **Engine (`engines/trainer-difusao`)**: `dataset.py` ganhou `_resolve_bucket_reso` (área ≈ `base_res²`, lados múltiplos de 64, min `base_res//2`, max `base_res*2`), agrupamento por bucket (`DiffusionDataset.buckets`/`bucket_dims`), `BucketBatchSampler` (batches uniformes por bucket, nada descartado, RNG com seed) e `build_dataloader`. Wiring em `flux.py`/`sd15.py`/`sdxl.py` (default `enable_bucket=True`); flux1 passou a derivar `img_ids` das dims reais do batch e o micro-conditioning do SDXL usa as dims do bucket quando ativo. Mock não usa dataset (inalterado). **84 testes pytest** (3 novos).

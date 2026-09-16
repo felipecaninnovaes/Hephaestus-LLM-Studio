@@ -38,6 +38,7 @@ import {
 import { applyAutotrackerBoxes } from "@/lib/autotracker";
 import { applyAutolabelCaptions } from "@/lib/autolabel";
 import { latestTrainingMetric } from "@/lib/jobMetrics";
+import { jobCapabilities } from "@/lib/jobCapabilities";
 import { ApiError } from "@/lib/api";
 import { copyToClipboard } from "@/lib/clipboard";
 import { formatBytes, formatDuration, formatRelativeTime } from "@/lib/format";
@@ -904,6 +905,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                       const jobExtraMetrics = metrics[job.id];
                       const jobExtraArtifacts = artifacts[job.id];
                       const latestMetric = latestTrainingMetric(jobExtraMetrics);
+                      const caps = jobCapabilities(job);
 
                       return (
                         <div
@@ -1081,18 +1083,34 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                   </div>
                                 </div>
 
-                                {/* Métricas ao vivo/finais se disponíveis */}
-                                {latestMetric && (
+                                {/* Métricas ao vivo/finais — regido por caps.metricChips */}
+                                {caps.metricChips === "progress" && (
+                                  <div className="grid grid-cols-1 gap-1.5 text-center">
+                                    <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
+                                      <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">Imagens processadas</span>
+                                      <span className="text-xs font-semibold text-zinc-200 font-mono tabular-nums">
+                                        {(() => {
+                                          const processed = job.step ?? (job.progress != null ? Math.round(job.progress * (job.step ?? 0)) : null);
+                                          if (processed != null) {
+                                            return `${processed}${job.step ? `/${job.step}` : ""}`;
+                                          }
+                                          return job.progress != null ? `${Math.round(job.progress * 100)}%` : "—";
+                                        })()}
+                                      </span>
+                                    </div>
+                                  </div>
+                                )}
+                                {caps.metricChips !== null && caps.metricChips !== "progress" && latestMetric && (
                                   <div>
                                     <div className="text-[10px] font-mono text-zinc-400 uppercase tracking-caps mb-1.5 flex items-center justify-between">
                                       <span>
-                                        {job.engine === "diffusion" || (job.kind as string) === "diffusion" || (job.kind as string) === "diffusion_train"
+                                        {caps.metricChips === "diffusion"
                                           ? "Métricas Difusão LoRA"
                                           : "Métricas"}
                                       </span>
                                       <span className="text-zinc-400">Epoch {latestMetric.epoch}</span>
                                     </div>
-                                    {job.engine === "diffusion" || (job.kind as string) === "diffusion" || (job.kind as string) === "diffusion_train" ? (
+                                    {caps.metricChips === "diffusion" ? (
                                       <div className="grid grid-cols-4 gap-1.5 text-center">
                                         <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
                                           <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">Loss</span>
@@ -1150,8 +1168,8 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                   </div>
                                 )}
 
-                                {/* Galeria de amostras visuais de validação (difusão) */}
-                                {jobExtraArtifacts && jobExtraArtifacts.length > 0 && (
+                                {/* Galeria de amostras visuais de validação — gated por caps */}
+                                {caps.samplesGallery && jobExtraArtifacts && jobExtraArtifacts.length > 0 && (
                                   <JobSamplesGallery
                                     jobId={job.id}
                                     artifacts={jobExtraArtifacts}
@@ -1211,8 +1229,8 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
 
                                 {/* Ações contextuais */}
                                 <div className="pt-2.5 border-t border-white/10 flex items-center justify-between gap-2 flex-wrap">
-                                  {/* AutoTracker: aplicar boxes */}
-                                  {job.kind === "autotracker" && job.status === "done" && (
+                                  {/* AutoTracker: aplicar boxes — gated por caps.applyAction */}
+                                  {caps.applyAction && job.kind === "autotracker" && job.status === "done" && (
                                     <div className="flex items-center gap-2 flex-wrap">
                                       <button
                                         type="button"
@@ -1244,8 +1262,8 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                     </div>
                                   )}
 
-                                  {/* AutoLabel: aplicar legendas */}
-                                  {job.kind === "autolabel" && job.status === "done" && (
+                                  {/* AutoLabel: aplicar legendas — gated por caps.applyAction */}
+                                  {caps.applyAction && job.kind === "autolabel" && job.status === "done" && (
                                     <div className="flex items-center gap-2 flex-wrap">
                                       <button
                                         type="button"
@@ -1278,8 +1296,8 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                     </div>
                                   )}
 
-                                  {/* Repetir treino para jobs finalizados/falhados */}
-                                  {!isActive && (job.engine === "diffusion" || job.engine === "yolo") && (
+                                  {/* Repetir treino para jobs finalizados/falhados — gated por caps.rerun */}
+                                  {caps.rerun && !isActive && (job.engine === "diffusion" || job.engine === "yolo") && (
                                     <button
                                       type="button"
                                       onClick={() => handleRerun(job)}

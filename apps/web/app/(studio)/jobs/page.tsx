@@ -13,6 +13,7 @@ import {
 import { applyAutotrackerBoxes } from "@/lib/autotracker";
 import { applyAutolabelCaptions } from "@/lib/autolabel";
 import { trainingMetrics } from "@/lib/jobMetrics";
+import { jobCapabilities } from "@/lib/jobCapabilities";
 import { ApiError } from "@/lib/api";
 import { showToast } from "@/components/studio/Toast";
 import ConfirmDialog from "@/components/studio/ConfirmDialog";
@@ -236,6 +237,12 @@ function JobsPageContent() {
   const selectedTrainingMetrics = useMemo(
     () => (selectedJob ? trainingMetrics(metrics[selectedJob.id] ?? []) : []),
     [selectedJob, metrics],
+  );
+
+  // AC-002: capacidades do job selecionado para gates de UI
+  const caps = useMemo(
+    () => (selectedJob ? jobCapabilities(selectedJob) : null),
+    [selectedJob],
   );
 
   // Carregar métricas e artefatos quando o selectedJob mudar
@@ -851,9 +858,8 @@ function JobsPageContent() {
                     </div>
                   )}
 
-                  {/* Métricas da Execução & Curvas de Convergência */}
-                  {(selectedJob.kind === "yolo_train" ||
-                    selectedTrainingMetrics.length > 0) && (
+                  {/* Métricas da Execução & Curvas de Convergência — regido por caps (AC-002) */}
+                  {caps && caps.convergenceChart && selectedTrainingMetrics.length > 0 && (
                     <div className="space-y-4 pt-3 border-t border-white/10">
                       <ConvergenceChart
                         metrics={selectedTrainingMetrics}
@@ -874,12 +880,12 @@ function JobsPageContent() {
                             </span>
                           </div>
                           <div className={`grid gap-2.5 ${
-                            selectedJob.engine === "diffusion" || (selectedJob.kind as string) === "diffusion"
+                            caps.metricChips === "diffusion"
                               ? "grid-cols-2 sm:grid-cols-4"
                               : "grid-cols-2 sm:grid-cols-3 lg:grid-cols-6"
                           }`}>
                             {(
-                              selectedJob.engine === "diffusion" || (selectedJob.kind as string) === "diffusion"
+                              caps.metricChips === "diffusion"
                                 ? ([
                                     ["loss", "Diffusion Loss", false],
                                     ["lr", "Learning Rate", false],
@@ -946,15 +952,35 @@ function JobsPageContent() {
                     </div>
                   )}
 
+                  {/* Chip único "Imagens processadas" para autolabel/autotracker (AC-002) */}
+                  {caps && caps.metricChips === "progress" && (
+                    <div className="pt-3 border-t border-white/10">
+                      <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10 inline-flex items-center gap-2">
+                        <span className="text-[10px] font-mono text-zinc-400 uppercase tracking-caps">Imagens processadas</span>
+                        <span className="text-xs font-semibold text-zinc-200 font-mono tabular-nums">
+                          {(() => {
+                            const processed = selectedJob.step ?? (selectedJob.progress != null ? Math.round(selectedJob.progress * (selectedJob.step ?? 0)) : null);
+                            if (processed != null) {
+                              return `${processed}${selectedJob.step ? `/${selectedJob.step}` : ""}`;
+                            }
+                            return selectedJob.progress != null ? `${Math.round(selectedJob.progress * 100)}%` : "—";
+                          })()}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Artefatos e Amostras Geradas */}
                   {artifacts[selectedJob.id] && artifacts[selectedJob.id].length > 0 && (
                     <div className="space-y-4 pt-3 border-t border-white/10">
-                      {/* Galeria de Amostras de Difusão */}
-                      <JobSamplesGallery
-                        jobId={selectedJob.id}
-                        artifacts={artifacts[selectedJob.id]}
-                        onDownload={(jId, art) => handleDownloadArtifact(jId, art)}
-                      />
+                      {/* Galeria de Amostras — gated por caps.samplesGallery (AC-002) */}
+                      {caps && caps.samplesGallery && (
+                        <JobSamplesGallery
+                          jobId={selectedJob.id}
+                          artifacts={artifacts[selectedJob.id]}
+                          onDownload={(jId, art) => handleDownloadArtifact(jId, art)}
+                        />
+                      )}
 
                       {/* Outros Artefatos Gerados */}
                       {artifacts[selectedJob.id].filter(
@@ -1031,9 +1057,9 @@ function JobsPageContent() {
                     </div>
                   )}
 
-                  {/* Ações do Job */}
-                  <div className="flex items-center justify-between gap-3 pt-2">
-                    {selectedJob.kind === "autotracker" && selectedJob.status === "done" && (
+                    {/* Ações do Job */}
+                    <div className="flex items-center justify-between gap-3 pt-2">
+                    {caps && caps.applyAction && selectedJob.kind === "autotracker" && selectedJob.status === "done" && (
                       <div className="flex items-center gap-3 flex-wrap">
                         <Button
                           type="button"
@@ -1070,7 +1096,7 @@ function JobsPageContent() {
                       </div>
                     )}
 
-                    {selectedJob.kind === "autolabel" && selectedJob.status === "done" && (
+                    {caps && caps.applyAction && selectedJob.kind === "autolabel" && selectedJob.status === "done" && (
                       <div className="flex items-center gap-3 flex-wrap">
                         <Button
                           type="button"
@@ -1108,8 +1134,8 @@ function JobsPageContent() {
                       </div>
                     )}
 
-                    {/* Ações para jobs finalizados de difusão ou YOLO */}
-                    {!isActive(selectedJob.status) &&
+                    {/* Ações para jobs finalizados de difusão ou YOLO — gated por caps.rerun (AC-002) */}
+                    {caps && caps.rerun && !isActive(selectedJob.status) &&
                       (selectedJob.engine === "diffusion" || selectedJob.engine === "yolo") && (
                         <Button
                           type="button"

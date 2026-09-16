@@ -5172,6 +5172,51 @@ async fn report_done_com_generated_segue_done() {
     assert_eq!(job.status, "done");
 }
 
+/// Exceção preservada (t7_ac006a_*, abort_em_voo): yolo_train que reporta
+/// done SEM artefatos segue done no nível report_job (não só na unidade).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn report_done_vazio_yolo_train_segue_done() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "done".into(),
+            progress: Some(1.0),
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: None,
+            meta_content: None,
+            phase: Some("completed".into()),
+            message: Some("Treino concluído".into()),
+        },
+    )
+    .await
+    .expect("report done vazio yolo_train");
+
+    let job = manager::get_job(&p, job_id).await.expect("get");
+    assert_eq!(job.status, "done");
+    assert_eq!(job.phase.as_deref(), Some("completed"));
+    assert_eq!(job.message.as_deref(), Some("Treino concluído"));
+}
+
 /// Meta corrupto → best-effort, 1 válida inserida.
 #[tokio::test]
 #[ignore = "requer Postgres (bash scripts/test-db.sh)"]

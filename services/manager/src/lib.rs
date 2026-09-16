@@ -1213,23 +1213,19 @@ pub async fn report_job(
                         reason = %reason,
                         "done recusado sem artefatos exigidos → failed/no_artifacts"
                     );
-                    sqlx::query("UPDATE jobs SET params = params || $2::jsonb WHERE id = $1")
-                        .bind(id)
-                        .bind(serde_json::json!({"error": err_code}))
-                        .execute(pool)
-                        .await
-                        .map_err(|e| {
-                            ManagerError::Internal(format!("merge no_artifacts error: {e}"))
-                        })?;
-                    sqlx::query("UPDATE jobs SET status = 'failed', finished_at = now(), phase = COALESCE($2, phase), message = $3 WHERE id = $1")
-                        .bind(id)
-                        .bind(&report.phase)
-                        .bind(&msg_pt)
-                        .execute(pool)
-                        .await
-                        .map_err(|e| {
-                            ManagerError::Internal(format!("set failed no_artifacts: {e}"))
-                        })?;
+                    // UPDATE único: merge do erro em params + transição failed.
+                    sqlx::query(
+                        "UPDATE jobs SET params = params || $2::jsonb, status = 'failed', \
+                         finished_at = now(), phase = COALESCE($3, phase), message = $4 \
+                         WHERE id = $1",
+                    )
+                    .bind(id)
+                    .bind(serde_json::json!({"error": err_code}))
+                    .bind(&report.phase)
+                    .bind(&msg_pt)
+                    .execute(pool)
+                    .await
+                    .map_err(|e| ManagerError::Internal(format!("set failed no_artifacts: {e}")))?;
                     return Ok(());
                 }
             }

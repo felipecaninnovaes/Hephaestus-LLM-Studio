@@ -174,9 +174,9 @@ export function deleteJob(jobId: string): Promise<JobDeletedResponse> {
   return apiFetch(`/api/jobs/${jobId}`, { method: "DELETE" });
 }
 
-/** POST /api/jobs/cleanup — limpa jobs terminais (AC-003). Body `{}` limpa todos os terminais. */
-export function cleanupJobs(params: JobCleanupRequest): Promise<JobCleanupResponse> {
-  return apiFetch("/api/jobs/cleanup", { method: "POST", body: params });
+/** POST /api/jobs/cleanup — limpeza em lote de jobs terminais (AC-003). */
+export function cleanupJobs(req: JobCleanupRequest): Promise<JobCleanupResponse> {
+  return apiFetch("/api/jobs/cleanup", { method: "POST", body: req });
 }
 
 /** GET /api/telemetry — telemetria do nó (CPU/RAM/VRAM/GPUs). */

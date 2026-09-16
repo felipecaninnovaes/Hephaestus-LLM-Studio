@@ -19,25 +19,54 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-16 (FATIA CLEANUP DE JOBS / AC-003 — FECHADA NA BRANCH, PENDENTE PUSH/MERGE)
+## Estado atual — 2026-09-16 (ACTION CENTER: AC-001..006 IMPLEMENTADOS EM 3 BRANCHES; AC-007 PENDENTE)
 
-- **REVIEW**: 1ª rodada BLOQUEIA (P1: modal "todos os terminais" sempre 400; P1: `Generation.jobId` não-nullable) → fixes `b730987`/`69ef232`/`645ffb8`/`44e1f9b` → re-auditoria **APROVA COM NITS** → nits `3304548`. Sweep corrigido no caminho: inclui `models.s3_key` órfãos e preserva gerações em trash (testes manager_db novos, 5/5 no banco efêmero).
-- **Checks de fechamento**: cargo fmt/check/test workspace verdes (456 lib/contract + manager_db via studio_test); `npm run build` 14/14; impeccable limpo nos arquivos da fatia. **Dívidas registradas (pré-existentes, fora da fatia)**: 3 anti-patterns `impeccable` em `AutotrackerReviewModal.tsx:222` e `JobProgressLive.tsx:86,168`; warning `dead_code inspect_container_ip` em orchestrator/daemon.rs; `studio` dev local está na migration 13 (>0012 do repo) — manager_db default falha contra ele, usar `scripts/test-db.sh`.
-- **Pendente do usuário**: push + PR + merge de `feat/jobs-cleanup` (inclui o `chore(agents)` do usuário na pilha). E2E manual de delete/cleanup no compose desejável antes do merge.
+- Plano: `docs/plano-action-center.md` (decisões 1–5 fechadas). Ramificações e verificação (tudo verde):
+  - **`feat/action-center-polish`** (esta branch, 9 commits `ccac092..1ce4296`): AC-001 manager `ORDER BY` + galeria
+    ordenada/colapsada com baseline separada; AC-005 mockups removidos (notificações ficcionais, rodapé "Sem
+    telemetria", JobLogViewer com 1 linha de boot real e timestamps sintéticos como "—"); AC-006-B filtro
+    `lib/jobMetrics.ts`; AC-004 deep links `?job=` (fix `?selected=` incl. TrainYoloModal), seleção↔URL
+    `router.replace`, modo foco `&focus=1` + botões Acompanhar/Sair-do-foco; AC-002 registry `lib/jobCapabilities.ts`
+    (matriz aprovada; chips "Imagens processadas" derivados de step/progress); AC-003 **UI** (lixeira por job terminal
+    com ConfirmDialog, `JobCleanupDialog`, `deleteJob`/`cleanupJobs`, toast com contagens). `tsc`+`npm run build` verdes.
+  - **`feat/jobs-cleanup`** (off main, `6c5217d..ede83ef`): AC-003 backend — manager `delete_job`/`cleanup_jobs`
+    (guarda terminal→409 `job_not_terminal`; migration **0012** gerações→SET NULL; expurga `models` do job; devolve
+    `objectKeys` exatas sem chaves da galeria) + BFF principal com sweep S3 por chave best-effort, wire camelCase,
+    openapi **0.27.0**. manager_db 111/111; principal 410 lib + 15 contract.
+  - **`feat/jobs-status-metrics-split`** (stacked sobre cleanup, `9836d5a..14e4ecc`): **ADR-0024** + AC-006-A —
+    orquestrador `is_training_metric` separa status×métrica na borda (contrato do engine intocado); report ganha
+    `phase`/`message` topo; manager persiste `jobs.phase`/`jobs.message` (migration **0013**); principal lê colunas;
+    openapi **0.28.0**; backend.md §9/§10 sync. orchestrator 117, manager_db 112, principal 410+15, compose ok.
+- **Ordem de merge**: polish → jobs-cleanup → status-metrics-split (conflito leve no drawer ao unir UI AC-003 com AC-001/002/004 — resolver no merge; migrations 0012/0013 dependem da ordem).
+- **Pendências**: (1) smoke E2E Chrome pós-rebuild das imagens (lixeira/cleanup reais, foco, chips autolabel, phase
+  real no drawer); (2) `docs/frontend.md` §10 p/ client fns+rotas UI (docs-sync rodou só backend); (3) @reviewer nas
+  3 branches; (4) **AC-007 NADA** — staging progress no canal criado pela ADR-0024 + cache MD5 conteudo-endereçado no
+  nó (design aprovado no plano §AC-007; `WeightRef.bytes`, eviction LRU `ORCH_CACHE_MAX_GB`, cache_hit, UI
+  preparing/dispatched) → branch `feat/node-content-cache` off main, próxima sessão.
+- **Custo**: sessão de 2026-09-16 queimou ~45M tokens de input (histórico reenviado por chamada + leituras de
+  arquivos inteiros + ANSI dos hooks). Retomar em sessão NOVA; usar graft/skeleton e offsets, não leituras completas.
 
-## Estado anterior — 2026-09-16 (FATIA CLEANUP DE JOBS / AC-003 — IMPLEMENTADA NA BRANCH, EM REVISÃO)
+## Estado anterior — 2026-09-16 (ACTION CENTER: plano antecipado em arquivo — NADA implementado)
 
-- **FATIA CLEANUP DE JOBS (AC-003) — branch `feat/jobs-cleanup` (a partir de `main` pós-merge do PR #30).** Exclusão de jobs terminais com sweep S3 por chaves exatas preservando a galeria. Commits: `6c5217d`+`33d1e5f` manager, `ede83ef` api (sessão anterior), `ba04977` chore(agents) do usuário, `4e752f5` feat(web), `08ae979` docs(sync).
-  - **Contrato**: OpenAPI 0.26.0 → **0.27.0** — `DELETE /api/jobs/{id}` (200 `JobDeletedResponse` | 404 | 409 `job_not_terminal` | 503) e `POST /api/jobs/cleanup` (`JobCleanupRequest{olderThanDays?,statuses?}` → `JobCleanupResponse{deleted,jobs[],objectKeys[]}`); internas `DELETE /internal/jobs/:id` e `POST /internal/jobs/cleanup` no manager.
-  - **Migration 0012**: `generations.job_id` → nullable `ON DELETE SET NULL` (galeria sobrevive ao expurgo do job).
-  - **Manager**: delete com guarda de estado (só terminais), cleanup em lote, sweep best-effort por chaves EXATAS (nunca prefixo — protege gerações), expurgo das linhas `models` derivadas do job.
-  - **API principal**: handlers `delete_job`/`cleanup_jobs`, wire camelCase, sweep best-effort pós-commit pós-200; `GET /api/generations` agora aceita `job_id` null.
-  - **UI**: botão "Excluir" (só terminal) + ConfirmDialog + toast com `modelsDeleted`/`generationsPreserved`; botão "Limpar antigos" + `CleanupJobsModal` (7/30/90 dias ou todos os terminais); `deleteJob`/`cleanupJobs` em `lib/jobs.ts`.
-  - **Verificações**: api-principal+manager 456 testes verdes (inclui contract); `npm run build` 14 rotas verde; impeccable limpo nos arquivos tocados (3 anti-patterns PRÉ-EXISTENTES em `AutotrackerReviewModal.tsx:222` e `JobProgressLive.tsx:86,168` — fora do escopo, candidatos a dívida).
-  - **Detalhes da entrega** (revistos e corrigidos, ver seção acima):
-  - **Nota de registro**: coordenacao.md estava desatualizada nesta retomada (última entrada era a fatia bucketing, já merged no PR #30; a AC-003 não estava registrada) — corrigido nesta sessão.
+- Usuário pediu análise+planejamento de 6 pontos do Action Center, sem implementar.
+  Entregue: **`docs/plano-action-center.md`** — causa-raiz provada por file:line para
+  AC-001 (amostras sem ordem/colapso; `get_job_artifacts` sem ORDER BY), AC-002 (painel
+  não-modular; chips zerados em AutoLabel), AC-003 (zero rotas de delete de jobs),
+  AC-004 (seleção fora da URL + deep link `?selected=` morto), AC-005 (notificações e
+  logs fabricados no drawer), AC-006 (mensagens de status do engine difusão fluem pelo
+  mesmo `metrics.jsonl`→orquestrador→manager→gráfico e viram "steps"; colisão
+  potencial `(epoch,step)` no upsert do manager). Sequência AC-1..AC-4 com donos e
+  **5 decisões fechadas pelo usuário (2026-09-16, todas "Sim" ao recomendado)** e
+  item adicional **AC-007** (progresso da sincronização de conteúdo no nó + cache
+  conteudo-endereçado; apurado: dataset/weights/LoRAs/custom são RE-BAIXADOS do
+  S3 a todo job — `orchestrator/src/lib.rs:1102-1242` — sem reuso entre jobs;
+  só o base model HF é cacheado). **Design do cache aprovado pelo usuário
+  (2026-09-16): mapeamento fixo conteudo-endereçado por MD5 no nó, verificação
+  de hash para reaproveitar, re-baixa só em alteração (plano AC-007 §2).**
+  Confirmar rebasing com o
+  branch `feat/enable-bucket`/`feat/aba-geracao` abertos antes de abrir AC-1.
 
-## Estado anterior — 2026-09-15 (FATIA BUCKETING POR ASPECT RATIO — MERGED PR #30)
+## Estado anterior — 2026-09-15 (FATIA BUCKETING POR ASPECT RATIO — IMPLEMENTADA NA BRANCH, AGUARDA REVISÃO)
 
 - **FATIA ENABLE BUCKET (branch `feat/enable-bucket`, criada a partir de `feat/aba-geracao`).** Pedido do usuário: implementar `enable_bucket: true` (padrão) no treino de LoRA de difusão (flux2) e na UI. Antes da fatia a opção não existia — todas as imagens eram esticadas para quadrado `resolução×resolução`.
   - **Engine (`engines/trainer-difusao`)**: `dataset.py` ganhou `_resolve_bucket_reso` (área ≈ `base_res²`, lados múltiplos de 64, min `base_res//2`, max `base_res*2`), agrupamento por bucket (`DiffusionDataset.buckets`/`bucket_dims`), `BucketBatchSampler` (batches uniformes por bucket, nada descartado, RNG com seed) e `build_dataloader`. Wiring em `flux.py`/`sd15.py`/`sdxl.py` (default `enable_bucket=True`); flux1 passou a derivar `img_ids` das dims reais do batch e o micro-conditioning do SDXL usa as dims do bucket quando ativo. Mock não usa dataset (inalterado). **84 testes pytest** (3 novos).

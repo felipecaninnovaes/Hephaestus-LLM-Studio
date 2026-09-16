@@ -2,6 +2,7 @@
 
 import { useId, useMemo, useState } from "react";
 import type { JobMetrics } from "@/types/studio";
+import { trainingMetrics } from "@/lib/jobMetrics";
 import { IconActivity, IconTrendingUp } from "@/components/icons";
 
 interface SparklineProps {
@@ -116,10 +117,12 @@ interface ConvergenceChartProps {
 }
 
 export function ConvergenceChart({
-  metrics,
+  metrics: rawMetrics,
   totalEpochs,
   isJobActive = false,
 }: ConvergenceChartProps) {
+  // AC-006-B: linhas de status/boot do engine não são pontos de treino.
+  const metrics = useMemo(() => trainingMetrics(rawMetrics), [rawMetrics]);
   const [tab, setTab] = useState<ChartTab>("all");
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
 

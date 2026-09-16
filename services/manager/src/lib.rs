@@ -880,12 +880,14 @@ pub async fn get_job_artifacts(
         return Err(ManagerError::NotFound);
     }
 
-    let rows: Vec<(Uuid, String, String, String, i64)> =
-        sqlx::query_as("SELECT id, kind, path, md5, bytes FROM job_artifacts WHERE job_id = $1")
-            .bind(job_id)
-            .fetch_all(pool)
-            .await
-            .map_err(|e| ManagerError::Internal(format!("list artifacts: {e}")))?;
+    let rows: Vec<(Uuid, String, String, String, i64)> = sqlx::query_as(
+        "SELECT id, kind, path, md5, bytes FROM job_artifacts WHERE job_id = $1 \
+             ORDER BY path, id",
+    )
+    .bind(job_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("list artifacts: {e}")))?;
 
     Ok(rows
         .into_iter()

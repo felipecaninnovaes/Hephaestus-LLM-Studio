@@ -695,7 +695,7 @@ export function predictErrorMessage(code: string): string {
 
 export interface Generation {
   id: string;
-  jobId: string;
+  jobId: string | null;
   filename: string;
   url: string | null;
   thumbUrl: string | null;

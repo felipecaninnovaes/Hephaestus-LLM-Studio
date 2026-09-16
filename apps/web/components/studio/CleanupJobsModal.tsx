@@ -35,9 +35,11 @@ export function CleanupJobsModal({ open, onClose, onSuccess }: Props) {
     setError(null);
     setBusy(true);
     try {
-      const res = await cleanupJobs({
-        olderThanDays: age === "all" ? null : Number(age),
-      });
+      const res = await cleanupJobs(
+        age === "all"
+          ? { statuses: ["done", "failed", "cancelled"] }
+          : { olderThanDays: Number(age) }
+      );
       if (res.deleted === 0) {
         showToast("Nenhum job elegível para limpeza.", "info");
       } else {

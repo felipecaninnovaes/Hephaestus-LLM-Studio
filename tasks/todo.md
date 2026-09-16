@@ -25,15 +25,20 @@ uma. Manter < 100 linhas; não duplicar docs — referenciar por seção.
 - **Fatia em andamento:** reestruturação do harness de agentes a partir da
   proposta auditada em `./tmp` (README §6 corrigido — ver plano abaixo).
   - [x] Branch aberta de `develop`
-  - [ ] Migrar estado ativo + arquivar `coordenacao.md`/`plano-3e` (este commit)
-  - [ ] `AGENTS.md` L0 + `docs/REPO_MAP.md` corrigidos (portas vs compose,
+  - [x] Migrar estado ativo + arquivar `coordenacao.md`/`plano-3e`
+  - [x] `AGENTS.md` L0 + `docs/REPO_MAP.md` corrigidos (portas vs compose,
         comandos uv, convenção de branch, ponteiro graft)
-  - [ ] `.agents/rules/` + `opencode.json` saneado (diff contra o atual:
-        MCPs/permissões a preservar; descriptions corrompidas fora)
-  - [ ] Dedup de skills (hephaestus-dev reconciliado, `.agent/` órfão removido)
-  - [ ] Saneamento de disco (`apps/web/graft`, `design-system.md`,
-        `.impeccable/critique`, `.ignore` ancorado em `/graft/`)
-  - [ ] @reviewer no diff + verificação final
+  - [x] `.agents/rules/` + `opencode.json` saneado (MCPs preservados; nits do
+        reviewer: denies docker restaurados, escalada reviewer-max no prompt)
+  - [x] Dedup de skills (hephaestus-dev reconciliado, `.agent/` órfão removido)
+  - [x] Saneamento de disco (`apps/web/graft`, `design-system.md`,
+        `.impeccable/critique`, `.ignore` ancorado em `/graft/` — nota: o
+        runtime do graft pode rescrever `!graft/` não-ancorado em refresh;
+        não travar briga, a árvore aninhada já não existe)
+  - [x] @reviewer no diff (APROVA COM NITS — nits P2 fechados: ponteiro ativo
+        em `docs/dividas.md` → `tasks/todo.md`)
+- **Pendência desta fatia:** mesclar em `develop` só com ordem do usuário
+  (revisão final humana dos 6 commits).
 
 ## Estado do produto (paralelo, NÃO bloqueado por esta fatia)
 

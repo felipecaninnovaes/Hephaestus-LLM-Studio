@@ -6,7 +6,7 @@ Engineering" (OpenAI, 2026-02-11): dívida como registro de primeira classe do
 repo, legível por qualquer agente sem contexto externo — paga continuamente em
 pequenas parcelas, não em rajadas.
 
-Separado de propósito: o estado de sessão/plano vive em `docs/coordenacao.md`
+Separado de propósito: o estado de sessão/plano vive em `tasks/todo.md`
 (volátil, reescrito por sessão); este arquivo é sistema de registro (permanente,
 versionado). O `coordenacao.md` referencia este arquivo e não o duplica.
 

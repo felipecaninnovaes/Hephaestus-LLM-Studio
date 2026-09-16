@@ -37,7 +37,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
         {label && (
           <label
             htmlFor={inputId}
-            className="tracking-caps mb-1.5 block font-mono text-[11px] font-medium uppercase text-zinc-300"
+            className="tracking-caps mb-1.5 block font-mono text-2xs font-medium uppercase text-zinc-300"
           >
             {label}
           </label>
@@ -66,12 +66,12 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
           )}
         </div>
         {error && (
-          <p role="alert" className="mt-1 font-mono text-[11px] text-rose-300">
+          <p role="alert" className="mt-1 font-mono text-2xs text-rose-300">
             {error}
           </p>
         )}
         {!error && hint && (
-          <p className="mt-1 font-mono text-[11px] text-zinc-500 leading-normal">
+          <p className="mt-1 font-mono text-2xs text-zinc-500 leading-normal">
             {hint}
           </p>
         )}

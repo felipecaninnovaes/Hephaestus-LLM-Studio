@@ -283,7 +283,7 @@ export const Select = forwardRef<SelectRefHandle, SelectProps<any>>(function Sel
 
   // Size styling
   const sizeClasses = {
-    sm: "h-8 text-[11px] px-2.5 py-1",
+    sm: "h-8 text-2xs px-2.5 py-1",
     default: "min-h-[38px] text-xs px-3.5 py-2",
     lg: "min-h-[44px] text-sm px-4 py-2.5",
   }[size];
@@ -318,7 +318,7 @@ export const Select = forwardRef<SelectRefHandle, SelectProps<any>>(function Sel
           id={`${selectId}-label`}
           htmlFor={selectId}
           onClick={() => triggerRef.current?.focus()}
-          className="tracking-caps mb-1.5 block font-mono text-[11px] font-medium uppercase text-zinc-300 select-none cursor-pointer"
+          className="tracking-caps mb-1.5 block font-mono text-2xs font-medium uppercase text-zinc-300 select-none cursor-pointer"
         >
           {label}
         </label>
@@ -433,7 +433,7 @@ export const Select = forwardRef<SelectRefHandle, SelectProps<any>>(function Sel
             className="max-h-60 overflow-y-auto overscroll-contain py-0.5 space-y-0.5 focus:outline-none scrollbar-thin"
           >
             {filteredOptions.length === 0 ? (
-              <li className="px-3 py-4 text-center font-mono text-[11px] text-zinc-500">
+              <li className="px-3 py-4 text-center font-mono text-2xs text-zinc-500">
                 {emptyText}
               </li>
             ) : (
@@ -479,12 +479,12 @@ export const Select = forwardRef<SelectRefHandle, SelectProps<any>>(function Sel
                       <div className="flex min-w-0 flex-col">
                         <span className="leading-snug">{opt.label}</span>
                         {opt.description && (
-                          <span className="truncate text-[11px] text-zinc-500">
+                          <span className="truncate text-2xs text-zinc-500">
                             {opt.description}
                           </span>
                         )}
                         {isDisabled && opt.disabledReason && (
-                          <span className="mt-0.5 truncate text-[11px] font-mono text-rose-400/80">
+                          <span className="mt-0.5 truncate text-2xs font-mono text-rose-400/80">
                             {opt.disabledReason}
                           </span>
                         )}
@@ -509,14 +509,14 @@ export const Select = forwardRef<SelectRefHandle, SelectProps<any>>(function Sel
 
       {/* Error message */}
       {error && (
-        <p role="alert" className="mt-1 font-mono text-[11px] text-rose-300">
+        <p role="alert" className="mt-1 font-mono text-2xs text-rose-300">
           {error}
         </p>
       )}
 
       {/* Help / hint message */}
       {!error && hint && (
-        <p className="mt-1 font-mono text-[11px] text-zinc-500 leading-normal">
+        <p className="mt-1 font-mono text-2xs text-zinc-500 leading-normal">
           {hint}
         </p>
       )}

@@ -118,7 +118,7 @@ export const GlassCardFooter = forwardRef<HTMLDivElement, GlassCardFooterProps>(
     return (
       <div
         ref={ref}
-        className={`mt-4 pt-3 border-t border-zinc-800/80 flex items-center justify-between gap-2 text-[11px] font-mono text-zinc-400 ${className}`.trim()}
+        className={`mt-4 pt-3 border-t border-zinc-800/80 flex items-center justify-between gap-2 text-2xs font-mono text-zinc-400 ${className}`.trim()}
         {...props}
       >
         {children}

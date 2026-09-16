@@ -12,7 +12,7 @@ export function Kbd({
   ...props
 }: KbdProps) {
   const sizeClasses =
-    size === "sm" ? "px-1 py-0.5 text-[10px]" : "px-1.5 py-0.5 text-xs";
+    size === "sm" ? "px-1 py-0.5 text-3xs" : "px-1.5 py-0.5 text-xs";
 
   return (
     <kbd

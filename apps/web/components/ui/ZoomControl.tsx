@@ -73,7 +73,7 @@ export function ZoomControl({
         size="sm"
         onClick={handleReset}
         disabled={value === resetValue}
-        className="text-[10px]"
+        className="text-3xs"
         title="Restaurar zoom para 100%"
       >
         Resetar 100%

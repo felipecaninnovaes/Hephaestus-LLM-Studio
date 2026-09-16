@@ -34,19 +34,19 @@ export interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {
 
 const VARIANT_CLASSES: Record<BadgeVariant, string> = {
   ready:
-    "border-[#34d399]/30 bg-[#34d399]/10 text-[#34d399] uppercase tracking-caps rounded-full px-2 py-0.5 text-[10px]",
+    "border-status-success/30 bg-status-success/10 text-status-success uppercase tracking-caps rounded-full px-2 py-0.5 text-3xs",
   alert:
-    "border-amber-400/30 bg-amber-400/10 text-amber-300 uppercase tracking-caps rounded-full px-2 py-0.5 text-[10px]",
+    "border-amber-400/30 bg-amber-400/10 text-amber-300 uppercase tracking-caps rounded-full px-2 py-0.5 text-3xs",
   info:
-    "border-cyan-400/30 bg-cyan-400/10 text-cyan-300 uppercase tracking-caps rounded-full px-2 py-0.5 text-[10px]",
+    "border-cyan-400/30 bg-cyan-400/10 text-cyan-300 uppercase tracking-caps rounded-full px-2 py-0.5 text-3xs",
   danger:
-    "border-rose-500/30 bg-rose-500/10 text-rose-300 uppercase tracking-caps rounded-full px-2 py-0.5 text-[10px]",
+    "border-rose-500/30 bg-rose-500/10 text-rose-300 uppercase tracking-caps rounded-full px-2 py-0.5 text-3xs",
   telemetry:
-    "border-white/10 bg-black/40 text-zinc-300 rounded-full px-2.5 py-1 text-[11px]",
+    "border-white/10 bg-black/40 text-zinc-300 rounded-full px-2.5 py-1 text-2xs",
   brand:
-    "border-brand-500/35 bg-brand-500/10 text-brand-400 uppercase tracking-caps rounded-full px-3 py-1 text-[11px]",
+    "border-brand-500/35 bg-brand-500/10 text-brand-400 uppercase tracking-caps rounded-full px-3 py-1 text-2xs",
   mono:
-    "border-zinc-800 bg-zinc-900 text-zinc-300 rounded px-2 py-0.5 text-[10px]",
+    "border-zinc-800 bg-zinc-900 text-zinc-300 rounded px-2 py-0.5 text-3xs",
 };
 
 export const Badge = forwardRef<HTMLSpanElement, BadgeProps>(

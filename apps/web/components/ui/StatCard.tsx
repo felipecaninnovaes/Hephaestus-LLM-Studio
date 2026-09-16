@@ -51,7 +51,7 @@ export function StatCard({
               {icon}
             </span>
           )}
-          <span className="font-mono text-[11px] font-semibold tracking-[0.08em] uppercase truncate">
+          <span className="font-mono text-2xs font-semibold tracking-[0.08em] uppercase truncate">
             {label}
           </span>
         </div>

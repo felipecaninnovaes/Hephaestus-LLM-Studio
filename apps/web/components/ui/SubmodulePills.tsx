@@ -67,7 +67,7 @@ export function SubmodulePills<T extends string = string>({
               {item.icon}
               <span className="truncate">{item.label}</span>
               {item.count != null && (
-                <span className="font-mono text-[11px] opacity-70">
+                <span className="font-mono text-2xs opacity-70">
                   {item.count}
                 </span>
               )}

@@ -19,7 +19,13 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-16 (FATIA CLEANUP DE JOBS / AC-003 — IMPLEMENTADA NA BRANCH, EM REVISÃO)
+## Estado atual — 2026-09-16 (FATIA CLEANUP DE JOBS / AC-003 — FECHADA NA BRANCH, PENDENTE PUSH/MERGE)
+
+- **REVIEW**: 1ª rodada BLOQUEIA (P1: modal "todos os terminais" sempre 400; P1: `Generation.jobId` não-nullable) → fixes `b730987`/`69ef232`/`645ffb8`/`44e1f9b` → re-auditoria **APROVA COM NITS** → nits `3304548`. Sweep corrigido no caminho: inclui `models.s3_key` órfãos e preserva gerações em trash (testes manager_db novos, 5/5 no banco efêmero).
+- **Checks de fechamento**: cargo fmt/check/test workspace verdes (456 lib/contract + manager_db via studio_test); `npm run build` 14/14; impeccable limpo nos arquivos da fatia. **Dívidas registradas (pré-existentes, fora da fatia)**: 3 anti-patterns `impeccable` em `AutotrackerReviewModal.tsx:222` e `JobProgressLive.tsx:86,168`; warning `dead_code inspect_container_ip` em orchestrator/daemon.rs; `studio` dev local está na migration 13 (>0012 do repo) — manager_db default falha contra ele, usar `scripts/test-db.sh`.
+- **Pendente do usuário**: push + PR + merge de `feat/jobs-cleanup` (inclui o `chore(agents)` do usuário na pilha). E2E manual de delete/cleanup no compose desejável antes do merge.
+
+## Estado anterior — 2026-09-16 (FATIA CLEANUP DE JOBS / AC-003 — IMPLEMENTADA NA BRANCH, EM REVISÃO)
 
 - **FATIA CLEANUP DE JOBS (AC-003) — branch `feat/jobs-cleanup` (a partir de `main` pós-merge do PR #30).** Exclusão de jobs terminais com sweep S3 por chaves exatas preservando a galeria. Commits: `6c5217d`+`33d1e5f` manager, `ede83ef` api (sessão anterior), `ba04977` chore(agents) do usuário, `4e752f5` feat(web), `08ae979` docs(sync).
   - **Contrato**: OpenAPI 0.26.0 → **0.27.0** — `DELETE /api/jobs/{id}` (200 `JobDeletedResponse` | 404 | 409 `job_not_terminal` | 503) e `POST /api/jobs/cleanup` (`JobCleanupRequest{olderThanDays?,statuses?}` → `JobCleanupResponse{deleted,jobs[],objectKeys[]}`); internas `DELETE /internal/jobs/:id` e `POST /internal/jobs/cleanup` no manager.
@@ -28,7 +34,7 @@ ser interrompido no meio de uma.
   - **API principal**: handlers `delete_job`/`cleanup_jobs`, wire camelCase, sweep best-effort pós-commit pós-200; `GET /api/generations` agora aceita `job_id` null.
   - **UI**: botão "Excluir" (só terminal) + ConfirmDialog + toast com `modelsDeleted`/`generationsPreserved`; botão "Limpar antigos" + `CleanupJobsModal` (7/30/90 dias ou todos os terminais); `deleteJob`/`cleanupJobs` em `lib/jobs.ts`.
   - **Verificações**: api-principal+manager 456 testes verdes (inclui contract); `npm run build` 14 rotas verde; impeccable limpo nos arquivos tocados (3 anti-patterns PRÉ-EXISTENTES em `AutotrackerReviewModal.tsx:222` e `JobProgressLive.tsx:86,168` — fora do escopo, candidatos a dívida).
-  - **Pendente**: review @reviewer do diff completo; E2E manual de delete/cleanup no compose (desejável); push+PR+merge pelo usuário.
+  - **Detalhes da entrega** (revistos e corrigidos, ver seção acima):
   - **Nota de registro**: coordenacao.md estava desatualizada nesta retomada (última entrada era a fatia bucketing, já merged no PR #30; a AC-003 não estava registrada) — corrigido nesta sessão.
 
 ## Estado anterior — 2026-09-15 (FATIA BUCKETING POR ASPECT RATIO — MERGED PR #30)

@@ -3,6 +3,7 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { getImage, putCaption } from "@/lib/images";
+import { copyToClipboard } from "@/lib/clipboard";
 import { Button } from "@/components/ui/Button";
 import {
   IconX,
@@ -110,7 +111,7 @@ export function ImageQuickLookModal({
   if (!open || !currentItem) return null;
 
   function copyText(text: string) {
-    navigator.clipboard.writeText(text);
+    void copyToClipboard(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   }

@@ -5,6 +5,7 @@ import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { IconCheck, IconAlertTriangle, IconTrash, IconCopy } from "@/components/icons";
 import type { UploadResultItem } from "@/types/studio";
+import { copyToClipboard } from "@/lib/clipboard";
 
 export interface UploadAuditModalProps {
   open: boolean;
@@ -25,7 +26,7 @@ export function UploadAuditModal({
   const rejected = results.filter((r) => r.status === "rejected" || r.status === "failed");
 
   function copyText(text: string, key: string) {
-    navigator.clipboard.writeText(text);
+    void copyToClipboard(text);
     setCopiedKey(key);
     setTimeout(() => setCopiedKey(null), 1500);
   }

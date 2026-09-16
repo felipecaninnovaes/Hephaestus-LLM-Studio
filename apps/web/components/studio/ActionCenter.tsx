@@ -38,6 +38,7 @@ import {
 import { applyAutotrackerBoxes } from "@/lib/autotracker";
 import { applyAutolabelCaptions } from "@/lib/autolabel";
 import { ApiError } from "@/lib/api";
+import { copyToClipboard } from "@/lib/clipboard";
 import { formatBytes, formatDuration, formatRelativeTime } from "@/lib/format";
 import { autotrackerErrorMessage, autolabelErrorMessage } from "@/types/studio";
 import type {
@@ -1208,7 +1209,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                       <button
                                         type="button"
                                         onClick={() => {
-                                          void navigator.clipboard.writeText(job.error || job.queueReason || "");
+                                          void copyToClipboard(job.error || job.queueReason || "");
                                           showToast("Traceback copiado para a área de transferência", "info");
                                         }}
                                         className="text-[10px] text-rose-400 hover:text-rose-200 underline cursor-pointer"

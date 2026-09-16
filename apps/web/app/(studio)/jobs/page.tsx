@@ -12,6 +12,7 @@ import {
 } from "@/lib/jobs";
 import { applyAutotrackerBoxes } from "@/lib/autotracker";
 import { applyAutolabelCaptions } from "@/lib/autolabel";
+import { trainingMetrics } from "@/lib/jobMetrics";
 import { ApiError } from "@/lib/api";
 import { showToast } from "@/components/studio/Toast";
 import ConfirmDialog from "@/components/studio/ConfirmDialog";
@@ -189,6 +190,13 @@ function JobsPageContent() {
 
   const isSelectedActive = selectedJob ? isActive(selectedJob.status) : false;
   const telemetry = useJobTelemetry(isSelectedActive ? selectedJob?.id : null);
+
+  // AC-006-B: pontos reais de métrica de treino do job selecionado
+  // (linhas de status/boot do engine ficam só no log, nunca no gráfico/chips)
+  const selectedTrainingMetrics = useMemo(
+    () => (selectedJob ? trainingMetrics(metrics[selectedJob.id] ?? []) : []),
+    [selectedJob, metrics],
+  );
 
   // Carregar métricas e artefatos quando o selectedJob mudar
   useEffect(() => {
@@ -778,24 +786,24 @@ function JobsPageContent() {
 
                   {/* Métricas da Execução & Curvas de Convergência */}
                   {(selectedJob.kind === "yolo_train" ||
-                    (metrics[selectedJob.id] && metrics[selectedJob.id].length > 0)) && (
+                    selectedTrainingMetrics.length > 0) && (
                     <div className="space-y-4 pt-3 border-t border-white/10">
                       <ConvergenceChart
-                        metrics={metrics[selectedJob.id] || []}
+                        metrics={selectedTrainingMetrics}
                         totalEpochs={selectedJob.epoch || 100}
                         isJobActive={selectedJob.status === "running"}
                       />
 
-                      {metrics[selectedJob.id] && metrics[selectedJob.id].length > 0 && (
+                      {selectedTrainingMetrics.length > 0 && (
                         <div className="space-y-2">
                           <div className="flex items-center justify-between">
                             <h3 className="font-mono text-[11px] font-semibold uppercase tracking-caps text-zinc-300">
                               Métricas (Epoch{" "}
-                              {metrics[selectedJob.id]![metrics[selectedJob.id]!.length - 1].epoch}
+                              {selectedTrainingMetrics[selectedTrainingMetrics.length - 1].epoch}
                               )
                             </h3>
                             <span className="font-mono text-[11px] text-zinc-400">
-                              {metrics[selectedJob.id]!.length} checkpoint(s)
+                              {selectedTrainingMetrics.length} checkpoint(s)
                             </span>
                           </div>
                           <div className={`grid gap-2.5 ${
@@ -820,7 +828,7 @@ function JobsPageContent() {
                                     ["epoch", "Epochs", false],
                                   ] as const)
                             ).map(([key, label, isPercent]) => {
-                              const jobMetrics = metrics[selectedJob.id]!;
+                              const jobMetrics = selectedTrainingMetrics;
                               const last = jobMetrics[jobMetrics.length - 1];
                               const val = last[key as keyof JobMetricsType];
                               const isPrimary = key === "map50" || key === "loss";

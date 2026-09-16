@@ -37,6 +37,7 @@ import {
 } from "@/lib/jobs";
 import { applyAutotrackerBoxes } from "@/lib/autotracker";
 import { applyAutolabelCaptions } from "@/lib/autolabel";
+import { latestTrainingMetric } from "@/lib/jobMetrics";
 import { ApiError } from "@/lib/api";
 import { copyToClipboard } from "@/lib/clipboard";
 import { formatBytes, formatDuration, formatRelativeTime } from "@/lib/format";
@@ -902,10 +903,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                       const duration = formatDuration(job.createdAt, job.finishedAt);
                       const jobExtraMetrics = metrics[job.id];
                       const jobExtraArtifacts = artifacts[job.id];
-                      const latestMetric =
-                        jobExtraMetrics && jobExtraMetrics.length > 0
-                          ? jobExtraMetrics[jobExtraMetrics.length - 1]
-                          : null;
+                      const latestMetric = latestTrainingMetric(jobExtraMetrics);
 
                       return (
                         <div

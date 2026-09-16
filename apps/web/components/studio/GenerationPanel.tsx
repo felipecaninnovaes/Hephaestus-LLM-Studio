@@ -886,7 +886,11 @@ export default function GenerationPanel() {
               progress={telemetry.progress || activeJob?.progress || 0}
               vramUsedGb={telemetry.vramUsedGb ?? activeJob?.vramUsedGb}
               step={telemetry.step ?? activeJob?.step}
-              totalSteps={telemetry.totalSteps ?? steps}
+              /* Contador de IMAGENS do batch (telemetry/job). Nunca usa `steps`
+                 do sampler do form — semânticas diferentes; sem valor, o
+                 contador some e resta barra/mensagem. totalSteps só vem do
+                 canal SSE; JobResponse do polling não tem o campo. */
+              totalSteps={telemetry.totalSteps ?? null}
               isLive={telemetry.isLive}
               isFinished={telemetry.isFinished}
             />

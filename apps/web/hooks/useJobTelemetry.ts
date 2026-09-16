@@ -65,6 +65,24 @@ export function useJobTelemetry(
       return;
     }
 
+    /* Novo job = estado zerado: sem isso a mensagem terminal do job anterior
+       ("Geração finalizada… N/N imagens", isFinished, progress 1) congelava
+       sobre o job novo até os primeiros eventos chegarem. */
+    setPhase(null);
+    setPhaseMessage(null);
+    setProgress(0);
+    setVramUsedGb(null);
+    setStep(null);
+    setTotalSteps(null);
+    setEpoch(null);
+    setTotalEpochs(null);
+    setMetrics(null);
+    setStatus(null);
+    setIsLive(false);
+    setIsFinished(false);
+    setError(null);
+    setLastEvent(null);
+
     let isClosed = false;
 
     function applyEvent(ev: JobTelemetryEvent, terminal = false) {
@@ -97,16 +115,26 @@ export function useJobTelemetry(
         try {
           const j = await getJob(jobId as string);
           setStatus(j.status);
-          const ev: JobTelemetryEvent = {
+          /* Polling (fallback sem SSE): propaga só o que o job informa.
+             JobResponse NÃO tem totalSteps/totalEpochs (só o SSE live tem) —
+             sem eles o contador de imagens some em vez de mentir. Spreads
+             condicionais evitam piscar contadores com nulls entre polls.
+             Terminal `done` sem progress: fixa 1 (failed/cancelled mantêm
+             o último valor; applyEvent ignora `undefined`). */
+          const isTerm = ["done", "failed", "cancelled"].includes(j.status);
+          const ev = {
             timestamp: new Date().toISOString(),
             phase: j.phase || j.status,
             phaseMessage: j.phaseMessage,
-            progress: j.progress || 0,
-            step: j.step,
-            epoch: j.epoch,
-            vramUsedGb: j.vramUsedGb,
-          };
-          const isTerm = ["done", "failed", "cancelled"].includes(j.status);
+            ...(typeof j.progress === "number" && Number.isFinite(j.progress)
+              ? { progress: j.progress }
+              : j.status === "done"
+                ? { progress: 1 }
+                : {}),
+            ...(j.step != null ? { step: j.step } : {}),
+            ...(j.epoch != null ? { epoch: j.epoch } : {}),
+            ...(j.vramUsedGb != null ? { vramUsedGb: j.vramUsedGb } : {}),
+          } as JobTelemetryEvent;
           applyEvent(ev, isTerm);
           if (isTerm) {
             if (pollTimerRef.current) {

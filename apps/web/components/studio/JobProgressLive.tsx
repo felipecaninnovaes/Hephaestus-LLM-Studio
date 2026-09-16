@@ -2,6 +2,12 @@
 
 import React from "react";
 
+/**
+ * Contadores de IMAGENS do batch de geração: `step` é 0-based da engine
+ * (exibido 1-based como `step + 1`), `totalSteps` o tamanho do batch.
+ * NÃO são training-steps/epochs do YOLO — nunca repassar telemetria de
+ * treino sem conversão.
+ */
 export interface JobProgressLiveProps {
   phase?: string | null;
   phaseMessage?: string | null;
@@ -132,10 +138,12 @@ export function JobProgressLive({
             </span>
           )}
 
-          {/* Step / Epoch Counters */}
-          {step !== null && step !== undefined && totalSteps && (
+          {/* Step / Epoch Counters — step/totalSteps são o contador de IMAGENS
+              do batch (0-based da engine; exibe 1-based). Só renderiza quando
+              totalSteps veio da telemetry/job; sem ele, mostra só barra/mensagem. */}
+          {step !== null && step !== undefined && totalSteps !== null && totalSteps !== undefined && totalSteps > 0 && (
             <span className="hidden sm:inline-block font-mono text-2xs text-zinc-400 bg-white/[0.03] border border-white/5 px-2 py-0.5 rounded">
-              Passo {step}/{totalSteps}
+              Imagem {step + 1}/{totalSteps}
             </span>
           )}
           {epoch !== null && epoch !== undefined && epoch > 0 && (

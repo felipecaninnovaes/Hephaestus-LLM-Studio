@@ -43,6 +43,7 @@ import {
   clearGeracaoForm,
   createDefaultGeracaoForm,
   loadGeracaoForm,
+  notifyGeracaoCompleted,
   saveGeracaoForm,
 } from "@/lib/geracao-storage";
 
@@ -483,6 +484,9 @@ export default function GenerationPanel() {
               ...newItems.filter((n) => !prev.some((h) => h.jobId === n.jobId && h.batchIndex === n.batchIndex)),
               ...prev,
             ]);
+            /* Slice F2/002: sinal cross-tab para a Galeria (outra aba).
+               `storage` cruza abas; CustomEvent não. try/catch dentro. */
+            notifyGeracaoCompleted(job.id);
           } else {
             // Fallback: single image
             const imgUrl = await getGeneratedImageUrl(job.id);
@@ -507,6 +511,8 @@ export default function GenerationPanel() {
               setBatchResults([singleItem]);
               setCurrentDisplayItem(singleItem);
               setHistory((prev) => [singleItem, ...prev.filter((h) => h.jobId !== singleItem.jobId)]);
+              /* Slice F2/002: sinal cross-tab para a Galeria (fallback single). */
+              notifyGeracaoCompleted(job.id);
             }
           }
 

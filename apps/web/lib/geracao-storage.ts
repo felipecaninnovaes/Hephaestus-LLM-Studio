@@ -170,3 +170,46 @@ export function clearGeracaoForm(): void {
     /* noop */
   }
 }
+
+/* ── Marker de conclusão (Slice F2/002) ──
+   Canal cross-tab Gerar → Galeria: o caso de uso real são DUAS ABAS do
+   navegador (uma em Gerar, outra em Galeria). `window.CustomEvent` não
+   cruza abas; o evento `storage` do localStorage cruza — por isso ele é
+   o canal primário. O Panel grava; a Gallery escuta `storage` + refetch
+   em `visibilitychange`/`focus` (cobre mesma-aba, onde `storage` não
+   dispara na aba de origem). Valor JSON { completedAt, jobId }. */
+
+export const GERACAO_COMPLETED_KEY = "geracao:lastCompletedAt";
+
+export interface GeracaoCompletedMarker {
+  completedAt: string;
+  jobId: string;
+}
+
+export function notifyGeracaoCompleted(jobId: string): void {
+  try {
+    const marker: GeracaoCompletedMarker = {
+      completedAt: new Date().toISOString(),
+      jobId,
+    };
+    window.localStorage.setItem(GERACAO_COMPLETED_KEY, JSON.stringify(marker));
+  } catch {
+    /* storage indisponível/cheio — galeria cobre via focus/visibility */
+  }
+}
+
+export function readGeracaoCompletedMarker(): GeracaoCompletedMarker | null {
+  try {
+    const raw = window.localStorage.getItem(GERACAO_COMPLETED_KEY);
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const rec = parsed as Record<string, unknown>;
+    if (typeof rec.completedAt !== "string" || typeof rec.jobId !== "string") {
+      return null;
+    }
+    return { completedAt: rec.completedAt, jobId: rec.jobId };
+  } catch {
+    return null;
+  }
+}

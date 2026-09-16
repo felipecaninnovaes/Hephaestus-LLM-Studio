@@ -31,6 +31,7 @@ import {
   exportGenerations,
   getGenerationDataUrl,
 } from "@/lib/generations";
+import { GERACAO_COMPLETED_KEY } from "@/lib/geracao-storage";
 import type { Generation } from "@/types/studio";
 import CompareSlider from "./CompareSlider";
 
@@ -152,6 +153,85 @@ export default function GenerationGallery() {
     observer.observe(el);
     return () => observer.disconnect();
   }, [loading, loadingMore, items.length, total, loadMore]);
+
+  /* ── Refresh silencioso (Slice F2/002) ──
+     Recarrega o intervalo já carregado (limit = max(PAGE_LIMIT, N atual),
+     offset 0) para que imagens novas façam prepend sem resetar scroll
+     (não toca em scrollTop; o container mantém a posição) e sem perder
+     paginação/infinite-scroll. Seleção preservada por id existente. Sem
+     setInterval permanente: o gatilho é evento, não polling. */
+  const refreshingRef = useRef(false);
+  const lastRefreshRef = useRef(0);
+  const itemsLengthRef = useRef(0);
+  const loadingRef = useRef(false);
+  const loadingMoreRef = useRef(false);
+  loadingRef.current = loading;
+  loadingMoreRef.current = loadingMore;
+
+  useEffect(() => {
+    itemsLengthRef.current = items.length;
+  }, [items.length]);
+
+  const refreshGallery = useCallback(async () => {
+    /* Cooldown 5s: `storage` + `focus`/`visibilitychange` costumam chegar
+       juntos ao trocar de aba — a 2ª chamada seria um fetch redundante. */
+    const now = Date.now();
+    if (refreshingRef.current) return;
+    if (loadingRef.current || loadingMoreRef.current) return;
+    if (now - lastRefreshRef.current < 5000) return;
+    refreshingRef.current = true;
+    lastRefreshRef.current = now;
+    try {
+      // openapi clamp 1..200; sem teto, lista truncaria e podaria seleção.
+      // TODO(filtros): propagar baseModel/quantization ao refresh se a UI de filtros existir
+      const limit = Math.min(200, Math.max(PAGE_LIMIT, itemsLengthRef.current));
+      const res = await listGenerations({ limit, offset: 0, deleted: false });
+      setItems(res.items);
+      setTotal(res.total);
+      setSelectedIds((prev) => {
+        if (prev.size === 0) return prev;
+        const alive = new Set(res.items.map((i) => i.id));
+        let dropped = false;
+        const next = new Set<string>();
+        for (const id of prev) {
+          if (alive.has(id)) next.add(id);
+          else dropped = true;
+        }
+        return dropped ? next : prev;
+      });
+    } catch {
+      /* refresh silencioso: sem toast para não spammar aba em background */
+    } finally {
+      refreshingRef.current = false;
+    }
+  }, []);
+
+  /* ── Canal primário cross-tab: evento `storage` cruza abas (CustomEvent
+     não). Dispara quando o Panel grava `geracao:lastCompletedAt`. ── */
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === GERACAO_COMPLETED_KEY) void refreshGallery();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [refreshGallery]);
+
+  /* ── Mesma-aba: `storage` não dispara na aba de origem; cobre via
+     foco/visibilidade. Mount já recarrega via loadInitial. ── */
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void refreshGallery();
+    };
+    const onFocus = () => {
+      void refreshGallery();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [refreshGallery]);
 
   /* ── Selection handlers ── */
   const toggleSelect = useCallback((id: string) => {

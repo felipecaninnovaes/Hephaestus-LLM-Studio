@@ -128,6 +128,7 @@ impl JobTelemetryEvent {
                 "done" => "completed".to_string(),
                 "failed" => "error".to_string(),
                 "cancelled" => "cancelled".to_string(),
+                // espelha to_job_response: status desconhecido ecoa cru.
                 _ => job.status.clone(),
             });
         let progress = job
@@ -426,7 +427,8 @@ fn to_job_response(job: crate::jobs::manager_client::InternalJob) -> JobResponse
         "done" => Some("completed".into()),
         "failed" => Some("error".into()),
         "cancelled" => Some("cancelled".into()),
-        _ => None,
+        // espelha from_job_response: status desconhecido ecoa cru (CHECK fecha o domínio, sem status real fora dos mapeados).
+        _ => Some(job.status.clone()),
     });
     let phase_message = job.message.clone();
     // AC-006-A D4: vram_used_gb continua derivado da última métrica.

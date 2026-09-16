@@ -4223,7 +4223,7 @@ components:
           description: "Momento da finalização (null enquanto ativo)."
         phase:
           type: [string, "null"]
-          description: "Fase atual da execução (ADR-0021 D0, ex.: downloading, quantizing, training, generating, done, error)."
+          description: "Fase atual da execução (ADR-0021 D0, ex.: downloading, quantizing, training, generating, completed, error)."
         phaseMessage:
           type: [string, "null"]
           description: "Mensagem amigável legível da fase atual. Origem: coluna jobs.message (ADR-0024), não derivada de metrics."

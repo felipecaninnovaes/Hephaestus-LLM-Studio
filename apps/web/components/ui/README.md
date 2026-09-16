@@ -1,4 +1,4 @@
-# Biblioteca de Componentes UI — Hephaestus LLM Studio (Arcane UI v2.1)
+# Biblioteca de Componentes UI — Hephaestus LLM Studio (Arcane UI v2.2)
 
 > **Localização:** `apps/web/components/ui/`  
 > **Importação:** `import { Button, Badge, GlassCard, ... } from "@/components/ui";`
@@ -33,6 +33,31 @@ Esta pasta reúne os componentes atômicos e primitivas do Design System, desenv
 | **[`DropOverlay`](./DropOverlay.tsx)** | `DropOverlay.tsx` | Overlay de drag & drop com borda tracejada violeta e feedback visual em backdrop-blur, acompanhado do hook `useFileDrop`. |
 | **[`ZoomControl`](./ZoomControl.tsx)** | `ZoomControl.tsx` | Barra flutuante em `.glass-menu` para controle de escala e zoom de canvas interativos com indicador percentual mono e reset 100%. |
 | **[`Kbd`](./Kbd.tsx)** | `Kbd.tsx` | Elemento atômico para indicação de atalhos de teclado (hotkeys) com estilo mono padronizado. |
+| **[`Spinner`](./Spinner.tsx)** | `Spinner.tsx` | Indicador circular canônico de carregamento; tamanho livre via `className` (ex.: `size-3`…`size-8`), tom via `tone` (`brand`, `current`, `white`). Usado internamente por `Button` (loading) e `SearchInput`. |
+
+---
+
+## Design Tokens (`@theme` em `app/globals.css`)
+
+**Cores semânticas de status** — use sempre a utility do token, nunca hex literal em `className`:
+
+| Utility | Valor | Quando usar |
+|---|---|---|
+| `*-status-success` | `#34d399` | Sucesso, progresso concluído, classe 1 |
+| `*-status-alert` | `#f59e0b` | Pausa, alerta de threshold, classe 2 |
+| `*-status-danger` | `#ef4444` | Erro, aborto, exclusão, classe 3 |
+| `*-status-telemetry` | `#06b6d4` | Latência/telemetria, selos AutoTracker, classe 4 |
+| `*-status-runtime` | `#eab308` | Indicador de runtime Python/PyTorch |
+
+Aceitam opacidade (`bg-status-alert/15`, `border-status-danger/30`). Tons claros de texto sobre véus (`amber-200/300/400`) são tinturas permitidas; o tom-base `amber-500` foi unificado a `status-alert`.
+
+**Escala micro-tipográfica de dados** — substitui os antigos `text-[11px]/[10px]/[9px]`:
+
+| Utility | Valor | Uso |
+|---|---|---|
+| `text-2xs` | 11px | Captions compactas, logs, labels de toolbars |
+| `text-3xs` | 10px | Micro-caps mono, `Kbd`, badges |
+| `text-4xs` | 9px | Tags de canvas BBox, badges pico |
 
 ---
 

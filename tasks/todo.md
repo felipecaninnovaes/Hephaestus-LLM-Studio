@@ -19,34 +19,34 @@ uma. Manter < 100 linhas; não duplicar docs — referenciar por seção.
    `docs/backend.md` §9/§10, `docs/frontend.md` §10, `docs/repo-estrutura.md`
    (ordem de fatias), `docs/dividas.md` e os ADRs em `docs/adr/`.
 
-## Estado atual — 2026-09-16 (fatia viva: harness restructure)
+## Estado atual — 2026-09-16 (fatia viva: design system web)
 
-- **Branch de trabalho:** `chore/harness-restructure` (off `develop`, 16/09).
-- **Fatia em andamento:** reestruturação do harness de agentes a partir da
-  proposta auditada em `./tmp` (README §6 corrigido — ver plano abaixo).
-  - [x] Branch aberta de `develop`
-  - [x] Migrar estado ativo + arquivar `coordenacao.md`/`plano-3e`
-  - [x] `AGENTS.md` L0 + `docs/REPO_MAP.md` corrigidos (portas vs compose,
-        comandos uv, convenção de branch, ponteiro graft)
-  - [x] `.agents/rules/` + `opencode.json` saneado (MCPs preservados; nits do
-        reviewer: denies docker restaurados, escalada reviewer-max no prompt)
-  - [x] Dedup de skills (hephaestus-dev reconciliado, `.agent/` órfão removido)
-  - [x] Saneamento de disco (`apps/web/graft`, `design-system.md`,
-        `.impeccable/critique`, `.ignore` ancorado em `/graft/` — nota: o
-        runtime do graft pode rescrever `!graft/` não-ancorado em refresh;
-        não travar briga, a árvore aninhada já não existe)
-  - [x] @reviewer no diff (APROVA COM NITS — nits P2 fechados: ponteiro ativo
-        em `docs/dividas.md` → `tasks/todo.md`)
-- **Pendência desta fatia:** mesclar em `develop` só com ordem do usuário
-  (revisão final humana dos 7 commits).
+- **Fatias anteriores fechadas:** harness restructure mergeado; as 3 branches
+  de UI (jobs-cleanup → action-center-polish → jobs-status-metrics-split) e
+  `develop` entraram na `main` via PR #31.
+- **Branch de trabalho:** `feat/web-design-tokens` (carrega `chore(agents):
+  atualiza impeccable` na história via `chore/fix-web`).
+- **Fatia em andamento:** extração de design system (`impeccable extract`):
+  tokens `status-*` + micro-tipografia (`text-2xs/3xs/4xs`) em `globals.css`,
+  componente `Spinner.tsx`, migração de ~503 ocorrências em 59 arquivos,
+  docs `DESIGN.md` + `ui/README.md` v2.2.
+  - [x] @reviewer: FECHAR (APROVA COM NITS); nit 4 (docs Spinner) fechado
+  - [x] `npm run build` verde (gate final pós-correção docs)
+  - [ ] 4 commits atômicos (fundação → ui primitives → studio → páginas+consolidações)
+- **Follow-ups desta fatia (não bloqueiam):**
+  1. Spinner `aria-hidden` explícito + `aria-busy` no Button (a11y).
+  2. `--text-2xs/3xs/4xs` sem line-height própria (herda do contexto) —
+     fixar token se introduzirmos `leading-*` nesses tamanhos.
+  3. **Comando fantasma:** `npm run lint --workspace=web` (AGENTS.md §2:23)
+     não existe — `apps/web` (nome `web`) não tem script `lint` e o repo não
+     tem config eslint/biome. Decisão do usuário: toolar lint (slice própria)
+     ou remover a linha do AGENTS.md.
+  4. Paleta de séries do ConvergenceChart (1 consumidor) — avaliar tokenização.
+  5. Divergências cosméticas canonicadas pelo reviewer: raio CTA /jobs
+     (lg→md), ghost DatasetTable (zinc-400→300), tom spinner brand (500→400).
+- **Pendência:** merge/push desta branch só com ordem explícita do usuário.
 
 ## Estado do produto (paralelo, NÃO bloqueado por esta fatia)
-
-- **`develop`** contém as 3 branches revisadas/aprovadas e mergeadas em 16/09:
-  `feat/jobs-cleanup` → `feat/action-center-polish` → `feat/jobs-status-metrics-split`
-  (ordem respeitada; UI AC-003 canônica da polish). Branches locais deletadas
-  pós-merge. `develop` está **44 commits à frente de `main`** — merge na main
-  aguarda ordem explícita do usuário.
 - **Pendências do produto:**
   1. **AC-007 NADA implementado** — staging progress (canal da ADR-0024) +
      cache MD5 conteudo-endereçado no nó; plano pronto em
@@ -55,8 +55,8 @@ uma. Manter < 100 linhas; não duplicar docs — referenciar por seção.
      `feat/node-content-cache`.
   2. Smoke E2E Chrome pós-rebuild das imagens (lixeira/cleanup reais, fase
      terminal no drawer, chips autolabel).
-  3. Push de `develop` ao origin (confirmar com usuário; remoto só tem
-     `feat/enable-bucket` fora).
+   3. Push de `feat/web-design-tokens` ao origin ao fechar a fatia (remoto já
+      tem `main` com PR #31; confirmar com usuário).
   4. Dívida registrada: ramo `cancelled` de telemetria não existe (Abort
      races — ver ADR-0024 / backend.md).
 

@@ -213,9 +213,25 @@ Escala zinc completa (undertone berinjela neutro):
 ### Named Rules
 **The One CTA Rule.** Existe apenas um CTA definitivo por contexto, no estilo outline-violeta translúcido (`border-brand-500/30` + `bg-brand-500/[0.12]`, texto `text-white` com inset highlight superior `rgba(255,255,255,0.08)`); NUNCA violeta sólido (`bg-brand-500`) como fundo de botão. O tom sólido `bg-brand-500` fica RESERVADO exclusivamente a elementos de destaque que não sejam botão (ex.: barra lateral ativa da Sidebar, badges de estado se necessário). Controles secundários utilizam o secundário translúcido (`border-white/10 bg-white/[0.05]`) ou ghost.
 
-**The Brand-Only Rule.** A paleta do app é estritamente `brand-*` e `zinc-*`. Classes utilitárias `emerald-*` são TERMINANTEMENTE PROIBIDAS no código da aplicação. No Tailwind v4 nativo, `emerald-500` resolve para o verde da versão inicial legada (`#10b981`). Qualquer classe `emerald-*` no código constitui bug de regressão visual. Estados de sucesso usam a cor semântica literal `#34d399`.
+**The Brand-Only Rule.** A paleta do app é estritamente `brand-*`, `zinc-*` e os tokens semânticos `status-*`. Classes utilitárias `emerald-*` são TERMINANTEMENTE PROIBIDAS no código da aplicação. No Tailwind v4 nativo, `emerald-500` resolve para o verde da versão inicial legada (`#10b981`). Qualquer classe `emerald-*` no código constitui bug de regressão visual. Estados de sucesso usam o token semântico `status-success` (`#34d399` via `@theme`), nunca o hex literal solto em `className`.
 
-**The Class Palette Integrity Rule.** As cores semânticas de status (sucesso `#34d399`, alerta `#f59e0b`, perigo `#ef4444`, telemetria `#06b6d4`, runtime `#eab308`) são reservadas e nunca reutilizadas para indicar estados de interface conflitantes na mesma área visual. As cores de classes de detecção de BBoxes seguem mapeamento rigoroso e consistente.
+**The Class Palette Integrity Rule.** As cores semânticas de status (sucesso `status-success` `#34d399`, alerta `status-alert` `#f59e0b`, perigo `status-danger` `#ef4444`, telemetria `status-telemetry` `#06b6d4`, runtime `status-runtime` `#eab308`) são reservadas e nunca reutilizadas para indicar estados de interface conflitantes na mesma área visual. As cores de classes de detecção de BBoxes seguem mapeamento rigoroso e consistente.
+
+### Semantic Tokens (`@theme` em `globals.css`)
+
+Cores semânticas canônicas expostas como utilities Tailwind v4 (`text-status-*`, `bg-status-*`, `border-status-*`, com modificadores de opacidade `/15`, `/30` etc.):
+
+| Token | Valor | Papel |
+| :--- | :--- | :--- |
+| `--color-status-success` | `#34d399` | Progresso de treino, classes de solda fria, confirmações |
+| `--color-status-alert` | `#f59e0b` | Pausa, avisos de threshold, curtocircuito |
+| `--color-status-danger` | `#ef4444` | Abortar, exclusão, componente ausente |
+| `--color-status-telemetry` | `#06b6d4` | Latência Rust Core, selos AutoTracker |
+| `--color-status-runtime` | `#eab308` | Ponto de runtime Python/PyTorch |
+
+Tons claros de alerta/sucesso para texto sobre véus translúcidos permanecem como tinturas da escala padrão (`amber-200/300/400`); o tom-base `amber-500` foi unificado ao token `status-alert`. **Hex literal em `className` é proibido** — todo estado semântico consome um token.
+
+Escala micro-tipográfica de dados (`--text-*` → `text-2xs|3xs|4xs`, px absoluto fiel ao uso corrente): `2xs` = 11px (captions compactas, logs), `3xs` = 10px (micro-caps mono, Kbd, badges), `4xs` = 9px (pico em canvas/tags de BBox).
 
 ## Typography
 
@@ -233,6 +249,7 @@ Escala zinc completa (undertone berinjela neutro):
 - **Title** (SemiBold 600, 0.875rem / 12.25px efetivos, line-height 1.4, Space Grotesk): Títulos de cards de parâmetros e labels de grupos de campos.
 - **Body** (Regular 400, 0.875rem / 12.25px efetivos, line-height 1.6, system sans): Textos de descrição, explicações de status e instruções inline (comprimento máx. 65-75ch).
 - **Label / Micro-Caps** (Medium 500, 0.6875rem / 9.6px efetivos, line-height 1.4, tracking 0.08em uppercase, JetBrains Mono): Rótulos de formulário, identificadores de classes, badges de status, coordenadas e telemetria.
+- **Micro Data** (`text-2xs` 11px / `text-3xs` 10px / `text-4xs` 9px, tokens `--text-*`): corpo compacto de logs e toolbars (2xs), micro-caps e Kbd (3xs), tags de canvas e badges pico (4xs).
 
 ### Named Rules
 **The Monospace Truth Rule.** Todo número representando medição (VRAM, CPU, RAM, latência, tempo de epoch, dimensões em pixels, coordenadas de bounding box e loss), além de telemetria, caminhos de arquivo (paths) e labels técnicos, deve ser renderizado obrigatoriamente em `JetBrains Mono` para garantir alinhamento tabular e evitar oscilações visuais (jittering) durante atualizações ao vivo.
@@ -322,11 +339,12 @@ inline-flex items-center justify-center gap-2 text-sm font-medium whitespace-now
 
 ### Inputs & Fields
 - `bg-black/40 border border-zinc-800 text-zinc-100 rounded-lg px-3 py-1.5 text-xs font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500`. Em visualizações móveis (`< md`), inputs e textareas adotam `font-size: 16px` para prevenir zoom automático no Safari iOS.
-- **SearchInput:** Campo de busca especializado com ícone de lupa, indicador de loading giratório (`spinner`) para pesquisas debounced assíncronas e botão de limpeza rápida (`IconX`).
+- **SearchInput:** Campo de busca especializado com ícone de lupa, indicador de loading via `Spinner` (tom brand) para pesquisas debounced assíncronas e botão de limpeza rápida (`IconX`).
 - **Select:** Menu seletor estilizado em vidro escuro (`bg-zinc-900/90`), chevron vetorial customizado, estados de foco violeta e suporte a tipografia mono ou sans.
 - **Slider:** Controle deslizante tátil de precisão com thumb circular de 22px (`#8350f2` com borda branca 2px), trilho de 8px e exibição numérica em mono.
-- **ProgressBar:** Barra de progresso com trilho `zinc-800` e preenchimento semântico (`#34d399` sucesso, `brand` violeta, âmbar e rosa).
-- **Kbd (Atalho de Teclado):** Elemento atômico para indicação de hotkeys em mono (`px-1.5 py-0.5 rounded border border-white/10 bg-white/[0.04] text-zinc-400 font-mono text-[10px] font-semibold`), garantindo legibilidade imediata de atalhos operacionais no estúdio e no canvas.
+- **ProgressBar:** Barra de progresso com trilho `zinc-800` e preenchimento semântico via tokens (`status-success`, `brand` violeta, `status-alert`, `status-danger`).
+- **Kbd (Atalho de Teclado):** Elemento atômico para indicação de hotkeys em mono (`px-1.5 py-0.5 rounded border border-white/10 bg-white/[0.04] text-zinc-400 font-mono text-3xs font-semibold`), garantindo legibilidade imediata de atalhos operacionais no estúdio e no canvas.
+- **Spinner:** Indicador circular canônico de carregamento (`animate-spin` com anel `border-2`), tamanho livre via className (ex.: `size-3` a `size-8`) e tom via `tone` (`brand` padrão, `current` herda a cor do texto — usado no estado `loading` do Button —, `white` para CTA escuros). Substitui qualquer span/div de loading feito à mão.
 
 ### Navigation & Utilities
 - **Sidebar Macro:** Barra lateral vertical fixa à esquerda com módulos de sistema, modo pinável com persistência em `localStorage` (68px colapsada / 260px expandida no desktop), drawer móvel em `< lg`, breadcrumbs em linha única e pílulas com fade edge.

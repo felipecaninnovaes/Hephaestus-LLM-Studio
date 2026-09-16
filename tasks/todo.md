@@ -35,15 +35,15 @@ uma. Manter < 100 linhas; não duplicar docs — referenciar por seção.
   - [x] 4 commits atômicos (fundação → ui primitives → studio A-L → studio C-Y → páginas+consolidações) — fechados
   - [x] Fatia Biome: config + scripts + 11 autofixes + nits a11y/line-height + docs honestos (@reviewer CORRIGIR-ANTES→fixer→ok; lint 116E/204W = débito da follow-up 3)
   - [x] Slice dívida a11y: 66 errors→0 + follow-ups reviewer (StatCard props, Esc lightbox)
-  - [ ] Slice dívida leve: noArrayIndexKey 8 + noSvgWithoutTitle 7 (em voo)
-  - [ ] Slice dívida hooks: useExhaustiveDependencies 32 (1 commit/módulo)
-  - [ ] Decisão UX: noAutofocus 3 (suprimir justificado vs remover)
+  - [x] Slice dívida leve: noArrayIndexKey 8 + noSvgWithoutTitle 7 + noAutofocus 3 (suprimido justificado) → restam 32E
+  - [x] Slice dívida hooks: useExhaustiveDependencies 32 → 0 (FECHAR; reviewer aprovou, 2 achas corrigidas antes do commit)
+  - [ ] Decisão UX: noAutofocus — RESOLVIDA: manter comportamento (login/dialogs), suprimido com justificativa
 - **Follow-ups desta fatia (não bloqueiam):**
   1. Spinner `aria-hidden` explícito + `aria-busy` no Button (a11y).
   2. `--text-2xs/3xs/4xs` sem line-height própria (herda do contexto) —
      fixar token se introduzirmos `leading-*` nesses tamanhos.
   3. **Biome toolado; dívida de lint a zerar:** ~~66 a11y~~ FECHADO (slice
-     a11y + follow-ups M1/M2 do reviewer). Restam 50 errors:
+     a11y + follow-ups M1/M2 do reviewer). Restavam 50 → ZERO errors (204 warnings, 3 infos — gate 0-errors agora real):
      `useExhaustiveDependencies` 32 (risco comportamental — um commit por
      módulo, @reviewer em cada), `noArrayIndexKey` 8 + `noSvgWithoutTitle` 7
      (slice em andamento), `noAutofocus` 3 (decisão UX: login/busca querem

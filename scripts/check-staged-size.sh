@@ -17,7 +17,7 @@ lines=${lines:-0}
 
 if [ "${lines}" -gt 400 ]; then
   echo "LEFTHOOK (aviso): staged com ~${lines} linhas alteradas > teto de fatia (~400)."
-  echo "  Se for fatia de código, quebre em commits menores (ver docs/coordenacao.md)."
+  echo "  Se for fatia de código, quebre em commits menores (ver tasks/todo.md)."
   echo "  Exceções: docs/ADRs/migrations de schema — o coordenador decide."
 fi
 exit 0

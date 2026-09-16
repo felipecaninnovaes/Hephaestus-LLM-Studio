@@ -28,6 +28,7 @@ interface LogLine {
   tag: "ORCH" | "ENGINE" | "TRAIN" | "DIFFUSION" | "AUTOLABEL" | "S3" | "STDERR" | "WARN";
   text: string;
   isError?: boolean;
+  syntheticTime?: boolean;
 }
 
 export function JobLogViewer({
@@ -53,55 +54,15 @@ export function JobLogViewer({
   // Sintetiza e formata as linhas reais de log e telemetria do orquestrador
   const lines = useMemo<LogLine[]>(() => {
     const list: LogLine[] = [];
-    const baseDate = new Date(job.createdAt);
 
-    function fmtTime(offsetSeconds: number) {
-      const d = new Date(baseDate.getTime() + offsetSeconds * 1000);
-      return d.toLocaleTimeString("pt-BR", { hour12: false });
-    }
-
-    // 1. Boot do Orquestrador e Identificação de Nó
+    // 1. Boot — única linha honesta derivada dos dados reais do job
+    const nodeName = job.orchestratorName || (job.orchestratorId ? job.orchestratorId.slice(0, 8) : "—");
     list.push({
-      id: "boot-1",
-      timestamp: fmtTime(0),
+      id: "boot",
+      timestamp: "—",
+      syntheticTime: true,
       tag: "ORCH",
-      text: `Dispatching job ${job.id.slice(0, 8)} [kind=${job.kind}, engine=${job.engine}]`,
-    });
-
-    const nodeName = job.orchestratorName || (job.orchestratorId ? job.orchestratorId.slice(0, 8) : "Orquestrador Local");
-    const nodeKind = job.orchestratorKind ? `[${job.orchestratorKind}]` : "[local]";
-    const fallbackNotice = job.orchestratorFallback ? " · Fallback automático ativado" : "";
-    list.push({
-      id: "boot-node",
-      timestamp: fmtTime(1),
-      tag: "ORCH",
-      text: `Nó Executor: ${nodeName} ${nodeKind}${fallbackNotice}`,
-    });
-
-    list.push({
-      id: "boot-2",
-      timestamp: fmtTime(1),
-      tag: "ORCH",
-      text: `Container montado: /outputs/${job.id} · Dataset: /datasets/${job.datasetId?.slice(0, 8) || "default"}`,
-    });
-
-    // Identificação do Engine específico
-    let engineDesc = `YOLO Engine inicializado: modelo=${job.model} | vram_min=${job.vramMinGb || 4}GB`;
-    if (job.kind === "autolabel" || job.engine === "autolabel") {
-      engineDesc = `AutoLabel Engine inicializado: modelo=${job.model} | Pipeline VLM Vision API`;
-    } else if (job.kind === "autotracker" || job.engine === "autotracker") {
-      engineDesc = `AutoTracker Engine inicializado: modelo=${job.model} | Open-Vocab Tracking`;
-    } else if (job.kind === "diffusion_train" || (job.kind as string) === "diffusion" || job.engine === "diffusion") {
-      engineDesc = `Diffusion LoRA Engine inicializado: modelo=${job.model} | vram_min=${job.vramMinGb || 8}GB`;
-    } else if (job.kind === "yolo_predict" || job.mode === "predict") {
-      engineDesc = `YOLO Predict Engine inicializado: modelo=${job.model}`;
-    }
-
-    list.push({
-      id: "boot-3",
-      timestamp: fmtTime(2),
-      tag: "ENGINE",
-      text: engineDesc,
+      text: `Job submetido · kind=${job.kind} · engine=${job.engine ?? "—"} · nó=${nodeName}`,
     });
 
     // 2. Telemetria / Progresso
@@ -114,7 +75,8 @@ export function JobLogViewer({
             : totalExpected ? `${Math.round((m.epoch / totalExpected) * 100)}%` : `item ${m.epoch}`;
           list.push({
             id: `metric-${m.epoch}`,
-            timestamp: fmtTime(3 + idx * 2),
+            timestamp: "—",
+            syntheticTime: true,
             tag: "AUTOLABEL",
             text: `Processamento de legendas: item ${m.epoch}${totalExpected ? `/${totalExpected}` : ""} · Progresso: ${prog}`,
           });
@@ -122,7 +84,8 @@ export function JobLogViewer({
           if (m.message || m.phase) {
             list.push({
               id: `metric-phase-${m.epoch}-${m.step ?? idx}`,
-              timestamp: fmtTime(3 + idx * 2),
+              timestamp: "—",
+              syntheticTime: true,
               tag: "DIFFUSION",
               text: m.message || `Fase: ${m.phase}`,
             });
@@ -133,7 +96,8 @@ export function JobLogViewer({
             if (m.step !== undefined) parts.push(`step=${m.step}`);
             list.push({
               id: `metric-${m.epoch}-${m.step ?? idx}`,
-              timestamp: fmtTime(3 + idx * 2),
+              timestamp: "—",
+              syntheticTime: true,
               tag: "DIFFUSION",
               text: parts.join(" "),
             });
@@ -147,7 +111,8 @@ export function JobLogViewer({
           if (m.map5095 !== undefined) parts.push(`mAP50-95=${(m.map5095 * 100).toFixed(1)}%`);
           list.push({
             id: `metric-${m.epoch}`,
-            timestamp: fmtTime(3 + idx * 2),
+            timestamp: "—",
+            syntheticTime: true,
             tag: "TRAIN",
             text: parts.join(" "),
           });
@@ -159,27 +124,28 @@ export function JobLogViewer({
     if (job.status === "cancelling") {
       list.push({
         id: "status-cancelling",
-        timestamp: fmtTime(metrics.length * 2 + 4),
+        timestamp: "—",
+        syntheticTime: true,
         tag: "WARN",
-        text: "Sinal de abort recebido via API. Enviando SIGTERM para o container...",
+        text: "Cancelamento solicitado via API. Aguardando encerramento da execução no nó...",
       });
     }
 
     // 4. Fecho / Conclusão
     if (job.status === "done") {
-      const finalSec = (metrics.length || 1) * 2 + 5;
       if (artifacts.length > 0) {
         artifacts.forEach((art) => {
           list.push({
             id: `art-${art.id}`,
-            timestamp: fmtTime(finalSec),
+            timestamp: "—",
+            syntheticTime: true,
             tag: "S3",
             text: `Artefato sincronizado: ${art.path} (${art.bytes} bytes, md5: ${art.md5.slice(0, 8)}…)`,
           });
         });
       }
 
-      let doneMsg = "Processo finalizado com exit code 0. Status: CONCLUÍDO.";
+      let doneMsg = "Execução concluída no nó. Status: CONCLUÍDO.";
       if (job.kind === "autolabel" || job.engine === "autolabel") {
         doneMsg = "AutoLabel finalizado com sucesso. Legendas geradas e prontas para aplicação.";
       } else if (job.kind === "autotracker" || job.engine === "autotracker") {
@@ -190,18 +156,26 @@ export function JobLogViewer({
         doneMsg = "Predição finalizada com sucesso. Detecções exportadas.";
       }
 
+      const finishedTime = job.finishedAt
+        ? new Date(job.finishedAt).toLocaleTimeString("pt-BR", { hour12: false })
+        : "—";
       list.push({
         id: "finish-done",
-        timestamp: fmtTime(finalSec + 1),
+        timestamp: finishedTime,
+        syntheticTime: !job.finishedAt,
         tag: "ORCH",
         text: doneMsg,
       });
     } else if (job.status === "failed") {
       const errDetail = job.error || job.queueReason || "Container execution failed";
       const errLines = errDetail.split("\n").map((l) => l.trimEnd()).filter(Boolean);
+      const finishedTime = job.finishedAt
+        ? new Date(job.finishedAt).toLocaleTimeString("pt-BR", { hour12: false })
+        : "—";
       list.push({
         id: "finish-failed",
-        timestamp: fmtTime((metrics.length || 1) * 2 + 4),
+        timestamp: finishedTime,
+        syntheticTime: !job.finishedAt,
         tag: "STDERR",
         text: `Erro fatal no processo do orquestrador: ${errLines[0] || "Container execution failed"}`,
         isError: true,
@@ -209,16 +183,21 @@ export function JobLogViewer({
       errLines.slice(1).forEach((line, idx) => {
         list.push({
           id: `finish-failed-detail-${idx}`,
-          timestamp: fmtTime((metrics.length || 1) * 2 + 4),
+          timestamp: finishedTime,
+          syntheticTime: !job.finishedAt,
           tag: "STDERR",
           text: line,
           isError: true,
         });
       });
     } else if (job.status === "cancelled") {
+      const finishedTime = job.finishedAt
+        ? new Date(job.finishedAt).toLocaleTimeString("pt-BR", { hour12: false })
+        : "—";
       list.push({
         id: "finish-cancelled",
-        timestamp: fmtTime((metrics.length || 1) * 2 + 4),
+        timestamp: finishedTime,
+        syntheticTime: !job.finishedAt,
         tag: "WARN",
         text: "Processo encerrado pelo usuário com sucesso. Status: CANCELADO.",
       });
@@ -247,7 +226,7 @@ export function JobLogViewer({
   async function handleCopyLogs() {
     try {
       const fullText = lines
-        .map((l) => `[${l.timestamp}] [${l.tag}] ${l.text}`)
+        .map((l) => `${l.syntheticTime ? "" : `[${l.timestamp}] `}[${l.tag}] ${l.text}`)
         .join("\n");
       await copyToClipboard(fullText);
       setCopied(true);
@@ -392,8 +371,11 @@ export function JobLogViewer({
                     line.isError ? "text-rose-300" : "text-zinc-300"
                   }`}
                 >
-                  <span className="text-zinc-600 shrink-0 select-none">
-                    {line.timestamp}
+                  <span
+                    className={`shrink-0 select-none ${line.syntheticTime ? "text-zinc-700" : "text-zinc-600"}`}
+                    title={line.syntheticTime ? "Hora não registrada pelo orquestrador" : undefined}
+                  >
+                    {line.syntheticTime ? "—" : line.timestamp}
                   </span>
                   <span className={`shrink-0 font-medium ${tagBadge}`}>
                     [{line.tag}]

@@ -470,16 +470,6 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
         });
       }
 
-      list.push({
-        id: "sys-node-status",
-        title: "Orquestrador Local Ativo",
-        message: `Nó Hephaestus operacional com ${telemetry.jobsActive} execução(ões) ativa(s) e VRAM monitorada.`,
-        category: "orchestrator",
-        level: "success",
-        timestamp: new Date().toISOString(),
-        actionLabel: "Monitor de Nós",
-        actionHref: "/dashboard",
-      });
     }
 
     // 2. Alertas de Jobs que falharam
@@ -497,18 +487,6 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
         actionLabel: "Investigar",
         actionHref: `/jobs?selected=${job.id}`,
       });
-    });
-
-    // 3. Sincronização do Acervo de Dados
-    list.push({
-      id: "sys-dataset-sync",
-      title: "Armazenamento & Datasets",
-      message: "Volumes de dados e diretórios de anotações sincronizados no cache NVMe local.",
-      category: "dataset",
-      level: "info",
-      timestamp: new Date(Date.now() - 1000 * 60 * 30).toISOString(),
-      actionLabel: "Explorar Datasets",
-      actionHref: "/datasets",
     });
 
     return list;
@@ -664,13 +642,13 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
         footer={
           <div className="p-3.5 flex flex-col sm:flex-row items-center justify-between gap-3">
             <div className="flex items-center space-x-2 text-[11px] font-mono text-zinc-400">
-              <span className="size-2 rounded-full bg-[#34d399] animate-pulse motion-reduce:animate-none" />
+              <span className={`size-2 rounded-full ${telemetry ? "bg-[#34d399] animate-pulse motion-reduce:animate-none" : "bg-zinc-500"}`} />
               <span>
                 Nó Local:{" "}
                 <strong className="text-zinc-200 font-semibold">
                   {telemetry
                     ? `${telemetry.jobsActive} ativo(s)${telemetry.vramUsed !== null ? ` · ${(telemetry.vramUsed / 1024).toFixed(1)} GB VRAM` : ""}${telemetry.cpu !== null ? ` · ${telemetry.cpu}% CPU` : ""}`
-                    : "Operacional"}
+                    : "Sem telemetria"}
                 </strong>
               </span>
             </div>
@@ -759,7 +737,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                     {query ? `Nenhum resultado para "${query}"` : "Nenhuma atividade recente"}
                   </h3>
                   <p className="text-xs text-zinc-400 leading-relaxed">
-                    O Centro de Atividades concentra todas as notificações do sistema em tempo real — incluindo treinos de IA, anotações de visão computacional, sincronizações de datasets e alertas de telemetria dos nós.
+                    O Centro de Atividades reúne as notificações do sistema em tempo real — treinos e tarefas de processamento, falhas de execução e alertas de recursos do nó (VRAM e CPU).
                   </p>
                 </div>
 

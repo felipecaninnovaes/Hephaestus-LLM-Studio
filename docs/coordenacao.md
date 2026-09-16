@@ -19,7 +19,34 @@ ser interrompido no meio de uma.
    contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
    está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
 
-## Estado atual — 2026-09-16 (ACTION CENTER: plano antecipado em arquivo — NADA implementado)
+## Estado atual — 2026-09-16 (ACTION CENTER: AC-001..006 IMPLEMENTADOS EM 3 BRANCHES; AC-007 PENDENTE)
+
+- Plano: `docs/plano-action-center.md` (decisões 1–5 fechadas). Ramificações e verificação (tudo verde):
+  - **`feat/action-center-polish`** (esta branch, 9 commits `ccac092..1ce4296`): AC-001 manager `ORDER BY` + galeria
+    ordenada/colapsada com baseline separada; AC-005 mockups removidos (notificações ficcionais, rodapé "Sem
+    telemetria", JobLogViewer com 1 linha de boot real e timestamps sintéticos como "—"); AC-006-B filtro
+    `lib/jobMetrics.ts`; AC-004 deep links `?job=` (fix `?selected=` incl. TrainYoloModal), seleção↔URL
+    `router.replace`, modo foco `&focus=1` + botões Acompanhar/Sair-do-foco; AC-002 registry `lib/jobCapabilities.ts`
+    (matriz aprovada; chips "Imagens processadas" derivados de step/progress); AC-003 **UI** (lixeira por job terminal
+    com ConfirmDialog, `JobCleanupDialog`, `deleteJob`/`cleanupJobs`, toast com contagens). `tsc`+`npm run build` verdes.
+  - **`feat/jobs-cleanup`** (off main, `6c5217d..ede83ef`): AC-003 backend — manager `delete_job`/`cleanup_jobs`
+    (guarda terminal→409 `job_not_terminal`; migration **0012** gerações→SET NULL; expurga `models` do job; devolve
+    `objectKeys` exatas sem chaves da galeria) + BFF principal com sweep S3 por chave best-effort, wire camelCase,
+    openapi **0.27.0**. manager_db 111/111; principal 410 lib + 15 contract.
+  - **`feat/jobs-status-metrics-split`** (stacked sobre cleanup, `9836d5a..14e4ecc`): **ADR-0024** + AC-006-A —
+    orquestrador `is_training_metric` separa status×métrica na borda (contrato do engine intocado); report ganha
+    `phase`/`message` topo; manager persiste `jobs.phase`/`jobs.message` (migration **0013**); principal lê colunas;
+    openapi **0.28.0**; backend.md §9/§10 sync. orchestrator 117, manager_db 112, principal 410+15, compose ok.
+- **Ordem de merge**: polish → jobs-cleanup → status-metrics-split (conflito leve no drawer ao unir UI AC-003 com AC-001/002/004 — resolver no merge; migrations 0012/0013 dependem da ordem).
+- **Pendências**: (1) smoke E2E Chrome pós-rebuild das imagens (lixeira/cleanup reais, foco, chips autolabel, phase
+  real no drawer); (2) `docs/frontend.md` §10 p/ client fns+rotas UI (docs-sync rodou só backend); (3) @reviewer nas
+  3 branches; (4) **AC-007 NADA** — staging progress no canal criado pela ADR-0024 + cache MD5 conteudo-endereçado no
+  nó (design aprovado no plano §AC-007; `WeightRef.bytes`, eviction LRU `ORCH_CACHE_MAX_GB`, cache_hit, UI
+  preparing/dispatched) → branch `feat/node-content-cache` off main, próxima sessão.
+- **Custo**: sessão de 2026-09-16 queimou ~45M tokens de input (histórico reenviado por chamada + leituras de
+  arquivos inteiros + ANSI dos hooks). Retomar em sessão NOVA; usar graft/skeleton e offsets, não leituras completas.
+
+## Estado anterior — 2026-09-16 (ACTION CENTER: plano antecipado em arquivo — NADA implementado)
 
 - Usuário pediu análise+planejamento de 6 pontos do Action Center, sem implementar.
   Entregue: **`docs/plano-action-center.md`** — causa-raiz provada por file:line para

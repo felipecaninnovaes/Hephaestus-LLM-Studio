@@ -9,6 +9,13 @@ services:
       - pgdata:/var/lib/postgresql/data
     ports:
       - '5432:5432'
+    healthcheck:
+      # Cold boot com volume novo (pgdata vazio) demora: initdb antes de
+      # aceitar conexões/DNS registrar; sem isso o principal dá crash-loop.
+      test: ["CMD-SHELL", "pg_isready -U studio -d studio"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   principal:
     build:
@@ -35,9 +42,11 @@ services:
       MODEL_DOWNLOAD_ALLOWED_HOSTS: ${MODEL_DOWNLOAD_ALLOWED_HOSTS:-}
     depends_on:
       db:
-        condition: service_started
+        condition: service_healthy
       seaweedfs:
         condition: service_healthy
+      s3-init:
+        condition: service_completed_successfully
 
   # SeaweedFS S3 (ADR-0003 D0, 3b.4): identidade em infra/seaweedfs-s3.json
   # (credenciais LOCAL-DEV — rotacione antes de qualquer exposição além do
@@ -69,6 +78,28 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
+
+  # s3-init (run-once): garante o bucket S3 após `down -v` (seaweed_data some
+  # e o bucket vai junto; a identidade volta via seaweedfs-s3.json mas o
+  # bucket NÃO é auto-criado p/ identidade escopada do orquestrador — sem ele
+  # os uploads falham silenciosamente, jobs "done" com zero artefatos).
+  # Script POSIX (sh do busybox, sem bash): só apk de curl+openssl; o retry
+  # cobre a janela entre healthy e S3 100% pronto. Sem ports: isolamento de
+  # engines/serviços intacto. Credenciais = mesmas LOCAL-DEV do compose.
+  s3-init:
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    volumes:
+      - ./scripts/ensure-bucket.sh:/ensure-bucket.sh:ro
+    environment:
+      S3_ENDPOINT_URL: http://seaweedfs:8333
+      S3_BUCKET: ${S3_BUCKET:-heph-data}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-heph}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-heph-local-dev}
+    command: ["sh", "-c", "apk add --no-cache curl openssl 2>&1 | tail -1; n=0; while ! sh /ensure-bucket.sh; do n=$$(($$n+1)); [ $$n -ge 30 ] && exit 1; sleep 2; done"]
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+    restart: "no"
 
   # Embedder CLIP (ADR-0004 D1, 3f.3): inferência de embeddings para busca
   # semântica. INFRA local (como o SeaweedFS) — não job do orquestrador
@@ -112,6 +143,8 @@ services:
         condition: service_started
       principal:
         condition: service_started
+      s3-init:
+        condition: service_completed_successfully
 
   orchestrator-local:
     build:
@@ -147,7 +180,10 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      - manager
+      manager:
+        condition: service_started
+      s3-init:
+        condition: service_completed_successfully
 
   # Build-only: imagem hephaestus/trainer-yolo:local (ADR-0007 D5).
   # Não inicia com `docker compose up` — só com `--profile build`.

@@ -97,8 +97,32 @@ gates verdes (cargo test 581p, pytest 101p, build+lint web 0E/204W baseline, com
      terminal no drawer, chips autolabel).
    3. Push de `feat/web-design-tokens` ao origin ao fechar a fatia (remoto já
       tem `main` com PR #31; confirmar com usuário).
-  4. Dívida registrada: ramo `cancelled` de telemetria não existe (Abort
-     races — ver ADR-0024 / backend.md).
+   4. Dívida registrada: ramo `cancelled` de telemetria não existe (Abort
+      races — ver ADR-0024 / backend.md).
+   5. (16/09, runtime) DB recriado vazio → login 500 no principal nativo
+      (:8080, pid novo, log `/tmp/api-principal.log`); reiniciado com
+      `MANAGER_URL=http://localhost:8081`, migrations rodaram, bootstrap
+      `STUDIO_PASSWORD=changeme`. **FIX COMMITADO `6130f57`** na branch
+      `chore/infra-native-runner` (worktree
+      `~/.cache/tmp/opencode/heph-chore-infra`, base origin/main): db
+      healthcheck + principal `service_healthy` + `scripts/run-native.sh`
+      (STUDIO_PASSWORD obrigatória, env de host, preflights, masking).
+      Re-adotar pós-wipe: endpoint deve ser DNS-de-container
+      (`http://orchestrator-local:8082`), nunca `localhost` (manager não
+      resolve host dentro do container); pairing code é single-use (linha
+      "pairing code gerado" no log do orquestrador). Local re-adotado e
+      online; remoto pendente (usuário fornece novo code + endpoint
+      alcançável do manager).
+   6. (16/09, runtime) Geração sem imagens: `down -v` matou bucket
+      `heph-data` (autoCreateBucket só vale p/ admin; orquestrador usa
+      credencial escopada) → jobs Truenas "done" com ZERO artefatos. Bucket
+      recriado à mão + **FIX COMMITADO `a167e2b`** (`chore/infra-native-runner`,
+      worktree tmp): s3-init no boot + ensure-bucket.sh SigV4 + preflight
+      WARN no run-native. @reviewer FECHAR COM NITS (nits 1-4 aplicados).
+      **FOLLOW-UP B em aberto (rust):** orquestrador/manager ainda aceitam
+      `done` com 0 artefatos se upload S3 falhar em runtime (causa
+      transitória) — report deveria marcar job como failed/degraded. Fatia
+      a decidir com usuário.
 
 ## Invariantes & lições da casa
 

@@ -104,9 +104,6 @@ function JobsPageContent() {
   const [applyOverwrite, setApplyOverwrite] = useState(false);
   const [reviewJob, setReviewJob] = useState<Job | null>(null);
   const [autotrackerReviewJob, setAutotrackerReviewJob] = useState<Job | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<Job | null>(null);
-  const [deleteBusy, setDeleteBusy] = useState(false);
-  const [cleanupOpen, setCleanupOpen] = useState(false);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 

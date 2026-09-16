@@ -5530,3 +5530,146 @@ async fn list_generations_pagination_offset_e_limit() {
     assert_eq!(resp_deleted.items.len(), 1, "deleted after delete: 1 item");
     assert_eq!(resp_deleted.total, 1, "deleted after delete: total 1");
 }
+
+// ===========================================================================
+// AC-003 — exclusão de jobs (delete_job / cleanup_jobs)
+// ===========================================================================
+
+async fn insert_artifact(pool: &PgPool, job_id: uuid::Uuid, path: &str) {
+    sqlx::query(
+        "INSERT INTO job_artifacts (id, job_id, kind, path, md5, bytes) \
+         VALUES ($1, $2, 'model', $3, 'd41d8cd98f00b204e9800998ecf8427e', 10)",
+    )
+    .bind(uuid::Uuid::new_v4())
+    .bind(job_id)
+    .bind(path)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn set_terminal(pool: &PgPool, job_id: uuid::Uuid, status: &str, days_ago: i64) {
+    sqlx::query(
+        "UPDATE jobs SET status = $2, finished_at = NOW() - ($3 * INTERVAL '1 day') WHERE id = $1",
+    )
+    .bind(job_id)
+    .bind(status)
+    .bind(days_ago)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn count_jobs(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM jobs")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn delete_job_guarda_estado_apaga_cascata() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create job");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    // 1. Job em 'queued' não é deletável.
+    let err = manager::delete_job(&p, job_id).await.unwrap_err();
+    assert!(
+        matches!(err, manager::ManagerError::NotDeletable),
+        "esperava NotDeletable, veio {err:?}"
+    );
+
+    // 2. Terminal + artifacts → apaga e devolve paths; cascade limpa job_artifacts.
+    set_terminal(&p, job_id, "done", 1).await;
+    insert_artifact(&p, job_id, "outputs/best.pt").await;
+    insert_artifact(&p, job_id, "samples/sample_epoch_001.png").await;
+
+    let deleted = manager::delete_job(&p, job_id).await.expect("delete ok");
+    assert_eq!(deleted.id, job_id.to_string());
+    assert_eq!(deleted.status, "done");
+    assert_eq!(deleted.artifacts.len(), 2, "paths dos artifacts p/ sweep");
+
+    assert_eq!(count_jobs(&p).await, 0);
+    let arts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM job_artifacts WHERE job_id = $1")
+        .bind(job_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(arts, 0, "FK ON DELETE CASCADE deve limpar artifacts");
+
+    // 3. Inexistente → NotFound.
+    let err = manager::delete_job(&p, job_id).await.unwrap_err();
+    assert!(matches!(err, manager::ManagerError::NotFound));
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn cleanup_jobs_lote_por_idade_e_status() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let mk = |p: &PgPool, ds: uuid::Uuid| {
+        let p = p.clone();
+        async move {
+            let r = manager::create_job(&p, test_job_request(ds))
+                .await
+                .expect("create");
+            r.job_id.parse::<uuid::Uuid>().unwrap()
+        }
+    };
+
+    let a = mk(&p, ds_id).await; // done há 10 dias (com artifact)
+    let b = mk(&p, ds_id).await; // done ontem (recente)
+    let c = mk(&p, ds_id).await; // failed há 30 dias
+    let d = mk(&p, ds_id).await; // ainda queued (não terminal)
+
+    set_terminal(&p, a, "done", 10).await;
+    insert_artifact(&p, a, "outputs/best.pt").await;
+    set_terminal(&p, b, "done", 1).await;
+    set_terminal(&p, c, "failed", 30).await;
+
+    // 1. Sem recorte de idade + sem statuses → Inválido (exige critério).
+    let err = manager::cleanup_jobs(&p, None, None).await.unwrap_err();
+    assert!(matches!(err, manager::ManagerError::InvalidRequest(_)));
+
+    // 2. Só terminais há mais de 7 dias → apaga A e C.
+    let res = manager::cleanup_jobs(&p, Some(7), None)
+        .await
+        .expect("cleanup");
+    assert_eq!(res.deleted, 2);
+    let ids: Vec<&str> = res.jobs.iter().map(|j| j.id.as_str()).collect();
+    assert!(ids.contains(&a.to_string().as_str()) && ids.contains(&c.to_string().as_str()));
+    let job_a = res.jobs.iter().find(|j| j.id == a.to_string()).unwrap();
+    assert_eq!(job_a.artifacts, vec!["outputs/best.pt".to_string()]);
+
+    // 3. B (done recente) e D (queued) permanecem.
+    assert_eq!(count_jobs(&p).await, 2);
+
+    // 4. Status inválido (não-terminal) → InvalidRequest.
+    let err = manager::cleanup_jobs(&p, Some(0), Some(vec!["running".into()]))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, manager::ManagerError::InvalidRequest(_)));
+
+    // 5. Por status, sem recorte de idade → apaga B (done); D permanece.
+    let res = manager::cleanup_jobs(&p, None, Some(vec!["done".into()]))
+        .await
+        .expect("cleanup por status");
+    assert_eq!(res.deleted, 1);
+    assert_eq!(res.jobs[0].id, b.to_string());
+    let remaining: Vec<String> = sqlx::query_scalar("SELECT id::text FROM jobs")
+        .fetch_all(&p)
+        .await
+        .unwrap();
+    assert_eq!(remaining, vec![d.to_string()], "só o queued D sobrevive");
+}

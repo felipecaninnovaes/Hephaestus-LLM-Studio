@@ -89,6 +89,14 @@ fn not_abortable() -> Response {
     )
 }
 
+fn not_deletable() -> Response {
+    error_response(
+        StatusCode::CONFLICT,
+        "job_not_terminal",
+        "only terminal jobs (done|failed|cancelled) can be deleted",
+    )
+}
+
 fn internal_error(msg: &str) -> Response {
     error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal", msg)
 }
@@ -285,9 +293,66 @@ async fn abort_job_handler(State(state): State<AppState>, Path(id): Path<String>
         Ok(status) => (StatusCode::OK, Json(AbortResponse { status })).into_response(),
         Err(ManagerError::NotFound) => not_found(),
         Err(ManagerError::NotAbortable) => not_abortable(),
+        Err(ManagerError::NotDeletable) => internal_error("unexpected job_not_terminal"),
         Err(ManagerError::Internal(e)) => internal_error(&e),
         Err(ManagerError::InvalidRequest(msg)) => bad_request(&msg),
         Err(ManagerError::PairingInvalid) => internal_error("unexpected pairing_invalid"),
+    }
+}
+
+/// DELETE /internal/jobs/:id — apaga um job terminal (AC-003).
+/// Guarda: não-terminal → 409 job_not_terminal; inexistente → 404.
+async fn delete_job_handler(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let uuid = match id.parse::<uuid::Uuid>() {
+        Ok(u) => u,
+        Err(_) => return not_found(),
+    };
+
+    match manager::delete_job(&state.pool, uuid).await {
+        Ok(deleted) => (StatusCode::OK, Json(deleted)).into_response(),
+        Err(ManagerError::NotFound) => not_found(),
+        Err(ManagerError::NotDeletable) => not_deletable(),
+        Err(ManagerError::InvalidRequest(msg)) => bad_request(&msg),
+        Err(ManagerError::Internal(e)) => internal_error(&e),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+/// Corpo de POST /internal/jobs/cleanup (AC-003).
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CleanupJobsRequest {
+    #[serde(default)]
+    older_than_days: Option<i64>,
+    #[serde(default)]
+    statuses: Option<Vec<String>>,
+}
+
+/// POST /internal/jobs/cleanup — limpeza em lote de jobs terminais (AC-003).
+async fn cleanup_jobs_handler(State(state): State<AppState>, body: Bytes) -> Response {
+    let req: CleanupJobsRequest = if body.is_empty() {
+        CleanupJobsRequest {
+            older_than_days: None,
+            statuses: None,
+        }
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(v) => v,
+            Err(e) => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    &format!("invalid json: {e}"),
+                )
+            }
+        }
+    };
+
+    match manager::cleanup_jobs(&state.pool, req.older_than_days, req.statuses).await {
+        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+        Err(ManagerError::InvalidRequest(msg)) => bad_request(&msg),
+        Err(ManagerError::Internal(e)) => internal_error(&e),
+        Err(e) => internal_error(&e.to_string()),
     }
 }
 
@@ -548,7 +613,11 @@ fn build_router(state: AppState) -> Router {
             "/internal/jobs",
             post(create_job_handler).get(list_jobs_handler),
         )
-        .route("/internal/jobs/:id", get(get_job_handler))
+        .route(
+            "/internal/jobs/:id",
+            get(get_job_handler).delete(delete_job_handler),
+        )
+        .route("/internal/jobs/cleanup", post(cleanup_jobs_handler))
         .route("/internal/jobs/:id/artifacts", get(list_artifacts_handler))
         .route("/internal/jobs/:id/abort", post(abort_job_handler))
         .route("/internal/jobs/:id/report", post(report_job_handler))

@@ -20,6 +20,8 @@ use uuid::Uuid;
 pub enum ManagerError {
     NotFound,
     NotAbortable,
+    /// Job não está em estado terminal (done|failed|cancelled) — não pode ser apagado.
+    NotDeletable,
     InvalidRequest(String),
     PairingInvalid,
     Internal(String),
@@ -30,6 +32,7 @@ impl std::fmt::Display for ManagerError {
         match self {
             Self::NotFound => write!(f, "not found"),
             Self::NotAbortable => write!(f, "job not abortable"),
+            Self::NotDeletable => write!(f, "job_not_terminal"),
             Self::InvalidRequest(e) => write!(f, "invalid request: {e}"),
             Self::PairingInvalid => write!(f, "pairing_invalid"),
             Self::Internal(e) => write!(f, "{e}"),
@@ -2086,6 +2089,177 @@ pub async fn delete_model(pool: &PgPool, id: Uuid) -> Result<ModelItem, ManagerE
     }
 }
 
+// ---------------------------------------------------------------------------
+// Exclusão de jobs (AC-003) — dono da fila/linhas é o manager; o sweep S3 é
+// compensação best-effort do principal (ADR-0003 D6/D7: linha primeiro, objeto
+// depois). Estados terminais são os únicos apagáveis (D-a do plano).
+// ---------------------------------------------------------------------------
+
+/// Linha apagada por `delete_job` — paths relativos dos artifacts para o sweep
+/// (a chave S3 completa `artifacts/{job_id}/{path}` é montada pelo principal).
+#[derive(Debug, Clone, Serialize)]
+pub struct DeletedJob {
+    pub id: String,
+    pub status: String,
+    pub artifacts: Vec<String>,
+}
+
+/// Resultado do `cleanup_jobs` (limpeza em lote).
+#[derive(Debug, Clone, Serialize)]
+pub struct CleanupResult {
+    pub deleted: i64,
+    pub jobs: Vec<DeletedJob>,
+}
+
+/// Estados terminais — os únicos apagáveis.
+pub const TERMINAL_STATUSES: [&str; 3] = ["done", "failed", "cancelled"];
+
+/// Apaga um job terminal e retorna a linha + paths dos artifacts.
+///
+/// Guarda: `done|failed|cancelled` → apaga (FK `job_artifacts ON DELETE
+/// CASCADE` remove os artefatos); qualquer outro status →
+/// [`ManagerError::NotDeletable`]; inexistente → [`ManagerError::NotFound`].
+pub async fn delete_job(pool: &PgPool, id: Uuid) -> Result<DeletedJob, ManagerError> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| ManagerError::Internal(format!("begin delete job: {e}")))?;
+
+    let status: Option<String> =
+        sqlx::query_scalar("SELECT status FROM jobs WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| ManagerError::Internal(format!("lock job for delete: {e}")))?;
+
+    let status = status.ok_or(ManagerError::NotFound)?;
+    if !TERMINAL_STATUSES.contains(&status.as_str()) {
+        return Err(ManagerError::NotDeletable);
+    }
+
+    let artifacts: Vec<String> =
+        sqlx::query_scalar("SELECT path FROM job_artifacts WHERE job_id = $1 ORDER BY path, id")
+            .bind(id)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|e| ManagerError::Internal(format!("list artifacts before delete: {e}")))?;
+
+    sqlx::query("DELETE FROM jobs WHERE id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("delete job: {e}")))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ManagerError::Internal(format!("commit delete job: {e}")))?;
+
+    Ok(DeletedJob {
+        id: id.to_string(),
+        status,
+        artifacts,
+    })
+}
+
+/// Normaliza e valida os statuses pedidos numa limpeza em lote.
+/// `None`/vazio → todos os terminais; qualquer status não-terminal → erro.
+pub fn normalize_cleanup_statuses(
+    statuses: Option<&Vec<String>>,
+) -> Result<Vec<String>, ManagerError> {
+    let list = match statuses {
+        None => Vec::new(),
+        Some(v) => v.clone(),
+    };
+    let list = if list.is_empty() {
+        TERMINAL_STATUSES.iter().map(|s| s.to_string()).collect()
+    } else {
+        for s in &list {
+            if !TERMINAL_STATUSES.contains(&s.as_str()) {
+                return Err(ManagerError::InvalidRequest(format!(
+                    "cleanup só aceita estados terminais (done|failed|cancelled), recebido: {s}"
+                )));
+            }
+        }
+        list
+    };
+    Ok(list)
+}
+
+/// Limpeza em lote de jobs terminais (AC-003).
+///
+/// `older_than_days`: apaga apenas jobs terminais há mais de N dias
+/// (`COALESCE(finished_at, created_at)`); `None` = sem recorte temporal.
+/// Exige pelo menos um critério (dias ou statuses) para não apagar o
+/// histórico inteiro por omissão. Retorna as linhas apagadas com os paths
+/// dos artifacts (prefixos S3 a sweeping pelo principal).
+pub async fn cleanup_jobs(
+    pool: &PgPool,
+    older_than_days: Option<i64>,
+    statuses: Option<Vec<String>>,
+) -> Result<CleanupResult, ManagerError> {
+    if older_than_days.is_none() && statuses.as_ref().map_or(true, |s| s.is_empty()) {
+        return Err(ManagerError::InvalidRequest(
+            "cleanup exige pelo menos um critério (olderThanDays ou statuses)".into(),
+        ));
+    }
+    if let Some(d) = older_than_days {
+        if d < 0 {
+            return Err(ManagerError::InvalidRequest(
+                "olderThanDays deve ser >= 0".into(),
+            ));
+        }
+    }
+    let statuses = normalize_cleanup_statuses(statuses.as_ref())?;
+
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| ManagerError::Internal(format!("begin cleanup: {e}")))?;
+
+    // Seleciona os candidatos (lock pessimista p/ não corrida com report/dispatch).
+    let rows: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT id, status FROM jobs \
+         WHERE status = ANY($1) \
+           AND ($2::bigint IS NULL OR COALESCE(finished_at, created_at) < NOW() - ($2::bigint * INTERVAL '1 day')) \
+         FOR UPDATE SKIP LOCKED",
+    )
+    .bind(&statuses)
+    .bind(older_than_days)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("select jobs to cleanup: {e}")))?;
+
+    let mut jobs = Vec::with_capacity(rows.len());
+    for (id, status) in rows {
+        let artifacts: Vec<String> = sqlx::query_scalar(
+            "SELECT path FROM job_artifacts WHERE job_id = $1 ORDER BY path, id",
+        )
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("list artifacts before cleanup: {e}")))?;
+
+        sqlx::query("DELETE FROM jobs WHERE id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| ManagerError::Internal(format!("delete job in cleanup: {e}")))?;
+
+        jobs.push(DeletedJob {
+            id: id.to_string(),
+            status,
+            artifacts,
+        });
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| ManagerError::Internal(format!("commit cleanup: {e}")))?;
+
+    let deleted = jobs.len() as i64;
+    Ok(CleanupResult { deleted, jobs })
+}
+
 /// Sanitiza uma string para slug seguro (apenas a-z, 0-9 e hífen).
 pub fn slugify(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -2911,6 +3085,31 @@ mod tests {
     #[test]
     fn is_valid_md5_non_hex() {
         assert!(!is_valid_md5("d41d8cd98f00b204e9800998ecf8427g"));
+    }
+
+    #[test]
+    fn normalize_cleanup_statuses_default_sao_terminais() {
+        let got = normalize_cleanup_statuses(None).unwrap();
+        assert_eq!(
+            got,
+            vec!["done".to_string(), "failed".into(), "cancelled".into()]
+        );
+        // Lista vazia → mesmo default.
+        let got2 = normalize_cleanup_statuses(Some(&Vec::new())).unwrap();
+        assert_eq!(got2, got);
+    }
+
+    #[test]
+    fn normalize_cleanup_statuses_rejeita_nao_terminal() {
+        let bad = vec!["running".to_string()];
+        let err = normalize_cleanup_statuses(Some(&bad)).unwrap_err();
+        assert!(matches!(err, ManagerError::InvalidRequest(_)));
+        // Subset válido passa.
+        let ok = vec!["done".to_string()];
+        assert_eq!(
+            normalize_cleanup_statuses(Some(&ok)).unwrap(),
+            vec!["done".to_string()]
+        );
     }
 
     #[test]

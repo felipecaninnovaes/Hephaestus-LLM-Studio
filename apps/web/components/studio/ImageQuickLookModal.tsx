@@ -357,6 +357,7 @@ export function ImageQuickLookModal({
                     rows={4}
                     placeholder="Digite a legenda desta imagem…"
                     className="w-full rounded-lg border border-white/15 bg-black/60 p-2 text-xs text-zinc-100 placeholder:text-zinc-500 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 font-mono leading-relaxed resize-y"
+                    // biome-ignore lint/a11y/noAutofocus: textarea de modo de edição ativado por clique em Editar dentro de modal; foco acompanha a transição para edição
                     autoFocus
                   />
                   <div className="flex items-center justify-between">

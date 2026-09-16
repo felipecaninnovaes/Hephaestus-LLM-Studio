@@ -196,6 +196,7 @@ export default function LoginPage() {
                     autoComplete="current-password"
                     required
                     placeholder="Digite sua senha…"
+                    // biome-ignore lint/a11y/noAutofocus: autofocus em única input de credenciais; padrão APG para telas de login
                     autoFocus
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}

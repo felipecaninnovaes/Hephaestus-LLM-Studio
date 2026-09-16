@@ -364,6 +364,7 @@ export default function ModelsPage() {
                   onChange={(e) => setNewModelName(e.target.value)}
                   className="w-full rounded-md border border-zinc-700/80 bg-zinc-900/90 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 focus:border-brand-500 focus:outline-none font-mono"
                   placeholder="ex: cyberpunk-flux2-cbrpnk.safetensors"
+                  // biome-ignore lint/a11y/noAutofocus: foco inicial em input de dialog de renomear aberto por ação do usuário; mantém o foco dentro do modal
                   autoFocus
                   required
                 />

@@ -380,7 +380,7 @@ Fundo fixo com 4 camadas óticas:
 Lint canônico do workspace `web` via Biome 2 (config única em `biome.json` na raiz: `recommended` + `a11y`, `css.parser.tailwindDirectives` para o `@theme` do Tailwind v4, formatter/assist habilitados mas não bloqueantes):
 
 ```bash
-npm run lint --workspace=web    # biome lint (follow-up: zerar os 116 errors atuais — ver tasks/todo.md; a partir daí, gate = 0 errors, warnings não bloqueantes)
+npm run lint --workspace=web    # biome lint — gate: 0 errors (atingido); warnings (204) reportados, não bloqueantes
 npm run check --workspace=web   # lint + format + assist (informativo)
 npm run build --workspace=web   # Next.js 16 — verificação final obrigatória
 ```

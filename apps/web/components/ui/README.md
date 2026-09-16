@@ -64,7 +64,7 @@ Aceitam opacidade (`bg-status-alert/15`, `border-status-danger/30`). Tons claros
 ## Qualidade (Biome)
 
 ```bash
-npm run lint --workspace=web    # cwd = raiz do monorepo; executa `biome lint .` com cwd apps/web (Checked 113 files; follow-up: zerar 116 errors — ver tasks/todo.md; gate futuro = 0 errors)
+npm run lint --workspace=web    # cwd = raiz do monorepo; executa `biome lint .` com cwd apps/web (Checked 113 files; gate: 0 errors — atingido; 204 warnings + 3 infos reportados, não bloqueantes)
 ```
 
 Config única em `biome.json` (raiz): `recommended` + `a11y`, `tailwindDirectives` ligado para o `@theme` do Tailwind v4. Formatter/assist habilitados mas não bloqueantes (storm de formatação vai em fatia própria — não rodar `--write` de `format`/`check` sem combinar).

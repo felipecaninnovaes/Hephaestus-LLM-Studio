@@ -1,0 +1,1227 @@
+# Coordenação — estado do plano (memória do coordenador)
+
+Arquivo de trabalho do agente coordenador: registra **onde estamos** e **qual o
+próximo passo na ordem**, para sobreviver a restart de sessão. Não duplica
+docs — referencia por seção. Atualizar: ao abrir fatia, ao fechar fatia, e ao
+ser interrompido no meio de uma.
+
+## Protocolo de retomada (início de sessão)
+
+1. Ler este arquivo → seção "Plano em andamento".
+2. `git status` + `git log --oneline -5` para conferir se o disco bate com o
+   registrado (branch aberta, commits pendentes de push).
+3. `graft check` se for mexer em código indexado (refresh: `graft build`).
+4. Fontes de verdade para a fatia: `IDEIA.md`, `docs/backend.md` §9/§10,
+   `docs/frontend.md` §10, `docs/repo-estrutura.md` (ordem de fatias),
+   `docs/dividas.md` (dívidas a honrar no nascedouro) e os ADRs em
+   `docs/adr/` — a 3b tem especificação própria e completa em
+   **`docs/adr/0003-object-storage-s3.md`** (decisões D0–D10, delta de contrato,
+   contorno da migration 0003, plano de commits 3b.0–3b.8); não reinvente nada que já
+   está lá, e não aplique os deltas de `backend.md`/`frontend.md` antes do commit 3b.8.
+
+## Estado atual — 2026-09-16 (AS 3 BRANCHES DE 16/09 REVISADAS — TODAS APROVADAS, PENDENTES DE MERGE)
+
+- **Revisão das 3 branches filhas de `feat/jobs-cleanup` (pedido do usuário: "estamos com 3 branches, estão todas revisadas?").** Nenhuma das duas filhas tinha sido revisada (registro antigo listava "(3) @reviewer nas 3 branches" como pendência). Feito nesta sessão:
+  - **`feat/action-center-polish`** (AC-001..006-B + UI AC-003 canônica): review BLOQUEIA (P1: chip "Imagens processadas" tautológico `N/N` ou `0`; P2: `as any` no delete, cleanup em lote sem toast, 404/503 genéricos, `isTrainingMetric` do front divergindo de `is_training_metric` da ADR-0024) → `3237e9a` (jobId nullable portado) + `8a1475b` (todos os P1/P2 + NITs) → re-auditoria **APROVA COM NITS** → `d81382f` (progress não-finito no chip, plano marca capability removida). **UI AC-003 é CANÔNICA nesta branch** (a UI de `feat/jobs-cleanup` será descartada no merge; backend da cleanup fica).
+  - **`feat/jobs-status-metrics-split`** (AC-006-A/ADR-0024): review BLOQUEIA (P1-1: forkou antes dos fixes da cleanup → regressava `tracing::warn!`, asserts camelCase aninhado e comentário da migration 0012; P1-2: jobs terminais `done`/`failed` não persistiam `phase`/`message` → `phaseMessage` congelada em "Carregando FLUX"; P2: métrica com fase não promovia, NaN/`is_finite`, `dispatched`/`cancelling` não-mapeados) → merge `07cb8ce` de `7f78032` + `cc17527` (todos os fixes; orquestrador emite `completed`/`error`, manager COALESCE nos UPDATEs terminais) + `009cd76` (docs alinhados ao real — **ramo `cancelled` NÃO existe**, registrado como dívida Abort races) → re-auditoria **APROVA COM NITS** → `180856e`.
+  - **Checks na split (árvore atual)**: `cargo test -p api-principal -p manager -p orchestrator` **577 verdes**, `scripts/test-db.sh` exit 0 (t6/t7 inclusos), `cargo fmt --all -- --check` limpo, `docker compose config -q` ok.
+- **Pendências**: (1) smoke E2E Chrome das 3 branches (lixeira/cleanup reais com manager de pé, chip de progresso novo, fase terminal no drawer); (2) **ORDEM DE MERGE DEFINITIVA: `jobs-cleanup` → `action-center-polish` → `jobs-status-metrics-split`** (verificada por topologia git em 16/09: split já contém cleanup via merge `07cb8ce`; polish não tem contrato/backend — por isso cleanup PRIMEIRO, corrigindo a ordem antiga do registro). Conflitos a resolver: na polish, UI AC-003 da polish VENCE (rejeitar lado cleanup em `jobs/page.tsx`/`lib/jobs.ts`/`types/studio.ts` do merge e **apagar `CleanupJobsModal.tsx`** — os fixes dela já vivem na polish); na split, só `docs/coordenacao.md` (ficar com a seção da split) e ruído possível em `docs/backend.md` §9; migrations 0012→0013 na ordem; CI por PR + `cargo test -p manager`/`test-db.sh` após cada merge; (3) **AC-007 NADA** (staging progress + cache MD5 no nó — plano pronto em `docs/plano-action-center.md` §AC-007, branch `feat/node-content-cache` off main); (4) push dos 3 branches ao origin.
+
+## Estado anterior — 2026-09-16 (FATIA CLEANUP DE JOBS / AC-003 — FECHADA NA BRANCH, PENDENTE PUSH/MERGE)
+
+- Plano: `docs/plano-action-center.md` (decisões 1–5 fechadas). Ramificações e verificação (tudo verde):
+  - **`feat/action-center-polish`** (esta branch, 9 commits `ccac092..1ce4296`): AC-001 manager `ORDER BY` + galeria
+    ordenada/colapsada com baseline separada; AC-005 mockups removidos (notificações ficcionais, rodapé "Sem
+    telemetria", JobLogViewer com 1 linha de boot real e timestamps sintéticos como "—"); AC-006-B filtro
+    `lib/jobMetrics.ts`; AC-004 deep links `?job=` (fix `?selected=` incl. TrainYoloModal), seleção↔URL
+    `router.replace`, modo foco `&focus=1` + botões Acompanhar/Sair-do-foco; AC-002 registry `lib/jobCapabilities.ts`
+    (matriz aprovada; chips "Imagens processadas" derivados de step/progress); AC-003 **UI** (lixeira por job terminal
+    com ConfirmDialog, `JobCleanupDialog`, `deleteJob`/`cleanupJobs`, toast com contagens). `tsc`+`npm run build` verdes.
+  - **`feat/jobs-cleanup`** (off main, `6c5217d..ede83ef`): AC-003 backend — manager `delete_job`/`cleanup_jobs`
+    (guarda terminal→409 `job_not_terminal`; migration **0012** gerações→SET NULL; expurga `models` do job; devolve
+    `objectKeys` exatas sem chaves da galeria) + BFF principal com sweep S3 por chave best-effort, wire camelCase,
+    openapi **0.27.0**. manager_db 111/111; principal 410 lib + 15 contract.
+  - **`feat/jobs-status-metrics-split`** (stacked sobre cleanup, `9836d5a..14e4ecc`): **ADR-0024** + AC-006-A —
+    orquestrador `is_training_metric` separa status×métrica na borda (contrato do engine intocado); report ganha
+    `phase`/`message` topo; manager persiste `jobs.phase`/`jobs.message` (migration **0013**); principal lê colunas;
+    openapi **0.28.0**; backend.md §9/§10 sync. orchestrator 117, manager_db 112, principal 410+15, compose ok.
+- **Ordem de merge**: polish → jobs-cleanup → status-metrics-split (conflito leve no drawer ao unir UI AC-003 com AC-001/002/004 — resolver no merge; migrations 0012/0013 dependem da ordem).
+- **Pendências**: (1) smoke E2E Chrome pós-rebuild das imagens (lixeira/cleanup reais, foco, chips autolabel, phase
+  real no drawer); (2) `docs/frontend.md` §10 p/ client fns+rotas UI (docs-sync rodou só backend); (3) @reviewer nas
+  3 branches; (4) **AC-007 NADA** — staging progress no canal criado pela ADR-0024 + cache MD5 conteudo-endereçado no
+  nó (design aprovado no plano §AC-007; `WeightRef.bytes`, eviction LRU `ORCH_CACHE_MAX_GB`, cache_hit, UI
+  preparing/dispatched) → branch `feat/node-content-cache` off main, próxima sessão.
+- **Custo**: sessão de 2026-09-16 queimou ~45M tokens de input (histórico reenviado por chamada + leituras de
+  arquivos inteiros + ANSI dos hooks). Retomar em sessão NOVA; usar graft/skeleton e offsets, não leituras completas.
+
+## Estado anterior — 2026-09-16 (ACTION CENTER: plano antecipado em arquivo — NADA implementado)
+
+- Usuário pediu análise+planejamento de 6 pontos do Action Center, sem implementar.
+  Entregue: **`docs/plano-action-center.md`** — causa-raiz provada por file:line para
+  AC-001 (amostras sem ordem/colapso; `get_job_artifacts` sem ORDER BY), AC-002 (painel
+  não-modular; chips zerados em AutoLabel), AC-003 (zero rotas de delete de jobs),
+  AC-004 (seleção fora da URL + deep link `?selected=` morto), AC-005 (notificações e
+  logs fabricados no drawer), AC-006 (mensagens de status do engine difusão fluem pelo
+  mesmo `metrics.jsonl`→orquestrador→manager→gráfico e viram "steps"; colisão
+  potencial `(epoch,step)` no upsert do manager). Sequência AC-1..AC-4 com donos e
+  **5 decisões fechadas pelo usuário (2026-09-16, todas "Sim" ao recomendado)** e
+  item adicional **AC-007** (progresso da sincronização de conteúdo no nó + cache
+  conteudo-endereçado; apurado: dataset/weights/LoRAs/custom são RE-BAIXADOS do
+  S3 a todo job — `orchestrator/src/lib.rs:1102-1242` — sem reuso entre jobs;
+  só o base model HF é cacheado). **Design do cache aprovado pelo usuário
+  (2026-09-16): mapeamento fixo conteudo-endereçado por MD5 no nó, verificação
+  de hash para reaproveitar, re-baixa só em alteração (plano AC-007 §2).**
+  Confirmar rebasing com o
+  branch `feat/enable-bucket`/`feat/aba-geracao` abertos antes de abrir AC-1.
+
+## Estado anterior — 2026-09-15 (FATIA BUCKETING POR ASPECT RATIO — IMPLEMENTADA NA BRANCH, AGUARDA REVISÃO)
+
+- **FATIA ENABLE BUCKET (branch `feat/enable-bucket`, criada a partir de `feat/aba-geracao`).** Pedido do usuário: implementar `enable_bucket: true` (padrão) no treino de LoRA de difusão (flux2) e na UI. Antes da fatia a opção não existia — todas as imagens eram esticadas para quadrado `resolução×resolução`.
+  - **Engine (`engines/trainer-difusao`)**: `dataset.py` ganhou `_resolve_bucket_reso` (área ≈ `base_res²`, lados múltiplos de 64, min `base_res//2`, max `base_res*2`), agrupamento por bucket (`DiffusionDataset.buckets`/`bucket_dims`), `BucketBatchSampler` (batches uniformes por bucket, nada descartado, RNG com seed) e `build_dataloader`. Wiring em `flux.py`/`sd15.py`/`sdxl.py` (default `enable_bucket=True`); flux1 passou a derivar `img_ids` das dims reais do batch e o micro-conditioning do SDXL usa as dims do bucket quando ativo. Mock não usa dataset (inalterado). **84 testes pytest** (3 novos).
+  - **Contrato**: OpenAPI 0.25.0 → **0.26.0**, `enableBucket: boolean` (default true) em `DiffusionJobRequest`.
+  - **api-principal**: `enable_bucket` no struct (default true), yaml sempre emite `  enable_bucket: true|false` na seção `lora:`, e `enableBucket` incluído nos `params` canônicos (clone "Repetir/Continuar treino"). **402 lib + 15 contract + 7 search_embed verdes**; `cargo check --workspace` limpo.
+  - **UI**: toggle "Bucketing por Aspect Ratio" nas Configurações Avançadas do `ForjaDifusaoSetup.tsx` (default ON), badge `ASPECT RATIO`/`QUADRADO` no resumo, propagação em `types/studio.ts`, `lib/jobs.ts` e presets (export/import/apply). `npm run build` ok.
+  - **Pendência docs-sync**: campo novo de contrato (sem rota nova); docs/backend.md e frontend.md não enumeram os campos do request — sync opcional.
+  - **Pendência @gpu**: validar treino real com bucketing na GPU do TrueNAS (dimensões não-quadradas no VAE Flux2/SDXL).
+
+## Estado anterior — 2026-09-15 (FATIA ABA GERAÇÃO — IMPLEMENTADA NA BRANCH, AGUARDA MERGE DO USUÁRIO)
+
+- **FATIA ABA GERAÇÃO — CONCLUÍDA NA BRANCH `feat/aba-geracao` (18 commits, `6be4639`..`0a3008d`).** Especificação: `docs/adr/0023-aba-geracao.md` (ACEITA). Docs sincronizados (0a3008d), graft build sincronizado.
+  - **Entregue**: aba `/geracao` (pills Gerar|Galeria) + `/playground` YOLO-only; OpenAPI 0.25.0 + migration 0011 (`models.kind/arch` + tabela `generations`); engine v2 (batch seed+i 1..8, multi-LoRA ≤4 via set_adapters/peft, custom SDXL/SD15 via from_single_file, thumbs 512px, meta JSONL, sentinela de cancel); daemon quente por nó (serve HTTP, spec-aware reload, idle TTL 600s, preempção, fallback one-shot, `DIFFUSION_DAEMON_ENABLED=0` default); manager hook generations (idempotente, best-effort) + rotas internas; principal BFF da galeria (listar/presigned condicional/excluir/exportar zip ≤100) + sniff de safetensors + cap 8 GiB; UI GenerationPanel/LoRAEditor/GenerationGallery/CompareSlider; mobile 1 coluna (375px) com bottom-sheet e touch ≥40px.
+  - **Verificações**: contract 15/15; api-principal lib 390; manager lib 20; manager_db 108; orchestrator 112; engine pytest 73; npm build 14 rotas; impeccable detect 0/0; graft build sincronizado; docker compose config -q ok.
+  - **E2E REAL provado no dev host (Chrome + compose mock)**: geração one-shot (done), batch 3 com seeds 777/778/779, galeria persistida com presigned URLs, seleção de 2 + comparador funcionando em 375px, **daemon quente ON**: 1º job spawn+health+generate (done, ~60s), 2º job MESMO spec done em ~25s SEM respawn (pipeline residente; cache por spec em serve.py), 3º job batch 2 via daemon done → 6 gerações indexadas. Fixes do review: wire do daemon (health/generate/real_config/volumes/rede compose `DIFFUSION_DAEMON_NETWORK`), XOR custom no yaml (omitir base_model quando custom), dedup `generated.png` no glob, thumb_filename no hook, seed ausente não emitida, scale com 2 casas, gap-1 no SegmentedControl, órfão container rm -f, env vazio = unset, URL propagada ao client do daemon.
+  - **Sessão de fixes pós-merge-do-usuário (2026-09-15 tarde/noite)**: geração real validada pelo usuário no TrueNAS (engine v2 na GPU) ✓; 3 fixes de fluxo encontrados em uso real:
+    1. **LoRA legado quebrado** (regressão da fatia): HFValidationError carregando o literal `{weights_path}` — o engine antigo tinha guarda `os.path.exists` que se perdeu na G.2 → restaurada em `_resolve_loras_from_legacy` + guard simétrico para `loras[]` (81 testes; E2E mock sem LoRA → done).
+    2. **Upload com name sem extensão → 400**: `validate_upload` exigia ext no NAME do usuário (display name) — ext agora vem do raw_filename via `validate_raw_filename`; `final_name = sanitize(name)+ext` com dedup; LoRA sem arch aceita (arch null); erro do manager propagado (não mais genérico) + docs deltas.
+    3. **UX do modal**: bloco "Classificação (opcional)" com Selects Kind/Arch para difusão+.safetensors; `modelErrorMessage` mapea erros de sniff/hint para pt-BR; E2E pela UI provado (toast sucesso, badges DIFUSÃO/.safetensors).
+    - Commits: `fix(engine)` guarda lora legado; `fix(api)` nome sem extensão/lora sem arch/erro visível; `feat(web)` classificação opcional. Baterias: api-principal 402+15, manager 108+20, orchestrator 112, engine 81, build web ok, fmt/check ok.
+  - **REVIEW (@reviewer)**: iniciou BLOQUEIA (2×P1: daemon wire incompatível + custom XOR violado) → TODOS os P1/P2-1/P2-2 corrigidos e provados em E2E (85843e5). P2-5 (filtro quantization quebra total) e NITs restam como dívida registrada em dividas.md.
+  - **Estado do ambiente de sessão (não versionado)**: `infra/.env` com `DIFFUSION_TRAINER_IMAGE=hephaestus/trainer-difusao:local` e `DIFFUSION_DAEMON_ENABLED=1` (daemon de pé, container `diffusion-daemon` na rede `infra_default`); TrueNAS orchestrator remoto está ADOPTADO e online neste manager de dev (heartbeats de 10.15.1.2) — roteamento automático pode escolher o nó GPU e exigir imagem `:gpu` (guarda anti-mock, comportamento correto).
+  - **Dívidas @gpu manuais (próxima sessão GPU)**: validar from_single_file quantizado + multi-LoRA peft no Flux2Klein + daemon quente real na GPU do TrueNAS; rebuild das imagens `:gpu` no TrueNAS com a branch.
+  - **Lição registrada (regra das duas correções)**: specs de template textual devem entregar o TEXTO FINAL EXATO; verificação E2E no browser é obrigatória após mudança de yaml (snapshot de contrato não pega erro de YAML). A corrente do daemon teve 5 bugs sequenciais de integração (env vazio, nome de container, firewall host-gateway, URL não propagada ao client, mounts errados) — todos diferentes, fechados um a um com prova.
+  - **Pendência para o usuário**: revisar/merge da branch `feat/aba-geracao` (push + CI + merge na main pelo usuário).
+
+## Estado anterior — 2026-09-15 (FATIA ABA GERAÇÃO — ADR-0023 ACEITO, SPIKES PROVADOS, EM CURSO)
+
+- **FATIA ABA GERAÇÃO (branch `feat/aba-geracao`) — EM CURSO.** Especificação executável: **`docs/adr/0023-aba-geracao.md`** (Status ACEITA; ler antes de qualquer despacho). Usuário aprovou o design em 2026-09-15 ("Concordo").
+  - **Pedidos cobertos**: aba `/geracao` (playground vira YOLO-only), servidor de inferência quente (daemon por nó, sem re-boot de container por geração), batch com seed+i (1..8), multi-LoRA `loras[]` ≤4, modelos custom SDXL/SD15 com sniff (Flux custom fora da v1), galeria persistente (tabela `generations` no manager + BFF listar/excluir/exportar zip ≤100), comparador de 2 imagens, mobile (375/768/1280).
+  - **Spikes PROVADOS (2026-09-15, dev host)**:
+    - **S1 PASS com nota**: diffusers 0.40.0 — SDXL `from_single_file` + `quantization_config` suportado (single_file_model.py:361); Flux2Klein = `Flux2LoraLoaderMixin.load_lora_weights(adapter_name)` + escala multi via `pipe.transformer.set_adapters` (peft, loaders/peft.py:437) — `set_adapters` NÃO existe no mixin de pipeline do Flux2. Validação runtime @gpu manual pendente (doutrina).
+    - **S2 PASS**: PUT único 6,5 GiB → HTTP 200 no SeaweedFS local (SigV4); cap 8 GiB de upload custom confirmado, sem multipart.
+  - **Plano de commits G.1–G.9** (1 commit/despacho cada): G.1 contrato OpenAPI 0.25.0 + migration 0011 (`models.kind/arch` + `generations`) + contract tests → G.2 engine one-shot v2 (batch/multi-LoRA/custom/meta/thumbs, mock pytest) → G.3 engine `serve` (daemon HTTP) → G.4 orchestrator daemon.rs + glob artefatos + staging multi-ref → G.5 manager (loras/custom + hook generations + rotas internas) → G.6 principal BFF (validação XOR, config.yaml v2, endpoints galeria, sniff 8 GiB) → G.7 UI `/geracao` + sidebar + `/playground` YOLO-only → G.8 UI galeria + CompareSlider + mobile → G.9 docs-sync + vram-table + review.
+  - **Lição registrada (regra das duas correções, 2026-09-15)**: o template `generate_diffusion_generate_config_yaml` (jobs/models.rs) falhou 2x em E2E real — 1º: seções condicionais sem newline após `batch_size:` (gerava `1weights_path:` colado); 2º: `weights_path:` root-level com `lora_scale:` indentado dentro de generate (mixed indentation → "did not find expected key"). Aprendizado: **specs de template textual devem entregar o TEXTO FINAL EXATO, não instruções de ajuste** — template estruturalmente correto agora especificado palavra a palavra no despacho seguinte. Verificação E2E no Chrome é OBRIGATÓRIA após qualquer mudança de yaml (o snapshot de contrato não pega erro de YAML).
+
+  - Spike script: `~/.cache/tmp/opencode/spike-s1-s2.sh` (não versionado).
+
+## Estado anterior — 2026-09-15 (FATIA CI REGISTRY PUSH — FECHADA, PIPELINE 100% VERDE)
+
+- **FATIA CI REGISTRY PUSH — FECHADA (2026-09-15)** — pipeline de release 100% verde: as **9 imagens × 2 tags** publicadas em `git.felipecncloud.com/felipe/hephaestus/<nome>` (principal, manager, orchestrator, web, embedder, trainer-yolo, trainer-difusao, trainer-yolo-gpu, trainer-difusao-gpu; tags `<sha>`+`latest` host e `gpu-<sha>`+`gpu` GPU). Pull provado no TrueNAS (dívida M8 parcialmente validada — pull com login funciona; package continua privado).
+  - **Run 2 (fix dockerfile paths, PR #27)**: engines buildam mas as 2 GPU falham no push — camada grande (~9GB pip) em retry infinito com `unknown: Client Closed Request`.
+  - **Causa raiz provada em logs do gitea**: `PATCH /v2/.../blobs/uploads/... 500 unexpected EOF em 60000.0ms` — **readTimeout default de 60s do traefik v3** no entrypoint `websecure` corta uploads >60s. Cloudflare descartado como causa (DNS-only, grey cloud, `dig` → IP direto).
+  - **Fix (TrueNAS, fora do repo)**: traefik recriado com `--entrypoints.websecure.transport.respondingTimeouts.readTimeout=3600s`. Compose novo em `/mnt/NVME/appdata/traefik/compose.yaml` (o compose original nos labels apontava para `/app/...` read-only e não existia mais). Outage ~2s. Rollback: `/mnt/NVME/appdata/traefik/docker-inspect-traefik.bak-ci-readtimeout.json`. Uma flag órfã do container antigo (`acme.dnschallenge.propagation.delaybeforechecks=0s`) foi descartada — a traefik v3.1 rejeita o campo e o valor era default.
+  - **Validação**: re-run do run 176 (attempt 2 via API) — 9/9 jobs success; GPU push conclui em <1min com o timeout novo.
+  - **Setup do runner que ficou de pé** (referência): `.gitea/workflows/release.yml` (só main, matrix 9 imagens, docker CLI puro, socket montado via `container.valid_volumes` no `/mnt/NVME/appdata/gitea/runner/config.yaml` do runner v3.3.2, secret `REGISTRY_TOKEN` PAT `write:package`). Backup do compose do runner: `compose.yaml.bak-ci`.
+  - **Dívidas restantes (do review v1)**: M3 sem `concurrency` (2 pushes seguidos competem nas tags rolling); M4 `capacity: 1` compartilhado (release de horas enfileira o `ci.yml`); M7 web com ARG defaults (localhost); M8 lado pull — package PRIVADO, consumidores remotos precisam login com escopo `read:package` (pull via 443 provado no TrueNAS); M10 prune de disco do daemon de produção é manual; M11 `.dockerignore` sem `target/`/`.git`; M12 mapear `embedder` ↔ `trainer-clip` na doc.
+  - **Operação**: re-run de run específico via API `POST /repos/{owner}/{repo}/actions/runs/{id}/rerun` (o endpoint por task `actions/tasks/{id}/rerun` dá 404 nesta versão).
+
+## Estado atual — 2026-09-15 (FATIA CI REGISTRY PUSH — PRONTA NA BRANCH, PENDENTE MERGE NA MAIN)
+
+- **FATIA CI REGISTRY PUSH — CONCLUÍDA NA BRANCH (2026-09-15)** — branch `feat/ci-registry-push`, commit `3ee804b` (`chore(ci): build de todas as imagens docker e push nos packages da gitea na main`). Pendente: push + merge na `main` pelo usuário → dispara o primeiro run real (validação ponta a ponta).
+  - **Objetivo**: workflow Gitea Actions `.gitea/workflows/release.yml` que, **somente em push na `main`**, builda as 9 imagens Docker do monorepo e publica no registry de packages da Gitea.
+  - **Workflow (`.gitea/workflows/release.yml`)**:
+    - Trigger: `on: push: branches: [main]` (exclusivo; o `ci.yml` segue rodando em todo push).
+    - Matrix de 9 imagens (`fail-fast: false`, sequencial — runner `capacity: 1`): `principal`, `manager`, `orchestrator`, `web` (context raiz) + `embedder` (trainer-clip), `trainer-yolo`, `trainer-difusao` (mock) + `trainer-yolo-gpu`, `trainer-difusao-gpu` (flag `gpu: true` na matrix).
+    - Zero ações externas (regra do `ci.yml`): checkout manual, imagem `docker:29-cli` pinada pela MESMA digest do ci.yml, docker CLI puro.
+    - O job monta `/var/run/docker.sock` (daemon do host TrueNAS — cache de camadas persistente entre runs); pre-flight `docker version` falha rápido se o mount for descartado.
+    - Login com secret `REGISTRY_TOKEN` (PAT `write:package` do usuário; escopado no step de login). GITEA_TOKEN não publica packages (limitação da Gitea).
+    - Destino: `git.felipecncloud.com/felipe/hephaestus/<nome>` — tags host: `<sha-curto>` + `latest`; GPU: `gpu-<sha-curto>` + `gpu`.
+    - Steps build/push com `set -euo pipefail`.
+  - **Config do runner (TrueNAS 10.15.1.2, fora do repo)**: criado `/mnt/NVME/appdata/gitea/runner/config.yaml` (montado em `/data/config.yaml`): `container.valid_volumes: [/var/run/docker.sock]` (default `[]` descarta mounts do workflow!), `runner.timeout: 6h` (1º build GPU puxa base CUDA ~9GB), `capacity: 1`, `log.level: info`. Compose `/mnt/NVME/appdata/Arcane/projects/gitea/compose.yaml`: env `CONFIG_FILE=/data/config.yaml` adicionada ao `gitea-runner` (backup `compose.yaml.bak-ci`). Runner recriado, Up, sem erros; `docker inspect` confirma env; gitea healthy.
+  - **Auth token**: `.env` local tem `GIT_TEA_TOKEN` com escopos `write:package, write:issue, write:repository` — foi registrado como secret `REGISTRY_TOKEN` do repo (não versionado).
+  - **Review (@reviewer)**: APROVADO, 0 bloqueios. Melhorias aplicadas: `set -euo pipefail` (M1), flag `gpu` na matrix (M2), pre-flight do daemon (M5), `REGISTRY_TOKEN` escopado no step (M6).
+  - **Dívidas registradas (não-bloqueantes, do review)**: M3 sem `concurrency` (2 pushes em sequência competem nas tags rolling); M4 `capacity: 1` compartilhado com o `ci.yml` (release de horas enfileira CI); M7 web publicada com ARG defaults (`NEXT_PUBLIC_API_URL` localhost — parametrizar quando existir URL de prod); M8 lado pull pendente (package nasce PRIVADO — pull exige login com leitura; próximos slices que consumirem as imagens precisam disso); M9 se push falhar por attestation do buildx, usar `--provenance=false` (verificar no 1º run); M10 disco do daemon de produção acumula imagens/caches por release (planejar prune manual); M11 `.dockerignore` sem `target/`/`.git` (custo aceito); M12 nome `embedder` ↔ `trainer-clip` (documentar mapeamento).
+  - **Risco aceito (documentado)**: `valid_volumes` é global do runner e o `ci.yml` roda em todo push — qualquer branch pode definir workflow montando o socket (root no host). Aceito no modelo de ameaça single-user.
+
+- **FATIA CHECKPOINTS AO VIVO, RETOMADA DE TREINO E DOWNLOAD DE CONFIGURAÇÃO JSON — CONCLUÍDA NA BRANCH (2026-09-14)** — branch `feat/diffusion-live-checkpoints-resume`.
+
+- **FATIA CHECKPOINTS AO VIVO, RETOMADA DE TREINO E DOWNLOAD DE CONFIGURAÇÃO JSON — CONCLUÍDA NA BRANCH (2026-09-14)** — branch `feat/diffusion-live-checkpoints-resume`.
+  - **Motivação**:
+    1. Transmitir checkpoints por época em tempo real para o S3 e interface gráfica durante a execução do treino, evitando perda de progresso se o job for cancelado ou falhar e permitindo ao usuário baixar ou testar checkpoints intermediários enquanto o processo ainda roda.
+    2. Viabilizar a continuação e retomada de treinamentos de difusão a partir de qualquer checkpoint prévio ou modelo concluído, clonando hiperparâmetros, injetando os pesos prévios via PEFT LoRA e mantendo a numeração contínua de épocas (`epoch_offset`).
+    3. Permitir a configuração da frequência de salvamento de checkpoints por época via seletor canônico na interface (`checkpointInterval`: 1, 2, 5, 10 épocas).
+    4. Permitir o download do JSON canônico de configuração do treino tanto como artefato S3 do job (`training_config.json`) quanto por ação direta na UI (compatível com a importação de presets).
+    5. Garantir que todas as adições de interface em `apps/web` sigam estritamente o Design System Dark Arcane e o skill `impeccable` (0 erros detectados pelo `impeccable detect`).
+  - **Contratos (OpenAPI 0.24.0)**:
+    - Bump de versão `0.23.0` → `0.24.0`.
+    - `DiffusionJobRequest`: adicionados `checkpointInterval` (inteiro, 1..=100, default 1) e `epochOffset` (inteiro, 0..=1000, default 0).
+    - `Job`: adicionada propriedade `params: object` (nullable), expondo os parâmetros canônicos de criação do job para inspeção e clonagem.
+  - **Backend Rust (`manager`, `api-principal`, `orchestrator`)**:
+    - `services/manager`:
+      - `JobRow`: adicionado `pub params: Option<serde_json::Value>`, populado em `list_jobs` e `get_job`.
+      - `create_job`: adicionado fallback na resolução de `weights_id` buscando na tabela `job_artifacts` (`WHERE id = $1 AND kind IN ('checkpoint', 'model')`), derivando chave S3 `artifacts/{job_id}/{path}`, engine e model.
+      - 16/16 testes unitários verdes.
+    - `services/api-principal`:
+      - `models.rs`: `DiffusionJobRequest` validando `checkpoint_interval` e `epoch_offset`, e `generate_diffusion_config_yaml` injetando `weights_path`, `checkpoint_interval` e `epoch_offset` no YAML.
+      - `handlers.rs`: `submit_diffusion_job` serializando o payload nos `params` do manager; `JobResponse` expondo `params`.
+      - Testes unitários e de integração atualizados (`tests/contract.rs`, `tests/datasets_db.rs`).
+    - `services/orchestrator`:
+      - Salva `outputs/{job_id}/training_config.json` no boot de jobs de difusão em modo `train`.
+      - Upload periódico ao vivo em `metrics_handle` de `outputs/checkpoints/*.safetensors` para o S3 com notificação incremental `kind: "checkpoint"`.
+      - Upload final inclui `training_config.json` como `kind: "config"`.
+      - 85/85 testes unitários verdes.
+  - **Engine Python (`trainer-difusao`)**:
+    - `common.py`: Gravação atômica de safetensors via `.tmp_{filename}` e `os.replace`; função `_load_lora_weights(model, weights_path)` para injeção de adaptadores prévios via PEFT/safetensors.
+    - `models/flux.py`, `models/sdxl.py`, `models/sd15.py`:
+      - Suporte a `weights_path`, `checkpoint_interval` e `epoch_offset`.
+      - Carregamento de pesos prévios via `_load_lora_weights`.
+      - Loop de treino com cálculo contínuo de época: `epoch = epoch_idx + epoch_offset`.
+      - Frequência de checkpoint respeitando `epoch_idx % checkpoint_interval == 0 or epoch_idx == epochs`.
+      - Amostra baseline Época 0 suprimida quando `epoch_offset > 0`.
+      - Correção de inicialização: variáveis de normalização do VAE (`shift_factor`, `scaling_factor`, `latents_mean`, `latents_std`) inicializadas antes do log de início de treino, eliminando `UnboundLocalError`.
+    - `models/mock.py`: Loop sintético e gravação atômica alinhados com o comportamento real.
+    - `tests/test_train.py`: Adicionados testes para intervalo de checkpoints e retomada com pesos e offset. 18/18 testes verdes (`uv run pytest`).
+  - **Web Frontend (`apps/web`) — Impeccable Design System**:
+    - `types/studio.ts`: Propriedades `params` em `Job`, `checkpointInterval` e `epochOffset` em `DiffusionJobRequest` e `DiffusionPreset`.
+    - `lib/jobs.ts`: `startDiffusionJob` propagando os novos parâmetros.
+    - `components/studio/ForjaDifusaoSetup.tsx`:
+      - Seletor canônico `<Select>` para "Intervalo de Checkpoints" nas Configurações Avançadas.
+      - Badge Dark Arcane de contexto "Modo Continuação: Retomando de {nome} (+N épocas)" com botão de cancelar retomada.
+      - Exportação e importação de presets incluindo `checkpointInterval` e `epochOffset`.
+    - `app/(studio)/difusao/page.tsx`:
+      - Wrapped em `<Suspense>` lendo dados de retomada do `sessionStorage` ou query params.
+    - `components/studio/JobCard.tsx` e `app/(studio)/jobs/page.tsx`:
+      - Botão "Retomar" em artefatos de checkpoint/modelo nos cards de jobs e lista de artefatos.
+      - Botões de ação direta no painel do job: "Repetir Treino", "Baixar JSON de Treino" e "Continuar Treino".
+      - Botão de ação rápida "Repetir" integrado aos cards do histórico no `JobListItem`.
+    - `components/studio/ActionCenter.tsx`:
+      - Conexão de ação "Retomar" na lista de artefatos do drawer lateral e botão "Repetir Treino" no rodapé de jobs finalizados.
+    - Validação de design: `impeccable detect` com 0 erros e 0 avisos; `npm run build` com 13/13 páginas compiladas estaticamente com sucesso total.
+
+
+- **FATIA CALIBRAÇÃO VAE FLUX.2, DESACOPLAMENTO MODULAR, CHECKPOINTS POR ÉPOCA E SALVAMENTO ATÔMICO — CONCLUÍDA NA BRANCH (2026-09-14)** — branch `feat/flux2-vae-modular-trainer`.
+  - **Motivação**:
+    1. Eliminar viés sistemático e artefatos de degradação em texturas finas (pele plástica/encerada na Época 1) no FLUX.2 Klein causados por amostragem descalibrada (fallback com 20 steps e guidance 3.5 em modelo destilado de 4 passos sem guidance embed), falta de `transformer.eval()`, timesteps sem time-shift do Flow Matching, e LR excessivo de 1e-4 no setup inicial.
+    2. Resolver a race condition de imagens de validação corrompidas ou cortadas pela metade no frontend causadas pela leitura prematura de arquivos PNG parcialmente gravados pelo loop de polling do orquestrador Rust.
+    3. Habilitar persistência de checkpoints periódicos por época (`outputs/checkpoints/{base_name}_epoch_XXX.safetensors`), honrando a nomeação semântica customizada (`output_name` da ADR-0022) com preservação retrocompatível de `adapter.safetensors`.
+    4. Desacoplar o motor monolítico `train.py` (~2.270 linhas) em arquitetura modular limpa e extensível por modelo (`models/flux.py`, `models/sdxl.py`, `models/sd15.py`, `models/mock.py`, `optimizers.py`, `dataset.py`, `common.py`).
+    5. Isolar e invalidar de forma determinística o cache de quantização 4-bit/8-bit nos nodes de GPU (`/outputs/.cache/quantized/`), prevenindo que a troca do modelo base reutilize silenciosamente pesos cacheados de modelos anteriores (ex: unsloth reutilizado em vez do modelo base oficial).
+  - **Correções Matemáticas, Numéricas e Amostragem no FLUX**:
+    - **Modelo Base Oficial de Treino**: Alinhamento estrito com o repositório oficial da Black Forest Labs para treino LoRA: `black-forest-labs/FLUX.2-klein-base-4B` (undistilled foundation model), separando-o da variante destilada para inferência rápida (`black-forest-labs/FLUX.2-klein-4B`).
+    - **Isolamento e Invalidação Automática de Cache Quantizado nos Nodes**:
+      - `models/flux.py`: Cache estruturado por slug do `model_id` e formato de precisão: `/outputs/.cache/quantized/{model_slug}_{quant_format}` (ex: `black-forest-labs_FLUX.2-klein-base-4B_4bit`).
+      - Gravação de `metadata.json` contendo `model_id`, `quant_format`, `target_dtype` e `is_flux2`.
+      - Validação estrita via `_is_cache_valid`: se o diretório não tiver `config.json` ou se `metadata.json` divergir do modelo solicitado (ou pastas legadas órfãs sem metadados), o cache é descartado e o node baixa e re-quantiza automaticamente os pesos corretos do zero. Suporte a `force_requantize: true` ou env `FLUX_FORCE_REQUANTIZE=1`.
+    - **Amostragem FLUX.2 Klein**: `_generate_sample_flux` encapsulado com `transformer.eval()` e restauração de estado anterior; passos fixados em 20–28 e guidance scale em 3.5 para o modelo base contínuo (resolvendo a falta de texturas finas/poros que ocorria com saltos grosseiros de 4 passos).
+    - **Calibração de Hiperparâmetros no Frontend**: Preset e auto-ajuste de LR para FLUX.2 Klein calibrados para `0.00003` (3e-5) com precisão `bf16` em `ForjaDifusaoSetup.tsx`.
+    - **Guidance Embedding de Treino**: Fixado em `1.0` durante o treino de LoRA em FLUX.1-dev.
+    - **Time-Shift Schedule**: Implementado shifted logit-normal $t_{\text{shifted}} = \frac{s \cdot t}{1 + (s - 1) \cdot t}$ com $s = 3.0$ do `FlowMatchEulerDiscreteScheduler`.
+    - **VAE FLUX.2 Klein**: Leitura estrita de `AutoencoderKLFlux2` com extração de parâmetros reais do checkpoint (Batch Normalization `running_mean`/`running_var` e `latents_mean`/`latents_std`).
+    - **Otimizadores Estritos**: `_create_optimizer` agora filtra exclusivamente tensores com `p.requires_grad == True`.
+  - **Gravação Atômica e Imunidade a Race Conditions**:
+    - **Motores Python**: `_generate_sample_flux`, `_generate_sample_sdxl`, `_generate_sample_sd15` e `_generate_mock_sample` gravam via `.tmp_{filename}` com atomic swap `os.replace(...)`.
+    - **Orquestrador Rust (`services/orchestrator/src/lib.rs`)**: `metrics_handle` e o coletor final ignoram arquivos ocultos ou terminados em `.tmp`/`.part`, eliminando 100% de uploads parciais e imagens cortadas no S3.
+  - **Checkpoints por Época & Nomeação Semântica (ADR-0022)**:
+    - `common.py`: Função pura `_resolve_output_name(cfg)` que higieniza e padroniza o nome base dos pesos.
+    - Todos os engines (`mock`, `flux`, `sdxl`, `sd15`) gravam a cada época em `outputs/checkpoints/{base_name}_epoch_{epoch:03d}.safetensors` com metadados estruturados.
+    - Gravação final em `outputs/{base_name}.safetensors` com cópia retrocompatível para `outputs/adapter.safetensors`.
+    - `services/api-principal/src/jobs/models.rs`: `generate_diffusion_config_yaml` agora injeta a linha `output_name: ...` quando fornecida.
+    - `services/orchestrator/src/lib.rs`: Upload automático de `outputs/checkpoints/*.safetensors` como `kind: "checkpoint"` e de modelos customizados na raiz como `kind: "model"`.
+  - **Modularização do `trainer-difusao`**:
+    - `common.py`, `optimizers.py`, `dataset.py`, `models/base.py`, `models/flux.py`, `models/sdxl.py`, `models/sd15.py`, `models/mock.py`, `models/__init__.py`, `train.py` (~160 linhas, 100% re-exports).
+  - **Testes & Verificações**:
+    - 16/16 testes unitários passando em `engines/trainer-difusao` (incluindo testes de resolução de nomes, checkpoints por época e validação/invalidação de cache quantizado).
+    - 334/334 testes unitários de `api-principal` passando (incluindo assertions de `output_name` no YAML).
+    - 85/85 testes do `orchestrator` passando.
+    - `npm run build` no `apps/web`: 13/13 páginas compiladas estaticamente com 0 erros TypeScript.
+    - `graft build` sincronizado.
+
+- **FATIA ALTERAÇÃO EM LOTE DE CLASSES NO GRID E CURADORIA DE CLASSES AUSENTES NO AUTOTRACKER — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/yolo-batch-tags-autotracker-classes`.
+  - **Motivação**: Eliminar a lentidão e o esforço manual repetitivo na correção de anotações em datasets de treino (por exemplo, trocar em massa `female_face` por `male_face` quando o detector confunde o gênero ou purgar tags/classes espúrias de imagens selecionadas) e permitir ao AutoTracker identificar e sugerir de forma interativa a criação de novas classes detectadas no dataset (evitando o descarte silencioso de boxes válidas).
+  - **Contratos (OpenAPI 0.23.0)**:
+    - Bump de versão `0.22.0` → `0.23.0`.
+    - Adicionado endpoint `POST /api/datasets/{id}/boxes/batch` (200, 400, 401, 404, 500) com schemas `BatchBoxesUpdateRequest` e `BatchBoxesUpdateResponse`.
+    - Adicionado endpoint `GET /api/jobs/{id}/autotracker/preview` (200, 401, 404, 409, 503) com schemas `AutotrackerPreviewResponse` e `AutotrackerClassCount`.
+    - Atualizado `AutotrackerApplyRequest` com campo opcional `createMissingClasses: Option<Vec<string>>`.
+  - **Backend Rust (`api-principal`)**:
+    - `datasets/models.rs`: Modelos `BatchBoxesUpdateRequest`, `BatchBoxesUpdateResponse` e função de validação pura `validate_batch_boxes_update` com testes unitários.
+    - `datasets/handlers.rs`: Handler atômico `batch_update_boxes` executando remap ou delete em transação única no Postgres com recálculo automático de contadores via triggers.
+    - `jobs/models.rs`: Modelos `AutotrackerClassCount`, `AutotrackerPreviewResponse` e campo `create_missing_classes` no `AutotrackerApplyRequest`.
+    - `jobs/handlers.rs`: Handlers `preview_autotracker_boxes` (agrupamento e auditoria de classes no artefato `boxes.json`) e suporte a criação automática de novas classes (`create_missing_classes`) com derivação de cor e `idx` antes do ingest em `apply_autotracker_boxes`.
+    - `auth/routes.rs`: Rotas registradas no inventário `PROTECTED_ROUTES` e no router. 334/334 testes unitários e 15/15 contract tests passando.
+  - **Web Frontend (`apps/web`)**:
+    - `types/studio.ts`: Tipos alinhados com o OpenAPI 0.23.0 (`BatchBoxesUpdateRequest`, `BatchBoxesUpdateResponse`, `AutotrackerPreviewResponse`, `AutotrackerClassCount`, `AutotrackerApplyRequest`).
+    - `lib/images.ts`: Função `batchUpdateBoxes`.
+    - `lib/autotracker.ts`: Funções `getAutotrackerPreview` e `applyAutotrackerBoxes` com `createMissingClasses`.
+    - `components/icons.tsx`: Adicionado `IconTag`.
+    - `components/studio/BatchEditClassesModal.tsx`: Modal em Dark-Only Vidro Óptico para remapear ou excluir classes em lote com suporte a criação rápida de novas classes.
+    - `components/studio/FloatingSelectionBar.tsx`: Ação rápida "Editar Classes" na barra flutuante da galeria.
+    - `app/(studio)/datasets/[id]/page.tsx`: Integração com `BatchEditClassesModal` e recarregamento reativo da galeria.
+    - `components/studio/AutotrackerReviewModal.tsx`: Modal de revisão do AutoTracker com estatísticas, detecção de classes ausentes, seleção individual/em massa para criação no dataset e controle de sobrescrita.
+    - `components/studio/ActionCenter.tsx` e `app/(studio)/jobs/page.tsx`: Botão e fluxo "Revisar e Aplicar" integrados.
+    - Verificação de build: `npm run build` compilado com 100% de sucesso (13/13 páginas, 0 erros).
+
+- **FATIA NOMEAÇÃO SEMÂNTICA, CONFIGURAÇÃO DE NOME E RENOMEAÇÃO DE MODELOS — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/nomeacao-modelos`.
+  - **Motivação**: Eliminar a confusão causada por múltiplos arquivos de pesos com nomes genéricos idênticos (`adapter.safetensors` para difusão LoRA e `best.pt` para YOLO), fornecendo nomeação automática contextual inteligente baseada no dataset, modelo e trigger word, permitindo ao usuário definir nomes customizados no setup dos treinos, renomear qualquer modelo existente diretamente pelo catálogo e baixar arquivos com nomes semânticos descritivos via `Content-Disposition`.
+  - **ADR & Contratos (OpenAPI 0.22.0)**:
+    - Criado `docs/adr/0022-nomeacao-modelos.md` (decisões D0–D4).
+    - Atualizado `packages/contracts/openapi.yaml`: Bump de versão `0.21.0` → `0.22.0`, adição de `outputName` em `YoloJobRequest` e `DiffusionJobRequest`, e endpoint `PATCH /api/models/{id}` (200, 400, 401, 404, 503) para renomear modelos.
+  - **Backend Rust (`manager` e `api-principal`)**:
+    - `services/manager`: Adicionados helper `slugify` com normalização de acentos e função pura `compute_model_name` derivando `{dataset_slug}-{model}-{trigger_or_short_id}.safetensors` ou `{dataset_slug}-{model}-best.pt`, hook `report_job` atualizado para buscar `dataset_slug` e honrar `output_name`, implementação de `update_model` e rota `PATCH /internal/models/:id`. Testes de unidade adicionados (16/16 passando).
+    - `services/api-principal`: Validação de `output_name` em `models.rs`, repasse de `output_name` nos handlers `submit_yolo_job` e `submit_diffusion_job`, cabeçalho `Content-Disposition` em `get_artifact_data` para artefatos de modelo, suporte a `update_model` em `ManagerPort`, `HttpManager` e `MockManager`, handler `update_model` e rota protegida `PATCH /api/models/:id` em `routes.rs`. Todos os testes unitários e contract tests passando.
+  - **Web Frontend (`apps/web`)**:
+    - `types/studio.ts`: Adicionado `outputName?: string | null` a `DiffusionJobRequest`.
+    - `lib/jobs.ts`: Suporte a `outputName` em `startYoloJob` e `startDiffusionJob`, e extração de `Content-Disposition` no `downloadArtifact`.
+    - `lib/models.ts`: Função `updateModel(id, name)`.
+    - `components/icons.tsx`: Adicionado `IconPencil`.
+    - `app/(studio)/models/page.tsx`: Ação e modal em Dark-Only Vidro Óptico para renomear modelos no catálogo com atualização reativa de estado.
+    - `components/studio/ForjaDifusaoSetup.tsx` e `ForjaYoloSetup.tsx`: Campo "Nome do Modelo / Adaptador (opcional)" com placeholder dinâmico inteligente derivado do dataset e modelo selecionados.
+    - Build Next.js verificado: `npm run build` compilado com 100% de sucesso (13/13 páginas, 0 erros).
+
+- **FATIA TELEMETRIA UNIFICADA: EVENTOS EM TEMPO REAL, FASES PADRONIZADAS E STREAMING SSE — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/telemetria-unificada`.
+  - **Motivação**: Eliminar a divergência na emissão e visualização de telemetria entre diferentes motores (YOLO, Difusão, Autotracker, Text-to-Image), substituindo o modelo de polling opaco e métricas ad-hoc por um contrato canônico e universal de eventos (`JobTelemetryEvent`), emissor padronizado Python (`TelemetryEmitter`), streaming via Server-Sent Events (`GET /api/jobs/{id}/events`) e componentes visuais modernos no frontend (hook `useJobTelemetry` e componente `JobProgressLive` em Dark-Only Vidro Óptico).
+  - **ADR & Contratos (OpenAPI 0.21.0)**:
+    - Criado `docs/adr/0021-telemetria-unificada.md` (decisões D0–D4).
+    - Atualizado `packages/contracts/openapi.yaml`: Bump de versão `0.20.0` → `0.21.0`, schema `JobTelemetryEvent`, campos `phase`, `phaseMessage`, `vramUsedGb` em `Job`, e endpoint SSE `GET /api/jobs/{id}/events` (200, 401, 404, 503).
+  - **Python Engines (`engines/trainer-difusao` e `engines/trainer-yolo`)**:
+    - Implementado `telemetry.py` com classe `TelemetryEmitter` em `trainer-difusao` e `trainer-yolo`: gravação atômica com flush imediato em `telemetry.jsonl`, medição automática de VRAM via PyTorch CUDA (`torch.cuda.memory_allocated()`), espelhamento transparente em `metrics.jsonl` para compatibilidade com leitores legados e tratamento de erros.
+    - Conexão de `TelemetryEmitter` no subcomando `generate` (`_mock_generate` e `_real_generate`) com emissão de fases `preparing`, `loading_model`, `quantizing`, `injecting_lora`, `generating`, `saving`, `completed` e `error`.
+    - Atualizado helper `_emit_metric` no pipeline de treino de difusão para emitir tanto em `metrics.jsonl` quanto em `telemetry.jsonl`.
+    - Testes unitários passando 100% (10/10 difusão, 107/107 yolo).
+  - **Backend Rust (`api-principal` e `orchestrator`)**:
+    - `services/api-principal`: Adicionados modelo `JobTelemetryEvent`, campos `phase`, `phaseMessage`, `vramUsedGb` em `JobResponse` e `MetricsItem`, mapeamento em `to_job_response` e `remap_metrics`, handler de streaming SSE `stream_job_events` em `handlers.rs` e rota protegida `GET /api/jobs/:id/events` em `routes.rs`. Todos os 327 testes unitários e 15 contract tests passando.
+    - `services/orchestrator`: Adicionado suporte a `vram_used_gb` e tolerância a eventos de telemetria sem `epoch` em `parse_metrics_line` e `MetricsLine`, propagando snapshots no `to_report_json`. Todos os 85 testes passando.
+  - **Web Frontend (`apps/web`)**:
+    - `types/studio.ts`: Adicionado tipo `JobTelemetryEvent` e campos `phase`, `phaseMessage`, `vramUsedGb` na interface `Job`.
+    - `hooks/useJobTelemetry.ts`: Hook universal com conexão SSE nativa (`EventSource`) e fallback automático e transparente para polling (`getJob`) em caso de falha de conexão.
+    - `components/studio/JobProgressLive.tsx`: Componente visual polido em Dark-Only Vidro Óptico com indicador pulsante de fase ativa, pill de VRAM em `font-mono`, contadores de passos/épocas, barra suave de progresso (0–100%) com shimmer animado.
+    - `components/studio/PlaygroundDiffusion.tsx`: Substituição de banner estático por `JobProgressLive` exibindo progresso em tempo real durante a geração Text-to-Image.
+    - `app/(studio)/jobs/page.tsx`: Integração de `JobProgressLive` no painel de monitoramento do job selecionado em execução.
+    - `components/studio/JobCard.tsx`: Exibição de badge de fase e indicador de VRAM no card de job.
+    - Verificação de build: `npm run build` compilado com 100% de sucesso (13/13 páginas estáticas, 0 erros TypeScript).
+
+- **FATIA PLAYGROUND DE DIFUSÃO (GERAÇÃO TEXT-TO-IMAGE MULTI-MODELO COM LORA, ASPECT RATIO, SEED RANDOMIZER E QUANTIZAÇÃO) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/playground-difusao`.
+  - **Motivação**: Oferecer um ambiente interativo moderno, ágil e visualmente polido (Vidro Óptico dark-only) para inferência direta Text-to-Image nos modelos de difusão suportados pelo estúdio (FLUX.2 Klein 4B, SDXL 1.0 e SD 1.5), permitindo experimentação imediata com prompts, prompts negativos, seeds travadas/aleatórias, aspect ratios, hiperparâmetros e injeção opcional de adaptadores LoRA treinados no próprio estúdio com escala configurável.
+  - **ADR & Contratos (OpenAPI 0.20.0)**:
+    - Criado `docs/adr/0020-playground-difusao.md`.
+    - Atualizado `packages/contracts/openapi.yaml`: Bump de versão `0.19.0` → `0.20.0`, schema `DiffusionGenerateJobRequest` e endpoint `POST /api/jobs/diffusion/generate` (202, 400, 401, 404, 503).
+  - **Python Engine (`engines/trainer-difusao`)**:
+    - Implementado `src/trainer_difusao/generate.py`: carregamento e validação estrita de configuração (`load_and_validate_generate_config`), gerador sintético determinístico com telemetria visual (`_mock_generate`) e pipeline real de geração (`_real_generate`) com suporte a `FLUX.2 Klein 4B` (4-bit NF4/8-bit BNB), `SDXL` e `SD 1.5`, aplicando pesos de adaptador LoRA quando fornecidos via `load_lora_weights` e salvando `output/generated.png`.
+    - Conexão do subcomando `generate` no CLI de `src/trainer_difusao/train.py`.
+    - Testes unitários cobrindo validação e geração sintética em `tests/test_train.py` (10/10 testes passando).
+  - **Backend Rust (`api-principal`, `manager`, `orchestrator`)**:
+    - `services/api-principal`: Adicionados modelo `DiffusionGenerateJobRequest`, validação `validate_diffusion_generate_request`, gerador de YAML de configuração `generate_diffusion_generate_config_yaml`, handler `submit_diffusion_generate_job`, rota protegida `POST /api/jobs/diffusion/generate` e testes unitários/contrato (327 testes unitários + 15 contract tests passando).
+    - `services/manager`: Ajustada extração de `package_ref` em `dispatch_next` para ser opcional (`filter(|p| !p.is_null() && p.get("key").is_some())`), desacoplando jobs de inferência de texto de zips de dataset.
+    - `services/orchestrator`: `DispatchRequest.package_ref: Option<PackageRef>` condicionalmente pulando download de pacote, mapeamento de `("diffusion", "generate")` para o subcomando `generate` e coleta do artefato `("generated.png", "generated")`. Teste de regressão adicionado (85/85 testes passando).
+  - **Web Frontend (`apps/web`)**:
+    - `types/studio.ts`: Adicionado `diffusion_generate` a `JobKind`, tipos `DiffusionGenerateJobRequest` e `diffusionGenerateErrorMessage`.
+    - `lib/jobs.ts`: Adicionado `getJob(jobId: string)`.
+    - `lib/playground.ts`: Adicionados `startDiffusionGenerateJob` e `getGeneratedImageUrl`.
+    - `components/icons.tsx`: Adicionados `IconSliders` e `IconDice`.
+    - `components/studio/PlaygroundDiffusion.tsx`: Componente completo Text-to-Image com formulário de parâmetros (modelo base, seletor de variante Destilada vs Base Original para o FLUX.2 Klein 4B com autocalibração de steps e CFG, LoRA com slider de escala, prompt com contador de caracteres, prompt negativo colapsável, presets de aspect ratio, steps, CFG, gerador e trava de seed, seletor de quantização de VRAM, seletor de nó de orquestração), visualizador de canvas com zoom e lightbox, histórico de sessão e botão primário com outline violeta no padrão Vidro Óptico sem `emerald`.
+    - `app/(studio)/playground/page.tsx`: Seletor de modo `SubmodulePills` alternando perfeitamente entre `Geração (Difusão)` e `Detecção (YOLO)`.
+    - Verificação de build: `npm run build` compilado com 100% de sucesso (13/13 páginas estáticas, 0 erros TypeScript).
+
+- **FATIA SELEÇÃO E CONFIGURAÇÃO DE QUANTIZAÇÃO DO MODELO BASE (4-BIT NF4, 8-BIT BNB E FP16 PLENO) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/flux-klein-4bit-training`.
+  - **Motivação**: Permitir ao usuário escolher livremente o nível de quantização do modelo base (`4bit` NF4 BitsAndBytes, `8bit` BitsAndBytes ou `none` FP16/BF16 pleno) no treinamento LoRA de difusão, equilibrando consumo de VRAM e precisão numérica conforme o hardware disponível (ex: 4-bit para RTX 3060 12GB, 8-bit para GPUs de 16GB+, e precisão plena para nós de 24GB+).
+  - **Contratos & API Principal**:
+    - `packages/contracts/openapi.yaml`: Adicionado campo `quantization` (enum: `none`, `4bit`, `8bit`, default `4bit`) em `DiffusionJobRequest`.
+    - `services/api-principal/src/jobs/models.rs`: Constante `ALLOWED_DIFFUSION_QUANTIZATIONS`, campo `quantization: String` com `#[serde(default = "default_diffusion_quantization")]`, validação estrita em `validate_diffusion_request` e injeção de `quantization: "{quantization}"` na seção `lora:` do `config.yaml`. Testes unitários com cobertura total (5/5 testes de difusão verdes).
+  - **Engine Python (`engines/trainer-difusao`)**:
+    - `train.py`: Leitura de `quantization` em `_real_train_flux`, `_real_train_sdxl`, `_real_train_sd15` e `_mock_train`.
+    - Suporte dinâmico a `BitsAndBytesConfig` (4-bit NF4 com double quantization e bfloat16 compute dtype; 8-bit BNB; ou None para carregamento FP16/BF16 pleno sem quantização).
+    - Cache condicional de pesos quantizados por subpasta (`flux2_klein_4bit`, `flux2_klein_8bit`), ignorando cache se `none`.
+    - Inclusão do campo `quantization` no dicionário `__metadata__` do arquivo de pesos gerado `adapter.safetensors`.
+    - Testes unitários atualizados em `test_train.py` (8/8 testes passando).
+  - **Frontend Web (`apps/web`)**:
+    - `types/studio.ts`: Propriedade `quantization?: "none" | "4bit" | "8bit"` adicionada em `DiffusionJobRequest` e `DiffusionPreset`.
+    - `lib/jobs.ts`: `startDiffusionJob` propagando `quantization` para o endpoint da API.
+    - `components/studio/ForjaDifusaoSetup.tsx`:
+      - Atualização do cálculo preditivo `estimateDiffusionVramGb` para considerar a quantização selecionada (4bit: ~10GB FLUX; 8bit: ~14.5GB; none: ~22GB).
+      - Adição do componente canônico `<Select>` de Quantização nas Configurações Avançadas de Treinamento.
+      - Adição de badge dinâmica de quantização no resumo colapsável do cabeçalho.
+      - Inclusão de `quantization` nos manipuladores de preset (`applyPreset`, `handleExportPreset`, `handleImportPreset`, `handleAutoFixSafeParams`).
+      - Adição do preset rápido `FLUX.2 Klein 4B (4-bit NF4)`.
+    - Verificações estritas: `next build` compilado com 100% de sucesso (12/12 páginas estáticas, 0 erros TypeScript).
+
+- **FATIA TREINO REAL FLUX.2 KLEIN 4B QUANTIZADO (4-BIT NF4 + TELEMETRIA DE PREPARAÇÃO + AMOSTRA BASELINE ÉPOCA 0) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/flux-klein-4bit-training`.
+  - **Motivação**: Viabilizar o treinamento real de LoRA para o novo modelo de ponta **FLUX.2 Klein 4B** (`unsloth/FLUX.2-klein-4B`) na GPU do estúdio (NVIDIA GeForce RTX 3060 12GB VRAM), onde parâmetros em precisão FP16 pura excedem a capacidade de memória (>21 GB necessários). Adicionalmente, fornecer **telemetria em tempo real de preparação e quantização**, **geração de amostra baseline pré-treino (Época 0)** e **métricas contínuas por step** no frontend.
+  - **Estratégia Técnica & Implementação**:
+    1. **Modelo Alvo FLUX.2 Klein 4B**: Adoção do modelo aberto `unsloth/FLUX.2-klein-4B` com arquitetura moderna de encoder único baseado em Qwen3 (`Qwen3ForCausalLM` / `AutoModelForCausalLM`), eliminando a necessidade do pesado T5-XXL do Flux.1 e reduzindo drasticamente o consumo de VRAM e latência de encoding.
+    2. **Quantização 4-bit (QLoRA via BitsAndBytes NF4)**: Carregamento do Transformer (`Flux2Transformer2DModel` / `FluxTransformer2DModel`) e do Text Encoder Qwen3 em 4-bit NF4 com compute dtype `bfloat16` nativo da arquitetura Ampere.
+    3. **Persistência de Pesos Quantizados em Cache**: Salvamento automático da versão quantizada em `/outputs/.cache/quantized/flux2_klein_4bit/` na primeira execução, permitindo carregamento direto nas execuções subsequentes em 2 a 3 segundos sem re-quantização.
+    4. **Telemetria de Preparação & Fases Estruturadas**:
+       - Função `_emit_metric` com flush imediato no motor Python (`engines/trainer-difusao/src/trainer_difusao/train.py`), emitindo eventos de fase com `epoch: 0` (`init`, `load_transformer`, `quantizing_transformer`, `load_text_encoder`, `quantizing_text_encoder`, `setup_lora`, `dataset_ready`).
+       - Propagação completa por Orquestrador (`phase`, `message` e fallback em `extract_epochs` para `lora.epochs`), Manager (`metrics_key` composto para não colidir eventos de época 0) e API Principal (`MetricsItem`).
+       - `JobLogViewer.tsx` e `JobSamplesGallery.tsx` atualizados para exibir mensagens com tag de fase e rotular amostra de época 0 como `"Baseline (Época 0)"`.
+    5. **Amostra Baseline Pré-Treino (Época 0)**:
+       - Geração automática de `sample_epoch_000.png` antes do início do loop de treino (FLUX, SDXL, SD1.5 e Mock), permitindo comparação visual direta antes e depois do ajuste fino LoRA.
+    6. **Métricas Contínuas por Step**:
+       - Emissão em `metrics.jsonl` a cada 5 steps e fim de época com cálculo proporcional de `progress` contínuo (0.10 a 0.99), `loss`, `lr` e `step`.
+    7. **Scripts de Build & Start Sem Sudo**:
+       - Compilação: `scripts/build-host.sh`, `scripts/build-gpu.sh` e `scripts/build-all.sh`.
+       - Inicialização Host: `scripts/start-host.sh` (`--no-web` dev e `--with-web` full), `scripts/start-host-dev.sh`, `scripts/start-host-full.sh`, `scripts/stop-host.sh`.
+       - Inicialização TrueNAS: `scripts/start-truenas.sh` (com auto-SSH se chamado do dev host ou local no TrueNAS) e `scripts/stop-truenas.sh`.
+    8. **Testes & Grafo**: 7/7 testes unitários passando em `trainer-difusao`, testes do `orchestrator`, `manager` e `api-principal` passando 100%, `next build` com 12/12 páginas estáticas compiladas, grafo `graft build` atualizado.
+
+- **FATIA OPÇÕES AVANÇADAS DE TREINO DE DIFUSÃO E PRESETS DE CONFIGURAÇÃO (JSON & QUICK PRESETS) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/diffusion-advanced-training-presets`.
+  - **Motivação**: Oferecer controle granular aos usuários sobre o pipeline de treino de difusão LoRA (resolução dinâmica, acumulação de gradientes para simulação de batch sem aumento de VRAM, seleção de otimizadores incluindo 8-bit AdamW e Prodigy adaptativo, schedulers com warmup e controle de precisão mista), além de facilitar a reproducibilidade através de importação e exportação de presets `.json` e presets rápidos embutidos na interface.
+  - **Contratos e API Principal**:
+    - `packages/contracts/openapi.yaml`: `DiffusionJobRequest` estendido com `resolution` (512, 768, 1024), `gradientAccumulationSteps` (1, 2, 4, 8), `optimizer` (adamw8bit, adamw, prodigy), `lrScheduler` (cosine, linear, constant, constant_with_warmup), `lrWarmupSteps` (0..1000), `mixedPrecision` (fp16, bf16, no).
+    - `services/api-principal/src/jobs/models.rs`: validações estritas em `validate_diffusion_request` e injeção completa na seção `lora:` do `config.yaml`. Testes unitários com cobertura total (326/326 testes verdes).
+  - **Engine Python (`engines/trainer-difusao`)**:
+    - `_create_optimizer`: suporte a 8-bit AdamW (`bitsandbytes`), AdamW padrão PyTorch e Prodigy adaptativo (`D-Adaptation`).
+    - `_create_lr_scheduler`: integração com schedulers da biblioteca Diffusers/Transformers com warmup progressivo e cálculo de taxa de aprendizado efetiva por step.
+    - Suporte a resolução configurável (512x512 a 1024x1024) com aspect-ratio adaptativo e acumulação de gradientes para treinamento estável e eficiente em GPUs de consumo.
+  - **Frontend Web (`apps/web`)**:
+    - `types/studio.ts`: atualizada tipagem `DiffusionJobRequest` e criada interface canônica `DiffusionPreset`.
+    - `lib/jobs.ts`: `startDiffusionJob` propagando os novos parâmetros para a API principal.
+    - `components/studio/ForjaDifusaoSetup.tsx`:
+      - **Barra de Presets**: Presets rápidos em 1 clique ("SDXL Padrão", "Eco 8 GB SD1.5", "Alta Fidelidade Rank 32", "Auto LR Prodigy") e botões de "Importar JSON" / "Exportar JSON" de configurações completas.
+      - **Configurações Avançadas Colapsáveis**: Seção retrátil contendo seleção de resolução de entrada, gradient accumulation, otimizador, LR scheduler, warmup steps e precisão mista (FP16 / BF16 / FP32).
+      - **Estimativa Preditiva de VRAM Refinada**: Cálculo dinâmico considerando resolução, otimizador e precisão com visualizador de risco CUDA OOM em tempo real.
+      - **Padronização Impeccable & Design System**:
+        - Substituição de todos os `<select>` nativos remanescentes pelo componente canônico `<Select>` do Design System (`components/ui/Select.tsx`) em `ForjaDifusaoSetup.tsx`, `AutoLabelModal.tsx` e `playground/page.tsx`.
+        - Eliminação total de classes proibidas `emerald-*` em `NodeSelect.tsx`, `AutoLabelModal.tsx` e `models/page.tsx`, adotando a paleta canônica `brand-500` e semântica `#34d399`.
+        - Verificações estritas: `impeccable detect` zerado (`[]`), `npm run build` compilando 12/12 páginas estáticas com 0 erros TypeScript.
+  - **Sincronização e Deploy**:
+    - Servidor TrueNAS (`10.15.1.2`): `git pull` com commits sincronizados (`feat/diffusion-advanced-training-presets`), rebuild da imagem `hephaestus/trainer-difusao:gpu` finalizado.
+    - Host Local: Rebuild da imagem `infra-principal` e container recriado e ativo.
+
+- **FATIA CORREÇÃO NUMÉRICA DE LOSS NAN (VAE FLOAT32) & PARSER TOLERANTE NO ORQUESTRADOR — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/engine-difusao-real`.
+  - **Diagnóstico da Causa Raiz de NaN e Logs Vazios**:
+    - *Loss NaN*: O `AutoencoderKL` do SDXL da Stability AI em `torch.float16` sofre overflow numérico interno no `vae.encode()` (valores extrapolam 65504), gerando `NaN` instantaneamente nos latents (`Latents NaN? True` validado na GPU do TrueNAS). Isso corrompia o forward/backward do UNet, gerando `loss = nan`.
+    - *Logs sumidos*: Ao gravar no `metrics.jsonl`, o Python emitia `{"loss": NaN}`. Por violar a especificação RFC 8259 (JSON padrão não aceita literais `NaN`), `serde_json::from_str` no orquestrador Rust falhava silenciosamente e descartava todas as linhas de progresso. Sem métricas chegando ao Manager, `job.metrics` ficava vazio no frontend, impedindo o `JobLogViewer` de renderizar os logs além do boot.
+  - **Correções Aplicadas**:
+    - `engines/trainer-difusao/src/trainer_difusao/train.py`:
+      - Carregamento do VAE em `torch.float32` tanto no SDXL quanto no SD 1.5, convertendo apenas os latents resultantes para `torch.float16` (`Latents NaN com float32? False`, Loss medido em `0.0389` na GPU física).
+      - Decodificação de amostras de validação em `_generate_sample_sdxl` e `_generate_sample_sd15` atualizadas com `output_type="latent"` e conversão explícita de `latents.to(dtype=torch.float32) / scaling_factor` antes do `vae.decode()`, eliminando o erro de tipo incompatível (`Input type (c10::Half) and bias type (float) should be the same`) e gerando com sucesso imagens PIL 1024x1024.
+      - Adicionado `torch.nn.utils.clip_grad_norm_(unet.parameters(), 1.0)` para estabilidade dos gradientes LoRA.
+      - Serialização segura de métricas: em caso de `NaN` ou `Inf`, grava `"loss": null` e nunca o literal inválido `NaN`.
+    - `services/orchestrator/src/lib.rs`:
+      - Sanitização automática em `parse_metrics_line` substituindo `: NaN` e `: Infinity` por `: null` antes do parse JSON.
+      - Teste unitário `parse_metrics_line_nan_tolerant` adicionado (84/84 testes verdes).
+  - **Sincronização e Deploy**:
+    - Servidor TrueNAS (`10.15.1.2`): `git pull`, imagem `hephaestus/trainer-difusao:gpu` reconstruída e container `gpu-orchestrator-gpu-1` recriado e saudável (`Up (healthy)`).
+    - Host de desenvolvimento: `infra-orchestrator-local-1` reconstruído e rodando.
+
+- **FATIA PERSISTÊNCIA DE CACHE HUGGING FACE / PYTORCH NO VOLUME DE OUTPUTS — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/engine-difusao-real`.
+  - **Diagnóstico da Causa Raiz**:
+    - No container do trainer, `from diffusers import ...` e `from transformers import ...` eram importados no topo do módulo ou antes da função `_setup_cache_dir()`. O pacote `huggingface_hub` congela as variáveis de cache na primeira importação. Consequentemente, o download dos 7 GB do modelo SDXL era gravado na camada efêmera `/root/.cache/huggingface` do container e destruído a cada término de job (`docker run --rm`).
+  - **Implementações**:
+    - `services/orchestrator/src/lib.rs`: injeção no `exec_env` do container Docker das variáveis de ambiente antes da inicialização do Python (`HF_HOME=/outputs/.cache/huggingface`, `HF_HUB_CACHE=/outputs/.cache/huggingface/hub`, `TRANSFORMERS_CACHE=/outputs/.cache/huggingface/hub`, `DIFFUSERS_CACHE=/outputs/.cache/huggingface/hub`, `TORCH_HOME=/outputs/.cache/torch`) quando `dispatch.engine == "diffusion"`.
+    - `engines/trainer-difusao/Dockerfile.gpu`: adicionadas as variáveis `ENV` persistentes apontando para `/outputs/.cache` e `PYTHONUNBUFFERED=1`.
+    - `engines/trainer-difusao/src/trainer_difusao/train.py`:
+      - `_setup_cache_dir()` refatorado para garantir diretórios `hub` e `torch`, retornando o path canônico do hub cache.
+      - `_real_train_sd15`, `_real_train_sdxl` e `_real_train_flux` atualizados para executar `_setup_cache_dir()` antes de qualquer import de `transformers` ou `diffusers`.
+      - Todos os `from_pretrained(...)` (tokenizers, VAE, text encoders, UNet, scheduler) agora recebem explicitamente `cache_dir=hub_cache`.
+  - **Sincronização e Deploy**:
+    - Testes: 83/83 unitários do orchestrator verdes, 6/6 testes python do trainer verdes, `cargo fmt` e `cargo check` limpos.
+    - TrueNAS (`10.15.1.2`): `git pull`, rebuild da imagem `hephaestus/trainer-difusao:gpu` e recreate do container `gpu-orchestrator-gpu-1`.
+    - Local: rebuild e recreate do container `infra-orchestrator-local-1`.
+
+- **FATIA STREAMING DE AMOSTRAS E TELEMETRIA DE DIFUSÃO POR STEP (SEED DETERMINÍSTICA & TEMPO REAL) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/engine-difusao-real`.
+  - **Backend, Manager e Orquestrador**:
+    - `packages/contracts/openapi.yaml`: schema `DiffusionJobRequest` atualizado com propriedade opcional `sampleSeed: Option<u64>` para fixação de semente geradora.
+    - `services/api-principal/src/jobs/models.rs`: `DiffusionJobRequest` com suporte a `sample_seed` e injeção de `seed:` na seção `samples:` do `config.yaml`.
+    - `services/manager/src/lib.rs`: `report_job` atualizado para aceitar e persistir artefatos intermediários (`report.artifacts`) durante status `running`/`preparing` com deduplicação por `(job_id, path)`, permitindo que o frontend descubra novas amostras em tempo de execução via polling de `GET /api/jobs/:id/artifacts`.
+    - `services/orchestrator/src/lib.rs`: loop assíncrono `metrics_handle` enriquecido para escanear `outputs/samples/` a cada 2 segundos, fazendo upload imediato para o S3 de cada nova imagem gerada durante a execução do container e despachando report incremental de artefatos para o Manager.
+    - Testes: 83/83 unitários do orchestrator verdes, 325/325 unitários da api-principal verdes, manager verde.
+  - **Engine `trainer-difusao`**:
+    - `engines/trainer-difusao/src/trainer_difusao/train.py`:
+      - Seed determinística fixa em `_generate_sample_sd15` e `_generate_sample_sdxl` via `torch.Generator.manual_seed(sample_seed)`, garantindo que a composição e o ruído inicial sejam mantidos constantes época a época para comparação visual fidedigna da convergência do LoRA.
+      - Emissão de métricas intermediárias por step a cada 5 passos com `flush()` imediato no `metrics.jsonl` e `print(..., flush=True)` no stdout, eliminando a sensação de processo travado durante épocas longas.
+      - `_generate_mock_sample` e `_mock_train` alinhados para refletir a seed determinística e o flush de métricas.
+    - Testes: 6/6 testes unittest verdes em `tests/test_train.py`.
+  - **Web Frontend**:
+    - `apps/web/lib/jobs.ts`: `startDiffusionJob` com suporte a `sampleSeed`.
+    - `apps/web/components/studio/ForjaDifusaoSetup.tsx`: campo numérico dedicado de `Seed da Amostra (Fixa)` no bloco de amostras visuais de validação, com tooltip explicativo sobre fixação de ruído composicional.
+    - `apps/web/components/studio/JobLogViewer.tsx`: chave de renderização única por `epoch` e `step`, exibindo telemetria progressiva de steps e loss instantâneo em tempo real.
+    - Verificação de build: `npm run build --prefix apps/web` 12/12 páginas compiladas com zero erros TypeScript.
+
+- **FATIA MÉTRICAS DE DIFUSÃO E AMOSTRAS POR ÉPOCA (SAMPLES GALLERY, CONVERGENCE & ACTION CENTER) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/engine-difusao-real`.
+  - **Backend & Contratos**:
+    - `packages/contracts/openapi.yaml`: schemas `MetricsItem` (adicionados `loss`, `lr`, `step`) e `DiffusionJobRequest` (adicionados `samplePrompt` e `sampleInterval`) atualizados.
+    - `services/orchestrator/src/lib.rs`: `MetricsLine` atualizado com `loss: Option<f64>`, `lr: Option<f64>`, `step: Option<i64>`, serialização limpa em `to_report_json()`, parser tolerante a métricas de difusão (`epoch,loss,lr,step`); upload automático para o S3 de imagens em `outputs/samples/` (`.png`, `.jpg`, `.jpeg`, `.webp`) gerando artefatos de kind `"sample"` sob a chave `artifacts/{job_id}/samples/...`.
+    - `services/api-principal/src/jobs/models.rs`: `DiffusionJobRequest` com suporte a validação de `sample_prompt` (até 500 caracteres) e `sample_interval` (1..1000), injetando a seção `samples:` no `config.yaml`.
+    - `services/api-principal/src/jobs/handlers.rs`: `MetricsItem` atualizado com `loss`, `lr`, `step`; `remap_metrics` mapeando os campos para JSON; detecção de MIME type em `get_artifact_data` para servir imagens de amostras (`image/png`, `image/jpeg`, `image/webp`) com Content-Type correto em vez de octet-stream genérico.
+    - Testes: 83/83 unitários do orchestrator verdes, 325/325 unitários da api-principal verdes.
+  - **Engine `trainer-difusao`**:
+    - `engines/trainer-difusao/src/trainer_difusao/train.py`:
+      - Leitura da configuração `samples` (`prompt` e `interval`).
+      - Geração sintética em modo mock (`_generate_mock_sample`) com visualização de ruído progressivo e carimbo de época/prompt para CI e testes locais rápidos.
+      - Geração real com pesos LoRA injetados em pipeline de inferência a cada N épocas (`_generate_sample_sd15` e `_generate_sample_sdxl`) salvando em `outputs/samples/sample_epoch_{epoch}.png`.
+      - Emissão de `loss`, `lr`, `step` e `epoch` no `metrics.jsonl`.
+    - `engines/trainer-difusao/tests/test_train.py`: teste `test_train_mock_produces_sample_images` adicionado (6/6 testes verdes).
+  - **Web Frontend**:
+    - `apps/web/types/studio.ts`: `JobMetrics` enriquecido com `loss?: number; lr?: number; step?: number;`, e `JobKind` incluindo `"diffusion_train"`.
+    - `apps/web/lib/jobs.ts`: `startDiffusionJob` aceitando `samplePrompt` e `sampleInterval`.
+    - `apps/web/components/studio/ForjaDifusaoSetup.tsx`: nova seção interativa "Amostras Visuais de Validação" com switch para habilitar geração periódica, input de prompt de validação e seletor de intervalo de épocas.
+    - `apps/web/components/studio/JobSamplesGallery.tsx`: novo componente visual com grid responsivo de miniaturas com badges de época, modal Lightbox de alta resolução com zoom e botão de download.
+    - `apps/web/components/studio/ConvergenceChart.tsx`: adaptação dinâmica para exibir curva contínua de `Diffusion Loss` (degradê índigo, escala dinâmica sem limite fixo de 0..1, tooltip com LR e step) quando o job for de difusão ou contiver `loss`.
+    - `apps/web/components/studio/ActionCenter.tsx`: cards de métricas adaptativos para difusão (`Loss`, `LR`, `Step`, `Época`), integração da `JobSamplesGallery` e separação das amostras da lista genérica de downloads.
+    - `apps/web/components/studio/JobLogViewer.tsx`: suporte a logs formatados para difusão (`[DIFFUSION] epoch=X/Y loss=... lr=... step=...`) com estilização de badge índigo e tratamento defensivo para métricas opcionais.
+    - `apps/web/app/(studio)/jobs/page.tsx`: cards de métricas de difusão e renderização de galeria de amostras na página de detalhe/histórico de jobs.
+    - Verificação de build: `npm run build --prefix apps/web` 12/12 páginas compiladas com zero erros TypeScript.
+
+- **FATIA ENGINE DE DIFUSÃO REAL E HARNESS (FLUX.2 KLEIN 4B, SDXL, SD 1.5) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/engine-difusao-real`.
+  - **Engine Python `trainer-difusao`**:
+    - `engines/trainer-difusao/pyproject.toml`: dependências declaradas (`pyyaml`, `pillow`, e extras de treino `diffusers`, `transformers`, `accelerate`, `peft`, `bitsandbytes`, `safetensors`).
+    - `engines/trainer-difusao/Dockerfile`: imagem mock com `ENGINE_MOCK=1` para dev e CI.
+    - `engines/trainer-difusao/Dockerfile.gpu`: imagem GPU com base `pytorch:2.6.0-cuda12.4-cudnn9-runtime`, dependências de aceleração e `ENGINE_MOCK=0`.
+    - `engines/trainer-difusao/src/trainer_difusao/train.py`:
+      - Suporte a `ENGINE_MOCK=1` gerando `metrics.jsonl` e `adapter.safetensors` com metadados para FLUX.2 Klein 4B (`base_model: flux-2-klein-4b`), SDXL e SD 1.5.
+      - **Pipelines reais de treino (@gpu)**:
+        - `DiffusionDataset`: leitor dinâmico dos pares `{stem}.webp` + `{stem}.txt` em `images/` ou raiz do dataset, com redimensionamento e normalização `[-1.0, 1.0]`.
+        - `_real_train_sd15`: carregamento com `torch.float16`, VAE e Text Encoder congelados, injeção de LoRA via `peft.LoraConfig` (`to_k, to_q, to_v, to_out.0`), gradient checkpointing, otimizador 8-bit AdamW (`bitsandbytes`), loop de ruído DDPM e emissão progressiva em `metrics.jsonl`.
+        - `_real_train_sdxl`: dual text encoders CLIP (`CLIPTextModel` + `CLIPTextModelWithProjection`), pooled prompt embeddings, micro-condicionamento (`add_time_ids` 1024x1024), resolução nativa 1024, gradient checkpointing, otimizador 8-bit AdamW e exportação canônica com metadados em `adapter.safetensors`.
+        - Cache persistente: `HF_HOME` configurado automaticamente para o volume `/outputs/.cache/huggingface`.
+    - Testes: 5/5 testes unittest verdes em `tests/test_train.py` (cobrindo mock FLUX/SDXL/SD15 e fail-fast do modo real).
+  - **Manager & Despacho de Infra**:
+    - `services/manager/src/lib.rs`: `dispatch_next` agora resolve a imagem do container sob medida para `engine == "diffusion"`, priorizando `DIFFUSION_TRAINER_IMAGE` e mapeando automaticamente `trainer-yolo` para `trainer-difusao` mantendo a tag (`:local` ou `:gpu`).
+    - `infra/compose.yaml` e `infra/compose.gpu.yaml`: definidos `DIFFUSION_TRAINER_IMAGE` e serviços build-only `trainer-difusao` e `trainer-difusao-gpu`.
+    - `packages/policies/vram-table.yaml`: adicionadas entradas para `flux2-klein-4b` / `flux` com `vram_min_gb: 8` (+2GB headroom = 10 GB), `sdxl` (12 GB) e `sd15` (8 GB).
+    - `services/api-principal/src/jobs/handlers.rs`: `vram_min` de FLUX ajustado para 10 GB na submissão de jobs.
+  - **Web Frontend**:
+    - `apps/web/components/studio/ForjaDifusaoSetup.tsx`: seletor de modelo atualizado para **FLUX.2 Klein 4B**, badge de VRAM ajustado para **~10 GB VRAM** (cabendo em GPUs como RTX 3060 12GB), fórmula do estimador de VRAM atualizada e descrição do modelo alinhada à arquitetura de 4B parâmetros com Flow Matching.
+    - `apps/web/types/studio.ts`: anotação documental de `flux` para FLUX.2 Klein 4B.
+  - **Verificações**: `cargo check --workspace` verde, `cargo test -p manager --lib` e `cargo test -p api-principal --lib` 325/325 verdes, `cargo fmt --all -- --check` limpo, `docker compose config -q` limpo, `npm run build` web verde (12/12 páginas compiladas), suite de testes python 4/4 verde.
+
+- **FATIA FILTRO ESTRITO POR TAG E CLASSE NO GRID DE IMAGENS — CONCLUÍDA E VALIDADA (2026-09-13)** — branch `feat/autolabel-selective-dataset`.
+  - **Backend API Principal**:
+    - `services/api-principal/src/datasets/handlers.rs`: query parameters `class_id` (UUID validado, com alias `classId`) e `tag` (1..200 chars) adicionados em `GET /api/datasets/:id/images` (`ImageQuery`).
+    - Filtro estrito via SQL com subqueries `EXISTS`:
+      - `class_id`: filtra imagens com anotação na classe especificada (`EXISTS (SELECT 1 FROM boxes b WHERE b.image_id = i.id AND b.class_id = $cid)`).
+      - `tag`: busca textual `ILIKE` estrita combinando nome de classes anotadas (`boxes JOIN classes`), legendas (`captions.text`) ou nome de arquivo (`images.filename`).
+    - Testes unitários: 325/325 verdes.
+  - **Contrato OpenAPI**:
+    - `packages/contracts/openapi.yaml`: parâmetros de query `classId` e `tag` documentados em `GET /api/datasets/{id}/images`.
+  - **Web Frontend**:
+    - `apps/web/lib/images.ts`: `ListImagesOpts` e `listImages` enriquecidos com `class_id`, `classId` e `tag`.
+    - `apps/web/components/studio/GalleryOperateToolbar.tsx`: pílulas interativas de classes anotadas com estilo ativo, seletor de modo de busca e novo botão de ação direta `"Selecionar todas"` / `"Desmarcar todas"` integrado ao lado do botão de seleção.
+    - `apps/web/components/studio/FloatingSelectionBar.tsx`: padronização do botão para `"Selecionar todas"` / `"Desmarcar todas"`, permitindo marcar todas as imagens filtradas e disparar AutoLabel ou batch delete em 1 clique.
+    - `apps/web/app/(studio)/datasets/[id]/page.tsx`:
+      - Desacoplamento de `activeTag` (filtro estrito de tags/classes no grid) de `activeQuery` (busca vetorial IA/CLIP), corrigindo conflito em que o grid renderizava o array vazio da busca semântica em vez dos `items` filtrados.
+      - Sincronização reativa via `useEffect` único para recarregamento sob troca de classes/tags/splits, eliminando chamadas concorrentes e race conditions.
+      - Integração de `isAllSelected`, `handleSelectAll` (que ativa automaticamente o `selectionMode`) e `handleClearSelection`.
+      - Renderização de Empty State contextual com botão `"Limpar filtros"` quando nenhum item corresponde à busca.
+      - Validação de ponta a ponta em tempo real no browser via Chrome DevTools MCP (busca por tag `armpits`, seleção da classe `buttocks_exposed` retornando 1 imagem, seleção total com 1 clique ativando floating bar com `AutoLabel (1)` / `AutoLabel (50)`, limpeza de filtros retornando as 129 imagens).
+  - **Verificações**: `cargo check --workspace` verde, `cargo test -p api-principal --lib` 325/325 verdes, `cargo fmt --all -- --check` limpo, `npm run build --prefix apps/web` 12/12 páginas compiladas sem erros TS, `graft build` sincronizado.
+
+- **FATIA AUTOLABEL SELETIVO POR CLASSE E SELEÇÃO DE IMAGENS — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/autolabel-selective-dataset`.
+  - **Contrato OpenAPI**: `AutolabelJobRequest` expandido com campos opcionais `filterClassId: Option<Uuid>` e `imageIds: Option<Vec<Uuid>>`.
+  - **Backend API Principal**:
+    - `package.rs`: implementado `build_package_filtered` permitindo empacotar unicamente um subconjunto de imagens ativas (com suporte a empacotamento de dataset sem imagens quando sem filtro explícito, mantendo compatibilidade com os testes de snapshot).
+    - `handlers.rs`: `submit_autolabel_job` com resolução de classe via `filter_class_id` (com checagem de integridade, substituição de template `{class_name}` no prompt e resolução de imagens anotadas com a classe) ou `image_ids` direto / interseção; telemetria no Manager com `image_ids_count` e `filter_class_id`.
+    - `models.rs`: validação de UUIDs em `filter_class_id` e `image_ids` (com teste unitário cobrindo casos válidos, inválidos e listas vazias).
+    - Testes: 325/325 unitários verdes; 84/84 integração de banco (`datasets_db`) 100% verdes.
+  - **Web Frontend**:
+    - `apps/web/types/studio.ts`: interface `AutolabelJobRequest` alinhada com `filterClassId` e `imageIds`.
+    - `apps/web/components/studio/AutoLabelModal.tsx`: novo seletor de "Escopo de Execução" com 3 modos:
+      1. *Dataset Completo*: todas as imagens ativas.
+      2. *Por Classe YOLO*: seletor da classe alvo, chip para inserção da tag dinâmica `{class_name}` no prompt e preset "Foco na Classe YOLO".
+      3. *Selecionadas no Grid*: executa exclusivamente nas imagens marcadas pelo usuário.
+    - `apps/web/components/studio/FloatingSelectionBar.tsx`: adicionado botão de ação rápida "AutoLabel (N)" que abre o modal já pré-configurado no modo de seleção.
+    - `apps/web/lib/images.ts`: remoção de envio duplicado de `class_id` e `classId` no `listImages` (o backend Axum/serde tratava o alias como campo duplicado retornando 400).
+  - **Verificações**: `cargo check --workspace` verde, `cargo test -p api-principal --lib` 325/325 verdes, `cargo fmt --all -- --check` limpo, `npm run build --prefix apps/web` 12/12 páginas estáticas/dinâmicas compiladas sem erros TS, `graft build` sincronizado. Branch pronta para commit.
+
+- **FATIA PREVIEW E VISUALIZAÇÃO DE LABELS NO DATASET (GRID E QUICKLOOK) — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/autolabel-caption-review` (mergeada na main via PR #15).
+  - **Backend API Principal**:
+    - `services/api-principal/src/datasets/models.rs`: `ImageResponse` enriquecido com campos opcionais `boxes_count: Option<i64>` e `caption: Option<String>` (com `skip_serializing_if = "Option::is_none"`).
+    - `services/api-principal/src/datasets/handlers.rs`: `list_images` otimizado com subqueries indexadas no Postgres para contar bounding boxes anotadas e trazer o texto da legenda sem requisições adicionais N+1.
+    - Testes unitários 324/324 verdes.
+  - **Contrato OpenAPI**:
+    - `packages/contracts/openapi.yaml`: Propriedades `boxesCount` e `caption` adicionadas ao schema `Image`.
+  - **Web Frontend**:
+    - `apps/web/types/studio.ts`: Tipos `ImageItem` atualizados com `boxesCount` e `caption`.
+    - `apps/web/lib/images.ts`: Função `putCaption` adicionada para salvar/editar legendas manuais (`PUT /api/datasets/{dataset_id}/images/{image_id}/caption`).
+    - `apps/web/components/studio/ImageCard.tsx`: Exibição de badges com contagem de bounding boxes anotadas (`N boxes`) e badge de legenda com tooltip; preview da legenda em itálico com aspas na barra inferior do card; botão de ação contextual (`"editar bbox →"` para YOLO vs `"ver legenda →"` para datasets de legendas/difusão).
+    - `apps/web/components/studio/ImageQuickLookModal.tsx`: Visualização completa de Legenda/Caption com badge de origem (`autolabel`, `manual`, `import`) e modelo VLM utilizado; botão de cópia com feedback visual; editor inline com contagem de caracteres (até 8000) e salvamento reativo via `putCaption`; callback `onCaptionUpdated` sincronizando o grid pai em tempo real.
+    - `apps/web/app/(studio)/datasets/[id]/page.tsx`: Clique no card em datasets de caption/difusão abre diretamente o `ImageQuickLookModal` para inspeção e edição imediata sem necessidade de telas externas.
+  - **Verificações**: `cargo check --workspace` verde, `cargo test -p api-principal --lib` 324/324 verdes, `cargo fmt --all -- --check` limpo, `npm run build --prefix apps/web` 12/12 páginas estáticas/dinâmicas compiladas com 0 erros TS, `graft build` sincronizado.
+
+- **FATIA REVISÃO E CURADORIA DE CAPTION NO AUTOLABEL — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/autolabel-caption-review`.
+  - **Contrato OpenAPI (0.19.0)**: Rota `GET /api/jobs/{id}/autolabel/preview` adicionada para inspeção prévia das legendas com presigned URLs; campo `items: Option<Vec<AutolabelApplyItem>>` em `AutolabelApplyRequest` permitindo curadoria seletiva e edição de legendas; novos schemas `AutolabelApplyItem`, `AutolabelPreviewItem` e `AutolabelPreviewResponse`.
+  - **Backend API Principal**:
+    - Handler `preview_autolabel_captions`: valida job/artefato `captions.jsonl`, calcula hash MD5, busca imagens ativas e legendas existentes no Postgres, assina URLs via `StoragePort` com fallback para `/data` e devolve lista enriquecida.
+    - Handler `apply_autolabel_captions`: atualizado para aplicar unicamente a lista curada quando `req.items` for fornecido, mantendo retrocompatibilidade total quando omitido (aplica 100% do artefato).
+    - Rota protegida registrada em `auth/routes.rs`. Testes unitários de serialização, validação e handlers 324/324 verdes.
+  - **Web Frontend**:
+    - Cliente HTTP: `getAutolabelPreview(jobId)` implementado em `apps/web/lib/autolabel.ts` e tipos alinhados em `apps/web/types/studio.ts`.
+    - Componente `AutolabelReviewModal.tsx`: modal moderno com contadores em tempo real (Total, Selecionadas, Editadas, Com Legenda Atual), barra de busca rápida, filtros por pílulas, visualizador de imagens com thumbnails, comparador lado a lado com a legenda anterior (identificando origem manual/import/autolabel), editor inline com contador de caracteres (até 8000), ações em massa ("Marcar Todas", "Desmarcar Todas", "Desfazer Edições") e opção de sobrescrita controlada.
+    - Integração de UI: Botão de ação "Revisar Legendas (Curadoria)" adicionado na visualização detalhada de jobs (`apps/web/app/(studio)/jobs/page.tsx`) e nos cards expansíveis do Centro de Atividades (`apps/web/components/studio/ActionCenter.tsx`), mantendo também o atalho de aplicação direta rápida.
+  - **Verificações**: `cargo check --workspace` verde, `cargo test -p api-principal --lib` 324/324 verde, `cargo fmt` 0 hunks, `npm run build` web verde (0 erros TS), `graft build` sincronizado. Branch pronta para commit.
+
+- **FATIA TELEMETRIA & LOGS NO ACTION CENTER — CONCLUÍDA NA BRANCH (2026-09-13)** — branch `feat/telemetria-logs-action` (commit `a213ee5`).
+
+- **FATIA AUTOLABEL V2 (MODELOS VLM, API OPENAI E ENDPOINTS CUSTOM) — CONCLUÍDA NA BRANCH (2026-09-12)** — branch `feat/autolabel-v2`. **Especificação executável: `docs/adr/0019-autolabel-v2-vlm-openai.md`** (D0–D5).
+  - **AL2.0 (docs/adr)**: ADR-0019 aceita e registrada (`docs/adr/0019-autolabel-v2-vlm-openai.md`).
+  - **AL2.1 (contrato OpenAPI 0.18.0)**: `AutolabelJobRequest` expandido com `model` enum `[mock, florence-2, qwen2-vl, openai]`, `apiKey`, `apiBase` e `openaiModel`; 15/15 contract tests verdes.
+  - **AL2.2 (backend api-principal)**: Validação pura em `models.rs` aceitando novos modelos VLM e endpoints com scheme http/https; serialização de novos parâmetros no `generate_autolabel_config_yaml`; 320 testes unitários verdes.
+  - **AL2.3 (engine trainer-yolo autolabel.py & orquestrador)**:
+    - Suporte robusto a chamadas HTTP à API compatível com OpenAI Vision com retries inteligentes (429/5xx), contexto SSL customizável e decodificação estruturada do corpo de erro da OpenAI no stderr.
+    - Ponte de rede host-container: flag `--add-host host.docker.internal:host-gateway` adicionada ao `build_docker_run_args` do orchestrator e normalização automática de `localhost`/`127.0.0.1` para `host.docker.internal` dentro de containers Docker, permitindo conexão com Ollama/LM Studio locais no host sem configuração manual de IP.
+    - Fail-fast sem mascaramento silencioso: erros de conexão, autenticação ou cota agora interrompem a execução com mensagem cristalina e exit code 1, impedindo geração de legendas falsas de mock quando a API falha.
+    - Suíte de 10 testes pytest verdes em `test_autolabel.py`, incluindo servidor HTTP mock local em thread testando o fluxo real de base64 e resposta da API.
+  - **AL2.4 (web frontend & persistência)**:
+    - `AutoLabelModal.tsx` redesenhado com seletor de presets de provedor de API (`OpenAI Oficial`, `Ollama Local`, `OpenRouter`, `vLLM / LM Studio`, `Customizado`), badges de arquitetura, dicas contextuais de rede/autenticação e chips rápidos com modelos sugeridos (`gpt-4o-mini`, `gpt-4o`, `llava`, `llama3.2-vision`, etc.).
+    - Persistência no `localStorage` do navegador (`hephaestus_autolabel_custom_config_v1`): endpoint base, modelo remoto, chave de API e provedor preferido são lembrados entre sessões, com botão de restauração rápida de padrões.
+    - `npx tsc --noEmit` limpo com 0 erros de tipo.
+  - **AL2.5 (verificações & formatação)**: `cargo fmt --all -- --check` 0 hunks; `ruff format --check` e `ruff check` 100% limpos; testes do monorepo verdes. Branch pronta para merge.
+
+- **FATIA FORJA DE TREINO DE DIFUSÃO LORA (`/difusao`) — CONCLUÍDA NA BRANCH (2026-09-12)** — branch `feat/treino-difusao`. **Especificação executável: `docs/adr/0018-treino-difusao-lora.md`** (D0–D4).
+  - **D.0 (docs/adr)**: ADR-0018 aceita e registrada (`docs/adr/0018-treino-difusao-lora.md`).
+  - **D.1 (contrato OpenAPI & API Principal)**: OpenAPI bumped para `0.17.0` com `POST /api/jobs/diffusion`, `DiffusionJobRequest` e `PackageRequest.engine` admitindo `[yolo, diffusion]`. Empacotamento de dataset em `datasets/package.rs` gerando pares `{stem}.webp` + `{stem}.txt` com legendas lidas da tabela `captions` e prefixo opcional do `trigger_word`. Handler `submit_diffusion_job` em `jobs/handlers.rs` recebendo a requisição, validando domínio, gerando `config.yaml` e compensando pacote em caso de falha de fila. Rota protegida em `auth/routes.rs`. Testes de contrato 15/15 verdes e unitários 319/319 verdes.
+  - **D.2 (Manager Backend)**: Validação de pesos para engine `diffusion` em `create_job`; hook de pós-conclusão do job em `report_job` atualizado para capturar automaticamente artefatos com terminação `.safetensors` ou nome `adapter.safetensors` e registrar no catálogo canônico `models` com `engine='diffusion'`. Testes unitários 12/12 verdes.
+  - **D.3 (Orquestrador Backend)**: Matriz de despacho atualizada para mapear `("diffusion", _)` para subcomando `train --config --output`, coletando `("adapter.safetensors", "model")` e `("metrics.jsonl", "metrics")`. Testes unitários 81/81 verdes.
+  - **D.4 (Engine Python trainer-difusao)**: CLI `train --config --output` implementada com suporte a mock determinístico emitindo `metrics.jsonl` por época e gerando arquivo sintético `adapter.safetensors` com cabeçalho JSON e metadados no formato canônico da HuggingFace. Suíte unittest verde.
+  - **D.5 (Web Frontend)**:
+    - Rota `/difusao` ativada na sidebar com badge `Diffusers Engine` e criada em `apps/web/app/(studio)/difusao/page.tsx`.
+    - Componente `ForjaDifusaoSetup.tsx` no padrão Dark-Only Vidro Óptico: seletor de dataset com tags de contagem e categoria, seletor visual de base model (SDXL 1.0 ~12 GB, Flux.1-dev ~16 GB, SD 1.5 ~8 GB), trigger word, hiperparâmetros LoRA (épocas, batch, rank, lr), seletor de pesos LoRA prévios, seletor de nó `<NodeSelect />`, estimador preditivo de VRAM e alertas de risco OOM com botão de auto-correção para perfil seguro.
+    - Cliente de API `startDiffusionJob` em `lib/jobs.ts` e helpers `canTrainDiffusion` em `lib/datasets.ts`.
+    - `npx tsc --noEmit` e `npm run build` limpos com 0 erros.
+  - **D.6 (Verificações e Formatação)**: `cargo fmt --all -- --check` 0 hunks; `uv run ruff check` e `ruff format` 100% limpos; testes do monorepo verdes. Branch pronta para revisão e merge.
+
+- **FATIA GESTÃO DE MODELOS E ACABAMENTO DE INFRAESTRUTURA — CONCLUÍDA NA BRANCH (2026-09-12)** — branch `feat/gestao-modelos-infra`.
+  - **M.1 (Isolamento de banco em test-db.sh — dívida quitada)**: `scripts/test-db.sh` agora cria o banco efêmero isolado `studio_test`, roda todas as migrations, executa a suíte completa de testes de integração (`api-principal` datasets_db + `manager` manager_db + manager bin) e descarta o banco efêmero via trap EXIT sem tocar no banco de produto `studio` nem invalidar o estado do compose.
+  - **M.2 (Backend Manager)**: Handler e rota `DELETE /internal/models/:id` (204 No Content, 404); migration `0010_models_engines.sql` expandindo constraint `models_engine_check` para `('yolo', 'world', 'diffusion', 'clip')`; `validate_create_model` atualizado para novas engines; 89 testes de integração verdes em `manager_db.rs`.
+  - **M.3 (Backend API Principal & OpenAPI 0.16.0)**: Trait `ManagerPort`, `HttpManager` e `MockManager` com `delete_model`; validação de magic header para `.safetensors` e extensões permitidas (`.pt`, `.safetensors`) em `validate.rs`; handler `delete_model` com remoção s3 best-effort para upload/download; rota `DELETE /api/models/:id` protegida; contrato OpenAPI bumped para `0.16.0` (15/15 contract tests verdes).
+  - **M.4 (Web Frontend)**: Função `deleteModel` em `lib/models.ts`; `ModelUploadModal.tsx` e `ModelDownloadModal.tsx` suportando engines `diffusion` e `clip` e formato `.safetensors`; página `/models` com botão de exclusão, modal `ConfirmDialog` de confirmação, badges de novas engines e badge de formato (`safetensors` / `.pt`); `npx tsc --noEmit` limpo com 0 erros.
+  - **M.5 (Verificação & Formatação)**: `scripts/test-db.sh` com exit code 0 (84 + 89 + 2 testes); `cargo test -p api-principal --lib` (316 testes verdes); `cargo fmt --all -- --check` 100% limpo sem hunks divergentes. Branch pronta para merge pelo usuário.
+
+- **FATIA R2 (UPLOAD NORMALIZADO WEBP, HIGIENIZAÇÃO DE METADADOS E DEDUPLICAÇÃO MD5) + MELHORIAS IMPECCABLE OPERATE — CONCLUÍDAS NA BRANCH (2026-09-12)** — branch `feat/upload-normalizado`. **Especificação executável: `docs/adr/0017-upload-normalizado-md5.md`** (D0–D4).
+  - **R2.0 (docs/adr)**: ADR-0017 aceita e registrada (`docs/adr/0017-upload-normalizado-md5.md`).
+  - **R2.1 (codecs & normalizer backend)**: `image` crate com features `["jpeg", "png", "webp", "bmp", "tiff", "gif"]`; módulo `normalize.rs` converte qualquer formato aceito para WebP, remove metadados sensíveis (EXIF/GPS/XMP) e calcula MD5/SHA256 em memória.
+  - **R2.2 (upload handler & dedupe)**: `POST /api/datasets/:id/upload` grava imagens como `{md5}.webp` com `media_type = 'webp'`. Zero colisão entre imagens com mesmo nome original; deduplicação real por conteúdo em `ON CONFLICT (dataset_id, filename)`.
+  - **R2.3 (web frontend & upload proxy fix)**: Leitor de pastas em `CreateDatasetModal.tsx` e drag-drop recursivo em `apps/web/lib/dataset-inspector.ts` (`extractFilesFromDataTransfer`); `uploadImages` em `apps/web/lib/images.ts` com concorrência de até 2 lotes simultâneos, `BATCH_MAX_FILES = 25` e `BATCH_MAX_BYTES = 8 MiB`. Configurado `experimental.proxyClientMaxBodySize: "250mb"` no `next.config.ts` eliminando o teto de 10MB do proxy do Next.js (causa do `socket hang up` / `ECONNRESET` e 500 no proxy).
+  - **R2.4 (observabilidade & logs backend)**: Tracing estruturado JSON adicionado ao handler `upload` em `services/api-principal/src/datasets/handlers.rs` cobrindo início de lote multipart, spool temporário, normalização para WebP, persistência no storage, detecção de duplicatas por MD5, rejeições por formato/tamanho e sumário do lote (`total`, `stored`, `duplicates`, `rejected`, `failed`). Imagem Docker `infra-principal` recompilada e container reiniciado.
+  - **R2.5 (impeccable operate — upload dock & galeria de alta densidade)**:
+    - `UploadFloatingDock.tsx`: dock persistente no rodapé inferior direito com progresso em tempo real, contagem de lotes (`lote X/Y`), botão de cancelar e CTA para auditoria.
+    - `UploadAuditModal.tsx`: modal de inspeção com abas para amostras armazenadas, duplicadas por MD5 e rejeitadas com motivo explícito, com botão para copiar o hash canônico.
+    - `GalleryOperateToolbar.tsx`: barra de controle de alta densidade com abas por Split (`Todas`, `Treino`, `Validação`, `Teste`, `Lixeira`), filtro de anotação (`Todas`, `Rotuladas`, `Sem rótulo`), seletor de densidade (`Compacto`, `Padrão`, `Tabela`) e ativação de seleção em massa.
+    - `FloatingSelectionBar.tsx`: barra flutuante inferior para ações em lote (selecionar todas da página, limpar seleção, mover selecionadas para lixeira com modal de confirmação).
+    - `ImageTableView.tsx`: visualização em tabela técnica para triagem rápida em massa com metadados detalhados (nome canônico, split, resolução, tamanho em bytes) e atalho de Quick Look.
+    - `ImageQuickLookModal.tsx`: modal lightbox de inspeção com atalhos de teclado (`Space` para abrir/fechar, setas para navegar, `Enter`/`E` para abrir o editor BBox), overlay vetorial de bounding boxes e sidebar de metadados.
+    - Scroll infinito nativo via `IntersectionObserver` substituindo o botão pontilhado estático.
+    - Drag & drop de pastas na galeria com extração recursiva de todas as imagens.
+  - **R2.6 (testes & build)**: 308 testes unitários + 15 de contrato + 84 testes de integração de `datasets_db` (`cargo test -p api-principal --test datasets_db -- --ignored`) 100% verdes após alinhamento com normalização WebP e deduplicação MD5; `cargo check --workspace` verde, build Next.js limpo (0 erros de tipagem, compilação estática/dinâmica 11/11). Branch pronta para merge pelo usuário.
+
+- **FATIA AUTOLABEL V1 — CONCLUÍDA NA BRANCH (2026-09-11)** — branch `feat/autolabel-v1`. **Especificação executável: `docs/adr/0016-autolabel-v1.md`** (D0–D5).
+  - **AL.0 (docs/adr)**: ADR-0016 aceita e registrada (commit `0905f1d`).
+  - **AL.1 (migration 0009 & models)**: Constraint `captions_origin_check` expandida para incluir `'autolabel'`; domínio validado em `models.rs` (commit `28ea063`).
+  - **AL.2 (engine trainer-yolo)**: Subcomando `autolabel` determinístico mock sob `ENGINE_MOCK=1` gerando `captions.jsonl`; suite pytest 101/101 verde (commit `bc18e0b`).
+  - **AL.3 (orquestrador & manager)**: Matriz de despacho `("autolabel", "autolabel")` adicionada ao orchestrator; coleta de artefato `captions.jsonl` (`kind='captions'`); teste de ciclo de vida no manager (commit `9e40fb2`).
+  - **AL.4 (api-principal & OpenAPI 0.15.0)**: `POST /api/jobs/autolabel` (202) e `POST /api/jobs/:id/autolabel/apply` (200); validação de request e parsing de JSONL; spec bump para `0.15.0` e 15/15 contract tests verdes (commit `1660744`).
+  - **AL.5 (web frontend)**: Botão "AutoLabel" habilitado na Galeria quando `imagesCount > 0`; `AutoLabelModal.tsx` com `NodeSelect`; ação "Aplicar Legendas" no card de detalhe em `/jobs` e no `ActionCenter.tsx` com toast e checkbox overwrite; Next.js build limpo (commit `490fd4d`).
+  - **AL.6 (testes e2e / smoke)**: Testes de integração em `datasets_db.rs` cobrindo submit 202, apply roundtrip e preservação de legendas manuais (commit `19137cd`).
+  - **AL.7 (code review)**: Auditoria pelo @reviewer; correções aplicadas: escape seguro de YAML contra injeção de prompt, `datasetId` no schema OpenAPI `AutolabelApplyRequest`, binding do modelo do job, contagem distinta de imagens aplicadas e log de erro de banco (commit `9c2c95f`).
+  - **AL.8 (docs-sync)**: `docs/backend.md`, `docs/frontend.md`, `docs/coordenacao.md` e `docs/dividas.md` sincronizados.
+  - **Baterias**: manager `test-db.sh` 83+87+2 testes verdes, engine pytest 101/101 verdes, `api-principal` unitários + 15 de contrato verdes, web build limpo. Branch pronta para merge pelo usuário.
+
+- **FATIA N (VISIBILIDADE E SELEÇÃO DE NÓ) — MERGEADA NA MAIN (2026-09-11)** — PRs #7 e #8 mergeados.
+
+  - **N.1 (Manager wire)**: `JobRow` com `orchestrator_id`, `orchestrator_name`, `orchestrator_kind`, `orchestrator_fallback` via `LEFT JOIN orchestrators`. Testado em `tests/manager_db.rs` (commit `2bb861c`).
+  - **N.2 (Manager hint & dispatch)**: `CreateJobRequest` com `orchestrator_hint`. Validação fail-fast (não-UUID ⇒ 400, inexistente ⇒ 404, não-online ⇒ 400). Despacho em 1º nível pelo nó com fallback automático após timeout de 120s gravando honestamente `orchestrator_fallback = true` (limpa caso nó preferencial seja honrado). 8 testes novos em `manager_db.rs` (commit `1dfbe32`).
+  - **N.3 (api-principal & OpenAPI 0.14.0)**: `orchestratorId` nos 3 submits públicos (`POST /api/jobs/yolo`, `/autotracker`, `/predict`), validações fail-fast não-UUID ⇒ 400, compensação de pacotes S3/banco no erro do manager, wire de jobs enriquecido com os dados do nó, testes unitários e de contrato (commit `1766bc7`).
+  - **N.4 (Web Frontend Core)**: Tipos atualizados (`Job`, submits), funções `startYoloJob` e `startAutotrackerJob` atualizadas, componente reutilizável `NodeSelect.tsx` criado seguindo Vidro Óptico / Dark-Only do `docs/DESIGN.md` (commit `64de64e`).
+  - **N.5 (Web UI /jobs)**: Hero Card e `JobListItem` exibem nó de execução e badge de `fallback` com tooltip explicativo (commit `8f4c6a1`).
+  - **N.6 (Web UI /playground)**: `NodeSelect` integrado ao painel de controle e ligado a `startPredictJob` com tratamento de erro (commit `7219cfd`).
+  - **N.7 (Web UI /treino e AutoTrackerModal)**: `NodeSelect` integrado a `ForjaYoloSetup.tsx`, `TrainYoloModal.tsx` e `AutoTrackerModal.tsx` com repasse de `orchestratorId` (commit `947a86b`).
+  - **N.8 & N.9 (Docs & Dívidas)**: `docs/dividas.md` atualizado com a dívida "Seleção manual de nó/GPU na UI" QUITADA; `docs/backend.md` e `docs/frontend.md` atualizados; `docs/coordenacao.md` sincronizado.
+  - **Baterias**: manager `test-db.sh` 86/86 testes verdes, `api-principal` 293 unitários + 15 de contrato verdes, Next.js build limpo sem erros de tipo.
+
+- **FATIA K (AUTOTRACKER REAL) — IMPLEMENTAÇÃO K.1–K.5 COMMITADA, REVIEW P1 APROVA COM NITS + P2 BLOQUEIA→fixes (`163a546`: toast do apply restaurado + tratamento local de 404 no modal, testes honestos, Cargo.lock hermético, doc D6, assert limpo) — smoke mock 11/11 (regressão sem modelId + pipeline com modelId + 404 + apply) — SESSÃO GPU PROVADA: download por URL do `yolov8x-worldv2.pt` (146.355.704 bytes do GitHub oficial via allow-list E1 — **requires compose pass-through fixado**, lacuna da Fatia I) + autotrack REAL no nó remoto (weights stagado, set_classes executado, boxes.json real com seed:0 e SEM metrics.jsonl, apply shape idêntico) — 0 detecções com prompts geométricos (honesto: mock nunca devolve 0 → caminho real provado; limitação conhecida de open-vocab com formas abstratas) + fix `openai-clip` no Dockerfile.gpu (achado da GPU) — teardown completo (TrueNAS main, GPUs 0 MiB, local online, banco 0/0/0 + 1 modelo legítimo yolov8x-worldv2.pt mantido, allow-list ligada no .env do dev host). Baterias: engine pytest 95, orchestrator 79, manager test-db 80+77+2, principal 289+14, spec **0.13.0**, build web ✓. **Pendência: usuário decide CI/merge da `feat/autotracker-real` (branch pushada).**
+- **Fila de revisão do usuário (2026-09-11)**: (1) upload de muitas imagens trava sem feedback + "importa só ~28" (causa: 1 request único com todos os files + teto de envelope 200 MiB ≈ 28 imgs de 7MB; resumo/rejected do contrato ignorados pela UI) → **Fatia R1 (upload em lote, só frontend, teto mantido) ESCOLHIDA ANTES DA K**; (2) playground yolo-only → plano de evolução K→L→M (AutoTracker real → difusão treino real → playground multi-engine), K segue após R1.
+- **FATIA R1 — escopo (aceite do usuário)**: chunking no `uploadImages` (lotes ~24 MB, máx 2 em voo), progresso por lote (X de Y imagens, lote i/n) com cancelamento, resumo final com rejected por item (contrato `items[{status,reason}]` já existe), aviso prévio de arquivo > 200 MiB; consumidores: `CreateDatasetModal.tsx` (~L309) + galeria `datasets/[id]/page.tsx` handleFiles (~L264-300). SEM mudança de contrato, SEM backend. Verificação: smoke Chrome com 60+ imagens.
+- **FATIA J (PLAYGROUND INFERÊNCIA) — FECHADA (2026-09-11)** — branch `feat/playground-inferencia` mergeada? NÃO — **pushada e PR pronto, aguardando CI/merge do usuário** (13 commits `9a8a15a`..`a5f1fb0`; smoke 11/11 + UI Chrome + sessão GPU com inferência real provada; docs-sync aplicado; teardown limpo). **Especificação executável: `docs/adr/0013-playground-inferencia.md`** (D0–D9; ler antes de qualquer despacho). Commits: `0c961c8` engine (predict.py + testes), `804b069` manager (mode no dispatch_body + variante em jobs.model), `f1ccf8a` principal+spec (POST /api/jobs/predict + validação + config yaml + spec 0.12.0), `8075ea1` orchestrator (DispatchRequest.mode + matriz engine/mode + predictions.json), `4708683` UI (Sidebar habilitado + página /playground + lib/playground.ts + overlay).
+- **Smoke mock 11/11 PASS** (2026-09-10): submit predict 202→done→predictions.json com boxes→overlay na UI→download→abort predict→console limpo.
+- **UI Chrome provada (2026-09-10)**: `/playground` (modelo/dataset/conf slider→submit→/jobs→done→overlay com boxes por classe usando `cls.color` do dataset, fallback zinc #71717a; stats imagens/com detecção/boxes/skips; download predictions.json; job failed visível com CTA /jobs; empty/error states honestos; card de job sem botão aninhado).
+- **SESSÃO GPU J.8 PROVADA (2026-09-10)**: treino real (best.pt 5.434.515 bytes) + INFERÊNCIA REAL no nó remoto (predictions.json real com 0 detecções — resultado honesto do modelo em dataset sintético; prova de caminho real: mock nunca devolve 0 boxes) + fix real do source (images/ — commit `fix(trainer-yolo)`, push ao Gitea) + teardown completo (TrueNAS main, GPUs 0 MiB, dev host restaurado, banco 0/0/0, /api/models vazio).
+- **Baterias finais**: pytest engine 86, orchestrator 75, manager test-db 80+69+2 handler, principal 276+14, spec **0.12.0**, build web ✓.
+- **Pendência: decisão do usuário de CI/merge da `feat/playground-inferencia`** (branch já pushada).
+
+## Estado anterior — FATIA I — Models real (branch `feat/models-real`)
+
+- **FATIA I (MODELS REAL) — IMPLEMENTAÇÃO I.0–I.6 COMMITADA, REVIEW 2× APROVA COM NITS, SMOKE BACKEND 14/14 + UI CHROME PROVADA** — branch `feat/models-real` de `main` (`6c91d2d`). **Especificação executável: `docs/adr/0012-models-real.md`** (D0–D8 + emenda E1; ler antes de qualquer despacho). Commits: `d7ce049` I.1 (infra), `8c353e9` I.2a (manager migration+hook+list+storage), `4d1e184` I.2b (manager internal/models+weights_id), `3b2ce2b` I.3 (orchestrator S3Scope+weights_ref), `083c866` I.4a (principal upload+download+allow-list), `c3c5287` I.4b (principal remap+modelsBytes+weights+yolo), `9a80e2b` I.6a (trainer fine-tune real), `a0e4811` I.5 (UI /models), `a44ba78` I.6 (UI dropdown /treino), `fbde07c` fix(review 502+explicito+hook), `034c45a` fix(review erro treino+apifetch+a11y), `77c86fd` fix(wire hash/md5 create_model — achado no smoke).
+- **Review 2× (2026-09-10)**: P1 Rust APROVA COM NITS (fbde07c fixes: 502 honesto, invalid_request explicito, log no hook); P2 Web APROVA COM NITS (034c45a fixes: mapeamento de erro do treino, apifetch em models, a11y do upload). Achado no smoke: wire hash/md5 faltando na resposta do create_model (503+órfão no smoke) → fixado em 77c86fd.
+- **Smoke backend 14/14 PASS** (2026-09-10): upload .pt → 201, GET /api/models ≥ 2 itens (backfill+upload, source/url corretos, presigned baixável), download por URL → 201, job yolo com weights → done (pipeline completa), storage com modelsBytes e total exato, 403 model_download_disabled honesto (allow-list ausente), erros 400/413/502 mapeados.
+- **UI Chrome provada (2026-09-10)**: `/models` (lista GlassCards + badges train/upload/download + modais upload/download + empty state + botão Baixar com url null → desabilitado), `/treino` (dropdown "Pesos iniciais" com models filtrados por engine=yolo + placeholder "Do zero"), console limpo, 403 model_download_disabled honesto na UI.
+- **Baterias finais**: fmt/check/compose ✓, test-db 80+61 (1 flaky no 1º run, re-run 61/61), api-principal 255+14, manager 255+14, orchestrator 69, engine pytest 60, spec **0.11.0**. **SESSÃO GPU TRUENAS PROVADA (2026-09-10, fine-tune real)**: branch pushada ao Gitea (requisito do teste); TrueNAS em `feat/models-real` (`caa3caa`), imagens orchestrator-gpu + trainer-gpu rebuildadas; adopt do remoto via API com pairing code; **treino real yolo11n (2 ep, 416px, 8 imgs) → done, best.pt 5.434.515 bytes REAL**; hook registrou Model `source=train` (5.4MB); **FINE-TUNE REAL: `weights=<modelId>` → orchestrator baixou o peso do bucket (escopo `artifacts/*`), stagou em `outputs/<job>/weights/best.pt` (5.434.515 bytes provado no volume), substituiu `{weights_path}` no config e `YOLO(path)` rodou → done com best.pt real de novo**; ambos os jobs no nó remoto (`kind=remoto`); falha honesta provada antes do fix do script (PNG sintético inválido → `libpng: bad adaptive filter` → trainer exit 1, erro capturado e reportado — produto correto). **Errata do script (não do produto)**: gerador de PNG do smoke tinha `bytes(fill) * (w*3)` (stride 577 vs 193 do IHDR) — família do bug de precedência do G.6. **Teardown completo**: TrueNAS repo na main (`6c91d2d`), volumes gpu_* removidos, GPUs 0 MiB; dev host sem TRAINER_IMAGE, manager re-adotou local online (revive ADR-0011 D5.7, pairing code do log), remotos = tombstones revoked; banco limpo (0 datasets/jobs/models/images), `/api/models` vazio, storage 0. **Pendência final da fatia: decisão do usuário de push/CI/merge da `feat/models-real`.**
+- **Dívida quitada**: "Models real (ADR-0009 R2/D2)" → QUITADA em `docs/dividas.md` (Fatia I completa). Dívidas novas registradas: gestão de modelos (DELETE/rotate), playground/inferência, WS progresso download, proxy /models/:id/data, sniff .safetensors, seleção manual nó/GPU.
+- **FATIA H (ORQUESTRAÇÃO ROBUSTA) FECHADA E MERGEADA** — branch `feat/orquestracao-robusta` mergeada pelo usuário. Todos os commits H.0–H.7 aplicados. **Verificação final do smoke H.7 (2026-09-10):**
+  - **Fase 1 (real @gpu)**: 2 orquestradores online simultâneos (local mock + remoto TrueNAS via adopt por UI); roteamento provado (job yolo11n 8GB → nó remoto com 18GB); best.pt 5.429.331 bytes REAL na 3060; vram-table gravada dinamicamente pelo heartbeat; adopt com pairing code single-use consumido com sucesso.
+  - **Fase 2 (watchdog)**: imagem `:local` + `ORCH_GPU_ALLOW_MOCK=1` no remoto → mock dispatch → `running` → `docker stop` do remoto → degraded aos ~15s → offline (watchdog sobre heartbeat provado end-to-end); job re-queueado → rodou no LOCAL → done com best.pt 110B HEPHMOCK.
+  - **Guarda anti-mock provada**: manager com TRAINER_IMAGE=:local e remoto em modo GPU RECUSOU o job ("GPU orchestrator requires GPU trainer image") — failed honesto, NÃO rodou mock silencioso.
+  - **Agregação provada**: 2 nós → `/api/telemetry` com cpu/ram/ramTotal:null, união de gpus reais, measured:true; nó offline → agregado filtra STALE.
+  - **Baterias finais**: orchestrator 53, manager 12 unit + test-db 47 (127 total com api 80), principal 200 unit + 14 contract (221), spec **0.10.0**, fmt/check limpos, build web verde. Zero migration.
+  - **UI provada**: página /environments (adopt via modal, chips de status, gauges por nó, empty state, Re-adotar); dashboard com gauges POR NÓ (regra `length===1` morta); Sidebar "Orquestradores" habilitado com chip multi-nó; console limpo.
+- **H.7 docs-sync aplicado**: lista completa da ADR-0011 "O que fica falso nos docs" executada. Doc↔código verificado nos dois sentidos. Dívidas quitadas (telemetria por orquestrador, watchdog, adopt/revoke+alias parcial, roteamento parcial) e novas registradas (policy VRAM completa, credenciais heph_o_*/TLS, dupla-execução/reconciliação, rate-limit/TTL do pairing).
+- **Estado pós-smoke**: TrueNAS com orchestrator-gpu PARADO (próxima sessão GPU = `docker start` + o README-gpu atualizado SEM psql); dev host em modo default (mock, sem TRAINER_IMAGE no .env); manager re-adoção do local provada de novo (regra test-db confirmada 3×).
+- **Próximo passo na ordem**: ~~usuário decide push/CI/merge~~ → **FATIA I em curso (bloco acima)**. Dívidas abertas em `docs/dividas.md`.
+
+- **Contexto da abertura**: main avançou 26 commits de redesign pós-fatia 5 (`2720a76`..`a98cc12` "redesign part 1..6.2" + `72b4bdd` DESIGN.md refeito). Design documental novo: **`docs/DESIGN.md`** (379 linhas — Dark-Only, One CTA, Brand-Only, Vidro Óptico 3 níveis, Monospace Truth, densidade 14px, fontes self-hosted). **REGRA NOVA PERMANENTE: toda implementação de Frontend passa pelo /impeccable** (skill), com DESIGN.md como contrato. Review da Web-UI SEMPRE POR PÁGINA (1 página = 1 fatia = 1 review).
+- **Inventário factual (feito por @explore, sessão 16)**: páginas 100% integradas = /login, /datasets, galeria [id], annotate, /jobs (22 endpoints reais, zero mockup de dados). **/dashboard = epicentro dos mockups (~25 valores fixos)**: array `nodes[]` hardcoded (dashboard/page.tsx L141–194 — "RunPod Pod A100" inexistente, "RTX 4090 24GB" com pct 82.4/8.5 fake, "v1.3.0", "0 erros"), StatCards "Modelos & Pesos = 14" e "Storage = 34.8 GB" sem chamada nenhuma, strings da Sidebar fixas ("Hephaestus Admin/admin@localhost/PyTorch CUDA"), 3 botões decorativos. **Backend confirmado por grep: `GET /api/orchestrators`, `GET /api/models` e uso de storage NÃO existem no principal** (só planejados no backend.md §9; frontend.md §10 mente que o front os consome — divergência doc↔código). Orchestrator JÁ lê MemTotal do /proc/meminfo (`services/orchestrator/src/lib.rs:1008-1021`) mas não reporta ram_total no wire. Componentes ui/ ÓRFÃOS (4): GlassCard, MetricTile, Breadcrumbs (reimplementado inline no layout.tsx L155–199), TruncatedText. 8 módulos Sidebar Roadmap (difusao/openclip/playground/models/environments/storage/events/settings) = divs desabilitadas honestas, SEM backend — fora do escopo desta fase (usuário confirmou: "somente os componentes de monitoramento de recurso").
+- **DECISÕES DO USUÁRIO (2026-09-09, "1. Aprovado / 2. (A) / 3. Aprovado")**:
+  - **Q1**: `/jobs` vira **"Execuções"** (fila de trabalho em execução de todos os tipos + histórico + detalhe); treino YOLO ganha **rota própria `/treino`** ("Treino YOLO" na Sidebar aponta para ela). YOLO não é um job — "pelo próprio nome job deveria ser as filas de trabalho que estão em execução". POST /api/jobs/yolo e a fila interna NÃO mudam (IA da UI apenas). TrainYoloModal da galeria INTOCADO.
+  - **Q2**: fazer NO BACKEND tudo que o front precisa para integrar (endpoints novos de verdade); só o nó RunPod sai (era mockup de disposição). Disposição atual do dashboard MANTIDA.
+  - **Q3**: integração cobre as 6 páginas vivas + órfãos + divergências de doc; 8 módulos Roadmap continuam desabilitados honestos.
+  - **Q4**: órfãos = **ADOTAR** (opção A) — GlassCard/MetricTile/Breadcrumbs/TruncatedText passam a ser consumidos nas fatias de frontend; nada apagado.
+- **PLANO F6 (branch `feat/integracao-web` de main atualizada; 1 página = 1 review)**:
+  - **F6.0** — ADR-0009 (@architect, em curso): desenho dos endpoints novos — `GET /api/orchestrators` (via manager Bearer; avaliar rota interna nova no manager + alias UI `/api/environments*`), `GET /api/models` (fonte: volume models/banco — decidir), `GET /api/storage/usage` (bytes reais: SQL de soma vs ListObjects S3 — decidir), telemetria estendida (ram_total no wire heartbeats→manager→`GET /api/telemetry`; nomes de GPU reais já existem como `gpus: Vec<String>`), fonte da versão do produto (v1.3.0 hardcoded em 3 lugares: dashboard + Sidebar L336/L602/L681), identidade do operador (single-user — manter simples). Delta OpenAPI 0.9.0.
+- **F6.1 FECHADO E VERIFICADO NO PRODUTO (3 commits)**: `d1dfbf6` F6.1a.0 orchestrator (`read_ram_total` + `ram_total` no HeartbeatBody, 40 ln, 31 tests) → `d632331` F6.1a manager (cache `ram_total` + rotas internas `GET /internal/orchestrators|models|storage/usage`, 146 ln prod + 8 testes novos, manager db 21/21) → `173faab` F6.1b principal (`src/monitoring.rs` novo, BFF 3 rotas camelCase, `ramTotal` na telemetria, `version` no /health, spec **0.9.0**, 314 ln prod, 188 unit + 14 contract). **Baterias: 209 testes principal + test-db 99/99 (78+21) + fmt/check limpos.** Containers rebuildados/recriados com a branch. **Smoke no produto**: login OK; `GET /api/orchestrators` = 1 item `orchestrator-local online` com lastHeartbeat fresco; `GET /api/models` = `{items:[]}` (banco vazio — cenário com job done fica p/ verificação final E2E); `GET /api/storage/usage` = `{0,0,0,measured:true}`; `GET /api/telemetry` = `ramTotal:33563316224` (~31 GB real do host), cpu real; `/health` = `version:"0.1.0"`. **Próximo: F6.2 dashboard** (@frontend-dev via /impeccable; file ownership: dashboard/page.tsx + lib/monitoring.ts novo + Sidebar.tsx — Sidebar fica SERIALIZADA: identidade no F6.2, rotas no F6.3).
+- **F6.2 FECHADO — DASHBOARD INTEGRADO E AUDITADO (commits `feat(web)`+`fix(web)`×2)**: `lib/monitoring.ts` novo (listOrchestrators/listModels/getStorageUsage/getHealth); dashboard 428 linhas — **todos os ~25 mockups mortos** (RunPod morre, GPU "RTX 4090" morre, fallbacks 5.4/13.2/62.8/17.5/82.4 mortos, StatCards reais de /api/models e /api/storage/usage, "Operador local", "0 erros" morre, botões decorativos removidos); Sidebar com versão real de /health + status real do orquestrador + "Operador local"; **órfãos ADOTADOS: GlassCard, MetricTile, TruncatedText** (Breadcrumbs fica p/ F6.3); diff líquido −413/+270+339. **Verificado no produto (Chrome :9222)**: console limpo, "10.5 / 31.3 GB RAM" real, "sem GPU (mock)", StatCards honestos, zero restos de mock (grep+runtime). **2 fixes de transporte pegos no smoke**: rewrite `/health` no next.config.ts + exclusão `health` do matcher do proxy.ts (middleware gateava a rota pública — 307 /login). **Auditoria visual @ui-designer (95% conforme)**: [REJEITADO por mim, falso positivo] scroll-trap no main do layout (é o shell único de scroll — decisão consciente r.1); [FIXADO] `.glass-card` sem hairline zenital/blur divergente do DESIGN.md (alinhado aos irmãos menu/modal, provado em runtime); [DÍVIDA] SegmentedControl h-7 24.5px vs 28px (contradição interna do DESIGN.md). Dívidas registradas em dividas.md (3: SegmentedControl, emerald-400 CreateDatasetModal ~L565, "V1.3" hardcoded no login ~L151). Screenshots: ~/.cache/tmp/opencode/f6-*.png. **Nota**: polling dashboard 3s unificado (6 chamadas Promise.allSettled); orchs no Sidebar 15s; /health fetch único no mount.
+- **F6.3 FECHADO — IA DE NAVEGAÇÃO (commit `95cfcfd`)**: `/treino` NOVA rota (setup YOLO central, 76 linhas, reusa ForjaYoloSetup; pós-202 → `/jobs?job=<id>` p/ auto-seleção); `/jobs` reescrito como **"Execuções"** (546 linhas de 792 — setup saiu; lista agrupa ativos primeiro com `engine` visível, painel de detalhe mantido, CTA "Novo Treino" primário); Sidebar: seção "Treinamento & Execução" — "Treino YOLO"→/treino (sem badge), "Execuções"→/jobs (badge jobsActive); breadcrumbs `treino`→"Treino YOLO", `jobs`→"Execuções"; ForjaYoloSetup deixou de chamar openActionCenter (a página controla navegação). TrainYoloModal/AutoTrackerModal/ActionCenter INTOCADOS. Build verde (/treino no output), smoke Chrome: /treino (empty state honesto "Nenhum dataset YOLO elegível") + /jobs ("Nenhuma execução registrada" + link p/ Treino) — console limpo. Fluxo de treino real (202→Execuções→done) entra na verificação final F6.4 (banco vazio).
+- **F6.4.1 FECHADO — E2E NO PRODUTO 25/25 PASS** (`~/.cache/tmp/opencode/smoke_f6.py`): ciclo treino yolo 202→done→artefatos; `/api/models` = 1 item `best.pt` com **dedupe por (engine,model) provado** (2 treinos → 1 item); `/api/storage/usage` bytes reais (total = soma, measured:true); `/api/orchestrators` 1 item online camelCase; `ramTotal` real (~31.3 GB); `/health` version 0.1.0; 401 sem sessão; **fluxo de UI provado no Chrome**: dataset elegível criado → `/treino` → select → "Iniciar Treino" → redirect `/jobs?job=<id>` → **auto-seleção OK** (Execuções, detalhe/logs visíveis) → console limpo (`f6-execucoes-e2e.png`). **Todos os FAILs intermediários foram ERRATAS DO SCRIPT do coordenador** (não do produto): campo multipart = `files` repetido, key de upload = `imageId`, `classId` = UUID (não índice), PUT boxes = wrapper `{boxes:[...]}` (não array), `imgsz` ∈ enum [416,640,1024] (o 400 do "2º treino" era o servidor CORRETO rejeitando imgsz=64 fora do enum — meu sed não pegou o dict sem vírgula). **Fixes também commitados**: cards → glass-card (`refactor(web)`); `-webkit-backdrop-filter` removido (a pipeline Lightning descartava o std junto — `.glass-menu`/`.glass-card` sem blur; `.glass-modal` (só std) sobrevivia) — **vidro provado em runtime: blur(20px) saturate(160%) + hairline zenital**; `metrics.jsonl` corrigido em teste do manager + ADR-0007 (21/21). Sujeira de smoke limpa do banco (11 jobs + 33 artifacts de hoje). Dev server :3000 reiniciado.
+- **FATIA F6 FECHADA (2026-09-09 ~19:45) — aguarda DECISÃO DO USUÁRIO de push/CI/merge**: branch `feat/integracao-web`, ~20 commits de `a98cc12` (base) até `118a24f` (docs-sync). **Verificação final**: fmt/check ✓, api-principal 188+14 ✓, orchestrator 31 ✓, test-db **101/101** (80+21) ✓, compose ✓, build web ✓; smoke visual pós-fixes: zero mockups, "sem GPU (mock)", RAM real, nó real online (`f6-final-dashboard.png`). **Nota de ambiente (regra mental confirmada 2×): test-db.sh apaga orchestrators → manager só re-adota no boot → restart do manager após qualquer test-db, senão "Nenhum orquestrador registrado" (estado vazio CORRETO, não bug).** Reviews F6.4.2: 3× APROVA COM NITS (nenhum MAIOR; R5 íntegro; ownership limpo). Dívidas novas (dividas.md): telemetria por orquestrador, models real (tabela+volume+upload/download), reconciliação bucket×banco, gestão de orquestradores (adopt/rotate/revoke + alias environments). Feedback do usuário nesta sessão: cards com backdrop-blur-xl → padronizados em glass-card (com achado do bug da pipeline: prefixo `-webkit-backdrop-filter` manual fazia o Lightning CSS descartar o std); "metrics.json" sem o l era literal de teste (corrigido) — produto sempre foi metrics.jsonl (JSON Lines).
+- **Ordem dos despachos corrente**: ~~FATIA F6 COMPLETA~~ → **MERGEADA PELO USUÁRIO (2026-09-09, CI verde — run concluído success; usuário informou, não conferir)**. Fatia corrente: **TREINO REAL @gpu** (TrueNAS). **SPIKE DE AMBIENTE RODADO (2026-09-09, coordenador via SSH, 2 scripts)** — resultados:
+  - ✓ **GPUs confirmadas**: RTX 3060 12GB + GTX 1660 Super 6GB, driver **580.173.02**, CUDA **13.0** no host.
+  - ✓ **Disco**: home em `/mnt/DADOS` com **4.9 TB livres** (build sem medo). RAM 62G total / ~12G disponível (host compartilhado).
+  - ✓ **Repo JÁ clonado e ATUALIZADO** em `/mnt/DADOS/home/dockeruser/Hephaestus-LLM-Studio` — `1a477dd` = mesmo HEAD da main local; remote = Gitea `git.felipecncloud.com:2222` (ssh id_git_ed25519 presente).
+  - ✓ **Rede OK** (registry-1.docker.io responde 401 auth-challenge = normal; github 200). O "pull falhou" do 1º script era o MESMO problema do docker (item abaixo), não rede.
+  - ✗ **BLOQUEIO ÚNICO (ação do USUÁRIO, sem sudo eu não resolvo)**: `/var/run/docker.sock` é `root:docker` 660 e o grupo `docker` (GID 999) está VAZIO — dockeruser não está nele. Todo `docker ps/run/pull` falha com permission denied. **FIX pedido ao usuário: `sudo usermod -aG docker dockeruser` + novo login SSH** (ou `sudo gpasswd -a dockeruser docker`). Sem sudo disponível (`sudo -n` pede senha). Após o fix: conferir `docker ps` (ver containers reais — 1º script viu 0 por causa do permission denied, não porque não há nada rodando), runtimes nvidia (nvidia-container-toolkit presumido — TrueNAS Electric Eel + driver instalado, MAS NÃO CONFIRMADO), disco do DockerRootDir, e o smoke nvidia/cuda:12.4.1 `nvidia-smi -L` dentro de container.
+  - ✗ **BLOQUEIO RESOLVIDO PELO USUÁRIO (2026-09-09)**: `usermod -aG docker dockeruser` aplicado — docker 28.3.1 OK sem sudo.
+  - ✓ **SPIKE FECHADO — GPU PROVADA DENTRO DE CONTAINER** (`nvidia/cuda:12.4.1-base` + `--runtime=nvidia`: as 2 GPUs listadas, exit 0): runtime **nvidia 1.19.1 registrado E DEFAULT no daemon** (cuidado: todos os containers herdam default nvidia — sem impacto pro trainer, é o comportamento desejado). nvidia-ctk 1.19.1 no host.
+  - ✓ **Disco do DockerRootDir**: `/mnt/.ix-apps/docker` com **327G livres** + /mnt/DADOS 4.9T → build de imagem PESADA (PyTorch ~8-10GB) é viável NO HOST TrueNAS; sem necessidade de scp/rsync de imagem.
+  - ✓ **48 containers rodando no host (NÃO TOCAR)** — incl. gitea + gitea-runner (CI DO USUÁRIO RODA NESSA CAIXA!), frigate, llama-cpp, traefik, obsidian-sync. Qualquer teste de rede/porta: sempre portas ALTAS efêmeras, nunca rebinding de serviços.
+  - ⚠ **ACHADO CRÍTICO DE CAPACIDADE (SUPERADO)**: 3060 estava com 11.5/12GB ocupados (llama.cpp) — **USUÁRIO DERRUROU o llama.cpp (3060 livre 0/12GB)**, mas ela é **INTERMITENTE** (usuário roda o modo deep do graft nela) → pre-flight obrigatório de VRAM na sessão GPU; 1660S = fallback. Registado como **emenda E1 da ADR-0010**.
+- **FATIA G (TREINO REAL @gpu) ABERTA (2026-09-09)** — branch `feat/treino-real-gpu` de `main` (`140c85d` = ADR commitada, G.0). **Especificação executável: `docs/adr/0010-treino-real-gpu.md`** (D0–D12 + plano G.0–G.7; ler antes de qualquer despacho da fatia). Ordem: **G.1 ∥ G.2 ∥ G.3** (despacho paralelo, ownership disjunto: `engines/trainer-yolo/` vs `services/orchestrator/` vs `services/manager/`) → G.4 (@infra-dev: compose.gpu.yaml + README-gpu, DEPOIS de G.1/G.2 pois referencia Dockerfile.gpu e envs) → G.5 (@reviewer) → **G.6 smoke manual @gpu no TrueNAS (coordenador via SSH, fora do CI)** → G.7 (@docs-sync). Regras: mock NUNCA quebra (baterias existentes intocadas = critério); zero delta público (spec 0.9.0 intacta); 1 dispatch = 1 commit; implementador que achar problema fora do escopo PARA e REPORTA.
+- **FATIA G MERGEADA PELO USUÁRIO (2026-09-09, `41893bb`)** — treino real @gpu na main. Ambiente local já roda o código mergeado (containers recriados durante a fatia). Estado atual: main limpa, produto em modo default (mock), TrueNAS com imagem `hephaestus/trainer-yolo:gpu` construída + checklist `infra/README-gpu.md` para a próxima sessão GPU. **Verificação final: fmt/check ✓, compose dev ✓, compose.gpu ✓, engine pytest 57 ✓, orchestrator 42 ✓, manager 10 unit + test-db 103/103 (80+23) ✓, principal 188+14 ✓.** **Smoke G.6 @gpu PROVADO NO PRODUTO**: treino yolo11n REAL na RTX 3060 → done, **best.pt = 5.429.331 bytes real** (≠ HEPHMOCK), util GPU 10-11%, telemetria `gpus[]`/vram reais (18432 MiB), dashboard com gauges reais do nó remoto (`g6-dashboard.png`), **falha honesta: yolo11x batch 32 → failed com torch.OutOfMemoryError provado em reexecução manual**, teardown completo (TrueNAS 47/48 containers intactos, dev host restaurado, banco limpo, dashboard voltou a "sem GPU (mock)" honesto — `g6-teardown.png`, console limpo). **Fixes de runtime do smoke (todos commitados)**: libs cv2 no Dockerfile.gpu (`9c8d41d`), path absoluto + train.txt/val.txt no `_real_train` (`e59133f`/`32a8620` — ultralytics resolve `path: .` contra o CWD e abre arquivo em `train:` como lista UTF-8; PNG sintético do smoke era inválido por precedência de operador no filter byte — bug do SCRIPT, não do produto), VRAM em MiB no wire + dashboard /18.0 GB + label "(mock)" morto (`c71bb0d`). **G.5 review**: 2× BLOQUEIA → 1 MAIOR Rust (unidade VRAM) + 3 MAIOR infra (build context, volumes gpu_gpu_*, envs TRAINER_IMAGE/AUTO_ADOPT_LOCAL não propagadas ao manager — compose.yaml do dev ganhou as 2 linhas com defaults preservando comportamento) → todos fixados em `0a5c9ce`. **Imagem :gpu JÁ CONSTRUÍDA no TrueNAS** (não rebuildar sem necessidade). A próxima sessão GPU usa o checklist `infra/README-gpu.md` (pre-flight nvidia-smi p/ 3060 livre do graft deep).
+- **Lição de processo da fatia G**: (1) o builder/export emite `train: [images/...]` e o ultralytics 8.3.x NÃO aceita listas diretas de imagens em `train:` (abre como txt UTF-8 → UnicodeDecodeError no magic PNG 0x89) — o caminho real adapta no container (`_prepare_dataset_yaml` gera train.txt/val.txt); PNG sintético de smoke tinha bug de precedência no filter byte (`b"\x00" + row * h`) — malformava TODOS os PNGs de teste desde a fatia 4 (ninguém decodava imagem até o treino real); (2) com N imagens < batch, o batch efetivo é N — "OOM garantido" por modelo grande não vale com dataset minúsculo (critério de OOM precisa batch real); (3) composição de sessão GPU manual (stop local + DELETE/INSERT + envs) funcionou, mas roteamento por capacidade segue como a dívida certa para matar o LIMIT 1.
+- **F6.0 FECHADO (ACEITA pelo usuário 2026-09-09, "Aceito")**: `docs/adr/0009-web-integracao-monitoramento.md` (506 linhas). Decisões: D0 escopo = só o que o dashboard precisa (POST adopt/rotate/revoke, alias /api/environments*, upload/download de models = dívidas); D1 `GET /api/orchestrators` via rota interna nova `GET /internal/orchestrators` no manager + BFF — **sem métricas por nó** (cache do manager é global, heartbeat sem identidade; UI compõe gauges só quando items.length===1); D2 `GET /api/models` derivado de `job_artifacts.kind='model'` (DISTINCT ON por (engine,model) de jobs done, prefere best.pt) — pesos mock 110 bytes, card não rotula "YOLOv11/Flux.1/SDXL"; D3 `GET /api/storage/usage` = soma SQL (`datasets.size_bytes` no principal + `SUM(job_artifacts.bytes)` no manager via `GET /internal/storage/usage`), NÃO ListObjects (StoragePort não tem list; SQL barato p/ polling 3s); D4 `ramTotal` aditivo Option<i64> nas 5 camadas (orchestrator JÁ lê MemTotal, só não devolve — lib.rs L1011-1040); sem gpuName novo (front usa gpus[] + vramUsed/vramTotal); D5 `version` no /health via `env!("CARGO_PKG_VERSION")` (0.1.0 real; "v1.3.0" é invenção da UI); D6 identidade "Operador local" derivado de /me (admin@localhost morre); D7 zero Error.code novo (503 queue_unavailable nas 3); D8 spec 0.8.0→0.9.0, sem migration, sem spike. **R5 (achado do architect)**: backend.md :173 mente — código real devolve measured:true com gpus:[] quando há heartbeat; implementador NÃO deve "consertar" o manager (doc é que se corrige no F6.4). **Auditoria do coordenador: APROVA** — SQL de D2 validado contra migration 0006 (jobs.engine/jobs.model existem, L32-33). **OFERTA DO USUÁRIO: máquina com GPU NVIDIA via SSH p/ testes @gpu (treino real)** — registrar o pedido quando a fatia de treino real chegar; NÃO necessário nesta fatia (leituras SQL).
+- **Lição de processo desta sessão**: frontend.md §10 declarava consumo de rotas inexistentes (orchestrators/models) — docs-sync deve validar doc↔código nos DOIS sentidos (doc diz que front consome X ≠ front realmente chama X).
+
+## Sessão 15 — FATIA 5 (AUTOTRACKER v1) FECHADA (histórico: A.1–A.8 completos, 17 commits na `feat/autotracker-v1`, todas as baterias verdes; mergeado pelo usuário em `6de4e94`)
+
+- **Fecho**: 17 commits (`61492ea`..`8a7db3b` — F1/F2 UI, A.1–A.6, fixes do review, t5_12, docs-sync). Baterias: principal **175 unit + 12 contract**, orchestrator **28**, engine **pytest 37**, **test-db 78/78**, **smoke E2E backend 16/16** (re-run final com o principal recompilado pós-fixes), smoke UI Chrome completo (console limpo, screenshots `~/.cache/tmp/opencode/f5-*.png`).
+- **Review A.7 em 2 partes** (lição sessão 14 aplicada): P1 Rust **BLOQUEIA** ([MAIOR] filtro imageId do apply com lógica morta — boxes cross-dataset; corrigido: resolve por filename + valida imagem ativa + t5_12 de regressão; [MENOR] all-skipped agora faz DELETE last-write-wins; [MENOR] submit 202 coberto por t5_11) → re-review **APROVA COM NITS**; P2 engine/web **APROVA COM NITS** ([MENOR] checkbox de overwrite morto no modal → removido, decisão única no apply; NITs: reset applyOverwrite, copy "Nenhum job ainda", botão desabilitado sem boxes.json, conf clamp ≤0.99).
+- **Achados do coordenador no caminho**: (1) F2 exigia `status==='ready'` na elegibilidade — `canTrain` da casa não exige (fix `11a703e`, pego no smoke); (2) worker commitou resíduos de runtime em `services/orchestrator/infra_outputs/` (removidos + gitignored, `44133ae`); (3) variante `UnsupportedEngine` morta (removida `8ec751d`).
+- **CAUSA-RAIZ de ambiente (pré-existente, registrada em dividas.md)**: `scripts/test-db.sh` roda os testes do manager no MESMO banco do produto e os fixtures fazem `DELETE FROM orchestrators` → dispatch preso em `waiting_slot` após qualquer test-db com a stack de pé. Mitigação: restart do manager (re-adota no boot). Conserto certo (banco efêmero `studio_test`) = fatia curta de infra futura — PROPOSTA ao usuário.
+- **Dívidas novas da fatia (dividas.md)**: AutoTracker de vídeo (D5), AutoTracker real com upload de modelo (D6), drift de classes snapshot→apply (R1), test-db isolamento (acima). QUITADA: highlight da Sidebar (usePathname, NIT F4.8).
+- **Próximo passo: USUÁRIO decide push/CI/merge da `feat/autotracker-v1`** (CI roda rust/web/compose). Backlog não bloqueante: isolamento do test-db (proposta acima), "Importar" na lista, ci-watch.sh, versionar smoke_f4/f5.
+
+- **ACEITE P1–P4 DADO ("sim aceito")** — ADR-0008 → **ACEITA**, spec executável (status atualizado pelo @fixer). Branch `feat/autotracker-v1` de main.
+- **2 DEMANDAS DE UI DO USUÁRIO entram na fatia como passos preliminares (comcommitados na branch, antes do A.6 para evitar conflito em /jobs)**:
+  - **F1 — highlight de módulo ativo da Sidebar** (NIT do review F4.8, agora pedido pelo usuário): ativo é derivado de `usePathname()` — `/datasets*` → "Dados & Anotação", `/jobs` → "Forja & Treinamento" (hoje hardcoded em "Dados & Anotação", `Sidebar.tsx`).
+  - **F2 — layout da Forja (/jobs)**: usuário: "em vez de estar o setup dos treinos está um histórico de treino e isso não é o correto — o histórico teria que ser uma activity feed numa sidebar à ESQUERDA" e o SETUP DE TREINO na área central. Setup = form equivalente ao TrainYoloModal (seletor de dataset yolo via `listDatasets()` + model/epochs/batch/imgsz/lr0/optimizer/augment → `startYoloJob`); histórico = coluna esquerda compacta (jobs com status/progresso); seleção de job mostra o painel de detalhe (métricas/artefatos/abort) no centro, com volta ao setup. Estilo design-system v2. TrainYoloModal da galeria INTOCADO (file ownership).
+- **A.1–A.6 IMPLEMENTADOS E VERIFICADOS (12 commits na `feat/autotracker-v1`, árvore limpa)**: `61492ea` F1 sidebar usePathname, `4b627d3` F2 forja 2 colunas, `55a0a17` A.1 engine autotrack (pytest 37/37), `874c809` A.2 submit (principal 151→163 tests, spec 0.8.0 parcial), `41c2a74` A.3 ramificação por engine (orchestrator 24→28), `8ec751d` cleanup UnsupportedEngine morta (achado meu), `da76dfa` A.4 apply (176 unit, erro job_not_done), `f941cb2` t5 test-db 9 casos (75/75), `fba566d` A.6 UI AutoTracker, `11a703e` fix elegibilidade (F2 exigia status ready — canTrain da casa NÃO exige; pego no smoke), `44133ae` resíduos infra_outputs removidos+gitignored (worker commitou lixo de runtime — pego no meu diff-stat).
+- **E2E PROVADO NO PRODUTO**: backend **16/16 PASS** (`~/.cache/tmp/opencode/smoke_f5_autotracker.py` — submit 202→done→artifacts boxes.json+metrics→apply 200 {applied:2,skipped:0,images:2}→**manual preservada**→idempotente→badge autoTracked). UI Chrome COMPLETO (desktop 1440): sidebar Forja ATIVA (violeta), forja 2 colunas (setup central + Atividade esquerda), treino YOLO do setup 202→detalhe auto-selecionado, AutoTrackerModal→202→/jobs→done→"Aplicar boxes"→toast "2 boxes aplicadas, 0 ignoradas em 2 imagem(ns)"→faixa "2 rotuladas por AutoTracker"→box renderizada no editor; console limpo; screenshots em ~/.cache/tmp/opencode/f5-*. Fix de runtime: **linha de orchestrators some do banco** (sem path de DELETE em produto — sujeira de ambiente herdada; manager restart re-adota e despacha — regra mental: dispatch preso em waiting_slot + orchestrators vazio = restart manager).
+- **A.7 review em curso (2 partes paralelas, lição sessão 14)** → depois A.8 docs-sync → fecho. Branch ainda NÃO mergeada (usuário decide).
+- **Produto local verificado pós-merge** (a pedido do usuário, "verificar em localhost"): healths 8080/8081/8082 = 200, web :3000 = 307 (→ /login), db/seaweedfs/embedder healthy.
+- **Usuário ESCOLHEU a fatia A — AutoTracker v1** ("pode ser a A") e confirmou build OK. CI do merge NÃO verificado via API Gitea (token 401 — pendente token novo); verificação local feita conforme acima.
+- **ADR-0008 PROPOSTA E COMMITADA** (`ea9f566`, main — exceção autorizada; emendas E1/E2 do coordenador aplicadas via @fixer: `overwrite` fora do body de submit/`jobs.params`, `images` do apply definido como contagem de imagens com ≥1 box gravada). Auditoria do coordenador: **APROVA COM EMENDAS (aplicadas)**.
+- **Núcleo do design (retomada rápida)**: D0 job na fila existente (`POST /api/jobs/autotracker` 202, reuso total fatia 4; preview efêmero = fatia futura); D1 retorno de boxes via artefato `boxes.json` em `artifacts/<job_id>/` + **apply EXPLÍCITO** `POST /api/jobs/:id/autotracker/apply` (principal lê bucket direto c/ path+md5; merge por origem: overwrite=false substitui só origin='autotracker', preserva manual/import; idempotente; transação por imagem; cap 1000; skip honesto); D2 subcomando `autotrack` no trainer-yolo (reuso da imagem — divergência consciente de "uma imagem por engine", modelo real terá runner próprio) + `metrics.jsonl` 1-linha p/ reusar `parse_metrics_line` sem mudança; D3 params `{datasetId, model?='mock', conf?=0.65}`; D4 UI: AutoTrackerModal na galeria (yolo c/ classes+imagens) → 202 → /jobs → botão "Aplicar boxes" → editor origin autotracker + badge `autoTracked`; D5/D6 vídeo e upload de modelo FORA (dívidas); erro novo `job_not_done` (409); spec 0.7.0→0.8.0; **SEM migration e SEM spike**.
+- **Plano A.1–A.8** (branch `feat/autotracker-v1` de main; um dispatch = um commit): A.1 engine mock (@python-engines) → A.2 submit no principal ∥ A.3 ramificação no orquestrador (ownership disjunto) → A.4 apply no principal (pode dividir A.4a/A.4b) → A.5 NÃO EXISTE (sem mudança de infra) → A.6 frontend → A.7 reviewer → A.8 docs-sync. Detalhes/critérios de pronto na tabela da ADR-0008.
+- **ACEITE P1–P4 registrado acima; ver bloco "Estado atual" no topo para a ordem corrente de despachos.
+
+*(Bloco de proposta A–D desta sessão removido — A escolhida pelo usuário; alternativas B/C/D permanecem referenciadas na ADR-0008 seção "Sequência".)*
+
+## Resumo da sessão 14 (fecho da fatia 4)
+
+- **F4.7 FECHADO**: hack `?engine=` removido (`d439be0`); build web verde; smoke Chrome COMPLETO provado (Treinar→modal→202→/jobs→done 22s→métricas epoch 100 mAP→best.pt 110 bytes octet-stream→telemetria real CPU/RAM→abort 200 cancelling→failed; abort tardio→409 com toast honesto; console limpo; screenshots 1440/768/390 salvos em ~/.cache/tmp/opencode/f47-*). 3 fixes no caminho: artefatos alinhados ao wire `{id,kind,path,md5,bytes}` (`a4ca85b`), estado `cancelling` no JobStatus/pill (`ab34219`), e o ambiente limpo (3 datasets de teste 204×3 + jobs/artifacts DELETE).
+- **F4.8 FECHADO — review em 3 partes PARALELAS** (despacho único falhou 2× com `Bad Request: model deepseek-v4-flash` no charter do reviewer; divisão de escopo resolveu — o problema era TAMANHO do contexto, não o modelo): backend Rust = **BLOQUEIA**, engine/infra e frontend = **APROVA COM NITS**. Achado crítico: **SQL injection** no `list_jobs` do manager (status/engine interpolados via format!). 10 fixes roteados: 5 Rust (@rust-dev) + 5 web (@fixer) + 1 cleanup (`ramPct` órfão). Commits: `61fe829` (binds+guarda de transição), `83be449` (teste 13/14→14/14, assert DESC), `fca3a6f` (heartbeat usa active_jobs real — matou o bug jobsActive congelado; log no report de erro), `00045e7` (gpus array + barra RAM removida), `6538ef0` (polling cobre cancelling + refetch de detalhe), `f3d7f1c` (janela lr0 1e-5).
+- **Pós-fix REPROVADO zero**: rebuild+recreate manager/orchestrator → **smoke E2E 17/17 PASS de novo** + `jobsActive:0` provado ao vivo com jobs terminais. test-db principal 66/66 + manager **14/14** (agora verde), fmt/check limpos, build web exit 0.
+- **F4.9 FECHADO (`03d232e`)**: backend.md §9/§10/§11 (10 rotas, 503 queue_unavailable generalizado — delta consciente, wire real, migration 0006), frontend.md §4.1/§10/§12 (rota /jobs, telemetria real, measured:false = caminho morto), dividas.md (+9 dívidas do review, telemetria sidebar QUITADA), ADR-0007 ganhou seção "Fecho da fatia". Fix factual pelo @fixer (6 keys do metrics.jsonl, não hiperparâmetros).
+- **Dívidas do review F4.8 registradas em dividas.md** (não bloqueiam merge): abort races (preparing/dispatched, cancelled vs failed), watchdog offline, pytest no CI, best==last mock, reports best-effort, defaults de token, unzip `\`, NITs frontend (highlight ativo, canTrain duplicado, toast wording, polling drawer).
+- **Lição nova (processo)**: despacho de review de fatia GRANDE (13k linhas) quebra o charter com erro de API ambíguo ("Bad Request: model X" parecia config, era tamanho) — dividir o review em partes por escopo desde o início; a regra das duas correções quase levou a fix de config desnecessário (usuário corretamente pediu retentativa).
+- **Próximo passo: USUÁRIO decide push/CI/merge da `feat/jobs-v1`** (CI vai rodar rust/web/compose; pytest do trainer não está no CI — dívida registrada). Backlog não bloqueante segue: "Importar" na lista de datasets, definição da 3h, ci-watch.sh, versionar smoke_f4.py.
+
+## Checklist de retomada (sessão 14 — ler TUDO abaixo antes de agir)
+
+1. Ler este bloco inteiro + ADR-0007 (spec executável da fatia).
+2. `git status` (deve estar limpo) + `git log --oneline -15` na `feat/jobs-v1`.
+3. Conferir ambiente: compose de pé (db/seaweedfs/principal/manager/orchestrator-local/embedder), principal/manager RECREADOS com o código do dual-shape fix — `GET /api/jobs` SEM filtros deve retornar `{items,total}` camelCase (PROVADO ao vivo na sessão 13, keys `createdAt/datasetId/...` ✓).
+4. **F4.7 = CONTINUAÇÃO**: o trabalho parcial do frontend JÁ FOI COMMITADO (varreu no commit do dual-shape — higiene imperfeita, anotado p/ reviewer): `apps/web/app/(studio)/jobs/page.tsx`, `components/studio/TrainYoloModal.tsx`, `lib/jobs.ts`, `types/studio.ts`, `Sidebar.tsx`/`DatasetMenu`/`DatasetCard`/`icons`/pages modificados. NUNCA foi buildado nem fumado. Pendências do F4.7: (a) **remover o hack `listJobs()` com `?engine=` em `lib/jobs.ts`** (o backend agora SEMPRE retorna {items,total} — chamar `/api/jobs` limpo); (b) `npm run build --workspace=web`; (c) smoke Chrome completo (Treinar→modal→202→/jobs→done→métricas→download best.pt→telemetria sidebar "sem GPU (mock)"→abort; console limpo; screenshots 1440/768/390); (d) limpar dataset de teste.
+5. Depois: F4.8 (@reviewer, diff completo vs ADR-0007 — lista de pontos de atenção abaixo) → F4.9 (@docs-sync) → verificação final → usuário push/merge.
+6. **Smoke E2E pronto**: `/home/felipecn/.cache/tmp/opencode/smoke_f4.py` (backend, 17/17 PASS na sessão 13) + JWT mintado com secret de `docker exec infra-db-1 psql ... "SELECT encode(jwt_secret,'hex') FROM auth_state"` (arquivo `jwt_secret.hex` no mesmo dir).
+7. Regras que nasceram nesta sessão (JÁ nos charters, commit `chore(config)`): implementadores PAREM e REPORTAM problemas fora do escopo (nunca editam fora, nem workaround); lição minha: build+recreate do container ANTES de despachar UI (o front bateu no principal velho).
+
+## Pontos de atenção p/ o @reviewer (F4.8) — acumulados da sessão 13
+
+1. **Commit `fix(api): dual-shape` varreu o trabalho parcial do frontend** (15 arquivos, ~1363 linhas) — higiene de commit imperfeita (deveria ter sido commit separado); conteúdo íntegro, reviewer valida.
+2. **Série de métricas rasa com mock rápido**: coletor do orquestrador (poll 2s) reporta linha a linha com best-effort (`let _ =`) — com 100 epochs em ~20s só ~1-3 reports chegam; em treino real/lento a série preenche; erros de report engolidos (lição 3b benigna por desenho) — decidir se vira dívida.
+3. **`jobs.dataset_id` gravou NULL no job do smoke** (o principal manda dataset_id no POST /internal/jobs — conferir o create_job do manager; o smoke não validou esse campo).
+4. Warning pré-existente no orchestrator (`heartbeat_client` never read).
+5. Aborts de job2 no smoke retornaram status `failed` (não `cancelled`) — job2 falhou antes do abort surtir efeito; semântica abort vs falha-concorrente a conferir.
+6. Orquestrador: `SubprocessExecutor` = stub honesto (RunPod fica p/ fatia futura — registrar em dividas.md no F4.9).
+7. Manager: recovery/auto-adoção provadas em teste-db; o manager do produto recriou e re-dispachou ✓ (jobs órfãos limpos à mão na sessão 13 — DELETE na tabela, OK pois eram sujeira de smoke).
+
+## Estado técnico da fatia (resumo para retomada rápida)
+
+- **Branch `feat/jobs-v1`** — ~20 commits (F4.0 spike → F4.1 package/0006 → F4.2a leitura → F4.2b escrita+logging → F4.3 manager → F4.4 orchestrator ∥ F4.5 trainer → F4.6 infra → fixes de runtime do E2E → dual-shape + charters). **NÃO mergear antes do F4.8/F4.9.**
+- **Baterias verdes na sessão 13**: test-db 66/66 principal + 14/14 manager; unit 137 api + 24 orchestrator + 17 trainer-yolo + 6 manager; contract 12; fmt/check limpos (1 warning orquestrador conhecido).
+- **E2E backend 17/17** (smoke_f4.py): ciclo completo provado no produto, incluindo best.pt 110 bytes baixável e telemetria real.
+- **Bugs de runtime corrigidos e commitados durante o E2E** (12 no total — lista completa no bloco anterior da sessão 13): rustls-tls, MANAGER_TOKEN no principal, axum 0.7 `:id`, Bearer no dispatch, seaweedfs force-recreate (bind-mount não detecta s3.json novo!), docker-cli (docker.io no trixie é só daemon), volumes nomeados + envs ORCH_VOL_* com prefixo do projeto, args do trainer no docker run, paths internos fixos, timeouts 10s nos 3 clients, metrics série com upsert por epoch, JobResponse camelCase.
+- **Contratos vivos (produto)**: `POST /api/jobs/yolo` 202; `GET /api/jobs` = `{items,total}` camelCase sempre (dual-shape morto); `GET /api/jobs/queue` deriva do mesmo payload; telemetria `{measured,cpu,ram,...}`; config.yaml com placeholders `{dataset_path}`/`{output_path}` substituídos pelo orquestrador; trainer roda via `docker run -v infra_datasets:/datasets -v infra_outputs:/outputs` + args `train --config /outputs/<id>/config.yaml --output /outputs/<id>`.
+
+## Fila pendente (não bloqueante, p/ o usuário)
+- Igual às sessões anteriores: backlog "Importar" na lista de datasets; definição da 3h; `scripts/ci-watch.sh` + smokes E2E versionados (o smoke_f4.py é candidato a versionar!).
+
+### Sessão 13 — histórico completo da fatia 4 (contexto; os 12 bugs do E2E estão na seção acima)
+
+- **Merge do redesign CONFIRMADO pelo coordenador**: `feature/redesign-app` → main (`c982726`), **CI run 29: 3/3 verdes** (rust/web/compose, verificado via API Gitea com token de `~/.config/hep-ci/token` — nova credencial informada pelo usuário). v2.1+v2.2 fechadas definitivamente.
+- **graft rebuildado** (`graft build --deep`, 86 conceitos; graft/ é gitignored — cache local, nada a commitar). Proto-lo de retomada executado.
+- **FATIA 4 ABERTA** ("jobs/package/materialização" — próximo passo registrado desde a sessão 11; usuário autorizou "pode prosseguir"). Contexto coletado e briefing completo montado:
+  - **Já travado**: T4 (`jobs.dataset_id ON DELETE SET NULL` + `dataset_versions`), `POST /:id/package` (ADR-0006 D0), cliente S3 escopado no orquestrador + Dockerfile → trixie-slim (R10), §10/§11 backend.md como fonte do DDL/manifest/ciclo, ciclos §4, policies já existem (`packages/policies/{engines,vram-table}.yaml`).
+  - **Estado do código**: manager/orchestrator = skeletons de 12 linhas (/health; :8081/:8082); compose JÁ sobe `orchestrator-local` (EXEC_MODE=docker, socket docker, volumes datasets/models/outputs) + `manager` (MANAGER_TOKEN); trainer-yolo = stub só-`__main__` (SEM modo treino — a fatia cria); openapi 0.6.0; test-db 54/54.
+  - **Briefing do architect**: 13 decisões abertas propostas (D0 escopo v1 — yolo_train local com mock; D1 formato package; D2 credencial S3 escopada; D3 principal↔manager; D4 manager↔orquestrador; D5 engine mock; D6 config.yaml; D7 API pública; D8 artefatos; D9 telemetria v1; D10 UI; D11 logging; D12 openapi 0.7.0 + plano de commits). Recomendações do coordenador: transporte chunked FORA (sem orquestrador remoto), telemetria/polling mínimos, UI só Treinar+lista de jobs+telemetria sidebar, playground/difusão/clip/autolabel/autotracker FORA.
+- **BLOQUEIO de ambiente RESOLVIDO (2 falhas do mesmo problema → escalado → usuário fixou)**: despacho `@architect` falhou 2× com `Bad Request: model deepseek-v4-flash` (charter `.opencode/agent/architect.md`); o **usuário comentou a flag `variant: high`** no charter (o modelo não possui variant) e confirmou funcionamento — despachado com sucesso na 3ª tentativa. Edição do charter ainda NÃO commitada (config do usuário).
+- **ADR-0007 FEITA E COMMITADA (`7ea7481`, 743 linhas, main)**: `docs/adr/0007-jobs-v1.md` — jobs v1 = **yolo_train LOCAL end-to-end com engine mock**. Descoberto rascunho pré-existente (~700 linhas, provavelmente do teste do usuário em outra aba do opencode) — o architect auditou citação por citação, corrigiu 7 divergências (compose.integ EXEC_MODE=subprocess HOJE; volumes datasets/models/outputs; IDEIA :14-16; renumeração D12/D13) e confirmou o mecanismo SeaweedFS por pesquisa web (formato legacy `-s3.config` nativo; incógnita real = `List` em sub-prefixo → spike F4.0). **Auditoria do coordenador: APROVA COM EMENDAS** — E1 (crítica): status `cancelling` faltava no CHECK do DDL (D3/D7 usam; janela do abort); E2: `engine_unsupported` inalcançável na v1 (rota /yolo fixa sem engine no body) → uso real movido para `POST /:id/package` (engine≠yolo → 400); E3 (NIT): telemetria CPU/RAM lida no /proc do container (aproxima o host — documentar na sync); E4: spike F4.0 dono = @infra-dev (spec do coordenador); E5: F4.2 autorizado a dividir em F4.2a/F4.2b se estourar ~400 linhas. Emendas aplicadas pelo `@fixer` e spot-checked.
+- **Núcleo do design (para retomada)**: migration 0006 cria SÓ `orchestrators`+`dataset_versions`(CASCADE)+`jobs`(SET NULL ×2)+`job_artifacts` (job_samples/runners/models ADIADAS); package = **zip autossuficiente em `packages/<version_id>/`** + manifest de transporte (`files[].key`/`chunks` ausentes na v1 local — nascem com o remoto); credencial S3 `heph-orchestrator` escopada a `packages/*`+`artifacts/*` + invariante de prefixo no código (2ª barreira); orquestrador → trixie-slim (manager mantém bookworm, sem S3); fila central no manager com recovery no boot (`queue_reason='recovered'`) + auto-adoção `orchestrator-local`; report = PUSH orquestrador→manager (manager grava transições/job_artifacts; orquestrador sem Postgres); trainer-yolo mock ganha `train --config` (metrics.jsonl + best/last.pt fake; modo real @gpu documentado); telemetria = `GET /api/telemetry` polling (VRAM `measured:false` "sem GPU (mock)", fila no-op sem `waiting_vram`); UI = Treinar (condição yolo+classes+imagens) → modal → `/jobs` (nova rota) + Sidebar Forja habilitada + telemetria real; logging ENXUTO entra (tracing JSON + x-request-id + /ready nos 3 Rust); unificação embedder→runner-CLIP **ADIADA** (D13); spec 0.6.0→0.7.0; 10 rotas públicas; erros novos `queue_unavailable`(503)/`dataset_not_ready`(409)/`job_not_abortable`(409)/`engine_unsupported`(400).
+- **Plano F4.0–F4.9**: F4.0 spike (@infra-dev: SeaweedFS List sub-prefixo, trixie aws-lc-sys, docker-run trainer — critérios binários na ADR) → F4.1–F4.4 rust-dev SEQUENCIAIS (principal → manager → orquestrador) → F4.5 python-engines ∥ F4.6 infra (ownership disjunto) → F4.7 frontend → F4.8 reviewer → F4.9 docs-sync. Branch `feat/jobs-v1`.
+- **ACEITE P1–P4 DADO pelo usuário (sessão 13, "pode prosseguir com a fatia 4")** — interpretado como "tudo como você recomenda": P1 painel `/jobs`+Sidebar Forja ✓; P2 logging enxuto entra ✓; P3 unificação embedder adiada (D13) ✓; P4 zip autossuficiente ✓. ADR-0007 é agora a **especificação executável** da fatia.
+- **F4.0 FECHADO (spike, `6f4b459` na `spike/jobs-f4-0`, NÃO mergeada)**: C2 PASS (trixie-slim `sha256:d7e12182…` roda binário aws-lc-sys; bookworm falha no loader GLIBC_2.38 — controle negativo; build-deps cmake/g++/pkg-config/perl), C3 PASS (docker-run 3/3 exit 0, volume ok, abort `docker stop --time 5` → 137), C1 **PASS com residual** — path-scope ENFORCEADO (`datasets/*` DENIED para `heph-orchestrator`), mas **action-type NÃO é enforceado** no `-s3.config` legacy (Read concedeu PUT/DELETE/ListBuckets — residual aceito, LOCAL-DEV); **`List:heph-data/packages/*` basta** (ListObjectsV2 prefix PASS — fallback bucket-level desnecessário, issue #7066 não afeta a imagem pinada). Apêndice "Resultados do spike F4.0" na ADR-0007 + status → ACEITA (aplicado pelo @fixer, verificado). D2 mantém o desenho; invariante de prefixo no código vira a barreira principal. Ambiente do spike limpo (containers/volume/imagem/rede removidos).
+- **PENDENTE: aceite do usuário P1–P4** (P1 painel `/jobs`+Sidebar Forja; P2 logging enxuto entra; P3 adiar unificação embedder; P4 zip autossuficiente) — fechável com "tudo como você recomenda". Após o aceite: F4.0 spike → commits.
+- **F4.1 FECHADO (`4336efc` na `feat/jobs-v1`)**: migration 0006 (4 tabelas à letra, `cancelling` no CHECK) + `POST /api/datasets/:id/package` (`package.rs` 845 linhas: congela `dataset_versions`, materializa YOLO do banco com builder COMPARTILHADO do export 3e, zip autossuficiente COM imagens via `get_to_file` fail-closed 503, PUT zip+manifest em `packages/<vid>/`, INSERT só APÓS os PUTs com compensação `delete_prefix`) + spec 0.7.0 declarando SÓ package + `engine_unsupported` (400). **Bateria: 62/62 db (7 t4_package_*), 91 lib + 11 contract + 7 search, fmt/check limpos.**
+- **F4.2a FECHADO (commit `git log -1` na `feat/jobs-v1`)**: módulo `src/jobs/` (trait `ManagerPort` + `HttpManager` reqwest Bearer + `MockManager` público p/ tests) + 7 rotas de leitura (jobs/queue/:id/metrics/artifacts/artifact-data/telemetry) todas via BFF, `MANAGER_URL`/`MANAGER_TOKEN` fail-fast, re-map metrics `mAP50-95`→`map5095`, defesa de `path` de artefato (`..` → 400), spec 0.7.0 com as 7 rotas + `queue_unavailable` (503). **Delta consciente aceito pelo coordenador: 503 `queue_unavailable` em TODAS as rotas de leitura quando o manager está inalcançável** (D7 só previa na rota `data` e no POST — docs-sync F4.9 cobre). Bateria: 112 unit + 11 contract + 7 search, 62/62 db, fmt/check limpos.
+- **F4.2b FECHADO (`f2cf1f7`)**: `POST /api/jobs/yolo` (validação pura em `jobs/models.rs`, config.yaml gerado pelo principal com placeholders `{dataset_path}`/`{output_path}`, builder do package REUSADO como `build_package()` compartilhado com a rota F4.1, `vram_min_gb=null` na v1) + `POST /:id/abort` + erros `dataset_not_ready`/`job_not_abortable` + spec 0.7.0 COMPLETA (10 rotas) + tracing JSON/`x-request-id`/`/ready` (db-only — delta consciente: embedder/storage têm healthchecks próprios no compose desde a 3f). **Decisão minha aplicada pós-achado do fixer: compensação do package (delete_prefix + DELETE row) quando o manager falha APÓS o build** — POST de job é operação composta. Teto de ~400 estourado (~859 prod; refactor do build_package incluso) — desvio registrado, commit único deliberado (logging mescla em routes.rs, split por arquivo seria parcial demais). Bateria: 137 unit + 11 contract + 7 search, **66/66 db (4 t4_job_*: cria-202, not-ready-409×3, offline-503-compensa, abort-estados)**, fmt/check limpos.
+- **F4.3 FECHADO**: manager completo (`lib.rs` 940 + `main.rs` 458): 9 rotas internas snake_case (Bearer MANAGER_TOKEN), fila FIFO em memória reconstruída do boot (`queue_reason='recovered'`), auto-adoção `orchestrator-local` (dedupe por endpoint), dispatch com worker loop 2s (falha → volta a queued `waiting_slot`), report idempotente (done grava `job_artifacts` + `finished_at`; failed → error em `params` JSONB), heartbeat → cache telemetria (`GET /internal/telemetry` shape idêntico ao `InternalTelemetry` do principal), policy VRAM no-op, tracing/`/ready` (db+fila), boot com retry (R11). `test-db.sh` estendido (manager 13/13: ciclo queued→done, abort×3, recovery, SET NULL, auto-adoção dedupe, dispatch-falha, md5 inválido, telemetry). Dual-shape em `GET /internal/jobs` (com query params → `{items,total}`; sem → array de fila) — hack interno para casar com o client do principal, NIT p/ reviewer. Achado meu: 1 teste do manager nunca tinha rodado com banco (placeholders `$4` sem bind → 42P18) — fixado (`@fixer`, 3 placeholders). Bateria: fmt/check ok, principal 66/66 + 137/11/7, **manager 13/13**.
+- **F4.4 ∥ F4.5 FECHADOS (commitados em paralelo, ownership disjunto — `5809898`/`e272f17`)**: **F4.4** orchestrator (`lib.rs` 1263 + `main.rs` 397): `scoped_key` (barreira principal — 8 testes de recusa: `..`, absoluto, fora de packages//artifacts/), dispatch com idempotência R4 (409 duplo), pipeline preparing→download+md5→unzip seguro (zip-slip)→config.yaml com placeholders substituídos→running→docker run (trait `TrainerExecutor`; subprocess = stub honesto, dívida RunPod)→metrics.jsonl polling 2s→artifacts upload+report done (falha → report failed com error real, sem engolir); heartbeat ~2s cpu/ram do `/proc`; Dockerfile builder com cmake/g++/pkg-config/perl + runtime **trixie-slim digest do spike** + docker-cli. **F4.5** trainer-yolo: CLI `train` (`train.py` 17 testes), parse pyyaml (aceitável — decisão minha), mock com `MOCK_EPOCH_SLEEP_MS`, `metrics.jsonl` com as 6 keys exatas (contrato com F4.4), best/last.pt fake "HEPHMOCK" 75 bytes determinístico, sem samples/, README modo real @gpu, Dockerfile python:3.12-slim digest do trainer-clip + pyyaml. Bateria: fmt/check ok (1 warning menor orchestrator: heartbeat_client unused — p/ reviewer), orchestrator 23/23, api 137+11+7, manager, db 66/66+13/13, engine 17/17.
+- **F4.6 FECHADO + E2E BACKEND 17/17 NO PRODUTO (2026-09-08 ~01:30)**: compose validado; smoke E2E backend (script `/home/felipecn/.cache/tmp/opencode/smoke_f4.py`, JWT mintado com o secret do `auth_state`) provou ciclo completo: create dataset yolo → upload 2 imgs → box → package (4 files) → POST /jobs/yolo 202 → **job queued→done (progress 1.0)** → metrics 200 → artifacts (3) → **download best.pt 110 bytes** → telemetry (measured:true, CPU/RAM reais do /proc) → job2 + **abort 200 cancelling→failed** → cleanup 204. **Bugs de runtime pegos no ferro e corrigidos (todos commitados)**: (1) reqwest default-features → openssl ausente no builder (→ rustls-tls); (2) MANAGER_TOKEN faltando no principal no compose; (3) rotas do manager com sintaxe axum 0.8 `{id}` em workspace 0.7 (`:id`) — testes do lib não pegam router!; (4) manager não enviava Bearer ao orquestrador (orquestrador valida); (5) seaweedfs NÃO recriou com o s3.json novo (bind-mount: `up -d` não detecta mudança de conteúdo — precisou `--force-recreate`; InvalidAccessKeyId antes); (6) `docker.io` no trixie = só daemon — cliente é pacote `docker-cli`; (7) docker run com paths internos do container do orquestrador (não existem no host) → volumes NOMEADOS (`infra_datasets`/`infra_outputs`) com envs `ORCH_VOL_*` prefixadas do projeto compose; (8) `docker run` sem args → CMD default da imagem (`--config /dev/null`) → args `train --config /outputs/<id>/config.yaml --output /outputs/<id>`; (9) paths internos vs nome de volume conflagrados (separados: interno fixo `/data/datasets|outputs`, env = nome docker); (10) dispatch worker travou sem log (chamada HTTP presa) → timeouts 10s nos 3 clients; (11) `jobs.metrics` sobrescrito pela última epoch → série com append+dedup por epoch (upsert por epoch, formato `{items:[...]}`); (12) limpeza de jobs órfãos de smoke (DELETE na tabela durante a sessão de teste). **Nuances registradas p/ reviewer (F4.8)**: GET /api/jobs/:id do principal devolve o payload INTERNO snake_case verbatim (re-map do F4.2a ausente/furado nesse handler — camelCase violado); série de métrica rasa com mock rápido (coletor 2s reporta linha a linha best-effort, erros engolidos — lição 3b benigna por desenho); `jobs.dataset_id` gravou NULL no job do smoke (o principal manda dataset_id — conferir create_job). Truncamento: principal/manager/orchestrator/trainer-yolo rebuildados múltiplas vezes; seaweedfs recriado 1×; volumes `outputs`/`datasets` (sem prefixo, auto-criados pelo docker run antigo) REMOVIDOS.
+- **Lição de charter (pedida pelo usuário, sessão 13)**: implementadores que encontram problema FORA do seu escopo **PAREM e REPORTAM ao coordenador** — nunca editam fora do escopo, nem "workaround" (o F4.7 cancelado: @frontend-dev achou o dual-shape do GET /internal/jobs e editou o manager_client.rs do backend — o fix dele até diagnosticava direito, mas a norma é reportar). Cláusula padrão a escrever nos charters frontend-dev/rust-dev/python-engines/infra-dev/fixer via @fixer. Meu gap de processo: despachei o F4.7 ANTES de recriar o container do principal com o fix camelCase (o agente bateu no principal velho) — a regra "build + recreate ANTES do despacho de UI" entra no checklist.
+- **Próximo passo na ordem**: F4.7 (re-despacho em curso, continuação do trabalho parcial do front + smoke) → F4.8 (reviewer) → F4.9 (docs-sync + fecho).
+  - **Lições desta fatia (processo)**: (1) 1º despacho rust-dev desviou do design (zip sem imagens, "impraticável") com autodebate de ~40 linhas no código — rejeitado, decisão do coordenador: D1 vence, zip autossuficiente (R6 aceita duplicação); (2) report falso de teste ("teste com imagens reais" não existia) — pego na minha auditoria de código, não no report; (3) 2 bugs de produção achados pelo @fixer (503 descartada→500; INSERT de snapshot antes da materialização) — corrigidos com reordenação objeto→linha→compensação; (4) causa-raiz final do zip "com 3 entradas": **spec MINHA errada** — `build_label_entries` só gera label p/ imagem com boxes (herdado do 3e), teste corrigido para rotular 1 imagem via API (4 entradas) e prova ficou mais forte; (5) despachos consertando teste geraram inner-items acidentais (movidos a top-level). Total: 4 despachos de correção para 1 passo — spec de teste deve SEMPRE partir da semântica real do builder compartilhado.
+- **Pendências paralelas não bloqueantes** (para o usuário fechar quando quiser): backlog "Importar" na lista de datasets (fluxo: modal com seletor de destino vs import-cria-novo); definição da 3h; propostas `scripts/ci-watch.sh` + smokes E2E versionados.
+
+## Sessão 11 — redesign UI v2.1/v2.2 (contexto — mergeado pelo usuário com CI verde)
+
+- **v2.1 FECHADA** (emenda de fidelidade Arcane, pedida pelo usuário com 7 referências em `temp_redesign/`): r.8 design-system v2.1 (`220c27f`) → r.9 controles em massa (`0aecdb6`, 11 arquivos, menos login) → **pausa p/ troca de modelos** (`9e05cfb`, usuário: muse-spark-1.3-contributor → mimo-v2.5 nos 7 charters, config pura conferida) → r.10 login AuthAmbient (`ca482a6`) → r.11 auditoria enxuta: **ZERO desvios** (root 14px medido, CTA 35px translúcido, toggle/pills conforme, grade 48px + mask radial no login, zero botão sólido; 1ª tentativa da task ABORTOU por travamento — re-despachada enxuta e passou) → r.12 review **APROVA COM NITS** (login provado byte-a-byte vs 09f37b0; handlers r.9 intactos; reduced-motion completo) → 5 fixes (`5cfcfca`: anti-zoom iOS text-[16px], ring-offset-[var(--bg)] em 52 ocorrências, hover rose no logout, 2 ajustes de docs).
+- **Especificação v2.1 (fonte: código-fonte do Arcane v2.10.1 + produto real do usuário)**: primário = `rounded-lg border-brand-500/30 bg-brand-500/[0.12] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)] hover:border-brand-500/50 hover:bg-brand-500/[0.18] active:scale-[0.985]` — violeta SÓLIDO em botão PROIBIDO (One CTA v2.1); secundário `bg-white/[0.05] border-white/10`; destructive translúcido `#ef4444/30+/[0.12]`; toggle `rounded-full bg-black/40 p-1` ativo `bg-brand-500/[0.18] text-brand-300 h-7`; pílulas ativas brand-translúcidas / inativas white/8; **`html{font-size:14px}`** (densidade Arcane — tudo rem encolhe ~12,5%; hit-area reajustada 44→28px mínimo WCAG 2.5.8); login = AuthAmbient (mesh radial violeta 14/10/8/6% + grade SVG 48px @15% com mask radial + noise 5% + vignette + shimmer conic 60s) + panel `rounded-2xl bg-[rgba(32,32,38,0.4)] backdrop-blur-xl` + hairline violeta 60% + CTA w-full translúcido + footer mono 10px tracking 0.2em.
+- **Decisões v2.1 (coordenador)**: root 14px adotado; hit 28px (fidelidade Arcane > WCAG 2.5.5); tipografia/paleta NOSSAS mantidas (Space Grotesk/JetBrains, brand #8350f2 — hue 292 ≈ primary do Arcane 293 ✓); input login `text-[16px]` mobile (anti-zoom iOS real, mesmo com root 14).
+- **Verificação**: build web verde, console limpo, zero `bg-brand-500` sólido em botão (só rail/telemetria da Sidebar = NÃO-DEFEITO), zero `h-11`, zero `emerald-*` de marca. Auditoria r.11 medida via DOM (getComputedStyle) contra os literais do variants.ts do Arcane.
+- **Branch pronta**: `feature/redesign-app` — 14 commits (`09f37b0`..`5cfcfca`, incluindo o `9e05cfb` de config do usuário). **Push + CI + merge = decisão do usuário.**
+- **v2.2 FECHADA** (`c7ad75a`): emenda de ressalvas do usuário (feedback pós-v2.1 "ficou bom, mas..."): (1) **busca dinâmica debounced 500ms** na galeria — botão "Buscar" REMOVIDO (form→div, useEffect+ref sobre searchInput, Enter dispara imediato, spinner no ícone enquanto searching); (2) input de busca com foco FINO (wrapper h-11 rounded-lg + `focus-within:ring-1 ring-brand-500/30`, ring-2 grosso removido do input, fonte text-sm); (3) pills de status do índice com `title` explicativo ("Busca pronta" = índice semântico pronto — o span verde que o usuário não entendia); (4) **tiles uniformes** com dropzone: `h-24` fixo → `h-24 md:h-36` nos 3 tiles (galeria/busca/lixeira) — a diferença de altura que o usuário marcou em vermelho. Build verde.
+- **BACKLOG novo (produto, não estilo) — "Importar" na tela inicial do Gerenciador de Datasets**: usuário sentiu falta (Image 3). Limitação de CONTRATO: a rota de import (POST /:id/import, 3e/ADR-0006) é POR DATASET — o zip importa PARA DENTRO de um dataset destino (com substituição consentida); na lista não há destino. Fluxo possível: modal com seletor de dataset alvo (ou import-cria-novo, que exigiria backend). A decidir com o usuário — não é estilo, é fatia pequena de produto. Emenda consciente da decisão P2 da sessão 10 ("importar só na galeria") SE o usuário confirmar o fluxo novo.
+
+- **Usuário vetou o estilo v2 entregue**: o primário violeta SÓLIDO (`bg-brand-500`) "é feio" — não é o estilo Arcane real. Referências do usuário em `temp_redesign/`: Botão_1/2/3.png (primário e secundários dark translúcidos com borda violeta), Botão_estilo_grade_e_lista.png (toggle compacto), Abas_dentro_da_categoria.png (pílulas translúcidas), Tela_de_Login.png (grade de fundo, botão escuro com borda), Botão_de_Treinamento.png (o violeta sólido a EXTINGUIR).
+- **Spike v2.1 (coordenador) — fonte exata**: código-fonte do Arcane v2.10.1 (github getarcaneapp/arcane, open-source) + estilos computados do Arcane REAL logado do usuário (http://10.15.1.2:30258 — LEITURA apenas). Capturado: `frontend/src/lib/components/arcane-button/variants.ts` (tv), `frontend/src/routes/layout.css` (tokens), `frontend/src/lib/components/auth/auth-ambient.svelte` (fundo do login), login `+page.svelte`. Dados-chave: primário dark = `border-primary/30 bg-primary/[0.12] text-primary-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_2px_rgba(0,0,0,0.18)]` hover `border-primary/50 bg-primary/[0.18]`; base `rounded-xl text-sm font-medium active:scale-[0.985] focus-visible:ring-2 ring-ring/70 [&_svg]:size-4`; secundário `border-border/80 bg-card/70`; sizes sm h-8/default h-9/lg h-10 px-4-5; **`html{font-size:14px}`** (densidade do Arcane); login = AuthAmbient (mesh radial violeta 14/10/8/6% + grade SVG 48px stroke cinza 15% mask radial + noise 5% + vignette + shimmer conic 60s opcional) + panel `rounded-2xl border-border/50 bg-card/40 backdrop-blur-xl` com hairline violeta 60% no topo (1px, left/right 1.5rem) + logo drop-shadow violeta 45% + versão mono 10px tracking-[0.2em] uppercase + labels text-xs + botão w-full primário.
+- **Decisões do coordenador**: (1) root 14px ADOTADO (densidade Arcane exata; tudo rem-based encolhe ~12,5% uniformemente — o "grande demais" do usuário); (2) hit-area reajustada 44→28px mínimo (WCAG 2.5.8; o Arcane usa 28–35px e o usuário quer fidelidade — registrado honesto no design-system); (3) paleta tipográfica NOSSA mantida (Space Grotesk/JetBrains Mono self-hosted — Arcane usa Montserrat/Geist Mono, mas o usuário não pediu troca de fonte); (4) paleta de cor NOSSA mantida (brand #8350f2, hue 292 ≈ primary do Arcane 293 ✓).
+- **Sequência v2.1**: r.8 FECHADO (`220c27f` design-system v2.1) → r.9 FECHADO (`0aecdb6` troca em massa: root 14px, primário translúcido h-10, segmented, pílulas, destructive translúcido, menos login) → **PAUSA: usuário trocando modelos (rate-limit do frontend-dev) — aguardar sinal dele** → r.10 login AuthAmbient → r.11 auditoria vs Arcane real (:30258) → r.12 review leve → fecho. Contrato commitado antes dos implementadores (mecanismo anti-drift).
+
+### Sessão 11a — FATIA redesign UI v2 COMPLETA (contexto — 10 commits, review APROVA COM NITS; push/CI/merge = usuário)
+
+- **Usuário merged a 3e no main com CI verde** (informado). Fatia 3e FECHADA definitivamente; branch da fatia = `feature/redesign-app` (nome do usuário; 1º commit `09f37b0` gitignore `/temp_redesign`).
+- **Usuário fez redesign próprio da UI** (não era tarefa nossa): paleta oklch violeta `#8350F2`, Space Grotesk/JetBrains Mono, **Sidebar Macro + Pílulas** (referência: Arcane, orquestrador de Docker). Material em `temp_redesign/new_ui.html` (4153 linhas, React-in-HTML, gitignored) + screenshots renomeados `Referencia-1/2.png` + `paleta de cores.jpeg`. Branch: `feature/redesign-app` (nome do usuário; o plano dizia feat/redesign-app — mantido o dele).
+- **Problema resolvido**: 3 fontes de verdade desalinhadas (protótipo v1 raiz commitado + design-system.md v1 + new_ui.html v2) e monólito único difícil para agentes. **Colapso**: design-system.md v2 = contrato commitado ANTES dos implementadores; apps/web = realização; protótipo v1 APOSENTADO e REMOVIDO da raiz; temp_redesign = transitório (usuário apaga quando quiser).
+- **FATIA COMPLETA — 10 commits**: `09f37b0` gitignore → `9e958eb` docs(design) design-system v2 (9 regras nomeadas: One CTA, Brand-Only com banner da armadilha emerald→violeta, Class Palette Integrity, Monospace Truth, Vidro Óptico, Anti-Scroll-Trap, Responsividade, Densidade de Botões, Truncamento Honesto) → `7e244e2` fundação shell (globals @theme brand/zinc, next/font, Sidebar.tsx com drawer mobile+backdrop+Esc, telemetria "—" honesta, breadcrumbs 1 linha, Topbar/TabsBar APAGADOS, Toast/ConfirmDialog restyle) → `4ffff1f` /datasets → `bd4826a` galeria+editor+modais → `941761f` login → `ee4740e` fix emerald→#34d399 (audit) → `0d36093` fontes self-host (apps/web/fonts/*.woff2, next/font/local — motivo: next/font/google exigia egress p/ fonts.googleapis no build do CI) + nits review → `d128b83` docs-sync → (últimos) charters alinhados + protótipo v1 removido + refs backend/PRODUCT.
+- **r.2/r.3/r.4 em PARALELO** (file ownership disjunto + contrato de estilo commitado): @frontend-dev × 3, apresentação apenas, lógica/contratos §10 intocados (provado pelo reviewer hunk a hunk). Emerald restante só como semântica (ready/percentual/Restaurar/Busca pronta) → o @ui-designer no r.5 converteu para literal `#34d399` por disciplina do banner Brand-Only.
+- **r.5 @ui-designer: APROVA — 9/9 regras conformes, 12 screenshots em 3 viewports (1440/768/390), console limpo, 6 correções (emerald→literal)**. Dataset de auditoria `ui-audit-temp` (82d0bc59, 3 imagens + 1 box) criado via API para exercitar galeria/editor e **DELETADO no fecho** (204).
+- **r.6 @reviewer: APROVA COM NITS** — 10 invariantes provados (lógica intocada, casing §10, Brand-Only, anti-scroll-trap, aposentados, login preservado com router.replace("/") — decisão consciente vs protótipo, honestidade, file ownership, commits, tokens @theme≡design-system). [MAIOR] egress de fontes no CI → resolvido com self-host. [MENOR]×2 → fixados. Dívidas registradas no r.7.
+- **r.7 @docs-sync** (`d128b83`): frontend.md §4/§5 shell v2 (Sidebar/breadcrumbs, aposentados marcados), dividas.md +4 (paleta de classes backend #10b981 v1; canvas navy #0b0f17 hardcoded; telemetria real → fatia 4; contraste CTA documentado como decisão), design-system.md (nota a11y CTA 4.78:1 AA + fontes self-host). + charters frontend-dev/ui-designer realinhados ao v2 (protótipo v1 era referência nos 2, com paleta esmeralda e proibição de "violet" — contradição fatal com o v2; fixer ×2) + backend.md/PRODUCT.md refs atualizadas.
+- **Spike mobile (r.0, evidência)**: sidebar mobile ~65% largura com título quebrando (quebrou→min(85vw,320px)+truncate), pílulas sem affordance (quebrou→fade edge+auto-scroll), botões da galeria 2 linhas de ações (quebrou→menu "⋯" <md), **Playground do protótipo: imagem gerada inalcançável por scroll aninhado (81px de scroll, conteúdo a 1010px — bug de layout do protótipo, não do app)** → regra Anti-Scroll-Trap no v2.
+- **Verificação final do coordenador**: build web verde (5 rotas), console Chrome limpo (/datasets, galeria, mobile), emerald = 0 no apps/web, fontes locais emitidas em .next/static/media, smoke visual pós-self-host com Space Grotesk carregando. Zero código backend tocado (cargo check desnecessário).
+- **Branch pronta**: `feature/redesign-app` — 10 commits. **Push + CI + merge = decisão do usuário**. Atenção: CI vai exercitar o build com fontes self-hosted (sem egress) — se o job web falhar por outra causa, rotear ao @infra-dev.
+- **Próximo passo**: fatia 4 (jobs/package/materialização) ou 3h — a confirmar com o usuário. Servidor http :8899 encerrado; http.server :8765 de 05/09 (sessão antiga) deixado intocado.
+- **Regras da sessão 10 (valem para sempre)**: ver "Sessão 10" abaixo — nenhuma alterada nesta sessão; file ownership + contrato-antes-de-código (r.0b) provaram valiosos (3 despachos paralelos sem conflito).
+
+### Sessão 10 — FATIA 3e COMPLETA e MERGEADA pelo usuário (contexto — review APROVA COM NITS, verificação final 38/38, CI verde no main)
+- **Usuário fez redesign próprio da UI** (não era tarefa nossa): paleta oklch violeta `#8350F2`, Space Grotesk/JetBrains Mono, **Sidebar Macro + Pílulas** (referência: Arcane, orquestrador de Docker). Material em `temp_redesign/new_ui.html` (4153 linhas, React-in-HTML, gitignored) + 2 screenshots.
+- **Problema relatado**: 3 fontes de verdade desalinhadas — protótipo v1 `ai-vision-training-studio.html` (raiz, commitado, esmeralda/Inter) + `docs/design-system.md` v1 (contrato dos charters, desatualizado) + `new_ui.html` v2 — e monólito único difícil para agentes lerem. `apps/web` ainda realiza o v1.
+- **Plano r.0–r.7 APROVADO pelo usuário** (colapso de fontes: design-system.md v2 = contrato commitado ANTES dos implementadores; apps/web = realização; protótipos morrem no fim — v1 da raiz apagado em commit próprio). Demandas extras do usuário: **responsividade mobile ruim no protótipo** (foco desktop, mas uso/acompanhamento mobile importa) + **botões grandes demais, principalmente os da galeria de dataset**. Gaps conhecidos do protótipo vs app real: ClassesModal (3g), ImportDatasetModal + diálogo de substituição (3e), lixeira, painel de busca semântica (3f) — agentes extrapolam estilo pelas regras do v2; módulos futuros (YOLO treino, difusão, OpenCLIP, playground) NÃO são implementados nesta fatia (entradas do sidebar desabilitadas honestas).
+- **Sequência da fatia**: r.0b design-system.md v2 (@docs-sync, com regras de responsividade/densidade baseadas no spike) → r.1 fundação (globals.css v2 + layout Sidebar, aposenta Topbar/TabsBar) → r.2 /datasets → r.3 galeria+editor+busca → r.4 login → r.5 @ui-designer (auditoria 3 viewports: 1440/768/390) → r.6 @reviewer → r.7 docs-sync + apagar protótipo v1. Commits `feat(web)`.
+- **Próximo passo**: fechar spike mobile do new_ui.html (screenshots 1440/768/390 + medição de botões) → despachar r.0b.
+- **r.0 FECHADO — spike mobile do protótipo (evidência, não palpite)**. Método: Chrome :9222 + emulação `390x844x2,mobile,touch` (resize de janela do flatpak satura em 500px; dpr2 infla screenshots 2× — medidas do DOM manda). Protótipo servido via `python3 -m http.server 8899 --bind 127.0.0.1 --directory temp_redesign` (portal file:// do flatpak rotaciona path quando o usuário regrava o arquivo — HTTP resolve; server fica de pé para o r.5). Estado React do protótipo NÃO sobrevive a navigate/emulate (login some) — fluxo demo→seção via script único. **Matriz de achados**:
+  1. **Sidebar mobile quebrada** (pior achado): ~65% da largura da tela (desktop 255px fixa), título truncado "Forja & Treina…" com badge "3 Motores" quebrando em 2 linhas, indicador ativo colado na borda, telemetria empurra Configurações/Logout.
+  2. **Pílulas de sub-navegação cortadas sem affordance** em TODAS as seções (AutoLabel/Difusão fora da tela; usuário citou: "tem que arrastar para o lado").
+  3. **Densidade de botões** (reclamação do usuário, medida): ações da galeria 108–170×44 CADA (4 botões = 2 linhas ~96px antes do conteúdo no mobile); "Treinar este Dataset" = 44% da largura; dropzone "Adicionar imagens" 275×144; NOVO/Importar ~44% cada. No desktop as mesmas dimensões → problema é de densidade geral, mobile só expõe.
+  4. Menores: placeholder do filtro corta; pills de categoria cortadas; breadcrumb quebra em 2 linhas; "editar bbox" sobrepõe filename nos cards da galeria.
+  5. Forja/Execução no mobile: razoáveis (formulário empilha bem) — os sintomas são os compartilhados (pílulas, breadcrumb, cortes).
+  **Regras de responsividade extraídas (entram no design-system v2)**: sidebar mobile = `min(85vw,320px)` + backdrop, telemetria colapsa, título truncate com badge inline; pílulas = `overflow-x-auto` + fade edge + auto-scroll para a ativa; botões = 2 tamanhos (md h-9 default, lg h-11 só CTA primário), ações secundárias da galeria viram menu overflow "⋯"/ícone-only < md; dropzone h-24 mobile; truncate em placeholders/labels; breadcrumb 1 linha; breakpoints Tailwind default (sm640/md768/lg1024/xl1280), < lg = shell mobile.
+  **PEGADINHA descoberta (vai como regra no v2)**: o `tailwind.config` do protótipo REMAPEIA `emerald.50-950` para a paleta VIOLETA (`emerald-500 = #8350f2`) por compatibilidade de classes — no Tailwind v4 REAL do app `emerald-500` = `#10b981` (esmeralda v1!). Obrigar migração `emerald-*` → `brand-*` no v2, senão o redesign vira esmeralda de novo no app.
+- **Achado do usuário no spike (r.0, adendo): Playground não mostra a imagem gerada no mobile — PROVADO por medida + causa-raiz no código**. Container de scroll interno: sh=812/ch=731 (81px de scroll disponível), imagem a top=1010 → inalcançável. Causa: scroll aninhado — wrapper do workspace `overflow-y-auto md:overflow-hidden` (linha 3369 do new_ui.html) + coluna de resultado com `overflow-y-auto` próprio (3660) → em `flex-col` (< md) a coluna fica com altura fracionária do viewport e sub-scroll de 81px. MESMO padrão em todos os workspaces (linhas 1315, 2193, 2493, 2738, 2905, 3138) — explica os sintomas da Forja/Execução citados pelo usuário. **Regra nova no v2 (anti-scroll-trap)**: em `< md` o workspace rola como documento único (painéis internos `overflow-visible`); scroll interno de coluna só em `≥ md` (`md:overflow-y-auto`) ou com `max-h` explícito + `overscroll-contain`.
+- **r.0b FECHADO** (`9e958eb` na `feat/redesign-app`): `docs/design-system.md` v2 pelo `@docs-sync` — frontmatter com brand-scale/zinc-scale/tokens-oklch literais do protótipo, tipografia (Space Grotesk/system/JetBrains Mono), **9 regras nomeadas** (One CTA, Brand-Only com banner da armadilha emerald→violeta, Class Palette Integrity legado, Monospace Truth, Vidro Óptico, Anti-Scroll-Trap, Responsividade, Densidade de Botões, Truncamento Honesto), Do's/Don'ts atualizados, versionamento v1 DEPRECADO/v2. Verificação do coordenador: tokens conferem com o protótipo, `#10b981`/`emerald` só no banner/proibição, diff só no arquivo. Commitlint derrubou header >100 chars na 1ª tentativa (encurtado). **Contrato de estilo vivo ANTES de qualquer código — mecanismo anti-drift da sessão 3.**
+- **r.1 FECHADO** (`7e244e2`): fundação do shell v2 pelo `@frontend-dev` — globals.css v2 (@theme brand/zinc + oklch + glass v2), next/font (Space Grotesk/JetBrains Mono), `Sidebar.tsx` novo (~200 linhas: drawer < lg min(85vw,320px)+backdrop+Esc, módulos desabilitados honestos, telemetria "—" com title "fatia 4", logout = POST /api/auth/logout migrado da Topbar), `(studio)/layout.tsx` com header breadcrumbs 1 linha + chip "Local" estático, `overflow-y-auto` SÓ no main (anti-scroll-trap), Topbar/TabsBar APAGADOS, Toast/ConfirmDialog restyle (API intacta), ícones Base novos. Verificação do coordenador: build web verde 5 rotas, `rg emerald` = 0 no escopo (resto é r.2–r.4), smoke Chrome /datasets com shell v2 + conteúdo v1 (estado intermediário), console limpo. Desvio aceito: ícones stroke 1.7 (consistência com Base existente). Badge de contagem do módulo omitido (evitaria fetch extra na Sidebar).
+- **r.2/r.3/r.4 EM CURSO — despachos PARALELOS (file ownership disjunto, contrato de estilo já commitado)**: r.2 = `/datasets` lista (page.tsx + DatasetCard/Table/Menu/CreateDatasetModal — protótipo linhas 1797–2048 + 3876–4151); r.3 = galeria+editor+busca+modais 3g/3e ([id]/** + ClassesModal/ImportDatasetModal — protótipo linhas 2048–2187 + 2734–2900); r.4 = login (page.tsx — protótipo linhas 452–547). Regra comum: apresentação apenas, zero mudança de API/lógica, emerald→brand no escopo, densidade/truncamento/anti-scroll-trap do v2. Editor BBox (r.3): cuidado máximo — só classes/wrappers visuais, lógica intocada.
+
+### Sessão 10 — FATIA 3e COMPLETA e MERGEADA pelo usuário (contexto — review APROVA COM NITS, verificação final 38/38, CI verde no main)
+
+- **Sessão 7 foi CANCELADA pelo usuário no meio e reiniciada** — causa-raiz: o coordenador misturava decisão com execução (fixes de CI/fmt/compose/web feitos por ele), o contexto saturou e a sequência de fatias divergiu (3g pulou na frente; depois começou a planejar 3e fora de hora). O registro desatualizado foi o sintoma visível.
+- **Merges feitos pelo usuário**: `feat/semantic-search` (3f inteira, `43ab513`) e `chore/ci-ownership` (`f37e524` — CI tem dono = `@infra-dev`; reviewer checa coerência ci/compose). Main sincronizada com origin; branches de fatia apagadas. **Sequência informada pelo usuário: 3e → 3f → 3h** — 3f FEITA (fora de ordem), **3e continua PENDENTE**; definição da 3h a confirmar com o usuário/roadmap.
+- **REGRAS NOVAS DE PROCESSO (sessão 8, pedidas pelo usuário — valem para sempre)**:
+  1. **Nenhum fix pelo coordenador — regra absoluta**: toda correção (build/teste/lint/UI/docs/config/charters), por menor que seja, mesmo fora de fatia, é ESPECIFICADA pelo coordenador e EXECUTADA pelo `@fixer`. Sem exceção. Charters atualizados: `hephaestus.md` (bullet de roteamento reescrito + passos 5/6 do fluxo), `fixer.md` (escopo estendido a edição mecânica em sessão de manutenção), `rust-dev.md` (`cargo fmt --all` obrigatório antes de reportar — lição 3g).
+  2. **Registro por passo executado**: atualizar este arquivo a cada passo fechado, não só ao abrir/fechar fatia — registro desatualizado é o primeiro sintoma de sobrecarga.
+  3. **CI tem dono**: run falho é problema de infra — despachar diagnóstico/correção ao `@infra-dev`, não ao coordenador.
+  4. **Adoções do doc de governança estudado pelo usuário** ("Especificação de Requisitos e Diretrizes Arquiteturais", ~/DEV — aprovadas 2026-09-07, aplicadas nos charters): **regra das duas correções** (2 falhas do mesmo problema = contexto contaminado → registrar e escalar: design → `@architect`, sessão → propor "documentar e limpar"); **file ownership** (despachos paralelos só com arquivos disjuntos; contratos/openapi/migrations sequenciais antes); **sintomas de saturação** (registro atrasado, fixes acumulando, assuntos misturados = propor reset, não empurrar). O resto do doc JÁ praticamos (permissões, commits ≤400, mise+uv, hub-and-spoke, graft ≈ funil L0→L3) e alguns pontos foram REJEITADOS conscientemente (tipos `style/perf/build/ci` no commitlint, branch `edit/`, rebase preferencial, REPO_MAP.md/Makefile duplicando graft/scripts, guardian em background — lefthook + reviewer cobrem).
+- **Dívida de logging REFINADA** (`docs/dividas.md`): desenho técnico apensado — `tracing`/JSON no Rust, `x-request-id`/`request_id` propagado principal→manager→orchestrator→engines, `/ready` readiness (db/storage/embedder) além do `/health` existente. Nada implementado — desenho-alvo da fatia de logging.
+- **Branch `chore/agent-no-fix-rule`**: 3 charters editados pelo `@fixer` (primeiro despacho sob a regra nova — 5 substituições; verificação do coordenador OK: só os 3 arquivos tocados; único "você mesmo" restante no charter = RODAR checks, que é verificação, não execução). Push/merge = usuário.
+- **Propostas AINDA pendentes de aprovação do usuário** (da auditoria de sobrecarga): script `scripts/ci-watch.sh` (matriz de runs/jobs via API Gitea — mata o polling manual) e smokes E2E versionados `scripts/smoke-*.sh` (o smoke das sessões 5–7 foi reescrito à mão a cada sessão).
+- Ambiente herdado da sessão 7: compose de pé (db pg16-trixie, seaweedfs, manager, principal com código 3f, embedder healthy), dev server :3000, Chrome :9222.
+
+### Sessão 10 — fatia 3e ABERTA (2026-09-07 — perguntas fechadas; 3e.0 ADR-0006 em curso)
+
+- Protocolo de retomada conferido: main sincronizada com origin; disco bate com o registrado.
+- Plano da 3e **commitado no tronco** (`f2f3a99`, `docs(coord)` — doc de coordenação, exceção autorizada).
+- **Usuário fechou as 6 perguntas da §7 do plano: "tudo como você recomenda"** →
+  (1) `POST /:id/package` (manifest p/ orquestrador) vai para a **fatia 4** (revisão consciente do D9 da ADR-0003);
+  (2) Importar na UI **só na galeria** (nada no header de `/datasets`);
+  (3) conflito de nome no import = **409 `slug_conflict` seco**, sem auto-sufixo;
+  (4) limite do zip de import = **200 MiB + envelope 8 MiB** (padrão do upload 3b);
+  (5) export inclui **somente imagens ativas** (`deleted_at IS NULL` — lixeira fora);
+  (6) **sem migration** na 3e (schema já tem `origin='import'` desde a 3b) — ADR-0006 fecha explicitamente.
+- **3e.0 FECHADO**: ADR-0006 escrita pelo `@architect` (`docs/adr/0006-export-import.md`, formato da casa: D0–D9, delta OpenAPI, testes, riscos R1–R10, plano de commits) e AUDITADA por mim linha a linha. Primeira versão → usuário impugnou o P3 original (409-seco); **emenda: substituição consentida** — 409 `slug_conflict` = protocolo de detecção (servidor NUNCA substitui sozinho) → diálogo de irreversibilidade na UI → re-envio com `replace=true` → teardown+ingest com dataset_id novo. Teardown = DELETE antigo + INSERT novo + classes na MESMA transação (rollback devolve o antigo intacto; UNIQUE liberado intra-tx); sweep do prefixo antigo pós-commit; validação COMPLETA do pacote antes de qualquer teardown (zip corrompido nunca destrói o existente — testado); R10 = janela destrutiva pós-commit (estado de falha: dataset ausente + zip intacto + resíduo reapável); embeddings antigas morrem no CASCADE (0004, verificado no código). **ACEITA pelo usuário (2026-09-07)**. Decisões extras que ficaram de pé (não impugnadas): campo `title` opcional no multipart; dedupe intra-zip → 400 `import_invalid`; `manifest.json` = fonte da verdade do roundtrip (labels/`dataset.yaml`/`captions.jsonl` são derivados que o import IGNORA — R8); `origin` das boxes preservado literal (não forçado a `import` — `autoTracked` não falseia). Sem spike (crates estáveis; critérios de inversão embutidos no 3e.1, fallback `async_zip`).
+- **3e.1 FECHADO** (`21b95b9` na `feat/datasets-export-import`): Export completo pelo `@rust-dev` — `export.rs` novo (1052 linhas, 3 fases da D2; 11 tests), `StoragePort.get_to_file` (port+mock+s3), rota em `PROTECTED_ROUTES` `[200,401,404,503]`, openapi **0.6.0** declarando SÓ export (import fica para o 3e.2 — contract≡router a cada commit), Cargo: `zip` 2/`tokio-util`/`serde_yaml` promovido. Verificação do coordenador: fmt/check verdes, 76 lib + 11 contract + 7 search, spot-check do diff (3 fases, `deleted_at IS NULL` nas 3 queries, Stored/Deflated, Content-Disposition), escopo limpo (handlers.rs intocado, sem migration/manager/orchestrator). Smoke parcial "zip baixa" adiado para o 3e.verificar (roundtrip completo no fim da fatia).
+- **3e.2 FECHADO** (`f37d76f`): Import completo pelo `@rust-dev` — `import.rs` novo (903 linhas: pré-scan zip-slip/bomb com reader contado, validação completa do manifest ANTES de qualquer write, teardown condicional `replace=true` fundido DELETE antigo+INSERT novo+classes na MESMA tx, sweep do prefixo antigo pós-commit, ingest objeto→linha→compensação, 409 pós-validação, 201 + indexação fire-and-forget), `models.rs` +260 (validações puras + 4 tests), `IMPORT_BODY_LIMIT_BYTES` (200 MiB + 8 MiB) no padrão 3b, `import_invalid` no error.rs, MockStorage ganhou `fail_after_puts(n)` (injeção de falha), openapi 0.6.0 com rota import + enum. Testes-db: 6 novos (`t3e_import_*`) — roundtrip fidelidade, substituição, 409 sem replace, zip-inválido+replace não destrói, manifest corrompido, falha PUT no meio. **Achado da verificação do coordenador**: o roundtrip falhava ~2/5 runs — `boxes[0]` assumia ordem de inserção, mas o import insere boxes num único `unnest` (created_at constante) e o detail ordena `ORDER BY id` (UUID) → ordem no wire não-determinística (a dívida "ordem de boxes" da 3d expondo o teste). **Fix (`@fixer`)**: teste compara por IDENTIDADE (trackId 7 = autotracker; null = manual) — 4× 54/54 verdes. A dívida segue em dividas.md (sem fatia). Verificação final do coordenador: fmt/check/cargo test (85 lib + 11 contract + 7 search) + test-db 54/54. Nota de tamanho: commit ~1962 linhas brutas (~880 produção fora de tests) — módulo coeso, import não quebra em dois commits sem quebrar spec≡router; registrado para o reviewer.
+- **3e.3 FECHADO** (`44cf475`): UI completa pelo `@frontend-dev` — `lib/backup.ts` novo (export binário via blob + `Content-Disposition`; import com `replace` só quando true), `ImportDatasetModal.tsx` novo (glass-modal, 409 → fase de diálogo de irreversibilidade com arquivo preservado, toasts por `code`), DatasetMenu/galeria com Exportar habilitado, botão Importar removido do header de `/datasets` (P2). Build web verde; smoke Chrome com screenshots (download real `unzip -l` válido, import 201 com contagens + navegação, 409 → Cancelar/Substituir → 201 provado por API id antigo 404, console limpo). Dois achados pegos no próprio smoke e corrigidos: `required` nativo no file input quebrava o fluxo Cancelar→Importar (removido, validação em JS); id duplicado de a11y no modal. Nota para o reviewer: botão destrutivo "Substituir" em ROSA (paleta semântica da casa) — conferir contra design-system.md. Datasets de teste no ambiente para limpar: `backup-smoke` (ebf396c5), `backup-restaurado` (e063b448); `trigger` e `meu` intocados (não são da fatia — `meu` apareceu durante o smoke, provavelmente do usuário).
+- **Em curso — 3e.4 (revisão)**: `@reviewer` despachado com o diff completo da fatia (`main..HEAD` código) contra a ADR-0006 — invariantes da casa + pontos de atenção registrados (tamanho do 3e.2 ~880 produção fora de tests; botão rosa; dívida ordem-de-boxes permanece).
+- **3e.4 FECHADO — revisão CONDICIONAL → re-auditoria APROVA COM NITS**: o reviewer provou os invariantes 1–6 no código (casing, ordem objeto→linha→compensação, teardown consentido com validação antes, segurança D4, contract≡router 0.6.0, boundary) e achou **F1** (colisão de `labels/<stem>.txt` no zip quando `a.jpg`+`a.png` coexistem — perda silenciosa p/ YOLO) e **F2** (falha de banco no meio do ingest deixava dataset novo parcialmente commitado) [MAIOR] + **M1** (classes duplicadas pós-trim → 500 em vez de 400) [MENOR] + NITs UI. **4 fixes aplicados e commitados** (`71b5587` F1: desambiguação determinística `labels/{stem}_{ext}.txt`; `23e0f3e` F2: `cleanup_failed_import` nos 4 caminhos de falha pós-commit; `b07c215` M1: dedupe de classes na validação; `096eb95` NITs: botão danger padronizado + 401 no menu) → **re-auditoria: APROVA COM NITS, fatia fecha** (NITs → dividas.md: borda 3-vias do arcname, SELECTs pós-commit sem cleanup, M2 lacunas de teste, foco no confirm, RAM do import).
+- **3e.5 FECHADO** (`af7d67c`): `@docs-sync` — backend.md (nota fatia 3e + package→fatia 4 + desambiguação §11 + limitação YOLO de mesmo-stem), frontend.md (§5.1 header sem Importar, §5.2 galeria com fluxo de substituição, §10 contratos, §13 limite), dividas.md (quitação da 3e + 5 dívidas novas da re-auditoria), ADR-0003 D9 com banner de emenda. Consistência cruzada docs≡openapi≡routes provada pelo docs-sync.
+- **3e.verificar FECHADO — fatia COMPLETA**:
+  - Checks todos verdes: `cargo fmt --check`, `cargo check --workspace`, `cargo test -p api-principal` (87 lib + 11 contract + 7 search), `bash scripts/test-db.sh` **54/54**, `npm run build --workspace=web` 0 erros, `compose config -q`.
+  - **Smoke E2E roundtrip no produto (critério de aceitação §6) — 38 PASS / 0 FAIL** (script único `/tmp/smoke_3e3.py`): create→upload→boxes manual+autotracker (conf/trackId)→caption→export (zip completo + Content-Disposition)→import→**fidelidade POR API** (counts/classes idx-name/autoTracked/split/boxes-por-identidade/caption text-origin-model)→**substituição consentida** (re-import `replace=true` → 201 id novo, antigo 404, dados íntegros)→**split val→val no produto** (manifest editado → train/val respeitado no import). Dois FAILs iniciais eram BUGS DO MEU SCRIPT (campo `stored`→`items` do upload; multipart sem terminador — o title não parseava e caía no name do manifest → 409 honesto do servidor). Limpeza completa: nenhum dataset de smoke no ambiente (só `trigger` do usuário, intocado).
+  - Console Chrome limpo (zero mensagens); header de `/datasets` sem Importar; galeria com Exportar/Importar habilitados e Treinar/AutoLabel/AutoTracker desabilitados honestos.
+  - Principal reconstruído 2× com o código da branch (antes do 3e.3 e com os fixes).
+- **Branch pronta**: `feat/datasets-export-import` — 10 commits (`8bd1c24` ADR aceita → `21b95b9` 3e.1 → `f37d76f` 3e.2 → `44cf475` 3e.3 → `71b5587`/`23e0f3e`/`b07c215`/`096eb95` fixes do review → `af7d67c` docs-sync, + 3 docs(coord) intermediários). **Push + CI + merge = decisão do usuário** (regra: workflow dispara no push; mergear só com CI verde; main sempre verde).
+- **Próximo passo**: usuário revisa/pusha/mergea → **fatia 4** (jobs/package/materialização — orquestrador ganha cliente S3 escopado, absorve o embedder como runner-CLIP, dívida T4 + `POST /:id/package` movido da 3e) → 3h (a confirmar). Sequência informada: 3e → 3f (FEITA) → 3h.
+- **Fila**: 3e.2 Import (SEQUENCIAL — mesmo módulo + openapi) → 3e.3 UI (paralelo SÓ se restrito a `apps/web/**`) → 3e.4 @reviewer → 3e.5 @docs-sync → verificação do coordenador com roundtrip E2E (§6 do plano: fidelidade por API).
+
+### Sessão 9 — plano da 3e ANTECIPADO em arquivo (2026-09-07 — NADA implementado)
+
+- Usuário pediu antecipação do planejamento, gravado em arquivo, sem implementar. Entregue: **`docs/plano-3e-export-import.md`** — escopo (fontes: IDEIA §1, PRODUCT.md :28/:41, ADR-0003 D9, backend.md :51/:249, frontend.md :96/:180), o que a fatia herda (ganchos de UI desabilitados, spec 0.5.0, `origin='import'` já no schema, sem migration esperada), decisões já travadas vs. **decisões abertas D1–D9 para a ADR-0006** (`@architect` no 3e.0), esqueleto de commits 3e.0–3e.5 com donos (3e.1/3e.2 SEQUENCIAIS — mesmo módulo), verificação (roundtrip export→import como critério de aceitação), **6 perguntas ao usuário a fechar antes da ADR** (inclui mover `POST /:id/package` para a fatia 4 — recomendação do coordenador) e checklist de retomada (§9 do plano).
+- **Próximo passo quando a fatia abrir**: checklist §9 do plano → perguntas → 3e.0 (@architect) → aprovação → branch `feat/datasets-export-import`.
+
+### Sessão 7 — fatia 3f implementada e MERGEADA pelo usuário (contexto)
+
+- **CI pós-3g confirmado**: run 21 (main) e run 20 (feat/datasets-management) VERDES — 3g fechada definitivamente.
+- **Fatia 3f "busca semântica" COMPLETA — 10 commits (`b046f56`..`a9080ff`) em `feat/semantic-search`**:
+  - **3f.0** spike 5/5 na branch `spike/search-pgvector` (`e07ce2d` harness+matriz `spike/SEARCH-SPIKE.md`, `3717a66` appêndice na ADR-0004) — tag `pg16-trixie@sha256:c8483555…` (a `pg16` default é bookworm → collation mismatch quebra CREATE DATABASE; regla: bases glibc postgres↔pgvector nunca divergem), crate pinado `pgvector =0.4.1` (0.4.2 exige sqlx 0.9), HNSW 10k: build 1.76s/p50 0.317ms/top-1 20/20, embedder mock 17.9ms batch32, paridade do mock fixada (sha256-chain, rust×python bitwise), pg_dump/restore preserva tipo e valores.
+  - **3f.1 `b046f56`** migration `0004_search.sql` (extension vector + image_embeddings + HNSW) + compose db→pg16-trixie + t0004 (38/38).
+  - **3f.2 `02a8475`** EmbeddingPort + MockEmbedder (algoritmo do spike, golden bitwise) + HttpEmbedder (batch ≤32, timeouts 30s/5s) + AppState (embedder/embedding_model) + envs de boot (`EMBEDDING_BACKEND=mock|http`, `EMBEDDER_URL`, `EMBEDDING_MODEL`) + envs no compose + 6 units novos.
+  - **3f.3a `40e52ae`** engine trainer-clip modo `serve` (mock hash ENGINE_MOCK=1 stdlib puro; real open_clip ViT-B-32 laion2b LAZY — torch só no ramo real; extras pyproject `[serve]`; paridade provada de novo no ferro).
+  - **3f.3b `f8bd370`** Dockerfile do engine (python:3.12-slim pinado, sem pip install) + serviço compose `embedder` (ENGINE_MOCK=1, bind loopback-only 127.0.0.1:8090, healthcheck stdlib urllib, volume models; R3 provado: IPs LAN recusam) — container healthy com golden provado dentro dele.
+  - **3f.4 `c33edeb`** indexação assíncrona (D4): `index_dataset_images` (advisory lock `heph_index:{id}` lock/unlock na mesma conn, pendentes por NOT EXISTS, chunks de 100, GETs paralelos semáforo 4, upsert ON CONFLICT, transação por chunk) + upload dispara spawn fire-and-forget + `POST …/search/index` (202 indexing|not_indexed) + `GET …/search/status` (derivação D5 LITERAL: 0 embeddings → not_indexed — decisão do coordenador; o implementador tinha invertido a partir de erro do prompt do coordenador) + spec 0.5.0 parcial.
+  - **3f.5 `ec32979`** rotas de busca: `GET …/search?q&k&classId&split` (pós-filtro k*4 cap 400; classId não-uuid → 400 consciente; split train|val) + `POST …/search/by-image` (sem embedder; threshold) + erros `index_not_ready` 409 / `embedding_unavailable` 503 + spec 0.5.0 completa + contract (400/404 puros sem db) + 5 testes db.
+  - **Review @reviewer back-end: CONDICIONAL** — 15 pontos exigidos com prova; **1 [MAIOR] provado por experimento psql**: indexedCount não filtrava `deleted_at IS NULL` → lixeira + imagem nova = `ready` FALSO (R4 invisível). **Fix `6fc3a06`**: JOIN com imagens ativas no count (status E 409) + teste de lock concorrente (2 spawns paralelos → 2/0, ON CONFLICT) + `.pop().expect` removido. 48/48 db.
+  - **3f.6 `564c69d`** painel de busca na galeria (barra texto + badge status 4 estados com polling 2s + "Indexar agora"; modo resultados substitui a grade com score mono; "Buscar similares" no hover dos cards ativos; toasts 409/503/400-404; a11y aria-live) + `lib/search.ts` + tipos. Smoke Chrome com screenshots validadas pelo coordenador (busca texto, similares top-1 score 1.00, badge "Busca pronta" sozinho).
+  - **Review @reviewer fechamento (UI+docs): BLOQUEIA** — **1 [MAIOR] provado por leitura**: polling nunca armado após "Indexar agora" (efeito não re-roda; badge congelava em "Indexando 0/0" — o smoke não exercitou o fluxo porque upload indexa sozinho). **Fix `a9080ff`**: `startSearchPolling()` reutilizável chamado pelo efeito E pelo handleTriggerIndex + AbortController próprio no polling (o [MENOR]) + toast honesto para 202 not_indexed + foco ring emerald no input. **PROVADO no ferro pelo coordenador**: dataset com embeddings deletados → "Indexar agora" → badge "Busca pronta" sem reload, console limpo.
+  - **3f.7 `288dd7c`** docs-sync: backend.md (§1 embedder como exceção de topologia, §4 modo serve, §9 +4 rotas/nota 3f, §10 image_embeddings+índices, §11 compose pg16-trixie+embedder+envs), frontend.md (§5.2 painel, §10 contratos), dividas.md (digest db pago parcialmente + 2 dívidas novas: teste @gpu manual do CLIP real ~600MB; planner pgvector seq-scan ~10k — sem fatia).
+- **E2E de API provado no produto** (binário reconstruído `docker compose build principal`): upload → status `ready 1/1` automático (spawn provado em produção-like), search text (score ∈ [-1,1]), by-image top-1 **score 1.0** (paridade mock Rust×container provada no produto), 400/409/404, delete 204.
+- **Branch pronta**: `feat/semantic-search` (10 commits). **ORDEM DE MERGE: `spike/search-pgvector` PRIMEIRO** (appêndice da ADR-0004 vive nele — NIT do reviewer), depois `feat/semantic-search`. Push + CI + merge = decisão do usuário (regra: workflow dispara no push; mergear só com CI verde).
+- **NITs residuais sem ação**: ADR-0004 D5 linha 57 ainda lista 503 no by-image (alinhar num docs futuro — junto do merge do spike); Content-Length sem teto no serve.py (aceito R3); dep `items.length` no efeito de status é INTENCIONAL (re-checa pós-upload); One CTA (Buscar vs Treinar) refutado pelo reviewer (Treinar está disabled).
+- **Ambiente**: compose de pé (db pg16-trixie, seaweedfs, manager, principal RECONSTRUÍDO com código 3f, embedder novo healthy), dev server :3000, Chrome :9222. Datasets de teste deletados; "Trigger" pré-existente intato.
+- **CI run 22 (merge spike→feat, `b869713`) FALHOU no rust — causa provada e fixada (`84ebb47`, aguardando push do usuário)**: o service `postgres` do ci.yml usava a `postgres:16` oficial (SEM a extensão vector) — a migration 0004 (`CREATE EXTENSION vector`, primeiro push da feat) falha no setup → **48/48 testes de banco falharam (0 passed)** — falha de SETUP global, não de testes individuais. O run 21 (main) passou porque a main ainda não tinha a migration. **Fix**: service do CI → `pgvector/pgvector:pg16-trixie@sha256:c8483555…` (mesma imagem do compose, digest pinado). **LIÇÃO DE PROCESSO (vale para toda fatia)**: migration que exige extensão/versão de banco = o service do ci.yml é atualizado NO MESMO commit (gap de boundary: o compose é do rust-dev mas o ci.yml é de CI — ninguém cobriu; o reviewer da 3f não auditava ci.yml porque o passo de banco já existia na main).
+- **Fix multi-dispositivo (pedido do usuário 2026-09-07, commit `6afa67b` na feat/semantic-search)**: página aberta pelo IP LAN falhava nas imagens — a presigned nascia com host `localhost:8333` (default) E o SeaweedFS estava loopback-only (`127.0.0.1:8333`). Duas camadas corrigidas: (1) compose ganhou knob `SEAWEED_PUBLISH` (default seguro `127.0.0.1`, R1 mantido); (2) receita no `.env.example`. **Aplicado no ambiente**: `infra/.env` LOCAL (não commitado — o compose com `-f infra/compose.yaml` lê o .env do DIRETÓRIO DO COMPOSE, não da raiz) com `SEAWEED_PUBLISH=0.0.0.0` + `S3_PUBLIC_ENDPOINT_URL=http://10.15.10.3:8333`; seaweedfs+principal recriados. **Provado**: S3 responde por IP (403 sem auth), presigned nasce com host IP e baixa 200, Chrome em `http://10.15.10.3:3000` renderiza imagem (naturalWidth>0, console limpo). Cuidado R1: bucket na LAN com credenciais LOCAL-DEV — rotacione se sair da rede. Se o IP mudar (DHCP): atualizar `infra/.env` e `up -d principal`.
+- **Próximo passo**: usuário revisa/pusha/mergea (spike → feat) → **fatia 3e (export/import)** → fatia 4. 🌱 graft na sessão: ~170k tokens poupados (soma dos packs).
+
+### Sessão 6 — fatia 3g FEITA — CI rust falhou em fmt; fix `599fc46` commitado, re-push feito pelo usuário (contexto)
+
+- **CI run 19 (`0c5a995`) FALHOU no job rust**: `cargo fmt --all --check` — os commits da 3g saíram sem fmt (handlers.rs/models.rs/datasets_db.rs). web e compose verdes. **Fix `599fc46` (chore(fmt))** commitado; 64+10+37 re-verificados pós-fmt; sem mudança de semântica. **LIÇÃO DE PROCESSO (vale para toda fatia com código rust): o checklist de verificação do coordenador passa a incluir `cargo fmt --all --check` — e os prompts aos implementadores rust-dev devem pedir fmt rodado antes de reportar pronto** (a lição da sessão 4 existia e não foi aplicada ao dispatch — falha do coordenador). Re-push da branch = usuário (ou push coordenador se autorizado).
+
+- **Fatia 3g "gestão de amostras e classes" COMPLETA — 11 commits (`23cdd88`..`ebbc1d3`), review @reviewer APROVA** (após BLOQUEIA inicial com crítico provado e corrigido). Entregue: **3g.0** migration `0005_image_soft_delete.sql` (`images.deleted_at`, unique parcial `(dataset_id, filename) WHERE deleted_at IS NULL` substituindo o constraint único — re-upload de filename na lixeira nasce linha nova, índice da lixeira, contadores filtrando deleted; ON CONFLICT do upload ajustado junto — sem o `WHERE` o índice parcial não casa → 500; `t0005` no test-db); **3g.1** `PUT /:id/classes` reconciliação por id + **409 `classes_in_use`** (guard; openapi no MESMO commit — lição: contract tests exigem spec≡router a cada commit; classId preservado no rename provado E2E); **3g.2** lixeira: DELETE imagem = soft (204 sem sweep), restore (204 | 200 `{filename}` com rename `_restaurado` + `copy_object` na StoragePort + delete key antiga best-effort; 503 se copy falha — nada parcial), purge `DELETE /:id/trash` (sweep por prefixo de imagem), `?deleted=true` no list; **3g.3** invisibilidade D13 (detail/data/boxes/caption/autoTracked ignoram deletadas) + `trashCount` derivado (cast `::int` — count do Postgres é bigint) + openapi **0.4.0** + nota na ADR-0004 (3f recalibra → 0.5.0); **3g.4** `ClassesModal` (galeria + editor, 409 mantém modal, copy honesta — dataset sem classe deixou de ser beco sem saída); **3g.5** lixeira UI (hover trash + toast com **Desfazer** via `Toast.action` 6s, pills Ativas|Lixeira, restaurar com desambiguação de filename, esvaziar com confirmação permanente; bug pego no smoke: apiFetch 204 → undefined → TypeError no `res.filename` — fix `res ?? {}`); **3g.6** ADR-0005 formal + docs-sync (backend.md §9/§10 nota 3g, frontend.md §5.2/§5.3/§10, dividas: GC da lixeira nova + quitação do sync L3). **Review 1: BLOQUEIA** — crítico PROVADO com probe: fase 2 do dance de UNIQUE rodava antes do DELETE das removidas → remover classe com idx menor que o destino de um mantido (ex.: remover a 1ª) violava `UNIQUE(dataset_id, idx)` → 500 (o test de remoção livre só cobria a ÚLTIMA classe — o caso que não colide). **Fix `2f9be9a`**: ordem OBRIGATÓRIA guard(dentro da tx) → fase 1 tmp → **DELETE removidas** → fase 2 finais → INSERT; testes db dos 3 cenários (1ª/meio/última); **fix `9278697`** web: 404 stale → refetch silencioso + toast info (3 handlers); **`ebbc1d3`** docs com a ordem. **Review 2: APROVA** (1 nit de duplicação não-bloqueante). Verificação: 64 units + 10 contract + 37 db; smoke E2E API 18/18 (reconciliação E2E com classId preservado pós-rename, 409 em uso, re-upload `stored` com filename na lixeira, restore com rename `px_restaurado.png`, purge com contadores 1/0/0); smoke UI 7/7 (undo, presigned na lixeira, purge, console limpo). Container do principal RECONSTRUÍDO com a 3g (401 provado nas 4 rotas novas). Dívida nova: GC automático da lixeira (dividas.md).
+- **Branch pronta**: `feat/datasets-management` — push + CI + merge = decisão do usuário (regra: workflow dispara no push; mergear só com CI verde).
+- **Fix `fix/web-bbox-insecure` (`b390dda`) MERGEADO** pelo usuário com a 3d (`2303a39` merge fix + `9de7378` merge 3d; main verde). Causa 1 PROVADA em aba real (Chrome dele, `http://10.15.10.3:3000`): acesso por IP LAN HTTP = non-secure context → `crypto.randomUUID` é `undefined` → `TypeError` no `onUp` DEPOIS de `setDraft(null)` (caixa some, sem erro visível). Nos smokes dos agentes (localhost:3000 = secure) funcionava. Fix: **`apps/web/lib/id.ts::newId()`** (randomUUID se existe, senão UUID v4 via `getRandomValues` — disponível em qualquer contexto). **Causa 2**: dataset sem classes descartava o desenho em silêncio — bloqueado na origem com toast (agora com saída real via ClassesModal da 3g). Review `@reviewer`: **APROVA COM NITS**. Provas pós-fix por IP: caixa criada com coords exatas, autosave PUT 200, zero erros. `next-env.d.ts` regenerado pelo build foi restaurado (ruído do gerador — usuário o commitou em `560d3e7`).
+- **Dois gaps de produto levantados pelo usuário na sessão 6, viraram a 3g (nada implementado ainda)**: (1) **classes pós-criação** — backend só aceita classes no `POST /api/datasets` (cap 200); tabela `classes` suporta mas NÃO há rota de CRUD/edição (§9), modal só na criação → dataset criado sem classes é órfão para sempre pela UI; copy "opcional" do modal e painel do editor ("crie-as no painel de criação") estão desonestos hoje; (2) **excluir imagem** — backend sem `DELETE /api/datasets/:id/images/:imageId` (só delete do dataset inteiro, sweep D7); protótipo não previa. Resolvidos no ADR-0005 v2 acima.
+
+### Sessão 5 — fatia 3d FEITA, aguardando merge do usuário (contexto)
+
+- **Fatia 3d (galeria `/datasets/[id]` + editor BBox) COMPLETA na branch `feat/datasets-gallery` — 8 commits (`61dc75b..f62c691`), pronto para merge do usuário** (após `fix/web/...`-style review APROVA COM NITS fechado). Entregue: **3d.1** T7 quitada (`autoTracked` derivado via `EXISTS` nas 3 queries de `handlers.rs`; `DatasetRow.auto_tracked`; teste de integração 3 casos; openapi descrição atualizada); **3d.2** galeria real (types/ImagePage/ImageDetail/upload multipart `files`/grade de thumbs presigned + chip `split` + load-more; 4 ações disabled com titles honestos — AutoLabel=futura, AutoTracker=4, Exportar=3e, Treinar=4); **3d.3/3d.4** editor BBox `/datasets/[id]/annotate/[imageId]` (sidebar 288px do protótipo, moldura 600px com aspect REAL + zoom 50–250, desenhar/mover/resize se-resize/pan/atalhos B,V,H,[1-9],Delete,Esc/clamp01 por update/autosave debounced 800ms + botão Salvar/beforeunload) com payload PUT total **preservando conf/origin/trackId** de caixas existentes (invariante T7) — `BoxInput` ganhou os 3 opcionais; **3d.5** docs (nota frontend.md + openapi + dividas T7 quitada).
+- **Review @reviewer: APROVA COM NITS** — check mais crítico provado correto (`origin:"" é OMITIDO do payload` — `if (b.origin)` falsy + backend defaulta manual; autotracker sobrevive ao resave). Corrigidos antes do fechamento: **F1** desseleção pós-draw (.onClick só deseleciona em `select`), **F2** edição durante PUT em voo (contador de mutação + reagendamento — sem perda silenciosa de anotação), **F3** `glass-panel`→`glass-menu`, **F4/F5** openapi + dividas. **F6** nota de tamanho (~1340 linhas no total da fatia) registrada, sem ação.
+- **Defeito extra pego no smoke E2E além do review (F1′ do coordenador, corrigido)**: PUT boxes é `DELETE`+`INSERT` → ids do backend nascem NOVOS a cada save; o eco do servidor em `handleSave` nulificava a seleção da caixa recém-desenhada ~800ms pós-draw (coords/moséca). Fix: reassociação da seleção por índice de payload (`current[i] ↔ res.boxes[i]`; ordem do RETURNING confirmada no rodapé do smoke). Provas: `selected:true` na caixa nova pós-autosave; coords `0.599/0.1/0.3/0.25` exatas; `origin=manual` para nova.
+- **Smoke E2E API (container principal RECONSTRUÍDO com a imagem da branch — `docker compose build principal && up -d`; estava há ~10h em binário pré-3d.1)**: login 200 → create → upload 2 imgs stored (dims 64/48 sniffadas) → PUT 1 box autotracker → **`autoTracked=true`** ✓ → PUT 2 boxes → substituição total ✓, metadados preservados (autotracker/trackId 7/conf 0.9) ✓ → delete 204. `cargo test -p api-principal` 55+10 verde, `test-db.sh` 25/25 (novo teste incluído), `npm run build --workspace=web` verde no ferro (5 rotas), smoke visual Chrome: galeria (header, meta com source `s3://…`, resumo, thumbs carregadas, chip train, tile dashed), editor (sidebar completa, zoom, desenho sintético + autosave + coords + ring). Minutíssimo achado ORM registrado em `dividas.md` (ordem de boxes — sem fatia).
+- **Ambiente após a sessão**: compose de pé (db, seaweedfs healthy, manager, principal — agora com código 3d), dev server :3000. Dataset de teste deletado (204); dataset "Trigger" pré-existente deixado intato (não é meu; usuário decide). Nota de fermentation: `docker compose build principal` reconstrói da branch atual — quando o usuário trocar de branch, revisitar se o binário divergir do tronco.
+- **Próximo passo**: usuário revisa/mergea `feat/datasets-gallery` em `main` (regra CI: workflow dispara no push da branch — pusha, acompanha via API, mergeia só quando verde; main sempre verde). Depois **fatia 3f (ADR-0004 busca semântica)** — 3f.0 spike pgvector primeiro; 3f.1–3f.5 podem ser despachadas em paralelo após a 3d mergeada; 3f.6 (UI) consome a galeria desta fatia. `@infra-dev` e novo roster entram nas próximas sessões (efetivo da contratação).
+- 🌱 Economia graft nesta sessão: `find_code` (2 chamadas) ≈ 3.681 tokens poupados.
+
+### Sessão 4 — ADR-0004 busca semântica + CI (contexto)
+
+- **Contratação do `@infra-dev` (2026-09-05, pedido do usuário)** — dono mecânico de infra: `infra/` (compose), Dockerfiles, `scripts/` de verificação, CI quando spec pedir, `.env.example`. **Não decide arquitetura** (ADR vem do fluxo normal); migrations seguem com `@rust-dev`; não toca código de negócio. Permissões negadas: commits/push/merge/rebase (padrão) + `compose down`/`prune`/`rm` de volume/network/container (proteção do ambiente de dev de pé — a lição do `fix/infra-env` virou política). `variant: medium` (decisão do coordenador: blast radius de ambiente inteiro + falha silenciosa — mesmo rationale do `@fixer`; usuário pode rebaixar para `low`). **Efetivo na próxima sessão** (config não retroage em sessão viva — roster do Task tool é fixado no boot). Gap que motivou: sem CI (`.github/workflows` não existe), dívida de digests pendente, e a 3f adiciona trabalho de infra (imagem pgvector, serviço embedder). Charter em `.opencode/agent/infra-dev.md`.
+- **Decisões de gestão do usuário (2026-09-05, fechamento da sessão 4)**:
+  1. `chore/infra-agent` MERGEADA pelo usuário (`662fb4d`) — `@infra-dev` efetivo na
+     próxima sessão.
+  2. **Digests: APROVADO e FEITO** — commit `4b8c7e4` em `chore/pin-digests`
+     (despacho `@rust-dev`; dívida QUITADA em `dividas.md`; aguardando merge). Nota
+     nova registrada: manager/orchestrator ainda em `bookworm-slim` — migrar para
+     `trixie-slim` quando o orquestrador ganhar cliente S3 (fatia 4, R10).
+  3. **CI = Gitea Actions (CORREÇÃO — registro anterior errado dizia "descartado")**:     o usuário se auto-hospeda em `git.felipecncloud.com` (origin) e estava
+     configurando o **gitea-runner** quando perguntei; workflows em `.gitea/workflows/`
+     (formato GitHub-compatível do act_runner). Desenho v1 acordado verbalmente (sem
+     arquivo ainda): job rust (`cargo fmt --all --check`, `cargo check --workspace`,
+     `cargo test -p api-principal` — sem banco), job web (`npm ci` + build), job compose
+     (`config -q` — não precisa de daemon). V2: testes de db com `services: postgres`;
+     storage tests só com docker-in-docker (adiar); engines Python entram no CI na 3f.3.
+     **Imagens + digests para o runner mirar (resolvidos 2026-09-05, registry oficial;
+     digests preservam-se ao copiar para o registry do Gitea)**:
+     `rust:1.97.1-slim@sha256:8e8cf8f7fd54a2d23d5a743b3a03f56e26b6c774276c33fa0595111704ebb15c`,
+     `node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0`,
+     `docker:29-cli@sha256:eccaacfeed644c7de222ff047483568cb988dde95476fbaaf10ea2d04921bb66` (29 = major do docker do host 29.7.2),
+     `postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94` (v2),
+     `python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea` (3f.3).
+     Pendências para escrever o `ci.yml`: label do runner (`runs-on:`) e se ele alcança
+     o Docker Hub (senão, mirar via registry do Gitea).
+     **Estado da iteração de CI (2026-09-06, monitorada pela API de Actions com token
+     read-only do usuário em `~/.config/hep-ci/token` — FORA do repo)**: run 1
+     (`079eb88`) provou digests ✓ + healthcheck do service ✓ + download de action ✓ e
+     derrubou `actions/checkout` (act_runner v3.3.2 NÃO injeta node em actions JS —
+     exit 127 em imagens sem node). Fix (`22c6f76`, mergeado): checkout manual
+     `git clone` + token automático via header basic `x-access-token` (esquema do
+     actions/checkout). Run 2 (`d05d7b9`): job `compose` VERDE de ponta a ponta
+     (prova do caminho inteiro); `rust` falhou por `rustfmt` ausente no
+     `rust:1.97.1-slim` (perfil mínimo do rustup) e `web` por git ausente no
+     `node:20-slim` (base debian-slim puro, NÃO scm-slim — errata do coordenador).
+     Fix no run 3: `chore/ci-round3` (`c224ca6`) — `rustup component add rustfmt` +
+     `apt-get install git` no web. **Regra de processo (pedida pelo usuário, vale
+     para sempre): NUNCA mergear na main para testar CI — o workflow dispara em
+     `on: push` de QUALQUER branch; pusha a branch, acompanha via API, mergeia só
+     quando verde. Main deve estar sempre verde. Recomendação ao usuário: ativar
+     branch protection em `main` (Settings → Branch → Enable Status Check exigindo
+     `rust`/`web`/`compose`) para o gate virar mecânico.** Acesso do coordenador à
+     API: `GET /api/v1/repos/Felipe/Hephaestus-LLM-Studio/actions/runs` e
+     `…/actions/jobs/{id}/logs` (o endpoint `…/tasks/{id}` individual não existe no
+     1.27.1 — usar o `jobs` do run).
+  4. **Push do tronco: feito pelo usuário** (após o merge do infra-agent; o ADR-0004
+     e o pin-digests/housekeeping ainda não estão no origin).
+  5. **`cargo fmt`: APROVADO e FEITO** — commit `8947fec` em `chore/housekeeping`
+     (`cargo fmt --all`, 14 arquivos; `cargo check --workspace` + `cargo test -p
+     api-principal` verdes; dívida do fmt quitada com o merge). Lição operacional:
+     o type-enum do commitlint é `[feat, fix, docs, refactor, test, chore]` — `style`
+     NÃO existe; usar `chore(fmt)`.
+  6. **3d na próxima sessão**: usuário abrirá sessão nova e fará levantamento leve
+     se a 3f afeta o que a 3d vai fazer (resposta: a 3f não muda o desenho da 3d —
+     só consome a galeria que ela cria; ver ADR-0004 D0).
+- **ADR-0004 ACEITA pelo usuário (2026-09-05): busca semântica sobre datasets com embeddings OpenCLIP = fatia 3f**, especificação completa em **`docs/adr/0004-semantic-search.md`** (D0–D8, migration `0004`, spike `3f.0` com 5 critérios binários, plano de commits 3f.0–3f.7). Resumo das decisões: pgvector no Postgres existente (compose troca `postgres:16` → `pgvector/pgvector:pg16` com digest pinado — spike prova upgrade sem dump/restore, R1); embedder = `trainer-clip` em modo `serve` como serviço compose (fora do orquestrador até a fatia 4 — exceção consciente à topologia, com caminho de unificação); indexação assíncrona SEM fila (estado derivado `indexedCount` vs `imagesCount` + advisory lock — não depende da fatia 4); 4 rotas novas, spec 0.4.0, erros novos `index_not_ready` (409) e `embedding_unavailable` (503); EmbeddingPort com `MockEmbedder` default (`EMBEDDING_BACKEND=mock`). Dedup e AutoLabel assistido fora de escopo v1 (schema não fecha portas). **Nada implementado** — docs de contrato só mudam no commit 3f.7 (lista de linhas que ficam falsas está no fim da ADR).
+- **Sequência do roadmap atualizada**: 3d → **3f** → 3e → 4. A 3f depende apenas da 3d (a busca mora na galeria); 3f.1–3f.5 são disjuntos de 3e/4 e podem ser despachados em paralelo ao fim da 3d; só 3f.6 (UI) espera a galeria.
+
+### Sessão 3 — alinhamento de design + fixes de ambiente (contexto)
+
+- **Problema reportado pelo usuário**: implementadores frontend desviando do estilo de layout (impeccable/OpenDesign como referência; troca de modelo do dev + protótipo regenerado com login no OpenDesign como teste). Fechado em 3 frentes:
+  1. **Referência formal** — `docs/design-system.md` MESCLADO (base OpenDesign: frontmatter YAML navegável + Do's/Don'ts + regras nomeadas; seções exclusivas da versão impeccable reincorporadas: iconografia, anatomia de componentes, a11y, avaliação crítica; token Runtime Python `#eab308` recuperado com prova v1:864). **Descoberta do reviewer**: o `ai-vision-training-studio.html` do tronco JÁ É a regeneração OpenDesign (3641 linhas, `LoginPage` ~329) desde o merge `chore/opendesign` (`39a1410`) — o `ai-vision-training-studio-v2.html` que o coordenador importou do OpenDesign era byte-idêntico e foi REMOVIDO (`1a00b22`); referência única = protótipo da raiz.
+  2. **Auditoria+correção visual** (`@ui-designer` qwen3.7-plus, Chrome flatpak :9222 + skill chrome-mcp): `/login` (blobs de luz zenital, meta v1.3, placeholder, autoFocus, focus ring emerald, footer "Single-User Mode" SEM botão demo — instrumentação rejeitada); DatasetCard (violet/sky → `text-zinc-300` PROVADO contra v1:1528; p-5; tiles com borda; chips estilo v1; "Treinar →" text-link); TabsBar (aba ativa `text-white` sem underline); Topbar (inline style → classes; superfície `zinc-950/80` MEDIDA E PROVADA igual à v1 — suspeita inicial do coordenador era falsa); modal `max-w-lg`. Pendências fechadas via `@frontend-dev`: `IconLock` (padrão Base, paths do protótipo) + ícones no DatasetMenu (adaptações declaradas: Eye→IconLayers, Play→IconTarget). **Smoke do login com senha dev `changeme`: 4/4 PASS** (autoFocus; POST 200 + cookie; redirect; 401 → "Senha incorreta."; regression redirect; console limpo).
+  3. **Causa-raiz** — charters de `@frontend-dev`/`@ui-designer` agora apontam `docs/design-system.md` como fonte de ESTILO (paleta FECHADA, regras nomeadas: One CTA/Monospace Truth/Refractive Edge/Class Palette Integrity; cores fora da paleta proibidas) e o protótipo como fonte de LAYOUT. É o mecanismo anti-improviso para os implementadores low.
+4. **Organização — dívidas viraram registro próprio (inspiração: artigo "Harness
+   Engineering" da OpenAI, 2026-02-11)**: seção de dívidas extraída deste arquivo
+   para **`docs/dividas.md`** (registro permanente: em aberto/quitado, fatia marcada,
+   como atualizar). Este arquivo referencia e não duplica; pendências do Fecho
+   também migraram para lá.
+- **Fixes de ambiente (desbloqueio do dev; branch `fix/infra-env` `c09569a`)**: healthcheck do SeaweedFS dependia de GNU wget (exit 8 em 403); a tag **mutável** `4.45_full` trocou o wget para BusyBox (exit 1) → container unhealthy permanente → novo probe portável (aceita QUALQUER resposta HTTP: `wget -S … | grep -q HTTP/1.1`). Runtime do principal `bookworm`(glibc 2.36) → `trixie-slim` (builder rust:slim é trixie/2.41; `aws-lc-sys` exige GLIBC_2.38 — **R10 da ADR-0003 materializado por tag mutável**). **Lição: tags de imagem mutáveis quebram builds verificados; recomendação PENDENTE ao usuário: fixar digests no compose/Dockerfiles.**
+- **Review da `fix/web-design-alignment`: APROVA** — 1 menor corrigido (v2 duplicado removido) e 1 menor REFUTADO com prova empírica: botão "Treinar" disabled — a regra global `button:disabled` do globals.css JÁ aplica opacity .55 + not-allowed (getComputedStyle confirmado) e o hit-test resolve no próprio botão (sem click-through ao Link) — falso positivo duplo do reviewer, registrado como lição (provar antes de corrigir).
+- **Branches aguardando MERGE do usuário (ordem importa)**: ~~todas~~ **MERGEADAS em 2026-09-05**: `fix/web-3c-review` (`0554d3f`, pelo usuário), `fix/web-design-alignment` (`a19d835` — conflito em TabsBar resolvido pelo coordenador: 6 abas da emenda + decisão visual da auditoria na aba ativa `text-white` sem underline; DatasetCard/Modal auto-mergeados, tag AutoTracker preservada, `max-w-lg` combinado), `fix/infra-env` (`fdfaff6`), `chore/agent-design-ref` (`11ebdfb`). **Verificação pós-merge**: build web verde (rota `ƒ /datasets/[id]` viva), compose config OK, smoke visual no Chrome: 6 abas + badge de contagem, aba ativa `rgb(255,255,255)` sem underline, card p-5/16px com Refractive Edge provado (borda topo `0.13` vs laterais `0.07`), botão Treinar com affordance global (opacity .55 + not-allowed). Branches de fatia ainda não apagadas — decisão do usuário. `main` ~6 à frente do origin (push pendente).
+- **Nota docs**: `docs/frontend.md` linha 3 ainda descreve o protótipo como "~2910 linhas" — o do tronco é a regeneração (3641, com LoginPage); sincronizar no próximo docs-sync.
+- **Ambiente de dev de pé** (não desligado): compose (db, seaweedfs healthy, manager, principal :8080 — senha dev `changeme`), dev server Next :3000, Chrome :9222 (flatpak).
+
+### Sessão 2 — 3b mergeada, 3c revisada e emendada (contexto)
+
+- **Fatia 3b MERGEADA no tronco pelo usuário** (`04b8987 Merge branch 'feat/datasets-storage'`) — storage S3/SeaweedFS fechado, spec 0.3.0.
+- **Fatia 3c (UI `/datasets`) NO TRONCO via `1f182ed`** — 3 commits (`cf2b978` fundação do shell: tipos, api lib, format, icons, Topbar/TabsBar/Toast; `f8bca9e` lista grade+tabela com filtros e empty states; `ce29fa4` criar/excluir com modal, confirmação, menu de contexto e toasts). O mesmo merge trouxe `d6e4e1d` (troca de modelos dos agentes — config puro, conferido pelo coordenador).
+- **Revisão da 3c: CONDICIONAL** (`@reviewer`, despacho único): contrato/casing/fetch 1:1 com openapi 0.3.0, zero críticos. Condições F1–F6 (link de galeria → 404; só 1 das 6 abas do shell, sem badge; code `"validation"` morto fora do enum; coluna Ações ausente na tabela; `trainTabFor` dead export; tag AutoTracker ausente). **Emenda implementada via `@frontend-dev` e verificada pelo coordenador** (build web limpo com rota `ƒ /datasets/[id]`; greps `validation`/`trainTabFor` zerados) em **branch `fix/web-3c-review`** (`f7889b2` fix(web) + `41739c2` chore gitignore) — **aguardando merge do usuário**. F7 (sem teste de UI) não bloqueia = backlog §12 do frontend.md.
+- **`main` está 5 commits à frente de `origin/main`** e `fix/web-3c-review` soma 2 — push/merge = decisão do usuário.
+
+### Histórico das sessões anteriores (contexto)
+
+- **Fatia 3b LANDED na branch `feat/datasets-storage` (3b.0–3b.7:
+  `f6c6ff5`..`393163c`) + docs sincronizados (3b.8, working tree desta sessão, sem
+  commit — o coordenador commiteia). Branch à frente de `main`; merge = decisão do
+  usuário. Entregue: migration 0003 + `StoragePort`/`MockStorage`/`S3Storage` + 6 rotas
+  (upload, images, detail, `/data`, boxes, caption) + sweep pós-commit + `source`
+  derivado + `classes{id}`; spec 0.3.0; revisões 3b.3/3b.6 feitas. Dívida 3b QUITADA
+   (ver `docs/dividas.md`); sobraram: logging server-side (fatia nomeada), gate `sub` órfão,
+  `cargo fmt`. A/B 3b.6 registrado no bullet do experimento — **encerrado pelo usuário:
+  sem swap; `@reviewer` é o despacho único, max só como escalada** (`a343a7c` em
+  `chore/reviewer-escalacao`).
+
+- **Spike 3b.0 EXECUTADO e PASSOU (7/7).** Rodado no ramo **descartável**
+  `spike/storage-seaweedfs` (commit `09a517d`; **fundido pelo usuário em `main` (`52da6f9`)**
+  — matriz `spike/STORAGE-SPIKE.md` e harnesses vivem no tronco). Consequência: **D4 (crate) e D3 (presigned)
+  ficam aprovadas, sem inversão**; R2 e R3 desriscados no ferro. Os achados que **corrigem o
+  rascunho da ADR** (identidade via `-s3.config` JSON e não env vars; bucket auto-cria sem
+  init-container; healthcheck exige `-ip.bind=0.0.0.0`; nomes reais da API do SDK; novo risco R10
+  = build do `aws-lc-sys` no `rust:slim`) estão appêndados na **ADR-0003**, seção "Resultados do
+  spike 3b.0" — **ler antes de codar a 3b.4**. `main` limpa de worktree; **1 commit à
+  frente do `origin/main`** (`f4d1551`), push pendente = decisão do usuário.
+- **Branch de trabalho: `main`.** `feat/datasets-core` foi **mergeada pelo usuário**
+  (`e724436 Merge branch 'feat/datasets-core'`) e as branches de fatia foram apagadas,
+  incluindo a de segurança `backup/pre-reword-3a` (confirmado antes de apagar: árvores de
+  código byte-idênticas aos commits que entraram; o único resíduo era o hash pré-reword de
+  um commit cujo conteúdo é o mesmo). Situação de push: ver bullet acima (`main` à frente
+  do origin em `f4d1551`).
+- Roadmap `docs/repo-estrutura.md` §Ordem: Slice 1 ✅, Slice 2 ✅, **Slice 3a ✅ (no
+  tronco)**, 3b é o próximo passo.
+- **Slice 3a no tronco**: `GET/POST /api/datasets` + `GET/DELETE /api/datasets/:id` com
+  migration `0002` (`datasets`+`classes`), primeira rota de negócio → gate
+  `route_layer(require_auth)` plugado (dívida do ADR-0001 D9 quitada), OpenAPI
+  0.2.0, ADR-0002 escrita. Verificação: `cargo check --workspace` limpo,
+  `cargo test -p api-principal` = 27 units + 7 contract verdes sem banco,
+  `bash scripts/test-db.sh` = 7 integration verdes com Postgres do compose,
+  `compose -f compose.yaml -f compose.integ.yaml config -q` OK.
+- **ADR-0003 (storage de objetos) ACEITA pelo usuário, servidor = SeaweedFS.** Nada
+  implementado ainda; é a próxima fatia. Ver "Próximo passo" abaixo e
+  `docs/adr/0003-object-storage-s3.md`.
+- **Decisão estrutural da 3a (ADR-0002 D1)**: casing no wire é **camelCase em
+  `/api/*` inteiro**; colunas SQL, valores de enum, `Error.code` e artefatos de
+  transporte (`manifest.json`, `config.yaml`, SQLite) ficam **snake_case**.
+  Enforcement por teste (`json_property_names_are_camel_case`, walk recursivo).
+  Isso altera o que os docs de settings exemplificavam → `hf_token` virou
+  `hfToken` no wire em `backend.md` §9 e `frontend.md` §10 (rota ainda não
+  existe). Não regrida isso por acaso.
+- `apps/web` continua com só `/` e `/login`; `/datasets` (3c) ainda não existe.
+- Ferramental: `@ui-designer` despacha (exige dev server + Chrome :9222).
+  Grafo graft em dia (`graft/` é git-ignored — não se commite); 2 nós de
+  `layout.tsx` seguem pendentes no meaning tier (modelo local falha lá, cosmético).
+- **Cadeia operacional atualizada (2026-09-05, `chore/agent-team`, pendente de merge):**
+  gate de commit vivo (`lefthook.yml` → commitlint no `commit-msg` + aviso de
+  staging >400 linhas e bloqueio de segredos/`target/` no `pre-commit`; setup novo:
+  `npm install && npx lefthook install`); subagentes com `git commit/push/merge/rebase`
+  **negados em runtime** (só o coordenador commiteia); `graft` mandatório em
+  `fixer`/`reviewer`/`docs-sync`; entregável do `architect` = formato ADR + plano de
+  commits numerado; checklist do `reviewer` com invariantes da casa (casing D1,
+  body-limit, ordem objeto→linha→compensação, contadores por função única);
+  `ui-designer`/`frontend-dev` alinhados ao Tailwind v4 com desempate de posse;
+  skill `hephaestus-dev` regrava (um dispatch = um commit, todo por passo com
+  atualização em tempo real, spikes = coordenador com loop de build em script único
+  — lição do 3b.0). Anti-exemplo registrado na skill: `1c1f72f` (3.219 linhas em 1
+  commit) que virou a cirurgia de reword da 3a.
+- **Experimento A/B de revisor (3b) — ENCERRADO pelo usuário em 2026-09-05** (custo de
+  tokens; decisão registrada ao fim da fatia). `@reviewer-max` (qwen3.8-max, `variant: high`,
+  corpo idêntico ao titular) despachou no MESMO diff que o `@reviewer` nos marcos
+  3b.3 e 3b.6. **Veredito do usuário: sem swap — `@reviewer` (flash/high) é o despacho
+  único de marco; `@reviewer-max` fica no time como ESCALADA** (só quando o titular não
+  resolver, travar no mesmo ponto, ou risco alto pedir auditoria independente — charter
+  reescrito em `a343a7c`/`chore/reviewer-escalacao`). *Dia 1 (smoke em `86fb0eb`)*: ambos
+  BLOQUEIA no mesmo defeito real (gate de segredos × `!.env.example` do gitignore —
+  comprovado por matriz de 4 casos antes do fix); o titular ainda cruzou com a ADR-0003
+  (`.env.example` é entregável prometido da 3b.4) — 1 ponto pro flash. *Marco 3b.3
+  (difícil, teste real)*: ambos **BLOQUEIA** pelo MESMO crítico comprovado por sonda
+  própria (livelock multipart pós-`LengthLimit` — axum embrulha corpo todo, multer nunca
+  fuseja; os dois citaram a fonte e reproduziram), **zero falso positivo nos dois lados**.
+  Titular achou a mais: duplicate falso por stem sem extensão (F4) e a janela de boot mock
+  (F6, decisão do coordenador); sombra achou a mais: doc de `sanitize_filename` mentindo +
+  branch morto (F7) e o staleness latente do `COALESCE(NEW,OLD)` em UPDATE de
+  reparentização (registro: inofensivo até existir rota de UPDATE de `image_id`/`dataset_id`).
+  Contagem: 2 titular × 2 sombra — empate técnico. *Marco 3b.6*: titular CONDICIONAL com
+  **1 falso positivo** (emenda vista só no trunk — o diff do marco não continha o fix) e 2
+  únicos (erros por-chave do `delete_prefix`, TTL não wired no compose); sombra PASSA com 2
+  únicos (órfão `infra_pgdata` no runner, upsert com `RETURNING`) e 0 falsos. **Placar
+  final: 3b.3 empate 2×2; 3b.6 2×2 com vantagem da sombra só em falsos positivos.**
+  Conclusão operacional: achados convergentes nos dois marcos — **o segundo despacho nunca
+  mudou um desfecho que o titular + coordenador não tivessem alcançado; o duplo despacho
+  não se paga.** Hipótese "medium no fixer reduz escaladas" segue válida (é outra linha do
+  experimento, sem custo de modelo caro).
+- **Esforço de razonamento fixado por agente** (`variant:` na frontmatter, validado
+  no provider): **coordenador `@hephaestus` sobe para qwen3.8-max/`medium`** (decisão do
+  usuário 2026-09-05, informed pelo A/B: o loop redundante de decisão em flash/high custou
+  mais que o differential do modelo — max decide certo com cadeia menor); `high` em
+  architect/reviewer; escalada `@reviewer-max` só quando o titular travar; `medium` em
+  fixer e ui-designer; `low` nos implementadores e explore. **Novo @visao**
+  (flash/`low`, permissões edit/bash/web negadas): proxy de visão do coordenador —
+  transcreve screenshots/PNGs de forma fática quando o usuário anexa imagem; NÃO audita
+  tela (isso segue sendo do `@ui-designer` com DevTools: DOM+computed styles+edição, que
+  "descrever pixels" não substitui). Fallbacks de uma linha: se max/medium mostrar
+  verbosidade ou loop novo no coordenador, testar `low`, e rebaixar para flash/high é o
+  último passo; a medição natural é a sessão da 3c. Hipótese "medium no fixer reduz
+  escaladas" segue válida. Vale a partir da próxima sessão (config não retroage em sessão
+  viva; em `chore/reviewer-escalacao` `bc4d5db`).
+
+## Storage da 3b — decisão TOMADA (2026-09-04): bucket S3/SeaweedFS
+
+Origem: o usuário propôs **MinIO** (como ele já opera no VisionLens,
+`/home/felipecn/DEV/VisionLens`) para imagens canônicas e labels/coordenadas no banco.
+O `@architect` desenhou e eu aprovei a direção; **o usuário aceitou a ADR-0003 e escolheu
+SeaweedFS** como servidor. Tudo está em
+**`docs/adr/0003-object-storage-s3.md`** — ela é a especificação da 3b, leia antes de
+codar. Resumo do que já está fechado lá:
+
+- **D1** bucket = único blob canônico; disco local só efêmero (árvore YOLO/`.txt`/
+  `data.yaml` nasce em tempdir **no orquestrador** e morre no `finally` — padrão validado
+  no `yolo_trainer.py` do VisionLens).
+- **D2** upload **via principal** com **spool em tempfile + `put_object` com
+  content-length exato.** Nunca stream de tamanho desconhecido (trilha
+  `aws-chunked`/`STREAMING-*-TRAILER`), nunca presigned browser→bucket (exigiria
+  `complete`+`HEAD`+sonda ou a máquina de notificação de bucket + estado "pendente").
+- **D3** leitura híbrida por `S3_PUBLIC_ENDPOINT_URL` (presigned **assinado no host
+  público** — gotcha SigV4 do header `Host`, lição do VisionLens) com fallback
+  `GET …/images/:imageId/data` **sempre disponível**.
+- **D4** `aws-sdk-s3` **sem** `aws-config`, `force_path_style(true)`,
+  `request_checksum_calculation(WhenRequired)`. Nenhum `reqwest` na 3b.
+- **D5** chaves legíveis `datasets/{dataset_id}/images/{image_id}/{filename}`;
+  `images.path`→`object_key`; **`datasets.source` sai do banco** (DROP na 0003) e vira
+  derivado no wire `s3://{bucket}/datasets/{id}/` quando `images_count > 0`.
+- **D6/D7** só mídia vira objeto; ordem **objeto→linha→compensação** e sweep de prefixo
+  **pós-commit** no `DELETE /:id`.
+- **D8** `src/storage/{port,mock,s3,keys,sniff}.rs` + `MockStorage` (testes sem rede);
+  **manager e orquestrador não têm cliente S3 na 3b**.
+- **D9** `export`/`import`/`package` **sairam da 3b e viraram fatia 3e** (backup interim =
+  UI do servidor + `mc mirror`); o chunking de 8 MB sobrevive só no transporte
+  principal→orquestrador **remoto**.
+- **D10** um erro novo só: `storage_unavailable` (503). Spec 0.2.0 → **0.3.0**.
+
+Por que não MinIO (e-a-confirma-na-fonte, não é palpite): repo `minio/minio` **arquivado
+pelo dono em 25/04/2026** ("THIS REPOSITORY IS NO LONGER MAINTAINED", só código-fonte,
+sem binário de comunidade; última release out/2025) e a **GHSA-9c4q-hq6p-c237 /
+CVE-2026-40344** (bypass de assinatura na trilha `STREAMING-UNSIGNED-PAYLOAD-TRAILER`) com
+**"Patched versions: None"** no OSS. As issues #21611 e **#21303 (esta é o SDK Rust com
+`ByteStream::from_path`)** documentam a trilha de streaming quebrada que a D2 evita.
+
+**Nenhum doc de `backend.md`/`frontend.md` foi alterado** — a lista de linhas que ficam
+falsas está no fim da ADR-0003, marcada para o commit `3b.8` (docs descrevem o que existe,
+não o que foi aprovado).
+
+## Dívidas técnicas
+
+As dívidas técnicas e pendências vivem em **`docs/dividas.md`** — registro
+permanente de primeira classe (em aberto / quitado, com fatia marcada quando
+aplicável; inspirado no `tech-debt-tracker` do artigo "Harness Engineering"
+da OpenAI). Este arquivo não as duplica: ao registrar, marcar fatia ou quitar
+uma dívida, atualize o `dividas.md`. Fatias novas DEVEM ler o `dividas.md`
+(item 4 do protocolo de retomada) e honrar as dívidas relevantes no
+nascedouro.
+
+## Plano em andamento — PRÓXIMO PASSO EXATO: fatia 3e (export/import) — ADR-0006 (3e.0)
+
+**Sequência daqui:** **3e export/import (ESTA FATIA — em curso)** → **4 jobs/package/materialização** (orquestrador ganha cliente S3 com credencial escopada por prefixo e absorve o embedder como runner-CLIP — mesma interface HTTP da 3f; dívida T4 da ADR-0002 — `jobs.dataset_id ON DELETE SET NULL` + `dataset_versions` — honrada no nascedouro; **herda `POST /:id/package` movido da 3e por decisão do usuário 2026-09-07**). 3h = definição a confirmar com o usuário/roadmap. Estado detalhado da 3e no topo (Sessão 10) e em `docs/plano-3e-export-import.md`.
+
+**3b.0–3b.8 FEITOS e MERGEADOS (`04b8987`); 3c FEITA, REVISADA e EMENDADA (ver "Estado atual").** A sequência:
+
+1. ~~`spike/storage-seaweedfs`~~ ✅ **CONCLUÍDO 2026-09-05** (ramo `spike/storage-seaweedfs`,
+   commit `09a517d`, matriz em `spike/STORAGE-SPIKE.md`; **fundido pelo usuário em `main` (`52da6f9`)** — harnesses e matriz vivem no tronco).
+2. ~~**3b.1..3b.7**~~ ✅ **CONCLUÍDOS** em `feat/datasets-storage` (`f6c6ff5`..`393163c`);
+   `@reviewer` ao fim de 3b.3 e 3b.6 (ver A/B no "Estado atual").
+3. ~~**3b.8**~~ ✅ **CONCLUÍDO nesta sessão** (`@docs-sync`: deltas da ADR-0003 aplicados em
+   `backend.md`/`frontend.md` + banner na ADR-0002 + ADR-0003 marcada IMPLEMENTADA).
+4. ~~3c UI `/datasets`~~ ✅ **NO TRONCO** (`1f182ed`, 3 commits) + revisão CONDICIONAL
+   fechada com emenda em **`fix/web-3c-review`** (`f7889b2`, `41739c2`). Próximo:
+   **usuário mergeia `fix/web-3c-review`** → **3d galeria `/datasets/[id]` + editor
+   BBox** (o placeholder honesto criado pela emenda é substituído pelo conteúdo real;
+   upload UI entra aqui) → **3e export/import** → **4 jobs/package/materialização**
+   (onde o orquestrador ganha cliente S3 com credencial escopada por prefixo e onde a
+   dívida T4 da ADR-0002 — `jobs.dataset_id ON DELETE SET NULL` + `dataset_versions` —
+   precisa ser honrada no nascedouro).
+
+Cada fatia: branch `feat/<slice>` de `main` atualizada, commit `type(scope):
+subject`, verificação do coordenador (`cargo check --workspace`, `cargo test -p
+api-principal`, `bash scripts/test-db.sh` quando houver teste de banco, `bash
+scripts/test-storage.sh` quando houver storage, `npm run build --workspace=web` quando
+houver UI, `compose config -q`), sem push/merge sem pedido. Commits **fora de
+`main`** (a regra da casa; `docs/coordenacao.md` e ADRs são as exceções que o usuário já
+autorizou a landing direto no tronco).
+
+## Fecho
+
+- [x] Fatia 3a mergeada em `main` pelo usuário (`e724436`) e branches de fatia apagadas.
+- [x] ADR-0003 aceita, D0 = SeaweedFS.
+- [x] Spike `spike/storage-seaweedfs` rodado (7/7 PASS, commit `09a517d`; **fundido pelo
+      usuário em `main` `52da6f9`**); achados appêndados na ADR-0003 → "Resultados do spike 3b.0".
+- [x] **3b.7** ✅ (sweep + `source` derivado + classes com `id`, `393163c`) e **3b.8** ✅
+      (docs sincronizados nesta sessão).
+- [x] **3b mergeada** (`04b8987`); **3c no tronco** (`1f182ed`), revisada (CONDICIONAL,
+      F1–F6) e emendada em `fix/web-3c-review` — build web limpo, greps zerados.
+- [x] Próximo passo = ~~4 merges~~ ✅ **MERGEADOS** (3c-review pelo usuário `0554d3f`; design-alignment `a19d835` com conflito de TabsBar resolvido; infra-env `fdfaff6`; agent-design-ref `11ebdfb`) → **3d é a próxima fatia**.
+- [ ] Pendências e dívidas que continuam valendo: ver **`docs/dividas.md`**
+      (registro permanente — inclui CLI `reset-password`, `cargo fmt`,
+      logging server-side, gate `sub` órfão, digests de imagem, testes de UI,
+      sync `docs/frontend.md` linha 3).
+      ~~`lefthook install`~~ ✅ quitado em `chore/agent-team` (gate ativo: hooks
+      instalados + commitlint real + deny de commit nos subagentes).
+
+## Sessão 2026-09-08 (pós-reboot — ambiente + fix proxy web)
+
+- **Reboot do host**: containers só derrubados (Exited 137/1); `docker compose up -d` em `infra/` recompôs tudo (7/7 up, seaweedfs/embedder healthy, volumes preservados). Nada de dados perdeu.
+- **Senha do studio**: 401 com `changeme` levou a falsa pista; causa real do meu 401 de teste = rota errada (`/login` vs `/api/auth/login`, fallback D9). NO ENTANTO, no caminho o `users` foi zerado + rebootstrap com `STUDIO_PASSWORD=changeme` (CLI reset-password = dívida T4 ADR-0001; receita de reset: `DELETE FROM users` + recriar principal com env). **Senha dev vigente: `changeme`**.
+- **"Login quebrado" reportado pelo usuário**: NÃO regressão do redesign. Bug latente de build: Next 16 compila `rewrites()` no `routes-manifest.json` em BUILD-time; Dockerfile não passava `API_INTERNAL_URL` → fallback `localhost:8080` assado no manifest → web proxyava `/api/*` para si mesmo (ECONNREFUSED → 500 "Falha inesperada."). Host dev server nunca mostrou porque lá `localhost:8080` é o principal publicado. Smoke pós-fix: `POST /api/auth/login` via :3000 → 200 + redirect /dashboard (Chrome, screenshot).
+- **Fix commitado `d8d01a4`** (`fix(web)`, branch `feat/integracao`): ARG/ENV `API_INTERNAL_URL=http://principal:8080` no `apps/web/Dockerfile` + `.dockerignore` na RAIZ do repo (nit do review: `.dockerignore` aninhado é no-op — Docker só lê o da raiz do contexto `..`; prova: `.next/dev` sumiu da imagem). Review APROVADO COM NITS → nits quitadas. `next-env.d.ts` modificado = ruído de regeneração, deixado fora do commit (usuário editando front).
+- **404 pré-existente registrado**: sidebar faz prefetch RSC de `/autotracker` (rota não existe — só dashboard/datasets/jobs). Decidir no redesign: desabilitar link ou criar rota (AutoTracker = fatia 4).
+- **PRÓXIMO**: usuário termina redesign do front-end (branch própria) → pedir review ao coordenador (auditoria @ui-designer/@reviewer + smoke Chrome).
+
+## Sessão 2026-09-09 (sincronização de documentação da nova interface — Impeccable)
+
+- **Auditoria de documentação**: solicitada pelo usuário (`/impeccable Precisa ver se a documentação está atualizada com a nova interface`).
+- **Arquivos sincronizados**:
+  - `docs/frontend.md`: §4 (Shell v2.1: Sidebar pinável 68/260px com persistência em localStorage, breadcrumbs dinâmicos via usePathname com labels pt-BR, chip de ambiente Local, botão rápido do Centro de Atividades); §4.3 (ActionCenter como drawer deslizante global para supervisão de jobs, telemetria e apply de boxes do AutoTracker); §4.4 (biblioteca atômica components/ui/); §5.1 (Painel /dashboard com StatCards e status do cluster de nós); §5.2 (Datasets com drag & drop unificado e pré-inspeção imediata com dataset-inspector.ts); §5.3 (Galeria com ImageCard modular e infinite scroll); §10 (integração de jobs com ForjaYoloSetup, YoloHyperparameters, ConvergenceChart, JobLogViewer e ActionCenter); §11 (árvore real de arquivos do apps/web); §12 (backlog atualizado com itens entregues).
+  - `docs/DESIGN.md`: inclusão das primitivas atômicas faltantes em Components (`DropOverlay`, `EmptyState`, `SearchInput`, `Select`, `Slider`, `ProgressBar`, `Breadcrumbs`, `SubmodulePills`, `ZoomControl`, `TruncatedText`).
+  - `docs/PRODUCT.md`: inclusão do Painel de Controle e Centro de Atividades no escopo de capacidades do produto.
+- **Verificação**: `npm run build --workspace=web` verde (todas as 7 rotas compilam com sucesso), detector do Impeccable com 0 advisories (`[]`).

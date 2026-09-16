@@ -109,7 +109,7 @@ export default function TrainYoloModal({
         "success",
         {
           label: "Ver na Forja",
-          onClick: () => router.push(`/jobs?selected=${result.jobId}`),
+          onClick: () => router.push(`/jobs?job=${result.jobId}`),
         },
       );
       onJobCreated();

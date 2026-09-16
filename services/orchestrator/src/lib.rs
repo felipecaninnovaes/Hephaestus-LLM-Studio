@@ -92,6 +92,15 @@ pub struct ReportBody {
     /// Campo opcional retrocompat: ausente em jobs legados.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meta_content: Option<String>,
+    /// AC-006-A D2: fase/status do job (ex.: "loading_model", "quantizing").
+    /// Eventos de status → phase/message; métricas de treino → None, EXCETO
+    /// que fase em qualquer linha promove `jobs.phase` (P2-1: métrica com
+    /// `phase` carrega a fase junto no report via COALESCE).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    /// AC-006-A D2: mensagem descritiva da fase (ex.: "Carregando FLUX").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -345,6 +354,20 @@ pub struct MetricsLine {
 }
 
 impl MetricsLine {
+    /// AC-006-A D1: linha de métrica de treino carrega ao menos um valor numérico.
+    /// Sem valor ⇒ é evento de status (fase/mensagem de boot, progresso por imagem).
+    /// Fase em qualquer linha promove `jobs.phase` (D2): métrica com `phase`
+    /// continua métrica e carrega a fase junto no report.
+    pub fn is_training_metric(&self) -> bool {
+        matches!(self.loss, Some(x) if x.is_finite())
+            || matches!(self.lr, Some(x) if x.is_finite())
+            || matches!(self.box_loss, x if x != 0.0 && x.is_finite())
+            || matches!(self.cls_loss, x if x != 0.0 && x.is_finite())
+            || matches!(self.dfl_loss, x if x != 0.0 && x.is_finite())
+            || matches!(self.map50, x if x != 0.0 && x.is_finite())
+            || matches!(self.map50_95, x if x != 0.0 && x.is_finite())
+    }
+
     pub fn to_report_json(&self) -> serde_json::Value {
         let mut obj = serde_json::json!({
             "box_loss": self.box_loss,
@@ -1008,9 +1031,11 @@ pub async fn run_job(
                     epoch: None,
                     step: None,
                     metrics: None,
-                    error: Some(err_msg),
+                    error: Some(err_msg.clone()),
                     artifacts: None,
                     meta_content: None,
+                    phase: Some("error".to_string()),
+                    message: Some(err_msg),
                 },
             )
             .await
@@ -1086,6 +1111,8 @@ async fn run_job_inner(
                 error: None,
                 artifacts: None,
                 meta_content: None,
+                phase: None,
+                message: None,
             },
         )
         .await
@@ -1296,6 +1323,8 @@ async fn run_job_inner(
                 error: None,
                 artifacts: None,
                 meta_content: None,
+                phase: None,
+                message: None,
             },
         )
         .await
@@ -1463,7 +1492,11 @@ async fn run_job_inner(
                     step: final_metrics
                         .as_ref()
                         .and_then(|m| m.step.map(|s| s as i32)),
-                    metrics: final_metrics.as_ref().map(|m| m.to_report_json()),
+                    // AC-006-A D1: somente métricas de treino entram no array.
+                    metrics: final_metrics
+                        .as_ref()
+                        .filter(|m| m.is_training_metric())
+                        .map(|m| m.to_report_json()),
                     error: None,
                     artifacts: if artifacts.is_empty() {
                         None
@@ -1471,6 +1504,8 @@ async fn run_job_inner(
                         Some(artifacts)
                     },
                     meta_content,
+                    phase: Some("completed".to_string()),
+                    message: Some("Treino concluído".to_string()),
                 },
             )
             .await
@@ -1692,6 +1727,10 @@ async fn run_job_inner(
             if !new_metrics.is_empty() {
                 for m in new_metrics {
                     let progress = compute_progress(&m, metrics_total);
+                    // AC-006-A D1/D2: classifica linha — métrica de treino vs evento de status.
+                    // Fase em qualquer linha promove jobs.phase (P2-1): métrica com
+                    // `phase` carrega métrica + fase; sem phase o COALESCE não pisa.
+                    let is_metric = m.is_training_metric();
                     let _ = metrics_report_client
                         .report(
                             &metrics_job_id,
@@ -1700,7 +1739,11 @@ async fn run_job_inner(
                                 progress: Some(progress),
                                 epoch: Some(m.epoch),
                                 step: m.step.map(|s| s as i32),
-                                metrics: Some(m.to_report_json()),
+                                metrics: if is_metric {
+                                    Some(m.to_report_json())
+                                } else {
+                                    None
+                                },
                                 error: None,
                                 artifacts: if new_live_artifacts.is_empty() {
                                     None
@@ -1708,6 +1751,8 @@ async fn run_job_inner(
                                     Some(std::mem::take(&mut new_live_artifacts))
                                 },
                                 meta_content: None,
+                                phase: m.phase.clone(),
+                                message: m.message.clone(),
                             },
                         )
                         .await;
@@ -1725,6 +1770,8 @@ async fn run_job_inner(
                             error: None,
                             artifacts: Some(new_live_artifacts),
                             meta_content: None,
+                            phase: None,
+                            message: None,
                         },
                     )
                     .await;
@@ -2112,7 +2159,11 @@ async fn run_job_inner(
                 step: final_metrics
                     .as_ref()
                     .and_then(|m| m.step.map(|s| s as i32)),
-                metrics: final_metrics.as_ref().map(|m| m.to_report_json()),
+                // AC-006-A D1: somente métricas de treino entram no array.
+                metrics: final_metrics
+                    .as_ref()
+                    .filter(|m| m.is_training_metric())
+                    .map(|m| m.to_report_json()),
                 error: None,
                 artifacts: if artifacts.is_empty() {
                     None
@@ -2120,6 +2171,8 @@ async fn run_job_inner(
                     Some(artifacts)
                 },
                 meta_content,
+                phase: Some("completed".to_string()),
+                message: Some("Treino concluído".to_string()),
             },
         )
         .await
@@ -5853,6 +5906,137 @@ also bad, not a number
             client.health_calls(),
             0,
             "should not check health when not running"
+        );
+    }
+
+    // -- is_training_metric tests (AC-006-A D1) --
+
+    #[test]
+    fn is_training_metric_phase_only_is_false() {
+        // Linha de status (ex.: loading_model) — sem valores numéricos de treino.
+        let m = MetricsLine {
+            loss: None,
+            lr: None,
+            box_loss: 0.0,
+            cls_loss: 0.0,
+            dfl_loss: 0.0,
+            map50: 0.0,
+            map50_95: 0.0,
+            step: None,
+            epoch: 0,
+            progress: Some(0.05),
+            phase: Some("loading_model".to_string()),
+            message: Some("Carregando FLUX".to_string()),
+            vram_used_gb: None,
+        };
+        assert!(
+            !m.is_training_metric(),
+            "phase-only line is not a training metric"
+        );
+    }
+
+    #[test]
+    fn is_training_metric_with_loss_is_true() {
+        let m = MetricsLine {
+            loss: Some(0.4),
+            lr: Some(0.0001),
+            ..Default::default()
+        };
+        assert!(
+            m.is_training_metric(),
+            "line with loss is a training metric"
+        );
+    }
+
+    #[test]
+    fn is_training_metric_autolabel_zeros_is_false() {
+        // Autolabel emite linhas com zeros — são eventos de status.
+        let m = MetricsLine {
+            loss: None,
+            lr: None,
+            box_loss: 0.0,
+            cls_loss: 0.0,
+            dfl_loss: 0.0,
+            map50: 0.0,
+            map50_95: 0.0,
+            step: Some(10),
+            epoch: 0,
+            progress: Some(0.1),
+            phase: None,
+            message: None,
+            vram_used_gb: None,
+        };
+        assert!(
+            !m.is_training_metric(),
+            "autolabel zeros is not a training metric"
+        );
+    }
+
+    #[test]
+    fn is_training_metric_yolo_with_box_loss_is_true() {
+        let m = MetricsLine {
+            box_loss: 0.5,
+            cls_loss: 0.3,
+            dfl_loss: 0.2,
+            map50: 0.8,
+            map50_95: 0.6,
+            epoch: 5,
+            ..Default::default()
+        };
+        assert!(
+            m.is_training_metric(),
+            "YOLO line with box_loss is a training metric"
+        );
+    }
+
+    #[test]
+    fn is_training_metric_diffusion_with_map_is_true() {
+        let m = MetricsLine {
+            loss: Some(0.045),
+            map50: 0.9,
+            epoch: 3,
+            ..Default::default()
+        };
+        assert!(
+            m.is_training_metric(),
+            "diffusion line with mAP is a training metric"
+        );
+    }
+
+    #[test]
+    fn is_training_metric_with_phase_is_true_and_phase_promoted() {
+        // P2-1: linha métrica COM phase continua métrica e promove a fase
+        // (o report carrega `metrics: Some` + `phase: m.phase`).
+        let m = MetricsLine {
+            loss: Some(0.4),
+            epoch: 3,
+            phase: Some("training".to_string()),
+            message: Some("Época 3".to_string()),
+            ..Default::default()
+        };
+        assert!(
+            m.is_training_metric(),
+            "metric line with phase is still a training metric"
+        );
+        let json = m.to_report_json();
+        assert_eq!(json.get("phase").and_then(|v| v.as_str()), Some("training"));
+        assert_eq!(
+            json.get("message").and_then(|v| v.as_str()),
+            Some("Época 3")
+        );
+    }
+
+    #[test]
+    fn parse_metrics_line_nan_loss_is_not_metric() {
+        // P2-2: literal NaN é sanitizado para null (parseia) e a linha
+        // resultante NÃO é métrica. Nota: sem epoch/phase/progress a linha é
+        // descartada por falta de epoch — o teste carrega epoch explícito.
+        let m = parse_metrics_line(r#"{"epoch": 3, "loss": NaN}"#)
+            .expect("NaN line must parse after sanitization");
+        assert_eq!(m.loss, None, "NaN loss must become null");
+        assert!(
+            !m.is_training_metric(),
+            "sanitized NaN-loss line is not a training metric"
         );
     }
 }

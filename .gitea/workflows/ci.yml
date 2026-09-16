@@ -1,6 +1,6 @@
 # CI — Gitea Actions (act_runner v3.3.2, label ubuntu-latest)
 #
-# Desenho v1 (registrado em docs/coordenacao.md sessão 4):
+# Desenho v1 (registro histórico em docs/archive/coordenacao-historico-2026-09.md, sessão 4):
 # - ZERO ações externas — o actions/checkout@v4 saiu porque act_runner v3.3.2
 #   NÃO injeta node no container (prova: primeiro run, exit 127
 #   "node: executable file not found" em rust:slim e docker:29-cli, 2026-09-06).

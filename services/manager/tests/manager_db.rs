@@ -266,6 +266,8 @@ async fn ciclo_queued_done() {
             artifacts: None,
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -290,6 +292,8 @@ async fn ciclo_queued_done() {
             artifacts: None,
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -335,6 +339,8 @@ async fn ciclo_queued_done() {
             artifacts: None,
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -379,6 +385,8 @@ async fn ciclo_queued_done() {
             ]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -418,6 +426,8 @@ async fn ciclo_queued_done() {
             }]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -464,6 +474,8 @@ async fn abort_em_voo_e_terminal() {
             artifacts: None,
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -503,6 +515,8 @@ async fn abort_em_voo_e_terminal() {
             artifacts: None,
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -722,6 +736,8 @@ async fn report_failed_grava_error_em_params() {
             artifacts: None,
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -772,6 +788,8 @@ async fn report_invalid_md5_rejeita() {
             }]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await;
@@ -886,6 +904,8 @@ async fn report_job_inexistente_404() {
             artifacts: None,
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await;
@@ -1097,6 +1117,8 @@ async fn metrics_append_e_dedup_por_epoch() {
             artifacts: None,
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -1135,6 +1157,8 @@ async fn metrics_append_e_dedup_por_epoch() {
             artifacts: None,
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -1176,6 +1200,8 @@ async fn metrics_append_e_dedup_por_epoch() {
             artifacts: None,
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -1334,6 +1360,8 @@ async fn list_models_job_done_com_artifacts() {
             ]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -1398,6 +1426,8 @@ async fn list_models_cada_job_best_uma_linha() {
             ]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -1429,6 +1459,8 @@ async fn list_models_cada_job_best_uma_linha() {
             }]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -1504,6 +1536,8 @@ async fn list_models_exclui_autotracker_boxes() {
             ]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -1586,6 +1620,8 @@ async fn storage_usage_soma_esperada() {
             ]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -1633,6 +1669,8 @@ async fn storage_usage_soma_esperada() {
             ]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -1697,6 +1735,8 @@ async fn backfill_best_pt_para_models() {
             ]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -1788,6 +1828,8 @@ async fn backfill_idempotente_2x_sem_duplicar() {
             }]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -1854,6 +1896,8 @@ async fn hook_best_pt_idempotente_report_2x() {
             }]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -1885,6 +1929,8 @@ async fn hook_best_pt_idempotente_report_2x() {
             }]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -1947,6 +1993,8 @@ async fn hook_sem_best_pt_nao_insere() {
             ]),
 
             meta_content: None,
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -4904,6 +4952,8 @@ async fn hook_generations_3_linhas_meta() {
                 },
             ]),
             meta_content: Some(meta_content.into()),
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -4973,6 +5023,8 @@ async fn hook_generations_idempotente_re_report() {
                 },
             ]),
             meta_content: Some(meta.into()),
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -4998,6 +5050,8 @@ async fn hook_generations_idempotente_re_report() {
             error: None,
             artifacts: None,
             meta_content: Some(meta.into()),
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -5056,6 +5110,8 @@ async fn hook_generations_meta_corrupto_best_effort() {
                 },
             ]),
             meta_content: Some(meta.into()),
+            phase: None,
+            message: None,
         },
     )
     .await
@@ -5529,4 +5585,584 @@ async fn list_generations_pagination_offset_e_limit() {
         .expect("list deleted after delete");
     assert_eq!(resp_deleted.items.len(), 1, "deleted after delete: 1 item");
     assert_eq!(resp_deleted.total, 1, "deleted after delete: total 1");
+}
+
+// ===========================================================================
+// AC-003 — exclusão de jobs (delete_job / cleanup_jobs)
+// ===========================================================================
+
+async fn insert_artifact(pool: &PgPool, job_id: uuid::Uuid, path: &str) {
+    sqlx::query(
+        "INSERT INTO job_artifacts (id, job_id, kind, path, md5, bytes) \
+         VALUES ($1, $2, 'model', $3, 'd41d8cd98f00b204e9800998ecf8427e', 10)",
+    )
+    .bind(uuid::Uuid::new_v4())
+    .bind(job_id)
+    .bind(path)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn set_terminal(pool: &PgPool, job_id: uuid::Uuid, status: &str, days_ago: i64) {
+    sqlx::query(
+        "UPDATE jobs SET status = $2, finished_at = NOW() - ($3 * INTERVAL '1 day') WHERE id = $1",
+    )
+    .bind(job_id)
+    .bind(status)
+    .bind(days_ago)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn count_jobs(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM jobs")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn delete_job_guarda_estado_apaga_cascata() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create job");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    // 1. Job em 'queued' não é deletável.
+    let err = manager::delete_job(&p, job_id).await.unwrap_err();
+    assert!(
+        matches!(err, manager::ManagerError::NotDeletable),
+        "esperava NotDeletable, veio {err:?}"
+    );
+
+    // 2. Terminal + artifacts → apaga e devolve paths; cascade limpa job_artifacts.
+    set_terminal(&p, job_id, "done", 1).await;
+    insert_artifact(&p, job_id, "outputs/best.pt").await;
+    insert_artifact(&p, job_id, "samples/sample_epoch_001.png").await;
+
+    let deleted = manager::delete_job(&p, job_id).await.expect("delete ok");
+    assert_eq!(deleted.id, job_id.to_string());
+    assert_eq!(deleted.status, "done");
+    assert_eq!(deleted.artifacts.len(), 2, "paths dos artifacts p/ sweep");
+    assert_eq!(
+        deleted.object_keys,
+        vec![
+            format!("artifacts/{job_id}/outputs/best.pt"),
+            format!("artifacts/{job_id}/samples/sample_epoch_001.png"),
+        ],
+        "chaves exatas na ordem dos paths"
+    );
+    assert_eq!(deleted.models_deleted, 0);
+    assert_eq!(deleted.generations_preserved, 0);
+
+    assert_eq!(count_jobs(&p).await, 0);
+    let arts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM job_artifacts WHERE job_id = $1")
+        .bind(job_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(arts, 0, "FK ON DELETE CASCADE deve limpar artifacts");
+
+    // 3. Inexistente → NotFound.
+    let err = manager::delete_job(&p, job_id).await.unwrap_err();
+    assert!(matches!(err, manager::ManagerError::NotFound));
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn cleanup_jobs_lote_por_idade_e_status() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let mk = |p: &PgPool, ds: uuid::Uuid| {
+        let p = p.clone();
+        async move {
+            let r = manager::create_job(&p, test_job_request(ds))
+                .await
+                .expect("create");
+            r.job_id.parse::<uuid::Uuid>().unwrap()
+        }
+    };
+
+    let a = mk(&p, ds_id).await; // done há 10 dias (com artifact)
+    let b = mk(&p, ds_id).await; // done ontem (recente)
+    let c = mk(&p, ds_id).await; // failed há 30 dias
+    let d = mk(&p, ds_id).await; // ainda queued (não terminal)
+
+    set_terminal(&p, a, "done", 10).await;
+    insert_artifact(&p, a, "outputs/best.pt").await;
+    set_terminal(&p, b, "done", 1).await;
+    set_terminal(&p, c, "failed", 30).await;
+
+    // 1. Sem recorte de idade + sem statuses → Inválido (exige critério).
+    let err = manager::cleanup_jobs(&p, None, None).await.unwrap_err();
+    assert!(matches!(err, manager::ManagerError::InvalidRequest(_)));
+
+    // 2. Só terminais há mais de 7 dias → apaga A e C.
+    let res = manager::cleanup_jobs(&p, Some(7), None)
+        .await
+        .expect("cleanup");
+    assert_eq!(res.deleted, 2);
+    let ids: Vec<&str> = res.jobs.iter().map(|j| j.id.as_str()).collect();
+    assert!(ids.contains(&a.to_string().as_str()) && ids.contains(&c.to_string().as_str()));
+    let job_a = res.jobs.iter().find(|j| j.id == a.to_string()).unwrap();
+    assert_eq!(job_a.artifacts, vec!["outputs/best.pt".to_string()]);
+
+    // 3. B (done recente) e D (queued) permanecem.
+    assert_eq!(count_jobs(&p).await, 2);
+
+    // 4. Status inválido (não-terminal) → InvalidRequest.
+    let err = manager::cleanup_jobs(&p, Some(0), Some(vec!["running".into()]))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, manager::ManagerError::InvalidRequest(_)));
+
+    // 5. Por status, sem recorte de idade → apaga B (done); D permanece.
+    let res = manager::cleanup_jobs(&p, None, Some(vec!["done".into()]))
+        .await
+        .expect("cleanup por status");
+    assert_eq!(res.deleted, 1);
+    assert_eq!(res.jobs[0].id, b.to_string());
+    let remaining: Vec<String> = sqlx::query_scalar("SELECT id::text FROM jobs")
+        .fetch_all(&p)
+        .await
+        .unwrap();
+    assert_eq!(remaining, vec![d.to_string()], "só o queued D sobrevive");
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn delete_job_preserva_galeria_e_expurga_models() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create job");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+    set_terminal(&p, job_id, "done", 1).await;
+
+    // artifact de modelo (vai p/ sweep) + artifact geradoReferenciado por geração viva.
+    insert_artifact(&p, job_id, "outputs/m.safetensors").await;
+    insert_artifact(&p, job_id, "generated.png").await;
+
+    // linha no catálogo de models derivada do job → deve ser expurgada.
+    let model_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO models (id, engine, name, model, s3_key, source, hash, bytes, job_id, kind) \
+         VALUES ($1, 'diffusion', 'm', 'flux', $2, 'train', 'd41d8cd98f00b204e9800998ecf8427e', 10, $3, 'lora')",
+    )
+    .bind(model_id)
+    .bind(format!("artifacts/{job_id}/outputs/m.safetensors"))
+    .bind(job_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    // geração VIVA referenciando o artifact `generated.png` → bytes preservados,
+    // linha sobrevive com job_id NULL.
+    let gen_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO generations (id, job_id, s3_key, thumb_s3_key, filename, seed, prompt, width, height) \
+         VALUES ($1, $2, $3, $4, 'generated.png', 1, 'p', 512, 512)",
+    )
+    .bind(gen_id)
+    .bind(job_id)
+    .bind(format!("artifacts/{job_id}/generated.png"))
+    .bind(format!("artifacts/{job_id}/generated_thumb.png"))
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let deleted = manager::delete_job(&p, job_id).await.expect("delete");
+    assert_eq!(deleted.generations_preserved, 1);
+    assert_eq!(deleted.models_deleted, 1, "catálogo expurga models do job");
+    // sweep NÃO inclui a chave da geração viva (nem thumb, que nem é artifact).
+    assert_eq!(
+        deleted.object_keys,
+        vec![format!("artifacts/{job_id}/outputs/m.safetensors")],
+        "generated.png preservado (pertence à galeria)"
+    );
+
+    // geração sobrevive órfã (job_id NULL).
+    let (g_job,): (Option<uuid::Uuid>,) =
+        sqlx::query_as("SELECT job_id FROM generations WHERE id = $1")
+            .bind(gen_id)
+            .fetch_one(&p)
+            .await
+            .unwrap();
+    assert!(g_job.is_none(), "galeria preservada com job_id NULL");
+
+    // models do job sumiram do catálogo.
+    let m_left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM models WHERE id = $1")
+        .bind(model_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(m_left, 0);
+}
+
+// ---------------------------------------------------------------------------
+// AC-006-A: phase/message persistidos no job (ADR-0024 D3)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t6_ac006a_status_report_persists_phase_and_message() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let ds_id = insert_test_dataset(&p).await;
+    let req = test_job_request(ds_id);
+    let resp = manager::create_job(&p, req).await.expect("create job");
+    let job_id = uuid::Uuid::parse_str(&resp.job_id).unwrap();
+
+    // (a) Report de STATUS sem metrics — phase/message devem ser persistidos.
+    let status_report = ReportRequest {
+        status: "running".to_string(),
+        progress: Some(0.05),
+        epoch: Some(0),
+        step: None,
+        metrics: None,
+        error: None,
+        artifacts: None,
+        meta_content: None,
+        phase: Some("loading_model".to_string()),
+        message: Some("Carregando FLUX".to_string()),
+    };
+    manager::report_job(&p, job_id, status_report)
+        .await
+        .expect("report status");
+
+    // Verifica que phase/message foram gravados.
+    let job = manager::get_job(&p, job_id)
+        .await
+        .expect("get job after status");
+    assert_eq!(job.phase.as_deref(), Some("loading_model"));
+    assert_eq!(job.message.as_deref(), Some("Carregando FLUX"));
+    // Array de metrics permanece VAZIO (status não entra em metrics).
+    let metrics_items = job
+        .metrics
+        .as_ref()
+        .and_then(|v| v.get("items"))
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    assert_eq!(
+        metrics_items, 0,
+        "status report must not pollute metrics array"
+    );
+
+    // (b) Report de MÉTRICA — metrics array tem 1 item, phase/message NÃO são pisados.
+    let metric_report = ReportRequest {
+        status: "running".to_string(),
+        progress: Some(0.3),
+        epoch: Some(3),
+        step: Some(100),
+        metrics: Some(serde_json::json!({
+            "loss": 0.4,
+            "lr": 0.0001,
+            "epoch": 3,
+            "step": 100
+        })),
+        error: None,
+        artifacts: None,
+        meta_content: None,
+        phase: None,
+        message: None,
+    };
+    manager::report_job(&p, job_id, metric_report)
+        .await
+        .expect("report metric");
+
+    // Verifica que metrics tem 1 item E phase/message PRESERVADOS.
+    let job = manager::get_job(&p, job_id)
+        .await
+        .expect("get job after metric");
+    let metrics_items = job
+        .metrics
+        .as_ref()
+        .and_then(|v| v.get("items"))
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    assert_eq!(metrics_items, 1, "metric report should add 1 item");
+    assert_eq!(
+        job.phase.as_deref(),
+        Some("loading_model"),
+        "phase must NOT be overwritten by metric report"
+    );
+    assert_eq!(
+        job.message.as_deref(),
+        Some("Carregando FLUX"),
+        "message must NOT be overwritten by metric report"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn t7_ac006a_terminal_report_persiste_phase_message() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    // (a) done com phase/message atualiza as colunas (não congela no "running").
+    let ds_id = insert_test_dataset(&p).await;
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create job");
+    let job_id = uuid::Uuid::parse_str(&resp.job_id).unwrap();
+
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "running".to_string(),
+            progress: Some(0.3),
+            epoch: Some(2),
+            step: Some(50),
+            metrics: None,
+            error: None,
+            artifacts: None,
+            meta_content: None,
+            phase: Some("training".to_string()),
+            message: Some("Treinando época 2".to_string()),
+        },
+    )
+    .await
+    .expect("report running");
+
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "done".to_string(),
+            progress: Some(1.0),
+            epoch: Some(2),
+            step: Some(50),
+            metrics: None,
+            error: None,
+            artifacts: None,
+            meta_content: None,
+            phase: Some("completed".to_string()),
+            message: Some("Treino concluído".to_string()),
+        },
+    )
+    .await
+    .expect("report done");
+
+    let job = manager::get_job(&p, job_id)
+        .await
+        .expect("get job after done");
+    assert_eq!(job.status, "done");
+    assert_eq!(job.phase.as_deref(), Some("completed"));
+    assert_eq!(job.message.as_deref(), Some("Treino concluído"));
+
+    // (b) done com phase/message None NÃO pisa as colunas (COALESCE segura).
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create job 2");
+    let job_id = uuid::Uuid::parse_str(&resp.job_id).unwrap();
+
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "running".to_string(),
+            progress: Some(0.1),
+            epoch: Some(0),
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: None,
+            meta_content: None,
+            phase: Some("loading_model".to_string()),
+            message: Some("Carregando FLUX".to_string()),
+        },
+    )
+    .await
+    .expect("report running 2");
+
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "done".to_string(),
+            progress: Some(1.0),
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: None,
+            meta_content: None,
+            phase: None,
+            message: None,
+        },
+    )
+    .await
+    .expect("report done 2");
+
+    let job = manager::get_job(&p, job_id)
+        .await
+        .expect("get job 2 after done");
+    assert_eq!(job.status, "done");
+    assert_eq!(
+        job.phase.as_deref(),
+        Some("loading_model"),
+        "COALESCE must preserve phase on terminal report with None"
+    );
+    assert_eq!(
+        job.message.as_deref(),
+        Some("Carregando FLUX"),
+        "COALESCE must preserve message on terminal report with None"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn delete_job_sweep_inclui_models_orfaos() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create job");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+    set_terminal(&p, job_id, "done", 1).await;
+
+    // artifact comum (vai p/ sweep).
+    insert_artifact(&p, job_id, "outputs/common.pt").await;
+
+    // geração viva sob artifacts/{job}/... → bytes preservados.
+    let gen_s3 = format!("artifacts/{job_id}/gen.png");
+    let gen_thumb = format!("artifacts/{job_id}/gen_thumb.png");
+    sqlx::query(
+        "INSERT INTO generations (id, job_id, s3_key, thumb_s3_key, filename, seed, prompt, width, height) \
+         VALUES ($1, $2, $3, $4, 'gen.png', 1, 'p', 512, 512)",
+    )
+    .bind(uuid::Uuid::new_v4())
+    .bind(job_id)
+    .bind(&gen_s3)
+    .bind(&gen_thumb)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    // linha `models` com s3_key FORA do conjunto de artifacts (órfão de bytes).
+    let orphan_key = format!(
+        "models/yolo/{}/peso-upload.safetensors",
+        uuid::Uuid::new_v4()
+    );
+    sqlx::query(
+        "INSERT INTO models (id, engine, name, model, s3_key, source, hash, bytes, job_id) \
+         VALUES ($1, 'yolo', 'peso-upload.safetensors', 'yolo11m', $2, 'upload', 'd41d8cd98f00b204e9800998ecf8427e', 10, $3)",
+    )
+    .bind(uuid::Uuid::new_v4())
+    .bind(&orphan_key)
+    .bind(job_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let deleted = manager::delete_job(&p, job_id).await.expect("delete");
+    assert_eq!(deleted.models_deleted, 1);
+    assert_eq!(deleted.generations_preserved, 1);
+    assert!(
+        deleted
+            .object_keys
+            .contains(&format!("artifacts/{job_id}/outputs/common.pt")),
+        "artifact comum no sweep, veio {:?}",
+        deleted.object_keys
+    );
+    assert!(
+        deleted.object_keys.contains(&orphan_key),
+        "model órfão no sweep, veio {:?}",
+        deleted.object_keys
+    );
+    assert!(
+        !deleted.object_keys.contains(&gen_s3),
+        "s3_key da geração preservada fora do sweep"
+    );
+    assert!(
+        !deleted.object_keys.contains(&gen_thumb),
+        "thumb da geração preservada fora do sweep"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn delete_job_preserva_geracoes_trash() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create job");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+    set_terminal(&p, job_id, "done", 1).await;
+
+    insert_artifact(&p, job_id, "outputs/common.pt").await;
+
+    // geração do job já na lixeira (deleted_at preenchido) → bytes preservados.
+    let gen_id = uuid::Uuid::new_v4();
+    let gen_s3 = format!("artifacts/{job_id}/trash.png");
+    let gen_thumb = format!("artifacts/{job_id}/trash_thumb.png");
+    sqlx::query(
+        "INSERT INTO generations (id, job_id, s3_key, thumb_s3_key, filename, seed, prompt, width, height, deleted_at) \
+         VALUES ($1, $2, $3, $4, 'trash.png', 1, 'p', 512, 512, NOW())",
+    )
+    .bind(gen_id)
+    .bind(job_id)
+    .bind(&gen_s3)
+    .bind(&gen_thumb)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let deleted = manager::delete_job(&p, job_id).await.expect("delete");
+    assert_eq!(
+        deleted.generations_preserved, 1,
+        "geração trash também conta como preservada"
+    );
+    assert!(
+        !deleted.object_keys.contains(&gen_s3),
+        "s3_key da geração trash fora do sweep"
+    );
+    assert!(
+        !deleted.object_keys.contains(&gen_thumb),
+        "thumb da geração trash fora do sweep"
+    );
+    assert!(
+        deleted
+            .object_keys
+            .contains(&format!("artifacts/{job_id}/outputs/common.pt")),
+        "artifact comum no sweep, veio {:?}",
+        deleted.object_keys
+    );
+
+    // linha trash sobrevive órfã (job_id NULL).
+    let (g_job,): (Option<uuid::Uuid>,) =
+        sqlx::query_as("SELECT job_id FROM generations WHERE id = $1")
+            .bind(gen_id)
+            .fetch_one(&p)
+            .await
+            .unwrap();
+    assert!(g_job.is_none(), "geração trash preservada com job_id NULL");
 }

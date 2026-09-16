@@ -6,7 +6,7 @@ Engineering" (OpenAI, 2026-02-11): dívida como registro de primeira classe do
 repo, legível por qualquer agente sem contexto externo — paga continuamente em
 pequenas parcelas, não em rajadas.
 
-Separado de propósito: o estado de sessão/plano vive em `docs/coordenacao.md`
+Separado de propósito: o estado de sessão/plano vive em `tasks/todo.md`
 (volátil, reescrito por sessão); este arquivo é sistema de registro (permanente,
 versionado). O `coordenacao.md` referencia este arquivo e não o duplica.
 
@@ -57,7 +57,7 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
 
 **Backend**
 
-- **Abort races (review F4.8):** abort durante `preparing` pode ser engolido (estado substituído pelo progress report do orquestrador; `is_cancelled` não é consultado no pipeline — dead code); abort em `dispatched` não notifica o orquestrador (o dispatch já foi feito mas o orquestrador pode estar starting); abort em voo termina `failed` (nunca `cancelled` — o orquestrador reporta `failed` com erro "job not found or already finished" quando o container é stopado). Janela de segundos em mock local; conserto exige testes de abort-em-voo.
+- **Abort races (review F4.8):** abort durante `preparing` pode ser engolido (estado substituído pelo progress report do orquestrador; `is_cancelled` não é consultado no pipeline — dead code); abort em `dispatched` não notifica o orquestrador (o dispatch já foi feito mas o orquestrador pode estar starting); abort em voo termina `failed` (nunca `cancelled` — o orquestrador reporta `failed` com erro "job not found or already finished" quando o container é stopado). Janela de segundos em mock local; conserto exige testes de abort-em-voo. (relacionado ADR-0024/cc17527: reports terminais done/failed já carregam e persistem phase/message via COALESCE; o ramo `cancelled` de report continua inexistente — ao consertar as races, adicionar arm cancelled em `report_job` + emissão no orquestrador).
 - ~~**Watchdog de orquestrador (review F4.8)**~~ **QUITADA 2026-09-10** (Fatia H, ADR-0011 D4: watchdog no worker loop existente, 15s → `degraded`, 60s → `offline` + re-queue dos jobs do nó morto via CTE).
 - **CI: pytest do trainer-yolo (review F4.8):** contrato das 6 keys do `metrics.jsonl` (`epoch, box_loss, cls_loss, dfl_loss, mAP50, mAP50-95`) com o parser do orquestrador (`parse_metrics_line`) não roda em CI — job Python ausente em `.gitea/workflows/ci.yml`. Validado manualmente no E2E.
 - **Mock: best.pt e last.pt idênticos (review F4.8):** artefatos deterministas (bytes de cabeçalho, mesmos 32 bytes) — diferenciar por mAP50 se a UI consumir histograma ou comparação entre best/last.
@@ -189,6 +189,14 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
   de modelos reais (Florence-2, Qwen-VL, BLIP-2 ou endpoint de API multimodal) e
   runner dedicado com aceleração GPU.
 
+- **Action Center (review 2026-09-16) — ABERTA 2026-09-16:**
+  NIT-1 — sem testes unit de jobCapabilities/jobMetrics/galeria/sync-URL;
+  NIT-3 — gates `kind===`/`engine===` redundantes ao registry (switch ainda
+  espalhado); NIT-6 — `selectJob`/`setFocus` leem `window.location.search` em
+  vez de `searchParams` (risco de dessync + flash no deep-link `&focus=1`);
+  NIT-9 — `untaggedSamples` furam o colapso da galeria; teste de paridade
+  front `isTrainingMetric` × orquestrador `is_training_metric` (pós-merge
+  das 3 branches).
 - **Modal base sem focus-trap/foco inicial — ABERTA 2026-09-10 (review I.8, componente pré-existente):** `apps/web/components/ui/Modal.tsx:50-57` não captura Tab dentro do modal nem move o foco inicial para o primeiro elemento focável; Esc e click-outside funcionam. Modais novos da fatia I herdam. Correção global no componente base numa fatia de refinamento (afeta todos os modais da casa).
 
 ## Quitadas

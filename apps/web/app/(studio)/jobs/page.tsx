@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
   abortJob,
+  deleteJob,
   downloadArtifact,
   getJobArtifacts,
   getJobMetrics,
@@ -12,6 +13,8 @@ import {
 } from "@/lib/jobs";
 import { applyAutotrackerBoxes } from "@/lib/autotracker";
 import { applyAutolabelCaptions } from "@/lib/autolabel";
+import { trainingMetrics } from "@/lib/jobMetrics";
+import { jobCapabilities, imageProgressLabel } from "@/lib/jobCapabilities";
 import { ApiError } from "@/lib/api";
 import { showToast } from "@/components/studio/Toast";
 import ConfirmDialog from "@/components/studio/ConfirmDialog";
@@ -35,6 +38,7 @@ import {
   IconSparkles,
   IconTarget,
   IconTrash,
+  IconX,
   IconZap,
 } from "@/components/icons";
 import type {
@@ -49,6 +53,7 @@ import { openActionCenter } from "@/lib/events";
 import { JobListItem } from "@/components/studio/JobCard";
 import { AutolabelReviewModal } from "@/components/studio/AutolabelReviewModal";
 import { AutotrackerReviewModal } from "@/components/studio/AutotrackerReviewModal";
+import { JobCleanupDialog } from "@/components/studio/JobCleanupDialog";
 
 const POLL_INTERVAL = 3000;
 
@@ -92,6 +97,9 @@ function JobsPageContent() {
   const [artifacts, setArtifacts] = useState<Record<string, JobArtifact[]>>({});
   const [abortTarget, setAbortTarget] = useState<Job | null>(null);
   const [abortBusy, setAbortBusy] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Job | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [cleanupOpen, setCleanupOpen] = useState(false);
   const [applyBusy, setApplyBusy] = useState(false);
   const [applyOverwrite, setApplyOverwrite] = useState(false);
   const [reviewJob, setReviewJob] = useState<Job | null>(null);
@@ -99,13 +107,52 @@ function JobsPageContent() {
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Lê query param ?job=jobId para auto-seleção (usado pela navegação de /treino)
+  // Lê query param ?job=jobId para auto-seleção (deep link / navegação do ActionCenter)
   useEffect(() => {
     const qJob = searchParams.get("job");
-    if (qJob) {
+    if (qJob && qJob !== selectedJobId) {
       setSelectedJobId(qJob);
     }
-  }, [searchParams]);
+  }, [searchParams, selectedJobId]);
+
+  // Estado derivado: modo foco = /jobs?job=ID&focus=1
+  const focusMode = searchParams.get("focus") === "1" && Boolean(selectedJobId);
+
+  /** Sincroniza seleção de job com a URL (substitui setSelectedJobId direto). */
+  const selectJob = useCallback(
+    (id: string | null) => {
+      setSelectedJobId(id);
+      const params = new URLSearchParams(window.location.search);
+      if (id) {
+        params.set("job", id);
+      } else {
+        params.delete("job");
+      }
+      params.delete("focus"); // sair de foco ao trocar/clear job
+      const qs = params.toString();
+      router.replace(qs ? `/jobs?${qs}` : "/jobs", { scroll: false });
+    },
+    [router],
+  );
+
+  /** Atualiza o parâmetro ?focus=1 sem trocar o job. */
+  const setFocus = useCallback(
+    (on: boolean, id?: string | null) => {
+      const target = id ?? selectedJobId;
+      if (!target) return;
+      if (target !== selectedJobId) setSelectedJobId(target);
+      const params = new URLSearchParams(window.location.search);
+      params.set("job", target);
+      if (on) {
+        params.set("focus", "1");
+      } else {
+        params.delete("focus");
+      }
+      const qs = params.toString();
+      router.replace(`/jobs?${qs}`, { scroll: false });
+    },
+    [router, selectedJobId],
+  );
 
   // Resetar applyOverwrite ao trocar de job
   useEffect(() => {
@@ -190,6 +237,19 @@ function JobsPageContent() {
   const isSelectedActive = selectedJob ? isActive(selectedJob.status) : false;
   const telemetry = useJobTelemetry(isSelectedActive ? selectedJob?.id : null);
 
+  // AC-006-B: pontos reais de métrica de treino do job selecionado
+  // (linhas de status/boot do engine ficam só no log, nunca no gráfico/chips)
+  const selectedTrainingMetrics = useMemo(
+    () => (selectedJob ? trainingMetrics(metrics[selectedJob.id] ?? []) : []),
+    [selectedJob, metrics],
+  );
+
+  // AC-002: capacidades do job selecionado para gates de UI
+  const caps = useMemo(
+    () => (selectedJob ? jobCapabilities(selectedJob) : null),
+    [selectedJob],
+  );
+
   // Carregar métricas e artefatos quando o selectedJob mudar
   useEffect(() => {
     const targetId = selectedJob?.id;
@@ -263,6 +323,50 @@ function JobsPageContent() {
       showToast("Falha ao cancelar job.", "error");
     } finally {
       setAbortBusy(false);
+    }
+  }
+
+  async function handleDeleteJob() {
+    if (!deleteTarget) return;
+    setDeleteBusy(true);
+    try {
+      const res = await deleteJob(deleteTarget.id);
+      showToast(
+        `Job excluído · ${res.artifacts.length} artefatos, ${res.modelsDeleted} modelo(s) do catálogo${res.generationsPreserved > 0 ? ` · ${res.generationsPreserved} geração(ões) da galeria preservadas` : ""}.`,
+        "success",
+      );
+      // Se o job excluído era o selecionado, limpar seleção
+      if (selectedJobId === deleteTarget.id) {
+        selectJob(null);
+      }
+      setDeleteTarget(null);
+      await fetchJobs();
+    } catch (err) {
+      if (
+        err instanceof ApiError &&
+        (err.code === "job_not_terminal" || err.status === 409)
+      ) {
+        showToast("Só jobs concluídos/falhos/cancelados podem ser excluídos.", "info");
+        setDeleteTarget(null);
+        return;
+      }
+      if (err instanceof ApiError && err.code === "not_found") {
+        showToast("Job já havia sido removido.", "info");
+        // Se o job excluído era o selecionado, limpar seleção
+        if (selectedJobId === deleteTarget.id) {
+          selectJob(null);
+        }
+        setDeleteTarget(null);
+        await fetchJobs();
+        return;
+      }
+      if (err instanceof ApiError && err.code === "queue_unavailable") {
+        showToast("Manager indisponível, tente de novo.", "error");
+        return;
+      }
+      showToast("Falha ao excluir job.", "error");
+    } finally {
+      setDeleteBusy(false);
     }
   }
 
@@ -554,12 +658,33 @@ function JobsPageContent() {
             type="button"
             variant="secondary"
             size="sm"
+            className="min-h-[40px]"
+            onClick={() => setCleanupOpen(true)}
+            title="Limpar jobs antigos do histórico"
+          >
+            <IconTrash className="size-3.5 text-rose-400" />
+            <span className="hidden sm:inline">Limpar antigos</span>
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
             onClick={() => void fetchJobs(true)}
             disabled={refreshing}
             title="Atualizar lista e status dos jobs"
           >
             <IconRefresh className={`size-3.5 ${refreshing ? "animate-spin text-brand-400" : ""}`} />
             <span>Atualizar</span>
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => setCleanupOpen(true)}
+            title="Limpar jobs terminais antigos"
+          >
+            <IconTrash className="size-3.5 text-zinc-400" />
+            <span className="hidden sm:inline">Limpar antigos</span>
           </Button>
           <Button
             type="button"
@@ -586,7 +711,8 @@ function JobsPageContent() {
           ═══════════════════════════════════════════════ */}
       {!error && (
         <div className="flex flex-col md:flex-row items-start gap-6">
-          {/* Coluna 1: Lista de Execuções (Fixa: w-full md:w-80 lg:w-96 shrink-0) */}
+          {/* Coluna 1: Lista de Execuções — oculta no modo foco */}
+          {!focusMode && (
           <aside className="w-full md:w-80 lg:w-96 shrink-0 md:sticky md:top-4 md:max-h-[calc(100vh-2rem)] md:overflow-y-auto overflow-x-hidden [scrollbar-width:thin] space-y-4">
             {loading ? (
               <div className="glass-card rounded-2xl p-8 text-center text-xs text-zinc-400 font-mono border border-white/10">
@@ -630,7 +756,7 @@ function JobsPageContent() {
                           key={job.id}
                           job={job}
                           isFocused={selectedJob?.id === job.id}
-                          onSelect={(id) => setSelectedJobId(id)}
+                          onSelect={selectJob}
                         />
                       ))}
                     </div>
@@ -654,7 +780,7 @@ function JobsPageContent() {
                           key={job.id}
                           job={job}
                           isFocused={selectedJob?.id === job.id}
-                          onSelect={(id) => setSelectedJobId(id)}
+                          onSelect={selectJob}
                           onRerun={handleRerunJob}
                         />
                       ))}
@@ -664,6 +790,7 @@ function JobsPageContent() {
               </div>
             )}
           </aside>
+          )}
 
           {/* Coluna 2: Painel de Detalhe (flex-1 min-w-0) */}
           <section className="w-full flex-1 min-w-0 space-y-4">
@@ -673,9 +800,11 @@ function JobsPageContent() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <h2 className="font-display text-sm font-semibold text-zinc-200">
-                      {isActive(selectedJob.status)
-                        ? "Execução Ativa"
-                        : "Detalhes da Execução"}
+                      {focusMode
+                        ? "Acompanhando"
+                        : isActive(selectedJob.status)
+                          ? "Execução Ativa"
+                          : "Detalhes da Execução"}
                     </h2>
                     <Badge
                       variant={jobStatusToBadgeVariant(selectedJob.status)}
@@ -684,15 +813,50 @@ function JobsPageContent() {
                       {STATUS_LABEL[selectedJob.status]}
                     </Badge>
                   </div>
-                  {selectedJobId && selectedJobId !== activeJobs[0]?.id && (
-                    <button
-                      type="button"
-                      onClick={() => setSelectedJobId(null)}
-                      className="text-xs text-zinc-400 hover:text-zinc-200 transition underline underline-offset-2"
-                    >
-                      {activeJobs.length > 0 ? "Voltar ao job ativo" : "Ver último job"}
-                    </button>
-                  )}
+                  <div className="flex items-center gap-3">
+                    {focusMode ? (
+                      <button
+                        type="button"
+                        onClick={() => setFocus(false)}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-[11px] font-mono text-zinc-300 transition hover:bg-white/[0.06] active:scale-[0.985] cursor-pointer"
+                        title="Sair do modo foco"
+                      >
+                        <IconX className="size-3" />
+                        <span>Sair do foco</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setFocus(true, selectedJob.id)}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-[11px] font-mono text-zinc-300 transition hover:bg-white/[0.06] active:scale-[0.985] cursor-pointer"
+                        title="Acompanhar este job em tela cheia"
+                      >
+                        <IconActivity className="size-3" />
+                        <span>Acompanhar</span>
+                      </button>
+                    )}
+                    {!isActive(selectedJob.status) && (
+                      <button
+                        type="button"
+                        onClick={() => setDeleteTarget(selectedJob)}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-[11px] font-mono text-rose-300 transition hover:border-rose-500/40 hover:bg-rose-500/10 active:scale-[0.985] cursor-pointer"
+                        aria-label="Excluir job"
+                        title="Excluir este job e seus artefatos"
+                      >
+                        <IconTrash className="size-3" />
+                        <span>Excluir</span>
+                      </button>
+                    )}
+                    {selectedJobId && selectedJobId !== activeJobs[0]?.id && (
+                      <button
+                        type="button"
+                        onClick={() => selectJob(null)}
+                        className="text-xs text-zinc-400 hover:text-zinc-200 transition underline underline-offset-2"
+                      >
+                        {activeJobs.length > 0 ? "Voltar ao job ativo" : "Ver último job"}
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {/* Job Hero Card */}
@@ -776,35 +940,34 @@ function JobsPageContent() {
                     </div>
                   )}
 
-                  {/* Métricas da Execução & Curvas de Convergência */}
-                  {(selectedJob.kind === "yolo_train" ||
-                    (metrics[selectedJob.id] && metrics[selectedJob.id].length > 0)) && (
+                  {/* Métricas da Execução & Curvas de Convergência — regido por caps (AC-002) */}
+                  {caps && caps.convergenceChart && selectedTrainingMetrics.length > 0 && (
                     <div className="space-y-4 pt-3 border-t border-white/10">
                       <ConvergenceChart
-                        metrics={metrics[selectedJob.id] || []}
+                        metrics={selectedTrainingMetrics}
                         totalEpochs={selectedJob.epoch || 100}
                         isJobActive={selectedJob.status === "running"}
                       />
 
-                      {metrics[selectedJob.id] && metrics[selectedJob.id].length > 0 && (
+                      {selectedTrainingMetrics.length > 0 && (
                         <div className="space-y-2">
                           <div className="flex items-center justify-between">
                             <h3 className="font-mono text-[11px] font-semibold uppercase tracking-caps text-zinc-300">
                               Métricas (Epoch{" "}
-                              {metrics[selectedJob.id]![metrics[selectedJob.id]!.length - 1].epoch}
+                              {selectedTrainingMetrics[selectedTrainingMetrics.length - 1].epoch}
                               )
                             </h3>
                             <span className="font-mono text-[11px] text-zinc-400">
-                              {metrics[selectedJob.id]!.length} checkpoint(s)
+                              {selectedTrainingMetrics.length} checkpoint(s)
                             </span>
                           </div>
                           <div className={`grid gap-2.5 ${
-                            selectedJob.engine === "diffusion" || (selectedJob.kind as string) === "diffusion"
+                            caps.metricChips === "diffusion"
                               ? "grid-cols-2 sm:grid-cols-4"
                               : "grid-cols-2 sm:grid-cols-3 lg:grid-cols-6"
                           }`}>
                             {(
-                              selectedJob.engine === "diffusion" || (selectedJob.kind as string) === "diffusion"
+                              caps.metricChips === "diffusion"
                                 ? ([
                                     ["loss", "Diffusion Loss", false],
                                     ["lr", "Learning Rate", false],
@@ -820,7 +983,7 @@ function JobsPageContent() {
                                     ["epoch", "Epochs", false],
                                   ] as const)
                             ).map(([key, label, isPercent]) => {
-                              const jobMetrics = metrics[selectedJob.id]!;
+                              const jobMetrics = selectedTrainingMetrics;
                               const last = jobMetrics[jobMetrics.length - 1];
                               const val = last[key as keyof JobMetricsType];
                               const isPrimary = key === "map50" || key === "loss";
@@ -871,15 +1034,29 @@ function JobsPageContent() {
                     </div>
                   )}
 
+                  {/* Chip único "Imagens processadas" para autolabel/autotracker (AC-002) */}
+                  {caps && caps.metricChips === "progress" && (
+                    <div className="pt-3 border-t border-white/10">
+                      <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10 inline-flex items-center gap-2">
+                        <span className="text-[10px] font-mono text-zinc-400 uppercase tracking-caps">Imagens processadas</span>
+                        <span className="text-xs font-semibold text-zinc-200 font-mono tabular-nums">
+                          {imageProgressLabel(selectedJob.step, selectedJob.progress)}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Artefatos e Amostras Geradas */}
                   {artifacts[selectedJob.id] && artifacts[selectedJob.id].length > 0 && (
                     <div className="space-y-4 pt-3 border-t border-white/10">
-                      {/* Galeria de Amostras de Difusão */}
-                      <JobSamplesGallery
-                        jobId={selectedJob.id}
-                        artifacts={artifacts[selectedJob.id]}
-                        onDownload={(jId, art) => handleDownloadArtifact(jId, art)}
-                      />
+                      {/* Galeria de Amostras — gated por caps.samplesGallery (AC-002) */}
+                      {caps && caps.samplesGallery && (
+                        <JobSamplesGallery
+                          jobId={selectedJob.id}
+                          artifacts={artifacts[selectedJob.id]}
+                          onDownload={(jId, art) => handleDownloadArtifact(jId, art)}
+                        />
+                      )}
 
                       {/* Outros Artefatos Gerados */}
                       {artifacts[selectedJob.id].filter(
@@ -956,9 +1133,9 @@ function JobsPageContent() {
                     </div>
                   )}
 
-                  {/* Ações do Job */}
-                  <div className="flex items-center justify-between gap-3 pt-2">
-                    {selectedJob.kind === "autotracker" && selectedJob.status === "done" && (
+                    {/* Ações do Job */}
+                    <div className="flex items-center justify-between gap-3 pt-2">
+                    {caps && caps.applyAction && selectedJob.kind === "autotracker" && selectedJob.status === "done" && (
                       <div className="flex items-center gap-3 flex-wrap">
                         <Button
                           type="button"
@@ -995,7 +1172,7 @@ function JobsPageContent() {
                       </div>
                     )}
 
-                    {selectedJob.kind === "autolabel" && selectedJob.status === "done" && (
+                    {caps && caps.applyAction && selectedJob.kind === "autolabel" && selectedJob.status === "done" && (
                       <div className="flex items-center gap-3 flex-wrap">
                         <Button
                           type="button"
@@ -1033,8 +1210,8 @@ function JobsPageContent() {
                       </div>
                     )}
 
-                    {/* Ações para jobs finalizados de difusão ou YOLO */}
-                    {!isActive(selectedJob.status) &&
+                    {/* Ações para jobs finalizados de difusão ou YOLO — gated por caps.rerun (AC-002) */}
+                    {caps && caps.rerun && !isActive(selectedJob.status) &&
                       (selectedJob.engine === "diffusion" || selectedJob.engine === "yolo") && (
                         <Button
                           type="button"
@@ -1104,6 +1281,19 @@ function JobsPageContent() {
                         <span>Cancelar Execução</span>
                       </Button>
                     )}
+
+                    {!isActive(selectedJob.status) && (
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => setDeleteTarget(selectedJob)}
+                        title="Excluir job e seus artefatos (a galeria de gerações é preservada)"
+                      >
+                        <IconTrash className="size-3.5" />
+                        <span>Excluir</span>
+                      </Button>
+                    )}
                   </div>
                 </div>
 
@@ -1150,6 +1340,40 @@ function JobsPageContent() {
         busy={abortBusy}
         onConfirm={handleAbort}
         onClose={() => setAbortTarget(null)}
+      />
+
+      {/* Confirmação de exclusão de Job */}
+      <ConfirmDialog
+        open={Boolean(deleteTarget)}
+        title="Excluir job"
+        body={
+          <p className="text-xs text-zinc-300">
+            Esta ação remove o job{" "}
+            <strong className="text-white font-mono">{deleteTarget?.model}</strong>{" "}
+            ({deleteTarget?.id.slice(0, 8)}…) do histórico e{" "}
+            <strong>apaga seus artefatos no armazenamento</strong>. Modelos derivados
+            deste job saem do catálogo. As imagens já salvas na galeria de geração
+            são preservadas.
+          </p>
+        }
+        confirmLabel="Sim, excluir job"
+        danger
+        busy={deleteBusy}
+        onConfirm={handleDeleteJob}
+        onClose={() => setDeleteTarget(null)}
+      />
+
+      {/* Diálogo de limpeza em lote */}
+      <JobCleanupDialog
+        open={cleanupOpen}
+        onClose={() => setCleanupOpen(false)}
+        terminalJobs={terminalJobs.map((j) => ({
+          id: j.id,
+          status: j.status as "done" | "failed" | "cancelled",
+          createdAt: j.createdAt,
+          finishedAt: j.finishedAt,
+        }))}
+        onDone={() => void fetchJobs()}
       />
 
       <AutolabelReviewModal

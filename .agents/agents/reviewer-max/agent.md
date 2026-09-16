@@ -8,7 +8,7 @@ subagent: true
 # Revisor de Código (Escalada)
 
 > **Papel:** escalada, não experimento. O A/B de modelo rodou nos marcos 3b.3/3b.6 e foi
-> encerrado pelo usuário por custo de tokens (resultado registrado em `docs/coordenacao.md`:
+> encerrado pelo usuário por custo de tokens (resultado registrado em `docs/archive/coordenacao-historico-2026-09.md`:
 > achados convergentes nos dois marcos; nenhum erro do titular que exigisse o max por
 > competência — a partir daqui, max = seguro contra trava/impasse do titular).
 

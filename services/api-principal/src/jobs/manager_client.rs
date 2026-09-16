@@ -17,6 +17,8 @@ pub enum ManagerError {
     NotFound,
     /// Resposta 409 do manager (job em estado terminal — abort não possível).
     NotAbortable,
+    /// Resposta 409 do manager (job não terminal — delete não possível).
+    NotDeletable,
     /// Resposta 409 do manager (pairing code inválido ou orquestrador inalcançável).
     PairingInvalid,
     /// Resposta 409 do manager (s3_key duplicado — modelo já existe).
@@ -31,6 +33,7 @@ impl std::fmt::Display for ManagerError {
             Self::Unavailable(_) => write!(f, "manager unavailable"),
             Self::NotFound => write!(f, "manager: not found"),
             Self::NotAbortable => write!(f, "manager: job not abortable"),
+            Self::NotDeletable => write!(f, "manager: job not terminal"),
             Self::PairingInvalid => write!(f, "manager: pairing invalid"),
             Self::Conflict => write!(f, "manager: conflict"),
             Self::InvalidRequest(_) => write!(f, "manager: invalid request"),
@@ -69,6 +72,12 @@ pub struct InternalJob {
     pub error: Option<String>,
     #[serde(default)]
     pub params: Option<serde_json::Value>,
+    /// AC-006-A D3: último status de fase do job (coluna jobs.phase).
+    #[serde(default)]
+    pub phase: Option<String>,
+    /// AC-006-A D3: última mensagem de status do job (coluna jobs.message).
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 /// Item da fila (snake_case interno do manager).
@@ -234,6 +243,15 @@ pub trait ManagerPort: Send + Sync {
     /// Aborta um job via manager (ADR-0007 D7).
     async fn abort_job(&self, id: &str) -> Result<AbortJobResponse, ManagerError>;
 
+    /// Exclui um job terminal via manager (DELETE /internal/jobs/:id).
+    async fn delete_job(&self, id: &str) -> Result<serde_json::Value, ManagerError>;
+
+    /// Limpa jobs antigos via manager (POST /internal/jobs/cleanup).
+    async fn cleanup_jobs(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, ManagerError>;
+
     /// Lista orquestradores registrados no manager.
     async fn list_orchestrators(&self) -> Result<Vec<InternalOrchestrator>, ManagerError>;
 
@@ -294,7 +312,9 @@ pub trait ManagerPort: Send + Sync {
 #[derive(Debug, Clone, Deserialize)]
 pub struct InternalGeneration {
     pub id: String,
-    pub job_id: String,
+    /// `None` quando o job de origem foi expurgado (AC-003: galeria sobrevive).
+    #[serde(default)]
+    pub job_id: Option<String>,
     pub s3_key: String,
     #[serde(default)]
     pub thumb_s3_key: Option<String>,
@@ -499,6 +519,63 @@ impl ManagerPort for HttpManager {
         }
         if status == reqwest::StatusCode::CONFLICT {
             return Err(ManagerError::NotAbortable);
+        }
+        if !status.is_success() {
+            return Err(ManagerError::Unavailable(format!(
+                "manager status: {status}"
+            )));
+        }
+        resp.json()
+            .await
+            .map_err(|e| ManagerError::Unavailable(format!("manager body: {e}")))
+    }
+
+    async fn delete_job(&self, id: &str) -> Result<serde_json::Value, ManagerError> {
+        let url = format!("{}/internal/jobs/{id}", self.base_url);
+        let resp = self
+            .client
+            .delete(&url)
+            .header("authorization", self.auth_header())
+            .send()
+            .await
+            .map_err(|e| ManagerError::Unavailable(format!("manager request: {e}")))?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(ManagerError::NotFound);
+        }
+        if status == reqwest::StatusCode::CONFLICT {
+            return Err(ManagerError::NotDeletable);
+        }
+        if !status.is_success() {
+            return Err(ManagerError::Unavailable(format!(
+                "manager status: {status}"
+            )));
+        }
+        resp.json()
+            .await
+            .map_err(|e| ManagerError::Unavailable(format!("manager body: {e}")))
+    }
+
+    async fn cleanup_jobs(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, ManagerError> {
+        let url = format!("{}/internal/jobs/cleanup", self.base_url);
+        let resp = self
+            .client
+            .post(&url)
+            .header("authorization", self.auth_header())
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| ManagerError::Unavailable(format!("manager request: {e}")))?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::BAD_REQUEST {
+            let msg = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "invalid request".into());
+            return Err(ManagerError::InvalidRequest(msg));
         }
         if !status.is_success() {
             return Err(ManagerError::Unavailable(format!(
@@ -822,6 +899,14 @@ pub struct MockManager {
     pub create_job_not_found: bool,
     /// Se `Some`, `create_job` retorna `InvalidRequest` com a mensagem (para testar 400 — Fatia J R6).
     pub create_job_invalid_request: Option<String>,
+    /// Resultado de `delete_job` (para testar 200).
+    pub delete_job_result: Option<serde_json::Value>,
+    /// Se `true`, `delete_job` retorna `NotDeletable` (para testar 409).
+    pub delete_not_terminal: bool,
+    /// Resultado de `cleanup_jobs` (para testar 200).
+    pub cleanup_result: Option<serde_json::Value>,
+    /// Se `Some`, `cleanup_jobs` retorna `InvalidRequest` com a mensagem (para testar 400).
+    pub cleanup_invalid_request: Option<String>,
     /// Body capturado na última chamada a `create_model` (para asserts de teste).
     last_create_model_body: std::sync::Mutex<Option<serde_json::Value>>,
     /// Body capturado na última chamada a `create_job` (para asserts de teste).
@@ -885,6 +970,10 @@ impl Default for MockManager {
             update_model_invalid_request: None,
             create_job_not_found: false,
             create_job_invalid_request: None,
+            delete_job_result: None,
+            delete_not_terminal: false,
+            cleanup_result: None,
+            cleanup_invalid_request: None,
             last_create_model_body: std::sync::Mutex::new(None),
             last_create_job_body: std::sync::Mutex::new(None),
             jobs_by_id: std::collections::HashMap::new(),
@@ -978,6 +1067,31 @@ impl ManagerPort for MockManager {
             return Err(ManagerError::NotAbortable);
         }
         self.abort_job_result.clone().ok_or(ManagerError::NotFound)
+    }
+
+    async fn delete_job(&self, _id: &str) -> Result<serde_json::Value, ManagerError> {
+        if self.fail {
+            return Err(ManagerError::Unavailable("mock fail".into()));
+        }
+        if self.delete_not_terminal {
+            return Err(ManagerError::NotDeletable);
+        }
+        self.delete_job_result.clone().ok_or(ManagerError::NotFound)
+    }
+
+    async fn cleanup_jobs(
+        &self,
+        _body: &serde_json::Value,
+    ) -> Result<serde_json::Value, ManagerError> {
+        if self.fail {
+            return Err(ManagerError::Unavailable("mock fail".into()));
+        }
+        if let Some(ref msg) = self.cleanup_invalid_request {
+            return Err(ManagerError::InvalidRequest(msg.clone()));
+        }
+        self.cleanup_result
+            .clone()
+            .ok_or(ManagerError::Unavailable("no cleanup result".into()))
     }
 
     async fn list_orchestrators(&self) -> Result<Vec<InternalOrchestrator>, ManagerError> {

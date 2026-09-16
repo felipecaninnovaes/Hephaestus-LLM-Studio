@@ -20,6 +20,8 @@ use uuid::Uuid;
 pub enum ManagerError {
     NotFound,
     NotAbortable,
+    /// Job não está em estado terminal (done|failed|cancelled) — não pode ser apagado.
+    NotDeletable,
     InvalidRequest(String),
     PairingInvalid,
     Internal(String),
@@ -30,6 +32,7 @@ impl std::fmt::Display for ManagerError {
         match self {
             Self::NotFound => write!(f, "not found"),
             Self::NotAbortable => write!(f, "job not abortable"),
+            Self::NotDeletable => write!(f, "job_not_terminal"),
             Self::InvalidRequest(e) => write!(f, "invalid request: {e}"),
             Self::PairingInvalid => write!(f, "pairing_invalid"),
             Self::Internal(e) => write!(f, "{e}"),
@@ -111,6 +114,12 @@ pub struct JobRow {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<serde_json::Value>,
+    /// AC-006-A D3: último status de fase do job (snapshot last-write-wins).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    /// AC-006-A D3: última mensagem de status do job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -135,6 +144,13 @@ pub struct ReportRequest {
     /// para o hook de generations (D5 — ADR-0023). Campo opcional retrocompat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meta_content: Option<String>,
+    /// AC-006-A D2/D3: fase/status do job (ex.: "loading_model").
+    /// Campo opcional retrocompat: ausente em orquestradores antigos.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    /// AC-006-A D2/D3: mensagem descritiva da fase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -213,7 +229,9 @@ pub struct ResolvedCheckpoint {
 #[derive(Debug, Clone, Serialize)]
 pub struct GenerationRow {
     pub id: String,
-    pub job_id: String,
+    /// `None` após o job de origem ser expurgado (AC-003: geração sobrevive ao
+    /// job; `s3_key` continua válido para o proxy de imagem).
+    pub job_id: Option<String>,
     pub s3_key: String,
     pub thumb_s3_key: Option<String>,
     pub filename: String,
@@ -696,6 +714,7 @@ pub async fn list_jobs(
     let mut query = String::from(
         "SELECT j.id, j.kind, j.engine, j.model, j.mode, j.dataset_id, j.status, j.queue_reason, \
          j.progress, j.epoch, j.step, j.metrics, j.vram_min_gb, j.orchestrator_id, j.created_at, j.finished_at, j.params, \
+         j.phase, j.message, \
          o.name AS orchestrator_name, o.kind AS orchestrator_kind, \
          COALESCE((j.params->>'orchestrator_fallback') = 'true', false) AS orchestrator_fallback, \
          j.params->>'error' AS error \
@@ -781,6 +800,8 @@ pub async fn list_jobs(
                 finished_at: finished_at.map(|t| t.to_rfc3339()),
                 error: r.get("error"),
                 params: r.get("params"),
+                phase: r.get("phase"),
+                message: r.get("message"),
             }
         })
         .collect();
@@ -808,6 +829,7 @@ pub async fn get_job(pool: &PgPool, id: Uuid) -> Result<JobRow, ManagerError> {
     let row = sqlx::query(
         "SELECT j.id, j.kind, j.engine, j.model, j.mode, j.dataset_id, j.status, j.queue_reason, \
          j.progress, j.epoch, j.step, j.metrics, j.vram_min_gb, j.orchestrator_id, j.created_at, j.finished_at, j.params, \
+         j.phase, j.message, \
          o.name AS orchestrator_name, o.kind AS orchestrator_kind, \
          COALESCE((j.params->>'orchestrator_fallback') = 'true', false) AS orchestrator_fallback, \
          j.params->>'error' AS error \
@@ -857,6 +879,8 @@ pub async fn get_job(pool: &PgPool, id: Uuid) -> Result<JobRow, ManagerError> {
         finished_at: finished_at.map(|t| t.to_rfc3339()),
         error: r.get("error"),
         params: r.get("params"),
+        phase: r.get("phase"),
+        message: r.get("message"),
     })
 }
 
@@ -875,12 +899,14 @@ pub async fn get_job_artifacts(
         return Err(ManagerError::NotFound);
     }
 
-    let rows: Vec<(Uuid, String, String, String, i64)> =
-        sqlx::query_as("SELECT id, kind, path, md5, bytes FROM job_artifacts WHERE job_id = $1")
-            .bind(job_id)
-            .fetch_all(pool)
-            .await
-            .map_err(|e| ManagerError::Internal(format!("list artifacts: {e}")))?;
+    let rows: Vec<(Uuid, String, String, String, i64)> = sqlx::query_as(
+        "SELECT id, kind, path, md5, bytes FROM job_artifacts WHERE job_id = $1 \
+             ORDER BY path, id",
+    )
+    .bind(job_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("list artifacts: {e}")))?;
 
     Ok(rows
         .into_iter()
@@ -1068,13 +1094,15 @@ pub async fn report_job(
     match report.status.as_str() {
         "preparing" | "running" => {
             sqlx::query(
-                "UPDATE jobs SET status = $2, progress = COALESCE($3, progress), epoch = COALESCE($4, epoch), step = COALESCE($5, step) WHERE id = $1",
+                "UPDATE jobs SET status = $2, progress = COALESCE($3, progress), epoch = COALESCE($4, epoch), step = COALESCE($5, step), phase = COALESCE($6, phase), message = COALESCE($7, message) WHERE id = $1",
             )
             .bind(id)
             .bind(&report.status)
             .bind(report.progress)
             .bind(report.epoch)
             .bind(report.step)
+            .bind(&report.phase)
+            .bind(&report.message)
             .execute(pool)
             .await
             .map_err(|e| ManagerError::Internal(format!("update job status: {e}")))?;
@@ -1401,9 +1429,11 @@ pub async fn report_job(
             }
 
             sqlx::query(
-                "UPDATE jobs SET status = 'done', finished_at = now(), progress = 1.0 WHERE id = $1",
+                "UPDATE jobs SET status = 'done', finished_at = now(), progress = 1.0, phase = COALESCE($2, phase), message = COALESCE($3, message) WHERE id = $1",
             )
             .bind(id)
+            .bind(&report.phase)
+            .bind(&report.message)
             .execute(pool)
             .await
             .map_err(|e| ManagerError::Internal(format!("set done: {e}")))?;
@@ -1420,8 +1450,10 @@ pub async fn report_job(
                     .map_err(|e| ManagerError::Internal(format!("merge error: {e}")))?;
             }
 
-            sqlx::query("UPDATE jobs SET status = 'failed', finished_at = now() WHERE id = $1")
+            sqlx::query("UPDATE jobs SET status = 'failed', finished_at = now(), phase = COALESCE($2, phase), message = COALESCE($3, message) WHERE id = $1")
                 .bind(id)
+                .bind(&report.phase)
+                .bind(&report.message)
                 .execute(pool)
                 .await
                 .map_err(|e| ManagerError::Internal(format!("set failed: {e}")))?;
@@ -2086,6 +2118,270 @@ pub async fn delete_model(pool: &PgPool, id: Uuid) -> Result<ModelItem, ManagerE
     }
 }
 
+// ---------------------------------------------------------------------------
+// Exclusão de jobs (AC-003) — dono da fila/linhas é o manager; o sweep S3 é
+// compensação best-effort do principal (ADR-0003 D6/D7: linha primeiro, objeto
+// depois). Estados terminais são os únicos apagáveis (D-a do plano).
+// ---------------------------------------------------------------------------
+
+/// Linha apagada por `delete_job`/`cleanup_jobs` (AC-003).
+///
+/// `object_keys` é a lista EXATA de chaves S3 a varrer no sweep do principal —
+/// já exclui as chaves das gerações preservadas (a galeria sobrevive ao job;
+/// seus bytes vivem sob `artifacts/{job_id}/...`, o mesmo prefixo dos demais
+/// artifacts, daí a necessidade de lista exata em vez de sweep por prefixo).
+#[derive(Debug, Clone, Serialize)]
+pub struct DeletedJob {
+    pub id: String,
+    pub status: String,
+    /// Paths relativos dos artifacts (informativo p/ UI/toast).
+    pub artifacts: Vec<String>,
+    /// Chaves S3 completas a apagar (exclui gerações preservadas).
+    pub object_keys: Vec<String>,
+    /// Linhas do catálogo `models` derivadas deste job e expurgadas (D-a).
+    pub models_deleted: i64,
+    /// Gerações da galeria preservadas pelo SET NULL na FK (0012).
+    pub generations_preserved: i64,
+}
+
+/// Resultado do `cleanup_jobs` (limpeza em lote).
+#[derive(Debug, Clone, Serialize)]
+pub struct CleanupResult {
+    pub deleted: i64,
+    pub jobs: Vec<DeletedJob>,
+    /// União das `object_keys` de todos os jobs (conveniência p/ o sweep).
+    pub object_keys: Vec<String>,
+}
+
+/// Estados terminais — os únicos apagáveis.
+pub const TERMINAL_STATUSES: [&str; 3] = ["done", "failed", "cancelled"];
+
+/// Monta a lista exata de chaves S3 a varrer num job (origem dupla:
+/// artifacts + `models.s3_key` de órfãos de bytes, excluindo chaves de
+/// gerações de todas as linhas do job, incl. trash) + conta modelos
+/// expurgados/gerações preservadas. Deve rodar DENTRO da transação,
+/// ANTES do `DELETE FROM jobs`.
+async fn plan_job_sweep(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    id: Uuid,
+) -> Result<(Vec<String>, Vec<String>, i64, i64), ManagerError> {
+    // Chaves de gerações a PRESERVAR (s3_key + thumb_s3_key) — todas as linhas
+    // do job, incl. trash (deleted_at preenchido; as linhas sobrevivem via
+    // SET NULL da 0012 e continuam referenciando s3_key/thumb_s3_key).
+    let gen_rows: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT s3_key, thumb_s3_key FROM generations \
+         WHERE job_id = $1",
+    )
+    .bind(id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("list generations to preserve: {e}")))?;
+    let preserved: std::collections::HashSet<String> = gen_rows
+        .iter()
+        .flat_map(|(k, t)| {
+            let mut v = vec![k.clone()];
+            if let Some(th) = t {
+                v.push(th.clone());
+            }
+            v
+        })
+        .collect();
+    let generations_preserved = gen_rows.len() as i64;
+
+    // Chaves dos artifacts, excluindo as preservadas.
+    let paths: Vec<String> =
+        sqlx::query_scalar("SELECT path FROM job_artifacts WHERE job_id = $1 ORDER BY path, id")
+            .bind(id)
+            .fetch_all(&mut **tx)
+            .await
+            .map_err(|e| ManagerError::Internal(format!("list artifacts before delete: {e}")))?;
+
+    // Chaves órfãs de bytes do catálogo `models` (s3_key NOT NULL, 0007) —
+    // capturadas ANTES do DELETE, pois vivem fora do prefixo artifacts/{job}/.
+    let model_keys: Vec<String> = sqlx::query_scalar("SELECT s3_key FROM models WHERE job_id = $1")
+        .bind(id)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("list models before delete: {e}")))?;
+
+    // União deduplicada e ordenada (artifacts + models), sem as preservadas.
+    let object_keys: Vec<String> = {
+        let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for p in &paths {
+            let k = format!("artifacts/{id}/{p}");
+            if !preserved.contains(&k) {
+                set.insert(k);
+            }
+        }
+        for k in &model_keys {
+            if !preserved.contains(k) {
+                set.insert(k.clone());
+            }
+        }
+        set.into_iter().collect()
+    };
+
+    // Expurga linhas do catálogo de modelos derivadas deste job (D-a: sim).
+    let models_deleted = sqlx::query("DELETE FROM models WHERE job_id = $1")
+        .bind(id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("delete job models: {e}")))?
+        .rows_affected() as i64;
+
+    Ok((paths, object_keys, models_deleted, generations_preserved))
+}
+
+/// Apaga um job terminal e retorna a linha + as chaves S3 a varrer.
+///
+/// Guarda: `done|failed|cancelled` → apaga (FK `job_artifacts ON DELETE
+/// CASCADE`; `generations` ficam com `job_id` NULL — galeria preservada);
+/// qualquer outro status → [`ManagerError::NotDeletable`]; inexistente →
+/// [`ManagerError::NotFound`].
+pub async fn delete_job(pool: &PgPool, id: Uuid) -> Result<DeletedJob, ManagerError> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| ManagerError::Internal(format!("begin delete job: {e}")))?;
+
+    let status: Option<String> =
+        sqlx::query_scalar("SELECT status FROM jobs WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| ManagerError::Internal(format!("lock job for delete: {e}")))?;
+
+    let status = status.ok_or(ManagerError::NotFound)?;
+    if !TERMINAL_STATUSES.contains(&status.as_str()) {
+        return Err(ManagerError::NotDeletable);
+    }
+
+    let (artifacts, object_keys, models_deleted, generations_preserved) =
+        plan_job_sweep(&mut tx, id).await?;
+
+    sqlx::query("DELETE FROM jobs WHERE id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("delete job: {e}")))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| ManagerError::Internal(format!("commit delete job: {e}")))?;
+
+    Ok(DeletedJob {
+        id: id.to_string(),
+        status,
+        artifacts,
+        object_keys,
+        models_deleted,
+        generations_preserved,
+    })
+}
+
+/// Normaliza e valida os statuses pedidos numa limpeza em lote.
+/// `None`/vazio → todos os terminais; qualquer status não-terminal → erro.
+pub fn normalize_cleanup_statuses(
+    statuses: Option<&Vec<String>>,
+) -> Result<Vec<String>, ManagerError> {
+    let list = match statuses {
+        None => Vec::new(),
+        Some(v) => v.clone(),
+    };
+    let list = if list.is_empty() {
+        TERMINAL_STATUSES.iter().map(|s| s.to_string()).collect()
+    } else {
+        for s in &list {
+            if !TERMINAL_STATUSES.contains(&s.as_str()) {
+                return Err(ManagerError::InvalidRequest(format!(
+                    "cleanup só aceita estados terminais (done|failed|cancelled), recebido: {s}"
+                )));
+            }
+        }
+        list
+    };
+    Ok(list)
+}
+
+/// Limpeza em lote de jobs terminais (AC-003).
+///
+/// `older_than_days`: apaga apenas jobs terminais há mais de N dias
+/// (`COALESCE(finished_at, created_at)`); `None` = sem recorte temporal.
+/// Exige pelo menos um critério (dias ou statuses) para não apagar o
+/// histórico inteiro por omissão. Retorna as linhas apagadas com as chaves
+/// S3 a varrer (exclui gerações preservadas).
+pub async fn cleanup_jobs(
+    pool: &PgPool,
+    older_than_days: Option<i64>,
+    statuses: Option<Vec<String>>,
+) -> Result<CleanupResult, ManagerError> {
+    if older_than_days.is_none() && statuses.as_ref().map_or(true, |s| s.is_empty()) {
+        return Err(ManagerError::InvalidRequest(
+            "cleanup exige pelo menos um critério (olderThanDays ou statuses)".into(),
+        ));
+    }
+    if let Some(d) = older_than_days {
+        if d < 0 {
+            return Err(ManagerError::InvalidRequest(
+                "olderThanDays deve ser >= 0".into(),
+            ));
+        }
+    }
+    let statuses = normalize_cleanup_statuses(statuses.as_ref())?;
+
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| ManagerError::Internal(format!("begin cleanup: {e}")))?;
+
+    // Seleciona os candidatos (lock pessimista p/ não corrida com report/dispatch).
+    let rows: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT id, status FROM jobs \
+         WHERE status = ANY($1) \
+           AND ($2::bigint IS NULL OR COALESCE(finished_at, created_at) < NOW() - ($2::bigint * INTERVAL '1 day')) \
+         FOR UPDATE SKIP LOCKED",
+    )
+    .bind(&statuses)
+    .bind(older_than_days)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("select jobs to cleanup: {e}")))?;
+
+    let mut jobs = Vec::with_capacity(rows.len());
+    let mut all_keys: Vec<String> = Vec::new();
+    for (id, status) in rows {
+        let (artifacts, object_keys, models_deleted, generations_preserved) =
+            plan_job_sweep(&mut tx, id).await?;
+
+        sqlx::query("DELETE FROM jobs WHERE id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| ManagerError::Internal(format!("delete job in cleanup: {e}")))?;
+
+        all_keys.extend(object_keys.iter().cloned());
+        jobs.push(DeletedJob {
+            id: id.to_string(),
+            status,
+            artifacts,
+            object_keys,
+            models_deleted,
+            generations_preserved,
+        });
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| ManagerError::Internal(format!("commit cleanup: {e}")))?;
+
+    let deleted = jobs.len() as i64;
+    Ok(CleanupResult {
+        deleted,
+        jobs,
+        object_keys: all_keys,
+    })
+}
+
 /// Sanitiza uma string para slug seguro (apenas a-z, 0-9 e hífen).
 pub fn slugify(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -2384,12 +2680,12 @@ pub async fn list_generations(
         .into_iter()
         .map(|r| {
             let id: Uuid = r.get("id");
-            let job_id: Uuid = r.get("job_id");
+            let job_id: Option<Uuid> = r.get("job_id");
             let created_at: DateTime<Utc> = r.get("created_at");
             let deleted_at: Option<DateTime<Utc>> = r.get("deleted_at");
             GenerationRow {
                 id: id.to_string(),
-                job_id: job_id.to_string(),
+                job_id: job_id.map(|u| u.to_string()),
                 s3_key: r.get("s3_key"),
                 thumb_s3_key: r.get("thumb_s3_key"),
                 filename: r.get("filename"),
@@ -2426,12 +2722,12 @@ pub async fn get_generation(
 
     Ok(row.map(|r| {
         let id: Uuid = r.get("id");
-        let job_id: Uuid = r.get("job_id");
+        let job_id: Option<Uuid> = r.get("job_id");
         let created_at: DateTime<Utc> = r.get("created_at");
         let deleted_at: Option<DateTime<Utc>> = r.get("deleted_at");
         GenerationRow {
             id: id.to_string(),
-            job_id: job_id.to_string(),
+            job_id: job_id.map(|u| u.to_string()),
             s3_key: r.get("s3_key"),
             thumb_s3_key: r.get("thumb_s3_key"),
             filename: r.get("filename"),
@@ -2911,6 +3207,31 @@ mod tests {
     #[test]
     fn is_valid_md5_non_hex() {
         assert!(!is_valid_md5("d41d8cd98f00b204e9800998ecf8427g"));
+    }
+
+    #[test]
+    fn normalize_cleanup_statuses_default_sao_terminais() {
+        let got = normalize_cleanup_statuses(None).unwrap();
+        assert_eq!(
+            got,
+            vec!["done".to_string(), "failed".into(), "cancelled".into()]
+        );
+        // Lista vazia → mesmo default.
+        let got2 = normalize_cleanup_statuses(Some(&Vec::new())).unwrap();
+        assert_eq!(got2, got);
+    }
+
+    #[test]
+    fn normalize_cleanup_statuses_rejeita_nao_terminal() {
+        let bad = vec!["running".to_string()];
+        let err = normalize_cleanup_statuses(Some(&bad)).unwrap_err();
+        assert!(matches!(err, ManagerError::InvalidRequest(_)));
+        // Subset válido passa.
+        let ok = vec!["done".to_string()];
+        assert_eq!(
+            normalize_cleanup_statuses(Some(&ok)).unwrap(),
+            vec!["done".to_string()]
+        );
     }
 
     #[test]

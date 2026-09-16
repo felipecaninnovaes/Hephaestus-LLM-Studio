@@ -26,8 +26,9 @@ use crate::storage::StorageError;
 #[derive(Debug, serde::Serialize)]
 pub struct Generation {
     pub id: String,
+    /// `null` quando o job de origem foi expurgado (AC-003 — galeria sobrevive).
     #[serde(rename = "jobId")]
-    pub job_id: String,
+    pub job_id: Option<String>,
     pub filename: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
@@ -344,12 +345,9 @@ pub async fn export_generations(
         let dest = tmp.path().join(&gen.filename);
         match state.storage.get_to_file(&gen.s3_key, &dest).await {
             Ok(()) => {
-                // Arcname: {job_id primeiros 8 chars}_{filename}
-                let job_short = if gen.job_id.len() >= 8 {
-                    &gen.job_id[..8]
-                } else {
-                    &gen.job_id
-                };
+                // Arcname: {job_id primeiros 8 chars}_{filename} (fallback: id da geração — AC-003)
+                let src = gen.job_id.as_deref().unwrap_or(gen.id.as_str());
+                let job_short = if src.len() >= 8 { &src[..8] } else { src };
                 let arcname = format!("{job_short}_{}", gen.filename);
                 zip_entries.push((arcname, dest));
             }
@@ -477,7 +475,7 @@ mod tests {
     fn make_generation(id: &str, job_id: &str) -> InternalGeneration {
         InternalGeneration {
             id: id.to_string(),
-            job_id: job_id.to_string(),
+            job_id: Some(job_id.to_string()),
             s3_key: format!("artifacts/{job_id}/generated.png"),
             thumb_s3_key: Some(format!("artifacts/{job_id}/thumb.jpg")),
             filename: "generated.png".to_string(),

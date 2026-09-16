@@ -211,6 +211,28 @@ export interface JobMetricsResponse {
   items: JobMetrics[];
 }
 
+/* ── AC-003: Job deletion & cleanup ──────────────────────────── */
+
+export interface JobDeletedResponse {
+  id: string;
+  status: "done" | "failed" | "cancelled";
+  artifacts: string[];
+  objectKeys: string[];
+  modelsDeleted: number;
+  generationsPreserved: number;
+}
+
+export interface JobCleanupRequest {
+  olderThanDays?: number | null;
+  statuses?: ("done" | "failed" | "cancelled")[] | null;
+}
+
+export interface JobCleanupResponse {
+  deleted: number;
+  jobs: JobDeletedResponse[];
+  objectKeys: string[];
+}
+
 export interface JobTelemetryEvent {
   timestamp: string;
   phase: string;
@@ -267,6 +289,30 @@ export interface JobArtifact {
 
 export interface JobArtifactsResponse {
   items: JobArtifact[];
+}
+
+/* ── Exclusão e limpeza de jobs (AC-003) ──────────────────── */
+
+export type JobTerminalStatus = "done" | "failed" | "cancelled";
+
+export interface JobDeletedResponse {
+  id: string;
+  status: JobTerminalStatus;
+  artifacts: string[];
+  objectKeys: string[];
+  modelsDeleted: number;
+  generationsPreserved: number;
+}
+
+export interface JobCleanupRequest {
+  olderThanDays?: number | null;
+  statuses?: JobTerminalStatus[] | null;
+}
+
+export interface JobCleanupResponse {
+  deleted: number;
+  jobs: JobDeletedResponse[];
+  objectKeys: string[];
 }
 
 export interface Telemetry {
@@ -671,7 +717,7 @@ export function predictErrorMessage(code: string): string {
 
 export interface Generation {
   id: string;
-  jobId: string;
+  jobId: string | null;
   filename: string;
   url: string | null;
   thumbUrl: string | null;

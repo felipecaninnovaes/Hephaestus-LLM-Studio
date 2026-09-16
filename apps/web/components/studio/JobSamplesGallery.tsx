@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState } from "react";
-import { IconDownload, IconImage, IconX, IconZoomIn } from "@/components/icons";
+import React, { useMemo, useState } from "react";
+import { IconChevronDown, IconChevronRight, IconDownload, IconImage, IconX, IconZoomIn } from "@/components/icons";
 import { formatBytes } from "@/lib/format";
 import type { JobArtifact } from "@/types/studio";
 
@@ -12,6 +12,24 @@ interface JobSamplesGalleryProps {
   className?: string;
 }
 
+const COLLAPSED_EPOCH_COUNT = 6;
+
+function parseSampleEpoch(path: string): number | null {
+  const match = path.match(/epoch_(\d+)/i);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+// Helper para extrair o rótulo da época
+function formatSampleLabel(path: string): string {
+  const match = path.match(/epoch_(\d+)/i);
+  if (match) {
+    const ep = parseInt(match[1], 10);
+    return ep === 0 ? "Baseline (Época 0)" : `Época ${ep}`;
+  }
+  const fname = path.split("/").pop() || path;
+  return fname.replace(/\.[^/.]+$/, "");
+}
+
 export function JobSamplesGallery({
   jobId,
   artifacts,
@@ -19,27 +37,96 @@ export function JobSamplesGallery({
   className = "",
 }: JobSamplesGalleryProps) {
   const [selectedSample, setSelectedSample] = useState<JobArtifact | null>(null);
+  const [expanded, setExpanded] = useState(false);
 
   // Filtra apenas artefatos que são amostras geradas (kind === 'sample' ou path com 'samples/')
-  const sampleArtifacts = artifacts.filter(
-    (art) =>
-      art.kind === "sample" ||
-      art.path.startsWith("samples/") ||
-      art.path.includes("sample_epoch_") ||
-      (art.path.endsWith(".png") && art.kind !== "model" && art.kind !== "metrics"),
-  );
+  // e ordena por época crescente: baseline (Época 0) primeiro, amostras sem época por último
+  // preservando a ordem recebida do servidor.
+  const { baselines, epochSamples, untaggedSamples } = useMemo(() => {
+    const filtered = artifacts.filter(
+      (art) =>
+        art.kind === "sample" ||
+        art.path.startsWith("samples/") ||
+        art.path.includes("sample_epoch_") ||
+        (art.path.endsWith(".png") && art.kind !== "model" && art.kind !== "metrics"),
+    );
+    const indexed = filtered.map((art, i) => ({ art, epoch: parseSampleEpoch(art.path), i }));
+    indexed.sort((a, b) => {
+      const ea = a.epoch;
+      const eb = b.epoch;
+      if (ea == null && eb == null) return a.i - b.i;
+      if (ea == null) return 1;
+      if (eb == null) return -1;
+      if (ea !== eb) return ea - eb;
+      return a.i - b.i;
+    });
+    return {
+      baselines: indexed.filter((x) => x.epoch === 0).map((x) => x.art),
+      epochSamples: indexed.filter((x) => x.epoch != null && x.epoch > 0).map((x) => x.art),
+      untaggedSamples: indexed.filter((x) => x.epoch == null).map((x) => x.art),
+    };
+  }, [artifacts]);
 
-  if (sampleArtifacts.length === 0) return null;
+  const total = baselines.length + epochSamples.length + untaggedSamples.length;
+  if (total === 0) return null;
 
-  // Helper para extrair o rótulo da época
-  function formatSampleLabel(path: string): string {
-    const match = path.match(/epoch_(\d+)/i);
-    if (match) {
-      const ep = parseInt(match[1], 10);
-      return ep === 0 ? "Baseline (Época 0)" : `Época ${ep}`;
-    }
-    const fname = path.split("/").pop() || path;
-    return fname.replace(/\.[^/.]+$/, "");
+  const visibleEpochSamples = expanded
+    ? epochSamples
+    : epochSamples.slice(Math.max(0, epochSamples.length - COLLAPSED_EPOCH_COUNT));
+  const canCollapse = epochSamples.length > COLLAPSED_EPOCH_COUNT;
+
+  function renderSampleCard(art: JobArtifact) {
+    const imgUrl = `/api/jobs/${jobId}/artifacts/${art.id}/data`;
+    const label = formatSampleLabel(art.path);
+
+    return (
+      <div
+        key={art.id}
+        className="group relative rounded-xl overflow-hidden border border-white/10 bg-black/40 aspect-square flex flex-col justify-between transition-all hover:border-indigo-500/50 hover:shadow-lg hover:shadow-indigo-500/10"
+      >
+        {/* Imagem de fundo / preview */}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={imgUrl}
+          alt={label}
+          className="absolute inset-0 w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+          loading="lazy"
+        />
+
+        {/* Overlay suave com gradiente */}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/10 to-black/30 pointer-events-none" />
+
+        {/* Header com badge de época */}
+        <div className="relative z-10 p-2 flex items-center justify-between">
+          <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-black/60 border border-white/20 text-[10px] font-mono font-medium text-indigo-300 backdrop-blur-md">
+            {label}
+          </span>
+          <button
+            type="button"
+            onClick={() => setSelectedSample(art)}
+            title="Ampliar amostra"
+            className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-lg bg-black/60 hover:bg-black/80 text-zinc-200 border border-white/20 backdrop-blur-md"
+          >
+            <IconZoomIn className="size-3.5" />
+          </button>
+        </div>
+
+        {/* Rodapé com tamanho e botão de download */}
+        <div className="relative z-10 p-2 flex items-center justify-between text-[10px] font-mono">
+          <span className="text-zinc-400">{formatBytes(art.bytes)}</span>
+          {onDownload && (
+            <button
+              type="button"
+              onClick={() => onDownload(jobId, art)}
+              title="Baixar imagem"
+              className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded bg-black/60 hover:bg-black/80 text-zinc-200 border border-white/20 backdrop-blur-md"
+            >
+              <IconDownload className="size-3" />
+            </button>
+          )}
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -47,68 +134,52 @@ export function JobSamplesGallery({
       <div className="flex items-center justify-between">
         <span className="text-[10px] font-mono text-zinc-400 uppercase tracking-caps flex items-center gap-1.5">
           <IconImage className="size-3.5 text-indigo-400" />
-          Amostras de Validação ({sampleArtifacts.length})
+          Amostras de Validação ({total})
         </span>
         <span className="text-[10px] font-mono text-zinc-400">
           LoRA Diffusion Previews
         </span>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-        {sampleArtifacts.map((art) => {
-          const imgUrl = `/api/jobs/${jobId}/artifacts/${art.id}/data`;
-          const label = formatSampleLabel(art.path);
+      {baselines.length > 0 && (
+        <div className="space-y-1.5">
+          <span className="block text-[10px] font-mono text-zinc-500 uppercase tracking-caps">
+            Baseline (pré-treino)
+          </span>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {baselines.map(renderSampleCard)}
+          </div>
+        </div>
+      )}
 
-          return (
-            <div
-              key={art.id}
-              className="group relative rounded-xl overflow-hidden border border-white/10 bg-black/40 aspect-square flex flex-col justify-between transition-all hover:border-indigo-500/50 hover:shadow-lg hover:shadow-indigo-500/10"
-            >
-              {/* Imagem de fundo / preview */}
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={imgUrl}
-                alt={label}
-                className="absolute inset-0 w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-                loading="lazy"
-              />
+      {(visibleEpochSamples.length > 0 || untaggedSamples.length > 0) && (
+        <div className="space-y-1.5">
+          {epochSamples.length > 0 && (
+            <span className="block text-[10px] font-mono text-zinc-500 uppercase tracking-caps">
+              Amostras por época ({epochSamples.length})
+            </span>
+          )}
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {[...visibleEpochSamples, ...untaggedSamples].map(renderSampleCard)}
+          </div>
+        </div>
+      )}
 
-              {/* Overlay suave com gradiente */}
-              <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/10 to-black/30 pointer-events-none" />
-
-              {/* Header com badge de época */}
-              <div className="relative z-10 p-2 flex items-center justify-between">
-                <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-black/60 border border-white/20 text-[10px] font-mono font-medium text-indigo-300 backdrop-blur-md">
-                  {label}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setSelectedSample(art)}
-                  title="Ampliar amostra"
-                  className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-lg bg-black/60 hover:bg-black/80 text-zinc-200 border border-white/20 backdrop-blur-md"
-                >
-                  <IconZoomIn className="size-3.5" />
-                </button>
-              </div>
-
-              {/* Rodapé com tamanho e botão de download */}
-              <div className="relative z-10 p-2 flex items-center justify-between text-[10px] font-mono">
-                <span className="text-zinc-400">{formatBytes(art.bytes)}</span>
-                {onDownload && (
-                  <button
-                    type="button"
-                    onClick={() => onDownload(jobId, art)}
-                    title="Baixar imagem"
-                    className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded bg-black/60 hover:bg-black/80 text-zinc-200 border border-white/20 backdrop-blur-md"
-                  >
-                    <IconDownload className="size-3" />
-                  </button>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      {canCollapse && (
+        <button
+          type="button"
+          onClick={() => setExpanded((prev) => !prev)}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] font-mono text-zinc-300 transition hover:border-indigo-500/40 hover:bg-white/[0.06] hover:text-white cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70"
+          aria-expanded={expanded}
+        >
+          {expanded ? (
+            <IconChevronDown className="size-3" />
+          ) : (
+            <IconChevronRight className="size-3" />
+          )}
+          {expanded ? "Recolher" : `Mostrar todas (${total})`}
+        </button>
+      )}
 
       {/* Lightbox Modal para ampliação de alta resolução */}
       {selectedSample && (

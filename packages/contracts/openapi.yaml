@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.26.0
+  version: 0.28.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -1976,6 +1976,75 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      operationId: deleteJob
+      tags: [jobs]
+      summary: Exclui um job terminal
+      description: |
+        Exclui um job em estado terminal (done/failed/cancelled) via manager (AC-003).
+        Sweep best-effort dos artefatos no storage pós-commit.
+        Job não-terminal ⇒ 409 `job_not_terminal`.
+      responses:
+        "200":
+          description: Job excluído.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobDeletedResponse" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Job inexistente ou id não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "Job em estado não-terminal — delete não possível (`code: job_not_terminal`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/jobs/cleanup:
+    post:
+      operationId: cleanupJobs
+      tags: [jobs]
+      summary: Limpa jobs antigos
+      description: |
+        Limpa jobs antigos via manager (AC-003). Filtros opcionais: `olderThanDays`
+        e `statuses`. Sweep best-effort dos artefatos de cada job removido.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JobCleanupRequest" }
+      responses:
+        "200":
+          description: Jobs limpos.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobCleanupResponse" }
+        "400":
+          description: "Body inválido (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/jobs/{id}/abort:
     parameters:
@@ -2690,7 +2759,7 @@ components:
       properties:
         code:
           type: string
-          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, storage_unavailable, classes_in_use, index_not_ready, embedding_unavailable, import_invalid, engine_unsupported, queue_unavailable, dataset_not_ready, job_not_abortable, job_not_done, pairing_invalid, model_download_failed, model_download_disabled, internal]
+          enum: [invalid_request, invalid_credentials, unauthorized, setup_required, not_found, slug_conflict, storage_unavailable, classes_in_use, index_not_ready, embedding_unavailable, import_invalid, engine_unsupported, queue_unavailable, dataset_not_ready, job_not_abortable, job_not_done, job_not_terminal, pairing_invalid, model_download_failed, model_download_disabled, internal]
           description: "Código estável para máquina — a UI decide a mensagem por `code`, nunca por `message`; o cliente DEVE ter ramo default: o enum cresce por fatia (aditivo na 0.2.0: `not_found`, `slug_conflict`; na 0.3.0: `storage_unavailable`, ADR-0003 D10; na 0.3.0, fatia 3g.1: `classes_in_use`; na 0.5.0, fatia 3f.5: `index_not_ready`, `embedding_unavailable`, ADR-0004 D5; na 0.6.0, fatia 3e: `import_invalid`; na 0.7.0, fatia 4: `engine_unsupported`, `queue_unavailable`, `dataset_not_ready`, `job_not_abortable`; na 0.8.0, fatia 5: `job_not_done`; na 0.10.0, fatia H: `pairing_invalid`, ADR-0011 D5; na 0.11.0, fatia I: `model_download_failed`, `model_download_disabled`, ADR-0012 D4/E1)."
         message:
           type: string
@@ -3240,7 +3309,8 @@ components:
         jobId:
           type: string
           format: uuid
-          description: "FK do job que gerou a imagem."
+          nullable: true
+          description: "FK do job que gerou a imagem; null quando o job foi expurgado (AC-003 — a galeria sobrevive ao job)."
         filename:
           type: string
           description: "Nome do arquivo na galeria."
@@ -3361,6 +3431,74 @@ components:
         status:
           type: string
           enum: [cancelling, cancelled]
+
+    JobDeletedResponse:
+      type: object
+      required: [id, status, artifacts, objectKeys, modelsDeleted, generationsPreserved]
+      additionalProperties: false
+      description: "Resposta do DELETE /api/jobs/:id (AC-003)."
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: "PK do job excluído."
+        status:
+          type: string
+          enum: [done, failed, cancelled]
+          description: "Status terminal do job excluído."
+        artifacts:
+          type: array
+          items: { type: string }
+          description: "Paths relativos dos artifacts do job (informativo p/ UI)."
+        objectKeys:
+          type: array
+          items: { type: string }
+          description: "Chaves S3 exatas a varrer (exclui gerações preservadas)."
+        modelsDeleted:
+          type: integer
+          minimum: 0
+          description: "Linhas do catálogo de models derivadas do job e expurgadas."
+        generationsPreserved:
+          type: integer
+          minimum: 0
+          description: "Linhas generations preservadas — todas as do job, incl. trash/soft-delete (FK SET NULL, 0012)."
+
+    JobCleanupRequest:
+      type: object
+      additionalProperties: false
+      description: "Body de POST /api/jobs/cleanup (AC-003). Exige pelo menos um critério (`olderThanDays` ou `statuses` não-vazio); sem critério ⇒ 400 `invalid_request`."
+      properties:
+        olderThanDays:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: "Limite de idade em dias (null = sem filtro de idade)."
+        statuses:
+          type: array
+          nullable: true
+          items:
+            type: string
+            enum: [done, failed, cancelled]
+          description: "Filtro por status terminal (null = todos os terminais)."
+
+    JobCleanupResponse:
+      type: object
+      required: [deleted, jobs, objectKeys]
+      additionalProperties: false
+      description: "Resposta do POST /api/jobs/cleanup (AC-003)."
+      properties:
+        deleted:
+          type: integer
+          minimum: 0
+          description: "Número de jobs excluídos."
+        jobs:
+          type: array
+          items: { $ref: "#/components/schemas/JobDeletedResponse" }
+          description: "Jobs excluídos (com artifacts/chaves/modelos)."
+        objectKeys:
+          type: array
+          items: { type: string }
+          description: "União das chaves S3 a varrer (exclui gerações preservadas)."
 
     AutotrackerApplyRequest:
       type: object
@@ -4085,10 +4223,10 @@ components:
           description: "Momento da finalização (null enquanto ativo)."
         phase:
           type: [string, "null"]
-          description: "Fase atual da execução (ADR-0021 D0, ex.: downloading, quantizing, training, generating, done, error)."
+          description: "Fase atual da execução (ADR-0021 D0, ex.: downloading, quantizing, training, generating, completed, error)."
         phaseMessage:
           type: [string, "null"]
-          description: "Mensagem amigável legível da fase atual."
+          description: "Mensagem amigável legível da fase atual. Origem: coluna jobs.message (ADR-0024), não derivada de metrics."
         vramUsedGb:
           type: [number, "null"]
           description: "Uso de VRAM medido em tempo real em GB."

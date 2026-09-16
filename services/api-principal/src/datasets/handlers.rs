@@ -306,7 +306,7 @@ pub async fn delete(State(state): State<AppState>, Path(id): Path<String>) -> Re
     if let Err(e) = state.storage.delete_prefix(&prefix).await {
         // D7: falha da varredura NÃO transforma o 204 em erro — o prefixo fica
         // reapável por script. Sem framework de log ainda (dívida nomeada em
-        // docs/coordenacao.md), o eprintln é o mínimo honesto. `e` é Display
+        // docs/archive/coordenacao-historico-2026-09.md), o eprintln é o mínimo honesto. `e` é Display
         // ESTÁTICO (nunca endpoint/credencial).
         eprintln!(
             "aviso: sweep do prefixo {prefix} falhou ({e}) — dataset deletado, objetos reapáveis"

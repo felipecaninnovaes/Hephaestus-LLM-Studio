@@ -29,6 +29,7 @@ import { AutolabelReviewModal } from "@/components/studio/AutolabelReviewModal";
 import { AutotrackerReviewModal } from "@/components/studio/AutotrackerReviewModal";
 import {
   abortJob,
+  deleteJob,
   downloadArtifact,
   getJobArtifacts,
   getJobMetrics,
@@ -37,6 +38,8 @@ import {
 } from "@/lib/jobs";
 import { applyAutotrackerBoxes } from "@/lib/autotracker";
 import { applyAutolabelCaptions } from "@/lib/autolabel";
+import { latestTrainingMetric } from "@/lib/jobMetrics";
+import { jobCapabilities, imageProgressLabel } from "@/lib/jobCapabilities";
 import { ApiError } from "@/lib/api";
 import { copyToClipboard } from "@/lib/clipboard";
 import { formatBytes, formatDuration, formatRelativeTime } from "@/lib/format";
@@ -49,6 +52,7 @@ import type {
   Telemetry,
 } from "@/types/studio";
 import ConfirmDialog from "@/components/studio/ConfirmDialog";
+import { JobCleanupDialog } from "@/components/studio/JobCleanupDialog";
 import { JOB_STATUS_CONFIG, JobArtifactsList } from "./JobCard";
 import { JobSamplesGallery } from "./JobSamplesGallery";
 import { showToast } from "./Toast";
@@ -90,6 +94,9 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
   const [applyOverwrite, setApplyOverwrite] = useState(false);
   const [reviewJob, setReviewJob] = useState<Job | null>(null);
   const [autotrackerReviewJob, setAutotrackerReviewJob] = useState<Job | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Job | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [cleanupOpen, setCleanupOpen] = useState(false);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -205,6 +212,43 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
       showToast("Falha ao cancelar job.", "error");
     } finally {
       setAbortBusy(false);
+    }
+  }
+
+  // Ação de excluir job terminal
+  async function handleDeleteJob() {
+    if (!deleteTarget) return;
+    setDeleteBusy(true);
+    try {
+      const res = await deleteJob(deleteTarget.id);
+      showToast(
+        `Job excluído · ${res.artifacts.length} artefatos, ${res.modelsDeleted} modelo(s) do catálogo${res.generationsPreserved > 0 ? ` · ${res.generationsPreserved} geração(ões) da galeria preservadas` : ""}.`,
+        "success",
+      );
+      setDeleteTarget(null);
+      await fetchData();
+    } catch (err) {
+      if (
+        err instanceof ApiError &&
+        (err.code === "job_not_terminal" || err.status === 409)
+      ) {
+        showToast("Só jobs concluídos/falhos/cancelados podem ser excluídos.", "info");
+        setDeleteTarget(null);
+        return;
+      }
+      if (err instanceof ApiError && err.code === "not_found") {
+        showToast("Job já havia sido removido.", "info");
+        setDeleteTarget(null);
+        await fetchData();
+        return;
+      }
+      if (err instanceof ApiError && err.code === "queue_unavailable") {
+        showToast("Manager indisponível, tente de novo.", "error");
+        return;
+      }
+      showToast("Falha ao excluir job.", "error");
+    } finally {
+      setDeleteBusy(false);
     }
   }
 
@@ -470,16 +514,6 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
         });
       }
 
-      list.push({
-        id: "sys-node-status",
-        title: "Orquestrador Local Ativo",
-        message: `Nó Hephaestus operacional com ${telemetry.jobsActive} execução(ões) ativa(s) e VRAM monitorada.`,
-        category: "orchestrator",
-        level: "success",
-        timestamp: new Date().toISOString(),
-        actionLabel: "Monitor de Nós",
-        actionHref: "/dashboard",
-      });
     }
 
     // 2. Alertas de Jobs que falharam
@@ -495,20 +529,8 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
         level: "error",
         timestamp: job.finishedAt || job.createdAt,
         actionLabel: "Investigar",
-        actionHref: `/jobs?selected=${job.id}`,
+        actionHref: `/jobs?job=${job.id}`,
       });
-    });
-
-    // 3. Sincronização do Acervo de Dados
-    list.push({
-      id: "sys-dataset-sync",
-      title: "Armazenamento & Datasets",
-      message: "Volumes de dados e diretórios de anotações sincronizados no cache NVMe local.",
-      category: "dataset",
-      level: "info",
-      timestamp: new Date(Date.now() - 1000 * 60 * 30).toISOString(),
-      actionLabel: "Explorar Datasets",
-      actionHref: "/datasets",
     });
 
     return list;
@@ -602,7 +624,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
         categoryLabel: "Visão Computacional",
         icon: IconTarget,
         actionText: "Ver na Forja →",
-        targetHref: `/jobs?selected=${job.id}`,
+        targetHref: `/jobs?job=${job.id}`,
       };
     }
     if (job.kind === "autotracker") {
@@ -611,7 +633,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
         categoryLabel: "Rastreamento & Vídeo",
         icon: IconLayers,
         actionText: job.datasetId ? "Ver no Dataset →" : "Ver no Studio →",
-        targetHref: job.datasetId ? `/datasets/${job.datasetId}` : `/jobs?selected=${job.id}`,
+        targetHref: job.datasetId ? `/datasets/${job.datasetId}` : `/jobs?job=${job.id}`,
       };
     }
     const kindName = String(job.kind).replace(/_/g, " ");
@@ -620,7 +642,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
       categoryLabel: "Processamento IA",
       icon: IconZap,
       actionText: "Ver Detalhes →",
-      targetHref: `/jobs?selected=${job.id}`,
+      targetHref: `/jobs?job=${job.id}`,
     };
   }
 
@@ -649,6 +671,15 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
             )}
             <button
               type="button"
+              onClick={() => setCleanupOpen(true)}
+              title="Limpar jobs antigos"
+              aria-label="Limpar jobs antigos"
+              className="inline-flex size-10 items-center justify-center rounded-lg border border-transparent bg-transparent text-zinc-400 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 cursor-pointer"
+            >
+              <IconTrash className="size-3.5" />
+            </button>
+            <button
+              type="button"
               onClick={() => void fetchData()}
               title="Atualizar atividades e telemetria"
               aria-label="Atualizar atividades"
@@ -664,13 +695,13 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
         footer={
           <div className="p-3.5 flex flex-col sm:flex-row items-center justify-between gap-3">
             <div className="flex items-center space-x-2 text-[11px] font-mono text-zinc-400">
-              <span className="size-2 rounded-full bg-[#34d399] animate-pulse motion-reduce:animate-none" />
+              <span className={`size-2 rounded-full ${telemetry ? "bg-[#34d399] animate-pulse motion-reduce:animate-none" : "bg-zinc-500"}`} />
               <span>
                 Nó Local:{" "}
                 <strong className="text-zinc-200 font-semibold">
                   {telemetry
                     ? `${telemetry.jobsActive} ativo(s)${telemetry.vramUsed !== null ? ` · ${(telemetry.vramUsed / 1024).toFixed(1)} GB VRAM` : ""}${telemetry.cpu !== null ? ` · ${telemetry.cpu}% CPU` : ""}`
-                    : "Operacional"}
+                    : "Sem telemetria"}
                 </strong>
               </span>
             </div>
@@ -759,7 +790,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                     {query ? `Nenhum resultado para "${query}"` : "Nenhuma atividade recente"}
                   </h3>
                   <p className="text-xs text-zinc-400 leading-relaxed">
-                    O Centro de Atividades concentra todas as notificações do sistema em tempo real — incluindo treinos de IA, anotações de visão computacional, sincronizações de datasets e alertas de telemetria dos nós.
+                    O Centro de Atividades reúne as notificações do sistema em tempo real — treinos e tarefas de processamento, falhas de execução e alertas de recursos do nó (VRAM e CPU).
                   </p>
                 </div>
 
@@ -924,10 +955,8 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                       const duration = formatDuration(job.createdAt, job.finishedAt);
                       const jobExtraMetrics = metrics[job.id];
                       const jobExtraArtifacts = artifacts[job.id];
-                      const latestMetric =
-                        jobExtraMetrics && jobExtraMetrics.length > 0
-                          ? jobExtraMetrics[jobExtraMetrics.length - 1]
-                          : null;
+                      const latestMetric = latestTrainingMetric(jobExtraMetrics);
+                      const caps = jobCapabilities(job);
 
                       return (
                         <div
@@ -1105,18 +1134,28 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                   </div>
                                 </div>
 
-                                {/* Métricas ao vivo/finais se disponíveis */}
-                                {latestMetric && (
+                                {/* Métricas ao vivo/finais — regido por caps.metricChips */}
+                                {caps.metricChips === "progress" && (
+                                  <div className="grid grid-cols-1 gap-1.5 text-center">
+                                    <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
+                                      <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">Imagens processadas</span>
+                                      <span className="text-xs font-semibold text-zinc-200 font-mono tabular-nums">
+                                        {imageProgressLabel(job.step, job.progress)}
+                                      </span>
+                                    </div>
+                                  </div>
+                                )}
+                                {caps.metricChips !== null && caps.metricChips !== "progress" && latestMetric && (
                                   <div>
                                     <div className="text-[10px] font-mono text-zinc-400 uppercase tracking-caps mb-1.5 flex items-center justify-between">
                                       <span>
-                                        {job.engine === "diffusion" || (job.kind as string) === "diffusion" || (job.kind as string) === "diffusion_train"
+                                        {caps.metricChips === "diffusion"
                                           ? "Métricas Difusão LoRA"
                                           : "Métricas"}
                                       </span>
                                       <span className="text-zinc-400">Epoch {latestMetric.epoch}</span>
                                     </div>
-                                    {job.engine === "diffusion" || (job.kind as string) === "diffusion" || (job.kind as string) === "diffusion_train" ? (
+                                    {caps.metricChips === "diffusion" ? (
                                       <div className="grid grid-cols-4 gap-1.5 text-center">
                                         <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
                                           <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">Loss</span>
@@ -1174,8 +1213,8 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                   </div>
                                 )}
 
-                                {/* Galeria de amostras visuais de validação (difusão) */}
-                                {jobExtraArtifacts && jobExtraArtifacts.length > 0 && (
+                                {/* Galeria de amostras visuais de validação — gated por caps */}
+                                {caps.samplesGallery && jobExtraArtifacts && jobExtraArtifacts.length > 0 && (
                                   <JobSamplesGallery
                                     jobId={job.id}
                                     artifacts={jobExtraArtifacts}
@@ -1235,8 +1274,8 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
 
                                 {/* Ações contextuais */}
                                 <div className="pt-2.5 border-t border-white/10 flex items-center justify-between gap-2 flex-wrap">
-                                  {/* AutoTracker: aplicar boxes */}
-                                  {job.kind === "autotracker" && job.status === "done" && (
+                                  {/* AutoTracker: aplicar boxes — gated por caps.applyAction */}
+                                  {caps.applyAction && job.kind === "autotracker" && job.status === "done" && (
                                     <div className="flex items-center gap-2 flex-wrap">
                                       <button
                                         type="button"
@@ -1268,8 +1307,8 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                     </div>
                                   )}
 
-                                  {/* AutoLabel: aplicar legendas */}
-                                  {job.kind === "autolabel" && job.status === "done" && (
+                                  {/* AutoLabel: aplicar legendas — gated por caps.applyAction */}
+                                  {caps.applyAction && job.kind === "autolabel" && job.status === "done" && (
                                     <div className="flex items-center gap-2 flex-wrap">
                                       <button
                                         type="button"
@@ -1302,8 +1341,8 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                     </div>
                                   )}
 
-                                  {/* Repetir treino para jobs finalizados/falhados */}
-                                  {!isActive && (job.engine === "diffusion" || job.engine === "yolo") && (
+                                  {/* Repetir treino para jobs finalizados/falhados — gated por caps.rerun */}
+                                  {caps.rerun && !isActive && (job.engine === "diffusion" || job.engine === "yolo") && (
                                     <button
                                       type="button"
                                       onClick={() => handleRerun(job)}
@@ -1324,6 +1363,34 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                     >
                                       <IconTrash className="size-3" />
                                       <span>Cancelar Job</span>
+                                    </button>
+                                  )}
+
+                                  {/* Acompanhar (tela cheia / modo foco) */}
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      onClose();
+                                      router.push(`/jobs?job=${job.id}&focus=1`);
+                                    }}
+                                    className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-[11px] font-mono text-zinc-300 transition hover:bg-white/[0.06] active:scale-[0.985] cursor-pointer"
+                                    title="Acompanhar este job em tela cheia"
+                                  >
+                                    <IconActivity className="size-3" />
+                                    <span>Acompanhar</span>
+                                  </button>
+
+                                  {/* Excluir job terminal */}
+                                  {!isActive && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setDeleteTarget(job)}
+                                      className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-[11px] font-mono text-rose-300 transition hover:border-rose-500/40 hover:bg-rose-500/10 active:scale-[0.985] cursor-pointer"
+                                      aria-label="Excluir job"
+                                      title="Excluir este job e seus artefatos"
+                                    >
+                                      <IconTrash className="size-3" />
+                                      <span>Excluir</span>
                                     </button>
                                   )}
 
@@ -1369,6 +1436,37 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
         busy={abortBusy}
         onConfirm={handleAbort}
         onClose={() => setAbortTarget(null)}
+      />
+
+      {/* Confirmação de exclusão de Job */}
+      <ConfirmDialog
+        open={Boolean(deleteTarget)}
+        title="Excluir job"
+        body={
+          <p className="text-xs text-zinc-300">
+            Esta ação remove o job{" "}
+            <strong className="text-white font-mono">{deleteTarget?.model}</strong>{" "}
+            ({deleteTarget?.id.slice(0, 8)}…) do histórico e{" "}
+            <strong>apaga seus artefatos no armazenamento</strong>. Modelos derivados
+            deste job saem do catálogo. As imagens já salvas na galeria de geração
+            são preservadas.
+          </p>
+        }
+        confirmLabel="Sim, excluir job"
+        danger
+        busy={deleteBusy}
+        onConfirm={handleDeleteJob}
+        onClose={() => setDeleteTarget(null)}
+      />
+
+      {/* Diálogo de limpeza em lote */}
+      <JobCleanupDialog
+        open={cleanupOpen}
+        onClose={() => setCleanupOpen(false)}
+        terminalJobs={jobs
+          .filter((j) => j.status === "done" || j.status === "failed" || j.status === "cancelled")
+          .map((j) => ({ id: j.id, status: j.status as "done" | "failed" | "cancelled", createdAt: j.createdAt, finishedAt: j.finishedAt }))}
+        onDone={() => void fetchData()}
       />
 
       {/* Modal de Revisão e Curadoria de Legendas (AutoLabel) */}

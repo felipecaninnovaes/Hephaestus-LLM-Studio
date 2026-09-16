@@ -4751,6 +4751,11 @@ mod tests {
             json["jobs"][0]["objectKeys"].is_array(),
             "objectKeys presente no job aninhado"
         );
+        assert_eq!(json["jobs"][1]["generationsPreserved"], 2);
+        assert!(
+            json["jobs"][1]["objectKeys"].is_array(),
+            "objectKeys presente no segundo job aninhado"
+        );
         assert!(
             json.get("object_keys").is_none(),
             "snake_case não deve vazar no wire"

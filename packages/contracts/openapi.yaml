@@ -3461,7 +3461,7 @@ components:
         generationsPreserved:
           type: integer
           minimum: 0
-          description: "Gerações da galeria preservadas (FK SET NULL, 0012)."
+          description: "Linhas generations preservadas — todas as do job, incl. trash/soft-delete (FK SET NULL, 0012)."
 
     JobCleanupRequest:
       type: object

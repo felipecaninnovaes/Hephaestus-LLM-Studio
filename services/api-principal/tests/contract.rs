@@ -915,6 +915,8 @@ async fn job_response_keys_are_camel_case() {
             finished_at: None,
             error: None,
             params: None,
+            phase: None,
+            message: None,
         };
         m.get_job_result = Some(job.clone());
         m.list_jobs_result = Some((vec![job], 1));

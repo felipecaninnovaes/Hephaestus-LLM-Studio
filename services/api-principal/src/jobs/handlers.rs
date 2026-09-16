@@ -412,18 +412,19 @@ fn remap_metrics(raw: &serde_json::Value) -> Vec<MetricsItem> {
 fn to_job_response(job: crate::jobs::manager_client::InternalJob) -> JobResponse {
     let metrics = job.metrics.as_ref().map(remap_metrics);
     let latest_metric = metrics.as_ref().and_then(|m| m.last());
-    let phase = latest_metric
-        .and_then(|m| m.phase.clone())
-        .or_else(|| match job.status.as_str() {
-            "queued" => Some("queued".to_string()),
-            "preparing" => Some("preparing".to_string()),
-            "running" => Some("running".to_string()),
-            "done" => Some("completed".to_string()),
-            "failed" => Some("error".to_string()),
-            "cancelled" => Some("cancelled".to_string()),
-            _ => None,
-        });
-    let phase_message = latest_metric.and_then(|m| m.message.clone());
+    // AC-006-A D4: phase/phase_message vêm das colunas do job (D3),
+    // com fallback de status-para-fase quando job.phase é None.
+    let phase = job.phase.clone().or_else(|| match job.status.as_str() {
+        "queued" => Some("queued".into()),
+        "preparing" => Some("preparing".into()),
+        "running" => Some("running".into()),
+        "done" => Some("completed".into()),
+        "failed" => Some("error".into()),
+        "cancelled" => Some("cancelled".into()),
+        _ => None,
+    });
+    let phase_message = job.message.clone();
+    // AC-006-A D4: vram_used_gb continua derivado da última métrica.
     let vram_used_gb = latest_metric.and_then(|m| m.vram_used_gb);
 
     JobResponse {
@@ -3112,6 +3113,8 @@ mod tests {
             finished_at: None,
             error: None,
             params: None,
+            phase: None,
+            message: None,
         };
         let resp = to_job_response(job);
         assert_eq!(resp.id, "550e8400-e29b-41d4-a716-446655440000");
@@ -3988,6 +3991,8 @@ mod tests {
             finished_at: Some("2026-01-01T01:00:00Z".into()),
             error: None,
             params: None,
+            phase: None,
+            message: None,
         }
     }
 
@@ -4349,6 +4354,8 @@ mod tests {
             finished_at: None,
             error: None,
             params: None,
+            phase: None,
+            message: None,
         }
     }
 

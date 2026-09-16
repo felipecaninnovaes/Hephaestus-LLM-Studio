@@ -184,8 +184,10 @@ jobs:     POST /api/jobs/yolo  → implementado (Fatia 4; ADR-0007 D7 — spec 0
           GET /api/jobs/queue   → implementado (Fatia 4; fila `{items:[{jobId,position,queueReason}]}`)
           GET /api/jobs/:id     → implementado (Fatia 4; detalhe do job)
           POST /api/jobs/:id/abort  → implementado (Fatia 4; 200 `{"status":"cancelling"|"cancelled"}` | 409 `job_not_abortable`)
-          GET /api/jobs/:id/metrics  → implementado (Fatia 4; `{items:[{epoch,boxLoss,clsLoss,dflLoss,map50,map5095}]}`)
-          GET /api/jobs/:id/artifacts  → implementado (Fatia 4; `{items:[{id,kind,path,md5,bytes}]}`)
+           DELETE /api/jobs/:id  → implementado (AC-003; 200 `JobDeletedResponse` | 401 | 404 `not_found` | 409 `job_not_terminal` | 503 `queue_unavailable`)
+           POST /api/jobs/cleanup  → implementado (AC-003; 200 `JobCleanupResponse` | 400 `invalid_request` | 401 | 503 `queue_unavailable`)
+           GET /api/jobs/:id/metrics  → implementado (Fatia 4; `{items:[{epoch,boxLoss,clsLoss,dflLoss,map50,map5095}]}`) — nota AC-006-A: só pontos de treino
+           GET /api/jobs/:id/artifacts  → implementado (Fatia 4; `{items:[{id,kind,path,md5,bytes}]}`)
           GET /api/jobs/:id/artifacts/:artifactId/data  → implementado (Fatia 4; proxy do objeto via StoragePort)
           # Adiados para fatias futuras: pause/resume, samples, WS, runners, clip, autolabel v2 (modelos reais/VLM)
 runners:  POST /api/runners/{difusao,yolo,clip}/up, POST /api/runners/:id/kill, GET /api/runners
@@ -214,7 +216,7 @@ ws:       /ws/jobs/:id/logs?since_seq=, /ws/telemetry
   - **Artefatos:** `{id,kind,path,md5,bytes}` — `path` é relativo ao prefixo `artifacts/<job_id>/`.
   - **`POST /api/jobs/:id/abort`:** 200 `{"status":"cancelling"}` (job em `preparing`/`running`) ou `{"status":"cancelled"}` (job em `queued`/`dispatched`); 409 `job_not_abortable` em estado terminal (`done`/`failed`/`cancelled`). Código: `manager::abort_job` (`lib.rs:532-585`) consulta status antes de escrever.
   - **Telemetria:** `{measured:bool, cpu:float|null, ram:i64|null, ramTotal:i64|null, vramUsed:i64|null, vramTotal:i64|null, gpus:string[], jobsActive:i32}`. `ramTotal` = bytes (lido de MemTotal do /proc/meminfo; ADR-0009 D4; aditivo, Option). CPU/RAM reais (leitura `/proc` do container orquestrador via heartbeat ~2s). `measured:true` = heartbeat recebido nos últimos 10s (get_telemetry L832-843). Com GPU ausente: `gpus:[]`, `vramUsed/vramTotal:null`, mas CPU/RAM **reais** — `measured:true` quando o heartbeat é fresco. O texto "sem GPU (mock)" é renderizado pelo front quando `vramTotal==null || gpus.length===0`. **Nota R5:** a semântica real (código) é: `measured:true` = heartbeat ≤ 10s; GPU ausente = `gpus:[]`/`vram_*:null` com CPU/RAM reais. `measured:false` só ocorre quando o heartbeat está ausente (>10s) — nesse caso CPU/RAM também são null. O mock SEMPRE reporta heartbeat (~2s), logo `measured:true` com `gpus:[]` (não `measured:false`).
-  - **Erros novos na v1:** `queue_unavailable` (503, todas as rotas jobs/telemetry), `dataset_not_ready` (409, `POST /api/jobs/yolo` quando category≠yolo ou 0 classes/imagens), `job_not_abortable` (409, `POST /:id/abort` em estado terminal), `engine_unsupported` (400, `POST /:id/package` quando engine≠yolo).
+  - **Erros novos na v1:** `queue_unavailable` (503, todas as rotas jobs/telemetry), `dataset_not_ready` (409, `POST /api/jobs/yolo` quando category≠yolo ou 0 classes/imagens), `job_not_abortable` (409, `POST /:id/abort` em estado terminal), `job_not_terminal` (409, `DELETE /api/jobs/:id` em estado não-terminal — AC-003), `engine_unsupported` (400, `POST /:id/package` quando engine≠yolo).
   - **`POST /api/datasets/:id/package`:** body `{engine:"yolo"}` → 200 `PackageResponse{versionId,key,bytes,md5Zip,files}`; 400 `engine_unsupported` (engine≠yolo na v1) | 404 dataset | 503 storage/queue. Congela `dataset_versions{manifest}` (snapshot JSONB, T4 ADR-0002). `config.yaml` gerado pelo principal com placeholders `{dataset_path}`/`{output_path}` substituídos pelo orquestrador no spawn do container. Trainer via `docker run` com volumes nomeados (`datasets-cache/<jobid>/`, `models/`, `outputs/`).
 - Nota Fatia 5 (ADR-0008, spec 0.8.0, `packages/contracts/openapi.yaml`):
   - **`POST /api/jobs/autotracker`** — body `{datasetId, model?, conf?}` → 202 `SubmitJobResponse{jobId,status:"queued",queuePosition?}`. Validação: `model` ∈ `{mock}` apenas (default `mock`), `conf` em `0..=1` (default `0.65`). Erros: 400 `invalid_request` (model∉{mock} | conf fora de domínio), 404 `not_found` (dataset não-UUID/inexistente), 409 `dataset_not_ready` (category≠yolo, 0 classes, 0 imagens ativas), 503 `queue_unavailable`. Job: `kind='autotracker'`, `engine='autotracker'`, `mode='autotrack'` (TEXT livre, sem migration).
@@ -273,7 +275,22 @@ ws:       /ws/jobs/:id/logs?since_seq=, /ws/telemetry
    POST /api/datasets/:id/export   200 401 404 503
    POST /api/datasets/import      201 400 401 409 503
    ```
-  `POST /:id/export` (sem body/query): 200 = `application/zip` em stream com `Content-Disposition: attachment; filename="{slug}.zip"` e `Content-Length` do spool; 404 `not_found` (id não-UUID/inexistente); 503 `storage_unavailable` (bucket fora). Pipeline em 3 fases: coleta async do banco + `get_to_file` por imagem para tempdir (novo método da `StoragePort`) → zip sync em `spawn_blocking` (`Stored` p/ imagens, `Deflated` p/ texto) → `ReaderStream` do arquivo. Só imagens ativas (`deleted_at IS NULL`); imagem com linha mas sem objeto ⇒ skip + `eprintln` (os `counts` do manifest refletem o exportado); dataset vazio ⇒ 200 com zip só-manifest. `POST /datasets/import` (multipart `file` obrigatório + `title` opcional ≤96 chars + `replace` opcional `"true"`/`"false"`, ausente = `false`, valor inválido ⇒ 400 `invalid_request`): 201 = `Dataset` existente (nenhum schema novo de resposta); 400 `invalid_request` (form: sem `file`, `title`/`replace` inválidos) | **`import_invalid`** (erro novo, "invalid import package": manifest ausente/incompatível/corrompido, zip malformado, zip-slip, zip bomb, dedupe intra-zip pós-sniff, sha256/media_type divergentes, domínios inválidos); 409 `slug_conflict` = protocolo de detecção da substituição consentida (slug existente + sem `replace=true`; o servidor NUNCA substitui sozinho — a UI confirma a irreversibilidade e re-envia com `replace=true` ⇒ teardown + ingest com dataset_id novo, 201; validação completa do pacote ANTES de qualquer teardown, zip corrompido nunca destrói o existente; `replace=true` com slug inexistente importa normalmente). Limites: corpo total `IMPORT_BODY_LIMIT_BYTES` = 200 MiB + 8 MiB de envelope na rota (mesmo padrão do upload 3b; excesso ⇒ 413 `invalid_request` no envelope). `POST /:id/package` segue pendente (fatia 4, revisão D0 da ADR-0006). Sem migration (schema já tinha `origin` com `import` desde a 0003).
+  `POST /:id/export` (sem body/query): 200 = `application/zip` em stream com `Content-Disposition: attachment; filename="{slug}.zip"` e `Content-Length` do spool; 404 `not_found` (id não-UUID/inexistente); 503 `storage_unavailable` (bucket fora). Pipeline em 3 fases: coleta async do banco + `get_to_file` por imagem para tempdir (novo método da `StoragePort`) → zip sync em `spawn_blocking` (`Stored` p/ imagens, `Deflated` p/ texto) → `ReaderStream` do arquivo. Só imagens ativas (`deleted_at IS NULL`); imagem com linha mas sem objeto ⇒ skip + `eprintln` (os `counts` do manifest refletem o exportado); dataset vazio ⇒ 200 com zip só-manifest. `POST /datasets/import` (multipart `file` obrigatório + `title` opcional ≤96 chars + `replace` opcional `"true"`/`"false"`, ausente = `false`, valor inválido ⇒ 400 `invalid_request`): 201 = `Dataset` existente (nenhum schema novo de resposta); 400 `invalid_request` (form: sem `file`, `title`/`replace` inválidos) | **`import_invalid`** (erro novo, "invalid import package": manifest ausente/incompatível/corrompido, zip malformado, zip-slip, zip bomb, dedupe intra-zip pós-sniff, sha256/media_type divergentes, domínios inválidos); 409 `slug_conflict` = protocolo de detecção da substituição consentida (slug existente + sem `replace=true`; o servidor NUNCA substitui sozinho — a UI confirma a irreversibilidade e re-envia com `replace=true` ⇒ teardown + ingest com dataset_id novo, 201; validação completa do pacote ANTES de qualquer teardown, zip corrompido nunca destrói o existente; `replace=true` com slug inexistente importa normalmente). Limites: corpo total `IMPORT_BODY_LIMIT_BYTES` = 200 MiB + 8 MiB de envelope na rota (mesmo padrão do upload 3b; excesso ⇒ 413 `invalid_request` no envelope).    `POST /:id/package` segue pendente (fatia 4, revisão D0 da ADR-0006). Sem migration (schema já tinha `origin` com `import` desde a 0003).
+- Nota Fatia AC-003 (ADR-0024 D3/D4, migration 0012+0013, spec 0.28.0, `packages/contracts/openapi.yaml`):
+  - **`DELETE /api/jobs/:id`** — exclui job terminal via manager. Sweep best-effort das `object_keys` retornadas (lista EXATA de chaves, não prefixo — preserva galeria `generations` cujos bytes vivem sob `artifacts/{job_id}/`). Status: 200 `JobDeletedResponse` | 401 | 404 `not_found` (UUID inválido ou inexistente) | 409 `job_not_terminal` (não-terminal) | 503 `queue_unavailable`.
+    - `JobDeletedResponse`: `{id, status, artifacts: string[], objectKeys: string[], modelsDeleted: int, generationsPreserved: int}` (camelCase). `modelsDeleted` = linhas do catálogo `models` derivadas do job e expurgadas; `generationsPreserved` = gerações preservadas (FK `SET NULL`, migration 0012).
+    - Manager: `delete_job` (`lib.rs:2211`) — lock `FOR UPDATE`, guarda `TERMINAL_STATUSES`, `plan_job_sweep` (chaves exatas sem gerações + DELETE `models` WHERE `job_id`), `DELETE FROM jobs`, commit. Não-terminal ⇒ `NotDeletable` (409); inexistente ⇒ `NotFound` (404).
+    - Rotas internas manager: `DELETE /internal/jobs/:id` (handler `delete_job_handler`, `main.rs:305`), `POST /internal/jobs/cleanup` (handler `cleanup_jobs_handler`, `main.rs:332`).
+  - **`POST /api/jobs/cleanup`** — limpeza em lote de jobs terminais. Body: `{olderThanDays?: int ≥ 0, statuses?: ("done"|"failed"|"cancelled")[]}` (ambos opcionais; exige pelo menos um critério — ausência ⇒ 400 `invalid_request`). Status: 200 `JobCleanupResponse` | 400 `invalid_request` (body inválido ou sem critério) | 401 | 503 `queue_unavailable`.
+    - `JobCleanupResponse`: `{deleted: int, jobs: JobDeletedResponse[], objectKeys: string[]}` (camelCase). Cada job na lista segue o mesmo shape de `DELETE /:id`. `objectKeys` é a união das chaves de todos os jobs apagados.
+    - Manager: `cleanup_jobs` (`lib.rs:2283`) — `FOR UPDATE SKIP LOCKED`, seleciona terminais com filtro de idade (`COALESCE(finished_at, created_at) < NOW() - (N days)`), faz `plan_job_sweep` + `DELETE FROM jobs` por job, commit único. Status não-terminal no filtro ⇒ 400 `invalid_request` (não aceita não-terminais).
+  - **Comportamento sweep S3:** lista EXATA de chaves (artifacts + models, sem generations preservadas) varrida item por item no principal pós-commit (`sweep_object_keys`, `handlers.rs:1908`). Cada `delete` é best-effort: `NotFound` ignorado, erro logado (`eprintln`) sem transformar 200 em erro. **Decisão:** lista exata em vez de `DeleteObjects` em lote — volumes baixos na v1, preserva galeria (`ADR-0024 D3/D4`; migration 0012 altera FK `generations.job_id` para `ON DELETE SET NULL`).
+  - **Wire camelCase** (`job_deleted_to_wire` / `cleanup_result_to_wire`): manager retorna `object_keys`/`models_deleted`/`generations_preserved` (snake_case); principal remapeia para `objectKeys`/`modelsDeleted`/`generationsPreserved` antes de retornar ao client.
+  - **Erros novos na enum:** `job_not_terminal` (409, `DELETE /:id` em estado não-terminal).
+- Nota AC-006-A (ADR-0024, migration 0013):
+  - **`GET /api/jobs/:id/metrics`** — o array `items` passa a conter **só pontos de dados de treino** (linhas com ao menos um valor numérico: `loss`, `lr`, `box_loss`, `cls_loss`, `dfl_loss`, `mAP50`, `mAP50-95`). Linhas de status/fase do engine (boot, `training_started`, progresso por imagem) não entram mais no array — classificação feita no orquestrador (`is_training_metric`, `orchestrator/src/lib.rs:357-365`, D1 da ADR-0024). Jobs antigos (pré-migration 0013) mantêm linhas de status dentro de `jobs.metrics` — o filtro B do front (`lib/jobMetrics.ts`) cobre a leitura; sem backfill.
+  - **`Job.phase` / `phaseMessage`:** agora têm origem direta nas colunas `jobs.phase` / `jobs.message` (migration `0013_job_status.sql`: `phase TEXT`, `message TEXT`). O manager persiste o ÚLTIMO status reportado (`report_job` grava `COALESCE($n, phase)` — D3 da ADR-0024). `to_job_response` lê essas colunas com fallback de status-para-fase quando `phase` é None; a derivação a partir do último item do array metrics é REMOVIDA (D4 da ADR-0024). `vramUsedGb` permanece derivado da última métrica.
+  - Spec OpenAPI: 0.28.0 (`packages/contracts/openapi.yaml`).
 
 ## 10. Schema Postgres (só local — principal/manager)
 
@@ -374,13 +391,16 @@ models(id UUID PK, engine TEXT NOT NULL CHECK (engine IN ('yolo','world','diffus
 jobs(id UUID PK, kind TEXT, dataset_id UUID NULL FK, engine TEXT, model TEXT, mode TEXT,
   params JSONB, config_yaml TEXT, status TEXT, queue_reason TEXT NULL,
   orchestrator_id UUID NULL FK, vram_min_gb INT, progress FLOAT,
-  epoch INT, step INT, metrics JSONB, created_at TIMESTAMPTZ, finished_at TIMESTAMPTZ NULL);
+  epoch INT, step INT, metrics JSONB, created_at TIMESTAMPTZ, finished_at TIMESTAMPTZ NULL,
+  phase TEXT, message TEXT);
   -- IMPLEMENTADO (Fatia 4; `migrations/0006_jobs.sql`): ciclo `queued→dispatched→preparing→running→done|failed|cancelled`.
   -- CHECK de status inclui `cancelling` (janela transitória entre abort aceito e confirmação do orquestrador — ADR-0007 D3/D7).
   -- `dataset_id` FK ON DELETE SET NULL (T4); `orchestrator_id` FK ON DELETE SET NULL.
   -- `params` JSONB inclui `package_ref` (snake_case): `{version_id,key,md5_zip,bytes}` (D1b ADR-0007).
   -- `config.yaml` gerado pelo principal com placeholders `{dataset_path}`/`{output_path}` substituídos pelo orquestrador no spawn.
   -- `metrics` JSONB é snake_case (transporte) — principal re-mapeia para camelCase no response de `/api/jobs/:id/metrics` (mAP50-95 → map5095).
+  -- IMPLEMENTADO (AC-006-A; `migrations/0013_job_status.sql`): `phase TEXT` e `message TEXT` — snapshot do último status reportado (ADR-0024 D3).
+  -- `report_job` grava `COALESCE($n, phase)`; o array `metrics` passa a conter só pontos de treino (linhas de status/classificação ficam fora — D1).
   -- Índices: `jobs(status)`, `jobs(dataset_id)`, `jobs(created_at)`.
 job_artifacts(id UUID PK, job_id UUID FK, kind TEXT, path TEXT, md5 TEXT, bytes BIGINT);
   -- IMPLEMENTADO (Fatia 4; `migrations/0006_jobs.sql`): artefatos retornados pelo orquestrador (ADR-0007 D8).
@@ -394,7 +414,7 @@ job_artifacts(id UUID PK, job_id UUID FK, kind TEXT, path TEXT, md5 TEXT, bytes 
 job_samples(job_id UUID FK, cycle INT, idx INT, image_path TEXT, meta JSONB, PRIMARY KEY(job_id, cycle, idx));
 runners(id UUID PK, engine TEXT, model TEXT, orchestrator_id UUID FK,
   status TEXT, vram_gb INT, last_used TIMESTAMPTZ);
-generations(id UUID PK, job_id UUID NOT NULL FK jobs ON DELETE CASCADE,
+generations(id UUID PK, job_id UUID NULL FK jobs ON DELETE SET NULL,
   s3_key TEXT NOT NULL UNIQUE, thumb_s3_key TEXT,
   filename TEXT NOT NULL CHECK (char_length(filename) BETWEEN 1 AND 255),
   seed BIGINT NOT NULL CHECK (seed >= 0),
@@ -408,6 +428,8 @@ generations(id UUID PK, job_id UUID NOT NULL FK jobs ON DELETE CASCADE,
   -- IMPLEMENTADO (Fatia Geração; ADR-0023 D5; migration 0011_generations.sql): galeria persistente de imagens geradas.
   -- Dono: manager (hook no report_job — job diffusion_generate done com artefato generated_meta → INSERT por imagem).
   -- Soft-delete: deleted_at (objeto S3 intocado; sweep é dívida); índice parcial WHERE deleted_at IS NOT NULL.
+  -- IMPLEMENTADO (AC-003; `migrations/0012_generations_job_optional.sql`): FK `job_id` alterada para `NULL + ON DELETE SET NULL`
+  -- (apagar um job não apaga a galeria — os bytes vivem sob `artifacts/{job_id}/`, as linhas `generations` preservam `s3_key` válido).
   -- Índices: `generations(created_at DESC)`, `generations(job_id)`, `generations(deleted_at) WHERE deleted_at IS NOT NULL`.
 ```
 

@@ -39,6 +39,12 @@ import NodeSelect from "@/components/studio/NodeSelect";
 import { LoRAEditor } from "@/components/studio/LoRAEditor";
 import { useJobTelemetry } from "@/hooks/useJobTelemetry";
 import { JobProgressLive } from "@/components/studio/JobProgressLive";
+import {
+  clearGeracaoForm,
+  createDefaultGeracaoForm,
+  loadGeracaoForm,
+  saveGeracaoForm,
+} from "@/lib/geracao-storage";
 
 /* ── Tipos internos ── */
 
@@ -190,6 +196,73 @@ export default function GenerationPanel() {
     return () => { active = false; };
   }, []);
 
+  /* ── Persistência do form (Slice F1/003) ──
+     Hidrata no mount com validação/clamp (lib/geracao-storage); grava com
+     debounce de ~300ms. Persiste só config — nunca resultados, histórico,
+     jobs, segredos ou nó selecionado. */
+  const hydratedFormRef = useRef(false);
+  const skipNextPersistRef = useRef(false);
+  const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    const stored = loadGeracaoForm();
+    if (stored) {
+      if (stored.modelMode !== undefined) setModelMode(stored.modelMode);
+      if (stored.baseModel !== undefined) setBaseModel(stored.baseModel);
+      if (stored.customModelId !== undefined) setCustomModelId(stored.customModelId);
+      if (stored.distilled !== undefined) setDistilled(stored.distilled);
+      if (stored.loras !== undefined) setLoras(stored.loras);
+      if (stored.prompt !== undefined) setPrompt(stored.prompt);
+      if (stored.negativePrompt !== undefined) setNegativePrompt(stored.negativePrompt);
+      if (stored.showNegative !== undefined) setShowNegative(stored.showNegative);
+      if (stored.width !== undefined) setWidth(stored.width);
+      if (stored.height !== undefined) setHeight(stored.height);
+      if (stored.steps !== undefined) setSteps(stored.steps);
+      if (stored.guidanceScale !== undefined) setGuidanceScale(stored.guidanceScale);
+      if (stored.seed !== undefined) setSeed(stored.seed);
+      if (stored.isLockedSeed !== undefined) setIsLockedSeed(stored.isLockedSeed);
+      if (stored.quantization !== undefined) setQuantization(stored.quantization);
+      if (stored.batchSize !== undefined) setBatchSize(stored.batchSize);
+    }
+    hydratedFormRef.current = true;
+  }, []);
+
+  useEffect(() => {
+    if (!hydratedFormRef.current) return;
+    if (skipNextPersistRef.current) {
+      skipNextPersistRef.current = false;
+      return;
+    }
+    if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
+    persistTimerRef.current = setTimeout(() => {
+      saveGeracaoForm({
+        modelMode,
+        baseModel,
+        customModelId,
+        distilled,
+        loras,
+        prompt,
+        negativePrompt,
+        showNegative,
+        width,
+        height,
+        steps,
+        guidanceScale,
+        seed,
+        isLockedSeed,
+        quantization,
+        batchSize,
+      });
+    }, 300);
+    return () => {
+      if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
+    };
+  }, [
+    modelMode, baseModel, customModelId, distilled, loras, prompt,
+    negativePrompt, showNegative, width, height, steps, guidanceScale,
+    seed, isLockedSeed, quantization, batchSize,
+  ]);
+
   /* ── Auto-adjust when base model changes ── */
   const handleBaseModelChange = useCallback((modelVal: string) => {
     const b = modelVal as "flux-2-klein-4b" | "sdxl" | "sd15";
@@ -230,6 +303,33 @@ export default function GenerationPanel() {
   /* ── Roll seed ── */
   const handleRollSeed = useCallback(() => {
     setSeed(Math.floor(Math.random() * 10000000));
+  }, []);
+
+  /* ── Restaurar padrões (Slice F1/003): limpa a key, volta aos defaults ── */
+  const handleResetForm = useCallback(() => {
+    const defaults = createDefaultGeracaoForm();
+    setModelMode(defaults.modelMode);
+    setBaseModel(defaults.baseModel);
+    setCustomModelId(defaults.customModelId);
+    setDistilled(defaults.distilled);
+    setLoras(defaults.loras);
+    setPrompt(defaults.prompt);
+    setNegativePrompt(defaults.negativePrompt);
+    setShowNegative(defaults.showNegative);
+    setWidth(defaults.width);
+    setHeight(defaults.height);
+    setSteps(defaults.steps);
+    setGuidanceScale(defaults.guidanceScale);
+    setSeed(defaults.seed);
+    setIsLockedSeed(defaults.isLockedSeed);
+    setQuantization(defaults.quantization);
+    setBatchSize(defaults.batchSize);
+    if (persistTimerRef.current) { clearTimeout(persistTimerRef.current); persistTimerRef.current = null; }
+    clearGeracaoForm();
+    /* Evita que o effect de persistência regrave os defaults: a key fica
+       ausente até a próxima edição do usuário. Não toca na aba ativa. */
+    skipNextPersistRef.current = true;
+    showToast("Configurações restauradas para o padrão.", "success");
   }, []);
 
   /* ── Submit generation ── */
@@ -745,6 +845,19 @@ export default function GenerationPanel() {
                   <Kbd className="hidden sm:inline-flex ml-1">Ctrl+Enter</Kbd>
                 </>
               )}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="w-full mt-2"
+              disabled={isBusy}
+              onClick={handleResetForm}
+              aria-label="Restaurar configurações padrão do formulário de geração"
+              title="Limpa as configurações salvas e volta aos padrões"
+            >
+              <IconRefresh className="size-3.5" />
+              Restaurar padrões
             </Button>
           </div>
         </div>

@@ -39,7 +39,7 @@ import {
 import { applyAutotrackerBoxes } from "@/lib/autotracker";
 import { applyAutolabelCaptions } from "@/lib/autolabel";
 import { latestTrainingMetric } from "@/lib/jobMetrics";
-import { jobCapabilities } from "@/lib/jobCapabilities";
+import { jobCapabilities, imageProgressLabel } from "@/lib/jobCapabilities";
 import { ApiError } from "@/lib/api";
 import { copyToClipboard } from "@/lib/clipboard";
 import { formatBytes, formatDuration, formatRelativeTime } from "@/lib/format";
@@ -230,10 +230,20 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
     } catch (err) {
       if (
         err instanceof ApiError &&
-        (err.code === "job_not_terminal" || (err as any).status === 409)
+        (err.code === "job_not_terminal" || err.status === 409)
       ) {
         showToast("Só jobs concluídos/falhos/cancelados podem ser excluídos.", "info");
         setDeleteTarget(null);
+        return;
+      }
+      if (err instanceof ApiError && err.code === "not_found") {
+        showToast("Job já havia sido removido.", "info");
+        setDeleteTarget(null);
+        await fetchData();
+        return;
+      }
+      if (err instanceof ApiError && err.code === "queue_unavailable") {
+        showToast("Manager indisponível, tente de novo.", "error");
         return;
       }
       showToast("Falha ao excluir job.", "error");
@@ -664,7 +674,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
               onClick={() => setCleanupOpen(true)}
               title="Limpar jobs antigos"
               aria-label="Limpar jobs antigos"
-              className="inline-flex size-8 items-center justify-center rounded-lg border border-transparent bg-transparent text-zinc-400 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 cursor-pointer"
+              className="inline-flex size-10 items-center justify-center rounded-lg border border-transparent bg-transparent text-zinc-400 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 cursor-pointer"
             >
               <IconTrash className="size-3.5" />
             </button>
@@ -1130,13 +1140,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                     <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
                                       <span className="text-[10px] font-mono text-zinc-400 block uppercase tracking-caps">Imagens processadas</span>
                                       <span className="text-xs font-semibold text-zinc-200 font-mono tabular-nums">
-                                        {(() => {
-                                          const processed = job.step ?? (job.progress != null ? Math.round(job.progress * (job.step ?? 0)) : null);
-                                          if (processed != null) {
-                                            return `${processed}${job.step ? `/${job.step}` : ""}`;
-                                          }
-                                          return job.progress != null ? `${Math.round(job.progress * 100)}%` : "—";
-                                        })()}
+                                        {imageProgressLabel(job.step, job.progress)}
                                       </span>
                                     </div>
                                   </div>
@@ -1369,7 +1373,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                       onClose();
                                       router.push(`/jobs?job=${job.id}&focus=1`);
                                     }}
-                                    className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] font-mono text-zinc-300 transition hover:bg-white/[0.06] active:scale-[0.985] cursor-pointer"
+                                    className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-[11px] font-mono text-zinc-300 transition hover:bg-white/[0.06] active:scale-[0.985] cursor-pointer"
                                     title="Acompanhar este job em tela cheia"
                                   >
                                     <IconActivity className="size-3" />
@@ -1381,7 +1385,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                     <button
                                       type="button"
                                       onClick={() => setDeleteTarget(job)}
-                                      className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] font-mono text-rose-300 transition hover:border-rose-500/40 hover:bg-rose-500/10 active:scale-[0.985] cursor-pointer"
+                                      className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-[11px] font-mono text-rose-300 transition hover:border-rose-500/40 hover:bg-rose-500/10 active:scale-[0.985] cursor-pointer"
                                       aria-label="Excluir job"
                                       title="Excluir este job e seus artefatos"
                                     >

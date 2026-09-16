@@ -189,6 +189,14 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
   de modelos reais (Florence-2, Qwen-VL, BLIP-2 ou endpoint de API multimodal) e
   runner dedicado com aceleração GPU.
 
+- **Action Center (review 2026-09-16) — ABERTA 2026-09-16:**
+  NIT-1 — sem testes unit de jobCapabilities/jobMetrics/galeria/sync-URL;
+  NIT-3 — gates `kind===`/`engine===` redundantes ao registry (switch ainda
+  espalhado); NIT-6 — `selectJob`/`setFocus` leem `window.location.search` em
+  vez de `searchParams` (risco de dessync + flash no deep-link `&focus=1`);
+  NIT-9 — `untaggedSamples` furam o colapso da galeria; teste de paridade
+  front `isTrainingMetric` × orquestrador `is_training_metric` (pós-merge
+  das 3 branches).
 - **Modal base sem focus-trap/foco inicial — ABERTA 2026-09-10 (review I.8, componente pré-existente):** `apps/web/components/ui/Modal.tsx:50-57` não captura Tab dentro do modal nem move o foco inicial para o primeiro elemento focável; Esc e click-outside funcionam. Modais novos da fatia I herdam. Correção global no componente base numa fatia de refinamento (afeta todos os modais da casa).
 
 ## Quitadas

@@ -1,17 +1,22 @@
 import type { JobMetrics } from "@/types/studio";
 
 /**
- * Um ponto de métrica de treino (AC-006-B) tem ao menos um valor numérico de
- * perda/precisão não-nulo e maior que zero. Linhas de status do engine de
- * difusão (boot: phase/message com epoch=0 e step sequencial, sem loss) e as
- * linhas por-imagem do AutoLabel (zeros) NÃO são métricas de treino e não
- * devem alimentar gráfico, chips nem contagem de checkpoints.
+ * Predicado de métrica de treino (espelha `is_training_metric` do orquestrador,
+ * ADR-0024 D1): um ponto é métrica ⇔ tem ao menos um valor numérico FINITO
+ * relevante — `loss`/`lr` (qualquer valor finito) OU `boxLoss`/`clsLoss`/
+ * `dflLoss`/`map50`/`map5095` finitos e diferentes de zero. Linhas de status do
+ * engine de difusão (boot: phase/message com epoch=0 e step sequencial, sem
+ * loss) e as linhas por-imagem do AutoLabel (zeros) NÃO são métricas de treino
+ * e não devem alimentar gráfico, chips nem contagem de checkpoints.
  */
 export function isTrainingMetric(m: JobMetrics): boolean {
-  if (m.loss != null) return true;
-  if ((m.map50 ?? 0) > 0) return true;
-  if ((m.boxLoss ?? 0) > 0) return true;
-  if ((m.clsLoss ?? 0) > 0) return true;
+  if (Number.isFinite(m.loss)) return true;
+  if (Number.isFinite(m.lr)) return true;
+  if (Number.isFinite(m.boxLoss) && m.boxLoss !== 0) return true;
+  if (Number.isFinite(m.clsLoss) && m.clsLoss !== 0) return true;
+  if (Number.isFinite(m.dflLoss) && m.dflLoss !== 0) return true;
+  if (Number.isFinite(m.map50) && m.map50 !== 0) return true;
+  if (Number.isFinite(m.map5095) && m.map5095 !== 0) return true;
   return false;
 }
 

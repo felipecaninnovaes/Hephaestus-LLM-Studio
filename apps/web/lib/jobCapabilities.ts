@@ -3,8 +3,6 @@ import type { Job } from "@/types/studio";
 export type MetricChipsFlavor = "yolo" | "diffusion" | "progress" | null;
 
 export interface JobCapabilities {
-  /** JobProgressLive durante execução */
-  progressLive: boolean;
   /** null = sem chips; "progress" = chip único de progresso derivado do job */
   metricChips: MetricChipsFlavor;
   /** Gráfico de convergência (ConvergenceChart) */
@@ -35,7 +33,6 @@ export function jobCapabilities(job: Pick<Job, "kind" | "engine">): JobCapabilit
 
   // Default
   const caps: JobCapabilities = {
-    progressLive: true,
     metricChips: null,
     convergenceChart: false,
     samplesGallery: true,
@@ -71,4 +68,13 @@ export function jobCapabilities(job: Pick<Job, "kind" | "engine">): JobCapabilit
   // default: já setado acima
 
   return caps;
+}
+
+/** Rótulo do chip de progresso de imagens: `step · %` quando ambos, um só quando parcial, "—" quando nada. */
+export function imageProgressLabel(step: number | null | undefined, progress: number | null | undefined): string {
+  const pct = progress != null ? `${Math.round(progress * 100)}%` : null;
+  if (step != null && pct) return `${step} · ${pct}`;
+  if (step != null) return String(step);
+  if (pct) return pct;
+  return "—";
 }

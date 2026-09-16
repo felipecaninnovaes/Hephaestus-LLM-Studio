@@ -75,6 +75,7 @@ export function JobCleanupDialog({
         olderThanDays: numericDays !== null && numericDays > 0 ? numericDays : null,
         statuses: selectedStatuses.length > 0 ? selectedStatuses : null,
       });
+      showToast(result.deleted > 0 ? `${result.deleted} job(s) removidos.` : "Nenhum job elegível para limpeza.", result.deleted > 0 ? "success" : "info");
       onDone(result);
       onClose();
     } catch (err) {

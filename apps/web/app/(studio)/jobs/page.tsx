@@ -14,7 +14,7 @@ import {
 import { applyAutotrackerBoxes } from "@/lib/autotracker";
 import { applyAutolabelCaptions } from "@/lib/autolabel";
 import { trainingMetrics } from "@/lib/jobMetrics";
-import { jobCapabilities } from "@/lib/jobCapabilities";
+import { jobCapabilities, imageProgressLabel } from "@/lib/jobCapabilities";
 import { ApiError } from "@/lib/api";
 import { showToast } from "@/components/studio/Toast";
 import ConfirmDialog from "@/components/studio/ConfirmDialog";
@@ -344,10 +344,24 @@ function JobsPageContent() {
     } catch (err) {
       if (
         err instanceof ApiError &&
-        (err.code === "job_not_terminal" || (err as any).status === 409)
+        (err.code === "job_not_terminal" || err.status === 409)
       ) {
         showToast("Só jobs concluídos/falhos/cancelados podem ser excluídos.", "info");
         setDeleteTarget(null);
+        return;
+      }
+      if (err instanceof ApiError && err.code === "not_found") {
+        showToast("Job já havia sido removido.", "info");
+        // Se o job excluído era o selecionado, limpar seleção
+        if (selectedJobId === deleteTarget.id) {
+          selectJob(null);
+        }
+        setDeleteTarget(null);
+        await fetchJobs();
+        return;
+      }
+      if (err instanceof ApiError && err.code === "queue_unavailable") {
+        showToast("Manager indisponível, tente de novo.", "error");
         return;
       }
       showToast("Falha ao excluir job.", "error");
@@ -644,6 +658,7 @@ function JobsPageContent() {
             type="button"
             variant="secondary"
             size="sm"
+            className="min-h-[40px]"
             onClick={() => setCleanupOpen(true)}
             title="Limpar jobs antigos do histórico"
           >
@@ -793,7 +808,7 @@ function JobsPageContent() {
                       <button
                         type="button"
                         onClick={() => setFocus(false)}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] font-mono text-zinc-300 transition hover:bg-white/[0.06] active:scale-[0.985] cursor-pointer"
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-[11px] font-mono text-zinc-300 transition hover:bg-white/[0.06] active:scale-[0.985] cursor-pointer"
                         title="Sair do modo foco"
                       >
                         <IconX className="size-3" />
@@ -803,7 +818,7 @@ function JobsPageContent() {
                       <button
                         type="button"
                         onClick={() => setFocus(true, selectedJob.id)}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] font-mono text-zinc-300 transition hover:bg-white/[0.06] active:scale-[0.985] cursor-pointer"
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-[11px] font-mono text-zinc-300 transition hover:bg-white/[0.06] active:scale-[0.985] cursor-pointer"
                         title="Acompanhar este job em tela cheia"
                       >
                         <IconActivity className="size-3" />
@@ -814,7 +829,7 @@ function JobsPageContent() {
                       <button
                         type="button"
                         onClick={() => setDeleteTarget(selectedJob)}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] font-mono text-rose-300 transition hover:border-rose-500/40 hover:bg-rose-500/10 active:scale-[0.985] cursor-pointer"
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-[11px] font-mono text-rose-300 transition hover:border-rose-500/40 hover:bg-rose-500/10 active:scale-[0.985] cursor-pointer"
                         aria-label="Excluir job"
                         title="Excluir este job e seus artefatos"
                       >
@@ -1015,13 +1030,7 @@ function JobsPageContent() {
                       <div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10 inline-flex items-center gap-2">
                         <span className="text-[10px] font-mono text-zinc-400 uppercase tracking-caps">Imagens processadas</span>
                         <span className="text-xs font-semibold text-zinc-200 font-mono tabular-nums">
-                          {(() => {
-                            const processed = selectedJob.step ?? (selectedJob.progress != null ? Math.round(selectedJob.progress * (selectedJob.step ?? 0)) : null);
-                            if (processed != null) {
-                              return `${processed}${selectedJob.step ? `/${selectedJob.step}` : ""}`;
-                            }
-                            return selectedJob.progress != null ? `${Math.round(selectedJob.progress * 100)}%` : "—";
-                          })()}
+                          {imageProgressLabel(selectedJob.step, selectedJob.progress)}
                         </span>
                       </div>
                     </div>

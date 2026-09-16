@@ -177,7 +177,7 @@ export function JobLogViewer({
         timestamp: finishedTime,
         syntheticTime: !job.finishedAt,
         tag: "STDERR",
-        text: `Erro fatal no processo do orquestrador: ${errLines[0] || "Container execution failed"}`,
+        text: `Erro reportado: ${errLines[0] || "Container execution failed"}`,
         isError: true,
       });
       errLines.slice(1).forEach((line, idx) => {
@@ -199,7 +199,7 @@ export function JobLogViewer({
         timestamp: finishedTime,
         syntheticTime: !job.finishedAt,
         tag: "WARN",
-        text: "Processo encerrado pelo usuário com sucesso. Status: CANCELADO.",
+        text: "Status: CANCELADO.",
       });
     }
 

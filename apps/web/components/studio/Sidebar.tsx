@@ -69,6 +69,7 @@ export default function Sidebar({
   const userMenuRef = useRef<HTMLDivElement>(null);
 
   // Fecha o menu de perfil ao trocar de rota ou fechar o drawer
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset intencional on-change — re-executa em pathname/open sem ler valores; reabriria condições de corrida ler estado do menu aqui
   useEffect(() => {
     setUserMenuOpen(false);
     setConfirmingLogout(false);

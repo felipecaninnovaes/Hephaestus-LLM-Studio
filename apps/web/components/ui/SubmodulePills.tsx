@@ -27,7 +27,10 @@ export function SubmodulePills<T extends string = string>({
 }: SubmodulePillsProps<T>) {
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Rola a pílula ativa para a vista quando value muda (trigger intencional;
+  // a leitura via DOM query não é visível ao linter — void explicita o uso)
   useEffect(() => {
+    void value;
     containerRef.current
       ?.querySelector('[data-active="true"]')
       ?.scrollIntoView({ inline: "nearest", block: "nearest" });

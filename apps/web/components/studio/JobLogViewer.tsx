@@ -216,12 +216,14 @@ export function JobLogViewer({
     return lines;
   }, [lines, filter]);
 
-  // Autoscroll quando novas linhas chegam
+  // Autoscroll quando novas linhas chegam (length lido para reagir a novas linhas;
+  // usa o array como dep — scroll é idempotente e barato)
   useEffect(() => {
-    if (autoScroll && terminalRef.current && isOpen) {
+    const count = filteredLines.length;
+    if (count > 0 && autoScroll && terminalRef.current && isOpen) {
       terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
     }
-  }, [filteredLines.length, autoScroll, isOpen]);
+  }, [filteredLines, autoScroll, isOpen]);
 
   async function handleCopyLogs() {
     try {

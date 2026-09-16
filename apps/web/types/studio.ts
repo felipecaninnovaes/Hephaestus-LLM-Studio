@@ -211,6 +211,28 @@ export interface JobMetricsResponse {
   items: JobMetrics[];
 }
 
+/* ── AC-003: Job deletion & cleanup ──────────────────────────── */
+
+export interface JobDeletedResponse {
+  id: string;
+  status: "done" | "failed" | "cancelled";
+  artifacts: string[];
+  objectKeys: string[];
+  modelsDeleted: number;
+  generationsPreserved: number;
+}
+
+export interface JobCleanupRequest {
+  olderThanDays?: number | null;
+  statuses?: ("done" | "failed" | "cancelled")[] | null;
+}
+
+export interface JobCleanupResponse {
+  deleted: number;
+  jobs: JobDeletedResponse[];
+  objectKeys: string[];
+}
+
 export interface JobTelemetryEvent {
   timestamp: string;
   phase: string;

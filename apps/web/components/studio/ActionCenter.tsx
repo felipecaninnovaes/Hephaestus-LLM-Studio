@@ -29,6 +29,7 @@ import { AutolabelReviewModal } from "@/components/studio/AutolabelReviewModal";
 import { AutotrackerReviewModal } from "@/components/studio/AutotrackerReviewModal";
 import {
   abortJob,
+  deleteJob,
   downloadArtifact,
   getJobArtifacts,
   getJobMetrics,
@@ -51,6 +52,7 @@ import type {
   Telemetry,
 } from "@/types/studio";
 import ConfirmDialog from "@/components/studio/ConfirmDialog";
+import { JobCleanupDialog } from "@/components/studio/JobCleanupDialog";
 import { JOB_STATUS_CONFIG, JobArtifactsList } from "./JobCard";
 import { JobSamplesGallery } from "./JobSamplesGallery";
 import { showToast } from "./Toast";
@@ -92,6 +94,9 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
   const [applyOverwrite, setApplyOverwrite] = useState(false);
   const [reviewJob, setReviewJob] = useState<Job | null>(null);
   const [autotrackerReviewJob, setAutotrackerReviewJob] = useState<Job | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Job | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [cleanupOpen, setCleanupOpen] = useState(false);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -207,6 +212,33 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
       showToast("Falha ao cancelar job.", "error");
     } finally {
       setAbortBusy(false);
+    }
+  }
+
+  // Ação de excluir job terminal
+  async function handleDeleteJob() {
+    if (!deleteTarget) return;
+    setDeleteBusy(true);
+    try {
+      const res = await deleteJob(deleteTarget.id);
+      showToast(
+        `Job excluído · ${res.artifacts.length} artefatos, ${res.modelsDeleted} modelo(s) do catálogo${res.generationsPreserved > 0 ? ` · ${res.generationsPreserved} geração(ões) da galeria preservadas` : ""}.`,
+        "success",
+      );
+      setDeleteTarget(null);
+      await fetchData();
+    } catch (err) {
+      if (
+        err instanceof ApiError &&
+        (err.code === "job_not_terminal" || (err as any).status === 409)
+      ) {
+        showToast("Só jobs concluídos/falhos/cancelados podem ser excluídos.", "info");
+        setDeleteTarget(null);
+        return;
+      }
+      showToast("Falha ao excluir job.", "error");
+    } finally {
+      setDeleteBusy(false);
     }
   }
 
@@ -627,6 +659,15 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                 </span>
               </span>
             )}
+            <button
+              type="button"
+              onClick={() => setCleanupOpen(true)}
+              title="Limpar jobs antigos"
+              aria-label="Limpar jobs antigos"
+              className="inline-flex size-8 items-center justify-center rounded-lg border border-transparent bg-transparent text-zinc-400 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 cursor-pointer"
+            >
+              <IconTrash className="size-3.5" />
+            </button>
             <button
               type="button"
               onClick={() => void fetchData()}
@@ -1335,6 +1376,20 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                     <span>Acompanhar</span>
                                   </button>
 
+                                  {/* Excluir job terminal */}
+                                  {!isActive && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setDeleteTarget(job)}
+                                      className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[11px] font-mono text-rose-300 transition hover:border-rose-500/40 hover:bg-rose-500/10 active:scale-[0.985] cursor-pointer"
+                                      aria-label="Excluir job"
+                                      title="Excluir este job e seus artefatos"
+                                    >
+                                      <IconTrash className="size-3" />
+                                      <span>Excluir</span>
+                                    </button>
+                                  )}
+
                                   {/* Ver detalhes no studio */}
                                   <button
                                     type="button"
@@ -1377,6 +1432,37 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
         busy={abortBusy}
         onConfirm={handleAbort}
         onClose={() => setAbortTarget(null)}
+      />
+
+      {/* Confirmação de exclusão de Job */}
+      <ConfirmDialog
+        open={Boolean(deleteTarget)}
+        title="Excluir job"
+        body={
+          <p className="text-xs text-zinc-300">
+            Esta ação remove o job{" "}
+            <strong className="text-white font-mono">{deleteTarget?.model}</strong>{" "}
+            ({deleteTarget?.id.slice(0, 8)}…) do histórico e{" "}
+            <strong>apaga seus artefatos no armazenamento</strong>. Modelos derivados
+            deste job saem do catálogo. As imagens já salvas na galeria de geração
+            são preservadas.
+          </p>
+        }
+        confirmLabel="Sim, excluir job"
+        danger
+        busy={deleteBusy}
+        onConfirm={handleDeleteJob}
+        onClose={() => setDeleteTarget(null)}
+      />
+
+      {/* Diálogo de limpeza em lote */}
+      <JobCleanupDialog
+        open={cleanupOpen}
+        onClose={() => setCleanupOpen(false)}
+        terminalJobs={jobs
+          .filter((j) => j.status === "done" || j.status === "failed" || j.status === "cancelled")
+          .map((j) => ({ id: j.id, status: j.status as "done" | "failed" | "cancelled", createdAt: j.createdAt, finishedAt: j.finishedAt }))}
+        onDone={() => void fetchData()}
       />
 
       {/* Modal de Revisão e Curadoria de Legendas (AutoLabel) */}

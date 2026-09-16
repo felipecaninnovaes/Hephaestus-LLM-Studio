@@ -3,6 +3,9 @@ import type {
   Job,
   JobArtifact,
   JobArtifactsResponse,
+  JobCleanupRequest,
+  JobCleanupResponse,
+  JobDeletedResponse,
   JobListResponse,
   JobMetricsResponse,
   Telemetry,
@@ -164,6 +167,16 @@ export async function downloadArtifact(
 /** POST /api/jobs/:id/abort — cancela um job. */
 export function abortJob(jobId: string): Promise<void> {
   return apiFetch(`/api/jobs/${jobId}/abort`, { method: "POST" });
+}
+
+/** DELETE /api/jobs/:id — exclui um job terminal (AC-003). */
+export function deleteJob(jobId: string): Promise<JobDeletedResponse> {
+  return apiFetch(`/api/jobs/${jobId}`, { method: "DELETE" });
+}
+
+/** POST /api/jobs/cleanup — limpeza em lote de jobs terminais (AC-003). */
+export function cleanupJobs(req: JobCleanupRequest): Promise<JobCleanupResponse> {
+  return apiFetch("/api/jobs/cleanup", { method: "POST", body: req });
 }
 
 /** GET /api/telemetry — telemetria do nó (CPU/RAM/VRAM/GPUs). */

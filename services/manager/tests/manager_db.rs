@@ -5065,6 +5065,113 @@ async fn hook_generations_idempotente_re_report() {
     assert_eq!(count2.0, 1, "idempotência: continua 1 row");
 }
 
+/// Incidente galeria vazia (defesa em profundidade): diffusion_generate que
+/// reporta done SEM artefatos é recusado → failed com erro no_artifacts.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn report_done_sem_artifacts_diffusion_generate_vira_failed() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+    let resp = manager::create_job(&p, diffusion_generate_request())
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+
+    // done sem artefatos: recusado como done, mas o report é aceito (Ok).
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "done".into(),
+            progress: Some(1.0),
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: None,
+            meta_content: None,
+            phase: None,
+            message: None,
+        },
+    )
+    .await
+    .expect("report done vazio (recusado, mas aceito)");
+
+    let job = manager::get_job(&p, job_id).await.expect("get");
+    assert_eq!(job.status, "failed");
+    assert!(job.finished_at.is_some());
+    let params: serde_json::Value = sqlx::query_scalar("SELECT params FROM jobs WHERE id = $1")
+        .bind(job_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert!(
+        params["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("no_artifacts"),
+        "params.error deve conter no_artifacts: {params}"
+    );
+    let message = job.message.unwrap_or_default();
+    assert!(
+        message.contains("no_artifacts"),
+        "message deve diagnosticar em PT: {message}"
+    );
+}
+
+/// Contra-caso: done COM artefato generated segue done normalmente.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn report_done_com_generated_segue_done() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+    let resp = manager::create_job(&p, diffusion_generate_request())
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "done".into(),
+            progress: Some(1.0),
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: Some(vec![ArtifactItem {
+                kind: "generated".into(),
+                path: "gen_0001.png".into(),
+                md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                bytes: 1024,
+            }]),
+            meta_content: None,
+            phase: None,
+            message: None,
+        },
+    )
+    .await
+    .expect("report done com generated");
+
+    let job = manager::get_job(&p, job_id).await.expect("get");
+    assert_eq!(job.status, "done");
+}
+
 /// Meta corrupto → best-effort, 1 válida inserida.
 #[tokio::test]
 #[ignore = "requer Postgres (bash scripts/test-db.sh)"]

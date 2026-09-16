@@ -421,6 +421,50 @@ fn is_valid_md5(s: &str) -> bool {
             .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
+/// Defesa em profundidade (incidente galeria vazia): kinds que exigem artefato
+/// não podem transitar para done sem eles.
+///
+/// Retorna `Some(motivo)` quando o report done viola a exigência; `None` = ok.
+///
+/// Tabela (decisão documentada):
+/// - `diffusion_generate` → exige ≥1 artefato E ≥1 com kind `generated`.
+/// - `yolo_train` → lista vazia/ausente é PRESERVADA como done (testes
+///   `t7_ac006a_*` e `abort_em_voo_e_terminal` reportam done sem artefatos e
+///   asseveram `done`); lista NÃO-vazia sem kind `model` → violação.
+/// - `diffusion_train`, `yolo_predict`, `autotracker`, `autolabel` → exigem
+///   lista não-vazia (por design todos produzem artefatos; nenhum teste
+///   existente faz done vazio para esses kinds).
+/// - kinds desconhecidos → permissivo (forward-compat).
+pub fn done_artifacts_violation(kind: &str, artifacts: Option<&[ArtifactItem]>) -> Option<String> {
+    let arts: &[ArtifactItem] = artifacts.unwrap_or(&[]);
+    match kind {
+        "diffusion_generate" => {
+            if arts.is_empty() {
+                return Some("diffusion_generate exige ao menos 1 artefato".into());
+            }
+            if !arts.iter().any(|a| a.kind == "generated") {
+                return Some("diffusion_generate exige artefato kind 'generated'".into());
+            }
+            None
+        }
+        // Lista vazia/ausente preservada como done (t7_ac006a_*, abort_em_voo);
+        // lista não-vazia sem modelo = treino sem produto → violação.
+        "yolo_train" => {
+            if !arts.is_empty() && !arts.iter().any(|a| a.kind == "model") {
+                return Some("yolo_train exige artefato kind 'model'".into());
+            }
+            None
+        }
+        "diffusion_train" | "yolo_predict" | "autotracker" | "autolabel" => {
+            if arts.is_empty() {
+                return Some(format!("{kind} exige ao menos 1 artefato"));
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 /// Cria um job. Retorna (job_id, queue_position).
 ///
 /// VRAM policy: `vram_min_gb` é gravado mas ignorado na decisão de fila (no-op
@@ -1145,6 +1189,51 @@ pub async fn report_job(
         }
 
         "done" => {
+            // Defesa em profundidade (incidente galeria vazia): recusa o done
+            // de kind que exige artefato quando a lista chega vazia/ausente ou
+            // sem o artefato-chave — registra failed com erro no_artifacts e
+            // mensagem PT (sem status novo, sem mexer no enum de wire).
+            let job_kind: Option<String> =
+                sqlx::query_scalar("SELECT kind FROM jobs WHERE id = $1")
+                    .bind(id)
+                    .fetch_optional(pool)
+                    .await
+                    .map_err(|e| ManagerError::Internal(format!("get kind for done guard: {e}")))?;
+            if let Some(kind) = job_kind {
+                if let Some(reason) =
+                    done_artifacts_violation(kind.as_str(), report.artifacts.as_deref())
+                {
+                    let err_code = format!("no_artifacts: {reason}");
+                    let msg_pt = format!(
+                        "Job finalizado sem os artefatos exigidos ({err_code}). Verifique o bucket S3 e os logs do orquestrador."
+                    );
+                    tracing::warn!(
+                        job_id = %id,
+                        kind = %kind,
+                        reason = %reason,
+                        "done recusado sem artefatos exigidos → failed/no_artifacts"
+                    );
+                    sqlx::query("UPDATE jobs SET params = params || $2::jsonb WHERE id = $1")
+                        .bind(id)
+                        .bind(serde_json::json!({"error": err_code}))
+                        .execute(pool)
+                        .await
+                        .map_err(|e| {
+                            ManagerError::Internal(format!("merge no_artifacts error: {e}"))
+                        })?;
+                    sqlx::query("UPDATE jobs SET status = 'failed', finished_at = now(), phase = COALESCE($2, phase), message = $3 WHERE id = $1")
+                        .bind(id)
+                        .bind(&report.phase)
+                        .bind(&msg_pt)
+                        .execute(pool)
+                        .await
+                        .map_err(|e| {
+                            ManagerError::Internal(format!("set failed no_artifacts: {e}"))
+                        })?;
+                    return Ok(());
+                }
+            }
+
             // Valida e insere artifacts.
             if let Some(artifacts) = &report.artifacts {
                 for art in artifacts {
@@ -3323,6 +3412,77 @@ mod tests {
     #[test]
     fn is_valid_md5_non_hex() {
         assert!(!is_valid_md5("d41d8cd98f00b204e9800998ecf8427g"));
+    }
+
+    // -- done_artifacts_violation: defesa no_artifacts (incidente galeria vazia) --
+
+    fn art(kind: &str) -> ArtifactItem {
+        ArtifactItem {
+            kind: kind.into(),
+            path: format!("{kind}.bin"),
+            md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+            bytes: 10,
+        }
+    }
+
+    #[test]
+    fn done_violation_diffusion_generate_sem_artifacts() {
+        assert!(done_artifacts_violation("diffusion_generate", None).is_some());
+        assert!(done_artifacts_violation("diffusion_generate", Some(&[])).is_some());
+    }
+
+    #[test]
+    fn done_violation_diffusion_generate_sem_generated() {
+        let arts = vec![art("generated_meta"), art("generated_thumb")];
+        assert!(done_artifacts_violation("diffusion_generate", Some(&arts)).is_some());
+    }
+
+    #[test]
+    fn done_violation_diffusion_generate_ok() {
+        let arts = vec![art("generated"), art("generated_meta")];
+        assert!(done_artifacts_violation("diffusion_generate", Some(&arts)).is_none());
+    }
+
+    #[test]
+    fn done_violation_yolo_train_vazio_preservado() {
+        // Preservação (t7_ac006a_*, abort_em_voo_e_terminal): done vazio segue done.
+        assert!(done_artifacts_violation("yolo_train", None).is_none());
+        assert!(done_artifacts_violation("yolo_train", Some(&[])).is_none());
+    }
+
+    #[test]
+    fn done_violation_yolo_train_exige_modelo() {
+        assert!(done_artifacts_violation("yolo_train", Some(&[art("model")])).is_none());
+        let arts = vec![art("metrics")];
+        assert!(done_artifacts_violation("yolo_train", Some(&arts)).is_some());
+    }
+
+    #[test]
+    fn done_violation_treinos_e_predicao_exigem_lista() {
+        for kind in [
+            "diffusion_train",
+            "yolo_predict",
+            "autotracker",
+            "autolabel",
+        ] {
+            assert!(
+                done_artifacts_violation(kind, None).is_some(),
+                "{kind} vazio deve violar"
+            );
+            assert!(
+                done_artifacts_violation(kind, Some(&[])).is_some(),
+                "{kind} vazio deve violar"
+            );
+            assert!(
+                done_artifacts_violation(kind, Some(&[art("model")])).is_none(),
+                "{kind} com artefato deve passar"
+            );
+        }
+    }
+
+    #[test]
+    fn done_violation_kind_desconhecido_permissivo() {
+        assert!(done_artifacts_violation("futura_engine_x", None).is_none());
     }
 
     #[test]

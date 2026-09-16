@@ -183,7 +183,9 @@ jobs:     POST /api/jobs/yolo  → implementado (Fatia 4; ADR-0007 D7 — spec 0
           GET /api/jobs         → implementado (Fatia 4; lista `{items,total}`)
           GET /api/jobs/queue   → implementado (Fatia 4; fila `{items:[{jobId,position,queueReason}]}`)
           GET /api/jobs/:id     → implementado (Fatia 4; detalhe do job)
-          POST /api/jobs/:id/abort  → implementado (Fatia 4; 200 `{"status":"cancelling"|"cancelled"}` | 409 `job_not_abortable`)
+           POST /api/jobs/:id/abort  → implementado (Fatia 4; 200 `{"status":"cancelling"|"cancelled"}` | 409 `job_not_abortable`)
+           DELETE /api/jobs/:id  → implementado (AC-003; spec 0.27.0 — 200 `JobDeletedResponse` | 404 `not_found` | 409 `job_not_terminal` | 503 `queue_unavailable`)
+           POST /api/jobs/cleanup  → implementado (AC-003; spec 0.27.0 — body `JobCleanupRequest` → 200 `JobCleanupResponse` | 400 | 401 | 503)
           GET /api/jobs/:id/metrics  → implementado (Fatia 4; `{items:[{epoch,boxLoss,clsLoss,dflLoss,map50,map5095}]}`)
           GET /api/jobs/:id/artifacts  → implementado (Fatia 4; `{items:[{id,kind,path,md5,bytes}]}`)
           GET /api/jobs/:id/artifacts/:artifactId/data  → implementado (Fatia 4; proxy do objeto via StoragePort)
@@ -241,7 +243,11 @@ ws:       /ws/jobs/:id/logs?since_seq=, /ws/telemetry
   - **`POST /api/generations/delete`** (body `GenerationIdsRequest{ids: uuid[], 1..100}`) → 204 soft-delete; 400; 503.
   - **`POST /api/generations/export`** (body `GenerationIdsRequest`) → 200 `application/zip` stream; 400; 503.
   - **Schemas novos:** `Generation{id,jobId,filename,url,thumbUrl,width,height,seed,prompt,negativePrompt?,params,createdAt}`, `GenerationList{items,total}`, `GenerationIdsRequest{ids}`, `LoraRef{modelId,scale}`.
-  - **`Model` (aditivo):** `kind: 'lora'|'checkpoint'|null`, `arch: 'flux-2-klein-4b'|'sdxl'|'sd15'|null` (migration 0011).
+   - **`Model` (aditivo):** `kind: 'lora'|'checkpoint'|null`, `arch: 'flux-2-klein-4b'|'sdxl'|'sd15'|null` (migration 0011).
+- Nota AC-003 — exclusão de jobs (spec 0.27.0, `packages/contracts/openapi.yaml`):
+  - **`DELETE /api/jobs/:id`** — exclui job terminal via manager (`DELETE /internal/jobs/:id`) → 200 `JobDeletedResponse{id,status,artifacts,objectKeys,modelsDeleted,generationsPreserved}` (wire camelCase; o manager devolve snake_case `object_keys`/`models_deleted`/`generations_preserved` e o principal remapeia em `handlers.rs::job_deleted_to_wire`). Só estados terminais (`done`/`failed`/`cancelled`); não-terminal ⇒ 409 `job_not_terminal` (erro novo na enum `Error.code`); id não-UUID/inexistente ⇒ 404 `not_found`; manager fora ⇒ 503 `queue_unavailable`. Sweep S3 **best-effort pós-commit por chaves exatas** (`object_keys` do manager, que já excluem as chaves das gerações vivas — nunca varre o prefixo `artifacts/{job_id}/`); falha do sweep só loga, nunca vira 500. Gerações da galeria preservadas (FK `SET NULL`, migration 0012); models do catálogo derivadas do job expurgadas (`modelsDeleted`).
+  - **`POST /api/jobs/cleanup`** — limpeza em lote via manager (`POST /internal/jobs/cleanup`): body `JobCleanupRequest{olderThanDays?,statuses?}` (`required: true` no wire; ambos os campos opcionais/nullable — `statuses` restrito a terminais no wire) → 200 `JobCleanupResponse{deleted,jobs,objectKeys}` (união das chaves p/ sweep). Erros: 400 `invalid_request` (body inválido, `olderThanDays < 0`, ou nenhum critério — o manager exige ao menos um), 401, 503 `queue_unavailable`. Sweep best-effort idem ao delete, agregado por job.
+  - **Internas do manager:** `DELETE /internal/jobs/:id` (guarda de estado: não-terminal ⇒ 409 `job_not_terminal`; não-UUID/inexistente ⇒ 404; responde `DeletedJob` com as chaves exatas p/ sweep) e `POST /internal/jobs/cleanup` (body vazio = sem filtros; JSON inválido ⇒ 400 `invalid_request`).
 - Nota Fatia 3a (ADR-0002 D1, casing): TODAS as chaves de body/query/response de `/api/*` são camelCase (o teste `json_property_names_are_camel_case` rejeita o resto). **Os nomes listados no §9 são colunas (§10) ou campos de transporte, não chaves JSON** — ex.: settings `{hfToken, …}` no wire vs colunas `hf_token` em `settings`; datasets `sizeBytes/imagesCount/lastModified` no wire vs colunas `size_bytes/images_count/updated_at`. A rota `PUT/GET /api/settings/keys` ainda **não está implementada**; as colunas de `settings` permanecem snake_case.
 - Nota Fatia 3b (ADR-0003, spec 0.3.0 — shapes reais em `services/api-principal/src/datasets/models.rs`, tabela de rotas ≡ `PROTECTED_ROUTES` em `src/auth/routes.rs`):
   ```
@@ -394,7 +400,7 @@ job_artifacts(id UUID PK, job_id UUID FK, kind TEXT, path TEXT, md5 TEXT, bytes 
 job_samples(job_id UUID FK, cycle INT, idx INT, image_path TEXT, meta JSONB, PRIMARY KEY(job_id, cycle, idx));
 runners(id UUID PK, engine TEXT, model TEXT, orchestrator_id UUID FK,
   status TEXT, vram_gb INT, last_used TIMESTAMPTZ);
-generations(id UUID PK, job_id UUID NOT NULL FK jobs ON DELETE CASCADE,
+generations(id UUID PK, job_id UUID NULL FK jobs ON DELETE SET NULL,
   s3_key TEXT NOT NULL UNIQUE, thumb_s3_key TEXT,
   filename TEXT NOT NULL CHECK (char_length(filename) BETWEEN 1 AND 255),
   seed BIGINT NOT NULL CHECK (seed >= 0),
@@ -406,6 +412,8 @@ generations(id UUID PK, job_id UUID NOT NULL FK jobs ON DELETE CASCADE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   deleted_at TIMESTAMPTZ);
   -- IMPLEMENTADO (Fatia Geração; ADR-0023 D5; migration 0011_generations.sql): galeria persistente de imagens geradas.
+  -- AC-003 (migration `0012_generations_job_optional.sql`): `job_id` passa a NULL + `ON DELETE SET NULL`
+  -- (era NOT NULL + CASCADE) — a galeria sobrevive ao expurgo do job de origem (linhas órfãs mantêm `s3_key` válido p/ proxy de imagem).
   -- Dono: manager (hook no report_job — job diffusion_generate done com artefato generated_meta → INSERT por imagem).
   -- Soft-delete: deleted_at (objeto S3 intocado; sweep é dívida); índice parcial WHERE deleted_at IS NOT NULL.
   -- Índices: `generations(created_at DESC)`, `generations(job_id)`, `generations(deleted_at) WHERE deleted_at IS NOT NULL`.

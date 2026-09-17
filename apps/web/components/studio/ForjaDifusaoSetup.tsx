@@ -114,6 +114,10 @@ export default function ForjaDifusaoSetup({
     resumeCheckpoint?.id ?? ""
   );
   const [selectedOrchestratorId, setSelectedOrchestratorId] = useState<string | null>(null);
+  /* Base custom (fatia pesos-custom-flux2): UUID de checkpoint kind=checkpoint; "" = preset oficial. */
+  const [customModelId, setCustomModelId] = useState<string>("");
+  /* Text encoder custom (kind=text_encoder). "" = encoder oficial BFL; só vale p/ arch flux-2. */
+  const [textEncoderModelId, setTextEncoderModelId] = useState<string>("");
 
   // Resume checkpoint state
   const [currentResumeCheckpoint, setCurrentResumeCheckpoint] = useState<{
@@ -218,20 +222,6 @@ export default function ForjaDifusaoSetup({
     };
   }, []);
 
-  // Estimativa preditiva de VRAM em GB
-  const estimatedVram = useMemo(
-    () =>
-      estimateDiffusionVramGb(
-        params.baseModel,
-        params.batchSize,
-        params.rank,
-        resolution,
-        optimizer,
-        mixedPrecision,
-        quantization,
-      ),
-    [params.baseModel, params.batchSize, params.rank, resolution, optimizer, mixedPrecision, quantization],
-  );
 
   const nodeVramTotalGb = useMemo(() => {
     if (telemetry?.vramTotal && telemetry.vramTotal > 0) {
@@ -242,26 +232,13 @@ export default function ForjaDifusaoSetup({
     return null;
   }, [telemetry?.vramTotal]);
 
-  const oomRisk = useMemo<"safe" | "warning" | "danger">(() => {
-    if (nodeVramTotalGb != null) {
-      if (estimatedVram > nodeVramTotalGb) return "danger";
-      if (estimatedVram > nodeVramTotalGb * 0.85) return "warning";
-      return "safe";
-    }
-    if (estimatedVram >= 16) return "danger";
-    if (estimatedVram >= 12) return "warning";
-    return "safe";
-  }, [estimatedVram, nodeVramTotalGb]);
-
-  const deviceLabel = useMemo(() => {
-    if (telemetry?.gpus && telemetry.gpus.length > 0) {
-      return `${telemetry.gpus[0]} (${nodeVramTotalGb || 24} GB)`;
-    }
-    return "Host CPU (Modo Mock)";
-  }, [telemetry?.gpus, nodeVramTotalGb]);
-
   function applyPreset(preset: Partial<DiffusionPreset> & { name: string }) {
-    if (preset.baseModel) setParams((p) => ({ ...p, baseModel: preset.baseModel! }));
+    if (preset.baseModel) {
+      setParams((p) => ({ ...p, baseModel: preset.baseModel! }));
+      /* Presets são oficiais: soltam checkpoint custom; encoder só sobrevive p/ flux. */
+      setCustomModelId("");
+      if (preset.baseModel !== "flux") setTextEncoderModelId("");
+    }
     if (preset.triggerWord !== undefined) setParams((p) => ({ ...p, triggerWord: preset.triggerWord! }));
     if (preset.epochs !== undefined) setParams((p) => ({ ...p, epochs: preset.epochs! }));
     if (preset.batchSize !== undefined) setParams((p) => ({ ...p, batchSize: preset.batchSize! }));
@@ -590,6 +567,112 @@ export default function ForjaDifusaoSetup({
     }));
   }, [diffusionModels]);
 
+  const checkpointModels = useMemo(
+    () => diffusionModels.filter((m) => m.engine === "diffusion" && m.kind === "checkpoint"),
+    [diffusionModels],
+  );
+  const textEncoderModels = useMemo(
+    () => diffusionModels.filter((m) => m.engine === "diffusion" && m.kind === "text_encoder"),
+    [diffusionModels],
+  );
+  /* Arch efetivo do treino: custom ⇒ arch do checkpoint; senão o preset ("flux" = flux-2-klein-4b). */
+  const trainEffectiveArch = useMemo(() => {
+    if (customModelId) {
+      return checkpointModels.find((m) => m.id === customModelId)?.arch ?? null;
+    }
+    return params.baseModel === "flux" ? "flux-2-klein-4b" : params.baseModel;
+  }, [customModelId, checkpointModels, params.baseModel]);
+  const isTrainFlux2 = trainEffectiveArch === "flux-2-klein-4b";
+  /* VRAM estimada pelo arch EFETIVO (custom flux-2 custa como flux-2-klein-4b). */
+  const estimatedVram = useMemo(
+    () =>
+      estimateDiffusionVramGb(
+        trainEffectiveArch === "flux-2-klein-4b"
+          ? "flux"
+          : trainEffectiveArch === "sdxl" || trainEffectiveArch === "sd15"
+            ? trainEffectiveArch
+            : params.baseModel,
+        params.batchSize,
+        params.rank,
+        resolution,
+        optimizer,
+        mixedPrecision,
+        quantization,
+      ),
+    [trainEffectiveArch, params.baseModel, params.batchSize, params.rank, resolution, optimizer, mixedPrecision, quantization],
+  );
+
+  const oomRisk = useMemo<"safe" | "warning" | "danger">(() => {
+    if (nodeVramTotalGb != null) {
+      if (estimatedVram > nodeVramTotalGb) return "danger";
+      if (estimatedVram > nodeVramTotalGb * 0.85) return "warning";
+      return "safe";
+    }
+    if (estimatedVram >= 16) return "danger";
+    if (estimatedVram >= 12) return "warning";
+    return "safe";
+  }, [estimatedVram, nodeVramTotalGb]);
+
+  const deviceLabel = useMemo(() => {
+    if (telemetry?.gpus && telemetry.gpus.length > 0) {
+      return `${telemetry.gpus[0]} (${nodeVramTotalGb || 24} GB)`;
+    }
+    return "Host CPU (Modo Mock)";
+  }, [telemetry?.gpus, nodeVramTotalGb]);
+
+  const trainBaseOptions = useMemo<SelectOption<string>[]>(() => {
+    const opts: SelectOption<string>[] = [
+      { value: "preset:sdxl", label: "SDXL 1.0 (oficial)", description: "Equilíbrio fidelidade/estilo" },
+      { value: "preset:flux", label: "FLUX.2 Klein 4B (oficial)", description: "LoRA rápido em GPUs 10–12 GB" },
+      { value: "preset:sd15", label: "SD 1.5 (oficial)", description: "Leve p/ GPUs menores" },
+    ];
+    const byArch: Record<string, Model[]> = {};
+    for (const m of checkpointModels) {
+      const key = m.arch ?? "sem arch detectado";
+      if (!byArch[key]) byArch[key] = [];
+      byArch[key].push(m);
+    }
+    for (const arch of Object.keys(byArch).sort()) {
+      for (const m of byArch[arch]) {
+        opts.push({
+          value: m.id,
+          label: `${m.name} (custom · ${arch})`,
+          description: `checkpoint ${arch} · ${m.source}`,
+        });
+      }
+    }
+    if (customModelId && !checkpointModels.some((m) => m.id === customModelId)) {
+      opts.push({
+        value: customModelId,
+        label: "Modelo removido — faça upload em Modelos & Pesos",
+        description: "checkpoint indisponível",
+      });
+    }
+    return opts;
+  }, [checkpointModels, customModelId]);
+  const trainBaseValue = customModelId ? customModelId : `preset:${params.baseModel}`;
+
+  const trainEncoderOptions = useMemo<SelectOption<string>[]>(() => {
+    const opts: SelectOption<string>[] = [
+      { value: "", label: "Encoder oficial BFL (padrão)", description: "Qwen3 do repo BFL" },
+    ];
+    for (const m of textEncoderModels) {
+      opts.push({
+        value: m.id,
+        label: m.name,
+        description: `text_encoder${m.arch ? ` ${m.arch}` : ""} · ${m.source}`,
+      });
+    }
+    if (textEncoderModelId && !textEncoderModels.some((m) => m.id === textEncoderModelId)) {
+      opts.push({
+        value: textEncoderModelId,
+        label: "Encoder removido — faça upload em Modelos & Pesos",
+        description: "text_encoder indisponível",
+      });
+    }
+    return opts;
+  }, [textEncoderModels, textEncoderModelId]);
+
   const batchOptions = useMemo<SelectOption<number>[]>(
     () => [
       { value: 1, label: "1 (Mínima VRAM)" },
@@ -720,7 +803,7 @@ export default function ForjaDifusaoSetup({
     try {
       const result = await startDiffusionJob({
         datasetId: selectedDatasetId,
-        baseModel: params.baseModel,
+        ...(customModelId ? { customModelId } : { baseModel: params.baseModel }),
         triggerWord: params.triggerWord.trim() || undefined,
         epochs: params.epochs,
         batchSize: params.batchSize,
@@ -745,6 +828,7 @@ export default function ForjaDifusaoSetup({
         enableBucket,
         checkpointInterval,
         epochOffset: epochOffset > 0 ? epochOffset : undefined,
+        ...(isTrainFlux2 && textEncoderModelId ? { textEncoderModelId } : {}),
       });
 
       showToast(
@@ -756,7 +840,8 @@ export default function ForjaDifusaoSetup({
 
       // Reset form
       setSelectedWeightId("");
-      setSelectedOrchestratorId(null);
+      setCustomModelId("");
+      setTextEncoderModelId("");
       setCurrentResumeCheckpoint(null);
       setEpochOffset(0);
       setCheckpointInterval(1);
@@ -1138,122 +1223,60 @@ export default function ForjaDifusaoSetup({
         </p>
       </div>
 
-      {/* Seletor de Modelo Base (Cards Selecionáveis) */}
+      {/* Seletor de Modelo Base (presets oficiais + checkpoints custom por arch) */}
       <div className="space-y-2">
         <span className="block text-xs font-medium text-zinc-300">
           Modelo Base
         </span>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          {/* SDXL 1.0 */}
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() =>
+        <Select
+          id="setup-diffusion-base"
+          options={trainBaseOptions}
+          value={trainBaseValue}
+          onChange={(val) => {
+            if (val.startsWith("preset:")) {
+              const next = val.slice("preset:".length) as DiffusionBaseModel;
+              setCustomModelId("");
               setParams((p) => ({
                 ...p,
-                baseModel: "sdxl",
-                learningRate: p.learningRate === "0.00003" ? "0.0001" : p.learningRate,
-              }))
-            }
-            className={`flex flex-col text-left p-3.5 rounded-xl border transition-colors ${
-              params.baseModel === "sdxl"
-                ? "border-brand-500/50 bg-brand-500/[0.08] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] ring-1 ring-brand-500/30"
-                : "border-white/10 bg-white/[0.02] text-zinc-300 hover:border-white/20 hover:bg-white/[0.04]"
-            }`}
-          >
-            <div className="flex items-center justify-between w-full mb-1.5">
-              <span className="font-display font-semibold text-xs text-zinc-100">
-                SDXL 1.0
-              </span>
-              <span
-                className={`rounded-full px-2 py-0.5 font-mono text-3xs ${
-                  params.baseModel === "sdxl"
-                    ? "border border-brand-500/30 bg-brand-500/20 text-brand-300"
-                    : "border border-white/10 bg-white/5 text-zinc-400"
-                }`}
-              >
-                ~12 GB VRAM
-              </span>
-            </div>
-            <p className="text-2xs text-zinc-400 leading-snug">
-              Equilíbrio ideal entre fidelidade, estilos artísticos e fotorealismo.
-            </p>
-          </button>
-
-          {/* FLUX.2 Klein 4B */}
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => {
-              setParams((p) => ({
-                ...p,
-                baseModel: "flux",
-                learningRate: p.learningRate === "0.0001" ? "0.00003" : p.learningRate,
+                baseModel: next,
+                learningRate:
+                  next === "flux"
+                    ? (p.learningRate === "0.0001" ? "0.00003" : p.learningRate)
+                    : (p.learningRate === "0.00003" ? "0.0001" : p.learningRate),
               }));
-              setMixedPrecision("bf16");
-            }}
-            className={`flex flex-col text-left p-3.5 rounded-xl border transition-colors ${
-              params.baseModel === "flux"
-                ? "border-brand-500/50 bg-brand-500/[0.08] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] ring-1 ring-brand-500/30"
-                : "border-white/10 bg-white/[0.02] text-zinc-300 hover:border-white/20 hover:bg-white/[0.04]"
-            }`}
-          >
-            <div className="flex items-center justify-between w-full mb-1.5">
-              <span className="font-display font-semibold text-xs text-zinc-100">
-                FLUX.2 Klein 4B
-              </span>
-              <span
-                className={`rounded-full px-2 py-0.5 font-mono text-3xs ${
-                  params.baseModel === "flux"
-                    ? "border border-brand-500/30 bg-brand-500/20 text-brand-300"
-                    : "border border-white/10 bg-white/5 text-zinc-400"
-                }`}
-              >
-                ~10 GB VRAM
-              </span>
-            </div>
-            <p className="text-2xs text-zinc-400 leading-snug">
-              Modelo leve de 4B parâmetros com Flow Matching, ideal para LoRA rápido em GPUs de 10–12 GB.
-            </p>
-          </button>
-
-          {/* Stable Diffusion 1.5 */}
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() =>
-              setParams((p) => ({
-                ...p,
-                baseModel: "sd15",
-                learningRate: p.learningRate === "0.00003" ? "0.0001" : p.learningRate,
-              }))
+              if (next === "flux") setMixedPrecision("bf16");
+              if (next !== "flux") setTextEncoderModelId("");
+            } else {
+              setCustomModelId(val);
+              const found = checkpointModels.find((m) => m.id === val);
+              if (found?.arch !== "flux-2-klein-4b") setTextEncoderModelId("");
             }
-            className={`flex flex-col text-left p-3.5 rounded-xl border transition-colors ${
-              params.baseModel === "sd15"
-                ? "border-brand-500/50 bg-brand-500/[0.08] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] ring-1 ring-brand-500/30"
-                : "border-white/10 bg-white/[0.02] text-zinc-300 hover:border-white/20 hover:bg-white/[0.04]"
-            }`}
-          >
-            <div className="flex items-center justify-between w-full mb-1.5">
-              <span className="font-display font-semibold text-xs text-zinc-100">
-                SD 1.5
-              </span>
-              <span
-                className={`rounded-full px-2 py-0.5 font-mono text-3xs ${
-                  params.baseModel === "sd15"
-                    ? "border border-brand-500/30 bg-brand-500/20 text-brand-300"
-                    : "border border-white/10 bg-white/5 text-zinc-400"
-                }`}
-              >
-                ~8 GB VRAM
-              </span>
-            </div>
-            <p className="text-2xs text-zinc-400 leading-snug">
-              Mais leve, veloz e compatível com GPUs menores ou ambientes restritos.
-            </p>
-          </button>
-        </div>
+          }}
+          placeholder="Selecione o modelo base"
+          disabled={busy}
+          searchable={trainBaseOptions.length > 5}
+          fontMono
+        />
+        {customModelId && trainEffectiveArch && (
+          <p className="font-mono text-3xs text-zinc-500">
+            Checkpoint custom · arch {trainEffectiveArch} · VRAM mínima como {trainEffectiveArch === "flux-2-klein-4b" ? "FLUX.2 Klein 4B" : trainEffectiveArch}
+          </p>
+        )}
       </div>
+
+      {/* Text encoder (somente flux-2-klein-4b) */}
+      <Select
+        id="setup-diffusion-text-encoder"
+        label="Text encoder"
+        hint={isTrainFlux2 ? "Default = encoder oficial BFL; selecione um text_encoder de Modelos & Pesos p/ substituir." : "Disponível só quando o arch efetivo é flux-2-klein-4b."}
+        options={trainEncoderOptions}
+        value={isTrainFlux2 ? textEncoderModelId : ""}
+        onChange={(val) => setTextEncoderModelId(val)}
+        placeholder={isTrainFlux2 ? "Encoder oficial BFL (padrão)" : "Disponível só p/ FLUX.2 Klein 4B"}
+        disabled={busy || !isTrainFlux2}
+        searchable={trainEncoderOptions.length > 5}
+        fontMono
+      />
 
       {/* Trigger Word */}
       <div className="space-y-1.5">

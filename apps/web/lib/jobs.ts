@@ -41,7 +41,9 @@ export function startYoloJob(params: {
 /** POST /api/jobs/diffusion — cria job de treino de difusão LoRA. Retorna 202 (preparing|queued). */
 export function startDiffusionJob(params: {
   datasetId: string;
-  baseModel: "sdxl" | "flux" | "sd15";
+  baseModel?: "sdxl" | "flux" | "sd15" | null;
+  customModelId?: string | null;
+  textEncoderModelId?: string | null;
   triggerWord?: string;
   epochs?: number;
   batchSize?: number;
@@ -90,6 +92,18 @@ export function startDiffusionJob(params: {
     ...rest
   } = params;
   const body: Record<string, unknown> = { ...rest };
+  /* XOR baseModel/customModelId (fatia pesos-custom-flux2): custom vence;
+     ambos ausentes ⇒ body sem nenhum (backend assume "sdxl"). NENHUM outro
+     campo muda — a lista de whitelists abaixo é intocada. */
+  if (params.customModelId) {
+    body.customModelId = params.customModelId;
+    delete body.baseModel;
+  } else if (params.baseModel) {
+    body.baseModel = params.baseModel;
+  } else {
+    delete body.baseModel;
+  }
+  if (params.textEncoderModelId) body.textEncoderModelId = params.textEncoderModelId;
   if (outputName?.trim()) body.outputName = outputName.trim();
   if (triggerWord?.trim()) body.triggerWord = triggerWord.trim();
   if (weights) body.weights = weights;

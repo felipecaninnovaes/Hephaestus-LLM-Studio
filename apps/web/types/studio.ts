@@ -479,8 +479,12 @@ export function autolabelErrorMessage(code: string): string {
 
 export interface DiffusionJobRequest {
   datasetId: string;
-  /** "flux" (FLUX.2 Klein 4B), "sdxl" (SDXL 1.0) ou "sd15" (Stable Diffusion 1.5) */
-  baseModel: "sdxl" | "flux" | "sd15";
+  /** "flux" (FLUX.2 Klein 4B), "sdxl" (SDXL 1.0) ou "sd15" (Stable Diffusion 1.5). XOR com customModelId; ambos ausentes ⇒ "sdxl" (retrocompat). */
+  baseModel?: "sdxl" | "flux" | "sd15";
+  /** UUID de checkpoint custom (kind=checkpoint). XOR com baseModel. */
+  customModelId?: string | null;
+  /** UUID de text encoder custom (kind=text_encoder). Só vale p/ arch flux-2-klein-4b; omitido = encoder oficial BFL. */
+  textEncoderModelId?: string | null;
   triggerWord?: string;
   epochs?: number;
   batchSize?: number;
@@ -557,6 +561,8 @@ export function diffusionErrorMessage(code: string): string {
 export interface DiffusionGenerateJobRequest {
   baseModel?: "flux-2-klein-4b" | "sdxl" | "sd15";
   customModelId?: string | null;
+  /** UUID de text encoder custom (kind=text_encoder). Só vale p/ arch flux-2-klein-4b; omitido = encoder oficial BFL. */
+  textEncoderModelId?: string | null;
   prompt: string;
   negativePrompt?: string;
   width?: number;
@@ -617,7 +623,7 @@ export interface Model {
   url: string | null;
   jobId: string | null;
   createdAt: string;
-  kind?: "lora" | "checkpoint" | null;
+  kind?: "lora" | "checkpoint" | "text_encoder" | null;
   arch?: "flux-2-klein-4b" | "sdxl" | "sd15" | null;
 }
 

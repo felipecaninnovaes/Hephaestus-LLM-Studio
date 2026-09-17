@@ -14,7 +14,6 @@ import type { Generation, LoraRef } from "@/types/studio";
 export const GERACAO_FORM_KEY = "geracao:form:v1";
 const GERACAO_FORM_VERSION = 1;
 
-export type GeracaoModelMode = "preset" | "custom";
 export type GeracaoBaseModel = "flux-2-klein-4b" | "sdxl" | "sd15";
 export type GeracaoQuantization = "none" | "2bit" | "4bit" | "6bit" | "8bit";
 export type GeracaoSampler =
@@ -36,9 +35,10 @@ export interface GeracaoUpscale {
 }
 
 export interface GeracaoFormState {
-  modelMode: GeracaoModelMode;
   baseModel: GeracaoBaseModel;
   customModelId: string;
+  /* UUID de text encoder custom (kind=text_encoder). "" = encoder oficial BFL. Só vale p/ arch flux-2-klein-4b. */
+  textEncoderModelId: string;
   distilled: boolean;
   loras: LoraRef[];
   prompt: string;
@@ -89,9 +89,9 @@ export function randomGeracaoSeed(): number {
    rolada a cada chamada (igual ao initializer do componente). */
 export function createDefaultGeracaoForm(): GeracaoFormState {
   return {
-    modelMode: "preset",
     baseModel: "flux-2-klein-4b",
     customModelId: "",
+    textEncoderModelId: "",
     distilled: true,
     loras: [],
     prompt: "",
@@ -183,12 +183,14 @@ export function loadGeracaoForm(): PartialGeracaoForm | null {
     const defaults = createDefaultGeracaoForm();
     const out: PartialGeracaoForm = {};
 
-    if (s.modelMode === "preset" || s.modelMode === "custom") out.modelMode = s.modelMode;
     if (typeof s.baseModel === "string" && (BASE_MODELS as readonly string[]).includes(s.baseModel)) {
       out.baseModel = s.baseModel as GeracaoBaseModel;
     }
     const customId = asString(s.customModelId, 256);
     if (customId !== null) out.customModelId = customId;
+    /* textEncoderModelId novo (fatia pesos-custom-flux2): "" = encoder oficial BFL. */
+    const encoderId = asString(s.textEncoderModelId, 256);
+    if (encoderId !== null) out.textEncoderModelId = encoderId;
     if (typeof s.distilled === "boolean") out.distilled = s.distilled;
     const loras = sanitizeLoras(s.loras);
     if (loras !== null) out.loras = loras;
@@ -314,8 +316,8 @@ export const GERACAO_APPLY_FORM_EVENT = "hephaestus:apply-geracao-form";
    sem `modelId` NÃO são reaplicáveis: vão p/ `lorasRaw` + `hasLoraResidue`
    (transparência no JSON), e `loras` carrega só UUIDs reaplicáveis.
    Mesmo p/ custom: `params.custom_checkpoint`/`custom_model_path`+`arch`
-   nunca viram UUID — só `customModelId`/`custom_model_id` legado ativa
-   modelMode="custom"; o resto vira resíduo documental. Ausentes = null
+   nunca viram UUID — só `customModelId`/`custom_model_id` entra no snapshot;
+   o resto vira resíduo documental. Ausentes = null
    (nunca a string "unknown"). */
 export interface GenerationReproSnapshot {
   baseModel: string | null;
@@ -323,6 +325,7 @@ export interface GenerationReproSnapshot {
   customModelPath: string | null;
   customCheckpoint: unknown;
   hasCustomResidue: boolean;
+  textEncoderModelId: string | null;
   prompt: string;
   negativePrompt: string | null;
   width: number;
@@ -339,7 +342,6 @@ export interface GenerationReproSnapshot {
   loras: LoraRef[];
   lorasRaw: Record<string, unknown>[];
   hasLoraResidue: boolean;
-  modelMode: GeracaoModelMode;
   seedLocked: boolean;
 }
 
@@ -349,6 +351,8 @@ export const GERACAO_CUSTOM_RESIDUE_WARNING =
   "Checkpoint custom não reaplicável automaticamente — selecione o modelo em Modelos & Pesos";
 export const GERACAO_SAMPLER_RESIDUE_WARNING =
   "Sampler não suportado pelo modelo atual — aplicado o padrão";
+export const GERACAO_ENCODER_RESIDUE_WARNING =
+  "Text encoder custom não reaplicável automaticamente — selecione o encoder em Modelos & Pesos";
 
 /* LoRAs do snapshot: aceita os 3 shapes (modelId UUID reaplicável,
    path da engine, s3_key do manager) mantendo `scale`. Só `modelId`
@@ -391,6 +395,7 @@ export function generationReproSnapshot(gen: Generation): GenerationReproSnapsho
   const customCheckpoint = customCheckpointRaw !== undefined && customCheckpointRaw !== null
     ? customCheckpointRaw
     : null;
+  const textEncoderModelId = nonEmptyString(firstParam(params, ["textEncoderModelId", "text_encoder_model_id"]), 256);
   const arch = nonEmptyString(firstParam(params, ["arch"]), 64);
   const hasCustomResidue = customRaw === null
     && (customModelPath !== null || customCheckpoint !== null || arch !== null);
@@ -424,6 +429,7 @@ export function generationReproSnapshot(gen: Generation): GenerationReproSnapsho
     customModelPath,
     customCheckpoint,
     hasCustomResidue,
+    textEncoderModelId,
     prompt: gen.prompt,
     negativePrompt: negTop ?? negParam,
     width: numOr(firstParam(params, ["width"]), gen.width),
@@ -440,7 +446,6 @@ export function generationReproSnapshot(gen: Generation): GenerationReproSnapsho
     loras,
     lorasRaw,
     hasLoraResidue,
-    modelMode: customRaw !== null ? "custom" : "preset",
     seedLocked: true,
   };
 }
@@ -452,9 +457,8 @@ export function generationConfigsJson(gen: Generation): string {
 /* Constrói GeracaoFormState a partir de uma geração, com o MESMO
    clamp/validação da hidratação (loadGeracaoForm). Seed travada p/
    reproduzir exatamente (usuário pode destravar no panel).
-   customModelId fora da lista atual de checkpoints: mantido com
-   modelMode="custom" — a validação/graciosidade existente do panel
-   lida (placeholder "Faça upload em Modelos & Pesos"). */
+   customModelId fora da lista atual de checkpoints: mantido — o seletor
+   unificado do panel mostra placeholder "Faça upload em Modelos & Pesos". */
 export interface GeracaoFormFromGenerationResult {
   form: GeracaoFormState;
   hasLoraResidue: boolean;
@@ -467,12 +471,17 @@ export function geracaoFormFromGeneration(gen: Generation): GeracaoFormFromGener
   const params: Record<string, unknown> = gen.params ?? {};
   const snap = generationReproSnapshot(gen);
   const customModelId = snap.customModelId ?? "";
+  const textEncoderModelId = snap.textEncoderModelId ?? "";
   const negativePrompt = snap.negativePrompt ?? "";
   const quantized = firstParam(params, ["quantization"]);
   const distilledRaw = firstParam(params, ["distilled"]);
   const warnings: string[] = [];
   if (snap.hasLoraResidue) warnings.push(GERACAO_LORA_RESIDUE_WARNING);
   if (snap.hasCustomResidue) warnings.push(GERACAO_CUSTOM_RESIDUE_WARNING);
+  /* Encoder referenciado mas sem UUID reaplicável ⇒ aviso honesto (mesmo padrão LoRA/custom). */
+  if (textEncoderModelId.length === 0 && firstParam(params, ["text_encoder_path"]) !== undefined) {
+    warnings.push(GERACAO_ENCODER_RESIDUE_WARNING);
+  }
   const formBaseModel = snap.baseModel !== null
     && (BASE_MODELS as readonly string[]).includes(snap.baseModel)
     ? (snap.baseModel as GeracaoBaseModel)
@@ -493,9 +502,9 @@ export function geracaoFormFromGeneration(gen: Generation): GeracaoFormFromGener
     }
   }
   const form: GeracaoFormState = {
-    modelMode: customModelId.length > 0 ? "custom" : "preset",
     baseModel: formBaseModel,
     customModelId,
+    textEncoderModelId,
     distilled: typeof distilledRaw === "boolean" ? distilledRaw : defaults.distilled,
     loras: snap.loras,
     prompt: snap.prompt.slice(0, 4000),

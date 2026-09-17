@@ -223,7 +223,8 @@ export default function GenerationPanel() {
 		"flux-2-klein-4b" | "sdxl" | "sd15"
 	>("flux-2-klein-4b");
 	const [customModelId, setCustomModelId] = useState<string>("");
-	const [modelMode, setModelMode] = useState<"preset" | "custom">("preset");
+	/* UUID de text encoder custom (kind=text_encoder). "" = encoder oficial BFL. */
+	const [textEncoderModelId, setTextEncoderModelId] = useState<string>("");
 	const [distilled, setDistilled] = useState(true);
 	const [loras, setLoras] = useState<LoraRef[]>([]);
 	const [prompt, setPrompt] = useState("");
@@ -299,14 +300,81 @@ export default function GenerationPanel() {
 		() => diffusionModels.filter((m) => m.kind === "checkpoint"),
 		[diffusionModels],
 	);
+	const textEncoderModels = useMemo(
+		() => diffusionModels.filter((m) => m.kind === "text_encoder"),
+		[diffusionModels],
+	);
 
-	const checkpointOptions = useMemo<SelectOption<string>[]>(() => {
-		return checkpointModels.map((m) => ({
-			value: m.id,
-			label: m.name,
-			description: `checkpoint${m.arch ? ` ${m.arch}` : ""} · ${m.source}`,
+	/* Arch efetivo: custom selecionado ⇒ arch do checkpoint; senão o preset. */
+	const effectiveArch = useMemo(() => {
+		if (customModelId) {
+			const found = checkpointModels.find((m) => m.id === customModelId);
+			return found?.arch ?? null;
+		}
+		return baseModel;
+	}, [customModelId, checkpointModels, baseModel]);
+	const isFlux2 = effectiveArch === "flux-2-klein-4b";
+
+	/* Seletor único "Modelo": presets primeiro + checkpoints agrupados por arch. */
+	const modelSelectOptions = useMemo<SelectOption<string>[]>(() => {
+		const opts: SelectOption<string>[] = BASE_MODEL_OPTIONS.map((o) => ({
+			value: `preset:${o.value}`,
+			label: `${o.label} (oficial)`,
+			description: o.description,
 		}));
-	}, [checkpointModels]);
+		const byArch: Record<string, Model[]> = {};
+		for (const m of checkpointModels) {
+			const key = m.arch ?? "sem arch detectado";
+			if (!byArch[key]) byArch[key] = [];
+			byArch[key].push(m);
+		}
+		for (const arch of Object.keys(byArch).sort()) {
+			for (const m of byArch[arch]) {
+				opts.push({
+					value: m.id,
+					label: `${m.name} (custom · ${arch})`,
+					description: `checkpoint ${arch} · ${m.source}`,
+				});
+			}
+		}
+		/* UUID órfão (storage antigo / modelo removido): preserva a seleção
+		   com placeholder honesto em vez de resetar silenciosamente. */
+		if (customModelId && !checkpointModels.some((m) => m.id === customModelId)) {
+			opts.push({
+				value: customModelId,
+				label: "Modelo removido — faça upload em Modelos & Pesos",
+				description: "checkpoint indisponível",
+			});
+		}
+		return opts;
+	}, [checkpointModels, customModelId]);
+	const modelSelectValue = customModelId ? customModelId : `preset:${baseModel}`;
+
+	/* Seletor "Text encoder": default BFL + text_encoders; só ativo p/ flux-2. */
+	const textEncoderOptions = useMemo<SelectOption<string>[]>(() => {
+		const opts: SelectOption<string>[] = [
+			{
+				value: "",
+				label: "Encoder oficial BFL (padrão)",
+				description: "Qwen3 do repo BFL",
+			},
+		];
+		for (const m of textEncoderModels) {
+			opts.push({
+				value: m.id,
+				label: m.name,
+				description: `text_encoder${m.arch ? ` ${m.arch}` : ""} · ${m.source}`,
+			});
+		}
+		if (textEncoderModelId && !textEncoderModels.some((m) => m.id === textEncoderModelId)) {
+			opts.push({
+				value: textEncoderModelId,
+				label: "Encoder removido — faça upload em Modelos & Pesos",
+				description: "text_encoder indisponível",
+			});
+		}
+		return opts;
+	}, [textEncoderModels, textEncoderModelId]);
 
 	/* ── Fetch models ── */
 	useEffect(() => {
@@ -336,10 +404,13 @@ export default function GenerationPanel() {
 
 	/* Aplica um form parcial validado nos states (mount + evento F4/007). */
 	const applyStoredForm = useCallback((stored: PartialGeracaoForm) => {
-		if (stored.modelMode !== undefined) setModelMode(stored.modelMode);
+		/* customModelId presente = checkpoint custom; ausente = preset oficial. */
+		/* (modelMode legado preset/custom: só o id importa; campo removido). */
 		if (stored.baseModel !== undefined) setBaseModel(stored.baseModel);
 		if (stored.customModelId !== undefined)
 			setCustomModelId(stored.customModelId);
+		if (stored.textEncoderModelId !== undefined)
+			setTextEncoderModelId(stored.textEncoderModelId);
 		if (stored.distilled !== undefined) setDistilled(stored.distilled);
 		if (stored.loras !== undefined) setLoras(stored.loras);
 		if (stored.prompt !== undefined) setPrompt(stored.prompt);
@@ -398,9 +469,9 @@ export default function GenerationPanel() {
 		if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
 		persistTimerRef.current = setTimeout(() => {
 			saveGeracaoForm({
-				modelMode,
 				baseModel,
 				customModelId,
+				textEncoderModelId,
 				distilled,
 				loras,
 				prompt,
@@ -423,9 +494,9 @@ export default function GenerationPanel() {
 			if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
 		};
 	}, [
-		modelMode,
 		baseModel,
 		customModelId,
+		textEncoderModelId,
 		distilled,
 		loras,
 		prompt,
@@ -446,12 +517,12 @@ export default function GenerationPanel() {
 		initStrength,
 	]);
 
+
 	/* ── Auto-adjust when base model changes ── */
 	const handleBaseModelChange = useCallback(
 		(modelVal: string) => {
 			const b = modelVal as "flux-2-klein-4b" | "sdxl" | "sd15";
 			setBaseModel(b);
-			/* Flux aceita só default/euler/heun: sampler sd-only volta ao padrão. */
 			setSampler((prev) =>
 				b === "flux-2-klein-4b"
 					? ((GERACAO_FLUX_SAMPLERS as readonly string[]).includes(prev) ? prev : "default")
@@ -477,6 +548,31 @@ export default function GenerationPanel() {
 			}
 		},
 		[distilled],
+	);
+	/* ── Seleção unificada preset/custom (fatia pesos-custom-flux2) ──
+	   value "preset:<arch>" = preset oficial; UUID = checkpoint custom.
+	   Trocar o modelo zera o encoder quando o arch efetivo deixa flux-2
+	   (encoder só vale p/ flux-2-klein-4b — wire manda undefined). */
+	const handleModelSelectChange = useCallback(
+		(val: string) => {
+			let nextCustom = "";
+			let nextBase = baseModel;
+			if (val.startsWith("preset:")) {
+				nextBase = val.slice("preset:".length) as "flux-2-klein-4b" | "sdxl" | "sd15";
+				setBaseModel(nextBase);
+				setCustomModelId("");
+			} else {
+				nextCustom = val;
+				setCustomModelId(val);
+			}
+			const nextArch = nextCustom
+				? (checkpointModels.find((m) => m.id === nextCustom)?.arch ?? null)
+				: nextBase;
+			if (nextArch !== "flux-2-klein-4b") setTextEncoderModelId("");
+			/* Presets disparam o auto-ajuste legado de resolução/CFG/steps. */
+			if (!nextCustom) handleBaseModelChange(nextBase);
+		},
+		[baseModel, checkpointModels, handleBaseModelChange],
 	);
 
 	/* ── Variant change (FLUX only) ── */
@@ -617,9 +713,9 @@ export default function GenerationPanel() {
 	/* ── Restaurar padrões (Slice F1/003): limpa a key, volta aos defaults ── */
 	const handleResetForm = useCallback(() => {
 		const defaults = createDefaultGeracaoForm();
-		setModelMode(defaults.modelMode);
 		setBaseModel(defaults.baseModel);
 		setCustomModelId(defaults.customModelId);
+		setTextEncoderModelId(defaults.textEncoderModelId);
 		setDistilled(defaults.distilled);
 		setLoras(defaults.loras);
 		setPrompt(defaults.prompt);
@@ -659,9 +755,10 @@ export default function GenerationPanel() {
 			}
 			const effectiveSeed = overrideSeed !== undefined ? overrideSeed : seed;
 			const isDistilledActive =
-				baseModel === "flux-2-klein-4b" ? distilled : false;
+				isFlux2 ? distilled : false;
 
-			// Build request: XOR baseModel / customModelId
+			// Build request: XOR baseModel / customModelId (custom vence);
+			// textEncoderModelId só segue p/ arch flux-2 (default BFL = omitido).
 			const request: DiffusionGenerateJobRequest = {
 				prompt: prompt.trim(),
 				negativePrompt: negativePrompt.trim() || undefined,
@@ -681,10 +778,13 @@ export default function GenerationPanel() {
 				orchestratorId: selectedOrchestratorId,
 			};
 
-		if (modelMode === "custom" && customModelId) {
+		if (customModelId) {
 			request.customModelId = customModelId;
 		} else {
 			request.baseModel = baseModel;
+		}
+		if (isFlux2 && textEncoderModelId) {
+			request.textEncoderModelId = textEncoderModelId;
 		}
 
 		// img2img (S5): XOR initImageId / initGenerationId; initStrength
@@ -703,8 +803,8 @@ export default function GenerationPanel() {
 				prompt: prompt.trim(),
 				negativePrompt: negativePrompt.trim() || undefined,
 				baseModel:
-					modelMode === "custom" ? `custom:${customModelId}` : baseModel,
-				customModelId: modelMode === "custom" ? customModelId : undefined,
+					customModelId ? `custom:${customModelId}` : baseModel,
+				customModelId: customModelId ? customModelId : undefined,
 				seed: effectiveSeed,
 				steps,
 				guidanceScale,
@@ -748,8 +848,9 @@ export default function GenerationPanel() {
 		},
 		[
 			baseModel,
-			modelMode,
 			customModelId,
+			isFlux2,
+			textEncoderModelId,
 			prompt,
 			negativePrompt,
 			width,
@@ -960,59 +1061,60 @@ export default function GenerationPanel() {
 				<div
 					className={`${paramsOpen ? "block" : "hidden"} lg:block p-4 md:p-5 space-y-4`}
 				>
-					{/* ══ Modelo Base ══ */}
+					{/* ══ Modelo (presets oficiais + checkpoints custom por arch) ══ */}
 					<div className="space-y-2">
 						<span className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-300">
 							Modelo
 						</span>
-						{/* Toggle preset/custom — SegmentedControl canônico */}
-						<SegmentedControl
-							options={[
-								{ id: "preset", label: "Base Padrão" },
-								{ id: "custom", label: "Custom" },
-							]}
-							value={modelMode}
-							onChange={(v) => setModelMode(v as "preset" | "custom")}
-							ariaLabel="Modo do modelo"
+						<Select
+							options={modelSelectOptions}
+							value={modelSelectValue}
+							onChange={handleModelSelectChange}
+							disabled={isBusy}
+							loading={loadingModels}
+							loadingText="Carregando modelos…"
+							placeholder={
+								checkpointModels.length === 0
+									? "Modelo oficial (envie customs em Modelos & Pesos)"
+									: "Selecione o modelo"
+							}
+							size="sm"
+							fontMono
 						/>
+						{customModelId && effectiveArch && (
+							<p className="font-mono text-3xs text-zinc-500">
+								Checkpoint custom · arch {effectiveArch}
+							</p>
+						)}
+					</div>
 
-						{modelMode === "preset" ? (
-							<Select
-								options={BASE_MODEL_OPTIONS}
-								value={baseModel}
-								onChange={handleBaseModelChange}
-								disabled={isBusy}
-								size="sm"
-							/>
-						) : (
-							<Select
-								options={
-									checkpointOptions.length > 0
-										? checkpointOptions
-										: [
-												{
-													value: "",
-													label: "Nenhum checkpoint disponível",
-													disabled: true,
-												},
-											]
-								}
-								value={customModelId}
-								onChange={(v) => setCustomModelId(v)}
-								disabled={isBusy || checkpointModels.length === 0}
-								placeholder={
-									checkpointModels.length === 0
-										? "Faça upload em Modelos & Pesos"
-										: "Selecione um checkpoint"
-								}
-								size="sm"
-								fontMono
-							/>
+					{/* ══ Text encoder (somente flux-2-klein-4b) ══ */}
+					<div className="space-y-2">
+						<span className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-300">
+							Text encoder
+						</span>
+						<Select
+							options={textEncoderOptions}
+							value={isFlux2 ? textEncoderModelId : ""}
+							onChange={(v) => setTextEncoderModelId(v)}
+							disabled={isBusy || !isFlux2}
+							placeholder={
+								isFlux2
+									? "Encoder oficial BFL (padrão)"
+									: "Disponível só p/ FLUX.2 Klein 4B"
+							}
+							size="sm"
+							fontMono
+						/>
+						{!isFlux2 && (
+							<p className="font-mono text-3xs text-zinc-500">
+								Text encoder custom só tem efeito com arch flux-2-klein-4b.
+							</p>
 						)}
 					</div>
 
 					{/* ══ Variante FLUX (destilada/base) — SegmentedControl canônico ══ */}
-					{modelMode === "preset" && baseModel === "flux-2-klein-4b" && (
+					{isFlux2 && (
 						<div className="space-y-2 rounded-xl border border-white/8 bg-white/[0.02] p-3">
 							<div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
 								<span className="font-mono text-2xs font-medium uppercase tracking-[0.08em] text-zinc-300">
@@ -1221,7 +1323,7 @@ export default function GenerationPanel() {
 							Sampler
 						</span>
 						<Select
-							options={(modelMode === "custom" || baseModel !== "flux-2-klein-4b" ? GERACAO_SAMPLERS : GERACAO_FLUX_SAMPLERS).map((s) => ({
+							options={(isFlux2 ? GERACAO_FLUX_SAMPLERS : GERACAO_SAMPLERS).map((s) => ({
 								value: s,
 								label: SAMPLER_LABELS[s] ?? s,
 							}))}

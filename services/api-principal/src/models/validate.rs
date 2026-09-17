@@ -222,8 +222,10 @@ pub fn url_basename(url: &url::Url) -> String {
 /// Arquiteturas de difusão suportadas.
 pub const ALLOWED_ARCHS: &[&str] = &["flux-2-klein-4b", "sdxl", "sd15"];
 
-/// Kinds de modelo suportados.
-pub const ALLOWED_KINDS: &[&str] = &["lora", "checkpoint"];
+/// Kinds de modelo suportados (text_encoder = text encoders custom flux-2,
+/// fatia feat/pesos-custom-flux2 — só admite arch flux-2-klein-4b, regra
+/// aplicada em `resolve_kind_arch`).
+pub const ALLOWED_KINDS: &[&str] = &["lora", "checkpoint", "text_encoder"];
 
 /// Teto do header JSON do safetensors: 2 MiB (headers reais de SDXL
 /// são centenas de KB; 2 MiB é generoso).
@@ -398,11 +400,12 @@ pub fn sniff_safetensors(
 
 /// Resolve kind+arch a partir de hints do cliente e sniff do header.
 ///
-/// Regras (ADR-0023 D4):
+/// Regras (ADR-0023 D4 + fatia feat/pesos-custom-flux2):
 /// - Sniff confiante vence hint
 /// - Sniff + hint conflitantes → erro
 /// - Sniff desconhecido + sem hint → erro
 /// - Sniff desconhecido + com hint → aceita hint
+/// - kind=text_encoder só admite arch flux-2-klein-4b (outro arch ⇒ erro)
 pub fn resolve_kind_arch(
     sniff: Result<SafetensorsSniff, SniffError>,
     hint_kind: Option<&str>,
@@ -431,6 +434,10 @@ pub fn resolve_kind_arch(
             if arch.is_empty() && s.kind != "lora" {
                 return Err("arch could not be determined; provide kind+arch hints");
             }
+            // text_encoder só existe para flux-2 (encoder swap do Qwen3).
+            if s.kind == "text_encoder" && !arch.is_empty() && arch != "flux-2-klein-4b" {
+                return Err("text_encoder requires arch 'flux-2-klein-4b'");
+            }
             Ok((s.kind, arch))
         }
         Err(SniffError::UnknownClassification) => {
@@ -439,6 +446,9 @@ pub fn resolve_kind_arch(
                 (Some(k), Some(a)) => {
                     if !ALLOWED_KINDS.contains(&k) || !ALLOWED_ARCHS.contains(&a) {
                         return Err("invalid kind or arch");
+                    }
+                    if k == "text_encoder" && a != "flux-2-klein-4b" {
+                        return Err("text_encoder requires arch 'flux-2-klein-4b'");
                     }
                     Ok((k.to_string(), a.to_string()))
                 }
@@ -850,6 +860,35 @@ mod tests {
         });
         let result = resolve_kind_arch(sniff, None, None);
         assert!(result.is_err());
+    }
+    #[test]
+    fn resolve_text_encoder_flux2_ok() {
+        // hint text_encoder + arch flux-2 ⇒ aceita (único arch permitido).
+        let sniff: Result<SafetensorsSniff, SniffError> = Err(SniffError::UnknownClassification);
+        let (kind, arch) =
+            resolve_kind_arch(sniff, Some("text_encoder"), Some("flux-2-klein-4b")).unwrap();
+        assert_eq!(kind, "text_encoder");
+        assert_eq!(arch, "flux-2-klein-4b");
+    }
+
+    #[test]
+    fn resolve_text_encoder_wrong_arch_err() {
+        // hint text_encoder + arch sdxl/sd15 ⇒ 400.
+        let sniff: Result<SafetensorsSniff, SniffError> = Err(SniffError::UnknownClassification);
+        assert!(resolve_kind_arch(sniff, Some("text_encoder"), Some("sdxl")).is_err());
+        let sniff2: Result<SafetensorsSniff, SniffError> = Err(SniffError::UnknownClassification);
+        assert!(resolve_kind_arch(sniff2, Some("text_encoder"), Some("sd15")).is_err());
+    }
+
+    #[test]
+    fn resolve_text_encoder_sniff_wrong_arch_err() {
+        // sniff text_encoder com arch não-flux-2 ⇒ erro (nunca persiste inválido).
+        let sniff = Ok(SafetensorsSniff {
+            kind: "text_encoder".to_string(),
+            arch: "sdxl".to_string(),
+            confidence: 0.9,
+        });
+        assert!(resolve_kind_arch(sniff, None, None).is_err());
     }
 
     #[test]

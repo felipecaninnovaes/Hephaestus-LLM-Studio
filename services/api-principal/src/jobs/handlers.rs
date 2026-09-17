@@ -1508,9 +1508,104 @@ pub async fn submit_diffusion_job(
         None => fingerprint,
     };
 
+    // 5.1. Pesos custom (fatia feat/pesos-custom-flux2): resolve custom_model_id
+    //    e text_encoder_model_id no manager (mesmo padrão do generate —
+    //    `list_models` + kind/arch). Inexistente ⇒ 404; kind errado ⇒ 400;
+    //    encoder em arch ≠ flux-2-klein-4b ⇒ 400. O YAML leva só placeholders
+    //    literais (NUNCA id/path real); o manager resolve os refs p/ staging.
+    let custom_arch: Option<String> = if let Some(ref custom_id) = req.custom_model_id {
+        let models = match state.manager.list_models().await {
+            Ok(m) => m,
+            Err(_) => return queue_unavailable(),
+        };
+        let model = match models.iter().find(|m| m.id == *custom_id) {
+            Some(m) => m,
+            None => return not_found(),
+        };
+        match model.kind.as_deref() {
+            Some("checkpoint") => {}
+            _ => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "customModelId must reference a checkpoint model",
+                );
+            }
+        }
+        match model.arch.as_deref() {
+            Some(arch @ ("sdxl" | "sd15" | "flux" | "flux-2-klein-4b")) => {
+                // Normaliza alias legado "flux" → arch canônico do YAML.
+                if arch == "flux" {
+                    Some("flux-2-klein-4b".to_string())
+                } else {
+                    Some(arch.to_string())
+                }
+            }
+            Some(_) => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "unsupported_architecture",
+                    "custom checkpoint architecture not supported",
+                );
+            }
+            None => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "custom model has no arch metadata",
+                );
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(ref encoder_id) = req.text_encoder_model_id {
+        let models = match state.manager.list_models().await {
+            Ok(m) => m,
+            Err(_) => return queue_unavailable(),
+        };
+        let model = match models.iter().find(|m| m.id == *encoder_id) {
+            Some(m) => m,
+            None => return not_found(),
+        };
+        match model.kind.as_deref() {
+            Some("text_encoder") => {}
+            _ => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "textEncoderModelId must reference a text_encoder model",
+                );
+            }
+        }
+        // Arch efetivo do treino: arch do custom ou base_model (default sdxl).
+        // Alias legado da UI "flux" ⇒ flux-2-klein-4b (mesma normalização
+        // aplicada ao custom_arch acima) — preset FLUX.2 chega como "flux".
+        let effective_arch = match custom_arch
+            .as_deref()
+            .unwrap_or_else(|| req.base_model.as_deref().unwrap_or("sdxl"))
+        {
+            "flux" => "flux-2-klein-4b",
+            other => other,
+        };
+        if effective_arch != "flux-2-klein-4b" {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "textEncoderModelId requires arch 'flux-2-klein-4b'",
+            );
+        }
+    }
+    // Arch efetivo do treino (p/ YAML + VRAM): custom resolvido ou base_model.
+    let effective_base: String = custom_arch
+        .clone()
+        .unwrap_or_else(|| req.base_model.clone().unwrap_or_else(|| "sdxl".to_string()));
     // 6. Config YAML (pura, barata).
-    let config_yaml =
-        models::generate_diffusion_config_yaml(&uuid::Uuid::new_v4().to_string(), &req);
+    let config_yaml = models::generate_diffusion_config_yaml(
+        &uuid::Uuid::new_v4().to_string(),
+        &req,
+        custom_arch.as_deref(),
+    );
 
     // 6.1. Pacote do control dataset (MVP síncrono): quando controlDatasetId
     //    informado, empacota o control via `build_package_diffusion` AGORA no
@@ -1544,10 +1639,11 @@ pub async fn submit_diffusion_job(
         None => None,
     };
 
-    // 7. VRAM mínima por modelo base (ADR-0018 D2 — FLUX.2 Klein 4B requer ~10 GB).
-    let vram_min = match req.base_model.as_str() {
+    // 7. VRAM mínima por arch efetivo (ADR-0018 D2 — FLUX.2 Klein 4B requer
+    //    ~10 GB; fatia: custom flux-2 custa como flux-2-klein-4b).
+    let vram_min = match effective_base.as_str() {
         "sd15" => 8,
-        "flux" => 10,
+        "flux" | "flux-2-klein-4b" => 10,
         _ => 12, // sdxl e default
     };
 
@@ -1555,13 +1651,15 @@ pub async fn submit_diffusion_job(
     let mut manager_body = serde_json::json!({
         "kind": "diffusion_train",
         "engine": "diffusion",
-        "model": req.base_model,
+        "model": effective_base,
         "mode": "train",
         "dataset_id": ds_id.to_string(),
         "config_yaml": config_yaml,
         "params": {
             "datasetId": ds_id.to_string(),
-            "baseModel": req.base_model,
+            "baseModel": effective_base,
+            "customModelId": req.custom_model_id,
+            "textEncoderModelId": req.text_encoder_model_id,
             "triggerWord": req.trigger_word,
             "epochs": req.epochs,
             "batchSize": req.batch_size,
@@ -1604,7 +1702,9 @@ pub async fn submit_diffusion_job(
         engine: "diffusion".to_string(),
         trigger_word: req.trigger_word.clone(),
         params: serde_json::json!({
-            "baseModel": req.base_model,
+            "baseModel": effective_base,
+            "customModelId": req.custom_model_id,
+            "textEncoderModelId": req.text_encoder_model_id,
             "triggerWord": req.trigger_word,
             "epochs": req.epochs,
             "batchSize": req.batch_size,
@@ -1659,8 +1759,9 @@ pub async fn submit_diffusion_generate_job(
     };
 
     // 3. Se custom_model_id presente → busca modelo no manager para obter arch.
-    //    Valida kind=checkpoint e arch ∈ {sdxl, sd15}.
-    let custom_arch: Option<String> = if let Some(ref custom_id) = req.custom_model_id {
+    //    Valida kind=checkpoint e arch ∈ {sdxl, sd15, flux-2-klein-4b}
+    //    (fatia feat/pesos-custom-flux2: flux-2 custom via transformer swap).
+    let custom_arch: Option<String> = if let Some(custom_id) = &req.custom_model_id {
         let models = match state.manager.list_models().await {
             Ok(m) => m,
             Err(_) => return queue_unavailable(),
@@ -1686,14 +1787,20 @@ pub async fn submit_diffusion_generate_job(
                 );
             }
         }
-        // Valida arch ∈ {sdxl, sd15} (ADR-0023 D4 — Flux custom fora da v1).
+        // Valida arch ∈ {sdxl, sd15, flux-2-klein-4b} (fatia: +flux-2).
         match model.arch.as_deref() {
-            Some(arch @ ("sdxl" | "sd15")) => Some(arch.to_string()),
+            Some(arch @ ("sdxl" | "sd15" | "flux" | "flux-2-klein-4b")) => {
+                if arch == "flux" {
+                    Some("flux-2-klein-4b".to_string())
+                } else {
+                    Some(arch.to_string())
+                }
+            }
             Some(_other) => {
                 return err(
                     StatusCode::BAD_REQUEST,
                     "unsupported_architecture",
-                    "custom checkpoint architecture not supported (use sdxl or sd15)",
+                    "custom checkpoint architecture not supported (use sdxl, sd15 or flux-2-klein-4b)",
                 );
             }
             None => {
@@ -1707,6 +1814,41 @@ pub async fn submit_diffusion_generate_job(
     } else {
         None
     };
+
+    // 3.1. Encoder custom (fatia feat/pesos-custom-flux2): resolve
+    //    text_encoder_model_id no manager (mesmo fluxo do custom_model_id):
+    //    inexistente ⇒ 404; kind≠text_encoder ⇒ 400; arch efetivo
+    //    (base_model ou arch do custom) ≠ flux-2-klein-4b ⇒ 400.
+    if let Some(encoder_id) = &req.text_encoder_model_id {
+        let models = match state.manager.list_models().await {
+            Ok(m) => m,
+            Err(_) => return queue_unavailable(),
+        };
+        let model = match models.iter().find(|m| m.id == *encoder_id) {
+            Some(m) => m,
+            None => return not_found(),
+        };
+        match model.kind.as_deref() {
+            Some("text_encoder") => {}
+            _ => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "textEncoderModelId must reference a text_encoder model",
+                );
+            }
+        }
+        let effective_arch = custom_arch
+            .as_deref()
+            .unwrap_or_else(|| req.base_model.as_deref().unwrap_or("flux-2-klein-4b"));
+        if effective_arch != "flux-2-klein-4b" {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "textEncoderModelId requires arch 'flux-2-klein-4b'",
+            );
+        }
+    }
 
     // 4. ID do job e config.yaml (v2 com custom_arch).
     let job_id = uuid::Uuid::new_v4().to_string();
@@ -1756,6 +1898,7 @@ pub async fn submit_diffusion_generate_job(
             "batchSize": req.batch_size,
             "loras": loras_json,
             "customModelId": req.custom_model_id,
+            "textEncoderModelId": req.text_encoder_model_id,
         },
         "vram_min_gb": vram_min,
     });
@@ -4688,6 +4831,9 @@ mod tests {
 
     #[tokio::test]
     async fn submit_diffusion_generate_custom_unsupported_arch_400() {
+        // Fatia feat/pesos-custom-flux2: flux-2-klein-4b custom AGORA é aceito
+        // (transformer swap); arch verdadeiramente desconhecida ⇒ 400
+        // `unsupported_architecture`. Teste legado atualizado.
         let custom_id = "550e8400-e29b-41d4-a716-446655440099";
         let body_json = serde_json::json!({
             "prompt": "test",
@@ -4697,17 +4843,17 @@ mod tests {
         let mut mock = MockManager::default();
         mock.list_models_result = Some(vec![InternalModel {
             id: custom_id.into(),
-            name: "my-flux.safetensors".into(),
+            name: "my-weird.safetensors".into(),
             engine: "diffusion".into(),
             model: None,
             source: "upload".into(),
             md5: "abc123".into(),
             bytes: 6_500_000_000,
-            path: "models/diffusion/custom/my-flux.safetensors".into(),
+            path: "models/diffusion/custom/my-weird.safetensors".into(),
             job_id: None,
             created_at: "2026-09-15T00:00:00Z".into(),
             kind: Some("checkpoint".into()),
-            arch: Some("flux-2-klein-4b".into()), // arch não suportada para custom
+            arch: Some("pixart".into()), // arch desconhecida
         }]);
         let state = test_state(mock);
 
@@ -4725,6 +4871,57 @@ mod tests {
         let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(json["code"], "unsupported_architecture");
+    }
+    #[tokio::test]
+    async fn submit_diffusion_generate_custom_flux2_202() {
+        // Fatia feat/pesos-custom-flux2: checkpoint flux-2-klein-4b ⇒ 202,
+        // arch efetivo flux-2-klein-4b no body do manager.
+        let custom_id = "550e8400-e29b-41d4-a716-446655440099";
+        let body_json = serde_json::json!({
+            "prompt": "test",
+            "customModelId": custom_id,
+            "quantization": "4bit"
+        });
+
+        let mut mock = MockManager::default();
+        mock.list_models_result = Some(vec![InternalModel {
+            id: custom_id.into(),
+            name: "my-flux2.safetensors".into(),
+            engine: "diffusion".into(),
+            model: None,
+            source: "upload".into(),
+            md5: "abc123".into(),
+            bytes: 6_500_000_000,
+            path: "models/diffusion/custom/my-flux2.safetensors".into(),
+            job_id: None,
+            created_at: "2026-09-15T00:00:00Z".into(),
+            kind: Some("checkpoint".into()),
+            arch: Some("flux-2-klein-4b".into()),
+        }]);
+        mock.create_job_result = Some(CreateJobResponse {
+            job_id: "job-flux2".into(),
+            status: "queued".into(),
+            queue_position: None,
+        });
+        let mock_arc = std::sync::Arc::new(mock);
+        let mock_ref = std::sync::Arc::clone(&mock_arc);
+        let mut state = test_state(MockManager::default());
+        state.manager = mock_arc;
+
+        let resp = submit_diffusion_generate_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                serde_json::to_string(&body_json).unwrap(),
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+        let body = mock_ref.last_create_job_body();
+        let body = body.expect("create_job body captured");
+        assert_eq!(body["model"], "flux-2-klein-4b");
+        // flux-2 + 4bit = 8 (mesma tabela first-class).
+        assert_eq!(body["vram_min_gb"], 8);
     }
 
     // =========================================================================
@@ -4982,6 +5179,129 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["code"], "job_not_terminal");
+    }
+
+    // --- POST /api/jobs/diffusion (treino) — gate do encoder ---
+    // DB-backed (`--ignored` + DATABASE_URL=studio_test, mesmo contrato do
+    // datasets_db): o gate do encoder roda DEPOIS das checagens de dataset
+    // (passos 3-5 do handler), então exige estado real no Postgres.
+
+    /// Conecta no banco efêmero studio_test (guarda anti-footgun), roda as
+    /// migrations e semeia dataset + 1 imagem ativa.
+    async fn db_state_with_dataset(manager: MockManager) -> (crate::state::AppState, uuid::Uuid) {
+        let url = std::env::var("DATABASE_URL")
+            .expect("DATABASE_URL é obrigatório para este teste --ignored");
+        assert!(
+            url.contains("/studio_test") || url.ends_with("studio_test"),
+            "só o banco efêmero studio_test (nunca o dev 'studio'): {url}"
+        );
+        let pool = sqlx::PgPool::connect(&url)
+            .await
+            .expect("conectar studio_test");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migrations");
+        let ds_id = uuid::Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO datasets (id, slug, title, category, type, task, format, status) \
+             VALUES ($1, $2, $3, 'difusao', 'difusao_lora', 'caption', 'captions', 'ready')",
+        )
+        .bind(ds_id)
+        .bind(format!("encoder-gate-{ds_id}"))
+        .bind("encoder gate test")
+        .execute(&pool)
+        .await
+        .expect("dataset semeado");
+        sqlx::query(
+            "INSERT INTO images (dataset_id, filename, object_key, bytes, width, height, md5, sha256, media_type) \
+             VALUES ($1, 'a.png', $2, 10, 16, 16, md5(random()::text), md5(random()::text) || md5(random()::text), 'png')",
+        )
+        .bind(ds_id)
+        .bind(format!("datasets/{ds_id}/x/a.png"))
+        .execute(&pool)
+        .await
+        .expect("imagem semeada");
+        let mut state = test_state(manager);
+        state.pool = pool;
+        (state, ds_id)
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn submit_diffusion_train_encoder_flux_alias_passes_gate() {
+        // baseModel "flux" (alias legado do preset FLUX.2 na UI) + encoder
+        // EXISTENTE (kind=text_encoder): o gate NÃO deve rejeitar com 400
+        // `textEncoderModelId requires arch 'flux-2-klein-4b'`. O mock não tem
+        // create_job_result ⇒ após o gate o fluxo chega ao manager e responde
+        // 503 `queue_unavailable` (pré-fix aqui seria 400 no gate).
+        let enc_id = "550e8400-e29b-41d4-a716-446655440101";
+        let mut manager = MockManager::default();
+        manager.list_models_result = Some(vec![InternalModel {
+            id: enc_id.into(),
+            name: "my-encoder.safetensors".into(),
+            engine: "diffusion".into(),
+            model: None,
+            source: "upload".into(),
+            md5: "abc123".into(),
+            bytes: 1_000_000,
+            path: "models/diffusion/custom/my-encoder.safetensors".into(),
+            job_id: None,
+            created_at: "2026-09-15T00:00:00Z".into(),
+            kind: Some("text_encoder".into()),
+            arch: Some("flux-2-klein-4b".into()),
+        }]);
+        let (state, ds_id) = db_state_with_dataset(manager).await;
+        let body_json = serde_json::json!({
+            "datasetId": ds_id,
+            "baseModel": "flux",
+            "textEncoderModelId": enc_id
+        });
+        let resp = submit_diffusion_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                serde_json::to_string(&body_json).unwrap(),
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn submit_diffusion_train_encoder_sdxl_400() {
+        // baseModel "sdxl" + encoder existente (kind=text_encoder) ⇒ gate
+        // rejeita com 400 `invalid_request`.
+        let enc_id = "550e8400-e29b-41d4-a716-446655440102";
+        let mut manager = MockManager::default();
+        manager.list_models_result = Some(vec![InternalModel {
+            id: enc_id.into(),
+            name: "my-encoder.safetensors".into(),
+            engine: "diffusion".into(),
+            model: None,
+            source: "upload".into(),
+            md5: "abc123".into(),
+            bytes: 1_000_000,
+            path: "models/diffusion/custom/my-encoder.safetensors".into(),
+            job_id: None,
+            created_at: "2026-09-15T00:00:00Z".into(),
+            kind: Some("text_encoder".into()),
+            arch: Some("flux-2-klein-4b".into()),
+        }]);
+        let (state, ds_id) = db_state_with_dataset(manager).await;
+        let body_json = serde_json::json!({
+            "datasetId": ds_id,
+            "baseModel": "sdxl",
+            "textEncoderModelId": enc_id
+        });
+        let resp = submit_diffusion_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                serde_json::to_string(&body_json).unwrap(),
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

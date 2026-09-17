@@ -68,6 +68,17 @@ andamento: harnesses de teste devem PANICAR se db != studio_test (guardia-mecani
 Branch segue: commits ee5c1f4..ecda78b+6. E2E pesado adiado p/ dataset re-importado ou
 sintético.
 
+## Achado 2 FECHADO (2026-09-17) — import de zip >2GB quebra no INSPECTOR (pré-existente)
+Sintoma: zip de 3GB no modal → DOMException "requested file could not be read..."
+(1.3GB ok). Causa: `dataset-inspector.ts` lia o zip INTEIRO (`file.arrayBuffer()`) —
+Chromium limita leitura de Blob a 2GB. O upload (FormData) nunca foi o gargalo.
+Fix 140aa66: parser por faixas (cauda≤64KB p/ EOCD, CD fatiado, extração só do range
+do entry) + ZIP64 completo (locator/record/extra-field u64). Validação: usuário testou
+import real de 3GB → OK; ZIP64 validado com zip sintético 4,1GB (CD além de 4GB) via
+port Node da mesma lógica. ⚠ Nota de harness: `chrome-devtools upload_file`
+(CDP setFileInputFiles) entrega File FANTOMA (size 0) — "EOCD não encontrado" em teste
+automatizado NÃO indica parser quebrado; usar seleção real do usuário.
+
 ## Fatia FECHADA (2026-09-17) — feat/jobs-async-submit: submit assíncrono (ADR-0025)
 12 commits (ee5c1f4..cab2cf5) sobre develop@4026fe3. **E2E ao vivo aprovado**: dataset
 sintético 865 imgs/4,6GB → submit via proxy :3000 = 202 `preparing` em 7-10ms (antes:

@@ -19,6 +19,25 @@ uma. Manter < 100 linhas; não duplicar docs — referenciar por seção.
    `docs/backend.md` §9/§10, `docs/frontend.md` §10, `docs/repo-estrutura.md`
    (ordem de fatias), `docs/dividas.md` e os ADRs em `docs/adr/`.
 
+## Fatia ABERTA 2026-09-17 — feat/img2img (branch de develop@4e3fb3e)
+
+Img2img com 2 origens: upload avulso efêmero (prefixo `generation-inputs/`) OU
+geração existente da galeria (sem re-upload). Engines sd15/sdxl/flux. Wire:
+`initImageId XOR initGenerationId` + `initStrength` (0.05–0.95, def 0.6).
+DAG: S1 contratos + migration `0017_generation_inputs` → ∥ S2 engine
+(generate.py: validação init_image_path/strength; variante img2img via
+`**pipe.components` por call — cache/spec inalterados; mock tolerante; meta
+PNG) ∥ S3 api-principal (`POST /api/generations/inputs` multipart+sniff+md5+
+INSERT; submit valida refs; yaml `{init_image_path}`) ∥ S4 manager (resolve
+init → ref {s3_key, md5?} + used_at; dispatch `init_image_ref`) + orchestrator
+(S3Scope::GenerationInputs; staging `/outputs/{job}/inputs/init.<ext>`; md5
+opcional p/ galeria; placeholder) ∥ S5 web (dropzone+slider GenerationPanel,
+ação galeria "Usar como input" via localStorage `geracao:initSource`, tipos).
+GC de inputs: NÃO implementar — registrar débito em docs/dividas.md (nada
+varre artifacts hoje tampouco). ⚠ PROIBIDO apagar datasets/modelos; harnesses
+Rust só com guarda studio_test*. Gates: cargo check+test workspace, pytest
+por engine, npm build+lint web, compose config -q.
+
 ## Estado atual — 2026-09-16 (fatia viva: design system web)
 
 - **Fatias anteriores fechadas:** harness restructure mergeado; as 3 branches

@@ -78,6 +78,40 @@ com ordem explícita do usuário. Nenhum dataset/modelo tocado.
      (lg→md), ghost DatasetTable (zinc-400→300), tom spinner brand (500→400).
 - **Pendência:** merge/push desta branch só com ordem explícita do usuário.
 
+## Fatia FECHADA (2026-09-17) — feat/flux2-motor-treino (bloco Motor do Flux.2 + Treino, CorrigirImplementar.md 001–005)
+
+De develop@46017e3, 5 slices paralelos + follow-up de integração (control
+dataset staging no orchestrator, assumido pelo RustDaemon). Reviewer2
+(escopo estreito, 5 pontos): FECHAR, zero bloqueantes, evidência
+arquivo:linha em scheduler contamination, fingerprint combinado
+{principal}:control:{control_fp}, guardas anti-placeholder
+{control_dataset_path} + md5 pré-unzip, retrocompat serde/Python, unicidade
+de ALLOWED_DIFFUSION_QUANTIZATIONS. Gates: cargo check 0E, fmt ok, cargo
+test --workspace 663p (orchestrator 142+3, api-principal 483, manager 33),
+pytest 150p, compileall ok, compose config ok, build web ok, biome 0E
+(200W/3I < baseline 204W). Entregas:
+- 001 quant 2bit/6bit (torchao IntxWeightOnlyConfig; falha honesta sem
+  CUDA/torchao; VRAM generate 2bit→7, 6bit→10; aliases 4bit-nf4/8bit-bnb).
+- 002 control dataset (regularização, captions vazias, control_ratio 0.1;
+  pacote próprio com fingerprint combinado e staging inputs/control +
+  md5; GC segue ciclo do job).
+- 003 resoluções {256,512,768,1024,1280,1328,1536,2048} (UI; engine/API já
+  aceitavam 256..2048).
+- 004 cache text embeddings (TextEmbedsCache sha256[:16], warm on miss,
+  falha de disco = warning; SD/SDXL/Flux arquivos de embedding por arch).
+- 005 daemon quente: DIFFUSION_TRAINER_IMAGE fix (main.rs), telemetry tail
+  no path daemon (orchestrator), DIFFUSION_DAEMON_ENABLED=1 default no
+  compose.
+- Sampler: 10 samplers (flux: default/euler/heun), scheduler fresh por
+  request + restore finally; NUNCA em cache key/spec. Upscale Real-ESRGAN
+  {model:"4x",scale:2|4} pós-passo torch-only (RRDBNet vendida, pesos
+  ai-forever/Real-ESRGAN, tiling; REALESRGAN_WEIGHTS override).
+- Limitações honestas: SDE exige torchsde (falha clara); pesos Real-ESRGAN
+  não exercitados no dev CPU; treino 2bit/6bit exige CUDA; reuso por
+  fingerprint NÃO cobre control dataset (packaging direto, documentado).
+- Merge/push só com ordem explícita do usuário. Infra "CI main/develop"
+  continua em aberto no CorrigirImplementar.md.
+
 ## INCIDENTE (2026-09-17 01:09, causado por workers desta branch) — dev DB `studio` limpo
 Um dispatch de teste (janela P4a/P4b) rodou a suíte `datasets_db.rs` com `DATABASE_URL`
 apontando para o DB de dev `studio`; o setup da suíte faz DELETE limpeza e allow-list

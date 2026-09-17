@@ -16,12 +16,5 @@ Arquivo responsavel por reunir todas as melhorias e correçoes de forma organiza
     - [ ] 007: Na galeria não tem como selecionar todas ou como usar shift para selecionar uma porção.
     - [ ] 008: Quando selecionado um modelo que foi salvo pelo treiner(arquivo final do treinamento) ele diz que os argumentos são invalidos, sendo necessario baixar o modelo e efetuar o upload novamente para utilizalo.
 
-  - Motor do Flux.2 e Treino:
-    - [ ] 001: Adicionar mais possibilidade de quantização um mais intermediaria um 6 bits e outra extrema como 2 bits (possibilita o usuario testar a degradação dos modelos).
-    - [ ] 002: Possibilidade de adicionar dataset de controle (Não sei a necessidade, mas vi que todo software de treino tem).
-    - [ ] 003: Mais possibilidade de resolução {256, 512, 768, 1024, 1280, 1328, 1536, 2048} para que tiver hardware sobrando não passar vontade.
-    - [ ] 004: Adicionar Cache Text Embeddings como opção no treino.
-    - [ ] 005: Foi prometido que iria ter uma otimização no quesito, usuario pediu para gerar uma imagem, logo em seguida pediu outra, o conteiner tem que subir de novo caregar os pesos e gerar a imagem novamente.
-
   - Infra:
     - [ ] Limitar o CI a apenas a branch main e develop as demais não devem ter CI.

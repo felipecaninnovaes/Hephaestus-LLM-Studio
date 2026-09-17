@@ -171,6 +171,37 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
     negative_prompt = gen_cfg.get("negative_prompt") or ""
     distilled = bool(gen_cfg.get("distilled", False))
 
+    # --- img2img: init_image_path + init_strength (S2 feat/img2img) ---
+    # Ambos ausentes = txt2img puro (retrocompatível).
+    raw_init_path = gen_cfg.get("init_image_path")
+    raw_init_strength = gen_cfg.get("init_strength")
+    if raw_init_path is None:
+        if raw_init_strength is not None:
+            _die("Campo 'init_strength' exige 'init_image_path' (img2img).")
+        init_image_path = None
+        init_strength = None
+    else:
+        if not isinstance(raw_init_path, str) or not raw_init_path.strip():
+            _die("Campo 'init_image_path' deve ser uma string não vazia.")
+        init_image_path = raw_init_path.strip()
+        if not os.path.isfile(init_image_path):
+            _die(f"init_image_path não encontrado: {init_image_path}")
+        if raw_init_strength is None:
+            init_strength = 0.6
+        else:
+            try:
+                init_strength = float(raw_init_strength)
+            except (TypeError, ValueError):
+                _die(
+                    f"init_strength inválido: {raw_init_strength}. "
+                    "Deve ser float entre 0.05 e 0.95."
+                )
+            if init_strength < 0.05 or init_strength > 0.95:
+                _die(
+                    f"init_strength inválido: {init_strength}. "
+                    "Deve estar entre 0.05 e 0.95."
+                )
+
     return {
         "job_id": str(job_id),
         "base_model": base_model,
@@ -189,6 +220,8 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "loras": loras,
         "custom_checkpoint_path": custom_checkpoint_path,
         "arch": arch,
+        "init_image_path": init_image_path,
+        "init_strength": init_strength,
     }
 
 
@@ -302,7 +335,7 @@ def _build_generation_meta(
     loras_effective: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Constrói o dict de metadados para uma imagem do batch (JSONL)."""
-    return {
+    meta: dict[str, Any] = {
         "filename": filename,
         "thumb_filename": thumb_filename,
         "seed": seed,
@@ -322,6 +355,12 @@ def _build_generation_meta(
         "batch_size": batch_size,
         "job_id": params.get("job_id"),
     }
+    # img2img (S2 feat/img2img): campos aditivos, só quando init presente —
+    # txt2img puro nunca carrega essas chaves (round-trip existente intacto).
+    if params.get("init_image_path"):
+        meta["init_image"] = os.path.basename(params["init_image_path"])
+        meta["init_strength"] = params.get("init_strength")
+    return meta
 
 
 # ---------------------------------------------------------------------------
@@ -457,6 +496,26 @@ def _mock_generate(params: dict[str, Any], output_dir: Path, emitter=None) -> No
     arch = params.get("arch")
     base_model = params["base_model"]
 
+    # img2img (S2 feat/img2img): tenta abrir a init como base do desenho
+    # sintético. Falha de decode NÃO derruba o job — cai para mock puro.
+    init_img_base = None
+    init_image_path = params.get("init_image_path")
+    if init_image_path:
+        try:
+            with Image.open(init_image_path) as _init:
+                init_img_base = (
+                    _init.convert("RGB").resize(
+                        (params["width"], params["height"]), Image.LANCZOS
+                    )
+                )
+        except Exception as exc:
+            print(
+                f"[MOCK-GEN] [AVISO] Falha ao abrir init_image ({init_image_path}): "
+                f"{exc}. Seguindo com mock puro.",
+                flush=True,
+            )
+            init_img_base = None
+
     emitter.emit(
         phase="preparing",
         message=f"Configurando pipeline Text-to-Image ({base_model})...",
@@ -490,6 +549,13 @@ def _mock_generate(params: dict[str, Any], output_dir: Path, emitter=None) -> No
         b_base = 35 + (h[2] % 50)
 
         img = Image.new("RGB", (width, height), (r_base, g_base, b_base))
+        if init_img_base is not None:
+            # Mock honesto: blend da init (stretch exato, LANCZOS) com a
+            # textura sintética (alpha 0.3) — visualmente distinto do txt2img.
+            try:
+                img = Image.blend(img, init_img_base, 0.3)
+            except Exception:
+                pass
         draw = ImageDraw.Draw(img)
 
         progressGen = 0.5
@@ -550,6 +616,8 @@ def _mock_generate(params: dict[str, Any], output_dir: Path, emitter=None) -> No
         if custom_cp:
             lora_label += f" | Custom: {Path(custom_cp).name} ({arch})"
         meta_line2 = f"{lora_label} | Res: {width}x{height} | Mode: MOCK DETERMINÍSTICO"
+        if init_image_path:
+            meta_line2 += f" | IMG2IMG: {Path(init_image_path).name}@{params.get('init_strength')}"
         batch_line = f"Batch: {i + 1}/{batch_size} (index={i})"
 
         draw.text(
@@ -640,7 +708,9 @@ def _real_generate(
     """Executa a geração Text-to-Image real via Diffusers com aceleração CUDA.
 
     Suporta batch (loop sequencial), multi-LoRA (com fallback para Flux2 via peft),
-    e checkpoints custom (SDXL/SD15 via from_single_file).
+    checkpoints custom (SDXL/SD15 via from_single_file) e img2img opcional via
+    init_image_path/init_strength (SD: variante Img2Img leve dos componentes do
+    pipe cacheado; Flux2Klein: image= nativo, sem strength na assinatura).
 
     Se *pipeline* for fornecido (cache hit), pula a fase de carregamento e usa o
     pipeline diretamente — caso contrário, carrega como antes (cache miss).
@@ -894,6 +964,54 @@ def _real_generate(
             pipe.set_adapters(adapter_names, adapter_scales)
             print(f"[DIFFUSION-GEN] Multi-LoRA aplicado: {adapter_names}", flush=True)
 
+    # --- img2img (S2 feat/img2img): variante leve + init pré-carregada ---
+    # A variante é construída DEPOIS do LoRA (herda unet/transformer com os
+    # adaptadores) a partir de `pipe.components` — compartilha os módulos,
+    # sem recarregar pesos e sem poluir o pipeline cacheado. O cache key da
+    # spec (pipeline_cache_key) NÃO muda.
+    init_image_path = params.get("init_image_path")
+    init_strength = params.get("init_strength")
+    is_img2img = bool(init_image_path)
+    init_image = None
+    call_pipe = pipe
+    if is_img2img:
+        if base_model == "flux-2-klein-4b":
+            # Flux2KleinPipeline.__call__ (diffusers 0.40.0, verificado via
+            # inspect) já aceita `image=` nativo (condicionamento estilo
+            # Kontext) e NÃO possui `strength` nem classe Img2Img dedicada —
+            # usa o próprio pipe cacheado; strength fica só no meta.
+            call_pipe = pipe
+        elif base_model == "sdxl":
+            from diffusers import StableDiffusionXLImg2ImgPipeline as _I2I
+
+            call_pipe = _I2I(**pipe.components)
+        elif base_model == "sd15":
+            from diffusers import StableDiffusionImg2ImgPipeline as _I2I
+
+            call_pipe = _I2I(**pipe.components)
+        else:
+            _die(f"img2img não suportado para o modelo: {base_model}")
+        print(
+            f"[DIFFUSION-GEN] img2img: variante={type(call_pipe).__name__} "
+            f"(cache preservado), strength={init_strength}",
+            flush=True,
+        )
+        try:
+            from PIL import Image as _PILImage
+
+            with _PILImage.open(init_image_path) as _f:
+                # Resize exato (width,height), LANCZOS — stretch documentado.
+                init_image = _f.convert("RGB").resize(
+                    (width, height), _PILImage.LANCZOS
+                )
+            print(
+                f"[DIFFUSION-GEN] img2img: init={init_image_path} "
+                f"(stretch exato {width}x{height}, LANCZOS)",
+                flush=True,
+            )
+        except Exception as exc:
+            _die(f"Falha ao abrir init_image ({init_image_path}): {exc}")
+
     # --- LOOP DE BATCH ---
     seed_base = (
         params["seed"] if params["seed"] is not None else random.randint(0, 2**31 - 1)
@@ -937,9 +1055,12 @@ def _real_generate(
                 "width": width,
                 "height": height,
             }
+            if is_img2img:
+                # Flux2Klein: image= nativo; sem strength na assinatura.
+                flux_kwargs["image"] = init_image
             with torch.inference_mode():
                 try:
-                    image = pipe(**flux_kwargs, **sampler_cb_kwargs).images[0]
+                    image = call_pipe(**flux_kwargs, **sampler_cb_kwargs).images[0]
                 except TypeError as exc:
                     if "callback_on_step_end" not in str(exc):
                         raise
@@ -948,7 +1069,7 @@ def _real_generate(
                         f"de progresso ({exc}). Seguindo sem telemetria fina.",
                         flush=True,
                     )
-                    image = pipe(**flux_kwargs).images[0]
+                    image = call_pipe(**flux_kwargs).images[0]
         elif base_model in ("sdxl", "sd15"):
             with torch.inference_mode():
                 sd_kwargs: dict[str, Any] = {
@@ -960,8 +1081,12 @@ def _real_generate(
                     "width": width,
                     "height": height,
                 }
+                if is_img2img:
+                    # Img2Img aceita negative_prompt; kwargs demais idênticos.
+                    sd_kwargs["image"] = init_image
+                    sd_kwargs["strength"] = init_strength
                 try:
-                    image = pipe(**sd_kwargs, **sampler_cb_kwargs).images[0]
+                    image = call_pipe(**sd_kwargs, **sampler_cb_kwargs).images[0]
                 except TypeError as exc:
                     if "callback_on_step_end" not in str(exc):
                         raise
@@ -970,7 +1095,7 @@ def _real_generate(
                         f"de progresso ({exc}). Seguindo sem telemetria fina.",
                         flush=True,
                     )
-                    image = pipe(**sd_kwargs).images[0]
+                    image = call_pipe(**sd_kwargs).images[0]
         else:
             _die(f"Modelo não suportado para inferência: {base_model}")
 

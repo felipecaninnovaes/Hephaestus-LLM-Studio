@@ -1414,8 +1414,57 @@ pub async fn submit_diffusion_job(
         return dataset_not_ready();
     }
 
+    // 4.1. Control dataset (motor Flux.2): mesma guarda do principal —
+    // existência + imagens ativas. (Datasets não têm coluna de dono; a
+    // "ownership" aqui é a existência, idêntica à do dataset principal.)
+    // A igualdade com o principal já foi rejeitada na validação pura.
+    let control_ds_id: Option<uuid::Uuid> = req.control_dataset_id;
+    if let Some(control_id) = control_ds_id {
+        let control_exists: bool = match sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM datasets WHERE id = $1)",
+        )
+        .bind(control_id)
+        .fetch_one(&state.pool)
+        .await
+        {
+            Ok(b) => b,
+            Err(_) => {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "internal server error",
+                )
+            }
+        };
+        if !control_exists {
+            return not_found();
+        }
+        let control_count: Option<i64> = match sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM images WHERE dataset_id = $1 AND deleted_at IS NULL",
+        )
+        .bind(control_id)
+        .fetch_optional(&state.pool)
+        .await
+        {
+            Ok(c) => c,
+            Err(_) => {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "internal server error",
+                )
+            }
+        };
+        if control_count.unwrap_or(0) == 0 {
+            return dataset_not_ready();
+        }
+    }
+
     // 5. Fingerprint (só SQL barato, sem S3 — ADR-0025). `trigger_word`
     //    entra no fingerprint porque altera as captions do pacote.
+    //    Com control dataset: o fingerprint do control entra no `extra` como
+    //    `{principal_fp}:control:{control_fp}` — o dedupe por fingerprint
+    //    considera o PAR (principal, control), nunca o principal sozinho.
     let fingerprint = match crate::jobs::prepare::fingerprint_for_dataset(
         &state.pool,
         ds_id,
@@ -1434,10 +1483,66 @@ pub async fn submit_diffusion_job(
             )
         }
     };
+    let fingerprint = match control_ds_id {
+        Some(control_id) => {
+            let control_fp = match crate::jobs::prepare::fingerprint_for_dataset(
+                &state.pool,
+                control_id,
+                None,
+                "diffusion",
+                req.trigger_word.as_deref().unwrap_or(""),
+            )
+            .await
+            {
+                Ok(f) => f,
+                Err(_) => {
+                    return err(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        "internal server error",
+                    )
+                }
+            };
+            format!("{fingerprint}:control:{control_fp}")
+        }
+        None => fingerprint,
+    };
 
     // 6. Config YAML (pura, barata).
     let config_yaml =
         models::generate_diffusion_config_yaml(&uuid::Uuid::new_v4().to_string(), &req);
+
+    // 6.1. Pacote do control dataset (MVP síncrono): quando controlDatasetId
+    //    informado, empacota o control via `build_package_diffusion` AGORA no
+    //    request e publica `params.control_package_ref` (snake_case, mesmo
+    //    shape do `package_ref` do dispatch: {version_id, key, md5_zip,
+    //    bytes} — `md5_zip`/`bytes` vêm direto do build, sem recomputo).
+    //    LIMITAÇÃO documentada: packaging síncrono no request (fora do worker
+    //    ADR-0025) e SEM reuso por fingerprint — NUNCA reusar fingerprint que
+    //    ignore o control dataset. O worker continua empacotando o principal;
+    //    o control viaja pronto em `params.control_package_ref`.
+    //    `gc_dataset_versions` precisa cobrir `control_package_ref.version_id`
+    //    (anti-GC) — fora deste ownership (slice do manager).
+    let control_package_ref: Option<serde_json::Value> = match control_ds_id {
+        Some(control_id) => {
+            match crate::datasets::package::build_package_diffusion(
+                &state,
+                control_id,
+                req.trigger_word.as_deref(),
+            )
+            .await
+            {
+                Ok(pkg) => Some(serde_json::json!({
+                    "version_id": pkg.version_id,
+                    "key": pkg.key,
+                    "md5_zip": pkg.md5_zip,
+                    "bytes": pkg.bytes,
+                })),
+                Err(resp) => return resp,
+            }
+        }
+        None => None,
+    };
 
     // 7. VRAM mínima por modelo base (ADR-0018 D2 — FLUX.2 Klein 4B requer ~10 GB).
     let vram_min = match req.base_model.as_str() {
@@ -1478,15 +1583,13 @@ pub async fn submit_diffusion_job(
             "sampleSeed": req.sample_seed,
             "weights": req.weights,
             "outputName": req.output_name,
+            "controlDatasetId": req.control_dataset_id.map(|u| u.to_string()),
+            "cacheTextEmbeddings": req.cache_text_embeddings,
         },
         "vram_min_gb": vram_min,
     });
-
-    if let Some(ref w_id) = req.weights {
-        manager_body["weights_id"] = serde_json::json!(w_id);
-    }
-    if let Some(ref orch_id) = req.orchestrator_id {
-        manager_body["orchestrator_hint"] = serde_json::json!(orch_id);
+    if let Some(control_ref) = control_package_ref {
+        manager_body["params"]["control_package_ref"] = control_ref;
     }
 
     // 9. Aceite assíncrono: dedupe → create → insert → spawn → 202.
@@ -1524,6 +1627,8 @@ pub async fn submit_diffusion_job(
             "weights": req.weights,
             "orchestratorId": req.orchestrator_id,
             "outputName": req.output_name,
+            "controlDatasetId": req.control_dataset_id.map(|u| u.to_string()),
+            "cacheTextEmbeddings": req.cache_text_embeddings,
         }),
     };
     crate::jobs::prepare::accept_job_preparing(&state, spec, manager_body).await
@@ -1608,26 +1713,14 @@ pub async fn submit_diffusion_generate_job(
     let config_yaml =
         models::generate_diffusion_generate_config_yaml(&job_id, &req, custom_arch.as_deref());
 
-    // 5. VRAM mínima por (arch_efetiva, quantization).
-    //    Valores atuais exatos (D8): sd15→6; 4bit→8; 8bit→12; none→16.
+    // 5. VRAM mínima por (arch_efetiva, quantization) — D8 estendido:
+    //    sd15 fixo 6; sdxl e flux: none→16, 6bit→10, 4bit→8, 2bit→7, 8bit→12.
     //    Custom: espelha first-class do arch (sdxl/sd15).
     let effective_arch = custom_arch
         .as_deref()
         .unwrap_or_else(|| req.base_model.as_deref().unwrap_or("flux-2-klein-4b"));
-    let vram_min: i32 = match effective_arch {
-        "sd15" => 6,
-        "sdxl" => match req.quantization.as_str() {
-            "4bit" => 8,
-            "8bit" => 12,
-            _ => 16,
-        },
-        // flux-2-klein-4b e demais: mesmo legado
-        _ => match req.quantization.as_str() {
-            "4bit" => 8,
-            "8bit" => 12,
-            _ => 16,
-        },
-    };
+    let vram_min: i32 =
+        models::diffusion_generate_vram_min_gb(effective_arch, req.quantization.as_str());
 
     // 6. Body para o Manager — params camelCase (ADR-0023).
     let loras_json: Vec<serde_json::Value> = req
@@ -1635,6 +1728,10 @@ pub async fn submit_diffusion_generate_job(
         .iter()
         .map(|l| serde_json::json!({ "modelId": l.model_id, "scale": l.scale }))
         .collect();
+    let upscale_json = match &req.upscale {
+        Some(up) => serde_json::json!({ "model": up.model, "scale": up.scale }),
+        None => serde_json::Value::Null,
+    };
 
     let mut manager_body = serde_json::json!({
         "kind": "diffusion_generate",
@@ -1652,6 +1749,8 @@ pub async fn submit_diffusion_generate_job(
             "guidance_scale": req.guidance_scale,
             "seed": req.seed,
             "quantization": req.quantization,
+            "sampler": req.sampler,
+            "upscale": upscale_json,
             "distilled": req.distilled,
             "lora_scale": req.lora_scale,
             "batchSize": req.batch_size,

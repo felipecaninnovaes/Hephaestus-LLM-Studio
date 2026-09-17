@@ -3123,7 +3123,7 @@ components:
           description: "PK do dataset com imagens e legendas. Não-UUID ou inexistente ⇒ 404 `not_found`."
         baseModel:
           type: string
-          enum: [sdxl, flux, sd15]
+          enum: [sdxl, flux, sd15, flux-2-klein-4b]
           default: sdxl
           description: "Modelo de difusão base para treino do adaptador LoRA."
         triggerWord:
@@ -3212,9 +3212,17 @@ components:
           description: "Precisão numérica de ponto flutuante durante o treino (fp16, bf16 ou no). Padrão fp16."
         quantization:
           type: string
-          enum: ["none", "4bit", "8bit"]
+          enum: ["none", "2bit", "4bit", "6bit", "8bit", "4bit-nf4", "8bit-bnb"]
           default: "4bit"
-          description: "Nível de quantização do modelo base (4bit = NF4 QLoRA, 8bit = BitsAndBytes int8, none = sem quantização FP16/BF16 pleno)."
+          description: "Nível de quantização do modelo base (2bit/4bit/6bit/8bit; aliases legados 4bit-nf4/8bit-bnb continuam aceitos; none = sem quantização FP16/BF16 pleno)."
+        controlDatasetId:
+          type: [string, "null"]
+          format: uuid
+          description: "UUID de dataset de regularização/controle para o treino (motor Flux.2). Deve diferir do datasetId; inexistente ⇒ 404; sem imagens ativas ⇒ 409. Opcional."
+        cacheTextEmbeddings:
+          type: boolean
+          default: false
+          description: "Cache de text embeddings durante o treino (economiza VRAM em re-épocas). Padrão false."
         enableBucket:
           type: boolean
           default: true
@@ -3291,9 +3299,19 @@ components:
           description: "Semente determinística para geração de ruído inicial. Opcional."
         quantization:
           type: string
-          enum: ["none", "4bit", "8bit"]
+          enum: ["none", "2bit", "4bit", "6bit", "8bit", "4bit-nf4", "8bit-bnb"]
           default: "4bit"
-          description: "Quantização do modelo base (4bit NF4, 8bit BNB ou none FP16 pleno)."
+          description: "Quantização do modelo base (2bit/4bit/6bit/8bit; aliases legados 4bit-nf4/8bit-bnb continuam aceitos; none = FP16 pleno)."
+        sampler:
+          type: string
+          enum: [default, euler, euler_a, heun, dpmpp_2m, dpmpp_2m_karras, dpmpp_2m_sde, dpmpp_2m_sde_karras, dpmpp_sde, ddim]
+          default: default
+          description: "Amostrador do scheduler de difusão (motor Flux.2). A base flux-2-klein-4b aceita apenas default, euler e heun; demais valores nessa base ⇒ 400."
+        upscale:
+          anyOf:
+            - $ref: "#/components/schemas/DiffusionUpscale"
+            - type: "null"
+          description: "Upscale pós-geração via Real-ESRGAN ({model: 4x, scale: 2 ou 4}). Null ou ausente = sem upscale. Opcional."
         distilled:
           type: boolean
           default: false
@@ -3345,6 +3363,20 @@ components:
           default: 0.6
           description: "Força da imagem inicial no img2img (0.05..0.95, padrão 0.6). Só tem efeito quando `initImageId` ou `initGenerationId` está presente; caso contrário é rejeitado com 400 (`code: invalid_request` — initStrength exige initImageId ou initGenerationId). Opcional."
 
+    DiffusionUpscale:
+      type: object
+      required: [model, scale]
+      additionalProperties: false
+      description: "Configuração de upscale pós-geração via Real-ESRGAN (fatia Flux.2)."
+      properties:
+        model:
+          type: string
+          enum: ["4x"]
+          description: "Modelo de upscale (apenas 4x nesta fatia)."
+        scale:
+          type: integer
+          enum: [2, 4]
+          description: "Fator de upscale (2 ou 4)."
     LoraRef:
       type: object
       required: [modelId, scale]

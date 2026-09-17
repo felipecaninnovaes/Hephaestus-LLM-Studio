@@ -737,7 +737,28 @@ const ALLOWED_DIFFUSION_OPTIMIZERS: &[&str] = &["adamw8bit", "adamw", "prodigy"]
 const ALLOWED_DIFFUSION_LR_SCHEDULERS: &[&str] =
     &["cosine", "linear", "constant", "constant_with_warmup"];
 const ALLOWED_DIFFUSION_PRECISION: &[&str] = &["fp16", "bf16", "no"];
-const ALLOWED_DIFFUSION_QUANTIZATIONS: &[&str] = &["none", "4bit", "8bit", "4bit-nf4", "8bit-bnb"];
+const ALLOWED_DIFFUSION_QUANTIZATIONS: &[&str] = &[
+    "none", "2bit", "4bit", "6bit", "8bit", "4bit-nf4", "8bit-bnb",
+];
+/// Samplers suportados no generate (wire camelCase `sampler`).
+/// `default` = sampler padrão do engine para o arch (retrocompat).
+const ALLOWED_DIFFUSION_SAMPLERS: &[&str] = &[
+    "default",
+    "euler",
+    "euler_a",
+    "heun",
+    "dpmpp_2m",
+    "dpmpp_2m_karras",
+    "dpmpp_2m_sde",
+    "dpmpp_2m_sde_karras",
+    "dpmpp_sde",
+    "ddim",
+];
+/// Samplers aceitos pela base `flux-2-klein-4b` (arch-aware: o motor Flux.2
+/// só suporta estes; os demais → 400 com mensagem clara).
+const ALLOWED_FLUX2_KLEIN_SAMPLERS: &[&str] = &["default", "euler", "heun"];
+/// Modelos de upscale suportados no generate (`upscale.model`).
+const ALLOWED_DIFFUSION_UPSCALE_MODELS: &[&str] = &["4x"];
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -790,6 +811,15 @@ pub struct DiffusionJobRequest {
     pub checkpoint_interval: u32,
     #[serde(default)]
     pub epoch_offset: Option<u32>,
+    /// Dataset de regularização/controle (treino Flux.2). `None` = sem controle.
+    /// Wire camelCase `controlDatasetId`; quando `Some`, deve diferir do
+    /// dataset principal e existir (ownership = existência, mesma guarda do
+    /// principal — datasets não têm coluna de dono).
+    #[serde(default)]
+    pub control_dataset_id: Option<uuid::Uuid>,
+    /// Cache de text embeddings no treino (default false).
+    #[serde(default)]
+    pub cache_text_embeddings: bool,
 }
 
 fn default_diffusion_checkpoint_interval() -> u32 {
@@ -962,6 +992,16 @@ pub fn validate_diffusion_request(req: DiffusionJobRequest) -> Result<DiffusionJ
     if let Some(ref out_name) = req.output_name {
         validate_output_name(out_name)?;
     }
+    // Motor Flux.2: control dataset deve diferir do principal (a igualdade
+    // seria regularizar o treino contra ele mesmo). Existência do control é
+    // verificada no handler (mesma guarda do dataset principal).
+    if let Some(control_id) = req.control_dataset_id {
+        if let Ok(main_id) = uuid::Uuid::parse_str(&req.dataset_id) {
+            if control_id == main_id {
+                return Err("controlDatasetId must differ from datasetId".to_string());
+            }
+        }
+    }
     Ok(req)
 }
 
@@ -1000,6 +1040,16 @@ pub fn generate_diffusion_config_yaml(job_id: &str, req: &DiffusionJobRequest) -
     } else {
         "  enable_bucket: false\n".to_string()
     };
+    let control_dataset_line = if req.control_dataset_id.is_some() {
+        "control_dataset_path: \"{control_dataset_path}\"\n".to_string()
+    } else {
+        String::new()
+    };
+    let cache_text_embeddings_line = if req.cache_text_embeddings {
+        "cache_text_embeddings: true\n".to_string()
+    } else {
+        "cache_text_embeddings: false\n".to_string()
+    };
     let samples_section = match &req.sample_prompt {
         Some(sp) if !sp.trim().is_empty() => {
             let seed_line = match req.sample_seed {
@@ -1021,10 +1071,10 @@ engine: "diffusion"
 model: "{base_model}"
 {output_name_line}{weights_line}{epoch_offset_line}mode: "train"
 dataset_path: "{{dataset_path}}"
-output_path: "{{output_path}}"
+{control_dataset_line}output_path: "{{output_path}}"
 seed: 42
 checkpoint_interval: {checkpoint_interval}
-lora:
+{cache_text_embeddings_line}lora:
 {trigger_line}  epochs: {epochs}
   batch_size: {batch_size}
   learning_rate: {learning_rate}
@@ -1043,8 +1093,9 @@ lora:
         output_name_line = output_name_line,
         weights_line = weights_line,
         epoch_offset_line = epoch_offset_line,
+        control_dataset_line = control_dataset_line,
+        cache_text_embeddings_line = cache_text_embeddings_line,
         checkpoint_interval = req.checkpoint_interval,
-        trigger_line = trigger_line,
         epochs = req.epochs,
         batch_size = req.batch_size,
         learning_rate = req.learning_rate,
@@ -1128,8 +1179,29 @@ pub struct DiffusionGenerateJobRequest {
     /// Só válida com um dos ids; ausente com id ⇒ null; default 0.6 aplicado no config_yaml/engine.
     #[serde(default)]
     pub init_strength: Option<f32>,
+    /// Amostrador do scheduler de difusão (wire `sampler`, default "default").
+    #[serde(default = "default_diffusion_sampler")]
+    pub sampler: String,
+    /// Upscale pós-geração via Real-ESRGAN (`upscale: {model, scale}` ou null).
+    #[serde(default)]
+    pub upscale: Option<DiffusionUpscale>,
 }
 
+/// Configuração de upscale pós-geração (Real-ESRGAN).
+///
+/// Wire camelCase (`model`, `scale`); `deny_unknown_fields` consistente com os
+/// demais requests de difusão.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DiffusionUpscale {
+    pub model: String,
+    pub scale: u8,
+}
+
+/// Sampler default: o padrão do engine para o arch (retrocompat).
+fn default_diffusion_sampler() -> String {
+    "default".to_string()
+}
 /// Batch size default: 1 (idêntico ao comportamento legado).
 fn default_diffusion_generate_batch_size() -> i64 {
     1
@@ -1158,8 +1230,13 @@ fn default_diffusion_lora_scale() -> f64 {
 /// - Se `loras` não vazio E (`weights` Some OU `lora_scale` fornecido) → 400
 ///   ("use loras ou weights, não ambos").
 /// - Prompt <= 4000 chars; dimensões 256..2048; steps 1..100; guidance 1.0..30.0.
-/// - Quantização: none/4bit/8bit/4bit-nf4/8bit-bnb (qualquer um; runtime @gpu
-///   valida compatibilidade com arch na sessão GPU).
+/// - Quantização: none/2bit/4bit/6bit/8bit + aliases legados 4bit-nf4/8bit-bnb
+///   (qualquer um; runtime @gpu valida compatibilidade com arch na sessão GPU).
+/// - Sampler: enum global [default, euler, euler_a, heun, dpmpp_2m,
+///   dpmpp_2m_karras, dpmpp_2m_sde, dpmpp_2m_sde_karras, dpmpp_sde, ddim]
+///   (default "default"); arch-aware: base flux-2-klein-4b aceita apenas
+///   [default, euler, heun].
+/// - Upscale opcional: `{model: "4x", scale: 2|4}` (Real-ESRGAN) ou null.
 /// - Se `custom_model_id` Some → quantization "none" é PERMITIDO (S1 passou;
 ///   runtime @gpu valida na sessão GPU — documentado no comentário).
 /// - img2img: `init_image_id` XOR `init_generation_id` (ambos ⇒ 400);
@@ -1313,9 +1390,50 @@ pub fn validate_diffusion_generate_request(
         }
     }
 
+    // --- Sampler (motor Flux.2): enum global + restrição arch-aware ---
+    if !ALLOWED_DIFFUSION_SAMPLERS.contains(&req.sampler.as_str()) {
+        return Err(format!(
+            "sampler must be one of {:?}, got '{}'",
+            ALLOWED_DIFFUSION_SAMPLERS, req.sampler
+        ));
+    }
+    // Custom usa arch sdxl/sd15 (sem restrição Flux.2); sem custom, a base
+    // efetiva é baseModel ou o default legado "flux-2-klein-4b".
+    let effective_base = if req.custom_model_id.is_some() {
+        String::new()
+    } else {
+        req.base_model
+            .as_deref()
+            .unwrap_or("flux-2-klein-4b")
+            .to_string()
+    };
+    if effective_base == "flux-2-klein-4b"
+        && !ALLOWED_FLUX2_KLEIN_SAMPLERS.contains(&req.sampler.as_str())
+    {
+        return Err(format!(
+            "sampler '{}' not supported for baseModel 'flux-2-klein-4b' (use one of {:?})",
+            req.sampler, ALLOWED_FLUX2_KLEIN_SAMPLERS
+        ));
+    }
+
+    // --- Upscale (Real-ESRGAN): model ∈ ["4x"], scale ∈ [2, 4] ---
+    if let Some(up) = &req.upscale {
+        if !ALLOWED_DIFFUSION_UPSCALE_MODELS.contains(&up.model.as_str()) {
+            return Err(format!(
+                "upscale.model must be one of {:?}, got '{}'",
+                ALLOWED_DIFFUSION_UPSCALE_MODELS, up.model
+            ));
+        }
+        if up.scale != 2 && up.scale != 4 {
+            return Err(format!(
+                "upscale.scale must be one of [2, 4], got {}",
+                up.scale
+            ));
+        }
+    }
+
     Ok(req)
 }
-
 /// Gera `config.yaml` de geração Text-to-Image v2 (ADR-0023 D2/D3/D4).
 ///
 /// Placeholders `{output_path}` e `{weights_path}` são substituídos pelo
@@ -1331,8 +1449,9 @@ pub fn validate_diffusion_generate_request(
 /// `generate:` ganha `init_image_path: "{init_image_path}"` (placeholder
 /// literal — o orchestrator substitui) + `init_strength` (pedido ou 0.6).
 ///
-/// Retrocompat byte-compatível: request legado (sem campos novos) gera yaml
-/// IDÊNTICO ao atual (batch_size: 1, sem loras, sem custom).
+/// Retrocompat: request legado (sem campos novos) gera yaml quase idêntico
+/// ao anterior à ADR-0023 (batch_size: 1, sem loras, sem custom, sem upscale)
+/// — exceção aditiva da fatia Flux.2: linha `sampler: "default"` sempre presente.
 pub fn generate_diffusion_generate_config_yaml(
     job_id: &str,
     req: &DiffusionGenerateJobRequest,
@@ -1425,6 +1544,16 @@ pub fn generate_diffusion_generate_config_yaml(
         String::new()
     };
 
+    // --- Upscale Real-ESRGAN: bloco `upscale:` com model/scale APENAS quando
+    // Some; ausente (None) ⇒ nada (engine trata ausente como sem upscale).
+    let upscale_block = match &req.upscale {
+        Some(up) => format!(
+            "  upscale:\n    model: \"{}\"\n    scale: {}\n",
+            up.model, up.scale
+        ),
+        None => String::new(),
+    };
+
     format!(
         r#"# Configuração de geração Difusão (Playground)
 job_id: "{job_id}"
@@ -1439,9 +1568,10 @@ output_path: "{{output_path}}"
   steps: {steps}
   guidance_scale: {guidance_scale}
 {seed_gen_line}  quantization: "{quantization}"
+  sampler: "{sampler}"
   distilled: {distilled}
   batch_size: {batch_size}
-{loras_block}{custom_block}{init_block}{lora_scale_line}"#,
+{loras_block}{custom_block}{init_block}{upscale_block}{lora_scale_line}"#,
         job_id = job_id,
         effective_model = effective_model,
         prompt_json = serde_json::to_string(&req.prompt).unwrap_or_else(|_| "\"\"".into()),
@@ -1451,6 +1581,7 @@ output_path: "{{output_path}}"
         steps = req.steps,
         guidance_scale = req.guidance_scale,
         quantization = req.quantization,
+        sampler = req.sampler,
         distilled = req.distilled,
         batch_size = req.batch_size,
         seed_root_line = seed_root_line,
@@ -1460,8 +1591,33 @@ output_path: "{{output_path}}"
         loras_block = loras_block,
         custom_block = custom_block,
         init_block = init_block,
+        upscale_block = upscale_block,
         lora_scale_line = lora_scale_line,
     )
+}
+
+/// VRAM mínima de generate por (arch efetiva, quantization) — D8 estendido.
+///
+/// sd15 fixo 6; sdxl e flux: none→16, 6bit→10, 4bit→8, 2bit→7, 8bit→12
+/// (aliases legados 4bit-nf4/8bit-bnb seguem o nível da família).
+pub fn diffusion_generate_vram_min_gb(arch: &str, quantization: &str) -> i32 {
+    match arch {
+        "sd15" => 6,
+        "sdxl" | "flux" | "flux-2-klein-4b" => match quantization {
+            "2bit" => 7,
+            "4bit" | "4bit-nf4" => 8,
+            "6bit" => 10,
+            "8bit" | "8bit-bnb" => 12,
+            _ => 16,
+        },
+        _ => match quantization {
+            "2bit" => 7,
+            "4bit" | "4bit-nf4" => 8,
+            "6bit" => 10,
+            "8bit" | "8bit-bnb" => 12,
+            _ => 16,
+        },
+    }
 }
 
 /// Formata init_strength com no mínimo 1 casa decimal e ponto (nunca vírgula).
@@ -3052,7 +3208,208 @@ mod tests {
             .is_some());
         assert!(gen.get(&serde_yaml::Value::String("arch".into())).is_some());
     }
+
+    // =====================================================================
+    // Motor Flux.2 + treino (fatia feat/flux2-motor-treino)
+    // =====================================================================
+
+    #[test]
+    fn flux2_sampler_defaults_euler_heun_ok() {
+        // Default "default" + euler/heun passam na base flux-2-klein-4b.
+        for sampler in ["default", "euler", "heun"] {
+            let json = format!(
+                r#"{{"prompt":"test","baseModel":"flux-2-klein-4b","sampler":"{sampler}"}}"#
+            );
+            let req: DiffusionGenerateJobRequest = serde_json::from_str(&json).unwrap();
+            let v = validate_diffusion_generate_request(req).expect("sampler deveria passar");
+            assert_eq!(v.sampler, sampler);
+        }
+        // Request legado sem sampler → default "default".
+        let req: DiffusionGenerateJobRequest =
+            serde_json::from_str(r#"{"prompt":"test"}"#).unwrap();
+        let v = validate_diffusion_generate_request(req).unwrap();
+        assert_eq!(v.sampler, "default");
+    }
+
+    #[test]
+    fn flux2_rejeita_dpmpp_2m() {
+        let json = r#"{"prompt":"test","baseModel":"flux-2-klein-4b","sampler":"dpmpp_2m"}"#;
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(json).unwrap();
+        let err = validate_diffusion_generate_request(req).expect_err("dpmpp_2m deve falhar");
+        assert!(
+            err.contains("flux-2-klein-4b"),
+            "erro deve citar a base: {err}"
+        );
+    }
+
+    #[test]
+    fn sampler_invalido_rejeitado() {
+        let json = r#"{"prompt":"test","sampler":"nao-existe"}"#;
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(json).unwrap();
+        assert!(validate_diffusion_generate_request(req).is_err());
+    }
+
+    #[test]
+    fn sampler_dpmpp_ok_em_sdxl() {
+        // Fora da base flux-2: dpmpp_2m passa (restrição é arch-aware).
+        let json = r#"{"prompt":"test","baseModel":"sdxl","sampler":"dpmpp_2m"}"#;
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(json).unwrap();
+        let v = validate_diffusion_generate_request(req).expect("sdxl aceita dpmpp_2m");
+        assert_eq!(v.sampler, "dpmpp_2m");
+    }
+
+    #[test]
+    fn upscale_none_e_4x_scale2_ok_scale3_400() {
+        // None (ausente) → válido.
+        let req: DiffusionGenerateJobRequest =
+            serde_json::from_str(r#"{"prompt":"test"}"#).unwrap();
+        let v = validate_diffusion_generate_request(req).unwrap();
+        assert!(v.upscale.is_none());
+        // {model: 4x, scale: 2} → válido.
+        let req2: DiffusionGenerateJobRequest =
+            serde_json::from_str(r#"{"prompt":"test","upscale":{"model":"4x","scale":2}}"#)
+                .unwrap();
+        let v2 = validate_diffusion_generate_request(req2).expect("upscale 4x/2 feliz");
+        assert_eq!(v2.upscale.as_ref().unwrap().model, "4x");
+        assert_eq!(v2.upscale.as_ref().unwrap().scale, 2);
+        // scale: 3 → 400.
+        let req3: DiffusionGenerateJobRequest =
+            serde_json::from_str(r#"{"prompt":"test","upscale":{"model":"4x","scale":3}}"#)
+                .unwrap();
+        assert!(validate_diffusion_generate_request(req3).is_err());
+        // model inválido → 400.
+        let req4: DiffusionGenerateJobRequest =
+            serde_json::from_str(r#"{"prompt":"test","upscale":{"model":"8x","scale":2}}"#)
+                .unwrap();
+        assert!(validate_diffusion_generate_request(req4).is_err());
+    }
+
+    #[test]
+    fn quantization_2bit_6bit_aceitas_nos_dois_requests() {
+        for q in ["2bit", "6bit"] {
+            let json = format!(
+                r#"{{"datasetId":"550e8400-e29b-41d4-a716-446655440001","quantization":"{q}"}}"#
+            );
+            let req: DiffusionJobRequest = serde_json::from_str(&json).unwrap();
+            let v = validate_diffusion_request(req).expect("treino deveria aceitar");
+            assert_eq!(v.quantization, q);
+            let gjson = format!(r#"{{"prompt":"test","quantization":"{q}"}}"#);
+            let greq: DiffusionGenerateJobRequest = serde_json::from_str(&gjson).unwrap();
+            let gv = validate_diffusion_generate_request(greq).expect("generate deveria aceitar");
+            assert_eq!(gv.quantization, q);
+        }
+        // Aliases legados continuam aceitos.
+        for q in ["4bit-nf4", "8bit-bnb"] {
+            let json = format!(
+                r#"{{"datasetId":"550e8400-e29b-41d4-a716-446655440001","quantization":"{q}"}}"#
+            );
+            let req: DiffusionJobRequest = serde_json::from_str(&json).unwrap();
+            assert!(validate_diffusion_request(req).is_ok());
+        }
+    }
+
+    #[test]
+    fn control_dataset_id_igual_ao_principal_400() {
+        let id = "550e8400-e29b-41d4-a716-446655440001";
+        let json = format!(r#"{{"datasetId":"{id}","controlDatasetId":"{id}"}}"#);
+        let req: DiffusionJobRequest = serde_json::from_str(&json).unwrap();
+        let err = validate_diffusion_request(req).expect_err("igual deve falhar");
+        assert!(
+            err.contains("controlDatasetId"),
+            "erro deve citar o campo: {err}"
+        );
+        // Diferente → ok.
+        let json2 = format!(
+            r#"{{"datasetId":"{id}","controlDatasetId":"550e8400-e29b-41d4-a716-446655440002"}}"#
+        );
+        let req2: DiffusionJobRequest = serde_json::from_str(&json2).unwrap();
+        assert!(validate_diffusion_request(req2).is_ok());
+    }
+
+    #[test]
+    fn train_yaml_control_cache_text_embeddings() {
+        // Sem control: sem linha control_dataset_path, cache false sempre presente.
+        let req: DiffusionJobRequest =
+            serde_json::from_str(r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001"}"#)
+                .unwrap();
+        let v = validate_diffusion_request(req).unwrap();
+        assert!(!v.cache_text_embeddings);
+        let yaml = generate_diffusion_config_yaml("job-train-sem-control", &v);
+        assert!(
+            !yaml.contains("control_dataset_path"),
+            "sem control: {yaml}"
+        );
+        assert!(
+            yaml.contains("cache_text_embeddings: false"),
+            "cache sempre: {yaml}"
+        );
+        // Com control + cache true: linha presente + true.
+        let req2: DiffusionJobRequest = serde_json::from_str(
+            r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","controlDatasetId":"550e8400-e29b-41d4-a716-446655440002","cacheTextEmbeddings":true}"#,
+        )
+        .unwrap();
+        let v2 = validate_diffusion_request(req2).unwrap();
+        assert!(v2.cache_text_embeddings);
+        let yaml2 = generate_diffusion_config_yaml("job-train-com-control", &v2);
+        assert!(
+            yaml2.contains("control_dataset_path: \"{control_dataset_path}\""),
+            "placeholder ausente: {yaml2}"
+        );
+        assert!(
+            yaml2.contains("cache_text_embeddings: true"),
+            "cache true: {yaml2}"
+        );
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml2).expect("yaml válido");
+        assert_eq!(
+            parsed["control_dataset_path"].as_str(),
+            Some("{control_dataset_path}")
+        );
+    }
+
+    #[test]
+    fn generate_yaml_contem_sampler_e_upscale() {
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(
+            r#"{"prompt":"test","baseModel":"sdxl","sampler":"dpmpp_2m","upscale":{"model":"4x","scale":4}}"#,
+        )
+        .unwrap();
+        let v = validate_diffusion_generate_request(req).unwrap();
+        let yaml = generate_diffusion_generate_config_yaml("job-gen-sampler", &v, None);
+        assert!(yaml.contains("sampler: \"dpmpp_2m\""), "sampler: {yaml}");
+        assert!(yaml.contains("upscale:"), "bloco upscale: {yaml}");
+        assert!(yaml.contains("scale: 4"), "scale: {yaml}");
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml válido");
+        assert_eq!(parsed["generate"]["sampler"].as_str(), Some("dpmpp_2m"));
+        assert_eq!(parsed["generate"]["upscale"]["scale"].as_i64(), Some(4));
+        // Sem upscale: bloco ausente, sampler default presente.
+        let req2: DiffusionGenerateJobRequest =
+            serde_json::from_str(r#"{"prompt":"test"}"#).unwrap();
+        let v2 = validate_diffusion_generate_request(req2).unwrap();
+        let yaml2 = generate_diffusion_generate_config_yaml("job-gen-sem-up", &v2, None);
+        assert!(!yaml2.contains("upscale:"), "sem upscale: {yaml2}");
+        assert!(
+            yaml2.contains("sampler: \"default\""),
+            "sampler default: {yaml2}"
+        );
+    }
+
+    #[test]
+    fn vram_min_2bit_7_e_6bit_10() {
+        assert_eq!(diffusion_generate_vram_min_gb("sdxl", "2bit"), 7);
+        assert_eq!(diffusion_generate_vram_min_gb("sdxl", "6bit"), 10);
+        assert_eq!(diffusion_generate_vram_min_gb("flux-2-klein-4b", "2bit"), 7);
+        assert_eq!(
+            diffusion_generate_vram_min_gb("flux-2-klein-4b", "6bit"),
+            10
+        );
+        assert_eq!(diffusion_generate_vram_min_gb("sd15", "2bit"), 6);
+        assert_eq!(diffusion_generate_vram_min_gb("sdxl", "4bit"), 8);
+        assert_eq!(diffusion_generate_vram_min_gb("sdxl", "8bit"), 12);
+        assert_eq!(diffusion_generate_vram_min_gb("sdxl", "none"), 16);
+    }
 }
+
+// =========================================================================
+// img2img (fatia feat/img2img)
 
 // =========================================================================
 // img2img (fatia feat/img2img) — validate XOR/faixa + yaml com/sem init

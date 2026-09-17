@@ -4,3 +4,4 @@
 //! proxy de imagem via StoragePort, delete em lote e export ZIP.
 
 pub mod handlers;
+pub mod inputs;

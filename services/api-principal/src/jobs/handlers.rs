@@ -1668,6 +1668,24 @@ pub async fn submit_diffusion_generate_job(
         manager_body["orchestrator_hint"] = serde_json::json!(orch_id);
     }
 
+    // img2img: encaminha o id que veio (`initImageId` OU `initGenerationId`) e
+    // `initStrength` só quando há id — sem default local (ausente ⇒ null;
+    // default 0.6 aplicado no config_yaml/engine). Existência/resolução dos
+    // ids é do manager (S4) — aqui não há lookup.
+    // VRAM: estimativa atual mantida p/ img2img (follow-up: medir overhead do
+    // decode/resize da init no nó GPU).
+    if let Some(id) = req.init_image_id {
+        manager_body["params"]["initImageId"] = serde_json::json!(id.to_string());
+    } else if let Some(id) = req.init_generation_id {
+        manager_body["params"]["initGenerationId"] = serde_json::json!(id.to_string());
+    }
+    if req.init_image_id.is_some() || req.init_generation_id.is_some() {
+        manager_body["params"]["initStrength"] = match req.init_strength {
+            Some(s) => serde_json::json!(s),
+            None => serde_json::Value::Null,
+        };
+    }
+
     match state.manager.create_job(&manager_body).await {
         Ok(resp) => {
             let body = SubmitJobResponse {
@@ -4608,6 +4626,183 @@ mod tests {
         let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(json["code"], "unsupported_architecture");
+    }
+
+    // =========================================================================
+    // Diffusion Generate img2img handler tests (fatia feat/img2img)
+    // =========================================================================
+
+    #[tokio::test]
+    async fn submit_diffusion_generate_202_forwards_init_image_id_and_strength() {
+        let init_id = "550e8400-e29b-41d4-a716-446655440010";
+        let body_json = serde_json::json!({
+            "prompt": "img2img test",
+            "baseModel": "sdxl",
+            "initImageId": init_id,
+            "initStrength": 0.8
+        });
+
+        let mut mock = MockManager::default();
+        mock.create_job_result = Some(CreateJobResponse {
+            job_id: "job-img2img".into(),
+            status: "queued".into(),
+            queue_position: None,
+        });
+        let mock_arc = std::sync::Arc::new(mock);
+        let mock_ref = std::sync::Arc::clone(&mock_arc);
+        let mut state = test_state(MockManager::default());
+        state.manager = mock_arc;
+
+        let resp = submit_diffusion_generate_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                serde_json::to_string(&body_json).unwrap(),
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+        // Params camelCase no body ao manager: o id que veio + strength.
+        let body = mock_ref.last_create_job_body();
+        let body = body.expect("create_job body captured");
+        let params = body["params"].as_object().expect("params object");
+        assert_eq!(params.get("initImageId"), Some(&serde_json::json!(init_id)));
+        assert!(
+            params.get("initGenerationId").is_none(),
+            "initGenerationId não deve ser enviado quando initImageId veio"
+        );
+        // f32 no JSON (0.8f32 ⇒ 0.800000011920929) — compara com epsilon.
+        let got_strength = params
+            .get("initStrength")
+            .and_then(|v| v.as_f64())
+            .expect("initStrength numérico");
+        assert!(
+            (got_strength - 0.8).abs() < 1e-6,
+            "initStrength divergente: {got_strength}"
+        );
+        // Config carrega o placeholder (nunca o id real).
+        let config = body["config_yaml"].as_str().expect("config_yaml string");
+        assert!(config.contains("init_image_path: \"{init_image_path}\""));
+        assert!(!config.contains(init_id));
+    }
+
+    #[tokio::test]
+    async fn submit_diffusion_generate_202_forwards_init_generation_id_null_strength() {
+        let gen_id = "550e8400-e29b-41d4-a716-446655440011";
+        let body_json = serde_json::json!({
+            "prompt": "img2img gallery test",
+            "baseModel": "sdxl",
+            "initGenerationId": gen_id
+        });
+
+        let mut mock = MockManager::default();
+        mock.create_job_result = Some(CreateJobResponse {
+            job_id: "job-img2img-2".into(),
+            status: "queued".into(),
+            queue_position: None,
+        });
+        let mock_arc = std::sync::Arc::new(mock);
+        let mock_ref = std::sync::Arc::clone(&mock_arc);
+        let mut state = test_state(MockManager::default());
+        state.manager = mock_arc;
+
+        let resp = submit_diffusion_generate_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                serde_json::to_string(&body_json).unwrap(),
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+        let body = mock_ref.last_create_job_body();
+        let body = body.expect("create_job body captured");
+        let params = body["params"].as_object().expect("params object");
+        assert_eq!(
+            params.get("initGenerationId"),
+            Some(&serde_json::json!(gen_id))
+        );
+        assert!(
+            params.get("initImageId").is_none(),
+            "initImageId não deve ser enviado quando initGenerationId veio"
+        );
+        // Strength ausente ⇒ null (sem default local; manager aplica 0.6).
+        assert_eq!(params.get("initStrength"), Some(&serde_json::Value::Null));
+    }
+
+    #[tokio::test]
+    async fn submit_diffusion_generate_202_txt2img_omite_init() {
+        let body_json = serde_json::json!({
+            "prompt": "txt2img puro",
+            "baseModel": "sdxl"
+        });
+
+        let mut mock = MockManager::default();
+        mock.create_job_result = Some(CreateJobResponse {
+            job_id: "job-txt2img".into(),
+            status: "queued".into(),
+            queue_position: None,
+        });
+        let mock_arc = std::sync::Arc::new(mock);
+        let mock_ref = std::sync::Arc::clone(&mock_arc);
+        let mut state = test_state(MockManager::default());
+        state.manager = mock_arc;
+
+        let resp = submit_diffusion_generate_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                serde_json::to_string(&body_json).unwrap(),
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+        let body = mock_ref.last_create_job_body();
+        let body = body.expect("create_job body captured");
+        let params = body["params"].as_object().expect("params object");
+        assert!(params.get("initImageId").is_none());
+        assert!(params.get("initGenerationId").is_none());
+        assert!(params.get("initStrength").is_none());
+    }
+
+    #[tokio::test]
+    async fn submit_diffusion_generate_400_init_xor_e_orfa() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+
+        // Ambos os ids ⇒ 400.
+        let resp = submit_diffusion_generate_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"prompt":"x","initImageId":"550e8400-e29b-41d4-a716-446655440010","initGenerationId":"550e8400-e29b-41d4-a716-446655440011"}"#,
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // Strength órfã ⇒ 400.
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_diffusion_generate_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"prompt":"x","initStrength":0.7}"#,
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // Strength fora da faixa ⇒ 400.
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_diffusion_generate_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"prompt":"x","initImageId":"550e8400-e29b-41d4-a716-446655440010","initStrength":1.5}"#,
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     // =========================================================================

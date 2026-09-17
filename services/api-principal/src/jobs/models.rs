@@ -1116,6 +1116,18 @@ pub struct DiffusionGenerateJobRequest {
     pub loras: Vec<LoraRef>,
     /// UUID de modelo custom (checkpoint — D4). XOR com `baseModel`.
     pub custom_model_id: Option<String>,
+    /// ID de input efêmero (`POST /api/generations/inputs`) p/ img2img.
+    /// Mutuamente exclusivo com `init_generation_id`.
+    #[serde(default)]
+    pub init_image_id: Option<uuid::Uuid>,
+    /// ID de geração existente da galeria p/ img2img (sem re-upload).
+    /// Mutuamente exclusivo com `init_image_id`.
+    #[serde(default)]
+    pub init_generation_id: Option<uuid::Uuid>,
+    /// Força da imagem inicial no img2img (0.05..=0.95).
+    /// Só válida com um dos ids; ausente com id ⇒ null; default 0.6 aplicado no config_yaml/engine.
+    #[serde(default)]
+    pub init_strength: Option<f32>,
 }
 
 /// Batch size default: 1 (idêntico ao comportamento legado).
@@ -1150,6 +1162,8 @@ fn default_diffusion_lora_scale() -> f64 {
 ///   valida compatibilidade com arch na sessão GPU).
 /// - Se `custom_model_id` Some → quantization "none" é PERMITIDO (S1 passou;
 ///   runtime @gpu valida na sessão GPU — documentado no comentário).
+/// - img2img: `init_image_id` XOR `init_generation_id` (ambos ⇒ 400);
+///   `init_strength` Some exige um dos ids (órfã ⇒ 400) e faixa 0.05..=0.95.
 pub fn validate_diffusion_generate_request(
     mut req: DiffusionGenerateJobRequest,
 ) -> Result<DiffusionGenerateJobRequest, String> {
@@ -1280,6 +1294,25 @@ pub fn validate_diffusion_generate_request(
         }
     }
 
+    // --- img2img: init_image_id XOR init_generation_id; init_strength órfã/faixa ---
+    // (serde já garante UUID válido nos ids — `Option<Uuid>` falha no parse ⇒
+    // 400 no handler; aqui só restam as regras relacionais.)
+    let has_init_image = req.init_image_id.is_some();
+    let has_init_generation = req.init_generation_id.is_some();
+    if has_init_image && has_init_generation {
+        return Err("use either initImageId or initGenerationId, not both".to_string());
+    }
+    if let Some(s) = req.init_strength {
+        if !has_init_image && !has_init_generation {
+            return Err("initStrength exige initImageId ou initGenerationId".to_string());
+        }
+        if s.is_nan() || !(0.05..=0.95).contains(&s) {
+            return Err(format!(
+                "initStrength must be between 0.05 and 0.95, got {s}"
+            ));
+        }
+    }
+
     Ok(req)
 }
 
@@ -1294,6 +1327,9 @@ pub fn validate_diffusion_generate_request(
 /// Quando `loras` vazio E `weights` Some: formato legado `weights_path`/`lora_scale`.
 /// Quando `custom_model_id` Some: `custom_checkpoint_path` + `arch` (resolvidos
 /// pelo handler — `custom_arch` deve ser Some).
+/// Quando `init_image_id` ou `init_generation_id` presente (img2img): bloco
+/// `generate:` ganha `init_image_path: "{init_image_path}"` (placeholder
+/// literal — o orchestrator substitui) + `init_strength` (pedido ou 0.6).
 ///
 /// Retrocompat byte-compatível: request legado (sem campos novos) gera yaml
 /// IDÊNTICO ao atual (batch_size: 1, sem loras, sem custom).
@@ -1374,6 +1410,21 @@ pub fn generate_diffusion_generate_config_yaml(
         )
     };
 
+    // --- img2img: init dentro do bloco `generate:` ---
+    // `init_image_path` é placeholder literal — o orchestrator substitui pelo
+    // path stageado (NUNCA emitir o id/path real aqui); `init_strength` usa o
+    // valor pedido ou 0.6 (default aplicado no config_yaml/engine). Sem id ⇒ bloco
+    // vazio (yaml legado byte-idêntico).
+    let init_block = if req.init_image_id.is_some() || req.init_generation_id.is_some() {
+        let strength = req.init_strength.unwrap_or(0.6);
+        format!(
+            "  init_image_path: \"{{init_image_path}}\"\n  init_strength: {}\n",
+            format_init_strength(strength)
+        )
+    } else {
+        String::new()
+    };
+
     format!(
         r#"# Configuração de geração Difusão (Playground)
 job_id: "{job_id}"
@@ -1390,7 +1441,7 @@ output_path: "{{output_path}}"
 {seed_gen_line}  quantization: "{quantization}"
   distilled: {distilled}
   batch_size: {batch_size}
-{loras_block}{custom_block}{lora_scale_line}"#,
+{loras_block}{custom_block}{init_block}{lora_scale_line}"#,
         job_id = job_id,
         effective_model = effective_model,
         prompt_json = serde_json::to_string(&req.prompt).unwrap_or_else(|_| "\"\"".into()),
@@ -1408,8 +1459,20 @@ output_path: "{{output_path}}"
         base_model_line = base_model_line,
         loras_block = loras_block,
         custom_block = custom_block,
+        init_block = init_block,
         lora_scale_line = lora_scale_line,
     )
+}
+
+/// Formata init_strength com no mínimo 1 casa decimal e ponto (nunca vírgula).
+/// 0.6 → "0.6", 0.5 → "0.5", 1.0 → "1.0", 0.05 → "0.05".
+fn format_init_strength(v: f32) -> String {
+    let s = format!("{v}").replace(',', ".");
+    if s.contains('.') {
+        s
+    } else {
+        format!("{s}.0")
+    }
 }
 
 /// Formata scale de LoRA preservando até 2 casas decimais, trim de zeros à direita.
@@ -2988,5 +3051,165 @@ mod tests {
             .get(&serde_yaml::Value::String("custom_checkpoint_path".into()))
             .is_some());
         assert!(gen.get(&serde_yaml::Value::String("arch".into())).is_some());
+    }
+}
+
+// =========================================================================
+// img2img (fatia feat/img2img) — validate XOR/faixa + yaml com/sem init
+// =========================================================================
+
+#[cfg(test)]
+mod img2img_tests {
+    use super::*;
+
+    const INIT_IMAGE: &str = "550e8400-e29b-41d4-a716-446655440010";
+    const INIT_GEN: &str = "550e8400-e29b-41d4-a716-446655440011";
+
+    fn parse(json: &str) -> DiffusionGenerateJobRequest {
+        serde_json::from_str(json).expect("parse")
+    }
+
+    #[test]
+    fn xor_ambos_ids_rejeitado() {
+        let json = format!(
+            r#"{{"prompt":"x","initImageId":"{INIT_IMAGE}","initGenerationId":"{INIT_GEN}"}}"#
+        );
+        let req = parse(&json);
+        assert!(validate_diffusion_generate_request(req).is_err());
+    }
+
+    #[test]
+    fn strength_orfa_rejeitada_com_mensagem_exata() {
+        let json = r#"{"prompt":"x","initStrength":0.7}"#;
+        let req = parse(json);
+        let err = validate_diffusion_generate_request(req).expect_err("órfã deve falhar");
+        assert_eq!(err, "initStrength exige initImageId ou initGenerationId");
+    }
+
+    #[test]
+    fn strength_fora_da_faixa_rejeitada() {
+        for s in [0.04, 0.0, 1.0, 1.5, -0.5] {
+            let json =
+                format!(r#"{{"prompt":"x","initImageId":"{INIT_IMAGE}","initStrength":{s}}}"#);
+            let req = parse(&json);
+            assert!(
+                validate_diffusion_generate_request(req).is_err(),
+                "initStrength={s} deveria falhar"
+            );
+        }
+    }
+
+    #[test]
+    fn strength_nas_bordas_ok() {
+        for s in [0.05, 0.6, 0.95] {
+            let json =
+                format!(r#"{{"prompt":"x","initImageId":"{INIT_IMAGE}","initStrength":{s}}}"#);
+            let req = parse(&json);
+            assert!(
+                validate_diffusion_generate_request(req).is_ok(),
+                "initStrength={s} deveria passar"
+            );
+        }
+    }
+
+    #[test]
+    fn feliz_init_image_e_init_generation() {
+        let json = format!(r#"{{"prompt":"x","initImageId":"{INIT_IMAGE}","initStrength":0.8}}"#);
+        let req = parse(&json);
+        let v = validate_diffusion_generate_request(req).expect("initImageId feliz");
+        assert_eq!(
+            v.init_image_id.map(|u| u.to_string()).as_deref(),
+            Some(INIT_IMAGE)
+        );
+        assert!(v.init_generation_id.is_none());
+
+        // initGenerationId sozinho (sem strength) também é feliz — manager
+        // aplica 0.6.
+        let json2 = format!(r#"{{"prompt":"x","initGenerationId":"{INIT_GEN}"}}"#);
+        let req2 = parse(&json2);
+        let v2 = validate_diffusion_generate_request(req2).expect("initGenerationId feliz");
+        assert!(v2.init_image_id.is_none());
+        assert_eq!(
+            v2.init_generation_id.map(|u| u.to_string()).as_deref(),
+            Some(INIT_GEN)
+        );
+        assert!(v2.init_strength.is_none());
+    }
+
+    #[test]
+    fn sem_init_sem_strength_ok() {
+        let req = parse(r#"{"prompt":"txt2img puro"}"#);
+        let v = validate_diffusion_generate_request(req).expect("legado feliz");
+        assert!(v.init_image_id.is_none());
+        assert!(v.init_generation_id.is_none());
+        assert!(v.init_strength.is_none());
+    }
+
+    #[test]
+    fn init_id_nao_uuid_rejeitado_no_parse() {
+        // `Option<Uuid>` falha no parse ⇒ 400 no handler (via serde).
+        let json = r#"{"prompt":"x","initImageId":"nao-eh-uuid"}"#;
+        assert!(serde_json::from_str::<DiffusionGenerateJobRequest>(json).is_err());
+    }
+
+    #[test]
+    fn yaml_sem_init_nao_emite_bloco() {
+        let req = parse(r#"{"prompt":"txt2img puro"}"#);
+        let v = validate_diffusion_generate_request(req).unwrap();
+        let yaml = generate_diffusion_generate_config_yaml("job-txt2img", &v, None);
+        assert!(!yaml.contains("init_image_path"), "sem init: {yaml}");
+        assert!(!yaml.contains("init_strength"), "sem init: {yaml}");
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml válido");
+        assert!(parsed["generate"].as_mapping().is_some());
+    }
+
+    #[test]
+    fn yaml_com_init_emite_placeholder_e_strength() {
+        let json =
+            format!(r#"{{"prompt":"img2img","initImageId":"{INIT_IMAGE}","initStrength":0.8}}"#);
+        let req = parse(&json);
+        let v = validate_diffusion_generate_request(req).unwrap();
+        let yaml = generate_diffusion_generate_config_yaml("job-img2img", &v, None);
+        // Placeholder literal presente (o id real NUNCA vaza no yaml).
+        assert!(
+            yaml.contains("init_image_path: \"{init_image_path}\""),
+            "placeholder ausente: {yaml}"
+        );
+        assert!(!yaml.contains(INIT_IMAGE), "id real vazou no yaml: {yaml}");
+        assert!(yaml.contains("init_strength: 0.8"), "strength: {yaml}");
+        // Dentro do bloco `generate:`.
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml válido");
+        let gen = parsed["generate"].as_mapping().expect("bloco generate");
+        assert!(gen
+            .get(&serde_yaml::Value::String("init_image_path".into()))
+            .is_some());
+        assert_eq!(
+            gen.get(&serde_yaml::Value::String("init_strength".into()))
+                .and_then(|n| n.as_f64()),
+            Some(0.8)
+        );
+    }
+
+    #[test]
+    fn yaml_com_init_sem_strength_usa_default_formatado() {
+        let json = format!(r#"{{"prompt":"img2img","initGenerationId":"{INIT_GEN}"}}"#);
+        let req = parse(&json);
+        let v = validate_diffusion_generate_request(req).unwrap();
+        let yaml = generate_diffusion_generate_config_yaml("job-img2img-def", &v, None);
+        assert!(
+            yaml.contains("init_image_path: \"{init_image_path}\""),
+            "placeholder ausente: {yaml}"
+        );
+        // Default 0.6 com 1 casa decimal no mínimo, sem vírgula.
+        assert!(yaml.contains("init_strength: 0.6"), "default: {yaml}");
+        assert!(!yaml.contains(','), "vírgula no yaml: {yaml}");
+    }
+
+    #[test]
+    fn formato_init_strength_uma_casa_no_minimo() {
+        assert_eq!(format_init_strength(0.6), "0.6");
+        assert_eq!(format_init_strength(0.5), "0.5");
+        assert_eq!(format_init_strength(0.05), "0.05");
+        assert_eq!(format_init_strength(1.0), "1.0");
     }
 }

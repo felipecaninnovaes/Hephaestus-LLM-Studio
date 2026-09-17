@@ -183,6 +183,7 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
     ("GET", "/api/storage/usage", &[200, 401, 503]),
     // Galeria de gerações (ADR-0023 D5 — G.1 stubs).
     ("GET", "/api/generations", &[200, 400, 401, 503]),
+    ("POST", "/api/generations/inputs", &[201, 400, 401]),
     ("GET", "/api/generations/:id/data", &[200, 401, 404, 503]),
     ("POST", "/api/generations/delete", &[204, 400, 401, 503]),
     ("POST", "/api/generations/export", &[200, 400, 401, 503]),
@@ -207,6 +208,14 @@ pub const UPLOAD_BODY_LIMIT_BYTES: usize = 200 * 1024 * 1024 + 8 * 1024 * 1024;
 /// mora na camada de roteamento, nunca no handler; teto alinhado com
 /// `MAX_GLOBAL_BYTES`/`MAX_DECLARED_TOTAL` do reader do import).
 pub const IMPORT_BODY_LIMIT_BYTES: usize = 8 * 1024 * 1024 * 1024 + 8 * 1024 * 1024;
+
+/// Limite do CORPO TOTAL do input img2img: 20 MiB de imagem + 8 MiB de folga
+/// p/ envelope multipart (mesmo padrão do upload de datasets — o limite mora
+/// na camada de roteamento; o teto por-arquivo de 20 MiB mora no handler e
+/// responde 400 `invalid_request`, nunca 413 — o contrato desta rota não
+/// declara 413).
+pub const GENERATION_INPUT_BODY_LIMIT_BYTES: usize =
+    crate::generations::inputs::MAX_INPUT_BYTES as usize + 8 * 1024 * 1024;
 
 /// Contrato total (inventário D8): união REAL de `PUBLIC_ROUTES` +
 /// `PROTECTED_ROUTES`. É função justamente para não existir alias esquecido —
@@ -454,6 +463,11 @@ pub fn build(state: AppState) -> axum::Router {
         .route(
             "/api/generations",
             get(generations::handlers::list_generations),
+        )
+        .route(
+            "/api/generations/inputs",
+            post(generations::inputs::upload_generation_input)
+                .layer(DefaultBodyLimit::max(GENERATION_INPUT_BODY_LIMIT_BYTES)),
         )
         .route(
             "/api/generations/:id/data",

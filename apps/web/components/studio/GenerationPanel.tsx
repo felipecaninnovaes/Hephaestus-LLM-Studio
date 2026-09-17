@@ -113,6 +113,25 @@ const BASE_MODEL_OPTIONS: SelectOption<string>[] = [
 
 const SQUARE_RESOLUTION_OPTIONS = [256, 512, 768, 1024, 1280, 1328, 1536, 2048];
 
+// Presets de aspecto para geração retangular. Todos múltiplos de 16
+// (compatível com o fator 8 do VAE SD e o alinhamento de patches do FLUX),
+// dentro do gate 256..2048 da engine. Duas faixas por proporção: "grande"
+// (área ≈ 1.3–1.8 MP) e "médio" (área ≈ 0.8–1.0 MP).
+const ASPECT_RESOLUTION_PRESETS: {
+	label: string;
+	width: number;
+	height: number;
+}[] = [
+	{ label: "16:9 · 1792×1008", width: 1792, height: 1008 },
+	{ label: "16:9 · 1280×720", width: 1280, height: 720 },
+	{ label: "9:16 · 1008×1792", width: 1008, height: 1792 },
+	{ label: "9:16 · 720×1280", width: 720, height: 1280 },
+	{ label: "4:3 · 1344×1008", width: 1344, height: 1008 },
+	{ label: "4:3 · 1024×768", width: 1024, height: 768 },
+	{ label: "3:2 · 1536×1024", width: 1536, height: 1024 },
+	{ label: "3:2 · 1152×768", width: 1152, height: 768 },
+];
+
 const SAMPLER_LABELS: Record<string, string> = {
   default: "Padrão",
   euler: "Euler",
@@ -1079,18 +1098,24 @@ export default function GenerationPanel() {
 							</span>
 						</div>
 						<Select
-							options={SQUARE_RESOLUTION_OPTIONS.map((r) => ({
-								value: String(r),
-								label: `${r}×${r}`,
-							}))}
-							value={width === height && SQUARE_RESOLUTION_OPTIONS.includes(width) ? String(width) : ""}
+							options={[
+								...SQUARE_RESOLUTION_OPTIONS.map((r) => ({
+									value: `${r}x${r}`,
+									label: `${r}×${r}`,
+								})),
+								...ASPECT_RESOLUTION_PRESETS.map((p) => ({
+									value: `${p.width}x${p.height}`,
+									label: p.label,
+								})),
+							]}
+							value={`${width}x${height}`}
 							onChange={(v) => {
-								const r = Number(v);
-								setWidth(r);
-								setHeight(r);
+								const [w, h] = v.split("x").map(Number);
+								setWidth(w);
+								setHeight(h);
 							}}
 							disabled={isBusy}
-							placeholder={width === height ? `${width}×${height}` : "Custom (preset)"}
+							placeholder={`${width}×${height}`}
 							size="sm"
 							fontMono
 						/>

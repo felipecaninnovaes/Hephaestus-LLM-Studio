@@ -5,9 +5,9 @@ modelRoles:
   # hephaestus (coordenador / sessão principal)
   # openrouter/qwen/qwen3.8-flash trava sem entregar token (testado 2026-09-17);
   # mesmo modelo via gateway opencode-go responde.
-  default: "opencode-go/qwen3.8-flash:high"
+  default: "openrouter/z-ai/glm-5.3-flash:high"
   # agente "plan" do opencode (modo plan)
-  plan: "opencode-go/qwen3.8-flash"
+  plan: "openrouter/qwen/qwen3.8-flash:high"
   # workers (implementadores, revisores, fixer, docs-sync, explore, ui-designer, visao)
   worker: "opencode-go/muse-spark-1.3-contributor"
   # workers com variant high do opencode (architect, reviewer, guardian, ui-designer)

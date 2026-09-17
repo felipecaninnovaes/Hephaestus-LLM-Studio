@@ -154,10 +154,48 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
         _die(f"Guidance scale inválido: {guidance_scale}. Deve estar entre 1.0 e 30.0.")
 
     quantization = str(gen_cfg.get("quantization", "4bit")).strip().lower()
-    if quantization not in ("none", "4bit", "8bit"):
+    if quantization not in ("none", "2bit", "4bit", "6bit", "8bit"):
         _die(
-            f"Nível de quantização inválido: {quantization}. Use 'none', '4bit' ou '8bit'."
+            f"Nível de quantização inválido: {quantization}. "
+            "Use 'none', '2bit', '4bit', '6bit' ou '8bit'."
         )
+
+    # --- sampler (fatia flux2-motor-treino): scheduler fresh-instance por request ---
+    from trainer_difusao.schedulers import FLUX_SAMPLER_CHOICES, SAMPLER_CHOICES
+
+    sampler = str(gen_cfg.get("sampler", "default")).strip().lower()
+    if sampler not in SAMPLER_CHOICES:
+        _die(f"Sampler inválido: {sampler}. Use: {', '.join(SAMPLER_CHOICES)}.")
+    if base_model == "flux-2-klein-4b" and sampler not in FLUX_SAMPLER_CHOICES:
+        _die(
+            f"Sampler '{sampler}' incompatível com FLUX.2 (flow-match). "
+            f"Modelo flux-2-klein-4b aceita apenas: {', '.join(FLUX_SAMPLER_CHOICES)}."
+        )
+
+    # --- upscale (fatia flux2-motor-treino): pós-passo Real-ESRGAN, fora do cache ---
+    from trainer_difusao.upscale import UPSCALE_MODELS
+
+    raw_upscale = gen_cfg.get("upscale")
+    if raw_upscale is None:
+        upscale = None
+    else:
+        if not isinstance(raw_upscale, dict):
+            _die("Campo 'upscale' deve ser um objeto {model, scale} ou null.")
+        upscale_model = str(raw_upscale.get("model", "")).strip()
+        if upscale_model not in UPSCALE_MODELS:
+            _die(
+                f"Modelo de upscale inválido: {upscale_model}. "
+                f"Use: {', '.join(UPSCALE_MODELS)}."
+            )
+        try:
+            upscale_scale = int(raw_upscale.get("scale"))
+        except (TypeError, ValueError):
+            _die(
+                f"Escala de upscale inválida: {raw_upscale.get('scale')}. Use 2 ou 4."
+            )
+        if upscale_scale not in (2, 4):
+            _die(f"Escala de upscale inválida: {upscale_scale}. Use 2 ou 4.")
+        upscale = {"model": upscale_model, "scale": upscale_scale}
 
     # Seed: ausente será resolvido no loop (random base)
     seed_raw = gen_cfg.get("seed")
@@ -222,6 +260,8 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "arch": arch,
         "init_image_path": init_image_path,
         "init_strength": init_strength,
+        "sampler": sampler,
+        "upscale": upscale,
     }
 
 
@@ -324,7 +364,6 @@ def _png_info_for_generation(meta: dict[str, Any]):
     )
     return info
 
-
 def _build_generation_meta(
     params: dict[str, Any],
     filename: str,
@@ -333,6 +372,7 @@ def _build_generation_meta(
     batch_index: int,
     batch_size: int,
     loras_effective: list[dict[str, Any]],
+    upscale_info: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Constrói o dict de metadados para uma imagem do batch (JSONL)."""
     meta: dict[str, Any] = {
@@ -354,7 +394,12 @@ def _build_generation_meta(
         "batch_index": batch_index,
         "batch_size": batch_size,
         "job_id": params.get("job_id"),
+        "sampler": params.get("sampler", "default"),
     }
+    # upscale (fatia flux2-motor-treino): só após o pós-passo aplicar —
+    # txt2img sem upscale nunca carrega a chave (round-trip intacto).
+    if upscale_info is not None:
+        meta["upscale"] = upscale_info
     # img2img (S2 feat/img2img): campos aditivos, só quando init presente —
     # txt2img puro nunca carrega essas chaves (round-trip existente intacto).
     if params.get("init_image_path"):
@@ -618,6 +663,12 @@ def _mock_generate(params: dict[str, Any], output_dir: Path, emitter=None) -> No
         meta_line2 = f"{lora_label} | Res: {width}x{height} | Mode: MOCK DETERMINÍSTICO"
         if init_image_path:
             meta_line2 += f" | IMG2IMG: {Path(init_image_path).name}@{params.get('init_strength')}"
+        sampler = params.get("sampler", "default")
+        upscale_cfg = params.get("upscale")
+        if sampler and sampler != "default":
+            meta_line2 += f" | Sampler: {sampler}"
+        if upscale_cfg:
+            meta_line2 += f" | UPSCALE: {upscale_cfg['model']} x{upscale_cfg['scale']}"
         batch_line = f"Batch: {i + 1}/{batch_size} (index={i})"
 
         draw.text(
@@ -661,6 +712,33 @@ def _mock_generate(params: dict[str, Any], output_dir: Path, emitter=None) -> No
             f"[MOCK-GEN] Imagem {i + 1}/{batch_size} gerada ({width}x{height}, seed={current_seed}): {out_file}",
             flush=True,
         )
+
+        # Upscale mock (fatia flux2-motor-treino): PIL LANCZOS no fator
+        # pedido + mesmos campos de meta do path real. Thumb reflete o final.
+        if upscale_cfg:
+            upscale_scale = int(upscale_cfg["scale"])
+            upscale_model = str(upscale_cfg["model"])
+            up_w, up_h = width * upscale_scale, height * upscale_scale
+            with Image.open(out_file) as _saved:
+                _saved.convert("RGB").resize(
+                    (up_w, up_h), Image.LANCZOS
+                ).save(out_file, "PNG")
+            meta_entry["upscale"] = {
+                "model": upscale_model,
+                "scale": upscale_scale,
+                "original_width": width,
+                "original_height": height,
+                "final_width": up_w,
+                "final_height": up_h,
+            }
+            # Re-salva o PNG para embarcar o meta final (com upscale) no iTXt.
+            with Image.open(out_file) as _up:
+                _up.save(out_file, "PNG", pnginfo=_png_info_for_generation(meta_entry))
+            print(
+                f"[MOCK-GEN] Upscale mock x{upscale_scale}: {width}x{height} → "
+                f"{up_w}x{up_h} ({out_file})",
+                flush=True,
+            )
 
         # Thumbnail
         thumb_path = output_dir / thumb_filename
@@ -761,7 +839,15 @@ def _real_generate(
         )
 
     # --- Configuração de quantização ---
-    bnb_config = None
+    # 4bit/8bit: BitsAndBytes (comportamento legado); 2bit/6bit: TorchAO
+    # (honesto: ImportError/erro de build → _die, nunca silencioso).
+    # Toda quantização exige cuda — em cpu o job falha com mensagem clara.
+    if quant in ("2bit", "4bit", "6bit", "8bit") and device != "cuda":
+        _die(
+            f"Quantização {quant} exige GPU CUDA (device atual: {device}). "
+            "Use quantization 'none' em CPU."
+        )
+    quantization_config = None
     if quant in ("4bit", "8bit") and device == "cuda":
         try:
             from transformers import BitsAndBytesConfig
@@ -772,19 +858,29 @@ def _real_generate(
                 progress=0.15,
             )
             if quant == "4bit":
-                bnb_config = BitsAndBytesConfig(
+                quantization_config = BitsAndBytesConfig(
                     load_in_4bit=True,
                     bnb_4bit_quant_type="nf4",
                     bnb_4bit_use_double_quant=True,
                     bnb_4bit_compute_dtype=torch.bfloat16,
                 )
             else:
-                bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+                quantization_config = BitsAndBytesConfig(load_in_8bit=True)
         except (ImportError, RuntimeError, ValueError) as e:
             print(
                 f"[WARN] Falha ao configurar BitsAndBytes: {e}. Usando precisão padrão.",
                 flush=True,
             )
+    elif quant in ("2bit", "6bit"):
+        # device já garantido cuda acima.
+        from trainer_difusao.quantization import build_torchao_config
+
+        emitter.emit(
+            phase="quantizing",
+            message=f"Configurando quantização {quant} (TorchAO)...",
+            progress=0.15,
+        )
+        quantization_config = build_torchao_config(quant)
 
     # --- Carregar pipeline (ou usar cache) ---
     if pipeline is not None:
@@ -814,8 +910,8 @@ def _real_generate(
                         torch.float16 if device == "cuda" else torch.float32
                     ),
                 }
-                if bnb_config and device == "cuda":
-                    load_kwargs["quantization_config"] = bnb_config
+                if quantization_config and device == "cuda":
+                    load_kwargs["quantization_config"] = quantization_config
                 pipe = StableDiffusionXLPipeline.from_single_file(
                     custom_cp, **load_kwargs
                 )
@@ -827,13 +923,13 @@ def _real_generate(
                         torch.float16 if device == "cuda" else torch.float32
                     ),
                 }
-                if bnb_config and device == "cuda":
-                    load_kwargs_sd15["quantization_config"] = bnb_config
+                if quantization_config and device == "cuda":
+                    load_kwargs_sd15["quantization_config"] = quantization_config
                 pipe = StableDiffusionPipeline.from_single_file(
                     custom_cp, **load_kwargs_sd15
                 )
 
-            if pipe and device == "cuda" and not bnb_config:
+            if pipe and device == "cuda" and not quantization_config:
                 pipe.to(device)
 
         elif base_model == "flux-2-klein-4b":
@@ -859,7 +955,7 @@ def _real_generate(
                 model_repo,
                 torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
             )
-            if bnb_config is None and device == "cuda":
+            if quantization_config is None and device == "cuda":
                 pipe.to(device)
             else:
                 pipe.enable_model_cpu_offload()
@@ -1012,69 +1108,80 @@ def _real_generate(
         except Exception as exc:
             _die(f"Falha ao abrir init_image ({init_image_path}): {exc}")
 
+    # --- sampler (fatia flux2-motor-treino): fresh-instance por request + restore ---
+    # O pipeline vem do cache do daemon e é reusado entre requests: trocar o
+    # scheduler SEM restore contaminaria o próximo request. `swapped_scheduler`
+    # restaura no finally (inclusive em exceção/cancel). Scheduler NUNCA entra
+    # no pipeline_cache_key nem na spec do daemon (não altera pesos).
+    # A variante img2img (`pipe.components`) compartilha o MESMO objeto
+    # scheduler — restaurar o `call_pipe` restaura o cacheado também.
+    from trainer_difusao.schedulers import build_scheduler, swapped_scheduler
+
+    sampler_name = params.get("sampler", "default")
+    upscale_cfg = params.get("upscale")
+    sched_arch = (
+        "flux" if base_model == "flux-2-klein-4b" else "sd"
+    )
+    if base_model not in ("flux-2-klein-4b", "sdxl", "sd15"):
+        _die(f"Modelo não suportado para inferência: {base_model}")
+    fresh_scheduler = None
+    if sampler_name and sampler_name != "default":
+        try:
+            base_sched_config = dict(call_pipe.scheduler.config)
+        except (AttributeError, TypeError) as e:
+            _die(
+                f"Sampler '{sampler_name}': pipeline sem scheduler configurável ({e})."
+            )
+        try:
+            fresh_scheduler = build_scheduler(
+                sampler_name, sched_arch, base_sched_config
+            )
+        except (ValueError, ImportError) as e:
+            _die(f"Sampler '{sampler_name}': {e}")
+        print(
+            f"[DIFFUSION-GEN] Sampler '{sampler_name}' → "
+            f"{type(fresh_scheduler).__name__} (fresh-instance, restore no finally).",
+            flush=True,
+        )
+
     # --- LOOP DE BATCH ---
     seed_base = (
         params["seed"] if params["seed"] is not None else random.randint(0, 2**31 - 1)
     )
     meta_lines: list[dict[str, Any]] = []
 
-    for i in range(batch_size):
-        # --- abort check ---
-        if _is_cancelled(output_dir):
+    with swapped_scheduler(call_pipe, fresh_scheduler):
+        for i in range(batch_size):
+            # --- abort check ---
+            if _is_cancelled(output_dir):
+                print(
+                    f"[DIFFUSION-GEN] Cancel detectado antes do item {i}. Saindo.",
+                    flush=True,
+                )
+                break
+
+            current_seed = seed_base + i
+            generator = torch.Generator(device=device).manual_seed(current_seed)
+
+            emitter.emit(
+                phase="generating",
+                message=f"Executando amostragem de difusão (item {i + 1}/{batch_size}, seed={current_seed})...",
+                progress=0.55 + (0.35 * i / batch_size),
+                step=i,
+                total_steps=batch_size,
+            )
             print(
-                f"[DIFFUSION-GEN] Cancel detectado antes do item {i}. Saindo.",
+                f"[DIFFUSION-GEN] Gerando imagem {i + 1}/{batch_size} (seed={current_seed})...",
                 flush=True,
             )
-            break
 
-        current_seed = seed_base + i
-        generator = torch.Generator(device=device).manual_seed(current_seed)
-
-        emitter.emit(
-            phase="generating",
-            message=f"Executando amostragem de difusão (item {i + 1}/{batch_size}, seed={current_seed})...",
-            progress=0.55 + (0.35 * i / batch_size),
-            step=i,
-            total_steps=batch_size,
-        )
-        print(
-            f"[DIFFUSION-GEN] Gerando imagem {i + 1}/{batch_size} (seed={current_seed})...",
-            flush=True,
-        )
-
-        # Inference (com callback de progresso do sampler; fallback sem
-        # callback se a pipeline — ex. flux/distilled — usar API diferente).
-        # Telemetria NEVER quebra a geração: TypeError → retry sem callback.
-        sampler_cb_kwargs = _pipe_call_kwargs_with_callback(emitter, i, batch_size, steps)
-        if base_model == "flux-2-klein-4b":
-            flux_kwargs: dict[str, Any] = {
-                "prompt": prompt,
-                "generator": generator,
-                "num_inference_steps": steps,
-                "guidance_scale": guidance,
-                "width": width,
-                "height": height,
-            }
-            if is_img2img:
-                # Flux2Klein: image= nativo; sem strength na assinatura.
-                flux_kwargs["image"] = init_image
-            with torch.inference_mode():
-                try:
-                    image = call_pipe(**flux_kwargs, **sampler_cb_kwargs).images[0]
-                except TypeError as exc:
-                    if "callback_on_step_end" not in str(exc):
-                        raise
-                    print(
-                        f"[DIFFUSION-GEN] [AVISO] pipeline não suporta callback "
-                        f"de progresso ({exc}). Seguindo sem telemetria fina.",
-                        flush=True,
-                    )
-                    image = call_pipe(**flux_kwargs).images[0]
-        elif base_model in ("sdxl", "sd15"):
-            with torch.inference_mode():
-                sd_kwargs: dict[str, Any] = {
+            # Inference (com callback de progresso do sampler; fallback sem
+            # callback se a pipeline — ex. flux/distilled — usar API diferente).
+            # Telemetria NEVER quebra a geração: TypeError → retry sem callback.
+            sampler_cb_kwargs = _pipe_call_kwargs_with_callback(emitter, i, batch_size, steps)
+            if base_model == "flux-2-klein-4b":
+                flux_kwargs: dict[str, Any] = {
                     "prompt": prompt,
-                    "negative_prompt": neg_prompt,
                     "generator": generator,
                     "num_inference_steps": steps,
                     "guidance_scale": guidance,
@@ -1082,53 +1189,110 @@ def _real_generate(
                     "height": height,
                 }
                 if is_img2img:
-                    # Img2Img aceita negative_prompt; kwargs demais idênticos.
-                    sd_kwargs["image"] = init_image
-                    sd_kwargs["strength"] = init_strength
-                try:
-                    image = call_pipe(**sd_kwargs, **sampler_cb_kwargs).images[0]
-                except TypeError as exc:
-                    if "callback_on_step_end" not in str(exc):
-                        raise
-                    print(
-                        f"[DIFFUSION-GEN] [AVISO] pipeline não suporta callback "
-                        f"de progresso ({exc}). Seguindo sem telemetria fina.",
-                        flush=True,
+                    # Flux2Klein: image= nativo; sem strength na assinatura.
+                    flux_kwargs["image"] = init_image
+                with torch.inference_mode():
+                    try:
+                        image = call_pipe(**flux_kwargs, **sampler_cb_kwargs).images[0]
+                    except TypeError as exc:
+                        if "callback_on_step_end" not in str(exc):
+                            raise
+                        print(
+                            f"[DIFFUSION-GEN] [AVISO] pipeline não suporta callback "
+                            f"de progresso ({exc}). Seguindo sem telemetria fina.",
+                            flush=True,
+                        )
+                        image = call_pipe(**flux_kwargs).images[0]
+            elif base_model in ("sdxl", "sd15"):
+                with torch.inference_mode():
+                    sd_kwargs: dict[str, Any] = {
+                        "prompt": prompt,
+                        "negative_prompt": neg_prompt,
+                        "generator": generator,
+                        "num_inference_steps": steps,
+                        "guidance_scale": guidance,
+                        "width": width,
+                        "height": height,
+                    }
+                    if is_img2img:
+                        # Img2Img aceita negative_prompt; kwargs demais idênticos.
+                        sd_kwargs["image"] = init_image
+                        sd_kwargs["strength"] = init_strength
+                    try:
+                        image = call_pipe(**sd_kwargs, **sampler_cb_kwargs).images[0]
+                    except TypeError as exc:
+                        if "callback_on_step_end" not in str(exc):
+                            raise
+                        print(
+                            f"[DIFFUSION-GEN] [AVISO] pipeline não suporta callback "
+                            f"de progresso ({exc}). Seguindo sem telemetria fina.",
+                            flush=True,
+                        )
+                        image = call_pipe(**sd_kwargs).images[0]
+            else:
+                _die(f"Modelo não suportado para inferência: {base_model}")
+
+            # Salvar imagem
+            emitter.emit(
+                phase="saving",
+                message=f"Salvando artefato de imagem {i + 1}/{batch_size}...",
+                progress=0.92,
+            )
+
+            filename = f"generated_{i + 1:04d}.png"
+            out_file = output_dir / filename
+            thumb_filename = f"thumb_{i + 1:04d}.jpg"
+            # Meta entry (mesma origem do JSONL) — PNG embarca o mesmo dict.
+            meta_entry = _build_generation_meta(
+                params=params,
+                filename=filename,
+                thumb_filename=thumb_filename,
+                seed=current_seed,
+                batch_index=i,
+                batch_size=batch_size,
+                loras_effective=loras_effective,
+            )
+            image.save(out_file, "PNG", pnginfo=_png_info_for_generation(meta_entry))
+            print(
+                f"[DIFFUSION-GEN] Imagem {i + 1}/{batch_size} salva: {out_file}", flush=True
+            )
+
+            # Upscale Real-ESRGAN (fatia flux2-motor-treino): pós-passo sobre o
+            # PNG salvo (re-salva o mesmo arquivo). Falha → _die honesto.
+            # Thumb e meta refletem a imagem final.
+            if upscale_cfg:
+                from trainer_difusao.upscale import upscale_image
+
+                dims = upscale_image(
+                    out_file,
+                    out_file,
+                    model=str(upscale_cfg["model"]),
+                    scale=int(upscale_cfg["scale"]),
+                )
+                meta_entry["upscale"] = {
+                    "model": str(upscale_cfg["model"]),
+                    "scale": int(upscale_cfg["scale"]),
+                    **dims,
+                }
+                # Re-salva o PNG para embarcar o meta final (com upscale) no iTXt.
+                from PIL import Image as _UpImage
+
+                with _UpImage.open(out_file) as _up:
+                    _up.save(
+                        out_file, "PNG", pnginfo=_png_info_for_generation(meta_entry)
                     )
-                    image = call_pipe(**sd_kwargs).images[0]
-        else:
-            _die(f"Modelo não suportado para inferência: {base_model}")
+                print(
+                    f"[DIFFUSION-GEN] Upscale {upscale_cfg['model']} x{upscale_cfg['scale']}: "
+                    f"{dims['original_width']}x{dims['original_height']} → "
+                    f"{dims['final_width']}x{dims['final_height']} ({out_file})",
+                    flush=True,
+                )
 
-        # Salvar imagem
-        emitter.emit(
-            phase="saving",
-            message=f"Salvando artefato de imagem {i + 1}/{batch_size}...",
-            progress=0.92,
-        )
+            # Thumbnail
+            thumb_path = output_dir / thumb_filename
+            _write_thumb(out_file, thumb_path)
 
-        filename = f"generated_{i + 1:04d}.png"
-        out_file = output_dir / filename
-        thumb_filename = f"thumb_{i + 1:04d}.jpg"
-        # Meta entry (mesma origem do JSONL) — PNG embarca o mesmo dict.
-        meta_entry = _build_generation_meta(
-            params=params,
-            filename=filename,
-            thumb_filename=thumb_filename,
-            seed=current_seed,
-            batch_index=i,
-            batch_size=batch_size,
-            loras_effective=loras_effective,
-        )
-        image.save(out_file, "PNG", pnginfo=_png_info_for_generation(meta_entry))
-        print(
-            f"[DIFFUSION-GEN] Imagem {i + 1}/{batch_size} salva: {out_file}", flush=True
-        )
-
-        # Thumbnail
-        thumb_path = output_dir / thumb_filename
-        _write_thumb(out_file, thumb_path)
-
-        meta_lines.append(meta_entry)
+            meta_lines.append(meta_entry)
 
     # Retrocompat: symlink generated.png → generated_0001.png (batch=1)
     if batch_size == 1:

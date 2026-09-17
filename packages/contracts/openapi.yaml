@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.28.0
+  version: 0.29.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -1469,7 +1469,7 @@ paths:
             schema: { $ref: "#/components/schemas/YoloJobRequest" }
       responses:
         "202":
-          description: Job criado e enfileirado.
+          description: Job aceito; `preparing` (pacote em construção, ADR-0025) ou `queued` (pacote reaproveitado/legado).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SubmitJobResponse" }
@@ -1515,7 +1515,7 @@ paths:
             schema: { $ref: "#/components/schemas/DiffusionJobRequest" }
       responses:
         "202":
-          description: Job criado e enfileirado.
+          description: Job aceito; `preparing` (pacote em construção, ADR-0025) ou `queued` (pacote reaproveitado/legado).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SubmitJobResponse" }
@@ -1561,7 +1561,7 @@ paths:
             schema: { $ref: "#/components/schemas/DiffusionGenerateJobRequest" }
       responses:
         "202":
-          description: Job de geração criado e enfileirado.
+          description: Job de geração aceito; `preparing` ou `queued` (envelope SubmitJobResponse, ADR-0025).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SubmitJobResponse" }
@@ -1603,7 +1603,7 @@ paths:
             schema: { $ref: "#/components/schemas/PredictJobRequest" }
       responses:
         "202":
-          description: Job criado e enfileirado.
+          description: Job aceito; `preparing` (pacote em construção, ADR-0025) ou `queued` (pacote reaproveitado/legado).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SubmitJobResponse" }
@@ -1651,7 +1651,7 @@ paths:
             schema: { $ref: "#/components/schemas/AutotrackerJobRequest" }
       responses:
         "202":
-          description: Job criado e enfileirado.
+          description: Job aceito; `preparing` (pacote em construção, ADR-0025) ou `queued` (pacote reaproveitado/legado).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SubmitJobResponse" }
@@ -1792,7 +1792,7 @@ paths:
             schema: { $ref: "#/components/schemas/AutolabelJobRequest" }
       responses:
         "202":
-          description: Job criado e enfileirado.
+          description: Job aceito; `preparing` (pacote em construção, ADR-0025) ou `queued` (pacote reaproveitado/legado).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SubmitJobResponse" }
@@ -1955,6 +1955,7 @@ paths:
       summary: Detalhe de um job
       description: |
         Detalhe do job via manager (ADR-0007 D3). Manager indisponível ⇒ 503 `queue_unavailable`.
+        Falha na preparação assíncrona (ADR-0025) ⇒ `status: failed` com `error: prepare_failed:<motivo>`.
       responses:
         "200":
           description: Job encontrado.
@@ -2058,8 +2059,9 @@ paths:
       tags: [jobs]
       summary: Aborta um job
       description: |
-        Aborta um job via manager (ADR-0007 D7 :372-373).
+        Aborta um job via manager (ADR-0007 D7 :372-373, ADR-0025 D3).
         Job em estado terminal (done/failed/cancelled) ⇒ 409 `job_not_abortable`.
+        Abort em `preparing` ⇒ `cancelling`; o worker de preparação observa a flag e desiste.
       responses:
         "200":
           description: Abort requisitado.
@@ -3410,17 +3412,18 @@ components:
       type: object
       required: [jobId, status]
       additionalProperties: false
-      description: "Resposta 202 do POST /api/jobs/yolo (ADR-0007 D7)."
+      description: "Resposta 202 dos POST /api/jobs/{yolo,autotracker,autolabel,diffusion,predict,diffusion/generate} (ADR-0007 D7, ADR-0025 D0)."
       properties:
         jobId:
           type: string
           format: uuid
         status:
           type: string
-          enum: [queued]
+          enum: [preparing, queued]
+          description: "preparing = pacote em construção (aceite assíncrono ADR-0025); queued = pacote reaproveitado/legado."
         queuePosition:
           type: [integer, "null"]
-          description: "Posição na fila (null se o manager não devolve)."
+          description: "Posição na fila (null no aceite preparing e quando o manager não devolve)."
 
     AbortResponse:
       type: object
@@ -4172,7 +4175,7 @@ components:
         status:
           type: string
           enum: [queued, dispatched, preparing, running, cancelling, done, failed, cancelled]
-          description: "Status do ciclo do job."
+          description: "Status do ciclo do job. Em `preparing`, `phase` usa prefixos `packaging_*` (preparação do pacote no BFF, ADR-0025) vs `staging_*` (staging no nó de execução, AC-007 futuro)."
         queueReason:
           type: [string, "null"]
           description: "Motivo da espera na fila."

@@ -13,6 +13,9 @@ import {
 	IconZap,
 	IconZoomIn,
 } from "@/components/icons";
+import { JobProgressLive } from "@/components/studio/JobProgressLive";
+import { LoRAEditor } from "@/components/studio/LoRAEditor";
+import NodeSelect from "@/components/studio/NodeSelect";
 import {
 	Button,
 	EmptyState,
@@ -21,41 +24,38 @@ import {
 	Modal,
 	SegmentedControl,
 	Select,
-	Slider,
 	type SelectOption,
+	Slider,
 	showToast,
 } from "@/components/ui";
-import { listJobs, getJob, getJobArtifacts } from "@/lib/jobs";
-import { listModels } from "@/lib/models";
-import {
-	getGeneratedImageUrl,
-	getGeneratedBatchResults,
-	startDiffusionGenerateJob,
-} from "@/lib/playground";
-import type {
-	Job,
-	Model,
-	LoraRef,
-	DiffusionGenerateJobRequest,
-} from "@/types/studio";
-import {
-	diffusionGenerateErrorMessage,
-	friendlyJobError,
-} from "@/types/studio";
-import { ApiError } from "@/lib/api";
-import NodeSelect from "@/components/studio/NodeSelect";
-import { LoRAEditor } from "@/components/studio/LoRAEditor";
 import { useJobTelemetry } from "@/hooks/useJobTelemetry";
-import { JobProgressLive } from "@/components/studio/JobProgressLive";
+import { ApiError } from "@/lib/api";
 import {
 	clearGeracaoForm,
 	createDefaultGeracaoForm,
 	GERACAO_APPLY_FORM_EVENT,
 	loadGeracaoForm,
 	notifyGeracaoCompleted,
-	saveGeracaoForm,
 	type PartialGeracaoForm,
+	saveGeracaoForm,
 } from "@/lib/geracao-storage";
+import { getJob, getJobArtifacts, listJobs } from "@/lib/jobs";
+import { listModels } from "@/lib/models";
+import {
+	getGeneratedBatchResults,
+	getGeneratedImageUrl,
+	startDiffusionGenerateJob,
+} from "@/lib/playground";
+import type {
+	DiffusionGenerateJobRequest,
+	Job,
+	LoraRef,
+	Model,
+} from "@/types/studio";
+import {
+	diffusionGenerateErrorMessage,
+	friendlyJobError,
+} from "@/types/studio";
 
 /* ── Tipos internos ── */
 
@@ -653,7 +653,7 @@ export default function GenerationPanel() {
           COLUNA ESQUERDA — CONTROLES (320-384px, scrollável)
           Vidro Óptico Nível 1 (glass-card) — NUNCA bg translúcido caseiro
           ═══════════════════════════════════════════════════════════════ */}
-			<div className="w-full shrink-0 lg:w-[384px] lg:border-r lg:border-white/5 lg:overflow-y-auto glass-card rounded-2xl">
+			<div className="w-full shrink-0 lg:w-[384px] lg:overflow-y-auto glass-card rounded-2xl">
 				{/* Mobile: toggle colapsável com glass-card; Desktop: sempre visível */}
 				<div className="lg:hidden">
 					<button

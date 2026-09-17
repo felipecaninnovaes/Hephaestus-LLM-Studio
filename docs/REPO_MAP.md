@@ -42,12 +42,13 @@ GPU real (TrueNAS): `infra/compose.gpu.yaml` / runbook `infra/README-gpu.md`.
 
 ## 3. Posse de Dados (Postgres único, schema compartilhado)
 
-Migrations canônicas: `services/api-principal/migrations/0001..0017.sql`.
+Migrations canônicas: `services/api-principal/migrations/0001..0018.sql`.
 - **Domínio aplicação/dados (escrita: api-principal):** `users`, `auth_state`,
   `datasets`, `dataset_versions`, `job_prepares` (aceite assíncrono ADR-0025 —
   0015 tabela, 0016 índice único parcial `state='preparing'`), `images`,
   `videos`, `boxes`, `classes`, `captions`, `image_embeddings` (pgvector),
-  `models`, `generations`, `generation_inputs` (img2img — 0017 tabela efêmera
+  `models` (`kind` += `text_encoder` — 0018, arch só `flux-2-klein-4b`),
+  `generations`, `generation_inputs` (img2img — 0017 tabela efêmera
   de inputs avulsos, sem GC; `used_at` marca consumo, linhas permanecem p/ auditoria).
 - **Domínio execução (escrita: manager/orchestrator):** `jobs` (status inclui
   `preparing`/`dispatched` + `phase`/`message` — ADR-0024/ADR-0025),
@@ -108,6 +109,23 @@ substituindo o placeholder → engine consome
 `generate.init_image_path`/`init_strength` (flux-2-klein: `image=` nativo sem
 `strength`; sd15/sdxl: variante `*Img2ImgPipeline(**pipe.components)` com
 `strength`; cache/spec inalterados).
+
+Cadeia pesos custom flux-2 (treino+geração, nunca via browser): wire
+`customModelId` (treino: XOR `baseModel`, default `sdxl`; geração: XOR já
+existia, arch += `flux-2-klein-4b`) + `textEncoderModelId` (treino+geração,
+só arch `flux-2-klein-4b`, senão 400; kind≠alvo ⇒ 400, inexistente ⇒ 404) →
+api-principal emite `config.yaml` só com placeholders literais (treino
+root-level `custom_checkpoint_path`/`text_encoder_path`; geração dentro de
+`generate:`; id/path real nunca vaza) → manager resolve por SQL
+(`SELECT s3_key,hash,kind,arch FROM models`, grava `custom_checkpoint` /
+`text_encoder_ref {s3_key,md5}` em `params` + `text_encoder {s3_key,md5}` no
+dispatch) → orchestrator baixa (escopo `models/`|`artifacts/`, md5
+obrigatório) e stageia em `outputs/<job>/weights/{custom.safetensors,
+text_encoder.safetensors}`, substituindo os placeholders → engine carrega
+(geração: `Flux2KleinPipeline` SEM `from_single_file` + transformer custom via
+`Flux2Transformer2DModel.from_single_file` + encoder/tokenizer override;
+treino: transformer via `load_state_dict` sobre repo; cache isolado por
+checkpoint+encoder).
 
 ## 5. Módulos do Frontend (`apps/web/app/`)
 

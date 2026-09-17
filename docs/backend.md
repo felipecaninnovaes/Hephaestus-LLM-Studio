@@ -230,12 +230,12 @@ ws:       /ws/jobs/:id/logs?since_seq=, /ws/telemetry
   - **`captions.jsonl` (transporte):** linhas JSON `{"filename": "...", "caption": "..."}`. Coleta automática pelo orquestrador como artefato `kind='captions'`.
   - **Migration 0009 (`0009_captions_autolabel.sql`):** amplia constraint de `captions.origin` para aceitar `'autolabel'`.
 - Nota Fatia Difusão LoRA (ADR-0018, spec 0.17.0, `packages/contracts/openapi.yaml`):
-  - **`POST /api/jobs/diffusion`** — body `{datasetId, baseModel, triggerWord?, epochs?, batchSize?, learningRate?, rank?, alpha?, weights?, orchestratorId?}` → 202 `SubmitJobResponse{jobId,status:"queued",queuePosition?}`. Validação: `baseModel` ∈ `{sdxl, flux, sd15}`, epochs 1..100, batchSize ∈ {1, 2, 4, 8}, lr 1e-6..0.01, rank/alpha 4..128. Erros: 400 `invalid_request`, 404 `not_found`, 409 `dataset_not_ready` (0 imagens ativas), 503 `queue_unavailable`. Job: `kind='diffusion_train'`, `engine='diffusion'`, `mode='train'`.
+  - **`POST /api/jobs/diffusion`** — body `{datasetId, baseModel|customModelId, textEncoderModelId?, triggerWord?, epochs?, batchSize?, learningRate?, rank?, alpha?, weights?, orchestratorId?}` → 202 `SubmitJobResponse{jobId,status:"queued",queuePosition?}`. `baseModel`/`customModelId` XOR (ambos ausentes ⇒ `sdxl`); `customModelId` ⇒ row `kind='checkpoint'` (inexistente ⇒ 404, kind≠ ⇒ 400, arch∉{sdxl,sd15,flux-2-klein-4b} ⇒ 400 `unsupported_architecture`); `textEncoderModelId` ⇒ row `kind='text_encoder'` e arch efetivo `flux-2-klein-4b` (senão 400). Validação base: `baseModel` ∈ `{sdxl, flux, sd15, flux-2-klein-4b}`, epochs 1..100, batchSize ∈ {1, 2, 4, 8}, lr 1e-6..0.01, rank/alpha 4..128 (`jobs/models.rs:886-912`, `jobs/handlers.rs:1516-1600`). YAML treino: root-level `custom_checkpoint_path: "{custom_checkpoint_path}"` + `text_encoder_path: "{text_encoder_path}"` (placeholders literais, `model:` = arch resolvido). VRAM por arch efetivo (sd15→8, flux/flux-2-klein-4b→10, sdxl→12). Job: `kind='diffusion_train'`, `engine='diffusion'`, `mode='train'`.
   - **Empacotamento `engine="diffusion"`:** gera pares `{stem}.webp` + `{stem}.txt`. Cada arquivo `.txt` contém a legenda da imagem consultada na tabela `captions`, opcionalmente prefixada por `triggerWord`. Se não houver caption, contém apenas o triggerWord ou vazio.
    - **Orquestrador e Manager:** orquestrador despacha subcomando `train --config --output` e coleta `adapter.safetensors` (`kind='model'`) e `metrics.jsonl` (`kind='metrics'`). O manager registra automaticamente o artefato `.safetensors` no catálogo canônico `models` com `engine='diffusion'` e `kind`/`arch` (Bug 009: deriva `arch` do job — `params.baseModel`/`jobs.model`/`config_yaml` — e classifica `kind` por path; `arch` indeterminável → `arch` NULL, nunca chute).
 - Nota Fatia Geração (ADR-0023, spec 0.25.0, `packages/contracts/openapi.yaml`):
-  - **`POST /api/jobs/diffusion/generate`** — body `{baseModel?|customModelId?, prompt, negativePrompt?, width?, height?, steps?, guidanceScale?, seed?, quantization?, distilled?, batchSize?, loras?, orchestratorId?}` → 202 `SubmitJobResponse{jobId,status:"queued",queuePosition?}`. `baseModel` e `customModelId` são **XOR** (exatamente um). `loras`: array ≤4 de `{modelId: uuid, scale: number 0..2}`. `weights`/`loraScale` marcados deprecated (400 se coexistirem com `loras`). `batchSize`: 1..8 (default 1). Validação: prompt ≤ 4000 chars, dimensões 256..2048, `customModelId` válido (row engine='diffusion', kind='checkpoint', arch ∈ {sdxl, sd15}). VRAM mínima por arch+quant: sd15→6; sdxl/flux: 4bit→8, 8bit→12, none→16. Job: `kind='diffusion_generate'`, `engine='diffusion'`, `mode='generate'`.
-  - Erros: 400 `invalid_request` (body malformado, XOR violado, `weights`+`loras` coexistentes, dimensões fora de domínio), 400 `unsupported_architecture` (custom arch fora de {sdxl, sd15}), 404 `not_found` (customModelId inexistente), 503 `queue_unavailable`.
+  - **`POST /api/jobs/diffusion/generate`** — body `{baseModel?|customModelId?, textEncoderModelId?, prompt, negativePrompt?, width?, height?, steps?, guidanceScale?, seed?, quantization?, distilled?, batchSize?, loras?, orchestratorId?}` → 202 `SubmitJobResponse{jobId,status:"queued",queuePosition?}`. `baseModel` e `customModelId` são **XOR** (exatamente um). `textEncoderModelId` ⇒ row `kind='text_encoder'` e arch efetivo `flux-2-klein-4b` (senão 400; `jobs/handlers.rs:1815-1848`). `loras`: array ≤4 de `{modelId: uuid, scale: number 0..2}`. `weights`/`loraScale` marcados deprecated (400 se coexistirem com `loras`). `batchSize`: 1..8 (default 1). Validação: prompt ≤ 4000 chars, dimensões 256..2048, `customModelId` válido (row engine='diffusion', kind='checkpoint', arch ∈ {sdxl, sd15, flux-2-klein-4b}). YAML geração: `custom_checkpoint_path`+`arch` e `text_encoder_path` dentro do bloco `generate:` (placeholders literais). VRAM mínima por arch+quant: sd15→6; sdxl/flux: 4bit→8, 8bit→12, none→16. Job: `kind='diffusion_generate'`, `engine='diffusion'`, `mode='generate'`.
+  - Erros: 400 `invalid_request` (body malformado, XOR violado, `weights`+`loras` coexistentes, dimensões fora de domínio, encoder fora de flux-2), 400 `unsupported_architecture` (custom arch fora de {sdxl, sd15, flux-2-klein-4b}), 404 `not_found` (customModelId/textEncoderModelId inexistente), 503 `queue_unavailable`.
    - **Orquestrador e Manager (daemon):** modo daemon (`DIFFUSION_DAEMON_ENABLED=1`, default 0) sobe 1 HTTP daemon por nó no 1º job `generate`; idle TTL 600s; lock 1 job por vez; preempção mata daemon idle antes de treino. Fallback one-shot (`docker run --rm`) quando daemon desabilitado ou falho. Artefatos glob: `generated_*.png` (kind `generated` — cada PNG carrega chunk iTXt `hephaestus.generation`, mesma origem do `generation_meta.json`), `thumb_*.jpg` (kind `generated_thumb`), `generation_meta.json` (kind `generated_meta`).
   - **Hook generations:** manager insere na tabela `generations` por imagem quando job `diffusion_generate` termina `done` com artefato `generated_meta` (idempotente via `ON CONFLICT (s3_key)`).
   - **`GET /api/generations?limit(1..200,50)&offset&baseModel&quantization&deleted`** → 200 `GenerationList{items,total}`; `url`/`thumbUrl` presigned quando `S3_PUBLIC_ENDPOINT_URL`; 503 `queue_unavailable`.
@@ -243,7 +243,7 @@ ws:       /ws/jobs/:id/logs?since_seq=, /ws/telemetry
   - **`POST /api/generations/delete`** (body `GenerationIdsRequest{ids: uuid[], 1..100}`) → 204 soft-delete; 400; 503.
   - **`POST /api/generations/export`** (body `GenerationIdsRequest`) → 200 `application/zip` stream; 400; 503.
   - **Schemas novos:** `Generation{id,jobId,filename,url,thumbUrl,width,height,seed,prompt,negativePrompt?,params,createdAt}`, `GenerationList{items,total}`, `GenerationIdsRequest{ids}`, `LoraRef{modelId,scale}`.
-   - **`Model` (aditivo):** `kind: 'lora'|'checkpoint'|null`, `arch: 'flux-2-klein-4b'|'sdxl'|'sd15'|null` (migration 0011; backfill 0014 preenche `kind`/`arch` NULL de treinos difusão, só-NULL/nunca sobrescreve).
+   - **`Model` (aditivo):** `kind: 'lora'|'checkpoint'|'text_encoder'|null`, `arch: 'flux-2-klein-4b'|'sdxl'|'sd15'|null` (migration 0011; backfill 0014 preenche `kind`/`arch` NULL de treinos difusão, só-NULL/nunca sobrescreve; migration 0018 expande o CHECK de `kind` p/ `text_encoder` — arch permitido só `flux-2-klein-4b`, regra de aplicação em `validate_create_model`/`resolve_kind_arch`, não CHECK).
 - Nota img2img (feat/img2img, `packages/contracts/openapi.yaml`):
   - **`POST /api/generations/inputs`** — upload avulso de imagem inicial (campo único `file`
     em `multipart/form-data`; sniff do conteúdo png/jpeg/webp, dimensões via `image`, md5 hex;
@@ -275,6 +275,20 @@ ws:       /ws/jobs/:id/logs?since_seq=, /ws/telemetry
     `generation_meta.json`). sd15/sdxl usam variante leve `*Img2ImgPipeline(**pipe.components)`
     (herda LoRA, sem recarregar pesos, cache key da spec inalterado) com `image` + `strength`
     reais. Init pré-carregada com resize exato (width×height, LANCZOS — stretch documentado).
+- Nota pesos-custom-flux2 (feat/pesos-custom-flux2, `packages/contracts/openapi.yaml`):
+  - **Staging (manager→orchestrator):** manager resolve `customModelId`/`textEncoderModelId` por SQL
+    (`SELECT s3_key,hash,kind,arch FROM models`; kind≠alvo ⇒ 400, inexistente ⇒ 404, encoder fora de
+    flux-2 ⇒ 400) e grava `custom_checkpoint` / `text_encoder_ref {s3_key,md5}` em `params` +
+    `text_encoder {s3_key,md5}` no dispatch (`manager/lib.rs:726-824`); orchestrator baixa
+    (escopo `models/`|`artifacts/`, md5 obrigatório) e stageia em
+    `outputs/<job>/weights/{custom.safetensors,text_encoder.safetensors}`, substituindo
+    `{custom_checkpoint_path}`/`{text_encoder_path}` (`orchestrator/lib.rs:616-650,1440-1500`).
+    Placeholder sem ref ⇒ erro explícito (nunca vaza, nunca fallback silencioso).
+  - **Engine:** geração flux-2 = `Flux2KleinPipeline` SEM `from_single_file` (0.40.0) + transformer
+    custom via `Flux2Transformer2DModel.from_single_file` + encoder/tokenizer override Qwen3
+    (dir HF ou `.safetensors` solto; `generate.py:925-955`); treino flux-2 = transformer via
+    `load_state_dict` sobre o repo (`models/flux.py:639-680`); sdxl/sd15 custom seguem
+    `from_single_file` mecânico. Cache quantizado isolado por checkpoint+encoder (slug + `metadata.json`).
 - Nota AC-003 — exclusão de jobs (spec 0.27.0, `packages/contracts/openapi.yaml`):
   - **`DELETE /api/jobs/:id`** — exclui job terminal via manager (`DELETE /internal/jobs/:id`) → 200 `JobDeletedResponse{id,status,artifacts,objectKeys,modelsDeleted,generationsPreserved}` (wire camelCase; o manager devolve snake_case `object_keys`/`models_deleted`/`generations_preserved` e o principal remapeia em `handlers.rs::job_deleted_to_wire`). Só estados terminais (`done`/`failed`/`cancelled`); não-terminal ⇒ 409 `job_not_terminal` (erro novo na enum `Error.code`); id não-UUID/inexistente ⇒ 404 `not_found`; manager fora ⇒ 503 `queue_unavailable`. Sweep S3 **best-effort pós-commit por chaves exatas** (`object_keys` do manager = chaves dos artefatos do job + `models.s3_key` do job, excluindo as chaves das gerações vivas — nunca varre o prefixo `artifacts/{job_id}/`); falha do sweep só loga, nunca vira 500. Gerações da galeria preservadas TODAS, incl. trash/soft-delete (FK `SET NULL`, migration 0012); models do catálogo derivadas do job expurgadas (`modelsDeleted`).
   - **`POST /api/jobs/cleanup`** — limpeza em lote via manager (`POST /internal/jobs/cleanup`): body `JobCleanupRequest{olderThanDays?,statuses?}` (`required: true` no wire; ambos os campos opcionais/nullable — `statuses` restrito a terminais no wire) → 200 `JobCleanupResponse{deleted,jobs,objectKeys}` (união das chaves p/ sweep). Erros: 400 `invalid_request` (body inválido, `olderThanDays < 0`, ou nenhum critério — o manager exige ao menos um), 401, 503 `queue_unavailable`. Sweep best-effort idem ao delete, agregado por job.
@@ -430,8 +444,8 @@ orchestrators(id UUID PK, name TEXT, endpoint TEXT UNIQUE, kind TEXT,     -- loc
 models(id UUID PK, engine TEXT NOT NULL CHECK (engine IN ('yolo','world','diffusion','clip')),
   name TEXT NOT NULL CHECK (char_length(name) BETWEEN 1 AND 255),
   model TEXT,                                              -- variante conhecida (treino); NULL p/ upload/download
-  kind TEXT NULL CHECK (kind IS NULL OR kind IN ('lora','checkpoint')),  -- só semântica para engine='diffusion' (ADR-0023 D4)
-  arch TEXT NULL CHECK (arch IS NULL OR arch IN ('flux-2-klein-4b','sdxl','sd15')),  -- checkpoint: arquitetura (ADR-0023 D4)
+  kind TEXT NULL CHECK (kind IS NULL OR kind IN ('lora','checkpoint','text_encoder')),  -- 0011 + 0018
+  arch TEXT NULL CHECK (arch IS NULL OR arch IN ('flux-2-klein-4b','sdxl','sd15')),
   s3_key TEXT NOT NULL UNIQUE,                             -- 'models/<engine>/<id>/<name>' | 'artifacts/<job_id>/<path>'
   source TEXT NOT NULL CHECK (source IN ('train','upload','download')),
   url TEXT,                                                -- fonte original do download; NULL p/ upload/train (transporte interno)
@@ -440,17 +454,19 @@ models(id UUID PK, engine TEXT NOT NULL CHECK (engine IN ('yolo','world','diffus
   job_id UUID REFERENCES jobs(id) ON DELETE SET NULL,      -- origem do treino; upload/download NULL
   created_at TIMESTAMPTZ NOT NULL DEFAULT now());
   -- IMPLEMENTADO (Fatia I; `migrations/0007_models.sql`): tabela canônica de pesos (catálogo; ADR-0012 D1/D2).
-  -- Dono: manager. Leitura: `GET /internal/models` (rota interna existente — troca a fonte de derived SQL para SELECT da tabela).
-  -- Escrita: (a) hook no `report_job` do manager — job `done` com artefato `kind='model'` e `path` contendo `best`/`adapter`/`.safetensors` → INSERT com `kind`/`arch` p/ treino de difusão (`arch` derivado de `params.baseModel`/`jobs.model`/`config_yaml`, `kind` por path; demais engines NULL) + `ON CONFLICT (s3_key) DO UPDATE` com `COALESCE` (só preenche NULL, nunca sobrescreve);
-  --          (b) `POST /internal/models` — cria row a partir de upload/download do principal (compensação delete se INSERT falhar).
-  --          (c) `DELETE /internal/models/:id` — remove row do banco (204 No Content, 404).
-  -- Backfill na migration: INSERT..SELECT dos artefatos `kind='model' AND path LIKE '%best%'` de jobs `done` (idempotente via ON CONFLICT).
   -- CHECK engine ampliado para `('yolo','world')` na migration `0008_world_models.sql` (ADR-0014 D1)
   -- e para `('yolo','world','diffusion','clip')` na migration `0010_models_engines.sql` (Fatia Gestão de Modelos).
   -- Colunas `kind`/`arch` adicionadas na migration `0011_generations.sql` (ADR-0023 D4): distingue LoRA de checkpoint
   -- e arquitetura (sdxl/sd15/flux-2-klein-4b); backfill 0011: diffusion existentes → kind='lora'.
   -- Backfill `0014_models_diffusion_backfill.sql` (Bug 009): preenche `kind`/`arch` NULL de treinos de difusão
   -- (deriva `arch` do job; adapter/lora no path → 'lora', demais → 'checkpoint'; idempotente, só-NULL).
+  -- Migration `0018_models_text_encoder.sql` (feat/pesos-custom-flux2): CHECK de `kind` expande p/
+  -- `('lora','checkpoint','text_encoder')`; arch de text_encoder só `flux-2-klein-4b` (regra de aplicação).
+  -- Dono: manager. Leitura: `GET /internal/models` (rota interna existente — troca a fonte de derived SQL para SELECT da tabela).
+  -- Escrita: (a) hook no `report_job` do manager — job `done` com artefato `kind='model'` e `path` contendo `best`/`adapter`/`.safetensors` → INSERT com `kind`/`arch` p/ treino de difusão (`arch` derivado de `params.baseModel`/`jobs.model`/`config_yaml`, `kind` por path; demais engines NULL) + `ON CONFLICT (s3_key) DO UPDATE` com `COALESCE` (só preenche NULL, nunca sobrescreve);
+  --          (b) `POST /internal/models` — cria row a partir de upload/download do principal (compensação delete se INSERT falhar).
+  --          (c) `DELETE /internal/models/:id` — remove row do banco (204 No Content, 404).
+  -- Backfill na migration: INSERT..SELECT dos artefatos `kind='model' AND path LIKE '%best%'` de jobs `done` (idempotente via ON CONFLICT).
   -- Índices: `models(engine)`, `models(created_at DESC)`.
   -- NOTA: checkpoint de treino vive em `artifacts/<job_id>/` (morre com o job via CASCADE; `plan_job_sweep` expurga `models WHERE job_id = <job>` antes do delete — linhas contadas em `modelsDeleted` e `s3_key` incluídas no sweep; FK `ON DELETE SET NULL` só preserva uploads nunca vinculados).
   --       Exclusão pública via `DELETE /api/models/:id`: remove S3 se upload/download e deleta row no manager.
@@ -536,8 +552,8 @@ generation_inputs(id UUID PK DEFAULT gen_random_uuid(), s3_key TEXT NOT NULL UNI
 - `manifest.json` (transporte orquestrador — IMPLEMENTADO Fatia 4; ADR-0007 D1): `{dataset_id, slug, category, engine, files:[{filename,md5,bytes}], md5_zip, bytes, chunks:null, created_at}`. **Na v1 local:** `files[].key` ausente (não há leitura por objeto — o orquestrador baixa o zip inteiro); `chunks: null` (não há transporte chunked — D9 da ADR-0003, adiado para orquestrador remoto). Snake_case (transporte, fora de `/api/*`). **Não confundir** com o `manifest.json` de backup da Fatia 3e (artefato distinto, D1 da ADR-0006: `schema_version/classes/images/boxes` — fonte da verdade do roundtrip export/import, com `dataset.yaml`/`labels/*.txt`/`captions.jsonl` como derivados ignorados no re-import).
 - `config.yaml` por job — IMPLEMENTADO (Fatia 4; ADR-0007 D6): comum `{job_id, engine, model, mode, dataset_path, output_path, seed}` + específico:
   - yolo: `{model, epochs, batch, imgsz, lr0, optimizer, augment:{mosaic, mixup_flip}}`.
-  - difusao train: `{base_model, trigger_word, rank, alpha, optimizer, steps, lr, cfg}` (adiado).
-  - difusao generate (ADR-0023): `{model, generate:{prompt, negative_prompt, seed, base_model?, width, height, steps, guidance_scale, quantization, distilled, batch_size, loras:[{path, scale}], custom_checkpoint_path?, arch?}}`. Retrocompat: `weights_path` root-level quando modo legado (sem loras, sem custom).
+  - difusao train: `{base_model, trigger_word, rank, alpha, optimizer, steps, lr, cfg}` (adiado) + fatia pesos-custom-flux2: root-level `custom_checkpoint_path: "{custom_checkpoint_path}"` + `text_encoder_path: "{text_encoder_path}"` (só quando wire pede; `model:` = arch resolvido).
+  - difusao generate (ADR-0023): `{model, generate:{prompt, negative_prompt, seed, base_model?, width, height, steps, guidance_scale, quantization, distilled, batch_size, loras:[{path, scale}], custom_checkpoint_path?, arch?, text_encoder_path?}}`. Retrocompat: `weights_path` root-level quando modo legado (sem loras, sem custom).
   - clip: `{backbone, embed_dim, loss, lr, warmup, batch, epochs}` (adiado).
   - `dataset_path`/`output_path` são **placeholders** (`{dataset_path}`/`{output_path}`) substituídos pelo orquestrador no momento do spawn do container trainer com os mounts reais. O principal é agnóstico de paths locais.
 - `engines.yaml`: `{engine, image, cuda, torch, validated_at}` — ex. `trainer-difusao: hephaestus/trainer-difusao:local`.

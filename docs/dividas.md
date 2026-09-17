@@ -142,6 +142,9 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
   para provar `StableDiffusionXLImg2ImgPipeline`/`StableDiffusionImg2ImgPipeline` via
   `**pipe.components` e `image=` nativo do `Flux2KleinPipeline` (diffusers 0.40.0) antes de
   anunciar pronto.
+- **Cache de quantização de treino usa path per-job no slug (feat/pesos-custom-flux2, reviewer N1) — ABERTA 2026-09-17:** `models/flux.py` isola o cache por checkpoint+encoder mas o slug carrega path per-job — dois treinos do MESMO checkpoint requantizam; dedup por md5-only é decisão de custo pendente.
+- **Validação @gpu manual de checkpoint/encoder custom flux-2 (feat/pesos-custom-flux2) — ABERTA 2026-09-17:** load real pendente (`Flux2Transformer2DModel.from_single_file` + encoder override Qwen3, `ENGINE_MOCK=0`); CPU-only cobre só validação/meta/cache.
+- **Nomes internos `custom_checkpoint` vs `text_encoder_ref` no manager (feat/pesos-custom-flux2, reviewer N5, inócuo) — ABERTA 2026-09-17:** padronizar na próxima passada (ex. ambos `*_ref` ou ambos sem sufixo).
 
 **Verificação / toolchain**
 

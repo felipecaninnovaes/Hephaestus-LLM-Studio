@@ -9,6 +9,14 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 compose() { docker compose -f "$ROOT_DIR/infra/compose.yaml" "$@"; }
 
+# Guarda anti-footgun: este script SÓ roda testes contra o banco efêmero
+# studio_test — nunca contra o banco de dev `studio`.
+TEST_DB_URL="postgres://studio:${POSTGRES_PASSWORD:-studio}@localhost:5432/studio_test"
+case "$TEST_DB_URL" in
+  */studio_test) ;;
+  *) echo "HARNESS DE TESTE RECUSANDO BANCO PERIGOSO: use studio_test via scripts/test-db.sh — nunca o DB de dev 'studio' (URL: '$TEST_DB_URL')" >&2; exit 1 ;;
+esac
+
 # 1. Estado anterior: db deste compose rodando? volume infra_pgdata existia?
 if [[ -n "$(compose ps -q db 2>/dev/null || true)" ]]; then
   WAS_RUNNING=1
@@ -85,17 +93,17 @@ echo "db: banco efêmero studio_test criado"
 cd "$ROOT_DIR"
 TEST_CODE=0
 echo ">>> api-principal: datasets_db --ignored"
-DATABASE_URL="postgres://studio:${POSTGRES_PASSWORD:-studio}@localhost:5432/studio_test" \
+DATABASE_URL="$TEST_DB_URL" \
   cargo test -p api-principal --test datasets_db -- --ignored || TEST_CODE=$?
 
 # 5. Testes do manager (F4.3) — banco efêmero studio_test, MESMO exit code guardado.
 echo ">>> manager: manager_db --ignored"
-DATABASE_URL="postgres://studio:${POSTGRES_PASSWORD:-studio}@localhost:5432/studio_test" \
+DATABASE_URL="$TEST_DB_URL" \
   cargo test -p manager --test manager_db -- --ignored || TEST_CODE=$?
 
 # 5b. Testes handler do manager (binário) — mesmos critérios.
 echo ">>> manager: bin handler tests --ignored"
-DATABASE_URL="postgres://studio:${POSTGRES_PASSWORD:-studio}@localhost:5432/studio_test" \
+DATABASE_URL="$TEST_DB_URL" \
   cargo test -p manager --bin manager -- --ignored || TEST_CODE=$?
 
 # 6. Exit com o código do cargo test (o trap limpa antes).

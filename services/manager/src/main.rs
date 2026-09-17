@@ -947,10 +947,42 @@ mod tests {
         }
     }
 
+    /// Guarda anti-footgun: `#[sqlx::test]` cria bancos `_sqlx_test_*` no
+    /// servidor de `DATABASE_URL` — a URL deve apontar para o banco efêmero
+    /// `studio_test` (via `bash scripts/test-db.sh`), nunca para o dev
+    /// `studio`. Checa a URL (não `current_database`, que é o nome gerado).
+    fn assert_test_db_url(url: &str) {
+        let path = url.rsplit('/').find(|s| !s.is_empty()).unwrap_or("");
+        let db = path.split('?').next().unwrap_or("");
+        assert!(
+            db.starts_with("studio_test"),
+            "HARNESS DE TESTE RECUSANDO BANCO PERIGOSO: use studio_test via scripts/test-db.sh — nunca o DB de dev 'studio' (banco na URL: '{db}')"
+        );
+    }
+
+    fn test_db_url() -> String {
+        let url = std::env::var("DATABASE_URL")
+            .expect("DATABASE_URL é obrigatório (bash scripts/test-db.sh)");
+        assert_test_db_url(&url);
+        url
+    }
+
+    #[test]
+    fn guarda_harness_aceita_studio_test() {
+        assert_test_db_url("postgres://studio:studio@localhost:5432/studio_test");
+    }
+
+    #[test]
+    #[should_panic(expected = "HARNESS DE TESTE RECUSANDO BANCO PERIGOSO")]
+    fn guarda_harness_rejeita_studio_dev() {
+        assert_test_db_url("postgres://studio:studio@localhost:5432/studio");
+    }
+
     /// POST /internal/jobs com weights_id inexistente → 404 not_found.
     #[sqlx::test(migrations = "../api-principal/migrations")]
     #[ignore = "requer Postgres (bash scripts/test-db.sh)"]
     async fn create_job_handler_not_found(pool: PgPool) {
+        let _ = test_db_url();
         let app = build_router(test_state(pool));
 
         let fake_id = uuid::Uuid::new_v4();
@@ -988,6 +1020,7 @@ mod tests {
     #[sqlx::test(migrations = "../api-principal/migrations")]
     #[ignore = "requer Postgres (bash scripts/test-db.sh)"]
     async fn create_job_handler_invalid_json(pool: PgPool) {
+        let _ = test_db_url();
         let app = build_router(test_state(pool));
 
         let response = app

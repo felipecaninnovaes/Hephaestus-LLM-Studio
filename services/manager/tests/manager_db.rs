@@ -1,8 +1,11 @@
 //! Integração manager × Postgres (F4.3) — funções de lib.rs com pool real.
 //!
-//! Execução: `DATABASE_URL=postgres://studio:studio@localhost:5432/studio cargo test -p manager --test manager_db -- --ignored`
+//! Execução: `bash scripts/test-db.sh` (sobe o banco efêmero `studio_test`).
 //!
-//! AVISO: ESTE TESTE É PARA BANCO DE DESENVOLVIMENTO.
+//! AVISO EM MAIÚSCULAS: ESTE HARNESS FAZ DELETEs NO SETUP E SÓ ACEITA O
+//! BANCO EFÊMERO `studio_test` — `DATABASE_URL` NUNCA DEVE APONTAR PARA
+//! O BANCO DE DEV `studio`. A guarda `assert_test_db_url` dá panic
+//! ANTES de conectar.
 
 use async_trait::async_trait;
 use manager::{
@@ -11,13 +14,40 @@ use manager::{
 };
 use sqlx::PgPool;
 
-const TEST_DB_URL: &str = "postgres://studio:studio@localhost:5432/studio";
+const TEST_DB_URL: &str = "postgres://studio:studio@localhost:5432/studio_test";
 
 // Serial lock — testes compartilham o mesmo banco.
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// Guarda anti-footgun (idem datasets_db.rs: o setup faz DELETEs). Panic
+/// ANTES de conectar se a URL não apontar para o banco efêmero `studio_test`
+/// (aceita derivados com prefixo `studio_test`). O dev `studio` é recusado.
+fn assert_test_db_url(url: &str) {
+    let path = url.rsplit('/').find(|s| !s.is_empty()).unwrap_or("");
+    let db = path.split('?').next().unwrap_or("");
+    assert!(
+        db.starts_with("studio_test"),
+        "HARNESS DE TESTE RECUSANDO BANCO PERIGOSO: use studio_test via scripts/test-db.sh — nunca o DB de dev 'studio' (banco na URL: '{db}')"
+    );
+}
+
+#[test]
+fn guarda_harness_aceita_studio_test() {
+    assert_test_db_url("postgres://studio:studio@localhost:5432/studio_test");
+    assert_test_db_url(
+        "postgres://studio:studio@localhost:5432/studio_test_migrations?sslmode=disable",
+    );
+}
+
+#[test]
+#[should_panic(expected = "HARNESS DE TESTE RECUSANDO BANCO PERIGOSO")]
+fn guarda_harness_rejeita_studio_dev() {
+    assert_test_db_url("postgres://studio:studio@localhost:5432/studio");
+}
+
 async fn pool() -> PgPool {
     let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| TEST_DB_URL.into());
+    assert_test_db_url(&url);
     let pool = PgPool::connect(&url).await.expect("conectar no Postgres");
     // Aplica migrations do principal (idempotente).
     sqlx::migrate!("../api-principal/migrations")

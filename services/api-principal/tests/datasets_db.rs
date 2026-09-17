@@ -1,10 +1,12 @@
 //! Integração datasets × Postgres (Fatia 3a) — router+gate+SQL juntos.
 //!
-//! Execução: `DATABASE_URL=postgres://studio:studio@localhost:5432/studio cargo test -p api-principal --test datasets_db -- --ignored`
+//! Execução: `bash scripts/test-db.sh` (sobe o banco efêmero `studio_test`).
 //!
-//! AVISO EM MAIÚSCULAS: ESTE TESTE É PARA BANCO DE DESENVOLVIMENTO. ELE APAGA
-//! `classes` E `datasets` NO SETUP — `DATABASE_URL` NUNCA DEVE APONTAR PARA
-//! BANCO COM DADOS REAIS.
+//! AVISO EM MAIÚSCULAS: ESTE HARNESS FAZ DELETEs NO SETUP E SÓ ACEITA O
+//! BANCO EFÊMERO `studio_test` — `DATABASE_URL` NUNCA DEVE APONTAR PARA
+//! O BANCO DE DEV `studio` (incidente real: suite rodada contra o dev
+//! apagou dados do usuário). A guarda `assert_test_db_url` dá panic
+//! ANTES de conectar.
 
 use api_principal::auth::{routes, session, AppState};
 use axum::body::Body;
@@ -20,10 +22,39 @@ const TEST_SECRET: [u8; 32] = [0x42; 32];
 // forma canônica `... -- --ignored` do doc acima).
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// Guarda anti-footgun (incidente real: suite rodada com DATABASE_URL do dev
+/// apagou dados do usuário — o setup faz DELETEs). Panic ANTES de conectar
+/// se a URL não apontar para o banco efêmero `studio_test` (aceita derivados
+/// com prefixo `studio_test`, ex. `studio_test_migrations`). O banco de dev
+/// `studio` é SEMPRE recusado.
+fn assert_test_db_url(url: &str) {
+    let path = url.rsplit('/').find(|s| !s.is_empty()).unwrap_or("");
+    let db = path.split('?').next().unwrap_or("");
+    assert!(
+        db.starts_with("studio_test"),
+        "HARNESS DE TESTE RECUSANDO BANCO PERIGOSO: use studio_test via scripts/test-db.sh — nunca o DB de dev 'studio' (banco na URL: '{db}')"
+    );
+}
+
+#[test]
+fn guarda_harness_aceita_studio_test() {
+    assert_test_db_url("postgres://studio:studio@localhost:5432/studio_test");
+    assert_test_db_url(
+        "postgres://studio:studio@localhost:5432/studio_test_migrations?sslmode=disable",
+    );
+}
+
+#[test]
+#[should_panic(expected = "HARNESS DE TESTE RECUSANDO BANCO PERIGOSO")]
+fn guarda_harness_rejeita_studio_dev() {
+    assert_test_db_url("postgres://studio:studio@localhost:5432/studio");
+}
+
 async fn state() -> AppState {
     // Runtime (nunca `env!` de compilação) e conexão real (nunca `connect_lazy`).
     let url = std::env::var("DATABASE_URL")
         .expect("DATABASE_URL é obrigatório para este teste --ignored");
+    assert_test_db_url(&url);
     let pool = sqlx::PgPool::connect(&url)
         .await
         .expect("conectar no Postgres de desenvolvimento");
@@ -111,8 +142,8 @@ async fn create_read_delete_flow() {
         .await
         .expect("current_database");
     assert!(
-        db == "studio" || db == "studio_test",
-        "o teste deve rodar contra o banco 'studio' ou 'studio_test', mas conectou em: {db}"
+        db.starts_with("studio_test"),
+        "HARNESS DE TESTE RECUSANDO BANCO PERIGOSO: use studio_test via scripts/test-db.sh — nunca o DB de dev 'studio' (conectado em: {db})"
     );
     let app = routes::build(st.clone());
     let cookie = authed_cookie();
@@ -5318,6 +5349,7 @@ async fn state_with_manager(
 ) {
     let url = std::env::var("DATABASE_URL")
         .expect("DATABASE_URL é obrigatório para este teste --ignored");
+    assert_test_db_url(&url);
     let pool = sqlx::PgPool::connect(&url)
         .await
         .expect("conectar no Postgres de desenvolvimento");

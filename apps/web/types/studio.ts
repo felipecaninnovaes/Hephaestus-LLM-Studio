@@ -200,23 +200,6 @@ export interface SubmitJobResponse {
   queuePosition: number | null;
 }
 
-/** Status com job em andamento (polling/SSE ativos). Terminal = done|failed|cancelled. */
-const ACTIVE_JOB_STATUSES: JobStatus[] = [
-  "preparing",
-  "queued",
-  "dispatched",
-  "running",
-  "cancelling",
-];
-
-export function isActiveJobStatus(status: JobStatus): boolean {
-  return ACTIVE_JOB_STATUSES.includes(status);
-}
-
-export function isTerminalJobStatus(status: JobStatus): boolean {
-  return status === "done" || status === "failed" || status === "cancelled";
-}
-
 /**
  * Erro legível de job falho. Falha de preparação (ADR-0025) chega como
  * `prepare_failed:<code>:<msg>` — expõe o motivo sem o prefixo de máquina.

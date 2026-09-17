@@ -33,7 +33,7 @@ import {
   startDiffusionGenerateJob,
 } from "@/lib/playground";
 import type { Job, Model, LoraRef, DiffusionGenerateJobRequest } from "@/types/studio";
-import { diffusionGenerateErrorMessage } from "@/types/studio";
+import { diffusionGenerateErrorMessage, friendlyJobError } from "@/types/studio";
 import { ApiError } from "@/lib/api";
 import NodeSelect from "@/components/studio/NodeSelect";
 import { LoRAEditor } from "@/components/studio/LoRAEditor";
@@ -540,7 +540,7 @@ export default function GenerationPanel() {
           setActiveJobId(null);
         } else if (job.status === "failed" || job.status === "cancelled") {
           setActiveJobId(null);
-          showToast(job.error || "A geração falhou.", "error");
+          showToast(friendlyJobError(job.error) || "A geração falhou.", "error");
         }
       } catch {
         // ignore sparse polling failures

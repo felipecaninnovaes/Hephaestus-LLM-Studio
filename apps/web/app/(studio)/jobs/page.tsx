@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
 	Suspense,
 	useCallback,
@@ -8,34 +10,6 @@ import {
 	useRef,
 	useState,
 } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-import Link from "next/link";
-import {
-	abortJob,
-	deleteJob,
-	downloadArtifact,
-	getJobArtifacts,
-	getJobMetrics,
-	listJobs,
-} from "@/lib/jobs";
-import { applyAutotrackerBoxes } from "@/lib/autotracker";
-import { applyAutolabelCaptions } from "@/lib/autolabel";
-import { trainingMetrics } from "@/lib/jobMetrics";
-import { jobCapabilities, imageProgressLabel } from "@/lib/jobCapabilities";
-import { ApiError } from "@/lib/api";
-import { showToast } from "@/components/studio/Toast";
-import ConfirmDialog from "@/components/studio/ConfirmDialog";
-import { Button, getButtonClasses } from "@/components/ui/Button";
-import { Badge, jobStatusToBadgeVariant } from "@/components/ui/Badge";
-import { Spinner } from "@/components/ui/Spinner";
-import {
-	ConvergenceChart,
-	MetricSparkline,
-} from "@/components/studio/ConvergenceChart";
-import { JobSamplesGallery } from "@/components/studio/JobSamplesGallery";
-import { JobLogViewer } from "@/components/studio/JobLogViewer";
-import { useJobTelemetry } from "@/hooks/useJobTelemetry";
-import { JobProgressLive } from "@/components/studio/JobProgressLive";
 import {
 	IconActivity,
 	IconCheck,
@@ -49,19 +23,45 @@ import {
 	IconX,
 	IconZap,
 } from "@/components/icons";
+import { AutolabelReviewModal } from "@/components/studio/AutolabelReviewModal";
+import { AutotrackerReviewModal } from "@/components/studio/AutotrackerReviewModal";
+import ConfirmDialog from "@/components/studio/ConfirmDialog";
+import {
+	ConvergenceChart,
+	MetricSparkline,
+} from "@/components/studio/ConvergenceChart";
+import { JobListItem } from "@/components/studio/JobCard";
+import { JobCleanupDialog } from "@/components/studio/JobCleanupDialog";
+import { JobLogViewer } from "@/components/studio/JobLogViewer";
+import { JobProgressLive } from "@/components/studio/JobProgressLive";
+import { JobSamplesGallery } from "@/components/studio/JobSamplesGallery";
+import { showToast } from "@/components/studio/Toast";
+import { Badge, jobStatusToBadgeVariant } from "@/components/ui/Badge";
+import { Button, getButtonClasses } from "@/components/ui/Button";
+import { Spinner } from "@/components/ui/Spinner";
+import { useJobTelemetry } from "@/hooks/useJobTelemetry";
+import { ApiError } from "@/lib/api";
+import { applyAutolabelCaptions } from "@/lib/autolabel";
+import { applyAutotrackerBoxes } from "@/lib/autotracker";
+import { openActionCenter } from "@/lib/events";
+import { formatBytes, formatDuration } from "@/lib/format";
+import { imageProgressLabel, jobCapabilities } from "@/lib/jobCapabilities";
+import { trainingMetrics } from "@/lib/jobMetrics";
+import {
+	abortJob,
+	deleteJob,
+	downloadArtifact,
+	getJobArtifacts,
+	getJobMetrics,
+	listJobs,
+} from "@/lib/jobs";
 import type {
 	Job,
 	JobArtifact,
 	JobMetrics as JobMetricsType,
 	JobStatus,
 } from "@/types/studio";
-import { autotrackerErrorMessage, autolabelErrorMessage } from "@/types/studio";
-import { formatBytes, formatDuration } from "@/lib/format";
-import { openActionCenter } from "@/lib/events";
-import { JobListItem } from "@/components/studio/JobCard";
-import { AutolabelReviewModal } from "@/components/studio/AutolabelReviewModal";
-import { AutotrackerReviewModal } from "@/components/studio/AutotrackerReviewModal";
-import { JobCleanupDialog } from "@/components/studio/JobCleanupDialog";
+import { autolabelErrorMessage, autotrackerErrorMessage } from "@/types/studio";
 
 const POLL_INTERVAL = 3000;
 
@@ -729,7 +729,6 @@ function JobsPageContent() {
 						type="button"
 						variant="secondary"
 						size="sm"
-						className="min-h-[40px]"
 						onClick={() => setCleanupOpen(true)}
 						title="Limpar jobs antigos do histórico"
 					>
@@ -748,16 +747,6 @@ function JobsPageContent() {
 							className={`size-3.5 ${refreshing ? "animate-spin text-brand-400" : ""}`}
 						/>
 						<span>Atualizar</span>
-					</Button>
-					<Button
-						type="button"
-						variant="secondary"
-						size="sm"
-						onClick={() => setCleanupOpen(true)}
-						title="Limpar jobs terminais antigos"
-					>
-						<IconTrash className="size-3.5 text-zinc-400" />
-						<span className="hidden sm:inline">Limpar antigos</span>
 					</Button>
 					<Button
 						type="button"

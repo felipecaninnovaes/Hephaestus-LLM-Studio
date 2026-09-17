@@ -252,7 +252,8 @@ async fn ciclo_queued_done() {
         .expect("get job dispatched");
     assert_eq!(job.status, "dispatched");
 
-    // 4. Report: preparing.
+    // 4. Report: preparing sobre job dispatched é IGNORADO (B3 — sem
+    // regressão de ciclo: preparing via report só vale em job preparing).
     manager::report_job(
         &p,
         job_id,
@@ -271,12 +272,12 @@ async fn ciclo_queued_done() {
         },
     )
     .await
-    .expect("report preparing");
+    .expect("report preparing ignorado");
 
     let job = manager::get_job(&p, job_id)
         .await
-        .expect("get job preparing");
-    assert_eq!(job.status, "preparing");
+        .expect("get job dispatched");
+    assert_eq!(job.status, "dispatched");
 
     // 5. Report: running.
     manager::report_job(
@@ -450,23 +451,35 @@ async fn abort_em_voo_e_terminal() {
 
     manager::adopt_orchestrator(&p).await.expect("adopt");
 
-    // Cria e despacha.
-    let resp = manager::create_job(&p, test_job_request(ds_id))
+    // Abort em voo (preparing genuíno do fluxo async ADR-0025, sem
+    // regressão via report) → cancelling. Sem nó alocado (pré-dispatch):
+    // sem notificação ao orquestrador.
+    let resp = manager::create_job(&p, test_prepare_job_request(ds_id))
         .await
-        .expect("create");
+        .expect("create preparing");
     let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
 
+    let result = manager::abort_job(&p, job_id, &orch).await;
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), "cancelling");
+
+    let job = manager::get_job(&p, job_id).await.expect("get");
+    assert_eq!(job.status, "cancelling");
+
+    // Abort em running com nó → cancelling + notifica o orquestrador.
+    let resp_r = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create running");
+    let run_id: uuid::Uuid = resp_r.job_id.parse().unwrap();
     manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
         .await
         .expect("dispatch");
-
-    // Report: preparing.
     manager::report_job(
         &p,
-        job_id,
+        run_id,
         ReportRequest {
-            status: "preparing".into(),
-            progress: None,
+            status: "running".into(),
+            progress: Some(0.1),
             epoch: None,
             step: None,
             metrics: None,
@@ -479,15 +492,14 @@ async fn abort_em_voo_e_terminal() {
         },
     )
     .await
-    .expect("report preparing");
+    .expect("report running");
 
-    // Abort em voo (preparing) → cancelling.
-    let result = manager::abort_job(&p, job_id, &orch).await;
-    assert!(result.is_ok());
-    assert_eq!(result.unwrap(), "cancelling");
+    let result_r = manager::abort_job(&p, run_id, &orch).await;
+    assert!(result_r.is_ok());
+    assert_eq!(result_r.unwrap(), "cancelling");
 
-    let job = manager::get_job(&p, job_id).await.expect("get");
-    assert_eq!(job.status, "cancelling");
+    let job_r = manager::get_job(&p, run_id).await.expect("get running");
+    assert_eq!(job_r.status, "cancelling");
 
     // Verifica que o orchestrator foi notificado.
     let calls = orch.calls();
@@ -581,14 +593,21 @@ async fn recupera_jobs_no_boot() {
 
     // Recovery.
     let recovered = manager::recover_jobs(&p).await.expect("recover");
-    assert_eq!(recovered, 3);
+    assert_eq!(recovered, 2);
 
-    // Verifica que todos voltaram a queued com queue_reason='recovered'.
-    for jid in [job1, job2, job3] {
+    // `dispatched`/`running` voltam a queued com queue_reason='recovered'.
+    for jid in [job1, job3] {
         let job = manager::get_job(&p, jid).await.expect("get recovered");
         assert_eq!(job.status, "queued");
         assert_eq!(job.queue_reason.as_deref(), Some("recovered"));
     }
+
+    // `preparing` é EXCLUÍDO do recover (B1 — dono é o principal via
+    // job_prepares/recover_stale_prepares, ADR-0025 D3): permanece
+    // `preparing`, sem virar queued sem pacote.
+    let job = manager::get_job(&p, job2).await.expect("get preparing");
+    assert_eq!(job.status, "preparing");
+    assert!(job.queue_reason.is_none());
 }
 
 #[tokio::test]
@@ -3191,6 +3210,20 @@ async fn watchdog_60s_offline_requeue() {
     .await
     .unwrap();
 
+    // B2: `preparing` no nó morto NÃO é re-queueizado — cai no caminho
+    // prepare-timeout/fail, nunca vira queued sem pacote.
+    let job3 = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO jobs (id, kind, engine, model, mode, dataset_id, status, orchestrator_id) \
+         VALUES ($1, 'yolo_train', 'yolo', 'yolo11m', 'train', $2, 'preparing', $3)",
+    )
+    .bind(job3)
+    .bind(ds_id)
+    .bind(orch_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
     manager::watchdog_tick(&p).await.expect("watchdog tick");
 
     // Nó → offline.
@@ -3208,6 +3241,11 @@ async fn watchdog_60s_offline_requeue() {
         assert_eq!(job.queue_reason.as_deref(), Some("recovered"));
         assert!(job.orchestrator_id.is_none());
     }
+
+    // `preparing` intocado pelo re-queue (sem transição, sem NULL no nó).
+    let job = manager::get_job(&p, job3).await.expect("get preparing job");
+    assert_eq!(job.status, "preparing");
+    assert_eq!(job.orchestrator_id, Some(orch_id.to_string()));
 }
 
 // --- Adopt / Revoke (ADR-0011 D5) ---
@@ -6486,6 +6524,9 @@ async fn hook_models_conflict_nao_sobrescreve_kind_existente() {
 // ===========================================================================
 
 /// Helper: request do fluxo assíncrono (package_ref ausente + params.prepare opaco).
+/// Espelha o envelope real do principal (`accept_job_preparing` em
+/// services/api-principal/src/jobs/prepare.rs): chaves camelCase
+/// (`datasetId`, nunca `dataset_id`).
 fn test_prepare_job_request(dataset_id: uuid::Uuid) -> CreateJobRequest {
     CreateJobRequest {
         kind: "yolo_train".into(),
@@ -6498,9 +6539,9 @@ fn test_prepare_job_request(dataset_id: uuid::Uuid) -> CreateJobRequest {
         config_yaml: None,
         params: Some(serde_json::json!({
             "prepare": {
-                "dataset_id": dataset_id.to_string(),
-                "fingerprint": "abc123",
-                "engine": "yolo"
+                "kind": "yolo_train",
+                "datasetId": dataset_id.to_string(),
+                "fingerprint": "abc123"
             }
         })),
         vram_min_gb: None,
@@ -6871,8 +6912,11 @@ async fn gc_dataset_versions_preserva_referenciados() {
     let p = pool().await;
     cleanup(&p).await;
     let ds_id = insert_test_dataset(&p).await;
+    // Dataset isolado para a órfã: a guarda de voo (B4) protege por
+    // dataset — a órfã precisa estar num dataset sem job não-terminal.
+    let ds_other = insert_test_dataset(&p).await;
 
-    let orphan = insert_test_version(&p, ds_id).await;
+    let orphan = insert_test_version(&p, ds_other).await;
     let referenced = insert_test_version(&p, ds_id).await;
     let recent = insert_test_version(&p, ds_id).await;
 
@@ -6911,4 +6955,183 @@ async fn gc_dataset_versions_preserva_referenciados() {
         "referenciada preservada"
     );
     assert!(version_exists(&p, recent).await, "recente preservada");
+}
+
+/// Complete duplo: 1º Ok (`preparing`→`queued`); 2º → Conflict (409, guarda
+/// de transição — sem reescrita de pacote).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn prepare_complete_duplo_segundo_409() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let version_id = insert_test_version(&p, ds_id).await;
+
+    let resp = manager::create_job(&p, test_prepare_job_request(ds_id))
+        .await
+        .expect("create prepare");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    manager::prepare_complete(&p, job_id, complete_req(version_id))
+        .await
+        .expect("1º complete");
+    let r = manager::prepare_complete(&p, job_id, complete_req(version_id)).await;
+    assert!(
+        matches!(r, Err(ManagerError::Conflict(_))),
+        "2º complete fora de preparing → 409"
+    );
+
+    let job = manager::get_job(&p, job_id).await.expect("get");
+    assert_eq!(job.status, "queued");
+}
+
+/// Regressão de ciclo (B3): report com status=`preparing` sobre job já
+/// `queued`/`dispatched` é ignorado mantendo o estado — nunca regride para
+/// `preparing` sem pacote (phase/progress/message também não são tocados).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn report_preparing_sobre_queued_nao_regride() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let legacy = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create legacy");
+    let queued_id: uuid::Uuid = legacy.job_id.parse().unwrap();
+
+    let regress = || ReportRequest {
+        status: "preparing".into(),
+        progress: Some(0.9),
+        epoch: None,
+        step: None,
+        metrics: None,
+        error: None,
+        artifacts: None,
+        meta_content: None,
+        phase: Some("packaging_dataset".into()),
+        message: Some("tentativa de regressão".into()),
+    };
+
+    // Sobre `queued`: ignorado, estado e fase intactos.
+    manager::report_job(&p, queued_id, regress())
+        .await
+        .expect("report ignorado sem erro");
+    let job = manager::get_job(&p, queued_id).await.expect("get queued");
+    assert_eq!(job.status, "queued");
+    assert!(job.phase.is_none(), "phase não muda na regressão ignorada");
+    assert!(
+        job.progress.is_none(),
+        "progress não muda na regressão ignorada"
+    );
+
+    // Sobre `dispatched`: idem.
+    sqlx::query("UPDATE jobs SET status = 'dispatched' WHERE id = $1")
+        .bind(queued_id)
+        .execute(&p)
+        .await
+        .unwrap();
+    manager::report_job(&p, queued_id, regress())
+        .await
+        .expect("report ignorado sem erro");
+    let job = manager::get_job(&p, queued_id)
+        .await
+        .expect("get dispatched");
+    assert_eq!(job.status, "dispatched");
+    assert!(job.phase.is_none(), "phase não muda na regressão ignorada");
+}
+
+/// Corrida fingerprint (B4): versão velha (-9d) com job `preparing` em voo
+/// cujo `params.prepare.datasetId` aponta para aquele dataset → GC pula;
+/// após o job virar terminal (`failed`) → GC apaga.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn gc_pula_versao_com_preparing_em_voo() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let old_ver = insert_test_version(&p, ds_id).await;
+    sqlx::query("UPDATE dataset_versions SET created_at = now() - interval '9 days' WHERE id = $1")
+        .bind(old_ver)
+        .execute(&p)
+        .await
+        .expect("backdate version");
+
+    // Job `preparing` com prepare apontando para aquele dataset.
+    let resp = manager::create_job(&p, test_prepare_job_request(ds_id))
+        .await
+        .expect("create prepare");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    let deleted = manager::gc_dataset_versions(&p).await.expect("gc com voo");
+    assert_eq!(deleted, 0, "versão com preparing em voo não é apagada");
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM dataset_versions WHERE id = $1)")
+            .bind(old_ver)
+            .fetch_one(&p)
+            .await
+            .unwrap();
+    assert!(exists, "versão com preparing em voo sobrevive");
+
+    // Job terminal → GC apaga.
+    manager::prepare_fail(
+        &p,
+        job_id,
+        manager::PrepareFailRequest {
+            code: "build_error".into(),
+            message: "fim do voo".into(),
+        },
+    )
+    .await
+    .expect("prepare fail");
+    let deleted = manager::gc_dataset_versions(&p)
+        .await
+        .expect("gc pós-terminal");
+    assert_eq!(deleted, 1, "sem voo ativo a versão velha é apagada");
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM dataset_versions WHERE id = $1)")
+            .bind(old_ver)
+            .fetch_one(&p)
+            .await
+            .unwrap();
+    assert!(!exists, "versão velha sem voo removida");
+}
+
+/// Touch (B4): `prepare_complete` com versão velha (-9d, ex.: reusada por
+/// fingerprint) renova `created_at` — o prazo de 7 dias do GC recomeça.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn prepare_complete_renova_created_at_da_versao() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let ver = insert_test_version(&p, ds_id).await;
+    sqlx::query("UPDATE dataset_versions SET created_at = now() - interval '9 days' WHERE id = $1")
+        .bind(ver)
+        .execute(&p)
+        .await
+        .expect("backdate version");
+
+    let resp = manager::create_job(&p, test_prepare_job_request(ds_id))
+        .await
+        .expect("create prepare");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+    manager::prepare_complete(&p, job_id, complete_req(ver))
+        .await
+        .expect("prepare complete");
+
+    let renewed: bool = sqlx::query_scalar(
+        "SELECT created_at > now() - interval '1 minute' FROM dataset_versions WHERE id = $1",
+    )
+    .bind(ver)
+    .fetch_one(&p)
+    .await
+    .unwrap();
+    assert!(renewed, "touch no complete renova created_at da versão");
 }

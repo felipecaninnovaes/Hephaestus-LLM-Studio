@@ -106,7 +106,10 @@ pub struct PreparePackageRef {
 }
 
 /// POST /internal/jobs/:id/prepare-fail (ADR-0025 D1).
+/// Wire camelCase como o resto de `/api/*` (campos de palavra única: sem
+/// efeito no wire, só conformidade de contrato).
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PrepareFailRequest {
     pub code: String,
     pub message: String,
@@ -501,7 +504,9 @@ pub fn done_artifacts_violation(kind: &str, artifacts: Option<&[ArtifactItem]>) 
 ///
 /// Fluxo assíncrono (ADR-0025 D0): sem package_ref + `params.prepare` (objeto)
 /// → `preparing` (queue_position NULL); com package_ref → `queued` (legado).
-/// Sem nenhum dos dois → `InvalidRequest` (400).
+/// Omissão total (sem package_ref nem prepare) → `queued` legado
+/// (retrocompat); intenção async malformada (package_ref null sem prepare, ou
+/// prepare não-objeto) → `InvalidRequest` (400).
 ///
 /// VRAM policy: `vram_min_gb` é gravado mas ignorado na decisão de fila (no-op
 /// sem GPU — D9/R3). Ver `@gpu` para o fluxo real com `waiting_vram`.
@@ -1122,8 +1127,10 @@ pub async fn abort_job(
 /// POST /internal/jobs/:id/prepare-complete: `preparing` → `queued`.
 ///
 /// Transição guardada (0 linhas ⇒ 404 se inexistente, 409 se fora de
-/// `preparing`). Persiste package_ref + dataset_version_id em params.
-/// O chamador (handler) dispara `dispatch_next` em seguida (best-effort).
+/// `preparing`). Persiste package_ref + dataset_version_id em params e renova
+/// `dataset_versions.created_at` (touch anti-GC: versão reutilizada por
+/// fingerprint sobrevive mais 7 dias). O chamador (handler) dispara
+/// `dispatch_next` em seguida (best-effort).
 pub async fn prepare_complete(
     pool: &PgPool,
     id: Uuid,
@@ -1170,7 +1177,7 @@ pub async fn prepare_complete(
     let result = sqlx::query(
         "UPDATE jobs SET status = 'queued', queue_reason = NULL, \
           params = params || jsonb_build_object('package_ref', $2::jsonb, 'dataset_version_id', $3) \
-         WHERE id = $1 AND status = 'preparing'",
+          WHERE id = $1 AND status = 'preparing'",
     )
     .bind(id)
     .bind(&package_json)
@@ -1190,6 +1197,15 @@ pub async fn prepare_complete(
         }
         return Err(ManagerError::Conflict("job_not_preparing".into()));
     }
+    // Touch anti-GC (ADR-0025 D4): versão reutilizada por fingerprint (D1)
+    // renova o prazo de 7 dias. Sem coluna updated_at em dataset_versions, o
+    // relógio do GC ancora em created_at. Só após transição aplicada: fora de
+    // `preparing` (409/404 acima) nada é renovado.
+    sqlx::query("UPDATE dataset_versions SET created_at = now() WHERE id = $1")
+        .bind(dv_id)
+        .execute(pool)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("touch dataset version: {e}")))?;
     Ok(())
 }
 
@@ -1259,13 +1275,23 @@ pub async fn watchdog_prepare_timeout(pool: &PgPool) -> Result<u64, ManagerError
 /// referenciadas por job aceito (referência = params.package_ref.version_id;
 /// NUNCA apaga pacote referenciado). Query defensiva: IS NOT NULL no
 /// version_id para NULL não virar match.
+///
+/// Corrida fingerprint (D1): o worker do principal pode REUSAR uma versão
+/// antiga (D1) enquanto ela é alvo do GC — por isso versões cujo dataset
+/// possui job não-terminal com `params.prepare.datasetId` são puladas. A
+/// chave é camelCase porque o aceite do principal grava exatamente assim
+/// (`accept_job_preparing`: `params.prepare = {kind, datasetId,
+/// fingerprint}` — ver services/api-principal/src/jobs/prepare.rs).
 pub async fn gc_dataset_versions(pool: &PgPool) -> Result<u64, ManagerError> {
     let result = sqlx::query(
         "DELETE FROM dataset_versions dv \
          WHERE dv.created_at < now() - interval '7 days' \
            AND NOT EXISTS (SELECT 1 FROM jobs j \
              WHERE (j.params->'package_ref'->>'version_id') IS NOT NULL \
-               AND j.params->'package_ref'->>'version_id' = dv.id::text)",
+               AND j.params->'package_ref'->>'version_id' = dv.id::text) \
+           AND NOT EXISTS (SELECT 1 FROM jobs j \
+             WHERE j.status NOT IN ('done','failed','cancelled') \
+               AND j.params->'prepare'->>'datasetId' = dv.dataset_id::text)",
     )
     .execute(pool)
     .await
@@ -1390,6 +1416,22 @@ pub async fn report_job(
     }
 
     match report.status.as_str() {
+        // `preparing` via report só existe dentro do ciclo async (ADR-0025):
+        // job já fora de `preparing` (queued/dispatched/...) nunca regride
+        // para `preparing` sem pacote — ignora mantendo o estado, no mesmo
+        // estilo das guardas de terminal/cancelling acima (sem 409: o handler
+        // mapeia Conflict para 500, e regressão de ciclo não é erro de
+        // concorrência do chamador). Phase/progress/message de prepares
+        // continuam fluindo normalmente enquanto o job está em `preparing`.
+        "preparing" if current_status != "preparing" => {
+            tracing::warn!(
+                job_id = %id,
+                current_status = %current_status,
+                report_status = %report.status,
+                "report preparing ignorado fora de preparing (sem regressão de ciclo)"
+            );
+            return Ok(());
+        }
         "preparing" | "running" => {
             sqlx::query(
                 "UPDATE jobs SET status = $2, progress = COALESCE($3, progress), epoch = COALESCE($4, epoch), step = COALESCE($5, step), phase = COALESCE($6, phase), message = COALESCE($7, message) WHERE id = $1",
@@ -3056,10 +3098,15 @@ pub async fn get_storage_usage(pool: &PgPool) -> Result<StorageUsageResponse, Ma
 }
 
 /// Recovery: marca jobs órfãos como queued com queue_reason='recovered'.
+///
+/// `preparing` é EXCLUÍDO de propósito: recuperação de prepares pertence ao
+/// principal (`job_prepares`/`recover_stale_prepares`, ADR-0025 D3) — um
+/// preparing órfão nunca vira `queued` sem pacote; morre pelo watchdog de
+/// 60min (`watchdog_prepare_timeout`) se o worker não voltar.
 pub async fn recover_jobs(pool: &PgPool) -> Result<u64, ManagerError> {
     let result = sqlx::query(
         "UPDATE jobs SET status = 'queued', queue_reason = 'recovered', orchestrator_id = NULL \
-         WHERE status IN ('dispatched', 'preparing', 'running', 'cancelling')",
+         WHERE status IN ('dispatched', 'running', 'cancelling')",
     )
     .execute(pool)
     .await
@@ -3244,6 +3291,8 @@ pub async fn watchdog_tick(pool: &PgPool) -> Result<(), ManagerError> {
     .map_err(|e| ManagerError::Internal(format!("watchdog degraded: {e}")))?;
 
     // degraded → offline + re-queue dos jobs do nó morto (CTE espelho de recover_jobs).
+    // `preparing` excluído como no recover: jobs em preparação caem no caminho
+    // prepare-timeout/fail, nunca viram queued sem pacote.
     let result = sqlx::query(
         "WITH morto AS ( \
              UPDATE orchestrators SET status = 'offline' \
@@ -3253,7 +3302,7 @@ pub async fn watchdog_tick(pool: &PgPool) -> Result<(), ManagerError> {
          ) \
          UPDATE jobs SET status = 'queued', queue_reason = 'recovered', orchestrator_id = NULL \
          WHERE orchestrator_id IN (SELECT id FROM morto) \
-           AND status IN ('dispatched','preparing','running','cancelling')",
+           AND status IN ('dispatched','running','cancelling')",
     )
     .bind(offline_s as f64)
     .execute(pool)
@@ -3484,7 +3533,7 @@ pub async fn dispatch_next(
              WHERE o.id = $1 AND o.status = 'online' \
                AND NOT EXISTS (SELECT 1 FROM jobs j \
                                WHERE j.orchestrator_id = o.id \
-                                 AND j.status IN ('dispatched','preparing','running','cancelling')) \
+                                 AND j.status IN ('dispatched','running','cancelling')) \
                AND ($2::int IS NULL OR o.vram_total_gb IS NULL OR o.vram_total_gb >= $2)",
         )
         .bind(hint_id)
@@ -3506,7 +3555,7 @@ pub async fn dispatch_next(
              WHERE o.status = 'online' \
                AND NOT EXISTS (SELECT 1 FROM jobs j \
                                WHERE j.orchestrator_id = o.id \
-                                 AND j.status IN ('dispatched','preparing','running','cancelling')) \
+                                 AND j.status IN ('dispatched','running','cancelling')) \
                AND ($1::int IS NULL OR o.vram_total_gb IS NULL OR o.vram_total_gb >= $1) \
              ORDER BY (o.vram_total_gb IS NULL) ASC, \
                       o.vram_total_gb DESC NULLS LAST, \

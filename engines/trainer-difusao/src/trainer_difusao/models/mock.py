@@ -12,9 +12,12 @@ from typing import Any
 
 from trainer_difusao.common import (
     _canonical_model_name,
+    _count_control_images,
     _emit_metric,
+    _normalize_train_quantization,
     _resolve_output_name,
     _synthetic_loss,
+    _validate_train_aux,
 )
 from trainer_difusao.models.base import BaseModelTrainer
 
@@ -112,6 +115,7 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
     output.mkdir(parents=True, exist_ok=True)
     metrics_path = output / "metrics.jsonl"
 
+    aux = _validate_train_aux(cfg, quant_default=None)
     seed = int(cfg.get("seed", 42))
     lora_cfg = cfg.get("lora", {})
     epochs = int(lora_cfg.get("epochs", 10))
@@ -127,6 +131,9 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
         0, int(cfg.get("epoch_offset") or lora_cfg.get("epoch_offset") or 0)
     )
     weights_path = cfg.get("weights_path")
+    control_dataset_path = aux["control_dataset_path"]
+    control_ratio = aux["control_ratio"]
+    cache_text_embeddings = aux["cache_text_embeddings"]
 
     samples_cfg = cfg.get("samples", {})
     sample_prompt = str(samples_cfg.get("prompt", "") or "").strip()
@@ -140,9 +147,23 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
 
     lora_info = dict(lora_cfg)
     lora_info["base_model"] = base_model
-    lora_info["quantization"] = str(
-        lora_cfg.get("quantization") or cfg.get("quantization") or "4bit"
+    raw_quant = lora_cfg.get("quantization") or cfg.get("quantization") or "4bit"
+    lora_info["quantization"] = _normalize_train_quantization(raw_quant, default="4bit")
+
+    # Telemetry do bloco Flux.2/motor-treino: linha control + cache no primeiro log.
+    control_n = _count_control_images(control_dataset_path) if control_dataset_path else 0
+    print(
+        f"[MOCK] Treino: control_dataset_images={control_n}, "
+        f"control_ratio={control_ratio}, cache_text_embeddings={cache_text_embeddings}",
+        flush=True,
     )
+    if control_dataset_path:
+        print(
+            f"[MOCK] control dataset: {control_n} imagens, ratio {control_ratio} (mock: no-op)",
+            flush=True,
+        )
+    if cache_text_embeddings:
+        print("[MOCK] cache_text_embeddings=True (mock: no-op)", flush=True)
 
     if weights_path:
         w_path = Path(weights_path)
@@ -176,6 +197,12 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
         ep = ep_idx + epoch_offset
         loss = _synthetic_loss(seed, ep, epochs + epoch_offset)
         progress = round(ep_idx / epochs, 4)
+        suffix = (
+            f" · control_dataset_images={control_n} · "
+            f"cache_text_embeddings={cache_text_embeddings}"
+            if ep_idx == 1 and (control_n or cache_text_embeddings)
+            else ""
+        )
         _emit_metric(
             metrics_path,
             epoch=ep,
@@ -184,7 +211,7 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
             lr=learning_rate,
             progress=progress,
             phase="training",
-            message=f"Época {ep}/{epochs + epoch_offset} concluída · Loss: {loss}",
+            message=f"Época {ep}/{epochs + epoch_offset} concluída · Loss: {loss}{suffix}",
         )
 
         # Salva checkpoint da época respeitando checkpoint_interval

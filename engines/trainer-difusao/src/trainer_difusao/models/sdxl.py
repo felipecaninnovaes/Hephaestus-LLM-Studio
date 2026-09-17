@@ -1,20 +1,24 @@
 """Pipeline real de treino LoRA para Stable Diffusion XL (SDXL 1.0) na GPU."""
 
-from __future__ import annotations
-
 import math
 import os
+import random
 import shutil
 from pathlib import Path
 from typing import Any
 
 from trainer_difusao.common import (
+    _cached_encode,
+    _cycling_batches,
     _die,
     _emit_metric,
     _load_lora_weights,
+    _precompute_text_cache,
     _resolve_output_name,
     _save_lora_safetensors,
     _setup_cache_dir,
+    _validate_train_aux,
+    TextEmbedsCache,
 )
 from trainer_difusao.dataset import DiffusionDataset, build_dataloader
 from trainer_difusao.models.base import BaseModelTrainer
@@ -28,8 +32,8 @@ def _compute_sdxl_embeddings(
     text_encoder_one: Any,
     text_encoder_two: Any,
     device: Any,
+    target_dtype: Any = None,
 ) -> tuple[Any, Any]:
-    """Codifica texto para SDXL combinando os dois encoders CLIP e extraindo pooled embeddings."""
     import torch
 
     with torch.no_grad():
@@ -53,9 +57,11 @@ def _compute_sdxl_embeddings(
         enc_two = text_encoder_two(tokens_two, output_hidden_states=True)
         hidden_states_two = enc_two.hidden_states[-2]
         pooled_embeds = enc_two.text_embeds
-
         # Concatena canais de embedding (768 + 1280 = 2048)
         prompt_embeds = torch.concat([hidden_states_one, hidden_states_two], dim=-1)
+        if target_dtype is not None:
+            prompt_embeds = prompt_embeds.to(dtype=target_dtype)
+            pooled_embeds = pooled_embeds.to(dtype=target_dtype)
 
     return prompt_embeds, pooled_embeds
 
@@ -152,6 +158,11 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
 
     device = torch.device("cuda")
 
+    aux = _validate_train_aux(cfg, quant_default="none")
+    control_dataset_path = aux["control_dataset_path"]
+    control_ratio = aux["control_ratio"]
+    cache_text_embeddings = aux["cache_text_embeddings"]
+
     seed = int(cfg.get("seed", 42))
     model_id = cfg.get("model_id") or "stabilityai/stable-diffusion-xl-base-1.0"
     dataset_path = Path(cfg.get("dataset_path", "/datasets"))
@@ -190,9 +201,11 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         if (mixed_precision == "bf16" and torch.cuda.is_bf16_supported())
         else torch.float16
     )
-    quantization = str(
-        lora_cfg.get("quantization") or cfg.get("quantization") or "none"
-    ).lower().strip()
+    # Como no SD 1.5, o UNet SDXL hoje carrega em precisão plena (sem
+    # BitsAndBytesConfig): nível validado/normalizado e registrado na telemetry
+    # + metadados; 2bit/6bit (torchao intx) exigem CUDA e seguem o caminho do
+    # Flux quando houver ponto de aplicação — nunca degradação silenciosa.
+    quantization = aux["quantization"] or "none"
 
     _emit_metric(
         metrics_path,
@@ -280,11 +293,52 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
     )
     dataloader = build_dataloader(dataset, batch_size, seed=seed)
 
+    # Dataset de controle (prior-preservation): mesma resolução/bucketing,
+    # caption VAZIA (sem trigger word). Intercalação por step (mesma pipeline
+    # de ruído/loss) com probabilidade control_ratio.
+    control_dataset = None
+    control_iter = None
+    control_n = 0
+    if control_dataset_path is not None:
+        control_dataset = DiffusionDataset(
+            control_dataset_path,
+            resolution=resolution,
+            trigger_word="",
+            enable_bucket=enable_bucket,
+            empty_captions=True,
+        )
+        control_iter = _cycling_batches(
+            build_dataloader(control_dataset, batch_size, seed=seed)
+        )
+        control_n = len(control_dataset)
+
     steps_per_epoch = math.ceil(len(dataloader) / grad_accum)
     total_train_steps = max(1, steps_per_epoch * epochs)
     lr_scheduler = _create_lr_scheduler(
         optimizer, lr_scheduler_name, total_train_steps, lr_warmup_steps
     )
+
+    # Cache de text embeddings (SDXL: saída combinada dos dois CLIP + pooled),
+    # pré-computado UMA vez no início; miss → on-the-fly + warm; falha → sem cache.
+    text_cache = TextEmbedsCache(output, cache_text_embeddings)
+    if cache_text_embeddings:
+        def _encode_sdxl_all(caps: list[str]) -> dict[str, Any]:
+            hidden, pooled = _compute_sdxl_embeddings(
+                caps,
+                tokenizer_one,
+                tokenizer_two,
+                text_encoder_one,
+                text_encoder_two,
+                device,
+            )
+            return {"hidden": hidden, "pooled": pooled}
+
+        _precompute_text_cache(
+            text_cache,
+            [c for _, c in dataset.samples]
+            + ([c for _, c in control_dataset.samples] if control_dataset else []),
+            _encode_sdxl_all,
+        )
 
     _emit_metric(
         metrics_path,
@@ -293,6 +347,12 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         progress=0.08,
         phase="dataset_ready",
         message=f"Dataset pronto: {len(dataset)} imagens.",
+    )
+    print(
+        f"[SDXL] Treino: dataset={len(dataset)} imagens, "
+        f"control_dataset_images={control_n}, control_ratio={control_ratio}, "
+        f"cache_text_embeddings={cache_text_embeddings}, quantization={quantization}",
+        flush=True,
     )
 
     # Time IDs padrão para SDXL dimensionados pela resolução configurada
@@ -352,6 +412,18 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
     global_step = 0
     safe_avg_loss = None
 
+    def _encode_sdxl_batch(caps: list[str]) -> dict[str, Any]:
+        hidden, pooled = _compute_sdxl_embeddings(
+            caps,
+            tokenizer_one,
+            tokenizer_two,
+            text_encoder_one,
+            text_encoder_two,
+            device,
+            target_dtype,
+        )
+        return {"hidden": hidden, "pooled": pooled}
+
     for epoch_idx in range(1, epochs + 1):
         epoch = epoch_idx + epoch_offset
         unet.train()
@@ -359,6 +431,10 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         steps_in_epoch = 0
 
         for batch in dataloader:
+            # Prior-preservation: com prob. control_ratio usa o batch de controle
+            # (regularização, captions vazias) no loss do mesmo step.
+            if control_iter is not None and random.random() < control_ratio:
+                batch = next(control_iter)
             pixel_values = batch["pixel_values"].to(device, dtype=torch.float32)
             prompts = batch["prompt"]
             cur_bs = pixel_values.shape[0]
@@ -375,15 +451,9 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
             ).long()
             noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
-            prompt_embeds, pooled_prompt_embeds = _compute_sdxl_embeddings(
-                prompts,
-                tokenizer_one,
-                tokenizer_two,
-                text_encoder_one,
-                text_encoder_two,
-                device,
-                target_dtype,
-            )
+            cached = _cached_encode(prompts, _encode_sdxl_batch, text_cache)
+            prompt_embeds = cached["hidden"].to(device, dtype=target_dtype)
+            pooled_prompt_embeds = cached["pooled"].to(device, dtype=target_dtype)
 
             # Micro-conditioning de tamanho original, target e crop
             # Com bucketing ativo as dims reais do batch (bucket) substituem a resolução configurada.

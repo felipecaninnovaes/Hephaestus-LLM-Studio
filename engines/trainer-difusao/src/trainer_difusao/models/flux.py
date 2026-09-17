@@ -5,22 +5,28 @@ from __future__ import annotations
 import json
 import math
 import os
+import random
 import re
 import shutil
 from pathlib import Path
 from typing import Any
 
 from trainer_difusao.common import (
+    _build_intx_torchao_config,
+    _cached_encode,
+    _cycling_batches,
     _die,
     _emit_metric,
     _load_lora_weights,
-    _resolve_output_name,
     _save_lora_safetensors,
     _setup_cache_dir,
+    _validate_train_aux,
+    TextEmbedsCache,
 )
 from trainer_difusao.dataset import DiffusionDataset, build_dataloader
 from trainer_difusao.models.base import BaseModelTrainer
 from trainer_difusao.optimizers import _create_lr_scheduler, _create_optimizer
+
 
 
 def _is_cache_valid(cache_dir: Path | None, expected_model_id: str, expected_quant: str) -> bool:
@@ -353,15 +359,29 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     trigger_word = str(lora_cfg.get("trigger_word", ""))
     base_name = _resolve_output_name(cfg)
 
-    quantization = str(
+    aux = _validate_train_aux(cfg, quant_default=None)
+    control_dataset_path = aux["control_dataset_path"]
+    control_ratio = aux["control_ratio"]
+    cache_text_embeddings = aux["cache_text_embeddings"]
+    raw_quant = (
         lora_cfg.get("quantization")
         or cfg.get("quantization")
         or os.environ.get("FLUX_QUANTIZATION")
+        or aux["quantization"]
         or "4bit"
-    ).lower().strip()
-    is_4bit = quantization in ("4bit", "4bit-nf4", "nf4")
-    is_8bit = quantization in ("8bit", "8bit-bnb", "int8")
-    is_quantized = is_4bit or is_8bit
+    )
+    quantization = str(raw_quant).strip().lower()
+    # Normaliza aliases legados e valida o enum canônico (none/2bit/4bit/6bit/8bit).
+    aux_check = _validate_train_aux(
+        {**cfg, "quantization": quantization},
+        quant_default=None,
+    )
+    quantization = aux_check["quantization"] or "none"
+    is_4bit = quantization == "4bit"
+    is_8bit = quantization == "8bit"
+    is_2bit = quantization == "2bit"
+    is_6bit = quantization == "6bit"
+    is_quantized = is_4bit or is_8bit or is_2bit or is_6bit
 
     if is_4bit:
         quant_label = "4-bit NF4"
@@ -372,16 +392,27 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             bnb_4bit_compute_dtype=target_dtype,
             bnb_4bit_use_double_quant=True,
         )
+        torchao_quant_cfg = None
     elif is_8bit:
         quant_label = "8-bit BitsAndBytes"
         quant_format = "8bit"
         bnb_config = BitsAndBytesConfig(
             load_in_8bit=True,
         )
+        torchao_quant_cfg = None
+    elif is_2bit or is_6bit:
+        # 2bit/6bit via torchao intx weight-only (quantização do modelo base na
+        # carga; LoRA treina em cima). Só faz sentido em CUDA — sem torchao/GPU
+        # _build_intx_torchao_config dá erro honesto, nunca fallback silencioso.
+        quant_label = f"{'2' if is_2bit else '6'}-bit TorchAO intx weight-only"
+        quant_format = "2bit" if is_2bit else "6bit"
+        bnb_config = None
+        torchao_quant_cfg = _build_intx_torchao_config(quant_format)
     else:
         quant_label = "Nenhum (FP16/BF16 pleno)"
         quant_format = "full"
         bnb_config = None
+        torchao_quant_cfg = None
 
     force_requantize = bool(
         cfg.get("force_requantize", False)
@@ -509,10 +540,20 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         )
         print(step_msg_trans, flush=True)
         try:
+            # 2bit/6bit: torchao intx weight-only exige diffusers.TorchAoConfig
+            # (quant_type=IntxWeightOnlyConfig). BitsAndBytes não cobre esses
+            # níveis — passar quantization_config=None seria precisão plena
+            # silenciosa; aqui o config torchao é sempre aplicado quando pedido.
+            if torchao_quant_cfg is not None:
+                from diffusers import TorchAoConfig as _DiffTorchAoConfig
+
+                effective_quant_cfg: Any = _DiffTorchAoConfig(quant_type=torchao_quant_cfg)
+            else:
+                effective_quant_cfg = bnb_config
             transformer = Flux2Transformer_cls.from_pretrained(
                 model_id,
                 subfolder="transformer",
-                quantization_config=bnb_config,
+                quantization_config=effective_quant_cfg,
                 torch_dtype=target_dtype,
                 cache_dir=hub_cache,
                 token=hf_token,
@@ -603,10 +644,18 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                 message=step_msg_enc,
             )
             print(step_msg_enc, flush=True)
+            # Mesmo roteamento torchao do transformer: text encoder Qwen3 também
+            # carrega quantizado em 2bit/6bit via transformers.TorchAoConfig.
+            if torchao_quant_cfg is not None:
+                from transformers import TorchAoConfig as _HfTorchAoConfig
+
+                text_quant_cfg: Any = _HfTorchAoConfig(quant_type=torchao_quant_cfg)
+            else:
+                text_quant_cfg = bnb_config
             text_encoder_one = AutoModelForCausalLM.from_pretrained(
                 model_id,
                 subfolder="text_encoder",
-                quantization_config=bnb_config,
+                quantization_config=text_quant_cfg,
                 torch_dtype=target_dtype,
                 cache_dir=hub_cache,
                 token=hf_token,
@@ -665,19 +714,18 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                 if is_quantized
                 else f"Baixando e carregando Text Encoder T5 em precisão plena ({model_id})..."
             )
-            _emit_metric(
-                metrics_path,
-                epoch=0,
-                step=4,
-                progress=0.04,
-                phase="quantizing_text_encoder" if is_quantized else "load_text_encoder",
-                message=step_msg_t5,
-            )
             print(step_msg_t5, flush=True)
+            # T5-XXL também carrega quantizado em 2bit/6bit via transformers.TorchAoConfig.
+            if torchao_quant_cfg is not None:
+                from transformers import TorchAoConfig as _HfTorchAoConfig2
+
+                t5_quant_cfg: Any = _HfTorchAoConfig2(quant_type=torchao_quant_cfg)
+            else:
+                t5_quant_cfg = bnb_config
             text_encoder_two = T5EncoderModel.from_pretrained(
                 model_id,
                 subfolder="text_encoder_2",
-                quantization_config=bnb_config,
+                quantization_config=t5_quant_cfg,
                 torch_dtype=target_dtype,
                 cache_dir=hub_cache,
                 token=hf_token,
@@ -767,7 +815,7 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         message=f"Adaptadores LoRA injetados no Transformer (rank={rank}, alpha={alpha}, treináveis: {trainable_params_count:,}).",
     )
 
-    # 5. Dataset de treino
+    # 5. Dataset de treino (+ controle para prior-preservation, se configurado)
     dataset = DiffusionDataset(
         dataset_path,
         resolution=resolution,
@@ -778,6 +826,25 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         _die(f"Nenhum par imagem+legenda (.txt) encontrado em: {dataset_path}")
 
     dataloader = build_dataloader(dataset, batch_size, seed=seed)
+
+    # Dataset de controle: mesma resolução/bucketing, caption VAZIA (sem
+    # trigger word). Intercalação por step via _cycling_batches com prob.
+    # control_ratio — mesma pipeline de ruído/loss no mesmo step.
+    control_dataset = None
+    control_iter = None
+    control_n = 0
+    if control_dataset_path is not None:
+        control_dataset = DiffusionDataset(
+            control_dataset_path,
+            resolution=resolution,
+            trigger_word="",
+            enable_bucket=enable_bucket,
+            empty_captions=True,
+        )
+        control_iter = _cycling_batches(
+            build_dataloader(control_dataset, batch_size, seed=seed)
+        )
+        control_n = len(control_dataset)
 
     _emit_metric(
         metrics_path,
@@ -790,6 +857,12 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             + (f" em {len(dataset.buckets)} buckets de aspect ratio." if enable_bucket else ".")
         ),
     )
+    print(
+        f"[FLUX] Treino: dataset={len(dataset)} imagens, "
+        f"control_dataset_images={control_n}, control_ratio={control_ratio}, "
+        f"cache_text_embeddings={cache_text_embeddings}, quantization={quantization}",
+        flush=True,
+    )
 
     # 6. Otimizador e LR Scheduler
     optimizer = _create_optimizer(transformer, optimizer_name, learning_rate)
@@ -798,6 +871,39 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     lr_scheduler = _create_lr_scheduler(
         optimizer, lr_scheduler_name, total_train_steps, lr_warmup_steps
     )
+
+    # Cache de text embeddings pré-computado UMA vez no início (miss → on-the-fly
+    # + warm; falha → segue sem cache). O que é cacheado por arch:
+    # - FLUX.2 Klein: saída do Qwen3 (_encode_qwen3_prompt: 3 camadas ocultas
+    #   concatenadas); txt_ids são determinísticos p/ seq_len e vão no payload.
+    # - FLUX.1: saída do CLIP (pooled) + saída do T5; txt_ids idem.
+    text_cache = TextEmbedsCache(output, cache_text_embeddings)
+    if cache_text_embeddings:
+        def _encode_flux_all(caps: list[str]) -> dict[str, Any]:
+            with torch.no_grad():
+                if is_flux2:
+                    hidden = _encode_qwen3_prompt(
+                        text_encoder_one, tokenizer_one, caps, device, target_dtype
+                    )
+                    return {"hidden": hidden}
+                clip_inputs = tokenizer_one(
+                    caps, padding="max_length", max_length=77,
+                    truncation=True, return_tensors="pt",
+                ).to(device)
+                pooled = text_encoder_one(clip_inputs.input_ids).pooler_output
+                t5_inputs = tokenizer_two(
+                    caps, padding="max_length", max_length=512,
+                    truncation=True, return_tensors="pt",
+                ).to(device)
+                hidden = text_encoder_two(t5_inputs.input_ids)[0]
+                return {"hidden": hidden, "pooled": pooled}
+
+        _precompute_text_cache(
+            text_cache,
+            [c for _, c in dataset.samples]
+            + ([c for _, c in control_dataset.samples] if control_dataset else []),
+            _encode_flux_all,
+        )
 
     # Amostra baseline (Época 0) para comparação pré-treino (apenas se não estiver retomando)
     if sample_prompt and epoch_offset == 0:
@@ -873,6 +979,32 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
 
     global_step = 0
     safe_avg_loss = None
+
+    def _encode_flux2_batch(caps: list[str]) -> dict[str, Any]:
+        hidden = _encode_qwen3_prompt(
+            text_encoder_one, tokenizer_one, caps, device, target_dtype
+        )
+        return {"hidden": hidden}
+
+    def _encode_flux1_batch(caps: list[str]) -> dict[str, Any]:
+        clip_inputs = tokenizer_one(
+            caps,
+            padding="max_length",
+            max_length=77,
+            truncation=True,
+            return_tensors="pt",
+        ).to(device)
+        pooled = text_encoder_one(clip_inputs.input_ids).pooler_output
+        t5_inputs = tokenizer_two(
+            caps,
+            padding="max_length",
+            max_length=512,
+            truncation=True,
+            return_tensors="pt",
+        ).to(device)
+        hidden = text_encoder_two(t5_inputs.input_ids)[0]
+        return {"hidden": hidden, "pooled": pooled}
+
     for epoch_idx in range(1, epochs + 1):
         epoch = epoch_idx + epoch_offset
         epoch_loss = 0.0
@@ -880,6 +1012,10 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         optimizer.zero_grad()
 
         for batch in dataloader:
+            # Prior-preservation: com prob. control_ratio usa o batch de controle
+            # (regularização, captions vazias) no loss do mesmo step.
+            if control_iter is not None and random.random() < control_ratio:
+                batch = next(control_iter)
             pixel_values = batch["pixel_values"].to(device)
             captions = batch["prompt"]
             bsz = pixel_values.shape[0]
@@ -906,8 +1042,8 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                     img_ids = _prepare_flux2_latent_ids(latents)
                     packed_latents = _pack_latents_flux2(latents)
 
-                    prompt_embeds = _encode_qwen3_prompt(
-                        text_encoder_one, tokenizer_one, captions, device, target_dtype
+                    prompt_embeds = _cached_encode(captions, _encode_flux2_batch, text_cache)["hidden"].to(
+                        device, dtype=target_dtype
                     )
                     txt_ids = _prepare_flux2_text_ids(prompt_embeds)
                     pooled_prompt_embeds = None
@@ -923,23 +1059,9 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                         target_dtype,
                     )
 
-                    clip_inputs = tokenizer_one(
-                        captions,
-                        padding="max_length",
-                        max_length=77,
-                        truncation=True,
-                        return_tensors="pt",
-                    ).to(device)
-                    pooled_prompt_embeds = text_encoder_one(clip_inputs.input_ids).pooler_output
-
-                    t5_inputs = tokenizer_two(
-                        captions,
-                        padding="max_length",
-                        max_length=512,
-                        truncation=True,
-                        return_tensors="pt",
-                    ).to(device)
-                    prompt_embeds = text_encoder_two(t5_inputs.input_ids)[0]
+                    cached = _cached_encode(captions, _encode_flux1_batch, text_cache)
+                    prompt_embeds = cached["hidden"].to(device, dtype=target_dtype)
+                    pooled_prompt_embeds = cached["pooled"].to(device, dtype=target_dtype)
                     txt_ids = _prepare_text_ids(prompt_embeds.shape[1], device, prompt_embeds.dtype, batch_size=bsz)
 
             # Ruído gaussiano e timesteps amostrados com shifted logit-normal para Flow Matching

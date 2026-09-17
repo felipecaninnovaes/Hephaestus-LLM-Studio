@@ -222,3 +222,269 @@ def _load_lora_weights(model: Any, weights_path: Path | str) -> None:
     set_peft_model_state_dict(model, state_dict)
     print("[INFO] Pesos LoRA injetados com sucesso no modelo para continuação de treino.", flush=True)
 
+
+# ---------------------------------------------------------------------------
+# Infraestrutura auxiliar do treino (control dataset, cache de embeddings, quant)
+# ---------------------------------------------------------------------------
+
+# Níveis canônicos de quantização aceitos no treino (wire api-principal → engines).
+_TRAIN_QUANT_LEVELS = ("none", "2bit", "4bit", "6bit", "8bit")
+# Aliases legados que continuam aceitos na validação (compat com configs antigas).
+_TRAIN_QUANT_ALIASES = {
+    "4bit-nf4": "4bit",
+    "nf4": "4bit",
+    "8bit-bnb": "8bit",
+    "int8": "8bit",
+}
+
+# Fração default/máxima de steps com prior-preservation (estilo DreamBooth, 10%).
+_CONTROL_RATIO_DEFAULT = 0.1
+_CONTROL_RATIO_MAX = 0.5
+
+
+def _normalize_train_quantization(raw: Any, default: str | None = "none") -> str | None:
+    """Normaliza o nível de quantização do treino para o enum canônico.
+
+    Aceita none/2bit/4bit/6bit/8bit + aliases legados 4bit-nf4/nf4/8bit-bnb/int8.
+    Valor ausente/vazio → ``default`` (None = ausente; o trainer aplica o default do arch).
+    Valor desconhecido → _die (erro honesto, nunca degradação silenciosa).
+    """
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        if default is None:
+            return None
+        raw = default
+    norm = str(raw).strip().lower()
+    norm = _TRAIN_QUANT_ALIASES.get(norm, norm)
+    if norm not in _TRAIN_QUANT_LEVELS:
+        _die(
+            f"Quantização de treino inválida: '{raw}'. "
+            "Valores aceitos: none, 2bit, 4bit, 6bit, 8bit "
+            "(aliases legados 4bit-nf4/8bit-bnb continuam aceitos)."
+        )
+    return norm
+
+
+def _validate_train_aux(cfg: dict[str, Any], quant_default: str | None = None) -> dict[str, Any]:
+    """Valida as chaves auxiliares do treino vindas do YAML gerado pelo api-principal.
+
+    Cobre ``control_dataset_path`` (diretório staging do orchestrator com imagens
+    de regularização), ``control_ratio`` (0..0.5, default 0.1),
+    ``cache_text_embeddings`` (bool, default False) e a sintaxe de ``quantization``
+    (``quant_default`` é o default do arch quando ausente: "none" p/ SD, "4bit" p/
+    Flux; None = ausente permanece None e o chamador aplica o próprio fallback).
+    Erro honesto via _die em valor inválido.
+    """
+    if not isinstance(cfg, dict):
+        _die("Configuração de treino inválida: raiz deve ser um dicionário.")
+    lora_cfg = cfg.get("lora", {}) or {}
+
+    raw_control = cfg.get("control_dataset_path", None)
+    if isinstance(raw_control, str) and not raw_control.strip():
+        raw_control = None
+    control_dataset_path: Path | None = None
+    if raw_control is not None:
+        control_dataset_path = Path(str(raw_control))
+        if not control_dataset_path.exists() or not control_dataset_path.is_dir():
+            _die(f"control_dataset_path inválido ou inexistente: {raw_control}")
+
+    raw_ratio = cfg.get("control_ratio", None)
+    if raw_ratio is None:
+        raw_ratio = lora_cfg.get("control_ratio", _CONTROL_RATIO_DEFAULT)
+    try:
+        control_ratio = float(raw_ratio)
+    except (TypeError, ValueError):
+        _die(
+            f"control_ratio inválido: {raw_ratio!r}. "
+            f"Deve ser float entre 0 e {_CONTROL_RATIO_MAX}."
+        )
+    if not (0.0 <= control_ratio <= _CONTROL_RATIO_MAX):
+        _die(
+            f"control_ratio fora do intervalo permitido: {control_ratio}. "
+            f"Deve estar entre 0 e {_CONTROL_RATIO_MAX}."
+        )
+
+    raw_cache = cfg.get("cache_text_embeddings", None)
+    if raw_cache is None:
+        raw_cache = lora_cfg.get("cache_text_embeddings", False)
+    if isinstance(raw_cache, str):
+        cache_text_embeddings = raw_cache.strip().lower() in ("1", "true", "yes")
+    else:
+        cache_text_embeddings = bool(raw_cache)
+
+    raw_quant = lora_cfg.get("quantization", None)
+    if raw_quant is None:
+        raw_quant = cfg.get("quantization", None)
+    quantization = _normalize_train_quantization(raw_quant, default=quant_default)
+
+    return {
+        "control_dataset_path": control_dataset_path,
+        "control_ratio": control_ratio,
+        "cache_text_embeddings": cache_text_embeddings,
+        "quantization": quantization,
+    }
+
+def _count_control_images(control_path: Path) -> int:
+    """Conta imagens de regularização (mesmas extensões do DiffusionDataset, sem abrir arquivos)."""
+    target = control_path / "images"
+    if not target.exists():
+        target = control_path
+    valid_exts = {".webp", ".png", ".jpg", ".jpeg"}
+    try:
+        return sum(
+            1 for p in target.iterdir() if p.is_file() and p.suffix.lower() in valid_exts
+        )
+    except OSError:
+        return 0
+
+
+def _cycling_batches(loader: Any) -> Any:
+    """Iterador infinito sobre um DataLoader (amostragem do control dataset com reposição)."""
+    while True:
+        for batch in loader:
+            yield batch
+
+
+def _caption_cache_key(caption: str) -> str:
+    """Chave de invalidação natural do cache: sha256(caption)[:16]."""
+    return hashlib.sha256(caption.encode("utf-8")).hexdigest()[:16]
+
+
+class TextEmbedsCache:
+    """Cache em disco dos prompt embeddings: ``{output}/text_embeds_cache/{sha256(caption)[:16]}.pt``.
+
+    Miss → o trainer computa on-the-fly e grava (warm). Falha de escrita
+    (disco cheio, permissão) → warning único, desabilita o cache e segue
+    sem cache — nunca derruba o treino.
+    """
+
+    def __init__(self, output: Path, enabled: bool):
+        self.enabled = bool(enabled)
+        self.dir = Path(output) / "text_embeds_cache"
+        self._broken = False
+
+    def get(self, caption: str) -> dict[str, Any] | None:
+        """Retorna o payload em CPU ou None (miss). Arquivo corrompido = miss (regenerado no put)."""
+        if not self.enabled or self._broken:
+            return None
+        path = self.dir / f"{_caption_cache_key(caption)}.pt"
+        if not path.exists():
+            return None
+        try:
+            import torch
+
+            data = torch.load(str(path), map_location="cpu", weights_only=True)
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+
+    def put(self, caption: str, payload: dict[str, Any]) -> None:
+        """Grava atomicamente o payload (tensores movidos para CPU). Falha → warning único + segue sem cache."""
+        if not self.enabled or self._broken:
+            return
+        try:
+            import torch
+
+            self.dir.mkdir(parents=True, exist_ok=True)
+            cpu_payload = {
+                k: (v.cpu() if hasattr(v, "cpu") else v) for k, v in payload.items()
+            }
+            tmp = self.dir / f".tmp_{_caption_cache_key(caption)}.pt"
+            torch.save(cpu_payload, tmp)
+            os.replace(tmp, self.dir / f"{_caption_cache_key(caption)}.pt")
+        except Exception as e:
+            self._broken = True
+            print(
+                f"[WARN] Cache de text embeddings desabilitado (falha de escrita): {e}",
+                flush=True,
+            )
+
+
+def _build_intx_torchao_config(quantization: str) -> Any:
+    """Constrói o torchao IntxWeightOnlyConfig para quantização 2bit/6bit weight-only.
+
+    Equivalente moderno aos knobs clássicos ("intx_weight_only", weight_type
+    "int2"/"int6"): o chamador embrulha em ``diffusers.TorchAoConfig(quant_type=...)``
+    (Transformer/UNet) ou ``transformers.TorchAoConfig(quant_type=...)``
+    (text encoders). Só faz sentido em CUDA: sem torch/torchao ou sem GPU →
+    erro honesto, nunca fallback silencioso para precisão plena.
+    """
+    norm = str(quantization).strip().lower()
+    if norm not in ("2bit", "6bit"):
+        _die(f"Quantização torchao intx inválida: '{quantization}'. Use '2bit' ou '6bit'.")
+    try:
+        import torch
+    except ImportError:
+        _die(f"Quantização '{norm}' exige torch instalado (extra 'train').")
+    try:
+        from torchao.quantization import IntxWeightOnlyConfig
+    except ImportError as e:
+        _die(f"Quantização '{norm}' exige torchao instalado (extra 'train'): {e}")
+    if not torch.cuda.is_available():
+        _die(
+            f"Quantização '{norm}' (torchao int2/int6 weight-only) exige CUDA "
+            "— sem fallback em CPU."
+        )
+    weight_dtype = torch.int2 if norm == "2bit" else torch.int6
+    try:
+        return IntxWeightOnlyConfig(weight_dtype=weight_dtype)
+    except Exception as e:
+        _die(f"Falha ao construir config torchao {norm}: {e}")
+
+def _precompute_text_cache(
+    cache: TextEmbedsCache,
+    captions: list[str],
+    encode_fn: Any,
+    batch_size: int = 32,
+) -> None:
+    """Pré-computa UMA vez os prompt embeddings de todas as captions do dataset.
+
+    ``encode_fn(caps)`` é o caminho honesto de cada arch (ex.: rodar os text
+    encoders uma vez — SD: CLIP; SDXL: dual CLIP + pooled; Flux: T5+CLIP ou
+    Qwen3 conforme o arch) e deve retornar ``{nome: Tensor[B, ...]}`` em
+    qualquer device. Falha aqui → warning e segue sem cache (não derruba o treino).
+    """
+    if not cache.enabled:
+        return
+    uniq = list(dict.fromkeys(c for c in captions if isinstance(c, str)))
+    if not uniq:
+        return
+    try:
+        for i in range(0, len(uniq), batch_size):
+            chunk = uniq[i : i + batch_size]
+            out = encode_fn(chunk)
+            for k, cap in enumerate(chunk):
+                cache.put(cap, {name: t[k].detach().cpu() for name, t in out.items()})
+    except Exception as e:
+        cache.enabled = False
+        print(
+            f"[WARN] Falha ao pré-computar cache de text embeddings, seguindo sem cache: {e}",
+            flush=True,
+        )
+        return
+    print(
+        f"[INFO] Cache de text embeddings pré-computado: {len(uniq)} captions únicas.",
+        flush=True,
+    )
+
+
+def _cached_encode(captions: list[str], encode_fn: Any, cache: TextEmbedsCache) -> dict[str, Any]:
+    """Resolve os embeddings do batch via cache (hit) ou encoder (miss com warm).
+
+    Retorna ``{nome: Tensor[B, ...]}`` empilhado em CPU no caminho com cache
+    (o chamador move para device/dtype — ``.to()`` é idempotente no caminho
+    direto). Miss → computa on-the-fly só o subset ausente e grava no cache.
+    """
+    import torch
+
+    if not cache.enabled:
+        return encode_fn(captions)
+    hits = [cache.get(c) for c in captions]
+    miss_idx = [i for i, h in enumerate(hits) if h is None]
+    if miss_idx:
+        out = encode_fn([captions[i] for i in miss_idx])
+        for k, i in enumerate(miss_idx):
+            payload = {name: t[k].detach().cpu() for name, t in out.items()}
+            cache.put(captions[i], payload)
+            hits[i] = payload
+    names = list(hits[0].keys())
+    return {name: torch.stack([h[name] for h in hits]) for name in names}

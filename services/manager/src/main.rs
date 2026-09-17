@@ -105,6 +105,10 @@ fn bad_request(msg: &str) -> Response {
     error_response(StatusCode::BAD_REQUEST, "invalid_request", msg)
 }
 
+fn conflict(code: &str, msg: &str) -> Response {
+    error_response(StatusCode::CONFLICT, code, msg)
+}
+
 fn pairing_invalid() -> Response {
     error_response(
         StatusCode::CONFLICT,
@@ -225,6 +229,7 @@ async fn create_job_handler(State(state): State<AppState>, body: Bytes) -> Respo
         Err(ManagerError::InvalidRequest(ref msg)) => {
             error_response(StatusCode::BAD_REQUEST, "invalid_request", msg)
         }
+        Err(ManagerError::Conflict(ref code)) => conflict(code, "conflict"),
         Err(ManagerError::Internal(e)) => internal_error(&e),
         Err(e) => internal_error(&e.to_string()),
     }
@@ -297,6 +302,9 @@ async fn abort_job_handler(State(state): State<AppState>, Path(id): Path<String>
         Err(ManagerError::Internal(e)) => internal_error(&e),
         Err(ManagerError::InvalidRequest(msg)) => bad_request(&msg),
         Err(ManagerError::PairingInvalid) => internal_error("unexpected pairing_invalid"),
+        Err(ManagerError::Conflict(code)) => {
+            internal_error(&format!("unexpected conflict: {code}"))
+        }
     }
 }
 
@@ -384,6 +392,106 @@ async fn report_job_handler(
     match manager::report_job(&state.pool, uuid, req).await {
         Ok(()) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response(),
         Err(ManagerError::NotFound) => not_found(),
+        Err(ManagerError::Internal(e)) => internal_error(&e),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+/// POST /internal/jobs/:id/prepare-complete — worker do BFF concluiu o
+/// empacotamento (ADR-0025 D1): `preparing` → `queued`. Fora de `preparing`
+/// → 409; inexistente → 404. Após a transição, dispara `dispatch_next`
+/// (best-effort — o loop de 2s pega o resto).
+async fn prepare_complete_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Response {
+    let uuid = match id.parse::<uuid::Uuid>() {
+        Ok(u) => u,
+        Err(_) => return not_found(),
+    };
+
+    if body.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "invalid_request", "empty body");
+    }
+    let req: manager::PrepareCompleteRequest = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                &format!("invalid json: {e}"),
+            )
+        }
+    };
+
+    match manager::prepare_complete(&state.pool, uuid, req).await {
+        Ok(()) => {
+            // Disparo normal de dispatch (best-effort: falha não desfaz o complete).
+            match manager::dispatch_next(
+                &state.pool,
+                state.orch_client.as_ref(),
+                &state.exec_mode,
+                &state.orch_workdir,
+                &state.trainer_image,
+                &state.vram_table,
+            )
+            .await
+            {
+                Ok(true) => tracing::info!("dispatch após prepare-complete: job despachado"),
+                Ok(false) => {}
+                Err(e) => tracing::warn!("dispatch após prepare-complete falhou: {e}"),
+            }
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"ok": true, "status": "queued"})),
+            )
+                .into_response()
+        }
+        Err(ManagerError::NotFound) => not_found(),
+        Err(ManagerError::Conflict(code)) => conflict(&code, "job is not in preparing state"),
+        Err(ManagerError::InvalidRequest(msg)) => bad_request(&msg),
+        Err(ManagerError::Internal(e)) => internal_error(&e),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+/// POST /internal/jobs/:id/prepare-fail — worker do BFF falhou o
+/// empacotamento (ADR-0025 D1): `preparing` → `failed`
+/// (`error='prepare_failed:<code>:<message>'`).
+async fn prepare_fail_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Response {
+    let uuid = match id.parse::<uuid::Uuid>() {
+        Ok(u) => u,
+        Err(_) => return not_found(),
+    };
+
+    if body.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "invalid_request", "empty body");
+    }
+    let req: manager::PrepareFailRequest = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                &format!("invalid json: {e}"),
+            )
+        }
+    };
+
+    match manager::prepare_fail(&state.pool, uuid, req).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"ok": true, "status": "failed"})),
+        )
+            .into_response(),
+        Err(ManagerError::NotFound) => not_found(),
+        Err(ManagerError::Conflict(code)) => conflict(&code, "job is not in preparing state"),
+        Err(ManagerError::InvalidRequest(msg)) => bad_request(&msg),
         Err(ManagerError::Internal(e)) => internal_error(&e),
         Err(e) => internal_error(&e.to_string()),
     }
@@ -621,6 +729,14 @@ fn build_router(state: AppState) -> Router {
         .route("/internal/jobs/:id/artifacts", get(list_artifacts_handler))
         .route("/internal/jobs/:id/abort", post(abort_job_handler))
         .route("/internal/jobs/:id/report", post(report_job_handler))
+        .route(
+            "/internal/jobs/:id/prepare-complete",
+            post(prepare_complete_handler),
+        )
+        .route(
+            "/internal/jobs/:id/prepare-fail",
+            post(prepare_fail_handler),
+        )
         .route("/internal/heartbeat", post(heartbeat_handler))
         .route("/internal/telemetry", get(telemetry_handler))
         .route("/internal/orchestrators", get(list_orchestrators_handler))

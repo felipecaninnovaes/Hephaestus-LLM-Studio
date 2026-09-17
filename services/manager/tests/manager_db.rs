@@ -4593,7 +4593,9 @@ async fn watchdog_requeue_preserva_hint_e_redispatch() {
 #[tokio::test]
 #[ignore = "requer Postgres (bash scripts/test-db.sh)"]
 async fn autolabel_job_lifecycle_and_dispatch() {
+    let _guard = SERIAL.lock().await;
     let p = pool().await;
+    cleanup(&p).await;
     let ds_id = insert_test_dataset(&p).await;
     let req = CreateJobRequest {
         kind: "autolabel".into(),
@@ -6477,4 +6479,436 @@ async fn hook_models_conflict_nao_sobrescreve_kind_existente() {
     );
     assert_eq!(rows[0].1.as_deref(), Some("sd15"), "arch manual preservado");
     assert_eq!(rows[0].2, "upload", "source manual preservado");
+}
+
+// ===========================================================================
+// P3 (ADR-0025) — submit assíncrono: estado `preparing` no manager
+// ===========================================================================
+
+/// Helper: request do fluxo assíncrono (package_ref ausente + params.prepare opaco).
+fn test_prepare_job_request(dataset_id: uuid::Uuid) -> CreateJobRequest {
+    CreateJobRequest {
+        kind: "yolo_train".into(),
+        engine: "yolo".into(),
+        model: "yolo11m".into(),
+        mode: "train".into(),
+        dataset_id: Some(dataset_id.to_string()),
+        dataset_version_id: None,
+        package_ref: None,
+        config_yaml: None,
+        params: Some(serde_json::json!({
+            "prepare": {
+                "dataset_id": dataset_id.to_string(),
+                "fingerprint": "abc123",
+                "engine": "yolo"
+            }
+        })),
+        vram_min_gb: None,
+        weights_id: None,
+        orchestrator_hint: None,
+    }
+}
+
+/// Helper: request com package_ref:null explícito e sem prepare (malformado p/ P3).
+fn test_bare_job_request(dataset_id: uuid::Uuid) -> CreateJobRequest {
+    CreateJobRequest {
+        kind: "yolo_train".into(),
+        engine: "yolo".into(),
+        model: "yolo11m".into(),
+        mode: "train".into(),
+        dataset_id: Some(dataset_id.to_string()),
+        dataset_version_id: None,
+        package_ref: None,
+        config_yaml: None,
+        params: Some(serde_json::json!({"package_ref": serde_json::Value::Null})),
+        vram_min_gb: None,
+        weights_id: None,
+        orchestrator_hint: None,
+    }
+}
+
+/// Insere uma dataset_version de teste e retorna o ID.
+async fn insert_test_version(pool: &PgPool, dataset_id: uuid::Uuid) -> uuid::Uuid {
+    let id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO dataset_versions (id, dataset_id, manifest) VALUES ($1, $2, '{}'::jsonb)",
+    )
+    .bind(id)
+    .bind(dataset_id)
+    .execute(pool)
+    .await
+    .expect("insert test version");
+    id
+}
+
+fn complete_req(version_id: uuid::Uuid) -> manager::PrepareCompleteRequest {
+    manager::PrepareCompleteRequest {
+        dataset_version_id: version_id.to_string(),
+        package_ref: manager::PreparePackageRef {
+            key: "packages/test/dataset.zip".into(),
+            md5_zip: "d41d8cd98f00b204e9800998ecf8427e".into(),
+            bytes: 1024,
+        },
+    }
+}
+
+/// (a) create_job com prepare → `preparing` (queue_position NULL); legado com
+/// pacote → `queued`; sem nenhum dos dois → 400 (InvalidRequest).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_prepare_vs_legado() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    // Fluxo assíncrono.
+    let resp = manager::create_job(&p, test_prepare_job_request(ds_id))
+        .await
+        .expect("create prepare");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+    assert_eq!(resp.status, "preparing");
+    assert_eq!(resp.queue_position, None);
+
+    let job = manager::get_job(&p, job_id).await.expect("get preparing");
+    assert_eq!(job.status, "preparing");
+    assert_eq!(job.queue_position, None);
+    assert!(job.params.as_ref().and_then(|v| v.get("prepare")).is_some());
+
+    // Legado (retrocompat total).
+    let legacy = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create legacy");
+    assert_eq!(legacy.status, "queued");
+    assert!(legacy.queue_position.is_some());
+
+    // Malformado: package_ref:null sem prepare → 400.
+    let bare = manager::create_job(&p, test_bare_job_request(ds_id)).await;
+    assert!(
+        matches!(bare, Err(ManagerError::InvalidRequest(_))),
+        "package_ref:null sem prepare deve ser 400"
+    );
+
+    // Omissão total (sem package, sem prepare) → legado `queued` (retrocompat).
+    let mut omitted = test_bare_job_request(ds_id);
+    omitted.params = Some(serde_json::json!({}));
+    let legacy_omitted = manager::create_job(&p, omitted)
+        .await
+        .expect("omissão legada");
+    assert_eq!(legacy_omitted.status, "queued");
+
+    // params.prepare não-objeto → 400.
+    let mut bad_prepare = test_bare_job_request(ds_id);
+    bad_prepare.params = Some(serde_json::json!({"prepare": "nao-objeto"}));
+    let bad = manager::create_job(&p, bad_prepare).await;
+    assert!(
+        matches!(bad, Err(ManagerError::InvalidRequest(_))),
+        "prepare não-objeto deve ser 400"
+    );
+}
+
+/// (b) prepare → complete → queued; dispatch ignora `preparing` e despacha
+/// após o complete.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn prepare_complete_vira_queued_e_despacha() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+
+    let resp = manager::create_job(&p, test_prepare_job_request(ds_id))
+        .await
+        .expect("create prepare");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    // Dispatch NÃO seleciona preparing.
+    let dispatched = manager::dispatch_next(
+        &p,
+        &orch,
+        "docker",
+        "/data",
+        "hephaestus/trainer-yolo:local",
+        &test_vram_table(),
+    )
+    .await
+    .expect("dispatch ignora preparing");
+    assert!(!dispatched, "preparing nunca é selecionado p/ dispatch");
+    assert!(orch.calls().is_empty());
+    let job = manager::get_job(&p, job_id).await.expect("get");
+    assert_eq!(job.status, "preparing");
+
+    // Complete (versão precisa existir — fail-fast anti-referência-pendurada).
+    let version_id = insert_test_version(&p, ds_id).await;
+    manager::prepare_complete(&p, job_id, complete_req(version_id))
+        .await
+        .expect("prepare complete");
+
+    let job = manager::get_job(&p, job_id).await.expect("get queued");
+    assert_eq!(job.status, "queued");
+    assert_eq!(job.queue_position, Some(1));
+    let params = job.params.expect("params");
+    assert_eq!(params["package_ref"]["key"], "packages/test/dataset.zip");
+    assert_eq!(params["package_ref"]["version_id"], version_id.to_string());
+    assert_eq!(params["dataset_version_id"], version_id.to_string());
+
+    // Agora o dispatch pega.
+    let dispatched = manager::dispatch_next(
+        &p,
+        &orch,
+        "docker",
+        "/data",
+        "hephaestus/trainer-yolo:local",
+        &test_vram_table(),
+    )
+    .await
+    .expect("dispatch após complete");
+    assert!(dispatched);
+    let job = manager::get_job(&p, job_id).await.expect("get dispatched");
+    assert_eq!(job.status, "dispatched");
+}
+
+/// (b2) report com phase/message/progress em `preparing` persiste (canal ADR-0024).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn report_preparing_persiste_phase_message() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let resp = manager::create_job(&p, test_prepare_job_request(ds_id))
+        .await
+        .expect("create prepare");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "preparing".into(),
+            progress: Some(0.42),
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: None,
+            meta_content: None,
+            phase: Some("packaging_dataset".into()),
+            message: Some("zipando 860 imagens".into()),
+        },
+    )
+    .await
+    .expect("report preparing");
+
+    let job = manager::get_job(&p, job_id).await.expect("get");
+    assert_eq!(job.status, "preparing");
+    assert_eq!(job.phase.as_deref(), Some("packaging_dataset"));
+    assert_eq!(job.message.as_deref(), Some("zipando 860 imagens"));
+    assert_eq!(job.progress, Some(0.42));
+}
+
+/// (c) prepare-fail → `failed` com error prefixado `prepare_failed:<code>:<msg>`.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn prepare_fail_vira_failed_prefixado() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let resp = manager::create_job(&p, test_prepare_job_request(ds_id))
+        .await
+        .expect("create prepare");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    manager::prepare_fail(
+        &p,
+        job_id,
+        manager::PrepareFailRequest {
+            code: "build_error".into(),
+            message: "s3 boom".into(),
+        },
+    )
+    .await
+    .expect("prepare fail");
+
+    let job = manager::get_job(&p, job_id).await.expect("get failed");
+    assert_eq!(job.status, "failed");
+    assert!(job.finished_at.is_some());
+    assert_eq!(
+        job.error.as_deref(),
+        Some("prepare_failed:build_error:s3 boom")
+    );
+}
+
+/// (d) transições fora de `preparing` → Conflict (409); inexistente → NotFound.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn prepare_transicao_fora_de_preparing_409() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let version_id = insert_test_version(&p, ds_id).await;
+
+    // Job legado em `queued`: complete e fail → Conflict.
+    let legacy = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create legacy");
+    let queued_id: uuid::Uuid = legacy.job_id.parse().unwrap();
+
+    let r = manager::prepare_complete(&p, queued_id, complete_req(version_id)).await;
+    assert!(
+        matches!(r, Err(ManagerError::Conflict(_))),
+        "complete fora de preparing → 409"
+    );
+    let r = manager::prepare_fail(
+        &p,
+        queued_id,
+        manager::PrepareFailRequest {
+            code: "x".into(),
+            message: "y".into(),
+        },
+    )
+    .await;
+    assert!(
+        matches!(r, Err(ManagerError::Conflict(_))),
+        "fail fora de preparing → 409"
+    );
+
+    // Inexistente → NotFound.
+    let fake = uuid::Uuid::new_v4();
+    let r = manager::prepare_complete(&p, fake, complete_req(version_id)).await;
+    assert!(matches!(r, Err(ManagerError::NotFound)));
+    let r = manager::prepare_fail(
+        &p,
+        fake,
+        manager::PrepareFailRequest {
+            code: "x".into(),
+            message: "y".into(),
+        },
+    )
+    .await;
+    assert!(matches!(r, Err(ManagerError::NotFound)));
+
+    // Versão inexistente → NotFound (fail-fast anti-referência-pendurada).
+    let prep = manager::create_job(&p, test_prepare_job_request(ds_id))
+        .await
+        .expect("create prepare");
+    let prep_id: uuid::Uuid = prep.job_id.parse().unwrap();
+    let r = manager::prepare_complete(&p, prep_id, complete_req(uuid::Uuid::new_v4())).await;
+    assert!(matches!(r, Err(ManagerError::NotFound)));
+}
+
+/// (e) abort em `preparing` → `cancelling` (worker observa a flag).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn abort_em_preparing_vira_cancelling() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    let resp = manager::create_job(&p, test_prepare_job_request(ds_id))
+        .await
+        .expect("create prepare");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    let result = manager::abort_job(&p, job_id, &orch).await;
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), "cancelling");
+
+    let job = manager::get_job(&p, job_id).await.expect("get");
+    assert_eq!(job.status, "cancelling");
+}
+
+/// (f) watchdog: `preparing` com created_at > 60min → `failed/prepare_timeout`;
+/// fresca permanece `preparing`.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn watchdog_preparing_vencido_falha() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let old = manager::create_job(&p, test_prepare_job_request(ds_id))
+        .await
+        .expect("create old");
+    let old_id: uuid::Uuid = old.job_id.parse().unwrap();
+    let fresh = manager::create_job(&p, test_prepare_job_request(ds_id))
+        .await
+        .expect("create fresh");
+    let fresh_id: uuid::Uuid = fresh.job_id.parse().unwrap();
+
+    sqlx::query("UPDATE jobs SET created_at = now() - interval '61 minutes' WHERE id = $1")
+        .bind(old_id)
+        .execute(&p)
+        .await
+        .expect("backdate");
+
+    // Loop periódico real (watchdog_tick inclui prepare-timeout + GC).
+    manager::watchdog_tick(&p).await.expect("watchdog tick");
+
+    let job = manager::get_job(&p, old_id).await.expect("get old");
+    assert_eq!(job.status, "failed");
+    assert_eq!(job.error.as_deref(), Some("prepare_timeout"));
+
+    let job = manager::get_job(&p, fresh_id).await.expect("get fresh");
+    assert_eq!(job.status, "preparing");
+}
+
+/// (g) GC D10: versão >7 dias sem referência → DELETE; referenciada por
+/// params.package_ref.version_id → preservada; recente → preservada.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn gc_dataset_versions_preserva_referenciados() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let orphan = insert_test_version(&p, ds_id).await;
+    let referenced = insert_test_version(&p, ds_id).await;
+    let recent = insert_test_version(&p, ds_id).await;
+
+    sqlx::query(
+        "UPDATE dataset_versions SET created_at = now() - interval '8 days' WHERE id = ANY($1)",
+    )
+    .bind(vec![orphan, referenced])
+    .execute(&p)
+    .await
+    .expect("backdate versions");
+
+    // Job em `queued` referenciando `referenced` via params.package_ref.
+    let resp = manager::create_job(&p, test_prepare_job_request(ds_id))
+        .await
+        .expect("create prepare");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+    manager::prepare_complete(&p, job_id, complete_req(referenced))
+        .await
+        .expect("complete referencia version");
+
+    let deleted = manager::gc_dataset_versions(&p).await.expect("gc");
+    assert_eq!(deleted, 1, "só a órfã deve ser removida");
+
+    async fn version_exists(pool: &PgPool, id: uuid::Uuid) -> bool {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM dataset_versions WHERE id = $1)",
+        )
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+    assert!(!version_exists(&p, orphan).await, "órfã >7d removida");
+    assert!(
+        version_exists(&p, referenced).await,
+        "referenciada preservada"
+    );
+    assert!(version_exists(&p, recent).await, "recente preservada");
 }

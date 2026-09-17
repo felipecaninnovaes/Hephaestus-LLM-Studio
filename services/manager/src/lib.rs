@@ -22,6 +22,8 @@ pub enum ManagerError {
     NotAbortable,
     /// Job não está em estado terminal (done|failed|cancelled) — não pode ser apagado.
     NotDeletable,
+    /// Transição guardada recusada (ex.: prepare-complete fora de `preparing`) → 409.
+    Conflict(String),
     InvalidRequest(String),
     PairingInvalid,
     Internal(String),
@@ -33,6 +35,7 @@ impl std::fmt::Display for ManagerError {
             Self::NotFound => write!(f, "not found"),
             Self::NotAbortable => write!(f, "job not abortable"),
             Self::NotDeletable => write!(f, "job_not_terminal"),
+            Self::Conflict(e) => write!(f, "{e}"),
             Self::InvalidRequest(e) => write!(f, "invalid request: {e}"),
             Self::PairingInvalid => write!(f, "pairing_invalid"),
             Self::Internal(e) => write!(f, "{e}"),
@@ -78,6 +81,35 @@ pub struct PackageRef {
     pub key: String,
     pub md5_zip: String,
     pub bytes: i64,
+}
+
+/// POST /internal/jobs/:id/prepare-complete (ADR-0025 D1).
+/// Wire camelCase com aliases snake_case (tolerante ao BFF).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrepareCompleteRequest {
+    #[serde(alias = "dataset_version_id")]
+    pub dataset_version_id: String,
+    #[serde(alias = "package_ref")]
+    pub package_ref: PreparePackageRef,
+}
+
+/// Pacote construído pelo worker de preparação (sem version_id: ele é o
+/// dataset_version_id do envelope).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparePackageRef {
+    pub key: String,
+    #[serde(alias = "md5_zip")]
+    pub md5_zip: String,
+    pub bytes: i64,
+}
+
+/// POST /internal/jobs/:id/prepare-fail (ADR-0025 D1).
+#[derive(Debug, Clone, Deserialize)]
+pub struct PrepareFailRequest {
+    pub code: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -465,7 +497,11 @@ pub fn done_artifacts_violation(kind: &str, artifacts: Option<&[ArtifactItem]>) 
     }
 }
 
-/// Cria um job. Retorna (job_id, queue_position).
+/// Cria um job. Retorna (job_id, status, queue_position).
+///
+/// Fluxo assíncrono (ADR-0025 D0): sem package_ref + `params.prepare` (objeto)
+/// → `preparing` (queue_position NULL); com package_ref → `queued` (legado).
+/// Sem nenhum dos dois → `InvalidRequest` (400).
 ///
 /// VRAM policy: `vram_min_gb` é gravado mas ignorado na decisão de fila (no-op
 /// sem GPU — D9/R3). Ver `@gpu` para o fluxo real com `waiting_vram`.
@@ -700,9 +736,55 @@ pub async fn create_job(
         }
     }
 
+    // Fluxo assíncrono (ADR-0025 D0): package_ref ausente + params.prepare
+    // (objeto opaco do BFF) → `preparing`; package_ref presente → `queued`
+    // (legado, retrocompat). Intenção async explícita porém malformada
+    // (package_ref:null sem prepare, ou prepare não-objeto) → 400: job
+    // ficaria eternamente `preparing` sem dono.
+    // Omissão total (sem package E sem prepare, como os callers legados e os
+    // testes de roteamento/generations) → `queued` legado (retrocompat total).
+    // Posição tardia de propósito: resoluções fail-fast (weights_id,
+    // orchestrator_hint, LoRA) mantêm precedência legada (404/400 próprios).
+    let has_package = req.package_ref.is_some()
+        || params
+            .get("package_ref")
+            .map(|v| {
+                v.is_object()
+                    && v.get("key")
+                        .and_then(|k| k.as_str())
+                        .map(|s| !s.is_empty())
+                        .unwrap_or(false)
+            })
+            .unwrap_or(false);
+    let prepare_field = params.get("prepare");
+    let has_prepare = prepare_field.map(|v| v.is_object()).unwrap_or(false);
+    if !has_package && !has_prepare {
+        let package_null = params
+            .get("package_ref")
+            .map(|v| v.is_null())
+            .unwrap_or(false);
+        if package_null || prepare_field.is_some() {
+            if prepare_field.is_some() {
+                return Err(ManagerError::InvalidRequest(
+                    "params.prepare deve ser um objeto".into(),
+                ));
+            }
+            return Err(ManagerError::InvalidRequest(
+                "job com package_ref null exige params.prepare (fluxo assíncrono ADR-0025)".into(),
+            ));
+        }
+    }
+    // package presente sempre vence → `queued`; só vai a `preparing` com
+    // intenção async genuína (prepare objeto, sem package).
+    let initial_status = if !has_package && has_prepare {
+        "preparing"
+    } else {
+        "queued"
+    };
+
     sqlx::query(
         "INSERT INTO jobs (id, kind, engine, model, mode, dataset_id, params, config_yaml, vram_min_gb, status, queue_reason) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'queued', NULL)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL)",
     )
     .bind(job_id)
     .bind(&req.kind)
@@ -713,23 +795,30 @@ pub async fn create_job(
     .bind(&params)
     .bind(&req.config_yaml)
     .bind(req.vram_min_gb)
+    .bind(initial_status)
     .execute(pool)
     .await
     .map_err(|e| ManagerError::Internal(format!("insert job: {e}")))?;
 
-    // Posição na fila: quantos jobs queued têm created_at menor.
-    let queue_pos: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM jobs WHERE status = 'queued' AND created_at < (SELECT created_at FROM jobs WHERE id = $1)",
-    )
-    .bind(job_id)
-    .fetch_one(pool)
-    .await
-    .map_err(|e| ManagerError::Internal(format!("queue position: {e}")))?;
+    // Posição na fila: só jobs `queued` contam; `preparing` → NULL.
+    // (dispatch_next/list/get usam o mesmo predicado status='queued'.)
+    let queue_position = if initial_status == "queued" {
+        let queue_pos: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM jobs WHERE status = 'queued' AND created_at < (SELECT created_at FROM jobs WHERE id = $1)",
+        )
+        .bind(job_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("queue position: {e}")))?;
+        Some((queue_pos.0 + 1) as i32)
+    } else {
+        None
+    };
 
     Ok(CreateJobResponse {
         job_id: job_id.to_string(),
-        status: "queued".to_string(),
-        queue_position: Some((queue_pos.0 + 1) as i32),
+        status: initial_status.to_string(),
+        queue_position,
     })
 }
 
@@ -1018,6 +1107,171 @@ pub async fn abort_job(
             "unexpected status: {other}"
         ))),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Preparação assíncrona (ADR-0025 D0/D1/D3) — dono do estado `preparing`.
+// Representação: SEM coluna nova em jobs (sem migration — CHECK da 0006 já
+// cobre `preparing`); package_ref vive em `params->'package_ref'`
+// {version_id,key,md5_zip,bytes} e o dataset_version_id espelhado em
+// `params->'dataset_version_id'`; o spec opaco do BFF em `params->'prepare'`.
+// Erros seguem a convenção do manager: `params->'error'` (exposto como
+// `JobRow.error` via `params->>'error'`).
+// ---------------------------------------------------------------------------
+
+/// POST /internal/jobs/:id/prepare-complete: `preparing` → `queued`.
+///
+/// Transição guardada (0 linhas ⇒ 404 se inexistente, 409 se fora de
+/// `preparing`). Persiste package_ref + dataset_version_id em params.
+/// O chamador (handler) dispara `dispatch_next` em seguida (best-effort).
+pub async fn prepare_complete(
+    pool: &PgPool,
+    id: Uuid,
+    req: PrepareCompleteRequest,
+) -> Result<(), ManagerError> {
+    let dv_id = Uuid::parse_str(&req.dataset_version_id).map_err(|_| {
+        ManagerError::InvalidRequest("dataset_version_id must be a valid UUID".into())
+    })?;
+    if req.package_ref.key.is_empty() {
+        return Err(ManagerError::InvalidRequest(
+            "package_ref.key must not be empty".into(),
+        ));
+    }
+    if !is_valid_md5(&req.package_ref.md5_zip) {
+        return Err(ManagerError::InvalidRequest(format!(
+            "invalid md5_zip: {}",
+            req.package_ref.md5_zip
+        )));
+    }
+    if req.package_ref.bytes < 0 {
+        return Err(ManagerError::InvalidRequest(format!(
+            "negative bytes: {}",
+            req.package_ref.bytes
+        )));
+    }
+    // Fail-fast: versão precisa existir (dono lógico: principal; DB físico
+    // compartilhado no dev) — evita referência pendurada.
+    let version_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM dataset_versions WHERE id = $1)")
+            .bind(dv_id)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| ManagerError::Internal(format!("check dataset version: {e}")))?;
+    if !version_exists {
+        return Err(ManagerError::NotFound);
+    }
+
+    let package_json = serde_json::json!({
+        "version_id": dv_id.to_string(),
+        "key": req.package_ref.key,
+        "md5_zip": req.package_ref.md5_zip,
+        "bytes": req.package_ref.bytes,
+    });
+    let result = sqlx::query(
+        "UPDATE jobs SET status = 'queued', queue_reason = NULL, \
+          params = params || jsonb_build_object('package_ref', $2::jsonb, 'dataset_version_id', $3) \
+         WHERE id = $1 AND status = 'preparing'",
+    )
+    .bind(id)
+    .bind(&package_json)
+    .bind(dv_id.to_string())
+    .execute(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("prepare complete: {e}")))?;
+
+    if result.rows_affected() == 0 {
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM jobs WHERE id = $1)")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| ManagerError::Internal(format!("check job: {e}")))?;
+        if !exists {
+            return Err(ManagerError::NotFound);
+        }
+        return Err(ManagerError::Conflict("job_not_preparing".into()));
+    }
+    Ok(())
+}
+
+/// POST /internal/jobs/:id/prepare-fail: `preparing` → `failed` com
+/// `params.error = 'prepare_failed:<code>:<message>'`.
+pub async fn prepare_fail(
+    pool: &PgPool,
+    id: Uuid,
+    req: PrepareFailRequest,
+) -> Result<(), ManagerError> {
+    if req.code.is_empty() || req.code.len() > 128 {
+        return Err(ManagerError::InvalidRequest(
+            "code must be 1-128 characters".into(),
+        ));
+    }
+    if req.message.is_empty() {
+        return Err(ManagerError::InvalidRequest(
+            "message must not be empty".into(),
+        ));
+    }
+    let error = format!("prepare_failed:{}:{}", req.code, req.message);
+    let result = sqlx::query(
+        "UPDATE jobs SET status = 'failed', finished_at = now(), \
+          params = params || jsonb_build_object('error', $2) \
+         WHERE id = $1 AND status = 'preparing'",
+    )
+    .bind(id)
+    .bind(&error)
+    .execute(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("prepare fail: {e}")))?;
+
+    if result.rows_affected() == 0 {
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM jobs WHERE id = $1)")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| ManagerError::Internal(format!("check job: {e}")))?;
+        if !exists {
+            return Err(ManagerError::NotFound);
+        }
+        return Err(ManagerError::Conflict("job_not_preparing".into()));
+    }
+    Ok(())
+}
+
+/// Watchdog de preparação (ADR-0025 D3): `preparing` com created_at > 60min
+/// → `failed` (`params.error = 'prepare_timeout'`).
+///
+/// Sem coluna `updated_at` em jobs (e sem migration nesta fatia): o relógio
+/// ancora em `created_at` — reports de progresso não estendem o prazo.
+/// Prepares duram minutos; 60min desde a criação é limite seguro.
+pub async fn watchdog_prepare_timeout(pool: &PgPool) -> Result<u64, ManagerError> {
+    let result = sqlx::query(
+        "UPDATE jobs SET status = 'failed', finished_at = now(), \
+          params = params || jsonb_build_object('error', 'prepare_timeout') \
+         WHERE status = 'preparing' AND created_at < now() - interval '60 minutes'",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("watchdog prepare timeout: {e}")))?;
+
+    Ok(result.rows_affected())
+}
+
+/// GC de dataset_versions (ADR-0025 D4): apaga versões com >7 dias NUNCA
+/// referenciadas por job aceito (referência = params.package_ref.version_id;
+/// NUNCA apaga pacote referenciado). Query defensiva: IS NOT NULL no
+/// version_id para NULL não virar match.
+pub async fn gc_dataset_versions(pool: &PgPool) -> Result<u64, ManagerError> {
+    let result = sqlx::query(
+        "DELETE FROM dataset_versions dv \
+         WHERE dv.created_at < now() - interval '7 days' \
+           AND NOT EXISTS (SELECT 1 FROM jobs j \
+             WHERE (j.params->'package_ref'->>'version_id') IS NOT NULL \
+               AND j.params->'package_ref'->>'version_id' = dv.id::text)",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("gc dataset versions: {e}")))?;
+
+    Ok(result.rows_affected())
 }
 
 // ---------------------------------------------------------------------------
@@ -3011,6 +3265,20 @@ pub async fn watchdog_tick(pool: &PgPool) -> Result<(), ManagerError> {
             "watchdog: {} jobs re-queued de nós offline",
             result.rows_affected()
         );
+    }
+
+    // Preparação travada (ADR-0025 D3): `preparing` > 60min → failed.
+    match watchdog_prepare_timeout(pool).await {
+        Ok(n) if n > 0 => tracing::info!("watchdog: {n} jobs preparing expirados → failed"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("watchdog prepare-timeout error: {e}"),
+    }
+
+    // GC de dataset_versions órfãs >7 dias (ADR-0025 D4) — mesmo loop.
+    match gc_dataset_versions(pool).await {
+        Ok(n) if n > 0 => tracing::info!("gc: {n} dataset_versions órfãs removidas"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("gc dataset_versions error: {e}"),
     }
 
     Ok(())

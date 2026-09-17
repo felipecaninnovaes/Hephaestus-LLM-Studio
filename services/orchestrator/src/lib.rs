@@ -84,6 +84,10 @@ pub struct DispatchRequest {
     /// Imagem inicial para img2img (S4 — feat/img2img). `None` = txt2img.
     #[serde(default)]
     pub init_image_ref: Option<InitImageRef>,
+    /// Dataset de regularização/controle para treino de difusão. `None` = sem controle.
+    /// Mesmo shape do `package_ref` (zip no escopo Packages + md5_zip).
+    #[serde(default)]
+    pub control_package_ref: Option<PackageRef>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -526,6 +530,65 @@ pub fn compute_progress(line: &MetricsLine, total_epochs: i32) -> f64 {
     ((line.epoch as f64) / (total_epochs as f64)).clamp(0.0, 1.0)
 }
 
+/// Lê linhas novas de um arquivo JSONL a partir de um offset (contagem de linhas).
+/// Retorna `(linhas_parseadas, novo_offset)`. O offset SEMPRE avança para o
+/// total de linhas lidas — inclusive sobre linhas malformadas (skip silencioso
+/// via `parse_metrics_line`), para não reprocessar lixo a cada tick.
+///
+/// Arquivo ausente ou ilegível → `(vec![], offset)` sem erro: o produtor pode
+/// ainda não ter criado o arquivo (ex.: daemon ainda carregando pipeline).
+///
+/// Compartilhada entre o collector do one-shot (`metrics.jsonl`) e o tail do
+/// path daemon (`telemetry.jsonl`, D1 — ADR-0023): mesmo formato de relatório
+/// nos dois paths.
+pub fn tail_jsonl_lines(path: &Path, lines_read: usize) -> (Vec<MetricsLine>, usize) {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return (Vec::new(), lines_read),
+    };
+    let lines: Vec<&str> = content.lines().collect();
+    // Arquivo truncado (rotação): recomeça do zero em vez de pular tudo.
+    let start = if lines.len() >= lines_read {
+        lines_read
+    } else {
+        0
+    };
+    let mut parsed = Vec::new();
+    for line in &lines[start..] {
+        if let Some(m) = parse_metrics_line(line) {
+            parsed.push(m);
+        }
+    }
+    (parsed, lines.len())
+}
+
+/// Constrói o `ReportBody` de progresso para uma linha de telemetria/metrics.
+///
+/// Formato idêntico ao do collector do one-shot: status "running", progress
+/// via `compute_progress` (honra `progress` explícito da linha), métrica só
+/// quando `is_training_metric()`, e `phase`/`message` promovidas via COALESCE
+/// no `report_job` do manager.
+pub fn telemetry_report_for_line(line: &MetricsLine, total_epochs: i32) -> ReportBody {
+    let progress = compute_progress(line, total_epochs);
+    let is_metric = line.is_training_metric();
+    ReportBody {
+        status: "running".to_string(),
+        progress: Some(progress),
+        epoch: Some(line.epoch),
+        step: line.step.map(|s| s as i32),
+        metrics: if is_metric {
+            Some(line.to_report_json())
+        } else {
+            None
+        },
+        error: None,
+        artifacts: None,
+        meta_content: None,
+        phase: line.phase.clone(),
+        message: line.message.clone(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Config.yaml placeholder replacement (D6)
 // ---------------------------------------------------------------------------
@@ -542,6 +605,7 @@ fn default_mode() -> String {
 /// - `{lora_path_0}`...`{lora_path_N}` — LoRAs multi-ref (D3)
 /// - `{custom_checkpoint_path}` — checkpoint custom (D4)
 /// - `{init_image_path}` — imagem inicial img2img (S4 — feat/img2img)
+/// - `{control_dataset_path}` — dataset de regularização/controle (treino difusão)
 ///
 /// Placeholders absentes no yaml são ignorados (no-op tolerante).
 pub fn replace_config_placeholders(
@@ -552,6 +616,7 @@ pub fn replace_config_placeholders(
     lora_paths: &[String],
     custom_checkpoint_path: Option<&str>,
     init_image_path: Option<&str>,
+    control_dataset_path: Option<&str>,
 ) -> String {
     let mut result = config
         .replace("{dataset_path}", dataset_path)
@@ -575,6 +640,10 @@ pub fn replace_config_placeholders(
         result = result.replace("{init_image_path}", ip);
     }
 
+    if let Some(cd) = control_dataset_path {
+        result = result.replace("{control_dataset_path}", cd);
+    }
+
     result
 }
 
@@ -592,6 +661,7 @@ pub fn replace_config_placeholders_legacy(
         output_path,
         weights_path,
         &[],
+        None,
         None,
         None,
     )
@@ -1399,6 +1469,34 @@ async fn run_job_inner(
         }
         init_staged_path = Some(format!("/outputs/{job_id}/inputs/init.{ext}"));
     }
+    // 5e. Download e staging do dataset de controle/regularização (treino difusão).
+    //     Mesmo caminho do pacote principal: zip no escopo Packages + md5_zip
+    //     obrigatório, extraído (zip-slip safe) para datasets-cache/<job_id>/control.
+    //     O path REAL do host entra no real_config via {control_dataset_path}.
+    //     Falha em qualquer etapa = job falha honesto (S3Download/Md5Mismatch/UnzipFailed).
+    let mut control_staged_path: Option<String> = None;
+    if let Some(ref control) = dispatch.control_package_ref {
+        let control_zip = temp_dir.join("control.zip");
+        let control_key = scoped_key(S3Scope::Packages, &control.key)
+            .map_err(|e| PipelineError::S3Download(format!("invalid control package key: {e}")))?;
+        s3.get_to_file(&control_key, &control_zip)
+            .await
+            .map_err(|e| PipelineError::S3Download(format!("download control package: {e}")))?;
+        let actual_md5 = compute_file_md5(&control_zip)
+            .map_err(|e| PipelineError::S3Download(format!("compute control md5: {e}")))?;
+        if actual_md5 != control.md5_zip {
+            return Err(PipelineError::Md5Mismatch {
+                expected: control.md5_zip.clone(),
+                actual: actual_md5,
+            });
+        }
+        let control_dir = datasets_cache.join("control");
+        tokio::fs::create_dir_all(&control_dir)
+            .await
+            .map_err(|e| PipelineError::Other(format!("create control dir: {e}")))?;
+        unzip_safe(&control_zip, &control_dir)?;
+        control_staged_path = Some(format!("/datasets/datasets-cache/{job_id}/control"));
+    }
 
     // 6. Monta config.yaml REAL — substitui placeholders (§8/:102)
     let total_epochs = dispatch
@@ -1420,6 +1518,7 @@ async fn run_job_inner(
             &lora_staged_paths,
             custom_staged_path.as_deref(),
             init_staged_path.as_deref(),
+            control_staged_path.as_deref(),
         );
 
         // O config exige init mas nenhum init_image_ref veio no dispatch:
@@ -1427,6 +1526,15 @@ async fn run_job_inner(
         if real_config.contains("{init_image_path}") {
             return Err(PipelineError::ConfigYamlInvalid(
                 "config.yaml requires {init_image_path} but no init_image_ref was provided"
+                    .to_string(),
+            ));
+        }
+
+        // O config exige control mas nenhum control_package_ref veio no dispatch:
+        // falha explícita em vez de deixar o placeholder vazar (espelha S4).
+        if real_config.contains("{control_dataset_path}") {
+            return Err(PipelineError::ConfigYamlInvalid(
+                "config.yaml requires {control_dataset_path} but no control_package_ref was provided"
                     .to_string(),
             ));
         }
@@ -1503,6 +1611,7 @@ async fn run_job_inner(
                     &lora_staged_paths,
                     custom_staged_path.as_deref(),
                     init_staged_path.as_deref(),
+                    control_staged_path.as_deref(),
                 )
             })
             .unwrap_or_default();
@@ -1516,13 +1625,48 @@ async fn run_job_inner(
             ));
         }
 
+        // Defesa anti-placeholder do control (espelha a de init): config exige
+        // control mas nenhum control_package_ref veio no dispatch.
+        if config_str.contains("{control_dataset_path}") {
+            return Err(PipelineError::ConfigYamlInvalid(
+                "config.yaml requires {control_dataset_path} but no control_package_ref was provided"
+                    .to_string(),
+            ));
+        }
+
         let body = daemon::GenerateBody {
             config: config_str,
             output_dir: outputs.to_str().unwrap_or_default().to_string(),
             telemetry_path: telemetry_abs.to_str().unwrap_or_default().to_string(),
         };
 
-        // (c) POST /generate com retry em 409 (D1: 2 retries com backoff curto)
+        // (c) Tail de telemetry.jsonl durante o POST /generate: o HTTP retorna
+        // só no 200 (fim da geração), então sem tail o job fica em 0.0 até
+        // done. Mesmos events/phases do one-shot: a task lê telemetry.jsonl
+        // via `tail_jsonl_lines` e reporta cada linha com
+        // `telemetry_report_for_line` (== formato do collector do one-shot).
+        // A task só observa o arquivo, nunca toca no client/launcher.
+        let telemetry_report_client = Arc::clone(&report_client);
+        let telemetry_path_clone = telemetry_abs.clone();
+        let telemetry_job_id = job_id.clone();
+        let telemetry_handle = tokio::spawn(async move {
+            let mut lines_read: usize = 0;
+            let mut interval = tokio::time::interval(Duration::from_millis(500));
+            loop {
+                interval.tick().await;
+                let (new_lines, new_offset) = tail_jsonl_lines(&telemetry_path_clone, lines_read);
+                lines_read = new_offset;
+                for m in new_lines {
+                    let body = telemetry_report_for_line(&m, total_epochs);
+                    let _ = telemetry_report_client
+                        .report(&telemetry_job_id, &body)
+                        .await;
+                }
+            }
+        });
+
+        // POST /generate com retry em 409 (D1: 2 retries com backoff curto).
+        // O tail acima emite progresso enquanto este await bloqueia.
         let mut last_err = String::new();
         let mut succeeded = false;
         for attempt in 0..3 {
@@ -1533,7 +1677,7 @@ async fn run_job_inner(
                     ds.touch();
                     break;
                 }
-                Err(ref e) if e == "busy" => {
+                Err(e) if e == "busy" => {
                     if attempt < 2 {
                         // Backoff curto antes de retry
                         tokio::time::sleep(Duration::from_millis(500 * (attempt as u64 + 1))).await;
@@ -1544,11 +1688,15 @@ async fn run_job_inner(
                     }
                 }
                 Err(e) => {
-                    // Erro diferente de busy → falha honesta
+                    // Erro diferente de busy → tail para, falha honesta
+                    telemetry_handle.abort();
                     return Err(PipelineError::Other(format!("daemon generate: {e}")));
                 }
             }
         }
+
+        // Para o tail: sucesso e busy-exausto convergem abaixo (done / DaemonBusy).
+        telemetry_handle.abort();
 
         if !succeeded {
             if last_err == "busy" {
@@ -1918,19 +2066,9 @@ async fn run_job_inner(
                 }
             }
 
-            // 2. Lê metrics.jsonl incrementalmente
-            let mut new_metrics: Vec<MetricsLine> = Vec::new();
-            if let Ok(content) = tokio::fs::read_to_string(&metrics_path_clone).await {
-                let lines: Vec<&str> = content.lines().collect();
-                if lines.len() > lines_read {
-                    for line in &lines[lines_read..] {
-                        if let Some(m) = parse_metrics_line(line) {
-                            new_metrics.push(m);
-                        }
-                    }
-                    lines_read = lines.len();
-                }
-            }
+            // 2. Lê metrics.jsonl incrementalmente (helper compartilhado com o tail do daemon)
+            let (new_metrics, new_lines_read) = tail_jsonl_lines(&metrics_path_clone, lines_read);
+            lines_read = new_lines_read;
 
             // 3. Envia report se houver novas métricas OU novos artefatos (amostras/checkpoints)
             if !new_metrics.is_empty() {
@@ -2833,6 +2971,7 @@ mod tests {
             &[],
             None,
             None,
+            None,
         );
         assert_eq!(
             result,
@@ -2850,6 +2989,7 @@ mod tests {
             "/outputs/j1",
             None,
             &[],
+            None,
             None,
             None,
         );
@@ -3382,6 +3522,7 @@ mod tests {
             loras: Vec::new(),
             custom_checkpoint: None,
             init_image_ref: None,
+            control_package_ref: None,
         }
     }
 
@@ -3680,6 +3821,231 @@ mod tests {
         assert!(filenames.contains(&"metrics.jsonl"));
         assert!(kinds.contains(&"model"));
         assert!(kinds.contains(&"metrics"));
+    }
+
+    // -- control dataset (treino difusão): staging + placeholder + defesa --
+
+    /// Fake S3 que serve zips distintos por key: pacote principal vs controle.
+    /// Reusa o mesmo zip válido do FakeS3 para ambos; o MD5 é calculado sobre
+    /// os bytes servidos, então o dispatch usa `compute_file_md5_bytes`.
+    struct FakeS3WithControl {
+        downloads: Mutex<Vec<String>>,
+        uploads: Mutex<Vec<(String, PathBuf)>>,
+        main_zip: Vec<u8>,
+        control_zip: Vec<u8>,
+    }
+
+    impl FakeS3WithControl {
+        fn new() -> Self {
+            let mut main_buf = std::io::Cursor::new(Vec::new());
+            {
+                let mut zip = zip::ZipWriter::new(&mut main_buf);
+                let opts = zip::write::SimpleFileOptions::default();
+                zip.start_file("dataset.yaml", opts).unwrap();
+                zip.write_all(b"classes: []\nimages: []\n").unwrap();
+                zip.finish().unwrap();
+            }
+            let mut control_buf = std::io::Cursor::new(Vec::new());
+            {
+                let mut zip = zip::ZipWriter::new(&mut control_buf);
+                let opts = zip::write::SimpleFileOptions::default();
+                zip.start_file("regularization.txt", opts).unwrap();
+                zip.write_all(b"control images\n").unwrap();
+                zip.finish().unwrap();
+            }
+            Self {
+                downloads: Mutex::new(Vec::new()),
+                uploads: Mutex::new(Vec::new()),
+                main_zip: main_buf.into_inner(),
+                control_zip: control_buf.into_inner(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl S3Port for FakeS3WithControl {
+        async fn get_to_file(&self, key: &str, path: &std::path::Path) -> Result<(), String> {
+            self.downloads.lock().unwrap().push(key.to_string());
+            let data = if key.contains("control") {
+                &self.control_zip
+            } else {
+                &self.main_zip
+            };
+            std::fs::write(path, data).map_err(|e| format!("write file: {e}"))
+        }
+
+        async fn put(&self, key: &str, path: &std::path::Path) -> Result<(), String> {
+            self.uploads
+                .lock()
+                .unwrap()
+                .push((key.to_string(), path.to_path_buf()));
+            Ok(())
+        }
+
+        async fn ping(&self) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn diffusion_train_control_dataset_staged_and_config_resolved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3WithControl::new());
+
+        let mut dispatch = make_dispatch("job-control-001", "diffusion");
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        dispatch.mode = "train".to_string();
+        dispatch.package_ref = Some(PackageRef {
+            key: "packages/test-pkg/dataset.zip".to_string(),
+            md5_zip: compute_file_md5_bytes(&s3.main_zip),
+            bytes: s3.main_zip.len() as i64,
+        });
+        dispatch.control_package_ref = Some(PackageRef {
+            key: "packages/test-pkg/control.zip".to_string(),
+            md5_zip: compute_file_md5_bytes(&s3.control_zip),
+            bytes: s3.control_zip.len() as i64,
+        });
+        dispatch.config_yaml = Some(
+            "epochs: 1\ndataset_path: {dataset_path}\noutput_path: {output_path}\ncontrol_dataset_path: \"{control_dataset_path}\"\ncache_text_embeddings: true"
+                .to_string(),
+        );
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let mut output_files = HashMap::new();
+        output_files.insert(
+            "adapter.safetensors".to_string(),
+            b"fake safetensors bytes".to_vec(),
+        );
+        create_fake_outputs(tmp.path(), "job-control-001", &output_files);
+
+        let res = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+            None,
+        )
+        .await;
+        assert!(res.is_ok(), "run_job_inner failed: {:?}", res);
+
+        // Diretório de controle existe no host (staging) com o conteúdo do zip.
+        let control_dir = tmp
+            .path()
+            .join("datasets")
+            .join("datasets-cache")
+            .join("job-control-001")
+            .join("control");
+        assert!(
+            control_dir.join("regularization.txt").is_file(),
+            "control dataset deve ser extraído em datasets-cache/<job>/control"
+        );
+
+        // Config final entregue ao trainer contém o path real, sem placeholder.
+        let config_path = tmp
+            .path()
+            .join("outputs")
+            .join("job-control-001")
+            .join("config.yaml");
+        let config = std::fs::read_to_string(&config_path).unwrap();
+        assert!(
+            config.contains("/datasets/datasets-cache/job-control-001/control"),
+            "config deve conter o control path real: {config}"
+        );
+        assert!(
+            !config.contains("{control_dataset_path}"),
+            "placeholder não pode vazar: {config}"
+        );
+        assert!(
+            config.contains("cache_text_embeddings: true"),
+            "flag opaca preservada: {config}"
+        );
+    }
+
+    #[tokio::test]
+    async fn diffusion_train_control_placeholder_sem_ref_falha_claro() {
+        // Defesa anti-placeholder (espelha init): config exige control mas
+        // nenhum control_package_ref veio no dispatch → ConfigYamlInvalid.
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_dispatch_with_valid_md5("job-control-002", "diffusion", &zip_path);
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        dispatch.mode = "train".to_string();
+        dispatch.control_package_ref = None;
+        dispatch.config_yaml = Some(
+            "epochs: 1\ndataset_path: {dataset_path}\noutput_path: {output_path}\ncontrol_dataset_path: \"{control_dataset_path}\""
+                .to_string(),
+        );
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let res = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+            None,
+        )
+        .await;
+        assert!(
+            matches!(res, Err(PipelineError::ConfigYamlInvalid(_))),
+            "placeholder sem ref deve falhar claro: {res:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn diffusion_train_control_md5_mismatch_falha_honesto() {
+        // MD5 divergente no pacote de controle → Md5Mismatch (nada silencioso).
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3WithControl::new());
+
+        let mut dispatch = make_dispatch("job-control-003", "diffusion");
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        dispatch.mode = "train".to_string();
+        dispatch.package_ref = Some(PackageRef {
+            key: "packages/test-pkg/dataset.zip".to_string(),
+            md5_zip: compute_file_md5_bytes(&s3.main_zip),
+            bytes: s3.main_zip.len() as i64,
+        });
+        dispatch.control_package_ref = Some(PackageRef {
+            key: "packages/test-pkg/control.zip".to_string(),
+            md5_zip: "00000000000000000000000000000000".to_string(),
+            bytes: s3.control_zip.len() as i64,
+        });
+        dispatch.config_yaml = Some(
+            "epochs: 1\ndataset_path: {dataset_path}\noutput_path: {output_path}\ncontrol_dataset_path: \"{control_dataset_path}\""
+                .to_string(),
+        );
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let res = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+            None,
+        )
+        .await;
+        assert!(
+            matches!(res, Err(PipelineError::Md5Mismatch { .. })),
+            "md5 divergente deve falhar honesto: {res:?}"
+        );
     }
 
     // -- ADR-0020: engine diffusion com mode generate usa generate e coleta generated.png sem exigir package --
@@ -4674,6 +5040,7 @@ also bad, not a number
             &[],
             None,
             None,
+            None,
         );
         assert_eq!(
             result,
@@ -4690,6 +5057,7 @@ also bad, not a number
             "/outputs/j1",
             None,
             &[],
+            None,
             None,
             None,
         );
@@ -4711,6 +5079,7 @@ also bad, not a number
             &[],
             None,
             Some("/outputs/j1/inputs/init.png"),
+            None,
         );
         assert_eq!(
             result,
@@ -4727,6 +5096,7 @@ also bad, not a number
             "/outputs/j1",
             None,
             &[],
+            None,
             None,
             None,
         );
@@ -4746,6 +5116,7 @@ also bad, not a number
                 &[],
                 None,
                 init,
+                None,
             );
             assert_eq!(result, config);
         }
@@ -5179,6 +5550,7 @@ also bad, not a number
             loras: Vec::new(),
             custom_checkpoint: None,
             init_image_ref: None,
+            control_package_ref: None,
         }
     }
 
@@ -6758,6 +7130,180 @@ also bad, not a number
         assert!(
             !m.is_training_metric(),
             "sanitized NaN-loss line is not a training metric"
+        );
+    }
+
+    // -- telemetry tail (daemon path): tail_jsonl_lines + telemetry_report_for_line --
+    #[test]
+    fn tail_jsonl_lines_incremental_skips_malformed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("telemetry.jsonl");
+        std::fs::write(
+            &path,
+            "{\"phase\":\"loading_model\",\"progress\":0.1}\nnot-json\n{\"progress\":0.5}\n",
+        )
+        .unwrap();
+        let (parsed, offset) = tail_jsonl_lines(&path, 0);
+        assert_eq!(offset, 3, "offset avança inclusive sobre linha malformada");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].phase.as_deref(), Some("loading_model"));
+        // Sem mais linhas novas → vazio, offset estável.
+        let (parsed2, offset2) = tail_jsonl_lines(&path, offset);
+        assert!(parsed2.is_empty());
+        assert_eq!(offset2, offset);
+        // Append incremental: só a linha nova é retornada.
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(f, "{{\"progress\":0.9}}").unwrap();
+        let (parsed3, offset3) = tail_jsonl_lines(&path, offset2);
+        assert_eq!(parsed3.len(), 1);
+        assert_eq!(offset3, offset2 + 1);
+    }
+
+    #[test]
+    fn tail_jsonl_lines_missing_file_keeps_offset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("telemetry.jsonl");
+        let (parsed, offset) = tail_jsonl_lines(&path, 7);
+        assert!(parsed.is_empty());
+        assert_eq!(offset, 7, "arquivo ausente não reseta o offset");
+    }
+
+    #[test]
+    fn telemetry_report_for_line_matches_oneshot_format() {
+        // Progress explícito honrado; evento de status → metrics None, phase/message promovidas.
+        let m =
+            parse_metrics_line(r#"{"phase":"denoising","message":"Etapa 3/20","progress":0.15}"#)
+                .unwrap();
+        let body = telemetry_report_for_line(&m, 100);
+        assert_eq!(body.status, "running");
+        assert!((body.progress.unwrap() - 0.15).abs() < 1e-9);
+        assert_eq!(body.metrics, None);
+        assert_eq!(body.phase.as_deref(), Some("denoising"));
+        assert_eq!(body.message.as_deref(), Some("Etapa 3/20"));
+        // Métrica de treino → metrics Some + phase junto.
+        let t = parse_metrics_line(r#"{"epoch":3,"loss":0.5,"phase":"training"}"#).unwrap();
+        let t_body = telemetry_report_for_line(&t, 100);
+        assert!(t_body.metrics.is_some());
+        assert_eq!(t_body.phase.as_deref(), Some("training"));
+        assert!((t_body.progress.unwrap() - 0.03).abs() < 1e-9);
+    }
+
+    /// Regressão: eventos de telemetry.jsonl escritos durante o generate do
+    /// daemon chegam como reports de progresso (antes: 0.0 até done).
+    ///
+    /// O FakeDaemonClient escreve linhas de telemetria no `telemetry_path`
+    /// recebido ANTES de retornar Ok — o tail do path daemon deve reportá-las
+    /// como "running" com progress/phase, além do "done" final.
+    #[tokio::test]
+    async fn daemon_path_emite_progresso_de_telemetry_jsonl() {
+        use std::io::Write;
+        struct TelemetryWritingClient;
+        #[async_trait]
+        impl DaemonClient for TelemetryWritingClient {
+            async fn health(&self) -> Option<HealthResponse> {
+                Some(HealthResponse {
+                    ok: true,
+                    loaded_spec: None,
+                    busy: false,
+                    _extra: Default::default(),
+                })
+            }
+            async fn generate(&self, body: &GenerateBody) -> Result<(), String> {
+                let path = std::path::PathBuf::from(&body.telemetry_path);
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let mut f = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                    .unwrap();
+                // Dá tempo ao tail (500ms) de observar o arquivo antes do 200.
+                for (phase, progress) in [("loading_model", 0.1), ("denoising", 0.5)] {
+                    writeln!(f, "{{\"phase\":\"{phase}\",\"progress\":{progress}}}").unwrap();
+                    f.flush().unwrap();
+                    tokio::time::sleep(Duration::from_millis(700)).await;
+                }
+                Ok(())
+            }
+            async fn shutdown(&self) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        struct NoopLauncher;
+        #[async_trait]
+        impl DaemonLauncher for NoopLauncher {
+            async fn start(&self) -> Result<String, String> {
+                Ok("http://localhost:8766".to_string())
+            }
+            async fn kill(&self) -> Result<(), String> {
+                Ok(())
+            }
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let mut dispatch = make_dispatch("job-daemon-telemetry-001", "diffusion");
+        dispatch.mode = "generate".to_string();
+        dispatch.package_ref = None;
+        dispatch.config_yaml =
+            Some("base_model: flux-2-klein-4b\noutput_path: {output_path}".to_string());
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let client = Arc::new(TelemetryWritingClient);
+        let launcher = Arc::new(NoopLauncher);
+        let daemon_state = Arc::new(DaemonState::new(
+            "hephaestus/trainer-difusao:local",
+            8766,
+            600,
+            client as Arc<dyn DaemonClient>,
+            launcher as Arc<dyn DaemonLauncher>,
+        ));
+        daemon_state.set_running(true, Some("http://localhost:8766".to_string()));
+
+        let mut output_files = HashMap::new();
+        output_files.insert("generated_0001.png".to_string(), b"daemon png".to_vec());
+        create_fake_outputs(tmp.path(), "job-daemon-telemetry-001", &output_files);
+
+        let result = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+            Some(&daemon_state),
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "daemon path should succeed: {:?}",
+            result.err()
+        );
+
+        let reports = report.reports.lock().unwrap().clone();
+        let running: Vec<&ReportBody> = reports.iter().filter(|r| r.status == "running").collect();
+        // running inicial (0.0) + ≥1 do tail com progress > 0 e phase.
+        assert!(
+            running.len() >= 2,
+            "tail deve emitir progresso além do running inicial: {running:?}"
+        );
+        assert!(
+            running.iter().any(|r| r.phase.as_deref() == Some("denoising")
+                && r.progress.unwrap_or(0.0) > 0.0),
+            "tail deve reportar phase/progress de telemetry.jsonl: {running:?}"
+        );
+        assert!(
+            reports.iter().any(|r| r.status == "done"),
+            "done final preservado"
         );
     }
 }

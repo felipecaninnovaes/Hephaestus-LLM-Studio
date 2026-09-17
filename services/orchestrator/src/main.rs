@@ -306,10 +306,20 @@ async fn pairing_verify_handler(State(state): State<AppState>, body: Bytes) -> R
         .into_response()
 }
 
+/// Resolve a imagem do daemon de difusão a partir do env `DIFFUSION_TRAINER_IMAGE`
+/// (mesmo nome usado pelo manager e pelo compose).
+///
+/// Env ausente ou vazio (só whitespace) → default `"hephaestus/trainer-difusao:local"`.
+fn resolve_daemon_diffusion_image(env_value: Option<&str>) -> String {
+    match env_value.map(str::trim) {
+        Some(v) if !v.is_empty() => v.to_string(),
+        _ => "hephaestus/trainer-difusao:local".to_string(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
-
 fn build_router(state: AppState) -> Router {
     let api = Router::new()
         .route("/internal/dispatch", post(dispatch_handler))
@@ -449,8 +459,12 @@ async fn main() {
         .filter(|v| !v.trim().is_empty());
 
     let daemon_state = if daemon_enabled {
-        let image = std::env::var("TRAINER_IMAGE_DIFFUSION")
-            .unwrap_or_else(|_| "hephaestus/trainer-difusao:local".into());
+        // Mesmo env do manager/compose (`DIFFUSION_TRAINER_IMAGE`): o nome
+        // antigo `TRAINER_IMAGE_DIFFUSION` caía sempre no default :local e a
+        // guarda D2 recusava job real no nó GPU.
+        let image = resolve_daemon_diffusion_image(
+            std::env::var("DIFFUSION_TRAINER_IMAGE").ok().as_deref(),
+        );
         let client: Arc<dyn orchestrator::daemon::DaemonClient> =
             if let Some(ref url) = daemon_url_override {
                 Arc::new(orchestrator::daemon::HttpDaemonClient::new(url))
@@ -618,4 +632,39 @@ async fn main() {
         .expect("bind");
     tracing::info!("orchestrator ouvindo em 0.0.0.0:{port}");
     axum::serve(listener, app).await.unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_daemon_diffusion_image;
+
+    #[test]
+    fn daemon_image_env_explicito_vence() {
+        assert_eq!(
+            resolve_daemon_diffusion_image(Some("meu-registry/trainer-difusao:gpu")),
+            "meu-registry/trainer-difusao:gpu"
+        );
+    }
+
+    #[test]
+    fn daemon_image_default_quando_ausente_ou_vazio() {
+        // Env ausente, vazio ou só whitespace → default :local (guarda D2 só
+        // recusa :local em nó GPU; CPU-only continua mock).
+        for v in [None, Some(""), Some("   ")] {
+            assert_eq!(
+                resolve_daemon_diffusion_image(v),
+                "hephaestus/trainer-difusao:local",
+                "env={v:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn daemon_image_preserva_whitespace_externo() {
+        // Trim: compose nunca deve injetar espaços no nome da imagem.
+        assert_eq!(
+            resolve_daemon_diffusion_image(Some("  hephaestus/trainer-difusao:gpu  ")),
+            "hephaestus/trainer-difusao:gpu"
+        );
+    }
 }

@@ -764,8 +764,18 @@ const ALLOWED_DIFFUSION_UPSCALE_MODELS: &[&str] = &["4x", "ultrasharp", "siax"];
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DiffusionJobRequest {
     pub dataset_id: String,
-    #[serde(default = "default_diffusion_base_model")]
-    pub base_model: String,
+    /// `baseModel` deixou de ser required — XOR com `customModelId`.
+    /// Se ambos ausentes, usa "sdxl" (default legado do treino).
+    #[serde(default)]
+    pub base_model: Option<String>,
+    /// UUID de checkpoint custom (kind=checkpoint) como base do treino.
+    /// XOR com `baseModel`. Placeholders literais no YAML, nunca id/path real.
+    #[serde(default)]
+    pub custom_model_id: Option<String>,
+    /// UUID de text encoder custom (kind=text_encoder). Só tem efeito com
+    /// arch flux-2-klein-4b; outro arch ⇒ 400.
+    #[serde(default)]
+    pub text_encoder_model_id: Option<String>,
     #[serde(default)]
     pub trigger_word: Option<String>,
     #[serde(default = "default_diffusion_epochs")]
@@ -826,9 +836,6 @@ fn default_diffusion_checkpoint_interval() -> u32 {
     1
 }
 
-fn default_diffusion_base_model() -> String {
-    "sdxl".to_string()
-}
 fn default_diffusion_quantization() -> String {
     "4bit".to_string()
 }
@@ -870,12 +877,37 @@ fn default_diffusion_enable_bucket() -> bool {
     true
 }
 
-pub fn validate_diffusion_request(req: DiffusionJobRequest) -> Result<DiffusionJobRequest, String> {
-    if !ALLOWED_DIFFUSION_BASE_MODELS.contains(&req.base_model.as_str()) {
-        return Err(format!(
-            "baseModel must be one of {:?}, got '{}'",
-            ALLOWED_DIFFUSION_BASE_MODELS, req.base_model
-        ));
+pub fn validate_diffusion_request(
+    mut req: DiffusionJobRequest,
+) -> Result<DiffusionJobRequest, String> {
+    // --- XOR baseModel/customModelId (contrato da fatia feat/pesos-custom-flux2) ---
+    // Ambos presentes ⇒ 400; ambos ausentes ⇒ default legado "sdxl" (retrocompat).
+    // UUIDs são validados aqui (formato); existência/kind/arch resolve no handler.
+    let has_custom = req.custom_model_id.is_some();
+    let has_base = req.base_model.is_some();
+    if has_custom && has_base {
+        return Err("use either baseModel or customModelId, not both".to_string());
+    }
+    if !has_custom && !has_base {
+        req.base_model = Some("sdxl".to_string());
+    }
+    if let Some(bm) = &req.base_model {
+        if !ALLOWED_DIFFUSION_BASE_MODELS.contains(&bm.as_str()) {
+            return Err(format!(
+                "baseModel must be one of {:?}, got '{}'",
+                ALLOWED_DIFFUSION_BASE_MODELS, bm
+            ));
+        }
+    }
+    if let Some(cm) = &req.custom_model_id {
+        if uuid::Uuid::parse_str(cm).is_err() {
+            return Err("customModelId must be a valid UUID".to_string());
+        }
+    }
+    if let Some(tm) = &req.text_encoder_model_id {
+        if uuid::Uuid::parse_str(tm).is_err() {
+            return Err("textEncoderModelId must be a valid UUID".to_string());
+        }
     }
     if !(1..=100).contains(&req.epochs) {
         return Err(format!(
@@ -1005,7 +1037,19 @@ pub fn validate_diffusion_request(req: DiffusionJobRequest) -> Result<DiffusionJ
     Ok(req)
 }
 
-pub fn generate_diffusion_config_yaml(job_id: &str, req: &DiffusionJobRequest) -> String {
+/// Gera `config.yaml` de treino Difusão LoRA (fatia feat/pesos-custom-flux2).
+///
+/// `custom_arch`: arch resolvido pelo handler a partir de `custom_model_id`
+/// (None = treino sobre repo oficial). Quando Some: `model:` recebe o arch
+/// resolvido + root-level `custom_checkpoint_path: "{custom_checkpoint_path}"`
+/// (placeholder literal — o orchestrator substitui via weights_ref; NUNCA
+/// emitir id/path real aqui). Quando `text_encoder_model_id` Some: root-level
+/// `text_encoder_path: "{text_encoder_path}"` (mesmo mecanismo).
+pub fn generate_diffusion_config_yaml(
+    job_id: &str,
+    req: &DiffusionJobRequest,
+    custom_arch: Option<&str>,
+) -> String {
     let output_name_line = match &req.output_name {
         Some(name) if !name.trim().is_empty() => {
             format!(
@@ -1017,6 +1061,17 @@ pub fn generate_diffusion_config_yaml(job_id: &str, req: &DiffusionJobRequest) -
     };
     let weights_line = if req.weights.is_some() {
         "weights_path: \"{weights_path}\"\n".to_string()
+    } else {
+        String::new()
+    };
+    // Pesos custom: root-level, placeholder literal para staging do orchestrator.
+    let custom_checkpoint_line = if custom_arch.is_some() {
+        "custom_checkpoint_path: \"{custom_checkpoint_path}\"\n".to_string()
+    } else {
+        String::new()
+    };
+    let text_encoder_line = if req.text_encoder_model_id.is_some() {
+        "text_encoder_path: \"{text_encoder_path}\"\n".to_string()
     } else {
         String::new()
     };
@@ -1064,12 +1119,15 @@ pub fn generate_diffusion_config_yaml(job_id: &str, req: &DiffusionJobRequest) -
         }
         _ => "".to_string(),
     };
+    // `model:` = arch resolvido quando custom, senão base_model (default sdxl).
+    let effective_model =
+        custom_arch.unwrap_or_else(|| req.base_model.as_deref().unwrap_or("sdxl"));
     format!(
         r#"# Configuração de treino Difusão LoRA (gerada pelo api-principal)
 job_id: "{job_id}"
 engine: "diffusion"
 model: "{base_model}"
-{output_name_line}{weights_line}{epoch_offset_line}mode: "train"
+{output_name_line}{weights_line}{custom_checkpoint_line}{text_encoder_line}{epoch_offset_line}mode: "train"
 dataset_path: "{{dataset_path}}"
 {control_dataset_line}output_path: "{{output_path}}"
 seed: 42
@@ -1089,9 +1147,11 @@ checkpoint_interval: {checkpoint_interval}
 {enable_bucket_line}  checkpoint_interval: {checkpoint_interval}
 {samples_section}"#,
         job_id = job_id,
-        base_model = req.base_model,
+        base_model = effective_model,
         output_name_line = output_name_line,
         weights_line = weights_line,
+        custom_checkpoint_line = custom_checkpoint_line,
+        text_encoder_line = text_encoder_line,
         epoch_offset_line = epoch_offset_line,
         control_dataset_line = control_dataset_line,
         cache_text_embeddings_line = cache_text_embeddings_line,
@@ -1167,6 +1227,10 @@ pub struct DiffusionGenerateJobRequest {
     pub loras: Vec<LoraRef>,
     /// UUID de modelo custom (checkpoint — D4). XOR com `baseModel`.
     pub custom_model_id: Option<String>,
+    /// UUID de text encoder custom (kind=text_encoder — fatia
+    /// feat/pesos-custom-flux2). Só tem efeito com arch flux-2-klein-4b.
+    #[serde(default)]
+    pub text_encoder_model_id: Option<String>,
     /// ID de input efêmero (`POST /api/generations/inputs`) p/ img2img.
     /// Mutuamente exclusivo com `init_generation_id`.
     #[serde(default)]
@@ -1272,9 +1336,15 @@ pub fn validate_diffusion_generate_request(
         }
     }
     // Validação de UUID para custom_model_id quando presente.
-    if let Some(ref cm) = req.custom_model_id {
+    if let Some(cm) = &req.custom_model_id {
         if uuid::Uuid::parse_str(cm).is_err() {
             return Err("customModelId must be a valid UUID".to_string());
+        }
+    }
+    // UUID do text encoder custom (formato); existência/kind/arch resolve no handler.
+    if let Some(tm) = &req.text_encoder_model_id {
+        if uuid::Uuid::parse_str(tm).is_err() {
+            return Err("textEncoderModelId must be a valid UUID".to_string());
         }
     }
 
@@ -1453,10 +1523,12 @@ pub fn validate_diffusion_generate_request(
 /// Quando `loras` vazio E `weights` Some: formato legado `weights_path`/`lora_scale`.
 /// Quando `custom_model_id` Some: `custom_checkpoint_path` + `arch` (resolvidos
 /// pelo handler — `custom_arch` deve ser Some).
+/// Quando `text_encoder_model_id` Some: dentro de `generate:`,
+/// `text_encoder_path: "{text_encoder_path}"` (placeholder literal — o
+/// orchestrator substitui via `text_encoder_ref`; NUNCA id/path real).
 /// Quando `init_image_id` ou `init_generation_id` presente (img2img): bloco
 /// `generate:` ganha `init_image_path: "{init_image_path}"` (placeholder
 /// literal — o orchestrator substitui) + `init_strength` (pedido ou 0.6).
-///
 /// Retrocompat: request legado (sem campos novos) gera yaml quase idêntico
 /// ao anterior à ADR-0023 (batch_size: 1, sem loras, sem custom, sem upscale)
 /// — exceção aditiva da fatia Flux.2: linha `sampler: "default"` sempre presente.
@@ -1520,6 +1592,14 @@ pub fn generate_diffusion_generate_config_yaml(
         String::new()
     };
 
+    // Encoder custom: placeholder literal dentro de `generate:` — o
+    // orchestrator substitui via text_encoder_ref (NUNCA id/path real).
+    let text_encoder_block = if req.text_encoder_model_id.is_some() {
+        "  text_encoder_path: \"{text_encoder_path}\"\n".to_string()
+    } else {
+        String::new()
+    };
+
     let lora_scale_line = if is_legacy {
         format!("  lora_scale: {}\n", req.lora_scale)
     } else {
@@ -1579,7 +1659,7 @@ output_path: "{{output_path}}"
   sampler: "{sampler}"
   distilled: {distilled}
   batch_size: {batch_size}
-{loras_block}{custom_block}{init_block}{upscale_block}{lora_scale_line}"#,
+{loras_block}{custom_block}{text_encoder_block}{init_block}{upscale_block}{lora_scale_line}"#,
         job_id = job_id,
         effective_model = effective_model,
         prompt_json = serde_json::to_string(&req.prompt).unwrap_or_else(|_| "\"\"".into()),
@@ -1598,6 +1678,7 @@ output_path: "{{output_path}}"
         base_model_line = base_model_line,
         loras_block = loras_block,
         custom_block = custom_block,
+        text_encoder_block = text_encoder_block,
         init_block = init_block,
         upscale_block = upscale_block,
         lora_scale_line = lora_scale_line,
@@ -2551,7 +2632,7 @@ mod tests {
         let json = r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001"}"#;
         let req: DiffusionJobRequest = serde_json::from_str(json).unwrap();
         let validated = validate_diffusion_request(req).expect("should validate");
-        assert_eq!(validated.base_model, "sdxl");
+        assert_eq!(validated.base_model.as_deref(), Some("sdxl"));
         assert_eq!(validated.epochs, 10);
         assert_eq!(validated.batch_size, 1);
         assert_eq!(validated.rank, 16);
@@ -2561,7 +2642,7 @@ mod tests {
         assert!(validated.enable_bucket);
         assert!(validated.trigger_word.is_none());
 
-        let yaml = generate_diffusion_config_yaml("job-123", &validated);
+        let yaml = generate_diffusion_config_yaml("job-123", &validated, None);
         assert!(yaml.contains(r#"engine: "diffusion""#));
         assert!(yaml.contains(r#"model: "sdxl""#));
         assert!(yaml.contains(r#"rank: 16"#));
@@ -2572,14 +2653,14 @@ mod tests {
         // Desabilitar bucketing injeta `enable_bucket: false` no yaml
         let mut no_bucket = validated.clone();
         no_bucket.enable_bucket = false;
-        let yaml3 = generate_diffusion_config_yaml("job-125", &no_bucket);
+        let yaml3 = generate_diffusion_config_yaml("job-125", &no_bucket, None);
         assert!(yaml3.contains("  enable_bucket: false"));
         assert!(!yaml3.contains("  enable_bucket: true"));
 
         // Com output_name explícito
         let mut with_name = validated.clone();
         with_name.output_name = Some("custom-lora-v1".to_string());
-        let yaml2 = generate_diffusion_config_yaml("job-124", &with_name);
+        let yaml2 = generate_diffusion_config_yaml("job-124", &with_name, None);
         assert!(yaml2.contains(r#"output_name: "custom-lora-v1""#));
     }
 
@@ -2589,6 +2670,73 @@ mod tests {
             r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","baseModel":"unsupported"}"#;
         let req: DiffusionJobRequest = serde_json::from_str(json).unwrap();
         assert!(validate_diffusion_request(req).is_err());
+    }
+    #[test]
+    fn diffusion_train_xor_base_custom() {
+        // XOR: ambos presentes ⇒ erro; ambos ausentes ⇒ default sdxl;
+        // só custom ⇒ ok (arch resolve no handler).
+        let both = r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","baseModel":"sdxl","customModelId":"550e8400-e29b-41d4-a716-446655440000"}"#;
+        let req: DiffusionJobRequest = serde_json::from_str(both).unwrap();
+        assert!(validate_diffusion_request(req).is_err());
+
+        let neither = r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001"}"#;
+        let req: DiffusionJobRequest = serde_json::from_str(neither).unwrap();
+        let v = validate_diffusion_request(req).expect("default sdxl");
+        assert_eq!(v.base_model.as_deref(), Some("sdxl"));
+        assert!(v.custom_model_id.is_none());
+
+        let custom_only = r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","customModelId":"550e8400-e29b-41d4-a716-446655440000"}"#;
+        let req: DiffusionJobRequest = serde_json::from_str(custom_only).unwrap();
+        let v = validate_diffusion_request(req).expect("custom only ok");
+        assert!(v.base_model.is_none());
+        assert_eq!(
+            v.custom_model_id.as_deref(),
+            Some("550e8400-e29b-41d4-a716-446655440000")
+        );
+
+        // UUID inválido ⇒ erro (custom e encoder).
+        let bad_custom =
+            r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","customModelId":"not-a-uuid"}"#;
+        let req: DiffusionJobRequest = serde_json::from_str(bad_custom).unwrap();
+        assert!(validate_diffusion_request(req).is_err());
+        let bad_enc = r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","textEncoderModelId":"not-a-uuid"}"#;
+        let req: DiffusionJobRequest = serde_json::from_str(bad_enc).unwrap();
+        assert!(validate_diffusion_request(req).is_err());
+    }
+
+    #[test]
+    fn diffusion_train_yaml_custom_and_encoder_placeholders() {
+        // Custom: model: = arch resolvido + placeholder literal root-level.
+        let json = r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","customModelId":"550e8400-e29b-41d4-a716-446655440000"}"#;
+        let req: DiffusionJobRequest = serde_json::from_str(json).unwrap();
+        let v = validate_diffusion_request(req).unwrap();
+        let yaml = generate_diffusion_config_yaml("job-train-custom", &v, Some("flux-2-klein-4b"));
+        assert!(yaml.contains("model: \"flux-2-klein-4b\""));
+        assert!(yaml.contains("custom_checkpoint_path: \"{custom_checkpoint_path}\""));
+        // NUNCA o id real no yaml.
+        assert!(!yaml.contains("550e8400-e29b-41d4-a716-446655440000"));
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml válido");
+        assert_eq!(parsed["model"].as_str(), Some("flux-2-klein-4b"));
+        assert_eq!(
+            parsed["custom_checkpoint_path"].as_str(),
+            Some("{custom_checkpoint_path}")
+        );
+
+        // Sem custom ⇒ sem placeholder.
+        let legacy = r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001"}"#;
+        let req: DiffusionJobRequest = serde_json::from_str(legacy).unwrap();
+        let v = validate_diffusion_request(req).unwrap();
+        let yaml = generate_diffusion_config_yaml("job-train-legado", &v, None);
+        assert!(!yaml.contains("custom_checkpoint_path"));
+        assert!(!yaml.contains("text_encoder_path"));
+
+        // Encoder: root-level placeholder literal.
+        let enc = r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","baseModel":"flux-2-klein-4b","textEncoderModelId":"550e8400-e29b-41d4-a716-446655440002"}"#;
+        let req: DiffusionJobRequest = serde_json::from_str(enc).unwrap();
+        let v = validate_diffusion_request(req).unwrap();
+        let yaml = generate_diffusion_config_yaml("job-train-enc", &v, None);
+        assert!(yaml.contains("text_encoder_path: \"{text_encoder_path}\""));
+        assert!(!yaml.contains("550e8400-e29b-41d4-a716-446655440002"));
     }
 
     #[test]
@@ -2630,7 +2778,7 @@ mod tests {
         assert_eq!(validated.mixed_precision, "bf16");
         assert_eq!(validated.quantization, "8bit");
 
-        let yaml = generate_diffusion_config_yaml("job-adv-1", &validated);
+        let yaml = generate_diffusion_config_yaml("job-adv-1", &validated, None);
         assert!(yaml.contains("resolution: 1024"));
         assert!(yaml.contains("gradient_accumulation_steps: 4"));
         assert!(yaml.contains(r#"optimizer: "adamw8bit""#));
@@ -2658,7 +2806,7 @@ mod tests {
             Some("550e8400-e29b-41d4-a716-446655440002")
         );
 
-        let yaml = generate_diffusion_config_yaml("job-resume-1", &validated);
+        let yaml = generate_diffusion_config_yaml("job-resume-1", &validated, None);
         assert!(yaml.contains(r#"weights_path: "{weights_path}""#));
         assert!(yaml.contains("checkpoint_interval: 5"));
         assert!(yaml.contains("epoch_offset: 10"));
@@ -3012,6 +3160,38 @@ mod tests {
             "generate must contain arch"
         );
     }
+    #[test]
+    fn diffusion_generate_yaml_text_encoder_block() {
+        // Encoder Some ⇒ placeholder literal dentro de generate:.
+        let json = r#"{
+            "prompt": "test",
+            "baseModel": "flux-2-klein-4b",
+            "textEncoderModelId": "550e8400-e29b-41d4-a716-446655440002"
+        }"#;
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(json).unwrap();
+        let validated = validate_diffusion_generate_request(req).unwrap();
+        let yaml = generate_diffusion_generate_config_yaml("job-enc-1", &validated, None);
+        assert!(yaml.contains("text_encoder_path: \"{text_encoder_path}\""));
+        assert!(!yaml.contains("550e8400-e29b-41d4-a716-446655440002"));
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("yaml válido");
+        let gen = parsed["generate"].as_mapping().expect("generate mapping");
+        assert!(
+            gen.contains_key(&serde_yaml::Value::String("text_encoder_path".into())),
+            "generate must contain text_encoder_path"
+        );
+
+        // Encoder ausente ⇒ sem placeholder (yaml legado byte-idêntico).
+        let legacy = r#"{"prompt": "test"}"#;
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(legacy).unwrap();
+        let validated = validate_diffusion_generate_request(req).unwrap();
+        let yaml = generate_diffusion_generate_config_yaml("job-enc-legado", &validated, None);
+        assert!(!yaml.contains("text_encoder_path"));
+
+        // UUID inválido do encoder ⇒ erro de validação.
+        let bad = r#"{"prompt": "test", "textEncoderModelId": "not-a-uuid"}"#;
+        let req: DiffusionGenerateJobRequest = serde_json::from_str(bad).unwrap();
+        assert!(validate_diffusion_generate_request(req).is_err());
+    }
 
     #[test]
     fn diffusion_generate_yaml_legacy_byte_compat() {
@@ -3297,7 +3477,8 @@ mod tests {
         // model ausente ⇒ default "4x" (retrocompat).
         let req_def: DiffusionGenerateJobRequest =
             serde_json::from_str(r#"{"prompt":"test","upscale":{"scale":4}}"#).unwrap();
-        let v_def = validate_diffusion_generate_request(req_def).expect("upscale sem model usa default");
+        let v_def =
+            validate_diffusion_generate_request(req_def).expect("upscale sem model usa default");
         assert_eq!(v_def.upscale.as_ref().unwrap().model, "4x");
         assert_eq!(v_def.upscale.as_ref().unwrap().scale, 4);
         // scale: 3 → 400.
@@ -3310,7 +3491,10 @@ mod tests {
             serde_json::from_str(r#"{"prompt":"test","upscale":{"model":"9x","scale":2}}"#)
                 .unwrap();
         let err = validate_diffusion_generate_request(req4).expect_err("upscale 9x deve falhar");
-        assert!(err.contains("4x") && err.contains("ultrasharp") && err.contains("siax"), "erro lista válidos: {err}");
+        assert!(
+            err.contains("4x") && err.contains("ultrasharp") && err.contains("siax"),
+            "erro lista válidos: {err}"
+        );
     }
 
     #[test]
@@ -3363,7 +3547,7 @@ mod tests {
                 .unwrap();
         let v = validate_diffusion_request(req).unwrap();
         assert!(!v.cache_text_embeddings);
-        let yaml = generate_diffusion_config_yaml("job-train-sem-control", &v);
+        let yaml = generate_diffusion_config_yaml("job-train-sem-control", &v, None);
         assert!(
             !yaml.contains("control_dataset_path"),
             "sem control: {yaml}"
@@ -3379,7 +3563,7 @@ mod tests {
         .unwrap();
         let v2 = validate_diffusion_request(req2).unwrap();
         assert!(v2.cache_text_embeddings);
-        let yaml2 = generate_diffusion_config_yaml("job-train-com-control", &v2);
+        let yaml2 = generate_diffusion_config_yaml("job-train-com-control", &v2, None);
         assert!(
             yaml2.contains("control_dataset_path: \"{control_dataset_path}\""),
             "placeholder ausente: {yaml2}"

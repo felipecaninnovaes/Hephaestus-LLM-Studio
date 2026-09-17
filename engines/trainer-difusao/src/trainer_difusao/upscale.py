@@ -16,9 +16,8 @@ Qualquer falha (download/forward) -> _die honesto: o job falha, nunca
 degrada silenciosamente.
 """
 
-from __future__ import annotations
-
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -55,6 +54,50 @@ _loaded_model: dict[tuple[str, str], Any] = {}
 def _die(msg: str) -> None:
     print(f"ERROR: {msg}", file=sys.stderr)
     sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Remap legado ESRGAN -> BasicSR (ultrasharp/siax sao .pth formato antigo)
+# ---------------------------------------------------------------------------
+# Pesos ultrasharp/siax usam o layout legado do ESRGAN ("model.0...",
+# "model.1.sub.{i}.RDB{n}.conv{c}.0.{weight,bias}", ...); a RRDBNet vendida
+# usa o naming BasicSR ("conv_first", "body.{i}.rdb{n}.conv{c}", ...).
+# O x4plus da ai-forever ja e formato novo (nenhuma key "model.*").
+_LEGACY_BODY_RE = re.compile(r"^model\.1\.sub\.(\d+)\.RDB([123])\.conv([1-5])\.0\.(.+)$")
+_LEGACY_HEAD_TAIL = {
+    "model.0": "conv_first",
+    "model.1.sub.23": "conv_body",
+    "model.3": "conv_up1",
+    "model.6": "conv_up2",
+    "model.8": "conv_hr",
+    "model.10": "conv_last",
+}
+
+
+def remap_esrgan_keys(sd: dict) -> dict:
+    """Remapeia state_dict legado ESRGAN ("model.N...") p/ o naming BasicSR vendido.
+
+    Sem nenhuma key "model.*": retorna o dict intacto (path x4plus, zero toque).
+    Key legada sem mapeamento conhecido -> _die honesto listando a key
+    (nunca strict=False: esconderia pesos nao-carregados).
+    """
+    if not any(str(k).startswith("model.") for k in sd):
+        return sd
+    out: dict = {}
+    for key, val in sd.items():
+        m = _LEGACY_BODY_RE.match(str(key))
+        if m:
+            idx, rdb, conv, tail = m.groups()
+            if int(idx) >= 23:
+                _die(f"Peso legado ESRGAN com bloco inesperado: {key}")
+            out[f"body.{int(idx)}.rdb{rdb}.conv{conv}.{tail}"] = val
+            continue
+        parts = str(key).rsplit(".", 1)
+        if len(parts) == 2 and parts[0] in _LEGACY_HEAD_TAIL:
+            out[f"{_LEGACY_HEAD_TAIL[parts[0]]}.{parts[1]}"] = val
+            continue
+        _die(f"Peso legado ESRGAN sem mapeamento p/ RRDBNet x4 vendida: {key}")
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +236,7 @@ def _get_model(device: str, model: str = "4x") -> Any:
         state = state["params_ema"]
     elif isinstance(state, dict) and "params" in state:
         state = state["params"]
+    state = remap_esrgan_keys(state)
     try:
         net.load_state_dict(state, strict=True)
     except Exception as e:  # noqa: BLE001

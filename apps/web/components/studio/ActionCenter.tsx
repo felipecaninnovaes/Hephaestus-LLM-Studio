@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import React, {
 	useCallback,
 	useEffect,
@@ -7,7 +8,6 @@ import React, {
 	useRef,
 	useState,
 } from "react";
-import { useRouter } from "next/navigation";
 import {
 	IconActivity,
 	IconAlertTriangle,
@@ -29,17 +29,27 @@ import {
 	IconX,
 	IconZap,
 } from "@/components/icons";
-import {
-	SearchInput,
-	SubmodulePills,
-	Badge,
-	ProgressBar,
-	Drawer,
-	jobStatusToBadgeVariant,
-} from "@/components/ui";
-import { JobLogViewer } from "@/components/studio/JobLogViewer";
 import { AutolabelReviewModal } from "@/components/studio/AutolabelReviewModal";
 import { AutotrackerReviewModal } from "@/components/studio/AutotrackerReviewModal";
+import ConfirmDialog from "@/components/studio/ConfirmDialog";
+import { JobCleanupDialog } from "@/components/studio/JobCleanupDialog";
+import { JobLogViewer } from "@/components/studio/JobLogViewer";
+import {
+	Badge,
+	Button,
+	Drawer,
+	jobStatusToBadgeVariant,
+	ProgressBar,
+	SearchInput,
+	SubmodulePills,
+} from "@/components/ui";
+import { ApiError } from "@/lib/api";
+import { applyAutolabelCaptions } from "@/lib/autolabel";
+import { applyAutotrackerBoxes } from "@/lib/autotracker";
+import { copyToClipboard } from "@/lib/clipboard";
+import { formatBytes, formatDuration, formatRelativeTime } from "@/lib/format";
+import { imageProgressLabel, jobCapabilities } from "@/lib/jobCapabilities";
+import { latestTrainingMetric } from "@/lib/jobMetrics";
 import {
 	abortJob,
 	deleteJob,
@@ -49,18 +59,6 @@ import {
 	getTelemetry,
 	listJobs,
 } from "@/lib/jobs";
-import { applyAutotrackerBoxes } from "@/lib/autotracker";
-import { applyAutolabelCaptions } from "@/lib/autolabel";
-import { latestTrainingMetric } from "@/lib/jobMetrics";
-import { jobCapabilities, imageProgressLabel } from "@/lib/jobCapabilities";
-import { ApiError } from "@/lib/api";
-import { copyToClipboard } from "@/lib/clipboard";
-import { formatBytes, formatDuration, formatRelativeTime } from "@/lib/format";
-import {
-	autotrackerErrorMessage,
-	autolabelErrorMessage,
-	friendlyJobError,
-} from "@/types/studio";
 import type {
 	Job,
 	JobArtifact,
@@ -68,8 +66,11 @@ import type {
 	JobStatus,
 	Telemetry,
 } from "@/types/studio";
-import ConfirmDialog from "@/components/studio/ConfirmDialog";
-import { JobCleanupDialog } from "@/components/studio/JobCleanupDialog";
+import {
+	autolabelErrorMessage,
+	autotrackerErrorMessage,
+	friendlyJobError,
+} from "@/types/studio";
 import { JOB_STATUS_CONFIG, JobArtifactsList } from "./JobCard";
 import { JobSamplesGallery } from "./JobSamplesGallery";
 import { showToast } from "./Toast";
@@ -732,27 +733,27 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
 								</span>
 							</span>
 						)}
-						<button
-							type="button"
+						<Button
+							variant="ghost"
+							size="icon"
 							onClick={() => setCleanupOpen(true)}
 							title="Limpar jobs antigos"
 							aria-label="Limpar jobs antigos"
-							className="inline-flex size-10 items-center justify-center rounded-lg border border-transparent bg-transparent text-zinc-400 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 cursor-pointer"
 						>
 							<IconTrash className="size-3.5" />
-						</button>
-						<button
-							type="button"
+						</Button>
+						<Button
+							variant="ghost"
+							size="icon"
 							onClick={() => void fetchData()}
 							title="Atualizar atividades e telemetria"
 							aria-label="Atualizar atividades"
 							disabled={loading}
-							className="inline-flex size-8 items-center justify-center rounded-lg border border-transparent bg-transparent text-zinc-400 transition hover:bg-white/[0.06] hover:text-white active:scale-[0.985] focus-visible:ring-2 focus-visible:ring-brand-500/70 cursor-pointer disabled:opacity-50"
 						>
 							<IconRefresh
 								className={`size-3.5 ${loading ? "animate-spin motion-reduce:animate-none text-brand-400" : ""}`}
 							/>
-						</button>
+						</Button>
 					</div>
 				}
 				footer={
@@ -1165,7 +1166,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
 
 												{/* Painel expansível: Detalhes, Métricas, Logs, Ações */}
 												{isExpanded && (
-													<div className="mt-3 border-t border-white/10 pt-3 text-2xs font-mono space-y-3 bg-black/40 backdrop-blur-md -mx-3 -mb-3 p-3.5">
+													<div className="mt-3 border-t border-white/10 pt-3 text-2xs font-mono space-y-3 bg-black/55 p-3.5">
 														{/* Info chips com Nó Executor */}
 														<div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-2xs">
 															<div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10">
@@ -1414,7 +1415,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
 																			Copiar Erro
 																		</button>
 																	</div>
-																	<p className="whitespace-pre-wrap break-all text-3xs text-rose-300/90 font-mono max-h-32 overflow-y-auto leading-relaxed select-text">
+																	<p className="whitespace-pre-wrap break-words text-3xs text-rose-300/90 font-mono max-h-32 overflow-y-auto leading-relaxed select-text">
 																		{friendlyJobError(job.error) ||
 																			job.queueReason}
 																	</p>
@@ -1438,17 +1439,17 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
 																job.kind === "autotracker" &&
 																job.status === "done" && (
 																	<div className="flex items-center gap-2 flex-wrap">
-																		<button
-																			type="button"
+																		<Button
+																			variant="primary"
+																			size="sm"
 																			onClick={() =>
 																				setAutotrackerReviewJob(job)
 																			}
-																			className="inline-flex items-center gap-1 rounded-lg border border-brand-500/40 bg-brand-500/15 px-2.5 py-1 text-2xs font-medium text-brand-300 transition hover:bg-brand-500/25 active:scale-[0.985] cursor-pointer"
+																			leftIcon={<IconSparkles />}
 																			title="Revisar classes detectadas e aceitar novas classes antes de aplicar"
 																		>
-																			<IconSparkles className="size-3 text-brand-400" />
 																			<span>Revisar e Aplicar</span>
-																		</button>
+																		</Button>
 																		<label className="flex items-center gap-1.5 text-2xs text-zinc-400 cursor-pointer">
 																			<input
 																				type="checkbox"
@@ -1460,19 +1461,19 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
 																			/>
 																			<span>Sobrescrever</span>
 																		</label>
-																		<button
-																			type="button"
+																		<Button
+																			variant="secondary"
+																			size="sm"
 																			disabled={applyBusy}
 																			onClick={() => handleApplyBoxes(job)}
-																			className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.06] px-2.5 py-1 text-2xs font-medium text-zinc-300 transition hover:bg-white/10 active:scale-[0.985] disabled:opacity-50 cursor-pointer"
+																			leftIcon={<IconCheck />}
 																		>
-																			<IconCheck className="size-3" />
 																			<span>
 																				{applyBusy
 																					? "Aplicando…"
 																					: "Aplicação direta"}
 																			</span>
-																		</button>
+																		</Button>
 																	</div>
 																)}
 
@@ -1481,15 +1482,15 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
 																job.kind === "autolabel" &&
 																job.status === "done" && (
 																	<div className="flex items-center gap-2 flex-wrap">
-																		<button
-																			type="button"
+																		<Button
+																			variant="primary"
+																			size="sm"
 																			onClick={() => setReviewJob(job)}
-																			className="inline-flex items-center gap-1 rounded-lg border border-brand-500/40 bg-brand-500/15 px-2.5 py-1 text-2xs font-medium text-brand-300 transition hover:bg-brand-500/25 active:scale-[0.985] cursor-pointer"
+																			leftIcon={<IconSparkles />}
 																			title="Inspecionar, editar e curar legendas antes de aplicar"
 																		>
-																			<IconSparkles className="size-3 text-brand-400" />
 																			<span>Revisar Legendas</span>
-																		</button>
+																		</Button>
 																		<label className="flex items-center gap-1.5 text-2xs text-zinc-400 cursor-pointer">
 																			<input
 																				type="checkbox"
@@ -1501,20 +1502,20 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
 																			/>
 																			<span>Sobrescrever</span>
 																		</label>
-																		<button
-																			type="button"
+																		<Button
+																			variant="secondary"
+																			size="sm"
 																			disabled={applyBusy}
 																			onClick={() => handleApplyCaptions(job)}
-																			className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-2xs font-medium text-zinc-300 transition hover:bg-white/10 active:scale-[0.985] disabled:opacity-50 cursor-pointer"
+																			leftIcon={<IconCheck />}
 																			title="Aplicar todas as legendas direto sem inspeção"
 																		>
-																			<IconCheck className="size-3 text-zinc-400" />
 																			<span>
 																				{applyBusy
 																					? "Aplicando…"
 																					: "Aplicar Todas"}
 																			</span>
-																		</button>
+																		</Button>
 																	</div>
 																)}
 
@@ -1523,55 +1524,55 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
 																!isActive &&
 																(job.engine === "diffusion" ||
 																	job.engine === "yolo") && (
-																	<button
-																		type="button"
+																	<Button
+																		variant="primary"
+																		size="sm"
 																		onClick={() => handleRerun(job)}
-																		className="inline-flex items-center gap-1 rounded-lg border border-brand-500/40 bg-brand-500/15 px-2.5 py-1 text-2xs font-medium text-brand-300 transition hover:bg-brand-500/25 active:scale-[0.985] cursor-pointer"
+																		leftIcon={<IconRefresh />}
 																		title="Abrir a Forja pré-carregada com todos os parâmetros deste treino para submeter novamente"
 																	>
-																		<IconRefresh className="size-3 text-brand-400" />
 																		<span>Repetir Treino</span>
-																	</button>
+																	</Button>
 																)}
 
 															{/* Cancelar Job ativo */}
 															{isActive && (
-																<button
-																	type="button"
+																<Button
+																	variant="destructive"
+																	size="sm"
 																	onClick={() => setAbortTarget(job)}
-																	className="inline-flex items-center gap-1 rounded-lg border border-rose-500/40 bg-rose-500/15 px-2.5 py-1 text-2xs font-medium text-rose-300 transition hover:bg-rose-500/25 active:scale-[0.985] cursor-pointer"
+																	leftIcon={<IconTrash />}
 																>
-																	<IconTrash className="size-3" />
 																	<span>Cancelar Job</span>
-																</button>
+																</Button>
 															)}
 
 															{/* Acompanhar (tela cheia / modo foco) */}
-															<button
-																type="button"
+															<Button
+																variant="secondary"
+																size="sm"
 																onClick={() => {
 																	onClose();
 																	router.push(`/jobs?job=${job.id}&focus=1`);
 																}}
-																className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-2xs font-mono text-zinc-300 transition hover:bg-white/[0.06] active:scale-[0.985] cursor-pointer"
+																leftIcon={<IconActivity />}
 																title="Acompanhar este job em tela cheia"
 															>
-																<IconActivity className="size-3" />
 																<span>Acompanhar</span>
-															</button>
+															</Button>
 
 															{/* Excluir job terminal */}
 															{!isActive && (
-																<button
-																	type="button"
+																<Button
+																	variant="destructive"
+																	size="sm"
 																	onClick={() => setDeleteTarget(job)}
-																	className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-2xs font-mono text-rose-300 transition hover:border-rose-500/40 hover:bg-rose-500/10 active:scale-[0.985] cursor-pointer"
+																	leftIcon={<IconTrash />}
 																	aria-label="Excluir job"
 																	title="Excluir este job e seus artefatos"
 																>
-																	<IconTrash className="size-3" />
 																	<span>Excluir</span>
-																</button>
+																</Button>
 															)}
 
 															{/* Ver detalhes no studio */}

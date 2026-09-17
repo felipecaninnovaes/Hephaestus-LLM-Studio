@@ -111,6 +111,14 @@ pytest 150p, compileall ok, compose config ok, build web ok, biome 0E
   fingerprint NÃO cobre control dataset (packaging direto, documentado).
 - Merge/push só com ordem explícita do usuário. Infra "CI main/develop"
   continua em aberto no CorrigirImplementar.md.
+- **REGRESSÃO da fatia (achada pelo usuário, 2026-09-17):** slice WebUI
+  substituiu blocos do body builder (`playground.ts`/`jobs.ts`) e derrubou
+  campos do wire — geração perdeu distilled/batchSize/loras (modelo sempre
+  BASE com "Destilado" marcado; LoRA nunca aplicada; batch >1 ignorado),
+  treino perdeu mixedPrecision/quantization/enableBucket. Fix `ba4c9fb`.
+  **Lição:** body builders por whitelist são armadilha — slices que tocam
+  esses builders devem listar diffs campo a campo; reviewer da 1ª rodada
+  não olhou `git diff` de lib/*.ts. Revisar outros whitelists ao tocar.
 
 ## INCIDENTE (2026-09-17 01:09, causado por workers desta branch) — dev DB `studio` limpo
 Um dispatch de teste (janela P4a/P4b) rodou a suíte `datasets_db.rs` com `DATABASE_URL`

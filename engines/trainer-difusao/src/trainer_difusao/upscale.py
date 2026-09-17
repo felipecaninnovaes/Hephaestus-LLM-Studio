@@ -1,10 +1,12 @@
-"""Pos-passo de upscale Real-ESRGAN x4 (torch-only, fatia flux2-motor-treino).
+"""Pos-passo de upscale x4 RRDBNet (torch-only, fatia flux2-motor-treino).
 
 Arquitetura RRDBNet vendida neste arquivo (x4, 64 features, 23 blocos);
-pesos via `hf_hub_download` (repo `ai-forever/Real-ESRGAN`,
-arquivo `RealESRGAN_x4.pth`), com override por env `REALESRGAN_WEIGHTS`
-(path local). Pesos do modelo cacheados em variavel global do modulo —
-upscale NAO entra em `pipeline_cache_key` nem na spec do daemon (e pos-passo).
+pesos via `hf_hub_download` por modelo (ver `UPSCALE_WEIGHTS`), com override
+por env `REALESRGAN_WEIGHTS_4X` / `REALESRGAN_WEIGHTS_ULTRASHARP` /
+`REALESRGAN_WEIGHTS_SIAX` (o generico `REALESRGAN_WEIGHTS` continua valendo
+para "4x", back-compat). Pesos cacheados por (modelo, device) em variavel
+global do modulo — upscale NAO entra em `pipeline_cache_key` nem na spec do
+daemon (e pos-passo).
 
 device: "cuda" se disponivel, senao cpu (caminho do dev).
 Inference com tiling (tile 256, overlap 8) para limitar memoria.
@@ -21,17 +23,33 @@ import sys
 from pathlib import Path
 from typing import Any
 
-UPSCALE_MODELS = ("4x",)
+UPSCALE_MODELS = ("4x", "ultrasharp", "siax")
 UPSCALE_SCALES = (2, 4)
 
+UPSCALE_WEIGHTS: dict[str, tuple[str, str]] = {
+    "4x": ("ai-forever/Real-ESRGAN", "RealESRGAN_x4.pth"),
+    "ultrasharp": ("lokCX/4x-Ultrasharp", "4x-UltraSharp.pth"),
+    "siax": ("gemasai/4x_NMKD-Siax_200k", "4x_NMKD-Siax_200k.pth"),
+}
+
+# Back-compat: aliases do entry "4x" (era o unico modelo suportado).
 REALESRGAN_REPO = "ai-forever/Real-ESRGAN"
 REALESRGAN_X4_FILE = "RealESRGAN_x4.pth"
+
+# Env override por modelo (path local do .pth).
+_WEIGHT_ENV_BY_MODEL = {
+    "4x": "REALESRGAN_WEIGHTS_4X",
+    "ultrasharp": "REALESRGAN_WEIGHTS_ULTRASHARP",
+    "siax": "REALESRGAN_WEIGHTS_SIAX",
+}
+# Env generico legado: continua valendo para "4x" (back-compat).
+_WEIGHT_ENV_LEGACY = "REALESRGAN_WEIGHTS"
 
 _TILE = 256
 _OVERLAP = 8
 
-# Cache global dos pesos carregados: {(device_str): model}
-_loaded_model: dict[str, Any] = {}
+# Cache global dos pesos carregados: {(model, device_str): model}
+_loaded_model: dict[tuple[str, str], Any] = {}
 
 
 def _die(msg: str) -> None:
@@ -121,37 +139,54 @@ def _build_rrdb_net() -> Any:
     return RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23)
 
 
-def _resolve_weights_path() -> str:
-    override = os.environ.get("REALESRGAN_WEIGHTS")
-    if override and override.strip():
-        p = override.strip()
-        if not os.path.isfile(p):
-            _die(f"REALESRGAN_WEIGHTS aponta para arquivo inexistente: {p}")
-        return p
+def resolve_weights(model: str) -> str:
+    """Resolve o path dos pesos do modelo de upscale (env override ou HF).
+
+    Env por modelo (`_WEIGHT_ENV_BY_MODEL`) aponta para path local do .pth;
+    o generico `REALESRGAN_WEIGHTS` continua valendo para "4x" (back-compat).
+    Falhas -> _die citando o modelo e o env override.
+    """
+    if model not in UPSCALE_WEIGHTS:
+        _die(f"Modelo de upscale inválido: {model}. Use: {', '.join(UPSCALE_MODELS)}.")
+    for env_name in (_WEIGHT_ENV_BY_MODEL[model],) + (
+        (_WEIGHT_ENV_LEGACY,) if model == "4x" else ()
+    ):
+        override = os.environ.get(env_name)
+        if override and override.strip():
+            p = override.strip()
+            if not os.path.isfile(p):
+                _die(f"{env_name} aponta para arquivo inexistente: {p} (modelo {model})")
+            return p
+    repo_id, filename = UPSCALE_WEIGHTS[model]
     try:
         from huggingface_hub import hf_hub_download
     except ImportError as e:
-        _die(f"Upscale Real-ESRGAN exige 'huggingface-hub' instalado: {e}")
+        _die(f"Upscale {model} exige 'huggingface-hub' instalado: {e}")
     try:
-        return hf_hub_download(repo_id=REALESRGAN_REPO, filename=REALESRGAN_X4_FILE)
+        return hf_hub_download(repo_id=repo_id, filename=filename)
     except Exception as e:  # noqa: BLE001 — rede/HF podem falhar de varios jeitos
         _die(
-            f"Falha ao baixar pesos Real-ESRGAN ({REALESRGAN_REPO}/{REALESRGAN_X4_FILE}): "
-            f"{e}. Defina REALESRGAN_WEIGHTS com o path local do .pth."
+            f"Falha ao baixar pesos de upscale ({model}: {repo_id}/{filename}): "
+            f"{e}. Defina {_WEIGHT_ENV_BY_MODEL[model]} com o path local do .pth."
         )
 
 
-def _get_model(device: str) -> Any:
-    if device in _loaded_model:
-        return _loaded_model[device]
+def _resolve_weights_path(model: str = "4x") -> str:
+    return resolve_weights(model)
+
+
+def _get_model(device: str, model: str = "4x") -> Any:
+    key = (model, device)
+    if key in _loaded_model:
+        return _loaded_model[key]
     import torch
 
-    model = _build_rrdb_net()
-    weights_path = _resolve_weights_path()
+    net = _build_rrdb_net()
+    weights_path = _resolve_weights_path(model)
     try:
         state = torch.load(weights_path, map_location="cpu", weights_only=True)
     except Exception as e:  # noqa: BLE001
-        _die(f"Falha ao carregar pesos Real-ESRGAN ({weights_path}): {e}")
+        _die(f"Falha ao carregar pesos de upscale ({model}: {weights_path}): {e}")
     if isinstance(state, dict) and "params-ema" in state:
         state = state["params-ema"]
     elif isinstance(state, dict) and "params_ema" in state:
@@ -159,15 +194,15 @@ def _get_model(device: str) -> Any:
     elif isinstance(state, dict) and "params" in state:
         state = state["params"]
     try:
-        model.load_state_dict(state, strict=True)
+        net.load_state_dict(state, strict=True)
     except Exception as e:  # noqa: BLE001
         _die(
-            f"Pesos Real-ESRGAN incompativeis com RRDBNet x4 vendida ({weights_path}): {e}"
+            f"Pesos de upscale incompativeis com RRDBNet x4 vendida ({model}: {weights_path}): {e}"
         )
-    model.eval()
-    model.to(device)
-    _loaded_model[device] = model
-    return model
+    net.eval()
+    net.to(device)
+    _loaded_model[key] = net
+    return net
 
 
 def _upscale_tiled(model: Any, img_tensor: Any, device: str) -> Any:
@@ -209,13 +244,13 @@ def _upscale_tiled(model: Any, img_tensor: Any, device: str) -> Any:
 def upscale_image(
     input_path: str | Path, output_path: str | Path, model: str = "4x", scale: int = 4
 ) -> dict[str, int]:
-    """Aplica Real-ESRGAN sobre o PNG salvo, re-salvando no mesmo arquivo.
+    """Aplica upscale RRDBNet x4 sobre o PNG salvo, re-salvando no mesmo arquivo.
 
     Retorna {"original_width","original_height","final_width","final_height"}.
     Falhas -> _die (job falha, nunca silencioso).
     """
-    if model != "4x":
-        _die(f"Modelo de upscale inválido: {model}. Use '4x'.")
+    if model not in UPSCALE_MODELS:
+        _die(f"Modelo de upscale inválido: {model}. Use: {', '.join(UPSCALE_MODELS)}.")
     if scale not in (2, 4):
         _die(f"Escala de upscale inválida: {scale}. Use 2 ou 4.")
 
@@ -223,8 +258,7 @@ def upscale_image(
     from PIL import Image
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    realesr = _get_model(device)
-
+    realesr = _get_model(device, model)
     try:
         with Image.open(input_path) as _img:
             img = _img.convert("RGB")

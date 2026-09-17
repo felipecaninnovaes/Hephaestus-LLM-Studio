@@ -757,8 +757,8 @@ const ALLOWED_DIFFUSION_SAMPLERS: &[&str] = &[
 /// Samplers aceitos pela base `flux-2-klein-4b` (arch-aware: o motor Flux.2
 /// só suporta estes; os demais → 400 com mensagem clara).
 const ALLOWED_FLUX2_KLEIN_SAMPLERS: &[&str] = &["default", "euler", "heun"];
-/// Modelos de upscale suportados no generate (`upscale.model`).
-const ALLOWED_DIFFUSION_UPSCALE_MODELS: &[&str] = &["4x"];
+/// Modelos de upscale suportados no generate (`upscale.model`, default "4x").
+const ALLOWED_DIFFUSION_UPSCALE_MODELS: &[&str] = &["4x", "ultrasharp", "siax"];
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1187,13 +1187,16 @@ pub struct DiffusionGenerateJobRequest {
     pub upscale: Option<DiffusionUpscale>,
 }
 
-/// Configuração de upscale pós-geração (Real-ESRGAN).
+/// Configuração de upscale pós-geração (Real-ESRGAN / variantes RRDBNet x4).
 ///
 /// Wire camelCase (`model`, `scale`); `deny_unknown_fields` consistente com os
-/// demais requests de difusão.
+/// demais requests de difusão. `model` ausente ⇒ "4x" (retrocompat);
+/// suportados: "4x" (RealESRGAN x4plus, generalista), "ultrasharp"
+/// (4x-UltraSharp, preserva textura) e "siax" (4x_NMKD-Siax_200k).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DiffusionUpscale {
+    #[serde(default = "default_diffusion_upscale_model")]
     pub model: String,
     pub scale: u8,
 }
@@ -1201,6 +1204,10 @@ pub struct DiffusionUpscale {
 /// Sampler default: o padrão do engine para o arch (retrocompat).
 fn default_diffusion_sampler() -> String {
     "default".to_string()
+}
+/// Upscale model default: "4x" (retrocompat — RealESRGAN x4plus).
+fn default_diffusion_upscale_model() -> String {
+    "4x".to_string()
 }
 /// Batch size default: 1 (idêntico ao comportamento legado).
 fn default_diffusion_generate_batch_size() -> i64 {
@@ -1236,7 +1243,8 @@ fn default_diffusion_lora_scale() -> f64 {
 ///   dpmpp_2m_karras, dpmpp_2m_sde, dpmpp_2m_sde_karras, dpmpp_sde, ddim]
 ///   (default "default"); arch-aware: base flux-2-klein-4b aceita apenas
 ///   [default, euler, heun].
-/// - Upscale opcional: `{model: "4x", scale: 2|4}` (Real-ESRGAN) ou null.
+/// - Upscale opcional: `{model: "4x"|"ultrasharp"|"siax", scale: 2|4}` ou null
+///   (`model` ausente ⇒ "4x"; RRDBNet x4 em todos).
 /// - Se `custom_model_id` Some → quantization "none" é PERMITIDO (S1 passou;
 ///   runtime @gpu valida na sessão GPU — documentado no comentário).
 /// - img2img: `init_image_id` XOR `init_generation_id` (ambos ⇒ 400);
@@ -1416,7 +1424,7 @@ pub fn validate_diffusion_generate_request(
         ));
     }
 
-    // --- Upscale (Real-ESRGAN): model ∈ ["4x"], scale ∈ [2, 4] ---
+    // --- Upscale (RRDBNet x4): model ∈ ["4x", "ultrasharp", "siax"], scale ∈ [2, 4] ---
     if let Some(up) = &req.upscale {
         if !ALLOWED_DIFFUSION_UPSCALE_MODELS.contains(&up.model.as_str()) {
             return Err(format!(
@@ -3272,16 +3280,37 @@ mod tests {
         let v2 = validate_diffusion_generate_request(req2).expect("upscale 4x/2 feliz");
         assert_eq!(v2.upscale.as_ref().unwrap().model, "4x");
         assert_eq!(v2.upscale.as_ref().unwrap().scale, 2);
+        // {model: ultrasharp, scale: 4} → válido (preserva textura).
+        let req_us: DiffusionGenerateJobRequest =
+            serde_json::from_str(r#"{"prompt":"test","upscale":{"model":"ultrasharp","scale":4}}"#)
+                .unwrap();
+        let v_us = validate_diffusion_generate_request(req_us).expect("upscale ultrasharp/4 feliz");
+        assert_eq!(v_us.upscale.as_ref().unwrap().model, "ultrasharp");
+        assert_eq!(v_us.upscale.as_ref().unwrap().scale, 4);
+        // {model: siax, scale: 2} → válido.
+        let req_sx: DiffusionGenerateJobRequest =
+            serde_json::from_str(r#"{"prompt":"test","upscale":{"model":"siax","scale":2}}"#)
+                .unwrap();
+        let v_sx = validate_diffusion_generate_request(req_sx).expect("upscale siax/2 feliz");
+        assert_eq!(v_sx.upscale.as_ref().unwrap().model, "siax");
+        assert_eq!(v_sx.upscale.as_ref().unwrap().scale, 2);
+        // model ausente ⇒ default "4x" (retrocompat).
+        let req_def: DiffusionGenerateJobRequest =
+            serde_json::from_str(r#"{"prompt":"test","upscale":{"scale":4}}"#).unwrap();
+        let v_def = validate_diffusion_generate_request(req_def).expect("upscale sem model usa default");
+        assert_eq!(v_def.upscale.as_ref().unwrap().model, "4x");
+        assert_eq!(v_def.upscale.as_ref().unwrap().scale, 4);
         // scale: 3 → 400.
         let req3: DiffusionGenerateJobRequest =
             serde_json::from_str(r#"{"prompt":"test","upscale":{"model":"4x","scale":3}}"#)
                 .unwrap();
         assert!(validate_diffusion_generate_request(req3).is_err());
-        // model inválido → 400.
+        // model inválido → 400 (mensagem lista os válidos).
         let req4: DiffusionGenerateJobRequest =
-            serde_json::from_str(r#"{"prompt":"test","upscale":{"model":"8x","scale":2}}"#)
+            serde_json::from_str(r#"{"prompt":"test","upscale":{"model":"9x","scale":2}}"#)
                 .unwrap();
-        assert!(validate_diffusion_generate_request(req4).is_err());
+        let err = validate_diffusion_generate_request(req4).expect_err("upscale 9x deve falhar");
+        assert!(err.contains("4x") && err.contains("ultrasharp") && err.contains("siax"), "erro lista válidos: {err}");
     }
 
     #[test]

@@ -3311,7 +3311,7 @@ components:
           anyOf:
             - $ref: "#/components/schemas/DiffusionUpscale"
             - type: "null"
-          description: "Upscale pós-geração via Real-ESRGAN ({model: 4x, scale: 2 ou 4}). Null ou ausente = sem upscale. Opcional."
+          description: "Upscale pós-geração (RRDBNet x4) ({model: 4x | ultrasharp | siax, scale: 2 ou 4}; model ausente = 4x). Null ou ausente = sem upscale. Opcional."
         distilled:
           type: boolean
           default: false
@@ -3365,14 +3365,15 @@ components:
 
     DiffusionUpscale:
       type: object
-      required: [model, scale]
+      required: [scale]
       additionalProperties: false
-      description: "Configuração de upscale pós-geração via Real-ESRGAN (fatia Flux.2)."
+      description: "Configuração de upscale pós-geração (RRDBNet x4, fatia Flux.2). Os três modelos compartilham a arquitetura RRDBNet x4 — muda apenas o checkpoint."
       properties:
         model:
           type: string
-          enum: ["4x"]
-          description: "Modelo de upscale (apenas 4x nesta fatia)."
+          enum: ["4x", "ultrasharp", "siax"]
+          default: "4x"
+          description: "\"4x\" = RealESRGAN x4plus (generalista, tende a suavizar pele); \"ultrasharp\" = 4x-UltraSharp (preserva textura, recomendado p/ retratos); \"siax\" = 4x_NMKD-Siax_200k (textura + nitidez)."
         scale:
           type: integer
           enum: [2, 4]

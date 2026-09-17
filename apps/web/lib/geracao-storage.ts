@@ -28,8 +28,10 @@ export type GeracaoSampler =
   | "dpmpp_2m_sde_karras"
   | "dpmpp_sde"
   | "ddim";
+export type GeracaoUpscaleModel = "4x" | "ultrasharp" | "siax";
+
 export interface GeracaoUpscale {
-  model: "4x";
+  model: GeracaoUpscaleModel;
   scale: 2 | 4;
 }
 
@@ -73,6 +75,7 @@ const SAMPLERS: readonly GeracaoSampler[] = [
   "ddim",
 ];
 const FLUX_SAMPLERS: readonly GeracaoSampler[] = ["default", "euler", "heun"];
+const UPSCALE_MODELS: readonly GeracaoUpscaleModel[] = ["4x", "ultrasharp", "siax"];
 
 /* Listas canônicas p/ a UI (fonte única; labels vivem no componente). */
 export const GERACAO_SAMPLERS: readonly GeracaoSampler[] = SAMPLERS;
@@ -213,9 +216,13 @@ export function loadGeracaoForm(): PartialGeracaoForm | null {
         out.upscale = null;
       } else if (typeof s.upscale === "object" && s.upscale !== null) {
         const u = s.upscale as Record<string, unknown>;
-        if (u.model === "4x" && (u.scale === 2 || u.scale === 4)) {
-          out.upscale = { model: "4x", scale: u.scale };
-        }
+        const validModel = typeof u.model === "string" && (UPSCALE_MODELS as readonly string[]).includes(u.model);
+        const validScale = u.scale === 2 || u.scale === 4;
+        out.upscale = validModel && validScale
+          ? { model: u.model as GeracaoUpscaleModel, scale: u.scale as 2 | 4 }
+          : null;
+      } else {
+        out.upscale = null;
       }
     }
 
@@ -407,8 +414,8 @@ export function generationReproSnapshot(gen: Generation): GenerationReproSnapsho
   let upscale: GeracaoUpscale | null = null;
   if (upscaleRaw !== undefined && upscaleRaw !== null && typeof upscaleRaw === "object") {
     const u = upscaleRaw as Record<string, unknown>;
-    if (u.model === "4x" && (u.scale === 2 || u.scale === 4)) {
-      upscale = { model: "4x", scale: u.scale };
+    if (typeof u.model === "string" && (UPSCALE_MODELS as readonly string[]).includes(u.model) && (u.scale === 2 || u.scale === 4)) {
+      upscale = { model: u.model as GeracaoUpscaleModel, scale: u.scale as 2 | 4 };
     }
   }
   return {

@@ -566,7 +566,7 @@ export interface DiffusionGenerateJobRequest {
   seed?: number;
   quantization?: "none" | "2bit" | "4bit" | "6bit" | "8bit";
   sampler?: string;
-  upscale?: { model: "4x"; scale: 2 | 4 } | null;
+  upscale?: { model: "4x" | "ultrasharp" | "siax"; scale: 2 | 4 } | null;
   distilled?: boolean;
   batchSize?: number;
   loras?: { modelId: string; scale: number }[];

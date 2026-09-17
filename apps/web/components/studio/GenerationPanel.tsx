@@ -45,6 +45,7 @@ import {
   saveGeracaoForm,
   type GeracaoQuantization,
   type GeracaoSampler,
+  type GeracaoUpscaleModel,
   type PartialGeracaoForm,
 } from "@/lib/geracao-storage";
 import { getGenerationDataUrl } from "@/lib/generations";
@@ -82,7 +83,7 @@ interface GeneratedImageItem {
 	guidanceScale: number;
 	quantization: string;
 	sampler?: string;
-	upscale?: { model: "4x"; scale: 2 | 4 } | null;
+	upscale?: { model: GeracaoUpscaleModel; scale: 2 | 4 } | null;
 	distilled?: boolean;
 	loras: LoraRef[];
 	width: number;
@@ -172,6 +173,28 @@ const QUANTIZATION_OPTIONS: SelectOption<string>[] = [
     description: "~18+ GB VRAM",
   },
 ];
+/* Upscale: UI default ultrasharp (preserva textura); wire default segue
+   "4x" na engine p/ retrocompat. Hidratação antiga assume ultrasharp. */
+const UPSCALE_MODEL_DEFAULT: GeracaoUpscaleModel = "ultrasharp";
+const UPSCALE_MODEL_OPTIONS: SelectOption<GeracaoUpscaleModel>[] = [
+  {
+    value: "ultrasharp",
+    label: "UltraSharp (retratos, preserva textura)",
+  },
+  {
+    value: "4x",
+    label: "x4plus (generalista; suaviza pele)",
+  },
+  {
+    value: "siax",
+    label: "NMKD-Siax (nitidez + textura)",
+  },
+];
+const UPSCALE_MODEL_SHORT_LABEL: Record<GeracaoUpscaleModel, string> = {
+  ultrasharp: "ultrasharp",
+  "4x": "x4plus",
+  siax: "siax",
+};
 
 /* ── img2img (fatia feat/img2img, S5) ── */
 const INIT_STRENGTH_DEFAULT = 0.6;
@@ -215,6 +238,7 @@ export default function GenerationPanel() {
 	const [quantization, setQuantization] = useState<GeracaoQuantization>("4bit");
 	const [sampler, setSampler] = useState<GeracaoSampler>("default");
 	const [upscaleEnabled, setUpscaleEnabled] = useState(false);
+	const [upscaleModel, setUpscaleModel] = useState<GeracaoUpscaleModel>(UPSCALE_MODEL_DEFAULT);
 	const [upscaleScale, setUpscaleScale] = useState<2 | 4>(4);
 	const [batchSize, setBatchSize] = useState(1);
 	const [selectedOrchestratorId, setSelectedOrchestratorId] = useState<
@@ -333,7 +357,10 @@ export default function GenerationPanel() {
 		if (stored.sampler !== undefined) setSampler(stored.sampler);
 		if (stored.upscale !== undefined) {
 			setUpscaleEnabled(stored.upscale !== null);
-			if (stored.upscale !== null) setUpscaleScale(stored.upscale.scale);
+			if (stored.upscale !== null) {
+				setUpscaleModel(stored.upscale.model);
+				setUpscaleScale(stored.upscale.scale);
+			}
 		}
 		if (stored.batchSize !== undefined) setBatchSize(stored.batchSize);
 		if (stored.initStrength !== undefined)
@@ -387,7 +414,7 @@ export default function GenerationPanel() {
 				isLockedSeed,
 				quantization,
 				sampler,
-				upscale: upscaleEnabled ? { model: "4x", scale: upscaleScale } : null,
+				upscale: upscaleEnabled ? { model: upscaleModel, scale: upscaleScale } : null,
 				batchSize,
 				initStrength,
 			});
@@ -413,6 +440,7 @@ export default function GenerationPanel() {
 		quantization,
 		sampler,
 		upscaleEnabled,
+		upscaleModel,
 		upscaleScale,
 		batchSize,
 		initStrength,
@@ -606,7 +634,7 @@ export default function GenerationPanel() {
 		setQuantization(defaults.quantization);
 		setSampler(defaults.sampler);
 		setUpscaleEnabled(defaults.upscale !== null);
-		if (defaults.upscale !== null) setUpscaleScale(defaults.upscale.scale);
+		if (defaults.upscale !== null) { setUpscaleModel(defaults.upscale.model); setUpscaleScale(defaults.upscale.scale); }
 		setBatchSize(defaults.batchSize);
 		setInitStrength(defaults.initStrength);
 		/* Init ativo (upload/galeria) é estado efêmero de sessão — o reset
@@ -644,7 +672,7 @@ export default function GenerationPanel() {
 				seed: effectiveSeed,
 				quantization,
 				sampler,
-				upscale: upscaleEnabled ? { model: "4x", scale: upscaleScale } : null,
+				upscale: upscaleEnabled ? { model: upscaleModel, scale: upscaleScale } : null,
 				distilled: isDistilledActive,
 				loras:
 					loras.filter((l) => l.modelId).length > 0
@@ -682,7 +710,7 @@ export default function GenerationPanel() {
 				guidanceScale,
 				quantization,
 				sampler,
-				upscale: upscaleEnabled ? { model: "4x", scale: upscaleScale } : null,
+				upscale: upscaleEnabled ? { model: upscaleModel, scale: upscaleScale } : null,
 				distilled: isDistilledActive,
 				loras: loras.filter((l) => l.modelId),
 				width,
@@ -732,6 +760,7 @@ export default function GenerationPanel() {
 			quantization,
 			sampler,
 			upscaleEnabled,
+			upscaleModel,
 			upscaleScale,
 			distilled,
 			loras,
@@ -1225,7 +1254,7 @@ export default function GenerationPanel() {
 								id="gen-upscale-toggle"
 								type="checkbox"
 								checked={upscaleEnabled}
-								onChange={(e) => setUpscaleEnabled(e.target.checked)}
+								onChange={(e) => { setUpscaleEnabled(e.target.checked); if (e.target.checked) setUpscaleModel(UPSCALE_MODEL_DEFAULT); }}
 								disabled={isBusy}
 								className="size-4 rounded border-white/20 bg-white/5 text-brand-500 focus:ring-brand-500/30"
 							/>
@@ -1234,21 +1263,35 @@ export default function GenerationPanel() {
 							</span>
 						</label>
 						{upscaleEnabled && (
-							<div className="space-y-1.5">
-								<span className="font-mono text-3xs text-zinc-400">
-									Modelo 4x · escala de saída
-								</span>
-								<Select
-									options={[
-										{ value: "2", label: "2x" },
-										{ value: "4", label: "4x" },
-									]}
-									value={String(upscaleScale)}
-									onChange={(v) => setUpscaleScale(Number(v) === 2 ? 2 : 4)}
-									disabled={isBusy}
-									size="sm"
-									fontMono
-								/>
+							<div className="space-y-2">
+								<div className="space-y-1.5">
+									<span className="font-mono text-3xs text-zinc-400">
+										Modelo
+									</span>
+									<Select
+										options={UPSCALE_MODEL_OPTIONS}
+										value={upscaleModel}
+										onChange={(v) => setUpscaleModel(v as GeracaoUpscaleModel)}
+										disabled={isBusy}
+										size="sm"
+									/>
+								</div>
+								<div className="space-y-1.5">
+									<span className="font-mono text-3xs text-zinc-400">
+										Escala de saída
+									</span>
+									<Select
+										options={[
+											{ value: "2", label: "2x" },
+											{ value: "4", label: "4x" },
+										]}
+										value={String(upscaleScale)}
+										onChange={(v) => setUpscaleScale(Number(v) === 2 ? 2 : 4)}
+										disabled={isBusy}
+										size="sm"
+										fontMono
+									/>
+								</div>
 							</div>
 						)}
 					</div>
@@ -1553,7 +1596,7 @@ export default function GenerationPanel() {
 								)}
 								{currentDisplayItem.upscale && (
 									<span className="font-mono text-4xs px-1.5 py-0.5 rounded bg-brand-500/10 border border-brand-500/20 text-brand-300">
-										upscale {currentDisplayItem.upscale.scale}x
+										upscale {UPSCALE_MODEL_SHORT_LABEL[currentDisplayItem.upscale.model] ?? currentDisplayItem.upscale.model} {currentDisplayItem.upscale.scale}x
 									</span>
 								)}
 								{currentDisplayItem.loras.length > 0 && (
@@ -1672,9 +1715,16 @@ export default function GenerationPanel() {
 							className="max-h-[60vh] w-auto max-w-full object-contain rounded-xl border border-white/10"
 						/>
 						<div className="w-full flex items-center justify-between gap-4 px-1">
-							<p className="text-xs text-zinc-300 truncate max-w-md italic">
-								&ldquo;{currentDisplayItem.prompt}&rdquo;
-							</p>
+							<div className="flex min-w-0 flex-col gap-1.5">
+								<p className="text-xs text-zinc-300 truncate max-w-md italic">
+									&ldquo;{currentDisplayItem.prompt}&rdquo;
+								</p>
+								{currentDisplayItem.upscale && (
+									<span className="font-mono text-4xs px-1.5 py-0.5 rounded bg-brand-500/10 border border-brand-500/20 text-brand-300 w-fit">
+										upscale {UPSCALE_MODEL_SHORT_LABEL[currentDisplayItem.upscale.model] ?? currentDisplayItem.upscale.model} {currentDisplayItem.upscale.scale}x
+									</span>
+								)}
+							</div>
 							<div className="flex items-center gap-2 shrink-0">
 								<Button size="sm" variant="primary" onClick={handleDownload}>
 									<IconDownload className="size-3.5 mr-1" />

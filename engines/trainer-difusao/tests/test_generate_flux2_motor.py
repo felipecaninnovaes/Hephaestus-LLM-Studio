@@ -101,6 +101,19 @@ class TestUpscaleQuantValidation(_Base):
         )
         self.assertEqual(params["upscale"], {"model": "4x", "scale": 2})
 
+    def test_upscale_all_models_valid(self):
+        for model in ("4x", "ultrasharp", "siax"):
+            params = load_and_validate_generate_config(
+                self._base_cfg(upscale={"model": model, "scale": 2})
+            )
+            self.assertEqual(params["upscale"], {"model": model, "scale": 2})
+
+    def test_upscale_9x_fails(self):
+        with self.assertRaises(SystemExit):
+            load_and_validate_generate_config(
+                self._base_cfg(upscale={"model": "9x", "scale": 4})
+            )
+
     def test_upscale_bad_model_fails(self):
         with self.assertRaises(SystemExit):
             load_and_validate_generate_config(

@@ -181,7 +181,7 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
     else:
         if not isinstance(raw_upscale, dict):
             _die("Campo 'upscale' deve ser um objeto {model, scale} ou null.")
-        upscale_model = str(raw_upscale.get("model", "")).strip()
+        upscale_model = str(raw_upscale.get("model", "4x") or "4x").strip() or "4x"
         if upscale_model not in UPSCALE_MODELS:
             _die(
                 f"Modelo de upscale inválido: {upscale_model}. "

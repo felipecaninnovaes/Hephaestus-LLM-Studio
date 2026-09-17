@@ -119,10 +119,25 @@ gates verdes (cargo test 581p, pytest 101p, build+lint web 0E/204W baseline, com
       recriado à mão + **FIX COMMITADO `a167e2b`** (`chore/infra-native-runner`,
       worktree tmp): s3-init no boot + ensure-bucket.sh SigV4 + preflight
       WARN no run-native. @reviewer FECHAR COM NITS (nits 1-4 aplicados).
-      **FOLLOW-UP B em aberto (rust):** orquestrador/manager ainda aceitam
-      `done` com 0 artefatos se upload S3 falhar em runtime (causa
-      transitória) — report deveria marcar job como failed/degraded. Fatia
-      a decidir com usuário.
+      **FOLLOW-UP B: FECHADO pela fatia S2 abaixo (item 7).**
+   7. (16/09, AUTONOMIA day-one — `fix/infra-autonomia-day-one`, 4 commits
+      `5a5ed5e`→`b2d54a9`): S1 principal autônomo (retry Postgres, senha de
+      bootstrap gerada+logada 1x em campo `bootstrap_password`, ensure_bucket
+      no boot); S2 done mentiroso morto (put_with_retry nos 6 uploads +
+      gate `no_artifacts` no manager; RED do incidente→GREEN; workspace
+      597/0); S3 `scripts/reset-dev.sh` = PROVA day-one automatizada
+      (down -v→up→asserts; --yes obrigatório); +paridade storage
+      nativo↔compose no run-native (5ª mina: mock não servia objetos do S3).
+      Deployado: compose backend inteiro nas imagens novas + principal
+      CONTAINER dono do :8080 (nativo parado; run-native p/ iteração).
+      E2E real provado: generate→Truenas→done→gallery→PNG 1024² 1.2MB.
+      PENDENTES: (a) TrueNAS ainda tem código velho do orquestrador — o
+      guard do manager já cobre a mentira, mas sync do repo no nó exige
+      push/merge (aguardando ordem do usuário); (b) corrida real do
+      reset-dev.sh (destrutivo — dia-one ainda NÃO provado de fato);
+      (c) nits reviewer S2: swallows residuais metrics-live/md5/scoped_key,
+      2 UPDATEs não-atômicos, teste integração yolo_train-done-vazio,
+      teste daemon upload_fail, retry-count assert.
 
 ## Invariantes & lições da casa
 

@@ -368,6 +368,30 @@ class TestCustom(_BaseGenerateTest):
         with self.assertRaises(SystemExit):
             main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
 
+    def test_custom_flux2_registers_in_meta(self):
+        cfg = self._base_cfg(
+            batch_size=1,
+            custom_checkpoint_path="/fake/flux2.safetensors",
+            arch="flux-2-klein-4b",
+            text_encoder_path="/fake/qwen3-custom",
+        )
+        del cfg["generate"]["base_model"]
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+
+        main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+
+        lines = [
+            json.loads(l)
+            for l in (out_dir / "generation_meta.json").read_text().splitlines()
+            if l.strip()
+        ]
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["custom_model_path"], "/fake/flux2.safetensors")
+        self.assertEqual(lines[0]["arch"], "flux-2-klein-4b")
+        self.assertEqual(lines[0]["base_model"], "flux-2-klein-4b")
+        self.assertEqual(lines[0]["text_encoder_path"], "/fake/qwen3-custom")
+
 
 class TestLimits(_BaseGenerateTest):
     """6. batch_size=9 → erro; 5 loras → erro; scale=2.5 → erro."""
@@ -761,6 +785,47 @@ class TestValidationDirect(unittest.TestCase):
                 }
             )
 
+    def test_text_encoder_absent_is_none(self):
+        result = load_and_validate_generate_config(
+            {"job_id": "x", "generate": {"prompt": "test"}}
+        )
+        self.assertIsNone(result["text_encoder_path"])
+
+    def test_text_encoder_empty_string_is_none(self):
+        result = load_and_validate_generate_config(
+            {"job_id": "x", "generate": {"prompt": "test", "text_encoder_path": ""}}
+        )
+        self.assertIsNone(result["text_encoder_path"])
+
+    def test_text_encoder_non_string_fails(self):
+        with self.assertRaises(SystemExit):
+            load_and_validate_generate_config(
+                {"job_id": "x", "generate": {"prompt": "test", "text_encoder_path": 123}}
+            )
+
+    def test_text_encoder_valid_path(self):
+        result = load_and_validate_generate_config(
+            {
+                "job_id": "x",
+                "generate": {"prompt": "test", "text_encoder_path": " /enc/qwen3 "},
+            }
+        )
+        self.assertEqual(result["text_encoder_path"], "/enc/qwen3")
+
+    def test_custom_flux2_accepted(self):
+        result = load_and_validate_generate_config(
+            {
+                "job_id": "x",
+                "generate": {
+                    "prompt": "test",
+                    "custom_checkpoint_path": "/fake/flux2.safetensors",
+                    "arch": "flux-2-klein-4b",
+                },
+            }
+        )
+        self.assertEqual(result["custom_checkpoint_path"], "/fake/flux2.safetensors")
+        self.assertEqual(result["arch"], "flux-2-klein-4b")
+        self.assertEqual(result["base_model"], "flux-2-klein-4b")
 
 class TestCliE2E(_BaseGenerateTest):
     """Testes end-to-end via CLI (main)."""
@@ -815,7 +880,7 @@ class TestPipelineCacheKey(unittest.TestCase):
             "arch": None,
         }
         key = pipeline_cache_key(params)
-        self.assertEqual(key, ("flux-2-klein-4b", "4bit", False))
+        self.assertEqual(key, ("flux-2-klein-4b", "4bit", False, None))
 
     def test_custom_checkpoint_cache_key(self):
         from trainer_difusao.generate import pipeline_cache_key
@@ -829,7 +894,25 @@ class TestPipelineCacheKey(unittest.TestCase):
         }
         key = pipeline_cache_key(params)
         # custom_checkpoint_path prevalece sobre base_model
-        self.assertEqual(key, ("/fake/model.safetensors", "none", False))
+        self.assertEqual(key, ("/fake/model.safetensors", "none", False, None))
+
+    def test_encoder_changes_cache_key(self):
+        from trainer_difusao.generate import pipeline_cache_key
+
+        base = {
+            "base_model": "flux-2-klein-4b",
+            "quantization": "4bit",
+            "distilled": False,
+            "custom_checkpoint_path": None,
+            "arch": None,
+            "text_encoder_path": None,
+        }
+        other = dict(base, text_encoder_path="/models/qwen3-custom")
+        self.assertEqual(
+            pipeline_cache_key(base), ("flux-2-klein-4b", "4bit", False, None)
+        )
+        self.assertNotEqual(pipeline_cache_key(base), pipeline_cache_key(other))
+        self.assertEqual(pipeline_cache_key(other)[3], "/models/qwen3-custom")
 
 
 class TestEnsurePipeline(unittest.TestCase):
@@ -847,7 +930,7 @@ class TestEnsurePipeline(unittest.TestCase):
         cache = {}
         pipeline, key = ensure_pipeline(params, cache)
         self.assertIsNone(pipeline)
-        self.assertEqual(key, ("flux-2-klein-4b", "4bit", False))
+        self.assertEqual(key, ("flux-2-klein-4b", "4bit", False, None))
 
     def test_cache_hit_returns_pipeline(self):
         from trainer_difusao.generate import ensure_pipeline
@@ -859,7 +942,7 @@ class TestEnsurePipeline(unittest.TestCase):
             "custom_checkpoint_path": None,
         }
         fake_pipeline = object()
-        key = ("flux-2-klein-4b", "4bit", False)
+        key = ("flux-2-klein-4b", "4bit", False, None)
         cache = {key: fake_pipeline}
         pipeline, k = ensure_pipeline(params, cache)
         self.assertIs(pipeline, fake_pipeline)

@@ -444,5 +444,98 @@ class TestMetaSamplerAlways(unittest.TestCase):
         self.assertNotIn("upscale", meta)
 
 
+class TestCustomWeightsQuantGuard(_Base):
+    """C2: quantizacao aplicada a pesos custom flux-2 (sem fallback silencioso)."""
+
+    _QUANT = object()  # sentinela p/ assercao de kwargs
+
+    def test_custom_transformer_receives_quantization_config(self):
+        from diffusers import Flux2Transformer2DModel
+
+        cp = self.tmp_path / "flux2.safetensors"
+        cp.write_bytes(b"0" * 16)
+        with mock.patch.object(
+            Flux2Transformer2DModel, "from_single_file", return_value=mock.Mock()
+        ) as m:
+            from trainer_difusao.generate import _load_flux2_custom_transformer
+
+            _load_flux2_custom_transformer(
+                str(cp), "float32", quantization_config=self._QUANT
+            )
+        self.assertIs(m.call_args.kwargs["quantization_config"], self._QUANT)
+
+    def test_custom_transformer_without_quant_unchanged(self):
+        from diffusers import Flux2Transformer2DModel
+
+        cp = self.tmp_path / "flux2.safetensors"
+        cp.write_bytes(b"0" * 16)
+        with mock.patch.object(
+            Flux2Transformer2DModel, "from_single_file", return_value=mock.Mock()
+        ) as m:
+            from trainer_difusao.generate import _load_flux2_custom_transformer
+
+            _load_flux2_custom_transformer(str(cp), "float32")
+        self.assertNotIn("quantization_config", m.call_args.kwargs)
+
+    def test_encoder_dir_receives_quantization_config(self):
+        import transformers
+        from trainer_difusao.generate import _load_flux2_text_encoder_override
+
+        enc_dir = self.tmp_path / "enc"
+        enc_dir.mkdir()
+        (enc_dir / "config.json").write_text("{}")
+        enc = mock.Mock()
+        with mock.patch.object(
+            transformers, "AutoModelForCausalLM"
+        ) as m_enc, mock.patch.object(transformers, "AutoTokenizer"):
+            m_enc.from_pretrained.return_value = enc
+            _load_flux2_text_encoder_override(
+                str(enc_dir), "repo/x", "float32",
+                quantization_config=self._QUANT,
+            )
+        self.assertIs(
+            m_enc.from_pretrained.call_args.kwargs["quantization_config"],
+            self._QUANT,
+        )
+
+    def test_encoder_loose_file_with_quant_dies(self):
+        from trainer_difusao.generate import _load_flux2_text_encoder_override
+
+        f = self.tmp_path / "enc.safetensors"
+        f.write_bytes(b"0" * 16)
+        with self.assertRaises(SystemExit):
+            _load_flux2_text_encoder_override(
+                str(f), "repo/x", "float32", quantization_config=self._QUANT
+            )
+
+
+class TestEncoderOverrideSdGuard(_Base):
+    """N2: text_encoder_path com checkpoint sdxl/sd15 -> SystemExit (sem engolir)."""
+
+    def test_dies_for_sdxl(self):
+        params = load_and_validate_generate_config(
+            self._base_cfg(
+                base_model=None,
+                custom_checkpoint_path="/tmp/model.safetensors",
+                arch="sdxl",
+                text_encoder_path="/tmp/enc",
+            )
+        )
+        with self.assertRaises(SystemExit):
+            _real_generate(params, self.tmp_path / "out")
+
+    def test_dies_for_sd15(self):
+        params = load_and_validate_generate_config(
+            self._base_cfg(
+                base_model=None,
+                custom_checkpoint_path="/tmp/model.safetensors",
+                arch="sd15",
+                text_encoder_path="/tmp/enc",
+            )
+        )
+        with self.assertRaises(SystemExit):
+            _real_generate(params, self.tmp_path / "out")
+
+
 if __name__ == "__main__":
     unittest.main()

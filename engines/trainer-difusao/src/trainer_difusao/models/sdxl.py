@@ -194,7 +194,20 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         0, int(cfg.get("epoch_offset") or lora_cfg.get("epoch_offset") or 0)
     )
     weights_path = cfg.get("weights_path")
-
+    # feat/pesos-custom-flux2: treino custom sdxl via from_single_file do UNet —
+    # mecânico (mesmo padrão da geração): demais componentes do repo oficial.
+    raw_custom_cp = cfg.get("custom_checkpoint_path")
+    custom_checkpoint_path: str | None = None
+    if raw_custom_cp:
+        if not isinstance(raw_custom_cp, str) or not raw_custom_cp.strip():
+            _die("custom_checkpoint_path deve ser uma string não vazia.")
+        custom_checkpoint_path = raw_custom_cp.strip()
+    raw_enc = cfg.get("text_encoder_path")
+    if raw_enc:
+        _die(
+            "text_encoder_path só é suportado com arch flux-2-klein-4b "
+            "(treino sdxl não usa encoder custom)."
+        )
     mixed_precision = str(lora_cfg.get("mixed_precision", "fp16")).lower().strip()
     target_dtype = (
         torch.bfloat16
@@ -250,9 +263,24 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
     vae = AutoencoderKL.from_pretrained(
         model_id, subfolder="vae", torch_dtype=torch.float32, cache_dir=hub_cache
     ).to(device)
-    unet = UNet2DConditionModel.from_pretrained(
-        model_id, subfolder="unet", torch_dtype=target_dtype, cache_dir=hub_cache
-    ).to(device)
+    if custom_checkpoint_path:
+        try:
+            unet = UNet2DConditionModel.from_single_file(
+                custom_checkpoint_path, torch_dtype=target_dtype
+            ).to(device)
+        except Exception as exc:
+            _die(
+                f"Falha ao carregar checkpoint sdxl custom "
+                f"({custom_checkpoint_path}): layout não reconhecido ({exc})"
+            )
+        print(
+            f"[SDXL] Checkpoint custom aplicado ao UNet: {custom_checkpoint_path}",
+            flush=True,
+        )
+    else:
+        unet = UNet2DConditionModel.from_pretrained(
+            model_id, subfolder="unet", torch_dtype=target_dtype, cache_dir=hub_cache
+        ).to(device)
     noise_scheduler = DDPMScheduler.from_pretrained(
         model_id, subfolder="scheduler", cache_dir=hub_cache
     )

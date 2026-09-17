@@ -29,8 +29,41 @@ from trainer_difusao.optimizers import _create_lr_scheduler, _create_optimizer
 
 
 
-def _is_cache_valid(cache_dir: Path | None, expected_model_id: str, expected_quant: str) -> bool:
-    """Verifica se o diretório em cache existe, contém config.json e pertence exatamente ao model_id e quantização esperados."""
+def _custom_checkpoint_identity(custom_cp: str | None) -> str | None:
+    """Identidade do checkpoint custom p/ isolamento do cache (path + md5 parcial).
+
+    None quando sem custom. md5 parcial (até 8 MiB) detecta troca de conteúdo
+    no mesmo path; falha de leitura honesta → fingerprint só do path (nunca
+    silencioso: o erro é logado e o cache é invalidado pela ausência do md5).
+    """
+    if not custom_cp:
+        return None
+    try:
+        import hashlib
+
+        h = hashlib.md5()
+        with open(custom_cp, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+                if h.digest_size and f.tell() >= 8 * 1024 * 1024:
+                    break
+        return f"{custom_cp}#{h.hexdigest()}"
+    except OSError as exc:
+        print(
+            f"[WARN] Não foi possível fingerprintar checkpoint custom ({custom_cp}): "
+            f"{exc}. Cache quantizado será invalidado.",
+            flush=True,
+        )
+        return f"{custom_cp}#unreadable"
+
+
+def _is_cache_valid(
+    cache_dir: Path | None,
+    expected_model_id: str,
+    expected_quant: str,
+    expected_custom: str | None = None,
+) -> bool:
+    """Verifica se o cache pertence exatamente ao model_id, quantização e custom esperados."""
     if not cache_dir or not cache_dir.exists():
         return False
     if not (cache_dir / "config.json").exists():
@@ -40,10 +73,12 @@ def _is_cache_valid(cache_dir: Path | None, expected_model_id: str, expected_qua
         return False
     try:
         data = json.loads(meta_path.read_text(encoding="utf-8"))
-        return (
-            data.get("model_id") == expected_model_id
-            and data.get("quant_format") == expected_quant
-        )
+        if data.get("model_id") != expected_model_id:
+            return False
+        if data.get("quant_format") != expected_quant:
+            return False
+        # Legado sem custom_checkpoint: válido só quando nenhum custom é pedido.
+        return data.get("custom_checkpoint") == expected_custom
     except Exception:
         return False
 
@@ -55,6 +90,7 @@ def _save_quant_metadata(
     quant_format: str,
     target_dtype: Any,
     is_flux2: bool,
+    custom_checkpoint: str | None = None,
 ) -> None:
     """Grava metadados da quantização persistida para garantir integridade e isolamento estrito."""
     try:
@@ -65,6 +101,7 @@ def _save_quant_metadata(
             "quant_format": quant_format,
             "target_dtype": str(target_dtype),
             "is_flux2": is_flux2,
+            "custom_checkpoint": custom_checkpoint,
         }
         (quant_base / "metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     except Exception as e:
@@ -349,15 +386,36 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     )
     is_flux2 = any(k in model_id.lower() for k in ["klein", "flux.2", "flux-2"])
 
-    dataset_path = Path(cfg.get("dataset_path", "/datasets"))
-    lora_cfg = cfg.get("lora", {})
-    epochs = int(lora_cfg.get("epochs", 10))
-    batch_size = int(lora_cfg.get("batch_size", 1))
-    learning_rate = float(lora_cfg.get("learning_rate", 1e-4))
-    rank = int(lora_cfg.get("rank", 16))
-    alpha = int(lora_cfg.get("alpha", 16))
-    trigger_word = str(lora_cfg.get("trigger_word", ""))
-    base_name = _resolve_output_name(cfg)
+    # --- pesos custom (feat/pesos-custom-flux2): só arch flux-2 chega aqui ---
+    # generate.py normaliza aliases p/ "flux-2-klein-4b"; no treino o YAML traz
+    # arch resolvido em cfg["model"]. sdxl/sd15 custom são roteados p/ seus
+    # loaders (from_single_file mecânico); outro arch ⇒ falha honesta.
+    raw_train_arch = str(cfg.get("model", "") or "").strip().lower()
+    raw_custom_cp = cfg.get("custom_checkpoint_path")
+    custom_checkpoint_path: str | None = None
+    if raw_custom_cp:
+        if not isinstance(raw_custom_cp, str) or not raw_custom_cp.strip():
+            _die("custom_checkpoint_path deve ser uma string não vazia.")
+        custom_checkpoint_path = raw_custom_cp.strip()
+        if raw_train_arch not in ("flux-2-klein-4b", "flux", "flux2", "flux-2"):
+            _die(
+                "treino custom não suportado para este arch "
+                f"({raw_train_arch or 'indefinido'}). "
+                "Checkpoints custom de treino usam arch 'flux-2-klein-4b' "
+                "(sdxl/sd15 custom seguem pelos loaders de sdxl.py/sd15.py)."
+            )
+    raw_encoder_path = cfg.get("text_encoder_path")
+    if not raw_encoder_path:
+        text_encoder_path: str | None = None
+    else:
+        if not isinstance(raw_encoder_path, str) or not raw_encoder_path.strip():
+            _die("text_encoder_path deve ser uma string não vazia.")
+        text_encoder_path = raw_encoder_path.strip()
+        if not is_flux2:
+            _die(
+                "text_encoder_path só é suportado com arch flux-2-klein-4b "
+                f"(modelo atual: {model_id})."
+            )
 
     aux = _validate_train_aux(cfg, quant_default=None)
     control_dataset_path = aux["control_dataset_path"]
@@ -465,9 +523,22 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     )
     weights_path = cfg.get("weights_path")
 
-    # Diretório persistente de cache para pesos pré-quantizados isolado estritamente por model_id e quant_format
+    # Cache quantizado isolado por (model_id, quant, custom_checkpoint, encoder).
+    # NUNCA reusar pesos de outro checkpoint/encoder: a identidade entra no
+    # subfolder E na validade do metadata.json (defesa em profundidade).
+    custom_identity = _custom_checkpoint_identity(custom_checkpoint_path)
     if is_quantized:
         model_slug = re.sub(r"[^a-zA-Z0-9_\-\.]", "_", model_id)
+        if custom_identity:
+            import hashlib as _hl
+
+            custom_slug = _hl.md5(custom_identity.encode("utf-8")).hexdigest()[:12]
+            model_slug = f"{model_slug}_custom{custom_slug}"
+        if text_encoder_path:
+            import hashlib as _hl2
+
+            enc_slug = _hl2.md5(text_encoder_path.encode("utf-8")).hexdigest()[:12]
+            model_slug = f"{model_slug}_enc{enc_slug}"
         subfolder_quant = f"{model_slug}_{quant_format}"
         quant_base = (
             Path(f"/outputs/.cache/quantized/{subfolder_quant}")
@@ -498,7 +569,12 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     # 1. Carregamento do Transformer (DiT): do cache quantizado se já existir e for válido, senão quantiza e salva
     transformer_is_cached = (
         not force_requantize
-        and _is_cache_valid(transformer_cache_dir, expected_model_id=model_id, expected_quant=quant_format)
+        and _is_cache_valid(
+            transformer_cache_dir,
+            expected_model_id=model_id,
+            expected_quant=quant_format,
+            expected_custom=custom_identity,
+        )
     )
     if transformer_is_cached:
         _emit_metric(
@@ -558,6 +634,40 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                 cache_dir=hub_cache,
                 token=hf_token,
             )
+            if custom_checkpoint_path:
+                # Base custom: transformer do arquivo sobre o carregado do repo.
+                # from_single_file sem quantização e depois quantizar seria
+                # silenciosamente divergente — aplica o state_dict com falha
+                # honesta se o layout não for reconhecido.
+                try:
+                    from safetensors.torch import load_file as _st_load
+
+                    custom_state = _st_load(custom_checkpoint_path)
+                except Exception as exc:
+                    _die(
+                        f"Falha ao ler checkpoint flux-2 custom "
+                        f"({custom_checkpoint_path}): {exc}"
+                    )
+                try:
+                    missing, unexpected = transformer.load_state_dict(
+                        custom_state, strict=False
+                    )
+                except Exception as exc:
+                    _die(
+                        f"Falha ao aplicar checkpoint flux-2 custom "
+                        f"({custom_checkpoint_path}): layout não reconhecido ({exc})"
+                    )
+                if missing or unexpected:
+                    _die(
+                        f"Checkpoint flux-2 custom ({custom_checkpoint_path}) com "
+                        f"layout não reconhecido: {len(missing)} chave(s) "
+                        f"ausente(s), {len(unexpected)} inesperada(s)."
+                    )
+                print(
+                    f"[FLUX] Checkpoint custom aplicado ao transformer: "
+                    f"{custom_checkpoint_path}",
+                    flush=True,
+                )
         except Exception as e:
             if (
                 "gated" in str(e).lower()
@@ -576,7 +686,10 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             try:
                 transformer_cache_dir.mkdir(parents=True, exist_ok=True)
                 transformer.save_pretrained(transformer_cache_dir)
-                _save_quant_metadata(quant_base, model_id, quant_label, quant_format, target_dtype, is_flux2)
+                _save_quant_metadata(
+                    quant_base, model_id, quant_label, quant_format, target_dtype,
+                    is_flux2, custom_checkpoint=custom_identity,
+                )
                 print(
                     f"Transformer {quant_label} persistido em cache para execuções futuras: {transformer_cache_dir}",
                     flush=True,
@@ -603,7 +716,12 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
 
         text_enc_is_cached = (
             not force_requantize
-            and _is_cache_valid(text_encoder_cache_dir, expected_model_id=model_id, expected_quant=quant_format)
+            and _is_cache_valid(
+                text_encoder_cache_dir,
+                expected_model_id=model_id,
+                expected_quant=quant_format,
+                expected_custom=custom_identity,
+            )
         )
         if text_enc_is_cached:
             _emit_metric(
@@ -660,11 +778,64 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                 cache_dir=hub_cache,
                 token=hf_token,
             )
+            if text_encoder_path:
+                # Override honest: mesmo esquema da geração (dir HF completo
+                # ou .safetensors solto aplicado sobre o encoder do repo).
+                enc_p = Path(text_encoder_path)
+                if enc_p.is_dir():
+                    try:
+                        text_encoder_one = AutoModelForCausalLM.from_pretrained(
+                            str(enc_p),
+                            quantization_config=text_quant_cfg,
+                            torch_dtype=target_dtype,
+                        )
+                    except Exception as exc:
+                        _die(
+                            f"Falha ao carregar text_encoder custom de dir "
+                            f"({text_encoder_path}): {exc}"
+                        )
+                elif enc_p.is_file():
+                    try:
+                        from safetensors.torch import load_file as _enc_st_load
+
+                        enc_state = _enc_st_load(str(enc_p))
+                    except Exception as exc:
+                        _die(
+                            f"Falha ao ler text_encoder custom ({text_encoder_path}): "
+                            f"arquivo .safetensors inválido ({exc})"
+                        )
+                    try:
+                        enc_missing, enc_unexpected = (
+                            text_encoder_one.load_state_dict(enc_state, strict=False)
+                        )
+                    except Exception as exc:
+                        _die(
+                            f"Falha ao aplicar text_encoder custom "
+                            f"({text_encoder_path}): layout não reconhecido ({exc})"
+                        )
+                    if enc_missing or enc_unexpected:
+                        _die(
+                            f"text_encoder custom ({text_encoder_path}) com layout "
+                            f"não reconhecido: {len(enc_missing)} chave(s) "
+                            f"ausente(s), {len(enc_unexpected)} inesperada(s)."
+                        )
+                else:
+                    _die(
+                        f"text_encoder_path não encontrado: {text_encoder_path}. "
+                        "Use um diretório HF ou arquivo .safetensors válido."
+                    )
+                print(
+                    f"[FLUX] Text encoder custom aplicado: {text_encoder_path}",
+                    flush=True,
+                )
             if text_encoder_cache_dir and quant_base:
                 try:
                     text_encoder_cache_dir.mkdir(parents=True, exist_ok=True)
                     text_encoder_one.save_pretrained(text_encoder_cache_dir)
-                    _save_quant_metadata(quant_base, model_id, quant_label, quant_format, target_dtype, is_flux2)
+                    _save_quant_metadata(
+                        quant_base, model_id, quant_label, quant_format, target_dtype,
+                        is_flux2, custom_checkpoint=custom_identity,
+                    )
                     print(
                         f"Text Encoder Qwen3 {quant_label} persistido em cache para execuções futuras: {text_encoder_cache_dir}",
                         flush=True,
@@ -674,15 +845,24 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                         f"[WARN] Não foi possível persistir Text Encoder Qwen3 quantizado em disco: {e}",
                         flush=True,
                     )
-
-        tokenizer_one = AutoTokenizer.from_pretrained(
-            model_id, subfolder="tokenizer", cache_dir=hub_cache, token=hf_token
-        )
+        if text_encoder_path and Path(text_encoder_path).is_dir():
+            tokenizer_one = AutoTokenizer.from_pretrained(
+                str(text_encoder_path), cache_dir=hub_cache, token=hf_token
+            )
+        else:
+            tokenizer_one = AutoTokenizer.from_pretrained(
+                model_id, subfolder="tokenizer", cache_dir=hub_cache, token=hf_token
+            )
     else:
         # FLUX.1: utiliza Text Encoder CLIP + T5-XXL
         t5_is_cached = (
             not force_requantize
-            and _is_cache_valid(text_encoder_cache_dir, expected_model_id=model_id, expected_quant=quant_format)
+            and _is_cache_valid(
+                text_encoder_cache_dir,
+                expected_model_id=model_id,
+                expected_quant=quant_format,
+                expected_custom=custom_identity,
+            )
         )
         if t5_is_cached:
             _emit_metric(
@@ -734,7 +914,10 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                 try:
                     text_encoder_cache_dir.mkdir(parents=True, exist_ok=True)
                     text_encoder_two.save_pretrained(text_encoder_cache_dir)
-                    _save_quant_metadata(quant_base, model_id, quant_label, quant_format, target_dtype, is_flux2)
+                    _save_quant_metadata(
+                        quant_base, model_id, quant_label, quant_format, target_dtype,
+                        is_flux2, custom_checkpoint=custom_identity,
+                    )
                     print(
                         f"Text Encoder T5 {quant_label} persistido em cache para execuções futuras: {text_encoder_cache_dir}",
                         flush=True,

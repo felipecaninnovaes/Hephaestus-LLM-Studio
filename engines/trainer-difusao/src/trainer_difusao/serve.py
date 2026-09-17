@@ -47,13 +47,14 @@ _server: ThreadingHTTPServer | None = None
 
 
 def _spec_key(spec: dict[str, Any] | None) -> tuple | None:
-    """Extrai chave de comparação da spec (base_model, custom, arch, quant, distilled)."""
+    """Extrai chave de comparação da spec (base, custom, arch, encoder, quant, distilled)."""
     if spec is None:
         return None
     return (
         spec.get("base_model"),
         spec.get("custom_checkpoint_path"),
         spec.get("arch"),
+        spec.get("text_encoder_path"),
         spec.get("quantization"),
         spec.get("distilled"),
     )
@@ -70,6 +71,7 @@ def _make_spec(params: dict[str, Any]) -> dict[str, Any]:
         "base_model": params.get("base_model"),
         "custom_checkpoint_path": params.get("custom_checkpoint_path"),
         "arch": params.get("arch"),
+        "text_encoder_path": params.get("text_encoder_path"),
         "quantization": params.get("quantization"),
         "distilled": params.get("distilled", False),
     }

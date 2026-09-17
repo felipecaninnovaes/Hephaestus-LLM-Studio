@@ -102,7 +102,7 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
             )
         loras.append({"path": str(lora_path).strip(), "scale": lora_scale})
 
-    # --- custom_checkpoint_path + arch (D4) ---
+    # --- custom_checkpoint_path + arch (D4; feat/pesos-custom-flux2: +flux-2) ---
     custom_checkpoint_path = gen_cfg.get("custom_checkpoint_path")
     arch = gen_cfg.get("arch")
     if custom_checkpoint_path:
@@ -112,12 +112,27 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
         ):
             _die("custom_checkpoint_path deve ser uma string não vazia.")
         custom_checkpoint_path = custom_checkpoint_path.strip()
-        if not arch or str(arch).strip().lower() not in ("sdxl", "sd15"):
-            _die("custom_checkpoint_path exige campo 'arch' válido ('sdxl' ou 'sd15').")
-        arch = str(arch).strip().lower()
+        arch = str(arch).strip().lower() if arch else None
+        if arch in ("flux", "flux2", "flux-2", "flux2-klein-4b", "flux.2-klein-4b"):
+            arch = "flux-2-klein-4b"
+        if arch not in ("sdxl", "sd15", "flux-2-klein-4b"):
+            _die(
+                "custom_checkpoint_path exige campo 'arch' válido "
+                "('sdxl', 'sd15' ou 'flux-2-klein-4b')."
+            )
     else:
         custom_checkpoint_path = None
         arch = str(arch).strip().lower() if arch else None
+
+    # --- text_encoder_path (feat/pesos-custom-flux2): override opcional do Qwen3 ---
+    # Ausente/falsy = sem override (retrocompatível). Presente = string não vazia.
+    raw_encoder = gen_cfg.get("text_encoder_path")
+    if not raw_encoder:
+        text_encoder_path = None
+    else:
+        if not isinstance(raw_encoder, str) or not raw_encoder.strip():
+            _die("text_encoder_path deve ser uma string não vazia.")
+        text_encoder_path = raw_encoder.strip()
 
     # --- base_model (XOR com custom_checkpoint_path) ---
     raw_base_model = gen_cfg.get("base_model") or cfg.get("model") or "flux-2-klein-4b"
@@ -131,13 +146,15 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
         )
 
     if custom_checkpoint_path:
-        # Para custom, aceita apenas sdxl/sd15
-        if arch not in ("sdxl", "sd15"):
-            _die(f"Arquitetura custom não suportada: {arch}. Use 'sdxl' ou 'sd15'.")
+        # Para custom, aceita sdxl/sd15 + flux-2-klein-4b (feat/pesos-custom-flux2)
+        if arch not in ("sdxl", "sd15", "flux-2-klein-4b"):
+            _die(
+                "Arquitetura custom não suportada: "
+                f"{arch}. Use 'sdxl', 'sd15' ou 'flux-2-klein-4b'."
+            )
         base_model = arch  # custom força base_model = arch
     elif base_model not in ("flux-2-klein-4b", "sdxl", "sd15"):
         _die(f"Modelo base de difusão não suportado: {raw_base_model}")
-
     width = int(gen_cfg.get("width", 1024))
     height = int(gen_cfg.get("height", 1024))
     if width < 256 or width > 2048 or height < 256 or height > 2048:
@@ -258,6 +275,7 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "loras": loras,
         "custom_checkpoint_path": custom_checkpoint_path,
         "arch": arch,
+        "text_encoder_path": text_encoder_path,
         "init_image_path": init_image_path,
         "init_strength": init_strength,
         "sampler": sampler,
@@ -302,19 +320,20 @@ def _resolve_loras_from_legacy(params: dict[str, Any]) -> list[dict[str, Any]]:
         )
     return []
 
-
 def pipeline_cache_key(params: dict[str, Any]) -> tuple:
     """Extrai chave de cache do pipeline a partir dos params validados.
 
-    Chave: (base_model|custom_checkpoint_path+arch, quantization, distilled).
+    Chave: (base_model|custom_checkpoint_path+arch, quantization, distilled,
+    text_encoder_path). O encoder entra na chave: trocar o encoder troca os
+    pesos de texto — reusar o pipeline cacheado seria fallback silencioso.
     """
     custom_cp = params.get("custom_checkpoint_path")
     return (
         custom_cp or params.get("base_model"),
         params.get("quantization"),
         params.get("distilled", False),
+        params.get("text_encoder_path"),
     )
-
 
 def ensure_pipeline(
     params: dict[str, Any], cache: dict[tuple, object]
@@ -390,6 +409,7 @@ def _build_generation_meta(
         "loras": loras_effective,
         "custom_model_path": params.get("custom_checkpoint_path"),
         "arch": params.get("arch"),
+        "text_encoder_path": params.get("text_encoder_path"),
         "base_model": params["base_model"],
         "batch_index": batch_index,
         "batch_size": batch_size,
@@ -660,6 +680,8 @@ def _mock_generate(params: dict[str, Any], output_dir: Path, emitter=None) -> No
             lora_label = "LoRA: Nenhum (Base Puro)"
         if custom_cp:
             lora_label += f" | Custom: {Path(custom_cp).name} ({arch})"
+        if params.get("text_encoder_path"):
+            lora_label += f" | Encoder: {Path(str(params['text_encoder_path'])).name}"
         meta_line2 = f"{lora_label} | Res: {width}x{height} | Mode: MOCK DETERMINÍSTICO"
         if init_image_path:
             meta_line2 += f" | IMG2IMG: {Path(init_image_path).name}@{params.get('init_strength')}"
@@ -777,6 +799,158 @@ def _mock_generate(params: dict[str, Any], output_dir: Path, emitter=None) -> No
     )
 
 
+def _flux2_repo_id(*, distilled: bool) -> str:
+    """Repo BFL do FLUX.2 Klein (overrides por env, defaults oficiais)."""
+    if distilled:
+        return (
+            os.environ.get("FLUX_DISTILLED_MODEL_ID")
+            or "black-forest-labs/FLUX.2-klein-4B"
+        )
+    return (
+        os.environ.get("FLUX_MODEL_ID") or "black-forest-labs/FLUX.2-klein-base-4B"
+    )
+
+
+def _load_flux2_text_encoder_override(
+    encoder_path: str,
+    model_repo: str,
+    pipe_dtype: Any,
+    quantization_config: Any = None,
+) -> tuple[Any, Any]:
+    """Carrega encoder/tokenizer override p/ FLUX.2 Klein (Qwen3).
+
+    Dir com config.json → encoder+tokenizer do próprio path (modelo HF
+    completo). Arquivo .safetensors solto → config/tokenizer do repo BFL e
+    state_dict do arquivo aplicado sobre o encoder do repo (falha honesta se
+    o layout não for reconhecido — nunca fallback silencioso p/ o oficial).
+
+    *quantization_config* (transformers.BitsAndBytesConfig/TorchAoConfig) é
+    aplicado via from_pretrained no caso dir. No caso arquivo-solto NÃO é
+    aplicável (load_state_dict sobre pesos já quantizados não funciona) →
+    _die honesto.
+    """
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    enc = Path(encoder_path)
+    if enc.is_dir():
+        try:
+            enc_kwargs: dict[str, Any] = {"torch_dtype": pipe_dtype}
+            if quantization_config is not None:
+                enc_kwargs["quantization_config"] = quantization_config
+            encoder = AutoModelForCausalLM.from_pretrained(
+                str(enc), **enc_kwargs
+            )
+        except Exception as exc:
+            _die(
+                f"Falha ao carregar text_encoder custom de dir ({encoder_path}): {exc}"
+            )
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(str(enc))
+        except Exception as exc:
+            _die(
+                f"Falha ao carregar tokenizer do text_encoder custom "
+                f"({encoder_path}): {exc}"
+            )
+        print(
+            f"[DIFFUSION-GEN] Text encoder custom (dir): {encoder_path}",
+            flush=True,
+        )
+        return encoder, tokenizer
+    if enc.is_file():
+        if quantization_config is not None:
+            _die(
+                f"Quantização não é suportada com text_encoder custom em arquivo "
+                f"solto ({encoder_path}): os pesos são aplicados via "
+                f"load_state_dict sobre o encoder do repo, incompatível com "
+                f"modelo quantizado. Use um diretório HF completo ou "
+                f"quantization=none."
+            )
+        try:
+            base_encoder = AutoModelForCausalLM.from_pretrained(
+                model_repo, subfolder="text_encoder", torch_dtype=pipe_dtype
+            )
+        except Exception as exc:
+            _die(
+                f"Falha ao carregar text encoder base do repo ({model_repo}) "
+                f"para aplicar override ({encoder_path}): {exc}"
+            )
+        try:
+            from safetensors.torch import load_file as _safetensors_load
+
+            state = _safetensors_load(str(enc))
+        except Exception as exc:
+            _die(
+                f"Falha ao ler text_encoder custom ({encoder_path}): "
+                f"arquivo .safetensors inválido ({exc})"
+            )
+        try:
+            missing, unexpected = base_encoder.load_state_dict(state, strict=False)
+        except Exception as exc:
+            _die(
+                f"Falha ao aplicar text_encoder custom ({encoder_path}) sobre o "
+                f"encoder do repo ({model_repo}): layout não reconhecido ({exc})"
+            )
+        if missing or unexpected:
+            _die(
+                f"text_encoder custom ({encoder_path}) com layout não reconhecido: "
+                f"{len(missing)} chave(s) ausente(s), {len(unexpected)} inesperada(s). "
+                "Envie o encoder como diretório HF completo ou um .safetensors "
+                "compatível com o Qwen3 do FLUX.2 Klein."
+            )
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_repo, subfolder="tokenizer"
+            )
+        except Exception as exc:
+            _die(
+                f"Falha ao carregar tokenizer base do repo ({model_repo}): {exc}"
+            )
+        print(
+            f"[DIFFUSION-GEN] Text encoder custom (.safetensors sobre repo): "
+            f"{encoder_path}",
+            flush=True,
+        )
+        return base_encoder, tokenizer
+    _die(
+        f"text_encoder_path não encontrado: {encoder_path}. "
+        "Use um diretório HF ou arquivo .safetensors válido."
+    )
+
+
+def _load_flux2_custom_transformer(
+    custom_cp: str, pipe_dtype: Any, quantization_config: Any = None
+) -> Any:
+    """Carrega transformer custom flux-2 do arquivo (falha honesta se layout inválido).
+
+    *quantization_config* é repassado a `Flux2Transformer2DModel.from_single_file`
+    (suportado em diffusers >= 0.40 via kwargs → DiffusersAutoQuantizer).
+    """
+    try:
+        from diffusers import Flux2Transformer2DModel
+    except ImportError as exc:
+        _die(
+            f"Checkpoint flux-2 custom exige diffusers com Flux2Transformer2DModel "
+            f"({custom_cp}): {exc}"
+        )
+    try:
+        tf_kwargs: dict[str, Any] = {"torch_dtype": pipe_dtype}
+        if quantization_config is not None:
+            tf_kwargs["quantization_config"] = quantization_config
+        transformer = Flux2Transformer2DModel.from_single_file(
+            custom_cp, **tf_kwargs
+        )
+    except Exception as exc:
+        _die(
+            f"Falha ao carregar checkpoint flux-2 custom ({custom_cp}): "
+            f"layout de arquivo não reconhecido ({exc})"
+        )
+    print(
+        f"[DIFFUSION-GEN] Transformer flux-2 custom: {custom_cp}",
+        flush=True,
+    )
+    return transformer
+
+
 # ---------------------------------------------------------------------------
 # REAL — geração via Diffusers com aceleração CUDA
 # ---------------------------------------------------------------------------
@@ -817,6 +991,17 @@ def _real_generate(
     loras_effective = _resolve_loras_from_legacy(params)
     custom_cp = params.get("custom_checkpoint_path")
     arch = params.get("arch")
+    text_encoder_path = params.get("text_encoder_path")
+    # N2: override de text_encoder só é suportado no fluxo flux-2. Para
+    # sdxl/sd15, falha honesta em vez de ignorar silenciosamente (BFF/manager
+    # já bloqueiam; defesa em profundidade no engine).
+    if text_encoder_path and arch in ("sdxl", "sd15"):
+        _die(
+            f"text_encoder_path ({text_encoder_path}) não é suportado com "
+            f"checkpoint custom sdxl/sd15: o override de encoder é exclusivo "
+            f"do fluxo flux-2-klein-4b. Remova text_encoder_path ou use "
+            f"arch=flux-2-klein-4b."
+        )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -935,26 +1120,50 @@ def _real_generate(
         elif base_model == "flux-2-klein-4b":
             from diffusers import Flux2KleinPipeline
 
-            model_repo = (
-                (
-                    os.environ.get("FLUX_DISTILLED_MODEL_ID")
-                    or "black-forest-labs/FLUX.2-klein-4B"
+            model_repo = _flux2_repo_id(distilled=distilled)
+            pipe_dtype = torch.bfloat16 if device == "cuda" else torch.float32
+            flux_kwargs: dict[str, Any] = {"torch_dtype": pipe_dtype}
+            # Encoder override: text_encoder=/tokenizer= no from_pretrained.
+            encoder_override = params.get("text_encoder_path")
+            if encoder_override:
+                try:
+                    enc_model, enc_tok = _load_flux2_text_encoder_override(
+                        encoder_override, model_repo, pipe_dtype,
+                        quantization_config=quantization_config,
+                    )
+                except SystemExit:
+                    raise
+                except Exception as exc:
+                    _die(
+                        f"Falha ao carregar text_encoder custom "
+                        f"({encoder_override}): {exc}"
+                    )
+                flux_kwargs["text_encoder"] = enc_model
+                flux_kwargs["tokenizer"] = enc_tok
+            # Checkpoint flux-2 custom: transformer do arquivo + resto do repo BFL.
+            if custom_cp and arch == "flux-2-klein-4b":
+                flux_kwargs["transformer"] = _load_flux2_custom_transformer(
+                    custom_cp, pipe_dtype, quantization_config=quantization_config
                 )
-                if distilled
-                else (
-                    os.environ.get("FLUX_MODEL_ID")
-                    or "black-forest-labs/FLUX.2-klein-base-4B"
+                print(
+                    f"[DIFFUSION-GEN] Carregando FLUX.2 Klein 4B custom: "
+                    f"{custom_cp} (componentes base: {model_repo})",
+                    flush=True,
                 )
-            )
-            print(
-                f"[DIFFUSION-GEN] Carregando FLUX.2 Klein 4B "
-                f"({'Destilado' if distilled else 'Base'}): {model_repo}",
-                flush=True,
-            )
-            pipe = Flux2KleinPipeline.from_pretrained(
-                model_repo,
-                torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
-            )
+            else:
+                print(
+                    f"[DIFFUSION-GEN] Carregando FLUX.2 Klein 4B "
+                    f"({'Destilado' if distilled else 'Base'}): {model_repo}",
+                    flush=True,
+                )
+            try:
+                pipe = Flux2KleinPipeline.from_pretrained(model_repo, **flux_kwargs)
+            except SystemExit:
+                raise
+            except Exception as exc:
+                _die(
+                    f"Falha ao carregar pipeline FLUX.2 Klein ({model_repo}): {exc}"
+                )
             if quantization_config is None and device == "cuda":
                 pipe.to(device)
             else:
@@ -1180,7 +1389,7 @@ def _real_generate(
             # Telemetria NEVER quebra a geração: TypeError → retry sem callback.
             sampler_cb_kwargs = _pipe_call_kwargs_with_callback(emitter, i, batch_size, steps)
             if base_model == "flux-2-klein-4b":
-                flux_kwargs: dict[str, Any] = {
+                flux_call_kwargs: dict[str, Any] = {
                     "prompt": prompt,
                     "generator": generator,
                     "num_inference_steps": steps,
@@ -1190,10 +1399,10 @@ def _real_generate(
                 }
                 if is_img2img:
                     # Flux2Klein: image= nativo; sem strength na assinatura.
-                    flux_kwargs["image"] = init_image
+                    flux_call_kwargs["image"] = init_image
                 with torch.inference_mode():
                     try:
-                        image = call_pipe(**flux_kwargs, **sampler_cb_kwargs).images[0]
+                        image = call_pipe(**flux_call_kwargs, **sampler_cb_kwargs).images[0]
                     except TypeError as exc:
                         if "callback_on_step_end" not in str(exc):
                             raise
@@ -1202,7 +1411,7 @@ def _real_generate(
                             f"de progresso ({exc}). Seguindo sem telemetria fina.",
                             flush=True,
                         )
-                        image = call_pipe(**flux_kwargs).images[0]
+                        image = call_pipe(**flux_call_kwargs).images[0]
             elif base_model in ("sdxl", "sd15"):
                 with torch.inference_mode():
                     sd_kwargs: dict[str, Any] = {

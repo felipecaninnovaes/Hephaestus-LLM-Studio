@@ -43,6 +43,10 @@ def _generate_mock_safetensors(output_file: Path, lora_params: dict[str, Any]) -
         metadata["epoch"] = str(lora_params["epoch"])
     if trigger_word:
         metadata["trigger_word"] = trigger_word
+    if lora_params.get("custom_checkpoint_path"):
+        metadata["custom_checkpoint_path"] = str(lora_params["custom_checkpoint_path"])
+    if lora_params.get("text_encoder_path"):
+        metadata["text_encoder_path"] = str(lora_params["text_encoder_path"])
 
     if "flux" in base_model:
         tensor_name = "transformer.single_transformer_blocks.0.linear1.lora_A.weight"
@@ -164,6 +168,16 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
         )
     if cache_text_embeddings:
         print("[MOCK] cache_text_embeddings=True (mock: no-op)", flush=True)
+    # feat/pesos-custom-flux2: reflete os campos novos no log/meta (honesto,
+    # sem fake de sucesso de load — o mock nunca carrega pesos reais).
+    custom_cp = cfg.get("custom_checkpoint_path")
+    enc_path = cfg.get("text_encoder_path")
+    if custom_cp:
+        print(f"[MOCK] custom_checkpoint_path={custom_cp} (mock: no-op)", flush=True)
+    if enc_path:
+        print(f"[MOCK] text_encoder_path={enc_path} (mock: no-op)", flush=True)
+    lora_info["custom_checkpoint_path"] = str(custom_cp) if custom_cp else None
+    lora_info["text_encoder_path"] = str(enc_path) if enc_path else None
 
     if weights_path:
         w_path = Path(weights_path)

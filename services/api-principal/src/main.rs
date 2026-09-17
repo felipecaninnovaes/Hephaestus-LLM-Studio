@@ -233,6 +233,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         model_download_allowed_hosts: load_download_allowed_hosts(),
     };
 
+    // 8. Recovery de preparações órfãs (ADR-0025 D3 — espelha `recover_jobs`
+    //    do manager): `job_prepares` em `preparing` com `updated_at` > 10min
+    //    ⇒ re-spawn (attempts < 3) ou `prepare_fail{timeout}`. Best-effort:
+    //    nunca derruba o boot.
+    match api_principal::jobs::prepare::recover_stale_prepares(&state).await {
+        Ok((respawned, failed)) if respawned + failed > 0 => {
+            tracing::info!(respawned, failed, "recovery de preparações concluído")
+        }
+        Ok(_) => tracing::info!("recovery de preparações: nada órfão"),
+        Err(e) => tracing::error!("recovery de preparações falhou: {e}"),
+    }
+
     let app = routes::build(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")

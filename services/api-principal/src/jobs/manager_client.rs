@@ -306,6 +306,39 @@ pub trait ManagerPort: Send + Sync {
     /// Soft-delete de generations por IDs (POST /internal/generations/delete).
     /// Idempotente: IDs inexistentes são ignorados.
     async fn delete_generations(&self, ids: &[String]) -> Result<(), ManagerError>;
+
+    // -----------------------------------------------------------------------
+    // Preparação assíncrona (ADR-0025 D0/D1/D2 — fatia P4a)
+    // -----------------------------------------------------------------------
+
+    /// Conclui a preparação: `preparing` → `queued`
+    /// (POST /internal/jobs/:id/prepare-complete).
+    /// Body camelCase: `{datasetVersionId, packageRef: {key, md5Zip, bytes}}`.
+    /// `Conflict` = job fora de `preparing` (abort concorrente — não compensar).
+    async fn prepare_complete(
+        &self,
+        job_id: &str,
+        body: &serde_json::Value,
+    ) -> Result<(), ManagerError>;
+
+    /// Falha a preparação: `preparing` → `failed`
+    /// (POST /internal/jobs/:id/prepare-fail).
+    /// Body: `{code, message}` (códigos P4a: storage_unavailable|build_error|timeout).
+    async fn prepare_fail(
+        &self,
+        job_id: &str,
+        body: &serde_json::Value,
+    ) -> Result<(), ManagerError>;
+
+    /// Report de progresso da preparação pelo canal ADR-0024
+    /// (POST /internal/jobs/:id/report).
+    /// Body: `{status: "preparing", phase: "packaging_dataset", message, progress}`.
+    /// Best-effort: o worker ignora todos os erros.
+    async fn report_phase(
+        &self,
+        job_id: &str,
+        body: &serde_json::Value,
+    ) -> Result<(), ManagerError>;
 }
 
 /// Generation retornada pelo manager (snake_case interno).
@@ -822,10 +855,76 @@ impl ManagerPort for HttpManager {
         }
         Ok(())
     }
+
+    // --- Preparação assíncrona (ADR-0025 D1/D2 — fatia P4a) ---
+
+    async fn prepare_complete(
+        &self,
+        job_id: &str,
+        body: &serde_json::Value,
+    ) -> Result<(), ManagerError> {
+        self.post_prepare(job_id, "prepare-complete", body).await
+    }
+
+    async fn prepare_fail(
+        &self,
+        job_id: &str,
+        body: &serde_json::Value,
+    ) -> Result<(), ManagerError> {
+        self.post_prepare(job_id, "prepare-fail", body).await
+    }
+
+    async fn report_phase(
+        &self,
+        job_id: &str,
+        body: &serde_json::Value,
+    ) -> Result<(), ManagerError> {
+        self.post_prepare(job_id, "report", body).await
+    }
 }
 
 /// Helper do HttpManager que aceita URL completa (para list_generations com query params).
 impl HttpManager {
+    /// POST genérico dos endpoints de preparação (complete/fail/report).
+    /// 404 → NotFound; 409 → Conflict (transição guardada, ex.: job fora de
+    /// `preparing`); 400 → InvalidRequest; demais → Unavailable.
+    async fn post_prepare(
+        &self,
+        job_id: &str,
+        action: &str,
+        body: &serde_json::Value,
+    ) -> Result<(), ManagerError> {
+        let url = format!("{}/internal/jobs/{job_id}/{action}", self.base_url);
+        let resp = self
+            .client
+            .post(&url)
+            .header("authorization", self.auth_header())
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| ManagerError::Unavailable(format!("manager request: {e}")))?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(ManagerError::NotFound);
+        }
+        if status == reqwest::StatusCode::CONFLICT {
+            return Err(ManagerError::Conflict);
+        }
+        if status == reqwest::StatusCode::BAD_REQUEST {
+            let msg = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "invalid request".into());
+            return Err(ManagerError::InvalidRequest(msg));
+        }
+        if !status.is_success() {
+            return Err(ManagerError::Unavailable(format!(
+                "manager status: {status}"
+            )));
+        }
+        Ok(())
+    }
+
     async fn get_json_raw<T: serde::de::DeserializeOwned>(
         &self,
         url: &str,
@@ -923,6 +1022,17 @@ pub struct MockManager {
     pub fail_list_generations: bool,
     /// Se `true`, `get_generation` retorna `NotFound` (para testar 404).
     pub get_generation_not_found: bool,
+    // --- Preparação assíncrona (P4a — ADR-0025) ---
+    /// Contador de chamadas a `create_job` (dedupe: 2 submits ⇒ 1 chamada).
+    pub create_job_calls: std::sync::Mutex<u32>,
+    /// job_ids que receberam `prepare_complete` (worker de preparação).
+    pub prepare_complete_calls: std::sync::Mutex<Vec<String>>,
+    /// `(job_id, code, message)` de cada `prepare_fail` (worker/recovery).
+    pub prepare_fail_calls: std::sync::Mutex<Vec<(String, String, String)>>,
+    /// Bodies de cada `report_phase` (progresso `packaging_dataset`).
+    pub report_calls: std::sync::Mutex<Vec<serde_json::Value>>,
+    /// Se `true`, `prepare_complete` retorna `Conflict` (job fora de `preparing`).
+    pub prepare_complete_conflict: bool,
 }
 
 impl MockManager {
@@ -932,6 +1042,42 @@ impl MockManager {
             .try_lock()
             .ok()
             .and_then(|m| m.clone())
+    }
+
+    /// Número de chamadas a `create_job` (dedupe P4a: 2 submits ⇒ 1).
+    pub fn create_job_call_count(&self) -> u32 {
+        self.create_job_calls
+            .try_lock()
+            .ok()
+            .map(|c| *c)
+            .unwrap_or(0)
+    }
+
+    /// job_ids que receberam `prepare_complete`.
+    pub fn prepare_completed_jobs(&self) -> Vec<String> {
+        self.prepare_complete_calls
+            .try_lock()
+            .ok()
+            .map(|c| c.clone())
+            .unwrap_or_default()
+    }
+
+    /// `(job_id, code, message)` de cada `prepare_fail`.
+    pub fn prepare_failures(&self) -> Vec<(String, String, String)> {
+        self.prepare_fail_calls
+            .try_lock()
+            .ok()
+            .map(|c| c.clone())
+            .unwrap_or_default()
+    }
+
+    /// Bodies de cada `report_phase`.
+    pub fn phase_reports(&self) -> Vec<serde_json::Value> {
+        self.report_calls
+            .try_lock()
+            .ok()
+            .map(|c| c.clone())
+            .unwrap_or_default()
     }
 
     /// Retorna o body capturado na última chamada a `create_model`.
@@ -981,6 +1127,11 @@ impl Default for MockManager {
             generations_by_id: std::sync::RwLock::new(std::collections::HashMap::new()),
             fail_list_generations: false,
             get_generation_not_found: false,
+            create_job_calls: std::sync::Mutex::new(0),
+            prepare_complete_calls: std::sync::Mutex::new(Vec::new()),
+            prepare_fail_calls: std::sync::Mutex::new(Vec::new()),
+            report_calls: std::sync::Mutex::new(Vec::new()),
+            prepare_complete_conflict: false,
         }
     }
 }
@@ -1053,6 +1204,9 @@ impl ManagerPort for MockManager {
         // rodam serializados pelo SERIAL.lock).
         if let Ok(mut guard) = self.last_create_job_body.try_lock() {
             *guard = Some(body.clone());
+        }
+        if let Ok(mut count) = self.create_job_calls.try_lock() {
+            *count += 1;
         }
         self.create_job_result
             .clone()
@@ -1278,6 +1432,63 @@ impl ManagerPort for MockManager {
             if let Some(gen) = gens.get_mut(id) {
                 gen.deleted_at = Some("2026-09-15T00:00:00Z".to_string());
             }
+        }
+        Ok(())
+    }
+
+    // --- Preparação assíncrona (P4a — ADR-0025) ---
+
+    async fn prepare_complete(
+        &self,
+        job_id: &str,
+        _body: &serde_json::Value,
+    ) -> Result<(), ManagerError> {
+        if self.fail {
+            return Err(ManagerError::Unavailable("mock fail".into()));
+        }
+        if self.prepare_complete_conflict {
+            return Err(ManagerError::Conflict);
+        }
+        if let Ok(mut calls) = self.prepare_complete_calls.try_lock() {
+            calls.push(job_id.to_string());
+        }
+        Ok(())
+    }
+
+    async fn prepare_fail(
+        &self,
+        job_id: &str,
+        body: &serde_json::Value,
+    ) -> Result<(), ManagerError> {
+        if self.fail {
+            return Err(ManagerError::Unavailable("mock fail".into()));
+        }
+        let code = body
+            .get("code")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let message = body
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if let Ok(mut calls) = self.prepare_fail_calls.try_lock() {
+            calls.push((job_id.to_string(), code, message));
+        }
+        Ok(())
+    }
+
+    async fn report_phase(
+        &self,
+        _job_id: &str,
+        body: &serde_json::Value,
+    ) -> Result<(), ManagerError> {
+        if self.fail {
+            return Err(ManagerError::Unavailable("mock fail".into()));
+        }
+        if let Ok(mut calls) = self.report_calls.try_lock() {
+            calls.push(body.clone());
         }
         Ok(())
     }

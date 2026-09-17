@@ -32,19 +32,6 @@ use crate::storage::StorageError;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Compensação: remove package (storage + row) quando o manager rejeita o
-/// job (A1 — Fatia J review J.6). Extraído para reuso nos 4 braços de erro.
-async fn compensate_package(state: &AppState, version_id: &str) {
-    let _ = state
-        .storage
-        .delete_prefix(&format!("packages/{version_id}/"))
-        .await;
-    let _ = sqlx::query("DELETE FROM dataset_versions WHERE id = $1")
-        .bind(version_id.parse::<uuid::Uuid>().expect("uuid"))
-        .execute(&state.pool)
-        .await;
-}
-
 // ---------------------------------------------------------------------------
 // Query params
 // ---------------------------------------------------------------------------
@@ -769,13 +756,14 @@ pub async fn get_telemetry(State(state): State<AppState>) -> Response {
 // POST /api/jobs/yolo — criação de job de treino YOLO (F4.2b)
 // ---------------------------------------------------------------------------
 
-/// POST /api/jobs/yolo — submete job de treino YOLO (ADR-0007 D7).
+/// POST /api/jobs/yolo — submete job de treino YOLO (ADR-0007 D7, ADR-0025 D0).
 ///
 /// Status: 202 | 400 `invalid_request` | 401 | 404 `not_found` |
 /// 409 `dataset_not_ready` | 503 `queue_unavailable`.
 ///
-/// Fluxo: valida body → dataset existe? → dataset pronto? → build_package
-/// (compartilhado) → POST ao manager → 202.
+/// Fluxo (aceite <1s): valida body → dataset existe? → dataset pronto? →
+/// fingerprint (só SQL) → `create_job` em modo `preparing` → 202; o
+/// empacotamento pesado roda em background (`jobs::prepare`).
 pub async fn submit_yolo_job(
     State(state): State<AppState>,
     body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
@@ -852,42 +840,38 @@ pub async fn submit_yolo_job(
         }
     }
 
-    // 6. Build package (função compartilhada — F4.2b).
-    let package = match crate::datasets::package::build_package(&state, ds_id).await {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
+    // 6. Fingerprint do dataset (só SQL barato, sem S3 — ADR-0025 D0/D1).
+    let fingerprint =
+        match crate::jobs::prepare::fingerprint_for_dataset(&state.pool, ds_id, None, "yolo", "")
+            .await
+        {
+            Ok(f) => f,
+            Err(_) => {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "internal server error",
+                )
+            }
+        };
 
-    // 7. Gera config.yaml.
-    let job_id = uuid::Uuid::new_v4().to_string();
-    let config_yaml = models::generate_config_yaml(&job_id, &req);
+    // 7. Gera config.yaml (pura, barata; o job_id embutido é decorativo como
+    //    antes — o manager aloca o id real no create_job).
+    let config_yaml = models::generate_config_yaml(&uuid::Uuid::new_v4().to_string(), &req);
 
-    // 8. POST ao manager (D7 :237-240 — snake_case interno).
+    // 8. Body ao manager em modo preparing (package_ref null; o accept injeta
+    //    params.prepare — D7 :237-240, snake_case interno).
     //    vram_min_gb = null na v1 (decisão registrada: política VRAM real entra
     //    com GPU; R3: vram_min gravado mas não bloqueante no mock).
     //    D5: weights_id repassado quando presente (manager resolve → weights_ref).
     let mut manager_body = serde_json::json!({
         "kind": "yolo_train",
         "engine": "yolo",
-        "model": req.model,
+        "model": req.model.clone(),
         "mode": "train",
         "dataset_id": ds_id.to_string(),
-        "dataset_version_id": package.version_id,
-        "package_ref": {
-            "version_id": package.version_id,
-            "key": package.key,
-            "md5_zip": package.md5_zip,
-            "bytes": package.bytes,
-        },
         "config_yaml": config_yaml,
-        "params": {
-            "package_ref": {
-                "version_id": package.version_id,
-                "key": package.key,
-                "md5_zip": package.md5_zip,
-                "bytes": package.bytes,
-            },
-        },
+        "params": {},
         "vram_min_gb": null,
     });
     // D5: insere weights_id no body quando presente.
@@ -903,34 +887,29 @@ pub async fn submit_yolo_job(
         manager_body["params"]["output_name"] = serde_json::json!(out_name);
     }
 
-    match state.manager.create_job(&manager_body).await {
-        Ok(resp) => {
-            let body = SubmitJobResponse {
-                job_id: resp.job_id,
-                status: resp.status,
-                queue_position: resp.queue_position,
-            };
-            (StatusCode::ACCEPTED, Json(body)).into_response()
-        }
-        // ADR-0015 D6.4: alinha ao R6 (NotFound→404, InvalidRequest→400, Unavailable→503).
-        // Compensação do package em TODOS os braços de erro.
-        Err(ManagerError::NotFound) => {
-            compensate_package(&state, &package.version_id).await;
-            not_found()
-        }
-        Err(ManagerError::InvalidRequest(_)) => {
-            compensate_package(&state, &package.version_id).await;
-            invalid_request()
-        }
-        Err(ManagerError::Unavailable(_)) => {
-            compensate_package(&state, &package.version_id).await;
-            queue_unavailable()
-        }
-        Err(_) => {
-            compensate_package(&state, &package.version_id).await;
-            queue_unavailable()
-        }
-    }
+    // 9. Aceite assíncrono: dedupe → create → insert → spawn → 202.
+    let spec = crate::jobs::prepare::PrepareSpec {
+        kind: "yolo_train".to_string(),
+        dataset_id: ds_id,
+        resolved_image_ids: None,
+        fingerprint,
+        engine: "yolo".to_string(),
+        trigger_word: None,
+        params: serde_json::json!({
+            "model": req.model,
+            "epochs": req.epochs,
+            "batch": req.batch,
+            "imgsz": req.imgsz,
+            "lr0": req.lr0,
+            "optimizer": req.optimizer,
+            "augment": { "mosaic": req.augment.mosaic, "mixupFlip": req.augment.mixup_flip },
+            "seed": req.seed,
+            "weights": req.weights,
+            "orchestratorId": req.orchestrator_id,
+            "outputName": req.output_name,
+        }),
+    };
+    crate::jobs::prepare::accept_job_preparing(&state, spec, manager_body).await
 }
 
 // ---------------------------------------------------------------------------
@@ -1017,40 +996,42 @@ pub async fn submit_autotracker_job(
         }
     }
 
-    // 6. Build package (função compartilhada — F4.2b).
-    let package = match crate::datasets::package::build_package(&state, ds_id).await {
-        Ok(p) => p,
-        Err(resp) => return resp,
+    // 6. Fingerprint do dataset (só SQL barato, sem S3 — ADR-0025 D0/D1).
+    let fingerprint = match crate::jobs::prepare::fingerprint_for_dataset(
+        &state.pool,
+        ds_id,
+        None,
+        "autotracker",
+        "",
+    )
+    .await
+    {
+        Ok(f) => f,
+        Err(_) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "internal server error",
+            )
+        }
     };
 
-    // 7. Gera config.yaml.
-    let job_id = uuid::Uuid::new_v4().to_string();
-    let config_yaml = models::generate_autotrack_config_yaml(&job_id, &req);
+    // 7. Gera config.yaml (pura, barata).
+    let config_yaml =
+        models::generate_autotrack_config_yaml(&uuid::Uuid::new_v4().to_string(), &req);
 
-    // 8. POST ao manager (ADR-0008 D3 — snake_case interno; ADR-0014 D6 — weights_id).
+    // 8. Body ao manager em modo preparing (ADR-0008 D3, snake_case interno;
+    //    ADR-0014 D6 — weights_id; package_ref null, prepare injetado no accept).
     let mut manager_body = serde_json::json!({
         "kind": "autotracker",
         "engine": "autotracker",
-        "model": req.model,
+        "model": req.model.clone(),
         "mode": "autotrack",
         "dataset_id": ds_id.to_string(),
-        "dataset_version_id": package.version_id,
-        "package_ref": {
-            "version_id": package.version_id,
-            "key": package.key,
-            "md5_zip": package.md5_zip,
-            "bytes": package.bytes,
-        },
         "config_yaml": config_yaml,
         "params": {
-            "model": req.model,
+            "model": req.model.clone(),
             "conf": req.conf,
-            "package_ref": {
-                "version_id": package.version_id,
-                "key": package.key,
-                "md5_zip": package.md5_zip,
-                "bytes": package.bytes,
-            },
         },
         "vram_min_gb": null,
     });
@@ -1063,36 +1044,24 @@ pub async fn submit_autotracker_job(
         manager_body["orchestrator_hint"] = serde_json::json!(orch_id);
     }
 
-    // ADR-0014 D6: mapeamento NotFound→404, InvalidRequest→400, Unavailable→503
-    // (padrão predict — NÃO o Err(_)→503 do submit_yolo_job).
-    // Compensação do package em TODOS os braços de erro.
-    match state.manager.create_job(&manager_body).await {
-        Ok(resp) => {
-            let body = SubmitJobResponse {
-                job_id: resp.job_id,
-                status: resp.status,
-                queue_position: resp.queue_position,
-            };
-            (StatusCode::ACCEPTED, Json(body)).into_response()
-        }
-        Err(ManagerError::NotFound) => {
-            compensate_package(&state, &package.version_id).await;
-            not_found()
-        }
-        Err(ManagerError::InvalidRequest(_)) => {
-            compensate_package(&state, &package.version_id).await;
-            invalid_request()
-        }
-        Err(ManagerError::Unavailable(_)) => {
-            compensate_package(&state, &package.version_id).await;
-            queue_unavailable()
-        }
-        // Outros erros do manager → 503 + compensação.
-        Err(_) => {
-            compensate_package(&state, &package.version_id).await;
-            queue_unavailable()
-        }
-    }
+    // 9. Aceite assíncrono: dedupe → create → insert → spawn → 202.
+    //    Mapeamento R6 preservado (NotFound→404, InvalidRequest→400,
+    //    Unavailable→503) dentro do accept.
+    let spec = crate::jobs::prepare::PrepareSpec {
+        kind: "autotracker".to_string(),
+        dataset_id: ds_id,
+        resolved_image_ids: None,
+        fingerprint,
+        engine: "autotracker".to_string(),
+        trigger_word: None,
+        params: serde_json::json!({
+            "model": req.model,
+            "conf": req.conf,
+            "modelId": req.model_id,
+            "orchestratorId": req.orchestrator_id,
+        }),
+    };
+    crate::jobs::prepare::accept_job_preparing(&state, spec, manager_body).await
 }
 
 // ---------------------------------------------------------------------------
@@ -1293,48 +1262,44 @@ pub async fn submit_autolabel_job(
         }
     }
 
-    // 5. Build package.
-    let package = match crate::datasets::package::build_package_filtered(
-        &state,
+    // 5. Fingerprint do escopo resolvido (só SQL barato, sem S3 — ADR-0025).
+    let fingerprint = match crate::jobs::prepare::fingerprint_for_dataset(
+        &state.pool,
         ds_id,
         resolved_image_ids.as_deref(),
+        "autolabel",
+        &req.model,
     )
     .await
     {
-        Ok(p) => p,
-        Err(resp) => return resp,
+        Ok(f) => f,
+        Err(_) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "internal server error",
+            )
+        }
     };
 
-    // 6. Config YAML.
-    let job_id = uuid::Uuid::new_v4().to_string();
-    let config_yaml = models::generate_autolabel_config_yaml(&job_id, &req);
+    // 6. Config YAML (pura, barata — carrega apiKey como antes; o tratamento
+    //    é idêntico ao legado: viaja no create_job, nunca em GET jobs).
+    let config_yaml =
+        models::generate_autolabel_config_yaml(&uuid::Uuid::new_v4().to_string(), &req);
 
-    // 7. Body para o Manager.
+    // 7. Body ao manager em modo preparing (package_ref null; prepare no accept).
     let mut manager_body = serde_json::json!({
         "kind": "autolabel",
         "engine": "autolabel",
         "model": req.model,
         "mode": "autolabel",
         "dataset_id": ds_id.to_string(),
-        "dataset_version_id": package.version_id,
-        "package_ref": {
-            "version_id": package.version_id,
-            "key": package.key,
-            "md5_zip": package.md5_zip,
-            "bytes": package.bytes,
-        },
         "config_yaml": config_yaml,
         "params": {
             "model": req.model,
             "prompt": req.prompt,
             "filter_class_id": req.filter_class_id,
             "image_ids_count": resolved_image_ids.as_ref().map(|v| v.len()),
-            "package_ref": {
-                "version_id": package.version_id,
-                "key": package.key,
-                "md5_zip": package.md5_zip,
-                "bytes": package.bytes,
-            },
         },
         "vram_min_gb": null,
     });
@@ -1343,32 +1308,34 @@ pub async fn submit_autolabel_job(
         manager_body["orchestrator_hint"] = serde_json::json!(orch_id);
     }
 
-    match state.manager.create_job(&manager_body).await {
-        Ok(resp) => {
-            let body = SubmitJobResponse {
-                job_id: resp.job_id,
-                status: resp.status,
-                queue_position: resp.queue_position,
-            };
-            (StatusCode::ACCEPTED, Json(body)).into_response()
-        }
-        Err(ManagerError::NotFound) => {
-            compensate_package(&state, &package.version_id).await;
-            not_found()
-        }
-        Err(ManagerError::InvalidRequest(_)) => {
-            compensate_package(&state, &package.version_id).await;
-            invalid_request()
-        }
-        Err(ManagerError::Unavailable(_)) => {
-            compensate_package(&state, &package.version_id).await;
-            queue_unavailable()
-        }
-        Err(_) => {
-            compensate_package(&state, &package.version_id).await;
-            queue_unavailable()
-        }
+    // 8. Aceite assíncrono: dedupe → create → insert → spawn → 202.
+    //    SEM apiKey no spec: o worker nunca regenera config (não há endpoint
+    //    no manager para config tardia) — persistir o segredo seria risco
+    //    gratuito (ver `jobs::prepare`).
+    let mut spec_params = crate::jobs::prepare::spec_params_autolabel(
+        &req.model,
+        req.prompt.as_deref(),
+        req.api_base.as_deref(),
+        req.openai_model.as_deref(),
+        req.reasoning_effort.as_deref(),
+        req.filter_class_id.as_deref(),
+        manager_body["params"]["image_ids_count"]
+            .as_u64()
+            .map(|n| n as usize),
+    );
+    if let Some(ref orch_id) = req.orchestrator_id {
+        spec_params["orchestratorId"] = serde_json::json!(orch_id);
     }
+    let spec = crate::jobs::prepare::PrepareSpec {
+        kind: "autolabel".to_string(),
+        dataset_id: ds_id,
+        resolved_image_ids,
+        fingerprint,
+        engine: "autolabel".to_string(),
+        trigger_word: None,
+        params: spec_params,
+    };
+    crate::jobs::prepare::accept_job_preparing(&state, spec, manager_body).await
 }
 
 // ---------------------------------------------------------------------------
@@ -1447,21 +1414,30 @@ pub async fn submit_diffusion_job(
         return dataset_not_ready();
     }
 
-    // 5. Build package de difusão (imagens + captions em .txt).
-    let package = match crate::datasets::package::build_package_diffusion(
-        &state,
+    // 5. Fingerprint (só SQL barato, sem S3 — ADR-0025). `trigger_word`
+    //    entra no fingerprint porque altera as captions do pacote.
+    let fingerprint = match crate::jobs::prepare::fingerprint_for_dataset(
+        &state.pool,
         ds_id,
-        req.trigger_word.as_deref(),
+        None,
+        "diffusion",
+        req.trigger_word.as_deref().unwrap_or(""),
     )
     .await
     {
-        Ok(p) => p,
-        Err(resp) => return resp,
+        Ok(f) => f,
+        Err(_) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "internal server error",
+            )
+        }
     };
 
-    // 6. Config YAML.
-    let job_id = uuid::Uuid::new_v4().to_string();
-    let config_yaml = models::generate_diffusion_config_yaml(&job_id, &req);
+    // 6. Config YAML (pura, barata).
+    let config_yaml =
+        models::generate_diffusion_config_yaml(&uuid::Uuid::new_v4().to_string(), &req);
 
     // 7. VRAM mínima por modelo base (ADR-0018 D2 — FLUX.2 Klein 4B requer ~10 GB).
     let vram_min = match req.base_model.as_str() {
@@ -1470,28 +1446,15 @@ pub async fn submit_diffusion_job(
         _ => 12, // sdxl e default
     };
 
-    // 8. Body para o Manager.
+    // 8. Body ao manager em modo preparing (package_ref null; prepare no accept).
     let mut manager_body = serde_json::json!({
         "kind": "diffusion_train",
         "engine": "diffusion",
         "model": req.base_model,
         "mode": "train",
         "dataset_id": ds_id.to_string(),
-        "dataset_version_id": package.version_id,
-        "package_ref": {
-            "version_id": package.version_id,
-            "key": package.key,
-            "md5_zip": package.md5_zip,
-            "bytes": package.bytes,
-        },
         "config_yaml": config_yaml,
         "params": {
-            "packageRef": {
-                "versionId": package.version_id,
-                "key": package.key,
-                "md5Zip": package.md5_zip,
-                "bytes": package.bytes,
-            },
             "datasetId": ds_id.to_string(),
             "baseModel": req.base_model,
             "triggerWord": req.trigger_word,
@@ -1526,32 +1489,44 @@ pub async fn submit_diffusion_job(
         manager_body["orchestrator_hint"] = serde_json::json!(orch_id);
     }
 
-    match state.manager.create_job(&manager_body).await {
-        Ok(resp) => {
-            let body = SubmitJobResponse {
-                job_id: resp.job_id,
-                status: resp.status,
-                queue_position: resp.queue_position,
-            };
-            (StatusCode::ACCEPTED, Json(body)).into_response()
-        }
-        Err(ManagerError::NotFound) => {
-            compensate_package(&state, &package.version_id).await;
-            not_found()
-        }
-        Err(ManagerError::InvalidRequest(_)) => {
-            compensate_package(&state, &package.version_id).await;
-            invalid_request()
-        }
-        Err(ManagerError::Unavailable(_)) => {
-            compensate_package(&state, &package.version_id).await;
-            queue_unavailable()
-        }
-        Err(_) => {
-            compensate_package(&state, &package.version_id).await;
-            queue_unavailable()
-        }
-    }
+    // 9. Aceite assíncrono: dedupe → create → insert → spawn → 202.
+    //    NOTA P4a+P4b: `build_package_diffusion` ainda não grava fingerprint
+    //    no manifest — o reuso por versão fica para a fusão; o dedupe por
+    //    `job_prepares` (30min) já vale.
+    let spec = crate::jobs::prepare::PrepareSpec {
+        kind: "diffusion_train".to_string(),
+        dataset_id: ds_id,
+        resolved_image_ids: None,
+        fingerprint,
+        engine: "diffusion".to_string(),
+        trigger_word: req.trigger_word.clone(),
+        params: serde_json::json!({
+            "baseModel": req.base_model,
+            "triggerWord": req.trigger_word,
+            "epochs": req.epochs,
+            "batchSize": req.batch_size,
+            "learningRate": req.learning_rate,
+            "rank": req.rank,
+            "alpha": req.alpha,
+            "resolution": req.resolution,
+            "gradientAccumulationSteps": req.gradient_accumulation_steps,
+            "optimizer": req.optimizer,
+            "lrScheduler": req.lr_scheduler,
+            "lrWarmupSteps": req.lr_warmup_steps,
+            "mixedPrecision": req.mixed_precision,
+            "quantization": req.quantization,
+            "enableBucket": req.enable_bucket,
+            "checkpointInterval": req.checkpoint_interval,
+            "epochOffset": req.epoch_offset,
+            "samplePrompt": req.sample_prompt,
+            "sampleInterval": req.sample_interval,
+            "sampleSeed": req.sample_seed,
+            "weights": req.weights,
+            "orchestratorId": req.orchestrator_id,
+            "outputName": req.output_name,
+        }),
+    };
+    crate::jobs::prepare::accept_job_preparing(&state, spec, manager_body).await
 }
 
 // ---------------------------------------------------------------------------
@@ -1795,40 +1770,36 @@ pub async fn submit_predict_job(
         }
     }
 
-    // 6. Build package (função compartilhada — D2).
-    let package = match crate::datasets::package::build_package(&state, ds_id).await {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
+    // 6. Fingerprint do dataset (só SQL barato, sem S3 — ADR-0025).
+    let fingerprint =
+        match crate::jobs::prepare::fingerprint_for_dataset(&state.pool, ds_id, None, "yolo", "")
+            .await
+        {
+            Ok(f) => f,
+            Err(_) => {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "internal server error",
+                )
+            }
+        };
 
-    // 7. Gera config.yaml.
-    let job_id = uuid::Uuid::new_v4().to_string();
-    let config_yaml = models::generate_predict_config_yaml(&job_id, &req);
+    // 7. Gera config.yaml (pura, barata).
+    let config_yaml = models::generate_predict_config_yaml(&uuid::Uuid::new_v4().to_string(), &req);
 
-    // 8. POST ao manager (D5: kind='yolo_predict', engine='yolo', mode='predict',
-    //    model='predict' placeholder, weights_id=modelId).
+    // 8. Body ao manager em modo preparing (D5: kind='yolo_predict',
+    //    engine='yolo', mode='predict', model='predict' placeholder,
+    //    weights_id=modelId; package_ref null, prepare no accept).
     let mut manager_body = serde_json::json!({
         "kind": "yolo_predict",
         "engine": "yolo",
         "model": "predict",
         "mode": "predict",
         "dataset_id": ds_id.to_string(),
-        "dataset_version_id": package.version_id,
-        "package_ref": {
-            "version_id": package.version_id,
-            "key": package.key,
-            "md5_zip": package.md5_zip,
-            "bytes": package.bytes,
-        },
         "config_yaml": config_yaml,
         "params": {
             "conf": req.conf,
-            "package_ref": {
-                "version_id": package.version_id,
-                "key": package.key,
-                "md5_zip": package.md5_zip,
-                "bytes": package.bytes,
-            },
         },
         "vram_min_gb": null,
         "weights_id": req.model_id,
@@ -1838,36 +1809,22 @@ pub async fn submit_predict_job(
         manager_body["orchestrator_hint"] = serde_json::json!(orch_id);
     }
 
-    match state.manager.create_job(&manager_body).await {
-        Ok(resp) => {
-            let body = SubmitJobResponse {
-                job_id: resp.job_id,
-                status: resp.status,
-                queue_position: resp.queue_position,
-            };
-            (StatusCode::ACCEPTED, Json(body)).into_response()
-        }
-        // R6: handler do predict mapeia NotFound→404, InvalidRequest→400
-        // (diferente do submit_yolo_job que mapeia Err(_)→503).
-        // A1: compensação em TODOS os braços de erro (package já criado).
-        Err(ManagerError::NotFound) => {
-            compensate_package(&state, &package.version_id).await;
-            not_found()
-        }
-        Err(ManagerError::InvalidRequest(_)) => {
-            compensate_package(&state, &package.version_id).await;
-            invalid_request()
-        }
-        Err(ManagerError::Unavailable(_)) => {
-            compensate_package(&state, &package.version_id).await;
-            queue_unavailable()
-        }
-        // Outros erros do manager → 503 + compensação.
-        Err(_) => {
-            compensate_package(&state, &package.version_id).await;
-            queue_unavailable()
-        }
-    }
+    // 9. Aceite assíncrono: dedupe → create → insert → spawn → 202.
+    //    Mapeamento R6 preservado (NotFound→404, InvalidRequest→400) no accept.
+    let spec = crate::jobs::prepare::PrepareSpec {
+        kind: "yolo_predict".to_string(),
+        dataset_id: ds_id,
+        resolved_image_ids: None,
+        fingerprint,
+        engine: "yolo".to_string(),
+        trigger_word: None,
+        params: serde_json::json!({
+            "modelId": req.model_id,
+            "conf": req.conf,
+            "orchestratorId": req.orchestrator_id,
+        }),
+    };
+    crate::jobs::prepare::accept_job_preparing(&state, spec, manager_body).await
 }
 
 // ---------------------------------------------------------------------------

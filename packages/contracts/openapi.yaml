@@ -2615,7 +2615,8 @@ paths:
         DefaultBodyLimit 8 GiB+8 MiB envelope (ADR-0023 D4); magic bytes obrigatórios;
         md5 hex computado; PUT S3; compensação delete se INSERT no manager falhar.
         Para `.safetensors` (diffusion): header JSON inspecionado para classificar
-        kind (lora/checkpoint) e arch (flux-2-klein-4b/sdxl/sd15).
+        kind (lora/checkpoint/text_encoder) e arch (flux-2-klein-4b/sdxl/sd15;
+        text_encoder só admite flux-2-klein-4b).
         Erros: 400 `invalid_request` (engine/ext/magic/name/kind/arch conflito),
         413 `invalid_request` (envelope), 503 `queue_unavailable` (manager),
         503 `storage_unavailable` (S3).
@@ -2641,8 +2642,8 @@ paths:
                   description: "Nome opcional do modelo (deve terminar em .pt/.safetensors; ausente = nome do arquivo)."
                 kind:
                   type: string
-                  enum: [lora, checkpoint]
-                  description: "Hint: tipo do modelo diffusion (lora ou checkpoint). Sniff do servidor é autoritativo."
+                  enum: [lora, checkpoint, text_encoder]
+                  description: "Hint: tipo do modelo diffusion (lora, checkpoint ou text_encoder). Sniff do servidor é autoritativo."
                 arch:
                   type: string
                   enum: [flux-2-klein-4b, sdxl, sd15]
@@ -3111,10 +3112,12 @@ components:
     DiffusionJobRequest:
       type: object
       additionalProperties: false
-      required: [datasetId, baseModel]
+      required: [datasetId]
       description: |
-        Body de `POST /api/jobs/diffusion` (ADR-0018 D1). `datasetId` e `baseModel` são
-        obrigatórios; os demais campos são opcionais com defaults.
+        Body de `POST /api/jobs/diffusion` (ADR-0018 D1). `datasetId` é obrigatório;
+        os demais campos são opcionais com defaults.
+        `baseModel` e `customModelId` são XOR (exatamente um); se ambos ausentes,
+        usa `sdxl` (retrocompat).
         Wire camelCase; `deny_unknown_fields` garante 400 para chaves desconhecidas.
       properties:
         datasetId:
@@ -3122,10 +3125,18 @@ components:
           format: uuid
           description: "PK do dataset com imagens e legendas. Não-UUID ou inexistente ⇒ 404 `not_found`."
         baseModel:
-          type: string
+          type: [string, "null"]
           enum: [sdxl, flux, sd15, flux-2-klein-4b]
           default: sdxl
-          description: "Modelo de difusão base para treino do adaptador LoRA."
+          description: "Modelo de difusão base para treino do adaptador LoRA. XOR com customModelId."
+        customModelId:
+          type: [string, "null"]
+          format: uuid
+          description: "UUID de checkpoint customizado (tabela `models`, kind=checkpoint) como base do treino. XOR com baseModel; inexistente ou kind≠checkpoint ⇒ 400/404."
+        textEncoderModelId:
+          type: [string, "null"]
+          format: uuid
+          description: "UUID de modelo text encoder (tabela `models`, kind=text_encoder) para substituir o encoder padrão no treino. Só tem efeito com arch flux-2-klein-4b; outro arch ⇒ 400. Inexistente ou kind≠text_encoder ⇒ 404/400."
         triggerWord:
           type: [string, "null"]
           maxLength: 100
@@ -3344,10 +3355,14 @@ components:
           type: [string, "null"]
           format: uuid
           description: "UUID de checkpoint customizado (tabela `models`, kind=checkpoint). XOR com baseModel."
+        textEncoderModelId:
+          type: [string, "null"]
+          format: uuid
+          description: "UUID de modelo text encoder (tabela `models`, kind=text_encoder) para substituir o encoder padrão na geração. Só tem efeito com arch flux-2-klein-4b; outro arch ⇒ 400. Inexistente ou kind≠text_encoder ⇒ 404/400."
         orchestratorId:
           type: [string, "null"]
           format: uuid
-          description: "ID do orquestrador preferencial para execução (ADR-0015 D2)."
+          description: "ID do orquestrador preferencial para execução (ADR-0015 D2). Opcional."
         initImageId:
           type: [string, "null"]
           format: uuid
@@ -4732,7 +4747,7 @@ components:
         kind:
           type: string
           nullable: true
-          enum: [lora, checkpoint]
+          enum: [lora, checkpoint, text_encoder]
           description: "Tipo de modelo (ADR-0023 D4). Null para engines não-difusão."
         arch:
           type: string

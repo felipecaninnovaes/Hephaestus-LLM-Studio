@@ -19,6 +19,31 @@ uma. Manter < 100 linhas; não duplicar docs — referenciar por seção.
    `docs/backend.md` §9/§10, `docs/frontend.md` §10, `docs/repo-estrutura.md`
    (ordem de fatias), `docs/dividas.md` e os ADRs em `docs/adr/`.
 
+## Fatia FECHADA (2026-09-17) — feat/pesos-custom-flux2 (6 commits 9f3ead8..docs, de feat/flux2-motor-treino@9f3ead8)
+
+Checkpoints e text encoders custom de "Modelos & Pesos" em treino e geração
+(default BFL preservado); UI de geração sem modo "custom" manual — modelos
+aparecem por kind/arch detectado. Contrato 9f3ead8 (openapi): textEncoderModelId
+treino+geração, customModelId treino (XOR, default sdxl), kind text_encoder
+(arch só flux-2-klein-4b), migration 0018 (CHECK aditivo).
+Wire→yaml→engine: treino root-level `custom_checkpoint_path`/`text_encoder_path`,
+geração no bloco `generate:`; placeholders staging no orchestrator; manager
+resolve por SQL (404/400); gate flux-2 com normalização do alias "flux".
+Engine (diffusers 0.40.0): `Flux2KleinPipeline` SEM from_single_file; transformer
+custom via `Flux2Transformer2DModel.from_single_file`; encoder override (dir HF
+ou safetensors sobre repo BFL); cache quantizado isolado por checkpoint+encoder;
+sdxl/sd15 treino base custom via UNet.from_single_file; falhas honestas (`_die`).
+Reviewer (FECHAR após fixes): B1/C1/C2/N2/N3 corrigidos via @fixer — B1 com
+RED→GREEN (gate "flux" no treino); C2 quantização repassada quando mecânica
+(verificado no diffusers), senão _die. Gates finais: cargo check 0E, fmt ok,
+cargo test workspace 678p, pytest 168p, compileall ok, compose ok, build web ok,
+biome 0E/199W (< baseline). docs-sync: REPO_MAP/backend/dividas (3 novas dívidas:
+cache slug per-job N1, validação @gpu, nomes N5).
+- Limitações honestas: loads reais de pesos custom só validáveis em GPU
+  (dívida @gpu em dividas.md); quantização em encoder de arquivo solto + quant
+  ⇒ _die (load_state_dict sobre modelo quantizado não funciona).
+- Merge/push só com ordem explícita do usuário. Nenhum dataset/modelo tocado.
+
 ## Fatia FECHADA 2026-09-17 — feat/img2img (7 commits 30140ea..083efcb, de develop@4e3fb3e)
 
 Img2img com 2 origens: upload efêmero (POST /api/generations/inputs, tabela

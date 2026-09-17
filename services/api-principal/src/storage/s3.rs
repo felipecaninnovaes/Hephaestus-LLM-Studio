@@ -74,12 +74,15 @@ fn build_client(endpoint_url: &str, access_key: &str, secret_key: &str) -> Clien
         .request_checksum_calculation(RequestChecksumCalculation::WhenRequired)
         .credentials_provider(creds)
         .retry_config(RetryConfig::disabled())
-        // C7 do spike: servidor morto ⇒ erro em ~ms, nunca hang (budget total ≤5s).
+        // C7 do spike (revisado p/ objetos multi-GB): fail-fast de servidor
+        // morto vem de connect_timeout (connect_refused em ~ms) + read_timeout
+        // (stream engasgado); operation_timeout é só o teto de transferência —
+        // 5s abortava qualquer PUT de GBs, 60min cobre datasets de vários GB.
         .timeout_config(
             TimeoutConfig::builder()
                 .connect_timeout(Duration::from_secs(2))
-                .read_timeout(Duration::from_secs(5))
-                .operation_timeout(Duration::from_secs(5))
+                .read_timeout(Duration::from_secs(30))
+                .operation_timeout(Duration::from_secs(3600))
                 .build(),
         )
         .build();

@@ -639,7 +639,9 @@ impl S3Client {
                 aws_smithy_types::timeout::TimeoutConfig::builder()
                     .connect_timeout(Duration::from_secs(2))
                     .read_timeout(Duration::from_secs(30))
-                    .operation_timeout(Duration::from_secs(120))
+                    // Teto de transferência p/ objetos multi-GB (fail-fast vem de
+                    // connect+read, não daqui): 120s flakeava em LAN lenta.
+                    .operation_timeout(Duration::from_secs(3600))
                     .build(),
             )
             .build();

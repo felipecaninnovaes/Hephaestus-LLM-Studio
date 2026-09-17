@@ -32,6 +32,9 @@ export function startDiffusionGenerateJob(
   if (params.quantization) body.quantization = params.quantization;
   if (params.sampler) body.sampler = params.sampler;
   if (params.upscale) body.upscale = params.upscale;
+  if (params.distilled != null) body.distilled = params.distilled;
+  if (params.batchSize && params.batchSize > 1) body.batchSize = params.batchSize;
+  if (params.loras && params.loras.length > 0) body.loras = params.loras;
   if (params.orchestratorId) body.orchestratorId = params.orchestratorId;
   // img2img (fatia feat/img2img — openapi 30140ea): XOR, nunca os dois ids;
   // initStrength só segue quando há id presente (sem id o backend 400).

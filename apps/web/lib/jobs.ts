@@ -100,6 +100,9 @@ export function startDiffusionJob(params: {
   if (lrScheduler) body.lrScheduler = lrScheduler;
   if (lrWarmupSteps != null) body.lrWarmupSteps = lrWarmupSteps;
   if (epochOffset != null) body.epochOffset = epochOffset;
+  if (mixedPrecision) body.mixedPrecision = mixedPrecision;
+  if (quantization) body.quantization = quantization;
+  if (enableBucket != null) body.enableBucket = enableBucket;
   if (controlDatasetId) body.controlDatasetId = controlDatasetId;
   if (cacheTextEmbeddings != null) body.cacheTextEmbeddings = cacheTextEmbeddings;
   if (checkpointInterval != null) body.checkpointInterval = checkpointInterval;

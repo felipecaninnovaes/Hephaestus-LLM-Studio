@@ -257,6 +257,16 @@ pub struct ResolvedCheckpoint {
     pub md5: String,
 }
 
+/// Referência resolvida de imagem inicial para img2img (S4 — feat/img2img).
+/// `md5` é `Some` quando vem de `generation_inputs` (upload avulso com hash
+/// conhecido) e `None` quando vem de `generations` (galeria — hash não
+/// persistido na linha; a verificação vira log no orchestrator).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolvedInitImage {
+    pub s3_key: String,
+    pub md5: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Generations (D5 — ADR-0023)
 // ---------------------------------------------------------------------------
@@ -735,6 +745,86 @@ pub async fn create_job(
                     let resolved = ResolvedCheckpoint { s3_key, md5: hash };
                     if let Ok(v) = serde_json::to_value(&resolved) {
                         params["custom_checkpoint"] = v;
+                    }
+                }
+            }
+        }
+
+        // Resolve initImageId (img2img — S4 feat/img2img).
+        // O BFF envia camelCase; o campo original é MANTIDO em params
+        // (rastreabilidade em generations.params — padrão da casa) e o
+        // resolvido é gravado snake_case em `init_image_ref`.
+        // Defesa em profundidade: BFF valida XOR, mas params pode vir de outra origem.
+        if params.get("initImageId").and_then(|v| v.as_str()).is_some()
+            && params
+                .get("initGenerationId")
+                .and_then(|v| v.as_str())
+                .is_some()
+        {
+            return Err(ManagerError::InvalidRequest(
+                "use either initImageId or initGenerationId, not both".into(),
+            ));
+        }
+        if let Some(init_id_str) = params.get("initImageId").and_then(|v| v.as_str()) {
+            let init_uuid = Uuid::parse_str(init_id_str).map_err(|_| {
+                ManagerError::InvalidRequest("initImageId must be a valid UUID".into())
+            })?;
+
+            let row: Option<(String, String)> =
+                sqlx::query_as("SELECT s3_key, md5 FROM generation_inputs WHERE id = $1")
+                    .bind(init_uuid)
+                    .fetch_optional(pool)
+                    .await
+                    .map_err(|e| ManagerError::Internal(format!("resolve init image: {e}")))?;
+
+            match row {
+                None => {
+                    return Err(ManagerError::InvalidRequest("initImageId not found".into()));
+                }
+                Some((s3_key, md5)) => {
+                    // Marca consumo (best-effort: falha aqui não aborta o job).
+                    let _ =
+                        sqlx::query("UPDATE generation_inputs SET used_at = now() WHERE id = $1")
+                            .bind(init_uuid)
+                            .execute(pool)
+                            .await;
+                    let resolved = ResolvedInitImage {
+                        s3_key,
+                        md5: Some(md5),
+                    };
+                    if let Ok(v) = serde_json::to_value(&resolved) {
+                        params["init_image_ref"] = v;
+                    }
+                }
+            }
+        }
+
+        // Resolve initGenerationId (img2img via galeria — S4 feat/img2img).
+        // Linha da galeria não persiste hash: `md5: null` (o orchestrator
+        // só registra o md5 calculado, sem falhar).
+        if let Some(gen_id_str) = params.get("initGenerationId").and_then(|v| v.as_str()) {
+            let gen_uuid = Uuid::parse_str(gen_id_str).map_err(|_| {
+                ManagerError::InvalidRequest("initGenerationId must be a valid UUID".into())
+            })?;
+
+            let row: Option<(String,)> = sqlx::query_as(
+                "SELECT s3_key FROM generations WHERE id = $1 AND deleted_at IS NULL",
+            )
+            .bind(gen_uuid)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| ManagerError::Internal(format!("resolve init generation: {e}")))?;
+
+            match row {
+                None => {
+                    return Err(ManagerError::InvalidRequest(
+                        "initGenerationId not found".into(),
+                    ));
+                }
+                Some((s3_key,)) => {
+                    let resolved = ResolvedInitImage { s3_key, md5: None };
+                    if let Ok(v) = serde_json::to_value(&resolved) {
+                        params["init_image_ref"] = v;
                     }
                 }
             }
@@ -3644,6 +3734,12 @@ pub async fn dispatch_next(
         .and_then(|p| p.get("custom_checkpoint"))
         .cloned();
 
+    // Extrai init_image_ref resolvido do params (img2img — S4 feat/img2img).
+    let init_image_ref = params
+        .as_ref()
+        .and_then(|p| p.get("init_image_ref"))
+        .cloned();
+
     // Resolve imagem do container: se engine for diffusion, usa DIFFUSION_TRAINER_IMAGE
     // (env explícito SEMPRE vence) ou herda tag de TRAINER_IMAGE (fallback p/ TrueNAS :gpu).
     let job_image = match engine.as_str() {
@@ -3680,6 +3776,12 @@ pub async fn dispatch_next(
     // snake_case: `custom_checkpoint: {s3_key, md5}` — casa com WeightRef do orquestrador.
     if let Some(cc) = custom_checkpoint {
         dispatch_body["custom_checkpoint"] = cc;
+    }
+
+    // Adiciona init_image_ref ao dispatch quando presente (S4 — feat/img2img).
+    // snake_case: `init_image_ref: {s3_key, md5|null}` — casa com InitImageRef do orquestrador.
+    if let Some(iir) = init_image_ref {
+        dispatch_body["init_image_ref"] = iir;
     }
 
     let url = format!("{}/internal/dispatch", orch_endpoint);

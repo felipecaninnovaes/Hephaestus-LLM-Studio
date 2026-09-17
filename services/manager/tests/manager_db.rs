@@ -126,6 +126,10 @@ impl manager::OrchestratorClient for FailingOrchestratorClient {
 
 /// Limpa tabelas do manager.
 async fn cleanup(pool: &PgPool) {
+    sqlx::query("DELETE FROM generation_inputs")
+        .execute(pool)
+        .await
+        .unwrap();
     sqlx::query("DELETE FROM generations")
         .execute(pool)
         .await
@@ -4954,6 +4958,262 @@ async fn create_job_legado_sem_loras_custom_ok() {
         .await
         .expect("create legacy job should work");
     assert!(!resp.job_id.is_empty());
+}
+
+// ===========================================================================
+// S4 feat/img2img — initImageId / initGenerationId
+// ===========================================================================
+
+/// Helper: cria um input efêmero em generation_inputs e retorna o ID.
+async fn insert_generation_input(pool: &PgPool) -> uuid::Uuid {
+    let id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO generation_inputs (id, s3_key, filename, mime_type, width, height, md5) \
+         VALUES ($1, $2, 'upload.png', 'image/png', 1024, 1024, 'd41d8cd98f00b204e9800998ecf8427e')",
+    )
+    .bind(id)
+    .bind(format!("generation_inputs/{id}/upload.png"))
+    .execute(pool)
+    .await
+    .expect("insert generation input");
+    id
+}
+
+/// Helper: cria uma linha na galeria generations para o job dado e retorna o ID.
+async fn insert_gallery_generation(pool: &PgPool, job_id: uuid::Uuid) -> uuid::Uuid {
+    let id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO generations (id, job_id, s3_key, filename, seed, prompt, width, height) \
+         VALUES ($1, $2, $3, 'generated_0001.png', 7, 'a lighthouse', 1024, 1024)",
+    )
+    .bind(id)
+    .bind(job_id)
+    .bind(format!("artifacts/{job_id}/generated_0001.png"))
+    .execute(pool)
+    .await
+    .expect("insert gallery generation");
+    id
+}
+
+/// create_job com initImageId → init_image_ref resolvido, used_at marcado,
+/// camelCase original preservado; dispatch carrega init_image_ref.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_job_com_init_image_id_resolve_e_dispatch() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+    let input_id = insert_generation_input(&p).await;
+
+    let mut req = diffusion_generate_request();
+    req.params = Some(serde_json::json!({
+        "prompt": "a cyberpunk city", "width": 1024, "height": 1024,
+        "steps": 20, "seed": 42,
+        "initImageId": input_id.to_string(), "initStrength": 0.6
+    }));
+
+    let resp = manager::create_job(&p, req)
+        .await
+        .expect("create job with initImageId");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    // params gravado: init_image_ref resolvido + camelCase originais mantidos.
+    let row: (serde_json::Value,) = sqlx::query_as("SELECT params FROM jobs WHERE id = $1")
+        .bind(job_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    let iir = row
+        .0
+        .get("init_image_ref")
+        .expect("init_image_ref presente");
+    assert_eq!(
+        iir["s3_key"],
+        format!("generation_inputs/{input_id}/upload.png")
+    );
+    assert_eq!(iir["md5"], "d41d8cd98f00b204e9800998ecf8427e");
+    assert_eq!(row.0["initImageId"], input_id.to_string());
+    assert_eq!(row.0["initStrength"], 0.6);
+
+    // Consumo marcado.
+    let used: (Option<chrono::DateTime<chrono::Utc>>,) =
+        sqlx::query_as("SELECT used_at FROM generation_inputs WHERE id = $1")
+            .bind(input_id)
+            .fetch_one(&p)
+            .await
+            .unwrap();
+    assert!(used.0.is_some(), "used_at deve ser marcado ao consumir");
+
+    // Dispatch carrega init_image_ref snake_case.
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+    let (_, body) = &orch.calls()[0];
+    let diir = body
+        .get("init_image_ref")
+        .expect("init_image_ref no dispatch");
+    assert_eq!(
+        diir["s3_key"],
+        format!("generation_inputs/{input_id}/upload.png")
+    );
+    assert_eq!(diir["md5"], "d41d8cd98f00b204e9800998ecf8427e");
+}
+
+/// create_job com initGenerationId → init_image_ref com md5 null; dispatch ok.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_job_com_init_generation_id_resolve_e_dispatch() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+    // Job de origem para a linha da galeria.
+    let src: uuid::Uuid = manager::create_job(&p, diffusion_generate_request())
+        .await
+        .expect("create src job")
+        .job_id
+        .parse()
+        .unwrap();
+    let gen_id = insert_gallery_generation(&p, src).await;
+
+    let mut req = diffusion_generate_request();
+    req.params = Some(serde_json::json!({
+        "prompt": "a lighthouse at dusk",
+        "initGenerationId": gen_id.to_string(), "initStrength": 0.75
+    }));
+
+    let resp = manager::create_job(&p, req)
+        .await
+        .expect("create job with initGenerationId");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    let row: (serde_json::Value,) = sqlx::query_as("SELECT params FROM jobs WHERE id = $1")
+        .bind(job_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    let iir = row
+        .0
+        .get("init_image_ref")
+        .expect("init_image_ref presente");
+    assert_eq!(iir["s3_key"], format!("artifacts/{src}/generated_0001.png"));
+    assert!(iir["md5"].is_null(), "galeria resolve md5 null");
+    assert_eq!(row.0["initGenerationId"], gen_id.to_string());
+
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch src");
+    // Libera o slot do orchestrator adotado (1 job por vez): encerra o src.
+    sqlx::query("UPDATE jobs SET status = 'done' WHERE id = $1")
+        .bind(src)
+        .execute(&p)
+        .await
+        .unwrap();
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+    // O dispatch entrega o job mais antigo primeiro (src); procura o body do job atual.
+    let calls = orch.calls();
+    let ours = calls
+        .iter()
+        .map(|(_, b)| b)
+        .find(|b| b["job_id"] == resp.job_id)
+        .expect("dispatch do job com initGenerationId");
+    assert!(ours["init_image_ref"]["md5"].is_null());
+}
+
+/// initImageId inexistente → falha honesta.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_job_init_image_id_inexistente_falha() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let mut req = diffusion_generate_request();
+    req.params = Some(serde_json::json!({
+        "prompt": "test",
+        "initImageId": uuid::Uuid::new_v4().to_string(), "initStrength": 0.6
+    }));
+    let result = manager::create_job(&p, req).await;
+    assert!(
+        matches!(result, Err(ManagerError::InvalidRequest(ref msg)) if msg.contains("initImageId"))
+    );
+}
+
+/// initGenerationId inexistente → falha honesta.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_job_init_generation_id_inexistente_falha() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let mut req = diffusion_generate_request();
+    req.params = Some(serde_json::json!({
+        "prompt": "test",
+        "initGenerationId": uuid::Uuid::new_v4().to_string(), "initStrength": 0.6
+    }));
+    let result = manager::create_job(&p, req).await;
+    assert!(
+        matches!(result, Err(ManagerError::InvalidRequest(ref msg)) if msg.contains("initGenerationId"))
+    );
+}
+
+/// initImageId com UUID malformado → 400.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_job_init_image_id_uuid_invalido_falha() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let mut req = diffusion_generate_request();
+    req.params = Some(serde_json::json!({"prompt": "test", "initImageId": "not-a-uuid"}));
+    let result = manager::create_job(&p, req).await;
+    assert!(
+        matches!(result, Err(ManagerError::InvalidRequest(ref msg)) if msg.contains("initImageId"))
+    );
+}
+
+/// Ambos initImageId e initGenerationId presentes → 400, sem marcar used_at.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_job_init_ambos_presentes_falha_sem_marcar_used_at() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let input_id = insert_generation_input(&p).await;
+    let src: uuid::Uuid = manager::create_job(&p, diffusion_generate_request())
+        .await
+        .expect("create src job")
+        .job_id
+        .parse()
+        .unwrap();
+    let gen_id = insert_gallery_generation(&p, src).await;
+    let mut req = diffusion_generate_request();
+    req.params = Some(serde_json::json!({
+        "prompt": "test",
+        "initImageId": input_id.to_string(),
+        "initGenerationId": gen_id.to_string(),
+        "initStrength": 0.6
+    }));
+    let result = manager::create_job(&p, req).await;
+    assert!(
+        matches!(result, Err(ManagerError::InvalidRequest(ref msg)) if msg.contains("not both"))
+    );
+    let used: (Option<chrono::DateTime<chrono::Utc>>,) =
+        sqlx::query_as("SELECT used_at FROM generation_inputs WHERE id = $1")
+            .bind(input_id)
+            .fetch_one(&p)
+            .await
+            .unwrap();
+    assert!(
+        used.0.is_none(),
+        "used_at não deve ser marcado quando ambos presentes"
+    );
 }
 
 /// Report done com generated_meta content → 3 rows em generations.

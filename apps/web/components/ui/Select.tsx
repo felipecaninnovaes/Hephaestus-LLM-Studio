@@ -1,15 +1,16 @@
 "use client";
 
 import React, {
-	useState,
-	useRef,
-	useEffect,
-	useCallback,
-	useId,
 	forwardRef,
+	useCallback,
+	useEffect,
+	useId,
 	useImperativeHandle,
+	useRef,
+	useState,
 } from "react";
-import { IconChevronDown, IconCheck, IconSearch } from "@/components/icons";
+import { createPortal } from "react-dom";
+import { IconCheck, IconChevronDown, IconSearch } from "@/components/icons";
 
 export interface SelectOption<T extends string | number = string | number> {
 	value: T;
@@ -97,6 +98,14 @@ export const Select = forwardRef<SelectRefHandle, SelectProps<any>>(
 		const [horizontalPlacement, setHorizontalPlacement] = useState<
 			"left" | "right"
 		>("left");
+		// Fixed viewport coords for the portaled menu (anchored to the trigger rect).
+		const [menuCoords, setMenuCoords] = useState<{
+			top?: number;
+			bottom?: number;
+			left?: number;
+			right?: number;
+			width?: number;
+		} | null>(null);
 
 		const containerRef = useRef<HTMLDivElement>(null);
 		const triggerRef = useRef<HTMLButtonElement>(null);
@@ -122,7 +131,7 @@ export const Select = forwardRef<SelectRefHandle, SelectProps<any>>(
 			return options.filter(
 				(opt) =>
 					opt.label.toLowerCase().includes(q) ||
-					(opt.description && opt.description.toLowerCase().includes(q)),
+					(opt.description?.toLowerCase().includes(q)),
 			);
 		}, [options, searchable, searchQuery]);
 
@@ -130,50 +139,84 @@ export const Select = forwardRef<SelectRefHandle, SelectProps<any>>(
 			return options.find((opt) => String(opt.value) === String(currentValue));
 		}, [options, currentValue]);
 
-		// Adjust menu placement (top vs bottom, left vs right) when opened
+		// Compute flip (top/bottom, left/right) + fixed viewport coords for the
+		// portaled menu, anchored to the trigger's getBoundingClientRect().
 		const updatePlacement = useCallback(() => {
-			if (!containerRef.current) return;
-			const rect = containerRef.current.getBoundingClientRect();
-			const spaceBelow = window.innerHeight - rect.bottom;
+			const anchor = triggerRef.current ?? containerRef.current;
+			if (!anchor) return;
+			const rect = anchor.getBoundingClientRect();
+			const gap = 6; // matches previous mt-1.5 / mb-1.5 offset
 			const minMenuHeight = 200;
-			if (spaceBelow < minMenuHeight && rect.top > minMenuHeight) {
-				setPlacement("top");
-			} else {
-				setPlacement("bottom");
-			}
 
-			if (align === "right") {
-				setHorizontalPlacement("right");
-			} else if (align === "left") {
-				setHorizontalPlacement("left");
+			let vertical: "bottom" | "top";
+			const spaceBelow = window.innerHeight - rect.bottom;
+			if (spaceBelow < minMenuHeight && rect.top > minMenuHeight) {
+				vertical = "top";
 			} else {
-				// Auto: if element is close to the right edge of the viewport, align to right
-				const spaceRight = window.innerWidth - rect.right;
-				if (spaceRight < 240) {
-					setHorizontalPlacement("right");
-				} else {
-					setHorizontalPlacement("left");
-				}
+				vertical = "bottom";
 			}
-		}, [align]);
+			setPlacement(vertical);
+
+			let horizontal: "left" | "right";
+			if (align === "right") {
+				horizontal = "right";
+			} else if (align === "left") {
+				horizontal = "left";
+			} else {
+				// Auto: if trigger is close to the right edge of the viewport, align to right
+				const spaceRight = window.innerWidth - rect.right;
+				horizontal = spaceRight < 240 ? "right" : "left";
+			}
+			setHorizontalPlacement(horizontal);
+
+			setMenuCoords({
+				...(vertical === "bottom"
+					? { top: rect.bottom + gap }
+					: { bottom: window.innerHeight - rect.top + gap }),
+				...(horizontal === "left"
+					? { left: rect.left }
+					: { right: window.innerWidth - rect.right }),
+				// Default ("trigger"): menu is EXACTLY the trigger width.
+				...(menuWidth === "trigger" || menuWidth === "fixed"
+					? { width: rect.width }
+					: {}),
+			});
+		}, [align, menuWidth]);
 
 		// Handle outside clicks
 		useEffect(() => {
 			if (!isOpen) return;
 
 			function handlePointerDown(e: PointerEvent) {
-				if (
-					containerRef.current &&
-					!containerRef.current.contains(e.target as Node)
-				) {
-					setIsOpen(false);
+				const target = e.target as Node;
+				if (containerRef.current?.contains(target)) {
+					return;
 				}
+				// Menu is portaled to document.body (outside the container): clicks
+				// inside it must NOT close the menu.
+				if (menuRef.current?.contains(target)) {
+					return;
+				}
+				setIsOpen(false);
 			}
 
 			document.addEventListener("pointerdown", handlePointerDown);
 			return () =>
 				document.removeEventListener("pointerdown", handlePointerDown);
 		}, [isOpen]);
+
+		// Keep the portaled menu anchored to the trigger while open
+		// (panel/page scroll or viewport resize recalculates fixed coords).
+		useEffect(() => {
+			if (!isOpen) return;
+			const handleReposition = () => updatePlacement();
+			window.addEventListener("resize", handleReposition);
+			document.addEventListener("scroll", handleReposition, true);
+			return () => {
+				window.removeEventListener("resize", handleReposition);
+				document.removeEventListener("scroll", handleReposition, true);
+			};
+		}, [isOpen, updatePlacement]);
 
 		// When opening, reset search, set initial highlighted index, update placement
 		useEffect(() => {
@@ -184,17 +227,19 @@ export const Select = forwardRef<SelectRefHandle, SelectProps<any>>(
 					(opt) => String(opt.value) === String(currentValue),
 				);
 				setHighlightedIndex(selectedIdx >= 0 ? selectedIdx : 0);
-
-				if (searchable) {
-					requestAnimationFrame(() => {
-						searchInputRef.current?.focus();
-					});
-				}
 			} else {
 				setSearchQuery("");
 				setHighlightedIndex(-1);
+				setMenuCoords(null);
 			}
-		}, [isOpen, currentValue, filteredOptions, searchable, updatePlacement]);
+		}, [isOpen, currentValue, filteredOptions, updatePlacement]);
+
+		// Focus the search input once the portaled menu exists (menuCoords set).
+		useEffect(() => {
+			if (isOpen && menuCoords && searchable) {
+				searchInputRef.current?.focus();
+			}
+		}, [isOpen, menuCoords, searchable]);
 
 		// Scroll highlighted item into view
 		useEffect(() => {
@@ -319,14 +364,15 @@ export const Select = forwardRef<SelectRefHandle, SelectProps<any>>(
 			lg: "min-h-[44px] text-sm px-4 py-2.5",
 		}[size];
 
+		// Portal (position: fixed in document.body) has no parent sizing context:
+		// "trigger" (default) uses an exact inline width (rect.width); "auto" sizes
+		// to content; custom strings pass through as classes.
 		const widthClasses =
 			menuWidth === "auto"
-				? "w-auto min-w-full max-w-[calc(100vw-32px)]"
-				: menuWidth === "fixed"
-					? "w-full min-w-full max-w-full"
-					: menuWidth && menuWidth !== "trigger"
-						? menuWidth
-						: "min-w-full w-max max-w-[min(440px,calc(100vw-32px))]";
+				? "w-max max-w-[min(440px,calc(100vw-32px))]"
+				: menuWidth && menuWidth !== "trigger" && menuWidth !== "fixed"
+					? menuWidth
+					: "max-w-[calc(100vw-32px)]";
 
 		return (
 			<div
@@ -424,142 +470,156 @@ export const Select = forwardRef<SelectRefHandle, SelectProps<any>>(
 					</span>
 				</button>
 
-				{/* Dropdown Popover (.glass-menu) */}
-				{isOpen && (
-					<div
-						ref={menuRef}
-						className={`glass-menu absolute z-50 rounded-xl p-1.5 shadow-2xl ${widthClasses} ${
-							placement === "top" ? "bottom-full mb-1.5" : "top-full mt-1.5"
-						} ${
-							horizontalPlacement === "right" ? "right-0" : "left-0"
-						} ${menuClassName}`}
-					>
-						{/* Optional Search Box */}
-						{searchable && (
-							<div className="relative mb-1.5 px-1 pt-1">
-								<div className="relative flex items-center">
-									<span className="pointer-events-none absolute left-2.5 flex items-center text-zinc-500 [&_svg]:size-3.5">
-										<IconSearch />
-									</span>
-									<input
-										ref={searchInputRef}
-										type="text"
-										value={searchQuery}
-										onChange={(e) => {
-											setSearchQuery(e.target.value);
-											setHighlightedIndex(0);
-										}}
-										placeholder={searchPlaceholder}
-										className="w-full rounded-lg border border-white/10 bg-black/50 backdrop-blur-sm py-1.5 pr-3 pl-8 font-mono text-xs text-zinc-200 placeholder-zinc-500 transition focus:border-brand-500/70 focus:bg-black/70 focus:outline-none focus:ring-1 focus:ring-brand-500/40"
-										onKeyDown={(e) => {
-											if (e.key === "Enter") {
-												e.preventDefault();
-											}
-											handleKeyDown(e);
-										}}
-									/>
-								</div>
-							</div>
-						)}
-
-						{/* Options List */}
+				{/* Dropdown Popover (.glass-menu) — portaled to document.body (fixed),
+          so ancestor overflow (e.g. overflow-y-auto panels) can't clip it
+          or coerce horizontal scrolling. */}
+				{isOpen &&
+					menuCoords &&
+					typeof document !== "undefined" &&
+					createPortal(
 						<div
-							ref={optionsListRef}
-							id={listboxId}
-							role="listbox"
-							aria-label={label || "Opções"}
-							onKeyDown={handleKeyDown}
-							className="max-h-60 overflow-y-auto overscroll-contain py-0.5 space-y-0.5 focus:outline-none scrollbar-thin"
+							ref={menuRef}
+							data-placement={placement}
+							data-align={horizontalPlacement}
+							style={{
+								position: "fixed",
+								top: menuCoords.top,
+								bottom: menuCoords.bottom,
+								left: menuCoords.left,
+								right: menuCoords.right,
+								width: menuCoords.width,
+								zIndex: 50,
+							}}
+							className={`glass-menu rounded-xl p-1.5 shadow-2xl ${widthClasses} ${menuClassName}`}
 						>
-							{filteredOptions.length === 0 ? (
-								<div className="px-3 py-4 text-center font-mono text-2xs text-zinc-500">
-									{emptyText}
-								</div>
-							) : (
-								filteredOptions.map((opt, idx) => {
-									const isSelected = String(opt.value) === String(currentValue);
-									const isHighlighted = idx === highlightedIndex;
-									const isDisabled = !!opt.disabled;
-
-									return (
-										<div
-											key={String(opt.value)}
-											id={`${listboxId}-opt-${idx}`}
-											role="option"
-											aria-selected={isSelected}
-											aria-disabled={isDisabled}
-											tabIndex={isDisabled ? -1 : isHighlighted ? 0 : -1}
-											title={
-												isDisabled && opt.disabledReason
-													? opt.disabledReason
-													: opt.label
-											}
-											onClick={() => !isDisabled && selectOption(opt)}
-											onKeyDown={(e) => {
-												if (isDisabled) return;
-												if (e.key === "Enter" || e.key === " ") {
-													e.preventDefault();
-													selectOption(opt);
-												}
+							{/* Optional Search Box */}
+							{searchable && (
+								<div className="relative mb-1.5 px-1 pt-1">
+									<div className="relative flex items-center">
+										<span className="pointer-events-none absolute left-2.5 flex items-center text-zinc-500 [&_svg]:size-3.5">
+											<IconSearch />
+										</span>
+										<input
+											ref={searchInputRef}
+											type="text"
+											value={searchQuery}
+											onChange={(e) => {
+												setSearchQuery(e.target.value);
+												setHighlightedIndex(0);
 											}}
-											onMouseEnter={() =>
-												!isDisabled && setHighlightedIndex(idx)
-											}
-											className={`group/item relative flex cursor-pointer items-center justify-between rounded-lg px-2.5 py-2 text-xs transition-all select-none ${
-												fontMono ? "font-mono" : "font-sans"
-											} ${
-												isDisabled
-													? "cursor-not-allowed opacity-45 bg-transparent text-zinc-500"
-													: isSelected
-														? "bg-brand-500/15 text-white font-medium border-l-2 border-brand-500 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]"
-														: isHighlighted
-															? "bg-white/[0.07] text-zinc-100"
-															: "text-zinc-300 hover:bg-white/[0.04] hover:text-zinc-100"
-											}`}
-										>
-											<div className="flex min-w-0 flex-1 items-center gap-2.5">
-												{opt.icon && (
-													<span
-														className={`shrink-0 transition-colors [&_svg]:size-3.5 ${
-															isSelected
-																? "text-brand-400"
-																: "text-zinc-500 group-hover/item:text-zinc-400"
-														}`}
-													>
-														{opt.icon}
-													</span>
-												)}
+											placeholder={searchPlaceholder}
+											className="w-full rounded-lg border border-white/10 bg-black/50 backdrop-blur-sm py-1.5 pr-3 pl-8 font-mono text-xs text-zinc-200 placeholder-zinc-500 transition focus:border-brand-500/70 focus:bg-black/70 focus:outline-none focus:ring-1 focus:ring-brand-500/40"
+											onKeyDown={(e) => {
+												if (e.key === "Enter") {
+													e.preventDefault();
+												}
+												handleKeyDown(e);
+											}}
+										/>
+									</div>
+								</div>
+							)}
 
-												<div className="flex min-w-0 flex-col">
-													<span className="leading-snug">{opt.label}</span>
-													{opt.description && (
-														<span className="truncate text-2xs text-zinc-500">
-															{opt.description}
+							{/* Options List */}
+							<div
+								ref={optionsListRef}
+								id={listboxId}
+								role="listbox"
+								aria-label={label || "Opções"}
+								onKeyDown={handleKeyDown}
+								className="max-h-60 overflow-y-auto overscroll-contain py-0.5 space-y-0.5 focus:outline-none scrollbar-thin"
+							>
+								{filteredOptions.length === 0 ? (
+									<div className="px-3 py-4 text-center font-mono text-2xs text-zinc-500">
+										{emptyText}
+									</div>
+								) : (
+									filteredOptions.map((opt, idx) => {
+										const isSelected =
+											String(opt.value) === String(currentValue);
+										const isHighlighted = idx === highlightedIndex;
+										const isDisabled = !!opt.disabled;
+
+										return (
+											<div
+												key={String(opt.value)}
+												id={`${listboxId}-opt-${idx}`}
+												role="option"
+												aria-selected={isSelected}
+												aria-disabled={isDisabled}
+												tabIndex={isDisabled ? -1 : isHighlighted ? 0 : -1}
+												title={
+													isDisabled && opt.disabledReason
+														? opt.disabledReason
+														: opt.label
+												}
+												onClick={() => !isDisabled && selectOption(opt)}
+												onKeyDown={(e) => {
+													if (isDisabled) return;
+													if (e.key === "Enter" || e.key === " ") {
+														e.preventDefault();
+														selectOption(opt);
+													}
+												}}
+												onMouseEnter={() =>
+													!isDisabled && setHighlightedIndex(idx)
+												}
+												className={`group/item relative flex cursor-pointer items-center justify-between rounded-lg px-2.5 py-2 text-xs transition-all select-none ${
+													fontMono ? "font-mono" : "font-sans"
+												} ${
+													isDisabled
+														? "cursor-not-allowed opacity-45 bg-transparent text-zinc-500"
+														: isSelected
+															? "bg-brand-500/15 text-white font-medium border-l-2 border-brand-500 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]"
+															: isHighlighted
+																? "bg-white/[0.07] text-zinc-100"
+																: "text-zinc-300 hover:bg-white/[0.04] hover:text-zinc-100"
+												}`}
+											>
+												<div className="flex min-w-0 flex-1 items-center gap-2.5">
+													{opt.icon && (
+														<span
+															className={`shrink-0 transition-colors [&_svg]:size-3.5 ${
+																isSelected
+																	? "text-brand-400"
+																	: "text-zinc-500 group-hover/item:text-zinc-400"
+															}`}
+														>
+															{opt.icon}
 														</span>
 													)}
-													{isDisabled && opt.disabledReason && (
-														<span className="mt-0.5 truncate text-2xs font-mono text-rose-400/80">
-															{opt.disabledReason}
+
+													<div className="flex min-w-0 flex-col">
+														<span className="leading-snug">{opt.label}</span>
+														{opt.description && (
+															<span className="truncate text-2xs text-zinc-500">
+																{opt.description}
+															</span>
+														)}
+														{isDisabled && opt.disabledReason && (
+															<span className="mt-0.5 truncate text-2xs font-mono text-rose-400/80">
+																{opt.disabledReason}
+															</span>
+														)}
+													</div>
+												</div>
+
+												<div className="flex items-center gap-2 shrink-0 ml-2">
+													{opt.badge && <div>{opt.badge}</div>}
+													{isSelected && (
+														<span className="flex items-center text-brand-400 [&_svg]:size-3.5">
+															<IconCheck />
 														</span>
 													)}
 												</div>
 											</div>
-
-											<div className="flex items-center gap-2 shrink-0 ml-2">
-												{opt.badge && <div>{opt.badge}</div>}
-												{isSelected && (
-													<span className="flex items-center text-brand-400 [&_svg]:size-3.5">
-														<IconCheck />
-													</span>
-												)}
-											</div>
-										</div>
-									);
-								})
-							)}
-						</div>
-					</div>
-				)}
+										);
+									})
+								)}
+							</div>
+						</div>,
+						document.body,
+					)}
 
 				{/* Error message */}
 				{error && (

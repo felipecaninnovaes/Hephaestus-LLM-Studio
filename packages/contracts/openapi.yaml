@@ -1554,6 +1554,10 @@ paths:
         Cria job de inferência Text-to-Image para modelos de difusão (ADR-0020).
         Suporta modelos base FLUX.2 Klein 4B, SDXL e SD 1.5, pesos LoRA opcionais
         do catálogo de modelos, quantização configurável e controle de seed.
+        Suporta img2img: `initImageId` (input efêmero de `POST /api/generations/inputs`)
+        ou `initGenerationId` (geração existente da galeria, sem re-upload) definem
+        a imagem inicial, ponderada por `initStrength`. A imagem de entrada é
+        redimensionada (stretch Lanczos) para o `width`×`height` alvo.
       requestBody:
         required: true
         content:
@@ -2339,6 +2343,48 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "503":
           description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/generations/inputs:
+    post:
+      operationId: uploadGenerationInput
+      tags: [generations]
+      summary: Envia imagem inicial efêmera para img2img (multipart)
+      description: |
+        Upload avulso de imagem inicial para img2img (inicialização de
+        `POST /api/jobs/diffusion/generate` via `initImageId`). Campo único
+        `file` em `multipart/form-data`; aceita image/png, image/jpeg e
+        image/webp com limite de 20 MiB. O objeto é persistido no bucket sob o
+        prefixo `generation_inputs/` e referenciado pela tabela `generation_inputs`.
+        Recurso efêmero, sem GC automático: após o consumo pelo job de geração
+        (`used_at` preenchido) a linha permanece para auditoria.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: "Imagem inicial (image/png, image/jpeg ou image/webp, máx. 20 MiB)."
+      responses:
+        "201":
+          description: Input efêmero criado (usar `id` como `initImageId`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GenerationInputUploaded" }
+        "400":
+          description: "Arquivo ausente, não-imagem ou acima de 20 MiB (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -3197,6 +3243,9 @@ components:
         Body de `POST /api/jobs/diffusion/generate` (ADR-0020, ADR-0023 D2/D3/D4).
         `prompt` é obrigatório. `baseModel` e `customModelId` são XOR (exatamente um).
         `weights`/`loraScale` são deprecated — usar `loras` em seu lugar.
+        `initImageId` e `initGenerationId` são mutuamente exclusivos (no máximo um);
+        `initStrength` só tem efeito com um deles presente. A imagem de entrada é
+        redimensionada (stretch Lanczos) para o `width`×`height` alvo.
       properties:
         baseModel:
           type: string
@@ -3281,6 +3330,20 @@ components:
           type: [string, "null"]
           format: uuid
           description: "ID do orquestrador preferencial para execução (ADR-0015 D2)."
+        initImageId:
+          type: [string, "null"]
+          format: uuid
+          description: "ID de input efêmero retornado por `POST /api/generations/inputs` para img2img. Mutuamente exclusivo com `initGenerationId`. Opcional."
+        initGenerationId:
+          type: [string, "null"]
+          format: uuid
+          description: "ID de geração existente na galeria a ser usada como imagem inicial de img2img (sem re-upload). Mutuamente exclusivo com `initImageId`. Opcional."
+        initStrength:
+          type: number
+          minimum: 0.05
+          maximum: 0.95
+          default: 0.6
+          description: "Força da imagem inicial no img2img (0.05..0.95, padrão 0.6). Só tem efeito quando `initImageId` ou `initGenerationId` está presente; caso contrário é rejeitado com 400 (`code: invalid_request` — initStrength exige initImageId ou initGenerationId). Opcional."
 
     LoraRef:
       type: object
@@ -3378,6 +3441,29 @@ components:
             type: string
             format: uuid
           description: "IDs das gerações (1..100)."
+
+    GenerationInputUploaded:
+      type: object
+      required: [id, filename, mimeType, width, height]
+      additionalProperties: false
+      description: "Input efêmero para img2img (tabela `generation_inputs`, prefixo S3 `generation_inputs/`). Recurso efêmero, sem GC automático."
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: "PK do input efêmero (usar como `initImageId`)."
+        filename:
+          type: string
+          description: "Nome original do arquivo enviado."
+        mimeType:
+          type: string
+          description: "MIME detectado por sniff do conteúdo (image/png, image/jpeg ou image/webp)."
+        width:
+          type: integer
+          description: "Largura da imagem em pixels."
+        height:
+          type: integer
+          description: "Altura da imagem em pixels."
 
     PredictJobRequest:
       type: object

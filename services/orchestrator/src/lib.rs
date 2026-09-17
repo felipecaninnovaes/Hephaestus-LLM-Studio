@@ -81,6 +81,11 @@ pub struct DispatchRequest {
     /// Checkpoint custom para staging multi-ref (D4 — ADR-0023).
     #[serde(default)]
     pub custom_checkpoint: Option<WeightRef>,
+    /// Text encoder custom para staging (fatia feat/pesos-custom-flux2).
+    /// `None` = encoder oficial do repo BFL. Mesmo shape do checkpoint
+    /// (`{s3_key, md5}` — casa com `text_encoder_ref`/`text_encoder` do manager).
+    #[serde(default)]
+    pub text_encoder: Option<WeightRef>,
     /// Imagem inicial para img2img (S4 — feat/img2img). `None` = txt2img.
     #[serde(default)]
     pub init_image_ref: Option<InitImageRef>,
@@ -596,7 +601,6 @@ pub fn telemetry_report_for_line(line: &MetricsLine, total_epochs: i32) -> Repor
 fn default_mode() -> String {
     "train".to_string()
 }
-
 /// Substitui placeholders no config.yaml.
 ///
 /// Suporta:
@@ -604,6 +608,7 @@ fn default_mode() -> String {
 /// - `{weights_path}` — weights legado (fine-tune)
 /// - `{lora_path_0}`...`{lora_path_N}` — LoRAs multi-ref (D3)
 /// - `{custom_checkpoint_path}` — checkpoint custom (D4)
+/// - `{text_encoder_path}` — text encoder custom (fatia feat/pesos-custom-flux2)
 /// - `{init_image_path}` — imagem inicial img2img (S4 — feat/img2img)
 /// - `{control_dataset_path}` — dataset de regularização/controle (treino difusão)
 ///
@@ -617,6 +622,7 @@ pub fn replace_config_placeholders(
     custom_checkpoint_path: Option<&str>,
     init_image_path: Option<&str>,
     control_dataset_path: Option<&str>,
+    text_encoder_path: Option<&str>,
 ) -> String {
     let mut result = config
         .replace("{dataset_path}", dataset_path)
@@ -634,6 +640,10 @@ pub fn replace_config_placeholders(
 
     if let Some(cp) = custom_checkpoint_path {
         result = result.replace("{custom_checkpoint_path}", cp);
+    }
+
+    if let Some(tp) = text_encoder_path {
+        result = result.replace("{text_encoder_path}", tp);
     }
 
     if let Some(ip) = init_image_path {
@@ -664,9 +674,9 @@ pub fn replace_config_placeholders_legacy(
         None,
         None,
         None,
+        None,
     )
 }
-
 /// Extrai o valor de `epochs` do config.yaml (para cálculo de progress).
 pub fn extract_epochs(config_yaml: &str) -> i32 {
     let parsed = serde_yaml::from_str::<serde_yaml::Value>(config_yaml).ok();
@@ -1431,6 +1441,43 @@ async fn run_job_inner(
         }
         custom_staged_path = Some(format!("/outputs/{job_id}/weights/custom.safetensors"));
     }
+    // 5c2. Download e staging do text encoder custom (fatia feat/pesos-custom-flux2).
+    //     Fica em outputs/<job_id>/weights/text_encoder.safetensors (mesmo
+    //     mecanismo weights_ref: escopo models/|artifacts/, md5 obrigatório,
+    //     falha honesta em qualquer etapa — nunca fallback silencioso p/ o oficial).
+    let mut text_encoder_staged_path: Option<String> = None;
+    if let Some(ref encoder) = dispatch.text_encoder {
+        tokio::fs::create_dir_all(&weights_dir)
+            .await
+            .map_err(|e| PipelineError::Other(format!("create weights dir: {e}")))?;
+        let scope = if encoder.s3_key.starts_with("models/") {
+            S3Scope::Models
+        } else if encoder.s3_key.starts_with("artifacts/") {
+            S3Scope::Artifacts
+        } else {
+            return Err(PipelineError::S3Download(format!(
+                "text_encoder s3_key must start with models/ or artifacts/, got: {}",
+                encoder.s3_key
+            )));
+        };
+        let scoped_key = scoped_key(scope, &encoder.s3_key)
+            .map_err(|e| PipelineError::S3Download(format!("invalid text_encoder key: {e}")))?;
+        let encoder_file = weights_dir.join("text_encoder.safetensors");
+        s3.get_to_file(&scoped_key, &encoder_file)
+            .await
+            .map_err(|e| PipelineError::S3Download(format!("download text_encoder: {e}")))?;
+        let actual_md5 = compute_file_md5(&encoder_file)
+            .map_err(|e| PipelineError::S3Download(format!("compute text_encoder md5: {e}")))?;
+        if actual_md5 != encoder.md5 {
+            return Err(PipelineError::Md5Mismatch {
+                expected: encoder.md5.clone(),
+                actual: actual_md5,
+            });
+        }
+        text_encoder_staged_path = Some(format!(
+            "/outputs/{job_id}/weights/text_encoder.safetensors"
+        ));
+    }
 
     // 5d. Download e staging da imagem inicial img2img (S4 — feat/img2img).
     //     Fica em outputs/<job_id>/inputs/init.<ext> (ext sanitizada do s3_key,
@@ -1519,6 +1566,7 @@ async fn run_job_inner(
             custom_staged_path.as_deref(),
             init_staged_path.as_deref(),
             control_staged_path.as_deref(),
+            text_encoder_staged_path.as_deref(),
         );
 
         // O config exige init mas nenhum init_image_ref veio no dispatch:
@@ -1535,6 +1583,16 @@ async fn run_job_inner(
         if real_config.contains("{control_dataset_path}") {
             return Err(PipelineError::ConfigYamlInvalid(
                 "config.yaml requires {control_dataset_path} but no control_package_ref was provided"
+                    .to_string(),
+            ));
+        }
+
+        // O config exige text encoder custom mas nenhum veio no dispatch:
+        // falha explícita em vez de vazar o placeholder ou cair no oficial
+        // (fallback silencioso proibido — fatia feat/pesos-custom-flux2).
+        if real_config.contains("{text_encoder_path}") {
+            return Err(PipelineError::ConfigYamlInvalid(
+                "config.yaml requires {text_encoder_path} but no text_encoder was provided"
                     .to_string(),
             ));
         }
@@ -1612,6 +1670,7 @@ async fn run_job_inner(
                     custom_staged_path.as_deref(),
                     init_staged_path.as_deref(),
                     control_staged_path.as_deref(),
+                    text_encoder_staged_path.as_deref(),
                 )
             })
             .unwrap_or_default();
@@ -1630,6 +1689,14 @@ async fn run_job_inner(
         if config_str.contains("{control_dataset_path}") {
             return Err(PipelineError::ConfigYamlInvalid(
                 "config.yaml requires {control_dataset_path} but no control_package_ref was provided"
+                    .to_string(),
+            ));
+        }
+
+        // Defesa anti-placeholder do text encoder (fatia feat/pesos-custom-flux2).
+        if config_str.contains("{text_encoder_path}") {
+            return Err(PipelineError::ConfigYamlInvalid(
+                "config.yaml requires {text_encoder_path} but no text_encoder was provided"
                     .to_string(),
             ));
         }
@@ -2972,6 +3039,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert_eq!(
             result,
@@ -2989,6 +3057,7 @@ mod tests {
             "/outputs/j1",
             None,
             &[],
+            None,
             None,
             None,
             None,
@@ -3521,6 +3590,7 @@ mod tests {
             weights_ref: None,
             loras: Vec::new(),
             custom_checkpoint: None,
+            text_encoder: None,
             init_image_ref: None,
             control_package_ref: None,
         }
@@ -5041,6 +5111,7 @@ also bad, not a number
             None,
             None,
             None,
+            None,
         );
         assert_eq!(
             result,
@@ -5057,6 +5128,7 @@ also bad, not a number
             "/outputs/j1",
             None,
             &[],
+            None,
             None,
             None,
             None,
@@ -5080,6 +5152,7 @@ also bad, not a number
             None,
             Some("/outputs/j1/inputs/init.png"),
             None,
+            None,
         );
         assert_eq!(
             result,
@@ -5096,6 +5169,7 @@ also bad, not a number
             "/outputs/j1",
             None,
             &[],
+            None,
             None,
             None,
             None,
@@ -5117,9 +5191,47 @@ also bad, not a number
                 None,
                 init,
                 None,
+                None,
             );
             assert_eq!(result, config);
         }
+    }
+    #[test]
+    fn replace_config_placeholders_with_text_encoder() {
+        // Fatia feat/pesos-custom-flux2: placeholder do encoder substituído.
+        let config = "text_encoder: {text_encoder_path}\nsteps: 20";
+        let result = replace_config_placeholders(
+            config,
+            "/datasets/j1",
+            "/outputs/j1",
+            None,
+            &[],
+            None,
+            None,
+            None,
+            Some("/outputs/j1/weights/text_encoder.safetensors"),
+        );
+        assert_eq!(
+            result,
+            "text_encoder: /outputs/j1/weights/text_encoder.safetensors\nsteps: 20"
+        );
+    }
+
+    #[test]
+    fn replace_config_placeholders_without_text_encoder_keeps_literal() {
+        let config = "text_encoder: {text_encoder_path}\nsteps: 20";
+        let result = replace_config_placeholders(
+            config,
+            "/datasets/j1",
+            "/outputs/j1",
+            None,
+            &[],
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(result, "text_encoder: {text_encoder_path}\nsteps: 20");
     }
 
     #[test]
@@ -5549,6 +5661,7 @@ also bad, not a number
             weights_ref: None,
             loras: Vec::new(),
             custom_checkpoint: None,
+            text_encoder: None,
             init_image_ref: None,
             control_package_ref: None,
         }
@@ -6908,6 +7021,77 @@ also bad, not a number
             !config_content.contains("{custom_checkpoint_path}"),
             "config should not contain literal {{custom_checkpoint_path}}"
         );
+    }
+    /// dispatch com text_encoder + custom (treino flux-2) → arquivos staged e
+    /// `{text_encoder_path}`/`{custom_checkpoint_path}` substituídos.
+    #[tokio::test]
+    async fn staging_text_encoder_and_custom_train() {
+        let tmp = tempfile::tempdir().unwrap();
+        let weights_bytes = b"fake encoder data";
+        let weights_md5 = compute_file_md5_bytes(weights_bytes);
+        let s3 = Arc::new(FakeS3WithWeights::new(weights_bytes.to_vec()));
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_dispatch_with_valid_md5("job-enc-001", "diffusion", &zip_path);
+        dispatch.mode = "train".to_string();
+        dispatch.config_yaml = Some(
+            "model: flux-2-klein-4b\ncustom_checkpoint_path: {custom_checkpoint_path}\ntext_encoder_path: {text_encoder_path}\noutput_path: {output_path}".to_string(),
+        );
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        dispatch.custom_checkpoint = Some(WeightRef {
+            s3_key: "models/checkpoint/xyz/custom.safetensors".to_string(),
+            md5: weights_md5.clone(),
+        });
+        dispatch.text_encoder = Some(WeightRef {
+            s3_key: "models/diffusion/enc/text_encoder.safetensors".to_string(),
+            md5: weights_md5.clone(),
+        });
+
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+        let outputs = tmp.path().join("outputs/job-enc-001");
+        std::fs::create_dir_all(&outputs).unwrap();
+
+        let result = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+            None,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "staging encoder should succeed: {:?}",
+            result.err()
+        );
+
+        let weights_dir = tmp.path().join("outputs/job-enc-001/weights");
+        assert!(
+            weights_dir.join("custom.safetensors").exists(),
+            "custom staged"
+        );
+        assert!(
+            weights_dir.join("text_encoder.safetensors").exists(),
+            "encoder staged"
+        );
+
+        let config_content = std::fs::read_to_string(outputs.join("config.yaml")).unwrap();
+        assert!(
+            config_content.contains("/outputs/job-enc-001/weights/custom.safetensors"),
+            "custom replaced: {config_content}"
+        );
+        assert!(
+            config_content.contains("/outputs/job-enc-001/weights/text_encoder.safetensors"),
+            "encoder replaced: {config_content}"
+        );
+        assert!(!config_content.contains("{custom_checkpoint_path}"));
+        assert!(!config_content.contains("{text_encoder_path}"));
     }
 
     // -- G.4 test 9: preempção --

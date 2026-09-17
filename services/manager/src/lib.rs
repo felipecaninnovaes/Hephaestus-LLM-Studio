@@ -257,6 +257,15 @@ pub struct ResolvedCheckpoint {
     pub md5: String,
 }
 
+/// Referência resolvida de text encoder custom para o dispatch
+/// (fatia feat/pesos-custom-flux2). Mesmo shape do checkpoint: `{s3_key, md5}`
+/// em snake_case — casa com `WeightRef` do orquestrador.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolvedTextEncoder {
+    pub s3_key: String,
+    pub md5: String,
+}
+
 /// Referência resolvida de imagem inicial para img2img (S4 — feat/img2img).
 /// `md5` é `Some` quando vem de `generation_inputs` (upload avulso com hash
 /// conhecido) e `None` quando vem de `generations` (galeria — hash não
@@ -645,11 +654,14 @@ pub async fn create_job(
     }
 
     // -------------------------------------------------------------------------
-    // Resolução multi-LoRA + custom checkpoint (D3/D4 — ADR-0023).
-    // Params contém `loras: [{modelId, scale}]` e `customModelId` (uuid|null).
-    // Lê de forma tolerante: campos ausentes = legado (sem loras/custom).
+    // Resolução multi-LoRA + custom checkpoint + text encoder
+    // (D3/D4 — ADR-0023; encoder — fatia feat/pesos-custom-flux2).
+    // Params contém `loras: [{modelId, scale}]`, `customModelId` (uuid|null)
+    // e `textEncoderModelId` (uuid|null).
+    // Lê de forma tolerante: campos ausentes = legado (sem loras/custom/encoder).
+    // Loras/img2img só existem no generate; custom + encoder valem p/ train e generate.
     // -------------------------------------------------------------------------
-    if req.engine == "diffusion" && req.mode == "generate" {
+    if req.engine == "diffusion" && (req.mode == "generate" || req.mode == "train") {
         // Resolve loras.
         if let Some(loras_arr) = params.get("loras").and_then(|v| v.as_array()) {
             if loras_arr.len() > 4 {
@@ -737,9 +749,16 @@ pub async fn create_job(
                         )));
                     }
                     let arch_val = arch.as_deref().unwrap_or("");
-                    if !matches!(arch_val, "sdxl" | "sd15") {
+                    // Fatia feat/pesos-custom-flux2: +flux-2-klein-4b (alias
+                    // legado "flux" normalizado). sdxl/sd15 inalterados.
+                    let arch_norm = if arch_val == "flux" {
+                        "flux-2-klein-4b"
+                    } else {
+                        arch_val
+                    };
+                    if !matches!(arch_norm, "sdxl" | "sd15" | "flux-2-klein-4b") {
                         return Err(ManagerError::InvalidRequest(format!(
-                            "customModelId arch must be 'sdxl' or 'sd15', got '{arch_val}'"
+                            "customModelId arch must be 'sdxl', 'sd15' or 'flux-2-klein-4b', got '{arch_val}'"
                         )));
                     }
                     let resolved = ResolvedCheckpoint { s3_key, md5: hash };
@@ -750,96 +769,154 @@ pub async fn create_job(
             }
         }
 
-        // Resolve initImageId (img2img — S4 feat/img2img).
-        // O BFF envia camelCase; o campo original é MANTIDO em params
-        // (rastreabilidade em generations.params — padrão da casa) e o
-        // resolvido é gravado snake_case em `init_image_ref`.
-        // Defesa em profundidade: BFF valida XOR, mas params pode vir de outra origem.
-        if params.get("initImageId").and_then(|v| v.as_str()).is_some()
-            && params
-                .get("initGenerationId")
-                .and_then(|v| v.as_str())
-                .is_some()
-        {
-            return Err(ManagerError::InvalidRequest(
-                "use either initImageId or initGenerationId, not both".into(),
-            ));
-        }
-        if let Some(init_id_str) = params.get("initImageId").and_then(|v| v.as_str()) {
-            let init_uuid = Uuid::parse_str(init_id_str).map_err(|_| {
-                ManagerError::InvalidRequest("initImageId must be a valid UUID".into())
+        // Resolve textEncoderModelId (fatia feat/pesos-custom-flux2).
+        // kind=text_encoder; arch EFETIVO deve ser flux-2-klein-4b.
+        // O campo original camelCase é mantido (rastreabilidade); o resolvido
+        // vai em snake_case `text_encoder_ref` ({s3_key, md5}).
+        // Defesa em profundidade: o BFF já valida, mas params pode vir de outra origem.
+        if let Some(encoder_id_str) = params.get("textEncoderModelId").and_then(|v| v.as_str()) {
+            let encoder_uuid = Uuid::parse_str(encoder_id_str).map_err(|_| {
+                ManagerError::InvalidRequest("textEncoderModelId must be a valid UUID".into())
             })?;
-
-            let row: Option<(String, String)> =
-                sqlx::query_as("SELECT s3_key, md5 FROM generation_inputs WHERE id = $1")
-                    .bind(init_uuid)
+            let row: Option<(String, String, Option<String>, Option<String>)> =
+                sqlx::query_as("SELECT s3_key, hash, kind, arch FROM models WHERE id = $1")
+                    .bind(encoder_uuid)
                     .fetch_optional(pool)
                     .await
-                    .map_err(|e| ManagerError::Internal(format!("resolve init image: {e}")))?;
-
-            match row {
-                None => {
-                    return Err(ManagerError::InvalidRequest("initImageId not found".into()));
-                }
-                Some((s3_key, md5)) => {
-                    // Marca consumo (best-effort: falha aqui não aborta o job).
-                    let _ =
-                        sqlx::query("UPDATE generation_inputs SET used_at = now() WHERE id = $1")
-                            .bind(init_uuid)
-                            .execute(pool)
-                            .await;
-                    let resolved = ResolvedInitImage {
-                        s3_key,
-                        md5: Some(md5),
-                    };
-                    if let Ok(v) = serde_json::to_value(&resolved) {
-                        params["init_image_ref"] = v;
-                    }
-                }
-            }
-        }
-
-        // Resolve initGenerationId (img2img via galeria — S4 feat/img2img).
-        // Linha da galeria não persiste hash: `md5: null` (o orchestrator
-        // só registra o md5 calculado, sem falhar).
-        if let Some(gen_id_str) = params.get("initGenerationId").and_then(|v| v.as_str()) {
-            let gen_uuid = Uuid::parse_str(gen_id_str).map_err(|_| {
-                ManagerError::InvalidRequest("initGenerationId must be a valid UUID".into())
-            })?;
-
-            let row: Option<(String,)> = sqlx::query_as(
-                "SELECT s3_key FROM generations WHERE id = $1 AND deleted_at IS NULL",
-            )
-            .bind(gen_uuid)
-            .fetch_optional(pool)
-            .await
-            .map_err(|e| ManagerError::Internal(format!("resolve init generation: {e}")))?;
-
+                    .map_err(|e| ManagerError::Internal(format!("resolve text encoder: {e}")))?;
             match row {
                 None => {
                     return Err(ManagerError::InvalidRequest(
-                        "initGenerationId not found".into(),
+                        "textEncoderModelId not found".into(),
                     ));
                 }
-                Some((s3_key,)) => {
-                    let resolved = ResolvedInitImage { s3_key, md5: None };
+                Some((s3_key, hash, kind, _arch)) => {
+                    if kind.as_deref() != Some("text_encoder") {
+                        return Err(ManagerError::InvalidRequest(format!(
+                            "textEncoderModelId must have kind='text_encoder', got {:?}",
+                            kind
+                        )));
+                    }
+                    let resolved = ResolvedTextEncoder { s3_key, md5: hash };
                     if let Ok(v) = serde_json::to_value(&resolved) {
-                        params["init_image_ref"] = v;
+                        params["text_encoder_ref"] = v;
                     }
                 }
             }
+            // Arch efetivo: o BFF envia baseModel já resolvido (generate:
+            // arch do custom ou base; train: effective_base). Normaliza "flux".
+            let effective = params
+                .get("baseModel")
+                .or_else(|| params.get("base_model"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let effective_norm = if effective == "flux" {
+                "flux-2-klein-4b"
+            } else {
+                effective
+            };
+            if effective_norm != "flux-2-klein-4b" {
+                return Err(ManagerError::InvalidRequest(
+                    "textEncoderModelId requires arch 'flux-2-klein-4b'".into(),
+                ));
+            }
         }
-    }
 
-    // Fluxo assíncrono (ADR-0025 D0): package_ref ausente + params.prepare
-    // (objeto opaco do BFF) → `preparing`; package_ref presente → `queued`
-    // (legado, retrocompat). Intenção async explícita porém malformada
-    // (package_ref:null sem prepare, ou prepare não-objeto) → 400: job
-    // ficaria eternamente `preparing` sem dono.
-    // Omissão total (sem package E sem prepare, como os callers legados e os
-    // testes de roteamento/generations) → `queued` legado (retrocompat total).
-    // Posição tardia de propósito: resoluções fail-fast (weights_id,
-    // orchestrator_hint, LoRA) mantêm precedência legada (404/400 próprios).
+        // initImageId/initGenerationId (img2img — S4): só no generate.
+        // Treino nunca envia esses campos — o guarda evita tocar jobs de
+        // treino que porventura carreguem chaves homônimas.
+        if req.mode == "generate" {
+            // Resolve initImageId (img2img — S4 feat/img2img).
+            // O BFF envia camelCase; o campo original é MANTIDO em params
+            // (rastreabilidade em generations.params — padrão da casa) e o
+            // resolvido é gravado snake_case em `init_image_ref`.
+            // Defesa em profundidade: BFF valida XOR, mas params pode vir de outra origem.
+            if params.get("initImageId").and_then(|v| v.as_str()).is_some()
+                && params
+                    .get("initGenerationId")
+                    .and_then(|v| v.as_str())
+                    .is_some()
+            {
+                return Err(ManagerError::InvalidRequest(
+                    "use either initImageId or initGenerationId, not both".into(),
+                ));
+            }
+            if let Some(init_id_str) = params.get("initImageId").and_then(|v| v.as_str()) {
+                let init_uuid = Uuid::parse_str(init_id_str).map_err(|_| {
+                    ManagerError::InvalidRequest("initImageId must be a valid UUID".into())
+                })?;
+
+                let row: Option<(String, String)> =
+                    sqlx::query_as("SELECT s3_key, md5 FROM generation_inputs WHERE id = $1")
+                        .bind(init_uuid)
+                        .fetch_optional(pool)
+                        .await
+                        .map_err(|e| ManagerError::Internal(format!("resolve init image: {e}")))?;
+
+                match row {
+                    None => {
+                        return Err(ManagerError::InvalidRequest("initImageId not found".into()));
+                    }
+                    Some((s3_key, md5)) => {
+                        // Marca consumo (best-effort: falha aqui não aborta o job).
+                        let _ = sqlx::query(
+                            "UPDATE generation_inputs SET used_at = now() WHERE id = $1",
+                        )
+                        .bind(init_uuid)
+                        .execute(pool)
+                        .await;
+                        let resolved = ResolvedInitImage {
+                            s3_key,
+                            md5: Some(md5),
+                        };
+                        if let Ok(v) = serde_json::to_value(&resolved) {
+                            params["init_image_ref"] = v;
+                        }
+                    }
+                }
+            }
+
+            // Resolve initGenerationId (img2img via galeria — S4 feat/img2img).
+            // Linha da galeria não persiste hash: `md5: null` (o orchestrator
+            // só registra o md5 calculado, sem falhar).
+            if let Some(gen_id_str) = params.get("initGenerationId").and_then(|v| v.as_str()) {
+                let gen_uuid = Uuid::parse_str(gen_id_str).map_err(|_| {
+                    ManagerError::InvalidRequest("initGenerationId must be a valid UUID".into())
+                })?;
+
+                let row: Option<(String,)> = sqlx::query_as(
+                    "SELECT s3_key FROM generations WHERE id = $1 AND deleted_at IS NULL",
+                )
+                .bind(gen_uuid)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| ManagerError::Internal(format!("resolve init generation: {e}")))?;
+
+                match row {
+                    None => {
+                        return Err(ManagerError::InvalidRequest(
+                            "initGenerationId not found".into(),
+                        ));
+                    }
+                    Some((s3_key,)) => {
+                        let resolved = ResolvedInitImage { s3_key, md5: None };
+                        if let Ok(v) = serde_json::to_value(&resolved) {
+                            params["init_image_ref"] = v;
+                        }
+                    }
+                }
+            }
+        } // fecha `if req.mode == "generate"` (img2img só no generate)
+    } // fecha `if diffusion generate|train`
+      // Fluxo assíncrono (ADR-0025 D0): package_ref ausente + params.prepare
+      // (objeto opaco do BFF) → `preparing`; package_ref presente → `queued`
+      // (legado, retrocompat). Intenção async explícita porém malformada
+      // (package_ref:null sem prepare, ou prepare não-objeto) → 400: job
+      // ficaria eternamente `preparing` sem dono.
+      // Omissão total (sem package E sem prepare, como os callers legados e os
+      // testes de roteamento/generations) → `queued` legado (retrocompat total).
+      // Posição tardia de propósito: resoluções fail-fast (weights_id,
+      // orchestrator_hint, LoRA) mantêm precedência legada (404/400 próprios).
     let has_package = req.package_ref.is_some()
         || params
             .get("package_ref")
@@ -2493,9 +2570,9 @@ fn validate_create_model(req: &CreateModelRequest) -> Result<(), ManagerError> {
         }
     }
     if let Some(ref kind) = req.kind {
-        if kind != "lora" && kind != "checkpoint" {
+        if kind != "lora" && kind != "checkpoint" && kind != "text_encoder" {
             return Err(ManagerError::InvalidRequest(format!(
-                "kind must be 'lora' or 'checkpoint', got '{}'",
+                "kind must be 'lora', 'checkpoint' or 'text_encoder', got '{}'",
                 kind
             )));
         }
@@ -2512,6 +2589,13 @@ fn validate_create_model(req: &CreateModelRequest) -> Result<(), ManagerError> {
     if req.kind.as_deref() == Some("checkpoint") && req.arch.is_none() {
         return Err(ManagerError::InvalidRequest(
             "checkpoint requires arch ('flux-2-klein-4b', 'sdxl', or 'sd15')".into(),
+        ));
+    }
+    // kind=text_encoder só admite arch flux-2-klein-4b (encoder swap do Qwen3).
+    if req.kind.as_deref() == Some("text_encoder") && req.arch.as_deref() != Some("flux-2-klein-4b")
+    {
+        return Err(ManagerError::InvalidRequest(
+            "text_encoder requires arch 'flux-2-klein-4b'".into(),
         ));
     }
     Ok(())
@@ -3740,6 +3824,11 @@ pub async fn dispatch_next(
         .and_then(|p| p.get("init_image_ref"))
         .cloned();
 
+    // Extrai text_encoder_ref resolvido do params (fatia feat/pesos-custom-flux2).
+    let text_encoder_ref = params
+        .as_ref()
+        .and_then(|p| p.get("text_encoder_ref"))
+        .cloned();
     // Resolve imagem do container: se engine for diffusion, usa DIFFUSION_TRAINER_IMAGE
     // (env explícito SEMPRE vence) ou herda tag de TRAINER_IMAGE (fallback p/ TrueNAS :gpu).
     let job_image = match engine.as_str() {
@@ -3782,6 +3871,12 @@ pub async fn dispatch_next(
     // snake_case: `init_image_ref: {s3_key, md5|null}` — casa com InitImageRef do orquestrador.
     if let Some(iir) = init_image_ref {
         dispatch_body["init_image_ref"] = iir;
+    }
+
+    // Adiciona text_encoder ao dispatch quando presente (fatia feat/pesos-custom-flux2).
+    // snake_case: `text_encoder: {s3_key, md5}` — casa com WeightRef do orquestrador.
+    if let Some(te) = text_encoder_ref {
+        dispatch_body["text_encoder"] = te;
     }
 
     let url = format!("{}/internal/dispatch", orch_endpoint);
@@ -4220,6 +4315,35 @@ mod tests {
             name: "a".repeat(256),
         };
         assert!(validate_update_model(&too_long).is_err());
+    }
+    #[test]
+    fn test_validate_create_model_text_encoder() {
+        // Helper: request base válido diffusion.
+        let base = |kind: Option<&str>, arch: Option<&str>| CreateModelRequest {
+            id: Uuid::new_v4(),
+            engine: "diffusion".to_string(),
+            name: "enc.safetensors".to_string(),
+            model: None,
+            s3_key: "models/diffusion/x/enc.safetensors".to_string(),
+            source: "upload".to_string(),
+            url: None,
+            hash: "d41d8cd98f00b204e9800998ecf8427e".to_string(),
+            bytes: 100,
+            job_id: None,
+            kind: kind.map(|s| s.to_string()),
+            arch: arch.map(|s| s.to_string()),
+        };
+        // text_encoder + flux-2 ⇒ ok.
+        assert!(
+            validate_create_model(&base(Some("text_encoder"), Some("flux-2-klein-4b"))).is_ok()
+        );
+        // text_encoder + sdxl/sd15/ausente ⇒ 400.
+        assert!(validate_create_model(&base(Some("text_encoder"), Some("sdxl"))).is_err());
+        assert!(validate_create_model(&base(Some("text_encoder"), Some("sd15"))).is_err());
+        assert!(validate_create_model(&base(Some("text_encoder"), None)).is_err());
+        // checkpoint segue exigindo arch (inalterado).
+        assert!(validate_create_model(&base(Some("checkpoint"), None)).is_err());
+        assert!(validate_create_model(&base(Some("checkpoint"), Some("sdxl"))).is_ok());
     }
 
     // ── Bug 009: classificação kind/arch de treino de difusão ─────────────

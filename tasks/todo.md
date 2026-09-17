@@ -68,7 +68,35 @@ andamento: harnesses de teste devem PANICAR se db != studio_test (guardia-mecani
 Branch segue: commits ee5c1f4..ecda78b+6. E2E pesado adiado p/ dataset re-importado ou
 sintético.
 
-## Achado CRÍTICO (2026-09-16, teste manual pesado) — empacotamento síncrono no request path
+## Fatia FECHADA (2026-09-17) — feat/jobs-async-submit: submit assíncrono (ADR-0025)
+12 commits (ee5c1f4..cab2cf5) sobre develop@4026fe3. **E2E ao vivo aprovado**: dataset
+sintético 865 imgs/4,6GB → submit via proxy :3000 = 202 `preparing` em 7-10ms (antes:
+500@30002ms); packaging em background com progresso `packaging_dataset`; reuso por
+fingerprint (<10s, dataset_versions sem duplicata); dedupe retorna mesmo jobId; apply de
+865 captions ok. Gates: cargo test --workspace 619p + test-db.sh verde; build/lint web
+0 errors novos; reviewer FECHAR em 3 rounds (bloqueantes manager+B1-B4 e dedupe/panic
+P4a todos resolvidos).
+- **Bugs extras caçados no teste pesado**: (1) `operation_timeout` S3 de 5s matava PUT
+  multi-GB (fix bd99e9c: 60min; fail-fast real = connect 2s + read 30s); (2) `infra/.env`
+  apontava `TRAINER_IMAGE=:gpu` em máquina CPU-only (corrigido local p/ `:local`, não
+  versionado); (3) migration 0015 mutada in-place quebrou checksum dev → índice virou
+  0016 (91b7e11).
+- **INCIDENTE**: worker rodou harness com DATABASE_URL do dev `studio` e limpou o dataset
+  do usuário `boys_big_dataset` (860 imgs — S3 intacto, usuário tem backup → RE-IMPORTAR
+  via UI). Guarda mecânica aplicada (b83d874: harnesses só aceitam `studio_test*`).
+- **SEGURANÇA**: token HuggingFace real (`hf_Gvud…`) exposto em env do container
+  orchestrator-local (origem: infra/.env, git-ignored). Recomendar rotação + mover p/
+  secret store se o host sair da LAN. NÃO commitado em lugar versionado (verificado).
+- **Pendente do usuário**: merge/push da branch (NUNCA sem ordem explícita); re-import do
+  backup; dataset `bigload_e2e` (c2aea0a4, 865 imgs, 4,6GB) deixado no dev p/ smoke —
+  apagar quando quiser.
+- **Dívidas registradas** (docs/dividas.md): diffusion sem fingerprint no build; watchdog
+  preparando ancorado em created_at; versão órfã pós-pânico reusável; progresso por
+  marcos sem % real; GC de prefixos S3 sem linha (>48h) é sweep manual.
+- **Escala p/ GPU real**: prep de 4,6GB levou ~4min serial→paralelo; com engine real o
+  gargalo vira o download do nó — AC-007 (`feat/node-content-cache`) já alinhado.
+
+## Achado ORIGINAL (2026-09-16, teste manual pesado) — empacotamento síncrono no request path
 Sintoma: dataset `boys_big_dataset` (d67a0a52, 860 imagens, ~3GB) → `POST /api/jobs/autolabel`
 via proxy Next retorna **500 em exatos 30002ms** e o job nunca inicia visível na UI.
 Causa-raiz (evidência em código + logs):
@@ -83,16 +111,7 @@ Causa-raiz (evidência em código + logs):
 - Drones: job manager 2206ec8e (autolabel, 00:38:37) está `done` sem linha em
   dataset_versions → forte indício de compensation (`compensate_package` apaga a linha
   L42) apagando pacote de job já aceito, ou dispatch sem versão. Investigar no round.
-Plano: spec do @architect RECEBIDA (ADR-0025 proposto, OpenAPI 0.29.0): submit vira
-aceite em <1 s (`202 {jobId, status: preparing}` — manager aloca id com `package_ref:null`
-+ `params.prepare`), preparação via `tokio::spawn` no BFF com tabela `job_prepares`
-(migration 0015), fingerprint p/ reuso de `dataset_versions`, novos
-`prepare-complete|fail` internos no manager + watchdog `preparing>60min`, otimizações
-obrigatórias (download `buffer_unordered(8)`, md5 streaming sem ler zip em RAM,
-compensation nunca apaga pacote referenciado). DAG P0–P6 (P4a‖P4b, P5‖P3).
-**Aguardando: aceite da ADR-0025 pelo usuário + execução de P0 (probe curl/DB, fecha
-hipótese H2 de DATABASE_URL divergente entre principal e manager).**
-Branch dedicada `feat/jobs-async-submit`; não misturar com `feat/web-design-tokens`.
+Plano: executado e FECHADO — ver seção "Fatia FECHADA" acima (ADR-0025, 12 commits).
 
 ## Plano encerrado — 2026-09-16: feat/geracao-galeria-fixes (de develop)
 Correções Geração/Galeria 001–009. TODAS as fatias implementadas, @reviewer em cada round,

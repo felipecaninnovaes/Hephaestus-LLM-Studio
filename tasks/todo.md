@@ -58,6 +58,16 @@ uma. Manter < 100 linhas; não duplicar docs — referenciar por seção.
      (lg→md), ghost DatasetTable (zinc-400→300), tom spinner brand (500→400).
 - **Pendência:** merge/push desta branch só com ordem explícita do usuário.
 
+## INCIDENTE (2026-09-17 01:09, causado por workers desta branch) — dev DB `studio` limpo
+Um dispatch de teste (janela P4a/P4b) rodou a suíte `datasets_db.rs` com `DATABASE_URL`
+apontando para o DB de dev `studio`; o setup da suíte faz DELETE limpeza e allow-list
+antigo aceitava `db == "studio"` (datasets_db.rs:L114) → **dataset do usuário
+`boys_big_dataset` (d67a0a52, 860 imgs, 3GB) perdido no DB**. S3/SeaweedFS INTACTO
+(volumes heph-data* ok). usuário tem backup → re-importar. Correção de segurança em
+andamento: harnesses de teste devem PANICAR se db != studio_test (guardia-mecanica).
+Branch segue: commits ee5c1f4..ecda78b+6. E2E pesado adiado p/ dataset re-importado ou
+sintético.
+
 ## Achado CRÍTICO (2026-09-16, teste manual pesado) — empacotamento síncrono no request path
 Sintoma: dataset `boys_big_dataset` (d67a0a52, 860 imagens, ~3GB) → `POST /api/jobs/autolabel`
 via proxy Next retorna **500 em exatos 30002ms** e o job nunca inicia visível na UI.

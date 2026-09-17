@@ -58,6 +58,32 @@ uma. Manter < 100 linhas; não duplicar docs — referenciar por seção.
      (lg→md), ghost DatasetTable (zinc-400→300), tom spinner brand (500→400).
 - **Pendência:** merge/push desta branch só com ordem explícita do usuário.
 
+## Achado CRÍTICO (2026-09-16, teste manual pesado) — empacotamento síncrono no request path
+Sintoma: dataset `boys_big_dataset` (d67a0a52, 860 imagens, ~3GB) → `POST /api/jobs/autolabel`
+via proxy Next retorna **500 em exatos 30002ms** e o job nunca inicia visível na UI.
+Causa-raiz (evidência em código + logs):
+- `submit_autolabel_job` (services/api-principal/src/jobs/handlers.rs:L1297) chama
+  `build_package_filtered` **dentro do request**: baixa as 860 imagens do SeaweedFS em loop
+  SERIAL (package.rs:L913), zipa ~3GB, lê o zip INTEIRO em RAM (`tokio::fs::read`, L441),
+  md5, e faz PUT de 3GB de volta ao S3 → minutos; o proxy do Next corta em 30s → 500.
+- MESMO padrão em TODOS os submits: L856, L1021 (yolo), L1451 (diffusion), L1799 — bug
+  geral de datasets grandes, não só autolabel.
+- Evidência colateral: `dataset_versions` com 0 linhas no DB `studio` (pacotes nunca
+  persistem/sobrevivem) e sqlx `slow statement` >1s por INSERT de image durante upload.
+- Drones: job manager 2206ec8e (autolabel, 00:38:37) está `done` sem linha em
+  dataset_versions → forte indício de compensation (`compensate_package` apaga a linha
+  L42) apagando pacote de job já aceito, ou dispatch sem versão. Investigar no round.
+Plano: spec do @architect RECEBIDA (ADR-0025 proposto, OpenAPI 0.29.0): submit vira
+aceite em <1 s (`202 {jobId, status: preparing}` — manager aloca id com `package_ref:null`
++ `params.prepare`), preparação via `tokio::spawn` no BFF com tabela `job_prepares`
+(migration 0015), fingerprint p/ reuso de `dataset_versions`, novos
+`prepare-complete|fail` internos no manager + watchdog `preparing>60min`, otimizações
+obrigatórias (download `buffer_unordered(8)`, md5 streaming sem ler zip em RAM,
+compensation nunca apaga pacote referenciado). DAG P0–P6 (P4a‖P4b, P5‖P3).
+**Aguardando: aceite da ADR-0025 pelo usuário + execução de P0 (probe curl/DB, fecha
+hipótese H2 de DATABASE_URL divergente entre principal e manager).**
+Branch dedicada `feat/jobs-async-submit`; não misturar com `feat/web-design-tokens`.
+
 ## Plano encerrado — 2026-09-16: feat/geracao-galeria-fixes (de develop)
 Correções Geração/Galeria 001–009. TODAS as fatias implementadas, @reviewer em cada round,
 gates verdes (cargo test 581p, pytest 101p, build+lint web 0E/204W baseline, compose ok):

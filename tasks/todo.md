@@ -238,5 +238,69 @@ inteiro + arquivos completos. Usar funil L0→L3: `AGENTS.md` →
   3. **Design**: imagem estática no boot do manager + roteamento automático p/
      nó GPU adoptado é armadilha (este incidente). Candidato @architect:
      resolução de imagem por capacidade do nó-alvo (:local→:gpu quando GPU).
-  4. `TRAINER_IMAGE` (yolo) segue `:local` no dev — job yolo roteado p/ Truenas
-     sofrerá a mesma guarda. Decisão de operador por sessão.
+   4. `TRAINER_IMAGE` (yolo) segue `:local` no dev — job yolo roteado p/ Truenas
+      sofrerá a mesma guarda. Decisão de operador por sessão.
+
+## Fatia FECHADA 2026-09-17 — Action Center + Web-UI (CorrigirImplementar.md)
+
+Evidências: @visao sobre 4 screenshots + inspeção CDP read-only ao vivo
+(10.15.10.3:3000) + leitura de código. Root-causes confirmados com números:
+
+- **AC-1 / WP-2 (drawer)** `ActionCenter.tsx`: painel expandido L1071 usa
+  `-mx-3 -mb-3` (bleed cortado por `overflow-hidden` do card → botões colados
+  na linha de status `w-1` L977, "O" de "Repetir Treino" clipped); linha de
+  ações L1275-1407 com botões artesanais fora do padrão (`py-1` h=24px misturado
+  com `min-h-[40px]` h=40px — medido ao vivo); header `size-10` L681 vs `size-8`
+  L691; flash branco no expand = `backdrop-blur-md` aninhado dentro de
+  `.glass-card` (backdrop-filter não compõe) + `transition-all duration-200`.
+- **WP-1 (página /jobs)** `app/(studio)/jobs/page.tsx`: "Limpar antigos"
+  DUPLICADO (L661-671 e L683-692, ambos `setCleanupOpen(true)`); 1º com
+  `min-h-[40px]` ad-hoc; botão "Centro de Atividades" redundante (sidebar já
+  expõe).
+- **WP-3 (geração desalinhada)** painel config `glass-card rounded-2xl` +
+  `lg:border-r` na MESMA borda → linha dupla no canto (classe vista ao vivo).
+- **WP-4 (select quebra UI)** `components/ui/Select.tsx` L395-403: menu
+  `absolute` (sem portal) com `w-max max-w-[440px]` dentro de container scroll
+  (`lg:overflow-y-auto` força `overflow-x:auto`) — medido: menu 440px vs painel
+  377px → scrollWidth 458 → scroll horizontal → labels truncadas ("ODELO",
+  "ROMPT") reproduzido ao vivo.
+
+DAG de solução (4 fatias ≤300 LOC, sequenciais por contrato de primitivo):
+
+1. **F1 — `Select.tsx` (portal + width)**: menu via `createPortal` com
+   posicionamento `fixed` a partir do rect do trigger (flip top/bottom já
+   existe); `menuWidth` default restringe a `min-w-full max-w-[--trigger-w]`.
+   Arquivos: `components/ui/Select.tsx` (+ teste). Gate: abrir NÓ DE EXECUÇÃO
+   em /geracao sem scroll horizontal.
+2. **F2 — `ActionCenter.tsx` (ação center 001)**: remover `-mx-3 -mb-3` do
+   painel expandido; substituir TODOS os botões artesanais da linha de ações e
+   header por `Button` (ghost/secondary sm, ícone-only `size-9`); trocar
+   `backdrop-blur-md` do painel por bg opaco; `break-all`→`break-words` no erro.
+   Arquivos: `ActionCenter.tsx` (pode splitar F2a/F2b se >300 LOC).
+3. **F3 — `jobs/page.tsx` (WP-1)**: deletar botão duplicado; remover
+   `min-h-[40px]`; avaliar remover "Centro de Atividades" da toolbar (redundante
+   com sidebar) — manter só se @reviewer julgar. Arquivos: `jobs/page.tsx`.
+4. **F4 — painel /geracao (WP-3)**: remover `lg:border-r` redundante do painel
+   que já é `glass-card` (ou trocar glass-card por border-r, decisão de
+   densidade). Arquivos: `app/(studio)/geracao/page.tsx` (ou componente dono).
+5. **F5 — verificação+fechamento**: `npm run build && npm run lint -w web`;
+   re-auditoria CDP (@ui-designer) das 4 telas; @reviewer; commits atômicos;
+   riscar itens de `tasks/impruvements/CorrigirImplementar.md`.
+
+Paralelismo: F1 ∥ F3 ∥ F4 (arquivos disjuntos); F2 dependeu de F1 p/
+re-auditoria. **EXECUTADO 2026-09-17** — 7 commits em
+`feat/ui-action-center-web-fixes` (nada comitado/push sem ordem):
+3 `chore` de reformat biome (Select/ActionCenter/jobs+GenPanel — os 4
+arquivos estavam em violação de formato no HEAD; gate `biome check` exige
+tabs) + 4 `fix` funcionais (97e5ea6 Select portal, c699427 ActionCenter,
+3178268 jobs duplicado, fba6d56 borda dupla). @reviewer: CORRIGIR-ANTES →
+C1 (autofocus searchable no 1º frame do portal) corrigido via @fixer; C2
+(36px vs 32px) = erro de conta do reviewer — root font é 14px
+(globals.css:79), evidência ao vivo bate com o código. Nits aceitos como
+follow-up: zIndex 50 do portal vs Drawer, branch `menuWidth:"fixed"` morta,
+footer Painel/Forja do ActionCenter ainda artesanal, 3 botões `min-h-[40px]`
+no painel de detalhe de /jobs (achado F3 fora de escopo). Verificação:
+build verde, `biome lint` 0 erros novos, CDP ao vivo: menu 342px==trigger e
+scrollWidth==clientWidth em /geracao; alturas 28/28/28 e header 32/32 no
+drawer; blur none; 1× "Limpar antigos". Itens riscados de
+CorrigirImplementar.md (Action center 001 + Web-UI ×4).

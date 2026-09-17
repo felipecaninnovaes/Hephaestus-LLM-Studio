@@ -16,7 +16,22 @@ const GERACAO_FORM_VERSION = 1;
 
 export type GeracaoModelMode = "preset" | "custom";
 export type GeracaoBaseModel = "flux-2-klein-4b" | "sdxl" | "sd15";
-export type GeracaoQuantization = "4bit" | "8bit" | "none";
+export type GeracaoQuantization = "none" | "2bit" | "4bit" | "6bit" | "8bit";
+export type GeracaoSampler =
+  | "default"
+  | "euler"
+  | "euler_a"
+  | "heun"
+  | "dpmpp_2m"
+  | "dpmpp_2m_karras"
+  | "dpmpp_2m_sde"
+  | "dpmpp_2m_sde_karras"
+  | "dpmpp_sde"
+  | "ddim";
+export interface GeracaoUpscale {
+  model: "4x";
+  scale: 2 | 4;
+}
 
 export interface GeracaoFormState {
   modelMode: GeracaoModelMode;
@@ -34,6 +49,8 @@ export interface GeracaoFormState {
   seed: number;
   isLockedSeed: boolean;
   quantization: GeracaoQuantization;
+  sampler: GeracaoSampler;
+  upscale: GeracaoUpscale | null;
   batchSize: number;
   /* img2img (fatia feat/img2img): força da imagem inicial (0.05..0.95).
      Persiste por ser preferência estável; os ids de init (upload efêmero
@@ -42,7 +59,24 @@ export interface GeracaoFormState {
 }
 
 const BASE_MODELS: readonly GeracaoBaseModel[] = ["flux-2-klein-4b", "sdxl", "sd15"];
-const QUANTIZATIONS: readonly GeracaoQuantization[] = ["4bit", "8bit", "none"];
+const QUANTIZATIONS: readonly GeracaoQuantization[] = ["none", "2bit", "4bit", "6bit", "8bit"];
+const SAMPLERS: readonly GeracaoSampler[] = [
+  "default",
+  "euler",
+  "euler_a",
+  "heun",
+  "dpmpp_2m",
+  "dpmpp_2m_karras",
+  "dpmpp_2m_sde",
+  "dpmpp_2m_sde_karras",
+  "dpmpp_sde",
+  "ddim",
+];
+const FLUX_SAMPLERS: readonly GeracaoSampler[] = ["default", "euler", "heun"];
+
+/* Listas canônicas p/ a UI (fonte única; labels vivem no componente). */
+export const GERACAO_SAMPLERS: readonly GeracaoSampler[] = SAMPLERS;
+export const GERACAO_FLUX_SAMPLERS: readonly GeracaoSampler[] = FLUX_SAMPLERS;
 
 export function randomGeracaoSeed(): number {
   return Math.floor(Math.random() * 10_000_000);
@@ -67,6 +101,8 @@ export function createDefaultGeracaoForm(): GeracaoFormState {
     seed: randomGeracaoSeed(),
     isLockedSeed: false,
     quantization: "4bit",
+    sampler: "default",
+    upscale: null,
     batchSize: 1,
     initStrength: 0.6,
   };
@@ -169,9 +205,18 @@ export function loadGeracaoForm(): PartialGeracaoForm | null {
     if (typeof s.quantization === "string" && (QUANTIZATIONS as readonly string[]).includes(s.quantization)) {
       out.quantization = s.quantization as GeracaoQuantization;
     }
-    if (s.batchSize !== undefined) out.batchSize = clampInt(s.batchSize, 1, 8, defaults.batchSize);
-    if (s.initStrength !== undefined) {
-      out.initStrength = clampFloat(s.initStrength, 0.05, 0.95, defaults.initStrength);
+    if (typeof s.sampler === "string" && (SAMPLERS as readonly string[]).includes(s.sampler)) {
+      out.sampler = s.sampler as GeracaoSampler;
+    }
+    if (s.upscale !== undefined) {
+      if (s.upscale === null) {
+        out.upscale = null;
+      } else if (typeof s.upscale === "object" && s.upscale !== null) {
+        const u = s.upscale as Record<string, unknown>;
+        if (u.model === "4x" && (u.scale === 2 || u.scale === 4)) {
+          out.upscale = { model: "4x", scale: u.scale };
+        }
+      }
     }
 
     return out;
@@ -280,6 +325,9 @@ export interface GenerationReproSnapshot {
   seed: number;
   batchSize: number;
   quantization: string | null;
+  sampler: string | null;
+  upscale: GeracaoUpscale | null;
+  hasSamplerResidue: boolean;
   distilled: boolean;
   loras: LoraRef[];
   lorasRaw: Record<string, unknown>[];
@@ -292,6 +340,8 @@ export const GERACAO_LORA_RESIDUE_WARNING =
   "A geração usava LoRA(s) que não podem ser reaplicados automaticamente; configs aplicadas sem LoRA";
 export const GERACAO_CUSTOM_RESIDUE_WARNING =
   "Checkpoint custom não reaplicável automaticamente — selecione o modelo em Modelos & Pesos";
+export const GERACAO_SAMPLER_RESIDUE_WARNING =
+  "Sampler não suportado pelo modelo atual — aplicado o padrão";
 
 /* LoRAs do snapshot: aceita os 3 shapes (modelId UUID reaplicável,
    path da engine, s3_key do manager) mantendo `scale`. Só `modelId`
@@ -347,7 +397,20 @@ export function generationReproSnapshot(gen: Generation): GenerationReproSnapsho
     ? rawBase
     : ((arch !== null && (BASE_MODELS as readonly string[]).includes(arch)) ? arch : null);
   const quantRaw = nonEmptyString(firstParam(params, ["quantization"]), 16);
+  const samplerRaw = nonEmptyString(firstParam(params, ["sampler"]), 32);
+  const sampler = samplerRaw !== null
+    && (SAMPLERS as readonly string[]).includes(samplerRaw)
+    ? samplerRaw
+    : null;
   const { loras, lorasRaw, hasLoraResidue } = parseSnapshotLoras(firstParam(params, ["loras"]));
+  const upscaleRaw = firstParam(params, ["upscale"]);
+  let upscale: GeracaoUpscale | null = null;
+  if (upscaleRaw !== undefined && upscaleRaw !== null && typeof upscaleRaw === "object") {
+    const u = upscaleRaw as Record<string, unknown>;
+    if (u.model === "4x" && (u.scale === 2 || u.scale === 4)) {
+      upscale = { model: "4x", scale: u.scale };
+    }
+  }
   return {
     baseModel,
     customModelId: customRaw,
@@ -363,6 +426,9 @@ export function generationReproSnapshot(gen: Generation): GenerationReproSnapsho
     seed: numOr(firstParam(params, ["seed"]), gen.seed),
     batchSize: numOr(firstParam(params, ["batchSize", "batch_size"]), 1),
     quantization: quantRaw,
+    sampler,
+    upscale,
+    hasSamplerResidue: false,
     distilled: typeof distilledRaw === "boolean" ? distilledRaw : false,
     loras,
     lorasRaw,
@@ -376,7 +442,6 @@ export function generationReproSnapshot(gen: Generation): GenerationReproSnapsho
 export function generationConfigsJson(gen: Generation): string {
   return JSON.stringify(generationReproSnapshot(gen), null, 2);
 }
-
 /* Constrói GeracaoFormState a partir de uma geração, com o MESMO
    clamp/validação da hidratação (loadGeracaoForm). Seed travada p/
    reproduzir exatamente (usuário pode destravar no panel).
@@ -401,12 +466,28 @@ export function geracaoFormFromGeneration(gen: Generation): GeracaoFormFromGener
   const warnings: string[] = [];
   if (snap.hasLoraResidue) warnings.push(GERACAO_LORA_RESIDUE_WARNING);
   if (snap.hasCustomResidue) warnings.push(GERACAO_CUSTOM_RESIDUE_WARNING);
+  const formBaseModel = snap.baseModel !== null
+    && (BASE_MODELS as readonly string[]).includes(snap.baseModel)
+    ? (snap.baseModel as GeracaoBaseModel)
+    : defaults.baseModel;
+  /* Sampler faz round-trip; se o modelo-alvo não o suportar (flux aceita
+     só default/euler/heun), volta ao padrão com aviso honesto de resíduo. */
+  let sampler: GeracaoSampler = defaults.sampler;
+  if (snap.sampler !== null
+    && (SAMPLERS as readonly string[]).includes(snap.sampler)) {
+    const candidate = snap.sampler as GeracaoSampler;
+    const supported = formBaseModel === "flux-2-klein-4b"
+      ? (FLUX_SAMPLERS as readonly string[]).includes(candidate)
+      : true;
+    if (supported) {
+      sampler = candidate;
+    } else {
+      warnings.push(GERACAO_SAMPLER_RESIDUE_WARNING);
+    }
+  }
   const form: GeracaoFormState = {
     modelMode: customModelId.length > 0 ? "custom" : "preset",
-    baseModel: snap.baseModel !== null
-      && (BASE_MODELS as readonly string[]).includes(snap.baseModel)
-      ? (snap.baseModel as GeracaoBaseModel)
-      : defaults.baseModel,
+    baseModel: formBaseModel,
     customModelId,
     distilled: typeof distilledRaw === "boolean" ? distilledRaw : defaults.distilled,
     loras: snap.loras,
@@ -423,6 +504,8 @@ export function geracaoFormFromGeneration(gen: Generation): GeracaoFormFromGener
       && (QUANTIZATIONS as readonly string[]).includes(quantized)
       ? (quantized as GeracaoQuantization)
       : defaults.quantization,
+    sampler,
+    upscale: snap.upscale,
     batchSize: clampInt(snap.batchSize, 1, 8, defaults.batchSize),
     /* img2img: aplicar configs de uma geração nunca define origem init
        (id efêmero) — força volta ao padrão p/ o próximo uso. */

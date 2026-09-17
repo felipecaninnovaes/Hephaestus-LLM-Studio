@@ -32,16 +32,20 @@ import {
 import { useJobTelemetry } from "@/hooks/useJobTelemetry";
 import { ApiError } from "@/lib/api";
 import {
-	clearGeracaoForm,
-	consumeGeracaoInitSource,
-	createDefaultGeracaoForm,
-	GERACAO_APPLY_FORM_EVENT,
-	GERACAO_INIT_SOURCE_EVENT,
-	GERACAO_INIT_SOURCE_KEY,
-	loadGeracaoForm,
-	notifyGeracaoCompleted,
-	type PartialGeracaoForm,
-	saveGeracaoForm,
+  clearGeracaoForm,
+  consumeGeracaoInitSource,
+  createDefaultGeracaoForm,
+  GERACAO_APPLY_FORM_EVENT,
+  GERACAO_FLUX_SAMPLERS,
+  GERACAO_INIT_SOURCE_EVENT,
+  GERACAO_INIT_SOURCE_KEY,
+  GERACAO_SAMPLERS,
+  loadGeracaoForm,
+  notifyGeracaoCompleted,
+  saveGeracaoForm,
+  type GeracaoQuantization,
+  type GeracaoSampler,
+  type PartialGeracaoForm,
 } from "@/lib/geracao-storage";
 import { getGenerationDataUrl } from "@/lib/generations";
 import { getJob, getJobArtifacts, listJobs } from "@/lib/jobs";
@@ -77,6 +81,8 @@ interface GeneratedImageItem {
 	steps: number;
 	guidanceScale: number;
 	quantization: string;
+	sampler?: string;
+	upscale?: { model: "4x"; scale: 2 | 4 } | null;
 	distilled?: boolean;
 	loras: LoraRef[];
 	width: number;
@@ -105,30 +111,47 @@ const BASE_MODEL_OPTIONS: SelectOption<string>[] = [
 	},
 ];
 
-const ASPECT_RATIO_PRESETS = [
-	{ label: "1:1", width: 1024, height: 1024 },
-	{ label: "16:9", width: 1344, height: 768 },
-	{ label: "9:16", width: 768, height: 1344 },
-	{ label: "4:3", width: 1152, height: 864 },
-	{ label: "Eco 512", width: 512, height: 512 },
-];
+const SQUARE_RESOLUTION_OPTIONS = [256, 512, 768, 1024, 1280, 1328, 1536, 2048];
+
+const SAMPLER_LABELS: Record<string, string> = {
+  default: "Padrão",
+  euler: "Euler",
+  euler_a: "Euler A",
+  heun: "Heun",
+  dpmpp_2m: "DPM++ 2M",
+  dpmpp_2m_karras: "DPM++ 2M Karras",
+  dpmpp_2m_sde: "DPM++ 2M SDE",
+  dpmpp_2m_sde_karras: "DPM++ 2M SDE Karras",
+  dpmpp_sde: "DPM SDE",
+  ddim: "DDIM",
+};
 
 const QUANTIZATION_OPTIONS: SelectOption<string>[] = [
-	{
-		value: "4bit",
-		label: "4-bit NF4",
-		description: "~8–10 GB VRAM",
-	},
-	{
-		value: "8bit",
-		label: "8-bit BnB",
-		description: "~12–14 GB VRAM",
-	},
-	{
-		value: "none",
-		label: "FP16",
-		description: "~18+ GB VRAM",
-	},
+  {
+    value: "4bit",
+    label: "4-bit NF4",
+    description: "~8–10 GB VRAM",
+  },
+  {
+    value: "6bit",
+    label: "6-bit (TorchAo)",
+    description: "~10 GB VRAM",
+  },
+  {
+    value: "8bit",
+    label: "8-bit BnB",
+    description: "~12–14 GB VRAM",
+  },
+  {
+    value: "2bit",
+    label: "2-bit (TorchAo)",
+    description: "~7 GB VRAM — degradação visível, p/ testes",
+  },
+  {
+    value: "none",
+    label: "FP16",
+    description: "~18+ GB VRAM",
+  },
 ];
 
 /* ── img2img (fatia feat/img2img, S5) ── */
@@ -170,9 +193,10 @@ export default function GenerationPanel() {
 	const [guidanceScale, setGuidanceScale] = useState(1.0);
 	const [seed, setSeed] = useState(() => Math.floor(Math.random() * 1000000));
 	const [isLockedSeed, setIsLockedSeed] = useState(false);
-	const [quantization, setQuantization] = useState<"4bit" | "8bit" | "none">(
-		"4bit",
-	);
+	const [quantization, setQuantization] = useState<GeracaoQuantization>("4bit");
+	const [sampler, setSampler] = useState<GeracaoSampler>("default");
+	const [upscaleEnabled, setUpscaleEnabled] = useState(false);
+	const [upscaleScale, setUpscaleScale] = useState<2 | 4>(4);
 	const [batchSize, setBatchSize] = useState(1);
 	const [selectedOrchestratorId, setSelectedOrchestratorId] = useState<
 		string | null
@@ -287,6 +311,11 @@ export default function GenerationPanel() {
 		if (stored.seed !== undefined) setSeed(stored.seed);
 		if (stored.isLockedSeed !== undefined) setIsLockedSeed(stored.isLockedSeed);
 		if (stored.quantization !== undefined) setQuantization(stored.quantization);
+		if (stored.sampler !== undefined) setSampler(stored.sampler);
+		if (stored.upscale !== undefined) {
+			setUpscaleEnabled(stored.upscale !== null);
+			if (stored.upscale !== null) setUpscaleScale(stored.upscale.scale);
+		}
 		if (stored.batchSize !== undefined) setBatchSize(stored.batchSize);
 		if (stored.initStrength !== undefined)
 			setInitStrength(clampInitStrength(stored.initStrength));
@@ -338,6 +367,8 @@ export default function GenerationPanel() {
 				seed,
 				isLockedSeed,
 				quantization,
+				sampler,
+				upscale: upscaleEnabled ? { model: "4x", scale: upscaleScale } : null,
 				batchSize,
 				initStrength,
 			});
@@ -361,6 +392,9 @@ export default function GenerationPanel() {
 		seed,
 		isLockedSeed,
 		quantization,
+		sampler,
+		upscaleEnabled,
+		upscaleScale,
 		batchSize,
 		initStrength,
 	]);
@@ -370,6 +404,12 @@ export default function GenerationPanel() {
 		(modelVal: string) => {
 			const b = modelVal as "flux-2-klein-4b" | "sdxl" | "sd15";
 			setBaseModel(b);
+			/* Flux aceita só default/euler/heun: sampler sd-only volta ao padrão. */
+			setSampler((prev) =>
+				b === "flux-2-klein-4b"
+					? ((GERACAO_FLUX_SAMPLERS as readonly string[]).includes(prev) ? prev : "default")
+					: prev,
+			);
 			if (b === "flux-2-klein-4b") {
 				setGuidanceScale(distilled ? 1.0 : 3.5);
 				setSteps(distilled ? 4 : 20);
@@ -545,6 +585,9 @@ export default function GenerationPanel() {
 		setSeed(defaults.seed);
 		setIsLockedSeed(defaults.isLockedSeed);
 		setQuantization(defaults.quantization);
+		setSampler(defaults.sampler);
+		setUpscaleEnabled(defaults.upscale !== null);
+		if (defaults.upscale !== null) setUpscaleScale(defaults.upscale.scale);
 		setBatchSize(defaults.batchSize);
 		setInitStrength(defaults.initStrength);
 		/* Init ativo (upload/galeria) é estado efêmero de sessão — o reset
@@ -581,8 +624,9 @@ export default function GenerationPanel() {
 				guidanceScale,
 				seed: effectiveSeed,
 				quantization,
+				sampler,
+				upscale: upscaleEnabled ? { model: "4x", scale: upscaleScale } : null,
 				distilled: isDistilledActive,
-				batchSize,
 				loras:
 					loras.filter((l) => l.modelId).length > 0
 						? loras.filter((l) => l.modelId)
@@ -618,6 +662,8 @@ export default function GenerationPanel() {
 				steps,
 				guidanceScale,
 				quantization,
+				sampler,
+				upscale: upscaleEnabled ? { model: "4x", scale: upscaleScale } : null,
 				distilled: isDistilledActive,
 				loras: loras.filter((l) => l.modelId),
 				width,
@@ -665,8 +711,10 @@ export default function GenerationPanel() {
 			guidanceScale,
 			seed,
 			quantization,
+			sampler,
+			upscaleEnabled,
+			upscaleScale,
 			distilled,
-			batchSize,
 			loras,
 			selectedOrchestratorId,
 			isLockedSeed,
@@ -731,7 +779,8 @@ export default function GenerationPanel() {
 							steps: params.steps,
 							guidanceScale: params.guidanceScale,
 							quantization: params.quantization,
-							distilled: params.distilled,
+							sampler: params.sampler,
+							upscale: params.upscale ?? null,
 							loras: params.loras,
 							width: params.width,
 							height: params.height,
@@ -770,7 +819,8 @@ export default function GenerationPanel() {
 								steps: params.steps,
 								guidanceScale: params.guidanceScale,
 								quantization: params.quantization,
-								distilled: params.distilled,
+								sampler: params.sampler,
+								upscale: params.upscale ?? null,
 								loras: params.loras,
 								width: params.width,
 								height: params.height,
@@ -1018,7 +1068,7 @@ export default function GenerationPanel() {
 						</div>
 					)}
 
-					{/* ══ Resolução — SegmentedControl canônico ══ */}
+					{/* ══ Resolução — quadrada 256..2048 (Select com portal; sem overflow) ══ */}
 					<div className="space-y-2">
 						<div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
 							<span className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-300">
@@ -1028,18 +1078,21 @@ export default function GenerationPanel() {
 								{width}×{height}
 							</span>
 						</div>
-						<SegmentedControl
-							options={ASPECT_RATIO_PRESETS.map((p) => ({
-								id: `${p.width}x${p.height}`,
-								label: p.label,
+						<Select
+							options={SQUARE_RESOLUTION_OPTIONS.map((r) => ({
+								value: String(r),
+								label: `${r}×${r}`,
 							}))}
-							value={`${width}x${height}`}
+							value={width === height && SQUARE_RESOLUTION_OPTIONS.includes(width) ? String(width) : ""}
 							onChange={(v) => {
-								const [w, h] = v.split("x").map(Number);
-								setWidth(w);
-								setHeight(h);
+								const r = Number(v);
+								setWidth(r);
+								setHeight(r);
 							}}
-							ariaLabel="Resolução"
+							disabled={isBusy}
+							placeholder={width === height ? `${width}×${height}` : "Custom (preset)"}
+							size="sm"
+							fontMono
 						/>
 					</div>
 
@@ -1108,6 +1161,24 @@ export default function GenerationPanel() {
 						</div>
 					</div>
 
+					{/* ══ Sampler — opções do arch ativo ══ */}
+					<div className="space-y-1.5">
+						<span className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-300">
+							Sampler
+						</span>
+						<Select
+							options={(modelMode === "custom" || baseModel !== "flux-2-klein-4b" ? GERACAO_SAMPLERS : GERACAO_FLUX_SAMPLERS).map((s) => ({
+								value: s,
+								label: SAMPLER_LABELS[s] ?? s,
+							}))}
+							value={sampler}
+							onChange={(v) => setSampler(v as GeracaoSampler)}
+							disabled={isBusy}
+							size="sm"
+							fontMono
+						/>
+					</div>
+
 					{/* ══ Quantização ══ */}
 					<div className="space-y-1.5">
 						<span className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-300">
@@ -1116,12 +1187,46 @@ export default function GenerationPanel() {
 						<Select
 							options={QUANTIZATION_OPTIONS}
 							value={quantization}
-							onChange={(v) => setQuantization(v as "4bit" | "8bit" | "none")}
+							onChange={(v) => setQuantization(v as GeracaoQuantization)}
 							disabled={isBusy}
 							size="sm"
 						/>
 					</div>
 
+					{/* ══ Upscale (Real-ESRGAN) ══ */}
+					<div className="space-y-2 rounded-xl border border-white/8 bg-white/[0.02] p-3">
+						<label htmlFor="gen-upscale-toggle" className="flex items-center gap-2 cursor-pointer select-none">
+							<input
+								id="gen-upscale-toggle"
+								type="checkbox"
+								checked={upscaleEnabled}
+								onChange={(e) => setUpscaleEnabled(e.target.checked)}
+								disabled={isBusy}
+								className="size-4 rounded border-white/20 bg-white/5 text-brand-500 focus:ring-brand-500/30"
+							/>
+							<span className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-300">
+								Upscale (Real-ESRGAN)
+							</span>
+						</label>
+						{upscaleEnabled && (
+							<div className="space-y-1.5">
+								<span className="font-mono text-3xs text-zinc-400">
+									Modelo 4x · escala de saída
+								</span>
+								<Select
+									options={[
+										{ value: "2", label: "2x" },
+										{ value: "4", label: "4x" },
+									]}
+									value={String(upscaleScale)}
+									onChange={(v) => setUpscaleScale(Number(v) === 2 ? 2 : 4)}
+									disabled={isBusy}
+									size="sm"
+									fontMono
+								/>
+							</div>
+						)}
+					</div>
 				{/* ══ Batch Size — Slider canônico ══ */}
 				<Slider
 					label="Quantidade de imagens"
@@ -1416,6 +1521,16 @@ export default function GenerationPanel() {
 								<span className="font-mono text-4xs px-1.5 py-0.5 rounded bg-zinc-900 border border-white/5 text-zinc-400">
 									{currentDisplayItem.quantization}
 								</span>
+								{currentDisplayItem.sampler && currentDisplayItem.sampler !== "default" && (
+									<span className="font-mono text-4xs px-1.5 py-0.5 rounded bg-zinc-900 border border-white/5 text-zinc-400">
+										{currentDisplayItem.sampler}
+									</span>
+								)}
+								{currentDisplayItem.upscale && (
+									<span className="font-mono text-4xs px-1.5 py-0.5 rounded bg-brand-500/10 border border-brand-500/20 text-brand-300">
+										upscale {currentDisplayItem.upscale.scale}x
+									</span>
+								)}
 								{currentDisplayItem.loras.length > 0 && (
 									<span className="font-mono text-4xs px-1.5 py-0.5 rounded bg-brand-500/10 border border-brand-500/20 text-brand-300">
 										{currentDisplayItem.loras.length} LoRA(s)

@@ -60,7 +60,9 @@ export function startDiffusionJob(params: {
   lrScheduler?: "cosine" | "linear" | "constant" | "constant_with_warmup";
   lrWarmupSteps?: number;
   mixedPrecision?: "fp16" | "bf16" | "no";
-  quantization?: "none" | "4bit" | "8bit";
+  quantization?: "none" | "2bit" | "4bit" | "6bit" | "8bit";
+  controlDatasetId?: string | null;
+  cacheTextEmbeddings?: boolean;
   enableBucket?: boolean;
   checkpointInterval?: number;
   epochOffset?: number;
@@ -83,6 +85,8 @@ export function startDiffusionJob(params: {
     enableBucket,
     checkpointInterval,
     epochOffset,
+    controlDatasetId,
+    cacheTextEmbeddings,
     ...rest
   } = params;
   const body: Record<string, unknown> = { ...rest };
@@ -95,11 +99,10 @@ export function startDiffusionJob(params: {
   if (optimizer) body.optimizer = optimizer;
   if (lrScheduler) body.lrScheduler = lrScheduler;
   if (lrWarmupSteps != null) body.lrWarmupSteps = lrWarmupSteps;
-  if (mixedPrecision) body.mixedPrecision = mixedPrecision;
-  if (quantization) body.quantization = quantization;
-  if (enableBucket != null) body.enableBucket = enableBucket;
-  if (checkpointInterval != null) body.checkpointInterval = checkpointInterval;
   if (epochOffset != null) body.epochOffset = epochOffset;
+  if (controlDatasetId) body.controlDatasetId = controlDatasetId;
+  if (cacheTextEmbeddings != null) body.cacheTextEmbeddings = cacheTextEmbeddings;
+  if (checkpointInterval != null) body.checkpointInterval = checkpointInterval;
   if (samplePrompt?.trim()) {
     body.samplePrompt = samplePrompt.trim();
     if (sampleInterval != null) body.sampleInterval = sampleInterval;

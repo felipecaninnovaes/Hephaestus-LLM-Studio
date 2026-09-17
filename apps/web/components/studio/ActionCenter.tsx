@@ -405,6 +405,15 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
 						quantization:
 							((job.params.quantization ||
 								(job.params as any).quantization) as any) || "4bit",
+						controlDatasetId:
+							(job.params.controlDatasetId ??
+								(job.params as any).control_dataset_id ??
+								"") as string,
+						cacheTextEmbeddings: Boolean(
+							job.params.cacheTextEmbeddings ??
+								(job.params as any).cache_text_embeddings ??
+								false,
+						),
 						checkpointInterval:
 							typeof job.params.checkpointInterval === "number"
 								? job.params.checkpointInterval
@@ -457,23 +466,23 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
 											"number"
 										? (job.params as any).gradient_accumulation_steps
 										: 1,
-							optimizer:
-								((job.params.optimizer ||
-									(job.params as any).optimizer) as any) || "adamw8bit",
-							lrScheduler:
-								((job.params.lrScheduler ||
-									(job.params as any).lr_scheduler) as any) || "cosine",
-							mixedPrecision:
-								((job.params.mixedPrecision ||
-									(job.params as any).mixed_precision) as any) || "fp16",
 							quantization:
 								((job.params.quantization ||
-									(job.params as any).quantization) as any) || "4bit",
+									(job.params as unknown as Record<string, unknown>).quantization) as string) || "4bit",
+							controlDatasetId:
+								(job.params.controlDatasetId ??
+									(job.params as unknown as Record<string, unknown>).control_dataset_id ??
+									"") as string,
+							cacheTextEmbeddings: Boolean(
+								job.params.cacheTextEmbeddings ??
+									(job.params as unknown as Record<string, unknown>).cache_text_embeddings ??
+									false,
+							),
 							checkpointInterval:
 								typeof job.params.checkpointInterval === "number"
 									? job.params.checkpointInterval
-									: typeof (job.params as any).checkpoint_interval === "number"
-										? (job.params as any).checkpoint_interval
+									: typeof (job.params as unknown as Record<string, unknown>).checkpoint_interval === "number"
+										? (job.params as unknown as Record<string, unknown>).checkpoint_interval
 										: 1,
 							epochs:
 								typeof job.params.epochs === "number"

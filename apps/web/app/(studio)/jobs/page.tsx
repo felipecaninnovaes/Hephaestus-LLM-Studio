@@ -533,6 +533,15 @@ function JobsPageContent() {
 						quantization:
 							((job.params.quantization ||
 								(job.params as any).quantization) as any) || "4bit",
+						controlDatasetId:
+							(job.params.controlDatasetId ??
+								(job.params as any).control_dataset_id ??
+								"") as string,
+						cacheTextEmbeddings: Boolean(
+							job.params.cacheTextEmbeddings ??
+								(job.params as any).cache_text_embeddings ??
+								false,
+						),
 						checkpointInterval:
 							typeof job.params.checkpointInterval === "number"
 								? job.params.checkpointInterval
@@ -596,6 +605,15 @@ function JobsPageContent() {
 							quantization:
 								((job.params.quantization ||
 									(job.params as any).quantization) as any) || "4bit",
+							controlDatasetId:
+								(job.params.controlDatasetId ??
+									(job.params as any).control_dataset_id ??
+									"") as string,
+							cacheTextEmbeddings: Boolean(
+								job.params.cacheTextEmbeddings ??
+									(job.params as any).cache_text_embeddings ??
+									false,
+							),
 							checkpointInterval:
 								typeof job.params.checkpointInterval === "number"
 									? job.params.checkpointInterval

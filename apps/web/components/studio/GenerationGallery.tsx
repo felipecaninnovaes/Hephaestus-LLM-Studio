@@ -882,6 +882,16 @@ export default function GenerationGallery() {
               {lightboxItem.params?.quantization ? (
                 <MetaRow label="Quantização" value={String(lightboxItem.params.quantization)} />
               ) : null}
+              {lightboxItem.params?.sampler ? (
+                <MetaRow label="Sampler" value={String(lightboxItem.params.sampler)} mono />
+              ) : null}
+              {lightboxItem.params?.upscale != null && typeof lightboxItem.params.upscale === "object" && "scale" in lightboxItem.params.upscale ? (
+                <MetaRow
+                  label="Upscale"
+                  value={`Real-ESRGAN 4x · ${String(lightboxItem.params.upscale.scale)}x`}
+                  mono
+                />
+              ) : null}
               {lightboxItem.params?.distilled != null ? (
                 <MetaRow label="Destilado" value={lightboxItem.params.distilled ? "Sim" : "Não"} />
               ) : null}

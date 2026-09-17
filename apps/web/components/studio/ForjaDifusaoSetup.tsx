@@ -57,15 +57,15 @@ export function estimateDiffusionVramGb(
   resolution: number = 1024,
   optimizer: "adamw8bit" | "adamw" | "prodigy" = "adamw8bit",
   mixedPrecision: "fp16" | "bf16" | "no" = "fp16",
-  quantization: "none" | "4bit" | "8bit" = "4bit",
+  quantization: "none" | "2bit" | "4bit" | "6bit" | "8bit" = "4bit",
 ): number {
   let baseGb = 12.0;
   if (baseModel === "sd15") {
-    baseGb = quantization === "4bit" ? 6.0 : quantization === "8bit" ? 7.0 : 8.0;
+    baseGb = quantization === "2bit" ? 5.2 : quantization === "4bit" ? 6.0 : quantization === "6bit" ? 6.5 : quantization === "8bit" ? 7.0 : 8.0;
   } else if (baseModel === "sdxl") {
-    baseGb = quantization === "4bit" ? 9.5 : quantization === "8bit" ? 11.0 : 12.0;
+    baseGb = quantization === "2bit" ? 8.6 : quantization === "4bit" ? 9.5 : quantization === "6bit" ? 10.2 : quantization === "8bit" ? 11.0 : 12.0;
   } else if (baseModel === "flux") {
-    baseGb = quantization === "4bit" ? 10.0 : quantization === "8bit" ? 14.5 : 22.0;
+    baseGb = quantization === "2bit" ? 9.0 : quantization === "4bit" ? 10.0 : quantization === "6bit" ? 12.2 : quantization === "8bit" ? 14.5 : 22.0;
   }
 
   // Ajuste por resolução relativa a 1024
@@ -149,8 +149,14 @@ export default function ForjaDifusaoSetup({
   const [mixedPrecision, setMixedPrecision] = useState<"fp16" | "bf16" | "no">(
     initialPreset?.mixedPrecision ?? "fp16"
   );
-  const [quantization, setQuantization] = useState<"none" | "4bit" | "8bit">(
+  const [quantization, setQuantization] = useState<"none" | "2bit" | "4bit" | "6bit" | "8bit">(
     initialPreset?.quantization ?? "4bit"
+  );
+  const [cacheTextEmbeddings, setCacheTextEmbeddings] = useState(
+    initialPreset?.cacheTextEmbeddings ?? false
+  );
+  const [controlDatasetId, setControlDatasetId] = useState(
+    initialPreset?.controlDatasetId ?? ""
   );
   const [enableBucket, setEnableBucket] = useState(initialPreset?.enableBucket ?? true);
   const [checkpointInterval, setCheckpointInterval] = useState<number>(
@@ -272,6 +278,8 @@ export default function ForjaDifusaoSetup({
     if (preset.lrWarmupSteps !== undefined) setLrWarmupSteps(preset.lrWarmupSteps);
     if (preset.mixedPrecision !== undefined) setMixedPrecision(preset.mixedPrecision);
     if (preset.quantization !== undefined) setQuantization(preset.quantization);
+    if (preset.controlDatasetId !== undefined) setControlDatasetId(preset.controlDatasetId ?? "");
+    if (preset.cacheTextEmbeddings !== undefined) setCacheTextEmbeddings(preset.cacheTextEmbeddings);
     if (preset.enableBucket !== undefined) setEnableBucket(preset.enableBucket);
     if (preset.checkpointInterval !== undefined) setCheckpointInterval(preset.checkpointInterval);
     if (preset.epochOffset !== undefined) setEpochOffset(preset.epochOffset);
@@ -302,9 +310,10 @@ export default function ForjaDifusaoSetup({
       lrWarmupSteps,
       mixedPrecision,
       quantization,
+      controlDatasetId: controlDatasetId || undefined,
+      cacheTextEmbeddings,
       enableBucket,
       checkpointInterval,
-      epochOffset: epochOffset > 0 ? epochOffset : undefined,
       enableSamples,
       samplePrompt,
       sampleInterval,
@@ -393,6 +402,8 @@ export default function ForjaDifusaoSetup({
                   : lrWarmupSteps,
           mixedPrecision: lora.mixed_precision || parsed.mixedPrecision || parsed.mixed_precision || mixedPrecision,
           quantization: lora.quantization || parsed.quantization || quantization,
+          controlDatasetId: lora.control_dataset_path != null ? undefined : (parsed.controlDatasetId ?? parsed.control_dataset_id ?? controlDatasetId),
+          cacheTextEmbeddings: typeof lora.cache_text_embeddings === "boolean" ? lora.cache_text_embeddings : (typeof parsed.cacheTextEmbeddings === "boolean" ? parsed.cacheTextEmbeddings : cacheTextEmbeddings),
           enableBucket:
             typeof lora.enable_bucket === "boolean"
               ? lora.enable_bucket
@@ -603,9 +614,14 @@ export default function ForjaDifusaoSetup({
 
   const resolutionOptions = useMemo<SelectOption<number>[]>(
     () => [
+      { value: 256, label: "256 x 256 (Miniatura / Menor VRAM)" },
       { value: 512, label: "512 x 512 (Padrão SD 1.5 / Menor VRAM)" },
       { value: 768, label: "768 x 768 (Intermediário)" },
       { value: 1024, label: "1024 x 1024 (Padrão SDXL / FLUX)" },
+      { value: 1280, label: "1280 x 1280 (Alta fidelidade)" },
+      { value: 1328, label: "1328 x 1328 (Panorâmica SDXL)" },
+      { value: 1536, label: "1536 x 1536 (Ultra detalhe)" },
+      { value: 2048, label: "2048 x 2048 (Máximo — Alta VRAM)" },
     ],
     [],
   );
@@ -650,9 +666,11 @@ export default function ForjaDifusaoSetup({
     [],
   );
 
-  const quantizationOptions = useMemo<SelectOption<"none" | "4bit" | "8bit">[]>(
+  const quantizationOptions = useMemo<SelectOption<"none" | "2bit" | "4bit" | "6bit" | "8bit">[]>(
     () => [
+      { value: "2bit", label: "2-bit TorchAo (Mínima VRAM — degradação visível, p/ testes)" },
       { value: "4bit", label: "4-bit NF4 (BitsAndBytes — Recomendado p/ GPUs ≤ 12GB)" },
+      { value: "6bit", label: "6-bit TorchAo (Intermediário — ~10 GB VRAM)" },
       { value: "8bit", label: "8-bit BitsAndBytes (Equilíbrio p/ GPUs ≥ 16GB)" },
       { value: "none", label: "Nenhum (FP16/BF16 Pleno — GPUs ≥ 24GB)" },
     ],
@@ -683,6 +701,10 @@ export default function ForjaDifusaoSetup({
 
     if (!selectedDatasetId) {
       setTopError("Selecione um dataset.");
+      return;
+    }
+    if (controlDatasetId && controlDatasetId === selectedDatasetId) {
+      setTopError("O dataset de controle deve ser diferente do dataset principal.");
       return;
     }
     if (!epochsValid) {
@@ -718,6 +740,8 @@ export default function ForjaDifusaoSetup({
         lrWarmupSteps,
         mixedPrecision,
         quantization,
+        controlDatasetId: controlDatasetId || undefined,
+        cacheTextEmbeddings,
         enableBucket,
         checkpointInterval,
         epochOffset: epochOffset > 0 ? epochOffset : undefined,
@@ -754,6 +778,8 @@ export default function ForjaDifusaoSetup({
       setLrWarmupSteps(0);
       setMixedPrecision("fp16");
       setQuantization("4bit");
+      setControlDatasetId("");
+      setCacheTextEmbeddings(false);
       onJobCreated?.(result.jobId);
     } catch (err) {
       if (err instanceof ApiError) {
@@ -1069,6 +1095,48 @@ export default function ForjaDifusaoSetup({
         searchable={datasets.length > 5}
         fontMono
       />
+      {/* Dataset de controle (regularização) — opcional, nunca igual ao principal */}
+      <Select
+        id="setup-diffusion-control-dataset"
+        label="Dataset de controle (regularização)"
+        hint="Opcional. Imagens de regularização para preservar o estilo base; o submit valida que difere do dataset principal."
+        options={[
+          { value: "", label: "— nenhum —" },
+          ...datasetOptions.filter((o) => o.value !== selectedDatasetId),
+        ]}
+        value={controlDatasetId}
+        onChange={(val) => setControlDatasetId(val)}
+        placeholder="— nenhum —"
+        loading={datasetsLoading}
+        loadingText="Carregando datasets…"
+        emptyText="Nenhum dataset com imagens encontrado"
+        disabled={busy}
+        searchable={datasets.length > 5}
+        fontMono
+      />
+
+      {/* Cache Text Embeddings — pré-computa embeddings das captions */}
+      <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3 space-y-1.5">
+        <label
+          htmlFor="cache-text-embeddings-toggle"
+          className="flex items-start gap-2 cursor-pointer select-none"
+        >
+          <input
+            id="cache-text-embeddings-toggle"
+            type="checkbox"
+            checked={cacheTextEmbeddings}
+            onChange={(e) => setCacheTextEmbeddings(e.target.checked)}
+            disabled={busy}
+            className="mt-0.5 size-4 rounded border-white/20 bg-white/5 text-brand-500 focus:ring-brand-500/30"
+          />
+          <span className="font-mono text-xs font-semibold text-zinc-200 leading-tight">
+            Cache Text Embeddings
+          </span>
+        </label>
+        <p className="text-3xs leading-relaxed text-zinc-400 pl-6">
+          Acelera datasets grandes; pré-computa os embeddings das captions antes do treino.
+        </p>
+      </div>
 
       {/* Seletor de Modelo Base (Cards Selecionáveis) */}
       <div className="space-y-2">
@@ -1325,7 +1393,7 @@ export default function ForjaDifusaoSetup({
               {mixedPrecision.toUpperCase()}
             </span>
             <span className="rounded-md bg-white/[0.04] px-2 py-0.5 border border-white/10 text-zinc-300">
-              {quantization === "4bit" ? "4-BIT NF4" : quantization === "8bit" ? "8-BIT BNB" : "FP16 PLENO"}
+              {quantization === "4bit" ? "4-BIT NF4" : quantization === "8bit" ? "8-BIT BNB" : quantization === "6bit" ? "6-BIT TAO" : quantization === "2bit" ? "2-BIT TAO" : "FP16 PLENO"}
             </span>
             <span className="rounded-md bg-white/[0.04] px-2 py-0.5 border border-white/10 text-zinc-300">
               {enableBucket ? "ASPECT RATIO" : "QUADRADO"}
@@ -1342,12 +1410,12 @@ export default function ForjaDifusaoSetup({
                 label="Quantização do Modelo Base"
                 hint={
                   params.baseModel === "flux"
-                    ? "4-bit NF4 permite rodar em GPUs ≤ 12 GB. 8-bit exige ≥ 16 GB e Nenhum exige ≥ 24 GB."
-                    : "Quantização BitsAndBytes do backbone para redução drástica de memória VRAM."
+                    ? "2-bit/4-bit permitem rodar em GPUs ≤ 12 GB. 6-bit intermediário (~10 GB), 8-bit exige ≥ 16 GB e Nenhum exige ≥ 24 GB."
+                    : "Quantização do backbone para redução drástica de memória VRAM (2-bit só p/ testes)."
                 }
                 options={quantizationOptions}
                 value={quantization}
-                onChange={(val) => setQuantization(val as "none" | "4bit" | "8bit")}
+                onChange={(val) => setQuantization(val as "none" | "2bit" | "4bit" | "6bit" | "8bit")}
                 disabled={busy}
                 fontMono
                 size="default"

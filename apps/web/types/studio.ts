@@ -498,7 +498,11 @@ export interface DiffusionJobRequest {
   lrScheduler?: "cosine" | "linear" | "constant" | "constant_with_warmup";
   lrWarmupSteps?: number;
   mixedPrecision?: "fp16" | "bf16" | "no";
-  quantization?: "none" | "4bit" | "8bit";
+  quantization?: "none" | "2bit" | "4bit" | "6bit" | "8bit";
+  /** Dataset de regularização/controle (Motor Flux.2): opcional, UUID. */
+  controlDatasetId?: string | null;
+  /** Pré-computa embeddings das captions (acelera datasets grandes). Padrão false. */
+  cacheTextEmbeddings?: boolean;
   /** Bucketing por aspect ratio: preserva a proporção das imagens (padrão true). */
   enableBucket?: boolean;
   checkpointInterval?: number;
@@ -523,7 +527,9 @@ export interface DiffusionPreset {
   lrScheduler?: "cosine" | "linear" | "constant" | "constant_with_warmup";
   lrWarmupSteps?: number;
   mixedPrecision?: "fp16" | "bf16" | "no";
-  quantization?: "none" | "4bit" | "8bit";
+  quantization?: "none" | "2bit" | "4bit" | "6bit" | "8bit";
+  controlDatasetId?: string | null;
+  cacheTextEmbeddings?: boolean;
   enableBucket?: boolean;
   checkpointInterval?: number;
   epochOffset?: number;
@@ -558,7 +564,9 @@ export interface DiffusionGenerateJobRequest {
   steps?: number;
   guidanceScale?: number;
   seed?: number;
-  quantization?: "none" | "4bit" | "8bit";
+  quantization?: "none" | "2bit" | "4bit" | "6bit" | "8bit";
+  sampler?: string;
+  upscale?: { model: "4x"; scale: 2 | 4 } | null;
   distilled?: boolean;
   batchSize?: number;
   loras?: { modelId: string; scale: number }[];

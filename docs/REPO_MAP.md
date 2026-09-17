@@ -1,7 +1,7 @@
 # REPO_MAP.md — Hephaestus LLM Studio (Nível 1: Meso L1)
 
 Mapa topológico de serviços, portas, rotas e persistência (~1.300 tokens).
-Fonte: `infra/compose.yaml` e código real (16/09/2026). Consulte para localizar
+Fonte: `infra/compose.yaml` e código real (17/09/2026). Consulte para localizar
 responsabilidades sem abrir código; aprofunde com `graft ask --source`.
 
 ---
@@ -42,12 +42,13 @@ GPU real (TrueNAS): `infra/compose.gpu.yaml` / runbook `infra/README-gpu.md`.
 
 ## 3. Posse de Dados (Postgres único, schema compartilhado)
 
-Migrations canônicas: `services/api-principal/migrations/0001..0016.sql`.
+Migrations canônicas: `services/api-principal/migrations/0001..0017.sql`.
 - **Domínio aplicação/dados (escrita: api-principal):** `users`, `auth_state`,
   `datasets`, `dataset_versions`, `job_prepares` (aceite assíncrono ADR-0025 —
   0015 tabela, 0016 índice único parcial `state='preparing'`), `images`,
   `videos`, `boxes`, `classes`, `captions`, `image_embeddings` (pgvector),
-  `models`, `generations`.
+  `models`, `generations`, `generation_inputs` (img2img — 0017 tabela efêmera
+  de inputs avulsos, sem GC; `used_at` marca consumo, linhas permanecem p/ auditoria).
 - **Domínio execução (escrita: manager/orchestrator):** `jobs` (status inclui
   `preparing`/`dispatched` + `phase`/`message` — ADR-0024/ADR-0025),
   `job_artifacts`, `orchestrators`.
@@ -77,7 +78,13 @@ Fonte: tabela de contrato em `services/api-principal/src/auth/routes.rs`
   telemetria `GET /api/telemetry`; geração `POST /jobs/diffusion/generate`.
 - **Modelos/pesos:** `GET /api/models[/:id]`, `POST /api/models/upload|download`.
 - **Galeria de gerações:** `GET /api/generations`, `/:id/data`,
-  `POST /api/generations/delete|export`.
+  `POST /api/generations/delete|export`; upload efêmero img2img
+  `POST /api/generations/inputs` (multipart campo `file`, png/jpeg/webp por
+  sniff, teto 20 MiB → 201 `{id,filename,mimeType,width,height}`; objeto em
+  `generation_inputs/{id}/{canonical}`); geração img2img via
+  `POST /jobs/diffusion/generate` com `initImageId` XOR `initGenerationId` +
+  `initStrength` (0.05–0.95, default 0.6 aplicado no yaml e no engine; wire
+  null quando ausente).
 - **Nós/monitoramento:** `GET /api/environments`, `/api/orchestrators`,
   `POST /api/environments/adopt`, `/orchestrators/adopt`, `/:id/revoke`,
   `GET /api/storage/usage`.
@@ -88,6 +95,20 @@ e `prepare-fail` — ciclo `preparing` ADR-0025, Bearer `MANAGER_TOKEN`, fora do
 contrato público) e orchestrator
 (`:8082/internal/dispatch|abort|pairing/verify`) nunca são chamadas pelo browser.
 
+Cadeia img2img (nunca via browser): api-principal emite
+`generate.init_image_path: "{init_image_path}"` + `init_strength` no
+`config.yaml` (placeholder literal, id real nunca vaza) → manager resolve a
+ref (`initImageId` ⇒ `SELECT s3_key,md5 FROM generation_inputs` + `used_at`;
+`initGenerationId` ⇒ `SELECT s3_key FROM generations`, `md5: null`) e despacha
+`init_image_ref {s3_key, md5|null}` → orchestrator baixa (escopo
+`S3Scope::GenerationInputs` ou `artifacts/`, md5 obrigatório só p/ upload —
+galeria só registra o calculado) e faz staging em
+`outputs/<job>/inputs/init.<ext>` (ext sanitizada do s3_key, fallback `png`),
+substituindo o placeholder → engine consome
+`generate.init_image_path`/`init_strength` (flux-2-klein: `image=` nativo sem
+`strength`; sd15/sdxl: variante `*Img2ImgPipeline(**pipe.components)` com
+`strength`; cache/spec inalterados).
+
 ## 5. Módulos do Frontend (`apps/web/app/`)
 
 - `(studio)/dashboard` — visão geral, métricas de hardware, atalhos.
@@ -95,7 +116,9 @@ contrato público) e orchestrator
   classes, anotação manual/verificação de boxes.
 - `(studio)/treino` — abas de setup de treino (YOLO, Difusão, CLIP).
 - `(studio)/jobs` — Action Center (fila, telemetria, drawer, lixeira/cleanup).
-- `(studio)/difusao` e `(studio)/geracao` — forja difusiva e galeria de gerações.
+- `(studio)/difusao` e `(studio)/geracao` — forja difusiva e galeria de gerações
+  (img2img: dropzone + slider `initStrength` no `GenerationPanel`, ação
+  "Usar como input" da galeria via localStorage `geracao:initSource`).
 - `(studio)/playground` — inferência interativa.
 - `(studio)/models` — upload/download de checkpoints (LoRA/pesos).
 - `(studio)/environments` — nós executores, adoção e monitor de VRAM.

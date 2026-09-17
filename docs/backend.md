@@ -244,6 +244,37 @@ ws:       /ws/jobs/:id/logs?since_seq=, /ws/telemetry
   - **`POST /api/generations/export`** (body `GenerationIdsRequest`) → 200 `application/zip` stream; 400; 503.
   - **Schemas novos:** `Generation{id,jobId,filename,url,thumbUrl,width,height,seed,prompt,negativePrompt?,params,createdAt}`, `GenerationList{items,total}`, `GenerationIdsRequest{ids}`, `LoraRef{modelId,scale}`.
    - **`Model` (aditivo):** `kind: 'lora'|'checkpoint'|null`, `arch: 'flux-2-klein-4b'|'sdxl'|'sd15'|null` (migration 0011; backfill 0014 preenche `kind`/`arch` NULL de treinos difusão, só-NULL/nunca sobrescreve).
+- Nota img2img (feat/img2img, `packages/contracts/openapi.yaml`):
+  - **`POST /api/generations/inputs`** — upload avulso de imagem inicial (campo único `file`
+    em `multipart/form-data`; sniff do conteúdo png/jpeg/webp, dimensões via `image`, md5 hex;
+    spool em tempfile com teto 20 MiB por-arquivo ⇒ 400 `invalid_request` se ausente/>20 MiB/não-imagem)
+    → 201 `GenerationInputUploaded{id,filename,mimeType,width,height}` (wire camelCase; `id` =
+    PK de `generation_inputs`, usar como `initImageId`). Ordem objeto→linha→compensação
+    (PUT `generation_inputs/{id}/{canonical}` precede o INSERT; INSERT falho ⇒ delete
+    best-effort do objeto). Contrato declara só 201/400/401 — storage/banco fora ⇒ 500 `internal`.
+  - **`POST /api/jobs/diffusion/generate` (img2img)** — campos novos `initImageId` XOR
+    `initGenerationId` (ambos ⇒ 400 `use either initImageId or initGenerationId, not both`;
+    defesa em profundidade repetida no manager) + `initStrength` opcional 0.05..=0.95
+    (órfã sem id ⇒ 400; fora de faixa/NaN ⇒ 400). Ausente ⇒ wire `initStrength: null`
+    (sem default local); default 0.6 aplicado no yaml do BFF (`unwrap_or(0.6)` no bloco
+    `generate:`) e no engine (None ⇒ 0.6). O BFF emite `init_image_path: "{init_image_path}"`
+    (placeholder literal — o id real nunca vaza no yaml) e repassa os ids camelCase em `params`
+    (rastreabilidade em `generations.params`); o manager resolve p/ snake_case `init_image_ref
+    {s3_key, md5}` (`initImageId` ⇒ `SELECT s3_key,md5 FROM generation_inputs` + `used_at = now()`
+    best-effort; `initGenerationId` ⇒ `SELECT s3_key FROM generations WHERE deleted_at IS NULL`,
+    `md5: null`) e despacha no body ao orquestrador. Orquestrador: escopo
+    `S3Scope::GenerationInputs` (aceita ambos os prefixos `generation_inputs/` e `artifacts/`,
+    rejeita o resto), staging em `outputs/<job_id>/inputs/init.<ext>` (ext sanitizada do s3_key,
+    fallback `png`), md5 verificado só quando a ref traz hash (galeria ⇒ só registra o calculado);
+    placeholder sem `init_image_ref` ⇒ erro explícito `ConfigYamlInvalid` (nunca vaza).
+    Engine consome `generate.init_image_path`/`init_strength` (validação: strength sem path ⇒
+    morte, path inexistente ⇒ morte, default 0.6).
+  - **Nota honesta flux:** `Flux2KleinPipeline.__call__` (diffusers 0.40.0, verificado via inspect)
+    aceita `image=` nativo (condicionamento estilo Kontext) e NÃO possui `strength` nem classe
+    Img2Img dedicada — usa o próprio pipe cacheado; `strength` vai só ao `meta` (PNG iTXt +
+    `generation_meta.json`). sd15/sdxl usam variante leve `*Img2ImgPipeline(**pipe.components)`
+    (herda LoRA, sem recarregar pesos, cache key da spec inalterado) com `image` + `strength`
+    reais. Init pré-carregada com resize exato (width×height, LANCZOS — stretch documentado).
 - Nota AC-003 — exclusão de jobs (spec 0.27.0, `packages/contracts/openapi.yaml`):
   - **`DELETE /api/jobs/:id`** — exclui job terminal via manager (`DELETE /internal/jobs/:id`) → 200 `JobDeletedResponse{id,status,artifacts,objectKeys,modelsDeleted,generationsPreserved}` (wire camelCase; o manager devolve snake_case `object_keys`/`models_deleted`/`generations_preserved` e o principal remapeia em `handlers.rs::job_deleted_to_wire`). Só estados terminais (`done`/`failed`/`cancelled`); não-terminal ⇒ 409 `job_not_terminal` (erro novo na enum `Error.code`); id não-UUID/inexistente ⇒ 404 `not_found`; manager fora ⇒ 503 `queue_unavailable`. Sweep S3 **best-effort pós-commit por chaves exatas** (`object_keys` do manager = chaves dos artefatos do job + `models.s3_key` do job, excluindo as chaves das gerações vivas — nunca varre o prefixo `artifacts/{job_id}/`); falha do sweep só loga, nunca vira 500. Gerações da galeria preservadas TODAS, incl. trash/soft-delete (FK `SET NULL`, migration 0012); models do catálogo derivadas do job expurgadas (`modelsDeleted`).
   - **`POST /api/jobs/cleanup`** — limpeza em lote via manager (`POST /internal/jobs/cleanup`): body `JobCleanupRequest{olderThanDays?,statuses?}` (`required: true` no wire; ambos os campos opcionais/nullable — `statuses` restrito a terminais no wire) → 200 `JobCleanupResponse{deleted,jobs,objectKeys}` (união das chaves p/ sweep). Erros: 400 `invalid_request` (body inválido, `olderThanDays < 0`, ou nenhum critério — o manager exige ao menos um), 401, 503 `queue_unavailable`. Sweep best-effort idem ao delete, agregado por job.
@@ -480,6 +511,16 @@ generations(id UUID PK, job_id UUID NULL FK jobs ON DELETE SET NULL,
   -- Dono: manager (hook no report_job — job diffusion_generate done com artefato generated_meta → INSERT por imagem).
   -- Soft-delete: deleted_at (objeto S3 intocado; sweep é dívida); índice parcial WHERE deleted_at IS NOT NULL.
   -- Índices: `generations(created_at DESC)`, `generations(job_id)`, `generations(deleted_at) WHERE deleted_at IS NOT NULL`.
+generation_inputs(id UUID PK DEFAULT gen_random_uuid(), s3_key TEXT NOT NULL UNIQUE,
+  filename TEXT NOT NULL, mime_type TEXT NOT NULL, width INT NOT NULL, height INT NOT NULL,
+  md5 CHAR(32) NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), used_at TIMESTAMPTZ);
+  -- IMPLEMENTADO (feat/img2img; `migrations/0017_generation_inputs.sql`): inputs avulsos efêmeros
+  -- p/ img2img (`POST /api/generations/inputs` → `initImageId` no generate). Dono: api-principal
+  -- (o manager só lê `s3_key,md5` e carimba `used_at` — mesma partilha de donos do §1/:32).
+  -- Objeto sob `generation_inputs/{id}/{canonical}` (stem sanitizado + extensão do sniff, nunca
+  -- a do form). Efêmera sem GC: linhas consumidas (`used_at` preenchido) permanecem p/ auditoria
+  -- (dívida registrada — mesmo padrão de artifacts sem sweep). Índice: UNIQUE de `s3_key`
+  -- (implícito); sem FK (referência lógica via `initImageId`, nunca constraint).
 ```
 
 - Índices: `images(dataset_id)`, `images(dataset_id, split)`, `images(dataset_id, filename) parcial ativa + images(dataset_id) parcial lixeira (0005)`, `boxes(image_id)`, `boxes(class_id)`, `videos(dataset_id)`, `classes(dataset_id, idx)`, `image_embeddings(dataset_id, model)` + HNSW do embedding (0004), `orchestrators(status)`, `jobs(status)`, `jobs(dataset_id)`, `jobs(created_at)`, `job_artifacts(job_id)`, `job_prepares(dataset_id, fingerprint, state)` (0015) + único parcial `job_prepares_dedupe` (0016), `dataset_versions(dataset_id, created_at)`, `generations(created_at DESC)`, `generations(job_id)`, `generations(deleted_at) WHERE deleted_at IS NOT NULL`.

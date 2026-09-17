@@ -131,6 +131,17 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
 - **Restore/lixeira de gerações + sweep S3 de soft-deletados (ADR-0023 D5) — ABERTA 2026-09-15:** `generations.deleted_at` dá o soft-delete mas não há restore nem sweep de objetos S3 (segue o padrão da lixeira de imagens — dívida pré-existente generalizada).
 - **NIT: nome custom_model_path vs custom_model_id no meta do engine (ADR-0023 D4) — ABERTA 2026-09-15:** engine python usa `custom_checkpoint_path` no config.yaml mas o meta reportado usa `custom_model_id`; alinhar na próxima iteração.
 - **Yaml legado inclui `batch_size: 1` (ADR-0023 D2) — ABERTA 2026-09-15:** quando modo legado (sem loras, sem custom), o config.yaml emite `batch_size: 1` mesmo para batch único — funcionalmente inócuo mas polui o yaml; limpar na iteração seguinte.
+- **GC de `generation_inputs` inexistente (feat/img2img) — ABERTA 2026-09-17:** objetos S3 sob
+  `generation_inputs/` e linhas com `used_at` preenchido não são varridos — mesmo padrão de
+  artifacts sem sweep (linhas consumidas permanecem p/ auditoria por decisão consciente da
+  migration 0017). Fechar = TTL + cron de purge (DELETE físico + sweep das vencidas), na mesma
+  fatia que generalizar o sweep de artifacts/gerações soft-deletadas.
+- **Validação @gpu manual do img2img real (feat/img2img) — ABERTA 2026-09-17 (follow-up,
+  não bloqueia docs):** wire validado em mock (upload, XOR, placeholder, staging, variante por
+  componentes, meta); sessão GPU pendente com pesos reais (sdxl + flux-2-klein, `ENGINE_MOCK=0`)
+  para provar `StableDiffusionXLImg2ImgPipeline`/`StableDiffusionImg2ImgPipeline` via
+  `**pipe.components` e `image=` nativo do `Flux2KleinPipeline` (diffusers 0.40.0) antes de
+  anunciar pronto.
 
 **Verificação / toolchain**
 

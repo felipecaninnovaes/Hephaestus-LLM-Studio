@@ -19,24 +19,25 @@ uma. Manter < 100 linhas; não duplicar docs — referenciar por seção.
    `docs/backend.md` §9/§10, `docs/frontend.md` §10, `docs/repo-estrutura.md`
    (ordem de fatias), `docs/dividas.md` e os ADRs em `docs/adr/`.
 
-## Fatia ABERTA 2026-09-17 — feat/img2img (branch de develop@4e3fb3e)
+## Fatia FECHADA 2026-09-17 — feat/img2img (7 commits 30140ea..083efcb, de develop@4e3fb3e)
 
-Img2img com 2 origens: upload avulso efêmero (prefixo `generation-inputs/`) OU
-geração existente da galeria (sem re-upload). Engines sd15/sdxl/flux. Wire:
-`initImageId XOR initGenerationId` + `initStrength` (0.05–0.95, def 0.6).
-DAG: S1 contratos + migration `0017_generation_inputs` → ∥ S2 engine
-(generate.py: validação init_image_path/strength; variante img2img via
-`**pipe.components` por call — cache/spec inalterados; mock tolerante; meta
-PNG) ∥ S3 api-principal (`POST /api/generations/inputs` multipart+sniff+md5+
-INSERT; submit valida refs; yaml `{init_image_path}`) ∥ S4 manager (resolve
-init → ref {s3_key, md5?} + used_at; dispatch `init_image_ref`) + orchestrator
-(S3Scope::GenerationInputs; staging `/outputs/{job}/inputs/init.<ext>`; md5
-opcional p/ galeria; placeholder) ∥ S5 web (dropzone+slider GenerationPanel,
-ação galeria "Usar como input" via localStorage `geracao:initSource`, tipos).
-GC de inputs: NÃO implementar — registrar débito em docs/dividas.md (nada
-varre artifacts hoje tampouco). ⚠ PROIBIDO apagar datasets/modelos; harnesses
-Rust só com guarda studio_test*. Gates: cargo check+test workspace, pytest
-por engine, npm build+lint web, compose config -q.
+Img2img com 2 origens: upload efêmero (POST /api/generations/inputs, tabela
+`generation_inputs` mig 0017, prefixo S3 `generation_inputs/` COM UNDERSCORE)
+OU geração existente da galeria (canal `geracao:initSource` no lightbox da
+GenerationGallery). Wire: `initImageId XOR initGenerationId` + `initStrength`
+(0.05–0.95, def 0.6). Cadeia completa: web → api-principal (sniff 20MiB, md5,
+yaml placeholder `{init_image_path}`) → manager (resolve ref {s3_key,md5?} +
+used_at, XOR defesa) → orchestrator (S3Scope::GenerationInputs allowlist
+generation_inputs/|artifacts/, staging outputs/<job>/inputs/init.<ext>, guarda
+anti-placeholder) → engine (variantes **pipe.components sd15/sdxl; flux
+Flux2Klein image= SEM strength no diffusers 0.40.0 — documental no meta; mock
+blend 0.3; cache key da spec inalterado). @reviewer FECHAR-APROVA COM NITS;
+N1–N3 corrigidos via @fixer (1ª tentativa). Gates: cargo 647p+test-db 231p
+(studio_test apenas), pytest 116p, build+lint web baseline 0E/204W/3I.
+Follow-ups: (a) validação @gpu manual sdxl+flux (registrada em docs/dividas.md);
+(b) GC de generation_inputs sem sweep (docs/dividas.md); (c) comentário
+"manager aplica 0.6" residual em handlers.rs teste (cosmético). Merge/push só
+com ordem explícita do usuário. Nenhum dataset/modelo tocado.
 
 ## Estado atual — 2026-09-16 (fatia viva: design system web)
 

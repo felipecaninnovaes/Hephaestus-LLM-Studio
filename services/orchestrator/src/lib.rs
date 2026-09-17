@@ -47,6 +47,17 @@ pub struct WeightRef {
     pub md5: String,
 }
 
+/// Referência à imagem inicial para img2img (S4 — feat/img2img).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct InitImageRef {
+    /// S3 key da imagem: `generation_inputs/<...>` ou `artifacts/<job_id>/<path>`.
+    pub s3_key: String,
+    /// MD5 hash esperado (hex 32). `None` = origem galeria (hash não
+    /// persistido na linha) — a verificação vira log, sem falha.
+    #[serde(default)]
+    pub md5: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct DispatchRequest {
     pub job_id: String,
@@ -70,6 +81,9 @@ pub struct DispatchRequest {
     /// Checkpoint custom para staging multi-ref (D4 — ADR-0023).
     #[serde(default)]
     pub custom_checkpoint: Option<WeightRef>,
+    /// Imagem inicial para img2img (S4 — feat/img2img). `None` = txt2img.
+    #[serde(default)]
+    pub init_image_ref: Option<InitImageRef>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -282,6 +296,7 @@ pub enum S3Scope {
     Packages,
     Artifacts,
     Models,
+    GenerationInputs,
 }
 
 impl S3Scope {
@@ -290,6 +305,7 @@ impl S3Scope {
             S3Scope::Packages => "packages/",
             S3Scope::Artifacts => "artifacts/",
             S3Scope::Models => "models/",
+            S3Scope::GenerationInputs => "generation_inputs/",
         }
     }
 }
@@ -318,6 +334,47 @@ pub fn scoped_key(scope: S3Scope, key: &str) -> Result<String, ScopedKeyError> {
         return Err(ScopedKeyError::OutsideScope);
     }
     Ok(key.to_string())
+}
+
+/// Valida key de imagem inicial img2img (S4 — feat/img2img).
+///
+/// Aceita `generation_inputs/<...>` (upload avulso) OU `artifacts/<...>`
+/// (galeria) — as duas origens possíveis do init. Escopo próprio do staging
+/// do init: NÃO afrouxa `scoped_key` para outros usos.
+pub fn scoped_init_image_key(key: &str) -> Result<String, ScopedKeyError> {
+    if key.is_empty() {
+        return Err(ScopedKeyError::EmptyKey);
+    }
+    if key.starts_with('/') {
+        return Err(ScopedKeyError::AbsolutePath);
+    }
+    if key.contains("..") {
+        return Err(ScopedKeyError::PathTraversal);
+    }
+    if key.starts_with(S3Scope::GenerationInputs.prefix())
+        || key.starts_with(S3Scope::Artifacts.prefix())
+    {
+        return Ok(key.to_string());
+    }
+    Err(ScopedKeyError::OutsideScope)
+}
+
+/// Extensão sanitizada da imagem inicial a partir do s3_key (S4 — feat/img2img).
+///
+/// Usa o sufixo após o último `.` do filename (após a última `/`): só
+/// `[a-zA-Z0-9]` com 2..5 chars (lowercased) — qualquer outra coisa cai em
+/// `"png"`. Nunca devolve `..` ou barras.
+pub fn init_image_ext(s3_key: &str) -> String {
+    let filename = s3_key.rsplit('/').next().unwrap_or("");
+    let ext = filename.rsplit('.').next().unwrap_or("");
+    let ok = (2..=5).contains(&ext.len())
+        && ext.chars().all(|c| c.is_ascii_alphanumeric())
+        && filename.contains('.');
+    if ok {
+        ext.to_ascii_lowercase()
+    } else {
+        "png".to_string()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -484,6 +541,7 @@ fn default_mode() -> String {
 /// - `{weights_path}` — weights legado (fine-tune)
 /// - `{lora_path_0}`...`{lora_path_N}` — LoRAs multi-ref (D3)
 /// - `{custom_checkpoint_path}` — checkpoint custom (D4)
+/// - `{init_image_path}` — imagem inicial img2img (S4 — feat/img2img)
 ///
 /// Placeholders absentes no yaml são ignorados (no-op tolerante).
 pub fn replace_config_placeholders(
@@ -493,6 +551,7 @@ pub fn replace_config_placeholders(
     weights_path: Option<&str>,
     lora_paths: &[String],
     custom_checkpoint_path: Option<&str>,
+    init_image_path: Option<&str>,
 ) -> String {
     let mut result = config
         .replace("{dataset_path}", dataset_path)
@@ -512,6 +571,10 @@ pub fn replace_config_placeholders(
         result = result.replace("{custom_checkpoint_path}", cp);
     }
 
+    if let Some(ip) = init_image_path {
+        result = result.replace("{init_image_path}", ip);
+    }
+
     result
 }
 
@@ -523,7 +586,15 @@ pub fn replace_config_placeholders_legacy(
     output_path: &str,
     weights_path: Option<&str>,
 ) -> String {
-    replace_config_placeholders(config, dataset_path, output_path, weights_path, &[], None)
+    replace_config_placeholders(
+        config,
+        dataset_path,
+        output_path,
+        weights_path,
+        &[],
+        None,
+        None,
+    )
 }
 
 /// Extrai o valor de `epochs` do config.yaml (para cálculo de progress).
@@ -1291,6 +1362,44 @@ async fn run_job_inner(
         custom_staged_path = Some(format!("/outputs/{job_id}/weights/custom.safetensors"));
     }
 
+    // 5d. Download e staging da imagem inicial img2img (S4 — feat/img2img).
+    //     Fica em outputs/<job_id>/inputs/init.<ext> (ext sanitizada do s3_key,
+    //     fallback `png`). O path REAL do host entra no real_config — o
+    //     config.yaml já é montado via volume /outputs, como weights/custom.
+    let mut init_staged_path: Option<String> = None;
+    if let Some(ref init) = dispatch.init_image_ref {
+        let scoped_ikey = scoped_init_image_key(&init.s3_key)
+            .map_err(|e| PipelineError::S3Download(format!("invalid init_image_ref key: {e}")))?;
+        let inputs_dir = outputs.join("inputs");
+        tokio::fs::create_dir_all(&inputs_dir)
+            .await
+            .map_err(|e| PipelineError::Other(format!("create inputs dir: {e}")))?;
+        let ext = init_image_ext(&init.s3_key);
+        let init_file = inputs_dir.join(format!("init.{ext}"));
+        s3.get_to_file(&scoped_ikey, &init_file)
+            .await
+            .map_err(|e| PipelineError::S3Download(format!("download init image: {e}")))?;
+        let actual_md5 = compute_file_md5(&init_file)
+            .map_err(|e| PipelineError::S3Download(format!("compute init image md5: {e}")))?;
+        match init.md5.as_deref() {
+            Some(expected) => {
+                if actual_md5 != expected {
+                    return Err(PipelineError::Md5Mismatch {
+                        expected: expected.to_string(),
+                        actual: actual_md5,
+                    });
+                }
+            }
+            // Origem galeria: sem hash de referência — só registra o calculado.
+            None => {
+                tracing::info!(
+                    "init image from gallery has no expected md5, staged md5={actual_md5}"
+                );
+            }
+        }
+        init_staged_path = Some(format!("/outputs/{job_id}/inputs/init.{ext}"));
+    }
+
     // 6. Monta config.yaml REAL — substitui placeholders (§8/:102)
     let total_epochs = dispatch
         .config_yaml
@@ -1310,7 +1419,17 @@ async fn run_job_inner(
             weights_staged_path.as_deref(),
             &lora_staged_paths,
             custom_staged_path.as_deref(),
+            init_staged_path.as_deref(),
         );
+
+        // O config exige init mas nenhum init_image_ref veio no dispatch:
+        // falha explícita em vez de deixar o placeholder vazar (S4).
+        if real_config.contains("{init_image_path}") {
+            return Err(PipelineError::ConfigYamlInvalid(
+                "config.yaml requires {init_image_path} but no init_image_ref was provided"
+                    .to_string(),
+            ));
+        }
 
         // Valida que é YAML parseável (D6)
         let _: serde_yaml::Value = serde_yaml::from_str(&real_config).map_err(|e| {
@@ -1383,9 +1502,19 @@ async fn run_job_inner(
                     weights_staged_path.as_deref(),
                     &lora_staged_paths,
                     custom_staged_path.as_deref(),
+                    init_staged_path.as_deref(),
                 )
             })
             .unwrap_or_default();
+
+        // Mesmo guarda do one-shot: placeholder de init sem init_image_ref
+        // falha explícita em vez de vazar para o daemon (S4).
+        if config_str.contains("{init_image_path}") {
+            return Err(PipelineError::ConfigYamlInvalid(
+                "config.yaml requires {init_image_path} but no init_image_ref was provided"
+                    .to_string(),
+            ));
+        }
 
         let body = daemon::GenerateBody {
             config: config_str,
@@ -2703,6 +2832,7 @@ mod tests {
             None,
             &[],
             None,
+            None,
         );
         assert_eq!(
             result,
@@ -2720,6 +2850,7 @@ mod tests {
             "/outputs/j1",
             None,
             &[],
+            None,
             None,
         );
         let parsed: serde_yaml::Value = serde_yaml::from_str(&result).unwrap();
@@ -3250,6 +3381,7 @@ mod tests {
             weights_ref: None,
             loras: Vec::new(),
             custom_checkpoint: None,
+            init_image_ref: None,
         }
     }
 
@@ -4541,6 +4673,7 @@ also bad, not a number
             Some("/outputs/j1/weights/best.pt"),
             &[],
             None,
+            None,
         );
         assert_eq!(
             result,
@@ -4551,9 +4684,173 @@ also bad, not a number
     #[test]
     fn replace_config_placeholders_without_weights_keeps_literal() {
         let config = "model: yolo11m\nweights_path: {weights_path}";
-        let result =
-            replace_config_placeholders(config, "/datasets/j1", "/outputs/j1", None, &[], None);
+        let result = replace_config_placeholders(
+            config,
+            "/datasets/j1",
+            "/outputs/j1",
+            None,
+            &[],
+            None,
+            None,
+        );
         assert_eq!(result, "model: yolo11m\nweights_path: {weights_path}");
+    }
+
+    // =========================================================================
+    // S4 feat/img2img — replace com/sem init, ext sanitizada, allowlist do init
+    // =========================================================================
+
+    #[test]
+    fn replace_config_placeholders_with_init_image() {
+        let config = "init_image: {init_image_path}\nstrength: 0.6";
+        let result = replace_config_placeholders(
+            config,
+            "/datasets/j1",
+            "/outputs/j1",
+            None,
+            &[],
+            None,
+            Some("/outputs/j1/inputs/init.png"),
+        );
+        assert_eq!(
+            result,
+            "init_image: /outputs/j1/inputs/init.png\nstrength: 0.6"
+        );
+    }
+
+    #[test]
+    fn replace_config_placeholders_without_init_keeps_literal() {
+        let config = "init_image: {init_image_path}\nstrength: 0.6";
+        let result = replace_config_placeholders(
+            config,
+            "/datasets/j1",
+            "/outputs/j1",
+            None,
+            &[],
+            None,
+            None,
+        );
+        assert_eq!(result, "init_image: {init_image_path}\nstrength: 0.6");
+    }
+
+    #[test]
+    fn replace_config_placeholders_no_init_placeholder_noop() {
+        // Config sem o placeholder: init presente ou não, no-op.
+        let config = "prompt: a cat\nsteps: 20";
+        for init in [None, Some("/outputs/j1/inputs/init.png")] {
+            let result = replace_config_placeholders(
+                config,
+                "/datasets/j1",
+                "/outputs/j1",
+                None,
+                &[],
+                None,
+                init,
+            );
+            assert_eq!(result, config);
+        }
+    }
+
+    #[test]
+    fn init_image_ext_from_suffix() {
+        assert_eq!(init_image_ext("generation_inputs/abc/img.png"), "png");
+        assert_eq!(init_image_ext("generation_inputs/abc/photo.JPG"), "jpg");
+        assert_eq!(init_image_ext("artifacts/job-1/gen_0001.webp"), "webp");
+        assert_eq!(init_image_ext("artifacts/job-1/frame.jpeg"), "jpeg");
+    }
+
+    #[test]
+    fn init_image_ext_fallback_png() {
+        // Sem extensão, extensão curta/longa demais ou não-alfanumérica → png.
+        assert_eq!(init_image_ext("artifacts/j/f"), "png");
+        assert_eq!(init_image_ext("artifacts/j/f."), "png");
+        assert_eq!(init_image_ext("artifacts/j/f.a"), "png");
+        assert_eq!(init_image_ext("artifacts/j/f.toolongext"), "png");
+        assert_eq!(init_image_ext("artifacts/j/f.pn_g"), "png");
+        assert_eq!(init_image_ext(""), "png");
+    }
+
+    #[test]
+    fn init_image_ext_never_returns_traversal_or_slashes() {
+        for key in [
+            "artifacts/j/..",
+            "artifacts/../evil.png",
+            "generation_inputs/x/../../etc/passwd",
+            "/abs/path.png",
+        ] {
+            let ext = init_image_ext(key);
+            assert!(!ext.contains(".."), "ext com traversal: {ext}");
+            assert!(!ext.contains('/'), "ext com barra: {ext}");
+        }
+    }
+
+    #[test]
+    fn scoped_init_image_key_accepts_both_prefixes() {
+        assert_eq!(
+            scoped_init_image_key("generation_inputs/abc/upload.png"),
+            Ok("generation_inputs/abc/upload.png".to_string())
+        );
+        assert_eq!(
+            scoped_init_image_key("artifacts/job-1/generated_0001.png"),
+            Ok("artifacts/job-1/generated_0001.png".to_string())
+        );
+    }
+
+    #[test]
+    fn scoped_init_image_key_rejects_other_prefixes() {
+        assert_eq!(
+            scoped_init_image_key("models/diffusion/x/ckpt.safetensors"),
+            Err(ScopedKeyError::OutsideScope)
+        );
+        assert_eq!(
+            scoped_init_image_key("packages/abc/dataset.zip"),
+            Err(ScopedKeyError::OutsideScope)
+        );
+        assert_eq!(
+            scoped_init_image_key("datasets/abc/images"),
+            Err(ScopedKeyError::OutsideScope)
+        );
+    }
+
+    #[test]
+    fn scoped_init_image_key_rejects_unsafe() {
+        assert_eq!(scoped_init_image_key(""), Err(ScopedKeyError::EmptyKey));
+        assert_eq!(
+            scoped_init_image_key("/generation_inputs/x.png"),
+            Err(ScopedKeyError::AbsolutePath)
+        );
+        assert_eq!(
+            scoped_init_image_key("generation_inputs/../evil.png"),
+            Err(ScopedKeyError::PathTraversal)
+        );
+        assert_eq!(
+            scoped_init_image_key("artifacts/../evil.png"),
+            Err(ScopedKeyError::PathTraversal)
+        );
+    }
+
+    #[test]
+    fn dispatch_request_init_image_ref_serde() {
+        // snake_case no wire interno, md5 opcional (galeria → null).
+        let json = r#"{
+            "job_id": "j1", "engine": "diffusion", "image": "img",
+            "exec_mode": "docker", "config_yaml": null,
+            "dataset_version_id": null, "workdir": "/tmp",
+            "init_image_ref": {"s3_key": "artifacts/j0/gen.png", "md5": null}
+        }"#;
+        let req: DispatchRequest = serde_json::from_str(json).unwrap();
+        let init = req.init_image_ref.expect("init presente");
+        assert_eq!(init.s3_key, "artifacts/j0/gen.png");
+        assert!(init.md5.is_none());
+
+        // Ausente → None (txt2img retrocompat).
+        let json2 = r#"{
+            "job_id": "j1", "engine": "diffusion", "image": "img",
+            "exec_mode": "docker", "config_yaml": null,
+            "dataset_version_id": null, "workdir": "/tmp"
+        }"#;
+        let req2: DispatchRequest = serde_json::from_str(json2).unwrap();
+        assert!(req2.init_image_ref.is_none());
     }
 
     // =========================================================================
@@ -4881,6 +5178,7 @@ also bad, not a number
             weights_ref: None,
             loras: Vec::new(),
             custom_checkpoint: None,
+            init_image_ref: None,
         }
     }
 

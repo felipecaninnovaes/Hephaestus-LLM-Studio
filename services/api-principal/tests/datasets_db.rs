@@ -7824,3 +7824,396 @@ async fn p4a_worker_observa_cancelamento() {
         .expect("count versions");
     assert_eq!(n, 0, "cancelado antes do build: nenhuma versão");
 }
+
+// ===========================================================================
+// B1/B2 — bloqueantes do @reviewer (dedupe TOCTOU + pânico do worker)
+// ===========================================================================
+
+/// Manager de teste para a corrida de dedupe (B1): delega tudo ao
+/// `MockManager` interno, mas `create_job` gera um job_id novo por chamada
+/// (como o manager real) e `abort_job` registra os ids abortados.
+/// `get_job` sintetiza `preparing` para os jobs criados aqui, de modo que o
+/// worker vencedor prossiga ao build (mantém a linha `preparing` na janela
+/// dos asserts em vez de falhar no cancel-check).
+struct RaceManager {
+    inner: api_principal::jobs::manager_client::MockManager,
+    created: std::sync::Mutex<Vec<String>>,
+    aborted: std::sync::Mutex<Vec<String>>,
+}
+
+impl RaceManager {
+    fn created_count(&self) -> usize {
+        self.created.lock().map(|c| c.len()).unwrap_or(0)
+    }
+    fn aborted(&self) -> Vec<String> {
+        self.aborted.lock().map(|a| a.clone()).unwrap_or_default()
+    }
+}
+
+#[async_trait::async_trait]
+impl api_principal::jobs::manager_client::ManagerPort for RaceManager {
+    async fn list_jobs(
+        &self,
+        status: Option<&str>,
+        engine: Option<&str>,
+    ) -> Result<
+        (Vec<api_principal::jobs::manager_client::InternalJob>, i32),
+        api_principal::jobs::manager_client::ManagerError,
+    > {
+        self.inner.list_jobs(status, engine).await
+    }
+    async fn list_queue(
+        &self,
+    ) -> Result<
+        Vec<api_principal::jobs::manager_client::InternalQueueItem>,
+        api_principal::jobs::manager_client::ManagerError,
+    > {
+        self.inner.list_queue().await
+    }
+    async fn get_job(
+        &self,
+        id: &str,
+    ) -> Result<
+        api_principal::jobs::manager_client::InternalJob,
+        api_principal::jobs::manager_client::ManagerError,
+    > {
+        if self
+            .created
+            .lock()
+            .map(|c| c.contains(&id.to_string()))
+            .unwrap_or(false)
+        {
+            return Ok(preparing_internal_job(id, "autotracker", "preparing"));
+        }
+        self.inner.get_job(id).await
+    }
+    async fn list_artifacts(
+        &self,
+        job_id: &str,
+    ) -> Result<
+        Vec<api_principal::jobs::manager_client::InternalArtifact>,
+        api_principal::jobs::manager_client::ManagerError,
+    > {
+        self.inner.list_artifacts(job_id).await
+    }
+    async fn get_telemetry(
+        &self,
+    ) -> Result<
+        api_principal::jobs::manager_client::InternalTelemetry,
+        api_principal::jobs::manager_client::ManagerError,
+    > {
+        self.inner.get_telemetry().await
+    }
+    async fn create_job(
+        &self,
+        _body: &serde_json::Value,
+    ) -> Result<
+        api_principal::jobs::manager_client::CreateJobResponse,
+        api_principal::jobs::manager_client::ManagerError,
+    > {
+        let id = uuid::Uuid::new_v4().to_string();
+        if let Ok(mut c) = self.created.lock() {
+            c.push(id.clone());
+        }
+        Ok(api_principal::jobs::manager_client::CreateJobResponse {
+            job_id: id,
+            status: "preparing".into(),
+            queue_position: None,
+        })
+    }
+    async fn abort_job(
+        &self,
+        id: &str,
+    ) -> Result<
+        api_principal::jobs::manager_client::AbortJobResponse,
+        api_principal::jobs::manager_client::ManagerError,
+    > {
+        if let Ok(mut a) = self.aborted.lock() {
+            a.push(id.to_string());
+        }
+        Ok(api_principal::jobs::manager_client::AbortJobResponse {
+            status: "cancelled".into(),
+        })
+    }
+    async fn delete_job(
+        &self,
+        id: &str,
+    ) -> Result<serde_json::Value, api_principal::jobs::manager_client::ManagerError> {
+        self.inner.delete_job(id).await
+    }
+    async fn cleanup_jobs(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, api_principal::jobs::manager_client::ManagerError> {
+        self.inner.cleanup_jobs(body).await
+    }
+    async fn list_orchestrators(
+        &self,
+    ) -> Result<
+        Vec<api_principal::jobs::manager_client::InternalOrchestrator>,
+        api_principal::jobs::manager_client::ManagerError,
+    > {
+        self.inner.list_orchestrators().await
+    }
+    async fn list_models(
+        &self,
+    ) -> Result<
+        Vec<api_principal::jobs::manager_client::InternalModel>,
+        api_principal::jobs::manager_client::ManagerError,
+    > {
+        self.inner.list_models().await
+    }
+    async fn get_storage_usage(
+        &self,
+    ) -> Result<
+        api_principal::jobs::manager_client::InternalStorageUsage,
+        api_principal::jobs::manager_client::ManagerError,
+    > {
+        self.inner.get_storage_usage().await
+    }
+    async fn adopt_orchestrator(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<
+        api_principal::jobs::manager_client::InternalOrchestrator,
+        api_principal::jobs::manager_client::ManagerError,
+    > {
+        self.inner.adopt_orchestrator(body).await
+    }
+    async fn revoke_orchestrator(
+        &self,
+        id: &str,
+    ) -> Result<(), api_principal::jobs::manager_client::ManagerError> {
+        self.inner.revoke_orchestrator(id).await
+    }
+    async fn create_model(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<
+        api_principal::jobs::manager_client::InternalModelResponse,
+        api_principal::jobs::manager_client::ManagerError,
+    > {
+        self.inner.create_model(body).await
+    }
+    async fn delete_model(
+        &self,
+        id: &str,
+    ) -> Result<
+        api_principal::jobs::manager_client::InternalModel,
+        api_principal::jobs::manager_client::ManagerError,
+    > {
+        self.inner.delete_model(id).await
+    }
+    async fn update_model(
+        &self,
+        id: &str,
+        name: &str,
+    ) -> Result<
+        api_principal::jobs::manager_client::InternalModel,
+        api_principal::jobs::manager_client::ManagerError,
+    > {
+        self.inner.update_model(id, name).await
+    }
+    async fn list_generations(
+        &self,
+        limit: i64,
+        offset: i64,
+        deleted: bool,
+        base_model: Option<&str>,
+    ) -> Result<
+        (
+            Vec<api_principal::jobs::manager_client::InternalGeneration>,
+            i64,
+        ),
+        api_principal::jobs::manager_client::ManagerError,
+    > {
+        self.inner
+            .list_generations(limit, offset, deleted, base_model)
+            .await
+    }
+    async fn get_generation(
+        &self,
+        id: &str,
+    ) -> Result<
+        api_principal::jobs::manager_client::InternalGeneration,
+        api_principal::jobs::manager_client::ManagerError,
+    > {
+        self.inner.get_generation(id).await
+    }
+    async fn delete_generations(
+        &self,
+        ids: &[String],
+    ) -> Result<(), api_principal::jobs::manager_client::ManagerError> {
+        self.inner.delete_generations(ids).await
+    }
+    async fn prepare_complete(
+        &self,
+        job_id: &str,
+        body: &serde_json::Value,
+    ) -> Result<(), api_principal::jobs::manager_client::ManagerError> {
+        self.inner.prepare_complete(job_id, body).await
+    }
+    async fn prepare_fail(
+        &self,
+        job_id: &str,
+        body: &serde_json::Value,
+    ) -> Result<(), api_principal::jobs::manager_client::ManagerError> {
+        self.inner.prepare_fail(job_id, body).await
+    }
+    async fn report_phase(
+        &self,
+        job_id: &str,
+        body: &serde_json::Value,
+    ) -> Result<(), api_principal::jobs::manager_client::ManagerError> {
+        self.inner.report_phase(job_id, body).await
+    }
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn p4a_dedupe_concorrente_um_vencedor() {
+    let _guard = SERIAL.lock().await;
+    // Pool real limpo via helper canônico, com o manager trocado pelo
+    // RaceManager (job_ids distintos por create_job, como o manager real).
+    let (mut st, _, _) =
+        state_with_manager(api_principal::jobs::manager_client::MockManager::default()).await;
+    let race = std::sync::Arc::new(RaceManager {
+        inner: api_principal::jobs::manager_client::MockManager::default(),
+        created: std::sync::Mutex::new(Vec::new()),
+        aborted: std::sync::Mutex::new(Vec::new()),
+    });
+    st.manager = race.clone();
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+    let (ds, ds_id, _, _, _, _) = setup_autotracker_dataset(&app, &cookie).await;
+
+    // Cada round insere uma imagem ⇒ fingerprint virgem (sem linha
+    // `preparing`) ⇒ ambos os submits passam o fast-path e disputam o
+    // INSERT sob o índice `job_prepares_dedupe`.
+    let mut conflict_observed = false;
+    for round in 0..4 {
+        insert_image(&st.pool, ds_id, &format!("race-{round}.jpg"), 100 + round).await;
+        let post = || {
+            Request::builder()
+                .method("POST")
+                .uri("/api/jobs/autotracker")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header(http::header::COOKIE, &cookie)
+                .body(Body::from(serde_json::json!({"datasetId": ds}).to_string()))
+                .unwrap()
+        };
+        let c0 = race.created_count();
+        let a0 = race.aborted().len();
+        let (r1, r2) = tokio::join!(call(app.clone(), post()), call(app.clone(), post()));
+        assert_eq!(r1.0, StatusCode::ACCEPTED, "round {round}: submit 1 aceito");
+        assert_eq!(r2.0, StatusCode::ACCEPTED, "round {round}: submit 2 aceito");
+        let j1 = json(&r1.2)["jobId"].as_str().expect("jobId 1").to_string();
+        let j2 = json(&r2.2)["jobId"].as_str().expect("jobId 2").to_string();
+        assert_eq!(j1, j2, "round {round}: vencedor único e estável");
+        let fp = api_principal::jobs::prepare::fingerprint_for_dataset(
+            &st.pool,
+            ds_id,
+            None,
+            "autotracker",
+            "",
+        )
+        .await
+        .expect("fingerprint");
+        let n: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM job_prepares \
+             WHERE dataset_id = $1 AND fingerprint = $2 AND state = 'preparing'",
+        )
+        .bind(ds_id)
+        .bind(&fp)
+        .fetch_one(&st.pool)
+        .await
+        .expect("count preparing");
+        assert_eq!(
+            n, 1,
+            "round {round}: uma única linha preparing para o fingerprint"
+        );
+        // Disputa real no INSERT: 2 creates, 1 abort do perdedor, 1 vencedor.
+        if race.created_count() - c0 == 2 && race.aborted().len() - a0 == 1 {
+            conflict_observed = true;
+            break;
+        }
+    }
+    assert!(
+        conflict_observed,
+        "a disputa no INSERT (2 creates + 1 abort do perdedor) deve ocorrer"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn p4a_worker_panic_marca_failed() {
+    let _guard = SERIAL.lock().await;
+    let job_id = uuid::Uuid::new_v4();
+    // Manager com o job em `preparing` (cancel-check do worker passa).
+    let mock = {
+        let mut m = api_principal::jobs::manager_client::MockManager::default();
+        m.jobs_by_id.insert(
+            job_id.to_string(),
+            preparing_internal_job(&job_id.to_string(), "autotracker", "preparing"),
+        );
+        m
+    };
+    let (st, _, mock_mgr) = state_with_manager(mock).await;
+    let app = routes::build(st.clone());
+    let cookie = authed_cookie();
+    let (status, _, body) = call(
+        app.clone(),
+        post_create("P4a Panic", &serde_json::json!(["a"]), &cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let ds_id: uuid::Uuid = json(&body)["id"]
+        .as_str()
+        .expect("id")
+        .parse()
+        .expect("uuid");
+
+    // Linha stale com spec de kind reservado que panica no worker.
+    let spec = api_principal::jobs::prepare::PrepareSpec {
+        kind: "__test_panic__".into(),
+        dataset_id: ds_id,
+        resolved_image_ids: None,
+        fingerprint: "fp-panic".into(),
+        engine: "test".into(),
+        trigger_word: None,
+        params: serde_json::json!({}),
+    };
+    sqlx::query(
+        "INSERT INTO job_prepares (job_id, dataset_id, fingerprint, spec, attempts, updated_at) \
+         VALUES ($1, $2, $3, $4, 0, now() - interval '11 minutes')",
+    )
+    .bind(job_id)
+    .bind(ds_id)
+    .bind(&spec.fingerprint)
+    .bind(serde_json::to_value(&spec).expect("spec json"))
+    .execute(&st.pool)
+    .await
+    .expect("seed stale");
+
+    let (respawned, failed) = api_principal::jobs::prepare::recover_stale_prepares(&st)
+        .await
+        .expect("recover");
+    assert_eq!((respawned, failed), (1, 0));
+    // O pânico no worker vira `failed` + prepare_fail (sem empacar 60min).
+    wait_for_cond("worker pânico marca failed", 200, || {
+        let pool = st.pool.clone();
+        async move {
+            let s: String = sqlx::query_scalar("SELECT state FROM job_prepares WHERE job_id = $1")
+                .bind(job_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap_or_default();
+            s == "failed"
+        }
+    })
+    .await;
+    let failures = mock_mgr.prepare_failures();
+    assert_eq!(failures.len(), 1, "prepare_fail chamado uma vez");
+    assert_eq!(failures[0].0, job_id.to_string());
+    assert_eq!(failures[0].1, "build_error");
+}

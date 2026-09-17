@@ -17,3 +17,9 @@ CREATE TABLE job_prepares (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX job_prepares_fp ON job_prepares(dataset_id, fingerprint, state);
+-- Dedupe anti-TOCTOU (B1): dois aceites simultâneos com o mesmo fingerprint
+-- disputam o INSERT em `accept_job_preparing`; o perdedor recebe 0 linhas
+-- (`ON CONFLICT DO NOTHING`), aborta o job recém-criado e responde 202 com o
+-- jobId vencedor — sem isso, 2 submits paralelos criavam 2 jobs + 2 builds.
+CREATE UNIQUE INDEX job_prepares_dedupe
+  ON job_prepares(dataset_id, fingerprint) WHERE state = 'preparing';

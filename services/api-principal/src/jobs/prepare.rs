@@ -268,7 +268,15 @@ fn queue_unavailable() -> Response {
 /// `manager_body`: body do `create_job` montado pelo caller (kind/engine/
 /// model/mode/config_yaml/params/vram/...) SEM `package_ref` (o helper injeta
 /// `package_ref: null` + `params.prepare`). Ordem (D3): dedupe → create_job no
-/// manager (ganha `job_id`) → INSERT local → spawn. Se o INSERT falhar:
+/// manager (ganha `job_id`) → INSERT local → spawn.
+///
+/// Anti-TOCTOU (B1): o SELECT dedupe acima é só fast-path — dois submits
+/// simultâneos passam por ele juntos. A vitória única vem do índice
+/// `job_prepares_dedupe` (migration 0015): o INSERT usa `ON CONFLICT DO
+/// NOTHING`; 0 linhas ⇒ outro aceite venceu em voo ⇒ re-SELECT pega o
+/// `job_id` vencedor, aborta-se o job recém-criado (best-effort) e responde-se
+/// 202 com o vencedor. O micro-gasto (criar+abortar 1 job) é aceitável frente
+/// a duplicar um build de dataset. Se o INSERT falhar por outro motivo:
 /// `prepare_fail` best-effort + 503 (o watchdog do manager falha o job órfão
 /// em 60min).
 pub async fn accept_job_preparing(
@@ -276,7 +284,9 @@ pub async fn accept_job_preparing(
     spec: PrepareSpec,
     mut manager_body: serde_json::Value,
 ) -> Response {
-    // 1. Dedupe: mesmo fingerprint com prepare ativo → mesmo jobId.
+    // 1. Dedupe fast-path: mesmo fingerprint com prepare ativo → mesmo jobId
+    //    sem tocar no manager. (A janela TOCTOU aqui é fechada pelo INSERT
+    //    com ON CONFLICT no passo 3.)
     match find_active_prepare(&state.pool, spec.dataset_id, &spec.fingerprint).await {
         Ok(Some(existing)) => {
             return (
@@ -325,30 +335,84 @@ pub async fn accept_job_preparing(
         }
     };
 
-    // 3. INSERT local (dono P4a — migration 0015).
+    // 3. INSERT local com arbiter do índice parcial `job_prepares_dedupe`
+    //    (dono P4a — migration 0015). 1 linha ⇒ vencemos; 0 linhas ⇒ outro
+    //    aceite em voo registrou o mesmo fingerprint primeiro.
     let spec_json = serde_json::to_value(&spec).unwrap_or(serde_json::json!({}));
-    if sqlx::query(
+    let inserted = sqlx::query(
         "INSERT INTO job_prepares (job_id, dataset_id, fingerprint, spec) \
-         VALUES ($1, $2, $3, $4)",
+         VALUES ($1, $2, $3, $4) \
+         ON CONFLICT (dataset_id, fingerprint) WHERE state = 'preparing' DO NOTHING",
     )
     .bind(job_id)
     .bind(spec.dataset_id)
     .bind(&spec.fingerprint)
     .bind(&spec_json)
     .execute(&state.pool)
-    .await
-    .is_err()
-    {
-        // Local falhou com job já alocado: falha o job no manager (best-effort)
-        // para não deixá-lo `preparing` até o watchdog de 60min.
-        let _ = state
-            .manager
-            .prepare_fail(
-                &created.job_id,
-                &prepare_fail_body("build_error", "falha ao registrar preparação"),
-            )
-            .await;
-        return queue_unavailable();
+    .await;
+    let won = match inserted {
+        Ok(r) => r.rows_affected() == 1,
+        Err(_) => false,
+    };
+    if !won {
+        // Disputa perdida OU erro local: re-SELECT decide. Vencedor distinto
+        // do nosso job ⇒ aborta o recém-criado (best-effort) e responde 202
+        // com o vencedor estável. Vencedor == nosso job (retry idempotente)
+        // ⇒ prossegue como dono. Sem vencedor (vencedor concluiu entre o
+        // INSERT e o SELECT) ⇒ tenta o INSERT uma vez (agora sem conflito);
+        // se ainda assim 0 linhas, falha o job e responde 503.
+        match find_active_prepare(&state.pool, spec.dataset_id, &spec.fingerprint).await {
+            Ok(Some(winner)) if winner != job_id => {
+                let _ = state.manager.abort_job(&created.job_id).await;
+                return (
+                    StatusCode::ACCEPTED,
+                    Json(serde_json::json!({
+                        "jobId": winner.to_string(),
+                        "status": "preparing",
+                        "queuePosition": null,
+                    })),
+                )
+                    .into_response();
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                let retry = sqlx::query(
+                    "INSERT INTO job_prepares (job_id, dataset_id, fingerprint, spec) \
+                     VALUES ($1, $2, $3, $4) \
+                     ON CONFLICT (dataset_id, fingerprint) WHERE state = 'preparing' DO NOTHING",
+                )
+                .bind(job_id)
+                .bind(spec.dataset_id)
+                .bind(&spec.fingerprint)
+                .bind(&spec_json)
+                .execute(&state.pool)
+                .await;
+                let retry_won = retry.map(|r| r.rows_affected() == 1).unwrap_or(false);
+                if !retry_won {
+                    // Local falhou com job já alocado: falha o job no manager
+                    // (best-effort) para não deixá-lo `preparing` até o
+                    // watchdog de 60min.
+                    let _ = state
+                        .manager
+                        .prepare_fail(
+                            &created.job_id,
+                            &prepare_fail_body("build_error", "falha ao registrar preparação"),
+                        )
+                        .await;
+                    return queue_unavailable();
+                }
+            }
+            Err(_) => {
+                let _ = state
+                    .manager
+                    .prepare_fail(
+                        &created.job_id,
+                        &prepare_fail_body("build_error", "falha ao registrar preparação"),
+                    )
+                    .await;
+                return queue_unavailable();
+            }
+        }
     }
 
     // 4. Spawn do worker + 202 imediato (<1s, sem S3 no request).
@@ -369,10 +433,34 @@ pub async fn accept_job_preparing(
 // ---------------------------------------------------------------------------
 
 /// Agenda a preparação em background. O futuro nunca propaga pânico para o
-/// request (todo erro vira `prepare_fail` + linha `failed`).
+/// runtime: `run_prepare` roda sob `catch_unwind` — pânico vira
+/// `prepare_fail{build_error}` + linha `failed` (B2). Sem isso, um pânico
+/// deixava a linha em `preparing` e o job empacado até o watchdog de 60min.
 pub fn spawn_prepare(state: AppState, job_id: Uuid, spec: PrepareSpec) {
     tokio::spawn(async move {
-        run_prepare(&state, job_id, &spec).await;
+        let caught = futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
+            run_prepare(&state, job_id, &spec),
+        ))
+        .await;
+        if let Err(payload) = caught {
+            // O payload do pânico pode carregar dados do spec: nunca logar o
+            // conteúdo, só o fato + kind (não-segredo, literal server-side).
+            let hint = payload
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| payload.downcast_ref::<String>().map(|s| s.as_str()))
+                .unwrap_or("panic");
+            tracing::error!(job_id = %job_id, kind = %spec.kind, panic = %hint, "worker de preparação panicou");
+            fail_prepare(
+                &state,
+                job_id,
+                None,
+                false,
+                "build_error",
+                fail_message("build_error"),
+            )
+            .await;
+        }
     });
 }
 
@@ -387,13 +475,27 @@ struct ResolvedPackage {
 }
 
 /// Report de progresso best-effort (falha nunca aborta a preparação).
+/// Toca `updated_at` junto: heartbeat do worker para o recovery —
+///
+/// `recover_stale_prepares` re-spawna `preparing` com `updated_at` > 10min;
+/// sem heartbeat, builds de horas pareceriam órfãos e seriam re-spawnados.
 async fn report_progress(state: &AppState, job_id: &str, message: &str, progress: f64) {
+    touch_prepare(&state.pool, job_id).await;
     let _ = state
         .manager
         .report_phase(
             job_id,
             &prepare_report_body("packaging_dataset", message, progress),
         )
+        .await;
+}
+
+/// Heartbeat do worker (B2): `updated_at=now()` para o recovery distinguir
+/// worker vivo de órfão. Best-effort como o resto do worker.
+async fn touch_prepare(pool: &sqlx::PgPool, job_id: &str) {
+    let _ = sqlx::query("UPDATE job_prepares SET updated_at = now() WHERE job_id = $1::uuid")
+        .bind(job_id)
+        .execute(pool)
         .await;
 }
 
@@ -565,10 +667,16 @@ fn fail_message(code: &str) -> &'static str {
 /// Corpo do worker: cancel-check → reuso/build → complete/fail.
 async fn run_prepare(state: &AppState, job_id: Uuid, spec: &PrepareSpec) {
     let job_id_str = job_id.to_string();
-    let _ = sqlx::query("UPDATE job_prepares SET updated_at = now() WHERE job_id = $1")
-        .bind(job_id)
-        .execute(&state.pool)
-        .await;
+    touch_prepare(&state.pool, &job_id_str).await;
+    // Gancho de teste (B2): kind reservado que panica de propósito para
+    // exercitar o `catch_unwind` do `spawn_prepare`. Inalcançável via HTTP —
+    // os handlers constroem `PrepareSpec` com kinds literais server-side
+    // (`yolo_train`, `autotracker`, `autolabel`, `diffusion_train`,
+    // `yolo_predict`); só chega aqui via linha semeada direto no banco
+    // (mesmo nível de confiança de qualquer escrita no DB).
+    if spec.kind == "__test_panic__" {
+        panic!("prepare worker panic hook (test-only kind)");
+    }
     report_progress(state, &job_id_str, "preparando dataset", 0.02).await;
 
     // (a) Cancelamento: abort em `preparing` ⇒ `cancelling` no manager.
@@ -600,7 +708,12 @@ async fn run_prepare(state: &AppState, job_id: Uuid, spec: &PrepareSpec) {
         }
         None => {
             report_progress(state, &job_id_str, "empacotando dataset", 0.1).await;
-            match build_for_spec(state, spec).await {
+            // Fase longa (S3+zip, minutos em datasets grandes): heartbeat
+            // antes e depois para o recovery não ver `updated_at` parado.
+            touch_prepare(&state.pool, &job_id_str).await;
+            let built = build_for_spec(state, spec).await;
+            touch_prepare(&state.pool, &job_id_str).await;
+            match built {
                 Ok(p) => {
                     report_progress(state, &job_id_str, "pacote pronto", 0.9).await;
                     p

@@ -15,6 +15,8 @@ export function jobStatusToBadgeVariant(status: string): BadgeVariant {
       return "ready";
     case "running":
       return "brand";
+    case "preparing":
+    case "dispatched":
     case "queued":
     case "cancelling":
       return "alert";

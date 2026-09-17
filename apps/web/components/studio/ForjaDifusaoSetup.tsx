@@ -724,7 +724,9 @@ export default function ForjaDifusaoSetup({
       });
 
       showToast(
-        `Job de difusão LoRA criado (posição ${result.queuePosition ?? "—"} na fila).`,
+        result.status === "preparing"
+          ? "Treino LoRA aceito — preparando pacote (empacotando dataset…). Acompanhe no Centro de Ações."
+          : `Job de difusão LoRA criado (posição ${result.queuePosition ?? "—"} na fila).`,
         "success",
       );
 

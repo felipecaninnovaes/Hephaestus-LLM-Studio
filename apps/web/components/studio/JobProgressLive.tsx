@@ -26,6 +26,7 @@ export interface JobProgressLiveProps {
 const PHASE_LABELS: Record<string, string> = {
   init: "Inicialização",
   preparing: "Preparação",
+  packaging_dataset: "Empacotando dataset",
   downloading: "Download de Pesos",
   loading_model: "Carregando Modelo",
   quantizing: "Quantização NF4/BNB",

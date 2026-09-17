@@ -409,9 +409,11 @@ export default function GenerationPanel() {
         setActiveJobId(res.jobId);
 
         showToast(
-          res.queuePosition
-            ? `Job enfileirado (posição ${res.queuePosition})`
-            : "Geração iniciada!",
+          res.status === "preparing"
+            ? "Geração aceita — preparando pacote (empacotando dataset…)."
+            : res.queuePosition
+              ? `Job enfileirado (posição ${res.queuePosition})`
+              : "Geração iniciada!",
           "info",
         );
 

@@ -40,7 +40,9 @@ export function JobLogViewer({
 }: JobLogViewerProps) {
   const isActive =
     job.status === "running" ||
+    job.status === "preparing" ||
     job.status === "queued" ||
+    job.status === "dispatched" ||
     job.status === "cancelling";
 
   // Expandido por padrão para jobs ativos ou se defaultOpen for fornecido

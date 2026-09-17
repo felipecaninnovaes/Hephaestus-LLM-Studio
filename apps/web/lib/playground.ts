@@ -3,6 +3,7 @@ import type {
   DiffusionGenerateJobRequest,
   PredictJobRequest,
   PredictionsData,
+  SubmitJobResponse,
 } from "@/types/studio";
 
 /**
@@ -12,7 +13,7 @@ import type {
  */
 export function startDiffusionGenerateJob(
   params: DiffusionGenerateJobRequest,
-): Promise<{ jobId: string; status: string; queuePosition?: number }> {
+): Promise<SubmitJobResponse> {
   // Build body: only include baseModel or customModelId (XOR), never legacy weights/loraScale
   const body: Record<string, unknown> = {};
   if (params.customModelId) {
@@ -90,7 +91,7 @@ export async function getGeneratedBatchResults(
  */
 export function startPredictJob(
   params: PredictJobRequest,
-): Promise<{ jobId: string; status: string; queuePosition?: number }> {
+): Promise<SubmitJobResponse> {
   return apiFetch("/api/jobs/predict", {
     method: "POST",
     body: params,

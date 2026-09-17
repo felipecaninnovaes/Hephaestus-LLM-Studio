@@ -26,12 +26,26 @@ export const JOB_STATUS_CONFIG: Record<
     label: string;
   }
 > = {
+  preparing: {
+    borderClass: "bg-status-alert",
+    badgeClass: "bg-status-alert/15 text-amber-300 border-status-alert/30 backdrop-blur-sm",
+    iconBg: "bg-status-alert/15 backdrop-blur-sm",
+    iconColor: "text-amber-400",
+    label: "Preparando",
+  },
   queued: {
     borderClass: "bg-status-alert",
     badgeClass: "bg-status-alert/15 text-amber-300 border-status-alert/30 backdrop-blur-sm",
     iconBg: "bg-status-alert/15 backdrop-blur-sm",
     iconColor: "text-amber-400",
     label: "Na fila",
+  },
+  dispatched: {
+    borderClass: "bg-status-alert",
+    badgeClass: "bg-status-alert/15 text-amber-300 border-status-alert/30 backdrop-blur-sm",
+    iconBg: "bg-status-alert/15 backdrop-blur-sm",
+    iconColor: "text-amber-400",
+    label: "Despachando",
   },
   running: {
     borderClass: "bg-brand-500",
@@ -152,7 +166,9 @@ export function JobListItem({
 }: JobListItemProps) {
   const config = JOB_STATUS_CONFIG[job.status] || JOB_STATUS_CONFIG.queued;
   const isActive =
+    job.status === "preparing" ||
     job.status === "queued" ||
+    job.status === "dispatched" ||
     job.status === "running" ||
     job.status === "cancelling";
   const pct = Math.round((job.progress ?? 0) * 100);

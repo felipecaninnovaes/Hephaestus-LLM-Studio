@@ -183,12 +183,54 @@ export interface SearchResponse {
 /* ── Jobs (F4.7) ──────────────────────────────────────────── */
 
 export type JobStatus =
+  | "preparing"
   | "queued"
+  | "dispatched"
   | "running"
   | "cancelling"
   | "done"
   | "failed"
   | "cancelled";
+
+/* ── Submit assíncrono (ADR-0025): 202 {jobId, status, queuePosition} ── */
+
+export interface SubmitJobResponse {
+  jobId: string;
+  status: JobStatus;
+  queuePosition: number | null;
+}
+
+/** Status com job em andamento (polling/SSE ativos). Terminal = done|failed|cancelled. */
+const ACTIVE_JOB_STATUSES: JobStatus[] = [
+  "preparing",
+  "queued",
+  "dispatched",
+  "running",
+  "cancelling",
+];
+
+export function isActiveJobStatus(status: JobStatus): boolean {
+  return ACTIVE_JOB_STATUSES.includes(status);
+}
+
+export function isTerminalJobStatus(status: JobStatus): boolean {
+  return status === "done" || status === "failed" || status === "cancelled";
+}
+
+/**
+ * Erro legível de job falho. Falha de preparação (ADR-0025) chega como
+ * `prepare_failed:<code>:<msg>` — expõe o motivo sem o prefixo de máquina.
+ */
+export function friendlyJobError(error: string | null | undefined): string | null {
+  if (!error) return null;
+  const m = /^prepare_failed:([^:]*):([\s\S]*)$/.exec(error);
+  if (m) {
+    const code = m[1].trim() || "prep";
+    const msg = m[2].trim() || "falha na preparação do pacote.";
+    return `Falha ao preparar o pacote (${code}): ${msg}`;
+  }
+  return error;
+}
 
 export type JobKind = "yolo_train" | "autotracker" | "yolo_predict" | "autolabel" | "diffusion" | "diffusion_train" | "diffusion_generate";
 

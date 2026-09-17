@@ -175,12 +175,14 @@ export default function PlaygroundPage() {
         if (activeRef.current) {
           setJobs(
             res.items.filter(
-              (j) =>
+                (j) =>
                 j.mode === "predict" &&
                 (j.status === "done" ||
                   j.status === "failed" ||
                   j.status === "running" ||
+                  j.status === "preparing" ||
                   j.status === "queued" ||
+                  j.status === "dispatched" ||
                   j.status === "cancelling"),
             ),
           );
@@ -300,7 +302,9 @@ export default function PlaygroundPage() {
         conf,
         orchestratorId: selectedOrchestratorId || undefined,
       });
-      showToast("Inferência iniciada — acompanhe nas Execuções.", "success", {
+      showToast(res.status === "preparing"
+        ? "Inferência aceita — preparando pacote. Acompanhe nas Execuções."
+        : "Inferência iniciada — acompanhe nas Execuções.", "success", {
         label: "Ver Execuções",
         onClick: () => router.push(`/jobs?job=${res.jobId}`),
       });
@@ -342,7 +346,7 @@ export default function PlaygroundPage() {
   const doneJobs = jobs.filter((j) => j.status === "done");
   const failedJobs = jobs.filter((j) => j.status === "failed");
   const activeJobs = jobs.filter(
-    (j) => j.status === "queued" || j.status === "running" || j.status === "cancelling",
+    (j) => j.status === "preparing" || j.status === "queued" || j.status === "dispatched" || j.status === "running" || j.status === "cancelling",
   );
 
   const modelsOnly = !loadingModels && models.length === 0;
@@ -630,12 +634,14 @@ export default function PlaygroundPage() {
                 listJobs().then((res) => {
                   setJobs(
                     res.items.filter(
-                      (j) =>
+                        (j) =>
                         j.mode === "predict" &&
                         (j.status === "done" ||
                           j.status === "failed" ||
                           j.status === "running" ||
+                          j.status === "preparing" ||
                           j.status === "queued" ||
+                          j.status === "dispatched" ||
                           j.status === "cancelling"),
                     ),
                   );

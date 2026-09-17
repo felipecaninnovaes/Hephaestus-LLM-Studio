@@ -8,11 +8,12 @@ import type {
   JobDeletedResponse,
   JobListResponse,
   JobMetricsResponse,
+  SubmitJobResponse,
   Telemetry,
   YoloAugment,
 } from "@/types/studio";
 
-/** POST /api/jobs/yolo — cria job de treino YOLO. Retorna 202. */
+/** POST /api/jobs/yolo — cria job de treino YOLO. Retorna 202 (preparing|queued). */
 export function startYoloJob(params: {
   datasetId: string;
   model: string;
@@ -25,7 +26,7 @@ export function startYoloJob(params: {
   weights?: string | null;
   orchestratorId?: string | null;
   outputName?: string | null;
-}): Promise<{ jobId: string; status: string; queuePosition?: number }> {
+}): Promise<SubmitJobResponse> {
   const { weights, orchestratorId, outputName, ...rest } = params;
   const body: Record<string, unknown> = { ...rest };
   if (weights) body.weights = weights;
@@ -37,7 +38,7 @@ export function startYoloJob(params: {
   });
 }
 
-/** POST /api/jobs/diffusion — cria job de treino de difusão LoRA. Retorna 202. */
+/** POST /api/jobs/diffusion — cria job de treino de difusão LoRA. Retorna 202 (preparing|queued). */
 export function startDiffusionJob(params: {
   datasetId: string;
   baseModel: "sdxl" | "flux" | "sd15";
@@ -63,7 +64,7 @@ export function startDiffusionJob(params: {
   enableBucket?: boolean;
   checkpointInterval?: number;
   epochOffset?: number;
-}): Promise<{ jobId: string; status: string; queuePosition?: number }> {
+}): Promise<SubmitJobResponse> {
   const {
     weights,
     orchestratorId,

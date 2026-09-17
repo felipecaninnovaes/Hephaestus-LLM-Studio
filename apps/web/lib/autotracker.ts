@@ -3,16 +3,17 @@ import type {
   AutotrackerApplyRequest,
   AutotrackerApplyResponse,
   AutotrackerPreviewResponse,
+  SubmitJobResponse,
 } from "@/types/studio";
 
-/** POST /api/jobs/autotracker — cria job de AutoTracker. Retorna 202. */
+/** POST /api/jobs/autotracker — cria job de AutoTracker. Retorna 202 (preparing|queued). */
 export function startAutotrackerJob(params: {
   datasetId: string;
   model?: string;
   conf?: number;
   modelId?: string;
   orchestratorId?: string | null;
-}): Promise<{ jobId: string; status: string; queuePosition?: number }> {
+}): Promise<SubmitJobResponse> {
   return apiFetch("/api/jobs/autotracker", {
     method: "POST",
     body: params,

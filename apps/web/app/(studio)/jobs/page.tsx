@@ -71,7 +71,9 @@ const SPARK_COLORS: Record<string, string> = {
 };
 
 const STATUS_LABEL: Record<JobStatus, string> = {
+  preparing: "Preparando",
   queued: "Na fila",
+  dispatched: "Despachando",
   running: "Executando",
   cancelling: "Cancelando",
   done: "Concluído",
@@ -80,7 +82,7 @@ const STATUS_LABEL: Record<JobStatus, string> = {
 };
 
 /** Status que indicam job em andamento (ativação de polling). */
-const ACTIVE_STATUSES: JobStatus[] = ["queued", "running", "cancelling"];
+const ACTIVE_STATUSES: JobStatus[] = ["preparing", "queued", "dispatched", "running", "cancelling"];
 
 function isActive(status: JobStatus): boolean {
   return ACTIVE_STATUSES.includes(status);
@@ -901,7 +903,12 @@ function JobsPageContent() {
                               </span>
                             )}
                           </span>
-                        ) : selectedJob.status === "queued" ? (
+                        ) : selectedJob.status === "preparing" ? (
+                          <span className="flex items-center gap-1.5 text-zinc-500">
+                            <span>·</span>
+                            <span>Preparando pacote</span>
+                          </span>
+                        ) : selectedJob.status === "queued" || selectedJob.status === "dispatched" ? (
                           <span className="flex items-center gap-1.5 text-zinc-500">
                             <span>·</span>
                             <span>Aguardando nó</span>

@@ -43,7 +43,7 @@ import { jobCapabilities, imageProgressLabel } from "@/lib/jobCapabilities";
 import { ApiError } from "@/lib/api";
 import { copyToClipboard } from "@/lib/clipboard";
 import { formatBytes, formatDuration, formatRelativeTime } from "@/lib/format";
-import { autotrackerErrorMessage, autolabelErrorMessage } from "@/types/studio";
+import { autotrackerErrorMessage, autolabelErrorMessage, friendlyJobError } from "@/types/studio";
 import type {
   Job,
   JobArtifact,
@@ -549,7 +549,9 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
       jobs.filter(
         (j) =>
           j.status === "running" ||
+          j.status === "preparing" ||
           j.status === "queued" ||
+          j.status === "dispatched" ||
           j.status === "cancelling",
       ).length,
     [jobs],
@@ -576,7 +578,9 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
       list = list.filter(
         (j) =>
           j.status === "running" ||
+          j.status === "preparing" ||
           j.status === "queued" ||
+          j.status === "dispatched" ||
           j.status === "cancelling",
       );
     }
@@ -948,7 +952,9 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                       const isExpanded = expandedId === job.id;
                       const isActive =
                         job.status === "running" ||
+                        job.status === "preparing" ||
                         job.status === "queued" ||
+                        job.status === "dispatched" ||
                         job.status === "cancelling";
                       const isRunning = job.status === "running";
                       const pct = Math.round((job.progress ?? 0) * 100);
@@ -1250,7 +1256,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
                                       </button>
                                     </div>
                                     <p className="whitespace-pre-wrap break-all text-3xs text-rose-300/90 font-mono max-h-32 overflow-y-auto leading-relaxed select-text">
-                                      {job.error || job.queueReason}
+                                      {friendlyJobError(job.error) || job.queueReason}
                                     </p>
                                   </div>
                                 )}

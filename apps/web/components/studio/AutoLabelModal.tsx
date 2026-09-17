@@ -340,7 +340,9 @@ export default function AutoLabelModal({
 
       const result = await startAutolabelJob(payload);
       showToast(
-        `AutoLabel iniciado com sucesso (posição ${result.queuePosition ?? "—"} na fila).`,
+        result.status === "preparing"
+          ? "AutoLabel aceito — preparando pacote (empacotando dataset…). Acompanhe no Centro de Ações."
+          : `AutoLabel iniciado com sucesso (posição ${result.queuePosition ?? "—"} na fila).`,
         "success",
       );
       onClose();

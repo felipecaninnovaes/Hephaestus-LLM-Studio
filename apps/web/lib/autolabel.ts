@@ -4,12 +4,13 @@ import type {
   AutolabelApplyResponse,
   AutolabelJobRequest,
   AutolabelPreviewResponse,
+  SubmitJobResponse,
 } from "@/types/studio";
 
-/** POST /api/jobs/autolabel — cria job de AutoLabel. Retorna 202. */
+/** POST /api/jobs/autolabel — cria job de AutoLabel. Retorna 202 (preparing|queued). */
 export function startAutolabelJob(
   params: AutolabelJobRequest,
-): Promise<{ jobId: string; status: string; queuePosition?: number }> {
+): Promise<SubmitJobResponse> {
   return apiFetch("/api/jobs/autolabel", {
     method: "POST",
     body: params,

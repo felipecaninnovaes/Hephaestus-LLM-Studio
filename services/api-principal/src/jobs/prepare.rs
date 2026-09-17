@@ -272,7 +272,7 @@ fn queue_unavailable() -> Response {
 ///
 /// Anti-TOCTOU (B1): o SELECT dedupe acima é só fast-path — dois submits
 /// simultâneos passam por ele juntos. A vitória única vem do índice
-/// `job_prepares_dedupe` (migration 0015): o INSERT usa `ON CONFLICT DO
+/// `job_prepares_dedupe` (migration 0016): o INSERT usa `ON CONFLICT DO
 /// NOTHING`; 0 linhas ⇒ outro aceite venceu em voo ⇒ re-SELECT pega o
 /// `job_id` vencedor, aborta-se o job recém-criado (best-effort) e responde-se
 /// 202 com o vencedor. O micro-gasto (criar+abortar 1 job) é aceitável frente
@@ -336,7 +336,7 @@ pub async fn accept_job_preparing(
     };
 
     // 3. INSERT local com arbiter do índice parcial `job_prepares_dedupe`
-    //    (dono P4a — migration 0015). 1 linha ⇒ vencemos; 0 linhas ⇒ outro
+    //    (dono P4a — migration 0016). 1 linha ⇒ vencemos; 0 linhas ⇒ outro
     //    aceite em voo registrou o mesmo fingerprint primeiro.
     let spec_json = serde_json::to_value(&spec).unwrap_or(serde_json::json!({}));
     let inserted = sqlx::query(

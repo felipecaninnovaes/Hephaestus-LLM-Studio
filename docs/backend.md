@@ -284,6 +284,46 @@ ws:       /ws/jobs/:id/logs?since_seq=, /ws/telemetry
   - **`GET /api/jobs/:id/metrics`** — o array `items` passa a conter **só pontos de dados de treino** (linhas com ao menos um valor numérico: `loss`, `lr`, `box_loss`, `cls_loss`, `dfl_loss`, `mAP50`, `mAP50-95`). Linhas de status/fase do engine (boot, `training_started`, progresso por imagem) não entram mais no array — classificação feita no orquestrador (`is_training_metric`, `orchestrator/src/lib.rs:361-368`, D1 da ADR-0024). Jobs antigos (pré-migration 0013) mantêm linhas de status dentro de `jobs.metrics` — o filtro B do front (`lib/jobMetrics.ts`) cobre a leitura; sem backfill.
   - **`Job.phase` / `phaseMessage`:** agora têm origem direta nas colunas `jobs.phase` / `jobs.message` (migration `0013_job_status.sql`: `phase TEXT`, `message TEXT`). O manager persiste o ÚLTIMO status reportado (`report_job` grava `COALESCE($n, phase)` — D3 da ADR-0024), incluindo os reports terminais (done→phase `completed`, failed→`error` com mensagem). `to_job_response` lê essas colunas com fallback de status-para-fase quando `phase` é None; a derivação a partir do último item do array metrics é REMOVIDA (D4 da ADR-0024). `vramUsedGb` permanece derivado da última métrica.
   - Spec OpenAPI: 0.28.0 (`packages/contracts/openapi.yaml`).
+- Nota submit assíncrono (ADR-0025, spec 0.29.0, `packages/contracts/openapi.yaml`):
+  - **Aceite <1s:** os 5 submits com dataset (`/yolo`, `/diffusion`, `/predict`,
+    `/autolabel`, `/autotracker`) viram aceite via `accept_job_preparing`
+    (`services/api-principal/src/jobs/prepare.rs`): dedupe → `create_job` no
+    manager com `package_ref: null` + `params.prepare = {kind, datasetId,
+    fingerprint}` ⇒ 202 `SubmitJobResponse{jobId,status: preparing|queued}`
+    (`preparing` = pacote em construção; `queued` = pacote reaproveitado/legado).
+    Dedupe anti-TOCTOU: fast-path SELECT + arbiter no índice único parcial
+    `job_prepares_dedupe` (`ON CONFLICT DO NOTHING` — perdedor aborta o job
+    recém-criado e responde 202 com o vencedor).
+  - **Worker de preparação:** `tokio::spawn` no api-principal sob `catch_unwind`
+    (pânico vira `prepare_fail`, nunca derruba o servidor); heartbeat via
+    `updated_at` (`touch_prepare`); cancel-check (abort em `preparing` ⇒
+    `cancelling` no manager, worker desiste); fingerprint sha1 sobre escopo +
+    frescor (`images.created_at`); reuso de `dataset_versions` via
+    `manifest->>'fingerprint'` (+ `md5_zip`/`bytes` de `packages/<vid>/manifest.json`);
+    recovery no boot (`recover_stale_prepares`: `preparing` com `updated_at` >
+    10min ⇒ `attempts+1`, teto 3). Build YOLO via `build_package_filtered(…,
+    fingerprint)` — download `buffer_unordered(PACKAGE_FETCH_CONCURRENCY||8)` +
+    md5 do zip em streaming (pico O(1), nunca o zip inteiro em RAM).
+  - **Canal de progresso:** reports `prepare_report_body` com `phase`
+    `packaging_*` (`packaging_dataset` = "Empacotando dataset"); marcos
+    0.02/0.1/0.6(reuso)/0.9 (sem % por imagem real dentro do download).
+  - **Erro assíncrono:** `prepare_fail` grava `params.error =
+    'prepare_failed:<code>:<message>'` ⇒ `status: failed` lido via
+    `GET /api/jobs/:id`.
+  - **Manager (internas, Bearer `MANAGER_TOKEN`, fora do contrato público):**
+    `create_job` aceita `package_ref: null` + `params.prepare` ⇒ `preparing`
+    (`queue_position` NULL); `POST /internal/jobs/:id/prepare-complete`
+    (`preparing` → `queued`, persiste `package_ref` + `dataset_version_id` e
+    renova `created_at` = touch anti-GC); `POST /internal/jobs/:id/prepare-fail`
+    (`preparing` → `failed`); watchdog `preparing` com `created_at` > 60min ⇒
+    `failed` (`prepare_timeout`); `gc_dataset_versions` apaga versões >7d sem
+    referência (`params.package_ref.version_id`, nunca referenciada) + defesa
+    contra corrida de reuso (pula datasets com job não-terminal e
+    `params.prepare.datasetId`); `recover_jobs`/watchdog offline NÃO tocam
+    `preparing` (recuperação de prepares pertence ao principal).
+  - **Harness de teste (incidente 17/09):** `scripts/test-db.sh` + harnesses
+    (`datasets_db.rs`, `manager_db.rs`) PANICAM se o banco não for `studio_test`
+    (guarda mecânica pós-DELETE acidental do dataset do usuário no DB `studio`).
 
 ## 10. Schema Postgres (só local — principal/manager)
 
@@ -388,7 +428,10 @@ jobs(id UUID PK, kind TEXT, dataset_id UUID NULL FK, engine TEXT, model TEXT, mo
   orchestrator_id UUID NULL FK, vram_min_gb INT, progress FLOAT,
   epoch INT, step INT, metrics JSONB, created_at TIMESTAMPTZ, finished_at TIMESTAMPTZ NULL,
   phase TEXT, message TEXT);
-  -- IMPLEMENTADO (Fatia 4; `migrations/0006_jobs.sql`): ciclo `queued→dispatched→preparing→running→done|failed|cancelled`.
+  -- IMPLEMENTADO (Fatia 4; `migrations/0006_jobs.sql`): ciclo `preparing→queued→dispatched→running→done|failed|cancelled`.
+  -- ADR-0025: submits com dataset nascem `preparing` (`package_ref: null` + `params.prepare = {kind,datasetId,fingerprint}`);
+  -- `prepare-complete` ⇒ `queued`, `prepare-fail` ⇒ `failed` (`params.error = 'prepare_failed:<code>:<msg>'`),
+  -- watchdog `preparing` com `created_at` > 60min ⇒ `failed` (`prepare_timeout`); abort em `preparing` ⇒ `cancelling`.
   -- CHECK de status inclui `cancelling` (janela transitória entre abort aceito e confirmação do orquestrador — ADR-0007 D3/D7).
   -- `dataset_id` FK ON DELETE SET NULL (T4); `orchestrator_id` FK ON DELETE SET NULL.
   -- `params` JSONB inclui `package_ref` (snake_case): `{version_id,key,md5_zip,bytes}` (D1b ADR-0007).
@@ -397,6 +440,17 @@ jobs(id UUID PK, kind TEXT, dataset_id UUID NULL FK, engine TEXT, model TEXT, mo
   -- IMPLEMENTADO (AC-006-A; `migrations/0013_job_status.sql`): `phase TEXT` e `message TEXT` — snapshot do último status reportado (ADR-0024 D3).
   -- `report_job` grava `COALESCE($n, phase)`; o array `metrics` passa a conter só pontos de treino (linhas de status/classificação ficam fora — D1).
   -- Índices: `jobs(status)`, `jobs(dataset_id)`, `jobs(created_at)`.
+job_prepares(job_id UUID PK, dataset_id UUID FK CASCADE, fingerprint TEXT NOT NULL,
+  spec JSONB NOT NULL DEFAULT '{}'::jsonb,
+  state TEXT NOT NULL DEFAULT 'preparing' CHECK (state IN ('preparing','done','failed','cancelled')),
+  attempts INT NOT NULL DEFAULT 0 CHECK (attempts >= 0), error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now());
+  -- IMPLEMENTADO (ADR-0025; `migrations/0015_job_prepares.sql`): 1 linha por job aceito
+  -- em `preparing`; worker avança preparing → done/failed/cancelled; recovery no boot
+  -- re-spawna `preparing` com `attempts < 3`.
+  -- IMPLEMENTADO (ADR-0025 B1; `migrations/0016_job_prepares_dedupe.sql`): índice único
+  -- parcial `job_prepares_dedupe ON (dataset_id, fingerprint) WHERE state = 'preparing'`
+  -- (arbiter anti-TOCTOU do dedupe; 0016 separada porque a 0015 já vigorava em dev).
 job_artifacts(id UUID PK, job_id UUID FK, kind TEXT, path TEXT, md5 TEXT, bytes BIGINT);
   -- IMPLEMENTADO (Fatia 4; `migrations/0006_jobs.sql`): artefatos retornados pelo orquestrador (ADR-0007 D8).
   -- `job_id` FK ON DELETE CASCADE; `md5` CHECK hex 32; `bytes` CHECK >= 0.
@@ -428,7 +482,7 @@ generations(id UUID PK, job_id UUID NULL FK jobs ON DELETE SET NULL,
   -- Índices: `generations(created_at DESC)`, `generations(job_id)`, `generations(deleted_at) WHERE deleted_at IS NOT NULL`.
 ```
 
-- Índices: `images(dataset_id)`, `images(dataset_id, split)`, `images(dataset_id, filename) parcial ativa + images(dataset_id) parcial lixeira (0005)`, `boxes(image_id)`, `boxes(class_id)`, `videos(dataset_id)`, `classes(dataset_id, idx)`, `image_embeddings(dataset_id, model)` + HNSW do embedding (0004), `orchestrators(status)`, `jobs(status)`, `jobs(dataset_id)`, `jobs(created_at)`, `job_artifacts(job_id)`, `dataset_versions(dataset_id, created_at)`, `generations(created_at DESC)`, `generations(job_id)`, `generations(deleted_at) WHERE deleted_at IS NOT NULL`.
+- Índices: `images(dataset_id)`, `images(dataset_id, split)`, `images(dataset_id, filename) parcial ativa + images(dataset_id) parcial lixeira (0005)`, `boxes(image_id)`, `boxes(class_id)`, `videos(dataset_id)`, `classes(dataset_id, idx)`, `image_embeddings(dataset_id, model)` + HNSW do embedding (0004), `orchestrators(status)`, `jobs(status)`, `jobs(dataset_id)`, `jobs(created_at)`, `job_artifacts(job_id)`, `job_prepares(dataset_id, fingerprint, state)` (0015) + único parcial `job_prepares_dedupe` (0016), `dataset_versions(dataset_id, created_at)`, `generations(created_at DESC)`, `generations(job_id)`, `generations(deleted_at) WHERE deleted_at IS NOT NULL`.
 - Nota (ADR-0002 D1, casing — resolvido; era ADR-0001 T3 "a definir antes da Fatia 3"): wire camelCase em `/api/*` (`userId`, `sizeBytes`, `lastModified`, settings `hfToken`…); colunas SQL snake_case; valores de enum, `Error.code` e artefatos de transporte (`manifest.json`, `config.yaml`, SQLite do orquestrador) snake_case.
 - Regra: contadores do dataset recalculados por função única `heph_refresh_dataset_counters(uuid)` — IMPLEMENTADO (Fatia 3b; `migrations/0003_images.sql`, fecha ADR-0002 T2): recalcula `images_count`/`labeled_count`/`size_bytes` e deriva `status` (`needs_labeling`/`in_progress`/`ready`) a partir das tabelas-fato, nunca `+=` (drift impossível; `UPDATE` com guarda `IS DISTINCT FROM` evita churn de `updated_at`); disparada por triggers `AFTER INSERT OR UPDATE OR DELETE` em `images`, `videos` e `boxes`/`captions` (via lookup de `dataset_id`); a ordem trigger-usuário × cascata-RJ do `DELETE FROM images` deixa de importar (o último disparo vê o estado final); `labeled` = imagem com ≥1 box (format `yolo_txt`) **ou** linha em `captions` (demais formats) — taxonomia R9; `size_bytes` soma `images` + `videos`. Chaves externas com `ON DELETE CASCADE` de dataset→filhos. O invariante `labeled_count <= images_count` continua sem `CHECK` (não deferrável) — é obrigação do trigger.
 - **Split:** coluna `images.split (train|val)`; padrão 80/20 estratificado no package com override manual na galeria (seletor train/val por imagem).

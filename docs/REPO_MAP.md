@@ -42,12 +42,15 @@ GPU real (TrueNAS): `infra/compose.gpu.yaml` / runbook `infra/README-gpu.md`.
 
 ## 3. Posse de Dados (Postgres único, schema compartilhado)
 
-Migrations canônicas: `services/api-principal/migrations/0001..0014.sql`.
+Migrations canônicas: `services/api-principal/migrations/0001..0016.sql`.
 - **Domínio aplicação/dados (escrita: api-principal):** `users`, `auth_state`,
-  `datasets`, `dataset_versions`, `images`, `videos`, `boxes`, `classes`,
-  `captions`, `image_embeddings` (pgvector), `models`, `generations`.
-- **Domínio execução (escrita: manager/orchestrator):** `jobs` (inclui
-  `phase`/`message` — ADR-0024), `job_artifacts`, `orchestrators`.
+  `datasets`, `dataset_versions`, `job_prepares` (aceite assíncrono ADR-0025 —
+  0015 tabela, 0016 índice único parcial `state='preparing'`), `images`,
+  `videos`, `boxes`, `classes`, `captions`, `image_embeddings` (pgvector),
+  `models`, `generations`.
+- **Domínio execução (escrita: manager/orchestrator):** `jobs` (status inclui
+  `preparing`/`dispatched` + `phase`/`message` — ADR-0024/ADR-0025),
+  `job_artifacts`, `orchestrators`.
 - Políticas de hardware/engines: `packages/policies/vram-table.yaml`,
   `packages/policies/engines.yaml`. Contrato HTTP: `packages/contracts/openapi.yaml`.
 
@@ -66,7 +69,10 @@ Fonte: tabela de contrato em `services/api-principal/src/auth/routes.rs`
   `GET /:id/search`, `POST /:id/search/by-image`.
 - **Jobs/treino:** `GET /api/jobs`, `/jobs/queue`; `POST /jobs/yolo`,
   `/jobs/diffusion`, `/jobs/predict`, `/jobs/autolabel`, `/jobs/autotracker`,
-  `/jobs/cleanup`, `/jobs/:id/abort`; `GET /jobs/:id[/artifacts|/metrics|/events]`;
+  `/jobs/cleanup`, `/jobs/:id/abort` (abort em `preparing` ⇒ `cancelling`);
+  `GET /jobs/:id[/artifacts|/metrics|/events]`; submits com dataset aceitam
+  em <1s com 202 `{jobId,status: preparing|queued}` (ADR-0025, spec 0.29.0 —
+  erro assíncrono `prepare_failed:<code>:<msg>` lido via `GET /jobs/:id`);
   previews `POST /jobs/:id/autolabel|autotracker/preview` + `/apply`;
   telemetria `GET /api/telemetry`; geração `POST /jobs/diffusion/generate`.
 - **Modelos/pesos:** `GET /api/models[/:id]`, `POST /api/models/upload|download`.
@@ -77,7 +83,9 @@ Fonte: tabela de contrato em `services/api-principal/src/auth/routes.rs`
   `GET /api/storage/usage`.
 
 Rotas internas manager (`:8081/internal/*`: dispatch loop, report, heartbeat,
-telemetry, cleanup, artifacts, adopt/revoke) e orchestrator
+telemetry, cleanup, artifacts, adopt/revoke, `POST /internal/jobs/:id/prepare-complete`
+e `prepare-fail` — ciclo `preparing` ADR-0025, Bearer `MANAGER_TOKEN`, fora do
+contrato público) e orchestrator
 (`:8082/internal/dispatch|abort|pairing/verify`) nunca são chamadas pelo browser.
 
 ## 5. Módulos do Frontend (`apps/web/app/`)

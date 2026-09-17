@@ -563,6 +563,19 @@ export interface DiffusionGenerateJobRequest {
   batchSize?: number;
   loras?: { modelId: string; scale: number }[];
   orchestratorId?: string | null;
+  /* img2img (fatia feat/img2img — openapi 30140ea): XOR, no máximo um. */
+  initImageId?: string | null;
+  initGenerationId?: string | null;
+  initStrength?: number;
+}
+
+/* Input efêmero p/ img2img — 201 de POST /api/generations/inputs. */
+export interface GenerationInputUploaded {
+  id: string;
+  filename: string;
+  mimeType: string;
+  width: number;
+  height: number;
 }
 
 export function diffusionGenerateErrorMessage(code: string): string {

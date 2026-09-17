@@ -1,6 +1,7 @@
 import { apiFetch, ApiError } from "@/lib/api";
 import type {
   DiffusionGenerateJobRequest,
+  GenerationInputUploaded,
   PredictJobRequest,
   PredictionsData,
   SubmitJobResponse,
@@ -33,10 +34,56 @@ export function startDiffusionGenerateJob(
   if (params.batchSize && params.batchSize > 1) body.batchSize = params.batchSize;
   if (params.loras && params.loras.length > 0) body.loras = params.loras;
   if (params.orchestratorId) body.orchestratorId = params.orchestratorId;
+  // img2img (fatia feat/img2img — openapi 30140ea): XOR, nunca os dois ids;
+  // initStrength só segue quando há id presente (sem id o backend 400).
+  if (params.initImageId) {
+    body.initImageId = params.initImageId;
+  } else if (params.initGenerationId) {
+    body.initGenerationId = params.initGenerationId;
+  }
+  if (
+    (params.initImageId || params.initGenerationId) &&
+    params.initStrength != null
+  ) {
+    body.initStrength = params.initStrength;
+  }
 
   return apiFetch("/api/jobs/diffusion/generate", {
     method: "POST",
     body,
+  });
+}
+
+/* ── Upload de imagem inicial p/ img2img ────────────────────────── */
+
+/** MIMEs aceitos por POST /api/generations/inputs (contrato 30140ea). */
+const INIT_INPUT_ACCEPTED_MIMES = ["image/png", "image/jpeg", "image/webp"];
+/** Teto do contrato: 20 MiB. */
+const INIT_INPUT_MAX_BYTES = 20 * 1024 * 1024;
+
+/**
+ * POST /api/generations/inputs — envia imagem inicial efêmera p/ img2img.
+ * Campo único `file` em multipart/form-data; retorna 201
+ * { id, filename, mimeType, width, height } (usar `id` como `initImageId`).
+ * Validação client-side prévia (tipo + 20 MiB) com erro humanizado em pt-BR.
+ */
+export async function uploadGenerationInput(
+  file: File,
+): Promise<GenerationInputUploaded> {
+  if (!INIT_INPUT_ACCEPTED_MIMES.includes(file.type)) {
+    throw new Error("Tipo de arquivo inválido — envie PNG, JPEG ou WebP.");
+  }
+  if (file.size <= 0) {
+    throw new Error("Arquivo vazio — escolha uma imagem válida.");
+  }
+  if (file.size > INIT_INPUT_MAX_BYTES) {
+    throw new Error("Imagem excede 20 MiB — escolha um arquivo menor.");
+  }
+  const form = new FormData();
+  form.append("file", file, file.name);
+  return apiFetch<GenerationInputUploaded>("/api/generations/inputs", {
+    method: "POST",
+    body: form,
   });
 }
 

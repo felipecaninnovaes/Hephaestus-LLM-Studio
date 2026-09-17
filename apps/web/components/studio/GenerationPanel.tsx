@@ -26,25 +26,31 @@ import {
 	Select,
 	type SelectOption,
 	Slider,
+	Spinner,
 	showToast,
 } from "@/components/ui";
 import { useJobTelemetry } from "@/hooks/useJobTelemetry";
 import { ApiError } from "@/lib/api";
 import {
 	clearGeracaoForm,
+	consumeGeracaoInitSource,
 	createDefaultGeracaoForm,
 	GERACAO_APPLY_FORM_EVENT,
+	GERACAO_INIT_SOURCE_EVENT,
+	GERACAO_INIT_SOURCE_KEY,
 	loadGeracaoForm,
 	notifyGeracaoCompleted,
 	type PartialGeracaoForm,
 	saveGeracaoForm,
 } from "@/lib/geracao-storage";
+import { getGenerationDataUrl } from "@/lib/generations";
 import { getJob, getJobArtifacts, listJobs } from "@/lib/jobs";
 import { listModels } from "@/lib/models";
 import {
 	getGeneratedBatchResults,
 	getGeneratedImageUrl,
 	startDiffusionGenerateJob,
+	uploadGenerationInput,
 } from "@/lib/playground";
 import type {
 	DiffusionGenerateJobRequest,
@@ -125,6 +131,17 @@ const QUANTIZATION_OPTIONS: SelectOption<string>[] = [
 	},
 ];
 
+/* ── img2img (fatia feat/img2img, S5) ── */
+const INIT_STRENGTH_DEFAULT = 0.6;
+const INIT_STRENGTH_MIN = 0.05;
+const INIT_STRENGTH_MAX = 0.95;
+
+function clampInitStrength(v: number): number {
+	if (!Number.isFinite(v)) return INIT_STRENGTH_DEFAULT;
+	const stepped = Math.round(v / 0.05) * 0.05;
+	return Math.min(INIT_STRENGTH_MAX, Math.max(INIT_STRENGTH_MIN, stepped));
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    GenerationPanel — painel de geração v3 (G.7 fix — Vidro Óptico)
    Desktop: 2 colunas (controles 320-384px glass-card | resultado flex-1)
@@ -161,6 +178,29 @@ export default function GenerationPanel() {
 		string | null
 	>(null);
 	const [paramsOpen, setParamsOpen] = useState(true);
+
+	/* ── Imagem inicial img2img (S5): XOR upload-efêmero × galeria.
+	   Ids NUNCA persistem (efêmeros); só initStrength vai ao storage F1. */
+	const [initImageId, setInitImageId] = useState<string | null>(null);
+	const [initImageMeta, setInitImageMeta] = useState<{
+		filename: string;
+		width: number;
+		height: number;
+	} | null>(null);
+	const [initGenerationId, setInitGenerationId] = useState<string | null>(null);
+	const [initUploadPreview, setInitUploadPreview] = useState<string | null>(null);
+	const [initGalleryPreview, setInitGalleryPreview] = useState<string | null>(
+		null,
+	);
+	const [initStrength, setInitStrength] = useState(INIT_STRENGTH_DEFAULT);
+	const [initUploading, setInitUploading] = useState(false);
+	const [initDragOver, setInitDragOver] = useState(false);
+	const initFileRef = useRef<HTMLInputElement | null>(null);
+	/* Invalida upload em voo quando a origem troca (galeria/limpar): a
+	   última origem vence; o resultado obsoleto é descartado. */
+	const initUploadSeqRef = useRef(0);
+	/* Espelho do preview local p/ revogar o object URL ao desmontar. */
+	const initUploadPreviewRef = useRef<string | null>(null);
 
 	/* ── Execution state ── */
 	const [submitting, setSubmitting] = useState(false);
@@ -248,6 +288,10 @@ export default function GenerationPanel() {
 		if (stored.isLockedSeed !== undefined) setIsLockedSeed(stored.isLockedSeed);
 		if (stored.quantization !== undefined) setQuantization(stored.quantization);
 		if (stored.batchSize !== undefined) setBatchSize(stored.batchSize);
+		if (stored.initStrength !== undefined)
+			setInitStrength(clampInitStrength(stored.initStrength));
+		/* NOTA img2img: ids de init (upload efêmero/galeria) nunca vêm do
+		   storage — seção restaura sempre vazia; só initStrength persiste. */
 	}, []);
 
 	useEffect(() => {
@@ -295,6 +339,7 @@ export default function GenerationPanel() {
 				isLockedSeed,
 				quantization,
 				batchSize,
+				initStrength,
 			});
 		}, 300);
 		return () => {
@@ -317,6 +362,7 @@ export default function GenerationPanel() {
 		isLockedSeed,
 		quantization,
 		batchSize,
+		initStrength,
 	]);
 
 	/* ── Auto-adjust when base model changes ── */
@@ -364,6 +410,123 @@ export default function GenerationPanel() {
 		setSeed(Math.floor(Math.random() * 10000000));
 	}, []);
 
+	/* ── img2img: upload imediato da imagem inicial (S5) ──
+	   Sucesso: aplica id+meta+preview local e limpa origem galeria (XOR).
+	   Falha: toast, mantém a origem anterior intacta. Upload em voo
+	   invalidado por troca de origem (seq) — última origem vence. */
+	const handleInitFile = useCallback(async (file: File) => {
+		const seq = ++initUploadSeqRef.current;
+		setInitUploading(true);
+		try {
+			const uploaded = await uploadGenerationInput(file);
+			if (seq !== initUploadSeqRef.current) {
+				/* Origem trocou durante o voo — descarta este resultado. */
+				return;
+			}
+			setInitGenerationId(null);
+			setInitGalleryPreview(null);
+			setInitImageId(uploaded.id);
+			setInitImageMeta({
+				filename: uploaded.filename,
+				width: uploaded.width,
+				height: uploaded.height,
+			});
+			const objectUrl = URL.createObjectURL(file);
+			initUploadPreviewRef.current = objectUrl;
+			setInitUploadPreview((prev) => {
+				if (prev) URL.revokeObjectURL(prev);
+				return objectUrl;
+			});
+			showToast("Imagem inicial carregada.", "success");
+		} catch (err) {
+			if (seq !== initUploadSeqRef.current) return;
+			showToast(
+				err instanceof Error ? err.message : "Falha ao enviar imagem inicial.",
+				"error",
+			);
+		} finally {
+			/* Só o dono da seq atual derruba o spinner; quem invalidou já o fez. */
+			if (seq === initUploadSeqRef.current) setInitUploading(false);
+		}
+	}, []);
+
+	/* ── img2img: limpar (remove id+preview, mantém slider p/ próximo uso) ── */
+	const handleClearInit = useCallback(() => {
+		initUploadSeqRef.current += 1;
+		setInitUploading(false);
+		setInitImageId(null);
+		setInitImageMeta(null);
+		setInitGenerationId(null);
+		setInitGalleryPreview(null);
+		setInitUploadPreview((prev) => {
+			if (prev) URL.revokeObjectURL(prev);
+			return null;
+		});
+		initUploadPreviewRef.current = null;
+		if (initFileRef.current) initFileRef.current.value = "";
+	}, []);
+
+	/* ── img2img: aplica geração vinda da galeria (XOR no state) ──
+	   Preview reutiliza o helper canônico getGenerationDataUrl (sem
+	   reimplementar resolução de URL — mesmo usado por ImageCard/QuickLook
+	   via gen.url/thumbUrl com fallback p/ data). */
+	const applyInitGeneration = useCallback((generationId: string) => {
+		if (!generationId) return;
+		initUploadSeqRef.current += 1;
+		setInitUploading(false);
+		setInitUploadPreview((prev) => {
+			if (prev) URL.revokeObjectURL(prev);
+			return null;
+		});
+		initUploadPreviewRef.current = null;
+		setInitImageId(null);
+		setInitImageMeta(null);
+		setInitGenerationId(generationId);
+		setInitGalleryPreview(getGenerationDataUrl(generationId));
+		if (initFileRef.current) initFileRef.current.value = "";
+		showToast("Imagem da galeria carregada como entrada.", "success");
+	}, []);
+
+	/* ── img2img: fonte galeria — mount consome a key (efêmero: reload
+	   restaura vazio); mesma-aba montado via CustomEvent; cross-tab via
+	   `storage` (padrão F2). ── */
+	useEffect(() => {
+		const consumed = consumeGeracaoInitSource();
+		if (consumed) applyInitGeneration(consumed.generationId);
+	}, [applyInitGeneration]);
+
+	useEffect(() => {
+		const onInitSource = (e: Event) => {
+			const detail = (e as CustomEvent<{ generationId?: string }>).detail;
+			if (detail?.generationId) applyInitGeneration(detail.generationId);
+		};
+		const onStorage = (e: StorageEvent) => {
+			if (e.key !== GERACAO_INIT_SOURCE_KEY || !e.newValue) return;
+			try {
+				const parsed = JSON.parse(e.newValue) as { generationId?: string };
+				if (parsed?.generationId) applyInitGeneration(parsed.generationId);
+			} catch {
+				/* key corrompida — ignora */
+			}
+		};
+		window.addEventListener(GERACAO_INIT_SOURCE_EVENT, onInitSource);
+		window.addEventListener("storage", onStorage);
+		return () => {
+			window.removeEventListener(GERACAO_INIT_SOURCE_EVENT, onInitSource);
+			window.removeEventListener("storage", onStorage);
+		};
+	}, [applyInitGeneration]);
+
+	/* Revoga o object URL do preview local ao desmontar. */
+	useEffect(() => {
+		return () => {
+			if (initUploadPreviewRef.current) {
+				URL.revokeObjectURL(initUploadPreviewRef.current);
+				initUploadPreviewRef.current = null;
+			}
+		};
+	}, []);
+
 	/* ── Restaurar padrões (Slice F1/003): limpa a key, volta aos defaults ── */
 	const handleResetForm = useCallback(() => {
 		const defaults = createDefaultGeracaoForm();
@@ -383,6 +546,9 @@ export default function GenerationPanel() {
 		setIsLockedSeed(defaults.isLockedSeed);
 		setQuantization(defaults.quantization);
 		setBatchSize(defaults.batchSize);
+		setInitStrength(defaults.initStrength);
+		/* Init ativo (upload/galeria) é estado efêmero de sessão — o reset
+		   de config não o descarta; "Limpar" da seção faz isso. */
 		if (persistTimerRef.current) {
 			clearTimeout(persistTimerRef.current);
 			persistTimerRef.current = null;
@@ -424,11 +590,21 @@ export default function GenerationPanel() {
 				orchestratorId: selectedOrchestratorId,
 			};
 
-			if (modelMode === "custom" && customModelId) {
-				request.customModelId = customModelId;
-			} else {
-				request.baseModel = baseModel;
-			}
+		if (modelMode === "custom" && customModelId) {
+			request.customModelId = customModelId;
+		} else {
+			request.baseModel = baseModel;
+		}
+
+		// img2img (S5): XOR initImageId / initGenerationId; initStrength
+		// só segue com id presente (sem id o backend rejeita com 400).
+		if (initImageId) {
+			request.initImageId = initImageId;
+			request.initStrength = initStrength;
+		} else if (initGenerationId) {
+			request.initGenerationId = initGenerationId;
+			request.initStrength = initStrength;
+		}
 
 			// Store params for history
 			submittedParamsRef.current = {
@@ -494,6 +670,9 @@ export default function GenerationPanel() {
 			loras,
 			selectedOrchestratorId,
 			isLockedSeed,
+			initImageId,
+			initGenerationId,
+			initStrength,
 		],
 	);
 
@@ -646,6 +825,15 @@ export default function GenerationPanel() {
 	}, [currentDisplayItem]);
 
 	const isBusy = submitting || !!activeJobId;
+
+	/* ── img2img derivados ── */
+	const initActive = initImageId !== null || initGenerationId !== null;
+	const initPreviewUrl = initUploadPreview ?? initGalleryPreview;
+	const initOriginLabel = initImageId
+		? "Upload"
+		: initGenerationId
+			? "Galeria"
+			: null;
 
 	return (
 		<div className="flex flex-col lg:h-full lg:min-h-0 lg:flex-row">
@@ -934,19 +1122,154 @@ export default function GenerationPanel() {
 						/>
 					</div>
 
-					{/* ══ Batch Size — Slider canônico ══ */}
-					<Slider
-						label="Quantidade de imagens"
-						value={batchSize}
-						onChange={(v) => setBatchSize(Math.round(v))}
-						min={1}
-						max={8}
-						step={1}
-						disabled={isBusy}
-						formatValue={(v) => `${Math.round(v)} · seed +1 por imagem`}
-					/>
+				{/* ══ Batch Size — Slider canônico ══ */}
+				<Slider
+					label="Quantidade de imagens"
+					value={batchSize}
+					onChange={(v) => setBatchSize(Math.round(v))}
+					min={1}
+					max={8}
+					step={1}
+					disabled={isBusy}
+					formatValue={(v) => `${Math.round(v)} · seed +1 por imagem`}
+				/>
 
-					{/* ══ Nó ══ */}
+				{/* ══ Imagem inicial (img2img) ══ */}
+				<div className="space-y-2 rounded-xl border border-white/8 bg-white/[0.02] p-3">
+					<div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+						<span className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-300">
+							Imagem inicial (img2img)
+						</span>
+						{initActive && (
+							<Button
+								type="button"
+								variant="ghost"
+								size="sm"
+								onClick={handleClearInit}
+								disabled={isBusy}
+								aria-label="Remover imagem inicial"
+							>
+								Limpar
+							</Button>
+						)}
+					</div>
+
+					{!initActive ? (
+						<button
+							type="button"
+							onClick={() => initFileRef.current?.click()}
+							disabled={isBusy || initUploading}
+							aria-label="Enviar imagem inicial para img2img. Pressione Enter para escolher um arquivo PNG, JPEG ou WebP de até 20 MiB."
+							onDragOver={(e) => {
+								e.preventDefault();
+								if (!isBusy && !initUploading) setInitDragOver(true);
+							}}
+							onDragLeave={() => setInitDragOver(false)}
+							onDrop={(e) => {
+								e.preventDefault();
+								setInitDragOver(false);
+								const f = e.dataTransfer.files?.[0];
+								if (f && !isBusy && !initUploading) void handleInitFile(f);
+							}}
+							className={`flex min-h-20 w-full cursor-pointer flex-col items-center justify-center gap-1.5 rounded-xl border border-dashed px-3 py-4 text-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/70 disabled:cursor-not-allowed ${
+								initDragOver
+									? "border-brand-500/60 bg-brand-500/[0.08]"
+									: "border-zinc-700 bg-black/30 hover:border-zinc-500"
+							} ${(isBusy || initUploading) && "opacity-60"}`}
+						>
+							{initUploading ? (
+								<span className="flex items-center gap-2 font-mono text-2xs text-zinc-300">
+									<Spinner className="size-4" />
+									Enviando imagem…
+								</span>
+							) : (
+								<>
+									<span className="text-xs text-zinc-300">
+										Arraste uma imagem ou clique para escolher
+									</span>
+									<span className="font-mono text-3xs text-zinc-500">
+										PNG, JPEG ou WebP · até 20 MiB
+									</span>
+								</>
+							)}
+						</button>
+					) : (
+						<div className="flex items-center gap-3 rounded-xl border border-white/8 bg-black/40 p-2">
+							{initPreviewUrl && (
+								// eslint-disable-next-line @next/next/no-img-element
+								<img
+									src={initPreviewUrl}
+									alt="Pré-visualização da imagem inicial"
+									className="size-14 shrink-0 rounded-lg border border-white/10 object-cover"
+								/>
+							)}
+							<div className="flex min-w-0 flex-1 flex-col gap-1">
+								<span
+									title={initImageMeta?.filename ?? `Geração ${initGenerationId}`}
+									className="truncate font-mono text-2xs text-zinc-200"
+								>
+									{initImageMeta?.filename ?? "Imagem da galeria"}
+								</span>
+								<span className="flex flex-wrap items-center gap-1.5">
+									{initOriginLabel && (
+										<span className="rounded border border-brand-500/20 bg-brand-500/10 px-1.5 py-0.5 font-mono text-4xs text-brand-300">
+											{initOriginLabel}
+										</span>
+									)}
+									<span className="rounded border border-white/5 bg-zinc-900 px-1.5 py-0.5 font-mono text-4xs text-zinc-400">
+										{initImageMeta
+											? `${initImageMeta.width}×${initImageMeta.height}`
+											: "dimensões do alvo"}
+									</span>
+								</span>
+							</div>
+						</div>
+					)}
+
+					<label htmlFor="gen-init-file" className="sr-only">
+						Escolher arquivo de imagem inicial (PNG, JPEG ou WebP, até 20 MiB)
+					</label>
+					<input
+						ref={initFileRef}
+						id="gen-init-file"
+						type="file"
+						accept="image/png,image/jpeg,image/webp"
+						className="sr-only"
+						disabled={isBusy || initUploading}
+						onChange={(e) => {
+							const f = e.target.files?.[0];
+							if (f) void handleInitFile(f);
+							e.target.value = "";
+						}}
+					/>
+					{!initActive && !initUploading && (
+						<Button
+							type="button"
+							variant="secondary"
+							size="sm"
+							className="w-full"
+							onClick={() => initFileRef.current?.click()}
+							disabled={isBusy}
+						>
+							Escolher arquivo
+						</Button>
+					)}
+					{initActive && (
+						<Slider
+							label="Força da imagem inicial"
+							value={initStrength}
+							onChange={(v) => setInitStrength(clampInitStrength(v))}
+							min={INIT_STRENGTH_MIN}
+							max={INIT_STRENGTH_MAX}
+							step={0.05}
+							disabled={isBusy}
+							aria-label="Força da imagem inicial"
+							formatValue={(v) => v.toFixed(2)}
+						/>
+					)}
+				</div>
+
+				{/* ══ Nó ══ */}
 					<NodeSelect
 						value={selectedOrchestratorId}
 						onChange={setSelectedOrchestratorId}

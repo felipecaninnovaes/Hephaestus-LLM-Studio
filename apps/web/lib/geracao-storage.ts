@@ -35,6 +35,10 @@ export interface GeracaoFormState {
   isLockedSeed: boolean;
   quantization: GeracaoQuantization;
   batchSize: number;
+  /* img2img (fatia feat/img2img): força da imagem inicial (0.05..0.95).
+     Persiste por ser preferência estável; os ids de init (upload efêmero
+     ou geração da galeria) NUNCA persistem — seção restaura vazia. */
+  initStrength: number;
 }
 
 const BASE_MODELS: readonly GeracaoBaseModel[] = ["flux-2-klein-4b", "sdxl", "sd15"];
@@ -64,6 +68,7 @@ export function createDefaultGeracaoForm(): GeracaoFormState {
     isLockedSeed: false,
     quantization: "4bit",
     batchSize: 1,
+    initStrength: 0.6,
   };
 }
 
@@ -165,6 +170,9 @@ export function loadGeracaoForm(): PartialGeracaoForm | null {
       out.quantization = s.quantization as GeracaoQuantization;
     }
     if (s.batchSize !== undefined) out.batchSize = clampInt(s.batchSize, 1, 8, defaults.batchSize);
+    if (s.initStrength !== undefined) {
+      out.initStrength = clampFloat(s.initStrength, 0.05, 0.95, defaults.initStrength);
+    }
 
     return out;
   } catch {
@@ -416,6 +424,9 @@ export function geracaoFormFromGeneration(gen: Generation): GeracaoFormFromGener
       ? (quantized as GeracaoQuantization)
       : defaults.quantization,
     batchSize: clampInt(snap.batchSize, 1, 8, defaults.batchSize),
+    /* img2img: aplicar configs de uma geração nunca define origem init
+       (id efêmero) — força volta ao padrão p/ o próximo uso. */
+    initStrength: defaults.initStrength,
   };
   return {
     form,
@@ -429,4 +440,61 @@ export function geracaoFormFromGeneration(gen: Generation): GeracaoFormFromGener
 export function publishGeracaoForm(state: GeracaoFormState): void {
   saveGeracaoForm(state);
   window.dispatchEvent(new CustomEvent(GERACAO_APPLY_FORM_EVENT));
+}
+
+/* ── Canal Galeria → Gerador p/ imagem inicial img2img (fatia feat/img2img, S5) ──
+   O Panel monta UMA aba por vez (Gerar XOR Galeria), então mesma-aba
+   desmontado é o caso comum: a Galeria grava `geracao:initSource` +
+   despacha `heph:init-source` + troca p/ a aba Gerar; o Panel consome a
+   key no mount (leitura destrutiva — reload restaura a seção vazia, pois
+   id de init é efêmero e NUNCA entra no form versionado). Mesma-aba
+   montado: CustomEvent. Cross-tab (Gerar aberta em OUTRA aba, padrão F2):
+   evento `storage` cruza abas; CustomEvent não. Valor
+   { generationId, at }. Toast de confirmação vive no Panel (receptor). */
+
+export const GERACAO_INIT_SOURCE_KEY = "geracao:initSource";
+export const GERACAO_INIT_SOURCE_EVENT = "heph:init-source";
+
+export interface GeracaoInitSource {
+  generationId: string;
+  at: string;
+}
+
+/* Grava a key + despacha o evento canônico mesma-aba. */
+export function publishGeracaoInitSource(generationId: string): void {
+  try {
+    const marker: GeracaoInitSource = {
+      generationId,
+      at: new Date().toISOString(),
+    };
+    window.localStorage.setItem(GERACAO_INIT_SOURCE_KEY, JSON.stringify(marker));
+  } catch {
+    /* storage indisponível — CustomEvent ainda cobre mesma-aba montado */
+  }
+  window.dispatchEvent(
+    new CustomEvent(GERACAO_INIT_SOURCE_EVENT, { detail: { generationId } }),
+  );
+}
+
+/* Leitura destrutiva p/ o mount do Panel: consome a key (remove) para que
+   reload/remount restaure a seção vazia (id efêmero). Retorna null se
+   ausente/corrompido. */
+export function consumeGeracaoInitSource(): GeracaoInitSource | null {
+  try {
+    const raw = window.localStorage.getItem(GERACAO_INIT_SOURCE_KEY);
+    if (!raw) return null;
+    window.localStorage.removeItem(GERACAO_INIT_SOURCE_KEY);
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const rec = parsed as Record<string, unknown>;
+    if (typeof rec.generationId !== "string" || rec.generationId.length === 0) {
+      return null;
+    }
+    return {
+      generationId: rec.generationId,
+      at: typeof rec.at === "string" ? rec.at : "",
+    };
+  } catch {
+    return null;
+  }
 }

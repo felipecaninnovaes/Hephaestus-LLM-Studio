@@ -33,7 +33,7 @@ import {
   exportGenerations,
   getGenerationDataUrl,
 } from "@/lib/generations";
-import { GERACAO_COMPLETED_KEY, generationConfigsJson, geracaoFormFromGeneration, publishGeracaoForm } from "@/lib/geracao-storage";
+import { GERACAO_COMPLETED_KEY, generationConfigsJson, geracaoFormFromGeneration, publishGeracaoForm, publishGeracaoInitSource } from "@/lib/geracao-storage";
 import { copyToClipboard } from "@/lib/clipboard";
 import type { Generation } from "@/types/studio";
 import CompareSlider from "./CompareSlider";
@@ -497,6 +497,19 @@ export default function GenerationGallery() {
     return gen.url || getGenerationDataUrl(gen.id);
   }, []);
 
+  /* ── Usar como imagem inicial img2img (fatia feat/img2img, S5) ──
+     Só gerações concluídas com imagem chegam aqui: a galeria lista
+     somente gerações persistidas (concluídas) e o lightbox abre para um
+     item concreto com imagem resolvível. Publica `geracao:initSource` +
+     evento `heph:init-source` (o Panel consome no mount/evento/storage)
+     e volta p/ a aba Gerar. Sem toast aqui — o Panel confirma ao receber
+     ("Imagem da galeria carregada como entrada."), evitando duplicata. ── */
+  const handleUseAsInit = useCallback((gen: Generation) => {
+    publishGeracaoInitSource(gen.id);
+    setLightboxItem(null);
+    window.dispatchEvent(new CustomEvent("hephaestus:switch-tab", { detail: "gerar" }));
+  }, []);
+
   /* ═══════════════════════════════════════════════════════════════════
      RENDER
      ═══════════════════════════════════════════════════════════════════ */
@@ -892,6 +905,17 @@ export default function GenerationGallery() {
               >
                 <IconSliders className="size-3.5" />
                 <span className="ml-1">Usar estas configs</span>
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => handleUseAsInit(lightboxItem)}
+                aria-label={`Usar geração seed ${lightboxItem.seed} como imagem inicial do img2img`}
+                title="Carrega esta imagem como entrada do img2img na aba Gerar"
+              >
+                <IconImage className="size-3.5" />
+                <span className="ml-1">Usar como imagem inicial</span>
               </Button>
               <Button
                 type="button"

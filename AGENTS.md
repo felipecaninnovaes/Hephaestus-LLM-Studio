@@ -62,7 +62,7 @@ Dev é CPU-only: `ENGINE_MOCK=1`; testes `@gpu` são manuais, não rodar.
 | Sincronizar `docs/` §9/§10 e contracts com o código | `@docs-sync` | barato |
 | Mapeamento/Localização de código (read-only) | `@explore` | barato |
 | Revisão de diff/contratos/boundary | `@reviewer` (escalada: `@reviewer-max`) | caro |
-| Auditoria visual via Chrome DevTools MCP | `@ui-designer` | barato |
+| Auditoria visual via MCP browser-harness | `@ui-designer` | barato |
 | Descrição factual de imagens/scrennshots | `@visao` | visão |
 | Governança de arquitetura sob demanda | `@guardian` | barato |
 

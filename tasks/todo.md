@@ -75,8 +75,9 @@ Chromium limita leitura de Blob a 2GB. O upload (FormData) nunca foi o gargalo.
 Fix 140aa66: parser por faixas (cauda≤64KB p/ EOCD, CD fatiado, extração só do range
 do entry) + ZIP64 completo (locator/record/extra-field u64). Validação: usuário testou
 import real de 3GB → OK; ZIP64 validado com zip sintético 4,1GB (CD além de 4GB) via
-port Node da mesma lógica. ⚠ Nota de harness: `chrome-devtools upload_file`
-(CDP setFileInputFiles) entrega File FANTOMA (size 0) — "EOCD não encontrado" em teste
+port Node da mesma lógica. ⚠ Nota de harness: upload via CDP `setFileInputFiles`
+(ferramenta `browser_upload_file` do browser-harness; antes `chrome-devtools upload_file`)
+entrega File FANTOMA (size 0) — "EOCD não encontrado" em teste
 automatizado NÃO indica parser quebrado; usar seleção real do usuário.
 
 ## Fatia FECHADA (2026-09-17) — feat/jobs-async-submit: submit assíncrono (ADR-0025)

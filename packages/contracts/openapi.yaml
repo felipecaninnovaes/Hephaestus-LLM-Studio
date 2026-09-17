@@ -2675,6 +2675,135 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/models/uploads/init:
+    post:
+      operationId: initModelUpload
+      tags: [jobs]
+      summary: Inicia upload chunked de modelo (arquivo grande)
+      description: |
+        Cria sessão de upload chunked (upload ≤ 8 GiB) para contornar buffering
+        de corpo no proxy Next (o proxy bufferiza multipart inteiro em RAM —
+        partes ≤ 96 MiB são seguras). Valida engine/name/extensão antecipadamente.
+        Sessão vive em memória do principal (não persistida); abortar via DELETE.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ModelUploadInitRequest" }
+      responses:
+        "201":
+          description: Sessão criada; usar `partSize` no fatiamento.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelUploadInitResponse" }
+        "400":
+          description: "engine/name/extensão/size inválidos (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/models/uploads/{uploadId}/part/{partNumber}:
+    put:
+      operationId: uploadModelPart
+      tags: [jobs]
+      summary: Envia uma parte do arquivo (octet-stream cru)
+      description: |
+        Corpo cru (não-multipart) com DefaultBodyLimit de 104 MiB (96 MiB de
+        parte + folga). Partes podem ser enviadas em qualquer ordem e
+        reenviadas (idempotente por partNumber). `size` do part é validado no
+        complete.
+      parameters:
+        - { name: uploadId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: partNumber, in: path, required: true, schema: { type: integer, minimum: 0, maximum: 100000 } }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "204":
+          description: Parte recebida e spoolada em disco.
+        "400":
+          description: "Parte vazia ou acima de 96 MiB (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Sessão inexistente (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "410":
+          description: "Sessão já completada (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413":
+          description: "Parte acima do limite (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/models/uploads/{uploadId}/complete:
+    post:
+      operationId: completeModelUpload
+      tags: [jobs]
+      summary: Finaliza upload chunked (assemble + validação + S3 + manager)
+      description: |
+        Monta o arquivo em ordem de partNumber, confere tamanho total contra
+        `size` do init e executa o MESMO fluxo do upload multipart único
+        (magic, sniff safetensors, md5, PUT S3, POST /internal/models,
+        compensação). Sessão é destruída após complete.
+      parameters:
+        - { name: uploadId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "201":
+          description: Modelo criado com sucesso.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Model" }
+        "400":
+          description: "Partes faltando ou total divergente do size (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Sessão inexistente (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "Conflito no manager (hash já existe)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413":
+          description: "Total acima de 8 GiB (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager ou storage indisponível."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/models/uploads/{uploadId}:
+    delete:
+      operationId: abortModelUpload
+      tags: [jobs]
+      summary: Aborta sessão de upload e remove partes spooladas
+      parameters:
+        - { name: uploadId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204":
+          description: Sessão encerrada (idempotente — 204 também se inexistente).
+
   /api/models/download:
     post:
       operationId: downloadModel
@@ -4660,6 +4789,60 @@ components:
           minLength: 1
           maxLength: 128
           description: "Código de pareamento (único uso, via ORCH_PAIRING_CODE no orquestrador)."
+
+    ModelUploadInitRequest:
+      type: object
+      additionalProperties: false
+      required: [name, engine, size, totalParts]
+      description: |
+        Sessão de upload chunked. `size` é o tamanho total do arquivo em bytes
+        (≤ 8 GiB); `totalParts` é o número de partes que o cliente enviará
+        (cada parte ≤ 96 MiB; o servidor devolve `partSize` canônico de 96 MiB
+        — todas as partes exceto a última têm exatamente `partSize` bytes).
+        `kind`/`arch` são hints idênticos ao upload multipart único.
+      properties:
+        name:
+          type: string
+          maxLength: 255
+          description: "Nome do arquivo de pesos (deve terminar em .pt/.safetensors)."
+        engine:
+          type: string
+          enum: [yolo, world, diffusion]
+        kind:
+          type: string
+          enum: [lora, checkpoint, text_encoder]
+          description: "Hint diffusion; sniff do servidor é autoritativo."
+        arch:
+          type: string
+          enum: [flux-2-klein-4b, sdxl, sd15]
+          description: "Hint diffusion; sniff do servidor é autoritativo."
+        size:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 8589934592
+          description: "Tamanho total do arquivo em bytes (≤ 8 GiB)."
+        totalParts:
+          type: integer
+          minimum: 1
+          maximum: 100000
+          description: "Número total de partes; ceil(size / partSize)."
+
+    ModelUploadInitResponse:
+      type: object
+      additionalProperties: false
+      required: [uploadId, partSize, totalParts]
+      properties:
+        uploadId:
+          type: string
+          format: uuid
+        partSize:
+          type: integer
+          format: int64
+          description: "Tamanho canônico da parte em bytes (96 MiB = 100663296)."
+        totalParts:
+          type: integer
+          description: "totalParts ecoado (validado contra size/partSize ⇒ 400 se divergente)."
 
     ModelWeight:
       type: object

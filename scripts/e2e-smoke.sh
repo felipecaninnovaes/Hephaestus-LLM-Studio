@@ -48,23 +48,33 @@ if [[ "${1:-}" == "--datasets" ]]; then
     -d "{\"password\":\"$PASS\"}")"
   [[ "$code" == "200" ]]
   echo "login: 200"
-  # 2. POST /api/datasets ⇒ 201, captura id + classes[0].id.
+  # 2. POST /api/datasets ⇒ 201, captura id + classes[0].id. Título com
+  # epoch: slug único por execução (título fixo envenenava re-runs com 409).
+  TITLE="E2E Storage $(date +%s)"
   code="$(curl -sS -o "$BODY" -w "%{http_code}" -b "$JAR" \
     -X POST "$API/api/datasets" \
     -H 'Content-Type: application/json' \
-    -d '{"title":"E2E Storage","type":"yolo_bbox","classes":["obj"]}')"
+    -d "{\"title\":\"$TITLE\",\"type\":\"yolo_bbox\",\"classes\":[\"obj\"]}")"
 
   [[ "$code" == "201" ]]
   DS_ID="$(jget "['id']")"
   CLASS_ID="$(jget "['classes'][0]['id']")"
   [[ -n "$DS_ID" && -n "$CLASS_ID" ]]
-  echo "create: 201 id=$DS_ID classId=$CLASS_ID"
+  echo "create: 201 title=$TITLE id=$DS_ID classId=$CLASS_ID"
   # 3. PNG 1×1 do fixture (mesmo dos testes).
   python3 -c "import base64; open('$TMPDIR_SMOKE/a.png','wb').write(base64.b64decode('$PNG_B64'))"
-  # 4. upload ⇒ stored; reenvio do MESMO arquivo ⇒ duplicate.
-  code="$(curl -sS -o "$BODY" -w "%{http_code}" -b "$JAR" \
-    -X POST "$API/api/datasets/$DS_ID/upload" \
-    -F "files=@$TMPDIR_SMOKE/a.png")"
+  # 4. upload ⇒ stored; reenvio do MESMO arquivo ⇒ duplicate. Retry c/
+  # settle S3: PUTs reais dão 500/transiente nos primeiros segundos pós-boot
+  # mesmo com bucket garantido + /health ready — 5 tentativas antes do assert.
+  code="000"
+  for i in $(seq 1 5); do
+    code="$(curl -sS -o "$BODY" -w "%{http_code}" -b "$JAR" \
+      -X POST "$API/api/datasets/$DS_ID/upload" \
+      -F "files=@$TMPDIR_SMOKE/a.png" || true)"
+    [[ -z "$code" ]] && code="000"
+    [[ "$code" == "200" ]] && break
+    [[ "$i" -lt 5 ]] && { echo "aguardando settle S3 ($i/5, HTTP $code)" >&2; sleep 2; }
+  done
   [[ "$code" == "200" ]]
   [[ "$(jget "['items'][0]['status']")" == "stored" ]]
   IMG_ID="$(jget "['items'][0]['imageId']")"
@@ -90,11 +100,22 @@ if [[ "${1:-}" == "--datasets" ]]; then
   [[ "$(jget "['imagesCount']")" == "1" ]]
   [[ "$(jget "['status']")" == "needs_labeling" ]]
   echo "dataset: source s3:// + imagesCount 1 + needs_labeling"
-  # 6. /data ⇒ bytes idênticos (sha256).
-  sha_local="$(sha256sum "$TMPDIR_SMOKE/a.png" | cut -d' ' -f1)"
-  sha_remote="$(curl -sS -b "$JAR" "$API/api/datasets/$DS_ID/images/$IMG_ID/data" | sha256sum | cut -d' ' -f1)"
-  [[ "$sha_local" == "$sha_remote" ]]
-  echo "data: sha256 idêntico $sha_local"
+  # 6. /data ⇒ contrato real pós-ADR-0017: upload normaliza p/ WebP, então
+  # os bytes servidos NUNCA são idênticos ao PNG de entrada (sha contra o
+  # fixture morreu aqui). Asserta 200 + magic RIFF....WEBP + sha256 estável
+  # entre dois GETs consecutivos (determinismo do objeto servido).
+  code="$(curl -sS -o "$TMPDIR_SMOKE/got1.bin" -w "%{http_code}" -b "$JAR" \
+    "$API/api/datasets/$DS_ID/images/$IMG_ID/data" || true)"
+  [[ "$code" == "200" ]]
+  magic="$(od -An -tx1 -N12 "$TMPDIR_SMOKE/got1.bin" | tr -d ' \n')"
+  case "$magic" in 52494646????????57454250) ;; *) echo "magic sem RIFF....WEBP: $magic" >&2; exit 1;; esac
+  code="$(curl -sS -o "$TMPDIR_SMOKE/got2.bin" -w "%{http_code}" -b "$JAR" \
+    "$API/api/datasets/$DS_ID/images/$IMG_ID/data" || true)"
+  [[ "$code" == "200" ]]
+  sha1="$(sha256sum "$TMPDIR_SMOKE/got1.bin" | cut -d' ' -f1)"
+  sha2="$(sha256sum "$TMPDIR_SMOKE/got2.bin" | cut -d' ' -f1)"
+  [[ -n "$sha1" && "$sha1" == "$sha2" ]]
+  echo "data: webp servido + sha estavel $sha1"
   # 7. PUT boxes com classId ⇒ 200; dataset ⇒ ready.
   code="$(curl -sS -o "$BODY" -w "%{http_code}" -b "$JAR" \
     -X PUT "$API/api/datasets/$DS_ID/images/$IMG_ID/boxes" \

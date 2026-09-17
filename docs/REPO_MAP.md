@@ -42,7 +42,7 @@ GPU real (TrueNAS): `infra/compose.gpu.yaml` / runbook `infra/README-gpu.md`.
 
 ## 3. Posse de Dados (Postgres único, schema compartilhado)
 
-Migrations canônicas: `services/api-principal/migrations/0001..0013.sql`.
+Migrations canônicas: `services/api-principal/migrations/0001..0014.sql`.
 - **Domínio aplicação/dados (escrita: api-principal):** `users`, `auth_state`,
   `datasets`, `dataset_versions`, `images`, `videos`, `boxes`, `classes`,
   `captions`, `image_embeddings` (pgvector), `models`, `generations`.

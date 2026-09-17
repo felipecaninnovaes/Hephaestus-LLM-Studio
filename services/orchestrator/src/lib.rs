@@ -980,6 +980,27 @@ pub fn new_active_jobs() -> ActiveJobs {
     Arc::new(dashmap::DashMap::new())
 }
 
+/// PUT S3 com retry (N=3, backoff curto 100ms/200ms).
+///
+/// Upload de output não pode falhar silenciosamente (incidente galeria vazia):
+/// quem chama registra o erro persistente e o report final vira failed.
+/// Não aborta o resto do loop — o chamador decide após coletar tudo.
+async fn put_with_retry(s3: &dyn S3Port, key: &str, path: &Path) -> Result<(), String> {
+    let mut last_err = String::from("upload falhou");
+    for attempt in 0..3 {
+        match s3.put(key, path).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                last_err = e;
+                if attempt < 2 {
+                    tokio::time::sleep(Duration::from_millis(100 * (attempt as u64 + 1))).await;
+                }
+            }
+        }
+    }
+    Err(last_err)
+}
+
 // ---------------------------------------------------------------------------
 // Job pipeline (§11/:262–270, D5/D6/D8)
 // ---------------------------------------------------------------------------
@@ -1409,6 +1430,9 @@ async fn run_job_inner(
 
         // (d) Coleta artefatos do output_dir igual one-shot (glob)
         let mut artifacts = Vec::new();
+        // Uploads com retry; falhas persistentes viram failed no gate abaixo
+        // (incidente galeria vazia) — sem abortar o resto do loop.
+        let mut upload_errors: Vec<String> = Vec::new();
 
         // Coleta glob: generated_*.png (kind generated), thumb_*.jpg (kind generated_thumb),
         // generation_meta.json (kind generated_meta) — D2 ADR-0023
@@ -1462,21 +1486,36 @@ async fn run_job_inner(
                     let bytes = std::fs::metadata(path).map(|m| m.len() as i64).unwrap_or(0);
                     if bytes > 0 {
                         let art_key = format!("artifacts/{job_id}/{fname}");
-                        if let Ok(scoped) = scoped_key(S3Scope::Artifacts, &art_key) {
-                            if let Ok(md5) = compute_file_md5(path) {
-                                if s3.put(&scoped, path).await.is_ok() {
-                                    artifacts.push(ArtifactReport {
+                        match scoped_key(S3Scope::Artifacts, &art_key) {
+                            Ok(scoped) => match compute_file_md5(path) {
+                                Ok(md5) => match put_with_retry(s3.as_ref(), &scoped, path).await {
+                                    Ok(()) => artifacts.push(ArtifactReport {
                                         kind: k.to_string(),
                                         path: fname,
                                         md5,
                                         bytes,
-                                    });
-                                }
-                            }
+                                    }),
+                                    Err(e) => upload_errors.push(format!("{fname}: {e}")),
+                                },
+                                Err(e) => upload_errors.push(format!(
+                                    "{fname}: falha ao preparar artefato (md5): {e}"
+                                )),
+                            },
+                            Err(e) => upload_errors
+                                .push(format!("{fname}: falha ao preparar artefato (key): {e}")),
                         }
                     }
                 }
             }
+        }
+
+        // Incidente galeria vazia: upload persistente falhou → o job falhou do
+        // ponto de vista do usuário; reportar done seria mentira.
+        if !upload_errors.is_empty() {
+            return Err(PipelineError::Other(format!(
+                "upload de artefatos falhou: {}",
+                upload_errors.join("; ")
+            )));
         }
 
         // 11. Report done — inclui meta_content se generation_meta.json existe (D5 ADR-0023)
@@ -1634,15 +1673,35 @@ async fn run_job_inner(
                                                 scoped_key(S3Scope::Artifacts, &art_key)
                                             {
                                                 if let Ok(md5) = compute_file_md5(&path) {
-                                                    if metrics_s3.put(&scoped, &path).await.is_ok()
+                                                    match put_with_retry(
+                                                        metrics_s3.as_ref(),
+                                                        &scoped,
+                                                        &path,
+                                                    )
+                                                    .await
                                                     {
-                                                        uploaded_samples.insert(fname.to_string());
-                                                        new_live_artifacts.push(ArtifactReport {
-                                                            kind: "sample".to_string(),
-                                                            path: rel_path,
-                                                            md5,
-                                                            bytes,
-                                                        });
+                                                        Ok(()) => {
+                                                            uploaded_samples
+                                                                .insert(fname.to_string());
+                                                            new_live_artifacts.push(
+                                                                ArtifactReport {
+                                                                    kind: "sample".to_string(),
+                                                                    path: rel_path,
+                                                                    md5,
+                                                                    bytes,
+                                                                },
+                                                            );
+                                                        }
+                                                        Err(e) => {
+                                                            // Live é best-effort: não anuncia o que
+                                                            // não subiu; próxima tick tenta de novo.
+                                                            tracing::warn!(
+                                                                job_id = %metrics_job_id,
+                                                                artifact = %rel_path,
+                                                                error = %e,
+                                                                "falha persistente no upload live de sample"
+                                                            );
+                                                        }
                                                     }
                                                 }
                                             }
@@ -1687,16 +1746,35 @@ async fn run_job_inner(
                                                 scoped_key(S3Scope::Artifacts, &art_key)
                                             {
                                                 if let Ok(md5) = compute_file_md5(&path) {
-                                                    if metrics_s3.put(&scoped, &path).await.is_ok()
+                                                    match put_with_retry(
+                                                        metrics_s3.as_ref(),
+                                                        &scoped,
+                                                        &path,
+                                                    )
+                                                    .await
                                                     {
-                                                        uploaded_checkpoints
-                                                            .insert(fname.to_string());
-                                                        new_live_artifacts.push(ArtifactReport {
-                                                            kind: "checkpoint".to_string(),
-                                                            path: rel_path,
-                                                            md5,
-                                                            bytes,
-                                                        });
+                                                        Ok(()) => {
+                                                            uploaded_checkpoints
+                                                                .insert(fname.to_string());
+                                                            new_live_artifacts.push(
+                                                                ArtifactReport {
+                                                                    kind: "checkpoint".to_string(),
+                                                                    path: rel_path,
+                                                                    md5,
+                                                                    bytes,
+                                                                },
+                                                            );
+                                                        }
+                                                        Err(e) => {
+                                                            // Live é best-effort: não anuncia o que
+                                                            // não subiu; próxima tick tenta de novo.
+                                                            tracing::warn!(
+                                                                job_id = %metrics_job_id,
+                                                                artifact = %rel_path,
+                                                                error = %e,
+                                                                "falha persistente no upload live de checkpoint"
+                                                            );
+                                                        }
                                                     }
                                                 }
                                             }
@@ -1877,6 +1955,9 @@ async fn run_job_inner(
     };
 
     let mut artifacts = Vec::new();
+    // Uploads com retry; falhas persistentes viram failed no gate abaixo
+    // (incidente galeria vazia) — sem abortar o resto do loop.
+    let mut upload_errors: Vec<String> = Vec::new();
 
     for (filename, kind) in artifact_specs {
         let file_path = outputs.join(filename);
@@ -1890,7 +1971,7 @@ async fn run_job_inner(
                 .map(|m| m.len() as i64)
                 .unwrap_or(0);
 
-            s3.put(&art_key, &file_path)
+            put_with_retry(s3.as_ref(), &art_key, &file_path)
                 .await
                 .map_err(|e| PipelineError::ArtifactUpload(format!("upload {filename}: {e}")))?;
 
@@ -1960,17 +2041,25 @@ async fn run_job_inner(
                         .unwrap_or(0);
                     if bytes > 0 {
                         let art_key = format!("artifacts/{job_id}/{fname}");
-                        if let Ok(scoped) = scoped_key(S3Scope::Artifacts, &art_key) {
-                            if let Ok(md5) = compute_file_md5(&gpath) {
-                                if s3.put(&scoped, &gpath).await.is_ok() {
-                                    artifacts.push(ArtifactReport {
-                                        kind: k.to_string(),
-                                        path: fname,
-                                        md5,
-                                        bytes,
-                                    });
+                        match scoped_key(S3Scope::Artifacts, &art_key) {
+                            Ok(scoped) => match compute_file_md5(&gpath) {
+                                Ok(md5) => {
+                                    match put_with_retry(s3.as_ref(), &scoped, &gpath).await {
+                                        Ok(()) => artifacts.push(ArtifactReport {
+                                            kind: k.to_string(),
+                                            path: fname,
+                                            md5,
+                                            bytes,
+                                        }),
+                                        Err(e) => upload_errors.push(format!("{fname}: {e}")),
+                                    }
                                 }
-                            }
+                                Err(e) => upload_errors.push(format!(
+                                    "{fname}: falha ao preparar artefato (md5): {e}"
+                                )),
+                            },
+                            Err(e) => upload_errors
+                                .push(format!("{fname}: falha ao preparar artefato (key): {e}")),
                         }
                     }
                 }
@@ -2014,20 +2103,28 @@ async fn run_job_inner(
                     if let Some(s_name) = s_path.file_name().and_then(|n| n.to_str()) {
                         let rel_path = format!("samples/{s_name}");
                         let art_key = format!("artifacts/{job_id}/{rel_path}");
-                        if let Ok(scoped) = scoped_key(S3Scope::Artifacts, &art_key) {
-                            if let Ok(md5) = compute_file_md5(&s_path) {
-                                let bytes = std::fs::metadata(&s_path)
-                                    .map(|m| m.len() as i64)
-                                    .unwrap_or(0);
-                                if s3.put(&scoped, &s_path).await.is_ok() {
-                                    artifacts.push(ArtifactReport {
-                                        kind: "sample".to_string(),
-                                        path: rel_path,
-                                        md5,
-                                        bytes,
-                                    });
+                        match scoped_key(S3Scope::Artifacts, &art_key) {
+                            Ok(scoped) => match compute_file_md5(&s_path) {
+                                Ok(md5) => {
+                                    let bytes = std::fs::metadata(&s_path)
+                                        .map(|m| m.len() as i64)
+                                        .unwrap_or(0);
+                                    match put_with_retry(s3.as_ref(), &scoped, &s_path).await {
+                                        Ok(()) => artifacts.push(ArtifactReport {
+                                            kind: "sample".to_string(),
+                                            path: rel_path,
+                                            md5,
+                                            bytes,
+                                        }),
+                                        Err(e) => upload_errors.push(format!("{rel_path}: {e}")),
+                                    }
                                 }
-                            }
+                                Err(e) => upload_errors.push(format!(
+                                    "{rel_path}: falha ao preparar artefato (md5): {e}"
+                                )),
+                            },
+                            Err(e) => upload_errors
+                                .push(format!("{rel_path}: falha ao preparar artefato (key): {e}")),
                         }
                     }
                 }
@@ -2064,20 +2161,28 @@ async fn run_job_inner(
                     if let Some(c_name) = c_path.file_name().and_then(|n| n.to_str()) {
                         let rel_path = format!("checkpoints/{c_name}");
                         let art_key = format!("artifacts/{job_id}/{rel_path}");
-                        if let Ok(scoped) = scoped_key(S3Scope::Artifacts, &art_key) {
-                            if let Ok(md5) = compute_file_md5(&c_path) {
-                                let bytes = std::fs::metadata(&c_path)
-                                    .map(|m| m.len() as i64)
-                                    .unwrap_or(0);
-                                if s3.put(&scoped, &c_path).await.is_ok() {
-                                    artifacts.push(ArtifactReport {
-                                        kind: "checkpoint".to_string(),
-                                        path: rel_path,
-                                        md5,
-                                        bytes,
-                                    });
+                        match scoped_key(S3Scope::Artifacts, &art_key) {
+                            Ok(scoped) => match compute_file_md5(&c_path) {
+                                Ok(md5) => {
+                                    let bytes = std::fs::metadata(&c_path)
+                                        .map(|m| m.len() as i64)
+                                        .unwrap_or(0);
+                                    match put_with_retry(s3.as_ref(), &scoped, &c_path).await {
+                                        Ok(()) => artifacts.push(ArtifactReport {
+                                            kind: "checkpoint".to_string(),
+                                            path: rel_path,
+                                            md5,
+                                            bytes,
+                                        }),
+                                        Err(e) => upload_errors.push(format!("{rel_path}: {e}")),
+                                    }
                                 }
-                            }
+                                Err(e) => upload_errors.push(format!(
+                                    "{rel_path}: falha ao preparar artefato (md5): {e}"
+                                )),
+                            },
+                            Err(e) => upload_errors
+                                .push(format!("{rel_path}: falha ao preparar artefato (key): {e}")),
                         }
                     }
                 }
@@ -2100,19 +2205,29 @@ async fn run_job_inner(
                                 .unwrap_or(false)
                         {
                             let art_key = format!("artifacts/{job_id}/{f_name}");
-                            if let Ok(scoped) = scoped_key(S3Scope::Artifacts, &art_key) {
-                                if let Ok(md5) = compute_file_md5(&p) {
-                                    let bytes =
-                                        std::fs::metadata(&p).map(|m| m.len() as i64).unwrap_or(0);
-                                    if s3.put(&scoped, &p).await.is_ok() {
-                                        artifacts.push(ArtifactReport {
-                                            kind: "model".to_string(),
-                                            path: f_name.to_string(),
-                                            md5,
-                                            bytes,
-                                        });
+                            match scoped_key(S3Scope::Artifacts, &art_key) {
+                                Ok(scoped) => match compute_file_md5(&p) {
+                                    Ok(md5) => {
+                                        let bytes = std::fs::metadata(&p)
+                                            .map(|m| m.len() as i64)
+                                            .unwrap_or(0);
+                                        match put_with_retry(s3.as_ref(), &scoped, &p).await {
+                                            Ok(()) => artifacts.push(ArtifactReport {
+                                                kind: "model".to_string(),
+                                                path: f_name.to_string(),
+                                                md5,
+                                                bytes,
+                                            }),
+                                            Err(e) => upload_errors.push(format!("{f_name}: {e}")),
+                                        }
                                     }
-                                }
+                                    Err(e) => upload_errors.push(format!(
+                                        "{f_name}: falha ao preparar artefato (md5): {e}"
+                                    )),
+                                },
+                                Err(e) => upload_errors.push(format!(
+                                    "{f_name}: falha ao preparar artefato (key): {e}"
+                                )),
                             }
                         }
                     }
@@ -2126,22 +2241,40 @@ async fn run_job_inner(
         let training_config_path = outputs.join("training_config.json");
         if training_config_path.is_file() {
             let art_key = format!("artifacts/{job_id}/training_config.json");
-            if let Ok(scoped) = scoped_key(S3Scope::Artifacts, &art_key) {
-                if let Ok(md5) = compute_file_md5(&training_config_path) {
-                    let bytes = std::fs::metadata(&training_config_path)
-                        .map(|m| m.len() as i64)
-                        .unwrap_or(0);
-                    if s3.put(&scoped, &training_config_path).await.is_ok() {
-                        artifacts.push(ArtifactReport {
-                            kind: "config".to_string(),
-                            path: "training_config.json".to_string(),
-                            md5,
-                            bytes,
-                        });
+            match scoped_key(S3Scope::Artifacts, &art_key) {
+                Ok(scoped) => match compute_file_md5(&training_config_path) {
+                    Ok(md5) => {
+                        let bytes = std::fs::metadata(&training_config_path)
+                            .map(|m| m.len() as i64)
+                            .unwrap_or(0);
+                        match put_with_retry(s3.as_ref(), &scoped, &training_config_path).await {
+                            Ok(()) => artifacts.push(ArtifactReport {
+                                kind: "config".to_string(),
+                                path: "training_config.json".to_string(),
+                                md5,
+                                bytes,
+                            }),
+                            Err(e) => upload_errors.push(format!("training_config.json: {e}")),
+                        }
                     }
-                }
+                    Err(e) => upload_errors.push(format!(
+                        "training_config.json: falha ao preparar artefato (md5): {e}"
+                    )),
+                },
+                Err(e) => upload_errors.push(format!(
+                    "training_config.json: falha ao preparar artefato (key): {e}"
+                )),
             }
         }
+    }
+
+    // Incidente galeria vazia: upload persistente falhou → o job falhou do
+    // ponto de vista do usuário; reportar done seria mentira.
+    if !upload_errors.is_empty() {
+        return Err(PipelineError::Other(format!(
+            "upload de artefatos falhou: {}",
+            upload_errors.join("; ")
+        )));
     }
 
     // 10. Lê métricas finais para o report done
@@ -2851,10 +2984,16 @@ mod tests {
     use std::sync::Mutex;
 
     /// Mock S3 que serve um zip válido para download e grava uploads.
+    /// `upload_fail` simula bucket inexistente/S3 fora do ar: `put` sempre falha.
+    /// `puts` conta tentativas (prova do retry N=3); `fail_first_n` simula S3
+    /// instável (falha as N primeiras tentativas, depois sucede).
     struct FakeS3 {
         downloads: Mutex<Vec<String>>,
         uploads: Mutex<Vec<(String, PathBuf)>>,
         zip_bytes: Vec<u8>,
+        upload_fail: AtomicBool,
+        puts: std::sync::atomic::AtomicUsize,
+        fail_first_n: std::sync::atomic::AtomicUsize,
     }
 
     impl FakeS3 {
@@ -2872,7 +3011,22 @@ mod tests {
                 downloads: Mutex::new(Vec::new()),
                 uploads: Mutex::new(Vec::new()),
                 zip_bytes: buf.into_inner(),
+                upload_fail: AtomicBool::new(false),
+                puts: std::sync::atomic::AtomicUsize::new(0),
+                fail_first_n: std::sync::atomic::AtomicUsize::new(0),
             }
+        }
+
+        fn set_upload_fail(&self, v: bool) {
+            self.upload_fail.store(v, Ordering::SeqCst);
+        }
+
+        fn set_fail_first_n(&self, n: usize) {
+            self.fail_first_n.store(n, Ordering::SeqCst);
+        }
+
+        fn put_count(&self) -> usize {
+            self.puts.load(Ordering::SeqCst)
         }
     }
 
@@ -2884,6 +3038,18 @@ mod tests {
         }
 
         async fn put(&self, key: &str, path: &std::path::Path) -> Result<(), String> {
+            self.puts.fetch_add(1, Ordering::SeqCst);
+            if self.upload_fail.load(Ordering::SeqCst) {
+                return Err(format!(
+                    "S3 PUT {key}: bucket inexistente (fake upload_fail)"
+                ));
+            }
+            if self.fail_first_n.load(Ordering::SeqCst) > 0 {
+                self.fail_first_n.fetch_sub(1, Ordering::SeqCst);
+                return Err(format!(
+                    "S3 PUT {key}: instabilidade transitória (fake flaky)"
+                ));
+            }
             self.uploads
                 .lock()
                 .unwrap()
@@ -2976,6 +3142,15 @@ mod tests {
                 .iter()
                 .map(|r| r.status.clone())
                 .collect()
+        }
+
+        fn failed_report(&self) -> Option<ReportBody> {
+            self.reports
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|r| r.status == "failed")
+                .cloned()
         }
 
         fn done_artifacts(&self) -> Option<Vec<ArtifactReport>> {
@@ -3420,6 +3595,252 @@ mod tests {
         let kinds: Vec<&str> = artifacts.iter().map(|a| a.kind.as_str()).collect();
         assert!(filenames.contains(&"generated.png"));
         assert!(kinds.contains(&"generated"));
+    }
+
+    // -- Incidente galeria vazia: bucket S3 inexistente → uploads falham → job
+    //    NÃO pode terminar done com zero artefatos (mentira sobre si mesmo).
+
+    /// FakeS3 em modo upload_fail → run_job deve reportar failed com mensagem
+    /// descritiva, nunca done.
+    #[tokio::test]
+    async fn generate_upload_fail_reports_failed_not_done() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let s3 = Arc::new(FakeS3::new());
+        s3.set_upload_fail(true);
+        let mut dispatch = make_dispatch("job-upload-fail-001", "diffusion");
+        dispatch.mode = "generate".to_string();
+        dispatch.package_ref = None; // Text-to-Image puro, como no incidente
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        // Trainer "produziu" a imagem — só o upload ao bucket falha.
+        let mut output_files = HashMap::new();
+        output_files.insert("generated_0001.png".to_string(), b"fake png".to_vec());
+        create_fake_outputs(tmp.path(), "job-upload-fail-001", &output_files);
+
+        run_job(
+            dispatch,
+            s3,
+            report.clone(),
+            executor,
+            active_jobs,
+            None,
+            false,
+            None,
+        )
+        .await;
+
+        let statuses = report.statuses();
+        assert!(
+            !statuses.iter().any(|s| s == "done"),
+            "job com upload falho não pode reportar done: {statuses:?}"
+        );
+        let failed = report
+            .failed_report()
+            .expect("deve haver report final failed");
+        let msg = failed
+            .message
+            .clone()
+            .or(failed.error.clone())
+            .unwrap_or_default();
+        assert!(
+            msg.contains("upload de artefatos falhou"),
+            "mensagem deve diagnosticar a falha de upload, obtido: {msg}"
+        );
+    }
+
+    // -- Ronda reviewer S2: retry e preparo de artefatos --
+
+    /// put_with_retry com S3 sempre falhando → Err após EXATAMENTE 3 tentativas.
+    #[tokio::test]
+    async fn put_with_retry_tries_three_times_then_gives_up() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("a.bin");
+        std::fs::write(&file, b"data").unwrap();
+
+        let s3 = FakeS3::new();
+        s3.set_upload_fail(true);
+        let res = put_with_retry(&s3, "artifacts/j/a.bin", &file).await;
+        assert!(res.is_err(), "put sempre falhando deve retornar Err");
+        assert_eq!(s3.put_count(), 3, "put_with_retry deve tentar N=3 vezes");
+    }
+
+    /// put_with_retry com S3 instável (2 falhas transitórias) → Ok na 3ª.
+    #[tokio::test]
+    async fn put_with_retry_succeeds_after_transient_failures() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("b.bin");
+        std::fs::write(&file, b"data").unwrap();
+
+        let s3 = FakeS3::new();
+        s3.set_fail_first_n(2);
+        let res = put_with_retry(&s3, "artifacts/j/b.bin", &file).await;
+        assert!(
+            res.is_ok(),
+            "falha transitória deve ser absorvida pelo retry"
+        );
+        assert_eq!(s3.put_count(), 3, "2 falhas + 1 sucesso = 3 tentativas");
+    }
+
+    /// One-shot generate com upload_fail → exatamente 3 puts por arquivo
+    /// (prova end-to-end do retry) + report final failed.
+    #[tokio::test]
+    async fn generate_upload_fail_puts_exactly_three_times() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let s3 = Arc::new(FakeS3::new());
+        s3.set_upload_fail(true);
+        let mut dispatch = make_dispatch("job-retry-count-001", "diffusion");
+        dispatch.mode = "generate".to_string();
+        dispatch.package_ref = None;
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let mut output_files = HashMap::new();
+        output_files.insert("generated_0001.png".to_string(), b"fake png".to_vec());
+        create_fake_outputs(tmp.path(), "job-retry-count-001", &output_files);
+
+        run_job(
+            dispatch,
+            s3.clone(),
+            report.clone(),
+            executor,
+            active_jobs,
+            None,
+            false,
+            None,
+        )
+        .await;
+
+        assert!(
+            report.failed_report().is_some(),
+            "upload falho deve terminar failed"
+        );
+        assert_eq!(s3.put_count(), 3, "1 arquivo × N=3 tentativas");
+    }
+
+    /// Falha de PREPARO (scoped_key rejeita job_id com traversal) → entra em
+    /// upload_errors → report final failed (nada é silenciado).
+    #[tokio::test]
+    async fn generate_scoped_key_failure_reports_failed() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let s3 = Arc::new(FakeS3::new());
+        // job_id com segmento ".." → art_key contém traversal → scoped_key Err.
+        let mut dispatch = make_dispatch("job/../traversal-001", "diffusion");
+        dispatch.mode = "generate".to_string();
+        dispatch.package_ref = None;
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let mut output_files = HashMap::new();
+        output_files.insert("generated_0001.png".to_string(), b"fake png".to_vec());
+        create_fake_outputs(tmp.path(), "job/../traversal-001", &output_files);
+
+        run_job(
+            dispatch,
+            s3,
+            report.clone(),
+            executor,
+            active_jobs,
+            None,
+            false,
+            None,
+        )
+        .await;
+
+        let statuses = report.statuses();
+        assert!(
+            !statuses.iter().any(|s| s == "done"),
+            "falha de preparo não pode terminar done: {statuses:?}"
+        );
+        let failed = report
+            .failed_report()
+            .expect("deve haver report final failed");
+        let msg = failed
+            .message
+            .clone()
+            .or(failed.error.clone())
+            .unwrap_or_default();
+        assert!(
+            msg.contains("upload de artefatos falhou"),
+            "gate deve transformar em failed, obtido: {msg}"
+        );
+        assert!(
+            msg.contains("falha ao preparar artefato (key)"),
+            "causa deve identificar o preparo (key), obtido: {msg}"
+        );
+    }
+
+    /// Simetria daemon: generate via daemon com upload_fail → failed, nunca done.
+    #[tokio::test]
+    async fn daemon_generate_upload_fail_reports_failed() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let s3 = Arc::new(FakeS3::new());
+        s3.set_upload_fail(true);
+        let mut dispatch = make_dispatch("job-daemon-fail-001", "diffusion");
+        dispatch.mode = "generate".to_string();
+        dispatch.package_ref = None;
+        dispatch.config_yaml =
+            Some("base_model: flux-2-klein-4b\noutput_path: {output_path}".to_string());
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let client = Arc::new(FakeDaemonClient::new());
+        let launcher = Arc::new(FakeDaemonLauncher::new());
+        let daemon_state = Arc::new(DaemonState::new(
+            "hephaestus/trainer-difusao:local",
+            8766,
+            600,
+            client.clone() as Arc<dyn DaemonClient>,
+            launcher.clone() as Arc<dyn DaemonLauncher>,
+        ));
+        daemon_state.set_running(true, Some("http://localhost:8766".to_string()));
+        client.set_generate_results(vec![Ok(())]);
+
+        let mut output_files = HashMap::new();
+        output_files.insert("generated_0001.png".to_string(), b"daemon png".to_vec());
+        create_fake_outputs(tmp.path(), "job-daemon-fail-001", &output_files);
+
+        run_job(
+            dispatch,
+            s3,
+            report.clone(),
+            executor,
+            active_jobs,
+            None,
+            false,
+            Some(daemon_state),
+        )
+        .await;
+
+        let statuses = report.statuses();
+        assert!(
+            !statuses.iter().any(|s| s == "done"),
+            "daemon com upload falho não pode reportar done: {statuses:?}"
+        );
+        let failed = report
+            .failed_report()
+            .expect("deve haver report final failed");
+        let msg = failed
+            .message
+            .clone()
+            .or(failed.error.clone())
+            .unwrap_or_default();
+        assert!(
+            msg.contains("upload de artefatos falhou"),
+            "mensagem deve diagnosticar a falha de upload, obtido: {msg}"
+        );
     }
 
     // -- D5 ADR-0023: meta_content no report done --

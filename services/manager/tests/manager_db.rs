@@ -5065,6 +5065,158 @@ async fn hook_generations_idempotente_re_report() {
     assert_eq!(count2.0, 1, "idempotência: continua 1 row");
 }
 
+/// Incidente galeria vazia (defesa em profundidade): diffusion_generate que
+/// reporta done SEM artefatos é recusado → failed com erro no_artifacts.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn report_done_sem_artifacts_diffusion_generate_vira_failed() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+    let resp = manager::create_job(&p, diffusion_generate_request())
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+
+    // done sem artefatos: recusado como done, mas o report é aceito (Ok).
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "done".into(),
+            progress: Some(1.0),
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: None,
+            meta_content: None,
+            phase: None,
+            message: None,
+        },
+    )
+    .await
+    .expect("report done vazio (recusado, mas aceito)");
+
+    let job = manager::get_job(&p, job_id).await.expect("get");
+    assert_eq!(job.status, "failed");
+    assert!(job.finished_at.is_some());
+    let params: serde_json::Value = sqlx::query_scalar("SELECT params FROM jobs WHERE id = $1")
+        .bind(job_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert!(
+        params["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("no_artifacts"),
+        "params.error deve conter no_artifacts: {params}"
+    );
+    let message = job.message.unwrap_or_default();
+    assert!(
+        message.contains("no_artifacts"),
+        "message deve diagnosticar em PT: {message}"
+    );
+}
+
+/// Contra-caso: done COM artefato generated segue done normalmente.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn report_done_com_generated_segue_done() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+    let resp = manager::create_job(&p, diffusion_generate_request())
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "done".into(),
+            progress: Some(1.0),
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: Some(vec![ArtifactItem {
+                kind: "generated".into(),
+                path: "gen_0001.png".into(),
+                md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                bytes: 1024,
+            }]),
+            meta_content: None,
+            phase: None,
+            message: None,
+        },
+    )
+    .await
+    .expect("report done com generated");
+
+    let job = manager::get_job(&p, job_id).await.expect("get");
+    assert_eq!(job.status, "done");
+}
+
+/// Exceção preservada (t7_ac006a_*, abort_em_voo): yolo_train que reporta
+/// done SEM artefatos segue done no nível report_job (não só na unidade).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn report_done_vazio_yolo_train_segue_done() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "done".into(),
+            progress: Some(1.0),
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: None,
+            meta_content: None,
+            phase: Some("completed".into()),
+            message: Some("Treino concluído".into()),
+        },
+    )
+    .await
+    .expect("report done vazio yolo_train");
+
+    let job = manager::get_job(&p, job_id).await.expect("get");
+    assert_eq!(job.status, "done");
+    assert_eq!(job.phase.as_deref(), Some("completed"));
+    assert_eq!(job.message.as_deref(), Some("Treino concluído"));
+}
+
 /// Meta corrupto → best-effort, 1 válida inserida.
 #[tokio::test]
 #[ignore = "requer Postgres (bash scripts/test-db.sh)"]
@@ -6165,4 +6317,164 @@ async fn delete_job_preserva_geracoes_trash() {
             .await
             .unwrap();
     assert!(g_job.is_none(), "geração trash preservada com job_id NULL");
+}
+
+// ===========================================================================
+// G.6 — Bug 009: hook pós-treino de difusão preenche kind/arch
+// ===========================================================================
+
+/// Helper: cria um request de diffusion train (espelha o body do BFF:
+/// params camelCase com baseModel + config_yaml com `model:`).
+fn diffusion_train_request(dataset_id: uuid::Uuid, base_model: &str) -> CreateJobRequest {
+    CreateJobRequest {
+        kind: "diffusion_train".into(),
+        engine: "diffusion".into(),
+        model: base_model.into(),
+        mode: "train".into(),
+        dataset_id: Some(dataset_id.to_string()),
+        dataset_version_id: None,
+        package_ref: None,
+        config_yaml: Some(format!(
+            "# Configuração de treino Difusão LoRA (gerada pelo api-principal)\nengine: \"diffusion\"\nmodel: \"{base_model}\"\nmode: \"train\"\n"
+        )),
+        params: Some(serde_json::json!({
+            "datasetId": dataset_id.to_string(),
+            "baseModel": base_model,
+            "triggerWord": "TOK",
+            "epochs": 10
+        })),
+        vram_min_gb: Some(12),
+        weights_id: None,
+        orchestrator_hint: None,
+    }
+}
+
+/// Bug 009: report done de treino de difusão com adapter.safetensors →
+/// models row com kind='lora' + arch derivado; o LoRA passa a ser aceito
+/// em diffusion generate (repro end-to-end do "argumentos inválidos").
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn report_diffusion_train_preenche_kind_arch_lora() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let resp = manager::create_job(&p, diffusion_train_request(ds_id, "sdxl"))
+        .await
+        .expect("create diffusion train");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "done".into(),
+            progress: Some(1.0),
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: Some(vec![ArtifactItem {
+                kind: "model".into(),
+                path: "adapter.safetensors".into(),
+                md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                bytes: 2048,
+            }]),
+            meta_content: None,
+            phase: None,
+            message: None,
+        },
+    )
+    .await
+    .expect("report done");
+
+    let row: (uuid::Uuid, Option<String>, Option<String>, String) =
+        sqlx::query_as("SELECT id, kind, arch, s3_key FROM models WHERE job_id = $1")
+            .bind(job_id)
+            .fetch_one(&p)
+            .await
+            .expect("models row do hook");
+    assert_eq!(row.1.as_deref(), Some("lora"), "adapter → kind='lora'");
+    assert_eq!(row.2.as_deref(), Some("sdxl"), "arch derivado do treino");
+    assert_eq!(row.3, format!("artifacts/{job_id}/adapter.safetensors"));
+
+    // Prova do Bug 009: o LoRA agora resolve em diffusion generate.
+    let mut gen = diffusion_generate_request();
+    gen.params = Some(serde_json::json!({
+        "prompt": "a cyberpunk city",
+        "width": 1024, "height": 1024, "steps": 20, "guidance_scale": 7.5, "seed": 42,
+        "loras": [{"modelId": row.0.to_string(), "scale": 0.8}]
+    }));
+    manager::create_job(&p, gen)
+        .await
+        .expect("generate com LoRA do treino deve resolver");
+}
+
+/// Bug 009: ON CONFLICT DO UPDATE com COALESCE — re-report do mesmo artefato
+/// preenche kind/arch NULL mas NUNCA sobrescreve kind já definido (upload manual).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn hook_models_conflict_nao_sobrescreve_kind_existente() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let resp = manager::create_job(&p, diffusion_train_request(ds_id, "sd15"))
+        .await
+        .expect("create diffusion train");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+    let s3_key = format!("artifacts/{job_id}/adapter.safetensors");
+
+    // Row pré-existente (upload manual classificou como checkpoint).
+    sqlx::query(
+        "INSERT INTO models (id, engine, name, model, s3_key, source, hash, bytes, job_id, kind, arch) \
+         VALUES ($1, 'diffusion', 'manual.safetensors', 'sd15', $2, 'upload', \
+                 'd41d8cd98f00b204e9800998ecf8427e', 1024, NULL, 'checkpoint', 'sd15')",
+    )
+    .bind(uuid::Uuid::new_v4())
+    .bind(&s3_key)
+    .execute(&p)
+    .await
+    .expect("pre-insert manual");
+
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "done".into(),
+            progress: Some(1.0),
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: Some(vec![ArtifactItem {
+                kind: "model".into(),
+                path: "adapter.safetensors".into(),
+                md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+                bytes: 2048,
+            }]),
+            meta_content: None,
+            phase: None,
+            message: None,
+        },
+    )
+    .await
+    .expect("report done");
+
+    let rows: Vec<(Option<String>, Option<String>, String)> =
+        sqlx::query_as("SELECT kind, arch, source FROM models WHERE s3_key = $1")
+            .bind(&s3_key)
+            .fetch_all(&p)
+            .await
+            .expect("select conflict");
+    assert_eq!(rows.len(), 1, "sem duplicata no conflito");
+    assert_eq!(
+        rows[0].0.as_deref(),
+        Some("checkpoint"),
+        "kind manual preservado"
+    );
+    assert_eq!(rows[0].1.as_deref(), Some("sd15"), "arch manual preservado");
+    assert_eq!(rows[0].2, "upload", "source manual preservado");
 }

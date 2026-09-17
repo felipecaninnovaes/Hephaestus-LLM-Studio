@@ -9,8 +9,10 @@ import React, {
 } from "react";
 import {
   IconCheck,
+  IconCopy,
   IconDownload,
   IconImage,
+  IconSliders,
   IconTrash,
   IconX,
   IconZoomIn,
@@ -31,12 +33,21 @@ import {
   exportGenerations,
   getGenerationDataUrl,
 } from "@/lib/generations";
+import { GERACAO_COMPLETED_KEY, generationConfigsJson, geracaoFormFromGeneration, publishGeracaoForm } from "@/lib/geracao-storage";
+import { copyToClipboard } from "@/lib/clipboard";
 import type { Generation } from "@/types/studio";
 import CompareSlider from "./CompareSlider";
 
 /* ── Constantes ── */
 
 const PAGE_LIMIT = 50;
+
+/** Limite defensivo por call ao paginar "carregar todas" (clamp 1..200 do backend). */
+const LOAD_ALL_LIMIT = 200;
+/** Teto de páginas por ação "carregar todas" (20 × 200 = 4000 itens máx.). */
+const LOAD_ALL_MAX_PAGES = 20;
+/** Teto do backend por call de delete/export (≤100 ids — handlers.rs:276,303). */
+const BACKEND_BATCH_LIMIT = 100;
 
 /** Chaves estáveis dos 12 placeholders de skeleton (lista estática — nunca reordena). */
 const GALLERY_SKELETON_KEYS = [
@@ -69,6 +80,12 @@ export default function GenerationGallery() {
 
   /* ── Selection ── */
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  /** Âncora da seleção por faixa (ID do item em `items`, ordem visual created_at DESC).
+      Âncora por ID (não índice): o prepend do refreshGallery invalida índices.
+      Atualizada SOMENTE em cliques sem Shift; Shift+clique nunca move a âncora. */
+  const anchorIdRef = useRef<string | null>(null);
+  /** Paginação "carregar todas" em andamento (desabilita toolbar). */
+  const [loadingAll, setLoadingAll] = useState(false);
 
   /* ── Lightbox ── */
   const [lightboxItem, setLightboxItem] = useState<Generation | null>(null);
@@ -87,10 +104,22 @@ export default function GenerationGallery() {
 
   /* ── Infinite scroll sentinel ── */
   const sentinelRef = useRef<HTMLDivElement | null>(null);
+  /** Guarda anti-setState-em-unmount para o loop paginado de loadAll. */
+  const mountedRef = useRef(true);
+
+  useEffect(() => () => {
+    mountedRef.current = false;
+  }, []);
 
   /* ── Derived ── */
   const selectedArray = useMemo(() => Array.from(selectedIds), [selectedIds]);
   const selectedCount = selectedArray.length;
+  /** Todas as CARREGADAS selecionadas (honesto quando total > items.length). */
+  const allLoadedSelected = useMemo(
+    () => items.length > 0 && items.every((i) => selectedIds.has(i.id)),
+    [items, selectedIds],
+  );
+  const hasMoreToLoad = items.length < total;
 
   /* ── Load initial page ── */
   const loadInitial = useCallback(async () => {
@@ -113,7 +142,8 @@ export default function GenerationGallery() {
 
   /* ── Load more (infinite scroll) ── */
   const loadMore = useCallback(async () => {
-    if (loadingMore || items.length >= total) return;
+    /* Trava contra loadAll/refresh (ref espelho: sem re-criar o callback). */
+    if (loadingMore || loadingAllRef.current || items.length >= total) return;
     setLoadingMore(true);
     try {
       const res = await listGenerations({
@@ -123,6 +153,8 @@ export default function GenerationGallery() {
       });
       setItems((prev) => [...prev, ...res.items]);
       setTotal(res.total);
+      /* Append desloca faixas de Shift: invalida a âncora. */
+      anchorIdRef.current = null;
     } catch {
       showToast("Falha ao carregar mais gerações.", "error");
     } finally {
@@ -141,6 +173,7 @@ export default function GenerationGallery() {
           entries[0]?.isIntersecting &&
           !loading &&
           !loadingMore &&
+          !loadingAllRef.current &&
           items.length < total
         ) {
           void loadMore();
@@ -153,7 +186,100 @@ export default function GenerationGallery() {
     return () => observer.disconnect();
   }, [loading, loadingMore, items.length, total, loadMore]);
 
-  /* ── Selection handlers ── */
+  /* ── Refresh silencioso (Slice F2/002) ──
+     Recarrega o intervalo já carregado (limit = max(PAGE_LIMIT, N atual),
+     offset 0) para que imagens novas façam prepend sem resetar scroll
+     (não toca em scrollTop; o container mantém a posição) e sem perder
+     paginação/infinite-scroll. Seleção preservada por id existente. Sem
+     setInterval permanente: o gatilho é evento, não polling. */
+  const refreshingRef = useRef(false);
+  const lastRefreshRef = useRef(0);
+  const itemsLengthRef = useRef(0);
+  const loadingRef = useRef(false);
+  const loadingMoreRef = useRef(false);
+  /** Espelho ref de `loadingAll` (loadMore/observer/refresh o leem sem re-subscrever). */
+  const loadingAllRef = useRef(false);
+  loadingRef.current = loading;
+  loadingMoreRef.current = loadingMore;
+  loadingAllRef.current = loadingAll;
+
+  useEffect(() => {
+    itemsLengthRef.current = items.length;
+  }, [items.length]);
+
+  const refreshGallery = useCallback(async () => {
+    /* Cooldown 5s: `storage` + `focus`/`visibilitychange` costumam chegar
+       juntos ao trocar de aba — a 2ª chamada seria um fetch redundante. */
+    const now = Date.now();
+    if (refreshingRef.current) return;
+    if (loadingRef.current || loadingMoreRef.current || loadingAllRef.current) return;
+    if (now - lastRefreshRef.current < 5000) return;
+    refreshingRef.current = true;
+    lastRefreshRef.current = now;
+    try {
+      // openapi clamp 1..200; sem teto, lista truncaria e podaria seleção.
+      // TODO(filtros): propagar baseModel/quantization ao refresh se a UI de filtros existir
+      const limit = Math.min(200, Math.max(PAGE_LIMIT, itemsLengthRef.current));
+      const res = await listGenerations({ limit, offset: 0, deleted: false });
+      setItems(res.items);
+      setTotal(res.total);
+      setSelectedIds((prev) => {
+        if (prev.size === 0) return prev;
+        const alive = new Set(res.items.map((i) => i.id));
+        let dropped = false;
+        const next = new Set<string>();
+        for (const id of prev) {
+          if (alive.has(id)) next.add(id);
+          else dropped = true;
+        }
+        return dropped ? next : prev;
+      });
+      /* Lista substituída (prepend reordena): a âncora de Shift pode ter
+         sumido ou mudado de posição — invalida. */
+      anchorIdRef.current = null;
+    } catch {
+      /* refresh silencioso: sem toast para não spammar aba em background */
+    } finally {
+      refreshingRef.current = false;
+    }
+  }, []);
+
+  /* ── Canal primário cross-tab: evento `storage` cruza abas (CustomEvent
+     não). Dispara quando o Panel grava `geracao:lastCompletedAt`. ── */
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === GERACAO_COMPLETED_KEY) void refreshGallery();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [refreshGallery]);
+
+  /* ── Mesma-aba: `storage` não dispara na aba de origem; cobre via
+     foco/visibilidade. Mount já recarrega via loadInitial. ── */
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void refreshGallery();
+    };
+    const onFocus = () => {
+      void refreshGallery();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [refreshGallery]);
+
+  /* ── Selection handlers (Slice F3/bug-008) ──
+     Interação escolhida:
+     - Clique simples = toggle do item + move a âncora para o índice clicado.
+     - Shift+clique = ADICIONA (nunca remove) a faixa [âncora..atual] na ordem
+       visual de `items`; sem âncora prévia, comporta-se como clique simples.
+     - "Selecionar todas" = todas as CARREGADAS; hint "N de M" denuncia o
+       restante não carregado; "Carregar todas" pagina (200/call, máx. 20
+       páginas) até esgotar — sem loop infinito: para em página vazia,
+       total atingido ou teto de páginas. */
   const toggleSelect = useCallback((id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -163,35 +289,130 @@ export default function GenerationGallery() {
     });
   }, []);
 
+  const handleCardClick = useCallback(
+    (id: string, index: number, shiftKey: boolean) => {
+      /* Âncora por ID: resolve o índice atual (o prepend do refreshGallery
+         invalida índices guardados; ID sobrevive à reordenação). */
+      const anchorIdx =
+        anchorIdRef.current !== null
+          ? items.findIndex((i) => i.id === anchorIdRef.current)
+          : -1;
+      if (shiftKey && anchorIdx >= 0) {
+        const lo = Math.max(0, Math.min(anchorIdx, index));
+        const hi = Math.min(items.length - 1, Math.max(anchorIdx, index));
+        const rangeIds = items.slice(lo, hi + 1).map((i) => i.id);
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          for (const rid of rangeIds) next.add(rid);
+          return next;
+        });
+        return;
+      }
+      /* Sem âncora ou âncora sumida da lista: clique simples + nova âncora. */
+      anchorIdRef.current = id;
+      toggleSelect(id);
+    },
+    [items, toggleSelect],
+  );
+
   const selectAll = useCallback(() => {
     setSelectedIds(new Set(items.map((i) => i.id)));
+    /* Âncora coerente: início da faixa (tudo já selecionado; Shift+clique vira no-op). */
+    anchorIdRef.current = items[0]?.id ?? null;
   }, [items]);
 
   const clearSelection = useCallback(() => {
     setSelectedIds(new Set());
+    anchorIdRef.current = null;
   }, []);
 
-  /* ── Delete handler ── */
+  /* ── Carregar todas (pagina até esgotar, com travas anti-loop) ── */
+  const loadAll = useCallback(async () => {
+    /* Trava contra refreshGallery/loadMore (refs: sem re-criar o callback). */
+    if (loadingAll || loading || loadingMore) return;
+    if (refreshingRef.current || loadingRef.current) return;
+    if (items.length >= total) return;
+    setLoadingAll(true);
+    try {
+      let accumulated: Generation[] = [];
+      let pages = 0;
+      let expectedTotal = total;
+      while (pages < LOAD_ALL_MAX_PAGES) {
+        if (!mountedRef.current) return;
+        const offset = items.length + accumulated.length;
+        if (offset >= expectedTotal) break;
+        const res = await listGenerations({
+          limit: LOAD_ALL_LIMIT,
+          offset,
+          deleted: false,
+        });
+        if (!mountedRef.current) return;
+        expectedTotal = res.total;
+        if (res.items.length === 0) break;
+        accumulated = [...accumulated, ...res.items];
+        pages += 1;
+        if (items.length + accumulated.length >= expectedTotal) break;
+      }
+      if (!mountedRef.current) return;
+      if (accumulated.length > 0) {
+        setItems((prev) => [...prev, ...accumulated]);
+        setTotal(expectedTotal);
+        /* Append em massa desloca faixas de Shift: invalida a âncora. */
+        anchorIdRef.current = null;
+      }
+    } catch {
+      if (mountedRef.current) showToast("Falha ao carregar todas as gerações.", "error");
+    } finally {
+      if (mountedRef.current) setLoadingAll(false);
+    }
+  }, [loadingAll, loading, loadingMore, items.length, total]);
+
+  /* ── Delete handler: lotes sequenciais de 100, um único toast ao final. ── */
   const handleDelete = useCallback(async () => {
     if (selectedCount === 0) return;
     setDeleteBusy(true);
     try {
-      await deleteGenerations(selectedArray);
-      setItems((prev) => prev.filter((i) => !selectedIds.has(i.id)));
-      setTotal((prev) => prev - selectedCount);
-      setSelectedIds(new Set());
+      let deleted = 0;
+      let partial = false;
+      for (let i = 0; i < selectedArray.length; i += BACKEND_BATCH_LIMIT) {
+        try {
+          await deleteGenerations(selectedArray.slice(i, i + BACKEND_BATCH_LIMIT));
+          deleted += Math.min(BACKEND_BATCH_LIMIT, selectedArray.length - i);
+        } catch {
+          /* Para no 1º lote com falha; o restante mantém a seleção p/ retry. */
+          partial = true;
+          break;
+        }
+      }
+      if (partial) {
+        showToast(`Exclusão parcial: ${deleted} de ${selectedCount} imagens excluídas.`, "error");
+        /* Refetch honesto bypassando o cooldown do refresh silencioso. */
+        lastRefreshRef.current = 0;
+        void refreshGallery();
+      } else {
+        const deletedIds = new Set(selectedArray);
+        setItems((prev) => prev.filter((i) => !deletedIds.has(i.id)));
+        /* DELETE retorna 204 sem corpo (sem res.total) → clamp local honesto. */
+        setTotal((prev) => Math.max(0, prev - deleted));
+        setSelectedIds(new Set());
+        anchorIdRef.current = null;
+        showToast(`${deleted} imagens excluídas.`, "success");
+      }
       setDeleteOpen(false);
-      showToast(`${selectedCount} geração(ões) excluída(s).`, "success");
     } catch {
       showToast("Falha ao excluir gerações.", "error");
     } finally {
       setDeleteBusy(false);
     }
-  }, [selectedArray, selectedIds, selectedCount]);
+  }, [selectedArray, selectedCount, refreshGallery]);
 
-  /* ── Export handler ── */
+  /* ── Export handler: 1 call; gate honesto acima de 100 (sem chunk silencioso). ── */
   const handleExport = useCallback(async () => {
     if (selectedCount === 0) return;
+    if (selectedCount > BACKEND_BATCH_LIMIT) {
+      showToast("Exportação limitada a 100 imagens por vez.", "error");
+      return;
+    }
     setExportBusy(true);
     try {
       await exportGenerations(selectedArray);
@@ -239,6 +460,37 @@ export default function GenerationGallery() {
   /* ── Image URL helper ── */
   const getImageUrl = useCallback((gen: Generation): string => {
     return gen.thumbUrl || gen.url || getGenerationDataUrl(gen.id);
+  }, []);
+
+  /* ── Copiar configs (Slice F4/007): JSON legível p/ reprodução.
+     Ação explícita — NUNCA sobrecarrega o clique do card (toggle de
+     seleção). Via copyToClipboard (fallback execCommand p/ HTTP em LAN). ── */
+  const handleCopyConfigs = useCallback(async (gen: Generation) => {
+    const ok = await copyToClipboard(generationConfigsJson(gen));
+    showToast(ok ? "Configs copiadas!" : "Falha ao copiar configs.", ok ? "success" : "error");
+  }, []);
+
+  /* ── Copiar prompt (bônus trivial) ── */
+  const handleCopyPrompt = useCallback(async (gen: Generation) => {
+    if (gen.prompt.trim().length === 0) {
+      showToast("Prompt vazio — nada para copiar.", "error");
+      return;
+    }
+    const ok = await copyToClipboard(gen.prompt);
+    showToast(ok ? "Prompt copiado!" : "Falha ao copiar prompt.", ok ? "success" : "error");
+  }, []);
+
+  /* ── Usar configs no gerador: grava `geracao:form:v1` + evento canônico
+     mesma-aba + volta p/ a aba Gerar (o Panel hidrata no mount; se já
+     montado, o listener re-hidrata ao vivo). Resíduos não-reaplicáveis
+     (LoRA sem UUID, checkpoint custom sem UUID) geram aviso explícito —
+     o Toast só tem success|error|info, sem variante warning: usa "error". ── */
+  const handleUseConfigs = useCallback((gen: Generation) => {
+    const { form, warnings } = geracaoFormFromGeneration(gen);
+    publishGeracaoForm(form);
+    window.dispatchEvent(new CustomEvent("hephaestus:switch-tab", { detail: "gerar" }));
+    showToast("Configs aplicadas no gerador.", "success");
+    if (warnings.length > 0) showToast(warnings.join(" "), "error");
   }, []);
 
   const getFullImageUrl = useCallback((gen: Generation): string => {
@@ -309,17 +561,66 @@ export default function GenerationGallery() {
             {total} {total === 1 ? "geração" : "gerações"}
           </span>
         </div>
-        {selectedCount > 0 && (
-          <span className="font-mono text-2xs text-brand-400">
-            {selectedCount} selecionada{selectedCount > 1 ? "s" : ""}
-          </span>
-        )}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          {selectedCount > 0 && (
+            <span className="font-mono text-2xs text-brand-400">
+              {selectedCount} selecionada{selectedCount > 1 ? "s" : ""}
+            </span>
+          )}
+          {/* Toolbar de seleção (bug-008): visível quando há itens carregados */}
+          {items.length > 0 && (
+            <div className="flex items-center gap-2" role="toolbar" aria-label="Seleção da galeria">
+              {allLoadedSelected ? (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={clearSelection}
+                  aria-label="Limpar seleção da galeria"
+                >
+                  Limpar seleção
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={selectAll}
+                  aria-label="Selecionar todas as imagens carregadas"
+                >
+                  Selecionar todas ({items.length})
+                </Button>
+              )}
+              {hasMoreToLoad ? (
+                <span className="flex items-center gap-2">
+                  <span
+                    className="font-mono text-2xs text-zinc-500"
+                    aria-live="polite"
+                    title="A seleção cobre apenas os itens já carregados na grade"
+                  >
+                    {items.length} de {total}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => void loadAll()}
+                    disabled={loadingAll || loading || loadingMore}
+                    aria-label={`Carregar todas as ${total} gerações para seleção completa`}
+                  >
+                    {loadingAll ? "Carregando…" : "Carregar todas"}
+                  </Button>
+                </span>
+              ) : null}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* ── Grid ── */}
       <div className="flex-1 overflow-visible p-4 md:p-6 lg:min-h-0 lg:overflow-y-auto">
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-3">
-          {items.map((gen) => {
+          {items.map((gen, index) => {
             const isSelected = selectedIds.has(gen.id);
             return (
               <div
@@ -351,9 +652,10 @@ export default function GenerationGallery() {
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    toggleSelect(gen.id);
+                    handleCardClick(gen.id, index, e.shiftKey);
                   }}
                   aria-label={isSelected ? `Desselecionar geração seed ${gen.seed}` : `Selecionar geração seed ${gen.seed}`}
+                  aria-pressed={isSelected}
                   className={`absolute top-2 left-2 z-10 flex size-10 items-center justify-center rounded-lg border transition-all cursor-pointer ${
                     isSelected
                       ? "border-brand-500 bg-brand-500/20 text-brand-300"
@@ -373,25 +675,40 @@ export default function GenerationGallery() {
                   />
                 </div>
 
-                {/* Botão zoom — hover */}
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setLightboxItem(gen);
-                  }}
-                  aria-label="Ampliar geração"
-                  className="absolute bottom-2 right-2 z-10 flex size-10 items-center justify-center rounded-lg bg-black/60 border border-white/20 text-zinc-200 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-black/80 backdrop-blur-md cursor-pointer"
-                >
-                  <IconZoomIn className="size-4" />
-                </button>
+                {/* Ações do card — hover (copiar NÃO toca na seleção) */}
+                <div className="absolute bottom-2 right-2 z-10 flex gap-1.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void handleCopyConfigs(gen);
+                    }}
+                    aria-label={`Copiar configs da geração seed ${gen.seed} em JSON`}
+                    title="Copiar configs (JSON)"
+                    className="flex size-10 items-center justify-center rounded-lg bg-black/60 border border-white/20 text-zinc-200 hover:bg-black/80 backdrop-blur-md cursor-pointer"
+                  >
+                    <IconCopy className="size-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setLightboxItem(gen);
+                    }}
+                    aria-label="Ampliar geração"
+                    className="flex size-10 items-center justify-center rounded-lg bg-black/60 border border-white/20 text-zinc-200 hover:bg-black/80 backdrop-blur-md cursor-pointer"
+                  >
+                    <IconZoomIn className="size-4" />
+                  </button>
+                </div>
 
-                {/* Click no card = selecionar/desselecionar */}
+                {/* Click no card = toggle | Shift+clique = faixa âncora..atual */}
                 <button
                   type="button"
-                  onClick={() => toggleSelect(gen.id)}
+                  onClick={(e) => handleCardClick(gen.id, index, e.shiftKey)}
                   className="absolute inset-0 z-[5] cursor-pointer"
-                  aria-label={isSelected ? "Desselecionar" : "Selecionar"}
+                  aria-label={isSelected ? "Desselecionar (Shift+clique seleciona a faixa)" : "Selecionar (Shift+clique seleciona a faixa)"}
+                  aria-pressed={isSelected}
                 />
               </div>
             );
@@ -438,12 +755,13 @@ export default function GenerationGallery() {
           <div className="flex items-center space-x-2">
             <button
               type="button"
-              onClick={selectedCount === total ? clearSelection : selectAll}
+              onClick={allLoadedSelected ? clearSelection : selectAll}
+              aria-label={allLoadedSelected ? `Limpar seleção (${selectedCount} selecionadas)` : `Selecionar todas as ${items.length} gerações carregadas`}
               className="flex items-center space-x-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 font-mono text-xs text-zinc-300 transition-colors hover:bg-white/10 hover:text-white cursor-pointer"
             >
               <IconCheck className="size-3.5 text-brand-400" />
               <span className="hidden sm:inline">
-                {selectedCount === total ? "Desmarcar todas" : "Selecionar todas"}
+                {allLoadedSelected ? "Limpar seleção" : "Selecionar todas"}
               </span>
             </button>
 
@@ -561,6 +879,39 @@ export default function GenerationGallery() {
                 />
               ) : null}
               <MetaRow label="Criado em" value={new Date(lightboxItem.createdAt).toLocaleString("pt-BR")} />
+            </div>
+
+            {/* Ações F4/007 — copiar configs/prompt, aplicar no gerador */}
+            <div className="flex flex-wrap gap-2 px-1 pb-1">
+              <Button
+                type="button"
+                variant="primary"
+                size="sm"
+                onClick={() => handleUseConfigs(lightboxItem)}
+                aria-label={`Usar configs da geração seed ${lightboxItem.seed} no gerador`}
+              >
+                <IconSliders className="size-3.5" />
+                <span className="ml-1">Usar estas configs</span>
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => void handleCopyConfigs(lightboxItem)}
+                aria-label={`Copiar configs da geração seed ${lightboxItem.seed} em JSON`}
+              >
+                <IconCopy className="size-3.5" />
+                <span className="ml-1">Copiar configs</span>
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => void handleCopyPrompt(lightboxItem)}
+                aria-label={`Copiar prompt da geração seed ${lightboxItem.seed}`}
+              >
+                Copiar prompt
+              </Button>
             </div>
           </div>
         </Modal>

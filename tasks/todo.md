@@ -58,6 +58,34 @@ uma. Manter < 100 linhas; não duplicar docs — referenciar por seção.
      (lg→md), ghost DatasetTable (zinc-400→300), tom spinner brand (500→400).
 - **Pendência:** merge/push desta branch só com ordem explícita do usuário.
 
+## Plano encerrado — 2026-09-16: feat/geracao-galeria-fixes (de develop)
+Correções Geração/Galeria 001–009. TODAS as fatias implementadas, @reviewer em cada round,
+gates verdes (cargo test 581p, pytest 101p, build+lint web 0E/204W baseline, compose ok):
+- [x] F1 (001+003): aba + configs do form persistidas (localStorage versionado) + "Restaurar padrões"
+- [x] E1 (006): PNG iTXt `hephaestus.generation` (mock+real) + testes round-trip
+- [x] B1 (009): hook pós-treino manager registra kind/arch + upsert COALESCE + migration 0014 backfill
+- [x] F2 (002): marker `geracao:lastCompletedAt` + listener `storage` cross-tab + focus/visibility refetch
+- [x] F3 (008): selecionar todas (paginado, teto honesto) + Shift-faixa com âncora por id + delete em lotes 100
+- [x] F4 (007): copiar configs/prompt (clipboard) + "Usar estas configs" (resíduos LoRA/custom avisados, nunca silenciosos)
+- [x] F5+B2 (004): telemetria fina por step do sampler (throttle, fallback TypeError filtrado) + UI "Imagem i/N" honesta + reset de snapshot por jobId
+- [x] docs(repos): REPO_MAP 0001..0014 + backend §9/§10 + frontend Model{kind,arch}
+- 005: SEM código (decisão de produto) — daemon quente já existe (`DIFFUSION_DAEMON_ENABLED`,
+  default 0, TTL 600s, cache 1 pipeline por spec) + cache de pesos AC-007 planejado
+  (`docs/plano-action-center.md` §AC-007 → branch `feat/node-content-cache`).
+  ⚠ Dependência descoberta: path do DAEMON NÃO faz tail de telemetry.jsonl
+  (`manager/src/lib.rs` daemon reporta 0.0 até done, ~L1336-1517) → habilitar daemon sem
+  isso REGREDI o 004. Registrar como pré-requisito de 005.
+- Follow-ups desta branch (não bloqueiam):
+  1. manager/engine persistirem `modelId` (UUID) nos `generations.params` de LoRA/custom →
+     "Usar estas configs" reaplicaria de fato (hoje: aviso honesto + `lorasRaw` no JSON).
+  2. `JobResponse` não expõe `totalSteps` → contador "Imagem i/N" só via SSE; campo no
+     contrato/openapi daria paridade no polling.
+  3. Galeria: shift-faixa por teclado (Shift+Space/Arrow); propagar filtros
+     `baseModel`/`quantization` ao refresh (TODO no código; paginação com filtro quant já é
+     inconsistente upstream — `effective_total` em memória).
+  4. `JobProgressLive.totalSteps` = IMAGENS do batch (documentado); gate por kind se o
+     Action Center passar a repassar telemetry de treino no mesmo componente.
+
 ## Estado do produto (paralelo, NÃO bloqueado por esta fatia)
 - **Pendências do produto:**
   1. **AC-007 NADA implementado** — staging progress (canal da ADR-0024) +
@@ -69,8 +97,47 @@ uma. Manter < 100 linhas; não duplicar docs — referenciar por seção.
      terminal no drawer, chips autolabel).
    3. Push de `feat/web-design-tokens` ao origin ao fechar a fatia (remoto já
       tem `main` com PR #31; confirmar com usuário).
-  4. Dívida registrada: ramo `cancelled` de telemetria não existe (Abort
-     races — ver ADR-0024 / backend.md).
+   4. Dívida registrada: ramo `cancelled` de telemetria não existe (Abort
+      races — ver ADR-0024 / backend.md).
+   5. (16/09, runtime) DB recriado vazio → login 500 no principal nativo
+      (:8080, pid novo, log `/tmp/api-principal.log`); reiniciado com
+      `MANAGER_URL=http://localhost:8081`, migrations rodaram, bootstrap
+      `STUDIO_PASSWORD=changeme`. **FIX COMMITADO `6130f57`** na branch
+      `chore/infra-native-runner` (worktree
+      `~/.cache/tmp/opencode/heph-chore-infra`, base origin/main): db
+      healthcheck + principal `service_healthy` + `scripts/run-native.sh`
+      (STUDIO_PASSWORD obrigatória, env de host, preflights, masking).
+      Re-adotar pós-wipe: endpoint deve ser DNS-de-container
+      (`http://orchestrator-local:8082`), nunca `localhost` (manager não
+      resolve host dentro do container); pairing code é single-use (linha
+      "pairing code gerado" no log do orquestrador). Local re-adotado e
+      online; remoto pendente (usuário fornece novo code + endpoint
+      alcançável do manager).
+   6. (16/09, runtime) Geração sem imagens: `down -v` matou bucket
+      `heph-data` (autoCreateBucket só vale p/ admin; orquestrador usa
+      credencial escopada) → jobs Truenas "done" com ZERO artefatos. Bucket
+      recriado à mão + **FIX COMMITADO `a167e2b`** (`chore/infra-native-runner`,
+      worktree tmp): s3-init no boot + ensure-bucket.sh SigV4 + preflight
+      WARN no run-native. @reviewer FECHAR COM NITS (nits 1-4 aplicados).
+      **FOLLOW-UP B: FECHADO pela fatia S2 abaixo (item 7).**
+   7. (16/09, AUTONOMIA day-one — `fix/infra-autonomia-day-one`, 4 commits
+      `5a5ed5e`→`b2d54a9`): S1 principal autônomo (retry Postgres, senha de
+      bootstrap gerada+logada 1x em campo `bootstrap_password`, ensure_bucket
+      no boot); S2 done mentiroso morto (put_with_retry nos 6 uploads +
+      gate `no_artifacts` no manager; RED do incidente→GREEN; workspace
+      597/0); S3 `scripts/reset-dev.sh` = PROVA day-one automatizada
+      (down -v→up→asserts; --yes obrigatório); +paridade storage
+      nativo↔compose no run-native (5ª mina: mock não servia objetos do S3).
+      Deployado: compose backend inteiro nas imagens novas + principal
+      CONTAINER dono do :8080 (nativo parado; run-native p/ iteração).
+      E2E real provado: generate→Truenas→done→gallery→PNG 1024² 1.2MB.
+      PENDENTES: (a) TrueNAS ainda tem código velho do orquestrador — o
+      guard do manager já cobre a mentira, mas sync do repo no nó exige
+      push/merge (aguardando ordem do usuário); (b) corrida real do
+      reset-dev.sh (destrutivo — dia-one ainda NÃO provado de fato);
+      (c) nits reviewer S2: swallows residuais metrics-live/md5/scoped_key,
+      2 UPDATEs não-atômicos, teste integração yolo_train-done-vazio,
+      teste daemon upload_fail, retry-count assert.
 
 ## Invariantes & lições da casa
 

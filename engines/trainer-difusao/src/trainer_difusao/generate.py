@@ -258,6 +258,40 @@ def ensure_pipeline(
     return None, key
 
 
+HEPHAESTUS_GENERATION_PNG_KEY = "hephaestus.generation"
+
+# Chaves de _build_generation_meta redundantes no PNG (nome do arquivo local).
+_PNG_EXCLUDED_META_KEYS = frozenset({"filename", "thumb_filename", "batch_index"})
+
+
+def _png_payload_for_generation(meta: dict[str, Any]) -> dict[str, Any]:
+    """Deriva o payload JSON embarcado no PNG a partir do dict do JSONL.
+
+    Mesma origem (`meta`) usada em `generation_meta.json`; apenas remove as
+    chaves redundantes de arquivo local. Sem limite artificial de tamanho —
+    prompts (incl. negativo) são gravados fiéis, UTF-8.
+    """
+    return {k: v for k, v in meta.items() if k not in _PNG_EXCLUDED_META_KEYS}
+
+
+def _png_info_for_generation(meta: dict[str, Any]):
+    """Serializa os campos de geração em chunk iTXt do PNG.
+
+    Chave única `hephaestus.generation` com JSON compacto (sort_keys para
+    determinismo). Usa `add_itxt` para suportar prompts UTF-8/com acentos
+    (tEXt é latin-1 por spec).
+    """
+    from PIL.PngImagePlugin import PngInfo
+
+    payload = _png_payload_for_generation(meta)
+    text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    info = PngInfo()
+    info.add_itxt(
+        HEPHAESTUS_GENERATION_PNG_KEY, text, lang="en", tkey=HEPHAESTUS_GENERATION_PNG_KEY
+    )
+    return info
+
+
 def _build_generation_meta(
     params: dict[str, Any],
     filename: str,
@@ -286,7 +320,116 @@ def _build_generation_meta(
         "base_model": params["base_model"],
         "batch_index": batch_index,
         "batch_size": batch_size,
+        "job_id": params.get("job_id"),
     }
+
+
+# ---------------------------------------------------------------------------
+# Telemetria fina de geração (bug 004 — barra "congelada" entre imagens).
+#
+# O intervalo de progresso da fase `generating` é [0.55, 0.90]: cada imagem
+# `i` do batch ocupa a fatia [0.55+0.35*i/B, 0.55+0.35*(i+1)/B]. Os helpers
+# abaixo interpolam os sampler steps dentro da fatia da imagem atual.
+# `step`/`total_steps` da telemetria continuam sendo o contador de IMAGENS
+# (i/B) — os steps do sampler vão apenas na mensagem.
+# ---------------------------------------------------------------------------
+_GENERATE_PROGRESS_BASE = 0.55
+_GENERATE_PROGRESS_SPAN = 0.35
+# Throttle: no máximo ~50 eventos por imagem → delta mínimo de 0.01
+# (floor(progress*1000) avança ≥10 permilagem) entre emissões.
+_SAMPLER_EMIT_MIN_DELTA_PERMILLE = 10
+# Subdivisões do mock (sem sleep adicional): 3-5 incrementos por imagem.
+_MOCK_TELEMETRY_SUBSTEPS = 4
+
+
+def _sampler_progress(
+    image_index: int, batch_size: int, sampler_step: int, num_sampler_steps: int
+) -> float:
+    """Progresso interpolado do sampler step dentro da fatia da imagem atual.
+
+    `sampler_step` é 0-indexed (0..num_sampler_steps-1). Fórmula:
+    `0.55 + 0.35*(i + (s+1)/num_steps)/batch_size`.
+    """
+    batch = max(1, int(batch_size))
+    total = max(1, int(num_sampler_steps))
+    frac = (int(sampler_step) + 1) / total
+    frac = max(0.0, min(1.0, frac))
+    return _GENERATE_PROGRESS_BASE + _GENERATE_PROGRESS_SPAN * (int(image_index) + frac) / batch
+
+
+def _should_emit(
+    prev_progress: float | None,
+    cur_progress: float,
+    *,
+    is_first: bool = False,
+    is_last: bool = False,
+) -> bool:
+    """Throttle do callback do sampler: no máximo ~50 eventos por imagem.
+
+    Emite sempre no primeiro e no último step; nos demais, só quando
+    floor(progress*1000) avança ≥10 (delta ≥ 0.01). Aceita chamada com 2
+    args (`_should_emit(prev, cur)`); `prev=None` (nada emitido ainda)
+    sempre emite.
+    """
+    if is_first or is_last:
+        return True
+    if prev_progress is None:
+        return True
+    try:
+        return (
+            int(float(cur_progress) * 1000) - int(float(prev_progress) * 1000)
+        ) >= _SAMPLER_EMIT_MIN_DELTA_PERMILLE
+    except (TypeError, ValueError):
+        return True
+
+
+def _make_sampler_callback(
+    emitter: object, image_index: int, batch_size: int, num_sampler_steps: int
+):
+    """Constrói `callback_on_step_end` do diffusers p/ a imagem atual.
+
+    Assinatura diffusers: `cb(pipe, step, timestep, callback_kwargs) -> dict`.
+    NEVER quebra a geração: qualquer falha de telemetria é engolida e o
+    `callback_kwargs` original é devolvido intacto.
+    """
+    total = max(1, int(num_sampler_steps))
+    state: dict[str, float | None] = {"prev": None}
+
+    def _callback(pipe: object, step: int, timestep: object, callback_kwargs: dict | None = None):
+        try:
+            s = int(step)
+            progress = _sampler_progress(image_index, batch_size, s, total)
+            if _should_emit(
+                state["prev"], progress, is_first=(s <= 0), is_last=(s >= total - 1)
+            ):
+                emitter.emit(  # type: ignore[attr-defined]
+                    phase="generating",
+                    message=f"Imagem {int(image_index) + 1}/{int(batch_size)} · step {s + 1}/{total}",
+                    progress=progress,
+                    step=int(image_index),
+                    total_steps=int(batch_size),
+                )
+                state["prev"] = progress
+        except Exception:
+            pass
+        return callback_kwargs if callback_kwargs is not None else {}
+
+    return _callback
+
+
+def _pipe_call_kwargs_with_callback(
+    emitter: object, image_index: int, batch_size: int, num_sampler_steps: int
+) -> dict[str, object]:
+    """Kwargs de callback p/ `pipe(...)`; `{}` (no-op) se construção falhar."""
+    try:
+        return {
+            "callback_on_step_end": _make_sampler_callback(
+                emitter, image_index, batch_size, num_sampler_steps
+            ),
+            "callback_on_step_end_tensor_inputs": ["latents"],
+        }
+    except Exception:
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -350,13 +493,19 @@ def _mock_generate(params: dict[str, Any], output_dir: Path, emitter=None) -> No
         draw = ImageDraw.Draw(img)
 
         progressGen = 0.5
-        emitter.emit(
-            phase="generating",
-            message=f"Sintetizando imagem determinística ({params['steps']} passos, item {i + 1}/{batch_size})...",
-            progress=progressGen,
-            step=i,
-            total_steps=batch_size,
-        )
+        # Mock simula o formato do path real: N incrementos interpolados
+        # dentro da fatia da imagem atual (sem sleep adicional).
+        for k in range(_MOCK_TELEMETRY_SUBSTEPS):
+            emitter.emit(
+                phase="generating",
+                message=(
+                    f"Imagem {i + 1}/{batch_size} · step {k + 1}/{_MOCK_TELEMETRY_SUBSTEPS} "
+                    f"(mock, {params['steps']} sampler steps, item {i + 1}/{batch_size})..."
+                ),
+                progress=_sampler_progress(i, batch_size, k, _MOCK_TELEMETRY_SUBSTEPS),
+                step=i,
+                total_steps=batch_size,
+            )
 
         # Desenho de círculos concêntricos e linhas geométricas simulando geração
         for ci in range(12):
@@ -428,18 +577,8 @@ def _mock_generate(params: dict[str, Any], output_dir: Path, emitter=None) -> No
 
         filename = f"generated_{i + 1:04d}.png"
         out_file = output_dir / filename
-        img.save(out_file, "PNG")
-        print(
-            f"[MOCK-GEN] Imagem {i + 1}/{batch_size} gerada ({width}x{height}, seed={current_seed}): {out_file}",
-            flush=True,
-        )
-
-        # Thumbnail
         thumb_filename = f"thumb_{i + 1:04d}.jpg"
-        thumb_path = output_dir / thumb_filename
-        _write_thumb(out_file, thumb_path)
-
-        # Meta entry
+        # Meta entry (mesma origem do JSONL) — PNG embarca o mesmo dict.
         meta_entry = _build_generation_meta(
             params=params,
             filename=filename,
@@ -449,6 +588,16 @@ def _mock_generate(params: dict[str, Any], output_dir: Path, emitter=None) -> No
             batch_size=batch_size,
             loras_effective=loras_effective,
         )
+        img.save(out_file, "PNG", pnginfo=_png_info_for_generation(meta_entry))
+        print(
+            f"[MOCK-GEN] Imagem {i + 1}/{batch_size} gerada ({width}x{height}, seed={current_seed}): {out_file}",
+            flush=True,
+        )
+
+        # Thumbnail
+        thumb_path = output_dir / thumb_filename
+        _write_thumb(out_file, thumb_path)
+
         meta_lines.append(meta_entry)
 
     # Retrocompat: symlink generated.png → generated_0001.png (batch=1)
@@ -775,28 +924,53 @@ def _real_generate(
             flush=True,
         )
 
-        # Inference
+        # Inference (com callback de progresso do sampler; fallback sem
+        # callback se a pipeline — ex. flux/distilled — usar API diferente).
+        # Telemetria NEVER quebra a geração: TypeError → retry sem callback.
+        sampler_cb_kwargs = _pipe_call_kwargs_with_callback(emitter, i, batch_size, steps)
         if base_model == "flux-2-klein-4b":
+            flux_kwargs: dict[str, Any] = {
+                "prompt": prompt,
+                "generator": generator,
+                "num_inference_steps": steps,
+                "guidance_scale": guidance,
+                "width": width,
+                "height": height,
+            }
             with torch.inference_mode():
-                image = pipe(
-                    prompt=prompt,
-                    generator=generator,
-                    num_inference_steps=steps,
-                    guidance_scale=guidance,
-                    width=width,
-                    height=height,
-                ).images[0]
+                try:
+                    image = pipe(**flux_kwargs, **sampler_cb_kwargs).images[0]
+                except TypeError as exc:
+                    if "callback_on_step_end" not in str(exc):
+                        raise
+                    print(
+                        f"[DIFFUSION-GEN] [AVISO] pipeline não suporta callback "
+                        f"de progresso ({exc}). Seguindo sem telemetria fina.",
+                        flush=True,
+                    )
+                    image = pipe(**flux_kwargs).images[0]
         elif base_model in ("sdxl", "sd15"):
             with torch.inference_mode():
-                image = pipe(
-                    prompt=prompt,
-                    negative_prompt=neg_prompt,
-                    generator=generator,
-                    num_inference_steps=steps,
-                    guidance_scale=guidance,
-                    width=width,
-                    height=height,
-                ).images[0]
+                sd_kwargs: dict[str, Any] = {
+                    "prompt": prompt,
+                    "negative_prompt": neg_prompt,
+                    "generator": generator,
+                    "num_inference_steps": steps,
+                    "guidance_scale": guidance,
+                    "width": width,
+                    "height": height,
+                }
+                try:
+                    image = pipe(**sd_kwargs, **sampler_cb_kwargs).images[0]
+                except TypeError as exc:
+                    if "callback_on_step_end" not in str(exc):
+                        raise
+                    print(
+                        f"[DIFFUSION-GEN] [AVISO] pipeline não suporta callback "
+                        f"de progresso ({exc}). Seguindo sem telemetria fina.",
+                        flush=True,
+                    )
+                    image = pipe(**sd_kwargs).images[0]
         else:
             _die(f"Modelo não suportado para inferência: {base_model}")
 
@@ -809,17 +983,8 @@ def _real_generate(
 
         filename = f"generated_{i + 1:04d}.png"
         out_file = output_dir / filename
-        image.save(out_file, "PNG")
-        print(
-            f"[DIFFUSION-GEN] Imagem {i + 1}/{batch_size} salva: {out_file}", flush=True
-        )
-
-        # Thumbnail
         thumb_filename = f"thumb_{i + 1:04d}.jpg"
-        thumb_path = output_dir / thumb_filename
-        _write_thumb(out_file, thumb_path)
-
-        # Meta entry
+        # Meta entry (mesma origem do JSONL) — PNG embarca o mesmo dict.
         meta_entry = _build_generation_meta(
             params=params,
             filename=filename,
@@ -829,6 +994,15 @@ def _real_generate(
             batch_size=batch_size,
             loras_effective=loras_effective,
         )
+        image.save(out_file, "PNG", pnginfo=_png_info_for_generation(meta_entry))
+        print(
+            f"[DIFFUSION-GEN] Imagem {i + 1}/{batch_size} salva: {out_file}", flush=True
+        )
+
+        # Thumbnail
+        thumb_path = output_dir / thumb_filename
+        _write_thumb(out_file, thumb_path)
+
         meta_lines.append(meta_entry)
 
     # Retrocompat: symlink generated.png → generated_0001.png (batch=1)

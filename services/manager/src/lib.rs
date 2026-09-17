@@ -421,6 +421,50 @@ fn is_valid_md5(s: &str) -> bool {
             .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
+/// Defesa em profundidade (incidente galeria vazia): kinds que exigem artefato
+/// não podem transitar para done sem eles.
+///
+/// Retorna `Some(motivo)` quando o report done viola a exigência; `None` = ok.
+///
+/// Tabela (decisão documentada):
+/// - `diffusion_generate` → exige ≥1 artefato E ≥1 com kind `generated`.
+/// - `yolo_train` → lista vazia/ausente é PRESERVADA como done (testes
+///   `t7_ac006a_*` e `abort_em_voo_e_terminal` reportam done sem artefatos e
+///   asseveram `done`); lista NÃO-vazia sem kind `model` → violação.
+/// - `diffusion_train`, `yolo_predict`, `autotracker`, `autolabel` → exigem
+///   lista não-vazia (por design todos produzem artefatos; nenhum teste
+///   existente faz done vazio para esses kinds).
+/// - kinds desconhecidos → permissivo (forward-compat).
+pub fn done_artifacts_violation(kind: &str, artifacts: Option<&[ArtifactItem]>) -> Option<String> {
+    let arts: &[ArtifactItem] = artifacts.unwrap_or(&[]);
+    match kind {
+        "diffusion_generate" => {
+            if arts.is_empty() {
+                return Some("diffusion_generate exige ao menos 1 artefato".into());
+            }
+            if !arts.iter().any(|a| a.kind == "generated") {
+                return Some("diffusion_generate exige artefato kind 'generated'".into());
+            }
+            None
+        }
+        // Lista vazia/ausente preservada como done (t7_ac006a_*, abort_em_voo);
+        // lista não-vazia sem modelo = treino sem produto → violação.
+        "yolo_train" => {
+            if !arts.is_empty() && !arts.iter().any(|a| a.kind == "model") {
+                return Some("yolo_train exige artefato kind 'model'".into());
+            }
+            None
+        }
+        "diffusion_train" | "yolo_predict" | "autotracker" | "autolabel" => {
+            if arts.is_empty() {
+                return Some(format!("{kind} exige ao menos 1 artefato"));
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 /// Cria um job. Retorna (job_id, queue_position).
 ///
 /// VRAM policy: `vram_min_gb` é gravado mas ignorado na decisão de fila (no-op
@@ -1145,6 +1189,47 @@ pub async fn report_job(
         }
 
         "done" => {
+            // Defesa em profundidade (incidente galeria vazia): recusa o done
+            // de kind que exige artefato quando a lista chega vazia/ausente ou
+            // sem o artefato-chave — registra failed com erro no_artifacts e
+            // mensagem PT (sem status novo, sem mexer no enum de wire).
+            let job_kind: Option<String> =
+                sqlx::query_scalar("SELECT kind FROM jobs WHERE id = $1")
+                    .bind(id)
+                    .fetch_optional(pool)
+                    .await
+                    .map_err(|e| ManagerError::Internal(format!("get kind for done guard: {e}")))?;
+            if let Some(kind) = job_kind {
+                if let Some(reason) =
+                    done_artifacts_violation(kind.as_str(), report.artifacts.as_deref())
+                {
+                    let err_code = format!("no_artifacts: {reason}");
+                    let msg_pt = format!(
+                        "Job finalizado sem os artefatos exigidos ({err_code}). Verifique o bucket S3 e os logs do orquestrador."
+                    );
+                    tracing::warn!(
+                        job_id = %id,
+                        kind = %kind,
+                        reason = %reason,
+                        "done recusado sem artefatos exigidos → failed/no_artifacts"
+                    );
+                    // UPDATE único: merge do erro em params + transição failed.
+                    sqlx::query(
+                        "UPDATE jobs SET params = params || $2::jsonb, status = 'failed', \
+                         finished_at = now(), phase = COALESCE($3, phase), message = $4 \
+                         WHERE id = $1",
+                    )
+                    .bind(id)
+                    .bind(serde_json::json!({"error": err_code}))
+                    .bind(&report.phase)
+                    .bind(&msg_pt)
+                    .execute(pool)
+                    .await
+                    .map_err(|e| ManagerError::Internal(format!("set failed no_artifacts: {e}")))?;
+                    return Ok(());
+                }
+            }
+
             // Valida e insere artifacts.
             if let Some(artifacts) = &report.artifacts {
                 for art in artifacts {
@@ -1200,10 +1285,18 @@ pub async fn report_job(
                     })
                     .collect();
                 if !best_models.is_empty() {
-                    // Lê engine, model, dataset_id, params do job para o INSERT (ADR-0022 D0).
-                    let job_info: Option<(String, String, Option<Uuid>, serde_json::Value)> =
-                        match sqlx::query_as::<_, (String, String, Option<Uuid>, serde_json::Value)>(
-                            "SELECT engine, model, dataset_id, params FROM jobs WHERE id = $1",
+                    // Lê engine/model/mode/kind/dataset_id/params/config_yaml do job (ADR-0022 D0 + Bug 009:
+                    // mode/kind/config_yaml alimentam a derivação de kind/arch do artefato).
+                    let job_info: Option<(
+                        String,
+                        String,
+                        String,
+                        String,
+                        Option<Uuid>,
+                        serde_json::Value,
+                        Option<String>,
+                    )> = match sqlx::query_as::<_, (String, String, String, String, Option<Uuid>, serde_json::Value, Option<String>)>(
+                            "SELECT engine, model, mode, kind, dataset_id, params, config_yaml FROM jobs WHERE id = $1",
                         )
                         .bind(id)
                         .fetch_optional(pool)
@@ -1217,7 +1310,9 @@ pub async fn report_job(
                                 None
                             }
                         };
-                    if let Some((engine, model, dataset_id, job_params)) = job_info {
+                    if let Some((engine, model, mode, kind, dataset_id, job_params, config_yaml)) =
+                        job_info
+                    {
                         let dataset_slug: Option<String> = if let Some(ds_id) = dataset_id {
                             match sqlx::query_scalar::<_, String>(
                                 "SELECT slug FROM datasets WHERE id = $1",
@@ -1238,6 +1333,29 @@ pub async fn report_job(
                             None
                         };
 
+                        // Bug 009: treinos de difusão emitem adapters LoRA, mas o INSERT
+                        // abaixo não preenchia kind/arch → a geração rejeitava o modelo
+                        // ("argumentos inválidos"). Classifica kind/arch só para treino
+                        // de difusão; outras engines mantêm NULL (comportamento legado).
+                        // Arch indeterminável → NULL + warn (nunca chuta).
+                        let is_diffusion_train =
+                            engine == "diffusion" && (mode == "train" || kind == "diffusion_train");
+                        let train_arch: Option<String> = if is_diffusion_train {
+                            match derive_diffusion_arch(&model, &job_params, config_yaml.as_deref())
+                            {
+                                Some(a) => Some(a),
+                                None => {
+                                    tracing::warn!(
+                                        job_id = %id,
+                                        "hook models: arch indeterminável p/ treino de difusão (kind será 'lora', arch NULL)"
+                                    );
+                                    None
+                                }
+                            }
+                        } else {
+                            None
+                        };
+
                         for art in best_models {
                             let s3_key = format!("artifacts/{id}/{}", art.path);
                             let model_name = compute_model_name(
@@ -1248,10 +1366,23 @@ pub async fn report_job(
                                 dataset_slug.as_deref(),
                                 &job_params,
                             );
+                            // Deriva kind/arch por artefato (difusão-train) ou NULL (legado).
+                            let (art_kind, art_arch): (Option<String>, Option<String>) =
+                                if is_diffusion_train {
+                                    (
+                                        Some(classify_diffusion_model_kind(&art.path).to_string()),
+                                        train_arch.clone(),
+                                    )
+                                } else {
+                                    (None, None)
+                                };
+                            // ON CONFLICT DO UPDATE com COALESCE: corrige rows já
+                            // quebradas (kind/arch NULL do Bug 009) sem sobrescrever
+                            // valores definidos manualmente (ex.: upload via create_model).
                             let result = sqlx::query(
-                                "INSERT INTO models (id, engine, name, model, s3_key, source, hash, bytes, job_id) \
-                                 VALUES ($1, $2, $3, $4, $5, 'train', $6, $7, $8) \
-                                 ON CONFLICT (s3_key) DO NOTHING",
+                                "INSERT INTO models (id, engine, name, model, s3_key, source, hash, bytes, job_id, kind, arch) \
+                                 VALUES ($1, $2, $3, $4, $5, 'train', $6, $7, $8, $9, $10) \
+                                 ON CONFLICT (s3_key) DO UPDATE SET kind = COALESCE(models.kind, EXCLUDED.kind), arch = COALESCE(models.arch, EXCLUDED.arch) WHERE models.kind IS NULL OR models.arch IS NULL",
                             )
                             .bind(Uuid::new_v4())
                             .bind(&engine)
@@ -1261,6 +1392,8 @@ pub async fn report_job(
                             .bind(&art.md5)
                             .bind(art.bytes)
                             .bind(id)
+                            .bind(&art_kind)
+                            .bind(&art_arch)
                             .execute(pool)
                             .await;
                             if let Err(e) = result {
@@ -2413,6 +2546,74 @@ pub fn slugify(s: &str) -> String {
     out
 }
 
+// ---------------------------------------------------------------------------
+// Classificação kind/arch de artefatos de treino de difusão (Bug 009)
+// ---------------------------------------------------------------------------
+
+/// Normaliza um nome de modelo base para o `arch` canônico do catálogo
+/// (`sdxl` | `sd15` | `flux-2-klein-4b` — CHECK da migration 0011).
+/// Retorna None quando impossível derivar com confiança (o chamador deixa
+/// NULL + log warn em vez de chutar).
+pub fn normalize_diffusion_arch(raw: &str) -> Option<String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "sdxl" => Some("sdxl".to_string()),
+        "sd15" | "sd1.5" | "sd_15" | "sd-15" | "sd 15" => Some("sd15".to_string()),
+        "flux" | "flux2" | "flux-2-klein" | "flux-2-klein-4b" | "flux2-klein-4b" => {
+            Some("flux-2-klein-4b".to_string())
+        }
+        _ => None,
+    }
+}
+
+/// Deriva o `arch` de um job de treino de difusão, por prioridade:
+/// 1. `params.baseModel` (wire camelCase do BFF) / `params.base_model` (legado);
+/// 2. coluna `jobs.model` (= base_model do treino);
+/// 3. linha `model: "x"` do `config_yaml` gerado pelo api-principal.
+/// Retorna None se nenhuma fonte normalizar (não chuta).
+pub fn derive_diffusion_arch(
+    job_model: &str,
+    params: &serde_json::Value,
+    config_yaml: Option<&str>,
+) -> Option<String> {
+    for key in ["baseModel", "base_model"] {
+        if let Some(s) = params.get(key).and_then(|v| v.as_str()) {
+            if let Some(arch) = normalize_diffusion_arch(s) {
+                return Some(arch);
+            }
+        }
+    }
+    if let Some(arch) = normalize_diffusion_arch(job_model) {
+        return Some(arch);
+    }
+    if let Some(yaml) = config_yaml {
+        for line in yaml.lines() {
+            // Match ancorado no início da linha aparada: não confunde
+            // `model:` com `openai_model:` (config de autolabel).
+            if let Some(rest) = line.trim().strip_prefix("model:") {
+                let v = rest.trim().trim_matches('"').trim_matches('\'').trim();
+                if let Some(arch) = normalize_diffusion_arch(v) {
+                    return Some(arch);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Classifica o `kind` de um artefato final de treino de difusão.
+/// O trainer-difusao emite adapters LoRA (`adapter.safetensors` ou
+/// `<output_name>.safetensors` — ver `common.py:resolve_lora_basename` e
+/// `models/{flux,sdxl,sd15,mock}.py`); um checkpoint completo fundido
+/// (ex.: `best.safetensors`/`merged.safetensors`) vira `checkpoint`.
+pub fn classify_diffusion_model_kind(art_path: &str) -> &'static str {
+    let lower = art_path.to_ascii_lowercase();
+    if lower.contains("adapter") || lower.contains("lora") {
+        "lora"
+    } else {
+        "checkpoint"
+    }
+}
+
 /// Deriva o nome do modelo registrado na tabela models (ADR-0022 D0).
 /// - Se `output_name` estiver presente nos params, usa-o garantindo a extensão apropriada.
 /// - Caso contrário, deriva semanticamente:
@@ -3209,6 +3410,77 @@ mod tests {
         assert!(!is_valid_md5("d41d8cd98f00b204e9800998ecf8427g"));
     }
 
+    // -- done_artifacts_violation: defesa no_artifacts (incidente galeria vazia) --
+
+    fn art(kind: &str) -> ArtifactItem {
+        ArtifactItem {
+            kind: kind.into(),
+            path: format!("{kind}.bin"),
+            md5: "d41d8cd98f00b204e9800998ecf8427e".into(),
+            bytes: 10,
+        }
+    }
+
+    #[test]
+    fn done_violation_diffusion_generate_sem_artifacts() {
+        assert!(done_artifacts_violation("diffusion_generate", None).is_some());
+        assert!(done_artifacts_violation("diffusion_generate", Some(&[])).is_some());
+    }
+
+    #[test]
+    fn done_violation_diffusion_generate_sem_generated() {
+        let arts = vec![art("generated_meta"), art("generated_thumb")];
+        assert!(done_artifacts_violation("diffusion_generate", Some(&arts)).is_some());
+    }
+
+    #[test]
+    fn done_violation_diffusion_generate_ok() {
+        let arts = vec![art("generated"), art("generated_meta")];
+        assert!(done_artifacts_violation("diffusion_generate", Some(&arts)).is_none());
+    }
+
+    #[test]
+    fn done_violation_yolo_train_vazio_preservado() {
+        // Preservação (t7_ac006a_*, abort_em_voo_e_terminal): done vazio segue done.
+        assert!(done_artifacts_violation("yolo_train", None).is_none());
+        assert!(done_artifacts_violation("yolo_train", Some(&[])).is_none());
+    }
+
+    #[test]
+    fn done_violation_yolo_train_exige_modelo() {
+        assert!(done_artifacts_violation("yolo_train", Some(&[art("model")])).is_none());
+        let arts = vec![art("metrics")];
+        assert!(done_artifacts_violation("yolo_train", Some(&arts)).is_some());
+    }
+
+    #[test]
+    fn done_violation_treinos_e_predicao_exigem_lista() {
+        for kind in [
+            "diffusion_train",
+            "yolo_predict",
+            "autotracker",
+            "autolabel",
+        ] {
+            assert!(
+                done_artifacts_violation(kind, None).is_some(),
+                "{kind} vazio deve violar"
+            );
+            assert!(
+                done_artifacts_violation(kind, Some(&[])).is_some(),
+                "{kind} vazio deve violar"
+            );
+            assert!(
+                done_artifacts_violation(kind, Some(&[art("model")])).is_none(),
+                "{kind} com artefato deve passar"
+            );
+        }
+    }
+
+    #[test]
+    fn done_violation_kind_desconhecido_permissivo() {
+        assert!(done_artifacts_violation("futura_engine_x", None).is_none());
+    }
+
     #[test]
     fn normalize_cleanup_statuses_default_sao_terminais() {
         let got = normalize_cleanup_statuses(None).unwrap();
@@ -3529,6 +3801,94 @@ mod tests {
             name: "a".repeat(256),
         };
         assert!(validate_update_model(&too_long).is_err());
+    }
+
+    // ── Bug 009: classificação kind/arch de treino de difusão ─────────────
+
+    #[test]
+    fn normalize_diffusion_arch_casos_suportados() {
+        assert_eq!(normalize_diffusion_arch("sdxl"), Some("sdxl".into()));
+        assert_eq!(normalize_diffusion_arch(" SDXL "), Some("sdxl".into()));
+        assert_eq!(normalize_diffusion_arch("sd15"), Some("sd15".into()));
+        assert_eq!(normalize_diffusion_arch("SD1.5"), Some("sd15".into()));
+        assert_eq!(
+            normalize_diffusion_arch("flux"),
+            Some("flux-2-klein-4b".into())
+        );
+        assert_eq!(
+            normalize_diffusion_arch("flux-2-klein-4b"),
+            Some("flux-2-klein-4b".into())
+        );
+    }
+
+    #[test]
+    fn normalize_diffusion_arch_desconhecido_e_none() {
+        assert_eq!(normalize_diffusion_arch("unsupported"), None);
+        assert_eq!(normalize_diffusion_arch(""), None);
+        assert_eq!(normalize_diffusion_arch("yolo11m"), None);
+    }
+
+    #[test]
+    fn derive_diffusion_arch_prioridade_params_model_yaml() {
+        // params.baseModel (camelCase do BFF) vence jobs.model.
+        let p = serde_json::json!({"baseModel": "sd15"});
+        assert_eq!(
+            derive_diffusion_arch("sdxl", &p, Some("model: \"sdxl\"")),
+            Some("sd15".into())
+        );
+        // snake_case legado também vale.
+        let p2 = serde_json::json!({"base_model": "sdxl"});
+        assert_eq!(
+            derive_diffusion_arch("sd15", &p2, None),
+            Some("sdxl".into())
+        );
+        // Sem params: cai para jobs.model.
+        let p3 = serde_json::json!({});
+        assert_eq!(
+            derive_diffusion_arch("sdxl", &p3, None),
+            Some("sdxl".into())
+        );
+        // Sem params nem model válido: extrai do config_yaml.
+        assert_eq!(
+            derive_diffusion_arch("", &p3, Some("job_id: \"x\"\nmodel: \"sd15\"\n")),
+            Some("sd15".into())
+        );
+        // Nada derivável: None (não chuta).
+        assert_eq!(derive_diffusion_arch("", &p3, None), None);
+        assert_eq!(
+            derive_diffusion_arch("???", &p3, Some("model: \"???\"")),
+            None
+        );
+        // `openai_model:` (autolabel) não contamina a extração do yaml.
+        assert_eq!(
+            derive_diffusion_arch(
+                "",
+                &p3,
+                Some("openai_model: \"gpt-4o\"\nmode: \"autolabel\"\n")
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn classify_diffusion_model_kind_adapter_vs_checkpoint() {
+        assert_eq!(classify_diffusion_model_kind("adapter.safetensors"), "lora");
+        assert_eq!(
+            classify_diffusion_model_kind("checkpoints/adapter_final.safetensors"),
+            "lora"
+        );
+        assert_eq!(
+            classify_diffusion_model_kind("meu-lora-v1.safetensors"),
+            "lora"
+        );
+        assert_eq!(
+            classify_diffusion_model_kind("best.safetensors"),
+            "checkpoint"
+        );
+        assert_eq!(
+            classify_diffusion_model_kind("merged-model.safetensors"),
+            "checkpoint"
+        );
     }
 
     // ── resolve_diffusion_image ──────────────────────────────────────────

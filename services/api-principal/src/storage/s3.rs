@@ -18,6 +18,38 @@ use aws_smithy_types::timeout::TimeoutConfig;
 
 use super::port::{StorageConfig, StorageError, StoragePort};
 
+/// Orçamento do `ensure_bucket` no boot (backend s3): tenta CreateBucket,
+/// retry a cada `ENSURE_BUCKET_RETRY_SECS` até `ENSURE_BUCKET_TIMEOUT_SECS`
+/// e então fail-fast (serviço sem bucket serve jobs "done" zerados — o bug
+/// que isto fecha). Constantes + `bucket_retry_due` puras e testáveis sem
+/// rede (o boot nunca dorme 60s em teste).
+pub const ENSURE_BUCKET_TIMEOUT_SECS: u64 = 60;
+pub const ENSURE_BUCKET_RETRY_SECS: u64 = 2;
+
+/// Puro/testável: ainda cabe outra tentativa após `elapsed_secs`?
+pub fn bucket_retry_due(elapsed_secs: u64) -> bool {
+    elapsed_secs < ENSURE_BUCKET_TIMEOUT_SECS
+}
+
+/// Puro/testável: intervalo entre tentativas do `ensure_bucket`.
+pub fn bucket_retry_interval() -> Duration {
+    Duration::from_secs(ENSURE_BUCKET_RETRY_SECS)
+}
+
+/// Classifica erro de CreateBucket: `true` = bucket já existe ou já é nosso
+/// (idempotente, boot segue). Qualquer outro erro (rede, 403, nome inválido)
+/// → retry até o orçamento, depois fail-fast. Sem pânico: usa match
+/// exaustivo, nunca `unwrap`/`expect` no erro do SDK.
+pub fn create_bucket_conflict(
+    err: &aws_sdk_s3::operation::create_bucket::CreateBucketError,
+) -> bool {
+    use aws_sdk_s3::operation::create_bucket::CreateBucketError as E;
+    matches!(
+        err,
+        E::BucketAlreadyExists(_) | E::BucketAlreadyOwnedByYou(_)
+    )
+}
+
 /// Percent-encode de key p/ `copy_source` (sem crate nova): preserva
 /// `A-Za-z0-9-_.~/`, encoda o resto byte a byte (`%XX` maiúsculo).
 fn encode_key(key: &str) -> String {
@@ -95,6 +127,56 @@ impl S3Storage {
             bucket: cfg.bucket.clone(),
             url_ttl_secs: cfg.url_ttl_secs,
         })
+    }
+
+    /// Garante o bucket no boot com `STORAGE_BACKEND=s3` (idempotente).
+    ///
+    /// CreateBucket no bucket configurado: criado ou já-existente (nosso ou
+    /// não — namespace S3 é global, colisão alheia também é "ok, segue",
+    /// o PUT posterior falha alto se não tivermos acesso) = sucesso com
+    /// log `bucket '<nome>' garantido`. Falha de rede/transiente → retry
+    /// 2s até ~60s; estourado o orçamento, `Err` claro e o boot aborta
+    /// (fail-fast: sem bucket o serviço mente "done" com zero artefatos).
+    /// Nome do bucket vai ao log; credencial/endpoint, nunca.
+    pub async fn ensure_bucket(&self) -> Result<(), String> {
+        let t0 = std::time::Instant::now();
+        loop {
+            match self
+                .client
+                .create_bucket()
+                .bucket(&self.bucket)
+                .send()
+                .await
+            {
+                Ok(_) => {
+                    tracing::info!("bucket '{}' garantido", self.bucket);
+                    return Ok(());
+                }
+                Err(sdk_err) => {
+                    // `as_service_error` (não `into_service_error`): falha de
+                    // transporte/timeout não é erro de serviço e não pode
+                    // dar pânico — cai no retry como transiente.
+                    if let Some(svc) = sdk_err.as_service_error() {
+                        if create_bucket_conflict(svc) {
+                            tracing::info!("bucket '{}' garantido", self.bucket);
+                            return Ok(());
+                        }
+                    }
+                    if !bucket_retry_due(t0.elapsed().as_secs()) {
+                        return Err(format!(
+                            "ensure bucket '{}': indisponivel apos ~{}s (verifique S3_ENDPOINT_URL e credenciais)",
+                            self.bucket, ENSURE_BUCKET_TIMEOUT_SECS
+                        ));
+                    }
+                    tracing::warn!(
+                        "bucket '{}' indisponivel, tentando de novo em {}s",
+                        self.bucket,
+                        ENSURE_BUCKET_RETRY_SECS
+                    );
+                    tokio::time::sleep(bucket_retry_interval()).await;
+                }
+            }
+        }
     }
 }
 
@@ -331,5 +413,36 @@ mod tests {
             "datasets/a/images/b/foto.jpg"
         );
         assert_eq!(encode_key("a b/c+d.png"), "a%20b/c%2Bd.png");
+    }
+
+    #[test]
+    fn bucket_retry_interval_e_orcamento() {
+        // Backoff/duração como fns puras: o teste nunca dorme.
+        assert_eq!(bucket_retry_interval(), Duration::from_secs(2));
+        assert_eq!(ENSURE_BUCKET_TIMEOUT_SECS, 60);
+        assert!(bucket_retry_due(0), "início: ainda cabe retry");
+        assert!(bucket_retry_due(59), "último segundo: ainda cabe retry");
+        assert!(!bucket_retry_due(60), "orçamento estourado: fail-fast");
+        assert!(!bucket_retry_due(3600), "muito além: fail-fast");
+    }
+
+    #[test]
+    fn create_bucket_conflict_aceita_buckets_existentes() {
+        use aws_sdk_s3::operation::create_bucket::CreateBucketError as E;
+        use aws_sdk_s3::types::error as TE;
+        // Constrói os erros via builders do SDK (sem rede): os dois
+        // "já existe" são idempotentes (ok), o resto é retry/fail.
+        let owned = E::BucketAlreadyOwnedByYou(TE::BucketAlreadyOwnedByYou::builder().build());
+        assert!(
+            create_bucket_conflict(&owned),
+            "BucketAlreadyOwnedByYou = ok"
+        );
+        let exists = E::BucketAlreadyExists(TE::BucketAlreadyExists::builder().build());
+        assert!(create_bucket_conflict(&exists), "BucketAlreadyExists = ok");
+        let unhandled = E::unhandled("boom");
+        assert!(
+            !create_bucket_conflict(&unhandled),
+            "Unhandled = retry/fail"
+        );
     }
 }

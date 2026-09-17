@@ -216,5 +216,27 @@ gates verdes (cargo test 581p, pytest 101p, build+lint web 0E/204W baseline, com
   contratos (openapi, migrations, policies) editados sequencialmente antes.
 - **Dev é CPU-only** (`ENGINE_MOCK=1`); GPU real sob demanda explícita.
 - **Custo (lição 16/09):** sessão queimou ~45M tokens lendo `coordenacao.md`
-  inteiro + arquivos completos. Usar funil L0→L3: `AGENTS.md` →
-  `docs/REPO_MAP.md` → `graft ask --source` → leitura delimitada por offset.
+inteiro + arquivos completos. Usar funil L0→L3: `AGENTS.md` →
+`docs/REPO_MAP.md` → `graft ask --source` → leitura delimitada por offset.
+
+## Registro 2026-09-17 — job diffusion_train barrado na guarda anti-mock (Truenas)
+
+- **Causa**: `infra/.env` tinha `DIFFUSION_TRAINER_IMAGE=:local` (explícito SEMPRE
+  vence herança de tag — `resolve_diffusion_image` manager lib.rs:L3474). Guarda
+  D2 do orquestrador GPU recusou corretamente (lib.rs:L1116). **Não era falha de
+  build no TrueNAS**: `start-truenas.sh --build` já cobre `trainer-difusao-gpu`
+  (profile build no compose.gpu.yaml) e a imagem `hephaestus/trainer-difusao:gpu`
+  está lá. **Fix aplicado**: env → `:gpu` + recreate manager (estado de sessão,
+  não versionado). Usuário precisa reenviar o job (sem endpoint de retry).
+- **Dívidas/achados abertos**:
+  1. `services/orchestrator/src/main.rs:L452` lê `TRAINER_IMAGE_DIFFUSION`, mas
+     manager/compose usam `DIFFUSION_TRAINER_IMAGE` — daemon sempre cai no
+     default `:local`. Fix 1 linha + teste → despachar @rust-dev quando abrir
+     fatia Rust.
+  2. `infra/README-gpu.md` não menciona `DIFFUSION_TRAINER_IMAGE` no checklist
+     de sessão GPU → @infra-dev atualizar.
+  3. **Design**: imagem estática no boot do manager + roteamento automático p/
+     nó GPU adoptado é armadilha (este incidente). Candidato @architect:
+     resolução de imagem por capacidade do nó-alvo (:local→:gpu quando GPU).
+  4. `TRAINER_IMAGE` (yolo) segue `:local` no dev — job yolo roteado p/ Truenas
+     sofrerá a mesma guarda. Decisão de operador por sessão.

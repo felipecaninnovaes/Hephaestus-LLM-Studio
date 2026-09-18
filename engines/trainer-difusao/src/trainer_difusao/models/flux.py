@@ -18,6 +18,7 @@ from trainer_difusao.common import (
     _die,
     _emit_metric,
     _load_lora_weights,
+    _precompute_text_cache,
     _resolve_output_name,
     _save_lora_safetensors,
     _setup_cache_dir,

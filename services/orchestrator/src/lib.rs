@@ -857,6 +857,94 @@ impl S3Port for S3Client {
 }
 
 // ---------------------------------------------------------------------------
+// Cache local de pesos customizados por MD5 (Text Encoder, LoRAs, Checkpoints)
+// ---------------------------------------------------------------------------
+
+/// Baixa e faz cache de pesos no nó orquestrador com base no MD5.
+///
+/// Se o peso já existir em `cache_dir/<md5>.<ext>` com tamanho > 0:
+/// - Reusa instantaneamente via hardlink O(1) (ou copy fallback) sem rebaixar do S3.
+/// Se não existir:
+/// - Baixa para arquivo temporário, valida MD5, move atomicamente para o cache
+///   e vincula ao arquivo de destino do job.
+pub async fn stage_cached_weight(
+    s3: &Arc<dyn S3Port>,
+    cache_dir: &Path,
+    dest_file: &Path,
+    scoped_key: &str,
+    expected_md5: &str,
+) -> Result<(), PipelineError> {
+    tokio::fs::create_dir_all(cache_dir)
+        .await
+        .map_err(|e| PipelineError::Other(format!("create weights cache dir: {e}")))?;
+
+    let ext = dest_file
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("safetensors");
+    let cached_file = cache_dir.join(format!("{expected_md5}.{ext}"));
+
+    if cached_file.is_file() {
+        if let Ok(meta) = tokio::fs::metadata(&cached_file).await {
+            if meta.len() > 0 {
+                tracing::info!(
+                    md5 = expected_md5,
+                    dest = %dest_file.display(),
+                    "Cache hit para peso custom — vinculando instantaneamente via link local"
+                );
+                let _ = tokio::fs::remove_file(dest_file).await;
+                if tokio::fs::hard_link(&cached_file, dest_file).await.is_ok() {
+                    return Ok(());
+                }
+                if tokio::fs::copy(&cached_file, dest_file).await.is_ok() {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    // Cache miss ou arquivo corrompido: baixa para arquivo temporário isolado
+    let tmp_file = cache_dir.join(format!(
+        ".tmp_{}_{}.part",
+        expected_md5,
+        uuid::Uuid::new_v4().simple()
+    ));
+
+    s3.get_to_file(scoped_key, &tmp_file)
+        .await
+        .map_err(|e| PipelineError::S3Download(format!("download weight {scoped_key}: {e}")))?;
+
+    let actual_md5 = compute_file_md5(&tmp_file)
+        .map_err(|e| PipelineError::S3Download(format!("compute weight md5 {scoped_key}: {e}")))?;
+
+    if actual_md5 != expected_md5 {
+        let _ = tokio::fs::remove_file(&tmp_file).await;
+        return Err(PipelineError::Md5Mismatch {
+            expected: expected_md5.to_string(),
+            actual: actual_md5,
+        });
+    }
+
+    // Move atomicamente para o cache permanente
+    if let Err(e) = tokio::fs::rename(&tmp_file, &cached_file).await {
+        if !cached_file.is_file() {
+            let _ = tokio::fs::remove_file(&tmp_file).await;
+            return Err(PipelineError::Other(format!("persist cached weight: {e}")));
+        }
+        let _ = tokio::fs::remove_file(&tmp_file).await;
+    }
+
+    let _ = tokio::fs::remove_file(dest_file).await;
+    if tokio::fs::hard_link(&cached_file, dest_file).await.is_err() {
+        tokio::fs::copy(&cached_file, dest_file)
+            .await
+            .map_err(|e| PipelineError::Other(format!("copy cached weight to dest: {e}")))?;
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Report client (trait mockable — reporta ao manager via D4)
 // ---------------------------------------------------------------------------
 
@@ -1363,7 +1451,7 @@ async fn run_job_inner(
         .join(job_id);
     let outputs = job_workdir.join("outputs").join(job_id);
     let temp_dir = job_workdir.join("tmp").join(job_id);
-
+    let weights_cache_dir = job_workdir.join("outputs").join(".weights-cache");
     tokio::fs::create_dir_all(&datasets_cache)
         .await
         .map_err(|e| PipelineError::Other(format!("create datasets-cache: {e}")))?;
@@ -1464,21 +1552,14 @@ async fn run_job_inner(
             .map_err(|e| PipelineError::Other(format!("create weights dir: {e}")))?;
 
         let weights_file = weights_dir.join(filename);
-        s3.get_to_file(&scoped_wkey, &weights_file)
-            .await
-            .map_err(|e| PipelineError::S3Download(format!("download weights: {e}")))?;
-
-        // Verifica MD5
-        let actual_md5 = compute_file_md5(&weights_file)
-            .map_err(|e| PipelineError::S3Download(format!("compute weights md5: {e}")))?;
-        if actual_md5 != weights_ref.md5 {
-            return Err(PipelineError::Md5Mismatch {
-                expected: weights_ref.md5.clone(),
-                actual: actual_md5,
-            });
-        }
-
-        // Caminho absoluto dentro do container trainer (volume outputs → /outputs)
+        stage_cached_weight(
+            &s3,
+            &weights_cache_dir,
+            &weights_file,
+            &scoped_wkey,
+            &weights_ref.md5,
+        )
+        .await?;
         weights_staged_path = Some(format!("/outputs/{job_id}/weights/{filename}"));
     }
 
@@ -1505,17 +1586,7 @@ async fn run_job_inner(
         let scoped_key = scoped_key(scope, &lora.s3_key)
             .map_err(|e| PipelineError::S3Download(format!("invalid lora key: {e}")))?;
         let lora_file = weights_dir.join(format!("lora_{i}.safetensors"));
-        s3.get_to_file(&scoped_key, &lora_file)
-            .await
-            .map_err(|e| PipelineError::S3Download(format!("download lora {i}: {e}")))?;
-        let actual_md5 = compute_file_md5(&lora_file)
-            .map_err(|e| PipelineError::S3Download(format!("compute lora {i} md5: {e}")))?;
-        if actual_md5 != lora.md5 {
-            return Err(PipelineError::Md5Mismatch {
-                expected: lora.md5.clone(),
-                actual: actual_md5,
-            });
-        }
+        stage_cached_weight(&s3, &weights_cache_dir, &lora_file, &scoped_key, &lora.md5).await?;
         lora_staged_paths.push(format!("/outputs/{job_id}/weights/lora_{i}.safetensors"));
     }
 
@@ -1539,17 +1610,14 @@ async fn run_job_inner(
         let scoped_key = scoped_key(scope, &custom.s3_key)
             .map_err(|e| PipelineError::S3Download(format!("invalid custom key: {e}")))?;
         let custom_file = weights_dir.join("custom.safetensors");
-        s3.get_to_file(&scoped_key, &custom_file)
-            .await
-            .map_err(|e| PipelineError::S3Download(format!("download custom: {e}")))?;
-        let actual_md5 = compute_file_md5(&custom_file)
-            .map_err(|e| PipelineError::S3Download(format!("compute custom md5: {e}")))?;
-        if actual_md5 != custom.md5 {
-            return Err(PipelineError::Md5Mismatch {
-                expected: custom.md5.clone(),
-                actual: actual_md5,
-            });
-        }
+        stage_cached_weight(
+            &s3,
+            &weights_cache_dir,
+            &custom_file,
+            &scoped_key,
+            &custom.md5,
+        )
+        .await?;
         custom_staged_path = Some(format!("/outputs/{job_id}/weights/custom.safetensors"));
     }
     // 5c2. Download e staging do text encoder custom (fatia feat/pesos-custom-flux2).
@@ -1574,17 +1642,14 @@ async fn run_job_inner(
         let scoped_key = scoped_key(scope, &encoder.s3_key)
             .map_err(|e| PipelineError::S3Download(format!("invalid text_encoder key: {e}")))?;
         let encoder_file = weights_dir.join("text_encoder.safetensors");
-        s3.get_to_file(&scoped_key, &encoder_file)
-            .await
-            .map_err(|e| PipelineError::S3Download(format!("download text_encoder: {e}")))?;
-        let actual_md5 = compute_file_md5(&encoder_file)
-            .map_err(|e| PipelineError::S3Download(format!("compute text_encoder md5: {e}")))?;
-        if actual_md5 != encoder.md5 {
-            return Err(PipelineError::Md5Mismatch {
-                expected: encoder.md5.clone(),
-                actual: actual_md5,
-            });
-        }
+        stage_cached_weight(
+            &s3,
+            &weights_cache_dir,
+            &encoder_file,
+            &scoped_key,
+            &encoder.md5,
+        )
+        .await?;
         text_encoder_staged_path = Some(format!(
             "/outputs/{job_id}/weights/text_encoder.safetensors"
         ));
@@ -7605,6 +7670,81 @@ also bad, not a number
         assert!(
             reports.iter().any(|r| r.status == "done"),
             "done final preservado"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stage_cached_weight_miss_then_hit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        let dest1 = tmp.path().join("job1/weights/text_encoder.safetensors");
+        let dest2 = tmp.path().join("job2/weights/text_encoder.safetensors");
+        tokio::fs::create_dir_all(dest1.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(dest2.parent().unwrap())
+            .await
+            .unwrap();
+
+        let weights_bytes = b"my custom text encoder weights in safetensors format";
+        let expected_md5 = compute_file_md5_bytes(weights_bytes);
+        let s3: Arc<dyn S3Port> = Arc::new(FakeS3WithWeights::new(weights_bytes.to_vec()));
+
+        // 1ª execução: cache miss -> baixa do S3
+        let res1 = stage_cached_weight(
+            &s3,
+            &cache_dir,
+            &dest1,
+            "models/weights/enc.safetensors",
+            &expected_md5,
+        )
+        .await;
+        assert!(res1.is_ok(), "primeira chamada deve ter sucesso");
+        assert!(dest1.is_file(), "dest1 deve existir");
+        assert_eq!(std::fs::read(&dest1).unwrap(), weights_bytes);
+
+        let cached_file = cache_dir.join(format!("{expected_md5}.safetensors"));
+        assert!(cached_file.is_file(), "arquivo no cache deve existir");
+
+        // 2ª execução: cache hit -> reusa sem baixar novamente do S3
+        let res2 = stage_cached_weight(
+            &s3,
+            &cache_dir,
+            &dest2,
+            "models/weights/enc.safetensors",
+            &expected_md5,
+        )
+        .await;
+        assert!(res2.is_ok(), "segunda chamada (cache hit) deve ter sucesso");
+        assert!(dest2.is_file(), "dest2 deve existir");
+        assert_eq!(std::fs::read(&dest2).unwrap(), weights_bytes);
+    }
+
+    #[tokio::test]
+    async fn test_stage_cached_weight_md5_mismatch_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        let dest = tmp.path().join("job1/weights/bad.safetensors");
+        tokio::fs::create_dir_all(dest.parent().unwrap())
+            .await
+            .unwrap();
+
+        let weights_bytes = b"real data";
+        let wrong_md5 = "00000000000000000000000000000000";
+        let s3: Arc<dyn S3Port> = Arc::new(FakeS3WithWeights::new(weights_bytes.to_vec()));
+
+        let res = stage_cached_weight(
+            &s3,
+            &cache_dir,
+            &dest,
+            "models/weights/enc.safetensors",
+            wrong_md5,
+        )
+        .await;
+        assert!(matches!(res, Err(PipelineError::Md5Mismatch { .. })));
+        assert!(
+            !dest.exists(),
+            "dest não deve ser criado em caso de mismatch"
         );
     }
 }

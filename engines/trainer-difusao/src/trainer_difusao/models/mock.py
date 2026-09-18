@@ -47,6 +47,8 @@ def _generate_mock_safetensors(output_file: Path, lora_params: dict[str, Any]) -
         metadata["custom_checkpoint_path"] = str(lora_params["custom_checkpoint_path"])
     if lora_params.get("text_encoder_path"):
         metadata["text_encoder_path"] = str(lora_params["text_encoder_path"])
+    if lora_params.get("optimizer"):
+        metadata["optimizer"] = str(lora_params["optimizer"])
 
     if "flux" in base_model:
         tensor_name = "transformer.single_transformer_blocks.0.linear1.lora_A.weight"
@@ -168,6 +170,9 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
     raw_quant = lora_cfg.get("quantization") or cfg.get("quantization") or "4bit"
     lora_info["quantization"] = _normalize_train_quantization(raw_quant, default="4bit")
 
+    raw_opt = lora_cfg.get("optimizer") or cfg.get("optimizer")
+    if raw_opt:
+        lora_info["optimizer"] = str(raw_opt)
     # Telemetry do bloco Flux.2/motor-treino: linha control + cache no primeiro log.
     control_n = _count_control_images(control_dataset_path) if control_dataset_path else 0
     print(

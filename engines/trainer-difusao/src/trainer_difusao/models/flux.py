@@ -91,7 +91,7 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             FluxPipeline,  # noqa: F401
             FluxTransformer2DModel,
         )
-        from peft import LoraConfig, get_peft_model
+        from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
         from transformers import (
             AutoModelForCausalLM,
             AutoTokenizer,
@@ -854,10 +854,15 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         init_lora_weights="gaussian",
         target_modules=target_modules,
     )
+    if is_quantized:
+        transformer = prepare_model_for_kbit_training(
+            transformer, use_gradient_checkpointing=True
+        )
+    else:
+        transformer.enable_gradient_checkpointing()
     transformer = get_peft_model(transformer, lora_config)
     if weights_path:
         _load_lora_weights(transformer, weights_path)
-    transformer.enable_gradient_checkpointing()
     transformer.train()
 
     # Confirma congelamento dos pesos base e isolamento estrito da LoRA

@@ -132,8 +132,8 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         import torch
         import torch.nn.functional as F
         from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
-        from peft import LoraConfig, get_peft_model
-        from transformers import CLIPTextModel, CLIPTokenizer
+        from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+        from transformers import BitsAndBytesConfig, CLIPTextModel, CLIPTokenizer
     except ImportError as e:
         _die(f"Dependência ausente para treino real SD 1.5: {e}")
 
@@ -199,12 +199,22 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         if (mixed_precision == "bf16" and torch.cuda.is_bf16_supported())
         else torch.float16
     )
-    # Hoje o treino SD 1.5/SDXL carrega o modelo base em precisão plena (sem
-    # BitsAndBytesConfig): o nível é validado/normalizado e registrado na
-    # telemetry + metadados do safetensors. 2bit/6bit (torchao intx) exigem CUDA
-    # e seguem o mesmo caminho de aplicação do Flux quando o ponto de aplicação
-    # existir — nunca degradação silenciosa.
     quantization = aux["quantization"] or "none"
+    is_4bit = quantization == "4bit"
+    is_8bit = quantization == "8bit"
+    is_quantized = is_4bit or is_8bit
+
+    if is_4bit:
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=target_dtype,
+            bnb_4bit_use_double_quant=True,
+        )
+    elif is_8bit:
+        bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+    else:
+        bnb_config = None
 
     _emit_metric(
         metrics_path,
@@ -242,9 +252,16 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
     ).to(device)
     if custom_checkpoint_path:
         try:
-            unet = UNet2DConditionModel.from_single_file(
-                custom_checkpoint_path, torch_dtype=target_dtype
-            ).to(device)
+            if is_quantized:
+                unet = UNet2DConditionModel.from_single_file(
+                    custom_checkpoint_path,
+                    quantization_config=bnb_config,
+                    torch_dtype=target_dtype,
+                )
+            else:
+                unet = UNet2DConditionModel.from_single_file(
+                    custom_checkpoint_path, torch_dtype=target_dtype
+                ).to(device)
         except Exception as exc:
             _die(
                 f"Falha ao carregar checkpoint sd15 custom "
@@ -255,9 +272,18 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
             flush=True,
         )
     else:
-        unet = UNet2DConditionModel.from_pretrained(
-            model_id, subfolder="unet", torch_dtype=target_dtype, cache_dir=hub_cache
-        ).to(device)
+        if is_quantized:
+            unet = UNet2DConditionModel.from_pretrained(
+                model_id,
+                subfolder="unet",
+                quantization_config=bnb_config,
+                torch_dtype=target_dtype,
+                cache_dir=hub_cache,
+            )
+        else:
+            unet = UNet2DConditionModel.from_pretrained(
+                model_id, subfolder="unet", torch_dtype=target_dtype, cache_dir=hub_cache
+            ).to(device)
     noise_scheduler = DDPMScheduler.from_pretrained(
         model_id, subfolder="scheduler", cache_dir=hub_cache
     )
@@ -267,9 +293,11 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
     text_encoder.requires_grad_(False)
     unet.requires_grad_(False)
 
-    # Gradient checkpointing economiza ~50% VRAM
-    unet.enable_gradient_checkpointing()
-
+    if is_quantized:
+        unet = prepare_model_for_kbit_training(unet, use_gradient_checkpointing=True)
+    else:
+        # Gradient checkpointing economiza ~50% VRAM
+        unet.enable_gradient_checkpointing()
     # Injeta LoRA no UNet
     lora_config = LoraConfig(
         r=rank,

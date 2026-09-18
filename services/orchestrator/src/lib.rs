@@ -1921,6 +1921,12 @@ async fn run_job_inner(
     }
     // Persistência de cache de modelos (Hugging Face / PyTorch) no volume montado /outputs/.cache
     if dispatch.engine == "diffusion" {
+        // Reduz fragmentação de VRAM (OOM de alocções grandes com modelo 4-bit
+        // carregado em GPU apertada).
+        exec_env.push((
+            "PYTORCH_CUDA_ALLOC_CONF".to_string(),
+            "expandable_segments:True".to_string(),
+        ));
         exec_env.push((
             "HF_HOME".to_string(),
             "/outputs/.cache/huggingface".to_string(),

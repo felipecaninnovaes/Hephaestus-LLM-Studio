@@ -498,15 +498,408 @@ class TestCustomWeightsQuantGuard(_Base):
             self._QUANT,
         )
 
-    def test_encoder_loose_file_with_quant_dies(self):
+    def test_encoder_loose_file_with_quant_uses_merge_cache(self):
+        """(a) arquivo solto + quant → merge em disco + carga quantizada.
+
+        from_pretrained chamado com quantization_config sobre o merged dir,
+        state_dict aplicado exatamente 1x, metadata com md5 correto.
+        """
+        import json
+        import transformers
         from trainer_difusao.generate import _load_flux2_text_encoder_override
 
-        f = self.tmp_path / "enc.safetensors"
-        f.write_bytes(b"0" * 16)
-        with self.assertRaises(SystemExit):
-            _load_flux2_text_encoder_override(
-                str(f), "repo/x", "float32", quantization_config=self._QUANT
+        import trainer_difusao.common as _common
+
+        cache_root = self.tmp_path / "enc-cache"
+        old_cache = os.environ.get("TEXT_ENCODER_CUSTOM_CACHE")
+        os.environ["TEXT_ENCODER_CUSTOM_CACHE"] = str(cache_root)
+        try:
+            f = self.tmp_path / "enc.safetensors"
+            f.write_bytes(b"custom-encoder-payload" * 64)
+            merged_dir, md5 = _common._custom_text_encoder_merge_dir(str(f))
+            base_enc = mock.Mock()
+            base_enc.load_state_dict.return_value = ([], [])
+            base_enc.save_pretrained.side_effect = (
+                lambda p: Path(p).mkdir(parents=True, exist_ok=True)
             )
+            merged_enc = mock.Mock()
+            quant_enc = mock.Mock()
+
+            calls = {"pretrained": []}
+
+            def _fake_pretrained(pretrained_path, **kwargs):
+                calls["pretrained"].append((pretrained_path, kwargs))
+                if pretrained_path == "repo/x":
+                    return base_enc
+                self.assertEqual(pretrained_path, str(merged_dir))
+                self.assertIs(kwargs.get("quantization_config"), self._QUANT)
+                if not (merged_dir / "metadata.json").exists():
+                    return merged_enc
+                return quant_enc
+
+            with mock.patch.object(
+                transformers, "AutoModelForCausalLM"
+            ) as m_enc, mock.patch.object(
+                transformers, "AutoTokenizer"
+            ), mock.patch.object(
+                _common, "_load_loose_text_encoder_state",
+                return_value={"w": 1},
+            ) as m_state:
+                m_enc.from_pretrained.side_effect = _fake_pretrained
+                enc, _tok = _load_flux2_text_encoder_override(
+                    str(f), "repo/x", "float32",
+                    quantization_config=self._QUANT,
+                )
+            self.assertIs(enc, quant_enc)
+            m_state.assert_called_once_with(str(f))
+            base_enc.load_state_dict.assert_called_once_with({"w": 1}, strict=False)
+            meta = json.loads((merged_dir / "metadata.json").read_text())
+            self.assertEqual(meta["md5"], md5)
+            self.assertEqual(meta["basename"], "enc.safetensors")
+            merge_calls = [
+                c for c in calls["pretrained"] if c[0] == str(merged_dir)
+            ]
+            self.assertEqual(len(merge_calls), 1)
+            self.assertNotIn(".tmp-", merge_calls[0][0])
+        finally:
+            if old_cache is None:
+                os.environ.pop("TEXT_ENCODER_CUSTOM_CACHE", None)
+            else:
+                os.environ["TEXT_ENCODER_CUSTOM_CACHE"] = old_cache
+
+    def test_encoder_loose_file_merge_cache_hit_skips_state_dict(self):
+        """(b) segunda chamada com cache válido → NÃO re-aplica state_dict."""
+        import json
+        import transformers
+        from trainer_difusao.generate import _load_flux2_text_encoder_override
+
+        import trainer_difusao.common as _common
+
+        cache_root = self.tmp_path / "enc-cache"
+        old_cache = os.environ.get("TEXT_ENCODER_CUSTOM_CACHE")
+        os.environ["TEXT_ENCODER_CUSTOM_CACHE"] = str(cache_root)
+        try:
+            f = self.tmp_path / "enc.safetensors"
+            f.write_bytes(b"custom-encoder-payload" * 64)
+            merged_dir, md5 = _common._custom_text_encoder_merge_dir(str(f))
+            merged_dir.mkdir(parents=True, exist_ok=True)
+            (merged_dir / "metadata.json").write_text(json.dumps({"md5": md5}))
+            quant_enc = mock.Mock()
+            with mock.patch.object(
+                transformers, "AutoModelForCausalLM"
+            ) as m_enc, mock.patch.object(
+                transformers, "AutoTokenizer"
+            ), mock.patch.object(
+                _common, "_load_loose_text_encoder_state"
+            ) as m_state:
+                m_enc.from_pretrained.return_value = quant_enc
+                enc, _tok = _load_flux2_text_encoder_override(
+                    str(f), "repo/x", "float32",
+                    quantization_config=self._QUANT,
+                )
+            self.assertIs(enc, quant_enc)
+            m_state.assert_not_called()
+            self.assertIs(
+                m_enc.from_pretrained.call_args.kwargs["quantization_config"],
+                self._QUANT,
+            )
+            self.assertEqual(
+                m_enc.from_pretrained.call_args.args[0], str(merged_dir)
+            )
+        finally:
+            if old_cache is None:
+                os.environ.pop("TEXT_ENCODER_CUSTOM_CACHE", None)
+            else:
+                os.environ["TEXT_ENCODER_CUSTOM_CACHE"] = old_cache
+
+    def test_encoder_loose_file_merge_cache_md5_mismatch_remerges(self):
+        """(c) metadata com md5 divergente → refaz merge."""
+        import json
+        import transformers
+        from trainer_difusao.generate import _load_flux2_text_encoder_override
+
+        import trainer_difusao.common as _common
+
+        cache_root = self.tmp_path / "enc-cache"
+        old_cache = os.environ.get("TEXT_ENCODER_CUSTOM_CACHE")
+        os.environ["TEXT_ENCODER_CUSTOM_CACHE"] = str(cache_root)
+        try:
+            f = self.tmp_path / "enc.safetensors"
+            f.write_bytes(b"custom-encoder-payload" * 64)
+            merged_dir, md5 = _common._custom_text_encoder_merge_dir(str(f))
+            merged_dir.mkdir(parents=True, exist_ok=True)
+            (merged_dir / "metadata.json").write_text(
+                json.dumps({"md5": "0" * 16})
+            )
+            base_enc = mock.Mock()
+            base_enc.load_state_dict.return_value = ([], [])
+            base_enc.save_pretrained.side_effect = (
+                lambda p: Path(p).mkdir(parents=True, exist_ok=True)
+            )
+            with mock.patch.object(
+                transformers, "AutoModelForCausalLM"
+            ) as m_enc, mock.patch.object(
+                transformers, "AutoTokenizer"
+            ), mock.patch.object(
+                _common, "_load_loose_text_encoder_state",
+                return_value={"w": 1},
+            ) as m_state:
+                m_enc.from_pretrained.side_effect = [base_enc, mock.Mock()]
+                _load_flux2_text_encoder_override(
+                    str(f), "repo/x", "float32",
+                    quantization_config=self._QUANT,
+                )
+            m_state.assert_called_once_with(str(f))
+            base_enc.load_state_dict.assert_called_once()
+            meta = json.loads((merged_dir / "metadata.json").read_text())
+            self.assertEqual(meta["md5"], md5)
+        finally:
+            if old_cache is None:
+                os.environ.pop("TEXT_ENCODER_CUSTOM_CACHE", None)
+            else:
+                os.environ["TEXT_ENCODER_CUSTOM_CACHE"] = old_cache
+
+    def test_encoder_loose_file_without_quant_unchanged(self):
+        """(d) sem quant → caminho atual preservado (bf16 direto, sem cache)."""
+        import transformers
+        from trainer_difusao.generate import _load_flux2_text_encoder_override
+
+        import trainer_difusao.common as _common
+
+        cache_root = self.tmp_path / "enc-cache"
+        old_cache = os.environ.get("TEXT_ENCODER_CUSTOM_CACHE")
+        os.environ["TEXT_ENCODER_CUSTOM_CACHE"] = str(cache_root)
+        try:
+            f = self.tmp_path / "enc.safetensors"
+            f.write_bytes(b"custom-encoder-payload" * 64)
+            base_enc = mock.Mock()
+            base_enc.load_state_dict.return_value = ([], [])
+            with mock.patch.object(
+                transformers, "AutoModelForCausalLM"
+            ) as m_enc, mock.patch.object(
+                transformers, "AutoTokenizer"
+            ), mock.patch.object(
+                _common, "_load_loose_text_encoder_state",
+                return_value={"w": 1},
+            ):
+                m_enc.from_pretrained.return_value = base_enc
+                enc, _tok = _load_flux2_text_encoder_override(
+                    str(f), "repo/x", "float32"
+                )
+            self.assertIs(enc, base_enc)
+            self.assertNotIn(
+                "quantization_config", m_enc.from_pretrained.call_args.kwargs
+            )
+            self.assertFalse(cache_root.exists())
+        finally:
+            if old_cache is None:
+                os.environ.pop("TEXT_ENCODER_CUSTOM_CACHE", None)
+            else:
+                os.environ["TEXT_ENCODER_CUSTOM_CACHE"] = old_cache
+
+    def test_encoder_loose_file_unexpected_keys_dies(self):
+        """(e) load_state_dict com unexpected keys → _die (sem fallback)."""
+        import transformers
+        from trainer_difusao.generate import _load_flux2_text_encoder_override
+
+        import trainer_difusao.common as _common
+
+        cache_root = self.tmp_path / "enc-cache"
+        old_cache = os.environ.get("TEXT_ENCODER_CUSTOM_CACHE")
+        os.environ["TEXT_ENCODER_CUSTOM_CACHE"] = str(cache_root)
+        try:
+            f = self.tmp_path / "enc.safetensors"
+            f.write_bytes(b"custom-encoder-payload" * 64)
+            base_enc = mock.Mock()
+            base_enc.load_state_dict.return_value = ([], ["qwen.foo"])
+            with mock.patch.object(
+                transformers, "AutoModelForCausalLM"
+            ) as m_enc, mock.patch.object(
+                transformers, "AutoTokenizer"
+            ), mock.patch.object(
+                _common, "_load_loose_text_encoder_state",
+                return_value={"w": 1},
+            ):
+                m_enc.from_pretrained.return_value = base_enc
+                with self.assertRaises(SystemExit):
+                    _load_flux2_text_encoder_override(
+                        str(f), "repo/x", "float32"
+                    )
+        finally:
+            if old_cache is None:
+                os.environ.pop("TEXT_ENCODER_CUSTOM_CACHE", None)
+            else:
+                os.environ["TEXT_ENCODER_CUSTOM_CACHE"] = old_cache
+
+    def test_encoder_persist_failure_removes_tmp_and_race_is_cache_hit(self):
+        """except de persist: remove .tmp-<pid>; corrida vira cache hit."""
+        import transformers
+        from trainer_difusao.generate import _load_flux2_text_encoder_override
+
+        import trainer_difusao.common as _common
+
+        cache_root = self.tmp_path / "enc-cache"
+        old_cache = os.environ.get("TEXT_ENCODER_CUSTOM_CACHE")
+        os.environ["TEXT_ENCODER_CUSTOM_CACHE"] = str(cache_root)
+        try:
+            f = self.tmp_path / "enc.safetensors"
+            f.write_bytes(b"custom-encoder-payload" * 64)
+            merged_dir, md5 = _common._custom_text_encoder_merge_dir(str(f))
+            merged_parent = merged_dir.parent
+            fresh_quant = mock.Mock()
+            with mock.patch.object(
+                transformers, "AutoModelForCausalLM"
+            ) as m_enc, mock.patch.object(
+                transformers, "AutoTokenizer"
+            ), mock.patch.object(
+                _common, "_load_loose_text_encoder_state",
+                return_value={"w": 1},
+            ):
+                base_enc = mock.Mock()
+                base_enc.load_state_dict.return_value = ([], [])
+
+                def _save_and_race(path):
+                    Path(path).mkdir(parents=True, exist_ok=True)
+                    merged_dir.mkdir(parents=True, exist_ok=True)
+                    (merged_dir / "metadata.json").write_text(
+                        json.dumps({"md5": md5})
+                    )
+                    raise OSError("disco cheio no os.replace")
+
+                base_enc.save_pretrained.side_effect = _save_and_race
+                m_enc.from_pretrained.side_effect = [base_enc, fresh_quant]
+                enc, _tok = _load_flux2_text_encoder_override(
+                    str(f), "repo/x", "float32",
+                    quantization_config=self._QUANT,
+                )
+            self.assertIs(enc, fresh_quant)
+            leftovers = list(merged_parent.glob(".tmp-*"))
+            self.assertEqual(leftovers, [])
+            self.assertEqual(
+                m_enc.from_pretrained.call_args.args[0], str(merged_dir)
+            )
+            self.assertIs(
+                m_enc.from_pretrained.call_args.kwargs["quantization_config"],
+                self._QUANT,
+            )
+        finally:
+            if old_cache is None:
+                os.environ.pop("TEXT_ENCODER_CUSTOM_CACHE", None)
+            else:
+                os.environ["TEXT_ENCODER_CUSTOM_CACHE"] = old_cache
+
+    def test_encoder_persist_failure_without_race_dies_and_removes_tmp(self):
+        """except de persist sem merge válido: _die + sem .tmp órfão."""
+        import transformers
+        from trainer_difusao.generate import _load_flux2_text_encoder_override
+
+        import trainer_difusao.common as _common
+
+        cache_root = self.tmp_path / "enc-cache"
+        old_cache = os.environ.get("TEXT_ENCODER_CUSTOM_CACHE")
+        os.environ["TEXT_ENCODER_CUSTOM_CACHE"] = str(cache_root)
+        try:
+            f = self.tmp_path / "enc.safetensors"
+            f.write_bytes(b"custom-encoder-payload" * 64)
+            merged_dir, _md5 = _common._custom_text_encoder_merge_dir(str(f))
+            merged_parent = merged_dir.parent
+            with mock.patch.object(
+                transformers, "AutoModelForCausalLM"
+            ) as m_enc, mock.patch.object(
+                transformers, "AutoTokenizer"
+            ), mock.patch.object(
+                _common, "_load_loose_text_encoder_state",
+                return_value={"w": 1},
+            ):
+                base_enc = mock.Mock()
+                base_enc.load_state_dict.return_value = ([], [])
+                base_enc.save_pretrained.side_effect = OSError("disco cheio")
+                m_enc.from_pretrained.return_value = base_enc
+                with self.assertRaises(SystemExit):
+                    _load_flux2_text_encoder_override(
+                        str(f), "repo/x", "float32",
+                        quantization_config=self._QUANT,
+                    )
+            self.assertEqual(list(merged_parent.glob(".tmp-*")), [])
+        finally:
+            if old_cache is None:
+                os.environ.pop("TEXT_ENCODER_CUSTOM_CACHE", None)
+            else:
+                os.environ["TEXT_ENCODER_CUSTOM_CACHE"] = old_cache
+
+    def test_encoder_merge_sweep_keeps_current_and_warns_on_failure(self):
+        """sweep: expurga os mais antigos até o teto, nunca o merge atual."""
+        import time
+
+        import trainer_difusao.common as _common
+
+        cache_root = self.tmp_path / "enc-cache"
+        old_cache = os.environ.get("TEXT_ENCODER_CUSTOM_CACHE")
+        old_max = os.environ.get("TEXT_ENCODER_CACHE_MAX_GB")
+        os.environ["TEXT_ENCODER_CUSTOM_CACHE"] = str(cache_root)
+        try:
+            current = cache_root / "c-current" / "merged"
+            old1 = cache_root / "a-old1" / "merged"
+            old2 = cache_root / "b-old2" / "merged"
+            for d in (old1, old2, current):
+                d.mkdir(parents=True, exist_ok=True)
+                (d / "weights.bin").write_bytes(b"x" * 1024 * 1024)
+                (d / "metadata.json").write_text(json.dumps({"md5": "0" * 16}))
+            now = time.time()
+            os.utime(old1, (now - 300, now - 300))
+            os.utime(old2, (now - 200, now - 200))
+            os.utime(current, (now - 100, now - 100))
+            os.environ["TEXT_ENCODER_CACHE_MAX_GB"] = str(1 / 1024)
+            _common._sweep_text_encoder_merge_cache(current)
+            self.assertTrue(current.exists())
+            self.assertFalse(old1.exists())
+            self.assertFalse(old2.exists())
+            with mock.patch.object(
+                _common.shutil, "rmtree", side_effect=OSError("boom")
+            ):
+                _common._sweep_text_encoder_merge_cache(current)
+            self.assertTrue(current.exists())
+        finally:
+            if old_cache is None:
+                os.environ.pop("TEXT_ENCODER_CUSTOM_CACHE", None)
+            else:
+                os.environ["TEXT_ENCODER_CUSTOM_CACHE"] = old_cache
+            if old_max is None:
+                os.environ.pop("TEXT_ENCODER_CACHE_MAX_GB", None)
+            else:
+                os.environ["TEXT_ENCODER_CACHE_MAX_GB"] = old_max
+
+    def test_encoder_cache_slug_uses_content_md5(self):
+        """slug do cache quant: md5 de conteúdo; muda com os bytes."""
+        import hashlib
+
+        import trainer_difusao.common as _common
+
+        f = self.tmp_path / "enc.safetensors"
+        f.write_bytes(b"conteudo-a" * 64)
+        slug_a = _common._text_encoder_cache_slug(str(f))
+        md5_a = _common._custom_text_encoder_merge_dir(str(f))[1][:12]
+        self.assertEqual(slug_a, md5_a)
+        f.write_bytes(b"conteudo-b" * 64)
+        slug_b = _common._text_encoder_cache_slug(str(f))
+        self.assertEqual(
+            slug_b, _common._custom_text_encoder_merge_dir(str(f))[1][:12]
+        )
+        self.assertNotEqual(slug_a, slug_b)
+        self.assertNotEqual(
+            slug_b, hashlib.md5(str(f).encode()).hexdigest()[:12]
+        )
+
+    def test_common_keeps_typing_any_for_get_type_hints(self):
+        """from typing import Any restaurado: hints de common resolvem."""
+        import typing
+
+        import trainer_difusao.common as _common
+
+        self.assertIn("Any", vars(_common))
+        hints = typing.get_type_hints(_common._load_loose_text_encoder_state)
+        self.assertEqual(hints["return"], dict[str, typing.Any])
+
 
 
 class TestEncoderOverrideSdGuard(_Base):

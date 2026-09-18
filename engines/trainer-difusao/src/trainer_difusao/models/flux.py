@@ -535,10 +535,9 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             custom_slug = _hl.md5(custom_identity.encode("utf-8")).hexdigest()[:12]
             model_slug = f"{model_slug}_custom{custom_slug}"
         if text_encoder_path:
-            import hashlib as _hl2
+            from trainer_difusao.common import _text_encoder_cache_slug as _enc_slug_fn
 
-            enc_slug = _hl2.md5(text_encoder_path.encode("utf-8")).hexdigest()[:12]
-            model_slug = f"{model_slug}_enc{enc_slug}"
+            model_slug = f"{model_slug}_enc{_enc_slug_fn(text_encoder_path)}"
         subfolder_quant = f"{model_slug}_{quant_format}"
         quant_base = (
             Path(f"/outputs/.cache/quantized/{subfolder_quant}")
@@ -780,7 +779,22 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             )
             if text_encoder_path:
                 # Override honest: mesmo esquema da geração (dir HF completo
-                # ou .safetensors solto aplicado sobre o encoder do repo).
+                # ou .safetensors solto). Arquivo solto + quant: os pesos
+                # custom NÃO podem ser aplicados via load_state_dict sobre um
+                # modelo já quantizado — usa-se o cache de merge compartilhado
+                # (bf16 mesclado em disco; quant por carga), mesmo padrão da
+                # geração (_load_flux2_loose_encoder_merged).
+                from trainer_difusao.common import (
+                    _cleanup_merge_tmp_dir,
+                    _custom_text_encoder_merge_dir,
+                    _load_loose_text_encoder_state,
+                    _merged_text_encoder_tmp_dir,
+                    _merged_text_encoder_valid,
+                    _publish_merged_text_encoder,
+                    _sweep_text_encoder_merge_cache,
+                    _write_merged_text_encoder_metadata,
+                )
+
                 enc_p = Path(text_encoder_path)
                 if enc_p.is_dir():
                     try:
@@ -794,16 +808,122 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                             f"Falha ao carregar text_encoder custom de dir "
                             f"({text_encoder_path}): {exc}"
                         )
-                elif enc_p.is_file():
-                    try:
-                        from safetensors.torch import load_file as _enc_st_load
-
-                        enc_state = _enc_st_load(str(enc_p))
-                    except Exception as exc:
-                        _die(
-                            f"Falha ao ler text_encoder custom ({text_encoder_path}): "
-                            f"arquivo .safetensors inválido ({exc})"
+                    print(
+                        f"[FLUX] Text encoder custom (dir): {text_encoder_path}",
+                        flush=True,
+                    )
+                elif enc_p.is_file() and text_quant_cfg is not None:
+                    # Rota merge: encoder base em bf16 (SEM quant) → aplica
+                    # state_dict → persist merged → recarrega quantizado.
+                    # O base já carregado acima veio quantizado — recarrega em
+                    # bf16 p/ o merge (custo pago 1x: merged fica em disco).
+                    enc_merged_dir, enc_md5 = _custom_text_encoder_merge_dir(
+                        text_encoder_path
+                    )
+                    if _merged_text_encoder_valid(enc_merged_dir, enc_md5):
+                        try:
+                            text_encoder_one = (
+                                AutoModelForCausalLM.from_pretrained(
+                                    str(enc_merged_dir),
+                                    quantization_config=text_quant_cfg,
+                                    torch_dtype=target_dtype,
+                                )
+                            )
+                        except Exception as exc:
+                            _die(
+                                f"Falha ao carregar text_encoder custom do cache "
+                                f"de merge ({enc_merged_dir}): {exc}"
+                            )
+                        print(
+                            f"[FLUX] Text encoder custom (merge em cache: "
+                            f"{enc_merged_dir}): {text_encoder_path}",
+                            flush=True,
                         )
+                    else:
+                        try:
+                            merge_base = AutoModelForCausalLM.from_pretrained(
+                                model_id,
+                                subfolder="text_encoder",
+                                torch_dtype=target_dtype,
+                                cache_dir=hub_cache,
+                                token=hf_token,
+                            )
+                        except Exception as exc:
+                            _die(
+                                f"Falha ao carregar text encoder base do repo "
+                                f"({model_id}) para aplicar override "
+                                f"({text_encoder_path}): {exc}"
+                            )
+                        enc_state = _load_loose_text_encoder_state(
+                            text_encoder_path
+                        )
+                        try:
+                            enc_missing, enc_unexpected = (
+                                merge_base.load_state_dict(enc_state, strict=False)
+                            )
+                        except Exception as exc:
+                            _die(
+                                f"Falha ao aplicar text_encoder custom "
+                                f"({text_encoder_path}): layout não "
+                                f"reconhecido ({exc})"
+                            )
+                        if enc_missing or enc_unexpected:
+                            _die(
+                                f"text_encoder custom ({text_encoder_path}) com "
+                                f"layout não reconhecido: "
+                                f"{len(list(enc_missing or []))} chave(s) "
+                                f"ausente(s) {list(enc_missing or [])[:5]}, "
+                                f"{len(list(enc_unexpected or []))} inesperada(s) "
+                                f"{list(enc_unexpected or [])[:5]}."
+                            )
+                        enc_parent = enc_merged_dir.parent
+                        enc_tmp = _merged_text_encoder_tmp_dir(enc_merged_dir)
+                        try:
+                            enc_parent.mkdir(parents=True, exist_ok=True)
+                            _cleanup_merge_tmp_dir(enc_tmp)
+                            merge_base.save_pretrained(str(enc_tmp))
+                            _write_merged_text_encoder_metadata(
+                                enc_tmp, md5=enc_md5,
+                                basename=enc_p.name, model_id=model_id,
+                            )
+                            _publish_merged_text_encoder(enc_tmp, enc_merged_dir)
+                        except SystemExit:
+                            raise
+                        except Exception as exc:
+                            if _merged_text_encoder_valid(enc_merged_dir, enc_md5):
+                                _cleanup_merge_tmp_dir(enc_tmp)
+                                print(
+                                    f"[FLUX] Text encoder custom (merge concorrente "
+                                    f"detectado em {enc_merged_dir}): {text_encoder_path}",
+                                    flush=True,
+                                )
+                            else:
+                                _cleanup_merge_tmp_dir(enc_tmp)
+                                _die(
+                                    f"Falha ao persistir cache de merge do "
+                                    f"text_encoder custom ({enc_merged_dir}): {exc}"
+                                )
+                        try:
+                            text_encoder_one = (
+                                AutoModelForCausalLM.from_pretrained(
+                                    str(enc_merged_dir),
+                                    quantization_config=text_quant_cfg,
+                                    torch_dtype=target_dtype,
+                                )
+                            )
+                        except Exception as exc:
+                            _die(
+                                f"Falha ao carregar text_encoder custom do cache "
+                                f"de merge ({enc_merged_dir}): {exc}"
+                            )
+                        print(
+                            f"[FLUX] Text encoder custom (merge novo executado: "
+                            f"{enc_merged_dir}): {text_encoder_path}",
+                            flush=True,
+                        )
+                        _sweep_text_encoder_merge_cache(enc_merged_dir)
+                elif enc_p.is_file():
+                    enc_state = _load_loose_text_encoder_state(text_encoder_path)
                     try:
                         enc_missing, enc_unexpected = (
                             text_encoder_one.load_state_dict(enc_state, strict=False)
@@ -816,18 +936,22 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                     if enc_missing or enc_unexpected:
                         _die(
                             f"text_encoder custom ({text_encoder_path}) com layout "
-                            f"não reconhecido: {len(enc_missing)} chave(s) "
-                            f"ausente(s), {len(enc_unexpected)} inesperada(s)."
+                            f"não reconhecido: "
+                            f"{len(list(enc_missing or []))} chave(s) "
+                            f"ausente(s) {list(enc_missing or [])[:5]}, "
+                            f"{len(list(enc_unexpected or []))} inesperada(s) "
+                            f"{list(enc_unexpected or [])[:5]}."
                         )
+                    print(
+                        f"[FLUX] Text encoder custom (.safetensors sobre repo): "
+                        f"{text_encoder_path}",
+                        flush=True,
+                    )
                 else:
                     _die(
                         f"text_encoder_path não encontrado: {text_encoder_path}. "
                         "Use um diretório HF ou arquivo .safetensors válido."
                     )
-                print(
-                    f"[FLUX] Text encoder custom aplicado: {text_encoder_path}",
-                    flush=True,
-                )
             if text_encoder_cache_dir and quant_base:
                 try:
                     text_encoder_cache_dir.mkdir(parents=True, exist_ok=True)

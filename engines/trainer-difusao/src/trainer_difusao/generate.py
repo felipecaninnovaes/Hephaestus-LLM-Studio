@@ -811,6 +811,17 @@ def _flux2_repo_id(*, distilled: bool) -> str:
     )
 
 
+def _text_encoder_merge_dir(encoder_path: str) -> tuple[Path, str]:
+    """Resolve (merged_dir, md5_16) do cache de merge p/ um encoder solto.
+
+    Delega p/ o helper compartilhado em trainer_difusao.common (mesmo padrão
+    usado no treino flux.py). Re-exportado aqui p/ testes via generate.
+    """
+    from trainer_difusao.common import _custom_text_encoder_merge_dir
+
+    return _custom_text_encoder_merge_dir(encoder_path)
+
+
 def _load_flux2_text_encoder_override(
     encoder_path: str,
     model_repo: str,
@@ -825,9 +836,13 @@ def _load_flux2_text_encoder_override(
     o layout não for reconhecido — nunca fallback silencioso p/ o oficial).
 
     *quantization_config* (transformers.BitsAndBytesConfig/TorchAoConfig) é
-    aplicado via from_pretrained no caso dir. No caso arquivo-solto NÃO é
-    aplicável (load_state_dict sobre pesos já quantizados não funciona) →
-    _die honesto.
+    aplicado via from_pretrained no caso dir. No caso arquivo-solto COM
+    quantização, os pesos bf16 são mesclados UMA vez sobre o encoder do repo
+    e persistidos no cache de merge
+    ($TEXT_ENCODER_CUSTOM_CACHE/<md5>-<slug>/merged); a quantização é então
+    aplicada por carga sobre o merged (mesma semântica do encoder default).
+    Sem quantization_config, o comportamento atual é preservado (bf16 direto,
+    sem cache).
     """
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -858,12 +873,8 @@ def _load_flux2_text_encoder_override(
         return encoder, tokenizer
     if enc.is_file():
         if quantization_config is not None:
-            _die(
-                f"Quantização não é suportada com text_encoder custom em arquivo "
-                f"solto ({encoder_path}): os pesos são aplicados via "
-                f"load_state_dict sobre o encoder do repo, incompatível com "
-                f"modelo quantizado. Use um diretório HF completo ou "
-                f"quantization=none."
+            return _load_flux2_loose_encoder_merged(
+                encoder_path, model_repo, pipe_dtype, quantization_config
             )
         try:
             base_encoder = AutoModelForCausalLM.from_pretrained(
@@ -874,29 +885,10 @@ def _load_flux2_text_encoder_override(
                 f"Falha ao carregar text encoder base do repo ({model_repo}) "
                 f"para aplicar override ({encoder_path}): {exc}"
             )
-        try:
-            from safetensors.torch import load_file as _safetensors_load
+        from trainer_difusao.common import _load_loose_text_encoder_state
 
-            state = _safetensors_load(str(enc))
-        except Exception as exc:
-            _die(
-                f"Falha ao ler text_encoder custom ({encoder_path}): "
-                f"arquivo .safetensors inválido ({exc})"
-            )
-        try:
-            missing, unexpected = base_encoder.load_state_dict(state, strict=False)
-        except Exception as exc:
-            _die(
-                f"Falha ao aplicar text_encoder custom ({encoder_path}) sobre o "
-                f"encoder do repo ({model_repo}): layout não reconhecido ({exc})"
-            )
-        if missing or unexpected:
-            _die(
-                f"text_encoder custom ({encoder_path}) com layout não reconhecido: "
-                f"{len(missing)} chave(s) ausente(s), {len(unexpected)} inesperada(s). "
-                "Envie o encoder como diretório HF completo ou um .safetensors "
-                "compatível com o Qwen3 do FLUX.2 Klein."
-            )
+        state = _load_loose_text_encoder_state(encoder_path)
+        _apply_loose_encoder_state(base_encoder, state, encoder_path, model_repo)
         try:
             tokenizer = AutoTokenizer.from_pretrained(
                 model_repo, subfolder="tokenizer"
@@ -915,6 +907,152 @@ def _load_flux2_text_encoder_override(
         f"text_encoder_path não encontrado: {encoder_path}. "
         "Use um diretório HF ou arquivo .safetensors válido."
     )
+
+
+def _apply_loose_encoder_state(
+    base_encoder: Any, state: dict[str, Any], encoder_path: str, model_repo: str
+) -> None:
+    """Aplica o state_dict solto sobre o encoder do repo (bf16, sem quant).
+
+    Erro honesto citando as primeiras chaves divergentes — nunca fallback
+    silencioso p/ o encoder oficial.
+    """
+    try:
+        missing, unexpected = base_encoder.load_state_dict(state, strict=False)
+    except Exception as exc:
+        _die(
+            f"Falha ao aplicar text_encoder custom ({encoder_path}) sobre o "
+            f"encoder do repo ({model_repo}): layout não reconhecido ({exc})"
+        )
+    if missing or unexpected:
+        missing = list(missing or [])
+        unexpected = list(unexpected or [])
+        _die(
+            f"text_encoder custom ({encoder_path}) com layout não reconhecido: "
+            f"{len(missing)} chave(s) ausente(s) {missing[:5]}, "
+            f"{len(unexpected)} inesperada(s) {unexpected[:5]}. "
+            "Envie o encoder como diretório HF completo ou um .safetensors "
+            "compatível com o Qwen3 do FLUX.2 Klein."
+        )
+
+
+def _load_flux2_loose_encoder_merged(
+    encoder_path: str,
+    model_repo: str,
+    pipe_dtype: Any,
+    quantization_config: Any,
+) -> tuple[Any, Any]:
+    """Arquivo solto + quantização via cache de merge (bf16 mesclado em disco).
+
+    O custo do merge é pago 1x por encoder; a quantização é aplicada por
+    carga sobre o merged (mesma semântica do encoder default). O
+    ``pipeline_cache_key`` NÃO muda — o merged é derivado do path, que já
+    está na chave.
+    """
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    from trainer_difusao.common import (
+        _cleanup_merge_tmp_dir,
+        _custom_text_encoder_merge_dir,
+        _load_loose_text_encoder_state,
+        _merged_text_encoder_tmp_dir,
+        _merged_text_encoder_valid,
+        _publish_merged_text_encoder,
+        _sweep_text_encoder_merge_cache,
+        _write_merged_text_encoder_metadata,
+    )
+
+    merged_dir, md5 = _custom_text_encoder_merge_dir(encoder_path)
+    if _merged_text_encoder_valid(merged_dir, md5):
+        try:
+            encoder = AutoModelForCausalLM.from_pretrained(
+                str(merged_dir),
+                torch_dtype=pipe_dtype,
+                quantization_config=quantization_config,
+            )
+        except Exception as exc:
+            _die(
+                f"Falha ao carregar text_encoder custom do cache de merge "
+                f"({merged_dir}): {exc}"
+            )
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_repo, subfolder="tokenizer"
+            )
+        except Exception as exc:
+            _die(
+                f"Falha ao carregar tokenizer base do repo ({model_repo}): {exc}"
+            )
+        print(
+            f"[DIFFUSION-GEN] Text encoder custom (merge em cache: "
+            f"{merged_dir}): {encoder_path}",
+            flush=True,
+        )
+        return encoder, tokenizer
+    try:
+        base_encoder = AutoModelForCausalLM.from_pretrained(
+            model_repo, subfolder="text_encoder", torch_dtype=pipe_dtype
+        )
+    except Exception as exc:
+        _die(
+            f"Falha ao carregar text encoder base do repo ({model_repo}) "
+            f"para aplicar override ({encoder_path}): {exc}"
+        )
+    state = _load_loose_text_encoder_state(encoder_path)
+    _apply_loose_encoder_state(base_encoder, state, encoder_path, model_repo)
+    parent = merged_dir.parent
+    tmp_dir = _merged_text_encoder_tmp_dir(merged_dir)
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+        _cleanup_merge_tmp_dir(tmp_dir)
+        base_encoder.save_pretrained(str(tmp_dir))
+        _write_merged_text_encoder_metadata(
+            tmp_dir, md5=md5, basename=Path(encoder_path).name,
+            model_id=model_repo,
+        )
+        _publish_merged_text_encoder(tmp_dir, merged_dir)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        if _merged_text_encoder_valid(merged_dir, md5):
+            _cleanup_merge_tmp_dir(tmp_dir)
+            print(
+                f"[DIFFUSION-GEN] Text encoder custom (merge concorrente "
+                f"detectado em {merged_dir}): {encoder_path}",
+                flush=True,
+            )
+        else:
+            _cleanup_merge_tmp_dir(tmp_dir)
+            _die(
+                f"Falha ao persistir cache de merge do text_encoder custom "
+                f"({merged_dir}): {exc}"
+            )
+    try:
+        encoder = AutoModelForCausalLM.from_pretrained(
+            str(merged_dir),
+            torch_dtype=pipe_dtype,
+            quantization_config=quantization_config,
+        )
+    except Exception as exc:
+        _die(
+            f"Falha ao carregar text_encoder custom do cache de merge "
+            f"({merged_dir}): {exc}"
+        )
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_repo, subfolder="tokenizer"
+        )
+    except Exception as exc:
+        _die(
+            f"Falha ao carregar tokenizer base do repo ({model_repo}): {exc}"
+        )
+    print(
+        f"[DIFFUSION-GEN] Text encoder custom (merge novo executado: "
+        f"{merged_dir}): {encoder_path}",
+        flush=True,
+    )
+    _sweep_text_encoder_merge_cache(merged_dir)
+    return encoder, tokenizer
 
 
 def _load_flux2_custom_transformer(

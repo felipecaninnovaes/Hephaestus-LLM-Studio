@@ -1593,9 +1593,9 @@ fn make_progress_reporter(
         };
         let rc_spawn = Arc::clone(&rc);
         let jid_spawn = jid.clone();
+        tracing::info!(job_id = %jid_spawn, phase = %phase, "{msg}");
         tokio::spawn(async move {
-            let _ = rc_spawn
-                .report(
+            let _ = rc_spawn.report(
                     &jid_spawn,
                     &ReportBody {
                         status: "running".to_string(),
@@ -1629,6 +1629,7 @@ fn make_progress_reporter(
             0.01,
             0.05,
         );
+        tracing::info!(job_id = %job_id, key = %key, "Iniciando download do dataset...");
         s3.get_to_file_with_progress(&key, &zip_path, Some(&on_dl))
             .await
             .map_err(|e| PipelineError::S3Download(format!("download package: {e}")))?;
@@ -1659,6 +1660,7 @@ fn make_progress_reporter(
                 actual: actual_md5,
             });
         }
+        tracing::info!(job_id = %job_id, md5 = %actual_md5, "Integridade do dataset validada com sucesso");
 
         // 4. Unzip (zip-slip safe, padrão import 3e)
         let _ = report_client
@@ -1678,6 +1680,7 @@ fn make_progress_reporter(
                 },
             )
             .await;
+        tracing::info!(job_id = %job_id, "Descompactando dataset no cache do nó...");
         unzip_safe(&zip_path, &datasets_cache)?;
     }
 
@@ -2500,10 +2503,15 @@ fn make_progress_reporter(
             if !new_metrics.is_empty() {
                 for m in new_metrics {
                     let progress = compute_progress(&m, metrics_total);
-                    // AC-006-A D1/D2: classifica linha — métrica de treino vs evento de status.
-                    // Fase em qualquer linha promove jobs.phase (P2-1): métrica com
-                    // `phase` carrega métrica + fase; sem phase o COALESCE não pisa.
                     let is_metric = m.is_training_metric();
+                    if let Some(ref msg) = m.message {
+                        tracing::info!(
+                            job_id = %metrics_job_id,
+                            phase = ?m.phase,
+                            epoch = m.epoch,
+                            "{msg}"
+                        );
+                    }
                     let _ = metrics_report_client
                         .report(
                             &metrics_job_id,
@@ -2531,6 +2539,13 @@ fn make_progress_reporter(
                         .await;
                 }
             } else if !new_live_artifacts.is_empty() {
+                for art in &new_live_artifacts {
+                    tracing::info!(
+                        job_id = %metrics_job_id,
+                        artifact = %art.path,
+                        "Artefato intermediário gerado e sincronizado"
+                    );
+                }
                 let _ = metrics_report_client
                     .report(
                         &metrics_job_id,
@@ -2603,6 +2618,11 @@ fn make_progress_reporter(
         }
     };
 
+    tracing::info!(
+        job_id = %job_id,
+        container = %container_name,
+        "Inicializando container de execução na GPU..."
+    );
     let _ = report_client
         .report(
             job_id,

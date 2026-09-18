@@ -1453,6 +1453,8 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
 																metrics={metrics[job.id] || (job.metrics ?? [])}
 																artifacts={artifacts[job.id] || []}
 																compact
+																livePhase={job.phase}
+																livePhaseMessage={job.phaseMessage}
 															/>
 														</div>
 

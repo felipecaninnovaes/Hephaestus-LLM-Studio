@@ -1477,6 +1477,8 @@ function JobsPageContent() {
 									job={selectedJob}
 									metrics={metrics[selectedJob.id] || []}
 									artifacts={artifacts[selectedJob.id] || []}
+									livePhase={telemetry.phase}
+									livePhaseMessage={telemetry.phaseMessage}
 								/>
 							</div>
 						) : (

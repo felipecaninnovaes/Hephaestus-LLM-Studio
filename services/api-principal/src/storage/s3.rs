@@ -11,7 +11,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use aws_sdk_s3::config::{BehaviorVersion, Credentials, Region, RequestChecksumCalculation};
 use aws_sdk_s3::presigning::PresigningConfig;
-use aws_sdk_s3::primitives::ByteStream;
+use aws_sdk_s3::primitives::{ByteStream, Length};
 use aws_sdk_s3::Client;
 use aws_smithy_types::retry::RetryConfig;
 use aws_smithy_types::timeout::TimeoutConfig;
@@ -48,6 +48,35 @@ pub fn create_bucket_conflict(
         err,
         E::BucketAlreadyExists(_) | E::BucketAlreadyOwnedByYou(_)
     )
+}
+
+/// Threshold do multipart upload: `put` com `len` acima deste valor usa
+/// `create_multipart_upload` + `upload_part` + `complete_multipart_upload`
+/// em vez de `put_object` único (PUT único > 5 GiB está fora do contrato S3
+/// e falha opaco no SeaweedFS — incidente 8,04 GB/71s). 4,5 GB mantém os
+/// dataset zips de 3–4,6 GB no PUT único que hoje funciona (blast mínimo).
+pub const MULTIPART_THRESHOLD_BYTES: u64 = 4_500_000_000;
+/// Tamanho de cada parte do multipart: 128 MiB — bem acima do mínimo S3 de
+/// 5 MiB e bem abaixo do teto de 5 GiB por parte, por construção. 8 GiB →
+/// 64 partes (limite S3: 10 000 partes).
+pub const MULTIPART_PART_BYTES: u64 = 128 * 1024 * 1024;
+
+/// Puro/testável: `len` exige multipart?
+pub fn use_multipart(len: u64) -> bool {
+    len > MULTIPART_THRESHOLD_BYTES
+}
+
+/// Puro/testável: plano de partes `(offset, len)` para `len` bytes.
+/// `ceil(len / MULTIPART_PART_BYTES)` partes sequenciais cobrindo o arquivo.
+pub fn multipart_plan(len: u64) -> Vec<(u64, u64)> {
+    let mut plan = Vec::new();
+    let mut offset = 0u64;
+    while offset < len {
+        let chunk = (len - offset).min(MULTIPART_PART_BYTES);
+        plan.push((offset, chunk));
+        offset += chunk;
+    }
+    plan
 }
 
 /// Percent-encode de key p/ `copy_source` (sem crate nova): preserva
@@ -132,6 +161,121 @@ impl S3Storage {
         })
     }
 
+    /// Multipart upload para objetos > `MULTIPART_THRESHOLD_BYTES` (modelos
+    /// até 8 GiB): create → upload_part sequencial em chunks de
+    /// `MULTIPART_PART_BYTES` lidos do disco via `ByteStream::read_from`
+    /// (offset+length, streaming — NUNCA carrega o arquivo em RAM) →
+    /// complete com as etags em ordem. Qualquer falha de parte faz
+    /// `abort_multipart_upload` (compensação: sem upload órfão cobrando
+    /// storage). Usa `self.client` — o mesmo do PUT único, com o
+    /// operation_timeout de 60min herdado (cada parte tem seu próprio
+    /// orçamento de 60min). Sequencial por decisão: loopback saturado não
+    /// ganha com concorrência; não complicar.
+    async fn put_multipart(&self, key: &str, path: &Path, len: u64) -> Result<(), StorageError> {
+        let upload_id = self
+            .client
+            .create_multipart_upload()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::error!(key = %key, err = ?e, "s3 create_multipart_upload falhou");
+                StorageError::Unavailable("storage unavailable".into())
+            })?
+            .upload_id()
+            .map(|s| s.to_string())
+            .ok_or_else(|| {
+                tracing::error!(key = %key, "s3 create_multipart_upload sem upload_id");
+                StorageError::Unavailable("storage unavailable".into())
+            })?;
+        let mut completed: Vec<aws_sdk_s3::types::CompletedPart> = Vec::new();
+        for (i, (offset, chunk)) in multipart_plan(len).into_iter().enumerate() {
+            let part_number = (i + 1) as i32;
+            let body = match ByteStream::read_from()
+                .path(path)
+                .offset(offset)
+                .length(Length::Exact(chunk))
+                .build()
+                .await
+            {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::error!(key = %key, part = part_number, err = ?e, "s3 multipart: ByteStream da parte falhou; abortando multipart");
+                    self.abort_multipart(key, &upload_id).await;
+                    return Err(StorageError::Unavailable("storage unavailable".into()));
+                }
+            };
+            let out = match self
+                .client
+                .upload_part()
+                .bucket(&self.bucket)
+                .key(key)
+                .upload_id(&upload_id)
+                .part_number(part_number)
+                .content_length(chunk as i64)
+                .body(body)
+                .send()
+                .await
+            {
+                Ok(out) => out,
+                Err(e) => {
+                    tracing::error!(key = %key, part = part_number, err = ?e, "s3 upload_part falhou; abortando multipart");
+                    self.abort_multipart(key, &upload_id).await;
+                    return Err(StorageError::Unavailable("storage unavailable".into()));
+                }
+            };
+            let etag = match out.e_tag() {
+                Some(t) => t.to_string(),
+                None => {
+                    tracing::error!(key = %key, part = part_number, "s3 upload_part sem etag; abortando multipart");
+                    self.abort_multipart(key, &upload_id).await;
+                    return Err(StorageError::Unavailable("storage unavailable".into()));
+                }
+            };
+            completed.push(
+                aws_sdk_s3::types::CompletedPart::builder()
+                    .part_number(part_number)
+                    .e_tag(etag)
+                    .build(),
+            );
+        }
+        let upload = aws_sdk_s3::types::CompletedMultipartUpload::builder()
+            .set_parts(Some(completed))
+            .build();
+        if let Err(e) = self
+            .client
+            .complete_multipart_upload()
+            .bucket(&self.bucket)
+            .key(key)
+            .upload_id(&upload_id)
+            .multipart_upload(upload)
+            .send()
+            .await
+        {
+            tracing::error!(key = %key, err = ?e, "s3 complete_multipart_upload falhou; abortando multipart");
+            self.abort_multipart(key, &upload_id).await;
+            return Err(StorageError::Unavailable("storage unavailable".into()));
+        }
+        tracing::info!(key = %key, bytes = len, "s3 multipart completo");
+        Ok(())
+    }
+
+    /// Best-effort: falha do abort só loga (o erro original já decidiu o 503).
+    async fn abort_multipart(&self, key: &str, upload_id: &str) {
+        if let Err(e) = self
+            .client
+            .abort_multipart_upload()
+            .bucket(&self.bucket)
+            .key(key)
+            .upload_id(upload_id)
+            .send()
+            .await
+        {
+            tracing::warn!(key = %key, err = ?e, "s3 abort_multipart_upload falhou (upload orfao?)");
+        }
+    }
+
     /// Garante o bucket no boot com `STORAGE_BACKEND=s3` (idempotente).
     ///
     /// CreateBucket no bucket configurado: criado ou já-existente (nosso ou
@@ -186,16 +330,24 @@ impl S3Storage {
 #[async_trait]
 impl StoragePort for S3Storage {
     async fn put(&self, key: &str, path: &Path) -> Result<(), StorageError> {
-        // `from_path` faz streaming do disco com length exato (C2/C3 do spike:
-        // com WhenRequired o wire sai sem trilha aws-chunked/trailer).
-        let body = ByteStream::from_path(path)
-            .await
-            .map_err(|_| StorageError::Unavailable("storage unavailable".into()))?;
         // D2/C2: o length é INVARIANTE, não otimização — stat que falha aborta
         // o PUT (nunca enviar length 0 com corpo de N bytes; revisão 3b.6 F2).
-        let len = std::fs::metadata(path)
-            .map(|m| m.len() as i64)
-            .map_err(|_| StorageError::Unavailable("storage unavailable".into()))?;
+        // O stat vem ANTES do branch: é ele que decide PUT único vs multipart.
+        let len_u64 = std::fs::metadata(path).map(|m| m.len()).map_err(|e| {
+            tracing::error!(key = %key, err = ?e, "s3 put: stat do arquivo falhou");
+            StorageError::Unavailable("storage unavailable".into())
+        })?;
+        if use_multipart(len_u64) {
+            return self.put_multipart(key, path, len_u64).await;
+        }
+        // PUT único (≤ 4,5 GB): `from_path` faz streaming do disco com length
+        // exato (C2/C3 do spike: com WhenRequired o wire sai sem trilha
+        // aws-chunked/trailer).
+        let body = ByteStream::from_path(path).await.map_err(|e| {
+            tracing::error!(key = %key, err = ?e, "s3 put: ByteStream::from_path falhou");
+            StorageError::Unavailable("storage unavailable".into())
+        })?;
+        let len = len_u64 as i64;
         self.client
             .put_object()
             .bucket(&self.bucket)
@@ -204,7 +356,10 @@ impl StoragePort for S3Storage {
             .body(body)
             .send()
             .await
-            .map_err(|_| StorageError::Unavailable("storage unavailable".into()))?;
+            .map_err(|e| {
+                tracing::error!(key = %key, err = ?e, "s3 put_object falhou");
+                StorageError::Unavailable("storage unavailable".into())
+            })?;
         Ok(())
     }
 
@@ -447,5 +602,37 @@ mod tests {
             !create_bucket_conflict(&unhandled),
             "Unhandled = retry/fail"
         );
+    }
+
+    #[test]
+    fn multipart_threshold_so_acima_de_4_5gb() {
+        assert_eq!(MULTIPART_THRESHOLD_BYTES, 4_500_000_000);
+        assert_eq!(MULTIPART_PART_BYTES, 128 * 1024 * 1024);
+        assert!(!use_multipart(0), "vazio: PUT unico");
+        assert!(!use_multipart(3_000_000_000), "zip 3GB: PUT unico");
+        assert!(!use_multipart(4_500_000_000), "limite exato: PUT unico");
+        assert!(use_multipart(4_500_000_001), "acima do limite: multipart");
+        assert!(
+            use_multipart(8 * 1024 * 1024 * 1024),
+            "modelo 8GiB: multipart"
+        );
+    }
+
+    #[test]
+    fn multipart_plan_cobre_arquivo_em_partes_128mib() {
+        // 8 GiB → 64 partes de 128 MiB (limite S3: 10 000).
+        let len = 8 * 1024 * 1024 * 1024u64;
+        let plan = multipart_plan(len);
+        assert_eq!(plan.len(), 64);
+        assert!(plan.iter().all(|(_, c)| *c == MULTIPART_PART_BYTES));
+        assert_eq!(plan[0].0, 0);
+        let total: u64 = plan.iter().map(|(_, c)| c).sum();
+        assert_eq!(total, len);
+        // Resto: 300 MiB → 2×128 + 44 MiB, offsets contíguos.
+        let plan = multipart_plan(300 * 1024 * 1024);
+        assert_eq!(plan.len(), 3);
+        assert_eq!(plan[2], (256 * 1024 * 1024, 44 * 1024 * 1024));
+        // Parte nunca passa de 5 GiB por construção.
+        assert!(plan.iter().all(|(_, c)| *c <= 5_000_000_000));
     }
 }

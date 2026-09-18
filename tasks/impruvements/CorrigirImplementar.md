@@ -27,7 +27,7 @@ Arquivo responsavel por reunir todas as melhorias e correçoes de forma organiza
 
   - Backend, Orchestrator, Pipelines & Métricas:
     - [ ] Plano de Autonomia 24/7 (detalhado em `tasks/impruvements/backend-orchestrator-pipelines-autonomia.md`):
-      - [ ] 01. Correção de abort em `preparing` e loop do `job_prepares` (evitar zumbi/503)
+      - [x] 01. Correção de abort em `preparing` e loop do `job_prepares` (evitar zumbi/503)
       - [ ] 02. Barreira local de GPU/VRAM e timeout com `kill_on_drop` no Orchestrator
       - [ ] 03. Deadlock de `SIGTERM` e dependências GPU (`torchao`) nas Engines
       - [ ] 04. Garbage Collection de sessões chunked, `outputs/`, `datasets-cache/` e S3

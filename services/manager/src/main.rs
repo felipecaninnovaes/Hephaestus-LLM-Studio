@@ -497,6 +497,28 @@ async fn prepare_fail_handler(
     }
 }
 
+/// POST /internal/jobs/:id/prepare-cancel — cancelamento de preparação pelo BFF.
+async fn prepare_cancel_handler(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let uuid = match id.parse::<uuid::Uuid>() {
+        Ok(u) => u,
+        Err(_) => return not_found(),
+    };
+
+    match manager::prepare_cancel(&state.pool, uuid).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"ok": true, "status": "cancelled"})),
+        )
+            .into_response(),
+        Err(ManagerError::NotFound) => not_found(),
+        Err(ManagerError::Conflict(code)) => {
+            conflict(&code, "job is not in preparing or cancelling state")
+        }
+        Err(ManagerError::Internal(e)) => internal_error(&e),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
 /// POST /internal/heartbeat — heartbeat do orquestrador.
 async fn heartbeat_handler(State(state): State<AppState>, body: Bytes) -> Response {
     if body.is_empty() {
@@ -736,6 +758,10 @@ fn build_router(state: AppState) -> Router {
         .route(
             "/internal/jobs/:id/prepare-fail",
             post(prepare_fail_handler),
+        )
+        .route(
+            "/internal/jobs/:id/prepare-cancel",
+            post(prepare_cancel_handler),
         )
         .route("/internal/heartbeat", post(heartbeat_handler))
         .route("/internal/telemetry", get(telemetry_handler))

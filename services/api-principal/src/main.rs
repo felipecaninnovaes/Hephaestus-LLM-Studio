@@ -245,6 +245,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => tracing::error!("recovery de preparações falhou: {e}"),
     }
 
+    // 8b. Worker periódico de recovery de preparações órfãs em background (a cada 60s)
+    let bg_state = state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            if let Err(e) = api_principal::jobs::prepare::recover_stale_prepares(&bg_state).await {
+                tracing::warn!("background recover_stale_prepares erro: {e}");
+            }
+        }
+    });
+
     let app = routes::build(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")

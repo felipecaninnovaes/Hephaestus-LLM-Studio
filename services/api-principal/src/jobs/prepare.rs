@@ -230,8 +230,8 @@ pub async fn find_active_prepare(
     sqlx::query_scalar(
         "SELECT job_id FROM job_prepares \
          WHERE dataset_id = $1 AND fingerprint = $2 AND state = 'preparing' \
-           AND created_at > now() - interval '30 minutes' \
-         ORDER BY created_at DESC LIMIT 1",
+           AND updated_at > now() - interval '30 minutes' \
+         ORDER BY updated_at DESC LIMIT 1",
     )
     .bind(dataset_id)
     .bind(fingerprint)
@@ -376,6 +376,18 @@ pub async fn accept_job_preparing(
             }
             Ok(Some(_)) => {}
             Ok(None) => {
+                // Se não há prepare ativo recente mas houve conflito no INSERT,
+                // expira eventuais linhas zumbis antigas (>10 min sem heartbeat):
+                let _ = sqlx::query(
+                    "UPDATE job_prepares SET state = 'failed', updated_at = now() \
+                     WHERE dataset_id = $1 AND fingerprint = $2 AND state = 'preparing' \
+                       AND updated_at < now() - interval '10 minutes'",
+                )
+                .bind(spec.dataset_id)
+                .bind(&spec.fingerprint)
+                .execute(&state.pool)
+                .await;
+
                 let retry = sqlx::query(
                     "INSERT INTO job_prepares (job_id, dataset_id, fingerprint, spec) \
                      VALUES ($1, $2, $3, $4) \
@@ -683,6 +695,7 @@ async fn run_prepare(state: &AppState, job_id: Uuid, spec: &PrepareSpec) {
     match state.manager.get_job(&job_id_str).await {
         Ok(j) if j.status == "cancelling" || j.status == "cancelled" => {
             mark_prepare_cancelled(&state.pool, job_id).await;
+            let _ = state.manager.prepare_cancel(&job_id_str).await;
             return;
         }
         Err(ManagerError::NotFound) => {
@@ -749,6 +762,7 @@ async fn run_prepare(state: &AppState, job_id: Uuid, spec: &PrepareSpec) {
                     .await;
             }
             mark_prepare_cancelled(&state.pool, job_id).await;
+            let _ = state.manager.prepare_cancel(&job_id_str).await;
             return;
         }
     }
@@ -1085,5 +1099,16 @@ mod tests {
         assert!(should_respawn(2));
         assert!(!should_respawn(3));
         assert!(!should_respawn(99));
+    }
+
+    #[tokio::test]
+    async fn prepare_cancel_mock_recebe_chamada() {
+        use crate::jobs::manager_client::ManagerPort;
+        let mock = crate::jobs::manager_client::MockManager::default();
+        mock.prepare_cancel("job-123")
+            .await
+            .expect("prepare_cancel");
+        let calls = mock.prepare_cancel_calls.lock().unwrap().clone();
+        assert_eq!(calls, vec!["job-123"]);
     }
 }

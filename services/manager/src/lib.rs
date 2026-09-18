@@ -1252,20 +1252,49 @@ pub async fn abort_job(
             Ok("cancelled".to_string())
         }
 
-        "preparing" | "running" => {
+        "preparing" => {
+            sqlx::query("UPDATE jobs SET status = 'cancelling' WHERE id = $1")
+                .bind(id)
+                .execute(pool)
+                .await
+                .map_err(|e| ManagerError::Internal(format!("set cancelling: {e}")))?;
+            Ok("cancelling".to_string())
+        }
+
+        "running" => {
             sqlx::query("UPDATE jobs SET status = 'cancelling' WHERE id = $1")
                 .bind(id)
                 .execute(pool)
                 .await
                 .map_err(|e| ManagerError::Internal(format!("set cancelling: {e}")))?;
 
-            // Notifica orquestrador (best-effort).
+            // Notifica orquestrador com retry (até 3 tentativas com backoff).
             if let Some(orch_id) = orchestrator_id {
                 if let Ok(orch) = get_orchestrator(pool, orch_id).await {
                     let body = serde_json::json!({"job_id": id.to_string()});
                     let url = format!("{}/internal/abort", orch.endpoint);
-                    if let Err(e) = orch_client.post(&url, &body).await {
-                        tracing::warn!("failed to notify orchestrator of abort for job {id}: {e}");
+                    let mut sent = false;
+                    for attempt in 0..3 {
+                        if attempt > 0 {
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                200 * (1 << attempt),
+                            ))
+                            .await;
+                        }
+                        match orch_client.post(&url, &body).await {
+                            Ok(_) => {
+                                sent = true;
+                                break;
+                            }
+                            Err(e) => {
+                                tracing::warn!("tentativa {attempt} abort no orquestrador falhou para job {id}: {e}");
+                            }
+                        }
+                    }
+                    if !sent {
+                        tracing::error!(
+                            "todas tentativas de abort no orquestrador falharam para job {id}"
+                        );
                     }
                 }
             }
@@ -1419,6 +1448,40 @@ pub async fn prepare_fail(
     Ok(())
 }
 
+/// POST /internal/jobs/:id/prepare-cancel: `preparing` | `cancelling` → `cancelled`.
+pub async fn prepare_cancel(pool: &PgPool, id: Uuid) -> Result<(), ManagerError> {
+    let result = sqlx::query(
+        "UPDATE jobs SET status = 'cancelled', finished_at = now() \
+         WHERE id = $1 AND status IN ('preparing', 'cancelling')",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("prepare cancel: {e}")))?;
+
+    if result.rows_affected() == 0 {
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM jobs WHERE id = $1)")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| ManagerError::Internal(format!("check job: {e}")))?;
+        if !exists {
+            return Err(ManagerError::NotFound);
+        }
+        let is_cancelled: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM jobs WHERE id = $1 AND status = 'cancelled')",
+        )
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("check job cancelled: {e}")))?;
+        if is_cancelled {
+            return Ok(());
+        }
+        return Err(ManagerError::Conflict("job_not_cancelling".into()));
+    }
+    Ok(())
+}
+
 /// Watchdog de preparação (ADR-0025 D3): `preparing` com created_at > 60min
 /// → `failed` (`params.error = 'prepare_timeout'`).
 ///
@@ -1497,8 +1560,8 @@ fn metrics_key(value: &serde_json::Value) -> Option<i64> {
 /// Faz upsert incremental de metrics no banco:
 /// lê array existente, normaliza novos, dedup por chave (epoch, step), grava como
 /// `{"items": [...]}` (formato esperado por `remap_metrics` no api-principal).
-async fn upsert_metrics(
-    pool: &PgPool,
+async fn upsert_metrics_conn(
+    conn: &mut sqlx::PgConnection,
     id: Uuid,
     new_metrics: &serde_json::Value,
 ) -> Result<(), ManagerError> {
@@ -1506,7 +1569,7 @@ async fn upsert_metrics(
     let existing: serde_json::Value =
         sqlx::query_scalar("SELECT COALESCE(metrics, '[]'::jsonb) FROM jobs WHERE id = $1")
             .bind(id)
-            .fetch_one(pool)
+            .fetch_one(&mut *conn)
             .await
             .map_err(|e| ManagerError::Internal(format!("read metrics: {e}")))?;
 
@@ -1536,11 +1599,23 @@ async fn upsert_metrics(
     sqlx::query("UPDATE jobs SET metrics = $2 WHERE id = $1")
         .bind(id)
         .bind(&merged)
-        .execute(pool)
+        .execute(&mut *conn)
         .await
         .map_err(|e| ManagerError::Internal(format!("write metrics: {e}")))?;
 
     Ok(())
+}
+
+async fn upsert_metrics(
+    pool: &PgPool,
+    id: Uuid,
+    new_metrics: &serde_json::Value,
+) -> Result<(), ManagerError> {
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|e| ManagerError::Internal(format!("acquire conn for metrics: {e}")))?;
+    upsert_metrics_conn(&mut conn, id, new_metrics).await
 }
 
 /// Processa um report do orquestrador.
@@ -1652,6 +1727,11 @@ pub async fn report_job(
         }
 
         "done" => {
+            let mut tx = pool
+                .begin()
+                .await
+                .map_err(|e| ManagerError::Internal(format!("begin report done tx: {e}")))?;
+
             // Defesa em profundidade (incidente galeria vazia): recusa o done
             // de kind que exige artefato quando a lista chega vazia/ausente ou
             // sem o artefato-chave — registra failed com erro no_artifacts e
@@ -1659,7 +1739,7 @@ pub async fn report_job(
             let job_kind: Option<String> =
                 sqlx::query_scalar("SELECT kind FROM jobs WHERE id = $1")
                     .bind(id)
-                    .fetch_optional(pool)
+                    .fetch_optional(&mut *tx)
                     .await
                     .map_err(|e| ManagerError::Internal(format!("get kind for done guard: {e}")))?;
             if let Some(kind) = job_kind {
@@ -1686,9 +1766,12 @@ pub async fn report_job(
                     .bind(serde_json::json!({"error": err_code}))
                     .bind(&report.phase)
                     .bind(&msg_pt)
-                    .execute(pool)
+                    .execute(&mut *tx)
                     .await
                     .map_err(|e| ManagerError::Internal(format!("set failed no_artifacts: {e}")))?;
+                    tx.commit().await.map_err(|e| {
+                        ManagerError::Internal(format!("commit failed no_artifacts tx: {e}"))
+                    })?;
                     return Ok(());
                 }
             }
@@ -1709,7 +1792,7 @@ pub async fn report_job(
                 // Limpa artifacts existentes (idempotência).
                 sqlx::query("DELETE FROM job_artifacts WHERE job_id = $1")
                     .bind(id)
-                    .execute(pool)
+                    .execute(&mut *tx)
                     .await
                     .map_err(|e| ManagerError::Internal(format!("delete old artifacts: {e}")))?;
 
@@ -1724,7 +1807,7 @@ pub async fn report_job(
                     .bind(&art.path)
                     .bind(&art.md5)
                     .bind(art.bytes)
-                    .execute(pool)
+                    .execute(&mut *tx)
                     .await
                     .map_err(|e| ManagerError::Internal(format!("insert artifact: {e}")))?;
                 }
@@ -1732,7 +1815,7 @@ pub async fn report_job(
 
             // Grava metrics (append + dedup por epoch).
             if let Some(metrics) = &report.metrics {
-                upsert_metrics(pool, id, metrics).await?;
+                upsert_metrics_conn(&mut tx, id, metrics).await?;
             }
 
             // Hook: registra best.pt na tabela models (ADR-0012 D1).
@@ -1762,7 +1845,7 @@ pub async fn report_job(
                             "SELECT engine, model, mode, kind, dataset_id, params, config_yaml FROM jobs WHERE id = $1",
                         )
                         .bind(id)
-                        .fetch_optional(pool)
+                        .fetch_optional(&mut *tx)
                         .await
                         {
                             Ok(opt) => opt,
@@ -1781,7 +1864,7 @@ pub async fn report_job(
                                 "SELECT slug FROM datasets WHERE id = $1",
                             )
                             .bind(ds_id)
-                            .fetch_optional(pool)
+                            .fetch_optional(&mut *tx)
                             .await
                             {
                                 Ok(opt) => opt,
@@ -1857,7 +1940,7 @@ pub async fn report_job(
                             .bind(id)
                             .bind(&art_kind)
                             .bind(&art_arch)
-                            .execute(pool)
+                            .execute(&mut *tx)
                             .await;
                             if let Err(e) = result {
                                 tracing::warn!(
@@ -1881,7 +1964,7 @@ pub async fn report_job(
                         "SELECT engine, mode FROM jobs WHERE id = $1",
                     )
                     .bind(id)
-                    .fetch_optional(pool)
+                    .fetch_optional(&mut *tx)
                     .await
                     {
                         Ok(opt) => opt,
@@ -1911,7 +1994,7 @@ pub async fn report_job(
                                     "SELECT content FROM job_artifacts WHERE job_id = $1 AND kind = 'generated_meta' LIMIT 1",
                                 )
                                 .bind(id)
-                                .fetch_optional(pool)
+                                .fetch_optional(&mut *tx)
                                 .await
                                 .ok()
                                 .flatten()
@@ -1992,7 +2075,7 @@ pub async fn report_job(
                                             .bind(width)
                                             .bind(height)
                                             .bind(&gen_params)
-                                            .execute(pool)
+                                            .execute(&mut *tx)
                                             .await;
 
                                             if let Err(e) = result {
@@ -2030,9 +2113,13 @@ pub async fn report_job(
             .bind(id)
             .bind(&report.phase)
             .bind(&report.message)
-            .execute(pool)
+            .execute(&mut *tx)
             .await
             .map_err(|e| ManagerError::Internal(format!("set done: {e}")))?;
+
+            tx.commit()
+                .await
+                .map_err(|e| ManagerError::Internal(format!("commit done tx: {e}")))?;
         }
 
         "failed" => {
@@ -3278,9 +3365,20 @@ pub async fn get_storage_usage(pool: &PgPool) -> Result<StorageUsageResponse, Ma
 /// preparing órfão nunca vira `queued` sem pacote; morre pelo watchdog de
 /// 60min (`watchdog_prepare_timeout`) se o worker não voltar.
 pub async fn recover_jobs(pool: &PgPool) -> Result<u64, ManagerError> {
+    // 1. Jobs que estavam em 'cancelling' no boot passam para 'cancelled':
+    sqlx::query(
+        "UPDATE jobs SET status = 'cancelled', finished_at = now(), queue_reason = 'recovered_cancel' \
+         WHERE status = 'cancelling'",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("recover cancelling jobs: {e}")))?;
+
+    // 2. Apenas jobs com pacote pronto (package_ref presente em params) voltam para queued:
     let result = sqlx::query(
         "UPDATE jobs SET status = 'queued', queue_reason = 'recovered', orchestrator_id = NULL \
-         WHERE status IN ('dispatched', 'running', 'cancelling')",
+         WHERE status IN ('dispatched', 'running') \
+           AND (params->>'package_ref' IS NOT NULL OR params->>'dataset_version_id' IS NOT NULL)",
     )
     .execute(pool)
     .await
@@ -3467,6 +3565,23 @@ pub async fn watchdog_tick(pool: &PgPool) -> Result<(), ManagerError> {
     // degraded → offline + re-queue dos jobs do nó morto (CTE espelho de recover_jobs).
     // `preparing` excluído como no recover: jobs em preparação caem no caminho
     // prepare-timeout/fail, nunca viram queued sem pacote.
+    // 1. Jobs do nó morto em 'cancelling' passam para 'cancelled':
+    let _ = sqlx::query(
+        "WITH morto AS ( \
+             SELECT id FROM orchestrators \
+             WHERE status = 'degraded' \
+               AND (last_heartbeat IS NULL OR last_heartbeat < now() - make_interval(secs => $1::float)) \
+         ) \
+         UPDATE jobs SET status = 'cancelled', finished_at = now(), orchestrator_id = NULL \
+         WHERE orchestrator_id IN (SELECT id FROM morto) \
+           AND status = 'cancelling'",
+    )
+    .bind(offline_s as f64)
+    .execute(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("watchdog cancel cancelling jobs: {e}")))?;
+
+    // 2. degraded → offline + re-queue dos jobs com pacote do nó morto:
     let result = sqlx::query(
         "WITH morto AS ( \
              UPDATE orchestrators SET status = 'offline' \
@@ -3476,13 +3591,13 @@ pub async fn watchdog_tick(pool: &PgPool) -> Result<(), ManagerError> {
          ) \
          UPDATE jobs SET status = 'queued', queue_reason = 'recovered', orchestrator_id = NULL \
          WHERE orchestrator_id IN (SELECT id FROM morto) \
-           AND status IN ('dispatched','running','cancelling')",
+           AND status IN ('dispatched','running') \
+           AND (params->>'package_ref' IS NOT NULL OR params->>'dataset_version_id' IS NOT NULL)",
     )
     .bind(offline_s as f64)
     .execute(pool)
     .await
     .map_err(|e| ManagerError::Internal(format!("watchdog offline: {e}")))?;
-
     if result.rows_affected() > 0 {
         tracing::info!(
             "watchdog: {} jobs re-queued de nós offline",
@@ -3666,7 +3781,12 @@ pub async fn dispatch_next(
     image: &str,
     vram_table: &VramTable,
 ) -> Result<bool, ManagerError> {
-    // 1. Seleciona próximo job queued (FIFO).
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| ManagerError::Internal(format!("begin dispatch tx: {e}")))?;
+
+    // 1. Seleciona próximo job queued (FIFO) com lock exclusivo SKIP LOCKED.
     let row: Option<(
         Uuid,
         String,
@@ -3676,9 +3796,10 @@ pub async fn dispatch_next(
         Option<String>,
     )> = sqlx::query_as(
         "SELECT id, engine, model, mode, params, config_yaml \
-         FROM jobs WHERE status = 'queued' ORDER BY created_at LIMIT 1",
+         FROM jobs WHERE status = 'queued' ORDER BY created_at LIMIT 1 \
+         FOR UPDATE SKIP LOCKED",
     )
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(|e| ManagerError::Internal(format!("select next job: {e}")))?;
 
@@ -3690,8 +3811,7 @@ pub async fn dispatch_next(
     // 2. Resolve requisito VRAM da vram-table.
     let required_gb: Option<i32> = vram_table.resolve_required_gb(&engine, &model, &mode);
 
-    // 3. Seleciona orquestrador (ADR-0015 D3).
-    // Se houver orchestrator_hint em params, tenta despachar para ele (D3.2).
+    // 3. Seleciona orquestrador (ADR-0015 D3) com lock FOR UPDATE OF o.
     let hint: Option<Uuid> = params
         .as_ref()
         .and_then(|p| p.get("orchestrator_hint"))
@@ -3708,11 +3828,12 @@ pub async fn dispatch_next(
                AND NOT EXISTS (SELECT 1 FROM jobs j \
                                WHERE j.orchestrator_id = o.id \
                                  AND j.status IN ('dispatched','running','cancelling')) \
-               AND ($2::int IS NULL OR o.vram_total_gb IS NULL OR o.vram_total_gb >= $2)",
+               AND ($2::int IS NULL OR o.vram_total_gb IS NULL OR o.vram_total_gb >= $2) \
+             FOR UPDATE OF o",
         )
         .bind(hint_id)
         .bind(required_gb)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|e| ManagerError::Internal(format!("find hinted orchestrator: {e}")))?;
 
@@ -3734,10 +3855,11 @@ pub async fn dispatch_next(
              ORDER BY (o.vram_total_gb IS NULL) ASC, \
                       o.vram_total_gb DESC NULLS LAST, \
                       o.name ASC \
-             LIMIT 1",
+             LIMIT 1 \
+             FOR UPDATE OF o",
         )
         .bind(required_gb)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|e| ManagerError::Internal(format!("find orchestrator: {e}")))?;
 
@@ -3756,14 +3878,17 @@ pub async fn dispatch_next(
             sqlx::query("UPDATE jobs SET queue_reason = $2 WHERE id = $1 AND status = 'queued'")
                 .bind(job_id)
                 .bind(reason)
-                .execute(pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(|e| ManagerError::Internal(format!("set queue reason: {e}")))?;
+            tx.commit()
+                .await
+                .map_err(|e| ManagerError::Internal(format!("commit queue reason tx: {e}")))?;
             return Ok(false);
         }
     };
 
-    // 4. Marca dispatched e atualiza flag de fallback em params (ADR-0015 D3.3, D3.5).
+    // 4. Marca dispatched e atualiza flag de fallback em params dentro da transação.
     if fallback_used {
         sqlx::query(
             "UPDATE jobs SET status = 'dispatched', queue_reason = NULL, orchestrator_id = $2, \
@@ -3772,7 +3897,7 @@ pub async fn dispatch_next(
         )
         .bind(job_id)
         .bind(orch_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| ManagerError::Internal(format!("set dispatched (fallback): {e}")))?;
     } else {
@@ -3783,10 +3908,14 @@ pub async fn dispatch_next(
         )
         .bind(job_id)
         .bind(orch_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| ManagerError::Internal(format!("set dispatched: {e}")))?;
     }
+
+    tx.commit()
+        .await
+        .map_err(|e| ManagerError::Internal(format!("commit dispatch tx: {e}")))?;
 
     // 5. Monta payload do dispatch (idêntico ao anterior).
     let package_ref = params

@@ -330,6 +330,10 @@ pub trait ManagerPort: Send + Sync {
         body: &serde_json::Value,
     ) -> Result<(), ManagerError>;
 
+    /// Cancela a preparação: `preparing` | `cancelling` → `cancelled`
+    /// (POST /internal/jobs/:id/prepare-cancel).
+    async fn prepare_cancel(&self, job_id: &str) -> Result<(), ManagerError>;
+
     /// Report de progresso da preparação pelo canal ADR-0024
     /// (POST /internal/jobs/:id/report).
     /// Body: `{status: "preparing", phase: "packaging_dataset", message, progress}`.
@@ -874,6 +878,11 @@ impl ManagerPort for HttpManager {
         self.post_prepare(job_id, "prepare-fail", body).await
     }
 
+    async fn prepare_cancel(&self, job_id: &str) -> Result<(), ManagerError> {
+        self.post_prepare(job_id, "prepare-cancel", &serde_json::json!({}))
+            .await
+    }
+
     async fn report_phase(
         &self,
         job_id: &str,
@@ -895,34 +904,51 @@ impl HttpManager {
         body: &serde_json::Value,
     ) -> Result<(), ManagerError> {
         let url = format!("{}/internal/jobs/{job_id}/{action}", self.base_url);
-        let resp = self
-            .client
-            .post(&url)
-            .header("authorization", self.auth_header())
-            .json(body)
-            .send()
-            .await
-            .map_err(|e| ManagerError::Unavailable(format!("manager request: {e}")))?;
-        let status = resp.status();
-        if status == reqwest::StatusCode::NOT_FOUND {
-            return Err(ManagerError::NotFound);
-        }
-        if status == reqwest::StatusCode::CONFLICT {
-            return Err(ManagerError::Conflict);
-        }
-        if status == reqwest::StatusCode::BAD_REQUEST {
-            let msg = resp
-                .text()
+        let mut last_err = ManagerError::Unavailable("unknown error".to_string());
+        for attempt in 0..4 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(200 * (1 << attempt))).await;
+            }
+            let resp = match self
+                .client
+                .post(&url)
+                .header("authorization", self.auth_header())
+                .json(body)
+                .send()
                 .await
-                .unwrap_or_else(|_| "invalid request".into());
-            return Err(ManagerError::InvalidRequest(msg));
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    last_err = ManagerError::Unavailable(format!("manager request: {e}"));
+                    continue;
+                }
+            };
+            let status = resp.status();
+            if status == reqwest::StatusCode::NOT_FOUND {
+                return Err(ManagerError::NotFound);
+            }
+            if status == reqwest::StatusCode::CONFLICT {
+                return Err(ManagerError::Conflict);
+            }
+            if status == reqwest::StatusCode::BAD_REQUEST {
+                let msg = resp
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "invalid request".into());
+                return Err(ManagerError::InvalidRequest(msg));
+            }
+            if status.is_server_error() {
+                last_err = ManagerError::Unavailable(format!("manager server error: {status}"));
+                continue;
+            }
+            if !status.is_success() {
+                return Err(ManagerError::Unavailable(format!(
+                    "manager status: {status}"
+                )));
+            }
+            return Ok(());
         }
-        if !status.is_success() {
-            return Err(ManagerError::Unavailable(format!(
-                "manager status: {status}"
-            )));
-        }
-        Ok(())
+        Err(last_err)
     }
 
     async fn get_json_raw<T: serde::de::DeserializeOwned>(
@@ -1030,6 +1056,8 @@ pub struct MockManager {
     /// `(job_id, code, message)` de cada `prepare_fail` (worker/recovery).
     pub prepare_fail_calls: std::sync::Mutex<Vec<(String, String, String)>>,
     /// Bodies de cada `report_phase` (progresso `packaging_dataset`).
+    /// job_ids que receberam `prepare_cancel` (worker de preparação).
+    pub prepare_cancel_calls: std::sync::Mutex<Vec<String>>,
     pub report_calls: std::sync::Mutex<Vec<serde_json::Value>>,
     /// Se `true`, `prepare_complete` retorna `Conflict` (job fora de `preparing`).
     pub prepare_complete_conflict: bool,
@@ -1131,6 +1159,7 @@ impl Default for MockManager {
             prepare_complete_calls: std::sync::Mutex::new(Vec::new()),
             prepare_fail_calls: std::sync::Mutex::new(Vec::new()),
             report_calls: std::sync::Mutex::new(Vec::new()),
+            prepare_cancel_calls: std::sync::Mutex::new(Vec::new()),
             prepare_complete_conflict: false,
         }
     }
@@ -1475,6 +1504,16 @@ impl ManagerPort for MockManager {
             .to_string();
         if let Ok(mut calls) = self.prepare_fail_calls.try_lock() {
             calls.push((job_id.to_string(), code, message));
+        }
+        Ok(())
+    }
+
+    async fn prepare_cancel(&self, job_id: &str) -> Result<(), ManagerError> {
+        if self.fail {
+            return Err(ManagerError::Unavailable("mock fail".into()));
+        }
+        if let Ok(mut calls) = self.prepare_cancel_calls.try_lock() {
+            calls.push(job_id.to_string());
         }
         Ok(())
     }

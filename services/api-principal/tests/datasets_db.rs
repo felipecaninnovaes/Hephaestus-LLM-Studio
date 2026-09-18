@@ -8092,6 +8092,12 @@ impl api_principal::jobs::manager_client::ManagerPort for RaceManager {
     ) -> Result<(), api_principal::jobs::manager_client::ManagerError> {
         self.inner.prepare_fail(job_id, body).await
     }
+    async fn prepare_cancel(
+        &self,
+        job_id: &str,
+    ) -> Result<(), api_principal::jobs::manager_client::ManagerError> {
+        self.inner.prepare_cancel(job_id).await
+    }
     async fn report_phase(
         &self,
         job_id: &str,

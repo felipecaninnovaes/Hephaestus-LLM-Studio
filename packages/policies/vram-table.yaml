@@ -6,8 +6,8 @@ entries:
   # ── Difusão train (ADR-0018) ──
   - { engine: diffusion, model: flux, mode: train, vram_min_gb: 8 }
   - { engine: diffusion, model: flux2-klein-4b, mode: train, vram_min_gb: 8 }
-  - { engine: diffusion, model: sdxl, mode: train, vram_min_gb: 10 }
-  - { engine: diffusion, model: sd15, mode: train, vram_min_gb: 6 }
+  - { engine: diffusion, model: sdxl, mode: train, vram_min_gb: 8 }
+  - { engine: diffusion, model: sd15, mode: train, vram_min_gb: 5 }
   - { engine: difusao, model: flux2-klein-4b, mode: train, vram_min_gb: 8 }
   - { engine: difusao, model: flux2-klein-9b-8bit, mode: infer, vram_min_gb: 16 }
   - { engine: difusao, model: flux2-klein-9b, mode: train, vram_min_gb: 28 }

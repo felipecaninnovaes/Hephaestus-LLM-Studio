@@ -3344,9 +3344,9 @@ components:
           description: "Passos de acumulação de gradientes para simular lote maior sem consumir mais VRAM. Padrão 1."
         optimizer:
           type: string
-          enum: [adamw8bit, adamw, prodigy]
-          default: adamw8bit
-          description: "Algoritmo otimizador (adamw8bit = 8-bit AdamW bitsandbytes, adamw = standard AdamW, prodigy = D-Adaptation). Padrão adamw8bit."
+          enum: [adamw8bit, adamw, prodigy, paged_adamw8bit, paged_adamw32bit]
+          default: paged_adamw8bit
+          description: "Algoritmo otimizador (paged_adamw8bit = Paged 8-bit AdamW BitsAndBytes p/ QLoRA, paged_adamw32bit = Paged 32-bit AdamW, adamw8bit = 8-bit AdamW bitsandbytes, adamw = standard AdamW, prodigy = D-Adaptation). Padrão paged_adamw8bit."
         lrScheduler:
           type: string
           enum: [cosine, linear, constant, constant_with_warmup]

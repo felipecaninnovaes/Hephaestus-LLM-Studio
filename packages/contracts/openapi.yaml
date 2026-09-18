@@ -2685,6 +2685,9 @@ paths:
         de corpo no proxy Next (o proxy bufferiza multipart inteiro em RAM —
         partes ≤ 96 MiB são seguras). Valida engine/name/extensão antecipadamente.
         Sessão vive em memória do principal (não persistida); abortar via DELETE.
+        Assimetria honesta vs. upload multipart único: o chunked registra o
+        arquivo SEMPRE com o nome do arquivo enviado (`name` = file.name); um
+        display-name customizado não é suportado (o multipart único suporta).
       requestBody:
         required: true
         content:
@@ -2733,13 +2736,13 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
-        "404":
-          description: "Sessão inexistente (`code: not_found`)."
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
-        "410":
-          description: "Sessão já completada (`code: not_found`)."
+        "404":
+          description: "Sessão inexistente (`code: not_found`)."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -2777,6 +2780,11 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "409":
           description: "Conflito no manager (hash já existe)."
           content:
@@ -2803,6 +2811,11 @@ paths:
       responses:
         "204":
           description: Sessão encerrada (idempotente — 204 também se inexistente).
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/models/download:
     post:

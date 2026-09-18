@@ -33,311 +33,37 @@ from trainer_difusao.optimizers import _create_lr_scheduler, _create_optimizer
 
 
 
-def _custom_checkpoint_identity(custom_cp: str | None) -> str | None:
-    """Identidade do checkpoint custom p/ isolamento do cache (path + md5 parcial).
+from trainer_difusao.models.flux_pkg import (
+    _custom_checkpoint_identity,
+    _encode_qwen3_prompt,
+    _generate_sample_flux,
+    _is_cache_valid,
+    _pack_latents,
+    _pack_latents_flux2,
+    _patchify_latents_flux2,
+    _prepare_flux2_latent_ids,
+    _prepare_flux2_text_ids,
+    _prepare_latent_image_ids,
+    _prepare_text_ids,
+    _save_quant_metadata,
+)
 
-    None quando sem custom. md5 parcial (até 8 MiB) detecta troca de conteúdo
-    no mesmo path; falha de leitura honesta → fingerprint só do path (nunca
-    silencioso: o erro é logado e o cache é invalidado pela ausência do md5).
-    """
-    if not custom_cp:
-        return None
-    try:
-        import hashlib
-
-        h = hashlib.md5()
-        with open(custom_cp, "rb") as f:
-            for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                h.update(chunk)
-                if h.digest_size and f.tell() >= 8 * 1024 * 1024:
-                    break
-        return f"{custom_cp}#{h.hexdigest()}"
-    except OSError as exc:
-        print(
-            f"[WARN] Não foi possível fingerprintar checkpoint custom ({custom_cp}): "
-            f"{exc}. Cache quantizado será invalidado.",
-            flush=True,
-        )
-        return f"{custom_cp}#unreadable"
-
-
-def _is_cache_valid(
-    cache_dir: Path | None,
-    expected_model_id: str,
-    expected_quant: str,
-    expected_custom: str | None = None,
-) -> bool:
-    """Verifica se o cache pertence exatamente ao model_id, quantização e custom esperados."""
-    if not cache_dir or not cache_dir.exists():
-        return False
-    if not (cache_dir / "config.json").exists():
-        return False
-    meta_path = cache_dir.parent / "metadata.json"
-    if not meta_path.exists():
-        return False
-    try:
-        data = json.loads(meta_path.read_text(encoding="utf-8"))
-        if data.get("model_id") != expected_model_id:
-            return False
-        if data.get("quant_format") != expected_quant:
-            return False
-        # Legado sem custom_checkpoint: válido só quando nenhum custom é pedido.
-        return data.get("custom_checkpoint") == expected_custom
-    except Exception:
-        return False
-
-
-def _save_quant_metadata(
-    quant_base: Path,
-    model_id: str,
-    quant_label: str,
-    quant_format: str,
-    target_dtype: Any,
-    is_flux2: bool,
-    custom_checkpoint: str | None = None,
-) -> None:
-    """Grava metadados da quantização persistida para garantir integridade e isolamento estrito."""
-    try:
-        quant_base.mkdir(parents=True, exist_ok=True)
-        meta = {
-            "model_id": model_id,
-            "quantization": quant_label,
-            "quant_format": quant_format,
-            "target_dtype": str(target_dtype),
-            "is_flux2": is_flux2,
-            "custom_checkpoint": custom_checkpoint,
-        }
-        (quant_base / "metadata.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
-    except Exception as e:
-        print(f"[WARN] Não foi possível salvar metadata do cache quantizado: {e}", flush=True)
-
-
-def _pack_latents(latents: Any) -> Any:
-    """Empacota tensores latentes do VAE no formato patch 2x2 do FLUX.1: [B, C, H, W] -> [B, (H//2)*(W//2), C*4]."""
-    b, c, h, w = latents.shape
-    latents = latents.view(b, c, h // 2, 2, w // 2, 2)
-    latents = latents.permute(0, 2, 4, 1, 3, 5)
-    latents = latents.reshape(b, (h // 2) * (w // 2), c * 4)
-    return latents
-
-
-def _patchify_latents_flux2(latents: Any) -> Any:
-    """Aplica patchify 2x2 nos latentes do FLUX.2 Klein: [B, C, H, W] -> [B, C*4, H//2, W//2]."""
-    b, c, h, w = latents.shape
-    latents = latents.view(b, c, h // 2, 2, w // 2, 2).permute(0, 1, 3, 5, 2, 4)
-    return latents.reshape(b, c * 4, h // 2, w // 2)
-
-
-def _pack_latents_flux2(latents: Any) -> Any:
-    """Empacota latentes patchificados do FLUX.2 Klein para entrada no transformer: [B, C, H, W] -> [B, H*W, C]."""
-    b, c, h, w = latents.shape
-    return latents.reshape(b, c, h * w).permute(0, 2, 1)
-
-
-def _prepare_latent_image_ids(
-    batch_size: int, height: int, width: int, device: Any, dtype: Any
-) -> Any:
-    """Gera coordenadas de posição 2D para o Rotary Embedding (RoPE) de imagem do FLUX.1."""
-    import torch
-
-    h = height // 16
-    w = width // 16
-    latent_image_ids = torch.zeros(h, w, 3, device=device, dtype=dtype)
-    latent_image_ids[..., 1] = latent_image_ids[..., 1] + torch.arange(h, device=device)[:, None]
-    latent_image_ids[..., 2] = latent_image_ids[..., 2] + torch.arange(w, device=device)[None, :]
-    latent_image_ids = latent_image_ids.reshape(h * w, 3)
-    return latent_image_ids.repeat(batch_size, 1, 1)
-
-
-def _prepare_text_ids(seq_len: int, device: Any, dtype: Any, batch_size: int = 1) -> Any:
-    """Gera coordenadas 1D de posição para o Rotary Embedding (RoPE) textual do FLUX.1."""
-    import torch
-
-    txt_ids = torch.zeros(seq_len, 3, device=device, dtype=dtype)
-    return txt_ids.repeat(batch_size, 1, 1)
-
-
-def _prepare_flux2_latent_ids(latents: Any) -> Any:
-    """Gera coordenadas de posição 4D (T, H, W, L) para o Rotary Embedding (RoPE) do FLUX.2 Klein."""
-    import torch
-
-    batch_size, _, height, width = latents.shape
-    t = torch.arange(1, device=latents.device)
-    h = torch.arange(height, device=latents.device)
-    w = torch.arange(width, device=latents.device)
-    l = torch.arange(1, device=latents.device)
-    coords = torch.cartesian_prod(t, h, w, l)
-    return coords.unsqueeze(0).expand(batch_size, -1, -1)
-
-
-def _prepare_flux2_text_ids(prompt_embeds: Any) -> Any:
-    """Gera coordenadas de posição 4D (T, H, W, L) para o Rotary Embedding (RoPE) textual do FLUX.2 Klein."""
-    import torch
-
-    batch_size, seq_len, _ = prompt_embeds.shape
-    t = torch.arange(1, device=prompt_embeds.device)
-    h = torch.arange(1, device=prompt_embeds.device)
-    w = torch.arange(1, device=prompt_embeds.device)
-    l = torch.arange(seq_len, device=prompt_embeds.device)
-    coords = torch.cartesian_prod(t, h, w, l)
-    return coords.unsqueeze(0).expand(batch_size, -1, -1)
-
-
-def _encode_qwen3_prompt(
-    text_encoder: Any,
-    tokenizer: Any,
-    prompts: list[str],
-    device: Any,
-    dtype: Any,
-    max_length: int = 512,
-    hidden_states_layers: tuple[int, ...] = (9, 18, 27),
-) -> Any:
-    """Codifica prompts de texto usando o modelo Qwen3 para FLUX.2 Klein 4B, extraindo e concatenando camadas intermediárias."""
-    import torch
-
-    all_input_ids = []
-    all_attention_masks = []
-    for p in prompts:
-        if hasattr(tokenizer, "apply_chat_template") and getattr(tokenizer, "chat_template", None):
-            messages = [{"role": "user", "content": p}]
-            try:
-                text = tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                    enable_thinking=False,
-                )
-            except Exception:
-                text = tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                )
-        else:
-            text = p
-        inputs = tokenizer(
-            text,
-            return_tensors="pt",
-            padding="max_length",
-            truncation=True,
-            max_length=max_length,
-        )
-        all_input_ids.append(inputs["input_ids"])
-        all_attention_masks.append(inputs["attention_mask"])
-
-    input_ids = torch.cat(all_input_ids, dim=0).to(device)
-    attention_mask = torch.cat(all_attention_masks, dim=0).to(device)
-
-    with torch.no_grad():
-        output = text_encoder(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            output_hidden_states=True,
-            use_cache=False,
-        )
-        num_layers = len(output.hidden_states)
-        layers_to_use = [k for k in hidden_states_layers if k < num_layers]
-        if not layers_to_use:
-            layers_to_use = [num_layers - 1]
-
-        out = torch.stack([output.hidden_states[k] for k in layers_to_use], dim=1)
-        out = out.to(dtype=dtype, device=device)
-
-        batch_size, num_channels, seq_len, hidden_dim = out.shape
-        prompt_embeds = out.permute(0, 2, 1, 3).reshape(batch_size, seq_len, num_channels * hidden_dim)
-
-    return prompt_embeds
-
-
-def _generate_sample_flux(
-    transformer: Any,
-    vae: Any,
-    text_encoder_one: Any,
-    text_encoder_two: Any,
-    tokenizer_one: Any,
-    tokenizer_two: Any,
-    scheduler: Any,
-    prompt: str,
-    output_path: Path,
-    seed: int = 42,
-    is_flux2: bool = False,
-    resolution: int = 512,
-) -> None:
-    """Gera uma imagem de teste para FLUX.2 Klein ou FLUX.1 com pesos LoRA ativos e seed fixa determinística.
-    
-    Chama transformer.eval() para evitar dropout/estatísticas de treino e salva atomicamente via .tmp_*.
-    Para FLUX.2 Klein destilado, utiliza 4 passos e guidance 1.0 (evitando saturação plástica de pele).
-    """
-    try:
-        import torch
-
-        was_training = getattr(transformer, "training", False)
-        transformer.eval()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = output_path.with_name(f".tmp_{output_path.name}")
-
-        try:
-            if is_flux2:
-                try:
-                    from diffusers import Flux2KleinPipeline
-
-                    pipe = Flux2KleinPipeline(
-                        scheduler=scheduler,
-                        text_encoder=text_encoder_one,
-                        tokenizer=tokenizer_one,
-                        vae=vae,
-                        transformer=transformer,
-                    )
-                    pipe.set_progress_bar_config(disable=True)
-                    generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(seed)
-                    with torch.inference_mode():
-                        image = pipe(
-                            prompt=prompt,
-                            generator=generator,
-                            num_inference_steps=20,
-                            guidance_scale=3.5,
-                            height=resolution,
-                            width=resolution,
-                        ).images[0]
-                        image.save(tmp_path)
-                        os.replace(tmp_path, output_path)
-                        print(f"[FLUX-KLEIN] Amostra de validação salva (seed={seed}) em: {output_path}", flush=True)
-                        return
-                except Exception as e:
-                    print(f"[WARN] Tentativa com Flux2KleinPipeline: {e}. Tentando fallback...", flush=True)
-
-            from diffusers import FluxPipeline
-
-            pipe = FluxPipeline(
-                scheduler=scheduler,
-                text_encoder=text_encoder_one,
-                text_encoder_2=text_encoder_two,
-                tokenizer=tokenizer_one,
-                tokenizer_2=tokenizer_two,
-                vae=vae,
-                transformer=transformer,
-            )
-            pipe.set_progress_bar_config(disable=True)
-            generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(seed)
-            with torch.inference_mode():
-                image = pipe(
-                    prompt=prompt,
-                    generator=generator,
-                    num_inference_steps=20,
-                    guidance_scale=3.5,
-                    height=resolution,
-                    width=resolution,
-                ).images[0]
-                image.save(tmp_path)
-                os.replace(tmp_path, output_path)
-                print(f"[FLUX] Amostra de validação salva (seed={seed}, steps=20, cfg=3.5) em: {output_path}", flush=True)
-        finally:
-            if was_training:
-                transformer.train()
-    except Exception as e:
-        print(f"[WARN] Falha ao gerar amostra de validação FLUX: {e}", flush=True)
-
-
+__all__ = [
+    "FluxTrainer",
+    "_real_train_flux",
+    "_custom_checkpoint_identity",
+    "_encode_qwen3_prompt",
+    "_generate_sample_flux",
+    "_is_cache_valid",
+    "_pack_latents",
+    "_pack_latents_flux2",
+    "_patchify_latents_flux2",
+    "_prepare_flux2_latent_ids",
+    "_prepare_flux2_text_ids",
+    "_prepare_latent_image_ids",
+    "_prepare_text_ids",
+    "_save_quant_metadata",
+]
 def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     """Treino real LoRA para FLUX.2 Klein 4B e FLUX.1 via Diffusers/PEFT com quantização e persistência em cache."""
     output.mkdir(parents=True, exist_ok=True)

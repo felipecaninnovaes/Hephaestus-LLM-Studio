@@ -120,8 +120,8 @@ services:
   # bind só no loopback do host (R3).
   embedder:
     build:
-      context: ../engines/trainer-clip
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: engines/trainer-clip/Dockerfile
     environment:
       ENGINE_MOCK: "1"
       MODEL: ${EMBEDDING_MODEL:-ViT-B-32}
@@ -208,8 +208,8 @@ services:
       - build
     image: hephaestus/trainer-yolo:local
     build:
-      context: ../engines/trainer-yolo
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: engines/trainer-yolo/Dockerfile
 
   # Build-only: imagem hephaestus/trainer-difusao:local (ADR-0018 D3).
   # Build: docker compose --profile build build trainer-difusao
@@ -218,8 +218,8 @@ services:
       - build
     image: hephaestus/trainer-difusao:local
     build:
-      context: ../engines/trainer-difusao
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: engines/trainer-difusao/Dockerfile
 
   web:
     build:

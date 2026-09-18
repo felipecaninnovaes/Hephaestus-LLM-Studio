@@ -16,8 +16,9 @@ RUN pip install --no-cache-dir "ultralytics==8.3.253" "openai-clip"
 
 WORKDIR /app
 
-# Copy trainer_yolo package (mesma estrutura do Dockerfile mock)
-COPY src/trainer_yolo/ /app/trainer_yolo/
+# Copy engine_kit e trainer_yolo package
+COPY engines/engine-kit/src/engine_kit/ /app/engine_kit/
+COPY engines/trainer-yolo/src/trainer_yolo/ /app/trainer_yolo/
 
 # Real training mode (not mock)
 ENV ENGINE_MOCK=0

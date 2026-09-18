@@ -36,10 +36,10 @@ Arquivo responsavel por reunir todas as melhorias e correçoes de forma organiza
       - [x] 08. Políticas de retenção de checkpoints locais por época
   - Modularização das Engines & Eliminação de Duplicações:
     - [ ] Plano de Modularização das Engines (detalhado em `tasks/impruvements/modularizacao-engines-autonomia.md`):
-      - [ ] 01. Extração do pacote compartilhado stdlib-only `engine-kit` (telemetry, mock, runtime, vram, httpd, artifacts)
-      - [ ] 02. Adoção do `engine-kit` nas 3 engines e correção de drift (VRAM 1023³, parsing tolerante de `ENGINE_MOCK`)
-      - [ ] 03. Decomposição de `generate.py` (1.709L) no pacote `generation/` com facades de retrocompatibilidade
-      - [ ] 04. Decomposição de `models/flux.py` (1.586L) no pacote `models/flux/` (rope, encoding, quant, loop)
-      - [ ] 05. Decomposição de `common.py` (760L) em `common_pkg/` e unificação de loops de treino SD
-      - [ ] 06. Modularização de `trainer-yolo` (`yolo_adapter.py`, `autolabel/`, `config.py`, `deterministic.py`)
-      - [ ] 07. Modularização de `trainer-clip/serve.py` e suite de testes de contrato
+      - [x] 01. Extração do pacote compartilhado stdlib-only `engine-kit` (telemetry, mock, runtime, vram, httpd, artifacts)
+      - [x] 02. Adoção do `engine-kit` nas 3 engines e correção de drift (VRAM 1023³, parsing tolerante de `ENGINE_MOCK`)
+      - [x] 03. Decomposição de `generate.py` (1.709L) no pacote `generation/` com facades de retrocompatibilidade
+      - [x] 04. Decomposição de `models/flux.py` (1.586L) no pacote `models/flux/` (rope, encoding, quant, loop)
+      - [x] 05. Decomposição de `common.py` (760L) em `common_pkg/` e unificação de loops de treino SD
+      - [x] 06. Modularização de `trainer-yolo` (`yolo_adapter.py`, `autolabel/`, `config.py`, `deterministic.py`)
+      - [x] 07. Modularização de `trainer-clip/serve.py` e suite de testes de contrato

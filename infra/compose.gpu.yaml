@@ -74,8 +74,8 @@ services:
       - build
     image: hephaestus/trainer-yolo:gpu
     build:
-      context: ../engines/trainer-yolo
-      dockerfile: Dockerfile.gpu
+      context: ..
+      dockerfile: engines/trainer-yolo/Dockerfile.gpu
 
   # Build-only: imagem hephaestus/trainer-difusao:gpu.
   # Build: docker compose -p gpu --profile build build trainer-difusao-gpu
@@ -84,8 +84,8 @@ services:
       - build
     image: hephaestus/trainer-difusao:gpu
     build:
-      context: ../engines/trainer-difusao
-      dockerfile: Dockerfile.gpu
+      context: ..
+      dockerfile: engines/trainer-difusao/Dockerfile.gpu
 
 volumes:
   gpu_datasets:

@@ -24,8 +24,9 @@ RUN pip install --no-cache-dir \
 
 WORKDIR /app
 
-# Copia pacote trainer_difusao
-COPY src/trainer_difusao/ /app/trainer_difusao/
+# Copia engine_kit e pacote trainer_difusao
+COPY engines/engine-kit/src/engine_kit/ /app/engine_kit/
+COPY engines/trainer-difusao/src/trainer_difusao/ /app/trainer_difusao/
 
 # Modo de treino real habilitado no container GPU e cache persistente em /outputs/.cache
 ENV ENGINE_MOCK=0 \

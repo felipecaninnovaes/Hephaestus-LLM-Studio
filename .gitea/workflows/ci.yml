@@ -127,10 +127,14 @@ jobs:
           git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$HEPH_TOKEN" | base64 -w0)" clone "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" .
           git checkout "$GITHUB_SHA"
       - name: compileall
-        run: python -m compileall engines/trainer-*/src
+        run: python -m compileall engines/*/src
       - name: install uv
         run: pip install --no-cache-dir uv
+      - name: test engine-kit
+        run: cd engines/engine-kit && uv run --extra test pytest
       - name: test trainer-yolo
         run: cd engines/trainer-yolo && uv run --extra test pytest
       - name: test trainer-difusao
         run: cd engines/trainer-difusao && uv run --extra test pytest
+      - name: test trainer-clip
+        run: cd engines/trainer-clip && uv run --extra test pytest

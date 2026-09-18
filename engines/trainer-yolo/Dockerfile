@@ -4,7 +4,8 @@
 FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
 RUN pip install --no-cache-dir pyyaml>=6.0 pillow>=10.0
 WORKDIR /app
-COPY src/trainer_yolo/ /app/trainer_yolo/
+COPY engines/engine-kit/src/engine_kit/ /app/engine_kit/
+COPY engines/trainer-yolo/src/trainer_yolo/ /app/trainer_yolo/
 ENV ENGINE_MOCK=1 \
     MOCK_EPOCH_SLEEP_MS=200
 ENTRYPOINT ["python", "-m", "trainer_yolo"]

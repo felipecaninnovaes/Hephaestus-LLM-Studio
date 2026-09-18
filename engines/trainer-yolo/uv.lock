@@ -428,10 +428,20 @@ wheels = [
 ]
 
 [[package]]
+name = "hephaestus-engine-kit"
+version = "0.1.0"
+source = { editable = "../engine-kit" }
+
+[package.metadata]
+requires-dist = [{ name = "pytest", marker = "extra == 'test'", specifier = ">=7.0" }]
+provides-extras = ["test"]
+
+[[package]]
 name = "hephaestus-trainer-yolo"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "hephaestus-engine-kit" },
     { name = "pillow" },
     { name = "pyyaml" },
 ]
@@ -446,6 +456,7 @@ train = [
 
 [package.metadata]
 requires-dist = [
+    { name = "hephaestus-engine-kit", editable = "../engine-kit" },
     { name = "pillow", specifier = ">=10.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=7.0" },
     { name = "pyyaml", specifier = ">=6.0" },

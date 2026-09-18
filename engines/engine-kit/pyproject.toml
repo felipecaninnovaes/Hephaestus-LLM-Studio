@@ -1,0 +1,15 @@
+[project]
+name = "hephaestus-engine-kit"
+version = "0.1.0"
+description = "Primitivas compartilhadas e biblioteca de infraestrutura das engines Hephaestus"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.uv]
+package = true
+
+[project.optional-dependencies]
+test = ["pytest>=7.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -40,8 +40,8 @@ cmd_up() {
     local mode="${1:---dev}"
     case "$mode" in
         --dev)
-            echo "Iniciando Hephaestus Studio em modo DEV (CPU-only / ENGINE_MOCK=1)..."
-            compose up -d db seaweedfs s3-init embedder manager orchestrator-local web
+            echo "Iniciando Hephaestus Studio em modo DEV (backend Docker, frontend local na porta 3000)..."
+            compose up -d db seaweedfs s3-init embedder principal manager orchestrator-local
             ;;
         --full)
             echo "Iniciando todos os serviços do Compose..."

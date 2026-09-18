@@ -42,7 +42,26 @@ cache slug per-job N1, validação @gpu, nomes N5).
 - Limitações honestas: loads reais de pesos custom só validáveis em GPU
   (dívida @gpu em dividas.md); quantização em encoder de arquivo solto + quant
   ⇒ _die (load_state_dict sobre modelo quantizado não funciona).
-- Merge/push só com ordem explícita do usuário. Nenhum dataset/modelo tocado.
+## Fatia FECHADA (2026-09-17) — feat/pesos-custom-flux2 + upload chunked (10 commits 9f3ead8..docs)
+
+**B) Upload chunked (bug do usuário):** upload de modelo grande via :3000 dava
+500 genérico — **OOM kill do next-server** (kernel 20:24:19: next-server morto,
+anon-rss 8.7 GB): o proxy Next **bufferiza multipart grande inteiro em RAM**;
+`proxyClientMaxBodySize: 8200mb` não muda isso. Principal aguenta streaming
+(provado: 8,49 GB spool direto em 4,6s). Fix: protocolo chunked (901ebad) —
+POST init (≤8 GiB, partSize 96 MiB canônico) → PUT part cru (DefaultBodyLimit
+104 MiB só na rota) → POST complete (assemble em tempfile + MESMO fluxo do
+upload único: magic/sniff/md5/S3/manager/compensação via finalize_model_file
+extraído, byte-compat) → DELETE abort. Web bifurca >96 MiB (Blob.slice,
+concorrência 2, retry 1, progresso, abort em falha/cancel/unmount); multipart
+≤96 MiB inalterado. Reviewer APROVA COM NITS → 401 nas rotas, 410 morto
+removido (pós-complete=404), hint de nome no UI. E2E smoke real contra
+principal deployado: 85 partes/8,49 GB em 17,7s, assemble 0,6s, 400 honesto no
+magic. Gates: cargo 0E/697p, web build/biome 0E (199W baseline).
+Dívidas: sessões sem TTL/GC; complete destrutivo em 503 (sem retry de sessão).
+- Limitação honesta: chunked registra sempre file.name (display-name só no
+  multipart ≤96 MiB) — surfaceado no UI e na spec.
+- Merge/push só com ordem explícita do usuário.
 
 ## Fatia FECHADA 2026-09-17 — feat/img2img (7 commits 30140ea..083efcb, de develop@4e3fb3e)
 

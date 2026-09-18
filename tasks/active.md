@@ -1,20 +1,17 @@
 # Memória Ativa — Hephaestus LLM Studio
 
-- **Branch atual:** `chore/reestruturacao-docs`
-- **Fatia em andamento:** Reestruturação da documentação e memória do monorepo (eliminação de monolitos >150 linhas, separação estrita entre `docs/` e `tasks/`).
+- **Branch atual:** `feat/qlora-difusao`
+- **Fatia em andamento:** Implementação de QLoRA para Modelos de Difusão (FLUX, SDXL e SD 1.5) conforme `tasks/specs/qlora-difusao.md`.
 
 ---
 
 ## Checklist Imediato da Sessão Ativa
 
-- [x] Criação de `docs/archive/specs/` e migração do spec concluído de modularização
-- [x] Criação de `tasks/specs/` e migração dos specs ativos (`qlora-difusao`, `infra-autonomia`, `backend-autonomia`)
-- [x] Consolidação de pendências e dívidas em `tasks/backlog.md` (< 120 linhas)
-- [x] Criação de `tasks/active.md` (< 70 linhas) substituindo `tasks/todo.md`
-- [x] Remoção de arquivos obsoletos (`tasks/todo.md`, `docs/dividas.md`, `tasks/impruvements/`)
-- [x] Conclusão dos agentes pares (`ServicesDocsWriter`, `EnginesWebDocsWriter`)
-- [x] Validação global do coordenador (contagem de linhas, integridade de referências)
-
+- [x] Fase 1: Motor de Treino Difusão (optimizers.py, sd15.py, sdxl.py, flux.py, mock.py, testes)
+- [x] Fase 2: Contratos OpenAPI e Validação no api-principal Rust
+- [x] Fase 3: Políticas de VRAM (vram-table.yaml)
+- [x] Fase 4: Interface Web Studio (types/studio.ts, jobs.ts e ForjaDifusaoSetup.tsx)
+- [x] Fase 5: Validação completa (Python pytest 160/160, Cargo test 708/708, Web build, Docker config)
 ---
 
 ## Protocolo de Retomada (3 Passos)

@@ -142,25 +142,25 @@ No QLoRA, a quantização 4-bit ocorre no modelo base **durante o treino**. Os p
 
 ## 4. Checklist de Execução
 
-- [ ] **1. Otimizadores Paginados nas Engines**
-  - [ ] Implementar `PagedAdamW8bit` e `PagedAdamW32bit` em `engines/trainer-difusao/src/trainer_difusao/optimizers.py`.
-  - [ ] Implementar fail-fast em ambiente CUDA caso `bitsandbytes` não esteja disponível.
-- [ ] **2. Quantização UNet e Preparação K-Bit**
-  - [ ] Injetar `BitsAndBytesConfig` (4-bit NF4 com double quant) no carregamento de `UNet2DConditionModel` em `sd15.py` e `sdxl.py`.
-  - [ ] Remover chamadas `.to(device)` para modelos quantizados.
-  - [ ] Aplicar `prepare_model_for_kbit_training` em `flux.py`, `sd15.py` e `sdxl.py`.
-- [ ] **3. Suporte no Mock e Testes Python**
-  - [ ] Atualizar `mock.py` para suportar os novos otimizadores.
-  - [ ] Adicionar testes unitários em `engines/trainer-difusao/tests/test_optimizers.py`.
-- [ ] **4. Contratos e Backend Rust**
-  - [ ] Atualizar `packages/contracts/openapi.yaml`.
-  - [ ] Atualizar `ALLOWED_DIFFUSION_OPTIMIZERS` em `services/api-principal/src/jobs/models.rs`.
-  - [ ] Ajustar testes unitários em `services/api-principal`.
-- [ ] **5. Políticas de VRAM e Frontend**
-  - [ ] Atualizar `packages/policies/vram-table.yaml`.
-  - [ ] Atualizar `apps/web/types/studio.ts` e `ForjaDifusaoSetup.tsx`.
-- [ ] **6. Validação e Homologação**
-  - [ ] `cargo check --workspace && cargo test --workspace`
-  - [ ] `python -m compileall engines/*/src`
-  - [ ] `cd engines/trainer-difusao && uv run pytest`
-  - [ ] `npm run build --workspace=web`
+- [x] **1. Otimizadores Paginados nas Engines**
+  - [x] Implementar `PagedAdamW8bit` e `PagedAdamW32bit` em `engines/trainer-difusao/src/trainer_difusao/optimizers.py`.
+  - [x] Implementar fail-fast em ambiente CUDA caso `bitsandbytes` não esteja disponível.
+- [x] **2. Quantização UNet e Preparação K-Bit**
+  - [x] Injetar `BitsAndBytesConfig` (4-bit NF4 com double quant) no carregamento de `UNet2DConditionModel` em `sd15.py` e `sdxl.py`.
+  - [x] Remover chamadas `.to(device)` para modelos quantizados.
+  - [x] Aplicar `prepare_model_for_kbit_training` em `flux.py`, `sd15.py` e `sdxl.py`.
+- [x] **3. Suporte no Mock e Testes Python**
+  - [x] Atualizar `mock.py` para suportar os novos otimizadores.
+  - [x] Adicionar testes unitários em `engines/trainer-difusao/tests/test_optimizers.py`.
+- [x] **4. Contratos e Backend Rust**
+  - [x] Atualizar `packages/contracts/openapi.yaml`.
+  - [x] Atualizar `ALLOWED_DIFFUSION_OPTIMIZERS` em `services/api-principal/src/jobs/models.rs`.
+  - [x] Ajustar testes unitários em `services/api-principal`.
+- [x] **5. Políticas de VRAM e Frontend**
+  - [x] Atualizar `packages/policies/vram-table.yaml`.
+  - [x] Atualizar `apps/web/types/studio.ts` e `ForjaDifusaoSetup.tsx`.
+- [x] **6. Validação e Homologação**
+  - [x] `cargo check --workspace && cargo test --workspace`
+  - [x] `python -m compileall engines/*/src`
+  - [x] `cd engines/trainer-difusao && uv run pytest`
+  - [x] `npm run build --workspace=web`

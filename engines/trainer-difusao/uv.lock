@@ -400,7 +400,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "safetensors", marker = "extra == 'train'", specifier = ">=0.4.3" },
     { name = "torch", marker = "extra == 'train'", specifier = ">=2.4.0" },
-    { name = "torchao", marker = "extra == 'train'", specifier = ">=0.13.0" },
+    { name = "torchao", marker = "extra == 'train'", specifier = ">=0.8.0,<0.9.0" },
     { name = "torchvision", marker = "extra == 'train'", specifier = ">=0.19.0" },
     { name = "transformers", marker = "extra == 'train'", specifier = ">=4.44.0" },
 ]
@@ -1450,11 +1450,11 @@ wheels = [
 
 [[package]]
 name = "torchao"
-version = "0.18.0"
+version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/19/55/ed9ad98f0f09d5a1124d09830043d13a39e63539f9590d2bdb6d71cbc4a4/torchao-0.18.0-cp310-abi3-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:6540b148e40ba81cbd4de86392225a076a1591146e9cebb099b3b234ba9feebe", size = 3372585, upload-time = "2026-08-03T19:43:10.993Z" },
-    { url = "https://files.pythonhosted.org/packages/c4/4d/485477bb8f05bd501016059c6d8abd742f830cb1b24ab7704e086c7cc35a/torchao-0.18.0-py3-none-any.whl", hash = "sha256:5c2b4485341bf28b7fed2c4fc95b9f298e209f41685350f067de85527a05585e", size = 1369798, upload-time = "2026-08-03T19:43:12.649Z" },
+    { url = "https://files.pythonhosted.org/packages/14/9a/74d00ac123b507dd6e4f589bab4a7872f981f32627fb3851e2670575b1ca/torchao-0.8.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:372c071869d4ebca527055bb2e5d889ca6762fcadee1c562609a47ff48fc14da", size = 4748885, upload-time = "2025-01-15T22:47:50.52Z" },
+    { url = "https://files.pythonhosted.org/packages/d4/d7/151e05197fe24e5f00eec2720c91876626bccbc4d7e51f1c992413128dbf/torchao-0.8.0-py3-none-any.whl", hash = "sha256:ae0640aae719f041eb3a814d0a03fcfe504cf40a9de58daca656933136ca70f4", size = 676033, upload-time = "2025-01-15T22:47:52.954Z" },
 ]
 
 [[package]]

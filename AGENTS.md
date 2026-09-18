@@ -1,8 +1,8 @@
 # AGENTS.md — Hephaestus LLM Studio (Nível 0: Macro)
 
 Entrada canônica dos agentes (<130 linhas). Início de toda sessão: ler
-`tasks/todo.md` (estado ativo) + este arquivo. Detalhes sob demanda em
-`.agents/rules/` e `docs/REPO_MAP.md` (Nível 1).
+`tasks/active.md` (estado ativo) + este arquivo. Detalhes sob demanda em
+`docs/REPO_MAP.md` (Nível 1) e na documentação modular em `docs/`.
 
 ## 1. Os Quatro Pilares (+ Contracts)
 
@@ -42,12 +42,12 @@ Dev é CPU-only: `ENGINE_MOCK=1`; testes `@gpu` são manuais, não rodar.
 4. **File Ownership:** paralelismo só com arquivos disjuntos; contratos
    (`packages/`, migrations, openapi) editados sequencialmente antes.
 5. **Regra das Duas Correções:** 2 falhas do mesmo erro = contexto
-   contaminado → parar, registrar em `tasks/todo.md`, escalar.
+   contaminado → parar, registrar em `tasks/active.md`, escalar.
 6. **Orçamento de contexto (funil L0→L3):** `AGENTS.md` → `docs/REPO_MAP.md` →
    `graft ask --source` / `graft skeleton` → leitura delimitada por offset.
    Proibido ler arquivos inteiros >100 linhas ou o histórico em
    `docs/archive/`. Zona saudável 15–35%; ao atingir ~40%: "Documentar e
-   Limpar" (estado em `tasks/todo.md`, sessão nova).
+   Limpar" (estado em `tasks/active.md`, sessão nova).
 
 ## 4. Roteamento de Subagentes
 
@@ -69,14 +69,16 @@ Dev é CPU-only: `ENGINE_MOCK=1`; testes `@gpu` são manuais, não rodar.
 Coordenação e decisão: `@hephaestus` (este agente). O coordenador **não
 executa fixes mecânicos** — especifica e despacha.
 
-## 5. Índice de Regras (Nível 1.5, carregar sob demanda)
+## 5. Índice de Documentação Modular (Nível 1.5, carregar sob demanda)
 
-- `.agents/rules/git.md` — branches, commits, atomicidade, permissões git.
-- `.agents/rules/architecture.md` — pilares, boundaries, isolamento, schema.
-- `.agents/rules/subagents.md` — hub-and-spoke, DAG, file ownership, relatórios.
-- `.agents/rules/context-management.md` — funil L0→L3, orçamento, Documentar-e-Limpar.
-- `.agents/rules/security.md` — segredos (.env), logs, auth.
-- `.agents/rules/antigravity-rtk-rules.md` — filtro rtk em comandos shell.
-- `docs/REPO_MAP.md` (L1) — portas, rotas, tabelas, módulos frontend.
-- `tasks/todo.md` — estado ativo da sessão (memória do coordenador).
+- `tasks/active.md` — memória ativa da sessão do coordenador (<70 linhas).
+- `tasks/backlog.md` — backlog único consolidado de dívidas e melhorias (<120 linhas).
+- `tasks/specs/` — especificações detalhadas de fatias em planejamento.
+- `docs/REPO_MAP.md` (L1) — topologia de portas, rotas, tabelas e módulos frontend.
+- `docs/architecture/` — `overview.md` (fluxo entre pilares), `network-and-vram.md` (isolamento/GPU).
+- `docs/services/` — `api-principal.md` (BFF/auth/chunked), `manager.md` (jobs), `orchestrator.md` (nós).
+- `docs/engines/` — `engine-kit.md` (primitives), `trainer-difusao.md`, `trainer-yolo.md`, `trainer-clip.md`.
+- `docs/web/` — `architecture.md` (Next.js 16/proxy), `state-and-realtime.md` (SSE/galeria).
+- `packages/contracts/openapi.yaml` — fonte única da verdade para contratos HTTP e payloads.
+- `packages/policies/vram-table.yaml` — fonte única da verdade para consumo e limites de VRAM.
 - `IDEIA.md` — intenção do produto (nunca contradizer em silêncio; expor conflitos).

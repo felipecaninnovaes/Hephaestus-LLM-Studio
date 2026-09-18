@@ -18,6 +18,7 @@ from trainer_difusao.common import (
     _die,
     _emit_metric,
     _load_lora_weights,
+    _resolve_output_name,
     _save_lora_safetensors,
     _setup_cache_dir,
     _validate_train_aux,
@@ -416,6 +417,16 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                 "text_encoder_path só é suportado com arch flux-2-klein-4b "
                 f"(modelo atual: {model_id})."
             )
+
+    dataset_path = Path(cfg.get("dataset_path", "/datasets"))
+    lora_cfg = cfg.get("lora", {})
+    epochs = int(lora_cfg.get("epochs", 10))
+    batch_size = int(lora_cfg.get("batch_size", 1))
+    learning_rate = float(lora_cfg.get("learning_rate", 1e-4))
+    rank = int(lora_cfg.get("rank", 16))
+    alpha = int(lora_cfg.get("alpha", 16))
+    trigger_word = str(lora_cfg.get("trigger_word", ""))
+    base_name = _resolve_output_name(cfg)
 
     aux = _validate_train_aux(cfg, quant_default=None)
     control_dataset_path = aux["control_dataset_path"]

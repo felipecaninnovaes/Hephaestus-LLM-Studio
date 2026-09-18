@@ -631,6 +631,26 @@ export interface ModelListResponse {
   items: Model[];
 }
 
+/* ── Upload chunked de modelos (contrato 901ebad) ────────────────── */
+// Contorna o buffering de multipart grande em RAM no proxy Next: arquivos
+// > 96 MiB são fatiados e enviados como octet-stream cru. Sessões vivem em
+// memória do principal (single-instance, sem TTL GC no servidor) — o cliente
+// aborta via DELETE em falha/cancelamento/unmount (dívida documentada).
+export interface ModelUploadInitRequest {
+  name: string;
+  engine: string;
+  kind?: string;
+  arch?: string;
+  size: number;
+  totalParts: number;
+}
+
+export interface ModelUploadInitResponse {
+  uploadId: string;
+  partSize: number;
+  totalParts: number;
+}
+
 export function modelSourceLabel(source: ModelSource): string {
   switch (source) {
     case "train":

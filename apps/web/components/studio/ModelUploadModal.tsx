@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { IconBox, IconUpload } from "@/components/icons";
 import {
 	Button,
@@ -10,7 +10,13 @@ import {
 	showToast,
 } from "@/components/ui";
 import type { SelectOption } from "@/components/ui/Select";
-import { uploadModel } from "@/lib/models";
+import {
+	abortModelUpload,
+	completeModelUpload,
+	initModelUpload,
+	uploadModel,
+	uploadModelPart,
+} from "@/lib/models";
 import { type Model, modelErrorMessage } from "@/types/studio";
 
 interface ModelUploadModalProps {
@@ -39,6 +45,10 @@ const ARCH_OPTIONS: SelectOption<string>[] = [
 	{ value: "sd15", label: "SD 1.5" },
 	{ value: "flux-2-klein-4b", label: "FLUX.2 Klein 4B" },
 ];
+// Limite do chunked: acima de 96 MiB o proxy Next bufferizaria o multipart
+// inteiro em RAM (OOM do next-server com 8 GB). Partes ≤ 96 MiB são seguras.
+const CHUNKED_THRESHOLD_BYTES = 96 * 1024 * 1024;
+const PART_CONCURRENCY = 2;
 
 export default function ModelUploadModal({
 	open,
@@ -54,12 +64,24 @@ export default function ModelUploadModal({
 	const [arch, setArch] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const [progress, setProgress] = useState<{ done: number; total: number } | null>(
+		null,
+	);
 	const inputRef = useRef<HTMLInputElement>(null);
-
+	// Sessão chunked aberta (para abort em cancelamento/unmount). Só vive
+	// durante o fluxo chunked; null no fluxo multipart único (inalterado).
+	const uploadIdRef = useRef<string | null>(null);
+	const cancelledRef = useRef(false);
 	const isDiffusionSafetensors =
 		engine === "diffusion" &&
 		file !== null &&
 		file.name.toLowerCase().endsWith(".safetensors");
+	// Upload em partes (> 96 MiB) só atendido para yolo/world/diffusion —
+	// fora disso o init devolveria 400 opaco; bloqueia o submit antes.
+	const isChunked = file !== null && file.size > CHUNKED_THRESHOLD_BYTES;
+	const isChunkedEngineSupported =
+		engine === "yolo" || engine === "world" || engine === "diffusion";
+	const chunkedEngineBlocked = isChunked && !isChunkedEngineSupported;
 	const reset = useCallback(() => {
 		setFile(null);
 		setName("");
@@ -67,6 +89,7 @@ export default function ModelUploadModal({
 		setKind("");
 		setArch("");
 		setError(null);
+		setProgress(null);
 	}, []);
 
 	const handleClose = useCallback(() => {
@@ -81,34 +104,147 @@ export default function ModelUploadModal({
 		setError(null);
 	}
 
+	// Aborta a sessão chunked aberta se o modal desmontar no meio do upload
+	// (cancelamento/unmount com sessão aberta). Best-effort silencioso.
+	useEffect(() => {
+		return () => {
+			if (uploadIdRef.current) {
+				abortModelUpload(uploadIdRef.current).catch(() => {});
+				uploadIdRef.current = null;
+			}
+		};
+	}, []);
+	function toModelErrorMessage(err: unknown): string {
+		let code = "";
+		let message: string | undefined;
+		if (err !== null && typeof err === "object") {
+			if ("code" in err && typeof err.code === "string") code = err.code;
+			if ("message" in err && typeof err.message === "string")
+				message = err.message;
+		}
+		return modelErrorMessage(code, message);
+	}
+	/** Fluxo chunked (> 96 MiB): init → PUT partes (conc. 2, 1 retry) → complete. */
+	async function uploadChunked(current: File): Promise<Model> {
+		const kindHint =
+			isDiffusionSafetensors && kind ? kind : undefined;
+		const archHint =
+			isDiffusionSafetensors && arch ? arch : undefined;
+		// Decisão S1 (backend): init.name é o filename cru COM extensão
+		// (validate_raw_filename + sanitize preservando ext, sem display-name
+		// separado no chunked) — sempre file.name + hints; o complete preserva.
+		// Limitação honesta: override digitado é ignorado no fluxo chunked.
+		// totalParts otimista com o teto do contrato (96 MiB); o servidor
+		// devolve o partSize canônico e valida totalParts contra size.
+		const assumedTotalParts = Math.ceil(current.size / CHUNKED_THRESHOLD_BYTES);
+		const init = await initModelUpload({
+			name: current.name,
+			engine,
+			kind: kindHint,
+			arch: archHint,
+			size: current.size,
+			totalParts: assumedTotalParts,
+		});
+		uploadIdRef.current = init.uploadId;
+		const { partSize, totalParts } = init;
+		setProgress({ done: 0, total: totalParts });
+		let done = 0;
+		let nextPart = 0;
+		let failed: unknown = null;
+
+		async function worker() {
+			while (nextPart < totalParts) {
+				if (cancelledRef.current || failed) break;
+				const partNumber = nextPart++;
+				const start = partNumber * partSize;
+				const blob = current.slice(start, start + partSize);
+				try {
+					await uploadModelPart(init.uploadId, partNumber, blob);
+				} catch (err) {
+					// Retry simples por parte (1 retry) antes de falhar.
+					if (!cancelledRef.current) {
+						try {
+							await uploadModelPart(init.uploadId, partNumber, blob);
+						} catch (retryErr) {
+							failed = retryErr;
+							break;
+						}
+					} else {
+						failed = err;
+						break;
+					}
+				}
+				done++;
+				setProgress({ done, total: totalParts });
+			}
+		}
+
+		const workers = Array.from(
+			{ length: Math.min(PART_CONCURRENCY, totalParts) },
+			() => worker(),
+		);
+		await Promise.all(workers);
+		if (failed) throw failed;
+		if (cancelledRef.current) throw new Error("cancelled");
+		const model = await completeModelUpload(init.uploadId);
+		uploadIdRef.current = null;
+		return model;
+	}
+
 	async function handleSubmit() {
 		if (!file) return;
+		const current = file;
+		cancelledRef.current = false;
 		setBusy(true);
 		setError(null);
+		setProgress(null);
 		try {
-			const model = await uploadModel({
-				file,
-				engine,
-				name: name.trim() || undefined,
-				kind: isDiffusionSafetensors && kind ? kind : undefined,
-				arch: isDiffusionSafetensors && arch ? arch : undefined,
-			});
+			const model =
+				current.size > CHUNKED_THRESHOLD_BYTES
+					? await uploadChunked(current)
+					: await uploadModel({
+							file: current,
+							engine,
+							name: name.trim() || undefined,
+							kind: isDiffusionSafetensors && kind ? kind : undefined,
+							arch: isDiffusionSafetensors && arch ? arch : undefined,
+						});
 			showToast("Modelo enviado com sucesso.", "success");
 			onUploaded(model);
 			reset();
 			onClose();
 		} catch (err: unknown) {
-			const code =
-				typeof err === "object" && err !== null && "code" in err
-					? (err as { code: string }).code
-					: "";
-			const message =
-				typeof err === "object" && err !== null && "message" in err
-					? (err as { message: string }).message
-					: "";
-			setError(modelErrorMessage(code, message));
+			// Abort best-effort silencioso da sessão chunked em qualquer falha.
+			if (uploadIdRef.current) {
+				await abortModelUpload(uploadIdRef.current).catch(() => {});
+				uploadIdRef.current = null;
+			}
+			if (
+				(err instanceof Error && err.message === "cancelled") ||
+				cancelledRef.current
+			) {
+				setError("Upload cancelado.");
+			} else {
+				const friendly = toModelErrorMessage(err);
+				setError(friendly);
+				showToast(friendly, "error");
+			}
 		} finally {
 			setBusy(false);
+			setProgress(null);
+		}
+	}
+
+	/** Cancelamento durante o chunked: sinaliza workers + aborta a sessão. */
+	function handleCancel() {
+		if (!busy) {
+			handleClose();
+			return;
+		}
+		cancelledRef.current = true;
+		if (uploadIdRef.current) {
+			abortModelUpload(uploadIdRef.current).catch(() => {});
+			uploadIdRef.current = null;
 		}
 	}
 
@@ -189,6 +325,11 @@ export default function ModelUploadModal({
 						maxLength={255}
 						className="w-full rounded-lg border border-zinc-700/60 bg-black/40 px-3 py-1.5 text-xs font-mono text-zinc-100 placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:opacity-55"
 					/>
+					{isChunked && (
+						<p className="mt-1.5 font-mono text-2xs text-zinc-500 leading-normal">
+							Nome customizado não se aplica ao upload em partes — o arquivo será registrado como {file?.name}.
+						</p>
+					)}
 				</div>
 
 				{/* Engine selector */}
@@ -260,11 +401,40 @@ export default function ModelUploadModal({
 					</div>
 				)}
 
+				{/* Progresso chunked (partes concluídas/total) */}
+				{progress && (
+					<div className="rounded-lg border border-brand-500/30 bg-brand-500/10 px-3 py-2">
+						<div className="font-mono text-2xs text-zinc-300">
+							Enviando parte {progress.done} de {progress.total}…
+						</div>
+						<div
+							role="progressbar"
+							aria-valuenow={progress.done}
+							aria-valuemin={0}
+							aria-valuemax={progress.total}
+							className="mt-1.5 h-1 overflow-hidden rounded-full bg-white/10"
+						>
+							<div
+								className="h-full rounded-full bg-brand-500 transition-[width]"
+								style={{
+									width: `${progress.total > 0 ? (progress.done / progress.total) * 100 : 0}%`,
+								}}
+							/>
+						</div>
+					</div>
+				)}
+
 				{/* Erro */}
 				{error && (
 					<div className="rounded-lg border border-status-danger/30 bg-status-danger/[0.08] px-3 py-2 text-xs text-status-danger">
 						{error}
 					</div>
+				)}
+				{/* Engine fora do chunked: aviso + submit desabilitado (evita 400 opaco do init). */}
+				{chunkedEngineBlocked && (
+					<p className="font-mono text-2xs text-zinc-500 leading-normal">
+						Upload em partes disponível para modelos yolo/world/diffusion.
+					</p>
 				)}
 
 				{/* Ações — One CTA */}
@@ -273,8 +443,8 @@ export default function ModelUploadModal({
 						type="button"
 						variant="ghost"
 						size="sm"
-						onClick={handleClose}
-						disabled={busy}
+						onClick={progress ? handleCancel : handleClose}
+						disabled={busy && !progress}
 					>
 						Cancelar
 					</Button>
@@ -283,7 +453,7 @@ export default function ModelUploadModal({
 						variant="primary"
 						size="sm"
 						onClick={handleSubmit}
-						disabled={!file || busy}
+						disabled={!file || busy || chunkedEngineBlocked}
 						loading={busy}
 					>
 						Enviar

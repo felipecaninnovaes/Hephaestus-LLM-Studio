@@ -180,6 +180,18 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
         "/api/models/download",
         &[201, 400, 401, 403, 502, 503],
     ),
+    ("POST", "/api/models/uploads/init", &[201, 400, 401]),
+    (
+        "PUT",
+        "/api/models/uploads/:uploadId/part/:partNumber",
+        &[204, 400, 401, 404, 413],
+    ),
+    (
+        "POST",
+        "/api/models/uploads/:uploadId/complete",
+        &[201, 400, 401, 404, 409, 413, 503],
+    ),
+    ("DELETE", "/api/models/uploads/:uploadId", &[204, 401]),
     ("GET", "/api/storage/usage", &[200, 401, 503]),
     // Galeria de gerações (ADR-0023 D5 — G.1 stubs).
     ("GET", "/api/generations", &[200, 400, 401, 503]),
@@ -457,6 +469,24 @@ pub fn build(state: AppState) -> axum::Router {
         .route(
             "/api/models/download",
             post(crate::models::handlers::download_model),
+        )
+        .route(
+            "/api/models/uploads/init",
+            post(crate::models::chunk::init_upload),
+        )
+        .route(
+            "/api/models/uploads/:uploadId/part/:partNumber",
+            put(crate::models::chunk::put_part).layer(DefaultBodyLimit::max(
+                crate::models::chunk::CHUNK_PART_BODY_LIMIT_BYTES,
+            )),
+        )
+        .route(
+            "/api/models/uploads/:uploadId/complete",
+            post(crate::models::chunk::complete_upload),
+        )
+        .route(
+            "/api/models/uploads/:uploadId",
+            delete(crate::models::chunk::abort_upload),
         )
         .route("/api/storage/usage", get(monitoring::get_storage_usage))
         // Galeria de gerações (ADR-0023 D5 — G.1 stubs).

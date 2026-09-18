@@ -3374,11 +3374,10 @@ pub async fn recover_jobs(pool: &PgPool) -> Result<u64, ManagerError> {
     .await
     .map_err(|e| ManagerError::Internal(format!("recover cancelling jobs: {e}")))?;
 
-    // 2. Apenas jobs com pacote pronto (package_ref presente em params) voltam para queued:
+    // 2. Jobs em voo (dispatched ou running) no boot passam para queued (preparing segue intocado):
     let result = sqlx::query(
         "UPDATE jobs SET status = 'queued', queue_reason = 'recovered', orchestrator_id = NULL \
-         WHERE status IN ('dispatched', 'running') \
-           AND (params->>'package_ref' IS NOT NULL OR params->>'dataset_version_id' IS NOT NULL)",
+         WHERE status IN ('dispatched', 'running')",
     )
     .execute(pool)
     .await
@@ -3581,7 +3580,7 @@ pub async fn watchdog_tick(pool: &PgPool) -> Result<(), ManagerError> {
     .await
     .map_err(|e| ManagerError::Internal(format!("watchdog cancel cancelling jobs: {e}")))?;
 
-    // 2. degraded → offline + re-queue dos jobs com pacote do nó morto:
+    // 2. degraded → offline + re-queue dos jobs em voo do nó morto (preparing segue intocado):
     let result = sqlx::query(
         "WITH morto AS ( \
              UPDATE orchestrators SET status = 'offline' \
@@ -3591,8 +3590,7 @@ pub async fn watchdog_tick(pool: &PgPool) -> Result<(), ManagerError> {
          ) \
          UPDATE jobs SET status = 'queued', queue_reason = 'recovered', orchestrator_id = NULL \
          WHERE orchestrator_id IN (SELECT id FROM morto) \
-           AND status IN ('dispatched','running') \
-           AND (params->>'package_ref' IS NOT NULL OR params->>'dataset_version_id' IS NOT NULL)",
+           AND status IN ('dispatched','running')",
     )
     .bind(offline_s as f64)
     .execute(pool)

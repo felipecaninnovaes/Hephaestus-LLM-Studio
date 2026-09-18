@@ -608,6 +608,11 @@ async fn main() {
 
     // Sweep de containers órfãos no boot (anti-processos fantasmas pós crash).
     orchestrator::sweep_orphan_trainer_containers().await;
+    orchestrator::sweep_orphan_workdirs(
+        &std::path::PathBuf::from(&workdir),
+        std::time::Duration::from_secs(86400),
+    )
+    .await;
 
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));

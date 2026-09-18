@@ -257,6 +257,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // 8c. Worker periódico de GC de storage (chunked, datasets-cache, trash) em background (a cada 10min)
+    let gc_state = state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));
+        loop {
+            interval.tick().await;
+            api_principal::storage::gc::run_storage_gc(&gc_state).await;
+        }
+    });
+
     let app = routes::build(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")

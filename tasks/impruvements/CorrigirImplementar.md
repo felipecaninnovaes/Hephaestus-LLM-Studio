@@ -18,7 +18,7 @@ Arquivo responsavel por reunir todas as melhorias e correçoes de forma organiza
   - [x] 02. Fechar porta Postgres no host (`0.0.0.0:5432` -> `${DB_PUBLISH:-127.0.0.1}:5432`)
       - [x] 03. Passar `--network` no spawn de containers pelo Orchestrator
   - [x] 04. CI: rodar testes do workspace inteiro (`manager` e `orchestrator`) e engines Python
-      - [ ] 05. Backup automatizado do Postgres (pgvector)
+      - [x] 05. Backup automatizado do Postgres (pgvector)
       - [ ] 06. Ingress/Reverse Proxy único para portas de produção
       - [ ] 07. Segregação de redes Docker Compose
       - [ ] 08. Containers com usuário não-privilegiado (`USER`)
@@ -30,7 +30,7 @@ Arquivo responsavel por reunir todas as melhorias e correçoes de forma organiza
       - [x] 01. Correção de abort em `preparing` e loop do `job_prepares` (evitar zumbi/503)
       - [x] 02. Barreira local de GPU/VRAM e timeout com `kill_on_drop` no Orchestrator
       - [x] 03. Deadlock de `SIGTERM` e dependências GPU (`torchao`) nas Engines
-      - [ ] 04. Garbage Collection de sessões chunked, `outputs/`, `datasets-cache/` e S3
+      - [x] 04. Garbage Collection de sessões chunked, `outputs/`, `datasets-cache/` e S3
       - [x] 05. Retry e idempotência em `prepare_complete` e reports do orquestrador
       - [ ] 06. Instrumentação Prometheus (`/metrics`) nos 3 serviços Rust
       - [ ] 07. Tracing distribuído e propagação de `x-request-id` / `traceparent`

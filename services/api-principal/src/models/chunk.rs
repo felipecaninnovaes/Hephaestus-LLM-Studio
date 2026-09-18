@@ -55,6 +55,25 @@ struct UploadSession {
     total_parts: u32,
     parts_dir: tempfile::TempDir,
     parts: std::collections::BTreeMap<u32, u64>,
+    last_activity: std::time::Instant,
+}
+
+/// Varre e remove sessões inativas há mais de max_age.
+/// Ao remover do mapa, o Drop do TempDir exclui os arquivos do disco automaticamente.
+pub fn sweep_expired_upload_sessions(max_age: std::time::Duration) -> usize {
+    let mut sessions = lock_sessions();
+    let now = std::time::Instant::now();
+    let before = sessions.len();
+    sessions.retain(|upload_id, session| {
+        let age = now.duration_since(session.last_activity);
+        if age > max_age {
+            tracing::info!(upload_id = %upload_id, age_secs = age.as_secs(), "expirando sessão de upload chunked inativa");
+            false
+        } else {
+            true
+        }
+    });
+    before - sessions.len()
 }
 
 // ---------------------------------------------------------------------------
@@ -177,6 +196,7 @@ pub async fn init_upload(Json(req): Json<ModelUploadInitRequest>) -> Response {
             total_parts,
             parts_dir,
             parts: Default::default(),
+            last_activity: std::time::Instant::now(),
         },
     );
 
@@ -288,6 +308,7 @@ pub async fn put_part(
             return not_found();
         }
         Some(s) => {
+            s.last_activity = std::time::Instant::now();
             s.parts.insert(part_number, total);
         }
     }

@@ -1160,6 +1160,24 @@ pub async fn sweep_orphan_trainer_containers() {
     }
 }
 
+/// Varre e limpa diretórios antigos de cache de datasets no workdir (> 24h).
+pub async fn sweep_orphan_workdirs(workdir: &Path, max_age: std::time::Duration) {
+    let cache_dir = workdir.join("datasets").join("datasets-cache");
+    if let Ok(mut entries) = tokio::fs::read_dir(&cache_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            if let Ok(meta) = entry.metadata().await {
+                if let Ok(modified) = meta.modified() {
+                    if let Ok(age) = modified.elapsed() {
+                        if age > max_age {
+                            let _ = tokio::fs::remove_dir_all(entry.path()).await;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Executor via subprocess (EXEC_MODE=subprocess, não é caminho de aceite R5).
 pub struct SubprocessExecutor;
 
@@ -1306,6 +1324,13 @@ pub async fn run_job(
         }
     }
 
+    // Cleanup pós-job do cache do dataset descompactado:
+    let job_workdir = std::path::PathBuf::from(&dispatch.workdir);
+    let dataset_dir = job_workdir
+        .join("datasets")
+        .join("datasets-cache")
+        .join(&job_id);
+    let _ = tokio::fs::remove_dir_all(&dataset_dir).await;
     active_jobs.remove(&job_id);
 }
 

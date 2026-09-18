@@ -1020,7 +1020,9 @@ pub fn build_docker_run_args(
     cmd_args.push("--add-host".to_string());
     cmd_args.push("host.docker.internal:host-gateway".to_string());
 
-    let network = std::env::var("ENGINE_NETWORK").unwrap_or_else(|_| "infra_default".to_string());
+    let network = std::env::var("ENGINE_NETWORK")
+        .or_else(|_| std::env::var("DIFFUSION_DAEMON_NETWORK"))
+        .unwrap_or_else(|_| "infra_default".to_string());
     cmd_args.push("--network".to_string());
     cmd_args.push(network);
     for (host, container) in volumes {

@@ -895,6 +895,9 @@ export default function GenerationGallery() {
               {lightboxItem.params?.custom_model_id ? (
                 <MetaRow label="Custom Model" value={String(lightboxItem.params.custom_model_id)} />
               ) : null}
+              {lightboxItem.params?.text_encoder_model_id ? (
+                <MetaRow label="Text Encoder" value={String(lightboxItem.params.text_encoder_model_id)} />
+              ) : null}
               {lightboxItem.params?.steps ? (
                 <MetaRow label="Steps" value={String(lightboxItem.params.steps)} mono />
               ) : null}

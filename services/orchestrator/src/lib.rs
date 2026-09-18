@@ -891,18 +891,36 @@ impl HttpReportClient {
 impl ReportClient for HttpReportClient {
     async fn report(&self, job_id: &str, body: &ReportBody) -> Result<(), String> {
         let url = format!("{}/internal/jobs/{job_id}/report", self.manager_url);
-        let mut req = self.client.post(&url).json(body);
-        if let Some(ref token) = self.token {
-            req = req.header("authorization", format!("Bearer {token}"));
+        let is_terminal = body.status == "done" || body.status == "failed";
+        let max_attempts = if is_terminal { 5 } else { 2 };
+        let mut last_err = "unknown report error".to_string();
+
+        for attempt in 0..max_attempts {
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_millis(300 * (1 << attempt))).await;
+            }
+            let mut req = self.client.post(&url).json(body);
+            if let Some(ref token) = self.token {
+                req = req.header("authorization", format!("Bearer {token}"));
+            }
+            match req.send().await {
+                Ok(resp) => {
+                    if resp.status().is_success() {
+                        return Ok(());
+                    }
+                    last_err = format!("report status: {}", resp.status());
+                    if resp.status().is_client_error()
+                        && resp.status() != reqwest::StatusCode::TOO_MANY_REQUESTS
+                    {
+                        return Err(last_err);
+                    }
+                }
+                Err(e) => {
+                    last_err = format!("report request: {e}");
+                }
+            }
         }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| format!("report request: {e}"))?;
-        if !resp.status().is_success() {
-            return Err(format!("report status: {}", resp.status()));
-        }
-        Ok(())
+        Err(last_err)
     }
 }
 
@@ -1002,6 +1020,9 @@ pub fn build_docker_run_args(
     cmd_args.push("--add-host".to_string());
     cmd_args.push("host.docker.internal:host-gateway".to_string());
 
+    let network = std::env::var("ENGINE_NETWORK").unwrap_or_else(|_| "infra_default".to_string());
+    cmd_args.push("--network".to_string());
+    cmd_args.push(network);
     for (host, container) in volumes {
         cmd_args.push("-v".to_string());
         cmd_args.push(format!("{host}:{container}"));
@@ -1045,16 +1066,30 @@ impl TrainerExecutor for DockerExecutor {
 
         let mut cmd = tokio::process::Command::new("docker");
         cmd.args(&cmd_args);
+        cmd.kill_on_drop(true);
 
-        match cmd.output().await {
-            Ok(o) => {
+        let timeout_secs: u64 = std::env::var("TRAINER_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(7200);
+        let timeout_duration = Duration::from_secs(timeout_secs);
+
+        match tokio::time::timeout(timeout_duration, cmd.output()).await {
+            Ok(Ok(o)) => {
                 let exit_code = o.status.code().unwrap_or(-1);
                 let stdout = String::from_utf8_lossy(&o.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&o.stderr).to_string();
                 let logs = format!("{stdout}\n{stderr}");
                 (exit_code, logs)
             }
-            Err(e) => (-1, format!("docker exec error: {e}")),
+            Ok(Err(e)) => (-1, format!("docker exec error: {e}")),
+            Err(_) => {
+                let _ = self.stop(container_name).await;
+                (
+                    -1,
+                    format!("timeout de execução atingido ({timeout_secs}s) - container encerrado"),
+                )
+            }
         }
     }
 
@@ -1072,6 +1107,55 @@ impl TrainerExecutor for DockerExecutor {
                 "docker stop failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             ))
+        }
+    }
+}
+
+/// Varre e encerra containers órfãos de treino (`trainer-*`) no boot do orquestrador.
+pub async fn sweep_orphan_trainer_containers() {
+    tracing::info!("verificando containers órfãos de treino no boot...");
+    let output = tokio::process::Command::new("docker")
+        .args(["ps", "-q", "--filter", "name=trainer-"])
+        .output()
+        .await;
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let container_ids = String::from_utf8_lossy(&out.stdout);
+            let ids: Vec<&str> = container_ids
+                .lines()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if ids.is_empty() {
+                tracing::info!("nenhum container órfão encontrado no boot");
+            } else {
+                tracing::warn!(
+                    "encontrados {} containers órfãos: {:?}. Encerrando...",
+                    ids.len(),
+                    ids
+                );
+                for id in ids {
+                    let stop_res = tokio::process::Command::new("docker")
+                        .args(["rm", "-f", id])
+                        .output()
+                        .await;
+                    if let Err(e) = stop_res {
+                        tracing::error!("falha ao remover container órfão {id}: {e}");
+                    } else {
+                        tracing::info!("container órfão {id} removido com sucesso");
+                    }
+                }
+            }
+        }
+        Ok(out) => {
+            tracing::warn!(
+                "docker ps retornou erro ao verificar órfãos: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        Err(e) => {
+            tracing::warn!("falha ao executar docker ps para checar órfãos: {e}");
         }
     }
 }

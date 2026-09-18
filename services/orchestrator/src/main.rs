@@ -36,6 +36,7 @@ struct AppState {
     gpu_allow_mock: bool,
     pairing: Arc<PairingState>,
     daemon_state: Option<Arc<orchestrator::daemon::DaemonState>>,
+    max_concurrent_jobs: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +186,15 @@ async fn dispatch_handler(State(state): State<AppState>, body: Bytes) -> Respons
         if pr.md5_zip.is_empty() {
             return bad_request("package_ref.md5_zip is required");
         }
+    }
+
+    // Semáforo local de GPU/VRAM: rejeita com HTTP 503 se atingiu capacidade máxima
+    if state.active_jobs.len() >= state.max_concurrent_jobs {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "node_busy",
+            "GPU node is currently at maximum capacity",
+        );
     }
 
     // Idempotência R4: se já existe job com MESMO job_id em memória → 409
@@ -370,6 +380,11 @@ async fn main() {
         .unwrap_or_else(|_| "8082".into())
         .parse()
         .expect("PORT deve ser um número");
+
+    let max_concurrent_jobs: usize = std::env::var("MAX_CONCURRENT_JOBS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
 
     // D1 — identidade no heartbeat.
     let advertise_url =
@@ -574,6 +589,7 @@ async fn main() {
         gpu_allow_mock: gpu_allow_mock_boot,
         pairing,
         daemon_state,
+        max_concurrent_jobs,
     };
 
     // Heartbeat loop (~2s, D4/D9).
@@ -589,6 +605,9 @@ async fn main() {
             "nvidia-smi indisponível — telemetria GPU desabilitada (gpus:[], vram:None)"
         );
     }
+
+    // Sweep de containers órfãos no boot (anti-processos fantasmas pós crash).
+    orchestrator::sweep_orphan_trainer_containers().await;
 
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));

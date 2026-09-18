@@ -1,0 +1,36 @@
+# ==============================================================================
+# infra/compose.prod.yaml — Overlay de Produção com Ingress Unificado (Porta 80)
+# ==============================================================================
+# Uso:
+#   docker compose -f infra/compose.yaml -f infra/compose.prod.yaml up -d
+# ==============================================================================
+
+services:
+  # Ingress Unificado via Caddy (portas 80 e 443 expostas no host)
+  ingress:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+      - principal
+    networks:
+      - default
+
+  # Em produção, fecha a exposição direta da porta 3000 do frontend
+  web:
+    ports: !override []
+
+  # Em produção, fecha a exposição direta da porta 8080 do BFF
+  principal:
+    ports: !override []
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,27 @@
+# Caddyfile — Reverse Proxy e Ingress do Hephaestus LLM Studio
+:80 {
+    # Compressão automática gzip/zstd
+    encode zstd gzip
+
+    # API Principal (BFF)
+    handle /api/* {
+        reverse_proxy principal:8080
+    }
+
+    # Métricas públicas do cluster (para Prometheus scraper)
+    handle /metrics {
+        reverse_proxy principal:8080
+    }
+
+    # Frontend Studio (Next.js Web UI)
+    handle {
+        reverse_proxy web:3000
+    }
+
+    # Security headers básicos
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy no-referrer-when-downgrade
+    }
+}

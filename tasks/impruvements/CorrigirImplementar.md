@@ -19,12 +19,11 @@ Arquivo responsavel por reunir todas as melhorias e correçoes de forma organiza
       - [x] 03. Passar `--network` no spawn de containers pelo Orchestrator
   - [x] 04. CI: rodar testes do workspace inteiro (`manager` e `orchestrator`) e engines Python
       - [x] 05. Backup automatizado do Postgres (pgvector)
-      - [ ] 06. Ingress/Reverse Proxy único para portas de produção
-      - [ ] 07. Segregação de redes Docker Compose
-      - [ ] 08. Containers com usuário não-privilegiado (`USER`)
+      - [x] 06. Ingress/Reverse Proxy único para portas de produção
+      - [x] 07. Segregação de redes Docker Compose
+      - [x] 08. Containers com usuário não-privilegiado (`USER`)
       - [x] 09. Métricas Prometheus e observabilidade dos serviços
-      - [ ] 10. Limites de recursos (CPU/Memória) no compose
-
+      - [x] 10. Limites de recursos (CPU/Memória) no compose
   - Backend, Orchestrator, Pipelines & Métricas:
     - [ ] Plano de Autonomia 24/7 (detalhado em `tasks/impruvements/backend-orchestrator-pipelines-autonomia.md`):
       - [x] 01. Correção de abort em `preparing` e loop do `job_prepares` (evitar zumbi/503)

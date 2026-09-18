@@ -61,6 +61,16 @@ magic. Gates: cargo 0E/697p, web build/biome 0E (199W baseline).
 Dívidas: sessões sem TTL/GC; complete destrutivo em 503 (sem retry de sessão).
 - Limitação honesta: chunked registra sempre file.name (display-name só no
   multipart ≤96 MiB) — surfaceado no UI e na spec.
+- **Sequência do bug real do usuário (fechada 2026-09-17 ~21:5x):** 2 camadas
+  a mais além do OOM: (a) `proxyTimeout` default 30s do proxy dev (Next
+  proxy-request.js:22 `|| 30000`) matava o complete de 8 GB (md5+PUT S3 >
+  30s) → fix `experimental.proxyTimeout: 900_000` (2aca87b); (b) PUT único
+  S3 estoura o limite de 5 GB em objetos 8 GiB → multipart upload em s3.rs
+  (threshold 4,5 GB, partes 128 MiB, abort compensatório, erro real do SDK
+  agora logado — engolido antes) (ee8facf). **E2E real aprovado**: arquivo do
+  usuário 8,04 GB via :3000 → 201 Model bd442ca1 (kind text_encoder), 70s no
+  complete, 64 partes multipart. Sniff não classifica text_encoder (hints da
+  UI cobrem) — dívida de sniff heurístico registrada em dividas.
 - Merge/push só com ordem explícita do usuário.
 
 ## Fatia FECHADA 2026-09-17 — feat/img2img (7 commits 30140ea..083efcb, de develop@4e3fb3e)

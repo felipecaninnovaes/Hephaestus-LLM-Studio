@@ -101,17 +101,21 @@ pub struct JobTelemetryEvent {
 }
 
 /// Extrai contadores totais (steps/epochs/imagens) a partir de job.params.
-pub fn extract_totals_from_params(params: Option<&serde_json::Value>) -> (Option<i64>, Option<i32>) {
+pub fn extract_totals_from_params(
+    params: Option<&serde_json::Value>,
+) -> (Option<i64>, Option<i32>) {
     let p = match params {
         Some(v) if v.is_object() => v,
         _ => return (None, None),
     };
-    let total_epochs = p.get("epochs")
+    let total_epochs = p
+        .get("epochs")
         .or_else(|| p.pointer("/lora/epochs"))
         .or_else(|| p.pointer("/yolo/epochs"))
         .and_then(|v| v.as_i64())
         .map(|v| v as i32);
-    let total_steps = p.get("batchSize")
+    let total_steps = p
+        .get("batchSize")
         .or_else(|| p.get("batch_size"))
         .or_else(|| p.get("totalSteps"))
         .or_else(|| p.get("total_steps"))
@@ -628,7 +632,8 @@ pub async fn stream_job_events(State(state): State<AppState>, Path(id): Path<Str
                 || telemetry.phase_message != c.last_message
                 || telemetry.step != c.last_step
                 || telemetry.epoch != c.last_epoch
-                || (telemetry.vram_used_gb.unwrap_or(0.0) - c.last_vram.unwrap_or(0.0)).abs() > 0.05
+                || (telemetry.vram_used_gb.unwrap_or(0.0) - c.last_vram.unwrap_or(0.0)).abs()
+                    > 0.05
                 || is_terminal;
 
             if has_changed {

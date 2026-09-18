@@ -930,7 +930,8 @@ pub async fn stage_cached_weight(
     scoped_key: &str,
     expected_md5: &str,
 ) -> Result<(), PipelineError> {
-    stage_cached_weight_with_progress(s3, cache_dir, dest_file, scoped_key, expected_md5, None).await
+    stage_cached_weight_with_progress(s3, cache_dir, dest_file, scoped_key, expected_md5, None)
+        .await
 }
 
 pub async fn stage_cached_weight_with_progress(
@@ -1565,55 +1566,64 @@ async fn run_job_inner(
         }
     }
 
-fn make_progress_reporter(
-    report_client: &Arc<dyn ReportClient>,
-    job_id: &str,
-    phase: &'static str,
-    prefix_msg: &'static str,
-    base_progress: f64,
-    progress_span: f64,
-) -> impl Fn(u64, Option<u64>) + Send + Sync + 'static {
-    let rc = Arc::clone(report_client);
-    let jid = job_id.to_string();
-    move |downloaded: u64, total: Option<u64>| {
-        let dl_mb = downloaded as f64 / (1024.0 * 1024.0);
-        let (msg, prog) = if let Some(tot) = total {
-            let tot_mb = tot as f64 / (1024.0 * 1024.0);
-            let pct = if tot > 0 {
-                (downloaded as f64 / tot as f64).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            (
-                format!("{prefix_msg} ({:.1} MB / {:.1} MB · {:.0}%)...", dl_mb, tot_mb, pct * 100.0),
-                base_progress + progress_span * pct,
-            )
-        } else {
-            (format!("{prefix_msg} ({:.1} MB)...", dl_mb), base_progress + 0.01)
-        };
-        let rc_spawn = Arc::clone(&rc);
-        let jid_spawn = jid.clone();
-        tracing::info!(job_id = %jid_spawn, phase = %phase, "{msg}");
-        tokio::spawn(async move {
-            let _ = rc_spawn.report(
-                    &jid_spawn,
-                    &ReportBody {
-                        status: "running".to_string(),
-                        progress: Some(prog),
-                        epoch: None,
-                        step: None,
-                        metrics: None,
-                        error: None,
-                        artifacts: None,
-                        meta_content: None,
-                        phase: Some(phase.to_string()),
-                        message: Some(msg),
-                    },
+    fn make_progress_reporter(
+        report_client: &Arc<dyn ReportClient>,
+        job_id: &str,
+        phase: &'static str,
+        prefix_msg: &'static str,
+        base_progress: f64,
+        progress_span: f64,
+    ) -> impl Fn(u64, Option<u64>) + Send + Sync + 'static {
+        let rc = Arc::clone(report_client);
+        let jid = job_id.to_string();
+        move |downloaded: u64, total: Option<u64>| {
+            let dl_mb = downloaded as f64 / (1024.0 * 1024.0);
+            let (msg, prog) = if let Some(tot) = total {
+                let tot_mb = tot as f64 / (1024.0 * 1024.0);
+                let pct = if tot > 0 {
+                    (downloaded as f64 / tot as f64).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                (
+                    format!(
+                        "{prefix_msg} ({:.1} MB / {:.1} MB · {:.0}%)...",
+                        dl_mb,
+                        tot_mb,
+                        pct * 100.0
+                    ),
+                    base_progress + progress_span * pct,
                 )
-                .await;
-        });
+            } else {
+                (
+                    format!("{prefix_msg} ({:.1} MB)...", dl_mb),
+                    base_progress + 0.01,
+                )
+            };
+            let rc_spawn = Arc::clone(&rc);
+            let jid_spawn = jid.clone();
+            tracing::info!(job_id = %jid_spawn, phase = %phase, "{msg}");
+            tokio::spawn(async move {
+                let _ = rc_spawn
+                    .report(
+                        &jid_spawn,
+                        &ReportBody {
+                            status: "running".to_string(),
+                            progress: Some(prog),
+                            epoch: None,
+                            step: None,
+                            metrics: None,
+                            error: None,
+                            artifacts: None,
+                            meta_content: None,
+                            phase: Some(phase.to_string()),
+                            message: Some(msg),
+                        },
+                    )
+                    .await;
+            });
+        }
     }
-}
 
     // 2. Download package.zip via S3 (scoped — D2 barreira principal) se presente
     if let Some(ref pr) = dispatch.package_ref {

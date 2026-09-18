@@ -3335,8 +3335,8 @@ components:
           description: "Semente determinística fixa para a geração das amostras de validação. Opcional (padrão 42)."
         resolution:
           type: integer
-          enum: [512, 768, 1024]
-          description: "Resolução quadrada de treino das imagens (ex: 512 para SD 1.5, 1024 para SDXL/Flux). Opcional."
+          enum: [256, 512, 768, 1024, 1280, 1328, 1536, 2048]
+          description: "Resolução quadrada de treino das imagens (ex: 512 para SD 1.5, 1024 para SDXL/Flux, 2048 para ultra). Opcional."
         gradientAccumulationSteps:
           type: integer
           enum: [1, 2, 4, 8]

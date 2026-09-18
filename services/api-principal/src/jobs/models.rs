@@ -731,7 +731,7 @@ autolabel:
 
 const ALLOWED_DIFFUSION_BASE_MODELS: &[&str] = &["sdxl", "flux", "sd15", "flux-2-klein-4b"];
 const ALLOWED_DIFFUSION_BATCH: &[u32] = &[1, 2, 4, 8];
-const ALLOWED_DIFFUSION_RESOLUTIONS: &[u32] = &[512, 768, 1024];
+const ALLOWED_DIFFUSION_RESOLUTIONS: &[u32] = &[256, 512, 768, 1024, 1280, 1328, 1536, 2048];
 const ALLOWED_DIFFUSION_GRAD_ACCUM: &[u32] = &[1, 2, 4, 8];
 const ALLOWED_DIFFUSION_OPTIMIZERS: &[&str] = &["adamw8bit", "adamw", "prodigy"];
 const ALLOWED_DIFFUSION_LR_SCHEDULERS: &[&str] =

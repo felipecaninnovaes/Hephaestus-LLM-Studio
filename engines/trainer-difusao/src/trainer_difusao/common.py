@@ -451,11 +451,33 @@ def _precompute_text_cache(
     if not uniq:
         return
     try:
-        for i in range(0, len(uniq), batch_size):
-            chunk = uniq[i : i + batch_size]
-            out = encode_fn(chunk)
+        i = 0
+        bs = batch_size
+        while i < len(uniq):
+            chunk = uniq[i : i + bs]
+            try:
+                out = encode_fn(chunk)
+            except Exception as e:
+                is_oom = "out of memory" in str(e).lower()
+                if is_oom and bs > 1:
+                    bs = max(1, bs // 2)
+                    try:
+                        import torch
+
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                    except ImportError:
+                        pass
+                    print(
+                        f"[INFO] OOM no pré-compute do cache de text embeddings "
+                        f"— reduzindo batch para {bs}.",
+                        flush=True,
+                    )
+                    continue
+                raise
             for k, cap in enumerate(chunk):
                 cache.put(cap, {name: t[k].detach().cpu() for name, t in out.items()})
+            i += len(chunk)
     except Exception as e:
         cache.enabled = False
         print(

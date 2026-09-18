@@ -153,6 +153,37 @@ async fn ready(State(state): State<AppState>) -> Response {
     }
 }
 
+async fn metrics_handler(State(state): State<AppState>) -> Response {
+    let active_count = state.active_jobs.len();
+    let max_concurrency = state.max_concurrent_jobs;
+    let s3_ok = if state.s3.ping().await { 1 } else { 0 };
+
+    let body = format!(
+        "# HELP hephaestus_orchestrator_up Service liveness\n\
+         # TYPE hephaestus_orchestrator_up gauge\n\
+         hephaestus_orchestrator_up 1\n\
+         # HELP hephaestus_orchestrator_active_jobs Active jobs running on this node\n\
+         # TYPE hephaestus_orchestrator_active_jobs gauge\n\
+         hephaestus_orchestrator_active_jobs {active_count}\n\
+         # HELP hephaestus_orchestrator_max_concurrent_jobs Maximum concurrent jobs allowed on this node\n\
+         # TYPE hephaestus_orchestrator_max_concurrent_jobs gauge\n\
+         hephaestus_orchestrator_max_concurrent_jobs {max_concurrency}\n\
+         # HELP hephaestus_orchestrator_s3_connected S3 accessibility probe\n\
+         # TYPE hephaestus_orchestrator_s3_connected gauge\n\
+         hephaestus_orchestrator_s3_connected {s3_ok}\n"
+    );
+
+    (
+        StatusCode::OK,
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    )
+        .into_response()
+}
+
 /// POST /internal/dispatch — recebe job do manager (D4 :263–267).
 async fn dispatch_handler(State(state): State<AppState>, body: Bytes) -> Response {
     if body.is_empty() {
@@ -343,6 +374,7 @@ fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
+        .route("/metrics", get(metrics_handler))
         .merge(api)
         .layer(middleware::from_fn(request_id_middleware))
         .layer(TraceLayer::new_for_http())

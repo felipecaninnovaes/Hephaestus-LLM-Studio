@@ -22,7 +22,7 @@ Arquivo responsavel por reunir todas as melhorias e correçoes de forma organiza
       - [ ] 06. Ingress/Reverse Proxy único para portas de produção
       - [ ] 07. Segregação de redes Docker Compose
       - [ ] 08. Containers com usuário não-privilegiado (`USER`)
-      - [ ] 09. Métricas Prometheus e observabilidade dos serviços
+      - [x] 09. Métricas Prometheus e observabilidade dos serviços
       - [ ] 10. Limites de recursos (CPU/Memória) no compose
 
   - Backend, Orchestrator, Pipelines & Métricas:
@@ -32,6 +32,6 @@ Arquivo responsavel por reunir todas as melhorias e correçoes de forma organiza
       - [x] 03. Deadlock de `SIGTERM` e dependências GPU (`torchao`) nas Engines
       - [x] 04. Garbage Collection de sessões chunked, `outputs/`, `datasets-cache/` e S3
       - [x] 05. Retry e idempotência em `prepare_complete` e reports do orquestrador
-      - [ ] 06. Instrumentação Prometheus (`/metrics`) nos 3 serviços Rust
-      - [ ] 07. Tracing distribuído e propagação de `x-request-id` / `traceparent`
+      - [x] 06. Instrumentação Prometheus (`/metrics`) nos 3 serviços Rust
+      - [x] 07. Tracing distribuído e propagação de `x-request-id` / `traceparent`
       - [x] 08. Políticas de retenção de checkpoints locais por época

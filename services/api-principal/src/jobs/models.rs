@@ -1599,9 +1599,9 @@ pub fn generate_diffusion_generate_config_yaml(
     };
 
     // Encoder custom: placeholder literal dentro de `generate:` — o
-    // orchestrator substitui via text_encoder_ref. Persiste também o model_id para reprodutibilidade.
-    let text_encoder_block = if let Some(ref enc_id) = req.text_encoder_model_id {
-        format!("  text_encoder_path: \"{{text_encoder_path}}\"\n  text_encoder_model_id: \"{enc_id}\"\n")
+    // orchestrator substitui via text_encoder_ref (NUNCA id/path real).
+    let text_encoder_block = if req.text_encoder_model_id.is_some() {
+        "  text_encoder_path: \"{text_encoder_path}\"\n".to_string()
     } else {
         String::new()
     };

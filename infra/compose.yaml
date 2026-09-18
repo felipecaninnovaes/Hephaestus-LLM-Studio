@@ -1,3 +1,9 @@
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   db:
     image: pgvector/pgvector:pg16-trixie@sha256:c8483555ce48101872f888c1df8a895ff689d6c7c7a5f7ac266475f9dfe89e0b
@@ -10,6 +16,7 @@ services:
     ports:
       - '${DB_PUBLISH:-127.0.0.1}:5432:5432'
     restart: unless-stopped
+    logging: *default-logging
     healthcheck:
       # Cold boot com volume novo (pgdata vazio) demora: initdb antes de
       # aceitar conexões/DNS registrar; sem isso o principal dá crash-loop.
@@ -25,6 +32,7 @@ services:
     ports:
       - '8080:8080'
     restart: unless-stopped
+    logging: *default-logging
     environment:
       DATABASE_URL: postgres://studio:${POSTGRES_PASSWORD:-studio}@db/studio
       STUDIO_PASSWORD: ${STUDIO_PASSWORD:-changeme}
@@ -225,6 +233,7 @@ services:
     depends_on:
       - principal
     restart: unless-stopped
+    logging: *default-logging
 
 volumes:
   pgdata:

@@ -29,9 +29,9 @@ Arquivo responsavel por reunir todas as melhorias e correçoes de forma organiza
     - [ ] Plano de Autonomia 24/7 (detalhado em `tasks/impruvements/backend-orchestrator-pipelines-autonomia.md`):
       - [x] 01. Correção de abort em `preparing` e loop do `job_prepares` (evitar zumbi/503)
       - [x] 02. Barreira local de GPU/VRAM e timeout com `kill_on_drop` no Orchestrator
-      - [ ] 03. Deadlock de `SIGTERM` e dependências GPU (`torchao`) nas Engines
+      - [x] 03. Deadlock de `SIGTERM` e dependências GPU (`torchao`) nas Engines
       - [ ] 04. Garbage Collection de sessões chunked, `outputs/`, `datasets-cache/` e S3
       - [x] 05. Retry e idempotência em `prepare_complete` e reports do orquestrador
       - [ ] 06. Instrumentação Prometheus (`/metrics`) nos 3 serviços Rust
       - [ ] 07. Tracing distribuído e propagação de `x-request-id` / `traceparent`
-      - [ ] 08. Políticas de retenção de checkpoints locais por época
+      - [x] 08. Políticas de retenção de checkpoints locais por época

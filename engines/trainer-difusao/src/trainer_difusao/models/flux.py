@@ -24,6 +24,8 @@ from trainer_difusao.common import (
     _setup_cache_dir,
     _validate_train_aux,
     TextEmbedsCache,
+    _prune_checkpoints,
+    _cleanup_cuda,
 )
 from trainer_difusao.dataset import DiffusionDataset, build_dataloader
 from trainer_difusao.models.base import BaseModelTrainer
@@ -1511,6 +1513,9 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                     "epoch": str(epoch),
                 },
             )
+            _prune_checkpoints(checkpoints_dir, keep_last_n=2)
+
+        _cleanup_cuda()
 
         # Geração de amostra visual periódica
         if sample_prompt and sample_interval > 0 and (epoch_idx % sample_interval == 0 or epoch_idx == epochs):

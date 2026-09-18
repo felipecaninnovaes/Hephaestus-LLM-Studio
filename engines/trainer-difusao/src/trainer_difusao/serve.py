@@ -404,10 +404,9 @@ def _do_shutdown_graceful():
 # Signal handler (SIGTERM)
 # ---------------------------------------------------------------------------
 def _sigterm_handler(signum, frame):
-    """Handler para SIGTERM — mesma rotina do /shutdown."""
-    print(f"[DAEMON] Sinal {signum} recebido — shutdown graciosamente.", flush=True)
-    _do_shutdown_graceful()
-
+    """Handler para SIGTERM — dispara shutdown em thread para evitar deadlock na thread principal."""
+    print(f"[DAEMON] Sinal {signum} recebido — shutdown gracioso.", flush=True)
+    threading.Thread(target=_do_shutdown_graceful, daemon=True).start()
 
 # ---------------------------------------------------------------------------
 # CLI entry point

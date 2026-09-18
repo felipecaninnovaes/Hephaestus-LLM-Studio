@@ -153,6 +153,37 @@ def _emit_metric(
         )
 
 
+def _prune_checkpoints(checkpoints_dir: Path, keep_last_n: int = 2) -> None:
+    """Mantém apenas os últimos keep_last_n checkpoints de época para não esgotar o disco."""
+    try:
+        files = sorted(
+            checkpoints_dir.glob("*_epoch_*.safetensors"),
+            key=lambda p: p.stat().st_mtime,
+        )
+        if len(files) > keep_last_n:
+            for f in files[:-keep_last_n]:
+                try:
+                    f.unlink()
+                    print(f"[CHECKPOINT] Pruned old checkpoint: {f.name}", flush=True)
+                except OSError:
+                    pass
+    except Exception as e:
+        print(f"[CHECKPOINT] Aviso: falha ao podar checkpoints antigos: {e}", flush=True)
+
+
+def _cleanup_cuda() -> None:
+    """Invoca coleta de lixo e limpeza de cache VRAM CUDA de forma segura."""
+    import gc
+
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
 def _setup_cache_dir(hf_token: str | None = None) -> str:
     """Configura diretório de cache persistente para Hugging Face e PyTorch no volume /outputs."""
     if Path("/outputs").exists():

@@ -14,6 +14,8 @@ RUN pip install --no-cache-dir \
       "accelerate>=1.2.0" \
       "peft>=0.14.0" \
       "bitsandbytes>=0.45.0" \
+      "torchao>=0.8.0" \
+      "prodigyopt" \
       "safetensors>=0.4.5" \
       "sentencepiece" \
       "protobuf" \

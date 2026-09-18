@@ -18,7 +18,7 @@ RUN mkdir -p services/api-principal/src services/orchestrator/src \
   && echo "fn main() {}" > services/orchestrator/src/main.rs \
   && touch services/manager/src/main.rs && cargo build --release -p manager
 
-FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
+FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
 WORKDIR /app
 COPY --from=build /app/target/release/manager /app/manager
 EXPOSE 8081

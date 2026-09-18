@@ -8,7 +8,8 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - '5432:5432'
+      - '${DB_PUBLISH:-127.0.0.1}:5432:5432'
+    restart: unless-stopped
     healthcheck:
       # Cold boot com volume novo (pgdata vazio) demora: initdb antes de
       # aceitar conexões/DNS registrar; sem isso o principal dá crash-loop.
@@ -23,6 +24,7 @@ services:
       dockerfile: services/api-principal/Dockerfile
     ports:
       - '8080:8080'
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgres://studio:${POSTGRES_PASSWORD:-studio}@db/studio
       STUDIO_PASSWORD: ${STUDIO_PASSWORD:-changeme}
@@ -64,6 +66,7 @@ services:
       # .env.example). Credenciais são LOCAL-DEV: rotacione se sair da LAN.
       - '${SEAWEED_PUBLISH:-127.0.0.1}:8333:8333'
       - '127.0.0.1:9333:9333'
+    restart: unless-stopped
     volumes:
       - seaweed_data:/data
       - ./seaweedfs-s3.json:/etc/seaweedfs/s3.json:ro
@@ -117,6 +120,7 @@ services:
       PORT: "8090"
     ports:
       - '127.0.0.1:8090:8090'
+    restart: unless-stopped
     volumes:
       - models:/data/models
     healthcheck:
@@ -131,7 +135,8 @@ services:
       context: ..
       dockerfile: services/manager/Dockerfile
     ports:
-      - '8081:8081'
+      - '${MANAGER_PUBLISH:-127.0.0.1}:8081:8081'
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgres://studio:${POSTGRES_PASSWORD:-studio}@db/studio
       MANAGER_TOKEN: ${MANAGER_TOKEN:-changeme}
@@ -140,7 +145,7 @@ services:
       AUTO_ADOPT_LOCAL: ${AUTO_ADOPT_LOCAL:-1}
     depends_on:
       db:
-        condition: service_started
+        condition: service_healthy
       principal:
         condition: service_started
       s3-init:
@@ -151,7 +156,8 @@ services:
       context: ..
       dockerfile: services/orchestrator/Dockerfile
     ports:
-      - '8082:8082'
+      - '${ORCHESTRATOR_PUBLISH:-127.0.0.1}:8082:8082'
+    restart: unless-stopped
     environment:
       MANAGER_URL: ${MANAGER_URL:-http://manager:8081}
       MANAGER_TOKEN: ${MANAGER_TOKEN:-changeme}
@@ -218,6 +224,7 @@ services:
       API_INTERNAL_URL: http://principal:8080
     depends_on:
       - principal
+    restart: unless-stopped
 
 volumes:
   pgdata:

@@ -775,6 +775,33 @@ fn build_router(state: AppState) -> Router {
 // Boot
 // ---------------------------------------------------------------------------
 
+/// Valida e resolve o MANAGER_TOKEN.
+/// Em produção (ENVIRONMENT=production), exige token explícito e rejeita valores triviais ("changeme", "manager-dev-token").
+/// Em desenvolvimento, permite fallback para "manager-dev-token" emitindo warning.
+fn resolve_manager_token(
+    raw_token: Result<String, std::env::VarError>,
+    is_prod: bool,
+) -> Result<String, String> {
+    match raw_token {
+        Ok(t)
+            if is_prod && (t.trim().is_empty() || t == "changeme" || t == "manager-dev-token") =>
+        {
+            Err(format!(
+                "MANAGER_TOKEN inseguro ('{t}') não permitido em produção"
+            ))
+        }
+        Ok(t) if t.trim().is_empty() => Err("MANAGER_TOKEN não pode ser vazio".to_string()),
+        Ok(t) => Ok(t),
+        Err(_) if is_prod => Err("MANAGER_TOKEN é obrigatório em produção".to_string()),
+        Err(_) => {
+            tracing::warn!(
+                "MANAGER_TOKEN não definido: usando token dev inseguro ('manager-dev-token')"
+            );
+            Ok("manager-dev-token".to_string())
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     // Tracing.
@@ -788,7 +815,11 @@ async fn main() {
 
     // Config.
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL obrigatório");
-    let token = std::env::var("MANAGER_TOKEN").unwrap_or_else(|_| "manager-dev-token".into());
+    let is_prod = std::env::var("ENVIRONMENT")
+        .map(|e| e.eq_ignore_ascii_case("production"))
+        .unwrap_or(false);
+    let token = resolve_manager_token(std::env::var("MANAGER_TOKEN"), is_prod)
+        .expect("validação de MANAGER_TOKEN");
     let exec_mode = std::env::var("EXEC_MODE").unwrap_or_else(|_| "docker".into());
     let orch_workdir = std::env::var("ORCH_WORKDIR").unwrap_or_else(|_| "/data".into());
     let trainer_image =
@@ -1043,5 +1074,42 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(json["code"], "invalid_request");
+    }
+
+    #[test]
+    fn test_resolve_manager_token_dev_default() {
+        let res = resolve_manager_token(Err(std::env::VarError::NotPresent), false);
+        assert_eq!(res.unwrap(), "manager-dev-token");
+    }
+
+    #[test]
+    fn test_resolve_manager_token_empty_fails() {
+        let res = resolve_manager_token(Ok("   ".to_string()), false);
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err(), "MANAGER_TOKEN não pode ser vazio");
+    }
+
+    #[test]
+    fn test_resolve_manager_token_prod_missing_fails() {
+        let res = resolve_manager_token(Err(std::env::VarError::NotPresent), true);
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err(), "MANAGER_TOKEN é obrigatório em produção");
+    }
+
+    #[test]
+    fn test_resolve_manager_token_prod_trivial_fails() {
+        let res = resolve_manager_token(Ok("changeme".to_string()), true);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("não permitido em produção"));
+
+        let res2 = resolve_manager_token(Ok("manager-dev-token".to_string()), true);
+        assert!(res2.is_err());
+        assert!(res2.unwrap_err().contains("não permitido em produção"));
+    }
+
+    #[test]
+    fn test_resolve_manager_token_prod_valid() {
+        let res = resolve_manager_token(Ok("super-secret-token-123".to_string()), true);
+        assert_eq!(res.unwrap(), "super-secret-token-123");
     }
 }

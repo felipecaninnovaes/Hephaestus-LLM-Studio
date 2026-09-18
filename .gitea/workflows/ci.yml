@@ -27,7 +27,9 @@ name: CI
 
 on:
   push:
-
+    branches:
+      - main
+      - develop
 jobs:
   rust:
     runs-on: ubuntu-latest
@@ -44,10 +46,9 @@ jobs:
         env:
           POSTGRES_USER: studio
           POSTGRES_PASSWORD: test
-          POSTGRES_DB: studio
+          POSTGRES_DB: studio_test
         options: >-
-          --health-cmd "pg_isready -U studio -d studio"
-          --health-interval 5s
+          --health-cmd "pg_isready -U studio -d studio_test"
           --health-timeout 5s
           --health-retries 20
     env:
@@ -65,13 +66,14 @@ jobs:
         run: cargo fmt --all --check
       - name: check (workspace, sem banco — regra ADR-0002 D10)
         run: cargo check --workspace
-      - name: test — units + contract (sem banco)
-        run: cargo test -p api-principal
+      - name: test — units + contract (sem banco, workspace)
+        run: cargo test --workspace
       - name: test — integração de banco (--ignored, migrações no setup do teste)
         env:
-          DATABASE_URL: postgres://studio:test@postgres:5432/studio
-        run: cargo test -p api-principal --test datasets_db -- --ignored
-
+          DATABASE_URL: postgres://studio:test@postgres:5432/studio_test
+        run: |
+          cargo test -p api-principal --test datasets_db -- --ignored
+          cargo test -p manager --test manager_db -- --ignored
   web:
     runs-on: ubuntu-latest
     container:
@@ -110,3 +112,25 @@ jobs:
         run: docker compose -f infra/compose.yaml -f infra/compose.integ.yaml config -q
       - name: valida compose do spike
         run: docker compose -f infra/compose.spike.yaml config -q
+
+  python:
+    runs-on: ubuntu-latest
+    container:
+      image: python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+    env:
+      HEPH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: git
+        run: apt-get update -qq && apt-get install -y -qq --no-install-recommends git ca-certificates
+      - name: checkout manual
+        run: |
+          git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$HEPH_TOKEN" | base64 -w0)" clone "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" .
+          git checkout "$GITHUB_SHA"
+      - name: compileall
+        run: python -m compileall engines/trainer-*/src
+      - name: install uv
+        run: pip install --no-cache-dir uv
+      - name: test trainer-yolo
+        run: cd engines/trainer-yolo && uv run pytest
+      - name: test trainer-difusao
+        run: cd engines/trainer-difusao && uv run pytest

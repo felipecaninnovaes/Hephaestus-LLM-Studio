@@ -20,7 +20,23 @@ from trainer_difusao.generate import (
 )
 from trainer_difusao.train import main
 
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
 
+try:
+    import diffusers
+    HAS_DIFFUSERS = True
+except ImportError:
+    HAS_DIFFUSERS = False
+
+try:
+    import transformers
+    HAS_TRANSFORMERS = True
+except ImportError:
+    HAS_TRANSFORMERS = False
 class _Base(unittest.TestCase):
     def setUp(self):
         self.old_mock = os.environ.get("ENGINE_MOCK")
@@ -140,8 +156,8 @@ class TestUpscaleQuantValidation(_Base):
             load_and_validate_generate_config(self._base_cfg(quantization="16bit"))
 
 
+@unittest.skipUnless(HAS_DIFFUSERS, "requer diffusers instalado")
 class TestSchedulerMapping(unittest.TestCase):
-    """build_scheduler: classes corretas + from_config + default=None."""
 
     def test_default_is_none(self):
         from trainer_difusao.schedulers import build_scheduler
@@ -227,8 +243,8 @@ class TestSchedulerMapping(unittest.TestCase):
             build_scheduler("dpmpp_2m", "flux", base)
 
 
+@unittest.skipUnless(HAS_DIFFUSERS, "requer diffusers instalado")
 class TestSchedulerNoContamination(unittest.TestCase):
-    """(b) swapped_scheduler restaura o original inclusive em excecao."""
 
     def _pipe(self):
         from diffusers import EulerDiscreteScheduler
@@ -444,8 +460,8 @@ class TestMetaSamplerAlways(unittest.TestCase):
         self.assertNotIn("upscale", meta)
 
 
+@unittest.skipUnless(HAS_DIFFUSERS and HAS_TRANSFORMERS, "requer diffusers e transformers instalados")
 class TestCustomWeightsQuantGuard(_Base):
-    """C2: quantizacao aplicada a pesos custom flux-2 (sem fallback silencioso)."""
 
     _QUANT = object()  # sentinela p/ assercao de kwargs
 
@@ -902,8 +918,8 @@ class TestCustomWeightsQuantGuard(_Base):
 
 
 
+@unittest.skipUnless(HAS_TORCH, "requer torch instalado")
 class TestEncoderOverrideSdGuard(_Base):
-    """N2: text_encoder_path com checkpoint sdxl/sd15 -> SystemExit (sem engolir)."""
 
     def test_dies_for_sdxl(self):
         params = load_and_validate_generate_config(

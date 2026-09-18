@@ -29,8 +29,14 @@ def _basicsr_to_legacy(key: str) -> str:
         idx, rdb, conv, tail = m.groups()
         return f"model.1.sub.{int(idx)}.RDB{rdb}.conv{conv}.0.{tail}"
     raise AssertionError(f"key BasicSR inesperada no teste: {key}")
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
 
 
+@unittest.skipUnless(HAS_TORCH, "requer torch instalado")
 class TestRemapLegacyRoundTrip(unittest.TestCase):
     """state_dict legado sintetico (shapes exatos) -> remap -> strict load + forward."""
 

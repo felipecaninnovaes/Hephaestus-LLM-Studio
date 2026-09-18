@@ -8,7 +8,11 @@ from pathlib import Path
 import yaml
 from trainer_difusao.train import main
 
-
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
 class TestTrainerDifusao(unittest.TestCase):
     def setUp(self):
         self.old_mock = os.environ.get("ENGINE_MOCK")
@@ -659,8 +663,8 @@ class TestTrainerDifusao(unittest.TestCase):
             )
             self.assertEqual(dc.samples[0][1], "")
 
+    @unittest.skipUnless(HAS_TORCH, "requer torch instalado")
     def test_text_embeds_cache_roundtrip_and_key(self):
-        import torch
 
         from trainer_difusao.common import TextEmbedsCache, _caption_cache_key
 
@@ -674,8 +678,8 @@ class TestTrainerDifusao(unittest.TestCase):
             self.assertIsNotNone(got)
             self.assertTrue(torch.equal(got["hidden"], torch.zeros(2, 4)))
 
+    @unittest.skipUnless(HAS_TORCH, "requer torch instalado")
     def test_cached_encode_uses_cache_and_warms_miss(self):
-        import torch
 
         from trainer_difusao.common import TextEmbedsCache, _cached_encode
 

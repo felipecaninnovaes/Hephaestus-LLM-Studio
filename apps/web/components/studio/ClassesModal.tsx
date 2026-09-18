@@ -141,7 +141,12 @@ export default function ClassesModal({
       return;
     }
     const seen = new Set<string>();
-    if (names.some((n) => (seen.has(n) ? true : (seen.add(n), false)))) {
+    const hasDuplicates = names.some((n) => {
+      if (seen.has(n)) return true;
+      seen.add(n);
+      return false;
+    });
+    if (hasDuplicates) {
       setFormError("Há nomes de classe duplicados.");
       return;
     }

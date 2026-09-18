@@ -28,7 +28,7 @@ import { ApiError } from "@/lib/api";
 import { diffusionErrorMessage } from "@/types/studio";
 import { showToast } from "./Toast";
 import NodeSelect from "./NodeSelect";
-import type { Dataset, Model, Telemetry, DiffusionPreset } from "@/types/studio";
+import type { Dataset, Model, Telemetry, DiffusionPreset, DiffusionOptimizer } from "@/types/studio";
 
 export const DIFFUSION_EPOCHS_MIN = 1;
 export const DIFFUSION_EPOCHS_MAX = 100;
@@ -55,17 +55,17 @@ export function estimateDiffusionVramGb(
   batchSize: number,
   rank: number,
   resolution: number = 1024,
-  optimizer: "adamw8bit" | "adamw" | "prodigy" = "adamw8bit",
+  optimizer: DiffusionOptimizer = "paged_adamw8bit",
   mixedPrecision: "fp16" | "bf16" | "no" = "fp16",
   quantization: "none" | "2bit" | "4bit" | "6bit" | "8bit" = "4bit",
 ): number {
   let baseGb = 12.0;
   if (baseModel === "sd15") {
-    baseGb = quantization === "2bit" ? 5.2 : quantization === "4bit" ? 6.0 : quantization === "6bit" ? 6.5 : quantization === "8bit" ? 7.0 : 8.0;
+    baseGb = quantization === "2bit" ? 4.5 : quantization === "4bit" ? 5.0 : quantization === "6bit" ? 5.5 : quantization === "8bit" ? 6.0 : 7.5;
   } else if (baseModel === "sdxl") {
-    baseGb = quantization === "2bit" ? 8.6 : quantization === "4bit" ? 9.5 : quantization === "6bit" ? 10.2 : quantization === "8bit" ? 11.0 : 12.0;
+    baseGb = quantization === "2bit" ? 7.0 : quantization === "4bit" ? 8.0 : quantization === "6bit" ? 9.0 : quantization === "8bit" ? 10.0 : 12.0;
   } else if (baseModel === "flux") {
-    baseGb = quantization === "2bit" ? 9.0 : quantization === "4bit" ? 10.0 : quantization === "6bit" ? 12.2 : quantization === "8bit" ? 14.5 : 22.0;
+    baseGb = quantization === "2bit" ? 7.5 : quantization === "4bit" ? 8.0 : quantization === "6bit" ? 10.5 : quantization === "8bit" ? 12.5 : 20.0;
   }
 
   // Ajuste por resolução relativa a 1024
@@ -77,7 +77,16 @@ export function estimateDiffusionVramGb(
 
   const batchMemory = (batchSize - 1) * (baseModel === "flux" ? 1.8 : baseModel === "sdxl" ? 2.0 : 1.2);
   const rankMemory = (rank / 64) * 0.8;
-  const optimMemory = optimizer === "adamw" ? 1.5 : optimizer === "prodigy" ? 0.6 : 0;
+  const optimMemory =
+    optimizer === "paged_adamw8bit"
+      ? -0.2
+      : optimizer === "adamw8bit"
+      ? 0
+      : optimizer === "prodigy"
+      ? 0.6
+      : optimizer === "paged_adamw32bit"
+      ? 0.8
+      : 1.5;
   const precMemory = mixedPrecision === "no" ? 3.5 : 0;
 
   return Math.max(4.0, Math.round((baseGb + batchMemory + rankMemory + optimMemory + precMemory) * 10) / 10);
@@ -143,8 +152,8 @@ export default function ForjaDifusaoSetup({
   const [gradientAccumulationSteps, setGradientAccumulationSteps] = useState<number>(
     initialPreset?.gradientAccumulationSteps ?? 1
   );
-  const [optimizer, setOptimizer] = useState<"adamw8bit" | "adamw" | "prodigy">(
-    initialPreset?.optimizer ?? "adamw8bit"
+  const [optimizer, setOptimizer] = useState<DiffusionOptimizer>(
+    initialPreset?.optimizer ?? "paged_adamw8bit"
   );
   const [lrScheduler, setLrScheduler] = useState<"cosine" | "linear" | "constant" | "constant_with_warmup">(
     initialPreset?.lrScheduler ?? "cosine"
@@ -719,11 +728,28 @@ export default function ForjaDifusaoSetup({
     [],
   );
 
-  const optimizerOptions = useMemo<SelectOption<"adamw8bit" | "adamw" | "prodigy">[]>(
+  const optimizerOptions = useMemo<SelectOption<DiffusionOptimizer>[]>(
     () => [
-      { value: "adamw8bit", label: "AdamW 8-bit (BitsAndBytes - Recomendado)" },
-      { value: "adamw", label: "AdamW FP32 (Padrão PyTorch)" },
-      { value: "prodigy", label: "Prodigy (Taxa adaptativa D-Adaptation)" },
+      {
+        value: "paged_adamw8bit",
+        label: "Paged AdamW 8-bit (BitsAndBytes — Recomendado p/ QLoRA)",
+      },
+      {
+        value: "paged_adamw32bit",
+        label: "Paged AdamW 32-bit (BitsAndBytes — Máxima precisão)",
+      },
+      {
+        value: "adamw8bit",
+        label: "AdamW 8-bit (BitsAndBytes Padrão)",
+      },
+      {
+        value: "adamw",
+        label: "AdamW FP32 (Padrão PyTorch)",
+      },
+      {
+        value: "prodigy",
+        label: "Prodigy (Taxa adaptativa D-Adaptation)",
+      },
     ],
     [],
   );
@@ -1021,7 +1047,7 @@ export default function ForjaDifusaoSetup({
                 learningRate: "0.00003",
                 resolution: 1024,
                 gradientAccumulationSteps: 1,
-                optimizer: "adamw8bit",
+                optimizer: "paged_adamw8bit",
                 lrScheduler: "cosine",
                 lrWarmupSteps: 0,
                 mixedPrecision: "bf16",
@@ -1034,7 +1060,7 @@ export default function ForjaDifusaoSetup({
               FLUX.2 Klein 4B
             </span>
             <span className="font-mono text-3xs text-zinc-400 mt-0.5">
-              1024px · 4-bit · ~10GB
+              1024px · QLoRA 4-bit · ~8-10GB
             </span>
           </button>
 
@@ -1052,7 +1078,7 @@ export default function ForjaDifusaoSetup({
                 learningRate: "0.0001",
                 resolution: 1024,
                 gradientAccumulationSteps: 1,
-                optimizer: "adamw8bit",
+                optimizer: "paged_adamw8bit",
                 lrScheduler: "cosine",
                 lrWarmupSteps: 0,
                 mixedPrecision: "fp16",
@@ -1065,7 +1091,7 @@ export default function ForjaDifusaoSetup({
               SDXL Padrão
             </span>
             <span className="font-mono text-3xs text-zinc-400 mt-0.5">
-              1024px · Rank 16 · 8-bit
+              1024px · QLoRA SDXL · ~8GB
             </span>
           </button>
 
@@ -1083,7 +1109,7 @@ export default function ForjaDifusaoSetup({
                 learningRate: "0.0001",
                 resolution: 512,
                 gradientAccumulationSteps: 2,
-                optimizer: "adamw8bit",
+                optimizer: "paged_adamw8bit",
                 lrScheduler: "cosine",
                 lrWarmupSteps: 0,
                 mixedPrecision: "fp16",
@@ -1093,10 +1119,10 @@ export default function ForjaDifusaoSetup({
             className="flex flex-col text-left p-2.5 rounded-lg border border-white/10 bg-white/[0.02] hover:border-brand-500/40 hover:bg-white/[0.05] transition-colors text-zinc-300 group focus:outline-none focus:ring-2 focus:ring-brand-500/40"
           >
             <span className="font-display text-xs font-medium text-zinc-200 group-hover:text-brand-300 transition-colors">
-              Eco 8 GB (SD 1.5)
+              Eco 5 GB (SD 1.5)
             </span>
             <span className="font-mono text-3xs text-zinc-400 mt-0.5">
-              512px · Rank 8 · GA 2x
+              512px · QLoRA 4-bit · GA 2x
             </span>
           </button>
 
@@ -1114,7 +1140,7 @@ export default function ForjaDifusaoSetup({
                 learningRate: "0.00005",
                 resolution: 1024,
                 gradientAccumulationSteps: 2,
-                optimizer: "adamw8bit",
+                optimizer: "paged_adamw8bit",
                 lrScheduler: "cosine",
                 lrWarmupSteps: 50,
                 mixedPrecision: "fp16",
@@ -1410,7 +1436,15 @@ export default function ForjaDifusaoSetup({
               GA: {gradientAccumulationSteps}x
             </span>
             <span className="rounded-md bg-white/[0.04] px-2 py-0.5 border border-white/10 text-zinc-300">
-              {optimizer === "adamw8bit" ? "8-bit AdamW" : optimizer === "prodigy" ? "Prodigy" : "AdamW"}
+              {optimizer === "paged_adamw8bit"
+                ? "Paged 8-bit"
+                : optimizer === "paged_adamw32bit"
+                ? "Paged 32-bit"
+                : optimizer === "adamw8bit"
+                ? "8-bit AdamW"
+                : optimizer === "prodigy"
+                ? "Prodigy"
+                : "AdamW"}
             </span>
             <span className="rounded-md bg-white/[0.04] px-2 py-0.5 border border-white/10 text-zinc-300">
               {mixedPrecision.toUpperCase()}
@@ -1503,6 +1537,10 @@ export default function ForjaDifusaoSetup({
                 hint={
                   optimizer === "prodigy"
                     ? "Requer LR=1.0 para o ajuste automático de D-Adaptation."
+                    : optimizer === "paged_adamw8bit"
+                    ? "Paginação CUDA BitsAndBytes: elimina OOM paginando estados para a RAM quando necessário (recomendado p/ QLoRA)."
+                    : optimizer === "paged_adamw32bit"
+                    ? "Paginação CUDA em 32-bit: máxima precisão numérica com proteção contra OOM."
                     : "8-bit economiza ~2 GB de VRAM no estado do otimizador."
                 }
                 options={optimizerOptions}

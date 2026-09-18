@@ -96,11 +96,13 @@ export function JobLogViewer({
   }, [livePhase, livePhaseMessage, job.phase, job.phaseMessage]);
 
   // Se o job reiniciar ou trocar, reseta o live log
+  const jobId = job.id;
   useEffect(() => {
-    setLiveLogEntries([]);
-    lastMsgRef.current = null;
-  }, [job.id]);
-
+    if (jobId) {
+      setLiveLogEntries([]);
+      lastMsgRef.current = null;
+    }
+  }, [jobId]);
   // Sintetiza e formata as linhas reais de log e telemetria do orquestrador
   const lines = useMemo<LogLine[]>(() => {
     const list: LogLine[] = [];

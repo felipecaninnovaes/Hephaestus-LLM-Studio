@@ -477,6 +477,13 @@ export function autolabelErrorMessage(code: string): string {
 
 /* ── Difusão LoRA (ADR-0018) ─────────────────────────────────── */
 
+export type DiffusionOptimizer =
+  | "adamw8bit"
+  | "adamw"
+  | "prodigy"
+  | "paged_adamw8bit"
+  | "paged_adamw32bit";
+
 export interface DiffusionJobRequest {
   datasetId: string;
   /** "flux" (FLUX.2 Klein 4B), "sdxl" (SDXL 1.0) ou "sd15" (Stable Diffusion 1.5). XOR com customModelId; ambos ausentes ⇒ "sdxl" (retrocompat). */
@@ -498,7 +505,7 @@ export interface DiffusionJobRequest {
   sampleSeed?: number;
   resolution?: number;
   gradientAccumulationSteps?: number;
-  optimizer?: "adamw8bit" | "adamw" | "prodigy";
+  optimizer?: DiffusionOptimizer;
   lrScheduler?: "cosine" | "linear" | "constant" | "constant_with_warmup";
   lrWarmupSteps?: number;
   mixedPrecision?: "fp16" | "bf16" | "no";
@@ -527,7 +534,7 @@ export interface DiffusionPreset {
   alpha: number;
   resolution?: number;
   gradientAccumulationSteps?: number;
-  optimizer?: "adamw8bit" | "adamw" | "prodigy";
+  optimizer?: DiffusionOptimizer;
   lrScheduler?: "cosine" | "linear" | "constant" | "constant_with_warmup";
   lrWarmupSteps?: number;
   mixedPrecision?: "fp16" | "bf16" | "no";

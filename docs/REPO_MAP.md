@@ -77,7 +77,14 @@ Fonte: tabela de contrato em `services/api-principal/src/auth/routes.rs`
   erro assíncrono `prepare_failed:<code>:<msg>` lido via `GET /jobs/:id`);
   previews `POST /jobs/:id/autolabel|autotracker/preview` + `/apply`;
   telemetria `GET /api/telemetry`; geração `POST /jobs/diffusion/generate`.
-- **Modelos/pesos:** `GET /api/models[/:id]`, `POST /api/models/upload|download`.
+- **Modelos/pesos:** `GET /api/models[/:id]`, `POST /api/models/upload|download`
+  (multipart único, ≤ 96 MiB na prática); chunked (proxy Next bufferiza
+  multipart grande em RAM → OOM; partes cruas `application/octet-stream`
+  ≤ 96 MiB passam seguras, principal faz spool em disco):
+  `POST /api/models/uploads/init` (201 `{uploadId,partSize,totalParts}`),
+  `PUT /api/models/uploads/:uploadId/part/:partNumber` (204, corpo cru),
+  `POST /api/models/uploads/:uploadId/complete` (201),
+  `DELETE /api/models/uploads/:uploadId` (abort, 204 idempotente).
 - **Galeria de gerações:** `GET /api/generations`, `/:id/data`,
   `POST /api/generations/delete|export`; upload efêmero img2img
   `POST /api/generations/inputs` (multipart campo `file`, png/jpeg/webp por

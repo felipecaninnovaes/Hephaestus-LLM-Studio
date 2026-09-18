@@ -145,6 +145,8 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
 - **Cache de quantização de treino usa path per-job no slug (feat/pesos-custom-flux2, reviewer N1) — ABERTA 2026-09-17:** `models/flux.py` isola o cache por checkpoint+encoder mas o slug carrega path per-job — dois treinos do MESMO checkpoint requantizam; dedup por md5-only é decisão de custo pendente.
 - **Validação @gpu manual de checkpoint/encoder custom flux-2 (feat/pesos-custom-flux2) — ABERTA 2026-09-17:** load real pendente (`Flux2Transformer2DModel.from_single_file` + encoder override Qwen3, `ENGINE_MOCK=0`); CPU-only cobre só validação/meta/cache.
 - **Nomes internos `custom_checkpoint` vs `text_encoder_ref` no manager (feat/pesos-custom-flux2, reviewer N5, inócuo) — ABERTA 2026-09-17:** padronizar na próxima passada (ex. ambos `*_ref` ou ambos sem sufixo).
+- **Sessões de upload chunked sem TTL/GC (feat/pesos-custom-flux2) — ABERTA 2026-09-17:** `init` órfão (sem `complete` nem `DELETE`) retém sessão em memória + tempdir até restart do principal (`services/api-principal/src/models/chunk.rs` — mapa global sob `Mutex`, sem expiração). Vetor de disco sob inits abandonados. Fechar = TTL + sweeper (varredura periódica removendo sessões expiradas com `TempDir` no `drop`).
+- **Complete chunked destrutivo em falha transitória de finalize (feat/pesos-custom-flux2) — ABERTA 2026-09-17:** `complete_upload` remove a sessão do mapa ANTES de montar/finalizar — 503 do manager/S3 ou erro de I/O descarta as partes e o retry exige reupload completo. Fechar = re-inserir a sessão no mapa (ou só remover no sucesso) em erro de finalize, permitindo retry do `complete` sem reenvio das partes.
 
 **Verificação / toolchain**
 

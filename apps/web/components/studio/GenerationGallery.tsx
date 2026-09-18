@@ -33,7 +33,7 @@ import {
   exportGenerations,
   getGenerationDataUrl,
 } from "@/lib/generations";
-import { GERACAO_COMPLETED_KEY, generationConfigsJson, geracaoFormFromGeneration, publishGeracaoForm } from "@/lib/geracao-storage";
+import { GERACAO_BROADCAST_CHANNEL, GERACAO_COMPLETED_KEY, generationConfigsJson, geracaoFormFromGeneration, publishGeracaoForm, publishGeracaoInitSource } from "@/lib/geracao-storage";
 import { copyToClipboard } from "@/lib/clipboard";
 import type { Generation } from "@/types/studio";
 import CompareSlider from "./CompareSlider";
@@ -207,13 +207,12 @@ export default function GenerationGallery() {
     itemsLengthRef.current = items.length;
   }, [items.length]);
 
-  const refreshGallery = useCallback(async () => {
-    /* Cooldown 5s: `storage` + `focus`/`visibilitychange` costumam chegar
-       juntos ao trocar de aba — a 2ª chamada seria um fetch redundante. */
+  const refreshGallery = useCallback(async (force = false) => {
+    /* Cooldown 5s apenas para eventos passivos; eventos explícitos de conclusão (force=true) bypassam. */
     const now = Date.now();
     if (refreshingRef.current) return;
     if (loadingRef.current || loadingMoreRef.current || loadingAllRef.current) return;
-    if (now - lastRefreshRef.current < 5000) return;
+    if (!force && now - lastRefreshRef.current < 5000) return;
     refreshingRef.current = true;
     lastRefreshRef.current = now;
     try {
@@ -244,14 +243,27 @@ export default function GenerationGallery() {
     }
   }, []);
 
-  /* ── Canal primário cross-tab: evento `storage` cruza abas (CustomEvent
-     não). Dispara quando o Panel grava `geracao:lastCompletedAt`. ── */
+  /* ── Canal primário cross-tab: BroadcastChannel + evento `storage` ── */
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
-      if (e.key === GERACAO_COMPLETED_KEY) void refreshGallery();
+      if (e.key === GERACAO_COMPLETED_KEY) void refreshGallery(true);
     };
     window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+
+    let bc: BroadcastChannel | null = null;
+    if (typeof BroadcastChannel !== "undefined") {
+      bc = new BroadcastChannel(GERACAO_BROADCAST_CHANNEL);
+      bc.onmessage = (ev) => {
+        if (ev.data?.type === "generation_completed") {
+          void refreshGallery(true);
+        }
+      };
+    }
+
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      if (bc) bc.close();
+    };
   }, [refreshGallery]);
 
   /* ── Mesma-aba: `storage` não dispara na aba de origem; cobre via
@@ -269,6 +281,16 @@ export default function GenerationGallery() {
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onFocus);
     };
+  }, [refreshGallery]);
+
+  /* ── Heartbeat/poll de galeria quando aba visível (atualização autônoma a cada 12s) ── */
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void refreshGallery(false);
+      }
+    }, 12000);
+    return () => clearInterval(interval);
   }, [refreshGallery]);
 
   /* ── Selection handlers (Slice F3/bug-008) ──
@@ -495,6 +517,19 @@ export default function GenerationGallery() {
 
   const getFullImageUrl = useCallback((gen: Generation): string => {
     return gen.url || getGenerationDataUrl(gen.id);
+  }, []);
+
+  /* ── Usar como imagem inicial img2img (fatia feat/img2img, S5) ──
+     Só gerações concluídas com imagem chegam aqui: a galeria lista
+     somente gerações persistidas (concluídas) e o lightbox abre para um
+     item concreto com imagem resolvível. Publica `geracao:initSource` +
+     evento `heph:init-source` (o Panel consome no mount/evento/storage)
+     e volta p/ a aba Gerar. Sem toast aqui — o Panel confirma ao receber
+     ("Imagem da galeria carregada como entrada."), evitando duplicata. ── */
+  const handleUseAsInit = useCallback((gen: Generation) => {
+    publishGeracaoInitSource(gen.id);
+    setLightboxItem(null);
+    window.dispatchEvent(new CustomEvent("hephaestus:switch-tab", { detail: "gerar" }));
   }, []);
 
   /* ═══════════════════════════════════════════════════════════════════
@@ -860,6 +895,9 @@ export default function GenerationGallery() {
               {lightboxItem.params?.custom_model_id ? (
                 <MetaRow label="Custom Model" value={String(lightboxItem.params.custom_model_id)} />
               ) : null}
+              {lightboxItem.params?.text_encoder_model_id ? (
+                <MetaRow label="Text Encoder" value={String(lightboxItem.params.text_encoder_model_id)} />
+              ) : null}
               {lightboxItem.params?.steps ? (
                 <MetaRow label="Steps" value={String(lightboxItem.params.steps)} mono />
               ) : null}
@@ -868,6 +906,16 @@ export default function GenerationGallery() {
               ) : null}
               {lightboxItem.params?.quantization ? (
                 <MetaRow label="Quantização" value={String(lightboxItem.params.quantization)} />
+              ) : null}
+              {lightboxItem.params?.sampler ? (
+                <MetaRow label="Sampler" value={String(lightboxItem.params.sampler)} mono />
+              ) : null}
+              {lightboxItem.params?.upscale != null && typeof lightboxItem.params.upscale === "object" && "scale" in lightboxItem.params.upscale ? (
+                <MetaRow
+                  label="Upscale"
+                  value={`Real-ESRGAN 4x · ${String(lightboxItem.params.upscale.scale)}x`}
+                  mono
+                />
               ) : null}
               {lightboxItem.params?.distilled != null ? (
                 <MetaRow label="Destilado" value={lightboxItem.params.distilled ? "Sim" : "Não"} />
@@ -892,6 +940,17 @@ export default function GenerationGallery() {
               >
                 <IconSliders className="size-3.5" />
                 <span className="ml-1">Usar estas configs</span>
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => handleUseAsInit(lightboxItem)}
+                aria-label={`Usar geração seed ${lightboxItem.seed} como imagem inicial do img2img`}
+                title="Carrega esta imagem como entrada do img2img na aba Gerar"
+              >
+                <IconImage className="size-3.5" />
+                <span className="ml-1">Usar como imagem inicial</span>
               </Button>
               <Button
                 type="button"

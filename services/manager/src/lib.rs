@@ -22,6 +22,8 @@ pub enum ManagerError {
     NotAbortable,
     /// Job não está em estado terminal (done|failed|cancelled) — não pode ser apagado.
     NotDeletable,
+    /// Transição guardada recusada (ex.: prepare-complete fora de `preparing`) → 409.
+    Conflict(String),
     InvalidRequest(String),
     PairingInvalid,
     Internal(String),
@@ -33,6 +35,7 @@ impl std::fmt::Display for ManagerError {
             Self::NotFound => write!(f, "not found"),
             Self::NotAbortable => write!(f, "job not abortable"),
             Self::NotDeletable => write!(f, "job_not_terminal"),
+            Self::Conflict(e) => write!(f, "{e}"),
             Self::InvalidRequest(e) => write!(f, "invalid request: {e}"),
             Self::PairingInvalid => write!(f, "pairing_invalid"),
             Self::Internal(e) => write!(f, "{e}"),
@@ -78,6 +81,38 @@ pub struct PackageRef {
     pub key: String,
     pub md5_zip: String,
     pub bytes: i64,
+}
+
+/// POST /internal/jobs/:id/prepare-complete (ADR-0025 D1).
+/// Wire camelCase com aliases snake_case (tolerante ao BFF).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrepareCompleteRequest {
+    #[serde(alias = "dataset_version_id")]
+    pub dataset_version_id: String,
+    #[serde(alias = "package_ref")]
+    pub package_ref: PreparePackageRef,
+}
+
+/// Pacote construído pelo worker de preparação (sem version_id: ele é o
+/// dataset_version_id do envelope).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparePackageRef {
+    pub key: String,
+    #[serde(alias = "md5_zip")]
+    pub md5_zip: String,
+    pub bytes: i64,
+}
+
+/// POST /internal/jobs/:id/prepare-fail (ADR-0025 D1).
+/// Wire camelCase como o resto de `/api/*` (campos de palavra única: sem
+/// efeito no wire, só conformidade de contrato).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrepareFailRequest {
+    pub code: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -220,6 +255,25 @@ pub struct ResolvedLora {
 pub struct ResolvedCheckpoint {
     pub s3_key: String,
     pub md5: String,
+}
+
+/// Referência resolvida de text encoder custom para o dispatch
+/// (fatia feat/pesos-custom-flux2). Mesmo shape do checkpoint: `{s3_key, md5}`
+/// em snake_case — casa com `WeightRef` do orquestrador.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolvedTextEncoder {
+    pub s3_key: String,
+    pub md5: String,
+}
+
+/// Referência resolvida de imagem inicial para img2img (S4 — feat/img2img).
+/// `md5` é `Some` quando vem de `generation_inputs` (upload avulso com hash
+/// conhecido) e `None` quando vem de `generations` (galeria — hash não
+/// persistido na linha; a verificação vira log no orchestrator).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolvedInitImage {
+    pub s3_key: String,
+    pub md5: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -465,7 +519,13 @@ pub fn done_artifacts_violation(kind: &str, artifacts: Option<&[ArtifactItem]>) 
     }
 }
 
-/// Cria um job. Retorna (job_id, queue_position).
+/// Cria um job. Retorna (job_id, status, queue_position).
+///
+/// Fluxo assíncrono (ADR-0025 D0): sem package_ref + `params.prepare` (objeto)
+/// → `preparing` (queue_position NULL); com package_ref → `queued` (legado).
+/// Omissão total (sem package_ref nem prepare) → `queued` legado
+/// (retrocompat); intenção async malformada (package_ref null sem prepare, ou
+/// prepare não-objeto) → `InvalidRequest` (400).
 ///
 /// VRAM policy: `vram_min_gb` é gravado mas ignorado na decisão de fila (no-op
 /// sem GPU — D9/R3). Ver `@gpu` para o fluxo real com `waiting_vram`.
@@ -594,11 +654,14 @@ pub async fn create_job(
     }
 
     // -------------------------------------------------------------------------
-    // Resolução multi-LoRA + custom checkpoint (D3/D4 — ADR-0023).
-    // Params contém `loras: [{modelId, scale}]` e `customModelId` (uuid|null).
-    // Lê de forma tolerante: campos ausentes = legado (sem loras/custom).
+    // Resolução multi-LoRA + custom checkpoint + text encoder
+    // (D3/D4 — ADR-0023; encoder — fatia feat/pesos-custom-flux2).
+    // Params contém `loras: [{modelId, scale}]`, `customModelId` (uuid|null)
+    // e `textEncoderModelId` (uuid|null).
+    // Lê de forma tolerante: campos ausentes = legado (sem loras/custom/encoder).
+    // Loras/img2img só existem no generate; custom + encoder valem p/ train e generate.
     // -------------------------------------------------------------------------
-    if req.engine == "diffusion" && req.mode == "generate" {
+    if req.engine == "diffusion" && (req.mode == "generate" || req.mode == "train") {
         // Resolve loras.
         if let Some(loras_arr) = params.get("loras").and_then(|v| v.as_array()) {
             if loras_arr.len() > 4 {
@@ -686,9 +749,16 @@ pub async fn create_job(
                         )));
                     }
                     let arch_val = arch.as_deref().unwrap_or("");
-                    if !matches!(arch_val, "sdxl" | "sd15") {
+                    // Fatia feat/pesos-custom-flux2: +flux-2-klein-4b (alias
+                    // legado "flux" normalizado). sdxl/sd15 inalterados.
+                    let arch_norm = if arch_val == "flux" {
+                        "flux-2-klein-4b"
+                    } else {
+                        arch_val
+                    };
+                    if !matches!(arch_norm, "sdxl" | "sd15" | "flux-2-klein-4b") {
                         return Err(ManagerError::InvalidRequest(format!(
-                            "customModelId arch must be 'sdxl' or 'sd15', got '{arch_val}'"
+                            "customModelId arch must be 'sdxl', 'sd15' or 'flux-2-klein-4b', got '{arch_val}'"
                         )));
                     }
                     let resolved = ResolvedCheckpoint { s3_key, md5: hash };
@@ -698,11 +768,195 @@ pub async fn create_job(
                 }
             }
         }
+
+        // Resolve textEncoderModelId (fatia feat/pesos-custom-flux2).
+        // kind=text_encoder; arch EFETIVO deve ser flux-2-klein-4b.
+        // O campo original camelCase é mantido (rastreabilidade); o resolvido
+        // vai em snake_case `text_encoder_ref` ({s3_key, md5}).
+        // Defesa em profundidade: o BFF já valida, mas params pode vir de outra origem.
+        if let Some(encoder_id_str) = params.get("textEncoderModelId").and_then(|v| v.as_str()) {
+            let encoder_uuid = Uuid::parse_str(encoder_id_str).map_err(|_| {
+                ManagerError::InvalidRequest("textEncoderModelId must be a valid UUID".into())
+            })?;
+            let row: Option<(String, String, Option<String>, Option<String>)> =
+                sqlx::query_as("SELECT s3_key, hash, kind, arch FROM models WHERE id = $1")
+                    .bind(encoder_uuid)
+                    .fetch_optional(pool)
+                    .await
+                    .map_err(|e| ManagerError::Internal(format!("resolve text encoder: {e}")))?;
+            match row {
+                None => {
+                    return Err(ManagerError::InvalidRequest(
+                        "textEncoderModelId not found".into(),
+                    ));
+                }
+                Some((s3_key, hash, kind, _arch)) => {
+                    if kind.as_deref() != Some("text_encoder") {
+                        return Err(ManagerError::InvalidRequest(format!(
+                            "textEncoderModelId must have kind='text_encoder', got {:?}",
+                            kind
+                        )));
+                    }
+                    let resolved = ResolvedTextEncoder { s3_key, md5: hash };
+                    if let Ok(v) = serde_json::to_value(&resolved) {
+                        params["text_encoder_ref"] = v;
+                    }
+                }
+            }
+            // Arch efetivo: o BFF envia baseModel já resolvido (generate:
+            // arch do custom ou base; train: effective_base). Normaliza "flux".
+            let effective = params
+                .get("baseModel")
+                .or_else(|| params.get("base_model"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let effective_norm = if effective == "flux" {
+                "flux-2-klein-4b"
+            } else {
+                effective
+            };
+            if effective_norm != "flux-2-klein-4b" {
+                return Err(ManagerError::InvalidRequest(
+                    "textEncoderModelId requires arch 'flux-2-klein-4b'".into(),
+                ));
+            }
+        }
+
+        // initImageId/initGenerationId (img2img — S4): só no generate.
+        // Treino nunca envia esses campos — o guarda evita tocar jobs de
+        // treino que porventura carreguem chaves homônimas.
+        if req.mode == "generate" {
+            // Resolve initImageId (img2img — S4 feat/img2img).
+            // O BFF envia camelCase; o campo original é MANTIDO em params
+            // (rastreabilidade em generations.params — padrão da casa) e o
+            // resolvido é gravado snake_case em `init_image_ref`.
+            // Defesa em profundidade: BFF valida XOR, mas params pode vir de outra origem.
+            if params.get("initImageId").and_then(|v| v.as_str()).is_some()
+                && params
+                    .get("initGenerationId")
+                    .and_then(|v| v.as_str())
+                    .is_some()
+            {
+                return Err(ManagerError::InvalidRequest(
+                    "use either initImageId or initGenerationId, not both".into(),
+                ));
+            }
+            if let Some(init_id_str) = params.get("initImageId").and_then(|v| v.as_str()) {
+                let init_uuid = Uuid::parse_str(init_id_str).map_err(|_| {
+                    ManagerError::InvalidRequest("initImageId must be a valid UUID".into())
+                })?;
+
+                let row: Option<(String, String)> =
+                    sqlx::query_as("SELECT s3_key, md5 FROM generation_inputs WHERE id = $1")
+                        .bind(init_uuid)
+                        .fetch_optional(pool)
+                        .await
+                        .map_err(|e| ManagerError::Internal(format!("resolve init image: {e}")))?;
+
+                match row {
+                    None => {
+                        return Err(ManagerError::InvalidRequest("initImageId not found".into()));
+                    }
+                    Some((s3_key, md5)) => {
+                        // Marca consumo (best-effort: falha aqui não aborta o job).
+                        let _ = sqlx::query(
+                            "UPDATE generation_inputs SET used_at = now() WHERE id = $1",
+                        )
+                        .bind(init_uuid)
+                        .execute(pool)
+                        .await;
+                        let resolved = ResolvedInitImage {
+                            s3_key,
+                            md5: Some(md5),
+                        };
+                        if let Ok(v) = serde_json::to_value(&resolved) {
+                            params["init_image_ref"] = v;
+                        }
+                    }
+                }
+            }
+
+            // Resolve initGenerationId (img2img via galeria — S4 feat/img2img).
+            // Linha da galeria não persiste hash: `md5: null` (o orchestrator
+            // só registra o md5 calculado, sem falhar).
+            if let Some(gen_id_str) = params.get("initGenerationId").and_then(|v| v.as_str()) {
+                let gen_uuid = Uuid::parse_str(gen_id_str).map_err(|_| {
+                    ManagerError::InvalidRequest("initGenerationId must be a valid UUID".into())
+                })?;
+
+                let row: Option<(String,)> = sqlx::query_as(
+                    "SELECT s3_key FROM generations WHERE id = $1 AND deleted_at IS NULL",
+                )
+                .bind(gen_uuid)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| ManagerError::Internal(format!("resolve init generation: {e}")))?;
+
+                match row {
+                    None => {
+                        return Err(ManagerError::InvalidRequest(
+                            "initGenerationId not found".into(),
+                        ));
+                    }
+                    Some((s3_key,)) => {
+                        let resolved = ResolvedInitImage { s3_key, md5: None };
+                        if let Ok(v) = serde_json::to_value(&resolved) {
+                            params["init_image_ref"] = v;
+                        }
+                    }
+                }
+            }
+        } // fecha `if req.mode == "generate"` (img2img só no generate)
+    } // fecha `if diffusion generate|train`
+      // Fluxo assíncrono (ADR-0025 D0): package_ref ausente + params.prepare
+      // (objeto opaco do BFF) → `preparing`; package_ref presente → `queued`
+      // (legado, retrocompat). Intenção async explícita porém malformada
+      // (package_ref:null sem prepare, ou prepare não-objeto) → 400: job
+      // ficaria eternamente `preparing` sem dono.
+      // Omissão total (sem package E sem prepare, como os callers legados e os
+      // testes de roteamento/generations) → `queued` legado (retrocompat total).
+      // Posição tardia de propósito: resoluções fail-fast (weights_id,
+      // orchestrator_hint, LoRA) mantêm precedência legada (404/400 próprios).
+    let has_package = req.package_ref.is_some()
+        || params
+            .get("package_ref")
+            .map(|v| {
+                v.is_object()
+                    && v.get("key")
+                        .and_then(|k| k.as_str())
+                        .map(|s| !s.is_empty())
+                        .unwrap_or(false)
+            })
+            .unwrap_or(false);
+    let prepare_field = params.get("prepare");
+    let has_prepare = prepare_field.map(|v| v.is_object()).unwrap_or(false);
+    if !has_package && !has_prepare {
+        let package_null = params
+            .get("package_ref")
+            .map(|v| v.is_null())
+            .unwrap_or(false);
+        if package_null || prepare_field.is_some() {
+            if prepare_field.is_some() {
+                return Err(ManagerError::InvalidRequest(
+                    "params.prepare deve ser um objeto".into(),
+                ));
+            }
+            return Err(ManagerError::InvalidRequest(
+                "job com package_ref null exige params.prepare (fluxo assíncrono ADR-0025)".into(),
+            ));
+        }
     }
+    // package presente sempre vence → `queued`; só vai a `preparing` com
+    // intenção async genuína (prepare objeto, sem package).
+    let initial_status = if !has_package && has_prepare {
+        "preparing"
+    } else {
+        "queued"
+    };
 
     sqlx::query(
         "INSERT INTO jobs (id, kind, engine, model, mode, dataset_id, params, config_yaml, vram_min_gb, status, queue_reason) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'queued', NULL)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL)",
     )
     .bind(job_id)
     .bind(&req.kind)
@@ -713,23 +967,30 @@ pub async fn create_job(
     .bind(&params)
     .bind(&req.config_yaml)
     .bind(req.vram_min_gb)
+    .bind(initial_status)
     .execute(pool)
     .await
     .map_err(|e| ManagerError::Internal(format!("insert job: {e}")))?;
 
-    // Posição na fila: quantos jobs queued têm created_at menor.
-    let queue_pos: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM jobs WHERE status = 'queued' AND created_at < (SELECT created_at FROM jobs WHERE id = $1)",
-    )
-    .bind(job_id)
-    .fetch_one(pool)
-    .await
-    .map_err(|e| ManagerError::Internal(format!("queue position: {e}")))?;
+    // Posição na fila: só jobs `queued` contam; `preparing` → NULL.
+    // (dispatch_next/list/get usam o mesmo predicado status='queued'.)
+    let queue_position = if initial_status == "queued" {
+        let queue_pos: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM jobs WHERE status = 'queued' AND created_at < (SELECT created_at FROM jobs WHERE id = $1)",
+        )
+        .bind(job_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("queue position: {e}")))?;
+        Some((queue_pos.0 + 1) as i32)
+    } else {
+        None
+    };
 
     Ok(CreateJobResponse {
         job_id: job_id.to_string(),
-        status: "queued".to_string(),
-        queue_position: Some((queue_pos.0 + 1) as i32),
+        status: initial_status.to_string(),
+        queue_position,
     })
 }
 
@@ -991,20 +1252,49 @@ pub async fn abort_job(
             Ok("cancelled".to_string())
         }
 
-        "preparing" | "running" => {
+        "preparing" => {
+            sqlx::query("UPDATE jobs SET status = 'cancelling' WHERE id = $1")
+                .bind(id)
+                .execute(pool)
+                .await
+                .map_err(|e| ManagerError::Internal(format!("set cancelling: {e}")))?;
+            Ok("cancelling".to_string())
+        }
+
+        "running" => {
             sqlx::query("UPDATE jobs SET status = 'cancelling' WHERE id = $1")
                 .bind(id)
                 .execute(pool)
                 .await
                 .map_err(|e| ManagerError::Internal(format!("set cancelling: {e}")))?;
 
-            // Notifica orquestrador (best-effort).
+            // Notifica orquestrador com retry (até 3 tentativas com backoff).
             if let Some(orch_id) = orchestrator_id {
                 if let Ok(orch) = get_orchestrator(pool, orch_id).await {
                     let body = serde_json::json!({"job_id": id.to_string()});
                     let url = format!("{}/internal/abort", orch.endpoint);
-                    if let Err(e) = orch_client.post(&url, &body).await {
-                        tracing::warn!("failed to notify orchestrator of abort for job {id}: {e}");
+                    let mut sent = false;
+                    for attempt in 0..3 {
+                        if attempt > 0 {
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                200 * (1 << attempt),
+                            ))
+                            .await;
+                        }
+                        match orch_client.post(&url, &body).await {
+                            Ok(_) => {
+                                sent = true;
+                                break;
+                            }
+                            Err(e) => {
+                                tracing::warn!("tentativa {attempt} abort no orquestrador falhou para job {id}: {e}");
+                            }
+                        }
+                    }
+                    if !sent {
+                        tracing::error!(
+                            "todas tentativas de abort no orquestrador falharam para job {id}"
+                        );
                     }
                 }
             }
@@ -1018,6 +1308,226 @@ pub async fn abort_job(
             "unexpected status: {other}"
         ))),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Preparação assíncrona (ADR-0025 D0/D1/D3) — dono do estado `preparing`.
+// Representação: SEM coluna nova em jobs (sem migration — CHECK da 0006 já
+// cobre `preparing`); package_ref vive em `params->'package_ref'`
+// {version_id,key,md5_zip,bytes} e o dataset_version_id espelhado em
+// `params->'dataset_version_id'`; o spec opaco do BFF em `params->'prepare'`.
+// Erros seguem a convenção do manager: `params->'error'` (exposto como
+// `JobRow.error` via `params->>'error'`).
+// ---------------------------------------------------------------------------
+
+/// POST /internal/jobs/:id/prepare-complete: `preparing` → `queued`.
+///
+/// Transição guardada (0 linhas ⇒ 404 se inexistente, 409 se fora de
+/// `preparing`). Persiste package_ref + dataset_version_id em params e renova
+/// `dataset_versions.created_at` (touch anti-GC: versão reutilizada por
+/// fingerprint sobrevive mais 7 dias). O chamador (handler) dispara
+/// `dispatch_next` em seguida (best-effort).
+pub async fn prepare_complete(
+    pool: &PgPool,
+    id: Uuid,
+    req: PrepareCompleteRequest,
+) -> Result<(), ManagerError> {
+    let dv_id = Uuid::parse_str(&req.dataset_version_id).map_err(|_| {
+        ManagerError::InvalidRequest("dataset_version_id must be a valid UUID".into())
+    })?;
+    if req.package_ref.key.is_empty() {
+        return Err(ManagerError::InvalidRequest(
+            "package_ref.key must not be empty".into(),
+        ));
+    }
+    if !is_valid_md5(&req.package_ref.md5_zip) {
+        return Err(ManagerError::InvalidRequest(format!(
+            "invalid md5_zip: {}",
+            req.package_ref.md5_zip
+        )));
+    }
+    if req.package_ref.bytes < 0 {
+        return Err(ManagerError::InvalidRequest(format!(
+            "negative bytes: {}",
+            req.package_ref.bytes
+        )));
+    }
+    // Fail-fast: versão precisa existir (dono lógico: principal; DB físico
+    // compartilhado no dev) — evita referência pendurada.
+    let version_exists: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM dataset_versions WHERE id = $1)")
+            .bind(dv_id)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| ManagerError::Internal(format!("check dataset version: {e}")))?;
+    if !version_exists {
+        return Err(ManagerError::NotFound);
+    }
+
+    let package_json = serde_json::json!({
+        "version_id": dv_id.to_string(),
+        "key": req.package_ref.key,
+        "md5_zip": req.package_ref.md5_zip,
+        "bytes": req.package_ref.bytes,
+    });
+    let result = sqlx::query(
+        "UPDATE jobs SET status = 'queued', queue_reason = NULL, \
+          params = params || jsonb_build_object('package_ref', $2::jsonb, 'dataset_version_id', $3) \
+          WHERE id = $1 AND status = 'preparing'",
+    )
+    .bind(id)
+    .bind(&package_json)
+    .bind(dv_id.to_string())
+    .execute(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("prepare complete: {e}")))?;
+
+    if result.rows_affected() == 0 {
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM jobs WHERE id = $1)")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| ManagerError::Internal(format!("check job: {e}")))?;
+        if !exists {
+            return Err(ManagerError::NotFound);
+        }
+        return Err(ManagerError::Conflict("job_not_preparing".into()));
+    }
+    // Touch anti-GC (ADR-0025 D4): versão reutilizada por fingerprint (D1)
+    // renova o prazo de 7 dias. Sem coluna updated_at em dataset_versions, o
+    // relógio do GC ancora em created_at. Só após transição aplicada: fora de
+    // `preparing` (409/404 acima) nada é renovado.
+    sqlx::query("UPDATE dataset_versions SET created_at = now() WHERE id = $1")
+        .bind(dv_id)
+        .execute(pool)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("touch dataset version: {e}")))?;
+    Ok(())
+}
+
+/// POST /internal/jobs/:id/prepare-fail: `preparing` → `failed` com
+/// `params.error = 'prepare_failed:<code>:<message>'`.
+pub async fn prepare_fail(
+    pool: &PgPool,
+    id: Uuid,
+    req: PrepareFailRequest,
+) -> Result<(), ManagerError> {
+    if req.code.is_empty() || req.code.len() > 128 {
+        return Err(ManagerError::InvalidRequest(
+            "code must be 1-128 characters".into(),
+        ));
+    }
+    if req.message.is_empty() {
+        return Err(ManagerError::InvalidRequest(
+            "message must not be empty".into(),
+        ));
+    }
+    let error = format!("prepare_failed:{}:{}", req.code, req.message);
+    let result = sqlx::query(
+        "UPDATE jobs SET status = 'failed', finished_at = now(), \
+          params = params || jsonb_build_object('error', $2) \
+         WHERE id = $1 AND status = 'preparing'",
+    )
+    .bind(id)
+    .bind(&error)
+    .execute(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("prepare fail: {e}")))?;
+
+    if result.rows_affected() == 0 {
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM jobs WHERE id = $1)")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| ManagerError::Internal(format!("check job: {e}")))?;
+        if !exists {
+            return Err(ManagerError::NotFound);
+        }
+        return Err(ManagerError::Conflict("job_not_preparing".into()));
+    }
+    Ok(())
+}
+
+/// POST /internal/jobs/:id/prepare-cancel: `preparing` | `cancelling` → `cancelled`.
+pub async fn prepare_cancel(pool: &PgPool, id: Uuid) -> Result<(), ManagerError> {
+    let result = sqlx::query(
+        "UPDATE jobs SET status = 'cancelled', finished_at = now() \
+         WHERE id = $1 AND status IN ('preparing', 'cancelling')",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("prepare cancel: {e}")))?;
+
+    if result.rows_affected() == 0 {
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM jobs WHERE id = $1)")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| ManagerError::Internal(format!("check job: {e}")))?;
+        if !exists {
+            return Err(ManagerError::NotFound);
+        }
+        let is_cancelled: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM jobs WHERE id = $1 AND status = 'cancelled')",
+        )
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("check job cancelled: {e}")))?;
+        if is_cancelled {
+            return Ok(());
+        }
+        return Err(ManagerError::Conflict("job_not_cancelling".into()));
+    }
+    Ok(())
+}
+
+/// Watchdog de preparação (ADR-0025 D3): `preparing` com created_at > 60min
+/// → `failed` (`params.error = 'prepare_timeout'`).
+///
+/// Sem coluna `updated_at` em jobs (e sem migration nesta fatia): o relógio
+/// ancora em `created_at` — reports de progresso não estendem o prazo.
+/// Prepares duram minutos; 60min desde a criação é limite seguro.
+pub async fn watchdog_prepare_timeout(pool: &PgPool) -> Result<u64, ManagerError> {
+    let result = sqlx::query(
+        "UPDATE jobs SET status = 'failed', finished_at = now(), \
+          params = params || jsonb_build_object('error', 'prepare_timeout') \
+         WHERE status = 'preparing' AND created_at < now() - interval '60 minutes'",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("watchdog prepare timeout: {e}")))?;
+
+    Ok(result.rows_affected())
+}
+
+/// GC de dataset_versions (ADR-0025 D4): apaga versões com >7 dias NUNCA
+/// referenciadas por job aceito (referência = params.package_ref.version_id;
+/// NUNCA apaga pacote referenciado). Query defensiva: IS NOT NULL no
+/// version_id para NULL não virar match.
+///
+/// Corrida fingerprint (D1): o worker do principal pode REUSAR uma versão
+/// antiga (D1) enquanto ela é alvo do GC — por isso versões cujo dataset
+/// possui job não-terminal com `params.prepare.datasetId` são puladas. A
+/// chave é camelCase porque o aceite do principal grava exatamente assim
+/// (`accept_job_preparing`: `params.prepare = {kind, datasetId,
+/// fingerprint}` — ver services/api-principal/src/jobs/prepare.rs).
+pub async fn gc_dataset_versions(pool: &PgPool) -> Result<u64, ManagerError> {
+    let result = sqlx::query(
+        "DELETE FROM dataset_versions dv \
+         WHERE dv.created_at < now() - interval '7 days' \
+           AND NOT EXISTS (SELECT 1 FROM jobs j \
+             WHERE (j.params->'package_ref'->>'version_id') IS NOT NULL \
+               AND j.params->'package_ref'->>'version_id' = dv.id::text) \
+           AND NOT EXISTS (SELECT 1 FROM jobs j \
+             WHERE j.status NOT IN ('done','failed','cancelled') \
+               AND j.params->'prepare'->>'datasetId' = dv.dataset_id::text)",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("gc dataset versions: {e}")))?;
+
+    Ok(result.rows_affected())
 }
 
 // ---------------------------------------------------------------------------
@@ -1050,8 +1560,8 @@ fn metrics_key(value: &serde_json::Value) -> Option<i64> {
 /// Faz upsert incremental de metrics no banco:
 /// lê array existente, normaliza novos, dedup por chave (epoch, step), grava como
 /// `{"items": [...]}` (formato esperado por `remap_metrics` no api-principal).
-async fn upsert_metrics(
-    pool: &PgPool,
+async fn upsert_metrics_conn(
+    conn: &mut sqlx::PgConnection,
     id: Uuid,
     new_metrics: &serde_json::Value,
 ) -> Result<(), ManagerError> {
@@ -1059,7 +1569,7 @@ async fn upsert_metrics(
     let existing: serde_json::Value =
         sqlx::query_scalar("SELECT COALESCE(metrics, '[]'::jsonb) FROM jobs WHERE id = $1")
             .bind(id)
-            .fetch_one(pool)
+            .fetch_one(&mut *conn)
             .await
             .map_err(|e| ManagerError::Internal(format!("read metrics: {e}")))?;
 
@@ -1089,11 +1599,23 @@ async fn upsert_metrics(
     sqlx::query("UPDATE jobs SET metrics = $2 WHERE id = $1")
         .bind(id)
         .bind(&merged)
-        .execute(pool)
+        .execute(&mut *conn)
         .await
         .map_err(|e| ManagerError::Internal(format!("write metrics: {e}")))?;
 
     Ok(())
+}
+
+async fn upsert_metrics(
+    pool: &PgPool,
+    id: Uuid,
+    new_metrics: &serde_json::Value,
+) -> Result<(), ManagerError> {
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|e| ManagerError::Internal(format!("acquire conn for metrics: {e}")))?;
+    upsert_metrics_conn(&mut conn, id, new_metrics).await
 }
 
 /// Processa um report do orquestrador.
@@ -1136,6 +1658,22 @@ pub async fn report_job(
     }
 
     match report.status.as_str() {
+        // `preparing` via report só existe dentro do ciclo async (ADR-0025):
+        // job já fora de `preparing` (queued/dispatched/...) nunca regride
+        // para `preparing` sem pacote — ignora mantendo o estado, no mesmo
+        // estilo das guardas de terminal/cancelling acima (sem 409: o handler
+        // mapeia Conflict para 500, e regressão de ciclo não é erro de
+        // concorrência do chamador). Phase/progress/message de prepares
+        // continuam fluindo normalmente enquanto o job está em `preparing`.
+        "preparing" if current_status != "preparing" => {
+            tracing::warn!(
+                job_id = %id,
+                current_status = %current_status,
+                report_status = %report.status,
+                "report preparing ignorado fora de preparing (sem regressão de ciclo)"
+            );
+            return Ok(());
+        }
         "preparing" | "running" => {
             sqlx::query(
                 "UPDATE jobs SET status = $2, progress = COALESCE($3, progress), epoch = COALESCE($4, epoch), step = COALESCE($5, step), phase = COALESCE($6, phase), message = COALESCE($7, message) WHERE id = $1",
@@ -1189,6 +1727,11 @@ pub async fn report_job(
         }
 
         "done" => {
+            let mut tx = pool
+                .begin()
+                .await
+                .map_err(|e| ManagerError::Internal(format!("begin report done tx: {e}")))?;
+
             // Defesa em profundidade (incidente galeria vazia): recusa o done
             // de kind que exige artefato quando a lista chega vazia/ausente ou
             // sem o artefato-chave — registra failed com erro no_artifacts e
@@ -1196,7 +1739,7 @@ pub async fn report_job(
             let job_kind: Option<String> =
                 sqlx::query_scalar("SELECT kind FROM jobs WHERE id = $1")
                     .bind(id)
-                    .fetch_optional(pool)
+                    .fetch_optional(&mut *tx)
                     .await
                     .map_err(|e| ManagerError::Internal(format!("get kind for done guard: {e}")))?;
             if let Some(kind) = job_kind {
@@ -1223,9 +1766,12 @@ pub async fn report_job(
                     .bind(serde_json::json!({"error": err_code}))
                     .bind(&report.phase)
                     .bind(&msg_pt)
-                    .execute(pool)
+                    .execute(&mut *tx)
                     .await
                     .map_err(|e| ManagerError::Internal(format!("set failed no_artifacts: {e}")))?;
+                    tx.commit().await.map_err(|e| {
+                        ManagerError::Internal(format!("commit failed no_artifacts tx: {e}"))
+                    })?;
                     return Ok(());
                 }
             }
@@ -1246,7 +1792,7 @@ pub async fn report_job(
                 // Limpa artifacts existentes (idempotência).
                 sqlx::query("DELETE FROM job_artifacts WHERE job_id = $1")
                     .bind(id)
-                    .execute(pool)
+                    .execute(&mut *tx)
                     .await
                     .map_err(|e| ManagerError::Internal(format!("delete old artifacts: {e}")))?;
 
@@ -1261,7 +1807,7 @@ pub async fn report_job(
                     .bind(&art.path)
                     .bind(&art.md5)
                     .bind(art.bytes)
-                    .execute(pool)
+                    .execute(&mut *tx)
                     .await
                     .map_err(|e| ManagerError::Internal(format!("insert artifact: {e}")))?;
                 }
@@ -1269,7 +1815,7 @@ pub async fn report_job(
 
             // Grava metrics (append + dedup por epoch).
             if let Some(metrics) = &report.metrics {
-                upsert_metrics(pool, id, metrics).await?;
+                upsert_metrics_conn(&mut tx, id, metrics).await?;
             }
 
             // Hook: registra best.pt na tabela models (ADR-0012 D1).
@@ -1299,7 +1845,7 @@ pub async fn report_job(
                             "SELECT engine, model, mode, kind, dataset_id, params, config_yaml FROM jobs WHERE id = $1",
                         )
                         .bind(id)
-                        .fetch_optional(pool)
+                        .fetch_optional(&mut *tx)
                         .await
                         {
                             Ok(opt) => opt,
@@ -1318,7 +1864,7 @@ pub async fn report_job(
                                 "SELECT slug FROM datasets WHERE id = $1",
                             )
                             .bind(ds_id)
-                            .fetch_optional(pool)
+                            .fetch_optional(&mut *tx)
                             .await
                             {
                                 Ok(opt) => opt,
@@ -1394,7 +1940,7 @@ pub async fn report_job(
                             .bind(id)
                             .bind(&art_kind)
                             .bind(&art_arch)
-                            .execute(pool)
+                            .execute(&mut *tx)
                             .await;
                             if let Err(e) = result {
                                 tracing::warn!(
@@ -1418,7 +1964,7 @@ pub async fn report_job(
                         "SELECT engine, mode FROM jobs WHERE id = $1",
                     )
                     .bind(id)
-                    .fetch_optional(pool)
+                    .fetch_optional(&mut *tx)
                     .await
                     {
                         Ok(opt) => opt,
@@ -1448,7 +1994,7 @@ pub async fn report_job(
                                     "SELECT content FROM job_artifacts WHERE job_id = $1 AND kind = 'generated_meta' LIMIT 1",
                                 )
                                 .bind(id)
-                                .fetch_optional(pool)
+                                .fetch_optional(&mut *tx)
                                 .await
                                 .ok()
                                 .flatten()
@@ -1529,7 +2075,7 @@ pub async fn report_job(
                                             .bind(width)
                                             .bind(height)
                                             .bind(&gen_params)
-                                            .execute(pool)
+                                            .execute(&mut *tx)
                                             .await;
 
                                             if let Err(e) = result {
@@ -1567,9 +2113,13 @@ pub async fn report_job(
             .bind(id)
             .bind(&report.phase)
             .bind(&report.message)
-            .execute(pool)
+            .execute(&mut *tx)
             .await
             .map_err(|e| ManagerError::Internal(format!("set done: {e}")))?;
+
+            tx.commit()
+                .await
+                .map_err(|e| ManagerError::Internal(format!("commit done tx: {e}")))?;
         }
 
         "failed" => {
@@ -2107,9 +2657,9 @@ fn validate_create_model(req: &CreateModelRequest) -> Result<(), ManagerError> {
         }
     }
     if let Some(ref kind) = req.kind {
-        if kind != "lora" && kind != "checkpoint" {
+        if kind != "lora" && kind != "checkpoint" && kind != "text_encoder" {
             return Err(ManagerError::InvalidRequest(format!(
-                "kind must be 'lora' or 'checkpoint', got '{}'",
+                "kind must be 'lora', 'checkpoint' or 'text_encoder', got '{}'",
                 kind
             )));
         }
@@ -2126,6 +2676,13 @@ fn validate_create_model(req: &CreateModelRequest) -> Result<(), ManagerError> {
     if req.kind.as_deref() == Some("checkpoint") && req.arch.is_none() {
         return Err(ManagerError::InvalidRequest(
             "checkpoint requires arch ('flux-2-klein-4b', 'sdxl', or 'sd15')".into(),
+        ));
+    }
+    // kind=text_encoder só admite arch flux-2-klein-4b (encoder swap do Qwen3).
+    if req.kind.as_deref() == Some("text_encoder") && req.arch.as_deref() != Some("flux-2-klein-4b")
+    {
+        return Err(ManagerError::InvalidRequest(
+            "text_encoder requires arch 'flux-2-klein-4b'".into(),
         ));
     }
     Ok(())
@@ -2802,10 +3359,25 @@ pub async fn get_storage_usage(pool: &PgPool) -> Result<StorageUsageResponse, Ma
 }
 
 /// Recovery: marca jobs órfãos como queued com queue_reason='recovered'.
+///
+/// `preparing` é EXCLUÍDO de propósito: recuperação de prepares pertence ao
+/// principal (`job_prepares`/`recover_stale_prepares`, ADR-0025 D3) — um
+/// preparing órfão nunca vira `queued` sem pacote; morre pelo watchdog de
+/// 60min (`watchdog_prepare_timeout`) se o worker não voltar.
 pub async fn recover_jobs(pool: &PgPool) -> Result<u64, ManagerError> {
+    // 1. Jobs que estavam em 'cancelling' no boot passam para 'cancelled':
+    sqlx::query(
+        "UPDATE jobs SET status = 'cancelled', finished_at = now(), queue_reason = 'recovered_cancel' \
+         WHERE status = 'cancelling'",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("recover cancelling jobs: {e}")))?;
+
+    // 2. Jobs em voo (dispatched ou running) no boot passam para queued (preparing segue intocado):
     let result = sqlx::query(
         "UPDATE jobs SET status = 'queued', queue_reason = 'recovered', orchestrator_id = NULL \
-         WHERE status IN ('dispatched', 'preparing', 'running', 'cancelling')",
+         WHERE status IN ('dispatched', 'running')",
     )
     .execute(pool)
     .await
@@ -2990,6 +3562,25 @@ pub async fn watchdog_tick(pool: &PgPool) -> Result<(), ManagerError> {
     .map_err(|e| ManagerError::Internal(format!("watchdog degraded: {e}")))?;
 
     // degraded → offline + re-queue dos jobs do nó morto (CTE espelho de recover_jobs).
+    // `preparing` excluído como no recover: jobs em preparação caem no caminho
+    // prepare-timeout/fail, nunca viram queued sem pacote.
+    // 1. Jobs do nó morto em 'cancelling' passam para 'cancelled':
+    let _ = sqlx::query(
+        "WITH morto AS ( \
+             SELECT id FROM orchestrators \
+             WHERE status = 'degraded' \
+               AND (last_heartbeat IS NULL OR last_heartbeat < now() - make_interval(secs => $1::float)) \
+         ) \
+         UPDATE jobs SET status = 'cancelled', finished_at = now(), orchestrator_id = NULL \
+         WHERE orchestrator_id IN (SELECT id FROM morto) \
+           AND status = 'cancelling'",
+    )
+    .bind(offline_s as f64)
+    .execute(pool)
+    .await
+    .map_err(|e| ManagerError::Internal(format!("watchdog cancel cancelling jobs: {e}")))?;
+
+    // 2. degraded → offline + re-queue dos jobs em voo do nó morto (preparing segue intocado):
     let result = sqlx::query(
         "WITH morto AS ( \
              UPDATE orchestrators SET status = 'offline' \
@@ -2999,18 +3590,31 @@ pub async fn watchdog_tick(pool: &PgPool) -> Result<(), ManagerError> {
          ) \
          UPDATE jobs SET status = 'queued', queue_reason = 'recovered', orchestrator_id = NULL \
          WHERE orchestrator_id IN (SELECT id FROM morto) \
-           AND status IN ('dispatched','preparing','running','cancelling')",
+           AND status IN ('dispatched','running')",
     )
     .bind(offline_s as f64)
     .execute(pool)
     .await
     .map_err(|e| ManagerError::Internal(format!("watchdog offline: {e}")))?;
-
     if result.rows_affected() > 0 {
         tracing::info!(
             "watchdog: {} jobs re-queued de nós offline",
             result.rows_affected()
         );
+    }
+
+    // Preparação travada (ADR-0025 D3): `preparing` > 60min → failed.
+    match watchdog_prepare_timeout(pool).await {
+        Ok(n) if n > 0 => tracing::info!("watchdog: {n} jobs preparing expirados → failed"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("watchdog prepare-timeout error: {e}"),
+    }
+
+    // GC de dataset_versions órfãs >7 dias (ADR-0025 D4) — mesmo loop.
+    match gc_dataset_versions(pool).await {
+        Ok(n) if n > 0 => tracing::info!("gc: {n} dataset_versions órfãs removidas"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("gc dataset_versions error: {e}"),
     }
 
     Ok(())
@@ -3175,7 +3779,12 @@ pub async fn dispatch_next(
     image: &str,
     vram_table: &VramTable,
 ) -> Result<bool, ManagerError> {
-    // 1. Seleciona próximo job queued (FIFO).
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| ManagerError::Internal(format!("begin dispatch tx: {e}")))?;
+
+    // 1. Seleciona próximo job queued (FIFO) com lock exclusivo SKIP LOCKED.
     let row: Option<(
         Uuid,
         String,
@@ -3185,9 +3794,10 @@ pub async fn dispatch_next(
         Option<String>,
     )> = sqlx::query_as(
         "SELECT id, engine, model, mode, params, config_yaml \
-         FROM jobs WHERE status = 'queued' ORDER BY created_at LIMIT 1",
+         FROM jobs WHERE status = 'queued' ORDER BY created_at LIMIT 1 \
+         FOR UPDATE SKIP LOCKED",
     )
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(|e| ManagerError::Internal(format!("select next job: {e}")))?;
 
@@ -3199,8 +3809,7 @@ pub async fn dispatch_next(
     // 2. Resolve requisito VRAM da vram-table.
     let required_gb: Option<i32> = vram_table.resolve_required_gb(&engine, &model, &mode);
 
-    // 3. Seleciona orquestrador (ADR-0015 D3).
-    // Se houver orchestrator_hint em params, tenta despachar para ele (D3.2).
+    // 3. Seleciona orquestrador (ADR-0015 D3) com lock FOR UPDATE OF o.
     let hint: Option<Uuid> = params
         .as_ref()
         .and_then(|p| p.get("orchestrator_hint"))
@@ -3216,12 +3825,13 @@ pub async fn dispatch_next(
              WHERE o.id = $1 AND o.status = 'online' \
                AND NOT EXISTS (SELECT 1 FROM jobs j \
                                WHERE j.orchestrator_id = o.id \
-                                 AND j.status IN ('dispatched','preparing','running','cancelling')) \
-               AND ($2::int IS NULL OR o.vram_total_gb IS NULL OR o.vram_total_gb >= $2)",
+                                 AND j.status IN ('dispatched','running','cancelling')) \
+               AND ($2::int IS NULL OR o.vram_total_gb IS NULL OR o.vram_total_gb >= $2) \
+             FOR UPDATE OF o",
         )
         .bind(hint_id)
         .bind(required_gb)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|e| ManagerError::Internal(format!("find hinted orchestrator: {e}")))?;
 
@@ -3238,15 +3848,16 @@ pub async fn dispatch_next(
              WHERE o.status = 'online' \
                AND NOT EXISTS (SELECT 1 FROM jobs j \
                                WHERE j.orchestrator_id = o.id \
-                                 AND j.status IN ('dispatched','preparing','running','cancelling')) \
+                                 AND j.status IN ('dispatched','running','cancelling')) \
                AND ($1::int IS NULL OR o.vram_total_gb IS NULL OR o.vram_total_gb >= $1) \
              ORDER BY (o.vram_total_gb IS NULL) ASC, \
                       o.vram_total_gb DESC NULLS LAST, \
                       o.name ASC \
-             LIMIT 1",
+             LIMIT 1 \
+             FOR UPDATE OF o",
         )
         .bind(required_gb)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|e| ManagerError::Internal(format!("find orchestrator: {e}")))?;
 
@@ -3265,14 +3876,17 @@ pub async fn dispatch_next(
             sqlx::query("UPDATE jobs SET queue_reason = $2 WHERE id = $1 AND status = 'queued'")
                 .bind(job_id)
                 .bind(reason)
-                .execute(pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(|e| ManagerError::Internal(format!("set queue reason: {e}")))?;
+            tx.commit()
+                .await
+                .map_err(|e| ManagerError::Internal(format!("commit queue reason tx: {e}")))?;
             return Ok(false);
         }
     };
 
-    // 4. Marca dispatched e atualiza flag de fallback em params (ADR-0015 D3.3, D3.5).
+    // 4. Marca dispatched e atualiza flag de fallback em params dentro da transação.
     if fallback_used {
         sqlx::query(
             "UPDATE jobs SET status = 'dispatched', queue_reason = NULL, orchestrator_id = $2, \
@@ -3281,7 +3895,7 @@ pub async fn dispatch_next(
         )
         .bind(job_id)
         .bind(orch_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| ManagerError::Internal(format!("set dispatched (fallback): {e}")))?;
     } else {
@@ -3292,10 +3906,14 @@ pub async fn dispatch_next(
         )
         .bind(job_id)
         .bind(orch_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| ManagerError::Internal(format!("set dispatched: {e}")))?;
     }
+
+    tx.commit()
+        .await
+        .map_err(|e| ManagerError::Internal(format!("commit dispatch tx: {e}")))?;
 
     // 5. Monta payload do dispatch (idêntico ao anterior).
     let package_ref = params
@@ -3327,6 +3945,17 @@ pub async fn dispatch_next(
         .and_then(|p| p.get("custom_checkpoint"))
         .cloned();
 
+    // Extrai init_image_ref resolvido do params (img2img — S4 feat/img2img).
+    let init_image_ref = params
+        .as_ref()
+        .and_then(|p| p.get("init_image_ref"))
+        .cloned();
+
+    // Extrai text_encoder_ref resolvido do params (fatia feat/pesos-custom-flux2).
+    let text_encoder_ref = params
+        .as_ref()
+        .and_then(|p| p.get("text_encoder_ref"))
+        .cloned();
     // Resolve imagem do container: se engine for diffusion, usa DIFFUSION_TRAINER_IMAGE
     // (env explícito SEMPRE vence) ou herda tag de TRAINER_IMAGE (fallback p/ TrueNAS :gpu).
     let job_image = match engine.as_str() {
@@ -3363,6 +3992,18 @@ pub async fn dispatch_next(
     // snake_case: `custom_checkpoint: {s3_key, md5}` — casa com WeightRef do orquestrador.
     if let Some(cc) = custom_checkpoint {
         dispatch_body["custom_checkpoint"] = cc;
+    }
+
+    // Adiciona init_image_ref ao dispatch quando presente (S4 — feat/img2img).
+    // snake_case: `init_image_ref: {s3_key, md5|null}` — casa com InitImageRef do orquestrador.
+    if let Some(iir) = init_image_ref {
+        dispatch_body["init_image_ref"] = iir;
+    }
+
+    // Adiciona text_encoder ao dispatch quando presente (fatia feat/pesos-custom-flux2).
+    // snake_case: `text_encoder: {s3_key, md5}` — casa com WeightRef do orquestrador.
+    if let Some(te) = text_encoder_ref {
+        dispatch_body["text_encoder"] = te;
     }
 
     let url = format!("{}/internal/dispatch", orch_endpoint);
@@ -3801,6 +4442,35 @@ mod tests {
             name: "a".repeat(256),
         };
         assert!(validate_update_model(&too_long).is_err());
+    }
+    #[test]
+    fn test_validate_create_model_text_encoder() {
+        // Helper: request base válido diffusion.
+        let base = |kind: Option<&str>, arch: Option<&str>| CreateModelRequest {
+            id: Uuid::new_v4(),
+            engine: "diffusion".to_string(),
+            name: "enc.safetensors".to_string(),
+            model: None,
+            s3_key: "models/diffusion/x/enc.safetensors".to_string(),
+            source: "upload".to_string(),
+            url: None,
+            hash: "d41d8cd98f00b204e9800998ecf8427e".to_string(),
+            bytes: 100,
+            job_id: None,
+            kind: kind.map(|s| s.to_string()),
+            arch: arch.map(|s| s.to_string()),
+        };
+        // text_encoder + flux-2 ⇒ ok.
+        assert!(
+            validate_create_model(&base(Some("text_encoder"), Some("flux-2-klein-4b"))).is_ok()
+        );
+        // text_encoder + sdxl/sd15/ausente ⇒ 400.
+        assert!(validate_create_model(&base(Some("text_encoder"), Some("sdxl"))).is_err());
+        assert!(validate_create_model(&base(Some("text_encoder"), Some("sd15"))).is_err());
+        assert!(validate_create_model(&base(Some("text_encoder"), None)).is_err());
+        // checkpoint segue exigindo arch (inalterado).
+        assert!(validate_create_model(&base(Some("checkpoint"), None)).is_err());
+        assert!(validate_create_model(&base(Some("checkpoint"), Some("sdxl"))).is_ok());
     }
 
     // ── Bug 009: classificação kind/arch de treino de difusão ─────────────

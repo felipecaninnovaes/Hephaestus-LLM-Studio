@@ -13,8 +13,8 @@ entries:
   - { engine: difusao, model: flux2-klein-9b, mode: train, vram_min_gb: 28 }
   - { engine: difusao, model: sdxl-1.0, mode: train, vram_min_gb: 20 }
   # ── Difusão generate (ADR-0023 D8) — valores espelhados do handler (handlers.rs L1620-1638) ──
-  - { engine: diffusion, model: flux-2-klein-4b, mode: generate, vram_min_gb: 8 }  # 4bit→8, 8bit→12, none→16
-  - { engine: diffusion, model: sdxl, mode: generate, vram_min_gb: 8 }             # 4bit→8, 8bit→12, none→16
+  - { engine: diffusion, model: flux-2-klein-4b, mode: generate, vram_min_gb: 8 }  # 2bit→7, 4bit→8, 6bit→10, 8bit→12, none→16
+  - { engine: diffusion, model: sdxl, mode: generate, vram_min_gb: 8 }             # 2bit→7, 4bit→8, 6bit→10, 8bit→12, none→16
   - { engine: diffusion, model: sd15, mode: generate, vram_min_gb: 6 }             # fixo 6
   # ── YOLO ──
   - { engine: yolo, model: yolo11n, mode: train, vram_min_gb: 6 }

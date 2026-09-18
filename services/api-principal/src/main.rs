@@ -233,6 +233,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         model_download_allowed_hosts: load_download_allowed_hosts(),
     };
 
+    // 8. Recovery de preparações órfãs (ADR-0025 D3 — espelha `recover_jobs`
+    //    do manager): `job_prepares` em `preparing` com `updated_at` > 10min
+    //    ⇒ re-spawn (attempts < 3) ou `prepare_fail{timeout}`. Best-effort:
+    //    nunca derruba o boot.
+    match api_principal::jobs::prepare::recover_stale_prepares(&state).await {
+        Ok((respawned, failed)) if respawned + failed > 0 => {
+            tracing::info!(respawned, failed, "recovery de preparações concluído")
+        }
+        Ok(_) => tracing::info!("recovery de preparações: nada órfão"),
+        Err(e) => tracing::error!("recovery de preparações falhou: {e}"),
+    }
+
+    // 8b. Worker periódico de recovery de preparações órfãs em background (a cada 60s)
+    let bg_state = state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            if let Err(e) = api_principal::jobs::prepare::recover_stale_prepares(&bg_state).await {
+                tracing::warn!("background recover_stale_prepares erro: {e}");
+            }
+        }
+    });
+
+    // 8c. Worker periódico de GC de storage (chunked, datasets-cache, trash) em background (a cada 10min)
+    let gc_state = state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));
+        loop {
+            interval.tick().await;
+            api_principal::storage::gc::run_storage_gc(&gc_state).await;
+        }
+    });
+
     let app = routes::build(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")

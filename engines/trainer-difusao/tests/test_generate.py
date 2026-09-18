@@ -368,6 +368,30 @@ class TestCustom(_BaseGenerateTest):
         with self.assertRaises(SystemExit):
             main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
 
+    def test_custom_flux2_registers_in_meta(self):
+        cfg = self._base_cfg(
+            batch_size=1,
+            custom_checkpoint_path="/fake/flux2.safetensors",
+            arch="flux-2-klein-4b",
+            text_encoder_path="/fake/qwen3-custom",
+        )
+        del cfg["generate"]["base_model"]
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / "output"
+
+        main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+
+        lines = [
+            json.loads(l)
+            for l in (out_dir / "generation_meta.json").read_text().splitlines()
+            if l.strip()
+        ]
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["custom_model_path"], "/fake/flux2.safetensors")
+        self.assertEqual(lines[0]["arch"], "flux-2-klein-4b")
+        self.assertEqual(lines[0]["base_model"], "flux-2-klein-4b")
+        self.assertEqual(lines[0]["text_encoder_path"], "/fake/qwen3-custom")
+
 
 class TestLimits(_BaseGenerateTest):
     """6. batch_size=9 → erro; 5 loras → erro; scale=2.5 → erro."""
@@ -761,6 +785,47 @@ class TestValidationDirect(unittest.TestCase):
                 }
             )
 
+    def test_text_encoder_absent_is_none(self):
+        result = load_and_validate_generate_config(
+            {"job_id": "x", "generate": {"prompt": "test"}}
+        )
+        self.assertIsNone(result["text_encoder_path"])
+
+    def test_text_encoder_empty_string_is_none(self):
+        result = load_and_validate_generate_config(
+            {"job_id": "x", "generate": {"prompt": "test", "text_encoder_path": ""}}
+        )
+        self.assertIsNone(result["text_encoder_path"])
+
+    def test_text_encoder_non_string_fails(self):
+        with self.assertRaises(SystemExit):
+            load_and_validate_generate_config(
+                {"job_id": "x", "generate": {"prompt": "test", "text_encoder_path": 123}}
+            )
+
+    def test_text_encoder_valid_path(self):
+        result = load_and_validate_generate_config(
+            {
+                "job_id": "x",
+                "generate": {"prompt": "test", "text_encoder_path": " /enc/qwen3 "},
+            }
+        )
+        self.assertEqual(result["text_encoder_path"], "/enc/qwen3")
+
+    def test_custom_flux2_accepted(self):
+        result = load_and_validate_generate_config(
+            {
+                "job_id": "x",
+                "generate": {
+                    "prompt": "test",
+                    "custom_checkpoint_path": "/fake/flux2.safetensors",
+                    "arch": "flux-2-klein-4b",
+                },
+            }
+        )
+        self.assertEqual(result["custom_checkpoint_path"], "/fake/flux2.safetensors")
+        self.assertEqual(result["arch"], "flux-2-klein-4b")
+        self.assertEqual(result["base_model"], "flux-2-klein-4b")
 
 class TestCliE2E(_BaseGenerateTest):
     """Testes end-to-end via CLI (main)."""
@@ -815,7 +880,7 @@ class TestPipelineCacheKey(unittest.TestCase):
             "arch": None,
         }
         key = pipeline_cache_key(params)
-        self.assertEqual(key, ("flux-2-klein-4b", "4bit", False))
+        self.assertEqual(key, ("flux-2-klein-4b", "4bit", False, None))
 
     def test_custom_checkpoint_cache_key(self):
         from trainer_difusao.generate import pipeline_cache_key
@@ -829,7 +894,25 @@ class TestPipelineCacheKey(unittest.TestCase):
         }
         key = pipeline_cache_key(params)
         # custom_checkpoint_path prevalece sobre base_model
-        self.assertEqual(key, ("/fake/model.safetensors", "none", False))
+        self.assertEqual(key, ("/fake/model.safetensors", "none", False, None))
+
+    def test_encoder_changes_cache_key(self):
+        from trainer_difusao.generate import pipeline_cache_key
+
+        base = {
+            "base_model": "flux-2-klein-4b",
+            "quantization": "4bit",
+            "distilled": False,
+            "custom_checkpoint_path": None,
+            "arch": None,
+            "text_encoder_path": None,
+        }
+        other = dict(base, text_encoder_path="/models/qwen3-custom")
+        self.assertEqual(
+            pipeline_cache_key(base), ("flux-2-klein-4b", "4bit", False, None)
+        )
+        self.assertNotEqual(pipeline_cache_key(base), pipeline_cache_key(other))
+        self.assertEqual(pipeline_cache_key(other)[3], "/models/qwen3-custom")
 
 
 class TestEnsurePipeline(unittest.TestCase):
@@ -847,7 +930,7 @@ class TestEnsurePipeline(unittest.TestCase):
         cache = {}
         pipeline, key = ensure_pipeline(params, cache)
         self.assertIsNone(pipeline)
-        self.assertEqual(key, ("flux-2-klein-4b", "4bit", False))
+        self.assertEqual(key, ("flux-2-klein-4b", "4bit", False, None))
 
     def test_cache_hit_returns_pipeline(self):
         from trainer_difusao.generate import ensure_pipeline
@@ -859,7 +942,7 @@ class TestEnsurePipeline(unittest.TestCase):
             "custom_checkpoint_path": None,
         }
         fake_pipeline = object()
-        key = ("flux-2-klein-4b", "4bit", False)
+        key = ("flux-2-klein-4b", "4bit", False, None)
         cache = {key: fake_pipeline}
         pipeline, k = ensure_pipeline(params, cache)
         self.assertIs(pipeline, fake_pipeline)
@@ -961,6 +1044,188 @@ class TestFlux2Fallback(unittest.TestCase):
 
         mock_pipe.transformer.set_adapters.assert_called()
         mock_pipe.set_adapters.assert_not_called()
+
+
+class TestImg2ImgValidation(_BaseGenerateTest):
+    """S2 feat/img2img: validação de init_image_path + init_strength."""
+
+    def _make_init_png(self, name="init.png", size=(64, 64), color=(200, 50, 50)):
+        from PIL import Image
+
+        p = self.tmp_path / name
+        Image.new("RGB", size, color).save(p, "PNG")
+        return p
+
+    def _cfg_with_init(self, **overrides):
+        cfg = self._base_cfg(batch_size=1, seed=7)
+        cfg["generate"].update(overrides)
+        return cfg
+
+    def test_valid_init_defaults_strength(self):
+        init = self._make_init_png()
+        result = load_and_validate_generate_config(
+            self._cfg_with_init(init_image_path=str(init))
+        )
+        self.assertEqual(result["init_image_path"], str(init))
+        self.assertEqual(result["init_strength"], 0.6)
+
+    def test_valid_init_custom_strength(self):
+        init = self._make_init_png()
+        result = load_and_validate_generate_config(
+            self._cfg_with_init(init_image_path=str(init), init_strength=0.35)
+        )
+        self.assertEqual(result["init_strength"], 0.35)
+
+    def test_boundary_strengths_ok(self):
+        init = self._make_init_png()
+        for s in (0.05, 0.95):
+            result = load_and_validate_generate_config(
+                self._cfg_with_init(init_image_path=str(init), init_strength=s)
+            )
+            self.assertEqual(result["init_strength"], s)
+
+    def test_absent_init_is_txt2img(self):
+        result = load_and_validate_generate_config(self._base_cfg())
+        self.assertIsNone(result["init_image_path"])
+        self.assertIsNone(result["init_strength"])
+
+    def test_strength_without_path_fails(self):
+        with self.assertRaises(SystemExit):
+            load_and_validate_generate_config(
+                self._cfg_with_init(init_strength=0.6)
+            )
+
+    def test_strength_below_range_fails(self):
+        init = self._make_init_png()
+        with self.assertRaises(SystemExit):
+            load_and_validate_generate_config(
+                self._cfg_with_init(init_image_path=str(init), init_strength=0.04)
+            )
+
+    def test_strength_above_range_fails(self):
+        init = self._make_init_png()
+        with self.assertRaises(SystemExit):
+            load_and_validate_generate_config(
+                self._cfg_with_init(init_image_path=str(init), init_strength=0.96)
+            )
+
+    def test_nonexistent_path_fails(self):
+        with self.assertRaises(SystemExit):
+            load_and_validate_generate_config(
+                self._cfg_with_init(init_image_path="/nao/existe/init.png")
+            )
+
+    def test_empty_path_fails(self):
+        with self.assertRaises(SystemExit):
+            load_and_validate_generate_config(
+                self._cfg_with_init(init_image_path="   ")
+            )
+
+    def test_cache_key_ignores_init(self):
+        from trainer_difusao.generate import pipeline_cache_key
+
+        init = self._make_init_png()
+        with_init = load_and_validate_generate_config(
+            self._cfg_with_init(init_image_path=str(init), init_strength=0.7)
+        )
+        without_init = load_and_validate_generate_config(self._base_cfg())
+        # Mesma spec (modelo/quant/distilled) → mesma chave de cache.
+        self.assertEqual(
+            pipeline_cache_key(with_init)[:3], pipeline_cache_key(without_init)[:3]
+        )
+
+
+class TestImg2ImgMetaAndMock(_BaseGenerateTest):
+    """S2 feat/img2img: meta JSONL + iTXt PNG + mock com init."""
+
+    def _make_init_png(self, name="init.png", size=(128, 96), color=(30, 120, 200)):
+        from PIL import Image
+
+        p = self.tmp_path / name
+        Image.new("RGB", size, color).save(p, "PNG")
+        return p
+
+    def _run_mock(self, cfg, out_name="output"):
+        cfg_path = self._write_config(cfg)
+        out_dir = self.tmp_path / out_name
+        main(["generate", "--config", str(cfg_path), "--output", str(out_dir)])
+        return out_dir
+
+    def _meta_lines(self, out_dir):
+        return [
+            json.loads(l)
+            for l in (out_dir / "generation_meta.json").read_text().splitlines()
+            if l.strip()
+        ]
+
+    def _png_payload(self, png_path):
+        from PIL import Image
+
+        with Image.open(png_path) as img:
+            raw = img.info.get("hephaestus.generation")
+        self.assertIsNotNone(raw, "PNG deve conter chunk hephaestus.generation")
+        return json.loads(raw)
+
+    def test_meta_includes_init_fields(self):
+        init = self._make_init_png()
+        cfg = self._base_cfg(
+            batch_size=1, seed=11, init_image_path=str(init), init_strength=0.45
+        )
+        out_dir = self._run_mock(cfg)
+        lines = self._meta_lines(out_dir)
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["init_image"], "init.png")
+        self.assertEqual(lines[0]["init_strength"], 0.45)
+
+    def test_txt2img_meta_has_no_init_keys(self):
+        cfg = self._base_cfg(batch_size=1, seed=11)
+        out_dir = self._run_mock(cfg)
+        entry = self._meta_lines(out_dir)[0]
+        self.assertNotIn("init_image", entry)
+        self.assertNotIn("init_strength", entry)
+
+    def test_png_itxt_includes_init_fields(self):
+        init = self._make_init_png()
+        cfg = self._base_cfg(
+            batch_size=1, seed=11, init_image_path=str(init), init_strength=0.8
+        )
+        out_dir = self._run_mock(cfg)
+        payload = self._png_payload(out_dir / "generated_0001.png")
+        self.assertEqual(payload["init_image"], "init.png")
+        self.assertEqual(payload["init_strength"], 0.8)
+        # Consistência com o JSONL (mesmo dict de origem).
+        entry = self._meta_lines(out_dir)[0]
+        self.assertEqual(entry["init_image"], payload["init_image"])
+        self.assertEqual(entry["init_strength"], payload["init_strength"])
+
+    def test_mock_with_init_batch_writes_normally(self):
+        init = self._make_init_png()
+        cfg = self._base_cfg(
+            batch_size=2, seed=21, init_image_path=str(init), init_strength=0.6
+        )
+        out_dir = self._run_mock(cfg)
+        for i in (1, 2):
+            png = out_dir / f"generated_{i:04d}.png"
+            thumb = out_dir / f"thumb_{i:04d}.jpg"
+            self.assertTrue(png.exists())
+            self.assertGreater(png.stat().st_size, 0)
+            self.assertTrue(thumb.exists())
+        lines = self._meta_lines(out_dir)
+        self.assertEqual(len(lines), 2)
+        for entry in lines:
+            self.assertEqual(entry["init_image"], "init.png")
+
+    def test_mock_with_unreadable_init_falls_back(self):
+        # Arquivo existe (passa no validador) mas não é imagem → mock puro.
+        fake = self.tmp_path / "fake_init.png"
+        fake.write_text("isto não é um png", encoding="utf-8")
+        cfg = self._base_cfg(
+            batch_size=1, seed=5, init_image_path=str(fake), init_strength=0.6
+        )
+        out_dir = self._run_mock(cfg)
+        self.assertTrue((out_dir / "generated_0001.png").exists())
+        lines = self._meta_lines(out_dir)
+        self.assertEqual(len(lines), 1)
 
 
 if __name__ == "__main__":

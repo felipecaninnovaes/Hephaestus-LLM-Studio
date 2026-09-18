@@ -1,20 +1,26 @@
 """Pipeline real de treino LoRA para Stable Diffusion 1.5 na GPU."""
 
-from __future__ import annotations
-
 import math
 import os
+import random
 import shutil
 from pathlib import Path
 from typing import Any
 
 from trainer_difusao.common import (
+    _cached_encode,
+    _cycling_batches,
     _die,
     _emit_metric,
     _load_lora_weights,
+    _precompute_text_cache,
     _resolve_output_name,
     _save_lora_safetensors,
     _setup_cache_dir,
+    _validate_train_aux,
+    TextEmbedsCache,
+    _prune_checkpoints,
+    _cleanup_cuda,
 )
 from trainer_difusao.dataset import DiffusionDataset, build_dataloader
 from trainer_difusao.models.base import BaseModelTrainer
@@ -107,6 +113,11 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
 
     device = torch.device("cuda")
 
+    aux = _validate_train_aux(cfg, quant_default="none")
+    control_dataset_path = aux["control_dataset_path"]
+    control_ratio = aux["control_ratio"]
+    cache_text_embeddings = aux["cache_text_embeddings"]
+
     seed = int(cfg.get("seed", 42))
     model_id = cfg.get("model_id") or "runwayml/stable-diffusion-v1-5"
     dataset_path = Path(cfg.get("dataset_path", "/datasets"))
@@ -118,6 +129,20 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
     alpha = int(lora_cfg.get("alpha", 16))
     trigger_word = str(lora_cfg.get("trigger_word", ""))
     base_name = _resolve_output_name(cfg)
+    # feat/pesos-custom-flux2: treino custom sd15 via from_single_file do UNet —
+    # mecânico (mesmo padrão da geração); demais componentes do repo oficial.
+    raw_custom_cp = cfg.get("custom_checkpoint_path")
+    custom_checkpoint_path: str | None = None
+    if raw_custom_cp:
+        if not isinstance(raw_custom_cp, str) or not raw_custom_cp.strip():
+            _die("custom_checkpoint_path deve ser uma string não vazia.")
+        custom_checkpoint_path = raw_custom_cp.strip()
+    raw_enc = cfg.get("text_encoder_path")
+    if raw_enc:
+        _die(
+            "text_encoder_path só é suportado com arch flux-2-klein-4b "
+            "(treino sd15 não usa encoder custom)."
+        )
 
     samples_cfg = cfg.get("samples", {})
     sample_prompt = str(samples_cfg.get("prompt", "") or "").strip()
@@ -145,9 +170,12 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         if (mixed_precision == "bf16" and torch.cuda.is_bf16_supported())
         else torch.float16
     )
-    quantization = str(
-        lora_cfg.get("quantization") or cfg.get("quantization") or "none"
-    ).lower().strip()
+    # Hoje o treino SD 1.5/SDXL carrega o modelo base em precisão plena (sem
+    # BitsAndBytesConfig): o nível é validado/normalizado e registrado na
+    # telemetry + metadados do safetensors. 2bit/6bit (torchao intx) exigem CUDA
+    # e seguem o mesmo caminho de aplicação do Flux quando o ponto de aplicação
+    # existir — nunca degradação silenciosa.
+    quantization = aux["quantization"] or "none"
 
     _emit_metric(
         metrics_path,
@@ -183,9 +211,24 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
     vae = AutoencoderKL.from_pretrained(
         model_id, subfolder="vae", torch_dtype=torch.float32, cache_dir=hub_cache
     ).to(device)
-    unet = UNet2DConditionModel.from_pretrained(
-        model_id, subfolder="unet", torch_dtype=target_dtype, cache_dir=hub_cache
-    ).to(device)
+    if custom_checkpoint_path:
+        try:
+            unet = UNet2DConditionModel.from_single_file(
+                custom_checkpoint_path, torch_dtype=target_dtype
+            ).to(device)
+        except Exception as exc:
+            _die(
+                f"Falha ao carregar checkpoint sd15 custom "
+                f"({custom_checkpoint_path}): layout não reconhecido ({exc})"
+            )
+        print(
+            f"[SD15] Checkpoint custom aplicado ao UNet: {custom_checkpoint_path}",
+            flush=True,
+        )
+    else:
+        unet = UNet2DConditionModel.from_pretrained(
+            model_id, subfolder="unet", torch_dtype=target_dtype, cache_dir=hub_cache
+        ).to(device)
     noise_scheduler = DDPMScheduler.from_pretrained(
         model_id, subfolder="scheduler", cache_dir=hub_cache
     )
@@ -228,11 +271,53 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
     )
     dataloader = build_dataloader(dataset, batch_size, seed=seed)
 
+    # Dataset de controle (prior-preservation): mesma resolução/bucketing do
+    # principal, caption VAZIA (sem trigger word). Intercalação por step via
+    # _cycling_batches: com prob. control_ratio usa-se o batch de controle no
+    # loss do mesmo step (mesma pipeline de ruído/loss) em vez do principal.
+    control_dataset = None
+    control_loader = None
+    control_iter = None
+    control_n = 0
+    if control_dataset_path is not None:
+        control_dataset = DiffusionDataset(
+            control_dataset_path,
+            resolution=resolution,
+            trigger_word="",
+            enable_bucket=enable_bucket,
+            empty_captions=True,
+        )
+        control_loader = build_dataloader(control_dataset, batch_size, seed=seed)
+        control_iter = _cycling_batches(control_loader)
+        control_n = len(control_dataset)
+
     steps_per_epoch = math.ceil(len(dataloader) / grad_accum)
     total_train_steps = max(1, steps_per_epoch * epochs)
     lr_scheduler = _create_lr_scheduler(
         optimizer, lr_scheduler_name, total_train_steps, lr_warmup_steps
     )
+
+    # Cache de text embeddings (SD: saída do CLIP text encoder), pré-computado
+    # UMA vez no início; miss → on-the-fly + warm; falha → segue sem cache.
+    text_cache = TextEmbedsCache(output, cache_text_embeddings)
+    if cache_text_embeddings:
+        with torch.no_grad():
+            _precompute_text_cache(
+                text_cache,
+                [c for _, c in dataset.samples]
+                + ([c for _, c in control_dataset.samples] if control_dataset else []),
+                lambda caps: {
+                    "hidden": text_encoder(
+                        tokenizer(
+                            caps,
+                            padding="max_length",
+                            max_length=tokenizer.model_max_length,
+                            truncation=True,
+                            return_tensors="pt",
+                        ).input_ids.to(device)
+                    )[0].to(dtype=target_dtype)
+                },
+            )
 
     _emit_metric(
         metrics_path,
@@ -241,6 +326,12 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         progress=0.08,
         phase="dataset_ready",
         message=f"Dataset pronto: {len(dataset)} imagens.",
+    )
+    print(
+        f"[SD 1.5] Treino: dataset={len(dataset)} imagens, "
+        f"control_dataset_images={control_n}, control_ratio={control_ratio}, "
+        f"cache_text_embeddings={cache_text_embeddings}, quantization={quantization}",
+        flush=True,
     )
 
     # Amostra baseline (Época 0) pré-treino (apenas se não estiver retomando)
@@ -291,6 +382,18 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
     global_step = 0
     safe_avg_loss = None
 
+    def _encode_sd15(caps: list[str]) -> dict[str, Any]:
+        inputs = tokenizer(
+            caps,
+            padding="max_length",
+            max_length=tokenizer.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        ).input_ids.to(device)
+        with torch.no_grad():
+            hidden = text_encoder(inputs)[0].to(dtype=target_dtype)
+        return {"hidden": hidden}
+
     for epoch_idx in range(1, epochs + 1):
         epoch = epoch_idx + epoch_offset
         unet.train()
@@ -298,6 +401,10 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         steps_in_epoch = 0
 
         for batch in dataloader:
+            # Prior-preservation: com prob. control_ratio troca-se o batch pelo
+            # de controle (regularização, captions vazias) no mesmo step.
+            if control_iter is not None and random.random() < control_ratio:
+                batch = next(control_iter)
             pixel_values = batch["pixel_values"].to(device, dtype=torch.float32)
             captions = batch["prompt"]
             cur_bs = pixel_values.shape[0]
@@ -314,18 +421,9 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
             ).long()
             noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
-            inputs = tokenizer(
-                captions,
-                padding="max_length",
-                max_length=tokenizer.model_max_length,
-                truncation=True,
-                return_tensors="pt",
-            ).to(device)
-
-            with torch.no_grad():
-                encoder_hidden_states = text_encoder(inputs.input_ids)[0].to(
-                    dtype=target_dtype
-                )
+            encoder_hidden_states = _cached_encode(captions, _encode_sd15, text_cache)["hidden"].to(
+                device, dtype=target_dtype
+            )
 
             model_pred = unet(
                 noisy_latents,
@@ -438,6 +536,9 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
                     "epoch": str(epoch),
                 },
             )
+            _prune_checkpoints(checkpoints_dir, keep_last_n=2)
+
+        _cleanup_cuda()
 
         if (
             sample_prompt

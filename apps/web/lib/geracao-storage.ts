@@ -14,14 +14,31 @@ import type { Generation, LoraRef } from "@/types/studio";
 export const GERACAO_FORM_KEY = "geracao:form:v1";
 const GERACAO_FORM_VERSION = 1;
 
-export type GeracaoModelMode = "preset" | "custom";
 export type GeracaoBaseModel = "flux-2-klein-4b" | "sdxl" | "sd15";
-export type GeracaoQuantization = "4bit" | "8bit" | "none";
+export type GeracaoQuantization = "none" | "2bit" | "4bit" | "6bit" | "8bit";
+export type GeracaoSampler =
+  | "default"
+  | "euler"
+  | "euler_a"
+  | "heun"
+  | "dpmpp_2m"
+  | "dpmpp_2m_karras"
+  | "dpmpp_2m_sde"
+  | "dpmpp_2m_sde_karras"
+  | "dpmpp_sde"
+  | "ddim";
+export type GeracaoUpscaleModel = "4x" | "ultrasharp" | "siax";
+
+export interface GeracaoUpscale {
+  model: GeracaoUpscaleModel;
+  scale: 2 | 4;
+}
 
 export interface GeracaoFormState {
-  modelMode: GeracaoModelMode;
   baseModel: GeracaoBaseModel;
   customModelId: string;
+  /* UUID de text encoder custom (kind=text_encoder). "" = encoder oficial BFL. Só vale p/ arch flux-2-klein-4b. */
+  textEncoderModelId: string;
   distilled: boolean;
   loras: LoraRef[];
   prompt: string;
@@ -34,11 +51,35 @@ export interface GeracaoFormState {
   seed: number;
   isLockedSeed: boolean;
   quantization: GeracaoQuantization;
+  sampler: GeracaoSampler;
+  upscale: GeracaoUpscale | null;
   batchSize: number;
+  /* img2img (fatia feat/img2img): força da imagem inicial (0.05..0.95).
+     Persiste por ser preferência estável; os ids de init (upload efêmero
+     ou geração da galeria) NUNCA persistem — seção restaura vazia. */
+  initStrength: number;
 }
 
 const BASE_MODELS: readonly GeracaoBaseModel[] = ["flux-2-klein-4b", "sdxl", "sd15"];
-const QUANTIZATIONS: readonly GeracaoQuantization[] = ["4bit", "8bit", "none"];
+const QUANTIZATIONS: readonly GeracaoQuantization[] = ["none", "2bit", "4bit", "6bit", "8bit"];
+const SAMPLERS: readonly GeracaoSampler[] = [
+  "default",
+  "euler",
+  "euler_a",
+  "heun",
+  "dpmpp_2m",
+  "dpmpp_2m_karras",
+  "dpmpp_2m_sde",
+  "dpmpp_2m_sde_karras",
+  "dpmpp_sde",
+  "ddim",
+];
+const FLUX_SAMPLERS: readonly GeracaoSampler[] = ["default", "euler", "heun"];
+const UPSCALE_MODELS: readonly GeracaoUpscaleModel[] = ["4x", "ultrasharp", "siax"];
+
+/* Listas canônicas p/ a UI (fonte única; labels vivem no componente). */
+export const GERACAO_SAMPLERS: readonly GeracaoSampler[] = SAMPLERS;
+export const GERACAO_FLUX_SAMPLERS: readonly GeracaoSampler[] = FLUX_SAMPLERS;
 
 export function randomGeracaoSeed(): number {
   return Math.floor(Math.random() * 10_000_000);
@@ -48,9 +89,9 @@ export function randomGeracaoSeed(): number {
    rolada a cada chamada (igual ao initializer do componente). */
 export function createDefaultGeracaoForm(): GeracaoFormState {
   return {
-    modelMode: "preset",
     baseModel: "flux-2-klein-4b",
     customModelId: "",
+    textEncoderModelId: "",
     distilled: true,
     loras: [],
     prompt: "",
@@ -63,7 +104,10 @@ export function createDefaultGeracaoForm(): GeracaoFormState {
     seed: randomGeracaoSeed(),
     isLockedSeed: false,
     quantization: "4bit",
+    sampler: "default",
+    upscale: null,
     batchSize: 1,
+    initStrength: 0.6,
   };
 }
 
@@ -139,12 +183,14 @@ export function loadGeracaoForm(): PartialGeracaoForm | null {
     const defaults = createDefaultGeracaoForm();
     const out: PartialGeracaoForm = {};
 
-    if (s.modelMode === "preset" || s.modelMode === "custom") out.modelMode = s.modelMode;
     if (typeof s.baseModel === "string" && (BASE_MODELS as readonly string[]).includes(s.baseModel)) {
       out.baseModel = s.baseModel as GeracaoBaseModel;
     }
     const customId = asString(s.customModelId, 256);
     if (customId !== null) out.customModelId = customId;
+    /* textEncoderModelId novo (fatia pesos-custom-flux2): "" = encoder oficial BFL. */
+    const encoderId = asString(s.textEncoderModelId, 256);
+    if (encoderId !== null) out.textEncoderModelId = encoderId;
     if (typeof s.distilled === "boolean") out.distilled = s.distilled;
     const loras = sanitizeLoras(s.loras);
     if (loras !== null) out.loras = loras;
@@ -164,7 +210,23 @@ export function loadGeracaoForm(): PartialGeracaoForm | null {
     if (typeof s.quantization === "string" && (QUANTIZATIONS as readonly string[]).includes(s.quantization)) {
       out.quantization = s.quantization as GeracaoQuantization;
     }
-    if (s.batchSize !== undefined) out.batchSize = clampInt(s.batchSize, 1, 8, defaults.batchSize);
+    if (typeof s.sampler === "string" && (SAMPLERS as readonly string[]).includes(s.sampler)) {
+      out.sampler = s.sampler as GeracaoSampler;
+    }
+    if (s.upscale !== undefined) {
+      if (s.upscale === null) {
+        out.upscale = null;
+      } else if (typeof s.upscale === "object" && s.upscale !== null) {
+        const u = s.upscale as Record<string, unknown>;
+        const validModel = typeof u.model === "string" && (UPSCALE_MODELS as readonly string[]).includes(u.model);
+        const validScale = u.scale === 2 || u.scale === 4;
+        out.upscale = validModel && validScale
+          ? { model: u.model as GeracaoUpscaleModel, scale: u.scale as 2 | 4 }
+          : null;
+      } else {
+        out.upscale = null;
+      }
+    }
 
     return out;
   } catch {
@@ -206,6 +268,8 @@ export interface GeracaoCompletedMarker {
   jobId: string;
 }
 
+export const GERACAO_BROADCAST_CHANNEL = "hephaestus:generations";
+
 export function notifyGeracaoCompleted(jobId: string): void {
   try {
     const marker: GeracaoCompletedMarker = {
@@ -213,6 +277,11 @@ export function notifyGeracaoCompleted(jobId: string): void {
       jobId,
     };
     window.localStorage.setItem(GERACAO_COMPLETED_KEY, JSON.stringify(marker));
+    if (typeof BroadcastChannel !== "undefined") {
+      const bc = new BroadcastChannel(GERACAO_BROADCAST_CHANNEL);
+      bc.postMessage({ type: "generation_completed", jobId, completedAt: marker.completedAt });
+      bc.close();
+    }
   } catch {
     /* storage indisponível/cheio — galeria cobre via focus/visibility */
   }
@@ -254,8 +323,8 @@ export const GERACAO_APPLY_FORM_EVENT = "hephaestus:apply-geracao-form";
    sem `modelId` NÃO são reaplicáveis: vão p/ `lorasRaw` + `hasLoraResidue`
    (transparência no JSON), e `loras` carrega só UUIDs reaplicáveis.
    Mesmo p/ custom: `params.custom_checkpoint`/`custom_model_path`+`arch`
-   nunca viram UUID — só `customModelId`/`custom_model_id` legado ativa
-   modelMode="custom"; o resto vira resíduo documental. Ausentes = null
+   nunca viram UUID — só `customModelId`/`custom_model_id` entra no snapshot;
+   o resto vira resíduo documental. Ausentes = null
    (nunca a string "unknown"). */
 export interface GenerationReproSnapshot {
   baseModel: string | null;
@@ -263,6 +332,7 @@ export interface GenerationReproSnapshot {
   customModelPath: string | null;
   customCheckpoint: unknown;
   hasCustomResidue: boolean;
+  textEncoderModelId: string | null;
   prompt: string;
   negativePrompt: string | null;
   width: number;
@@ -272,11 +342,13 @@ export interface GenerationReproSnapshot {
   seed: number;
   batchSize: number;
   quantization: string | null;
+  sampler: string | null;
+  upscale: GeracaoUpscale | null;
+  hasSamplerResidue: boolean;
   distilled: boolean;
   loras: LoraRef[];
   lorasRaw: Record<string, unknown>[];
   hasLoraResidue: boolean;
-  modelMode: GeracaoModelMode;
   seedLocked: boolean;
 }
 
@@ -284,6 +356,10 @@ export const GERACAO_LORA_RESIDUE_WARNING =
   "A geração usava LoRA(s) que não podem ser reaplicados automaticamente; configs aplicadas sem LoRA";
 export const GERACAO_CUSTOM_RESIDUE_WARNING =
   "Checkpoint custom não reaplicável automaticamente — selecione o modelo em Modelos & Pesos";
+export const GERACAO_SAMPLER_RESIDUE_WARNING =
+  "Sampler não suportado pelo modelo atual — aplicado o padrão";
+export const GERACAO_ENCODER_RESIDUE_WARNING =
+  "Text encoder custom não reaplicável automaticamente — selecione o encoder em Modelos & Pesos";
 
 /* LoRAs do snapshot: aceita os 3 shapes (modelId UUID reaplicável,
    path da engine, s3_key do manager) mantendo `scale`. Só `modelId`
@@ -302,9 +378,12 @@ function parseSnapshotLoras(raw: unknown): {
     const scale = typeof rec.scale === "number" && Number.isFinite(rec.scale)
       ? Math.min(2, Math.max(0, rec.scale))
       : 1;
-    if (typeof rec.modelId === "string" && rec.modelId.length > 0) {
+    const rawId = typeof rec.modelId === "string" && rec.modelId.length > 0
+      ? rec.modelId
+      : (typeof rec.model_id === "string" && rec.model_id.length > 0 ? rec.model_id : null);
+    if (rawId) {
       if (loras.length < 10) {
-        loras.push({ modelId: rec.modelId.slice(0, 256), scale });
+        loras.push({ modelId: rawId.slice(0, 256), scale });
       }
     } else {
       if (lorasRaw.length < 10) lorasRaw.push(rec);
@@ -326,6 +405,7 @@ export function generationReproSnapshot(gen: Generation): GenerationReproSnapsho
   const customCheckpoint = customCheckpointRaw !== undefined && customCheckpointRaw !== null
     ? customCheckpointRaw
     : null;
+  const textEncoderModelId = nonEmptyString(firstParam(params, ["textEncoderModelId", "text_encoder_model_id"]), 256);
   const arch = nonEmptyString(firstParam(params, ["arch"]), 64);
   const hasCustomResidue = customRaw === null
     && (customModelPath !== null || customCheckpoint !== null || arch !== null);
@@ -339,13 +419,27 @@ export function generationReproSnapshot(gen: Generation): GenerationReproSnapsho
     ? rawBase
     : ((arch !== null && (BASE_MODELS as readonly string[]).includes(arch)) ? arch : null);
   const quantRaw = nonEmptyString(firstParam(params, ["quantization"]), 16);
+  const samplerRaw = nonEmptyString(firstParam(params, ["sampler"]), 32);
+  const sampler = samplerRaw !== null
+    && (SAMPLERS as readonly string[]).includes(samplerRaw)
+    ? samplerRaw
+    : null;
   const { loras, lorasRaw, hasLoraResidue } = parseSnapshotLoras(firstParam(params, ["loras"]));
+  const upscaleRaw = firstParam(params, ["upscale"]);
+  let upscale: GeracaoUpscale | null = null;
+  if (upscaleRaw !== undefined && upscaleRaw !== null && typeof upscaleRaw === "object") {
+    const u = upscaleRaw as Record<string, unknown>;
+    if (typeof u.model === "string" && (UPSCALE_MODELS as readonly string[]).includes(u.model) && (u.scale === 2 || u.scale === 4)) {
+      upscale = { model: u.model as GeracaoUpscaleModel, scale: u.scale as 2 | 4 };
+    }
+  }
   return {
     baseModel,
     customModelId: customRaw,
     customModelPath,
     customCheckpoint,
     hasCustomResidue,
+    textEncoderModelId,
     prompt: gen.prompt,
     negativePrompt: negTop ?? negParam,
     width: numOr(firstParam(params, ["width"]), gen.width),
@@ -355,11 +449,13 @@ export function generationReproSnapshot(gen: Generation): GenerationReproSnapsho
     seed: numOr(firstParam(params, ["seed"]), gen.seed),
     batchSize: numOr(firstParam(params, ["batchSize", "batch_size"]), 1),
     quantization: quantRaw,
+    sampler,
+    upscale,
+    hasSamplerResidue: false,
     distilled: typeof distilledRaw === "boolean" ? distilledRaw : false,
     loras,
     lorasRaw,
     hasLoraResidue,
-    modelMode: customRaw !== null ? "custom" : "preset",
     seedLocked: true,
   };
 }
@@ -368,13 +464,11 @@ export function generationReproSnapshot(gen: Generation): GenerationReproSnapsho
 export function generationConfigsJson(gen: Generation): string {
   return JSON.stringify(generationReproSnapshot(gen), null, 2);
 }
-
 /* Constrói GeracaoFormState a partir de uma geração, com o MESMO
    clamp/validação da hidratação (loadGeracaoForm). Seed travada p/
    reproduzir exatamente (usuário pode destravar no panel).
-   customModelId fora da lista atual de checkpoints: mantido com
-   modelMode="custom" — a validação/graciosidade existente do panel
-   lida (placeholder "Faça upload em Modelos & Pesos"). */
+   customModelId fora da lista atual de checkpoints: mantido — o seletor
+   unificado do panel mostra placeholder "Faça upload em Modelos & Pesos". */
 export interface GeracaoFormFromGenerationResult {
   form: GeracaoFormState;
   hasLoraResidue: boolean;
@@ -387,19 +481,40 @@ export function geracaoFormFromGeneration(gen: Generation): GeracaoFormFromGener
   const params: Record<string, unknown> = gen.params ?? {};
   const snap = generationReproSnapshot(gen);
   const customModelId = snap.customModelId ?? "";
+  const textEncoderModelId = snap.textEncoderModelId ?? "";
   const negativePrompt = snap.negativePrompt ?? "";
   const quantized = firstParam(params, ["quantization"]);
   const distilledRaw = firstParam(params, ["distilled"]);
   const warnings: string[] = [];
   if (snap.hasLoraResidue) warnings.push(GERACAO_LORA_RESIDUE_WARNING);
   if (snap.hasCustomResidue) warnings.push(GERACAO_CUSTOM_RESIDUE_WARNING);
+  /* Encoder referenciado mas sem UUID reaplicável ⇒ aviso honesto (mesmo padrão LoRA/custom). */
+  if (textEncoderModelId.length === 0 && firstParam(params, ["text_encoder_path"]) !== undefined) {
+    warnings.push(GERACAO_ENCODER_RESIDUE_WARNING);
+  }
+  const formBaseModel = snap.baseModel !== null
+    && (BASE_MODELS as readonly string[]).includes(snap.baseModel)
+    ? (snap.baseModel as GeracaoBaseModel)
+    : defaults.baseModel;
+  /* Sampler faz round-trip; se o modelo-alvo não o suportar (flux aceita
+     só default/euler/heun), volta ao padrão com aviso honesto de resíduo. */
+  let sampler: GeracaoSampler = defaults.sampler;
+  if (snap.sampler !== null
+    && (SAMPLERS as readonly string[]).includes(snap.sampler)) {
+    const candidate = snap.sampler as GeracaoSampler;
+    const supported = formBaseModel === "flux-2-klein-4b"
+      ? (FLUX_SAMPLERS as readonly string[]).includes(candidate)
+      : true;
+    if (supported) {
+      sampler = candidate;
+    } else {
+      warnings.push(GERACAO_SAMPLER_RESIDUE_WARNING);
+    }
+  }
   const form: GeracaoFormState = {
-    modelMode: customModelId.length > 0 ? "custom" : "preset",
-    baseModel: snap.baseModel !== null
-      && (BASE_MODELS as readonly string[]).includes(snap.baseModel)
-      ? (snap.baseModel as GeracaoBaseModel)
-      : defaults.baseModel,
+    baseModel: formBaseModel,
     customModelId,
+    textEncoderModelId,
     distilled: typeof distilledRaw === "boolean" ? distilledRaw : defaults.distilled,
     loras: snap.loras,
     prompt: snap.prompt.slice(0, 4000),
@@ -415,7 +530,12 @@ export function geracaoFormFromGeneration(gen: Generation): GeracaoFormFromGener
       && (QUANTIZATIONS as readonly string[]).includes(quantized)
       ? (quantized as GeracaoQuantization)
       : defaults.quantization,
+    sampler,
+    upscale: snap.upscale,
     batchSize: clampInt(snap.batchSize, 1, 8, defaults.batchSize),
+    /* img2img: aplicar configs de uma geração nunca define origem init
+       (id efêmero) — força volta ao padrão p/ o próximo uso. */
+    initStrength: defaults.initStrength,
   };
   return {
     form,
@@ -429,4 +549,61 @@ export function geracaoFormFromGeneration(gen: Generation): GeracaoFormFromGener
 export function publishGeracaoForm(state: GeracaoFormState): void {
   saveGeracaoForm(state);
   window.dispatchEvent(new CustomEvent(GERACAO_APPLY_FORM_EVENT));
+}
+
+/* ── Canal Galeria → Gerador p/ imagem inicial img2img (fatia feat/img2img, S5) ──
+   O Panel monta UMA aba por vez (Gerar XOR Galeria), então mesma-aba
+   desmontado é o caso comum: a Galeria grava `geracao:initSource` +
+   despacha `heph:init-source` + troca p/ a aba Gerar; o Panel consome a
+   key no mount (leitura destrutiva — reload restaura a seção vazia, pois
+   id de init é efêmero e NUNCA entra no form versionado). Mesma-aba
+   montado: CustomEvent. Cross-tab (Gerar aberta em OUTRA aba, padrão F2):
+   evento `storage` cruza abas; CustomEvent não. Valor
+   { generationId, at }. Toast de confirmação vive no Panel (receptor). */
+
+export const GERACAO_INIT_SOURCE_KEY = "geracao:initSource";
+export const GERACAO_INIT_SOURCE_EVENT = "heph:init-source";
+
+export interface GeracaoInitSource {
+  generationId: string;
+  at: string;
+}
+
+/* Grava a key + despacha o evento canônico mesma-aba. */
+export function publishGeracaoInitSource(generationId: string): void {
+  try {
+    const marker: GeracaoInitSource = {
+      generationId,
+      at: new Date().toISOString(),
+    };
+    window.localStorage.setItem(GERACAO_INIT_SOURCE_KEY, JSON.stringify(marker));
+  } catch {
+    /* storage indisponível — CustomEvent ainda cobre mesma-aba montado */
+  }
+  window.dispatchEvent(
+    new CustomEvent(GERACAO_INIT_SOURCE_EVENT, { detail: { generationId } }),
+  );
+}
+
+/* Leitura destrutiva p/ o mount do Panel: consome a key (remove) para que
+   reload/remount restaure a seção vazia (id efêmero). Retorna null se
+   ausente/corrompido. */
+export function consumeGeracaoInitSource(): GeracaoInitSource | null {
+  try {
+    const raw = window.localStorage.getItem(GERACAO_INIT_SOURCE_KEY);
+    if (!raw) return null;
+    window.localStorage.removeItem(GERACAO_INIT_SOURCE_KEY);
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const rec = parsed as Record<string, unknown>;
+    if (typeof rec.generationId !== "string" || rec.generationId.length === 0) {
+      return null;
+    }
+    return {
+      generationId: rec.generationId,
+      at: typeof rec.at === "string" ? rec.at : "",
+    };
+  } catch {
+    return null;
+  }
 }

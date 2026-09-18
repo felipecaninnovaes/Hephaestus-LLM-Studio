@@ -58,6 +58,29 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
 **Backend**
 
 - **Abort races (review F4.8):** abort durante `preparing` pode ser engolido (estado substituído pelo progress report do orquestrador; `is_cancelled` não é consultado no pipeline — dead code); abort em `dispatched` não notifica o orquestrador (o dispatch já foi feito mas o orquestrador pode estar starting); abort em voo termina `failed` (nunca `cancelled` — o orquestrador reporta `failed` com erro "job not found or already finished" quando o container é stopado). Janela de segundos em mock local; conserto exige testes de abort-em-voo. (relacionado ADR-0024/cc17527: reports terminais done/failed já carregam e persistem phase/message via COALESCE; o ramo `cancelled` de report continua inexistente — ao consertar as races, adicionar arm cancelled em `report_job` + emissão no orquestrador).
+- **Diffusion sem fingerprint de reuso (ADR-0025 P4a):** `build_package_diffusion`
+  (`services/api-principal/src/datasets/package.rs:583`) não recebe nem grava
+  `fingerprint` no manifest — `try_reuse_package` só acerta p/ `build_package_filtered`;
+  job `diffusion_train` SEMPRE reconstrói o pacote (só o dedupe local de submits
+  simultâneos via `job_prepares` o protege). Fechar = assinar `build_package_diffusion`
+  com `fingerprint: Option<&str>` + gravar no manifest (fusão P4a+P4b).
+- **Watchdog `preparing` ancorado em `created_at` (ADR-0025 D3):** o timeout de 60min
+  (`watchdog_prepare_timeout`, `services/manager/src/lib.rs:1261`) conta desde a
+  criação — reports de progresso (`prepare-complete` renova, mas reports
+  intermediários de `packaging_*` NÃO) não estendem o prazo. Build legítimo >60min
+  morre `prepare_timeout`. Fechar = ancorar em `updated_at` (heartbeat do worker)
+  ou renovar `created_at` a cada report de progresso.
+- **Pânico pós-upload deixa versão órfã reusável (ADR-0025 P4a):** se o worker
+  panica DEPOIS do PUT do zip mas ANTES do `prepare_complete`, a `dataset_version`
+  fica sem referência e `try_reuse_package` a reutiliza em submits futuros (bytes
+  íntegros — só falta o vínculo com o job original). Defesa atual: GC de
+  `dataset_versions` pula datasets com job não-terminal (`params.prepare.datasetId`).
+  Fechar = marcar versão como `complete` no `prepare_complete` e só reusar marcadas.
+- **Progresso do build por marcos, sem % real de download (ADR-0025 P4b):**
+  `run_prepare` reporta 0.02/0.1/0.6(reuso)/0.9 (`services/api-principal/src/jobs/prepare.rs`);
+  dentro de `materialize_images_from_storage` há `i/N` aproximado só na mensagem de
+  erro — a barra salta por marcos, não acompanha bytes/imagens reais. Fechar = reportar
+  progresso fracionário a partir do stream `buffer_unordered` (p/ ex. a cada N arquivos).
 - ~~**Watchdog de orquestrador (review F4.8)**~~ **QUITADA 2026-09-10** (Fatia H, ADR-0011 D4: watchdog no worker loop existente, 15s → `degraded`, 60s → `offline` + re-queue dos jobs do nó morto via CTE).
 - **CI: pytest do trainer-yolo (review F4.8):** contrato das 6 keys do `metrics.jsonl` (`epoch, box_loss, cls_loss, dfl_loss, mAP50, mAP50-95`) com o parser do orquestrador (`parse_metrics_line`) não roda em CI — job Python ausente em `.gitea/workflows/ci.yml`. Validado manualmente no E2E.
 - **Mock: best.pt e last.pt idênticos (review F4.8):** artefatos deterministas (bytes de cabeçalho, mesmos 32 bytes) — diferenciar por mAP50 se a UI consumir histograma ou comparação entre best/last.
@@ -108,6 +131,22 @@ fechou). Enquanto em aberto, uma dívida NÃO pode ser violada por uma fatia nov
 - **Restore/lixeira de gerações + sweep S3 de soft-deletados (ADR-0023 D5) — ABERTA 2026-09-15:** `generations.deleted_at` dá o soft-delete mas não há restore nem sweep de objetos S3 (segue o padrão da lixeira de imagens — dívida pré-existente generalizada).
 - **NIT: nome custom_model_path vs custom_model_id no meta do engine (ADR-0023 D4) — ABERTA 2026-09-15:** engine python usa `custom_checkpoint_path` no config.yaml mas o meta reportado usa `custom_model_id`; alinhar na próxima iteração.
 - **Yaml legado inclui `batch_size: 1` (ADR-0023 D2) — ABERTA 2026-09-15:** quando modo legado (sem loras, sem custom), o config.yaml emite `batch_size: 1` mesmo para batch único — funcionalmente inócuo mas polui o yaml; limpar na iteração seguinte.
+- **GC de `generation_inputs` inexistente (feat/img2img) — ABERTA 2026-09-17:** objetos S3 sob
+  `generation_inputs/` e linhas com `used_at` preenchido não são varridos — mesmo padrão de
+  artifacts sem sweep (linhas consumidas permanecem p/ auditoria por decisão consciente da
+  migration 0017). Fechar = TTL + cron de purge (DELETE físico + sweep das vencidas), na mesma
+  fatia que generalizar o sweep de artifacts/gerações soft-deletadas.
+- **Validação @gpu manual do img2img real (feat/img2img) — ABERTA 2026-09-17 (follow-up,
+  não bloqueia docs):** wire validado em mock (upload, XOR, placeholder, staging, variante por
+  componentes, meta); sessão GPU pendente com pesos reais (sdxl + flux-2-klein, `ENGINE_MOCK=0`)
+  para provar `StableDiffusionXLImg2ImgPipeline`/`StableDiffusionImg2ImgPipeline` via
+  `**pipe.components` e `image=` nativo do `Flux2KleinPipeline` (diffusers 0.40.0) antes de
+  anunciar pronto.
+- **Cache de quantização de treino usa path per-job no slug (feat/pesos-custom-flux2, reviewer N1) — ABERTA 2026-09-17:** `models/flux.py` isola o cache por checkpoint+encoder mas o slug carrega path per-job — dois treinos do MESMO checkpoint requantizam; dedup por md5-only é decisão de custo pendente.
+- **Validação @gpu manual de checkpoint/encoder custom flux-2 (feat/pesos-custom-flux2) — ABERTA 2026-09-17:** load real pendente (`Flux2Transformer2DModel.from_single_file` + encoder override Qwen3, `ENGINE_MOCK=0`); CPU-only cobre só validação/meta/cache.
+- **Nomes internos `custom_checkpoint` vs `text_encoder_ref` no manager (feat/pesos-custom-flux2, reviewer N5, inócuo) — ABERTA 2026-09-17:** padronizar na próxima passada (ex. ambos `*_ref` ou ambos sem sufixo).
+- **Sessões de upload chunked sem TTL/GC (feat/pesos-custom-flux2) — ABERTA 2026-09-17:** `init` órfão (sem `complete` nem `DELETE`) retém sessão em memória + tempdir até restart do principal (`services/api-principal/src/models/chunk.rs` — mapa global sob `Mutex`, sem expiração). Vetor de disco sob inits abandonados. Fechar = TTL + sweeper (varredura periódica removendo sessões expiradas com `TempDir` no `drop`).
+- **Complete chunked destrutivo em falha transitória de finalize (feat/pesos-custom-flux2) — ABERTA 2026-09-17:** `complete_upload` remove a sessão do mapa ANTES de montar/finalizar — 503 do manager/S3 ou erro de I/O descarta as partes e o retry exige reupload completo. Fechar = re-inserir a sessão no mapa (ou só remover no sucesso) em erro de finalize, permitindo retry do `complete` sem reenvio das partes.
 
 **Verificação / toolchain**
 

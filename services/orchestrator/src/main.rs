@@ -36,6 +36,7 @@ struct AppState {
     gpu_allow_mock: bool,
     pairing: Arc<PairingState>,
     daemon_state: Option<Arc<orchestrator::daemon::DaemonState>>,
+    max_concurrent_jobs: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -152,6 +153,37 @@ async fn ready(State(state): State<AppState>) -> Response {
     }
 }
 
+async fn metrics_handler(State(state): State<AppState>) -> Response {
+    let active_count = state.active_jobs.len();
+    let max_concurrency = state.max_concurrent_jobs;
+    let s3_ok = if state.s3.ping().await { 1 } else { 0 };
+
+    let body = format!(
+        "# HELP hephaestus_orchestrator_up Service liveness\n\
+         # TYPE hephaestus_orchestrator_up gauge\n\
+         hephaestus_orchestrator_up 1\n\
+         # HELP hephaestus_orchestrator_active_jobs Active jobs running on this node\n\
+         # TYPE hephaestus_orchestrator_active_jobs gauge\n\
+         hephaestus_orchestrator_active_jobs {active_count}\n\
+         # HELP hephaestus_orchestrator_max_concurrent_jobs Maximum concurrent jobs allowed on this node\n\
+         # TYPE hephaestus_orchestrator_max_concurrent_jobs gauge\n\
+         hephaestus_orchestrator_max_concurrent_jobs {max_concurrency}\n\
+         # HELP hephaestus_orchestrator_s3_connected S3 accessibility probe\n\
+         # TYPE hephaestus_orchestrator_s3_connected gauge\n\
+         hephaestus_orchestrator_s3_connected {s3_ok}\n"
+    );
+
+    (
+        StatusCode::OK,
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    )
+        .into_response()
+}
+
 /// POST /internal/dispatch — recebe job do manager (D4 :263–267).
 async fn dispatch_handler(State(state): State<AppState>, body: Bytes) -> Response {
     if body.is_empty() {
@@ -185,6 +217,15 @@ async fn dispatch_handler(State(state): State<AppState>, body: Bytes) -> Respons
         if pr.md5_zip.is_empty() {
             return bad_request("package_ref.md5_zip is required");
         }
+    }
+
+    // Semáforo local de GPU/VRAM: rejeita com HTTP 503 se atingiu capacidade máxima
+    if state.active_jobs.len() >= state.max_concurrent_jobs {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "node_busy",
+            "GPU node is currently at maximum capacity",
+        );
     }
 
     // Idempotência R4: se já existe job com MESMO job_id em memória → 409
@@ -306,10 +347,20 @@ async fn pairing_verify_handler(State(state): State<AppState>, body: Bytes) -> R
         .into_response()
 }
 
+/// Resolve a imagem do daemon de difusão a partir do env `DIFFUSION_TRAINER_IMAGE`
+/// (mesmo nome usado pelo manager e pelo compose).
+///
+/// Env ausente ou vazio (só whitespace) → default `"hephaestus/trainer-difusao:local"`.
+fn resolve_daemon_diffusion_image(env_value: Option<&str>) -> String {
+    match env_value.map(str::trim) {
+        Some(v) if !v.is_empty() => v.to_string(),
+        _ => "hephaestus/trainer-difusao:local".to_string(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
-
 fn build_router(state: AppState) -> Router {
     let api = Router::new()
         .route("/internal/dispatch", post(dispatch_handler))
@@ -323,6 +374,7 @@ fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
+        .route("/metrics", get(metrics_handler))
         .merge(api)
         .layer(middleware::from_fn(request_id_middleware))
         .layer(TraceLayer::new_for_http())
@@ -360,6 +412,11 @@ async fn main() {
         .unwrap_or_else(|_| "8082".into())
         .parse()
         .expect("PORT deve ser um número");
+
+    let max_concurrent_jobs: usize = std::env::var("MAX_CONCURRENT_JOBS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
 
     // D1 — identidade no heartbeat.
     let advertise_url =
@@ -449,8 +506,12 @@ async fn main() {
         .filter(|v| !v.trim().is_empty());
 
     let daemon_state = if daemon_enabled {
-        let image = std::env::var("TRAINER_IMAGE_DIFFUSION")
-            .unwrap_or_else(|_| "hephaestus/trainer-difusao:local".into());
+        // Mesmo env do manager/compose (`DIFFUSION_TRAINER_IMAGE`): o nome
+        // antigo `TRAINER_IMAGE_DIFFUSION` caía sempre no default :local e a
+        // guarda D2 recusava job real no nó GPU.
+        let image = resolve_daemon_diffusion_image(
+            std::env::var("DIFFUSION_TRAINER_IMAGE").ok().as_deref(),
+        );
         let client: Arc<dyn orchestrator::daemon::DaemonClient> =
             if let Some(ref url) = daemon_url_override {
                 Arc::new(orchestrator::daemon::HttpDaemonClient::new(url))
@@ -560,6 +621,7 @@ async fn main() {
         gpu_allow_mock: gpu_allow_mock_boot,
         pairing,
         daemon_state,
+        max_concurrent_jobs,
     };
 
     // Heartbeat loop (~2s, D4/D9).
@@ -575,6 +637,14 @@ async fn main() {
             "nvidia-smi indisponível — telemetria GPU desabilitada (gpus:[], vram:None)"
         );
     }
+
+    // Sweep de containers órfãos no boot (anti-processos fantasmas pós crash).
+    orchestrator::sweep_orphan_trainer_containers().await;
+    orchestrator::sweep_orphan_workdirs(
+        &std::path::PathBuf::from(&workdir),
+        std::time::Duration::from_secs(86400),
+    )
+    .await;
 
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
@@ -618,4 +688,39 @@ async fn main() {
         .expect("bind");
     tracing::info!("orchestrator ouvindo em 0.0.0.0:{port}");
     axum::serve(listener, app).await.unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_daemon_diffusion_image;
+
+    #[test]
+    fn daemon_image_env_explicito_vence() {
+        assert_eq!(
+            resolve_daemon_diffusion_image(Some("meu-registry/trainer-difusao:gpu")),
+            "meu-registry/trainer-difusao:gpu"
+        );
+    }
+
+    #[test]
+    fn daemon_image_default_quando_ausente_ou_vazio() {
+        // Env ausente, vazio ou só whitespace → default :local (guarda D2 só
+        // recusa :local em nó GPU; CPU-only continua mock).
+        for v in [None, Some(""), Some("   ")] {
+            assert_eq!(
+                resolve_daemon_diffusion_image(v),
+                "hephaestus/trainer-difusao:local",
+                "env={v:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn daemon_image_preserva_whitespace_externo() {
+        // Trim: compose nunca deve injetar espaços no nome da imagem.
+        assert_eq!(
+            resolve_daemon_diffusion_image(Some("  hephaestus/trainer-difusao:gpu  ")),
+            "hephaestus/trainer-difusao:gpu"
+        );
+    }
 }

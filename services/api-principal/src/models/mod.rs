@@ -3,5 +3,6 @@
 //! Upload de pesos (multipart) e download por URL (server-side no principal).
 //! Handlers + validação pura; reutiliza padrões de `src/datasets/` e `package.rs`.
 
+pub mod chunk;
 pub mod handlers;
 pub mod validate;

@@ -1,5 +1,10 @@
 import { apiFetch } from "@/lib/api";
-import type { Model, ModelListResponse } from "@/types/studio";
+import type {
+  Model,
+  ModelListResponse,
+  ModelUploadInitRequest,
+  ModelUploadInitResponse,
+} from "@/types/studio";
 
 /** GET /api/models — lista de modelos canônicos da tabela models. */
 export function listModels(): Promise<ModelListResponse> {
@@ -47,5 +52,46 @@ export async function updateModel(id: string, name: string): Promise<Model> {
     method: "PATCH",
     body: { name },
   });
+}
+
+/* ── Upload chunked (contrato 901ebad) ─────────────────────────────── */
+// Contorna o OOM do proxy Next (bufferiza multipart grande em RAM): partes
+// vão como corpo cru octet-stream, nunca multipart. Sessões vivem em memória
+// do principal — abortar via DELETE em falha/cancelamento (sem TTL no server).
+export function initModelUpload(
+  params: ModelUploadInitRequest,
+): Promise<ModelUploadInitResponse> {
+  return apiFetch<ModelUploadInitResponse>("/api/models/uploads/init", {
+    method: "POST",
+    body: params,
+  });
+}
+
+/** PUT parte como corpo cru (SEM multipart). Retorna 204 (sem corpo). */
+export async function uploadModelPart(
+  uploadId: string,
+  partNumber: number,
+  blob: Blob,
+): Promise<void> {
+  await apiFetch(
+    `/api/models/uploads/${uploadId}/part/${partNumber}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: blob,
+    },
+  );
+}
+
+/** POST complete — monta, valida e executa o mesmo fluxo do multipart único. Retorna 201 Model. */
+export function completeModelUpload(uploadId: string): Promise<Model> {
+  return apiFetch<Model>(`/api/models/uploads/${uploadId}/complete`, {
+    method: "POST",
+  });
+}
+
+/** DELETE abort — idempotente (204 também se inexistente). Best-effort: chamar com .catch silencioso. */
+export async function abortModelUpload(uploadId: string): Promise<void> {
+  await apiFetch(`/api/models/uploads/${uploadId}`, { method: "DELETE" });
 }
 

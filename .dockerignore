@@ -1,2 +1,29 @@
-apps/web/.next
-apps/web/node_modules
+# Caches de build e dependências
+target/
+apps/web/.next/
+node_modules/
+**/node_modules/
+
+# Caches Python e ambientes virtuais
+.venv/
+**/__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+**/.pytest_cache/
+.ruff_cache/
+**/.ruff_cache/
+
+# Git
+.git/
+.gitea/
+
+# Modelos, dados pesados, artefatos temporários e caches
+*.pt
+*.bin
+*.safetensors
+*.onnx
+datasets/
+outputs/
+models/
+tmp/

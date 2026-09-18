@@ -180,9 +180,22 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
         "/api/models/download",
         &[201, 400, 401, 403, 502, 503],
     ),
+    ("POST", "/api/models/uploads/init", &[201, 400, 401]),
+    (
+        "PUT",
+        "/api/models/uploads/:uploadId/part/:partNumber",
+        &[204, 400, 401, 404, 413],
+    ),
+    (
+        "POST",
+        "/api/models/uploads/:uploadId/complete",
+        &[201, 400, 401, 404, 409, 413, 503],
+    ),
+    ("DELETE", "/api/models/uploads/:uploadId", &[204, 401]),
     ("GET", "/api/storage/usage", &[200, 401, 503]),
     // Galeria de gerações (ADR-0023 D5 — G.1 stubs).
     ("GET", "/api/generations", &[200, 400, 401, 503]),
+    ("POST", "/api/generations/inputs", &[201, 400, 401]),
     ("GET", "/api/generations/:id/data", &[200, 401, 404, 503]),
     ("POST", "/api/generations/delete", &[204, 400, 401, 503]),
     ("POST", "/api/generations/export", &[200, 400, 401, 503]),
@@ -207,6 +220,14 @@ pub const UPLOAD_BODY_LIMIT_BYTES: usize = 200 * 1024 * 1024 + 8 * 1024 * 1024;
 /// mora na camada de roteamento, nunca no handler; teto alinhado com
 /// `MAX_GLOBAL_BYTES`/`MAX_DECLARED_TOTAL` do reader do import).
 pub const IMPORT_BODY_LIMIT_BYTES: usize = 8 * 1024 * 1024 * 1024 + 8 * 1024 * 1024;
+
+/// Limite do CORPO TOTAL do input img2img: 20 MiB de imagem + 8 MiB de folga
+/// p/ envelope multipart (mesmo padrão do upload de datasets — o limite mora
+/// na camada de roteamento; o teto por-arquivo de 20 MiB mora no handler e
+/// responde 400 `invalid_request`, nunca 413 — o contrato desta rota não
+/// declara 413).
+pub const GENERATION_INPUT_BODY_LIMIT_BYTES: usize =
+    crate::generations::inputs::MAX_INPUT_BYTES as usize + 8 * 1024 * 1024;
 
 /// Contrato total (inventário D8): união REAL de `PUBLIC_ROUTES` +
 /// `PROTECTED_ROUTES`. É função justamente para não existir alias esquecido —
@@ -247,6 +268,61 @@ async fn ready(State(state): State<AppState>) -> Response {
         )
             .into_response()
     }
+}
+
+/// GET /metrics — métricas no formato padrão Prometheus (OpenMetrics)
+async fn metrics_handler(State(state): State<AppState>) -> Response {
+    let pool_size = state.pool.size();
+    let pool_idle = state.pool.num_idle();
+    let setup_val = if state.setup_required { 1 } else { 0 };
+
+    let body = format!(
+        "# HELP hephaestus_api_principal_up Service liveness\n\
+         # TYPE hephaestus_api_principal_up gauge\n\
+         hephaestus_api_principal_up 1\n\
+         # HELP hephaestus_db_pool_connections_total Total connections in DB pool\n\
+         # TYPE hephaestus_db_pool_connections_total gauge\n\
+         hephaestus_db_pool_connections_total {pool_size}\n\
+         # HELP hephaestus_db_pool_connections_idle Idle connections in DB pool\n\
+         # TYPE hephaestus_db_pool_connections_idle gauge\n\
+         hephaestus_db_pool_connections_idle {pool_idle}\n\
+         # HELP hephaestus_auth_setup_required Setup required flag\n\
+         # TYPE hephaestus_auth_setup_required gauge\n\
+         hephaestus_auth_setup_required {setup_val}\n"
+    );
+
+    (
+        StatusCode::OK,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    )
+        .into_response()
+}
+
+/// Middleware de propagação de x-request-id
+async fn request_id_middleware(
+    mut req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> Response {
+    let request_id = req
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    if let Ok(val) = request_id.parse() {
+        req.headers_mut().insert("x-request-id", val);
+    }
+
+    let mut response = next.run(req).await;
+    if let Ok(val) = request_id.parse() {
+        response.headers_mut().insert("x-request-id", val);
+    }
+    response
 }
 
 /// Fallback D9: caminho não roteado — sem sessão válida → 401 `unauthorized`;
@@ -449,11 +525,34 @@ pub fn build(state: AppState) -> axum::Router {
             "/api/models/download",
             post(crate::models::handlers::download_model),
         )
+        .route(
+            "/api/models/uploads/init",
+            post(crate::models::chunk::init_upload),
+        )
+        .route(
+            "/api/models/uploads/:uploadId/part/:partNumber",
+            put(crate::models::chunk::put_part).layer(DefaultBodyLimit::max(
+                crate::models::chunk::CHUNK_PART_BODY_LIMIT_BYTES,
+            )),
+        )
+        .route(
+            "/api/models/uploads/:uploadId/complete",
+            post(crate::models::chunk::complete_upload),
+        )
+        .route(
+            "/api/models/uploads/:uploadId",
+            delete(crate::models::chunk::abort_upload),
+        )
         .route("/api/storage/usage", get(monitoring::get_storage_usage))
         // Galeria de gerações (ADR-0023 D5 — G.1 stubs).
         .route(
             "/api/generations",
             get(generations::handlers::list_generations),
+        )
+        .route(
+            "/api/generations/inputs",
+            post(generations::inputs::upload_generation_input)
+                .layer(DefaultBodyLimit::max(GENERATION_INPUT_BODY_LIMIT_BYTES)),
         )
         .route(
             "/api/generations/:id/data",
@@ -478,10 +577,12 @@ pub fn build(state: AppState) -> axum::Router {
     axum::Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
+        .route("/metrics", get(metrics_handler))
         .route("/api/auth/login", post(handlers::login))
         .route("/api/auth/me", get(handlers::me))
         .route("/api/auth/logout", post(handlers::logout))
         .merge(protected)
         .fallback(gate_fallback)
         .with_state(state)
+        .layer(middleware::from_fn(request_id_middleware))
 }

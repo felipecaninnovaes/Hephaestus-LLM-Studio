@@ -8,6 +8,8 @@ const nextConfig: NextConfig = {
   allowedDevOrigins: ["10.15.10.3"],
   experimental: {
     proxyClientMaxBodySize: "8200mb",
+    // Complete de upload chunked (md5 + PUT S3 de até 8 GiB) excede o default de 30s do proxy dev.
+    proxyTimeout: 900_000,
   },
   async rewrites() {
     const apiBase =

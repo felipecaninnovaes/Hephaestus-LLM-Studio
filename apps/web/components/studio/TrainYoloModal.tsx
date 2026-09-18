@@ -105,7 +105,9 @@ export default function TrainYoloModal({
         orchestratorId: selectedOrchestratorId || null,
       });
       showToast(
-        `Job de treino criado (posição ${result.queuePosition ?? "—"} na fila).`,
+        result.status === "preparing"
+          ? "Treino aceito — preparando pacote (empacotando dataset…). Acompanhe no Centro de Ações."
+          : `Job de treino criado (posição ${result.queuePosition ?? "—"} na fila).`,
         "success",
         {
           label: "Ver na Forja",

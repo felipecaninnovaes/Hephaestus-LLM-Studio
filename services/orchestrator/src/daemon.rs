@@ -116,16 +116,12 @@ impl DockerDaemonLauncher {
         args.push("--add-host".to_string());
         args.push("host.docker.internal:host-gateway".to_string());
 
-        // Rede: se network_name definido, usa rede compose (DNS resolve
-        // `diffusion-daemon` internamente). Caso contrário, fallback host.
-        if let Some(ref net) = self.network_name {
-            args.push("--network".to_string());
-            args.push(net.clone());
-        } else {
-            // Rede host: daemon escuta na NET do host (0.0.0.0:PORT).
-            args.push("--network".to_string());
-            args.push("host".to_string());
-        }
+        // Rede: usa network_name definido ou fallback para ENGINE_NETWORK / infra_default (nunca host).
+        let net = self.network_name.clone().unwrap_or_else(|| {
+            std::env::var("ENGINE_NETWORK").unwrap_or_else(|_| "infra_default".to_string())
+        });
+        args.push("--network".to_string());
+        args.push(net);
 
         // Detached mode (D1) — sem --rm (daemon persiste)
         args.push("-d".to_string());
@@ -622,7 +618,7 @@ mod tests {
         assert!(args.contains(&"--add-host".to_string()));
         assert!(args.contains(&"host.docker.internal:host-gateway".to_string()));
         assert!(args.contains(&"--network".to_string()));
-        assert!(args.contains(&"host".to_string()));
+        assert!(args.contains(&"infra_default".to_string()));
         assert!(args.contains(&"-d".to_string()));
 
         // Volumes — targets devem ser /data/datasets e /data/outputs
@@ -686,9 +682,9 @@ mod tests {
         assert!(args.contains(&"infra_default".to_string()));
     }
 
-    /// start() retorna URL host.docker.internal no modo host.
+    /// start() usa rede isolada e não faz fallback para modo host.
     #[test]
-    fn daemon_url_host_mode() {
+    fn daemon_url_isolated_network_mode() {
         let launcher = DockerDaemonLauncher::new(
             "hephaestus/trainer-difusao:local",
             "diffusion-daemon",
@@ -699,7 +695,8 @@ mod tests {
             None,
         );
         let args = launcher.build_daemon_args();
-        assert!(args.contains(&"host".to_string()));
+        assert!(args.contains(&"infra_default".to_string()));
+        assert!(!args.contains(&"host".to_string()));
     }
 
     #[test]

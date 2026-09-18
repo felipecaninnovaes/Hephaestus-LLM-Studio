@@ -1,0 +1,15 @@
+{
+  "$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
+  "mcpServers": {
+    "graft": {
+      "type": "stdio",
+      "command": "graft",
+      "args": ["mcp"]
+    },
+    "browser-harness": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["--from", "browser-harness[mcp]", "browser-harness-mcp"]
+    }
+  }
+}

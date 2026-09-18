@@ -105,6 +105,10 @@ fn bad_request(msg: &str) -> Response {
     error_response(StatusCode::BAD_REQUEST, "invalid_request", msg)
 }
 
+fn conflict(code: &str, msg: &str) -> Response {
+    error_response(StatusCode::CONFLICT, code, msg)
+}
+
 fn pairing_invalid() -> Response {
     error_response(
         StatusCode::CONFLICT,
@@ -203,6 +207,49 @@ async fn ready(State(state): State<AppState>) -> Response {
     }
 }
 
+async fn metrics_handler(State(state): State<AppState>) -> Response {
+    let pool_size = state.pool.size();
+    let pool_idle = state.pool.num_idle();
+
+    let rows: Vec<(String, i64)> =
+        sqlx::query_as("SELECT status, count(*) FROM jobs GROUP BY status")
+            .fetch_all(&state.pool)
+            .await
+            .unwrap_or_default();
+
+    let mut jobs_metrics = String::new();
+    for (status, count) in rows {
+        jobs_metrics.push_str(&format!(
+            "hephaestus_manager_jobs_total{{status=\"{status}\"}} {count}\n"
+        ));
+    }
+
+    let body = format!(
+        "# HELP hephaestus_manager_up Service liveness\n\
+         # TYPE hephaestus_manager_up gauge\n\
+         hephaestus_manager_up 1\n\
+         # HELP hephaestus_manager_db_pool_connections_total Total connections in DB pool\n\
+         # TYPE hephaestus_manager_db_pool_connections_total gauge\n\
+         hephaestus_manager_db_pool_connections_total {pool_size}\n\
+         # HELP hephaestus_manager_db_pool_connections_idle Idle connections in DB pool\n\
+         # TYPE hephaestus_manager_db_pool_connections_idle gauge\n\
+         hephaestus_manager_db_pool_connections_idle {pool_idle}\n\
+         # HELP hephaestus_manager_jobs_total Jobs count by status\n\
+         # TYPE hephaestus_manager_jobs_total gauge\n\
+         {jobs_metrics}"
+    );
+
+    (
+        StatusCode::OK,
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    )
+        .into_response()
+}
+
 /// POST /internal/jobs — cria job.
 async fn create_job_handler(State(state): State<AppState>, body: Bytes) -> Response {
     if body.is_empty() {
@@ -225,6 +272,7 @@ async fn create_job_handler(State(state): State<AppState>, body: Bytes) -> Respo
         Err(ManagerError::InvalidRequest(ref msg)) => {
             error_response(StatusCode::BAD_REQUEST, "invalid_request", msg)
         }
+        Err(ManagerError::Conflict(ref code)) => conflict(code, "conflict"),
         Err(ManagerError::Internal(e)) => internal_error(&e),
         Err(e) => internal_error(&e.to_string()),
     }
@@ -297,6 +345,9 @@ async fn abort_job_handler(State(state): State<AppState>, Path(id): Path<String>
         Err(ManagerError::Internal(e)) => internal_error(&e),
         Err(ManagerError::InvalidRequest(msg)) => bad_request(&msg),
         Err(ManagerError::PairingInvalid) => internal_error("unexpected pairing_invalid"),
+        Err(ManagerError::Conflict(code)) => {
+            internal_error(&format!("unexpected conflict: {code}"))
+        }
     }
 }
 
@@ -384,6 +435,128 @@ async fn report_job_handler(
     match manager::report_job(&state.pool, uuid, req).await {
         Ok(()) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response(),
         Err(ManagerError::NotFound) => not_found(),
+        Err(ManagerError::Internal(e)) => internal_error(&e),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+/// POST /internal/jobs/:id/prepare-complete — worker do BFF concluiu o
+/// empacotamento (ADR-0025 D1): `preparing` → `queued`. Fora de `preparing`
+/// → 409; inexistente → 404. Após a transição, dispara `dispatch_next`
+/// (best-effort — o loop de 2s pega o resto).
+async fn prepare_complete_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Response {
+    let uuid = match id.parse::<uuid::Uuid>() {
+        Ok(u) => u,
+        Err(_) => return not_found(),
+    };
+
+    if body.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "invalid_request", "empty body");
+    }
+    let req: manager::PrepareCompleteRequest = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                &format!("invalid json: {e}"),
+            )
+        }
+    };
+
+    match manager::prepare_complete(&state.pool, uuid, req).await {
+        Ok(()) => {
+            // Disparo normal de dispatch (best-effort: falha não desfaz o complete).
+            match manager::dispatch_next(
+                &state.pool,
+                state.orch_client.as_ref(),
+                &state.exec_mode,
+                &state.orch_workdir,
+                &state.trainer_image,
+                &state.vram_table,
+            )
+            .await
+            {
+                Ok(true) => tracing::info!("dispatch após prepare-complete: job despachado"),
+                Ok(false) => {}
+                Err(e) => tracing::warn!("dispatch após prepare-complete falhou: {e}"),
+            }
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"ok": true, "status": "queued"})),
+            )
+                .into_response()
+        }
+        Err(ManagerError::NotFound) => not_found(),
+        Err(ManagerError::Conflict(code)) => conflict(&code, "job is not in preparing state"),
+        Err(ManagerError::InvalidRequest(msg)) => bad_request(&msg),
+        Err(ManagerError::Internal(e)) => internal_error(&e),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+/// POST /internal/jobs/:id/prepare-fail — worker do BFF falhou o
+/// empacotamento (ADR-0025 D1): `preparing` → `failed`
+/// (`error='prepare_failed:<code>:<message>'`).
+async fn prepare_fail_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Response {
+    let uuid = match id.parse::<uuid::Uuid>() {
+        Ok(u) => u,
+        Err(_) => return not_found(),
+    };
+
+    if body.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "invalid_request", "empty body");
+    }
+    let req: manager::PrepareFailRequest = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                &format!("invalid json: {e}"),
+            )
+        }
+    };
+
+    match manager::prepare_fail(&state.pool, uuid, req).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"ok": true, "status": "failed"})),
+        )
+            .into_response(),
+        Err(ManagerError::NotFound) => not_found(),
+        Err(ManagerError::Conflict(code)) => conflict(&code, "job is not in preparing state"),
+        Err(ManagerError::InvalidRequest(msg)) => bad_request(&msg),
+        Err(ManagerError::Internal(e)) => internal_error(&e),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
+/// POST /internal/jobs/:id/prepare-cancel — cancelamento de preparação pelo BFF.
+async fn prepare_cancel_handler(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let uuid = match id.parse::<uuid::Uuid>() {
+        Ok(u) => u,
+        Err(_) => return not_found(),
+    };
+
+    match manager::prepare_cancel(&state.pool, uuid).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"ok": true, "status": "cancelled"})),
+        )
+            .into_response(),
+        Err(ManagerError::NotFound) => not_found(),
+        Err(ManagerError::Conflict(code)) => {
+            conflict(&code, "job is not in preparing or cancelling state")
+        }
         Err(ManagerError::Internal(e)) => internal_error(&e),
         Err(e) => internal_error(&e.to_string()),
     }
@@ -621,6 +794,18 @@ fn build_router(state: AppState) -> Router {
         .route("/internal/jobs/:id/artifacts", get(list_artifacts_handler))
         .route("/internal/jobs/:id/abort", post(abort_job_handler))
         .route("/internal/jobs/:id/report", post(report_job_handler))
+        .route(
+            "/internal/jobs/:id/prepare-complete",
+            post(prepare_complete_handler),
+        )
+        .route(
+            "/internal/jobs/:id/prepare-fail",
+            post(prepare_fail_handler),
+        )
+        .route(
+            "/internal/jobs/:id/prepare-cancel",
+            post(prepare_cancel_handler),
+        )
         .route("/internal/heartbeat", post(heartbeat_handler))
         .route("/internal/telemetry", get(telemetry_handler))
         .route("/internal/orchestrators", get(list_orchestrators_handler))
@@ -649,6 +834,7 @@ fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
+        .route("/metrics", get(metrics_handler))
         .merge(api)
         .layer(middleware::from_fn(request_id_middleware))
         .layer(TraceLayer::new_for_http())
@@ -658,6 +844,33 @@ fn build_router(state: AppState) -> Router {
 // ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
+
+/// Valida e resolve o MANAGER_TOKEN.
+/// Em produção (ENVIRONMENT=production), exige token explícito e rejeita valores triviais ("changeme", "manager-dev-token").
+/// Em desenvolvimento, permite fallback para "manager-dev-token" emitindo warning.
+fn resolve_manager_token(
+    raw_token: Result<String, std::env::VarError>,
+    is_prod: bool,
+) -> Result<String, String> {
+    match raw_token {
+        Ok(t)
+            if is_prod && (t.trim().is_empty() || t == "changeme" || t == "manager-dev-token") =>
+        {
+            Err(format!(
+                "MANAGER_TOKEN inseguro ('{t}') não permitido em produção"
+            ))
+        }
+        Ok(t) if t.trim().is_empty() => Err("MANAGER_TOKEN não pode ser vazio".to_string()),
+        Ok(t) => Ok(t),
+        Err(_) if is_prod => Err("MANAGER_TOKEN é obrigatório em produção".to_string()),
+        Err(_) => {
+            tracing::warn!(
+                "MANAGER_TOKEN não definido: usando token dev inseguro ('manager-dev-token')"
+            );
+            Ok("manager-dev-token".to_string())
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -672,7 +885,11 @@ async fn main() {
 
     // Config.
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL obrigatório");
-    let token = std::env::var("MANAGER_TOKEN").unwrap_or_else(|_| "manager-dev-token".into());
+    let is_prod = std::env::var("ENVIRONMENT")
+        .map(|e| e.eq_ignore_ascii_case("production"))
+        .unwrap_or(false);
+    let token = resolve_manager_token(std::env::var("MANAGER_TOKEN"), is_prod)
+        .expect("validação de MANAGER_TOKEN");
     let exec_mode = std::env::var("EXEC_MODE").unwrap_or_else(|_| "docker".into());
     let orch_workdir = std::env::var("ORCH_WORKDIR").unwrap_or_else(|_| "/data".into());
     let trainer_image =
@@ -831,10 +1048,42 @@ mod tests {
         }
     }
 
+    /// Guarda anti-footgun: `#[sqlx::test]` cria bancos `_sqlx_test_*` no
+    /// servidor de `DATABASE_URL` — a URL deve apontar para o banco efêmero
+    /// `studio_test` (via `bash scripts/test-db.sh`), nunca para o dev
+    /// `studio`. Checa a URL (não `current_database`, que é o nome gerado).
+    fn assert_test_db_url(url: &str) {
+        let path = url.rsplit('/').find(|s| !s.is_empty()).unwrap_or("");
+        let db = path.split('?').next().unwrap_or("");
+        assert!(
+            db.starts_with("studio_test"),
+            "HARNESS DE TESTE RECUSANDO BANCO PERIGOSO: use studio_test via scripts/test-db.sh — nunca o DB de dev 'studio' (banco na URL: '{db}')"
+        );
+    }
+
+    fn test_db_url() -> String {
+        let url = std::env::var("DATABASE_URL")
+            .expect("DATABASE_URL é obrigatório (bash scripts/test-db.sh)");
+        assert_test_db_url(&url);
+        url
+    }
+
+    #[test]
+    fn guarda_harness_aceita_studio_test() {
+        assert_test_db_url("postgres://studio:studio@localhost:5432/studio_test");
+    }
+
+    #[test]
+    #[should_panic(expected = "HARNESS DE TESTE RECUSANDO BANCO PERIGOSO")]
+    fn guarda_harness_rejeita_studio_dev() {
+        assert_test_db_url("postgres://studio:studio@localhost:5432/studio");
+    }
+
     /// POST /internal/jobs com weights_id inexistente → 404 not_found.
     #[sqlx::test(migrations = "../api-principal/migrations")]
     #[ignore = "requer Postgres (bash scripts/test-db.sh)"]
     async fn create_job_handler_not_found(pool: PgPool) {
+        let _ = test_db_url();
         let app = build_router(test_state(pool));
 
         let fake_id = uuid::Uuid::new_v4();
@@ -872,6 +1121,7 @@ mod tests {
     #[sqlx::test(migrations = "../api-principal/migrations")]
     #[ignore = "requer Postgres (bash scripts/test-db.sh)"]
     async fn create_job_handler_invalid_json(pool: PgPool) {
+        let _ = test_db_url();
         let app = build_router(test_state(pool));
 
         let response = app
@@ -894,5 +1144,42 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(json["code"], "invalid_request");
+    }
+
+    #[test]
+    fn test_resolve_manager_token_dev_default() {
+        let res = resolve_manager_token(Err(std::env::VarError::NotPresent), false);
+        assert_eq!(res.unwrap(), "manager-dev-token");
+    }
+
+    #[test]
+    fn test_resolve_manager_token_empty_fails() {
+        let res = resolve_manager_token(Ok("   ".to_string()), false);
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err(), "MANAGER_TOKEN não pode ser vazio");
+    }
+
+    #[test]
+    fn test_resolve_manager_token_prod_missing_fails() {
+        let res = resolve_manager_token(Err(std::env::VarError::NotPresent), true);
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err(), "MANAGER_TOKEN é obrigatório em produção");
+    }
+
+    #[test]
+    fn test_resolve_manager_token_prod_trivial_fails() {
+        let res = resolve_manager_token(Ok("changeme".to_string()), true);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("não permitido em produção"));
+
+        let res2 = resolve_manager_token(Ok("manager-dev-token".to_string()), true);
+        assert!(res2.is_err());
+        assert!(res2.unwrap_err().contains("não permitido em produção"));
+    }
+
+    #[test]
+    fn test_resolve_manager_token_prod_valid() {
+        let res = resolve_manager_token(Ok("super-secret-token-123".to_string()), true);
+        assert_eq!(res.unwrap(), "super-secret-token-123");
     }
 }

@@ -1,0 +1,30 @@
+# Config omp nativo do projeto — migrado de opencode.json
+# Agentes vivem em .omp/agents/*.md; este arquivo resolve modelos e guard-rails.
+
+modelRoles:
+  # hephaestus (coordenador / sessão principal)
+  # openrouter/qwen/qwen3.8-flash trava sem entregar token (testado 2026-09-17);
+  # mesmo modelo via gateway opencode-go responde.
+  default: "openrouter/z-ai/glm-5.3-flash:high"
+  # agente "plan" do opencode (modo plan)
+  plan: "openrouter/qwen/qwen3.8-flash:high"
+  # workers (implementadores, revisores, fixer, docs-sync, explore, ui-designer, visao)
+  worker: "opencode-go/muse-spark-1.3-contributor"
+  # workers com variant high do opencode (architect, reviewer, guardian, ui-designer)
+  worker-high: "opencode-go/muse-spark-1.3-contributor:high"
+  # reviewer-max (escalada) — sem sufixo: o modelo não expõe níveis de effort
+  max: "openrouter/qwen/qwen3.8-max"
+
+bash:
+  patterns:
+    # Equivalente dos permission.bash do opencode, porém global (vale para
+    # coordenador e subagentes). Em subagentes headless, `prompt` rejeita a
+    # chamada; na sessão principal vira confirmação interativa.
+    - match: "git push*"
+      approval: prompt
+    - match: "git merge*"
+      approval: prompt
+    # Subagentes não cometem (AGENTS.md §3.2); coordenador confirma cada commit.
+    # Remova esta regra se a confirmação por commit for indesejada.
+    - match: "git commit*"
+      approval: prompt

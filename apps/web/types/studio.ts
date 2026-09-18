@@ -183,12 +183,37 @@ export interface SearchResponse {
 /* ── Jobs (F4.7) ──────────────────────────────────────────── */
 
 export type JobStatus =
+  | "preparing"
   | "queued"
+  | "dispatched"
   | "running"
   | "cancelling"
   | "done"
   | "failed"
   | "cancelled";
+
+/* ── Submit assíncrono (ADR-0025): 202 {jobId, status, queuePosition} ── */
+
+export interface SubmitJobResponse {
+  jobId: string;
+  status: JobStatus;
+  queuePosition: number | null;
+}
+
+/**
+ * Erro legível de job falho. Falha de preparação (ADR-0025) chega como
+ * `prepare_failed:<code>:<msg>` — expõe o motivo sem o prefixo de máquina.
+ */
+export function friendlyJobError(error: string | null | undefined): string | null {
+  if (!error) return null;
+  const m = /^prepare_failed:([^:]*):([\s\S]*)$/.exec(error);
+  if (m) {
+    const code = m[1].trim() || "prep";
+    const msg = m[2].trim() || "falha na preparação do pacote.";
+    return `Falha ao preparar o pacote (${code}): ${msg}`;
+  }
+  return error;
+}
 
 export type JobKind = "yolo_train" | "autotracker" | "yolo_predict" | "autolabel" | "diffusion" | "diffusion_train" | "diffusion_generate";
 
@@ -454,8 +479,12 @@ export function autolabelErrorMessage(code: string): string {
 
 export interface DiffusionJobRequest {
   datasetId: string;
-  /** "flux" (FLUX.2 Klein 4B), "sdxl" (SDXL 1.0) ou "sd15" (Stable Diffusion 1.5) */
-  baseModel: "sdxl" | "flux" | "sd15";
+  /** "flux" (FLUX.2 Klein 4B), "sdxl" (SDXL 1.0) ou "sd15" (Stable Diffusion 1.5). XOR com customModelId; ambos ausentes ⇒ "sdxl" (retrocompat). */
+  baseModel?: "sdxl" | "flux" | "sd15";
+  /** UUID de checkpoint custom (kind=checkpoint). XOR com baseModel. */
+  customModelId?: string | null;
+  /** UUID de text encoder custom (kind=text_encoder). Só vale p/ arch flux-2-klein-4b; omitido = encoder oficial BFL. */
+  textEncoderModelId?: string | null;
   triggerWord?: string;
   epochs?: number;
   batchSize?: number;
@@ -473,7 +502,11 @@ export interface DiffusionJobRequest {
   lrScheduler?: "cosine" | "linear" | "constant" | "constant_with_warmup";
   lrWarmupSteps?: number;
   mixedPrecision?: "fp16" | "bf16" | "no";
-  quantization?: "none" | "4bit" | "8bit";
+  quantization?: "none" | "2bit" | "4bit" | "6bit" | "8bit";
+  /** Dataset de regularização/controle (Motor Flux.2): opcional, UUID. */
+  controlDatasetId?: string | null;
+  /** Pré-computa embeddings das captions (acelera datasets grandes). Padrão false. */
+  cacheTextEmbeddings?: boolean;
   /** Bucketing por aspect ratio: preserva a proporção das imagens (padrão true). */
   enableBucket?: boolean;
   checkpointInterval?: number;
@@ -498,7 +531,9 @@ export interface DiffusionPreset {
   lrScheduler?: "cosine" | "linear" | "constant" | "constant_with_warmup";
   lrWarmupSteps?: number;
   mixedPrecision?: "fp16" | "bf16" | "no";
-  quantization?: "none" | "4bit" | "8bit";
+  quantization?: "none" | "2bit" | "4bit" | "6bit" | "8bit";
+  controlDatasetId?: string | null;
+  cacheTextEmbeddings?: boolean;
   enableBucket?: boolean;
   checkpointInterval?: number;
   epochOffset?: number;
@@ -526,6 +561,8 @@ export function diffusionErrorMessage(code: string): string {
 export interface DiffusionGenerateJobRequest {
   baseModel?: "flux-2-klein-4b" | "sdxl" | "sd15";
   customModelId?: string | null;
+  /** UUID de text encoder custom (kind=text_encoder). Só vale p/ arch flux-2-klein-4b; omitido = encoder oficial BFL. */
+  textEncoderModelId?: string | null;
   prompt: string;
   negativePrompt?: string;
   width?: number;
@@ -533,11 +570,26 @@ export interface DiffusionGenerateJobRequest {
   steps?: number;
   guidanceScale?: number;
   seed?: number;
-  quantization?: "none" | "4bit" | "8bit";
+  quantization?: "none" | "2bit" | "4bit" | "6bit" | "8bit";
+  sampler?: string;
+  upscale?: { model: "4x" | "ultrasharp" | "siax"; scale: 2 | 4 } | null;
   distilled?: boolean;
   batchSize?: number;
   loras?: { modelId: string; scale: number }[];
   orchestratorId?: string | null;
+  /* img2img (fatia feat/img2img — openapi 30140ea): XOR, no máximo um. */
+  initImageId?: string | null;
+  initGenerationId?: string | null;
+  initStrength?: number;
+}
+
+/* Input efêmero p/ img2img — 201 de POST /api/generations/inputs. */
+export interface GenerationInputUploaded {
+  id: string;
+  filename: string;
+  mimeType: string;
+  width: number;
+  height: number;
 }
 
 export function diffusionGenerateErrorMessage(code: string): string {
@@ -571,12 +623,32 @@ export interface Model {
   url: string | null;
   jobId: string | null;
   createdAt: string;
-  kind?: "lora" | "checkpoint" | null;
+  kind?: "lora" | "checkpoint" | "text_encoder" | null;
   arch?: "flux-2-klein-4b" | "sdxl" | "sd15" | null;
 }
 
 export interface ModelListResponse {
   items: Model[];
+}
+
+/* ── Upload chunked de modelos (contrato 901ebad) ────────────────── */
+// Contorna o buffering de multipart grande em RAM no proxy Next: arquivos
+// > 96 MiB são fatiados e enviados como octet-stream cru. Sessões vivem em
+// memória do principal (single-instance, sem TTL GC no servidor) — o cliente
+// aborta via DELETE em falha/cancelamento/unmount (dívida documentada).
+export interface ModelUploadInitRequest {
+  name: string;
+  engine: string;
+  kind?: string;
+  arch?: string;
+  size: number;
+  totalParts: number;
+}
+
+export interface ModelUploadInitResponse {
+  uploadId: string;
+  partSize: number;
+  totalParts: number;
 }
 
 export function modelSourceLabel(source: ModelSource): string {

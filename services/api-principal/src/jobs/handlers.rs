@@ -32,19 +32,6 @@ use crate::storage::StorageError;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Compensação: remove package (storage + row) quando o manager rejeita o
-/// job (A1 — Fatia J review J.6). Extraído para reuso nos 4 braços de erro.
-async fn compensate_package(state: &AppState, version_id: &str) {
-    let _ = state
-        .storage
-        .delete_prefix(&format!("packages/{version_id}/"))
-        .await;
-    let _ = sqlx::query("DELETE FROM dataset_versions WHERE id = $1")
-        .bind(version_id.parse::<uuid::Uuid>().expect("uuid"))
-        .execute(&state.pool)
-        .await;
-}
-
 // ---------------------------------------------------------------------------
 // Query params
 // ---------------------------------------------------------------------------
@@ -769,13 +756,14 @@ pub async fn get_telemetry(State(state): State<AppState>) -> Response {
 // POST /api/jobs/yolo — criação de job de treino YOLO (F4.2b)
 // ---------------------------------------------------------------------------
 
-/// POST /api/jobs/yolo — submete job de treino YOLO (ADR-0007 D7).
+/// POST /api/jobs/yolo — submete job de treino YOLO (ADR-0007 D7, ADR-0025 D0).
 ///
 /// Status: 202 | 400 `invalid_request` | 401 | 404 `not_found` |
 /// 409 `dataset_not_ready` | 503 `queue_unavailable`.
 ///
-/// Fluxo: valida body → dataset existe? → dataset pronto? → build_package
-/// (compartilhado) → POST ao manager → 202.
+/// Fluxo (aceite <1s): valida body → dataset existe? → dataset pronto? →
+/// fingerprint (só SQL) → `create_job` em modo `preparing` → 202; o
+/// empacotamento pesado roda em background (`jobs::prepare`).
 pub async fn submit_yolo_job(
     State(state): State<AppState>,
     body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
@@ -852,42 +840,38 @@ pub async fn submit_yolo_job(
         }
     }
 
-    // 6. Build package (função compartilhada — F4.2b).
-    let package = match crate::datasets::package::build_package(&state, ds_id).await {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
+    // 6. Fingerprint do dataset (só SQL barato, sem S3 — ADR-0025 D0/D1).
+    let fingerprint =
+        match crate::jobs::prepare::fingerprint_for_dataset(&state.pool, ds_id, None, "yolo", "")
+            .await
+        {
+            Ok(f) => f,
+            Err(_) => {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "internal server error",
+                )
+            }
+        };
 
-    // 7. Gera config.yaml.
-    let job_id = uuid::Uuid::new_v4().to_string();
-    let config_yaml = models::generate_config_yaml(&job_id, &req);
+    // 7. Gera config.yaml (pura, barata; o job_id embutido é decorativo como
+    //    antes — o manager aloca o id real no create_job).
+    let config_yaml = models::generate_config_yaml(&uuid::Uuid::new_v4().to_string(), &req);
 
-    // 8. POST ao manager (D7 :237-240 — snake_case interno).
+    // 8. Body ao manager em modo preparing (package_ref null; o accept injeta
+    //    params.prepare — D7 :237-240, snake_case interno).
     //    vram_min_gb = null na v1 (decisão registrada: política VRAM real entra
     //    com GPU; R3: vram_min gravado mas não bloqueante no mock).
     //    D5: weights_id repassado quando presente (manager resolve → weights_ref).
     let mut manager_body = serde_json::json!({
         "kind": "yolo_train",
         "engine": "yolo",
-        "model": req.model,
+        "model": req.model.clone(),
         "mode": "train",
         "dataset_id": ds_id.to_string(),
-        "dataset_version_id": package.version_id,
-        "package_ref": {
-            "version_id": package.version_id,
-            "key": package.key,
-            "md5_zip": package.md5_zip,
-            "bytes": package.bytes,
-        },
         "config_yaml": config_yaml,
-        "params": {
-            "package_ref": {
-                "version_id": package.version_id,
-                "key": package.key,
-                "md5_zip": package.md5_zip,
-                "bytes": package.bytes,
-            },
-        },
+        "params": {},
         "vram_min_gb": null,
     });
     // D5: insere weights_id no body quando presente.
@@ -903,34 +887,29 @@ pub async fn submit_yolo_job(
         manager_body["params"]["output_name"] = serde_json::json!(out_name);
     }
 
-    match state.manager.create_job(&manager_body).await {
-        Ok(resp) => {
-            let body = SubmitJobResponse {
-                job_id: resp.job_id,
-                status: resp.status,
-                queue_position: resp.queue_position,
-            };
-            (StatusCode::ACCEPTED, Json(body)).into_response()
-        }
-        // ADR-0015 D6.4: alinha ao R6 (NotFound→404, InvalidRequest→400, Unavailable→503).
-        // Compensação do package em TODOS os braços de erro.
-        Err(ManagerError::NotFound) => {
-            compensate_package(&state, &package.version_id).await;
-            not_found()
-        }
-        Err(ManagerError::InvalidRequest(_)) => {
-            compensate_package(&state, &package.version_id).await;
-            invalid_request()
-        }
-        Err(ManagerError::Unavailable(_)) => {
-            compensate_package(&state, &package.version_id).await;
-            queue_unavailable()
-        }
-        Err(_) => {
-            compensate_package(&state, &package.version_id).await;
-            queue_unavailable()
-        }
-    }
+    // 9. Aceite assíncrono: dedupe → create → insert → spawn → 202.
+    let spec = crate::jobs::prepare::PrepareSpec {
+        kind: "yolo_train".to_string(),
+        dataset_id: ds_id,
+        resolved_image_ids: None,
+        fingerprint,
+        engine: "yolo".to_string(),
+        trigger_word: None,
+        params: serde_json::json!({
+            "model": req.model,
+            "epochs": req.epochs,
+            "batch": req.batch,
+            "imgsz": req.imgsz,
+            "lr0": req.lr0,
+            "optimizer": req.optimizer,
+            "augment": { "mosaic": req.augment.mosaic, "mixupFlip": req.augment.mixup_flip },
+            "seed": req.seed,
+            "weights": req.weights,
+            "orchestratorId": req.orchestrator_id,
+            "outputName": req.output_name,
+        }),
+    };
+    crate::jobs::prepare::accept_job_preparing(&state, spec, manager_body).await
 }
 
 // ---------------------------------------------------------------------------
@@ -1017,40 +996,42 @@ pub async fn submit_autotracker_job(
         }
     }
 
-    // 6. Build package (função compartilhada — F4.2b).
-    let package = match crate::datasets::package::build_package(&state, ds_id).await {
-        Ok(p) => p,
-        Err(resp) => return resp,
+    // 6. Fingerprint do dataset (só SQL barato, sem S3 — ADR-0025 D0/D1).
+    let fingerprint = match crate::jobs::prepare::fingerprint_for_dataset(
+        &state.pool,
+        ds_id,
+        None,
+        "autotracker",
+        "",
+    )
+    .await
+    {
+        Ok(f) => f,
+        Err(_) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "internal server error",
+            )
+        }
     };
 
-    // 7. Gera config.yaml.
-    let job_id = uuid::Uuid::new_v4().to_string();
-    let config_yaml = models::generate_autotrack_config_yaml(&job_id, &req);
+    // 7. Gera config.yaml (pura, barata).
+    let config_yaml =
+        models::generate_autotrack_config_yaml(&uuid::Uuid::new_v4().to_string(), &req);
 
-    // 8. POST ao manager (ADR-0008 D3 — snake_case interno; ADR-0014 D6 — weights_id).
+    // 8. Body ao manager em modo preparing (ADR-0008 D3, snake_case interno;
+    //    ADR-0014 D6 — weights_id; package_ref null, prepare injetado no accept).
     let mut manager_body = serde_json::json!({
         "kind": "autotracker",
         "engine": "autotracker",
-        "model": req.model,
+        "model": req.model.clone(),
         "mode": "autotrack",
         "dataset_id": ds_id.to_string(),
-        "dataset_version_id": package.version_id,
-        "package_ref": {
-            "version_id": package.version_id,
-            "key": package.key,
-            "md5_zip": package.md5_zip,
-            "bytes": package.bytes,
-        },
         "config_yaml": config_yaml,
         "params": {
-            "model": req.model,
+            "model": req.model.clone(),
             "conf": req.conf,
-            "package_ref": {
-                "version_id": package.version_id,
-                "key": package.key,
-                "md5_zip": package.md5_zip,
-                "bytes": package.bytes,
-            },
         },
         "vram_min_gb": null,
     });
@@ -1063,36 +1044,24 @@ pub async fn submit_autotracker_job(
         manager_body["orchestrator_hint"] = serde_json::json!(orch_id);
     }
 
-    // ADR-0014 D6: mapeamento NotFound→404, InvalidRequest→400, Unavailable→503
-    // (padrão predict — NÃO o Err(_)→503 do submit_yolo_job).
-    // Compensação do package em TODOS os braços de erro.
-    match state.manager.create_job(&manager_body).await {
-        Ok(resp) => {
-            let body = SubmitJobResponse {
-                job_id: resp.job_id,
-                status: resp.status,
-                queue_position: resp.queue_position,
-            };
-            (StatusCode::ACCEPTED, Json(body)).into_response()
-        }
-        Err(ManagerError::NotFound) => {
-            compensate_package(&state, &package.version_id).await;
-            not_found()
-        }
-        Err(ManagerError::InvalidRequest(_)) => {
-            compensate_package(&state, &package.version_id).await;
-            invalid_request()
-        }
-        Err(ManagerError::Unavailable(_)) => {
-            compensate_package(&state, &package.version_id).await;
-            queue_unavailable()
-        }
-        // Outros erros do manager → 503 + compensação.
-        Err(_) => {
-            compensate_package(&state, &package.version_id).await;
-            queue_unavailable()
-        }
-    }
+    // 9. Aceite assíncrono: dedupe → create → insert → spawn → 202.
+    //    Mapeamento R6 preservado (NotFound→404, InvalidRequest→400,
+    //    Unavailable→503) dentro do accept.
+    let spec = crate::jobs::prepare::PrepareSpec {
+        kind: "autotracker".to_string(),
+        dataset_id: ds_id,
+        resolved_image_ids: None,
+        fingerprint,
+        engine: "autotracker".to_string(),
+        trigger_word: None,
+        params: serde_json::json!({
+            "model": req.model,
+            "conf": req.conf,
+            "modelId": req.model_id,
+            "orchestratorId": req.orchestrator_id,
+        }),
+    };
+    crate::jobs::prepare::accept_job_preparing(&state, spec, manager_body).await
 }
 
 // ---------------------------------------------------------------------------
@@ -1293,48 +1262,44 @@ pub async fn submit_autolabel_job(
         }
     }
 
-    // 5. Build package.
-    let package = match crate::datasets::package::build_package_filtered(
-        &state,
+    // 5. Fingerprint do escopo resolvido (só SQL barato, sem S3 — ADR-0025).
+    let fingerprint = match crate::jobs::prepare::fingerprint_for_dataset(
+        &state.pool,
         ds_id,
         resolved_image_ids.as_deref(),
+        "autolabel",
+        &req.model,
     )
     .await
     {
-        Ok(p) => p,
-        Err(resp) => return resp,
+        Ok(f) => f,
+        Err(_) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "internal server error",
+            )
+        }
     };
 
-    // 6. Config YAML.
-    let job_id = uuid::Uuid::new_v4().to_string();
-    let config_yaml = models::generate_autolabel_config_yaml(&job_id, &req);
+    // 6. Config YAML (pura, barata — carrega apiKey como antes; o tratamento
+    //    é idêntico ao legado: viaja no create_job, nunca em GET jobs).
+    let config_yaml =
+        models::generate_autolabel_config_yaml(&uuid::Uuid::new_v4().to_string(), &req);
 
-    // 7. Body para o Manager.
+    // 7. Body ao manager em modo preparing (package_ref null; prepare no accept).
     let mut manager_body = serde_json::json!({
         "kind": "autolabel",
         "engine": "autolabel",
         "model": req.model,
         "mode": "autolabel",
         "dataset_id": ds_id.to_string(),
-        "dataset_version_id": package.version_id,
-        "package_ref": {
-            "version_id": package.version_id,
-            "key": package.key,
-            "md5_zip": package.md5_zip,
-            "bytes": package.bytes,
-        },
         "config_yaml": config_yaml,
         "params": {
             "model": req.model,
             "prompt": req.prompt,
             "filter_class_id": req.filter_class_id,
             "image_ids_count": resolved_image_ids.as_ref().map(|v| v.len()),
-            "package_ref": {
-                "version_id": package.version_id,
-                "key": package.key,
-                "md5_zip": package.md5_zip,
-                "bytes": package.bytes,
-            },
         },
         "vram_min_gb": null,
     });
@@ -1343,32 +1308,34 @@ pub async fn submit_autolabel_job(
         manager_body["orchestrator_hint"] = serde_json::json!(orch_id);
     }
 
-    match state.manager.create_job(&manager_body).await {
-        Ok(resp) => {
-            let body = SubmitJobResponse {
-                job_id: resp.job_id,
-                status: resp.status,
-                queue_position: resp.queue_position,
-            };
-            (StatusCode::ACCEPTED, Json(body)).into_response()
-        }
-        Err(ManagerError::NotFound) => {
-            compensate_package(&state, &package.version_id).await;
-            not_found()
-        }
-        Err(ManagerError::InvalidRequest(_)) => {
-            compensate_package(&state, &package.version_id).await;
-            invalid_request()
-        }
-        Err(ManagerError::Unavailable(_)) => {
-            compensate_package(&state, &package.version_id).await;
-            queue_unavailable()
-        }
-        Err(_) => {
-            compensate_package(&state, &package.version_id).await;
-            queue_unavailable()
-        }
+    // 8. Aceite assíncrono: dedupe → create → insert → spawn → 202.
+    //    SEM apiKey no spec: o worker nunca regenera config (não há endpoint
+    //    no manager para config tardia) — persistir o segredo seria risco
+    //    gratuito (ver `jobs::prepare`).
+    let mut spec_params = crate::jobs::prepare::spec_params_autolabel(
+        &req.model,
+        req.prompt.as_deref(),
+        req.api_base.as_deref(),
+        req.openai_model.as_deref(),
+        req.reasoning_effort.as_deref(),
+        req.filter_class_id.as_deref(),
+        manager_body["params"]["image_ids_count"]
+            .as_u64()
+            .map(|n| n as usize),
+    );
+    if let Some(ref orch_id) = req.orchestrator_id {
+        spec_params["orchestratorId"] = serde_json::json!(orch_id);
     }
+    let spec = crate::jobs::prepare::PrepareSpec {
+        kind: "autolabel".to_string(),
+        dataset_id: ds_id,
+        resolved_image_ids,
+        fingerprint,
+        engine: "autolabel".to_string(),
+        trigger_word: None,
+        params: spec_params,
+    };
+    crate::jobs::prepare::accept_job_preparing(&state, spec, manager_body).await
 }
 
 // ---------------------------------------------------------------------------
@@ -1447,53 +1414,252 @@ pub async fn submit_diffusion_job(
         return dataset_not_ready();
     }
 
-    // 5. Build package de difusão (imagens + captions em .txt).
-    let package = match crate::datasets::package::build_package_diffusion(
-        &state,
+    // 4.1. Control dataset (motor Flux.2): mesma guarda do principal —
+    // existência + imagens ativas. (Datasets não têm coluna de dono; a
+    // "ownership" aqui é a existência, idêntica à do dataset principal.)
+    // A igualdade com o principal já foi rejeitada na validação pura.
+    let control_ds_id: Option<uuid::Uuid> = req.control_dataset_id;
+    if let Some(control_id) = control_ds_id {
+        let control_exists: bool = match sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM datasets WHERE id = $1)",
+        )
+        .bind(control_id)
+        .fetch_one(&state.pool)
+        .await
+        {
+            Ok(b) => b,
+            Err(_) => {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "internal server error",
+                )
+            }
+        };
+        if !control_exists {
+            return not_found();
+        }
+        let control_count: Option<i64> = match sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM images WHERE dataset_id = $1 AND deleted_at IS NULL",
+        )
+        .bind(control_id)
+        .fetch_optional(&state.pool)
+        .await
+        {
+            Ok(c) => c,
+            Err(_) => {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "internal server error",
+                )
+            }
+        };
+        if control_count.unwrap_or(0) == 0 {
+            return dataset_not_ready();
+        }
+    }
+
+    // 5. Fingerprint (só SQL barato, sem S3 — ADR-0025). `trigger_word`
+    //    entra no fingerprint porque altera as captions do pacote.
+    //    Com control dataset: o fingerprint do control entra no `extra` como
+    //    `{principal_fp}:control:{control_fp}` — o dedupe por fingerprint
+    //    considera o PAR (principal, control), nunca o principal sozinho.
+    let fingerprint = match crate::jobs::prepare::fingerprint_for_dataset(
+        &state.pool,
         ds_id,
-        req.trigger_word.as_deref(),
+        None,
+        "diffusion",
+        req.trigger_word.as_deref().unwrap_or(""),
     )
     .await
     {
-        Ok(p) => p,
-        Err(resp) => return resp,
+        Ok(f) => f,
+        Err(_) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "internal server error",
+            )
+        }
+    };
+    let fingerprint = match control_ds_id {
+        Some(control_id) => {
+            let control_fp = match crate::jobs::prepare::fingerprint_for_dataset(
+                &state.pool,
+                control_id,
+                None,
+                "diffusion",
+                req.trigger_word.as_deref().unwrap_or(""),
+            )
+            .await
+            {
+                Ok(f) => f,
+                Err(_) => {
+                    return err(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        "internal server error",
+                    )
+                }
+            };
+            format!("{fingerprint}:control:{control_fp}")
+        }
+        None => fingerprint,
     };
 
-    // 6. Config YAML.
-    let job_id = uuid::Uuid::new_v4().to_string();
-    let config_yaml = models::generate_diffusion_config_yaml(&job_id, &req);
+    // 5.1. Pesos custom (fatia feat/pesos-custom-flux2): resolve custom_model_id
+    //    e text_encoder_model_id no manager (mesmo padrão do generate —
+    //    `list_models` + kind/arch). Inexistente ⇒ 404; kind errado ⇒ 400;
+    //    encoder em arch ≠ flux-2-klein-4b ⇒ 400. O YAML leva só placeholders
+    //    literais (NUNCA id/path real); o manager resolve os refs p/ staging.
+    let custom_arch: Option<String> = if let Some(ref custom_id) = req.custom_model_id {
+        let models = match state.manager.list_models().await {
+            Ok(m) => m,
+            Err(_) => return queue_unavailable(),
+        };
+        let model = match models.iter().find(|m| m.id == *custom_id) {
+            Some(m) => m,
+            None => return not_found(),
+        };
+        match model.kind.as_deref() {
+            Some("checkpoint") => {}
+            _ => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "customModelId must reference a checkpoint model",
+                );
+            }
+        }
+        match model.arch.as_deref() {
+            Some(arch @ ("sdxl" | "sd15" | "flux" | "flux-2-klein-4b")) => {
+                // Normaliza alias legado "flux" → arch canônico do YAML.
+                if arch == "flux" {
+                    Some("flux-2-klein-4b".to_string())
+                } else {
+                    Some(arch.to_string())
+                }
+            }
+            Some(_) => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "unsupported_architecture",
+                    "custom checkpoint architecture not supported",
+                );
+            }
+            None => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "custom model has no arch metadata",
+                );
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(ref encoder_id) = req.text_encoder_model_id {
+        let models = match state.manager.list_models().await {
+            Ok(m) => m,
+            Err(_) => return queue_unavailable(),
+        };
+        let model = match models.iter().find(|m| m.id == *encoder_id) {
+            Some(m) => m,
+            None => return not_found(),
+        };
+        match model.kind.as_deref() {
+            Some("text_encoder") => {}
+            _ => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "textEncoderModelId must reference a text_encoder model",
+                );
+            }
+        }
+        // Arch efetivo do treino: arch do custom ou base_model (default sdxl).
+        // Alias legado da UI "flux" ⇒ flux-2-klein-4b (mesma normalização
+        // aplicada ao custom_arch acima) — preset FLUX.2 chega como "flux".
+        let effective_arch = match custom_arch
+            .as_deref()
+            .unwrap_or_else(|| req.base_model.as_deref().unwrap_or("sdxl"))
+        {
+            "flux" => "flux-2-klein-4b",
+            other => other,
+        };
+        if effective_arch != "flux-2-klein-4b" {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "textEncoderModelId requires arch 'flux-2-klein-4b'",
+            );
+        }
+    }
+    // Arch efetivo do treino (p/ YAML + VRAM): custom resolvido ou base_model.
+    let effective_base: String = custom_arch
+        .clone()
+        .unwrap_or_else(|| req.base_model.clone().unwrap_or_else(|| "sdxl".to_string()));
+    // 6. Config YAML (pura, barata).
+    let config_yaml = models::generate_diffusion_config_yaml(
+        &uuid::Uuid::new_v4().to_string(),
+        &req,
+        custom_arch.as_deref(),
+    );
 
-    // 7. VRAM mínima por modelo base (ADR-0018 D2 — FLUX.2 Klein 4B requer ~10 GB).
-    let vram_min = match req.base_model.as_str() {
+    // 6.1. Pacote do control dataset (MVP síncrono): quando controlDatasetId
+    //    informado, empacota o control via `build_package_diffusion` AGORA no
+    //    request e publica `params.control_package_ref` (snake_case, mesmo
+    //    shape do `package_ref` do dispatch: {version_id, key, md5_zip,
+    //    bytes} — `md5_zip`/`bytes` vêm direto do build, sem recomputo).
+    //    LIMITAÇÃO documentada: packaging síncrono no request (fora do worker
+    //    ADR-0025) e SEM reuso por fingerprint — NUNCA reusar fingerprint que
+    //    ignore o control dataset. O worker continua empacotando o principal;
+    //    o control viaja pronto em `params.control_package_ref`.
+    //    `gc_dataset_versions` precisa cobrir `control_package_ref.version_id`
+    //    (anti-GC) — fora deste ownership (slice do manager).
+    let control_package_ref: Option<serde_json::Value> = match control_ds_id {
+        Some(control_id) => {
+            match crate::datasets::package::build_package_diffusion(
+                &state,
+                control_id,
+                req.trigger_word.as_deref(),
+            )
+            .await
+            {
+                Ok(pkg) => Some(serde_json::json!({
+                    "version_id": pkg.version_id,
+                    "key": pkg.key,
+                    "md5_zip": pkg.md5_zip,
+                    "bytes": pkg.bytes,
+                })),
+                Err(resp) => return resp,
+            }
+        }
+        None => None,
+    };
+
+    // 7. VRAM mínima por arch efetivo (ADR-0018 D2 — FLUX.2 Klein 4B requer
+    //    ~10 GB; fatia: custom flux-2 custa como flux-2-klein-4b).
+    let vram_min = match effective_base.as_str() {
         "sd15" => 8,
-        "flux" => 10,
+        "flux" | "flux-2-klein-4b" => 10,
         _ => 12, // sdxl e default
     };
 
-    // 8. Body para o Manager.
+    // 8. Body ao manager em modo preparing (package_ref null; prepare no accept).
     let mut manager_body = serde_json::json!({
         "kind": "diffusion_train",
         "engine": "diffusion",
-        "model": req.base_model,
+        "model": effective_base,
         "mode": "train",
         "dataset_id": ds_id.to_string(),
-        "dataset_version_id": package.version_id,
-        "package_ref": {
-            "version_id": package.version_id,
-            "key": package.key,
-            "md5_zip": package.md5_zip,
-            "bytes": package.bytes,
-        },
         "config_yaml": config_yaml,
         "params": {
-            "packageRef": {
-                "versionId": package.version_id,
-                "key": package.key,
-                "md5Zip": package.md5_zip,
-                "bytes": package.bytes,
-            },
             "datasetId": ds_id.to_string(),
-            "baseModel": req.base_model,
+            "baseModel": effective_base,
+            "customModelId": req.custom_model_id,
+            "textEncoderModelId": req.text_encoder_model_id,
             "triggerWord": req.trigger_word,
             "epochs": req.epochs,
             "batchSize": req.batch_size,
@@ -1515,43 +1681,57 @@ pub async fn submit_diffusion_job(
             "sampleSeed": req.sample_seed,
             "weights": req.weights,
             "outputName": req.output_name,
+            "controlDatasetId": req.control_dataset_id.map(|u| u.to_string()),
+            "cacheTextEmbeddings": req.cache_text_embeddings,
         },
         "vram_min_gb": vram_min,
     });
-
-    if let Some(ref w_id) = req.weights {
-        manager_body["weights_id"] = serde_json::json!(w_id);
-    }
-    if let Some(ref orch_id) = req.orchestrator_id {
-        manager_body["orchestrator_hint"] = serde_json::json!(orch_id);
+    if let Some(control_ref) = control_package_ref {
+        manager_body["params"]["control_package_ref"] = control_ref;
     }
 
-    match state.manager.create_job(&manager_body).await {
-        Ok(resp) => {
-            let body = SubmitJobResponse {
-                job_id: resp.job_id,
-                status: resp.status,
-                queue_position: resp.queue_position,
-            };
-            (StatusCode::ACCEPTED, Json(body)).into_response()
-        }
-        Err(ManagerError::NotFound) => {
-            compensate_package(&state, &package.version_id).await;
-            not_found()
-        }
-        Err(ManagerError::InvalidRequest(_)) => {
-            compensate_package(&state, &package.version_id).await;
-            invalid_request()
-        }
-        Err(ManagerError::Unavailable(_)) => {
-            compensate_package(&state, &package.version_id).await;
-            queue_unavailable()
-        }
-        Err(_) => {
-            compensate_package(&state, &package.version_id).await;
-            queue_unavailable()
-        }
-    }
+    // 9. Aceite assíncrono: dedupe → create → insert → spawn → 202.
+    //    NOTA P4a+P4b: `build_package_diffusion` ainda não grava fingerprint
+    //    no manifest — o reuso por versão fica para a fusão; o dedupe por
+    //    `job_prepares` (30min) já vale.
+    let spec = crate::jobs::prepare::PrepareSpec {
+        kind: "diffusion_train".to_string(),
+        dataset_id: ds_id,
+        resolved_image_ids: None,
+        fingerprint,
+        engine: "diffusion".to_string(),
+        trigger_word: req.trigger_word.clone(),
+        params: serde_json::json!({
+            "baseModel": effective_base,
+            "customModelId": req.custom_model_id,
+            "textEncoderModelId": req.text_encoder_model_id,
+            "triggerWord": req.trigger_word,
+            "epochs": req.epochs,
+            "batchSize": req.batch_size,
+            "learningRate": req.learning_rate,
+            "rank": req.rank,
+            "alpha": req.alpha,
+            "resolution": req.resolution,
+            "gradientAccumulationSteps": req.gradient_accumulation_steps,
+            "optimizer": req.optimizer,
+            "lrScheduler": req.lr_scheduler,
+            "lrWarmupSteps": req.lr_warmup_steps,
+            "mixedPrecision": req.mixed_precision,
+            "quantization": req.quantization,
+            "enableBucket": req.enable_bucket,
+            "checkpointInterval": req.checkpoint_interval,
+            "epochOffset": req.epoch_offset,
+            "samplePrompt": req.sample_prompt,
+            "sampleInterval": req.sample_interval,
+            "sampleSeed": req.sample_seed,
+            "weights": req.weights,
+            "orchestratorId": req.orchestrator_id,
+            "outputName": req.output_name,
+            "controlDatasetId": req.control_dataset_id.map(|u| u.to_string()),
+            "cacheTextEmbeddings": req.cache_text_embeddings,
+        }),
+    };
+    crate::jobs::prepare::accept_job_preparing(&state, spec, manager_body).await
 }
 
 // ---------------------------------------------------------------------------
@@ -1579,8 +1759,9 @@ pub async fn submit_diffusion_generate_job(
     };
 
     // 3. Se custom_model_id presente → busca modelo no manager para obter arch.
-    //    Valida kind=checkpoint e arch ∈ {sdxl, sd15}.
-    let custom_arch: Option<String> = if let Some(ref custom_id) = req.custom_model_id {
+    //    Valida kind=checkpoint e arch ∈ {sdxl, sd15, flux-2-klein-4b}
+    //    (fatia feat/pesos-custom-flux2: flux-2 custom via transformer swap).
+    let custom_arch: Option<String> = if let Some(custom_id) = &req.custom_model_id {
         let models = match state.manager.list_models().await {
             Ok(m) => m,
             Err(_) => return queue_unavailable(),
@@ -1606,14 +1787,20 @@ pub async fn submit_diffusion_generate_job(
                 );
             }
         }
-        // Valida arch ∈ {sdxl, sd15} (ADR-0023 D4 — Flux custom fora da v1).
+        // Valida arch ∈ {sdxl, sd15, flux-2-klein-4b} (fatia: +flux-2).
         match model.arch.as_deref() {
-            Some(arch @ ("sdxl" | "sd15")) => Some(arch.to_string()),
+            Some(arch @ ("sdxl" | "sd15" | "flux" | "flux-2-klein-4b")) => {
+                if arch == "flux" {
+                    Some("flux-2-klein-4b".to_string())
+                } else {
+                    Some(arch.to_string())
+                }
+            }
             Some(_other) => {
                 return err(
                     StatusCode::BAD_REQUEST,
                     "unsupported_architecture",
-                    "custom checkpoint architecture not supported (use sdxl or sd15)",
+                    "custom checkpoint architecture not supported (use sdxl, sd15 or flux-2-klein-4b)",
                 );
             }
             None => {
@@ -1628,31 +1815,54 @@ pub async fn submit_diffusion_generate_job(
         None
     };
 
+    // 3.1. Encoder custom (fatia feat/pesos-custom-flux2): resolve
+    //    text_encoder_model_id no manager (mesmo fluxo do custom_model_id):
+    //    inexistente ⇒ 404; kind≠text_encoder ⇒ 400; arch efetivo
+    //    (base_model ou arch do custom) ≠ flux-2-klein-4b ⇒ 400.
+    if let Some(encoder_id) = &req.text_encoder_model_id {
+        let models = match state.manager.list_models().await {
+            Ok(m) => m,
+            Err(_) => return queue_unavailable(),
+        };
+        let model = match models.iter().find(|m| m.id == *encoder_id) {
+            Some(m) => m,
+            None => return not_found(),
+        };
+        match model.kind.as_deref() {
+            Some("text_encoder") => {}
+            _ => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "textEncoderModelId must reference a text_encoder model",
+                );
+            }
+        }
+        let effective_arch = custom_arch
+            .as_deref()
+            .unwrap_or_else(|| req.base_model.as_deref().unwrap_or("flux-2-klein-4b"));
+        if effective_arch != "flux-2-klein-4b" {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "textEncoderModelId requires arch 'flux-2-klein-4b'",
+            );
+        }
+    }
+
     // 4. ID do job e config.yaml (v2 com custom_arch).
     let job_id = uuid::Uuid::new_v4().to_string();
     let config_yaml =
         models::generate_diffusion_generate_config_yaml(&job_id, &req, custom_arch.as_deref());
 
-    // 5. VRAM mínima por (arch_efetiva, quantization).
-    //    Valores atuais exatos (D8): sd15→6; 4bit→8; 8bit→12; none→16.
+    // 5. VRAM mínima por (arch_efetiva, quantization) — D8 estendido:
+    //    sd15 fixo 6; sdxl e flux: none→16, 6bit→10, 4bit→8, 2bit→7, 8bit→12.
     //    Custom: espelha first-class do arch (sdxl/sd15).
     let effective_arch = custom_arch
         .as_deref()
         .unwrap_or_else(|| req.base_model.as_deref().unwrap_or("flux-2-klein-4b"));
-    let vram_min: i32 = match effective_arch {
-        "sd15" => 6,
-        "sdxl" => match req.quantization.as_str() {
-            "4bit" => 8,
-            "8bit" => 12,
-            _ => 16,
-        },
-        // flux-2-klein-4b e demais: mesmo legado
-        _ => match req.quantization.as_str() {
-            "4bit" => 8,
-            "8bit" => 12,
-            _ => 16,
-        },
-    };
+    let vram_min: i32 =
+        models::diffusion_generate_vram_min_gb(effective_arch, req.quantization.as_str());
 
     // 6. Body para o Manager — params camelCase (ADR-0023).
     let loras_json: Vec<serde_json::Value> = req
@@ -1660,6 +1870,10 @@ pub async fn submit_diffusion_generate_job(
         .iter()
         .map(|l| serde_json::json!({ "modelId": l.model_id, "scale": l.scale }))
         .collect();
+    let upscale_json = match &req.upscale {
+        Some(up) => serde_json::json!({ "model": up.model, "scale": up.scale }),
+        None => serde_json::Value::Null,
+    };
 
     let mut manager_body = serde_json::json!({
         "kind": "diffusion_generate",
@@ -1677,11 +1891,14 @@ pub async fn submit_diffusion_generate_job(
             "guidance_scale": req.guidance_scale,
             "seed": req.seed,
             "quantization": req.quantization,
+            "sampler": req.sampler,
+            "upscale": upscale_json,
             "distilled": req.distilled,
             "lora_scale": req.lora_scale,
             "batchSize": req.batch_size,
             "loras": loras_json,
             "customModelId": req.custom_model_id,
+            "textEncoderModelId": req.text_encoder_model_id,
         },
         "vram_min_gb": vram_min,
     });
@@ -1691,6 +1908,24 @@ pub async fn submit_diffusion_generate_job(
     }
     if let Some(ref orch_id) = req.orchestrator_id {
         manager_body["orchestrator_hint"] = serde_json::json!(orch_id);
+    }
+
+    // img2img: encaminha o id que veio (`initImageId` OU `initGenerationId`) e
+    // `initStrength` só quando há id — sem default local (ausente ⇒ null;
+    // default 0.6 aplicado no config_yaml/engine). Existência/resolução dos
+    // ids é do manager (S4) — aqui não há lookup.
+    // VRAM: estimativa atual mantida p/ img2img (follow-up: medir overhead do
+    // decode/resize da init no nó GPU).
+    if let Some(id) = req.init_image_id {
+        manager_body["params"]["initImageId"] = serde_json::json!(id.to_string());
+    } else if let Some(id) = req.init_generation_id {
+        manager_body["params"]["initGenerationId"] = serde_json::json!(id.to_string());
+    }
+    if req.init_image_id.is_some() || req.init_generation_id.is_some() {
+        manager_body["params"]["initStrength"] = match req.init_strength {
+            Some(s) => serde_json::json!(s),
+            None => serde_json::Value::Null,
+        };
     }
 
     match state.manager.create_job(&manager_body).await {
@@ -1795,40 +2030,36 @@ pub async fn submit_predict_job(
         }
     }
 
-    // 6. Build package (função compartilhada — D2).
-    let package = match crate::datasets::package::build_package(&state, ds_id).await {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
+    // 6. Fingerprint do dataset (só SQL barato, sem S3 — ADR-0025).
+    let fingerprint =
+        match crate::jobs::prepare::fingerprint_for_dataset(&state.pool, ds_id, None, "yolo", "")
+            .await
+        {
+            Ok(f) => f,
+            Err(_) => {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "internal server error",
+                )
+            }
+        };
 
-    // 7. Gera config.yaml.
-    let job_id = uuid::Uuid::new_v4().to_string();
-    let config_yaml = models::generate_predict_config_yaml(&job_id, &req);
+    // 7. Gera config.yaml (pura, barata).
+    let config_yaml = models::generate_predict_config_yaml(&uuid::Uuid::new_v4().to_string(), &req);
 
-    // 8. POST ao manager (D5: kind='yolo_predict', engine='yolo', mode='predict',
-    //    model='predict' placeholder, weights_id=modelId).
+    // 8. Body ao manager em modo preparing (D5: kind='yolo_predict',
+    //    engine='yolo', mode='predict', model='predict' placeholder,
+    //    weights_id=modelId; package_ref null, prepare no accept).
     let mut manager_body = serde_json::json!({
         "kind": "yolo_predict",
         "engine": "yolo",
         "model": "predict",
         "mode": "predict",
         "dataset_id": ds_id.to_string(),
-        "dataset_version_id": package.version_id,
-        "package_ref": {
-            "version_id": package.version_id,
-            "key": package.key,
-            "md5_zip": package.md5_zip,
-            "bytes": package.bytes,
-        },
         "config_yaml": config_yaml,
         "params": {
             "conf": req.conf,
-            "package_ref": {
-                "version_id": package.version_id,
-                "key": package.key,
-                "md5_zip": package.md5_zip,
-                "bytes": package.bytes,
-            },
         },
         "vram_min_gb": null,
         "weights_id": req.model_id,
@@ -1838,36 +2069,22 @@ pub async fn submit_predict_job(
         manager_body["orchestrator_hint"] = serde_json::json!(orch_id);
     }
 
-    match state.manager.create_job(&manager_body).await {
-        Ok(resp) => {
-            let body = SubmitJobResponse {
-                job_id: resp.job_id,
-                status: resp.status,
-                queue_position: resp.queue_position,
-            };
-            (StatusCode::ACCEPTED, Json(body)).into_response()
-        }
-        // R6: handler do predict mapeia NotFound→404, InvalidRequest→400
-        // (diferente do submit_yolo_job que mapeia Err(_)→503).
-        // A1: compensação em TODOS os braços de erro (package já criado).
-        Err(ManagerError::NotFound) => {
-            compensate_package(&state, &package.version_id).await;
-            not_found()
-        }
-        Err(ManagerError::InvalidRequest(_)) => {
-            compensate_package(&state, &package.version_id).await;
-            invalid_request()
-        }
-        Err(ManagerError::Unavailable(_)) => {
-            compensate_package(&state, &package.version_id).await;
-            queue_unavailable()
-        }
-        // Outros erros do manager → 503 + compensação.
-        Err(_) => {
-            compensate_package(&state, &package.version_id).await;
-            queue_unavailable()
-        }
-    }
+    // 9. Aceite assíncrono: dedupe → create → insert → spawn → 202.
+    //    Mapeamento R6 preservado (NotFound→404, InvalidRequest→400) no accept.
+    let spec = crate::jobs::prepare::PrepareSpec {
+        kind: "yolo_predict".to_string(),
+        dataset_id: ds_id,
+        resolved_image_ids: None,
+        fingerprint,
+        engine: "yolo".to_string(),
+        trigger_word: None,
+        params: serde_json::json!({
+            "modelId": req.model_id,
+            "conf": req.conf,
+            "orchestratorId": req.orchestrator_id,
+        }),
+    };
+    crate::jobs::prepare::accept_job_preparing(&state, spec, manager_body).await
 }
 
 // ---------------------------------------------------------------------------
@@ -4614,6 +4831,9 @@ mod tests {
 
     #[tokio::test]
     async fn submit_diffusion_generate_custom_unsupported_arch_400() {
+        // Fatia feat/pesos-custom-flux2: flux-2-klein-4b custom AGORA é aceito
+        // (transformer swap); arch verdadeiramente desconhecida ⇒ 400
+        // `unsupported_architecture`. Teste legado atualizado.
         let custom_id = "550e8400-e29b-41d4-a716-446655440099";
         let body_json = serde_json::json!({
             "prompt": "test",
@@ -4623,17 +4843,17 @@ mod tests {
         let mut mock = MockManager::default();
         mock.list_models_result = Some(vec![InternalModel {
             id: custom_id.into(),
-            name: "my-flux.safetensors".into(),
+            name: "my-weird.safetensors".into(),
             engine: "diffusion".into(),
             model: None,
             source: "upload".into(),
             md5: "abc123".into(),
             bytes: 6_500_000_000,
-            path: "models/diffusion/custom/my-flux.safetensors".into(),
+            path: "models/diffusion/custom/my-weird.safetensors".into(),
             job_id: None,
             created_at: "2026-09-15T00:00:00Z".into(),
             kind: Some("checkpoint".into()),
-            arch: Some("flux-2-klein-4b".into()), // arch não suportada para custom
+            arch: Some("pixart".into()), // arch desconhecida
         }]);
         let state = test_state(mock);
 
@@ -4651,6 +4871,234 @@ mod tests {
         let body_bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(json["code"], "unsupported_architecture");
+    }
+    #[tokio::test]
+    async fn submit_diffusion_generate_custom_flux2_202() {
+        // Fatia feat/pesos-custom-flux2: checkpoint flux-2-klein-4b ⇒ 202,
+        // arch efetivo flux-2-klein-4b no body do manager.
+        let custom_id = "550e8400-e29b-41d4-a716-446655440099";
+        let body_json = serde_json::json!({
+            "prompt": "test",
+            "customModelId": custom_id,
+            "quantization": "4bit"
+        });
+
+        let mut mock = MockManager::default();
+        mock.list_models_result = Some(vec![InternalModel {
+            id: custom_id.into(),
+            name: "my-flux2.safetensors".into(),
+            engine: "diffusion".into(),
+            model: None,
+            source: "upload".into(),
+            md5: "abc123".into(),
+            bytes: 6_500_000_000,
+            path: "models/diffusion/custom/my-flux2.safetensors".into(),
+            job_id: None,
+            created_at: "2026-09-15T00:00:00Z".into(),
+            kind: Some("checkpoint".into()),
+            arch: Some("flux-2-klein-4b".into()),
+        }]);
+        mock.create_job_result = Some(CreateJobResponse {
+            job_id: "job-flux2".into(),
+            status: "queued".into(),
+            queue_position: None,
+        });
+        let mock_arc = std::sync::Arc::new(mock);
+        let mock_ref = std::sync::Arc::clone(&mock_arc);
+        let mut state = test_state(MockManager::default());
+        state.manager = mock_arc;
+
+        let resp = submit_diffusion_generate_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                serde_json::to_string(&body_json).unwrap(),
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+        let body = mock_ref.last_create_job_body();
+        let body = body.expect("create_job body captured");
+        assert_eq!(body["model"], "flux-2-klein-4b");
+        // flux-2 + 4bit = 8 (mesma tabela first-class).
+        assert_eq!(body["vram_min_gb"], 8);
+    }
+
+    // =========================================================================
+    // Diffusion Generate img2img handler tests (fatia feat/img2img)
+    // =========================================================================
+
+    #[tokio::test]
+    async fn submit_diffusion_generate_202_forwards_init_image_id_and_strength() {
+        let init_id = "550e8400-e29b-41d4-a716-446655440010";
+        let body_json = serde_json::json!({
+            "prompt": "img2img test",
+            "baseModel": "sdxl",
+            "initImageId": init_id,
+            "initStrength": 0.8
+        });
+
+        let mut mock = MockManager::default();
+        mock.create_job_result = Some(CreateJobResponse {
+            job_id: "job-img2img".into(),
+            status: "queued".into(),
+            queue_position: None,
+        });
+        let mock_arc = std::sync::Arc::new(mock);
+        let mock_ref = std::sync::Arc::clone(&mock_arc);
+        let mut state = test_state(MockManager::default());
+        state.manager = mock_arc;
+
+        let resp = submit_diffusion_generate_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                serde_json::to_string(&body_json).unwrap(),
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+        // Params camelCase no body ao manager: o id que veio + strength.
+        let body = mock_ref.last_create_job_body();
+        let body = body.expect("create_job body captured");
+        let params = body["params"].as_object().expect("params object");
+        assert_eq!(params.get("initImageId"), Some(&serde_json::json!(init_id)));
+        assert!(
+            params.get("initGenerationId").is_none(),
+            "initGenerationId não deve ser enviado quando initImageId veio"
+        );
+        // f32 no JSON (0.8f32 ⇒ 0.800000011920929) — compara com epsilon.
+        let got_strength = params
+            .get("initStrength")
+            .and_then(|v| v.as_f64())
+            .expect("initStrength numérico");
+        assert!(
+            (got_strength - 0.8).abs() < 1e-6,
+            "initStrength divergente: {got_strength}"
+        );
+        // Config carrega o placeholder (nunca o id real).
+        let config = body["config_yaml"].as_str().expect("config_yaml string");
+        assert!(config.contains("init_image_path: \"{init_image_path}\""));
+        assert!(!config.contains(init_id));
+    }
+
+    #[tokio::test]
+    async fn submit_diffusion_generate_202_forwards_init_generation_id_null_strength() {
+        let gen_id = "550e8400-e29b-41d4-a716-446655440011";
+        let body_json = serde_json::json!({
+            "prompt": "img2img gallery test",
+            "baseModel": "sdxl",
+            "initGenerationId": gen_id
+        });
+
+        let mut mock = MockManager::default();
+        mock.create_job_result = Some(CreateJobResponse {
+            job_id: "job-img2img-2".into(),
+            status: "queued".into(),
+            queue_position: None,
+        });
+        let mock_arc = std::sync::Arc::new(mock);
+        let mock_ref = std::sync::Arc::clone(&mock_arc);
+        let mut state = test_state(MockManager::default());
+        state.manager = mock_arc;
+
+        let resp = submit_diffusion_generate_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                serde_json::to_string(&body_json).unwrap(),
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+        let body = mock_ref.last_create_job_body();
+        let body = body.expect("create_job body captured");
+        let params = body["params"].as_object().expect("params object");
+        assert_eq!(
+            params.get("initGenerationId"),
+            Some(&serde_json::json!(gen_id))
+        );
+        assert!(
+            params.get("initImageId").is_none(),
+            "initImageId não deve ser enviado quando initGenerationId veio"
+        );
+        // Strength ausente ⇒ null (sem default local; manager aplica 0.6).
+        assert_eq!(params.get("initStrength"), Some(&serde_json::Value::Null));
+    }
+
+    #[tokio::test]
+    async fn submit_diffusion_generate_202_txt2img_omite_init() {
+        let body_json = serde_json::json!({
+            "prompt": "txt2img puro",
+            "baseModel": "sdxl"
+        });
+
+        let mut mock = MockManager::default();
+        mock.create_job_result = Some(CreateJobResponse {
+            job_id: "job-txt2img".into(),
+            status: "queued".into(),
+            queue_position: None,
+        });
+        let mock_arc = std::sync::Arc::new(mock);
+        let mock_ref = std::sync::Arc::clone(&mock_arc);
+        let mut state = test_state(MockManager::default());
+        state.manager = mock_arc;
+
+        let resp = submit_diffusion_generate_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                serde_json::to_string(&body_json).unwrap(),
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+        let body = mock_ref.last_create_job_body();
+        let body = body.expect("create_job body captured");
+        let params = body["params"].as_object().expect("params object");
+        assert!(params.get("initImageId").is_none());
+        assert!(params.get("initGenerationId").is_none());
+        assert!(params.get("initStrength").is_none());
+    }
+
+    #[tokio::test]
+    async fn submit_diffusion_generate_400_init_xor_e_orfa() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+
+        // Ambos os ids ⇒ 400.
+        let resp = submit_diffusion_generate_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"prompt":"x","initImageId":"550e8400-e29b-41d4-a716-446655440010","initGenerationId":"550e8400-e29b-41d4-a716-446655440011"}"#,
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // Strength órfã ⇒ 400.
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_diffusion_generate_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"prompt":"x","initStrength":0.7}"#,
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // Strength fora da faixa ⇒ 400.
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp = submit_diffusion_generate_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                r#"{"prompt":"x","initImageId":"550e8400-e29b-41d4-a716-446655440010","initStrength":1.5}"#,
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     // =========================================================================
@@ -4731,6 +5179,129 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["code"], "job_not_terminal");
+    }
+
+    // --- POST /api/jobs/diffusion (treino) — gate do encoder ---
+    // DB-backed (`--ignored` + DATABASE_URL=studio_test, mesmo contrato do
+    // datasets_db): o gate do encoder roda DEPOIS das checagens de dataset
+    // (passos 3-5 do handler), então exige estado real no Postgres.
+
+    /// Conecta no banco efêmero studio_test (guarda anti-footgun), roda as
+    /// migrations e semeia dataset + 1 imagem ativa.
+    async fn db_state_with_dataset(manager: MockManager) -> (crate::state::AppState, uuid::Uuid) {
+        let url = std::env::var("DATABASE_URL")
+            .expect("DATABASE_URL é obrigatório para este teste --ignored");
+        assert!(
+            url.contains("/studio_test") || url.ends_with("studio_test"),
+            "só o banco efêmero studio_test (nunca o dev 'studio'): {url}"
+        );
+        let pool = sqlx::PgPool::connect(&url)
+            .await
+            .expect("conectar studio_test");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migrations");
+        let ds_id = uuid::Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO datasets (id, slug, title, category, type, task, format, status) \
+             VALUES ($1, $2, $3, 'difusao', 'difusao_lora', 'caption', 'captions', 'ready')",
+        )
+        .bind(ds_id)
+        .bind(format!("encoder-gate-{ds_id}"))
+        .bind("encoder gate test")
+        .execute(&pool)
+        .await
+        .expect("dataset semeado");
+        sqlx::query(
+            "INSERT INTO images (dataset_id, filename, object_key, bytes, width, height, md5, sha256, media_type) \
+             VALUES ($1, 'a.png', $2, 10, 16, 16, md5(random()::text), md5(random()::text) || md5(random()::text), 'png')",
+        )
+        .bind(ds_id)
+        .bind(format!("datasets/{ds_id}/x/a.png"))
+        .execute(&pool)
+        .await
+        .expect("imagem semeada");
+        let mut state = test_state(manager);
+        state.pool = pool;
+        (state, ds_id)
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn submit_diffusion_train_encoder_flux_alias_passes_gate() {
+        // baseModel "flux" (alias legado do preset FLUX.2 na UI) + encoder
+        // EXISTENTE (kind=text_encoder): o gate NÃO deve rejeitar com 400
+        // `textEncoderModelId requires arch 'flux-2-klein-4b'`. O mock não tem
+        // create_job_result ⇒ após o gate o fluxo chega ao manager e responde
+        // 503 `queue_unavailable` (pré-fix aqui seria 400 no gate).
+        let enc_id = "550e8400-e29b-41d4-a716-446655440101";
+        let mut manager = MockManager::default();
+        manager.list_models_result = Some(vec![InternalModel {
+            id: enc_id.into(),
+            name: "my-encoder.safetensors".into(),
+            engine: "diffusion".into(),
+            model: None,
+            source: "upload".into(),
+            md5: "abc123".into(),
+            bytes: 1_000_000,
+            path: "models/diffusion/custom/my-encoder.safetensors".into(),
+            job_id: None,
+            created_at: "2026-09-15T00:00:00Z".into(),
+            kind: Some("text_encoder".into()),
+            arch: Some("flux-2-klein-4b".into()),
+        }]);
+        let (state, ds_id) = db_state_with_dataset(manager).await;
+        let body_json = serde_json::json!({
+            "datasetId": ds_id,
+            "baseModel": "flux",
+            "textEncoderModelId": enc_id
+        });
+        let resp = submit_diffusion_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                serde_json::to_string(&body_json).unwrap(),
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn submit_diffusion_train_encoder_sdxl_400() {
+        // baseModel "sdxl" + encoder existente (kind=text_encoder) ⇒ gate
+        // rejeita com 400 `invalid_request`.
+        let enc_id = "550e8400-e29b-41d4-a716-446655440102";
+        let mut manager = MockManager::default();
+        manager.list_models_result = Some(vec![InternalModel {
+            id: enc_id.into(),
+            name: "my-encoder.safetensors".into(),
+            engine: "diffusion".into(),
+            model: None,
+            source: "upload".into(),
+            md5: "abc123".into(),
+            bytes: 1_000_000,
+            path: "models/diffusion/custom/my-encoder.safetensors".into(),
+            job_id: None,
+            created_at: "2026-09-15T00:00:00Z".into(),
+            kind: Some("text_encoder".into()),
+            arch: Some("flux-2-klein-4b".into()),
+        }]);
+        let (state, ds_id) = db_state_with_dataset(manager).await;
+        let body_json = serde_json::json!({
+            "datasetId": ds_id,
+            "baseModel": "sdxl",
+            "textEncoderModelId": enc_id
+        });
+        let resp = submit_diffusion_job(
+            axum::extract::State(state),
+            Ok(axum::body::Bytes::from(
+                serde_json::to_string(&body_json).unwrap(),
+            )),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

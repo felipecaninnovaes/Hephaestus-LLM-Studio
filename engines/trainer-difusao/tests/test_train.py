@@ -8,7 +8,11 @@ from pathlib import Path
 import yaml
 from trainer_difusao.train import main
 
-
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
 class TestTrainerDifusao(unittest.TestCase):
     def setUp(self):
         self.old_mock = os.environ.get("ENGINE_MOCK")
@@ -527,6 +531,172 @@ class TestTrainerDifusao(unittest.TestCase):
             self.assertEqual(seen, set(range(len(ds))))
             self.assertEqual(len(sampler), 4)  # ceil(5/4) + ceil(3/4) + ceil(2/4) = 2+1+1
 
+    def test_train_mock_control_dataset_and_cache_telemetry(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            cfg_path = tmp_path / "config.yaml"
+            out_dir = tmp_path / "output"
+            control_dir = tmp_path / "control"
+            control_dir.mkdir()
+            for i in range(3):
+                Image.new("RGB", (64, 64), (200, 200, 200)).save(control_dir / f"c{i}.png")
+
+            cfg = {
+                "job_id": "test-diff-job-control",
+                "model": "sdxl",
+                "seed": 42,
+                "control_dataset_path": str(control_dir),
+                "control_ratio": 0.2,
+                "cache_text_embeddings": True,
+                "lora": {"epochs": 2, "batch_size": 1},
+            }
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                yaml.dump(cfg, f)
+
+            main(["train", "--config", str(cfg_path), "--output", str(out_dir)])
+
+            metrics_file = out_dir / "metrics.jsonl"
+            lines = [json.loads(l) for l in metrics_file.read_text().splitlines() if l.strip()]
+            self.assertEqual(len(lines), 2)
+            first_msg = lines[0]["message"]
+            self.assertIn("control_dataset_images=3", first_msg)
+            self.assertIn("cache_text_embeddings=True", first_msg)
+            self.assertNotIn("control_dataset_images", lines[1]["message"])
+            # Mock não cria cache em disco — é no-op com telemetry apenas.
+            self.assertFalse((out_dir / "text_embeds_cache").exists())
+
+    def test_train_mock_rejects_missing_control_dataset(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            cfg_path = tmp_path / "config.yaml"
+            out_dir = tmp_path / "output"
+
+            cfg = {
+                "job_id": "test-diff-job-control-missing",
+                "model": "sd15",
+                "control_dataset_path": str(tmp_path / "nao-existe"),
+                "lora": {"epochs": 1},
+            }
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                yaml.dump(cfg, f)
+
+            with self.assertRaises(SystemExit) as ctx:
+                main(["train", "--config", str(cfg_path), "--output", str(out_dir)])
+            self.assertEqual(ctx.exception.code, 1)
+
+    def test_train_mock_rejects_control_ratio_out_of_range(self):
+        for bad_ratio in (-0.1, 0.51, 1.0):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp_path = Path(tmpdir)
+                cfg_path = tmp_path / "config.yaml"
+                out_dir = tmp_path / "output"
+
+                cfg = {
+                    "job_id": "test-diff-job-ratio",
+                    "model": "flux",
+                    "control_ratio": bad_ratio,
+                    "lora": {"epochs": 1},
+                }
+                with open(cfg_path, "w", encoding="utf-8") as f:
+                    yaml.dump(cfg, f)
+
+                with self.assertRaises(SystemExit) as ctx:
+                    main(["train", "--config", str(cfg_path), "--output", str(out_dir)])
+                self.assertEqual(ctx.exception.code, 1)
+
+    def test_train_mock_rejects_invalid_quantization(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            cfg_path = tmp_path / "config.yaml"
+            out_dir = tmp_path / "output"
+
+            cfg = {
+                "job_id": "test-diff-job-badquant",
+                "model": "flux",
+                "lora": {"epochs": 1, "quantization": "3bit"},
+            }
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                yaml.dump(cfg, f)
+
+            with self.assertRaises(SystemExit) as ctx:
+                main(["train", "--config", str(cfg_path), "--output", str(out_dir)])
+            self.assertEqual(ctx.exception.code, 1)
+
+    def test_train_mock_accepts_2bit_6bit_quant_labels(self):
+        for quant in ("2bit", "6bit"):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp_path = Path(tmpdir)
+                cfg_path = tmp_path / "config.yaml"
+                out_dir = tmp_path / "output"
+
+                cfg = {
+                    "job_id": f"test-diff-job-{quant}",
+                    "model": "flux",
+                    "lora": {"epochs": 1, "quantization": quant},
+                }
+                with open(cfg_path, "w", encoding="utf-8") as f:
+                    yaml.dump(cfg, f)
+
+                main(["train", "--config", str(cfg_path), "--output", str(out_dir)])
+                adapter_file = out_dir / "adapter.safetensors"
+                data = adapter_file.read_bytes()
+                header_len = struct.unpack("<Q", data[:8])[0]
+                meta = json.loads(data[8 : 8 + header_len].decode("utf-8"))["__metadata__"]
+                self.assertEqual(meta["quantization"], quant)
+
+    def test_control_dataset_forces_empty_captions(self):
+        from PIL import Image
+
+        from trainer_difusao.dataset import DiffusionDataset
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            Image.new("RGB", (64, 64), (50, 50, 50)).save(tmp_path / "x.png")
+            (tmp_path / "x.txt").write_text("uma legenda com ohwx", encoding="utf-8")
+
+            ds = DiffusionDataset(tmp_path, resolution=512, trigger_word="ohwx")
+            self.assertEqual(ds.samples[0][1], "uma legenda com ohwx")
+            dc = DiffusionDataset(
+                tmp_path, resolution=512, trigger_word="ohwx", empty_captions=True
+            )
+            self.assertEqual(dc.samples[0][1], "")
+
+    @unittest.skipUnless(HAS_TORCH, "requer torch instalado")
+    def test_text_embeds_cache_roundtrip_and_key(self):
+
+        from trainer_difusao.common import TextEmbedsCache, _caption_cache_key
+
+        self.assertEqual(len(_caption_cache_key("qualquer caption")), 16)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache = TextEmbedsCache(Path(tmpdir), True)
+            self.assertIsNone(cache.get("ola mundo"))
+            payload = {"hidden": torch.zeros(2, 4)}
+            cache.put("ola mundo", payload)
+            got = cache.get("ola mundo")
+            self.assertIsNotNone(got)
+            self.assertTrue(torch.equal(got["hidden"], torch.zeros(2, 4)))
+
+    @unittest.skipUnless(HAS_TORCH, "requer torch instalado")
+    def test_cached_encode_uses_cache_and_warms_miss(self):
+
+        from trainer_difusao.common import TextEmbedsCache, _cached_encode
+
+        calls: list[list[str]] = []
+
+        def encode_fn(caps: list[str]) -> dict:
+            calls.append(list(caps))
+            return {"hidden": torch.ones(len(caps), 3)}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache = TextEmbedsCache(Path(tmpdir), True)
+            out1 = _cached_encode(["a", "b"], encode_fn, cache)
+            self.assertEqual(out1["hidden"].shape, (2, 3))
+            self.assertEqual(len(calls), 1)
+            out2 = _cached_encode(["a", "b"], encode_fn, cache)
+            self.assertTrue(torch.equal(out2["hidden"], torch.ones(2, 3)))
+            self.assertEqual(len(calls), 1)  # segundo batch veio do cache (hit)
 
 if __name__ == "__main__":
     unittest.main()

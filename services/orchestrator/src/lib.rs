@@ -47,6 +47,17 @@ pub struct WeightRef {
     pub md5: String,
 }
 
+/// Referência à imagem inicial para img2img (S4 — feat/img2img).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct InitImageRef {
+    /// S3 key da imagem: `generation_inputs/<...>` ou `artifacts/<job_id>/<path>`.
+    pub s3_key: String,
+    /// MD5 hash esperado (hex 32). `None` = origem galeria (hash não
+    /// persistido na linha) — a verificação vira log, sem falha.
+    #[serde(default)]
+    pub md5: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct DispatchRequest {
     pub job_id: String,
@@ -70,6 +81,18 @@ pub struct DispatchRequest {
     /// Checkpoint custom para staging multi-ref (D4 — ADR-0023).
     #[serde(default)]
     pub custom_checkpoint: Option<WeightRef>,
+    /// Text encoder custom para staging (fatia feat/pesos-custom-flux2).
+    /// `None` = encoder oficial do repo BFL. Mesmo shape do checkpoint
+    /// (`{s3_key, md5}` — casa com `text_encoder_ref`/`text_encoder` do manager).
+    #[serde(default)]
+    pub text_encoder: Option<WeightRef>,
+    /// Imagem inicial para img2img (S4 — feat/img2img). `None` = txt2img.
+    #[serde(default)]
+    pub init_image_ref: Option<InitImageRef>,
+    /// Dataset de regularização/controle para treino de difusão. `None` = sem controle.
+    /// Mesmo shape do `package_ref` (zip no escopo Packages + md5_zip).
+    #[serde(default)]
+    pub control_package_ref: Option<PackageRef>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -282,6 +305,7 @@ pub enum S3Scope {
     Packages,
     Artifacts,
     Models,
+    GenerationInputs,
 }
 
 impl S3Scope {
@@ -290,6 +314,7 @@ impl S3Scope {
             S3Scope::Packages => "packages/",
             S3Scope::Artifacts => "artifacts/",
             S3Scope::Models => "models/",
+            S3Scope::GenerationInputs => "generation_inputs/",
         }
     }
 }
@@ -318,6 +343,47 @@ pub fn scoped_key(scope: S3Scope, key: &str) -> Result<String, ScopedKeyError> {
         return Err(ScopedKeyError::OutsideScope);
     }
     Ok(key.to_string())
+}
+
+/// Valida key de imagem inicial img2img (S4 — feat/img2img).
+///
+/// Aceita `generation_inputs/<...>` (upload avulso) OU `artifacts/<...>`
+/// (galeria) — as duas origens possíveis do init. Escopo próprio do staging
+/// do init: NÃO afrouxa `scoped_key` para outros usos.
+pub fn scoped_init_image_key(key: &str) -> Result<String, ScopedKeyError> {
+    if key.is_empty() {
+        return Err(ScopedKeyError::EmptyKey);
+    }
+    if key.starts_with('/') {
+        return Err(ScopedKeyError::AbsolutePath);
+    }
+    if key.contains("..") {
+        return Err(ScopedKeyError::PathTraversal);
+    }
+    if key.starts_with(S3Scope::GenerationInputs.prefix())
+        || key.starts_with(S3Scope::Artifacts.prefix())
+    {
+        return Ok(key.to_string());
+    }
+    Err(ScopedKeyError::OutsideScope)
+}
+
+/// Extensão sanitizada da imagem inicial a partir do s3_key (S4 — feat/img2img).
+///
+/// Usa o sufixo após o último `.` do filename (após a última `/`): só
+/// `[a-zA-Z0-9]` com 2..5 chars (lowercased) — qualquer outra coisa cai em
+/// `"png"`. Nunca devolve `..` ou barras.
+pub fn init_image_ext(s3_key: &str) -> String {
+    let filename = s3_key.rsplit('/').next().unwrap_or("");
+    let ext = filename.rsplit('.').next().unwrap_or("");
+    let ok = (2..=5).contains(&ext.len())
+        && ext.chars().all(|c| c.is_ascii_alphanumeric())
+        && filename.contains('.');
+    if ok {
+        ext.to_ascii_lowercase()
+    } else {
+        "png".to_string()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -469,6 +535,65 @@ pub fn compute_progress(line: &MetricsLine, total_epochs: i32) -> f64 {
     ((line.epoch as f64) / (total_epochs as f64)).clamp(0.0, 1.0)
 }
 
+/// Lê linhas novas de um arquivo JSONL a partir de um offset (contagem de linhas).
+/// Retorna `(linhas_parseadas, novo_offset)`. O offset SEMPRE avança para o
+/// total de linhas lidas — inclusive sobre linhas malformadas (skip silencioso
+/// via `parse_metrics_line`), para não reprocessar lixo a cada tick.
+///
+/// Arquivo ausente ou ilegível → `(vec![], offset)` sem erro: o produtor pode
+/// ainda não ter criado o arquivo (ex.: daemon ainda carregando pipeline).
+///
+/// Compartilhada entre o collector do one-shot (`metrics.jsonl`) e o tail do
+/// path daemon (`telemetry.jsonl`, D1 — ADR-0023): mesmo formato de relatório
+/// nos dois paths.
+pub fn tail_jsonl_lines(path: &Path, lines_read: usize) -> (Vec<MetricsLine>, usize) {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return (Vec::new(), lines_read),
+    };
+    let lines: Vec<&str> = content.lines().collect();
+    // Arquivo truncado (rotação): recomeça do zero em vez de pular tudo.
+    let start = if lines.len() >= lines_read {
+        lines_read
+    } else {
+        0
+    };
+    let mut parsed = Vec::new();
+    for line in &lines[start..] {
+        if let Some(m) = parse_metrics_line(line) {
+            parsed.push(m);
+        }
+    }
+    (parsed, lines.len())
+}
+
+/// Constrói o `ReportBody` de progresso para uma linha de telemetria/metrics.
+///
+/// Formato idêntico ao do collector do one-shot: status "running", progress
+/// via `compute_progress` (honra `progress` explícito da linha), métrica só
+/// quando `is_training_metric()`, e `phase`/`message` promovidas via COALESCE
+/// no `report_job` do manager.
+pub fn telemetry_report_for_line(line: &MetricsLine, total_epochs: i32) -> ReportBody {
+    let progress = compute_progress(line, total_epochs);
+    let is_metric = line.is_training_metric();
+    ReportBody {
+        status: "running".to_string(),
+        progress: Some(progress),
+        epoch: Some(line.epoch),
+        step: line.step.map(|s| s as i32),
+        metrics: if is_metric {
+            Some(line.to_report_json())
+        } else {
+            None
+        },
+        error: None,
+        artifacts: None,
+        meta_content: None,
+        phase: line.phase.clone(),
+        message: line.message.clone(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Config.yaml placeholder replacement (D6)
 // ---------------------------------------------------------------------------
@@ -476,7 +601,6 @@ pub fn compute_progress(line: &MetricsLine, total_epochs: i32) -> f64 {
 fn default_mode() -> String {
     "train".to_string()
 }
-
 /// Substitui placeholders no config.yaml.
 ///
 /// Suporta:
@@ -484,6 +608,9 @@ fn default_mode() -> String {
 /// - `{weights_path}` — weights legado (fine-tune)
 /// - `{lora_path_0}`...`{lora_path_N}` — LoRAs multi-ref (D3)
 /// - `{custom_checkpoint_path}` — checkpoint custom (D4)
+/// - `{text_encoder_path}` — text encoder custom (fatia feat/pesos-custom-flux2)
+/// - `{init_image_path}` — imagem inicial img2img (S4 — feat/img2img)
+/// - `{control_dataset_path}` — dataset de regularização/controle (treino difusão)
 ///
 /// Placeholders absentes no yaml são ignorados (no-op tolerante).
 pub fn replace_config_placeholders(
@@ -493,6 +620,9 @@ pub fn replace_config_placeholders(
     weights_path: Option<&str>,
     lora_paths: &[String],
     custom_checkpoint_path: Option<&str>,
+    init_image_path: Option<&str>,
+    control_dataset_path: Option<&str>,
+    text_encoder_path: Option<&str>,
 ) -> String {
     let mut result = config
         .replace("{dataset_path}", dataset_path)
@@ -512,6 +642,18 @@ pub fn replace_config_placeholders(
         result = result.replace("{custom_checkpoint_path}", cp);
     }
 
+    if let Some(tp) = text_encoder_path {
+        result = result.replace("{text_encoder_path}", tp);
+    }
+
+    if let Some(ip) = init_image_path {
+        result = result.replace("{init_image_path}", ip);
+    }
+
+    if let Some(cd) = control_dataset_path {
+        result = result.replace("{control_dataset_path}", cd);
+    }
+
     result
 }
 
@@ -523,9 +665,18 @@ pub fn replace_config_placeholders_legacy(
     output_path: &str,
     weights_path: Option<&str>,
 ) -> String {
-    replace_config_placeholders(config, dataset_path, output_path, weights_path, &[], None)
+    replace_config_placeholders(
+        config,
+        dataset_path,
+        output_path,
+        weights_path,
+        &[],
+        None,
+        None,
+        None,
+        None,
+    )
 }
-
 /// Extrai o valor de `epochs` do config.yaml (para cálculo de progress).
 pub fn extract_epochs(config_yaml: &str) -> i32 {
     let parsed = serde_yaml::from_str::<serde_yaml::Value>(config_yaml).ok();
@@ -639,7 +790,9 @@ impl S3Client {
                 aws_smithy_types::timeout::TimeoutConfig::builder()
                     .connect_timeout(Duration::from_secs(2))
                     .read_timeout(Duration::from_secs(30))
-                    .operation_timeout(Duration::from_secs(120))
+                    // Teto de transferência p/ objetos multi-GB (fail-fast vem de
+                    // connect+read, não daqui): 120s flakeava em LAN lenta.
+                    .operation_timeout(Duration::from_secs(3600))
                     .build(),
             )
             .build();
@@ -704,6 +857,94 @@ impl S3Port for S3Client {
 }
 
 // ---------------------------------------------------------------------------
+// Cache local de pesos customizados por MD5 (Text Encoder, LoRAs, Checkpoints)
+// ---------------------------------------------------------------------------
+
+/// Baixa e faz cache de pesos no nó orquestrador com base no MD5.
+///
+/// Se o peso já existir em `cache_dir/<md5>.<ext>` com tamanho > 0:
+/// - Reusa instantaneamente via hardlink O(1) (ou copy fallback) sem rebaixar do S3.
+/// Se não existir:
+/// - Baixa para arquivo temporário, valida MD5, move atomicamente para o cache
+///   e vincula ao arquivo de destino do job.
+pub async fn stage_cached_weight(
+    s3: &Arc<dyn S3Port>,
+    cache_dir: &Path,
+    dest_file: &Path,
+    scoped_key: &str,
+    expected_md5: &str,
+) -> Result<(), PipelineError> {
+    tokio::fs::create_dir_all(cache_dir)
+        .await
+        .map_err(|e| PipelineError::Other(format!("create weights cache dir: {e}")))?;
+
+    let ext = dest_file
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("safetensors");
+    let cached_file = cache_dir.join(format!("{expected_md5}.{ext}"));
+
+    if cached_file.is_file() {
+        if let Ok(meta) = tokio::fs::metadata(&cached_file).await {
+            if meta.len() > 0 {
+                tracing::info!(
+                    md5 = expected_md5,
+                    dest = %dest_file.display(),
+                    "Cache hit para peso custom — vinculando instantaneamente via link local"
+                );
+                let _ = tokio::fs::remove_file(dest_file).await;
+                if tokio::fs::hard_link(&cached_file, dest_file).await.is_ok() {
+                    return Ok(());
+                }
+                if tokio::fs::copy(&cached_file, dest_file).await.is_ok() {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    // Cache miss ou arquivo corrompido: baixa para arquivo temporário isolado
+    let tmp_file = cache_dir.join(format!(
+        ".tmp_{}_{}.part",
+        expected_md5,
+        uuid::Uuid::new_v4().simple()
+    ));
+
+    s3.get_to_file(scoped_key, &tmp_file)
+        .await
+        .map_err(|e| PipelineError::S3Download(format!("download weight {scoped_key}: {e}")))?;
+
+    let actual_md5 = compute_file_md5(&tmp_file)
+        .map_err(|e| PipelineError::S3Download(format!("compute weight md5 {scoped_key}: {e}")))?;
+
+    if actual_md5 != expected_md5 {
+        let _ = tokio::fs::remove_file(&tmp_file).await;
+        return Err(PipelineError::Md5Mismatch {
+            expected: expected_md5.to_string(),
+            actual: actual_md5,
+        });
+    }
+
+    // Move atomicamente para o cache permanente
+    if let Err(e) = tokio::fs::rename(&tmp_file, &cached_file).await {
+        if !cached_file.is_file() {
+            let _ = tokio::fs::remove_file(&tmp_file).await;
+            return Err(PipelineError::Other(format!("persist cached weight: {e}")));
+        }
+        let _ = tokio::fs::remove_file(&tmp_file).await;
+    }
+
+    let _ = tokio::fs::remove_file(dest_file).await;
+    if tokio::fs::hard_link(&cached_file, dest_file).await.is_err() {
+        tokio::fs::copy(&cached_file, dest_file)
+            .await
+            .map_err(|e| PipelineError::Other(format!("copy cached weight to dest: {e}")))?;
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Report client (trait mockable — reporta ao manager via D4)
 // ---------------------------------------------------------------------------
 
@@ -738,18 +979,36 @@ impl HttpReportClient {
 impl ReportClient for HttpReportClient {
     async fn report(&self, job_id: &str, body: &ReportBody) -> Result<(), String> {
         let url = format!("{}/internal/jobs/{job_id}/report", self.manager_url);
-        let mut req = self.client.post(&url).json(body);
-        if let Some(ref token) = self.token {
-            req = req.header("authorization", format!("Bearer {token}"));
+        let is_terminal = body.status == "done" || body.status == "failed";
+        let max_attempts = if is_terminal { 5 } else { 2 };
+        let mut last_err = "unknown report error".to_string();
+
+        for attempt in 0..max_attempts {
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_millis(300 * (1 << attempt))).await;
+            }
+            let mut req = self.client.post(&url).json(body);
+            if let Some(ref token) = self.token {
+                req = req.header("authorization", format!("Bearer {token}"));
+            }
+            match req.send().await {
+                Ok(resp) => {
+                    if resp.status().is_success() {
+                        return Ok(());
+                    }
+                    last_err = format!("report status: {}", resp.status());
+                    if resp.status().is_client_error()
+                        && resp.status() != reqwest::StatusCode::TOO_MANY_REQUESTS
+                    {
+                        return Err(last_err);
+                    }
+                }
+                Err(e) => {
+                    last_err = format!("report request: {e}");
+                }
+            }
         }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| format!("report request: {e}"))?;
-        if !resp.status().is_success() {
-            return Err(format!("report status: {}", resp.status()));
-        }
-        Ok(())
+        Err(last_err)
     }
 }
 
@@ -849,6 +1108,11 @@ pub fn build_docker_run_args(
     cmd_args.push("--add-host".to_string());
     cmd_args.push("host.docker.internal:host-gateway".to_string());
 
+    let network = std::env::var("ENGINE_NETWORK")
+        .or_else(|_| std::env::var("DIFFUSION_DAEMON_NETWORK"))
+        .unwrap_or_else(|_| "infra_default".to_string());
+    cmd_args.push("--network".to_string());
+    cmd_args.push(network);
     for (host, container) in volumes {
         cmd_args.push("-v".to_string());
         cmd_args.push(format!("{host}:{container}"));
@@ -892,16 +1156,30 @@ impl TrainerExecutor for DockerExecutor {
 
         let mut cmd = tokio::process::Command::new("docker");
         cmd.args(&cmd_args);
+        cmd.kill_on_drop(true);
 
-        match cmd.output().await {
-            Ok(o) => {
+        let timeout_secs: u64 = std::env::var("TRAINER_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(7200);
+        let timeout_duration = Duration::from_secs(timeout_secs);
+
+        match tokio::time::timeout(timeout_duration, cmd.output()).await {
+            Ok(Ok(o)) => {
                 let exit_code = o.status.code().unwrap_or(-1);
                 let stdout = String::from_utf8_lossy(&o.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&o.stderr).to_string();
                 let logs = format!("{stdout}\n{stderr}");
                 (exit_code, logs)
             }
-            Err(e) => (-1, format!("docker exec error: {e}")),
+            Ok(Err(e)) => (-1, format!("docker exec error: {e}")),
+            Err(_) => {
+                let _ = self.stop(container_name).await;
+                (
+                    -1,
+                    format!("timeout de execução atingido ({timeout_secs}s) - container encerrado"),
+                )
+            }
         }
     }
 
@@ -919,6 +1197,73 @@ impl TrainerExecutor for DockerExecutor {
                 "docker stop failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             ))
+        }
+    }
+}
+
+/// Varre e encerra containers órfãos de treino (`trainer-*`) no boot do orquestrador.
+pub async fn sweep_orphan_trainer_containers() {
+    tracing::info!("verificando containers órfãos de treino no boot...");
+    let output = tokio::process::Command::new("docker")
+        .args(["ps", "-q", "--filter", "name=trainer-"])
+        .output()
+        .await;
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let container_ids = String::from_utf8_lossy(&out.stdout);
+            let ids: Vec<&str> = container_ids
+                .lines()
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if ids.is_empty() {
+                tracing::info!("nenhum container órfão encontrado no boot");
+            } else {
+                tracing::warn!(
+                    "encontrados {} containers órfãos: {:?}. Encerrando...",
+                    ids.len(),
+                    ids
+                );
+                for id in ids {
+                    let stop_res = tokio::process::Command::new("docker")
+                        .args(["rm", "-f", id])
+                        .output()
+                        .await;
+                    if let Err(e) = stop_res {
+                        tracing::error!("falha ao remover container órfão {id}: {e}");
+                    } else {
+                        tracing::info!("container órfão {id} removido com sucesso");
+                    }
+                }
+            }
+        }
+        Ok(out) => {
+            tracing::warn!(
+                "docker ps retornou erro ao verificar órfãos: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        Err(e) => {
+            tracing::warn!("falha ao executar docker ps para checar órfãos: {e}");
+        }
+    }
+}
+
+/// Varre e limpa diretórios antigos de cache de datasets no workdir (> 24h).
+pub async fn sweep_orphan_workdirs(workdir: &Path, max_age: std::time::Duration) {
+    let cache_dir = workdir.join("datasets").join("datasets-cache");
+    if let Ok(mut entries) = tokio::fs::read_dir(&cache_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            if let Ok(meta) = entry.metadata().await {
+                if let Ok(modified) = meta.modified() {
+                    if let Ok(age) = modified.elapsed() {
+                        if age > max_age {
+                            let _ = tokio::fs::remove_dir_all(entry.path()).await;
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1069,6 +1414,13 @@ pub async fn run_job(
         }
     }
 
+    // Cleanup pós-job do cache do dataset descompactado:
+    let job_workdir = std::path::PathBuf::from(&dispatch.workdir);
+    let dataset_dir = job_workdir
+        .join("datasets")
+        .join("datasets-cache")
+        .join(&job_id);
+    let _ = tokio::fs::remove_dir_all(&dataset_dir).await;
     active_jobs.remove(&job_id);
 }
 
@@ -1099,7 +1451,7 @@ async fn run_job_inner(
         .join(job_id);
     let outputs = job_workdir.join("outputs").join(job_id);
     let temp_dir = job_workdir.join("tmp").join(job_id);
-
+    let weights_cache_dir = job_workdir.join("outputs").join(".weights-cache");
     tokio::fs::create_dir_all(&datasets_cache)
         .await
         .map_err(|e| PipelineError::Other(format!("create datasets-cache: {e}")))?;
@@ -1200,21 +1552,14 @@ async fn run_job_inner(
             .map_err(|e| PipelineError::Other(format!("create weights dir: {e}")))?;
 
         let weights_file = weights_dir.join(filename);
-        s3.get_to_file(&scoped_wkey, &weights_file)
-            .await
-            .map_err(|e| PipelineError::S3Download(format!("download weights: {e}")))?;
-
-        // Verifica MD5
-        let actual_md5 = compute_file_md5(&weights_file)
-            .map_err(|e| PipelineError::S3Download(format!("compute weights md5: {e}")))?;
-        if actual_md5 != weights_ref.md5 {
-            return Err(PipelineError::Md5Mismatch {
-                expected: weights_ref.md5.clone(),
-                actual: actual_md5,
-            });
-        }
-
-        // Caminho absoluto dentro do container trainer (volume outputs → /outputs)
+        stage_cached_weight(
+            &s3,
+            &weights_cache_dir,
+            &weights_file,
+            &scoped_wkey,
+            &weights_ref.md5,
+        )
+        .await?;
         weights_staged_path = Some(format!("/outputs/{job_id}/weights/{filename}"));
     }
 
@@ -1241,17 +1586,7 @@ async fn run_job_inner(
         let scoped_key = scoped_key(scope, &lora.s3_key)
             .map_err(|e| PipelineError::S3Download(format!("invalid lora key: {e}")))?;
         let lora_file = weights_dir.join(format!("lora_{i}.safetensors"));
-        s3.get_to_file(&scoped_key, &lora_file)
-            .await
-            .map_err(|e| PipelineError::S3Download(format!("download lora {i}: {e}")))?;
-        let actual_md5 = compute_file_md5(&lora_file)
-            .map_err(|e| PipelineError::S3Download(format!("compute lora {i} md5: {e}")))?;
-        if actual_md5 != lora.md5 {
-            return Err(PipelineError::Md5Mismatch {
-                expected: lora.md5.clone(),
-                actual: actual_md5,
-            });
-        }
+        stage_cached_weight(&s3, &weights_cache_dir, &lora_file, &scoped_key, &lora.md5).await?;
         lora_staged_paths.push(format!("/outputs/{job_id}/weights/lora_{i}.safetensors"));
     }
 
@@ -1275,18 +1610,115 @@ async fn run_job_inner(
         let scoped_key = scoped_key(scope, &custom.s3_key)
             .map_err(|e| PipelineError::S3Download(format!("invalid custom key: {e}")))?;
         let custom_file = weights_dir.join("custom.safetensors");
-        s3.get_to_file(&scoped_key, &custom_file)
+        stage_cached_weight(
+            &s3,
+            &weights_cache_dir,
+            &custom_file,
+            &scoped_key,
+            &custom.md5,
+        )
+        .await?;
+        custom_staged_path = Some(format!("/outputs/{job_id}/weights/custom.safetensors"));
+    }
+    // 5c2. Download e staging do text encoder custom (fatia feat/pesos-custom-flux2).
+    //     Fica em outputs/<job_id>/weights/text_encoder.safetensors (mesmo
+    //     mecanismo weights_ref: escopo models/|artifacts/, md5 obrigatório,
+    //     falha honesta em qualquer etapa — nunca fallback silencioso p/ o oficial).
+    let mut text_encoder_staged_path: Option<String> = None;
+    if let Some(ref encoder) = dispatch.text_encoder {
+        tokio::fs::create_dir_all(&weights_dir)
             .await
-            .map_err(|e| PipelineError::S3Download(format!("download custom: {e}")))?;
-        let actual_md5 = compute_file_md5(&custom_file)
-            .map_err(|e| PipelineError::S3Download(format!("compute custom md5: {e}")))?;
-        if actual_md5 != custom.md5 {
+            .map_err(|e| PipelineError::Other(format!("create weights dir: {e}")))?;
+        let scope = if encoder.s3_key.starts_with("models/") {
+            S3Scope::Models
+        } else if encoder.s3_key.starts_with("artifacts/") {
+            S3Scope::Artifacts
+        } else {
+            return Err(PipelineError::S3Download(format!(
+                "text_encoder s3_key must start with models/ or artifacts/, got: {}",
+                encoder.s3_key
+            )));
+        };
+        let scoped_key = scoped_key(scope, &encoder.s3_key)
+            .map_err(|e| PipelineError::S3Download(format!("invalid text_encoder key: {e}")))?;
+        let encoder_file = weights_dir.join("text_encoder.safetensors");
+        stage_cached_weight(
+            &s3,
+            &weights_cache_dir,
+            &encoder_file,
+            &scoped_key,
+            &encoder.md5,
+        )
+        .await?;
+        text_encoder_staged_path = Some(format!(
+            "/outputs/{job_id}/weights/text_encoder.safetensors"
+        ));
+    }
+
+    // 5d. Download e staging da imagem inicial img2img (S4 — feat/img2img).
+    //     Fica em outputs/<job_id>/inputs/init.<ext> (ext sanitizada do s3_key,
+    //     fallback `png`). O path REAL do host entra no real_config — o
+    //     config.yaml já é montado via volume /outputs, como weights/custom.
+    let mut init_staged_path: Option<String> = None;
+    if let Some(ref init) = dispatch.init_image_ref {
+        let scoped_ikey = scoped_init_image_key(&init.s3_key)
+            .map_err(|e| PipelineError::S3Download(format!("invalid init_image_ref key: {e}")))?;
+        let inputs_dir = outputs.join("inputs");
+        tokio::fs::create_dir_all(&inputs_dir)
+            .await
+            .map_err(|e| PipelineError::Other(format!("create inputs dir: {e}")))?;
+        let ext = init_image_ext(&init.s3_key);
+        let init_file = inputs_dir.join(format!("init.{ext}"));
+        s3.get_to_file(&scoped_ikey, &init_file)
+            .await
+            .map_err(|e| PipelineError::S3Download(format!("download init image: {e}")))?;
+        let actual_md5 = compute_file_md5(&init_file)
+            .map_err(|e| PipelineError::S3Download(format!("compute init image md5: {e}")))?;
+        match init.md5.as_deref() {
+            Some(expected) => {
+                if actual_md5 != expected {
+                    return Err(PipelineError::Md5Mismatch {
+                        expected: expected.to_string(),
+                        actual: actual_md5,
+                    });
+                }
+            }
+            // Origem galeria: sem hash de referência — só registra o calculado.
+            None => {
+                tracing::info!(
+                    "init image from gallery has no expected md5, staged md5={actual_md5}"
+                );
+            }
+        }
+        init_staged_path = Some(format!("/outputs/{job_id}/inputs/init.{ext}"));
+    }
+    // 5e. Download e staging do dataset de controle/regularização (treino difusão).
+    //     Mesmo caminho do pacote principal: zip no escopo Packages + md5_zip
+    //     obrigatório, extraído (zip-slip safe) para datasets-cache/<job_id>/control.
+    //     O path REAL do host entra no real_config via {control_dataset_path}.
+    //     Falha em qualquer etapa = job falha honesto (S3Download/Md5Mismatch/UnzipFailed).
+    let mut control_staged_path: Option<String> = None;
+    if let Some(ref control) = dispatch.control_package_ref {
+        let control_zip = temp_dir.join("control.zip");
+        let control_key = scoped_key(S3Scope::Packages, &control.key)
+            .map_err(|e| PipelineError::S3Download(format!("invalid control package key: {e}")))?;
+        s3.get_to_file(&control_key, &control_zip)
+            .await
+            .map_err(|e| PipelineError::S3Download(format!("download control package: {e}")))?;
+        let actual_md5 = compute_file_md5(&control_zip)
+            .map_err(|e| PipelineError::S3Download(format!("compute control md5: {e}")))?;
+        if actual_md5 != control.md5_zip {
             return Err(PipelineError::Md5Mismatch {
-                expected: custom.md5.clone(),
+                expected: control.md5_zip.clone(),
                 actual: actual_md5,
             });
         }
-        custom_staged_path = Some(format!("/outputs/{job_id}/weights/custom.safetensors"));
+        let control_dir = datasets_cache.join("control");
+        tokio::fs::create_dir_all(&control_dir)
+            .await
+            .map_err(|e| PipelineError::Other(format!("create control dir: {e}")))?;
+        unzip_safe(&control_zip, &control_dir)?;
+        control_staged_path = Some(format!("/datasets/datasets-cache/{job_id}/control"));
     }
 
     // 6. Monta config.yaml REAL — substitui placeholders (§8/:102)
@@ -1308,7 +1740,38 @@ async fn run_job_inner(
             weights_staged_path.as_deref(),
             &lora_staged_paths,
             custom_staged_path.as_deref(),
+            init_staged_path.as_deref(),
+            control_staged_path.as_deref(),
+            text_encoder_staged_path.as_deref(),
         );
+
+        // O config exige init mas nenhum init_image_ref veio no dispatch:
+        // falha explícita em vez de deixar o placeholder vazar (S4).
+        if real_config.contains("{init_image_path}") {
+            return Err(PipelineError::ConfigYamlInvalid(
+                "config.yaml requires {init_image_path} but no init_image_ref was provided"
+                    .to_string(),
+            ));
+        }
+
+        // O config exige control mas nenhum control_package_ref veio no dispatch:
+        // falha explícita em vez de deixar o placeholder vazar (espelha S4).
+        if real_config.contains("{control_dataset_path}") {
+            return Err(PipelineError::ConfigYamlInvalid(
+                "config.yaml requires {control_dataset_path} but no control_package_ref was provided"
+                    .to_string(),
+            ));
+        }
+
+        // O config exige text encoder custom mas nenhum veio no dispatch:
+        // falha explícita em vez de vazar o placeholder ou cair no oficial
+        // (fallback silencioso proibido — fatia feat/pesos-custom-flux2).
+        if real_config.contains("{text_encoder_path}") {
+            return Err(PipelineError::ConfigYamlInvalid(
+                "config.yaml requires {text_encoder_path} but no text_encoder was provided"
+                    .to_string(),
+            ));
+        }
 
         // Valida que é YAML parseável (D6)
         let _: serde_yaml::Value = serde_yaml::from_str(&real_config).map_err(|e| {
@@ -1381,9 +1844,38 @@ async fn run_job_inner(
                     weights_staged_path.as_deref(),
                     &lora_staged_paths,
                     custom_staged_path.as_deref(),
+                    init_staged_path.as_deref(),
+                    control_staged_path.as_deref(),
+                    text_encoder_staged_path.as_deref(),
                 )
             })
             .unwrap_or_default();
+
+        // Mesmo guarda do one-shot: placeholder de init sem init_image_ref
+        // falha explícita em vez de vazar para o daemon (S4).
+        if config_str.contains("{init_image_path}") {
+            return Err(PipelineError::ConfigYamlInvalid(
+                "config.yaml requires {init_image_path} but no init_image_ref was provided"
+                    .to_string(),
+            ));
+        }
+
+        // Defesa anti-placeholder do control (espelha a de init): config exige
+        // control mas nenhum control_package_ref veio no dispatch.
+        if config_str.contains("{control_dataset_path}") {
+            return Err(PipelineError::ConfigYamlInvalid(
+                "config.yaml requires {control_dataset_path} but no control_package_ref was provided"
+                    .to_string(),
+            ));
+        }
+
+        // Defesa anti-placeholder do text encoder (fatia feat/pesos-custom-flux2).
+        if config_str.contains("{text_encoder_path}") {
+            return Err(PipelineError::ConfigYamlInvalid(
+                "config.yaml requires {text_encoder_path} but no text_encoder was provided"
+                    .to_string(),
+            ));
+        }
 
         let body = daemon::GenerateBody {
             config: config_str,
@@ -1391,7 +1883,33 @@ async fn run_job_inner(
             telemetry_path: telemetry_abs.to_str().unwrap_or_default().to_string(),
         };
 
-        // (c) POST /generate com retry em 409 (D1: 2 retries com backoff curto)
+        // (c) Tail de telemetry.jsonl durante o POST /generate: o HTTP retorna
+        // só no 200 (fim da geração), então sem tail o job fica em 0.0 até
+        // done. Mesmos events/phases do one-shot: a task lê telemetry.jsonl
+        // via `tail_jsonl_lines` e reporta cada linha com
+        // `telemetry_report_for_line` (== formato do collector do one-shot).
+        // A task só observa o arquivo, nunca toca no client/launcher.
+        let telemetry_report_client = Arc::clone(&report_client);
+        let telemetry_path_clone = telemetry_abs.clone();
+        let telemetry_job_id = job_id.clone();
+        let telemetry_handle = tokio::spawn(async move {
+            let mut lines_read: usize = 0;
+            let mut interval = tokio::time::interval(Duration::from_millis(500));
+            loop {
+                interval.tick().await;
+                let (new_lines, new_offset) = tail_jsonl_lines(&telemetry_path_clone, lines_read);
+                lines_read = new_offset;
+                for m in new_lines {
+                    let body = telemetry_report_for_line(&m, total_epochs);
+                    let _ = telemetry_report_client
+                        .report(&telemetry_job_id, &body)
+                        .await;
+                }
+            }
+        });
+
+        // POST /generate com retry em 409 (D1: 2 retries com backoff curto).
+        // O tail acima emite progresso enquanto este await bloqueia.
         let mut last_err = String::new();
         let mut succeeded = false;
         for attempt in 0..3 {
@@ -1402,7 +1920,7 @@ async fn run_job_inner(
                     ds.touch();
                     break;
                 }
-                Err(ref e) if e == "busy" => {
+                Err(e) if e == "busy" => {
                     if attempt < 2 {
                         // Backoff curto antes de retry
                         tokio::time::sleep(Duration::from_millis(500 * (attempt as u64 + 1))).await;
@@ -1413,11 +1931,15 @@ async fn run_job_inner(
                     }
                 }
                 Err(e) => {
-                    // Erro diferente de busy → falha honesta
+                    // Erro diferente de busy → tail para, falha honesta
+                    telemetry_handle.abort();
                     return Err(PipelineError::Other(format!("daemon generate: {e}")));
                 }
             }
         }
+
+        // Para o tail: sucesso e busy-exausto convergem abaixo (done / DaemonBusy).
+        telemetry_handle.abort();
 
         if !succeeded {
             if last_err == "busy" {
@@ -1575,6 +2097,12 @@ async fn run_job_inner(
     }
     // Persistência de cache de modelos (Hugging Face / PyTorch) no volume montado /outputs/.cache
     if dispatch.engine == "diffusion" {
+        // Reduz fragmentação de VRAM (OOM de alocções grandes com modelo 4-bit
+        // carregado em GPU apertada).
+        exec_env.push((
+            "PYTORCH_CUDA_ALLOC_CONF".to_string(),
+            "expandable_segments:True".to_string(),
+        ));
         exec_env.push((
             "HF_HOME".to_string(),
             "/outputs/.cache/huggingface".to_string(),
@@ -1787,19 +2315,9 @@ async fn run_job_inner(
                 }
             }
 
-            // 2. Lê metrics.jsonl incrementalmente
-            let mut new_metrics: Vec<MetricsLine> = Vec::new();
-            if let Ok(content) = tokio::fs::read_to_string(&metrics_path_clone).await {
-                let lines: Vec<&str> = content.lines().collect();
-                if lines.len() > lines_read {
-                    for line in &lines[lines_read..] {
-                        if let Some(m) = parse_metrics_line(line) {
-                            new_metrics.push(m);
-                        }
-                    }
-                    lines_read = lines.len();
-                }
-            }
+            // 2. Lê metrics.jsonl incrementalmente (helper compartilhado com o tail do daemon)
+            let (new_metrics, new_lines_read) = tail_jsonl_lines(&metrics_path_clone, lines_read);
+            lines_read = new_lines_read;
 
             // 3. Envia report se houver novas métricas OU novos artefatos (amostras/checkpoints)
             if !new_metrics.is_empty() {
@@ -2701,6 +3219,9 @@ mod tests {
             None,
             &[],
             None,
+            None,
+            None,
+            None,
         );
         assert_eq!(
             result,
@@ -2718,6 +3239,9 @@ mod tests {
             "/outputs/j1",
             None,
             &[],
+            None,
+            None,
+            None,
             None,
         );
         let parsed: serde_yaml::Value = serde_yaml::from_str(&result).unwrap();
@@ -3248,6 +3772,9 @@ mod tests {
             weights_ref: None,
             loras: Vec::new(),
             custom_checkpoint: None,
+            text_encoder: None,
+            init_image_ref: None,
+            control_package_ref: None,
         }
     }
 
@@ -3546,6 +4073,231 @@ mod tests {
         assert!(filenames.contains(&"metrics.jsonl"));
         assert!(kinds.contains(&"model"));
         assert!(kinds.contains(&"metrics"));
+    }
+
+    // -- control dataset (treino difusão): staging + placeholder + defesa --
+
+    /// Fake S3 que serve zips distintos por key: pacote principal vs controle.
+    /// Reusa o mesmo zip válido do FakeS3 para ambos; o MD5 é calculado sobre
+    /// os bytes servidos, então o dispatch usa `compute_file_md5_bytes`.
+    struct FakeS3WithControl {
+        downloads: Mutex<Vec<String>>,
+        uploads: Mutex<Vec<(String, PathBuf)>>,
+        main_zip: Vec<u8>,
+        control_zip: Vec<u8>,
+    }
+
+    impl FakeS3WithControl {
+        fn new() -> Self {
+            let mut main_buf = std::io::Cursor::new(Vec::new());
+            {
+                let mut zip = zip::ZipWriter::new(&mut main_buf);
+                let opts = zip::write::SimpleFileOptions::default();
+                zip.start_file("dataset.yaml", opts).unwrap();
+                zip.write_all(b"classes: []\nimages: []\n").unwrap();
+                zip.finish().unwrap();
+            }
+            let mut control_buf = std::io::Cursor::new(Vec::new());
+            {
+                let mut zip = zip::ZipWriter::new(&mut control_buf);
+                let opts = zip::write::SimpleFileOptions::default();
+                zip.start_file("regularization.txt", opts).unwrap();
+                zip.write_all(b"control images\n").unwrap();
+                zip.finish().unwrap();
+            }
+            Self {
+                downloads: Mutex::new(Vec::new()),
+                uploads: Mutex::new(Vec::new()),
+                main_zip: main_buf.into_inner(),
+                control_zip: control_buf.into_inner(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl S3Port for FakeS3WithControl {
+        async fn get_to_file(&self, key: &str, path: &std::path::Path) -> Result<(), String> {
+            self.downloads.lock().unwrap().push(key.to_string());
+            let data = if key.contains("control") {
+                &self.control_zip
+            } else {
+                &self.main_zip
+            };
+            std::fs::write(path, data).map_err(|e| format!("write file: {e}"))
+        }
+
+        async fn put(&self, key: &str, path: &std::path::Path) -> Result<(), String> {
+            self.uploads
+                .lock()
+                .unwrap()
+                .push((key.to_string(), path.to_path_buf()));
+            Ok(())
+        }
+
+        async fn ping(&self) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn diffusion_train_control_dataset_staged_and_config_resolved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3WithControl::new());
+
+        let mut dispatch = make_dispatch("job-control-001", "diffusion");
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        dispatch.mode = "train".to_string();
+        dispatch.package_ref = Some(PackageRef {
+            key: "packages/test-pkg/dataset.zip".to_string(),
+            md5_zip: compute_file_md5_bytes(&s3.main_zip),
+            bytes: s3.main_zip.len() as i64,
+        });
+        dispatch.control_package_ref = Some(PackageRef {
+            key: "packages/test-pkg/control.zip".to_string(),
+            md5_zip: compute_file_md5_bytes(&s3.control_zip),
+            bytes: s3.control_zip.len() as i64,
+        });
+        dispatch.config_yaml = Some(
+            "epochs: 1\ndataset_path: {dataset_path}\noutput_path: {output_path}\ncontrol_dataset_path: \"{control_dataset_path}\"\ncache_text_embeddings: true"
+                .to_string(),
+        );
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let mut output_files = HashMap::new();
+        output_files.insert(
+            "adapter.safetensors".to_string(),
+            b"fake safetensors bytes".to_vec(),
+        );
+        create_fake_outputs(tmp.path(), "job-control-001", &output_files);
+
+        let res = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+            None,
+        )
+        .await;
+        assert!(res.is_ok(), "run_job_inner failed: {:?}", res);
+
+        // Diretório de controle existe no host (staging) com o conteúdo do zip.
+        let control_dir = tmp
+            .path()
+            .join("datasets")
+            .join("datasets-cache")
+            .join("job-control-001")
+            .join("control");
+        assert!(
+            control_dir.join("regularization.txt").is_file(),
+            "control dataset deve ser extraído em datasets-cache/<job>/control"
+        );
+
+        // Config final entregue ao trainer contém o path real, sem placeholder.
+        let config_path = tmp
+            .path()
+            .join("outputs")
+            .join("job-control-001")
+            .join("config.yaml");
+        let config = std::fs::read_to_string(&config_path).unwrap();
+        assert!(
+            config.contains("/datasets/datasets-cache/job-control-001/control"),
+            "config deve conter o control path real: {config}"
+        );
+        assert!(
+            !config.contains("{control_dataset_path}"),
+            "placeholder não pode vazar: {config}"
+        );
+        assert!(
+            config.contains("cache_text_embeddings: true"),
+            "flag opaca preservada: {config}"
+        );
+    }
+
+    #[tokio::test]
+    async fn diffusion_train_control_placeholder_sem_ref_falha_claro() {
+        // Defesa anti-placeholder (espelha init): config exige control mas
+        // nenhum control_package_ref veio no dispatch → ConfigYamlInvalid.
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_dispatch_with_valid_md5("job-control-002", "diffusion", &zip_path);
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        dispatch.mode = "train".to_string();
+        dispatch.control_package_ref = None;
+        dispatch.config_yaml = Some(
+            "epochs: 1\ndataset_path: {dataset_path}\noutput_path: {output_path}\ncontrol_dataset_path: \"{control_dataset_path}\""
+                .to_string(),
+        );
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let res = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+            None,
+        )
+        .await;
+        assert!(
+            matches!(res, Err(PipelineError::ConfigYamlInvalid(_))),
+            "placeholder sem ref deve falhar claro: {res:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn diffusion_train_control_md5_mismatch_falha_honesto() {
+        // MD5 divergente no pacote de controle → Md5Mismatch (nada silencioso).
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3WithControl::new());
+
+        let mut dispatch = make_dispatch("job-control-003", "diffusion");
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        dispatch.mode = "train".to_string();
+        dispatch.package_ref = Some(PackageRef {
+            key: "packages/test-pkg/dataset.zip".to_string(),
+            md5_zip: compute_file_md5_bytes(&s3.main_zip),
+            bytes: s3.main_zip.len() as i64,
+        });
+        dispatch.control_package_ref = Some(PackageRef {
+            key: "packages/test-pkg/control.zip".to_string(),
+            md5_zip: "00000000000000000000000000000000".to_string(),
+            bytes: s3.control_zip.len() as i64,
+        });
+        dispatch.config_yaml = Some(
+            "epochs: 1\ndataset_path: {dataset_path}\noutput_path: {output_path}\ncontrol_dataset_path: \"{control_dataset_path}\""
+                .to_string(),
+        );
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let res = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+            None,
+        )
+        .await;
+        assert!(
+            matches!(res, Err(PipelineError::Md5Mismatch { .. })),
+            "md5 divergente deve falhar honesto: {res:?}"
+        );
     }
 
     // -- ADR-0020: engine diffusion com mode generate usa generate e coleta generated.png sem exigir package --
@@ -4539,6 +5291,9 @@ also bad, not a number
             Some("/outputs/j1/weights/best.pt"),
             &[],
             None,
+            None,
+            None,
+            None,
         );
         assert_eq!(
             result,
@@ -4549,9 +5304,218 @@ also bad, not a number
     #[test]
     fn replace_config_placeholders_without_weights_keeps_literal() {
         let config = "model: yolo11m\nweights_path: {weights_path}";
-        let result =
-            replace_config_placeholders(config, "/datasets/j1", "/outputs/j1", None, &[], None);
+        let result = replace_config_placeholders(
+            config,
+            "/datasets/j1",
+            "/outputs/j1",
+            None,
+            &[],
+            None,
+            None,
+            None,
+            None,
+        );
         assert_eq!(result, "model: yolo11m\nweights_path: {weights_path}");
+    }
+
+    // =========================================================================
+    // S4 feat/img2img — replace com/sem init, ext sanitizada, allowlist do init
+    // =========================================================================
+
+    #[test]
+    fn replace_config_placeholders_with_init_image() {
+        let config = "init_image: {init_image_path}\nstrength: 0.6";
+        let result = replace_config_placeholders(
+            config,
+            "/datasets/j1",
+            "/outputs/j1",
+            None,
+            &[],
+            None,
+            Some("/outputs/j1/inputs/init.png"),
+            None,
+            None,
+        );
+        assert_eq!(
+            result,
+            "init_image: /outputs/j1/inputs/init.png\nstrength: 0.6"
+        );
+    }
+
+    #[test]
+    fn replace_config_placeholders_without_init_keeps_literal() {
+        let config = "init_image: {init_image_path}\nstrength: 0.6";
+        let result = replace_config_placeholders(
+            config,
+            "/datasets/j1",
+            "/outputs/j1",
+            None,
+            &[],
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(result, "init_image: {init_image_path}\nstrength: 0.6");
+    }
+
+    #[test]
+    fn replace_config_placeholders_no_init_placeholder_noop() {
+        // Config sem o placeholder: init presente ou não, no-op.
+        let config = "prompt: a cat\nsteps: 20";
+        for init in [None, Some("/outputs/j1/inputs/init.png")] {
+            let result = replace_config_placeholders(
+                config,
+                "/datasets/j1",
+                "/outputs/j1",
+                None,
+                &[],
+                None,
+                init,
+                None,
+                None,
+            );
+            assert_eq!(result, config);
+        }
+    }
+    #[test]
+    fn replace_config_placeholders_with_text_encoder() {
+        // Fatia feat/pesos-custom-flux2: placeholder do encoder substituído.
+        let config = "text_encoder: {text_encoder_path}\nsteps: 20";
+        let result = replace_config_placeholders(
+            config,
+            "/datasets/j1",
+            "/outputs/j1",
+            None,
+            &[],
+            None,
+            None,
+            None,
+            Some("/outputs/j1/weights/text_encoder.safetensors"),
+        );
+        assert_eq!(
+            result,
+            "text_encoder: /outputs/j1/weights/text_encoder.safetensors\nsteps: 20"
+        );
+    }
+
+    #[test]
+    fn replace_config_placeholders_without_text_encoder_keeps_literal() {
+        let config = "text_encoder: {text_encoder_path}\nsteps: 20";
+        let result = replace_config_placeholders(
+            config,
+            "/datasets/j1",
+            "/outputs/j1",
+            None,
+            &[],
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(result, "text_encoder: {text_encoder_path}\nsteps: 20");
+    }
+
+    #[test]
+    fn init_image_ext_from_suffix() {
+        assert_eq!(init_image_ext("generation_inputs/abc/img.png"), "png");
+        assert_eq!(init_image_ext("generation_inputs/abc/photo.JPG"), "jpg");
+        assert_eq!(init_image_ext("artifacts/job-1/gen_0001.webp"), "webp");
+        assert_eq!(init_image_ext("artifacts/job-1/frame.jpeg"), "jpeg");
+    }
+
+    #[test]
+    fn init_image_ext_fallback_png() {
+        // Sem extensão, extensão curta/longa demais ou não-alfanumérica → png.
+        assert_eq!(init_image_ext("artifacts/j/f"), "png");
+        assert_eq!(init_image_ext("artifacts/j/f."), "png");
+        assert_eq!(init_image_ext("artifacts/j/f.a"), "png");
+        assert_eq!(init_image_ext("artifacts/j/f.toolongext"), "png");
+        assert_eq!(init_image_ext("artifacts/j/f.pn_g"), "png");
+        assert_eq!(init_image_ext(""), "png");
+    }
+
+    #[test]
+    fn init_image_ext_never_returns_traversal_or_slashes() {
+        for key in [
+            "artifacts/j/..",
+            "artifacts/../evil.png",
+            "generation_inputs/x/../../etc/passwd",
+            "/abs/path.png",
+        ] {
+            let ext = init_image_ext(key);
+            assert!(!ext.contains(".."), "ext com traversal: {ext}");
+            assert!(!ext.contains('/'), "ext com barra: {ext}");
+        }
+    }
+
+    #[test]
+    fn scoped_init_image_key_accepts_both_prefixes() {
+        assert_eq!(
+            scoped_init_image_key("generation_inputs/abc/upload.png"),
+            Ok("generation_inputs/abc/upload.png".to_string())
+        );
+        assert_eq!(
+            scoped_init_image_key("artifacts/job-1/generated_0001.png"),
+            Ok("artifacts/job-1/generated_0001.png".to_string())
+        );
+    }
+
+    #[test]
+    fn scoped_init_image_key_rejects_other_prefixes() {
+        assert_eq!(
+            scoped_init_image_key("models/diffusion/x/ckpt.safetensors"),
+            Err(ScopedKeyError::OutsideScope)
+        );
+        assert_eq!(
+            scoped_init_image_key("packages/abc/dataset.zip"),
+            Err(ScopedKeyError::OutsideScope)
+        );
+        assert_eq!(
+            scoped_init_image_key("datasets/abc/images"),
+            Err(ScopedKeyError::OutsideScope)
+        );
+    }
+
+    #[test]
+    fn scoped_init_image_key_rejects_unsafe() {
+        assert_eq!(scoped_init_image_key(""), Err(ScopedKeyError::EmptyKey));
+        assert_eq!(
+            scoped_init_image_key("/generation_inputs/x.png"),
+            Err(ScopedKeyError::AbsolutePath)
+        );
+        assert_eq!(
+            scoped_init_image_key("generation_inputs/../evil.png"),
+            Err(ScopedKeyError::PathTraversal)
+        );
+        assert_eq!(
+            scoped_init_image_key("artifacts/../evil.png"),
+            Err(ScopedKeyError::PathTraversal)
+        );
+    }
+
+    #[test]
+    fn dispatch_request_init_image_ref_serde() {
+        // snake_case no wire interno, md5 opcional (galeria → null).
+        let json = r#"{
+            "job_id": "j1", "engine": "diffusion", "image": "img",
+            "exec_mode": "docker", "config_yaml": null,
+            "dataset_version_id": null, "workdir": "/tmp",
+            "init_image_ref": {"s3_key": "artifacts/j0/gen.png", "md5": null}
+        }"#;
+        let req: DispatchRequest = serde_json::from_str(json).unwrap();
+        let init = req.init_image_ref.expect("init presente");
+        assert_eq!(init.s3_key, "artifacts/j0/gen.png");
+        assert!(init.md5.is_none());
+
+        // Ausente → None (txt2img retrocompat).
+        let json2 = r#"{
+            "job_id": "j1", "engine": "diffusion", "image": "img",
+            "exec_mode": "docker", "config_yaml": null,
+            "dataset_version_id": null, "workdir": "/tmp"
+        }"#;
+        let req2: DispatchRequest = serde_json::from_str(json2).unwrap();
+        assert!(req2.init_image_ref.is_none());
     }
 
     // =========================================================================
@@ -4879,6 +5843,9 @@ also bad, not a number
             weights_ref: None,
             loras: Vec::new(),
             custom_checkpoint: None,
+            text_encoder: None,
+            init_image_ref: None,
+            control_package_ref: None,
         }
     }
 
@@ -6237,6 +7204,77 @@ also bad, not a number
             "config should not contain literal {{custom_checkpoint_path}}"
         );
     }
+    /// dispatch com text_encoder + custom (treino flux-2) → arquivos staged e
+    /// `{text_encoder_path}`/`{custom_checkpoint_path}` substituídos.
+    #[tokio::test]
+    async fn staging_text_encoder_and_custom_train() {
+        let tmp = tempfile::tempdir().unwrap();
+        let weights_bytes = b"fake encoder data";
+        let weights_md5 = compute_file_md5_bytes(weights_bytes);
+        let s3 = Arc::new(FakeS3WithWeights::new(weights_bytes.to_vec()));
+        let zip_path = tmp.path().join("pkg.zip");
+        std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+        let mut dispatch = make_dispatch_with_valid_md5("job-enc-001", "diffusion", &zip_path);
+        dispatch.mode = "train".to_string();
+        dispatch.config_yaml = Some(
+            "model: flux-2-klein-4b\ncustom_checkpoint_path: {custom_checkpoint_path}\ntext_encoder_path: {text_encoder_path}\noutput_path: {output_path}".to_string(),
+        );
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        dispatch.custom_checkpoint = Some(WeightRef {
+            s3_key: "models/checkpoint/xyz/custom.safetensors".to_string(),
+            md5: weights_md5.clone(),
+        });
+        dispatch.text_encoder = Some(WeightRef {
+            s3_key: "models/diffusion/enc/text_encoder.safetensors".to_string(),
+            md5: weights_md5.clone(),
+        });
+
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+        let outputs = tmp.path().join("outputs/job-enc-001");
+        std::fs::create_dir_all(&outputs).unwrap();
+
+        let result = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+            None,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "staging encoder should succeed: {:?}",
+            result.err()
+        );
+
+        let weights_dir = tmp.path().join("outputs/job-enc-001/weights");
+        assert!(
+            weights_dir.join("custom.safetensors").exists(),
+            "custom staged"
+        );
+        assert!(
+            weights_dir.join("text_encoder.safetensors").exists(),
+            "encoder staged"
+        );
+
+        let config_content = std::fs::read_to_string(outputs.join("config.yaml")).unwrap();
+        assert!(
+            config_content.contains("/outputs/job-enc-001/weights/custom.safetensors"),
+            "custom replaced: {config_content}"
+        );
+        assert!(
+            config_content.contains("/outputs/job-enc-001/weights/text_encoder.safetensors"),
+            "encoder replaced: {config_content}"
+        );
+        assert!(!config_content.contains("{custom_checkpoint_path}"));
+        assert!(!config_content.contains("{text_encoder_path}"));
+    }
 
     // -- G.4 test 9: preempção --
     /// daemon idle + job treino → kill chamado antes do dispatch de treino.
@@ -6458,6 +7496,255 @@ also bad, not a number
         assert!(
             !m.is_training_metric(),
             "sanitized NaN-loss line is not a training metric"
+        );
+    }
+
+    // -- telemetry tail (daemon path): tail_jsonl_lines + telemetry_report_for_line --
+    #[test]
+    fn tail_jsonl_lines_incremental_skips_malformed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("telemetry.jsonl");
+        std::fs::write(
+            &path,
+            "{\"phase\":\"loading_model\",\"progress\":0.1}\nnot-json\n{\"progress\":0.5}\n",
+        )
+        .unwrap();
+        let (parsed, offset) = tail_jsonl_lines(&path, 0);
+        assert_eq!(offset, 3, "offset avança inclusive sobre linha malformada");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].phase.as_deref(), Some("loading_model"));
+        // Sem mais linhas novas → vazio, offset estável.
+        let (parsed2, offset2) = tail_jsonl_lines(&path, offset);
+        assert!(parsed2.is_empty());
+        assert_eq!(offset2, offset);
+        // Append incremental: só a linha nova é retornada.
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(f, "{{\"progress\":0.9}}").unwrap();
+        let (parsed3, offset3) = tail_jsonl_lines(&path, offset2);
+        assert_eq!(parsed3.len(), 1);
+        assert_eq!(offset3, offset2 + 1);
+    }
+
+    #[test]
+    fn tail_jsonl_lines_missing_file_keeps_offset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("telemetry.jsonl");
+        let (parsed, offset) = tail_jsonl_lines(&path, 7);
+        assert!(parsed.is_empty());
+        assert_eq!(offset, 7, "arquivo ausente não reseta o offset");
+    }
+
+    #[test]
+    fn telemetry_report_for_line_matches_oneshot_format() {
+        // Progress explícito honrado; evento de status → metrics None, phase/message promovidas.
+        let m =
+            parse_metrics_line(r#"{"phase":"denoising","message":"Etapa 3/20","progress":0.15}"#)
+                .unwrap();
+        let body = telemetry_report_for_line(&m, 100);
+        assert_eq!(body.status, "running");
+        assert!((body.progress.unwrap() - 0.15).abs() < 1e-9);
+        assert_eq!(body.metrics, None);
+        assert_eq!(body.phase.as_deref(), Some("denoising"));
+        assert_eq!(body.message.as_deref(), Some("Etapa 3/20"));
+        // Métrica de treino → metrics Some + phase junto.
+        let t = parse_metrics_line(r#"{"epoch":3,"loss":0.5,"phase":"training"}"#).unwrap();
+        let t_body = telemetry_report_for_line(&t, 100);
+        assert!(t_body.metrics.is_some());
+        assert_eq!(t_body.phase.as_deref(), Some("training"));
+        assert!((t_body.progress.unwrap() - 0.03).abs() < 1e-9);
+    }
+
+    /// Regressão: eventos de telemetry.jsonl escritos durante o generate do
+    /// daemon chegam como reports de progresso (antes: 0.0 até done).
+    ///
+    /// O FakeDaemonClient escreve linhas de telemetria no `telemetry_path`
+    /// recebido ANTES de retornar Ok — o tail do path daemon deve reportá-las
+    /// como "running" com progress/phase, além do "done" final.
+    #[tokio::test]
+    async fn daemon_path_emite_progresso_de_telemetry_jsonl() {
+        use std::io::Write;
+        struct TelemetryWritingClient;
+        #[async_trait]
+        impl DaemonClient for TelemetryWritingClient {
+            async fn health(&self) -> Option<HealthResponse> {
+                Some(HealthResponse {
+                    ok: true,
+                    loaded_spec: None,
+                    busy: false,
+                    _extra: Default::default(),
+                })
+            }
+            async fn generate(&self, body: &GenerateBody) -> Result<(), String> {
+                let path = std::path::PathBuf::from(&body.telemetry_path);
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let mut f = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                    .unwrap();
+                // Dá tempo ao tail (500ms) de observar o arquivo antes do 200.
+                for (phase, progress) in [("loading_model", 0.1), ("denoising", 0.5)] {
+                    writeln!(f, "{{\"phase\":\"{phase}\",\"progress\":{progress}}}").unwrap();
+                    f.flush().unwrap();
+                    tokio::time::sleep(Duration::from_millis(700)).await;
+                }
+                Ok(())
+            }
+            async fn shutdown(&self) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        struct NoopLauncher;
+        #[async_trait]
+        impl DaemonLauncher for NoopLauncher {
+            async fn start(&self) -> Result<String, String> {
+                Ok("http://localhost:8766".to_string())
+            }
+            async fn kill(&self) -> Result<(), String> {
+                Ok(())
+            }
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let s3 = Arc::new(FakeS3::new());
+        let mut dispatch = make_dispatch("job-daemon-telemetry-001", "diffusion");
+        dispatch.mode = "generate".to_string();
+        dispatch.package_ref = None;
+        dispatch.config_yaml =
+            Some("base_model: flux-2-klein-4b\noutput_path: {output_path}".to_string());
+        dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+        let report = Arc::new(FakeReport::new());
+        let executor = Arc::new(FakeTrainerExecutor::new());
+        let active_jobs = new_active_jobs();
+
+        let client = Arc::new(TelemetryWritingClient);
+        let launcher = Arc::new(NoopLauncher);
+        let daemon_state = Arc::new(DaemonState::new(
+            "hephaestus/trainer-difusao:local",
+            8766,
+            600,
+            client as Arc<dyn DaemonClient>,
+            launcher as Arc<dyn DaemonLauncher>,
+        ));
+        daemon_state.set_running(true, Some("http://localhost:8766".to_string()));
+
+        let mut output_files = HashMap::new();
+        output_files.insert("generated_0001.png".to_string(), b"daemon png".to_vec());
+        create_fake_outputs(tmp.path(), "job-daemon-telemetry-001", &output_files);
+
+        let result = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+            Some(&daemon_state),
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "daemon path should succeed: {:?}",
+            result.err()
+        );
+
+        let reports = report.reports.lock().unwrap().clone();
+        let running: Vec<&ReportBody> = reports.iter().filter(|r| r.status == "running").collect();
+        // running inicial (0.0) + ≥1 do tail com progress > 0 e phase.
+        assert!(
+            running.len() >= 2,
+            "tail deve emitir progresso além do running inicial: {running:?}"
+        );
+        assert!(
+            running.iter().any(|r| r.phase.as_deref() == Some("denoising")
+                && r.progress.unwrap_or(0.0) > 0.0),
+            "tail deve reportar phase/progress de telemetry.jsonl: {running:?}"
+        );
+        assert!(
+            reports.iter().any(|r| r.status == "done"),
+            "done final preservado"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stage_cached_weight_miss_then_hit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        let dest1 = tmp.path().join("job1/weights/text_encoder.safetensors");
+        let dest2 = tmp.path().join("job2/weights/text_encoder.safetensors");
+        tokio::fs::create_dir_all(dest1.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(dest2.parent().unwrap())
+            .await
+            .unwrap();
+
+        let weights_bytes = b"my custom text encoder weights in safetensors format";
+        let expected_md5 = compute_file_md5_bytes(weights_bytes);
+        let s3: Arc<dyn S3Port> = Arc::new(FakeS3WithWeights::new(weights_bytes.to_vec()));
+
+        // 1ª execução: cache miss -> baixa do S3
+        let res1 = stage_cached_weight(
+            &s3,
+            &cache_dir,
+            &dest1,
+            "models/weights/enc.safetensors",
+            &expected_md5,
+        )
+        .await;
+        assert!(res1.is_ok(), "primeira chamada deve ter sucesso");
+        assert!(dest1.is_file(), "dest1 deve existir");
+        assert_eq!(std::fs::read(&dest1).unwrap(), weights_bytes);
+
+        let cached_file = cache_dir.join(format!("{expected_md5}.safetensors"));
+        assert!(cached_file.is_file(), "arquivo no cache deve existir");
+
+        // 2ª execução: cache hit -> reusa sem baixar novamente do S3
+        let res2 = stage_cached_weight(
+            &s3,
+            &cache_dir,
+            &dest2,
+            "models/weights/enc.safetensors",
+            &expected_md5,
+        )
+        .await;
+        assert!(res2.is_ok(), "segunda chamada (cache hit) deve ter sucesso");
+        assert!(dest2.is_file(), "dest2 deve existir");
+        assert_eq!(std::fs::read(&dest2).unwrap(), weights_bytes);
+    }
+
+    #[tokio::test]
+    async fn test_stage_cached_weight_md5_mismatch_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        let dest = tmp.path().join("job1/weights/bad.safetensors");
+        tokio::fs::create_dir_all(dest.parent().unwrap())
+            .await
+            .unwrap();
+
+        let weights_bytes = b"real data";
+        let wrong_md5 = "00000000000000000000000000000000";
+        let s3: Arc<dyn S3Port> = Arc::new(FakeS3WithWeights::new(weights_bytes.to_vec()));
+
+        let res = stage_cached_weight(
+            &s3,
+            &cache_dir,
+            &dest,
+            "models/weights/enc.safetensors",
+            wrong_md5,
+        )
+        .await;
+        assert!(matches!(res, Err(PipelineError::Md5Mismatch { .. })));
+        assert!(
+            !dest.exists(),
+            "dest não deve ser criado em caso de mismatch"
         );
     }
 }

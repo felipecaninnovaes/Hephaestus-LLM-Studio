@@ -260,16 +260,23 @@ pub struct PackageBuildResult {
 /// Retorna `Ok(PackageBuildResult)` com todos os dados que o chamador
 /// precisa (rota ou job submission). `Err(Response)` = erro HTTP pronto.
 ///
+/// `filter_image_ids`: restringe às imagens listadas (job submission).
+/// `fingerprint`: dedup/idempotência do worker em background (P4b/ADR-0025) —
+/// gravado como chave de topo `fingerprint` no `manifest_json` (JSONB em
+/// `dataset_versions`) e no manifest de transporte (`manifest.json`).
+/// `None` = sem impressão digital (rota síncrona).
+///
 /// Refactor do F4.1: a rota `POST /:id/package` e o job submission
 /// compartilham esta função (ADR-0007 D7).
 pub async fn build_package(state: &AppState, ds_id: Uuid) -> Result<PackageBuildResult, Response> {
-    build_package_filtered(state, ds_id, None).await
+    build_package_filtered(state, ds_id, None, None).await
 }
 
 pub async fn build_package_filtered(
     state: &AppState,
     ds_id: Uuid,
     filter_image_ids: Option<&[Uuid]>,
+    fingerprint: Option<&str>,
 ) -> Result<PackageBuildResult, Response> {
     // 1. Dataset existe?
     let ds: Option<(Uuid, String, String, String, String)> = match sqlx::query_as(
@@ -280,7 +287,10 @@ pub async fn build_package_filtered(
     .await
     {
         Ok(r) => r,
-        Err(_) => return Err(internal()),
+        Err(e) => {
+            tracing::error!("package: query datasets falhou: {e}");
+            return Err(internal());
+        }
     };
     let (_ds_id, slug, _title, category, _format) = match ds {
         Some(r) => r,
@@ -296,7 +306,10 @@ pub async fn build_package_filtered(
     .await
     {
         Ok(r) => r,
-        Err(_) => return Err(internal()),
+        Err(e) => {
+            tracing::error!("package: query classes falhou: {e}");
+            return Err(internal());
+        }
     };
 
     // 3. Imagens ATIVAS com object_key (lixeira fora).
@@ -314,7 +327,10 @@ pub async fn build_package_filtered(
         .await
         {
             Ok(r) => r,
-            Err(_) => return Err(internal()),
+            Err(e) => {
+                tracing::error!("package: query images (filtrada) falhou: {e}");
+                return Err(internal());
+            }
         }
     } else {
         match sqlx::query_as(
@@ -328,7 +344,10 @@ pub async fn build_package_filtered(
         .await
         {
             Ok(r) => r,
-            Err(_) => return Err(internal()),
+            Err(e) => {
+                tracing::error!("package: query images falhou: {e}");
+                return Err(internal());
+            }
         }
     };
 
@@ -354,7 +373,10 @@ pub async fn build_package_filtered(
     .await
     {
         Ok(r) => r,
-        Err(_) => return Err(internal()),
+        Err(e) => {
+            tracing::error!("package: query boxes falhou: {e}");
+            return Err(internal());
+        }
     };
 
     // 5. Monta snapshot manifest.
@@ -413,45 +435,52 @@ pub async fn build_package_filtered(
     };
 
     // 6. Gera version_id e manifest_json (usados nos PUTs; INSERT fica no passo 9 abaixo).
+    // `fingerprint` (P4b/ADR-0025) circula como chave de topo do JSONB.
     let version_id = Uuid::new_v4();
-    let manifest_json = serde_json::to_value(&snapshot).unwrap_or(serde_json::Value::Null);
+    let manifest_json = snapshot_json_with_fingerprint(&snapshot, fingerprint);
 
     // 7. Materializa YOLO em tempdir + baixa imagens do storage + gera zip.
     let tmp = match tempfile::TempDir::new() {
         Ok(d) => d,
-        Err(_) => return Err(internal()),
+        Err(e) => {
+            tracing::error!("package: TempDir::new falhou: {e}");
+            return Err(internal());
+        }
     };
     let export_manifest = snapshot_to_export_manifest(&snapshot);
     if materialize_yolo_tree(tmp.path(), &export_manifest)
         .await
         .is_err()
     {
+        tracing::error!("package: materialize_yolo_tree falhou");
         return Err(internal());
     }
     // Baixa binários das imagens do storage para o tempdir (fail-closed: 503 se blob ausente).
+    // O erro real já foi registrado dentro de `materialize_images_from_storage`.
     if let Err(resp) = materialize_images_from_storage(state, tmp.path(), &image_rows).await {
         return Err(resp);
     }
     let (zip_path, file_entries) = match generate_package_zip(tmp.path(), &export_manifest).await {
         Ok(p) => p,
-        Err(resp) => return Err(resp),
+        Err(resp) => {
+            tracing::error!("package: generate_package_zip falhou");
+            return Err(resp);
+        }
     };
 
-    // 8. Calcula md5 e bytes do zip.
-    let zip_bytes = match tokio::fs::read(&zip_path).await {
-        Ok(b) => b,
-        Err(_) => return Err(internal()),
-    };
-    let zip_len = zip_bytes.len() as i64;
-    let zip_md5 = {
-        use md5::Digest;
-        let hash = md5::Md5::digest(&zip_bytes);
-        hex::encode(hash)
+    // 8. md5 + bytes do zip em streaming (P4b: pico O(1) — nunca o zip inteiro em RAM).
+    let (zip_len, zip_md5) = match md5_of_file(&zip_path).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("package: md5 streaming do zip falhou: {e}");
+            return Err(internal());
+        }
     };
 
     // 9–10. PUT zip, PUT manifest, INSERT — com compensação best-effort.
     let zip_key = format!("packages/{version_id}/dataset.zip");
-    if state.storage.put(&zip_key, &zip_path).await.is_err() {
+    if let Err(e) = state.storage.put(&zip_key, &zip_path).await {
+        tracing::error!("package: PUT {zip_key} falhou: {e}");
         let _ = state
             .storage
             .delete_prefix(&format!("packages/{version_id}/"))
@@ -479,6 +508,7 @@ pub async fn build_package_filtered(
         "slug": slug,
         "category": snapshot.dataset.category,
         "engine": snapshot.dataset.engine,
+        "fingerprint": fingerprint,
         "files": files_json,
         "md5_zip": zip_md5,
         "bytes": zip_len,
@@ -487,25 +517,21 @@ pub async fn build_package_filtered(
     });
     let manifest_key = format!("packages/{version_id}/manifest.json");
     let manifest_path = tmp.path().join("manifest.json");
-    if tokio::fs::write(
+    if let Err(e) = tokio::fs::write(
         &manifest_path,
         serde_json::to_string_pretty(&transport_manifest).unwrap_or_else(|_| "{}".to_string()),
     )
     .await
-    .is_err()
     {
+        tracing::error!("package: write manifest.json local falhou: {e}");
         let _ = state
             .storage
             .delete_prefix(&format!("packages/{version_id}/"))
             .await;
         return Err(internal());
     }
-    if state
-        .storage
-        .put(&manifest_key, &manifest_path)
-        .await
-        .is_err()
-    {
+    if let Err(e) = state.storage.put(&manifest_key, &manifest_path).await {
+        tracing::error!("package: PUT {manifest_key} falhou: {e}");
         let _ = state
             .storage
             .delete_prefix(&format!("packages/{version_id}/"))
@@ -518,15 +544,15 @@ pub async fn build_package_filtered(
     }
 
     // INSERT em dataset_versions — só após PUTs bem-sucedidos (doutrina: objeto→linha).
-    let inserted =
+    let insert_res =
         sqlx::query("INSERT INTO dataset_versions (id, dataset_id, manifest) VALUES ($1, $2, $3)")
             .bind(version_id)
             .bind(ds_id)
             .bind(&manifest_json)
             .execute(&state.pool)
-            .await
-            .is_ok();
-    if !inserted {
+            .await;
+    if let Err(e) = insert_res {
+        tracing::error!("package: INSERT dataset_versions {version_id} falhou: {e}");
         let _ = state
             .storage
             .delete_prefix(&format!("packages/{version_id}/"))
@@ -568,7 +594,10 @@ pub async fn build_package_diffusion(
     .await
     {
         Ok(r) => r,
-        Err(_) => return Err(internal()),
+        Err(e) => {
+            tracing::error!("package diffusion: query datasets falhou: {e}");
+            return Err(internal());
+        }
     };
     let (_ds_id, slug, _title, _category, _format) = match ds {
         Some(r) => r,
@@ -585,7 +614,10 @@ pub async fn build_package_diffusion(
     .await
     {
         Ok(r) => r,
-        Err(_) => return Err(internal()),
+        Err(e) => {
+            tracing::error!("package diffusion: query images falhou: {e}");
+            return Err(internal());
+        }
     };
 
     if image_rows.is_empty() {
@@ -605,7 +637,10 @@ pub async fn build_package_diffusion(
             .await
         {
             Ok(r) => r,
-            Err(_) => return Err(internal()),
+            Err(e) => {
+                tracing::error!("package diffusion: query captions falhou: {e}");
+                return Err(internal());
+            }
         };
     let captions_count = caption_rows.len();
     let captions_by_img: HashMap<Uuid, String> = caption_rows.into_iter().collect();
@@ -613,12 +648,16 @@ pub async fn build_package_diffusion(
     // 4. Tempdir para materializar imagens e textos.
     let tmp = match tempfile::TempDir::new() {
         Ok(d) => d,
-        Err(_) => return Err(internal()),
+        Err(e) => {
+            tracing::error!("package diffusion: TempDir::new falhou: {e}");
+            return Err(internal());
+        }
     };
     let images_dir = tmp.path().join("images");
-    tokio::fs::create_dir_all(&images_dir)
-        .await
-        .map_err(|_| internal())?;
+    if let Err(e) = tokio::fs::create_dir_all(&images_dir).await {
+        tracing::error!("package diffusion: create_dir images falhou: {e}");
+        return Err(internal());
+    }
 
     // Baixa binários das imagens para tmp/images/<filename>
     if let Err(resp) = materialize_images_from_storage(state, tmp.path(), &image_rows).await {
@@ -650,7 +689,8 @@ pub async fn build_package_diffusion(
             (None, true) => String::new(),
         };
 
-        if tokio::fs::write(&txt_path, &final_caption).await.is_err() {
+        if let Err(e) = tokio::fs::write(&txt_path, &final_caption).await {
+            tracing::error!("package diffusion: write legenda {txt_filename} falhou: {e}");
             return Err(internal());
         }
 
@@ -669,7 +709,8 @@ pub async fn build_package_diffusion(
         trigger_word.unwrap_or("")
     );
     let yaml_path = tmp.path().join("dataset.yaml");
-    if tokio::fs::write(&yaml_path, &dataset_yaml).await.is_err() {
+    if let Err(e) = tokio::fs::write(&yaml_path, &dataset_yaml).await {
+        tracing::error!("package diffusion: write dataset.yaml falhou: {e}");
         return Err(internal());
     }
     entries.push(ZipEntry {
@@ -686,7 +727,7 @@ pub async fn build_package_diffusion(
         .map(|e| (e.arcname.clone(), e.fs_path.clone(), e.is_text))
         .collect();
 
-    let file_entries = tokio::task::spawn_blocking(move || {
+    let file_entries = match tokio::task::spawn_blocking(move || {
         use md5::Digest;
         write_zip(&entries, &zip_path_clone)?;
         let mut file_entries: Vec<ZipFileEntry> = Vec::new();
@@ -727,25 +768,32 @@ pub async fn build_package_diffusion(
         Ok::<_, std::io::Error>(file_entries)
     })
     .await
-    .map_err(|_| internal())?
-    .map_err(|_| internal())?;
-
-    // 7. Calcula md5 e bytes do zip
-    let zip_bytes = match tokio::fs::read(&zip_path).await {
-        Ok(b) => b,
-        Err(_) => return Err(internal()),
+    {
+        Ok(Ok(fe)) => fe,
+        Ok(Err(e)) => {
+            tracing::error!("package diffusion: write_zip/md5 entradas falhou: {e}");
+            return Err(internal());
+        }
+        Err(e) => {
+            tracing::error!("package diffusion: spawn_blocking do zip falhou: {e}");
+            return Err(internal());
+        }
     };
-    let zip_len = zip_bytes.len() as i64;
-    let zip_md5 = {
-        use md5::Digest;
-        let hash = md5::Md5::digest(&zip_bytes);
-        hex::encode(hash)
+
+    // 7. md5 + bytes do zip em streaming (P4b: pico O(1) — nunca o zip inteiro em RAM).
+    let (zip_len, zip_md5) = match md5_of_file(&zip_path).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("package diffusion: md5 streaming do zip falhou: {e}");
+            return Err(internal());
+        }
     };
 
     // 8. PUT zip no storage
     let version_id = Uuid::new_v4();
     let zip_key = format!("packages/{version_id}/dataset.zip");
-    if state.storage.put(&zip_key, &zip_path).await.is_err() {
+    if let Err(e) = state.storage.put(&zip_key, &zip_path).await {
+        tracing::error!("package diffusion: PUT {zip_key} falhou: {e}");
         let _ = state
             .storage
             .delete_prefix(&format!("packages/{version_id}/"))
@@ -777,7 +825,8 @@ pub async fn build_package_diffusion(
     .execute(&state.pool)
     .await;
 
-    if insert_res.is_err() {
+    if let Err(e) = insert_res {
+        tracing::error!("package diffusion: INSERT dataset_versions {version_id} falhou: {e}");
         let _ = state
             .storage
             .delete_prefix(&format!("packages/{version_id}/"))
@@ -850,7 +899,7 @@ async fn generate_package_zip(
         .iter()
         .map(|e| (e.arcname.clone(), e.fs_path.clone(), e.is_text))
         .collect();
-    let file_entries = tokio::task::spawn_blocking(move || {
+    let file_entries = match tokio::task::spawn_blocking(move || {
         use md5::Digest;
         write_zip(&entries, &zip_path_clone)?;
         let mut file_entries: Vec<ZipFileEntry> = Vec::new();
@@ -892,45 +941,134 @@ async fn generate_package_zip(
         Ok::<_, std::io::Error>(file_entries)
     })
     .await
-    .map_err(|_| internal())?
-    .map_err(|_| internal())?;
+    {
+        Ok(Ok(fe)) => fe,
+        Ok(Err(e)) => {
+            tracing::error!("package: write_zip/md5 entradas falhou: {e}");
+            return Err(internal());
+        }
+        Err(e) => {
+            tracing::error!("package: spawn_blocking do zip falhou: {e}");
+            return Err(internal());
+        }
+    };
     Ok((zip_path, file_entries))
+}
+
+// ---------------------------------------------------------------------------
+// Helpers P4b (ADR-0025): concorrência, fingerprint, md5 streaming, 503 c/ progresso.
+// ---------------------------------------------------------------------------
+
+/// Concorrência do download paralelo (P4b): env `PACKAGE_FETCH_CONCURRENCY`,
+/// default 8. Valores inválidos/zero caem no default (nunca 0 — `buffer_unordered(0)`
+/// travaria o stream).
+fn fetch_concurrency() -> usize {
+    std::env::var("PACKAGE_FETCH_CONCURRENCY")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(8)
+}
+
+/// Serializa o snapshot com `fingerprint` como chave de topo (P4b/ADR-0025).
+/// `None` ⇒ chave presente com `null` (coluna JSONB sempre com a mesma forma,
+/// `manifest->>'fingerprint'` nunca dá erro de caminho ausente no SQL).
+fn snapshot_json_with_fingerprint(
+    snapshot: &PackageManifest,
+    fingerprint: Option<&str>,
+) -> serde_json::Value {
+    let mut v = serde_json::to_value(snapshot).unwrap_or(serde_json::Value::Null);
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert(
+            "fingerprint".to_string(),
+            fingerprint
+                .map(serde_json::Value::from)
+                .unwrap_or(serde_json::Value::Null),
+        );
+    }
+    v
+}
+
+/// MD5 + tamanho de um arquivo em streaming, chunks de 1 MiB (P4b).
+/// Pico de RAM O(1) no tamanho do arquivo; o hash é o md5 do conteúdo
+/// integral — idêntico a `md5::Md5::digest(&bytes)` do buffer em RAM.
+async fn md5_of_file(path: &Path) -> Result<(i64, String), std::io::Error> {
+    use md5::Digest as _;
+    use tokio::io::AsyncReadExt as _;
+    let len = tokio::fs::metadata(path).await?.len() as i64;
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut hasher = md5::Md5::new();
+    let mut buf = vec![0u8; 1024 * 1024];
+    loop {
+        let n = file.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        md5::Digest::update(&mut hasher, &buf[..n]);
+    }
+    Ok((len, hex::encode(md5::Digest::finalize(hasher))))
+}
+
+/// 503 `storage_unavailable` com progresso aproximado `i/N` na mensagem
+/// (P4b: fail-fast do download paralelo). Mesmo status + `code` do `err`
+/// estático — `crate::error::err` exige `message: &'static str` (D6), então
+/// o envelope `{code, message}` é remontado aqui para carregar o contexto.
+/// Forma do corpo idêntica à de `err`.
+fn storage_unavailable_with_progress(idx: usize, total: usize) -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(serde_json::json!({
+            "code": "storage_unavailable",
+            "message": format!("{MSG_STORAGE_UNAVAILABLE} (imagem {idx}/{total})"),
+        })),
+    )
+        .into_response()
 }
 
 // ---------------------------------------------------------------------------
 // Download de imagens do storage para o tempdir (ADR-0007 D1: zip autossuficiente).
 // ---------------------------------------------------------------------------
 
-/// Baixa imagens do storage para `tmp/images/<filename>`.
+/// Baixa imagens do storage para `tmp/images/<filename>` em paralelo
+/// (P4b/ADR-0025: `buffer_unordered(PACKAGE_FETCH_CONCURRENCY||8)`).
 /// Diferente do export (3e): fail-closed em blob ausente (503) — o package
 /// precisa do conjunto completo para treinar; o export 3e faz skip+eprintln em órfãs.
+///
+/// Fail-fast: o primeiro erro aborta o stream (futuros pendentes são
+/// descartados) e retorna o MESMO 503 `storage_unavailable`, com `i/N`
+/// aproximado na mensagem. A ordem de conclusão NÃO afeta o zip: cada
+/// download escreve em `images/<filename>` determinístico e o zip é gerado
+/// depois iterando `manifest.images` (ordem created_at/id do banco).
 async fn materialize_images_from_storage(
     state: &AppState,
     tmp: &Path,
     image_rows: &[(Uuid, String, String, i32, i32, String)],
 ) -> Result<(), Response> {
+    use futures_util::{StreamExt as _, TryStreamExt as _};
     let images_dir = tmp.join("images");
-    for (_id, filename, object_key, _width, _height, _split) in image_rows {
-        let dest = images_dir.join(filename);
-        if let Err(e) = state.storage.get_to_file(object_key, &dest).await {
-            match e {
-                crate::storage::StorageError::NotFound => {
-                    return Err(err(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "storage_unavailable",
-                        MSG_STORAGE_UNAVAILABLE,
-                    ));
-                }
-                crate::storage::StorageError::Unavailable(_) => {
-                    return Err(err(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "storage_unavailable",
-                        MSG_STORAGE_UNAVAILABLE,
-                    ));
-                }
-            }
+    let total = image_rows.len();
+    let concurrency = fetch_concurrency();
+    // O stream possui (destino, chave) clonados — sem borrow do caller.
+    let jobs: Vec<(std::path::PathBuf, String)> = image_rows
+        .iter()
+        .map(|(_, filename, object_key, _, _, _)| (images_dir.join(filename), object_key.clone()))
+        .collect();
+    futures_util::stream::iter(jobs.into_iter().enumerate().map(|(i, (dest, key))| {
+        let storage = state.storage.clone();
+        async move {
+            storage
+                .get_to_file(&key, &dest)
+                .await
+                .map_err(|e| (i + 1, e))
         }
-    }
+    }))
+    .buffer_unordered(concurrency)
+    .try_for_each(|_| futures_util::future::ready(Ok::<(), _>(())))
+    .await
+    .map_err(|(idx, e)| {
+        tracing::error!("package: download {idx}/{total} falhou: {e}");
+        storage_unavailable_with_progress(idx, total)
+    })?;
     Ok(())
 }
 
@@ -1128,5 +1266,171 @@ mod tests {
         )
         .await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn fetch_concurrency_default_e_invalido() {
+        // P4b: default 8; zero/lixo caem no default (nunca 0 — travaria o stream).
+        // Único teste que toca este env (sem paralelo concorrente no var).
+        let prev = std::env::var("PACKAGE_FETCH_CONCURRENCY").ok();
+        std::env::remove_var("PACKAGE_FETCH_CONCURRENCY");
+        assert_eq!(fetch_concurrency(), 8);
+        std::env::set_var("PACKAGE_FETCH_CONCURRENCY", "0");
+        assert_eq!(fetch_concurrency(), 8);
+        std::env::set_var("PACKAGE_FETCH_CONCURRENCY", "lixo");
+        assert_eq!(fetch_concurrency(), 8);
+        std::env::set_var("PACKAGE_FETCH_CONCURRENCY", "3");
+        assert_eq!(fetch_concurrency(), 3);
+        match prev {
+            Some(v) => std::env::set_var("PACKAGE_FETCH_CONCURRENCY", v),
+            None => std::env::remove_var("PACKAGE_FETCH_CONCURRENCY"),
+        }
+    }
+
+    #[test]
+    fn fingerprint_no_topo_do_manifest_json() {
+        // P4b: `fingerprint` circula como chave de topo do JSONB de dataset_versions.
+        let snap = PackageManifest {
+            dataset: SnapshotDataset {
+                id: Uuid::nil(),
+                slug: "pcb".to_string(),
+                category: "yolo".to_string(),
+                engine: "yolo".to_string(),
+            },
+            classes: vec![],
+            images: vec![],
+            counts: SnapshotCounts {
+                images: 0,
+                labeled: 0,
+                classes: 0,
+            },
+        };
+        let v = snapshot_json_with_fingerprint(&snap, Some("fp-abc-123"));
+        assert_eq!(v["fingerprint"], "fp-abc-123");
+        assert_eq!(v["dataset"]["slug"], "pcb");
+        assert!(v.get("dataset").is_some());
+        // None ⇒ chave presente com null (forma estável p/ `manifest->>'fingerprint'`).
+        let v_none = snapshot_json_with_fingerprint(&snap, None);
+        assert!(v_none["fingerprint"].is_null());
+        assert!(v_none["dataset"].is_object());
+    }
+
+    #[tokio::test]
+    async fn md5_streaming_igual_buffer() {
+        // P4b: md5 em chunks de 1 MiB == md5 do buffer integral.
+        // Fixture > 1 MiB para cruzar a fronteira do chunk.
+        use md5::Digest as _;
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("big.bin");
+        let mut data = Vec::with_capacity(2 * 1024 * 1024 + 123);
+        for i in 0..data.capacity() {
+            data.push((i % 251) as u8);
+        }
+        tokio::fs::write(&path, &data).await.expect("seed");
+        let (len, hex_stream) = md5_of_file(&path).await.expect("md5");
+        assert_eq!(len, data.len() as i64);
+        assert_eq!(hex_stream, hex::encode(md5::Md5::digest(&data)));
+    }
+
+    #[tokio::test]
+    async fn materialize_paralelo_fail_closed_com_mock() {
+        // P4b: blob ausente ⇒ fail-fast 503 `storage_unavailable` com `i/N`
+        // na mensagem; downloads usam MockStorage (sem rede/DB).
+        use http_body_util::BodyExt as _;
+        let mock = std::sync::Arc::new(crate::storage::MockStorage::new());
+        mock.put_bytes("k/a.jpg", vec![1, 2, 3]).await;
+        mock.put_bytes("k/b.jpg", vec![4, 5]).await;
+        // k/c.jpg ausente de propósito.
+        let pool = sqlx::PgPool::connect_lazy("postgres://n/n").expect("lazy");
+        let state = crate::state::AppState {
+            pool,
+            jwt_secret: [0x42; 32],
+            secure_cookie: false,
+            setup_required: false,
+            storage: mock,
+            storage_config: crate::storage::MockStorage::test_config(),
+            embedder: std::sync::Arc::new(crate::search::MockEmbedder::new()),
+            embedding_model: "ViT-B-32".to_string(),
+            manager: std::sync::Arc::new(crate::jobs::manager_client::MockManager::default()),
+            model_download_allowed_hosts: vec![],
+        };
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        tokio::fs::create_dir_all(tmp.path().join("images"))
+            .await
+            .expect("mkdir");
+        let rows = vec![
+            (
+                Uuid::new_v4(),
+                "a.jpg".to_string(),
+                "k/a.jpg".to_string(),
+                1,
+                1,
+                "train".to_string(),
+            ),
+            (
+                Uuid::new_v4(),
+                "b.jpg".to_string(),
+                "k/b.jpg".to_string(),
+                1,
+                1,
+                "train".to_string(),
+            ),
+            (
+                Uuid::new_v4(),
+                "c.jpg".to_string(),
+                "k/c.jpg".to_string(),
+                1,
+                1,
+                "train".to_string(),
+            ),
+        ];
+        let resp = materialize_images_from_storage(&state, tmp.path(), &rows)
+            .await
+            .expect_err("blob ausente = fail-closed");
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = resp.into_body().collect().await.expect("body").to_bytes();
+        let v: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(v["code"], "storage_unavailable");
+        let msg = v["message"].as_str().expect("message");
+        assert!(msg.contains("/3"), "mensagem inclui i/N, obtido: {msg}");
+    }
+
+    #[tokio::test]
+    async fn materialize_paralelo_tudo_presente_ok() {
+        // P4b: todos os blobs presentes ⇒ Ok e arquivos no disco.
+        let mock = std::sync::Arc::new(crate::storage::MockStorage::new());
+        mock.put_bytes("k/a.jpg", vec![7, 8]).await;
+        let pool = sqlx::PgPool::connect_lazy("postgres://n/n").expect("lazy");
+        let state = crate::state::AppState {
+            pool,
+            jwt_secret: [0x42; 32],
+            secure_cookie: false,
+            setup_required: false,
+            storage: mock,
+            storage_config: crate::storage::MockStorage::test_config(),
+            embedder: std::sync::Arc::new(crate::search::MockEmbedder::new()),
+            embedding_model: "ViT-B-32".to_string(),
+            manager: std::sync::Arc::new(crate::jobs::manager_client::MockManager::default()),
+            model_download_allowed_hosts: vec![],
+        };
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        tokio::fs::create_dir_all(tmp.path().join("images"))
+            .await
+            .expect("mkdir");
+        let rows = vec![(
+            Uuid::new_v4(),
+            "a.jpg".to_string(),
+            "k/a.jpg".to_string(),
+            1,
+            1,
+            "train".to_string(),
+        )];
+        materialize_images_from_storage(&state, tmp.path(), &rows)
+            .await
+            .expect("tudo presente = Ok");
+        assert_eq!(
+            std::fs::read(tmp.path().join("images").join("a.jpg")).expect("read"),
+            vec![7, 8]
+        );
     }
 }

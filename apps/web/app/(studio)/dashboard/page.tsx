@@ -116,7 +116,7 @@ export default function DashboardPage() {
   const labeledPct =
     totalImages > 0 ? Math.round((totalLabeled / totalImages) * 100) : 100;
 
-  const activeJobsCount = telemetry?.jobsActive ?? jobs.filter((j) => j.status === "running").length;
+  const activeJobsCount = telemetry?.jobsActive ?? jobs.filter((j) => j.status !== "done" && j.status !== "failed" && j.status !== "cancelled").length;
   const completedJobsCount = jobs.filter((j) => j.status === "done").length;
 
   const fmt = (v: number | null | undefined, decimals = 1, suffix = ""): string =>

@@ -88,8 +88,15 @@ def cmd_train(args: list[str]) -> None:
 
     raw_model = cfg.get("model", "flux")
     trainer = get_trainer(raw_model, is_mock=is_mock)
-    trainer.train(cfg, output)
-
+    try:
+        trainer.train(cfg, output)
+    except Exception as e:
+        is_oom = "OutOfMemoryError" in type(e).__name__ or "CUDA out of memory" in str(e)
+        code = "cuda_oom" if is_oom else "crash"
+        msg = f"CUDA OOM: {e}" if is_oom else f"Erro no treino: {e}"
+        _emit_metric(output / "metrics.jsonl", epoch=0, step=0, phase="error", message=msg)
+        print(f"ERROR: [{code}] {msg}", file=sys.stderr, flush=True)
+        sys.exit(1)
 
 def cmd_health() -> None:
     """Subcomando health: emite status JSON para verificação de liveness."""

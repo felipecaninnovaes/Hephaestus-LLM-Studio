@@ -142,7 +142,9 @@ export default function AutoTrackerModal({
         ...(selectedOrchestratorId ? { orchestratorId: selectedOrchestratorId } : {}),
       });
       showToast(
-        `AutoTracker iniciado (posição ${result.queuePosition ?? "—"} na fila).`,
+        result.status === "preparing"
+          ? "AutoTracker aceito — preparando pacote (empacotando dataset…). Acompanhe no Centro de Ações."
+          : `AutoTracker iniciado (posição ${result.queuePosition ?? "—"} na fila).`,
         "success",
       );
       onClose();

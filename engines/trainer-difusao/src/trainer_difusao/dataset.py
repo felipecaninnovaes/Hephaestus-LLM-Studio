@@ -59,11 +59,14 @@ class DiffusionDataset:
         resolution: int = 512,
         trigger_word: str = "",
         enable_bucket: bool = False,
+        empty_captions: bool = False,
     ):
+        """Inicializa o dataset (com ``empty_captions`` a legenda é sempre "" — controle/regularização)."""
         self.samples: list[tuple[Path, str]] = []
         self.resolution = resolution
         self.trigger_word = trigger_word.strip()
         self.enable_bucket = bool(enable_bucket)
+        self.empty_captions = bool(empty_captions)
         # Dimensões (w, h) efetivas de cada amostra: bucket resolvido ou quadrado.
         self.bucket_dims: list[tuple[int, int]] = []
         # bucket (w, h) -> índices das amostras naquele bucket.
@@ -78,6 +81,9 @@ class DiffusionDataset:
         if target_dir.exists():
             for p in sorted(target_dir.iterdir()):
                 if p.suffix.lower() in valid_exts:
+                    if self.empty_captions:
+                        self.samples.append((p, ""))
+                        continue
                     txt_path = p.with_suffix(".txt")
                     caption = ""
                     if txt_path.exists():

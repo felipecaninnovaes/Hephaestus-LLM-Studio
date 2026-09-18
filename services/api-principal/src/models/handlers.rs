@@ -63,7 +63,7 @@ pub struct DownloadRequest {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn queue_unavailable() -> Response {
+pub(crate) fn queue_unavailable() -> Response {
     err(
         StatusCode::SERVICE_UNAVAILABLE,
         "queue_unavailable",
@@ -71,7 +71,7 @@ fn queue_unavailable() -> Response {
     )
 }
 
-fn storage_unavailable() -> Response {
+pub(crate) fn storage_unavailable() -> Response {
     err(
         StatusCode::SERVICE_UNAVAILABLE,
         "storage_unavailable",
@@ -79,7 +79,7 @@ fn storage_unavailable() -> Response {
     )
 }
 
-fn invalid_request() -> Response {
+pub(crate) fn invalid_request() -> Response {
     err(
         StatusCode::BAD_REQUEST,
         "invalid_request",
@@ -93,7 +93,7 @@ fn is_too_large(err: &axum::extract::multipart::MultipartError) -> bool {
 }
 
 /// Compute md5 hex de um arquivo.
-async fn compute_md5(path: &std::path::Path) -> Result<String, String> {
+pub(crate) async fn compute_md5(path: &std::path::Path) -> Result<String, String> {
     use md5::Digest;
     use tokio::io::AsyncReadExt;
 
@@ -146,6 +146,199 @@ async fn resolve_and_check_private(hostname: &str) -> Result<(), Response> {
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Finalização compartilhada upload único × chunked
+// ---------------------------------------------------------------------------
+
+/// Entrada canônica de um binário de modelo pronto para S3+manager.
+pub(crate) struct FinalizeInput {
+    pub(crate) engine: String,
+    pub(crate) final_name: String,
+    pub(crate) kind_hint: Option<String>,
+    pub(crate) arch_hint: Option<String>,
+}
+
+/// Magic + sniff safetensors (diffusion) idênticos ao fluxo do upload único.
+/// Retorna `(resolved_kind, resolved_arch)` ou uma `Response` de erro pronta.
+async fn resolve_final_kind_arch(
+    file_path: &std::path::Path,
+    input: &FinalizeInput,
+) -> Result<(Option<String>, Option<String>), Response> {
+    use tokio::io::AsyncReadExt;
+
+    let mut head = [0u8; 16];
+    let mut n = 0usize;
+    match tokio::fs::File::open(file_path).await {
+        Ok(mut f) => {
+            while n < head.len() {
+                match f.read(&mut head[n..]).await {
+                    Ok(0) => break,
+                    Ok(k) => n += k,
+                    Err(_) => break,
+                }
+            }
+        }
+        Err(_) => return Err(invalid_request()),
+    };
+    if !validate::validate_magic(&head[..n], &input.final_name) {
+        return Err(invalid_request());
+    }
+
+    let mut resolved_kind: Option<String> = None;
+    let mut resolved_arch: Option<String> = None;
+    let lower_final = input.final_name.to_lowercase();
+    if lower_final.ends_with(".safetensors") && input.engine == "diffusion" {
+        let mut buf = vec![0u8; 8 + validate::SAFETENSORS_HEADER_MAX];
+        let mut m = 0usize;
+        match tokio::fs::File::open(file_path).await {
+            Ok(mut f) => {
+                while m < buf.len() {
+                    match f.read(&mut buf[m..]).await {
+                        Ok(0) => break,
+                        Ok(k) => m += k,
+                        Err(_) => break,
+                    }
+                }
+            }
+            Err(_) => return Err(invalid_request()),
+        }
+        let sniff_result = match validate::parse_safetensors_header(&buf[..m]) {
+            Ok(map) => validate::sniff_safetensors(&map),
+            Err(e) => Err(e),
+        };
+        match validate::resolve_kind_arch(
+            sniff_result,
+            input.kind_hint.as_deref(),
+            input.arch_hint.as_deref(),
+        ) {
+            Ok((kind, arch)) => {
+                resolved_kind = Some(kind);
+                resolved_arch = if arch.is_empty() { None } else { Some(arch) };
+            }
+            Err(msg) => return Err(err(StatusCode::BAD_REQUEST, "invalid_request", msg)),
+        }
+    } else if input.engine == "diffusion" {
+        if let (Some(k), Some(a)) = (&input.kind_hint, &input.arch_hint) {
+            if !validate::ALLOWED_KINDS.contains(&k.as_str())
+                || !validate::ALLOWED_ARCHS.contains(&a.as_str())
+            {
+                return Err(err(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "invalid kind or arch",
+                ));
+            }
+            resolved_kind = Some(k.clone());
+            resolved_arch = Some(a.clone());
+        }
+    }
+    Ok((resolved_kind, resolved_arch))
+}
+
+/// S3 PUT + POST /internal/models + presign + compensações delete (D1).
+/// Fluxo EXATO do upload único, reutilizado pelo complete chunked.
+pub(crate) async fn finalize_model_file(
+    state: &AppState,
+    file_path: &std::path::Path,
+    input: FinalizeInput,
+) -> Response {
+    let (resolved_kind, resolved_arch) = match resolve_final_kind_arch(file_path, &input).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+
+    let md5_hex = match compute_md5(file_path).await {
+        Ok(h) => h,
+        Err(_) => return invalid_request(),
+    };
+    let bytes = match tokio::fs::metadata(file_path).await {
+        Ok(m) => m.len() as i64,
+        Err(_) => return invalid_request(),
+    };
+
+    let model_id = uuid::Uuid::new_v4().to_string();
+    let s3_key = format!("models/{}/{}/{}", input.engine, model_id, input.final_name);
+
+    if let Err(e) = state.storage.put(&s3_key, file_path).await {
+        tracing::error!("finalize_model_file: S3 put failed: {e}");
+        return storage_unavailable();
+    }
+
+    let mut payload = serde_json::json!({
+        "id": model_id,
+        "engine": input.engine,
+        "name": input.final_name,
+        "model": null,
+        "source": "upload",
+        "s3_key": s3_key,
+        "hash": md5_hex,
+        "bytes": bytes,
+        "job_id": null,
+    });
+    if let Some(k) = &resolved_kind {
+        payload["kind"] = serde_json::json!(k);
+    }
+    if let Some(a) = &resolved_arch {
+        payload["arch"] = serde_json::json!(a);
+    }
+
+    match state.manager.create_model(&payload).await {
+        Ok(resp) => {
+            let url = match state.storage.presign_get(&s3_key).await {
+                Ok(u) => Some(u),
+                Err(_) => None,
+            };
+            (
+                StatusCode::CREATED,
+                Json(ModelResponse {
+                    id: resp.id,
+                    name: resp.name,
+                    engine: resp.engine,
+                    model: resp.model,
+                    source: resp.source,
+                    bytes: resp.bytes,
+                    md5: resp.md5,
+                    url,
+                    job_id: resp.job_id,
+                    created_at: resp.created_at,
+                    kind: resp.kind,
+                    arch: resp.arch,
+                }),
+            )
+                .into_response()
+        }
+        Err(ManagerError::Conflict) => {
+            let _ = state.storage.delete(&s3_key).await;
+            err(StatusCode::CONFLICT, "conflict", "model already exists")
+        }
+        Err(ManagerError::InvalidRequest(msg)) => {
+            let _ = state.storage.delete(&s3_key).await;
+            tracing::warn!("finalize_model_file: manager invalid_request: {msg}");
+            #[derive(serde::Serialize)]
+            struct ErrorBody {
+                code: &'static str,
+                message: String,
+            }
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorBody {
+                    code: "invalid_request",
+                    message: msg,
+                }),
+            )
+                .into_response()
+        }
+        Err(ManagerError::Unavailable(_)) => {
+            let _ = state.storage.delete(&s3_key).await;
+            queue_unavailable()
+        }
+        Err(_) => {
+            let _ = state.storage.delete(&s3_key).await;
+            queue_unavailable()
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -308,191 +501,18 @@ pub async fn upload_model(State(state): State<AppState>, mut multipart: Multipar
         return invalid_request();
     }
 
-    // Magic bytes check (lê até 16 bytes para cobrir PK\x03\x04 ou safetensors header u64 + '{').
-    let head = {
-        use tokio::io::AsyncReadExt;
-        let mut f = match tokio::fs::File::open(tmp_file.path()).await {
-            Ok(f) => f,
-            Err(_) => return invalid_request(),
-        };
-        let mut buf = [0u8; 16];
-        let mut n = 0usize;
-        while n < 16 {
-            match f.read(&mut buf[n..]).await {
-                Ok(0) => break,
-                Ok(k) => n += k,
-                Err(_) => break,
-            }
-        }
-        buf[..n].to_vec()
-    };
-
-    if !validate::validate_magic(&head, &final_name) {
-        return invalid_request();
-    }
-
-    // Sniff de safetensors para engine=diffusion (ADR-0023 D4).
-    let mut resolved_kind: Option<String> = None;
-    let mut resolved_arch: Option<String> = None;
-    let lower_final_name = final_name.to_lowercase();
-    if lower_final_name.ends_with(".safetensors") && engine == "diffusion" {
-        // Lê o header do safetensors: 8 bytes LE + JSON.
-        let header_data = {
-            use tokio::io::AsyncReadExt;
-            let mut f = match tokio::fs::File::open(tmp_file.path()).await {
-                Ok(f) => f,
-                Err(_) => return invalid_request(),
-            };
-            let mut buf = vec![0u8; 8 + validate::SAFETENSORS_HEADER_MAX];
-            let mut n = 0usize;
-            while n < buf.len() {
-                match f.read(&mut buf[n..]).await {
-                    Ok(0) => break,
-                    Ok(k) => n += k,
-                    Err(_) => break,
-                }
-            }
-            buf[..n].to_vec()
-        };
-
-        let sniff_result = match validate::parse_safetensors_header(&header_data) {
-            Ok(map) => validate::sniff_safetensors(&map),
-            Err(e) => Err(e),
-        };
-
-        match validate::resolve_kind_arch(sniff_result, kind_hint.as_deref(), arch_hint.as_deref())
-        {
-            Ok((kind, arch)) => {
-                resolved_kind = Some(kind);
-                // LoRA pode ter arch vazio → persistir como None (não Some("")).
-                resolved_arch = if arch.is_empty() { None } else { Some(arch) };
-            }
-            Err(msg) => {
-                return err(StatusCode::BAD_REQUEST, "invalid_request", msg);
-            }
-        }
-    } else if engine == "diffusion" {
-        // Para .pt com engine=diffusion, hints são aceitos diretamente.
-        if let (Some(k), Some(a)) = (&kind_hint, &arch_hint) {
-            if !validate::ALLOWED_KINDS.contains(&k.as_str())
-                || !validate::ALLOWED_ARCHS.contains(&a.as_str())
-            {
-                return err(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_request",
-                    "invalid kind or arch",
-                );
-            }
-            resolved_kind = Some(k.clone());
-            resolved_arch = Some(a.clone());
-        }
-    }
-
-    // md5 do arquivo.
-    let md5_hex = match compute_md5(tmp_file.path()).await {
-        Ok(h) => h,
-        Err(_) => return invalid_request(),
-    };
-
-    // Tamanho do arquivo.
-    let bytes = match tokio::fs::metadata(tmp_file.path()).await {
-        Ok(m) => m.len() as i64,
-        Err(_) => return invalid_request(),
-    };
-
-    // UUID gerado pelo principal.
-    let model_id = uuid::Uuid::new_v4().to_string();
-
-    // Chave S3: models/<engine>/<id>/<name>
-    let s3_key = format!("models/{}/{}/{}", validation.engine, model_id, final_name);
-
-    // PUT no S3.
-    if let Err(e) = state.storage.put(&s3_key, tmp_file.path()).await {
-        tracing::error!("upload_model: S3 put failed: {e}");
-        return storage_unavailable();
-    }
-
-    // POST /internal/models (chama o manager).
-    let mut payload = serde_json::json!({
-        "id": model_id,
-        "engine": validation.engine,
-        "name": final_name,
-        "model": null,
-        "source": "upload",
-        "s3_key": s3_key,
-        "hash": md5_hex,
-        "bytes": bytes,
-        "job_id": null,
-    });
-    // Adiciona kind+arch se sniff/hints resolveram (ADR-0023 D4).
-    if let Some(k) = &resolved_kind {
-        payload["kind"] = serde_json::json!(k);
-    }
-    if let Some(a) = &resolved_arch {
-        payload["arch"] = serde_json::json!(a);
-    }
-
-    match state.manager.create_model(&payload).await {
-        Ok(resp) => {
-            // Presign URL.
-            let url = match state.storage.presign_get(&s3_key).await {
-                Ok(u) => Some(u),
-                Err(_) => None,
-            };
-            (
-                StatusCode::CREATED,
-                Json(ModelResponse {
-                    id: resp.id,
-                    name: resp.name,
-                    engine: resp.engine,
-                    model: resp.model,
-                    source: resp.source,
-                    bytes: resp.bytes,
-                    md5: resp.md5,
-                    url,
-                    job_id: resp.job_id,
-                    created_at: resp.created_at,
-                    kind: resp.kind,
-                    arch: resp.arch,
-                }),
-            )
-                .into_response()
-        }
-        Err(ManagerError::Conflict) => {
-            // Compensação: delete do objeto S3 (D1).
-            let _ = state.storage.delete(&s3_key).await;
-            err(StatusCode::CONFLICT, "conflict", "model already exists")
-        }
-        Err(ManagerError::InvalidRequest(msg)) => {
-            // Compensação: delete do objeto S3 (D1).
-            let _ = state.storage.delete(&s3_key).await;
-            tracing::warn!("upload_model: manager invalid_request: {msg}");
-            // Propaga a mensagem específica do manager no envelope.
-            #[derive(serde::Serialize)]
-            struct ErrorBody {
-                code: &'static str,
-                message: String,
-            }
-            (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorBody {
-                    code: "invalid_request",
-                    message: msg,
-                }),
-            )
-                .into_response()
-        }
-        Err(ManagerError::Unavailable(_)) => {
-            // Compensação: delete do objeto S3 (D1).
-            let _ = state.storage.delete(&s3_key).await;
-            queue_unavailable()
-        }
-        Err(_) => {
-            // Compensação: delete do objeto S3 (D1).
-            let _ = state.storage.delete(&s3_key).await;
-            queue_unavailable()
-        }
-    }
+    // Magic + sniff + S3 + manager: fluxo compartilhado com o complete chunked.
+    finalize_model_file(
+        &state,
+        tmp_file.path(),
+        FinalizeInput {
+            engine: validation.engine,
+            final_name,
+            kind_hint,
+            arch_hint,
+        },
+    )
+    .await
 }
 
 /// POST /api/models/download — body `{url, engine, name?}` (D4/E1 ADR-0012).

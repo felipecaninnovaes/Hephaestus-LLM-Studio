@@ -102,7 +102,7 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
             )
         loras.append({"path": str(lora_path).strip(), "scale": lora_scale})
 
-    # --- custom_checkpoint_path + arch (D4) ---
+    # --- custom_checkpoint_path + arch (D4; feat/pesos-custom-flux2: +flux-2) ---
     custom_checkpoint_path = gen_cfg.get("custom_checkpoint_path")
     arch = gen_cfg.get("arch")
     if custom_checkpoint_path:
@@ -112,12 +112,27 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
         ):
             _die("custom_checkpoint_path deve ser uma string não vazia.")
         custom_checkpoint_path = custom_checkpoint_path.strip()
-        if not arch or str(arch).strip().lower() not in ("sdxl", "sd15"):
-            _die("custom_checkpoint_path exige campo 'arch' válido ('sdxl' ou 'sd15').")
-        arch = str(arch).strip().lower()
+        arch = str(arch).strip().lower() if arch else None
+        if arch in ("flux", "flux2", "flux-2", "flux2-klein-4b", "flux.2-klein-4b"):
+            arch = "flux-2-klein-4b"
+        if arch not in ("sdxl", "sd15", "flux-2-klein-4b"):
+            _die(
+                "custom_checkpoint_path exige campo 'arch' válido "
+                "('sdxl', 'sd15' ou 'flux-2-klein-4b')."
+            )
     else:
         custom_checkpoint_path = None
         arch = str(arch).strip().lower() if arch else None
+
+    # --- text_encoder_path (feat/pesos-custom-flux2): override opcional do Qwen3 ---
+    # Ausente/falsy = sem override (retrocompatível). Presente = string não vazia.
+    raw_encoder = gen_cfg.get("text_encoder_path")
+    if not raw_encoder:
+        text_encoder_path = None
+    else:
+        if not isinstance(raw_encoder, str) or not raw_encoder.strip():
+            _die("text_encoder_path deve ser uma string não vazia.")
+        text_encoder_path = raw_encoder.strip()
 
     # --- base_model (XOR com custom_checkpoint_path) ---
     raw_base_model = gen_cfg.get("base_model") or cfg.get("model") or "flux-2-klein-4b"
@@ -131,13 +146,15 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
         )
 
     if custom_checkpoint_path:
-        # Para custom, aceita apenas sdxl/sd15
-        if arch not in ("sdxl", "sd15"):
-            _die(f"Arquitetura custom não suportada: {arch}. Use 'sdxl' ou 'sd15'.")
+        # Para custom, aceita sdxl/sd15 + flux-2-klein-4b (feat/pesos-custom-flux2)
+        if arch not in ("sdxl", "sd15", "flux-2-klein-4b"):
+            _die(
+                "Arquitetura custom não suportada: "
+                f"{arch}. Use 'sdxl', 'sd15' ou 'flux-2-klein-4b'."
+            )
         base_model = arch  # custom força base_model = arch
     elif base_model not in ("flux-2-klein-4b", "sdxl", "sd15"):
         _die(f"Modelo base de difusão não suportado: {raw_base_model}")
-
     width = int(gen_cfg.get("width", 1024))
     height = int(gen_cfg.get("height", 1024))
     if width < 256 or width > 2048 or height < 256 or height > 2048:
@@ -154,10 +171,48 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
         _die(f"Guidance scale inválido: {guidance_scale}. Deve estar entre 1.0 e 30.0.")
 
     quantization = str(gen_cfg.get("quantization", "4bit")).strip().lower()
-    if quantization not in ("none", "4bit", "8bit"):
+    if quantization not in ("none", "2bit", "4bit", "6bit", "8bit"):
         _die(
-            f"Nível de quantização inválido: {quantization}. Use 'none', '4bit' ou '8bit'."
+            f"Nível de quantização inválido: {quantization}. "
+            "Use 'none', '2bit', '4bit', '6bit' ou '8bit'."
         )
+
+    # --- sampler (fatia flux2-motor-treino): scheduler fresh-instance por request ---
+    from trainer_difusao.schedulers import FLUX_SAMPLER_CHOICES, SAMPLER_CHOICES
+
+    sampler = str(gen_cfg.get("sampler", "default")).strip().lower()
+    if sampler not in SAMPLER_CHOICES:
+        _die(f"Sampler inválido: {sampler}. Use: {', '.join(SAMPLER_CHOICES)}.")
+    if base_model == "flux-2-klein-4b" and sampler not in FLUX_SAMPLER_CHOICES:
+        _die(
+            f"Sampler '{sampler}' incompatível com FLUX.2 (flow-match). "
+            f"Modelo flux-2-klein-4b aceita apenas: {', '.join(FLUX_SAMPLER_CHOICES)}."
+        )
+
+    # --- upscale (fatia flux2-motor-treino): pós-passo Real-ESRGAN, fora do cache ---
+    from trainer_difusao.upscale import UPSCALE_MODELS
+
+    raw_upscale = gen_cfg.get("upscale")
+    if raw_upscale is None:
+        upscale = None
+    else:
+        if not isinstance(raw_upscale, dict):
+            _die("Campo 'upscale' deve ser um objeto {model, scale} ou null.")
+        upscale_model = str(raw_upscale.get("model", "4x") or "4x").strip() or "4x"
+        if upscale_model not in UPSCALE_MODELS:
+            _die(
+                f"Modelo de upscale inválido: {upscale_model}. "
+                f"Use: {', '.join(UPSCALE_MODELS)}."
+            )
+        try:
+            upscale_scale = int(raw_upscale.get("scale"))
+        except (TypeError, ValueError):
+            _die(
+                f"Escala de upscale inválida: {raw_upscale.get('scale')}. Use 2 ou 4."
+            )
+        if upscale_scale not in (2, 4):
+            _die(f"Escala de upscale inválida: {upscale_scale}. Use 2 ou 4.")
+        upscale = {"model": upscale_model, "scale": upscale_scale}
 
     # Seed: ausente será resolvido no loop (random base)
     seed_raw = gen_cfg.get("seed")
@@ -170,6 +225,37 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
     weights_path = cfg.get("weights_path") or gen_cfg.get("weights_path")
     negative_prompt = gen_cfg.get("negative_prompt") or ""
     distilled = bool(gen_cfg.get("distilled", False))
+
+    # --- img2img: init_image_path + init_strength (S2 feat/img2img) ---
+    # Ambos ausentes = txt2img puro (retrocompatível).
+    raw_init_path = gen_cfg.get("init_image_path")
+    raw_init_strength = gen_cfg.get("init_strength")
+    if raw_init_path is None:
+        if raw_init_strength is not None:
+            _die("Campo 'init_strength' exige 'init_image_path' (img2img).")
+        init_image_path = None
+        init_strength = None
+    else:
+        if not isinstance(raw_init_path, str) or not raw_init_path.strip():
+            _die("Campo 'init_image_path' deve ser uma string não vazia.")
+        init_image_path = raw_init_path.strip()
+        if not os.path.isfile(init_image_path):
+            _die(f"init_image_path não encontrado: {init_image_path}")
+        if raw_init_strength is None:
+            init_strength = 0.6
+        else:
+            try:
+                init_strength = float(raw_init_strength)
+            except (TypeError, ValueError):
+                _die(
+                    f"init_strength inválido: {raw_init_strength}. "
+                    "Deve ser float entre 0.05 e 0.95."
+                )
+            if init_strength < 0.05 or init_strength > 0.95:
+                _die(
+                    f"init_strength inválido: {init_strength}. "
+                    "Deve estar entre 0.05 e 0.95."
+                )
 
     return {
         "job_id": str(job_id),
@@ -189,6 +275,11 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "loras": loras,
         "custom_checkpoint_path": custom_checkpoint_path,
         "arch": arch,
+        "text_encoder_path": text_encoder_path,
+        "init_image_path": init_image_path,
+        "init_strength": init_strength,
+        "sampler": sampler,
+        "upscale": upscale,
     }
 
 
@@ -229,19 +320,20 @@ def _resolve_loras_from_legacy(params: dict[str, Any]) -> list[dict[str, Any]]:
         )
     return []
 
-
 def pipeline_cache_key(params: dict[str, Any]) -> tuple:
     """Extrai chave de cache do pipeline a partir dos params validados.
 
-    Chave: (base_model|custom_checkpoint_path+arch, quantization, distilled).
+    Chave: (base_model|custom_checkpoint_path+arch, quantization, distilled,
+    text_encoder_path). O encoder entra na chave: trocar o encoder troca os
+    pesos de texto — reusar o pipeline cacheado seria fallback silencioso.
     """
     custom_cp = params.get("custom_checkpoint_path")
     return (
         custom_cp or params.get("base_model"),
         params.get("quantization"),
         params.get("distilled", False),
+        params.get("text_encoder_path"),
     )
-
 
 def ensure_pipeline(
     params: dict[str, Any], cache: dict[tuple, object]
@@ -291,7 +383,6 @@ def _png_info_for_generation(meta: dict[str, Any]):
     )
     return info
 
-
 def _build_generation_meta(
     params: dict[str, Any],
     filename: str,
@@ -300,9 +391,10 @@ def _build_generation_meta(
     batch_index: int,
     batch_size: int,
     loras_effective: list[dict[str, Any]],
+    upscale_info: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Constrói o dict de metadados para uma imagem do batch (JSONL)."""
-    return {
+    meta: dict[str, Any] = {
         "filename": filename,
         "thumb_filename": thumb_filename,
         "seed": seed,
@@ -316,12 +408,26 @@ def _build_generation_meta(
         "distilled": params["distilled"],
         "loras": loras_effective,
         "custom_model_path": params.get("custom_checkpoint_path"),
+        "custom_model_id": params.get("custom_model_id"),
         "arch": params.get("arch"),
+        "text_encoder_path": params.get("text_encoder_path"),
+        "text_encoder_model_id": params.get("text_encoder_model_id"),
         "base_model": params["base_model"],
         "batch_index": batch_index,
         "batch_size": batch_size,
         "job_id": params.get("job_id"),
+        "sampler": params.get("sampler", "default"),
     }
+    # upscale (fatia flux2-motor-treino): só após o pós-passo aplicar —
+    # txt2img sem upscale nunca carrega a chave (round-trip intacto).
+    if upscale_info is not None:
+        meta["upscale"] = upscale_info
+    # img2img (S2 feat/img2img): campos aditivos, só quando init presente —
+    # txt2img puro nunca carrega essas chaves (round-trip existente intacto).
+    if params.get("init_image_path"):
+        meta["init_image"] = os.path.basename(params["init_image_path"])
+        meta["init_strength"] = params.get("init_strength")
+    return meta
 
 
 # ---------------------------------------------------------------------------
@@ -457,6 +563,26 @@ def _mock_generate(params: dict[str, Any], output_dir: Path, emitter=None) -> No
     arch = params.get("arch")
     base_model = params["base_model"]
 
+    # img2img (S2 feat/img2img): tenta abrir a init como base do desenho
+    # sintético. Falha de decode NÃO derruba o job — cai para mock puro.
+    init_img_base = None
+    init_image_path = params.get("init_image_path")
+    if init_image_path:
+        try:
+            with Image.open(init_image_path) as _init:
+                init_img_base = (
+                    _init.convert("RGB").resize(
+                        (params["width"], params["height"]), Image.LANCZOS
+                    )
+                )
+        except Exception as exc:
+            print(
+                f"[MOCK-GEN] [AVISO] Falha ao abrir init_image ({init_image_path}): "
+                f"{exc}. Seguindo com mock puro.",
+                flush=True,
+            )
+            init_img_base = None
+
     emitter.emit(
         phase="preparing",
         message=f"Configurando pipeline Text-to-Image ({base_model})...",
@@ -490,6 +616,13 @@ def _mock_generate(params: dict[str, Any], output_dir: Path, emitter=None) -> No
         b_base = 35 + (h[2] % 50)
 
         img = Image.new("RGB", (width, height), (r_base, g_base, b_base))
+        if init_img_base is not None:
+            # Mock honesto: blend da init (stretch exato, LANCZOS) com a
+            # textura sintética (alpha 0.3) — visualmente distinto do txt2img.
+            try:
+                img = Image.blend(img, init_img_base, 0.3)
+            except Exception:
+                pass
         draw = ImageDraw.Draw(img)
 
         progressGen = 0.5
@@ -549,7 +682,17 @@ def _mock_generate(params: dict[str, Any], output_dir: Path, emitter=None) -> No
             lora_label = "LoRA: Nenhum (Base Puro)"
         if custom_cp:
             lora_label += f" | Custom: {Path(custom_cp).name} ({arch})"
+        if params.get("text_encoder_path"):
+            lora_label += f" | Encoder: {Path(str(params['text_encoder_path'])).name}"
         meta_line2 = f"{lora_label} | Res: {width}x{height} | Mode: MOCK DETERMINÍSTICO"
+        if init_image_path:
+            meta_line2 += f" | IMG2IMG: {Path(init_image_path).name}@{params.get('init_strength')}"
+        sampler = params.get("sampler", "default")
+        upscale_cfg = params.get("upscale")
+        if sampler and sampler != "default":
+            meta_line2 += f" | Sampler: {sampler}"
+        if upscale_cfg:
+            meta_line2 += f" | UPSCALE: {upscale_cfg['model']} x{upscale_cfg['scale']}"
         batch_line = f"Batch: {i + 1}/{batch_size} (index={i})"
 
         draw.text(
@@ -594,6 +737,33 @@ def _mock_generate(params: dict[str, Any], output_dir: Path, emitter=None) -> No
             flush=True,
         )
 
+        # Upscale mock (fatia flux2-motor-treino): PIL LANCZOS no fator
+        # pedido + mesmos campos de meta do path real. Thumb reflete o final.
+        if upscale_cfg:
+            upscale_scale = int(upscale_cfg["scale"])
+            upscale_model = str(upscale_cfg["model"])
+            up_w, up_h = width * upscale_scale, height * upscale_scale
+            with Image.open(out_file) as _saved:
+                _saved.convert("RGB").resize(
+                    (up_w, up_h), Image.LANCZOS
+                ).save(out_file, "PNG")
+            meta_entry["upscale"] = {
+                "model": upscale_model,
+                "scale": upscale_scale,
+                "original_width": width,
+                "original_height": height,
+                "final_width": up_w,
+                "final_height": up_h,
+            }
+            # Re-salva o PNG para embarcar o meta final (com upscale) no iTXt.
+            with Image.open(out_file) as _up:
+                _up.save(out_file, "PNG", pnginfo=_png_info_for_generation(meta_entry))
+            print(
+                f"[MOCK-GEN] Upscale mock x{upscale_scale}: {width}x{height} → "
+                f"{up_w}x{up_h} ({out_file})",
+                flush=True,
+            )
+
         # Thumbnail
         thumb_path = output_dir / thumb_filename
         _write_thumb(out_file, thumb_path)
@@ -631,6 +801,302 @@ def _mock_generate(params: dict[str, Any], output_dir: Path, emitter=None) -> No
     )
 
 
+def _flux2_repo_id(*, distilled: bool) -> str:
+    """Repo BFL do FLUX.2 Klein (overrides por env, defaults oficiais)."""
+    if distilled:
+        return (
+            os.environ.get("FLUX_DISTILLED_MODEL_ID")
+            or "black-forest-labs/FLUX.2-klein-4B"
+        )
+    return (
+        os.environ.get("FLUX_MODEL_ID") or "black-forest-labs/FLUX.2-klein-base-4B"
+    )
+
+
+def _text_encoder_merge_dir(encoder_path: str) -> tuple[Path, str]:
+    """Resolve (merged_dir, md5_16) do cache de merge p/ um encoder solto.
+
+    Delega p/ o helper compartilhado em trainer_difusao.common (mesmo padrão
+    usado no treino flux.py). Re-exportado aqui p/ testes via generate.
+    """
+    from trainer_difusao.common import _custom_text_encoder_merge_dir
+
+    return _custom_text_encoder_merge_dir(encoder_path)
+
+
+def _load_flux2_text_encoder_override(
+    encoder_path: str,
+    model_repo: str,
+    pipe_dtype: Any,
+    quantization_config: Any = None,
+) -> tuple[Any, Any]:
+    """Carrega encoder/tokenizer override p/ FLUX.2 Klein (Qwen3).
+
+    Dir com config.json → encoder+tokenizer do próprio path (modelo HF
+    completo). Arquivo .safetensors solto → config/tokenizer do repo BFL e
+    state_dict do arquivo aplicado sobre o encoder do repo (falha honesta se
+    o layout não for reconhecido — nunca fallback silencioso p/ o oficial).
+
+    *quantization_config* (transformers.BitsAndBytesConfig/TorchAoConfig) é
+    aplicado via from_pretrained no caso dir. No caso arquivo-solto COM
+    quantização, os pesos bf16 são mesclados UMA vez sobre o encoder do repo
+    e persistidos no cache de merge
+    ($TEXT_ENCODER_CUSTOM_CACHE/<md5>-<slug>/merged); a quantização é então
+    aplicada por carga sobre o merged (mesma semântica do encoder default).
+    Sem quantization_config, o comportamento atual é preservado (bf16 direto,
+    sem cache).
+    """
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    enc = Path(encoder_path)
+    if enc.is_dir():
+        try:
+            enc_kwargs: dict[str, Any] = {"torch_dtype": pipe_dtype}
+            if quantization_config is not None:
+                enc_kwargs["quantization_config"] = quantization_config
+            encoder = AutoModelForCausalLM.from_pretrained(
+                str(enc), **enc_kwargs
+            )
+        except Exception as exc:
+            _die(
+                f"Falha ao carregar text_encoder custom de dir ({encoder_path}): {exc}"
+            )
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(str(enc))
+        except Exception as exc:
+            _die(
+                f"Falha ao carregar tokenizer do text_encoder custom "
+                f"({encoder_path}): {exc}"
+            )
+        print(
+            f"[DIFFUSION-GEN] Text encoder custom (dir): {encoder_path}",
+            flush=True,
+        )
+        return encoder, tokenizer
+    if enc.is_file():
+        if quantization_config is not None:
+            return _load_flux2_loose_encoder_merged(
+                encoder_path, model_repo, pipe_dtype, quantization_config
+            )
+        try:
+            base_encoder = AutoModelForCausalLM.from_pretrained(
+                model_repo, subfolder="text_encoder", torch_dtype=pipe_dtype
+            )
+        except Exception as exc:
+            _die(
+                f"Falha ao carregar text encoder base do repo ({model_repo}) "
+                f"para aplicar override ({encoder_path}): {exc}"
+            )
+        from trainer_difusao.common import _load_loose_text_encoder_state
+
+        state = _load_loose_text_encoder_state(encoder_path)
+        _apply_loose_encoder_state(base_encoder, state, encoder_path, model_repo)
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_repo, subfolder="tokenizer"
+            )
+        except Exception as exc:
+            _die(
+                f"Falha ao carregar tokenizer base do repo ({model_repo}): {exc}"
+            )
+        print(
+            f"[DIFFUSION-GEN] Text encoder custom (.safetensors sobre repo): "
+            f"{encoder_path}",
+            flush=True,
+        )
+        return base_encoder, tokenizer
+    _die(
+        f"text_encoder_path não encontrado: {encoder_path}. "
+        "Use um diretório HF ou arquivo .safetensors válido."
+    )
+
+
+def _apply_loose_encoder_state(
+    base_encoder: Any, state: dict[str, Any], encoder_path: str, model_repo: str
+) -> None:
+    """Aplica o state_dict solto sobre o encoder do repo (bf16, sem quant).
+
+    Erro honesto citando as primeiras chaves divergentes — nunca fallback
+    silencioso p/ o encoder oficial.
+    """
+    try:
+        missing, unexpected = base_encoder.load_state_dict(state, strict=False)
+    except Exception as exc:
+        _die(
+            f"Falha ao aplicar text_encoder custom ({encoder_path}) sobre o "
+            f"encoder do repo ({model_repo}): layout não reconhecido ({exc})"
+        )
+    ignored_keys = {"lm_head.weight", "model.lm_head.weight"}
+    missing_filtered = [k for k in (missing or []) if k not in ignored_keys]
+    unexpected_filtered = [k for k in (unexpected or []) if k not in ignored_keys]
+    if missing_filtered or unexpected_filtered:
+        _die(
+            f"text_encoder custom ({encoder_path}) com layout não reconhecido: "
+            f"{len(missing_filtered)} chave(s) ausente(s) {missing_filtered[:5]}, "
+            f"{len(unexpected_filtered)} inesperada(s) {unexpected_filtered[:5]}. "
+            "Envie o encoder como diretório HF completo ou um .safetensors "
+            "compatível com o Qwen3 do FLUX.2 Klein."
+        )
+    if hasattr(base_encoder, "tie_weights"):
+        try:
+            base_encoder.tie_weights()
+        except Exception:
+            pass
+
+
+def _load_flux2_loose_encoder_merged(
+    encoder_path: str,
+    model_repo: str,
+    pipe_dtype: Any,
+    quantization_config: Any,
+) -> tuple[Any, Any]:
+    """Arquivo solto + quantização via cache de merge (bf16 mesclado em disco).
+
+    O custo do merge é pago 1x por encoder; a quantização é aplicada por
+    carga sobre o merged (mesma semântica do encoder default). O
+    ``pipeline_cache_key`` NÃO muda — o merged é derivado do path, que já
+    está na chave.
+    """
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    from trainer_difusao.common import (
+        _cleanup_merge_tmp_dir,
+        _custom_text_encoder_merge_dir,
+        _load_loose_text_encoder_state,
+        _merged_text_encoder_tmp_dir,
+        _merged_text_encoder_valid,
+        _publish_merged_text_encoder,
+        _sweep_text_encoder_merge_cache,
+        _write_merged_text_encoder_metadata,
+    )
+
+    merged_dir, md5 = _custom_text_encoder_merge_dir(encoder_path)
+    if _merged_text_encoder_valid(merged_dir, md5):
+        try:
+            encoder = AutoModelForCausalLM.from_pretrained(
+                str(merged_dir),
+                torch_dtype=pipe_dtype,
+                quantization_config=quantization_config,
+            )
+        except Exception as exc:
+            _die(
+                f"Falha ao carregar text_encoder custom do cache de merge "
+                f"({merged_dir}): {exc}"
+            )
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_repo, subfolder="tokenizer"
+            )
+        except Exception as exc:
+            _die(
+                f"Falha ao carregar tokenizer base do repo ({model_repo}): {exc}"
+            )
+        print(
+            f"[DIFFUSION-GEN] Text encoder custom (merge em cache: "
+            f"{merged_dir}): {encoder_path}",
+            flush=True,
+        )
+        return encoder, tokenizer
+    try:
+        base_encoder = AutoModelForCausalLM.from_pretrained(
+            model_repo, subfolder="text_encoder", torch_dtype=pipe_dtype
+        )
+    except Exception as exc:
+        _die(
+            f"Falha ao carregar text encoder base do repo ({model_repo}) "
+            f"para aplicar override ({encoder_path}): {exc}"
+        )
+    state = _load_loose_text_encoder_state(encoder_path)
+    _apply_loose_encoder_state(base_encoder, state, encoder_path, model_repo)
+    parent = merged_dir.parent
+    tmp_dir = _merged_text_encoder_tmp_dir(merged_dir)
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+        _cleanup_merge_tmp_dir(tmp_dir)
+        base_encoder.save_pretrained(str(tmp_dir))
+        _write_merged_text_encoder_metadata(
+            tmp_dir, md5=md5, basename=Path(encoder_path).name,
+            model_id=model_repo,
+        )
+        _publish_merged_text_encoder(tmp_dir, merged_dir)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        if _merged_text_encoder_valid(merged_dir, md5):
+            _cleanup_merge_tmp_dir(tmp_dir)
+            print(
+                f"[DIFFUSION-GEN] Text encoder custom (merge concorrente "
+                f"detectado em {merged_dir}): {encoder_path}",
+                flush=True,
+            )
+        else:
+            _cleanup_merge_tmp_dir(tmp_dir)
+            _die(
+                f"Falha ao persistir cache de merge do text_encoder custom "
+                f"({merged_dir}): {exc}"
+            )
+    try:
+        encoder = AutoModelForCausalLM.from_pretrained(
+            str(merged_dir),
+            torch_dtype=pipe_dtype,
+            quantization_config=quantization_config,
+        )
+    except Exception as exc:
+        _die(
+            f"Falha ao carregar text_encoder custom do cache de merge "
+            f"({merged_dir}): {exc}"
+        )
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_repo, subfolder="tokenizer"
+        )
+    except Exception as exc:
+        _die(
+            f"Falha ao carregar tokenizer base do repo ({model_repo}): {exc}"
+        )
+    print(
+        f"[DIFFUSION-GEN] Text encoder custom (merge novo executado: "
+        f"{merged_dir}): {encoder_path}",
+        flush=True,
+    )
+    _sweep_text_encoder_merge_cache(merged_dir)
+    return encoder, tokenizer
+
+
+def _load_flux2_custom_transformer(
+    custom_cp: str, pipe_dtype: Any, quantization_config: Any = None
+) -> Any:
+    """Carrega transformer custom flux-2 do arquivo (falha honesta se layout inválido).
+
+    *quantization_config* é repassado a `Flux2Transformer2DModel.from_single_file`
+    (suportado em diffusers >= 0.40 via kwargs → DiffusersAutoQuantizer).
+    """
+    try:
+        from diffusers import Flux2Transformer2DModel
+    except ImportError as exc:
+        _die(
+            f"Checkpoint flux-2 custom exige diffusers com Flux2Transformer2DModel "
+            f"({custom_cp}): {exc}"
+        )
+    try:
+        tf_kwargs: dict[str, Any] = {"torch_dtype": pipe_dtype}
+        if quantization_config is not None:
+            tf_kwargs["quantization_config"] = quantization_config
+        transformer = Flux2Transformer2DModel.from_single_file(
+            custom_cp, **tf_kwargs
+        )
+    except Exception as exc:
+        _die(
+            f"Falha ao carregar checkpoint flux-2 custom ({custom_cp}): "
+            f"layout de arquivo não reconhecido ({exc})"
+        )
+    print(
+        f"[DIFFUSION-GEN] Transformer flux-2 custom: {custom_cp}",
+        flush=True,
+    )
+    return transformer
+
+
 # ---------------------------------------------------------------------------
 # REAL — geração via Diffusers com aceleração CUDA
 # ---------------------------------------------------------------------------
@@ -640,7 +1106,9 @@ def _real_generate(
     """Executa a geração Text-to-Image real via Diffusers com aceleração CUDA.
 
     Suporta batch (loop sequencial), multi-LoRA (com fallback para Flux2 via peft),
-    e checkpoints custom (SDXL/SD15 via from_single_file).
+    checkpoints custom (SDXL/SD15 via from_single_file) e img2img opcional via
+    init_image_path/init_strength (SD: variante Img2Img leve dos componentes do
+    pipe cacheado; Flux2Klein: image= nativo, sem strength na assinatura).
 
     Se *pipeline* for fornecido (cache hit), pula a fase de carregamento e usa o
     pipeline diretamente — caso contrário, carrega como antes (cache miss).
@@ -669,6 +1137,17 @@ def _real_generate(
     loras_effective = _resolve_loras_from_legacy(params)
     custom_cp = params.get("custom_checkpoint_path")
     arch = params.get("arch")
+    text_encoder_path = params.get("text_encoder_path")
+    # N2: override de text_encoder só é suportado no fluxo flux-2. Para
+    # sdxl/sd15, falha honesta em vez de ignorar silenciosamente (BFF/manager
+    # já bloqueiam; defesa em profundidade no engine).
+    if text_encoder_path and arch in ("sdxl", "sd15"):
+        _die(
+            f"text_encoder_path ({text_encoder_path}) não é suportado com "
+            f"checkpoint custom sdxl/sd15: o override de encoder é exclusivo "
+            f"do fluxo flux-2-klein-4b. Remova text_encoder_path ou use "
+            f"arch=flux-2-klein-4b."
+        )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -691,7 +1170,15 @@ def _real_generate(
         )
 
     # --- Configuração de quantização ---
-    bnb_config = None
+    # 4bit/8bit: BitsAndBytes (comportamento legado); 2bit/6bit: TorchAO
+    # (honesto: ImportError/erro de build → _die, nunca silencioso).
+    # Toda quantização exige cuda — em cpu o job falha com mensagem clara.
+    if quant in ("2bit", "4bit", "6bit", "8bit") and device != "cuda":
+        _die(
+            f"Quantização {quant} exige GPU CUDA (device atual: {device}). "
+            "Use quantization 'none' em CPU."
+        )
+    quantization_config = None
     if quant in ("4bit", "8bit") and device == "cuda":
         try:
             from transformers import BitsAndBytesConfig
@@ -702,19 +1189,29 @@ def _real_generate(
                 progress=0.15,
             )
             if quant == "4bit":
-                bnb_config = BitsAndBytesConfig(
+                quantization_config = BitsAndBytesConfig(
                     load_in_4bit=True,
                     bnb_4bit_quant_type="nf4",
                     bnb_4bit_use_double_quant=True,
                     bnb_4bit_compute_dtype=torch.bfloat16,
                 )
             else:
-                bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+                quantization_config = BitsAndBytesConfig(load_in_8bit=True)
         except (ImportError, RuntimeError, ValueError) as e:
             print(
                 f"[WARN] Falha ao configurar BitsAndBytes: {e}. Usando precisão padrão.",
                 flush=True,
             )
+    elif quant in ("2bit", "6bit"):
+        # device já garantido cuda acima.
+        from trainer_difusao.quantization import build_torchao_config
+
+        emitter.emit(
+            phase="quantizing",
+            message=f"Configurando quantização {quant} (TorchAO)...",
+            progress=0.15,
+        )
+        quantization_config = build_torchao_config(quant)
 
     # --- Carregar pipeline (ou usar cache) ---
     if pipeline is not None:
@@ -744,8 +1241,8 @@ def _real_generate(
                         torch.float16 if device == "cuda" else torch.float32
                     ),
                 }
-                if bnb_config and device == "cuda":
-                    load_kwargs["quantization_config"] = bnb_config
+                if quantization_config and device == "cuda":
+                    load_kwargs["quantization_config"] = quantization_config
                 pipe = StableDiffusionXLPipeline.from_single_file(
                     custom_cp, **load_kwargs
                 )
@@ -757,39 +1254,63 @@ def _real_generate(
                         torch.float16 if device == "cuda" else torch.float32
                     ),
                 }
-                if bnb_config and device == "cuda":
-                    load_kwargs_sd15["quantization_config"] = bnb_config
+                if quantization_config and device == "cuda":
+                    load_kwargs_sd15["quantization_config"] = quantization_config
                 pipe = StableDiffusionPipeline.from_single_file(
                     custom_cp, **load_kwargs_sd15
                 )
 
-            if pipe and device == "cuda" and not bnb_config:
+            if pipe and device == "cuda" and not quantization_config:
                 pipe.to(device)
 
         elif base_model == "flux-2-klein-4b":
             from diffusers import Flux2KleinPipeline
 
-            model_repo = (
-                (
-                    os.environ.get("FLUX_DISTILLED_MODEL_ID")
-                    or "black-forest-labs/FLUX.2-klein-4B"
+            model_repo = _flux2_repo_id(distilled=distilled)
+            pipe_dtype = torch.bfloat16 if device == "cuda" else torch.float32
+            flux_kwargs: dict[str, Any] = {"torch_dtype": pipe_dtype}
+            # Encoder override: text_encoder=/tokenizer= no from_pretrained.
+            encoder_override = params.get("text_encoder_path")
+            if encoder_override:
+                try:
+                    enc_model, enc_tok = _load_flux2_text_encoder_override(
+                        encoder_override, model_repo, pipe_dtype,
+                        quantization_config=quantization_config,
+                    )
+                except SystemExit:
+                    raise
+                except Exception as exc:
+                    _die(
+                        f"Falha ao carregar text_encoder custom "
+                        f"({encoder_override}): {exc}"
+                    )
+                flux_kwargs["text_encoder"] = enc_model
+                flux_kwargs["tokenizer"] = enc_tok
+            # Checkpoint flux-2 custom: transformer do arquivo + resto do repo BFL.
+            if custom_cp and arch == "flux-2-klein-4b":
+                flux_kwargs["transformer"] = _load_flux2_custom_transformer(
+                    custom_cp, pipe_dtype, quantization_config=quantization_config
                 )
-                if distilled
-                else (
-                    os.environ.get("FLUX_MODEL_ID")
-                    or "black-forest-labs/FLUX.2-klein-base-4B"
+                print(
+                    f"[DIFFUSION-GEN] Carregando FLUX.2 Klein 4B custom: "
+                    f"{custom_cp} (componentes base: {model_repo})",
+                    flush=True,
                 )
-            )
-            print(
-                f"[DIFFUSION-GEN] Carregando FLUX.2 Klein 4B "
-                f"({'Destilado' if distilled else 'Base'}): {model_repo}",
-                flush=True,
-            )
-            pipe = Flux2KleinPipeline.from_pretrained(
-                model_repo,
-                torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
-            )
-            if bnb_config is None and device == "cuda":
+            else:
+                print(
+                    f"[DIFFUSION-GEN] Carregando FLUX.2 Klein 4B "
+                    f"({'Destilado' if distilled else 'Base'}): {model_repo}",
+                    flush=True,
+                )
+            try:
+                pipe = Flux2KleinPipeline.from_pretrained(model_repo, **flux_kwargs)
+            except SystemExit:
+                raise
+            except Exception as exc:
+                _die(
+                    f"Falha ao carregar pipeline FLUX.2 Klein ({model_repo}): {exc}"
+                )
+            if quantization_config is None and device == "cuda":
                 pipe.to(device)
             else:
                 pipe.enable_model_cpu_offload()
@@ -894,116 +1415,239 @@ def _real_generate(
             pipe.set_adapters(adapter_names, adapter_scales)
             print(f"[DIFFUSION-GEN] Multi-LoRA aplicado: {adapter_names}", flush=True)
 
+    # --- img2img (S2 feat/img2img): variante leve + init pré-carregada ---
+    # A variante é construída DEPOIS do LoRA (herda unet/transformer com os
+    # adaptadores) a partir de `pipe.components` — compartilha os módulos,
+    # sem recarregar pesos e sem poluir o pipeline cacheado. O cache key da
+    # spec (pipeline_cache_key) NÃO muda.
+    init_image_path = params.get("init_image_path")
+    init_strength = params.get("init_strength")
+    is_img2img = bool(init_image_path)
+    init_image = None
+    call_pipe = pipe
+    if is_img2img:
+        if base_model == "flux-2-klein-4b":
+            # Flux2KleinPipeline.__call__ (diffusers 0.40.0, verificado via
+            # inspect) já aceita `image=` nativo (condicionamento estilo
+            # Kontext) e NÃO possui `strength` nem classe Img2Img dedicada —
+            # usa o próprio pipe cacheado; strength fica só no meta.
+            call_pipe = pipe
+        elif base_model == "sdxl":
+            from diffusers import StableDiffusionXLImg2ImgPipeline as _I2I
+
+            call_pipe = _I2I(**pipe.components)
+        elif base_model == "sd15":
+            from diffusers import StableDiffusionImg2ImgPipeline as _I2I
+
+            call_pipe = _I2I(**pipe.components)
+        else:
+            _die(f"img2img não suportado para o modelo: {base_model}")
+        print(
+            f"[DIFFUSION-GEN] img2img: variante={type(call_pipe).__name__} "
+            f"(cache preservado), strength={init_strength}",
+            flush=True,
+        )
+        try:
+            from PIL import Image as _PILImage
+
+            with _PILImage.open(init_image_path) as _f:
+                # Resize exato (width,height), LANCZOS — stretch documentado.
+                init_image = _f.convert("RGB").resize(
+                    (width, height), _PILImage.LANCZOS
+                )
+            print(
+                f"[DIFFUSION-GEN] img2img: init={init_image_path} "
+                f"(stretch exato {width}x{height}, LANCZOS)",
+                flush=True,
+            )
+        except Exception as exc:
+            _die(f"Falha ao abrir init_image ({init_image_path}): {exc}")
+
+    # --- sampler (fatia flux2-motor-treino): fresh-instance por request + restore ---
+    # O pipeline vem do cache do daemon e é reusado entre requests: trocar o
+    # scheduler SEM restore contaminaria o próximo request. `swapped_scheduler`
+    # restaura no finally (inclusive em exceção/cancel). Scheduler NUNCA entra
+    # no pipeline_cache_key nem na spec do daemon (não altera pesos).
+    # A variante img2img (`pipe.components`) compartilha o MESMO objeto
+    # scheduler — restaurar o `call_pipe` restaura o cacheado também.
+    from trainer_difusao.schedulers import build_scheduler, swapped_scheduler
+
+    sampler_name = params.get("sampler", "default")
+    upscale_cfg = params.get("upscale")
+    sched_arch = (
+        "flux" if base_model == "flux-2-klein-4b" else "sd"
+    )
+    if base_model not in ("flux-2-klein-4b", "sdxl", "sd15"):
+        _die(f"Modelo não suportado para inferência: {base_model}")
+    fresh_scheduler = None
+    if sampler_name and sampler_name != "default":
+        try:
+            base_sched_config = dict(call_pipe.scheduler.config)
+        except (AttributeError, TypeError) as e:
+            _die(
+                f"Sampler '{sampler_name}': pipeline sem scheduler configurável ({e})."
+            )
+        try:
+            fresh_scheduler = build_scheduler(
+                sampler_name, sched_arch, base_sched_config
+            )
+        except (ValueError, ImportError) as e:
+            _die(f"Sampler '{sampler_name}': {e}")
+        print(
+            f"[DIFFUSION-GEN] Sampler '{sampler_name}' → "
+            f"{type(fresh_scheduler).__name__} (fresh-instance, restore no finally).",
+            flush=True,
+        )
+
     # --- LOOP DE BATCH ---
     seed_base = (
         params["seed"] if params["seed"] is not None else random.randint(0, 2**31 - 1)
     )
     meta_lines: list[dict[str, Any]] = []
 
-    for i in range(batch_size):
-        # --- abort check ---
-        if _is_cancelled(output_dir):
+    with swapped_scheduler(call_pipe, fresh_scheduler):
+        for i in range(batch_size):
+            # --- abort check ---
+            if _is_cancelled(output_dir):
+                print(
+                    f"[DIFFUSION-GEN] Cancel detectado antes do item {i}. Saindo.",
+                    flush=True,
+                )
+                break
+
+            current_seed = seed_base + i
+            generator = torch.Generator(device=device).manual_seed(current_seed)
+
+            emitter.emit(
+                phase="generating",
+                message=f"Executando amostragem de difusão (item {i + 1}/{batch_size}, seed={current_seed})...",
+                progress=0.55 + (0.35 * i / batch_size),
+                step=i,
+                total_steps=batch_size,
+            )
             print(
-                f"[DIFFUSION-GEN] Cancel detectado antes do item {i}. Saindo.",
+                f"[DIFFUSION-GEN] Gerando imagem {i + 1}/{batch_size} (seed={current_seed})...",
                 flush=True,
             )
-            break
 
-        current_seed = seed_base + i
-        generator = torch.Generator(device=device).manual_seed(current_seed)
-
-        emitter.emit(
-            phase="generating",
-            message=f"Executando amostragem de difusão (item {i + 1}/{batch_size}, seed={current_seed})...",
-            progress=0.55 + (0.35 * i / batch_size),
-            step=i,
-            total_steps=batch_size,
-        )
-        print(
-            f"[DIFFUSION-GEN] Gerando imagem {i + 1}/{batch_size} (seed={current_seed})...",
-            flush=True,
-        )
-
-        # Inference (com callback de progresso do sampler; fallback sem
-        # callback se a pipeline — ex. flux/distilled — usar API diferente).
-        # Telemetria NEVER quebra a geração: TypeError → retry sem callback.
-        sampler_cb_kwargs = _pipe_call_kwargs_with_callback(emitter, i, batch_size, steps)
-        if base_model == "flux-2-klein-4b":
-            flux_kwargs: dict[str, Any] = {
-                "prompt": prompt,
-                "generator": generator,
-                "num_inference_steps": steps,
-                "guidance_scale": guidance,
-                "width": width,
-                "height": height,
-            }
-            with torch.inference_mode():
-                try:
-                    image = pipe(**flux_kwargs, **sampler_cb_kwargs).images[0]
-                except TypeError as exc:
-                    if "callback_on_step_end" not in str(exc):
-                        raise
-                    print(
-                        f"[DIFFUSION-GEN] [AVISO] pipeline não suporta callback "
-                        f"de progresso ({exc}). Seguindo sem telemetria fina.",
-                        flush=True,
-                    )
-                    image = pipe(**flux_kwargs).images[0]
-        elif base_model in ("sdxl", "sd15"):
-            with torch.inference_mode():
-                sd_kwargs: dict[str, Any] = {
+            # Inference (com callback de progresso do sampler; fallback sem
+            # callback se a pipeline — ex. flux/distilled — usar API diferente).
+            # Telemetria NEVER quebra a geração: TypeError → retry sem callback.
+            sampler_cb_kwargs = _pipe_call_kwargs_with_callback(emitter, i, batch_size, steps)
+            if base_model == "flux-2-klein-4b":
+                flux_call_kwargs: dict[str, Any] = {
                     "prompt": prompt,
-                    "negative_prompt": neg_prompt,
                     "generator": generator,
                     "num_inference_steps": steps,
                     "guidance_scale": guidance,
                     "width": width,
                     "height": height,
                 }
-                try:
-                    image = pipe(**sd_kwargs, **sampler_cb_kwargs).images[0]
-                except TypeError as exc:
-                    if "callback_on_step_end" not in str(exc):
-                        raise
-                    print(
-                        f"[DIFFUSION-GEN] [AVISO] pipeline não suporta callback "
-                        f"de progresso ({exc}). Seguindo sem telemetria fina.",
-                        flush=True,
+                if is_img2img:
+                    # Flux2Klein: image= nativo; sem strength na assinatura.
+                    flux_call_kwargs["image"] = init_image
+                with torch.inference_mode():
+                    try:
+                        image = call_pipe(**flux_call_kwargs, **sampler_cb_kwargs).images[0]
+                    except TypeError as exc:
+                        if "callback_on_step_end" not in str(exc):
+                            raise
+                        print(
+                            f"[DIFFUSION-GEN] [AVISO] pipeline não suporta callback "
+                            f"de progresso ({exc}). Seguindo sem telemetria fina.",
+                            flush=True,
+                        )
+                        image = call_pipe(**flux_call_kwargs).images[0]
+            elif base_model in ("sdxl", "sd15"):
+                with torch.inference_mode():
+                    sd_kwargs: dict[str, Any] = {
+                        "prompt": prompt,
+                        "negative_prompt": neg_prompt,
+                        "generator": generator,
+                        "num_inference_steps": steps,
+                        "guidance_scale": guidance,
+                        "width": width,
+                        "height": height,
+                    }
+                    if is_img2img:
+                        # Img2Img aceita negative_prompt; kwargs demais idênticos.
+                        sd_kwargs["image"] = init_image
+                        sd_kwargs["strength"] = init_strength
+                    try:
+                        image = call_pipe(**sd_kwargs, **sampler_cb_kwargs).images[0]
+                    except TypeError as exc:
+                        if "callback_on_step_end" not in str(exc):
+                            raise
+                        print(
+                            f"[DIFFUSION-GEN] [AVISO] pipeline não suporta callback "
+                            f"de progresso ({exc}). Seguindo sem telemetria fina.",
+                            flush=True,
+                        )
+                        image = call_pipe(**sd_kwargs).images[0]
+            else:
+                _die(f"Modelo não suportado para inferência: {base_model}")
+
+            # Salvar imagem
+            emitter.emit(
+                phase="saving",
+                message=f"Salvando artefato de imagem {i + 1}/{batch_size}...",
+                progress=0.92,
+            )
+
+            filename = f"generated_{i + 1:04d}.png"
+            out_file = output_dir / filename
+            thumb_filename = f"thumb_{i + 1:04d}.jpg"
+            # Meta entry (mesma origem do JSONL) — PNG embarca o mesmo dict.
+            meta_entry = _build_generation_meta(
+                params=params,
+                filename=filename,
+                thumb_filename=thumb_filename,
+                seed=current_seed,
+                batch_index=i,
+                batch_size=batch_size,
+                loras_effective=loras_effective,
+            )
+            image.save(out_file, "PNG", pnginfo=_png_info_for_generation(meta_entry))
+            print(
+                f"[DIFFUSION-GEN] Imagem {i + 1}/{batch_size} salva: {out_file}", flush=True
+            )
+
+            # Upscale Real-ESRGAN (fatia flux2-motor-treino): pós-passo sobre o
+            # PNG salvo (re-salva o mesmo arquivo). Falha → _die honesto.
+            # Thumb e meta refletem a imagem final.
+            if upscale_cfg:
+                from trainer_difusao.upscale import upscale_image
+
+                dims = upscale_image(
+                    out_file,
+                    out_file,
+                    model=str(upscale_cfg["model"]),
+                    scale=int(upscale_cfg["scale"]),
+                )
+                meta_entry["upscale"] = {
+                    "model": str(upscale_cfg["model"]),
+                    "scale": int(upscale_cfg["scale"]),
+                    **dims,
+                }
+                # Re-salva o PNG para embarcar o meta final (com upscale) no iTXt.
+                from PIL import Image as _UpImage
+
+                with _UpImage.open(out_file) as _up:
+                    _up.save(
+                        out_file, "PNG", pnginfo=_png_info_for_generation(meta_entry)
                     )
-                    image = pipe(**sd_kwargs).images[0]
-        else:
-            _die(f"Modelo não suportado para inferência: {base_model}")
+                print(
+                    f"[DIFFUSION-GEN] Upscale {upscale_cfg['model']} x{upscale_cfg['scale']}: "
+                    f"{dims['original_width']}x{dims['original_height']} → "
+                    f"{dims['final_width']}x{dims['final_height']} ({out_file})",
+                    flush=True,
+                )
 
-        # Salvar imagem
-        emitter.emit(
-            phase="saving",
-            message=f"Salvando artefato de imagem {i + 1}/{batch_size}...",
-            progress=0.92,
-        )
+            # Thumbnail
+            thumb_path = output_dir / thumb_filename
+            _write_thumb(out_file, thumb_path)
 
-        filename = f"generated_{i + 1:04d}.png"
-        out_file = output_dir / filename
-        thumb_filename = f"thumb_{i + 1:04d}.jpg"
-        # Meta entry (mesma origem do JSONL) — PNG embarca o mesmo dict.
-        meta_entry = _build_generation_meta(
-            params=params,
-            filename=filename,
-            thumb_filename=thumb_filename,
-            seed=current_seed,
-            batch_index=i,
-            batch_size=batch_size,
-            loras_effective=loras_effective,
-        )
-        image.save(out_file, "PNG", pnginfo=_png_info_for_generation(meta_entry))
-        print(
-            f"[DIFFUSION-GEN] Imagem {i + 1}/{batch_size} salva: {out_file}", flush=True
-        )
-
-        # Thumbnail
-        thumb_path = output_dir / thumb_filename
-        _write_thumb(out_file, thumb_path)
-
-        meta_lines.append(meta_entry)
+            meta_lines.append(meta_entry)
 
     # Retrocompat: symlink generated.png → generated_0001.png (batch=1)
     if batch_size == 1:

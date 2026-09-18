@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.28.0
+  version: 0.29.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -1469,7 +1469,7 @@ paths:
             schema: { $ref: "#/components/schemas/YoloJobRequest" }
       responses:
         "202":
-          description: Job criado e enfileirado.
+          description: Job aceito; `preparing` (pacote em construção, ADR-0025) ou `queued` (pacote reaproveitado/legado).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SubmitJobResponse" }
@@ -1515,7 +1515,7 @@ paths:
             schema: { $ref: "#/components/schemas/DiffusionJobRequest" }
       responses:
         "202":
-          description: Job criado e enfileirado.
+          description: Job aceito; `preparing` (pacote em construção, ADR-0025) ou `queued` (pacote reaproveitado/legado).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SubmitJobResponse" }
@@ -1554,6 +1554,10 @@ paths:
         Cria job de inferência Text-to-Image para modelos de difusão (ADR-0020).
         Suporta modelos base FLUX.2 Klein 4B, SDXL e SD 1.5, pesos LoRA opcionais
         do catálogo de modelos, quantização configurável e controle de seed.
+        Suporta img2img: `initImageId` (input efêmero de `POST /api/generations/inputs`)
+        ou `initGenerationId` (geração existente da galeria, sem re-upload) definem
+        a imagem inicial, ponderada por `initStrength`. A imagem de entrada é
+        redimensionada (stretch Lanczos) para o `width`×`height` alvo.
       requestBody:
         required: true
         content:
@@ -1561,7 +1565,7 @@ paths:
             schema: { $ref: "#/components/schemas/DiffusionGenerateJobRequest" }
       responses:
         "202":
-          description: Job de geração criado e enfileirado.
+          description: Job de geração aceito; `preparing` ou `queued` (envelope SubmitJobResponse, ADR-0025).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SubmitJobResponse" }
@@ -1603,7 +1607,7 @@ paths:
             schema: { $ref: "#/components/schemas/PredictJobRequest" }
       responses:
         "202":
-          description: Job criado e enfileirado.
+          description: Job aceito; `preparing` (pacote em construção, ADR-0025) ou `queued` (pacote reaproveitado/legado).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SubmitJobResponse" }
@@ -1651,7 +1655,7 @@ paths:
             schema: { $ref: "#/components/schemas/AutotrackerJobRequest" }
       responses:
         "202":
-          description: Job criado e enfileirado.
+          description: Job aceito; `preparing` (pacote em construção, ADR-0025) ou `queued` (pacote reaproveitado/legado).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SubmitJobResponse" }
@@ -1792,7 +1796,7 @@ paths:
             schema: { $ref: "#/components/schemas/AutolabelJobRequest" }
       responses:
         "202":
-          description: Job criado e enfileirado.
+          description: Job aceito; `preparing` (pacote em construção, ADR-0025) ou `queued` (pacote reaproveitado/legado).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SubmitJobResponse" }
@@ -1955,6 +1959,7 @@ paths:
       summary: Detalhe de um job
       description: |
         Detalhe do job via manager (ADR-0007 D3). Manager indisponível ⇒ 503 `queue_unavailable`.
+        Falha na preparação assíncrona (ADR-0025) ⇒ `status: failed` com `error: prepare_failed:<motivo>`.
       responses:
         "200":
           description: Job encontrado.
@@ -2058,8 +2063,9 @@ paths:
       tags: [jobs]
       summary: Aborta um job
       description: |
-        Aborta um job via manager (ADR-0007 D7 :372-373).
+        Aborta um job via manager (ADR-0007 D7 :372-373, ADR-0025 D3).
         Job em estado terminal (done/failed/cancelled) ⇒ 409 `job_not_abortable`.
+        Abort em `preparing` ⇒ `cancelling`; o worker de preparação observa a flag e desiste.
       responses:
         "200":
           description: Abort requisitado.
@@ -2341,6 +2347,48 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/generations/inputs:
+    post:
+      operationId: uploadGenerationInput
+      tags: [generations]
+      summary: Envia imagem inicial efêmera para img2img (multipart)
+      description: |
+        Upload avulso de imagem inicial para img2img (inicialização de
+        `POST /api/jobs/diffusion/generate` via `initImageId`). Campo único
+        `file` em `multipart/form-data`; aceita image/png, image/jpeg e
+        image/webp com limite de 20 MiB. O objeto é persistido no bucket sob o
+        prefixo `generation_inputs/` e referenciado pela tabela `generation_inputs`.
+        Recurso efêmero, sem GC automático: após o consumo pelo job de geração
+        (`used_at` preenchido) a linha permanece para auditoria.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: "Imagem inicial (image/png, image/jpeg ou image/webp, máx. 20 MiB)."
+      responses:
+        "201":
+          description: Input efêmero criado (usar `id` como `initImageId`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GenerationInputUploaded" }
+        "400":
+          description: "Arquivo ausente, não-imagem ou acima de 20 MiB (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/generations/{id}/data:
     get:
       operationId: getGenerationData
@@ -2567,7 +2615,8 @@ paths:
         DefaultBodyLimit 8 GiB+8 MiB envelope (ADR-0023 D4); magic bytes obrigatórios;
         md5 hex computado; PUT S3; compensação delete se INSERT no manager falhar.
         Para `.safetensors` (diffusion): header JSON inspecionado para classificar
-        kind (lora/checkpoint) e arch (flux-2-klein-4b/sdxl/sd15).
+        kind (lora/checkpoint/text_encoder) e arch (flux-2-klein-4b/sdxl/sd15;
+        text_encoder só admite flux-2-klein-4b).
         Erros: 400 `invalid_request` (engine/ext/magic/name/kind/arch conflito),
         413 `invalid_request` (envelope), 503 `queue_unavailable` (manager),
         503 `storage_unavailable` (S3).
@@ -2593,8 +2642,8 @@ paths:
                   description: "Nome opcional do modelo (deve terminar em .pt/.safetensors; ausente = nome do arquivo)."
                 kind:
                   type: string
-                  enum: [lora, checkpoint]
-                  description: "Hint: tipo do modelo diffusion (lora ou checkpoint). Sniff do servidor é autoritativo."
+                  enum: [lora, checkpoint, text_encoder]
+                  description: "Hint: tipo do modelo diffusion (lora, checkpoint ou text_encoder). Sniff do servidor é autoritativo."
                 arch:
                   type: string
                   enum: [flux-2-klein-4b, sdxl, sd15]
@@ -2622,6 +2671,148 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "503":
           description: "Manager ou storage indisponível (`code: queue_unavailable` ou `storage_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/models/uploads/init:
+    post:
+      operationId: initModelUpload
+      tags: [jobs]
+      summary: Inicia upload chunked de modelo (arquivo grande)
+      description: |
+        Cria sessão de upload chunked (upload ≤ 8 GiB) para contornar buffering
+        de corpo no proxy Next (o proxy bufferiza multipart inteiro em RAM —
+        partes ≤ 96 MiB são seguras). Valida engine/name/extensão antecipadamente.
+        Sessão vive em memória do principal (não persistida); abortar via DELETE.
+        Assimetria honesta vs. upload multipart único: o chunked registra o
+        arquivo SEMPRE com o nome do arquivo enviado (`name` = file.name); um
+        display-name customizado não é suportado (o multipart único suporta).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ModelUploadInitRequest" }
+      responses:
+        "201":
+          description: Sessão criada; usar `partSize` no fatiamento.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelUploadInitResponse" }
+        "400":
+          description: "engine/name/extensão/size inválidos (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/models/uploads/{uploadId}/part/{partNumber}:
+    put:
+      operationId: uploadModelPart
+      tags: [jobs]
+      summary: Envia uma parte do arquivo (octet-stream cru)
+      description: |
+        Corpo cru (não-multipart) com DefaultBodyLimit de 104 MiB (96 MiB de
+        parte + folga). Partes podem ser enviadas em qualquer ordem e
+        reenviadas (idempotente por partNumber). `size` do part é validado no
+        complete.
+      parameters:
+        - { name: uploadId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: partNumber, in: path, required: true, schema: { type: integer, minimum: 0, maximum: 100000 } }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "204":
+          description: Parte recebida e spoolada em disco.
+        "400":
+          description: "Parte vazia ou acima de 96 MiB (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Sessão inexistente (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413":
+          description: "Parte acima do limite (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/models/uploads/{uploadId}/complete:
+    post:
+      operationId: completeModelUpload
+      tags: [jobs]
+      summary: Finaliza upload chunked (assemble + validação + S3 + manager)
+      description: |
+        Monta o arquivo em ordem de partNumber, confere tamanho total contra
+        `size` do init e executa o MESMO fluxo do upload multipart único
+        (magic, sniff safetensors, md5, PUT S3, POST /internal/models,
+        compensação). Sessão é destruída após complete.
+      parameters:
+        - { name: uploadId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "201":
+          description: Modelo criado com sucesso.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Model" }
+        "400":
+          description: "Partes faltando ou total divergente do size (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Sessão inexistente (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: "Conflito no manager (hash já existe)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413":
+          description: "Total acima de 8 GiB (`code: invalid_request`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager ou storage indisponível."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/models/uploads/{uploadId}:
+    delete:
+      operationId: abortModelUpload
+      tags: [jobs]
+      summary: Aborta sessão de upload e remove partes spooladas
+      parameters:
+        - { name: uploadId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "204":
+          description: Sessão encerrada (idempotente — 204 também se inexistente).
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -3063,10 +3254,12 @@ components:
     DiffusionJobRequest:
       type: object
       additionalProperties: false
-      required: [datasetId, baseModel]
+      required: [datasetId]
       description: |
-        Body de `POST /api/jobs/diffusion` (ADR-0018 D1). `datasetId` e `baseModel` são
-        obrigatórios; os demais campos são opcionais com defaults.
+        Body de `POST /api/jobs/diffusion` (ADR-0018 D1). `datasetId` é obrigatório;
+        os demais campos são opcionais com defaults.
+        `baseModel` e `customModelId` são XOR (exatamente um); se ambos ausentes,
+        usa `sdxl` (retrocompat).
         Wire camelCase; `deny_unknown_fields` garante 400 para chaves desconhecidas.
       properties:
         datasetId:
@@ -3074,10 +3267,18 @@ components:
           format: uuid
           description: "PK do dataset com imagens e legendas. Não-UUID ou inexistente ⇒ 404 `not_found`."
         baseModel:
-          type: string
-          enum: [sdxl, flux, sd15]
+          type: [string, "null"]
+          enum: [sdxl, flux, sd15, flux-2-klein-4b]
           default: sdxl
-          description: "Modelo de difusão base para treino do adaptador LoRA."
+          description: "Modelo de difusão base para treino do adaptador LoRA. XOR com customModelId."
+        customModelId:
+          type: [string, "null"]
+          format: uuid
+          description: "UUID de checkpoint customizado (tabela `models`, kind=checkpoint) como base do treino. XOR com baseModel; inexistente ou kind≠checkpoint ⇒ 400/404."
+        textEncoderModelId:
+          type: [string, "null"]
+          format: uuid
+          description: "UUID de modelo text encoder (tabela `models`, kind=text_encoder) para substituir o encoder padrão no treino. Só tem efeito com arch flux-2-klein-4b; outro arch ⇒ 400. Inexistente ou kind≠text_encoder ⇒ 404/400."
         triggerWord:
           type: [string, "null"]
           maxLength: 100
@@ -3134,8 +3335,8 @@ components:
           description: "Semente determinística fixa para a geração das amostras de validação. Opcional (padrão 42)."
         resolution:
           type: integer
-          enum: [512, 768, 1024]
-          description: "Resolução quadrada de treino das imagens (ex: 512 para SD 1.5, 1024 para SDXL/Flux). Opcional."
+          enum: [256, 512, 768, 1024, 1280, 1328, 1536, 2048]
+          description: "Resolução quadrada de treino das imagens (ex: 512 para SD 1.5, 1024 para SDXL/Flux, 2048 para ultra). Opcional."
         gradientAccumulationSteps:
           type: integer
           enum: [1, 2, 4, 8]
@@ -3164,9 +3365,17 @@ components:
           description: "Precisão numérica de ponto flutuante durante o treino (fp16, bf16 ou no). Padrão fp16."
         quantization:
           type: string
-          enum: ["none", "4bit", "8bit"]
+          enum: ["none", "2bit", "4bit", "6bit", "8bit", "4bit-nf4", "8bit-bnb"]
           default: "4bit"
-          description: "Nível de quantização do modelo base (4bit = NF4 QLoRA, 8bit = BitsAndBytes int8, none = sem quantização FP16/BF16 pleno)."
+          description: "Nível de quantização do modelo base (2bit/4bit/6bit/8bit; aliases legados 4bit-nf4/8bit-bnb continuam aceitos; none = sem quantização FP16/BF16 pleno)."
+        controlDatasetId:
+          type: [string, "null"]
+          format: uuid
+          description: "UUID de dataset de regularização/controle para o treino (motor Flux.2). Deve diferir do datasetId; inexistente ⇒ 404; sem imagens ativas ⇒ 409. Opcional."
+        cacheTextEmbeddings:
+          type: boolean
+          default: false
+          description: "Cache de text embeddings durante o treino (economiza VRAM em re-épocas). Padrão false."
         enableBucket:
           type: boolean
           default: true
@@ -3195,6 +3404,9 @@ components:
         Body de `POST /api/jobs/diffusion/generate` (ADR-0020, ADR-0023 D2/D3/D4).
         `prompt` é obrigatório. `baseModel` e `customModelId` são XOR (exatamente um).
         `weights`/`loraScale` são deprecated — usar `loras` em seu lugar.
+        `initImageId` e `initGenerationId` são mutuamente exclusivos (no máximo um);
+        `initStrength` só tem efeito com um deles presente. A imagem de entrada é
+        redimensionada (stretch Lanczos) para o `width`×`height` alvo.
       properties:
         baseModel:
           type: string
@@ -3240,9 +3452,19 @@ components:
           description: "Semente determinística para geração de ruído inicial. Opcional."
         quantization:
           type: string
-          enum: ["none", "4bit", "8bit"]
+          enum: ["none", "2bit", "4bit", "6bit", "8bit", "4bit-nf4", "8bit-bnb"]
           default: "4bit"
-          description: "Quantização do modelo base (4bit NF4, 8bit BNB ou none FP16 pleno)."
+          description: "Quantização do modelo base (2bit/4bit/6bit/8bit; aliases legados 4bit-nf4/8bit-bnb continuam aceitos; none = FP16 pleno)."
+        sampler:
+          type: string
+          enum: [default, euler, euler_a, heun, dpmpp_2m, dpmpp_2m_karras, dpmpp_2m_sde, dpmpp_2m_sde_karras, dpmpp_sde, ddim]
+          default: default
+          description: "Amostrador do scheduler de difusão (motor Flux.2). A base flux-2-klein-4b aceita apenas default, euler e heun; demais valores nessa base ⇒ 400."
+        upscale:
+          anyOf:
+            - $ref: "#/components/schemas/DiffusionUpscale"
+            - type: "null"
+          description: "Upscale pós-geração (RRDBNet x4) ({model: 4x | ultrasharp | siax, scale: 2 ou 4}; model ausente = 4x). Null ou ausente = sem upscale. Opcional."
         distilled:
           type: boolean
           default: false
@@ -3275,11 +3497,44 @@ components:
           type: [string, "null"]
           format: uuid
           description: "UUID de checkpoint customizado (tabela `models`, kind=checkpoint). XOR com baseModel."
+        textEncoderModelId:
+          type: [string, "null"]
+          format: uuid
+          description: "UUID de modelo text encoder (tabela `models`, kind=text_encoder) para substituir o encoder padrão na geração. Só tem efeito com arch flux-2-klein-4b; outro arch ⇒ 400. Inexistente ou kind≠text_encoder ⇒ 404/400."
         orchestratorId:
           type: [string, "null"]
           format: uuid
-          description: "ID do orquestrador preferencial para execução (ADR-0015 D2)."
+          description: "ID do orquestrador preferencial para execução (ADR-0015 D2). Opcional."
+        initImageId:
+          type: [string, "null"]
+          format: uuid
+          description: "ID de input efêmero retornado por `POST /api/generations/inputs` para img2img. Mutuamente exclusivo com `initGenerationId`. Opcional."
+        initGenerationId:
+          type: [string, "null"]
+          format: uuid
+          description: "ID de geração existente na galeria a ser usada como imagem inicial de img2img (sem re-upload). Mutuamente exclusivo com `initImageId`. Opcional."
+        initStrength:
+          type: number
+          minimum: 0.05
+          maximum: 0.95
+          default: 0.6
+          description: "Força da imagem inicial no img2img (0.05..0.95, padrão 0.6). Só tem efeito quando `initImageId` ou `initGenerationId` está presente; caso contrário é rejeitado com 400 (`code: invalid_request` — initStrength exige initImageId ou initGenerationId). Opcional."
 
+    DiffusionUpscale:
+      type: object
+      required: [scale]
+      additionalProperties: false
+      description: "Configuração de upscale pós-geração (RRDBNet x4, fatia Flux.2). Os três modelos compartilham a arquitetura RRDBNet x4 — muda apenas o checkpoint."
+      properties:
+        model:
+          type: string
+          enum: ["4x", "ultrasharp", "siax"]
+          default: "4x"
+          description: "\"4x\" = RealESRGAN x4plus (generalista, tende a suavizar pele); \"ultrasharp\" = 4x-UltraSharp (preserva textura, recomendado p/ retratos); \"siax\" = 4x_NMKD-Siax_200k (textura + nitidez)."
+        scale:
+          type: integer
+          enum: [2, 4]
+          description: "Fator de upscale (2 ou 4)."
     LoraRef:
       type: object
       required: [modelId, scale]
@@ -3377,6 +3632,29 @@ components:
             format: uuid
           description: "IDs das gerações (1..100)."
 
+    GenerationInputUploaded:
+      type: object
+      required: [id, filename, mimeType, width, height]
+      additionalProperties: false
+      description: "Input efêmero para img2img (tabela `generation_inputs`, prefixo S3 `generation_inputs/`). Recurso efêmero, sem GC automático."
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: "PK do input efêmero (usar como `initImageId`)."
+        filename:
+          type: string
+          description: "Nome original do arquivo enviado."
+        mimeType:
+          type: string
+          description: "MIME detectado por sniff do conteúdo (image/png, image/jpeg ou image/webp)."
+        width:
+          type: integer
+          description: "Largura da imagem em pixels."
+        height:
+          type: integer
+          description: "Altura da imagem em pixels."
+
     PredictJobRequest:
       type: object
       required: [modelId, datasetId]
@@ -3410,17 +3688,18 @@ components:
       type: object
       required: [jobId, status]
       additionalProperties: false
-      description: "Resposta 202 do POST /api/jobs/yolo (ADR-0007 D7)."
+      description: "Resposta 202 dos POST /api/jobs/{yolo,autotracker,autolabel,diffusion,predict,diffusion/generate} (ADR-0007 D7, ADR-0025 D0)."
       properties:
         jobId:
           type: string
           format: uuid
         status:
           type: string
-          enum: [queued]
+          enum: [preparing, queued]
+          description: "preparing = pacote em construção (aceite assíncrono ADR-0025); queued = pacote reaproveitado/legado."
         queuePosition:
           type: [integer, "null"]
-          description: "Posição na fila (null se o manager não devolve)."
+          description: "Posição na fila (null no aceite preparing e quando o manager não devolve)."
 
     AbortResponse:
       type: object
@@ -4172,7 +4451,7 @@ components:
         status:
           type: string
           enum: [queued, dispatched, preparing, running, cancelling, done, failed, cancelled]
-          description: "Status do ciclo do job."
+          description: "Status do ciclo do job. Em `preparing`, `phase` usa prefixos `packaging_*` (preparação do pacote no BFF, ADR-0025) vs `staging_*` (staging no nó de execução, AC-007 futuro)."
         queueReason:
           type: [string, "null"]
           description: "Motivo da espera na fila."
@@ -4524,6 +4803,60 @@ components:
           maxLength: 128
           description: "Código de pareamento (único uso, via ORCH_PAIRING_CODE no orquestrador)."
 
+    ModelUploadInitRequest:
+      type: object
+      additionalProperties: false
+      required: [name, engine, size, totalParts]
+      description: |
+        Sessão de upload chunked. `size` é o tamanho total do arquivo em bytes
+        (≤ 8 GiB); `totalParts` é o número de partes que o cliente enviará
+        (cada parte ≤ 96 MiB; o servidor devolve `partSize` canônico de 96 MiB
+        — todas as partes exceto a última têm exatamente `partSize` bytes).
+        `kind`/`arch` são hints idênticos ao upload multipart único.
+      properties:
+        name:
+          type: string
+          maxLength: 255
+          description: "Nome do arquivo de pesos (deve terminar em .pt/.safetensors)."
+        engine:
+          type: string
+          enum: [yolo, world, diffusion]
+        kind:
+          type: string
+          enum: [lora, checkpoint, text_encoder]
+          description: "Hint diffusion; sniff do servidor é autoritativo."
+        arch:
+          type: string
+          enum: [flux-2-klein-4b, sdxl, sd15]
+          description: "Hint diffusion; sniff do servidor é autoritativo."
+        size:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 8589934592
+          description: "Tamanho total do arquivo em bytes (≤ 8 GiB)."
+        totalParts:
+          type: integer
+          minimum: 1
+          maximum: 100000
+          description: "Número total de partes; ceil(size / partSize)."
+
+    ModelUploadInitResponse:
+      type: object
+      additionalProperties: false
+      required: [uploadId, partSize, totalParts]
+      properties:
+        uploadId:
+          type: string
+          format: uuid
+        partSize:
+          type: integer
+          format: int64
+          description: "Tamanho canônico da parte em bytes (96 MiB = 100663296)."
+        totalParts:
+          type: integer
+          description: "totalParts ecoado (validado contra size/partSize ⇒ 400 se divergente)."
+
     ModelWeight:
       type: object
       required: [id, name, engine, model, jobId, bytes, createdAt]
@@ -4610,7 +4943,7 @@ components:
         kind:
           type: string
           nullable: true
-          enum: [lora, checkpoint]
+          enum: [lora, checkpoint, text_encoder]
           description: "Tipo de modelo (ADR-0023 D4). Null para engines não-difusão."
         arch:
           type: string

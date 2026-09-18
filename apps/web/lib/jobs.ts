@@ -8,11 +8,12 @@ import type {
   JobDeletedResponse,
   JobListResponse,
   JobMetricsResponse,
+  SubmitJobResponse,
   Telemetry,
   YoloAugment,
 } from "@/types/studio";
 
-/** POST /api/jobs/yolo — cria job de treino YOLO. Retorna 202. */
+/** POST /api/jobs/yolo — cria job de treino YOLO. Retorna 202 (preparing|queued). */
 export function startYoloJob(params: {
   datasetId: string;
   model: string;
@@ -25,7 +26,7 @@ export function startYoloJob(params: {
   weights?: string | null;
   orchestratorId?: string | null;
   outputName?: string | null;
-}): Promise<{ jobId: string; status: string; queuePosition?: number }> {
+}): Promise<SubmitJobResponse> {
   const { weights, orchestratorId, outputName, ...rest } = params;
   const body: Record<string, unknown> = { ...rest };
   if (weights) body.weights = weights;
@@ -37,10 +38,12 @@ export function startYoloJob(params: {
   });
 }
 
-/** POST /api/jobs/diffusion — cria job de treino de difusão LoRA. Retorna 202. */
+/** POST /api/jobs/diffusion — cria job de treino de difusão LoRA. Retorna 202 (preparing|queued). */
 export function startDiffusionJob(params: {
   datasetId: string;
-  baseModel: "sdxl" | "flux" | "sd15";
+  baseModel?: "sdxl" | "flux" | "sd15" | null;
+  customModelId?: string | null;
+  textEncoderModelId?: string | null;
   triggerWord?: string;
   epochs?: number;
   batchSize?: number;
@@ -59,11 +62,13 @@ export function startDiffusionJob(params: {
   lrScheduler?: "cosine" | "linear" | "constant" | "constant_with_warmup";
   lrWarmupSteps?: number;
   mixedPrecision?: "fp16" | "bf16" | "no";
-  quantization?: "none" | "4bit" | "8bit";
+  quantization?: "none" | "2bit" | "4bit" | "6bit" | "8bit";
+  controlDatasetId?: string | null;
+  cacheTextEmbeddings?: boolean;
   enableBucket?: boolean;
   checkpointInterval?: number;
   epochOffset?: number;
-}): Promise<{ jobId: string; status: string; queuePosition?: number }> {
+}): Promise<SubmitJobResponse> {
   const {
     weights,
     orchestratorId,
@@ -82,9 +87,23 @@ export function startDiffusionJob(params: {
     enableBucket,
     checkpointInterval,
     epochOffset,
+    controlDatasetId,
+    cacheTextEmbeddings,
     ...rest
   } = params;
   const body: Record<string, unknown> = { ...rest };
+  /* XOR baseModel/customModelId (fatia pesos-custom-flux2): custom vence;
+     ambos ausentes ⇒ body sem nenhum (backend assume "sdxl"). NENHUM outro
+     campo muda — a lista de whitelists abaixo é intocada. */
+  if (params.customModelId) {
+    body.customModelId = params.customModelId;
+    delete body.baseModel;
+  } else if (params.baseModel) {
+    body.baseModel = params.baseModel;
+  } else {
+    delete body.baseModel;
+  }
+  if (params.textEncoderModelId) body.textEncoderModelId = params.textEncoderModelId;
   if (outputName?.trim()) body.outputName = outputName.trim();
   if (triggerWord?.trim()) body.triggerWord = triggerWord.trim();
   if (weights) body.weights = weights;
@@ -94,11 +113,13 @@ export function startDiffusionJob(params: {
   if (optimizer) body.optimizer = optimizer;
   if (lrScheduler) body.lrScheduler = lrScheduler;
   if (lrWarmupSteps != null) body.lrWarmupSteps = lrWarmupSteps;
+  if (epochOffset != null) body.epochOffset = epochOffset;
   if (mixedPrecision) body.mixedPrecision = mixedPrecision;
   if (quantization) body.quantization = quantization;
   if (enableBucket != null) body.enableBucket = enableBucket;
+  if (controlDatasetId) body.controlDatasetId = controlDatasetId;
+  if (cacheTextEmbeddings != null) body.cacheTextEmbeddings = cacheTextEmbeddings;
   if (checkpointInterval != null) body.checkpointInterval = checkpointInterval;
-  if (epochOffset != null) body.epochOffset = epochOffset;
   if (samplePrompt?.trim()) {
     body.samplePrompt = samplePrompt.trim();
     if (sampleInterval != null) body.sampleInterval = sampleInterval;

@@ -131,6 +131,6 @@ jobs:
       - name: install uv
         run: pip install --no-cache-dir uv
       - name: test trainer-yolo
-        run: cd engines/trainer-yolo && uv run pytest
+        run: cd engines/trainer-yolo && uv run --extra test pytest
       - name: test trainer-difusao
-        run: cd engines/trainer-difusao && uv run pytest
+        run: cd engines/trainer-difusao && uv run --extra test pytest

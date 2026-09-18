@@ -8,8 +8,8 @@ Arquivo responsavel por reunir todas as melhorias e correçoes de forma organiza
 
 - Corrigir/Implementar:
   - Geração/Galeria (implementado/validar):
-    - [ ] 002: A galeria não atualiza com uma nova foto, forçando o usuario atualizar. Caso de uso Usuario divide a tela em duas abas uma para a galeria e outra na geração ele tem que atualizar a pagina para ver a nova foto e bate no problema 001.
-    - [ ] 006 Possibilidade de clicar na foto para copiar as configs(isso ainda não funciona 100%, não puxa o modelo e config do lora).
+    - [x] 002: A galeria não atualiza com uma nova foto, forçando o usuario atualizar. Caso de uso Usuario divide a tela em duas abas uma para a galeria e outra na geração ele tem que atualizar a pagina para ver a nova foto e bate no problema 001.
+    - [x] 006 Possibilidade de clicar na foto para copiar as configs(isso ainda não funciona 100%, não puxa o modelo e config do lora).
 
   - Infra:
 - [x] Limitar o CI a apenas a branch main e develop as demais não devem ter CI.

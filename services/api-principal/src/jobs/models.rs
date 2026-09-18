@@ -1580,22 +1580,28 @@ pub fn generate_diffusion_generate_config_yaml(
         for (i, lora) in req.loras.iter().enumerate() {
             let scale_str = format_lora_scale(lora.scale);
             block.push_str(&format!(
-                "    - path: \"{{lora_path_{i}}}\"\n      scale: {scale_str}\n"
+                "    - path: \"{{lora_path_{i}}}\"\n      scale: {scale_str}\n      model_id: \"{}\"\n",
+                lora.model_id
             ));
         }
         format!("  loras:\n{block}")
     };
 
     let custom_block = if let Some(arch) = custom_arch {
-        format!("  custom_checkpoint_path: \"{{custom_checkpoint_path}}\"\n  arch: \"{arch}\"\n")
+        let cid_line = if let Some(ref cid) = req.custom_model_id {
+            format!("  custom_model_id: \"{cid}\"\n")
+        } else {
+            String::new()
+        };
+        format!("{cid_line}  custom_checkpoint_path: \"{{custom_checkpoint_path}}\"\n  arch: \"{arch}\"\n")
     } else {
         String::new()
     };
 
     // Encoder custom: placeholder literal dentro de `generate:` — o
-    // orchestrator substitui via text_encoder_ref (NUNCA id/path real).
-    let text_encoder_block = if req.text_encoder_model_id.is_some() {
-        "  text_encoder_path: \"{text_encoder_path}\"\n".to_string()
+    // orchestrator substitui via text_encoder_ref. Persiste também o model_id para reprodutibilidade.
+    let text_encoder_block = if let Some(ref enc_id) = req.text_encoder_model_id {
+        format!("  text_encoder_path: \"{{text_encoder_path}}\"\n  text_encoder_model_id: \"{enc_id}\"\n")
     } else {
         String::new()
     };

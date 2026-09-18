@@ -33,7 +33,7 @@ import {
   exportGenerations,
   getGenerationDataUrl,
 } from "@/lib/generations";
-import { GERACAO_COMPLETED_KEY, generationConfigsJson, geracaoFormFromGeneration, publishGeracaoForm, publishGeracaoInitSource } from "@/lib/geracao-storage";
+import { GERACAO_BROADCAST_CHANNEL, GERACAO_COMPLETED_KEY, generationConfigsJson, geracaoFormFromGeneration, publishGeracaoForm, publishGeracaoInitSource } from "@/lib/geracao-storage";
 import { copyToClipboard } from "@/lib/clipboard";
 import type { Generation } from "@/types/studio";
 import CompareSlider from "./CompareSlider";
@@ -207,13 +207,12 @@ export default function GenerationGallery() {
     itemsLengthRef.current = items.length;
   }, [items.length]);
 
-  const refreshGallery = useCallback(async () => {
-    /* Cooldown 5s: `storage` + `focus`/`visibilitychange` costumam chegar
-       juntos ao trocar de aba — a 2ª chamada seria um fetch redundante. */
+  const refreshGallery = useCallback(async (force = false) => {
+    /* Cooldown 5s apenas para eventos passivos; eventos explícitos de conclusão (force=true) bypassam. */
     const now = Date.now();
     if (refreshingRef.current) return;
     if (loadingRef.current || loadingMoreRef.current || loadingAllRef.current) return;
-    if (now - lastRefreshRef.current < 5000) return;
+    if (!force && now - lastRefreshRef.current < 5000) return;
     refreshingRef.current = true;
     lastRefreshRef.current = now;
     try {
@@ -244,14 +243,27 @@ export default function GenerationGallery() {
     }
   }, []);
 
-  /* ── Canal primário cross-tab: evento `storage` cruza abas (CustomEvent
-     não). Dispara quando o Panel grava `geracao:lastCompletedAt`. ── */
+  /* ── Canal primário cross-tab: BroadcastChannel + evento `storage` ── */
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
-      if (e.key === GERACAO_COMPLETED_KEY) void refreshGallery();
+      if (e.key === GERACAO_COMPLETED_KEY) void refreshGallery(true);
     };
     window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+
+    let bc: BroadcastChannel | null = null;
+    if (typeof BroadcastChannel !== "undefined") {
+      bc = new BroadcastChannel(GERACAO_BROADCAST_CHANNEL);
+      bc.onmessage = (ev) => {
+        if (ev.data?.type === "generation_completed") {
+          void refreshGallery(true);
+        }
+      };
+    }
+
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      if (bc) bc.close();
+    };
   }, [refreshGallery]);
 
   /* ── Mesma-aba: `storage` não dispara na aba de origem; cobre via
@@ -269,6 +281,16 @@ export default function GenerationGallery() {
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onFocus);
     };
+  }, [refreshGallery]);
+
+  /* ── Heartbeat/poll de galeria quando aba visível (atualização autônoma a cada 12s) ── */
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void refreshGallery(false);
+      }
+    }, 12000);
+    return () => clearInterval(interval);
   }, [refreshGallery]);
 
   /* ── Selection handlers (Slice F3/bug-008) ──

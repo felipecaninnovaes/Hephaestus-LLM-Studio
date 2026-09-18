@@ -268,6 +268,8 @@ export interface GeracaoCompletedMarker {
   jobId: string;
 }
 
+export const GERACAO_BROADCAST_CHANNEL = "hephaestus:generations";
+
 export function notifyGeracaoCompleted(jobId: string): void {
   try {
     const marker: GeracaoCompletedMarker = {
@@ -275,6 +277,11 @@ export function notifyGeracaoCompleted(jobId: string): void {
       jobId,
     };
     window.localStorage.setItem(GERACAO_COMPLETED_KEY, JSON.stringify(marker));
+    if (typeof BroadcastChannel !== "undefined") {
+      const bc = new BroadcastChannel(GERACAO_BROADCAST_CHANNEL);
+      bc.postMessage({ type: "generation_completed", jobId, completedAt: marker.completedAt });
+      bc.close();
+    }
   } catch {
     /* storage indisponível/cheio — galeria cobre via focus/visibility */
   }
@@ -371,9 +378,12 @@ function parseSnapshotLoras(raw: unknown): {
     const scale = typeof rec.scale === "number" && Number.isFinite(rec.scale)
       ? Math.min(2, Math.max(0, rec.scale))
       : 1;
-    if (typeof rec.modelId === "string" && rec.modelId.length > 0) {
+    const rawId = typeof rec.modelId === "string" && rec.modelId.length > 0
+      ? rec.modelId
+      : (typeof rec.model_id === "string" && rec.model_id.length > 0 ? rec.model_id : null);
+    if (rawId) {
       if (loras.length < 10) {
-        loras.push({ modelId: rec.modelId.slice(0, 256), scale });
+        loras.push({ modelId: rawId.slice(0, 256), scale });
       }
     } else {
       if (lorasRaw.length < 10) lorasRaw.push(rec);

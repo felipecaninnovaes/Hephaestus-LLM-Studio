@@ -71,6 +71,12 @@ Dívidas: sessões sem TTL/GC; complete destrutivo em 503 (sem retry de sessão)
   usuário 8,04 GB via :3000 → 201 Model bd442ca1 (kind text_encoder), 70s no
   complete, 64 partes multipart. Sniff não classifica text_encoder (hints da
   UI cobrem) — dívida de sniff heurístico registrada em dividas.
+- **Quantização + encoder custom (bug do usuário, fechado):** _die honesto
+  bloqueava a única combinação que a plataforma produz (arquivo solto).
+  Fix `0d7c794`: cache de merge bf16 (repo + state_dict → save_pretrained,
+  quant na carga); treino idem + bug latente (state_dict sobre quantizado)
+  corrigido; sweep de teto (48 GB default) + corrida por re-check. Reviewer
+  2 corrigir-antes resolvidos (import Any, GC). pytest 177.
 - Merge/push só com ordem explícita do usuário.
 
 ## Fatia FECHADA 2026-09-17 — feat/img2img (7 commits 30140ea..083efcb, de develop@4e3fb3e)

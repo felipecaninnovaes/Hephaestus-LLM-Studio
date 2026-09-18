@@ -1602,6 +1602,7 @@ export default function GenerationPanel() {
 				{activeJobId && (
 					<div className="mb-4">
 						<JobProgressLive
+							jobKind="diffusion_generate"
 							phase={telemetry.phase || activeJob?.phase || activeJob?.status}
 							phaseMessage={
 								telemetry.phaseMessage ||
@@ -1613,11 +1614,7 @@ export default function GenerationPanel() {
 							progress={telemetry.progress || activeJob?.progress || 0}
 							vramUsedGb={telemetry.vramUsedGb ?? activeJob?.vramUsedGb}
 							step={telemetry.step ?? activeJob?.step}
-							/* Contador de IMAGENS do batch (telemetry/job). Nunca usa `steps`
-                 do sampler do form — semânticas diferentes; sem valor, o
-                 contador some e resta barra/mensagem. totalSteps só vem do
-                 canal SSE; JobResponse do polling não tem o campo. */
-							totalSteps={telemetry.totalSteps ?? null}
+							totalSteps={telemetry.totalSteps ?? activeJob?.totalSteps ?? null}
 							isLive={telemetry.isLive}
 							isFinished={telemetry.isFinished}
 						/>

@@ -102,10 +102,7 @@ def _mock_generate(params: dict[str, Any], output_dir: Path, emitter=None) -> No
         for k in range(_MOCK_TELEMETRY_SUBSTEPS):
             emitter.emit(
                 phase="generating",
-                message=(
-                    f"Imagem {i + 1}/{batch_size} · step {k + 1}/{_MOCK_TELEMETRY_SUBSTEPS} "
-                    f"(mock, {params['steps']} sampler steps, item {i + 1}/{batch_size})..."
-                ),
+                message=f"Gerando imagem {i + 1}/{batch_size} · step {k + 1}/{_MOCK_TELEMETRY_SUBSTEPS}",
                 progress=_sampler_progress(i, batch_size, k, _MOCK_TELEMETRY_SUBSTEPS),
                 step=i,
                 total_steps=batch_size,

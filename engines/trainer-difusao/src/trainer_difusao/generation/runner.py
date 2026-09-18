@@ -74,7 +74,7 @@ def _real_generate(
 
     emitter.emit(
         phase="preparing",
-        message=f"Inicializando pipeline Text-to-Image ({base_model})...",
+        message=f"Inicializando motor de geração de imagens ({base_model})...",
         progress=0.05,
     )
     print(
@@ -400,7 +400,7 @@ def _real_generate(
 
             emitter.emit(
                 phase="generating",
-                message=f"Executando amostragem de difusão (item {i + 1}/{batch_size}, seed={current_seed})...",
+                message=f"Iniciando amostragem da imagem {i + 1}/{batch_size} (seed={current_seed})...",
                 progress=0.55 + (0.35 * i / batch_size),
                 step=i,
                 total_steps=batch_size,
@@ -464,7 +464,7 @@ def _real_generate(
 
             emitter.emit(
                 phase="saving",
-                message=f"Salvando artefato de imagem {i + 1}/{batch_size}...",
+                message=f"Salvando imagem {i + 1}/{batch_size}...",
                 progress=0.92,
             )
 
@@ -539,7 +539,7 @@ def _real_generate(
 
     emitter.emit(
         phase="completed",
-        message=f"Geração finalizada com sucesso! {len(meta_lines)}/{batch_size} imagens.",
+        message=f"Geração finalizada com sucesso! {len(meta_lines)}/{batch_size} imagem(ns).",
         progress=1.0,
     )
 

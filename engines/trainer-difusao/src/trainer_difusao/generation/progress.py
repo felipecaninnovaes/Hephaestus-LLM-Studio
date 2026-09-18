@@ -56,7 +56,7 @@ def _make_sampler_callback(
             ):
                 emitter.emit(  # type: ignore[attr-defined]
                     phase="generating",
-                    message=f"Imagem {int(image_index) + 1}/{int(batch_size)} · step {s + 1}/{total}",
+                    message=f"Gerando imagem {int(image_index) + 1}/{int(batch_size)} · step {s + 1}/{total}",
                     progress=progress,
                     step=int(image_index),
                     total_steps=int(batch_size),

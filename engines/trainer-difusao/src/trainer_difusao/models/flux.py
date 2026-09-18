@@ -992,6 +992,8 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             seed=sample_seed,
             is_flux2=is_flux2,
             resolution=resolution,
+            metrics_path=metrics_path,
+            epoch=0,
         )
         _emit_metric(
             metrics_path,
@@ -1261,6 +1263,13 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
 
         # Geração de amostra visual periódica
         if sample_prompt and sample_interval > 0 and (epoch_idx % sample_interval == 0 or epoch_idx == epochs):
+            _emit_metric(
+                metrics_path,
+                epoch=epoch,
+                phase="generating_sample",
+                message=f"Iniciando geração de amostra visual (Época {epoch})...",
+                telemetry_only=True,
+            )
             sample_file = output / "samples" / f"sample_epoch_{epoch:03d}.png"
             _generate_sample_flux(
                 transformer=transformer,
@@ -1275,6 +1284,15 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                 seed=sample_seed,
                 is_flux2=is_flux2,
                 resolution=resolution,
+                metrics_path=metrics_path,
+                epoch=epoch,
+            )
+            _emit_metric(
+                metrics_path,
+                epoch=epoch,
+                phase="sample_ready",
+                message=f"Amostra visual da Época {epoch} pronta.",
+                telemetry_only=True,
             )
 
     # Salva adaptador LoRA final em safetensors com metadados

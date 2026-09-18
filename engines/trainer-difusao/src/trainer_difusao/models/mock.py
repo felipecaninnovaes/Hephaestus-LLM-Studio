@@ -80,7 +80,11 @@ def _generate_mock_safetensors(output_file: Path, lora_params: dict[str, Any]) -
 
 
 def _generate_mock_sample(
-    output_dir: Path, epoch: int, prompt: str, seed: int = 42
+    output_dir: Path,
+    epoch: int,
+    prompt: str,
+    seed: int = 42,
+    metrics_path: Path | None = None,
 ) -> None:
     """Gera uma imagem de teste sintética para validação do fluxo de artefatos de sample.
     
@@ -112,6 +116,16 @@ def _generate_mock_sample(
         )
         tmp_file.write_bytes(tiny_png)
         os.replace(tmp_file, sample_file)
+    if metrics_path is not None:
+        from trainer_difusao.common_pkg.metrics import _emit_metric
+        total_substeps = 4
+        for k in range(1, total_substeps + 1):
+            _emit_metric(
+                metrics_path,
+                phase="generating_sample",
+                message=f"Gerando amostra visual da Época {epoch} (passo {k}/{total_substeps})...",
+                telemetry_only=True,
+            )
 
 
 def _mock_train(cfg: dict[str, Any], output: Path) -> None:
@@ -194,7 +208,7 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
 
     # Amostra baseline Época 0 (se configurada e sem epoch_offset)
     if sample_prompt and epoch_offset == 0:
-        _generate_mock_sample(output, 0, sample_prompt, seed=sample_seed)
+        _generate_mock_sample(output, 0, sample_prompt, seed=sample_seed, metrics_path=metrics_path)
         _emit_metric(
             metrics_path,
             epoch=0,
@@ -234,7 +248,21 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
             _generate_mock_safetensors(ckpt_file, {**lora_info, "epoch": str(ep)})
 
         if sample_prompt and sample_interval > 0 and (ep_idx % sample_interval == 0 or ep_idx == epochs):
-            _generate_mock_sample(output, ep, sample_prompt, seed=sample_seed)
+            _emit_metric(
+                metrics_path,
+                epoch=ep,
+                phase="generating_sample",
+                message=f"Iniciando geração de amostra visual (Época {ep})...",
+                telemetry_only=True,
+            )
+            _generate_mock_sample(output, ep, sample_prompt, seed=sample_seed, metrics_path=metrics_path)
+            _emit_metric(
+                metrics_path,
+                epoch=ep,
+                phase="sample_ready",
+                message=f"Amostra visual da Época {ep} pronta.",
+                telemetry_only=True,
+            )
 
         if sleep_ms > 0:
             time.sleep(sleep_ms / 1000.0)

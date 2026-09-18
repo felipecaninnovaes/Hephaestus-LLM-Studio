@@ -759,7 +759,18 @@ pub fn unzip_safe(zip_path: &Path, dest: &Path) -> Result<(), PipelineError> {
 #[async_trait]
 pub trait S3Port: Send + Sync {
     /// Faz GET de um objeto S3 para um arquivo local.
-    async fn get_to_file(&self, key: &str, path: &Path) -> Result<(), String>;
+    async fn get_to_file(&self, key: &str, path: &Path) -> Result<(), String> {
+        self.get_to_file_with_progress(key, path, None).await
+    }
+    /// Faz GET de um objeto S3 para um arquivo local com callback de progresso opcional (bytes_baixados, total_bytes).
+    async fn get_to_file_with_progress(
+        &self,
+        key: &str,
+        path: &Path,
+        _on_progress: Option<&(dyn Fn(u64, Option<u64>) + Send + Sync)>,
+    ) -> Result<(), String> {
+        self.get_to_file(key, path).await
+    }
     /// Faz PUT de um arquivo local para um objeto S3.
     async fn put(&self, key: &str, path: &Path) -> Result<(), String>;
     /// Verifica se o bucket é acessível (para /ready).
@@ -806,6 +817,17 @@ impl S3Client {
 #[async_trait]
 impl S3Port for S3Client {
     async fn get_to_file(&self, key: &str, path: &Path) -> Result<(), String> {
+        self.get_to_file_with_progress(key, path, None).await
+    }
+
+    async fn get_to_file_with_progress(
+        &self,
+        key: &str,
+        path: &Path,
+        on_progress: Option<&(dyn Fn(u64, Option<u64>) + Send + Sync)>,
+    ) -> Result<(), String> {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
         let out = self
             .client
             .get_object()
@@ -815,13 +837,47 @@ impl S3Port for S3Client {
             .await
             .map_err(|e| format!("S3 GET {key}: {e}"))?;
 
+        let total_bytes = out.content_length().map(|l| l as u64);
         let mut reader = out.body.into_async_read();
         let mut file = tokio::fs::File::create(path)
             .await
             .map_err(|e| format!("create file {}: {e}", path.display()))?;
-        tokio::io::copy(&mut reader, &mut file)
+
+        let mut buf = [0u8; 64 * 1024];
+        let mut downloaded_bytes: u64 = 0;
+        let mut last_reported = tokio::time::Instant::now();
+
+        if let Some(cb) = on_progress {
+            cb(0, total_bytes);
+        }
+
+        loop {
+            let n = reader
+                .read(&mut buf)
+                .await
+                .map_err(|e| format!("read S3 GET {key}: {e}"))?;
+            if n == 0 {
+                break;
+            }
+            file.write_all(&buf[..n])
+                .await
+                .map_err(|e| format!("write file {}: {e}", path.display()))?;
+            downloaded_bytes += n as u64;
+
+            if let Some(cb) = on_progress {
+                if last_reported.elapsed() >= std::time::Duration::from_millis(200) {
+                    cb(downloaded_bytes, total_bytes);
+                    last_reported = tokio::time::Instant::now();
+                }
+            }
+        }
+        file.flush()
             .await
-            .map_err(|e| format!("write file {}: {e}", path.display()))?;
+            .map_err(|e| format!("flush file {}: {e}", path.display()))?;
+
+        if let Some(cb) = on_progress {
+            cb(downloaded_bytes, total_bytes);
+        }
         Ok(())
     }
 
@@ -874,6 +930,17 @@ pub async fn stage_cached_weight(
     scoped_key: &str,
     expected_md5: &str,
 ) -> Result<(), PipelineError> {
+    stage_cached_weight_with_progress(s3, cache_dir, dest_file, scoped_key, expected_md5, None).await
+}
+
+pub async fn stage_cached_weight_with_progress(
+    s3: &Arc<dyn S3Port>,
+    cache_dir: &Path,
+    dest_file: &Path,
+    scoped_key: &str,
+    expected_md5: &str,
+    on_progress: Option<&(dyn Fn(u64, Option<u64>) + Send + Sync)>,
+) -> Result<(), PipelineError> {
     tokio::fs::create_dir_all(cache_dir)
         .await
         .map_err(|e| PipelineError::Other(format!("create weights cache dir: {e}")))?;
@@ -910,7 +977,7 @@ pub async fn stage_cached_weight(
         uuid::Uuid::new_v4().simple()
     ));
 
-    s3.get_to_file(scoped_key, &tmp_file)
+    s3.get_to_file_with_progress(scoped_key, &tmp_file, on_progress)
         .await
         .map_err(|e| PipelineError::S3Download(format!("download weight {scoped_key}: {e}")))?;
 
@@ -1498,17 +1565,92 @@ async fn run_job_inner(
         }
     }
 
+fn make_progress_reporter(
+    report_client: &Arc<dyn ReportClient>,
+    job_id: &str,
+    phase: &'static str,
+    prefix_msg: &'static str,
+    base_progress: f64,
+    progress_span: f64,
+) -> impl Fn(u64, Option<u64>) + Send + Sync + 'static {
+    let rc = Arc::clone(report_client);
+    let jid = job_id.to_string();
+    move |downloaded: u64, total: Option<u64>| {
+        let dl_mb = downloaded as f64 / (1024.0 * 1024.0);
+        let (msg, prog) = if let Some(tot) = total {
+            let tot_mb = tot as f64 / (1024.0 * 1024.0);
+            let pct = if tot > 0 {
+                (downloaded as f64 / tot as f64).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            (
+                format!("{prefix_msg} ({:.1} MB / {:.1} MB · {:.0}%)...", dl_mb, tot_mb, pct * 100.0),
+                base_progress + progress_span * pct,
+            )
+        } else {
+            (format!("{prefix_msg} ({:.1} MB)...", dl_mb), base_progress + 0.01)
+        };
+        let rc_spawn = Arc::clone(&rc);
+        let jid_spawn = jid.clone();
+        tokio::spawn(async move {
+            let _ = rc_spawn
+                .report(
+                    &jid_spawn,
+                    &ReportBody {
+                        status: "running".to_string(),
+                        progress: Some(prog),
+                        epoch: None,
+                        step: None,
+                        metrics: None,
+                        error: None,
+                        artifacts: None,
+                        meta_content: None,
+                        phase: Some(phase.to_string()),
+                        message: Some(msg),
+                    },
+                )
+                .await;
+        });
+    }
+}
+
     // 2. Download package.zip via S3 (scoped — D2 barreira principal) se presente
     if let Some(ref pr) = dispatch.package_ref {
         let zip_path = temp_dir.join("dataset.zip");
         let key = scoped_key(S3Scope::Packages, &pr.key)
             .map_err(|e| PipelineError::S3Download(format!("invalid package key: {e}")))?;
 
-        s3.get_to_file(&key, &zip_path)
+        let on_dl = make_progress_reporter(
+            &report_client,
+            job_id,
+            "downloading_dataset",
+            "Baixando dataset",
+            0.01,
+            0.05,
+        );
+        s3.get_to_file_with_progress(&key, &zip_path, Some(&on_dl))
             .await
             .map_err(|e| PipelineError::S3Download(format!("download package: {e}")))?;
 
         // 3. Verify MD5 (crash do job se divergir — D4)
+        let _ = report_client
+            .report(
+                job_id,
+                &ReportBody {
+                    status: "running".to_string(),
+                    progress: Some(0.06),
+                    epoch: None,
+                    step: None,
+                    metrics: None,
+                    error: None,
+                    artifacts: None,
+                    meta_content: None,
+                    phase: Some("downloading_dataset".to_string()),
+                    message: Some("Validando integridade do dataset (MD5)...".to_string()),
+                },
+            )
+            .await;
         let actual_md5 = compute_file_md5(&zip_path)
             .map_err(|e| PipelineError::S3Download(format!("compute md5: {e}")))?;
         if actual_md5 != pr.md5_zip {
@@ -1519,6 +1661,23 @@ async fn run_job_inner(
         }
 
         // 4. Unzip (zip-slip safe, padrão import 3e)
+        let _ = report_client
+            .report(
+                job_id,
+                &ReportBody {
+                    status: "running".to_string(),
+                    progress: Some(0.07),
+                    epoch: None,
+                    step: None,
+                    metrics: None,
+                    error: None,
+                    artifacts: None,
+                    meta_content: None,
+                    phase: Some("extracting_dataset".to_string()),
+                    message: Some("Descompactando dataset no cache do nó...".to_string()),
+                },
+            )
+            .await;
         unzip_safe(&zip_path, &datasets_cache)?;
     }
 
@@ -1552,12 +1711,21 @@ async fn run_job_inner(
             .map_err(|e| PipelineError::Other(format!("create weights dir: {e}")))?;
 
         let weights_file = weights_dir.join(filename);
-        stage_cached_weight(
+        let on_w = make_progress_reporter(
+            &report_client,
+            job_id,
+            "downloading_weights",
+            "Baixando pesos do modelo",
+            0.07,
+            0.03,
+        );
+        stage_cached_weight_with_progress(
             &s3,
             &weights_cache_dir,
             &weights_file,
             &scoped_wkey,
             &weights_ref.md5,
+            Some(&on_w),
         )
         .await?;
         weights_staged_path = Some(format!("/outputs/{job_id}/weights/{filename}"));
@@ -1610,12 +1778,21 @@ async fn run_job_inner(
         let scoped_key = scoped_key(scope, &custom.s3_key)
             .map_err(|e| PipelineError::S3Download(format!("invalid custom key: {e}")))?;
         let custom_file = weights_dir.join("custom.safetensors");
-        stage_cached_weight(
+        let on_c = make_progress_reporter(
+            &report_client,
+            job_id,
+            "downloading_weights",
+            "Baixando checkpoint custom",
+            0.07,
+            0.03,
+        );
+        stage_cached_weight_with_progress(
             &s3,
             &weights_cache_dir,
             &custom_file,
             &scoped_key,
             &custom.md5,
+            Some(&on_c),
         )
         .await?;
         custom_staged_path = Some(format!("/outputs/{job_id}/weights/custom.safetensors"));
@@ -2425,6 +2602,24 @@ async fn run_job_inner(
             )))
         }
     };
+
+    let _ = report_client
+        .report(
+            job_id,
+            &ReportBody {
+                status: "running".to_string(),
+                progress: Some(0.08),
+                epoch: None,
+                step: None,
+                metrics: None,
+                error: None,
+                artifacts: None,
+                meta_content: None,
+                phase: Some("starting_container".to_string()),
+                message: Some("Inicializando container de execução na GPU...".to_string()),
+            },
+        )
+        .await;
 
     let (exit_code, logs) = executor
         .run(

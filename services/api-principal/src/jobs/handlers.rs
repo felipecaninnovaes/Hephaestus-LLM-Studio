@@ -100,6 +100,27 @@ pub struct JobTelemetryEvent {
     pub metrics: Option<serde_json::Value>,
 }
 
+/// Extrai contadores totais (steps/epochs/imagens) a partir de job.params.
+pub fn extract_totals_from_params(params: Option<&serde_json::Value>) -> (Option<i64>, Option<i32>) {
+    let p = match params {
+        Some(v) if v.is_object() => v,
+        _ => return (None, None),
+    };
+    let total_epochs = p.get("epochs")
+        .or_else(|| p.pointer("/lora/epochs"))
+        .or_else(|| p.pointer("/yolo/epochs"))
+        .and_then(|v| v.as_i64())
+        .map(|v| v as i32);
+    let total_steps = p.get("batchSize")
+        .or_else(|| p.get("batch_size"))
+        .or_else(|| p.get("totalSteps"))
+        .or_else(|| p.get("total_steps"))
+        .or_else(|| p.get("imagesCount"))
+        .or_else(|| p.get("image_count"))
+        .and_then(|v| v.as_i64());
+    (total_steps, total_epochs)
+}
+
 impl JobTelemetryEvent {
     pub fn from_job_response(job: &JobResponse) -> Self {
         let timestamp = chrono::Utc::now().to_rfc3339();
@@ -149,9 +170,9 @@ impl JobTelemetryEvent {
             phase_message: job.phase_message.clone(),
             progress,
             step: job.step.map(|s| s as i64),
-            total_steps: None,
+            total_steps: job.total_steps,
             epoch: job.epoch,
-            total_epochs: None,
+            total_epochs: job.total_epochs,
             vram_used_gb: job.vram_used_gb,
             metrics,
         }
@@ -190,10 +211,13 @@ pub struct JobResponse {
     pub phase_message: Option<String>,
     #[serde(rename = "vramUsedGb", skip_serializing_if = "Option::is_none")]
     pub vram_used_gb: Option<f64>,
+    #[serde(rename = "totalSteps", skip_serializing_if = "Option::is_none")]
+    pub total_steps: Option<i64>,
+    #[serde(rename = "totalEpochs", skip_serializing_if = "Option::is_none")]
+    pub total_epochs: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<serde_json::Value>,
 }
-
 /// Job list response.
 #[derive(Debug, Serialize)]
 pub struct JobListResponse {
@@ -446,6 +470,14 @@ fn to_job_response(job: crate::jobs::manager_client::InternalJob) -> JobResponse
         phase,
         phase_message,
         vram_used_gb,
+        total_steps: {
+            let (ts, _) = extract_totals_from_params(job.params.as_ref());
+            ts
+        },
+        total_epochs: {
+            let (_, te) = extract_totals_from_params(job.params.as_ref());
+            te
+        },
         params: job.params,
     }
 }
@@ -532,6 +564,10 @@ pub async fn stream_job_events(State(state): State<AppState>, Path(id): Path<Str
         terminal_sent: bool,
         last_progress: f64,
         last_phase: String,
+        last_message: Option<String>,
+        last_step: Option<i64>,
+        last_epoch: Option<i32>,
+        last_vram: Option<f64>,
     }
 
     let initial_telemetry = JobTelemetryEvent::from_job_response(&initial_job);
@@ -545,6 +581,10 @@ pub async fn stream_job_events(State(state): State<AppState>, Path(id): Path<Str
         terminal_sent: false,
         last_progress: initial_telemetry.progress,
         last_phase: initial_telemetry.phase.clone(),
+        last_message: initial_telemetry.phase_message.clone(),
+        last_step: initial_telemetry.step,
+        last_epoch: initial_telemetry.epoch,
+        last_vram: initial_telemetry.vram_used_gb,
     };
 
     let sse_stream = futures_util::stream::unfold(ctx, move |mut c| async move {
@@ -570,7 +610,7 @@ pub async fn stream_job_events(State(state): State<AppState>, Path(id): Path<Str
         }
 
         loop {
-            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
             let current_job = match c.manager.get_job(&c.id).await {
                 Ok(v) => to_job_response(v),
@@ -585,11 +625,19 @@ pub async fn stream_job_events(State(state): State<AppState>, Path(id): Path<Str
 
             let has_changed = (telemetry.progress - c.last_progress).abs() > 0.0001
                 || telemetry.phase != c.last_phase
+                || telemetry.phase_message != c.last_message
+                || telemetry.step != c.last_step
+                || telemetry.epoch != c.last_epoch
+                || (telemetry.vram_used_gb.unwrap_or(0.0) - c.last_vram.unwrap_or(0.0)).abs() > 0.05
                 || is_terminal;
 
             if has_changed {
                 c.last_progress = telemetry.progress;
                 c.last_phase = telemetry.phase.clone();
+                c.last_message = telemetry.phase_message.clone();
+                c.last_step = telemetry.step;
+                c.last_epoch = telemetry.epoch;
+                c.last_vram = telemetry.vram_used_gb;
                 let event_type = if is_terminal { "finished" } else { "telemetry" };
                 if is_terminal {
                     c.terminal_sent = true;

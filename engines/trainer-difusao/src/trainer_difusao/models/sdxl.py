@@ -79,6 +79,8 @@ def _generate_sample_sdxl(
     prompt: str,
     output_path: Path,
     seed: int = 42,
+    metrics_path: Path | None = None,
+    epoch: int = 0,
 ) -> None:
     """Gera uma imagem de teste para SDXL com os pesos LoRA ativos e seed fixa determinística.
     
@@ -107,14 +109,42 @@ def _generate_sample_sdxl(
             generator = torch.Generator(
                 device="cuda" if torch.cuda.is_available() else "cpu"
             ).manual_seed(seed)
+            total_sample_steps = 20
+            def step_callback(pipe_obj: Any, step_idx: int, timestep: Any, callback_kwargs: dict[str, Any]) -> dict[str, Any]:
+                if metrics_path is not None:
+                    try:
+                        from trainer_difusao.common_pkg.metrics import _emit_metric
+                        step_num = step_idx + 1
+                        _emit_metric(
+                            metrics_path,
+                            epoch=epoch,
+                            step=step_num,
+                            phase="generating_sample",
+                            message=f"Gerando amostra de validação (passo {step_num}/{total_sample_steps})...",
+                            telemetry_only=True,
+                        )
+                    except Exception:
+                        pass
+                return callback_kwargs
+
             with torch.inference_mode():
-                latents = pipe(
-                    prompt,
-                    generator=generator,
-                    num_inference_steps=20,
-                    guidance_scale=7.0,
-                    output_type="latent",
-                ).images
+                try:
+                    latents = pipe(
+                        prompt,
+                        generator=generator,
+                        num_inference_steps=total_sample_steps,
+                        guidance_scale=7.0,
+                        output_type="latent",
+                        callback_on_step_end=step_callback,
+                    ).images
+                except TypeError:
+                    latents = pipe(
+                        prompt,
+                        generator=generator,
+                        num_inference_steps=total_sample_steps,
+                        guidance_scale=7.0,
+                        output_type="latent",
+                    ).images
                 latents = latents.to(dtype=torch.float32) / vae.config.scaling_factor
                 decoded = vae.decode(latents).sample
                 image = (decoded / 2 + 0.5).clamp(0, 1)
@@ -414,6 +444,8 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
             sample_prompt,
             sample_baseline_file,
             seed=sample_seed,
+            metrics_path=metrics_path,
+            epoch=0,
         )
         _emit_metric(
             metrics_path,
@@ -609,6 +641,13 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
             and (epoch_idx % sample_interval == 0 or epoch_idx == epochs)
         ):
             sample_file = output / "samples" / f"sample_epoch_{epoch:03d}.png"
+            _emit_metric(
+                metrics_path,
+                epoch=epoch,
+                phase="generating_sample",
+                message=f"Iniciando geração de amostra visual (Época {epoch})...",
+                telemetry_only=True,
+            )
             _generate_sample_sdxl(
                 unet,
                 vae,
@@ -620,6 +659,15 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
                 sample_prompt,
                 sample_file,
                 seed=sample_seed,
+                metrics_path=metrics_path,
+                epoch=epoch,
+            )
+            _emit_metric(
+                metrics_path,
+                epoch=epoch,
+                phase="sample_ready",
+                message=f"Amostra visual da Época {epoch} pronta.",
+                telemetry_only=True,
             )
 
     final_adapter_file = output / f"{base_name}.safetensors"

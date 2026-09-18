@@ -284,8 +284,8 @@ export interface Job {
   progress: number;
   epoch: number | null;
   step: number | null;
-  /* JobResponse do backend NÃO tem totalSteps/totalEpochs (só o SSE
-     JobTelemetryEvent os informa) — o polling nunca os repassa. */
+  totalSteps?: number | null;
+  totalEpochs?: number | null;
   metrics: Record<string, unknown> | null;
   vramMinGb: number | null;
   orchestratorId: string | null;

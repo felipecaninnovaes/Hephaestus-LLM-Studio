@@ -1148,28 +1148,43 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
 
 													{/* Barra de Progresso em jobs ativos */}
 													{isActive && (
-														<ProgressBar
-															value={pct}
-															variant="brand"
-															size="md"
-															label={
-																job.kind === "autolabel" ||
-																job.engine === "autolabel"
-																	? `Legendagem Automática VLM · ${pct}%`
-																	: job.kind === "autotracker" ||
-																			job.engine === "autotracker"
-																		? `Rastreamento & Detecção · ${pct}%`
-																		: (job.kind as string) === "diffusion" ||
-																				job.engine === "diffusion"
-																			? `Treinamento LoRA Difusão · ${pct}%`
-																			: job.kind === "yolo_predict" ||
-																					job.mode === "predict"
-																				? `Inferência YOLO · ${pct}%`
-																				: `Treinamento YOLO · ${pct}%${latestMetric ? ` (Época ${latestMetric.epoch})` : ""}`
-															}
-															showPercent
-															className="mt-2.5"
-														/>
+														<div className="mt-2.5 space-y-1.5">
+															<ProgressBar
+																value={pct}
+																variant="brand"
+																size="md"
+																label={
+																	job.phaseMessage
+																		? job.phaseMessage
+																		: job.kind === "autolabel" ||
+																			job.engine === "autolabel"
+																			? `Legendagem Automática VLM · ${pct}%`
+																			: job.kind === "autotracker" ||
+																					job.engine === "autotracker"
+																				? `Rastreamento & Detecção · ${pct}%`
+																				: (job.kind as string) === "diffusion_generate" || (job.kind === "diffusion" && job.mode === "generate")
+																					? `Geração de Imagens · ${pct}%`
+																					: (job.kind as string) === "diffusion" ||
+																							job.engine === "diffusion"
+																						? `Treinamento LoRA Difusão · ${pct}%`
+																						: job.kind === "yolo_predict" ||
+																								job.mode === "predict"
+																							? `Inferência YOLO · ${pct}%`
+																							: `Treinamento YOLO · ${pct}%${latestMetric ? ` (Época ${latestMetric.epoch})` : ""}`
+																}
+																showPercent
+															/>
+															{job.phaseMessage && (
+																<div className="flex items-center justify-between text-3xs text-zinc-400 font-mono">
+																	<span className="truncate">{job.phaseMessage}</span>
+																	{job.vramUsedGb && (
+																		<span className="shrink-0 text-zinc-500">
+																			{(job.vramUsedGb).toFixed(1)} GB VRAM
+																		</span>
+																	)}
+																</div>
+															)}
+														</div>
 													)}
 												</button>
 

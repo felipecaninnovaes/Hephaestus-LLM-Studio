@@ -21,6 +21,8 @@ def _generate_sample_flux(
     seed: int = 42,
     is_flux2: bool = False,
     resolution: int = 512,
+    metrics_path: Path | None = None,
+    epoch: int = 0,
 ) -> None:
     """Gera uma imagem de teste para FLUX.2 Klein ou FLUX.1 com pesos LoRA ativos e seed fixa determinística."""
     try:
@@ -30,6 +32,24 @@ def _generate_sample_flux(
         transformer.eval()
         output_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = output_path.with_name(f".tmp_{output_path.name}")
+
+        total_sample_steps = 20
+        def step_callback(pipe_obj: Any, step_idx: int, timestep: Any, callback_kwargs: dict[str, Any]) -> dict[str, Any]:
+            if metrics_path is not None:
+                try:
+                    from trainer_difusao.common_pkg.metrics import _emit_metric
+                    step_num = step_idx + 1
+                    _emit_metric(
+                        metrics_path,
+                        epoch=epoch,
+                        step=step_num,
+                        phase="generating_sample",
+                        message=f"Gerando amostra de validação (passo {step_num}/{total_sample_steps})...",
+                        telemetry_only=True,
+                    )
+                except Exception:
+                    pass
+            return callback_kwargs
 
         try:
             if is_flux2:
@@ -46,14 +66,25 @@ def _generate_sample_flux(
                     pipe.set_progress_bar_config(disable=True)
                     generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(seed)
                     with torch.inference_mode():
-                        image = pipe(
-                            prompt=prompt,
-                            generator=generator,
-                            num_inference_steps=20,
-                            guidance_scale=3.5,
-                            height=resolution,
-                            width=resolution,
-                        ).images[0]
+                        try:
+                            image = pipe(
+                                prompt=prompt,
+                                generator=generator,
+                                num_inference_steps=total_sample_steps,
+                                guidance_scale=3.5,
+                                height=resolution,
+                                width=resolution,
+                                callback_on_step_end=step_callback,
+                            ).images[0]
+                        except TypeError:
+                            image = pipe(
+                                prompt=prompt,
+                                generator=generator,
+                                num_inference_steps=total_sample_steps,
+                                guidance_scale=3.5,
+                                height=resolution,
+                                width=resolution,
+                            ).images[0]
                         image.save(tmp_path)
                         os.replace(tmp_path, output_path)
                         print(f"[FLUX-KLEIN] Amostra de validação salva (seed={seed}) em: {output_path}", flush=True)
@@ -75,14 +106,25 @@ def _generate_sample_flux(
             pipe.set_progress_bar_config(disable=True)
             generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(seed)
             with torch.inference_mode():
-                image = pipe(
-                    prompt=prompt,
-                    generator=generator,
-                    num_inference_steps=20,
-                    guidance_scale=3.5,
-                    height=resolution,
-                    width=resolution,
-                ).images[0]
+                try:
+                    image = pipe(
+                        prompt=prompt,
+                        generator=generator,
+                        num_inference_steps=total_sample_steps,
+                        guidance_scale=3.5,
+                        height=resolution,
+                        width=resolution,
+                        callback_on_step_end=step_callback,
+                    ).images[0]
+                except TypeError:
+                    image = pipe(
+                        prompt=prompt,
+                        generator=generator,
+                        num_inference_steps=total_sample_steps,
+                        guidance_scale=3.5,
+                        height=resolution,
+                        width=resolution,
+                    ).images[0]
                 image.save(tmp_path)
                 os.replace(tmp_path, output_path)
                 print(f"[FLUX] Amostra de validação salva (seed={seed}, steps=20, cfg=3.5) em: {output_path}", flush=True)

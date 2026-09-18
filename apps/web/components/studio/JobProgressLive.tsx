@@ -9,6 +9,7 @@ import React from "react";
  * treino sem conversão.
  */
 export interface JobProgressLiveProps {
+  jobKind?: string | null;
   phase?: string | null;
   phaseMessage?: string | null;
   progress?: number;
@@ -25,14 +26,30 @@ export interface JobProgressLiveProps {
 
 const PHASE_LABELS: Record<string, string> = {
   init: "Inicialização",
-  preparing: "Preparação",
-  packaging_dataset: "Empacotando dataset",
+  preparing: "Preparando Ambiente",
+  packaging_dataset: "Empacotando Dataset",
+  downloading_dataset: "Sincronizando Dataset",
+  extracting_dataset: "Extraindo Dataset",
   downloading: "Download de Pesos",
+  downloading_weights: "Download de Pesos",
+  starting_container: "Iniciando Nó GPU",
   loading_model: "Carregando Modelo",
-  quantizing: "Quantização NF4/BNB",
+  load_transformer: "Carregando Transformer",
+  load_text_encoder: "Carregando Text Encoder",
+  quantizing: "Quantização",
+  quantizing_transformer: "Quantizando Transformer",
+  quantizing_text_encoder: "Quantizando Text Encoder",
+  setup_lora: "Configurando LoRA",
   injecting_lora: "Injeção de LoRA",
-  generating: "Amostragem de Difusão",
-  training: "Treinamento em Andamento",
+  dataset_ready: "Dataset Carregado",
+  generating: "Gerando Imagem",
+  generating_baseline_sample: "Amostra Baseline",
+  generating_sample: "Gerando Amostra",
+  sample_ready: "Amostra Concluída",
+  baseline_ready: "Amostra Inicial Pronta",
+  training: "Treinamento",
+  training_started: "Treino Iniciado",
+  epoch_complete: "Época Concluída",
   saving: "Gravando Artefato",
   completed: "Concluído",
   done: "Finalizado",
@@ -42,6 +59,7 @@ const PHASE_LABELS: Record<string, string> = {
 };
 
 export function JobProgressLive({
+  jobKind,
   phase,
   phaseMessage,
   progress = 0,
@@ -59,9 +77,15 @@ export function JobProgressLive({
   const percent = Math.round(normProgress * 100);
 
   const rawPhase = phase?.toLowerCase() || (isFinished ? "completed" : "preparing");
-  const displayPhase = PHASE_LABELS[rawPhase] || rawPhase.toUpperCase();
+  const isGeneratingSample = rawPhase === "generating_sample" || rawPhase === "generating_baseline_sample";
+  const isGenerationJob = jobKind === "diffusion_generate" || jobKind === "diffusion";
+  const displayPhase =
+    isGeneratingSample
+      ? "Gerando Amostra"
+      : isGenerationJob && rawPhase === "generating"
+        ? "Gerando Imagem"
+        : PHASE_LABELS[rawPhase] || rawPhase.replace(/_/g, " ").toUpperCase();
   const isError = rawPhase === "error" || rawPhase === "failed";
-
   if (compact) {
     return (
       <div className={`space-y-1.5 ${className}`}>
@@ -139,18 +163,27 @@ export function JobProgressLive({
             </span>
           )}
 
-          {/* Step / Epoch Counters — step/totalSteps são o contador de IMAGENS
-              do batch (0-based da engine; exibe 1-based). Só renderiza quando
-              totalSteps veio da telemetry/job; sem ele, mostra só barra/mensagem. */}
-          {step !== null && step !== undefined && totalSteps !== null && totalSteps !== undefined && totalSteps > 0 && (
+          {/* Badges de progresso contextual */}
+          {isGeneratingSample && step !== null && step !== undefined && step > 0 && (
+            <span className="inline-flex items-center gap-1 font-mono text-2xs text-amber-300 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded animate-pulse">
+              <span className="size-1.5 rounded-full bg-amber-400" />
+              Amostra: Passo {step}{totalSteps ? `/${totalSteps}` : "/20"}
+            </span>
+          )}
+          {!isGeneratingSample && isGenerationJob && step !== null && step !== undefined && totalSteps !== null && totalSteps !== undefined && totalSteps > 0 && (
             <span className="hidden sm:inline-block font-mono text-2xs text-zinc-400 bg-white/[0.03] border border-white/5 px-2 py-0.5 rounded">
               Imagem {step + 1}/{totalSteps}
             </span>
           )}
-          {epoch !== null && epoch !== undefined && epoch > 0 && (
+          {!isGeneratingSample && !isGenerationJob && epoch !== null && epoch !== undefined && epoch > 0 && (
             <span className="hidden sm:inline-block font-mono text-2xs text-zinc-400 bg-white/[0.03] border border-white/5 px-2 py-0.5 rounded">
               Época {epoch}
               {totalEpochs ? `/${totalEpochs}` : ""}
+            </span>
+          )}
+          {!isGeneratingSample && !isGenerationJob && step !== null && step !== undefined && step > 0 && (
+            <span className="hidden md:inline-block font-mono text-2xs text-zinc-400 bg-white/[0.03] border border-white/5 px-2 py-0.5 rounded">
+              Passo {step}{totalSteps ? `/${totalSteps}` : ""}
             </span>
           )}
         </div>

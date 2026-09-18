@@ -14,15 +14,15 @@ from engine_kit.vram import vram_allocated_gb
 
 def _emit_metric(
     metrics_path: Path,
-    epoch: int,
-    step: int,
+    epoch: int = 0,
+    step: int = 0,
     loss: float | None = None,
     lr: float | None = None,
     progress: float | None = None,
     phase: str | None = None,
     message: str | None = None,
+    telemetry_only: bool = False,
 ) -> None:
-    """Emite uma linha estruturada em metrics.jsonl com flush imediato para consumo pelo orquestrador."""
     try:
         metrics_path.parent.mkdir(parents=True, exist_ok=True)
         payload: dict[str, Any] = {
@@ -40,10 +40,10 @@ def _emit_metric(
         if message is not None:
             payload["message"] = message
 
-        with open(metrics_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload) + "\n")
-            f.flush()
-
+        if not telemetry_only:
+            with open(metrics_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(payload) + "\n")
+                f.flush()
         # ADR-0021: Espelha em telemetry.jsonl no formato canônico
         try:
             telemetry_path = metrics_path.parent / "telemetry.jsonl"

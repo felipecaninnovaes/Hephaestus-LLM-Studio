@@ -1032,6 +1032,7 @@ function JobsPageContent() {
 									{isActive(selectedJob.status) && (
 										<div className="pt-2">
 											<JobProgressLive
+												jobKind={selectedJob.kind}
 												phase={
 													telemetry.phase ||
 													selectedJob.phase ||
@@ -1047,7 +1048,9 @@ function JobsPageContent() {
 													telemetry.vramUsedGb ?? selectedJob.vramUsedGb
 												}
 												step={telemetry.step ?? selectedJob.step}
+												totalSteps={telemetry.totalSteps ?? selectedJob.totalSteps}
 												epoch={telemetry.epoch ?? selectedJob.epoch}
+												totalEpochs={telemetry.totalEpochs ?? selectedJob.totalEpochs}
 												isLive={telemetry.isLive}
 												isFinished={telemetry.isFinished}
 											/>

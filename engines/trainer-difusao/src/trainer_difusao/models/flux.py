@@ -881,15 +881,23 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                                 f"({text_encoder_path}): layout não "
                                 f"reconhecido ({exc})"
                             )
-                        if enc_missing or enc_unexpected:
+                        _ign = {"lm_head.weight", "model.lm_head.weight"}
+                        _enc_miss = [k for k in (enc_missing or []) if k not in _ign]
+                        _enc_unexp = [k for k in (enc_unexpected or []) if k not in _ign]
+                        if _enc_miss or _enc_unexp:
                             _die(
                                 f"text_encoder custom ({text_encoder_path}) com "
                                 f"layout não reconhecido: "
-                                f"{len(list(enc_missing or []))} chave(s) "
-                                f"ausente(s) {list(enc_missing or [])[:5]}, "
-                                f"{len(list(enc_unexpected or []))} inesperada(s) "
-                                f"{list(enc_unexpected or [])[:5]}."
+                                f"{len(_enc_miss)} chave(s) "
+                                f"ausente(s) {_enc_miss[:5]}, "
+                                f"{len(_enc_unexp)} inesperada(s) "
+                                f"{_enc_unexp[:5]}."
                             )
+                        if hasattr(merge_base, "tie_weights"):
+                            try:
+                                merge_base.tie_weights()
+                            except Exception:
+                                pass
                         enc_parent = enc_merged_dir.parent
                         enc_tmp = _merged_text_encoder_tmp_dir(enc_merged_dir)
                         try:
@@ -947,15 +955,23 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                             f"Falha ao aplicar text_encoder custom "
                             f"({text_encoder_path}): layout não reconhecido ({exc})"
                         )
-                    if enc_missing or enc_unexpected:
+                    _ign = {"lm_head.weight", "model.lm_head.weight"}
+                    _enc_miss = [k for k in (enc_missing or []) if k not in _ign]
+                    _enc_unexp = [k for k in (enc_unexpected or []) if k not in _ign]
+                    if _enc_miss or _enc_unexp:
                         _die(
                             f"text_encoder custom ({text_encoder_path}) com layout "
                             f"não reconhecido: "
-                            f"{len(list(enc_missing or []))} chave(s) "
-                            f"ausente(s) {list(enc_missing or [])[:5]}, "
-                            f"{len(list(enc_unexpected or []))} inesperada(s) "
-                            f"{list(enc_unexpected or [])[:5]}."
+                            f"{len(_enc_miss)} chave(s) "
+                            f"ausente(s) {_enc_miss[:5]}, "
+                            f"{len(_enc_unexp)} inesperada(s) "
+                            f"{_enc_unexp[:5]}."
                         )
+                    if hasattr(text_encoder_one, "tie_weights"):
+                        try:
+                            text_encoder_one.tie_weights()
+                        except Exception:
+                            pass
                     print(
                         f"[FLUX] Text encoder custom (.safetensors sobre repo): "
                         f"{text_encoder_path}",

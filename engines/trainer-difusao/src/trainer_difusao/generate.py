@@ -926,16 +926,22 @@ def _apply_loose_encoder_state(
             f"Falha ao aplicar text_encoder custom ({encoder_path}) sobre o "
             f"encoder do repo ({model_repo}): layout não reconhecido ({exc})"
         )
-    if missing or unexpected:
-        missing = list(missing or [])
-        unexpected = list(unexpected or [])
+    ignored_keys = {"lm_head.weight", "model.lm_head.weight"}
+    missing_filtered = [k for k in (missing or []) if k not in ignored_keys]
+    unexpected_filtered = [k for k in (unexpected or []) if k not in ignored_keys]
+    if missing_filtered or unexpected_filtered:
         _die(
             f"text_encoder custom ({encoder_path}) com layout não reconhecido: "
-            f"{len(missing)} chave(s) ausente(s) {missing[:5]}, "
-            f"{len(unexpected)} inesperada(s) {unexpected[:5]}. "
+            f"{len(missing_filtered)} chave(s) ausente(s) {missing_filtered[:5]}, "
+            f"{len(unexpected_filtered)} inesperada(s) {unexpected_filtered[:5]}. "
             "Envie o encoder como diretório HF completo ou um .safetensors "
             "compatível com o Qwen3 do FLUX.2 Klein."
         )
+    if hasattr(base_encoder, "tie_weights"):
+        try:
+            base_encoder.tie_weights()
+        except Exception:
+            pass
 
 
 def _load_flux2_loose_encoder_merged(

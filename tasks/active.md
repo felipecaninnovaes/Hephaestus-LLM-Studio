@@ -1,15 +1,13 @@
 # Memória Ativa — Hephaestus LLM Studio
 
 - **Branch atual:** `feat/onboarding-ux-proxy-e-worker-join`
-- **Fatia em andamento:** Melhoria de Onboarding e Pareamento — Modo Proxy de Storage por Padrão, Auto-detecção de GPU no `setup.sh`, Exportador de Configuração de Worker Remoto e Redirect de Rotas.
+- **Fatia em andamento:** Documentação e Instalador One-Line — Script `scripts/install.sh` (instalação via curl sem clone do repo) e `README.md` raiz com guia completo de setup e arquitetura.
 
 ## Checklist Imediato da Sessão Ativa
-- [x] Configurar modo proxy de storage por padrão nos templates compose (`S3_PUBLIC_ENDPOINT_URL=""`)
-- [x] Aprimorar `scripts/setup.sh` com auto-detecção de GPU NVIDIA vs CPU-only e recomendação de perfis
-- [x] Adicionar helper `export-worker-env` no `scripts/heph.sh` para facilitar pareamento remoto
-- [x] Adicionar redirect de `/orchestrators` -> `/environments` em `apps/web/next.config.ts`
-- [x] Validar sintaxe `docker compose config` dos templates e execução dos scripts
-- [x] Validar build web (`npm run build --workspace=web`) e workspace Rust (`cargo check --workspace`)
+- [x] Criar `scripts/install.sh` para download e setup direto via `curl | bash`
+- [x] Criar `README.md` canônico na raiz documentando os 4 modelos e o one-line quickstart
+- [x] Testar instalação via `scripts/install.sh` na VM Ubuntu
+- [x] Validar sintaxe dos scripts (`bash -n`) e commit convencional
 ## Entregas Concluídas Recentemente
 - [x] Roadmap de Hardening e Padronização da Infraestrutura (`tasks/infra-auditoria.md`) concluído e integrado.
 - [x] Hotfix manager: `report_job` aceita `status: cancelled` pós-abort (commit 4bfb450).

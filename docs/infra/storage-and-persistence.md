@@ -83,6 +83,7 @@ O SeaweedFS carrega identidades estritas via arquivo de configuração montado c
 }
 ```
 - **Princípio do Menor Privilégio:** O `orchestrator` recebe credenciais com escopo granular (`heph-orchestrator`), restritas aos prefixos necessários dentro do bucket `heph-data`.
+- **Alerta de Hardening:** O arquivo `seaweedfs-s3.json` versionado contém credenciais conhecidas (`heph-local-dev`, `heph-orch-local-dev`). Em ambientes expostos ou de produção, esse arquivo **não deve ser utilizado** diretamente; utilize uma cópia fora de versão montada no container com credenciais geradas aleatoriamente.
 
 ### 3.2 Bootstrap com `s3-init` e `ensure-bucket.sh`
 - **Problema Arquitetural:** Ao executar `docker compose down -v`, o volume `seaweed_data` é destruído. No próximo `up`, o SeaweedFS reinicia com as identidades declaradas, mas **sem o bucket `heph-data` criado**. Como a credencial do orchestrator não possui permissão `Admin` para auto-criação de buckets no primeiro PUT, uploads de artefatos de treino falhariam silenciosamente.
@@ -120,32 +121,69 @@ Ao descarregar ou resolver pesos de modelos (ex.: FLUX.2 Klein, SD 1.5, CLIP), o
 
 ## 5. Resiliência, Backups e Prevenção de Desastres
 
-### 5.1 Perigo do `down -v` em Ambiente Real
-Um comando inadvertido como `docker compose down -v` elimina os volumes nomeados `pgdata` e `seaweed_data`, causando perda definitiva e irreversível de metadados, anotações de imagens e checkpoints treinados.
+### 5.1 Perigo Crítico do `docker compose down -v`
+> 🛑 **AVISO:** O comando `docker compose down -v` elimina os volumes nomeados `pgdata` e `seaweed_data`, causando **destruição total e irreversível** de todos os datasets, vetores de busca e checkpoints treinados. Ele **NUNCA** deve fazer parte da rotina operacional padrão de desligamento. O comando correto para parar a stack preservando os dados é apenas `docker compose down`.
 
-### 5.2 Rotina Canônica de Backup
+### 5.2 Janela de Consistência Referencial entre Banco e S3
+O banco de dados relacional armazena referências a chaves do S3 (`images.s3_key`, `models.s3_key`, `job_artifacts.s3_key`).
+- **Problema de Concorrência:** Se o backup do banco e a cópia do S3 forem executados assincronamente em janelas separadas, o dump do banco pode conter ponteiros para arquivos que ainda não foram gravados no backup do S3 (dangling references) ou omitir arquivos recém-gravados.
+- **Protocolo de Ordenação Segura:**
+  1. Primeiro, realizar a cópia dos objetos do S3 (`rclone copy`).
+  2. Imediatamente após, executar o snapshot consistente do PostgreSQL (`pg_dump -Fc`).
+  Dessa forma, garante-se que todo objeto referenciado no banco de dados já possui cópia persistida no backup do S3.
 
-#### 1. Backup do Banco Relacional e Vetores (PostgreSQL)
+### 5.3 Rotina Canônica de Backup Seguro
+
+#### 1. Cópia do Object Storage (com Preservação contra Deleções)
+**Evite `rclone sync`:** O comando `sync` espelha deleções imediatamente — qualquer exclusão acidental ou corrupção na origem apagará os arquivos correspondentes no destino de backup.
+
+Utilize `rclone copy` com diretório de versionamento/backup para histórico:
 ```bash
-# Gerar dump consistente em formato binário customizado comprimido (-Fc)
-docker compose -f infra/compose.yaml exec -T db pg_dump -U studio -d studio -Fc > backup_pg_$(date +%Y%m%d_%H%M%S).dump
+BACKUP_DATE=$(date +%Y%m%d_%H%M%S)
 
-# Restauração:
-docker compose -f infra/compose.yaml exec -T db pg_restore -U studio -d studio --clean --if-exists < backup_pg.dump
-```
-
-#### 2. Backup do Object Storage (SeaweedFS S3)
-Para sincronização de dados binários (imagens, datasets, artefatos):
-```bash
-# Via AWS CLI ou rclone apontando para o endpoint local:
-rclone sync :s3:heph-data /mnt/backup/heph-data \
+# Cópia incremental versionada dos objetos do bucket
+rclone copy :s3:heph-data /mnt/backup/hephaestus/s3/current \
+  --backup-dir=/mnt/backup/hephaestus/s3/deleted_${BACKUP_DATE} \
   --s3-provider=Other \
   --s3-endpoint=http://127.0.0.1:8333 \
   --s3-access-key-id=heph \
   --s3-secret-access-key=heph-local-dev
 ```
 
-### 5.3 Garbage Collection de Disco no SeaweedFS
-O SeaweedFS inclui parâmetro de coleta de lixo no comando padrão:
-`-master.volumeSizeLimitMB=1024 -master.garbageThreshold=0.3`
-Ao remover datasets e artefatos pela interface do Studio, o master do SeaweedFS compacta volumes com mais de 30% de espaço liberado, recuperando o espaço físico em disco sem intervenção manual.
+#### 2. Snapshot Consistente do PostgreSQL
+```bash
+docker compose -f infra/compose.yaml exec -T db pg_dump \
+  -U studio -d studio -Fc > /mnt/backup/hephaestus/db/backup_pg_${BACKUP_DATE}.dump
+```
+
+---
+
+## 6. Procedimento de Restauração Testada (Disaster Recovery)
+
+Um backup sem teste de restore documentado não oferece garantia de recuperação. Procedimento periódico de validação em ambiente limpo:
+
+1. **Subir stack isolada com volumes temporários:**
+   ```bash
+   docker compose -p heph-dr -f infra/compose.yaml up -d db seaweedfs s3-init
+   ```
+2. **Restaurar objetos no SeaweedFS:**
+   ```bash
+   rclone copy /mnt/backup/hephaestus/s3/current :s3:heph-data \
+     --s3-provider=Other \
+     --s3-endpoint=http://127.0.0.1:8333 \
+     --s3-access-key-id=heph \
+     --s3-secret-access-key=heph-local-dev
+   ```
+3. **Restaurar e validar integridade do PostgreSQL e extensões:**
+   ```bash
+   docker compose -p heph-dr exec -T db pg_restore \
+     -U studio -d studio --clean --if-exists < /mnt/backup/hephaestus/db/backup_pg_LATEST.dump
+   
+   # Testar integridade de índices vetoriais e tabelas principais
+   docker compose -p heph-dr exec -T db psql -U studio -d studio -c \
+     "SELECT count(*) FROM image_embeddings; SELECT count(*) FROM datasets;"
+   ```
+4. **Desmontar stack de teste:**
+   ```bash
+   docker compose -p heph-dr down -v
+   ```

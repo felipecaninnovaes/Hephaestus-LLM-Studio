@@ -48,6 +48,10 @@ Dev é CPU-only: `ENGINE_MOCK=1`; testes `@gpu` são manuais, não rodar.
    Proibido ler arquivos inteiros >100 linhas ou o histórico em
    `docs/archive/`. Zona saudável 15–35%; ao atingir ~40%: "Documentar e
    Limpar" (estado em `tasks/active.md`, sessão nova).
+7. **Arquivos Proibidos & Segredos:** Proibido inspecionar ou expor arquivos
+   de segredos locais (`.env`, `env.gpu`, `.env.*`, chaves privadas `*.pem`,
+   `*.key`, credenciais de produção). Consultar exclusivamente arquivos
+   `*.example` para entender a estrutura de variáveis.
 
 ## 4. Roteamento de Subagentes
 

@@ -11,143 +11,18 @@ use std::time::Duration;
 
 pub mod config;
 pub mod daemon;
+pub mod domain;
+pub mod ports;
+
+pub use domain::errors::{PipelineError, ScopedKeyError};
+pub use domain::models::*;
+pub use ports::executor::TrainerExecutor;
+pub use ports::heartbeat::HeartbeatClient;
+pub use ports::reporter::ReportClient;
+pub use ports::storage::S3Port;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-
-// ---------------------------------------------------------------------------
-// Tipos de request/response (snake_case interno, conforme D4)
-// ---------------------------------------------------------------------------
-
-/// Referência a pesos de modelo no S3 (fine-tune — ADR-0012 D5).
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct WeightsRef {
-    /// S3 key do peso: `models/<engine>/<id>/<name>` ou `artifacts/<job_id>/<path>`.
-    pub s3_key: String,
-    /// MD5 hash esperado (hex 32).
-    pub md5: String,
-}
-
-/// Referência a um LoRA para staging multi-ref (D3 — ADR-0023).
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct LoraRefStage {
-    /// S3 key do LoRA (.safetensors).
-    pub s3_key: String,
-    /// MD5 hash esperado (hex 32).
-    pub md5: String,
-    /// Escala do LoRA (0..2).
-    pub scale: f64,
-}
-
-/// Referência a um checkpoint custom para staging multi-ref (D4 — ADR-0023).
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct WeightRef {
-    /// S3 key do checkpoint (.safetensors).
-    pub s3_key: String,
-    /// MD5 hash esperado (hex 32).
-    pub md5: String,
-}
-
-/// Referência à imagem inicial para img2img (S4 — feat/img2img).
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct InitImageRef {
-    /// S3 key da imagem: `generation_inputs/<...>` ou `artifacts/<job_id>/<path>`.
-    pub s3_key: String,
-    /// MD5 hash esperado (hex 32). `None` = origem galeria (hash não
-    /// persistido na linha) — a verificação vira log, sem falha.
-    #[serde(default)]
-    pub md5: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct DispatchRequest {
-    pub job_id: String,
-    pub engine: String,
-    pub image: String,
-    pub exec_mode: String,
-    #[serde(default)]
-    pub package_ref: Option<PackageRef>,
-    pub config_yaml: Option<String>,
-    pub dataset_version_id: Option<String>,
-    pub workdir: String,
-    /// Modo de operação: `train` (default) ou `predict` (ADR-0013 D6).
-    #[serde(default = "default_mode")]
-    pub mode: String,
-    /// Pesos de modelo para fine-tune (ADR-0012 D5). `None` = treino do zero.
-    #[serde(default)]
-    pub weights_ref: Option<WeightsRef>,
-    /// LoRAs para staging multi-ref (D3 — ADR-0023). Empty = sem LoRAs.
-    #[serde(default)]
-    pub loras: Vec<LoraRefStage>,
-    /// Checkpoint custom para staging multi-ref (D4 — ADR-0023).
-    #[serde(default)]
-    pub custom_checkpoint: Option<WeightRef>,
-    /// Text encoder custom para staging (fatia feat/pesos-custom-flux2).
-    /// `None` = encoder oficial do repo BFL. Mesmo shape do checkpoint
-    /// (`{s3_key, md5}` — casa com `text_encoder_ref`/`text_encoder` do manager).
-    #[serde(default)]
-    pub text_encoder: Option<WeightRef>,
-    /// Imagem inicial para img2img (S4 — feat/img2img). `None` = txt2img.
-    #[serde(default)]
-    pub init_image_ref: Option<InitImageRef>,
-    /// Dataset de regularização/controle para treino de difusão. `None` = sem controle.
-    /// Mesmo shape do `package_ref` (zip no escopo Packages + md5_zip).
-    #[serde(default)]
-    pub control_package_ref: Option<PackageRef>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct PackageRef {
-    pub key: String,
-    pub md5_zip: String,
-    pub bytes: i64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ReportBody {
-    pub status: String,
-    pub progress: Option<f64>,
-    pub epoch: Option<i32>,
-    pub step: Option<i32>,
-    pub metrics: Option<serde_json::Value>,
-    pub error: Option<String>,
-    pub artifacts: Option<Vec<ArtifactReport>>,
-    /// Conteúdo textual do generation_meta.json (JSONL) — D5 ADR-0023.
-    /// Campo opcional retrocompat: ausente em jobs legados.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub meta_content: Option<String>,
-    /// AC-006-A D2: fase/status do job (ex.: "loading_model", "quantizing").
-    /// Eventos de status → phase/message; métricas de treino → None, EXCETO
-    /// que fase em qualquer linha promove `jobs.phase` (P2-1: métrica com
-    /// `phase` carrega a fase junto no report via COALESCE).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub phase: Option<String>,
-    /// AC-006-A D2: mensagem descritiva da fase (ex.: "Carregando FLUX").
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ArtifactReport {
-    pub kind: String,
-    pub path: String,
-    pub md5: String,
-    pub bytes: i64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct HeartbeatBody {
-    pub endpoint: String,
-    pub gpus: Vec<String>,
-    pub vram_total: Option<i64>,
-    pub vram_used: Option<i64>,
-    pub cpu: Option<f64>,
-    pub ram: Option<i64>,
-    pub ram_total: Option<i64>,
-    pub jobs_active: i32,
-    /// Maior VRAM individual entre as GPUs (MiB) — capacidade real de 1 job.
-    pub max_gpu_mib: Option<i64>,
-}
 
 // ---------------------------------------------------------------------------
 // Pairing (D5.1-2 — single-use em memória)
@@ -209,93 +84,6 @@ pub fn generate_pairing_code() -> String {
     let hex = hex::encode(bytes);
     format!("heph_p_{hex}")
 }
-
-// ---------------------------------------------------------------------------
-// Erros
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum ScopedKeyError {
-    EmptyKey,
-    AbsolutePath,
-    PathTraversal,
-    OutsideScope,
-}
-
-impl std::fmt::Display for ScopedKeyError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::EmptyKey => write!(f, "empty key"),
-            Self::AbsolutePath => write!(f, "absolute path not allowed"),
-            Self::PathTraversal => write!(f, "path traversal not allowed"),
-            Self::OutsideScope => write!(f, "key outside allowed scope"),
-        }
-    }
-}
-
-impl std::error::Error for ScopedKeyError {}
-
-#[derive(Debug)]
-pub enum PipelineError {
-    S3Download(String),
-    Md5Mismatch {
-        expected: String,
-        actual: String,
-    },
-    UnzipFailed(String),
-    ConfigYamlInvalid(String),
-    DockerFailed {
-        exit_code: i32,
-        logs_tail: String,
-    },
-    ArtifactUpload(String),
-    ReportFailed(String),
-    /// GPU orchestrator recebeu imagem mock — guarda anti-mock (D2).
-    GpuImageGuard {
-        image: String,
-    },
-    /// Erro genérico (sem variante específica).
-    Other(String),
-    /// Daemon de difusão falhou ao subir (D1).
-    DaemonLaunchFailed(String),
-    /// Daemon de difusão não respondeu health a tempo (D1).
-    DaemonHealthTimeout(String),
-    /// Daemon de difusão busy após múltiplas tentativas (D1).
-    DaemonBusy,
-}
-
-impl std::fmt::Display for PipelineError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::S3Download(e) => write!(f, "S3 download failed: {e}"),
-            Self::Md5Mismatch { expected, actual } => {
-                write!(f, "MD5 mismatch: expected {expected}, got {actual}")
-            }
-            Self::UnzipFailed(e) => write!(f, "unzip failed: {e}"),
-            Self::ConfigYamlInvalid(e) => write!(f, "config.yaml invalid: {e}"),
-            Self::DockerFailed {
-                exit_code,
-                logs_tail,
-            } => {
-                write!(f, "trainer failed (exit {exit_code}):\n{logs_tail}")
-            }
-            Self::ArtifactUpload(e) => write!(f, "artifact upload failed: {e}"),
-            Self::ReportFailed(e) => write!(f, "report failed: {e}"),
-            Self::GpuImageGuard { image } => {
-                write!(
-                    f,
-                    "GPU orchestrator requires GPU trainer image (TRAINER_IMAGE={image} → :gpu)"
-                )
-            }
-            Self::Other(e) => write!(f, "{e}"),
-            Self::DaemonLaunchFailed(e) => write!(f, "daemon launch failed: {e}"),
-            Self::DaemonHealthTimeout(e) => write!(f, "daemon health timeout: {e}"),
-            Self::DaemonBusy => write!(f, "daemon busy after retries"),
-        }
-    }
-}
-
-impl std::error::Error for PipelineError {}
 
 // ---------------------------------------------------------------------------
 // S3 scoped key (D2 — invariante de prefixo, barreira principal)
@@ -599,9 +387,6 @@ pub fn telemetry_report_for_line(line: &MetricsLine, total_epochs: i32) -> Repor
 // Config.yaml placeholder replacement (D6)
 // ---------------------------------------------------------------------------
 
-fn default_mode() -> String {
-    "train".to_string()
-}
 /// Substitui placeholders no config.yaml.
 ///
 /// Suporta:
@@ -751,31 +536,6 @@ pub fn unzip_safe(zip_path: &Path, dest: &Path) -> Result<(), PipelineError> {
     }
 
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// S3 port (trait mockable)
-// ---------------------------------------------------------------------------
-
-#[async_trait]
-pub trait S3Port: Send + Sync {
-    /// Faz GET de um objeto S3 para um arquivo local.
-    async fn get_to_file(&self, key: &str, path: &Path) -> Result<(), String> {
-        self.get_to_file_with_progress(key, path, None).await
-    }
-    /// Faz GET de um objeto S3 para um arquivo local com callback de progresso opcional (bytes_baixados, total_bytes).
-    async fn get_to_file_with_progress(
-        &self,
-        key: &str,
-        path: &Path,
-        _on_progress: Option<&(dyn Fn(u64, Option<u64>) + Send + Sync)>,
-    ) -> Result<(), String> {
-        self.get_to_file(key, path).await
-    }
-    /// Faz PUT de um arquivo local para um objeto S3.
-    async fn put(&self, key: &str, path: &Path) -> Result<(), String>;
-    /// Verifica se o bucket é acessível (para /ready).
-    async fn ping(&self) -> bool;
 }
 
 /// Cliente S3 real usando aws-sdk-s3 (padrão services/api-principal/src/storage/s3.rs).
@@ -1013,15 +773,6 @@ pub async fn stage_cached_weight_with_progress(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Report client (trait mockable — reporta ao manager via D4)
-// ---------------------------------------------------------------------------
-
-#[async_trait]
-pub trait ReportClient: Send + Sync {
-    async fn report(&self, job_id: &str, body: &ReportBody) -> Result<(), String>;
-}
-
 /// Cliente HTTP que reporta ao manager via POST /internal/jobs/:id/report.
 pub struct HttpReportClient {
     manager_url: String,
@@ -1081,15 +832,6 @@ impl ReportClient for HttpReportClient {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Heartbeat client (D4/D9)
-// ---------------------------------------------------------------------------
-
-#[async_trait]
-pub trait HeartbeatClient: Send + Sync {
-    async fn send(&self, body: &HeartbeatBody) -> Result<(), String>;
-}
-
 pub struct HttpHeartbeatClient {
     manager_url: String,
     token: Option<String>,
@@ -1128,32 +870,6 @@ impl HeartbeatClient for HttpHeartbeatClient {
         }
         Ok(())
     }
-}
-
-// ---------------------------------------------------------------------------
-// Trainer executor (trait mockable — docker CLI ou subprocess)
-// ---------------------------------------------------------------------------
-
-#[async_trait]
-pub trait TrainerExecutor: Send + Sync {
-    /// Executa o trainer. Retorna (exit_code, logs_completos).
-    ///
-    /// `env` — variáveis de ambiente extras (ex.: `ENGINE_MOCK=0`).
-    /// `gpu_devices` — lista de índices nvidia-smi (ex.: `"0"` ou `"0,1"`).
-    ///   `Some(v)` → `--gpus "device={v}"` + `-e NVIDIA_VISIBLE_DEVICES={v}` +
-    ///   `--shm-size=2g` + envs repassados. `None` → comportamento padrão.
-    async fn run(
-        &self,
-        image: &str,
-        container_name: &str,
-        volumes: &[(String, String)], // (host_path, container_path)
-        args: &[String],              // argumentos após a imagem (ex.: train --config …)
-        env: &[(String, String)],     // variáveis de ambiente extras
-        gpu_devices: Option<&str>,    // índices nvidia-smi (ex.: "0")
-    ) -> (i32, String);
-
-    /// Para um container (abort via docker stop --time 5 → exit 137).
-    async fn stop(&self, container_name: &str) -> Result<(), String>;
 }
 
 /// Executor real via CLI docker (EXEC_MODE=docker, default).

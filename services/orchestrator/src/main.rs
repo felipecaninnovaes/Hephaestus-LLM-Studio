@@ -17,8 +17,8 @@ use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 
 use orchestrator::{
-    self, DispatchRequest, HeartbeatBody, HttpHeartbeatClient, HttpReportClient, PairingState,
-    ReportBody, S3Client,
+    self, config::OrchestratorConfig, DispatchRequest, HeartbeatBody, HttpHeartbeatClient,
+    HttpReportClient, PairingState, ReportBody, S3Client,
 };
 
 // ---------------------------------------------------------------------------
@@ -347,16 +347,10 @@ async fn pairing_verify_handler(State(state): State<AppState>, body: Bytes) -> R
         .into_response()
 }
 
-/// Resolve a imagem do daemon de difusão a partir do env `DIFFUSION_TRAINER_IMAGE`
-/// (mesmo nome usado pelo manager e pelo compose).
-///
-/// Env ausente ou vazio (só whitespace) → default `"hephaestus/trainer-difusao:local"`.
-fn resolve_daemon_diffusion_image(env_value: Option<&str>) -> String {
-    match env_value.map(str::trim) {
-        Some(v) if !v.is_empty() => v.to_string(),
-        _ => "hephaestus/trainer-difusao:local".to_string(),
-    }
-}
+/// Re-export de [`orchestrator::config::resolve_daemon_diffusion_image`] para
+/// compatibilidade com os testes existentes deste módulo (Fatia 1).
+#[cfg(test)]
+pub(crate) use orchestrator::config::resolve_daemon_diffusion_image;
 
 // ---------------------------------------------------------------------------
 // Router
@@ -396,39 +390,16 @@ async fn main() {
         .json()
         .init();
 
-    // Config — fail-fast sem ecoar valor (padrão load_storage do principal).
-    let s3_endpoint =
-        std::env::var("S3_ORCH_ENDPOINT_URL").expect("S3_ORCH_ENDPOINT_URL obrigatório");
-    let s3_bucket = std::env::var("S3_ORCH_BUCKET").unwrap_or_else(|_| "heph-data".into());
-    let s3_access_key =
-        std::env::var("S3_ORCH_ACCESS_KEY").expect("S3_ORCH_ACCESS_KEY obrigatório");
-    let s3_secret_key =
-        std::env::var("S3_ORCH_SECRET_KEY").expect("S3_ORCH_SECRET_KEY obrigatório");
-    let workdir = std::env::var("ORCH_WORKDIR").unwrap_or_else(|_| "/data".into());
-    let exec_mode = std::env::var("EXEC_MODE").unwrap_or_else(|_| "docker".into());
-    let manager_url = std::env::var("MANAGER_URL").unwrap_or_else(|_| "http://manager:8081".into());
-    let manager_token = std::env::var("MANAGER_TOKEN").ok();
-    let port: u16 = std::env::var("PORT")
-        .unwrap_or_else(|_| "8082".into())
-        .parse()
-        .expect("PORT deve ser um número");
-
-    let max_concurrent_jobs: usize = std::env::var("MAX_CONCURRENT_JOBS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1);
-
-    // D1 — identidade no heartbeat.
-    let advertise_url =
-        orchestrator::resolve_advertise_url(std::env::var("ORCH_ADVERTISE_URL").ok().as_deref());
+    // Config tipada — fail-fast sem ecoar valor (config::OrchestratorConfig).
+    let cfg = OrchestratorConfig::from_env().unwrap_or_else(|e| panic!("{e}"));
 
     // D5.1-2 — pairing code: env define, ou gera no boot e loga uma vez.
-    let pairing = Arc::new(match std::env::var("ORCH_PAIRING_CODE") {
-        Ok(code) if !code.is_empty() => {
+    let pairing = Arc::new(match cfg.pairing_code.clone() {
+        Some(code) => {
             tracing::info!("ORCH_PAIRING_CODE definido via env");
             orchestrator::PairingState::new(code)
         }
-        _ => {
+        None => {
             let code = orchestrator::generate_pairing_code();
             tracing::info!(
                 pairing_code = %code,
@@ -438,30 +409,34 @@ async fn main() {
         }
     });
 
-    tracing::info!("orchestrator boot: exec_mode={exec_mode}, workdir={workdir}");
+    tracing::info!(
+        "orchestrator boot: exec_mode={}, workdir={}",
+        cfg.exec_mode,
+        cfg.workdir
+    );
 
     // S3 client (D2 — cliente escopado).
     let s3 = Arc::new(S3Client::new(
-        &s3_endpoint,
-        &s3_access_key,
-        &s3_secret_key,
-        &s3_bucket,
+        &cfg.s3_endpoint,
+        &cfg.s3_access_key,
+        &cfg.s3_secret_key,
+        &cfg.s3_bucket,
     )) as Arc<dyn orchestrator::S3Port>;
 
     // Report client (D4 — POST /internal/jobs/:id/report).
     let report_client = Arc::new(HttpReportClient::new(
-        &manager_url,
-        manager_token.as_deref(),
+        &cfg.manager_url,
+        cfg.manager_token.as_deref(),
     )) as Arc<dyn orchestrator::ReportClient>;
 
     // Heartbeat client (D4/D9 — POST /internal/heartbeat).
     let heartbeat_client = Arc::new(HttpHeartbeatClient::new(
-        &manager_url,
-        manager_token.as_deref(),
+        &cfg.manager_url,
+        cfg.manager_token.as_deref(),
     )) as Arc<dyn orchestrator::HeartbeatClient>;
 
     // Executor (D5 — docker CLI via socket do host).
-    let executor: Arc<dyn orchestrator::TrainerExecutor> = match exec_mode.as_str() {
+    let executor: Arc<dyn orchestrator::TrainerExecutor> = match cfg.exec_mode.as_str() {
         "subprocess" => Arc::new(orchestrator::SubprocessExecutor),
         _ => Arc::new(orchestrator::DockerExecutor),
     };
@@ -469,71 +444,45 @@ async fn main() {
     // State.
     let active_jobs = orchestrator::new_active_jobs();
 
-    // GPU config: lê uma vez no boot (D4/D7).
-    let gpu_devices_boot = std::env::var("ORCH_GPU_DEVICES")
-        .ok()
-        .filter(|s| !s.is_empty());
-    let gpu_allow_mock_boot = std::env::var("ORCH_GPU_ALLOW_MOCK").eq(&Ok("1".to_string()));
-    if let Some(ref devices) = gpu_devices_boot {
+    // GPU config: lida uma vez no boot via cfg (D4/D7).
+    if let Some(devices) = &cfg.gpu_devices {
         tracing::info!("ORCH_GPU_DEVICES={devices} — modo GPU habilitado");
     }
-    if gpu_allow_mock_boot {
+    if cfg.gpu_allow_mock {
         tracing::info!("ORCH_GPU_ALLOW_MOCK=1 — guarda anti-mock desabilitada");
     }
 
-    // Daemon config (D1 — ADR-0023).
+    // Daemon (D1 — ADR-0023).
     // Trata string vazia como ausente: compose emite `DIFFUSION_DAEMON_URL=`
     // (presença + valor vazio) e o unwrap_or vê Ok("") → daemon externo errado.
-    let daemon_enabled = std::env::var("DIFFUSION_DAEMON_ENABLED")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .as_deref()
-        == Some("1");
-    let daemon_port: u16 = std::env::var("DIFFUSION_DAEMON_PORT")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| "8766".into())
-        .parse()
-        .unwrap_or(8766);
-    let daemon_idle_ttl: u64 = std::env::var("DIFFUSION_DAEMON_IDLE_TTL_S")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| "600".into())
-        .parse()
-        .unwrap_or(600);
-    let daemon_url_override = std::env::var("DIFFUSION_DAEMON_URL")
-        .ok()
-        .filter(|v| !v.trim().is_empty());
-
-    let daemon_state = if daemon_enabled {
+    // (Filtro aplicado em `config::DaemonConfig`.)
+    let daemon_state = if cfg.daemon.enabled {
         // Mesmo env do manager/compose (`DIFFUSION_TRAINER_IMAGE`): o nome
         // antigo `TRAINER_IMAGE_DIFFUSION` caía sempre no default :local e a
         // guarda D2 recusava job real no nó GPU.
-        let image = resolve_daemon_diffusion_image(
-            std::env::var("DIFFUSION_TRAINER_IMAGE").ok().as_deref(),
-        );
+        let image = cfg.daemon.image.clone();
         let client: Arc<dyn orchestrator::daemon::DaemonClient> =
-            if let Some(ref url) = daemon_url_override {
+            if let Some(url) = &cfg.daemon.url_override {
                 Arc::new(orchestrator::daemon::HttpDaemonClient::new(url))
             } else {
                 Arc::new(orchestrator::daemon::HttpDaemonClient::new(&format!(
-                    "http://localhost:{daemon_port}"
+                    "http://localhost:{}",
+                    cfg.daemon.port
                 )))
             };
 
         // Mesmos volumes/mounts do one-shot (build_docker_run_args).
-        let vol_datasets_daemon =
-            std::env::var("ORCH_VOL_DATASETS").unwrap_or_else(|_| "infra_datasets".into());
-        let vol_outputs_daemon =
-            std::env::var("ORCH_VOL_OUTPUTS").unwrap_or_else(|_| "infra_outputs".into());
         let daemon_volumes: Vec<(String, String)> = vec![
-            (vol_datasets_daemon, "/data/datasets".to_string()),
-            (vol_outputs_daemon, "/data/outputs".to_string()),
+            (
+                cfg.daemon.vol_datasets.clone(),
+                "/data/datasets".to_string(),
+            ),
+            (cfg.daemon.vol_outputs.clone(), "/data/outputs".to_string()),
         ];
 
         // Mesmas envs do one-shot: ENGINE_MOCK=0 quando GPU, HF cache paths, etc.
         let mut daemon_env: Vec<(String, String)> = Vec::new();
-        if gpu_devices_boot.is_some() {
+        if cfg.gpu_devices.is_some() {
             daemon_env.push(("ENGINE_MOCK".to_string(), "0".to_string()));
         }
         // HF cache paths para diffusion (igual one-shot L1473-1493)
@@ -557,45 +506,37 @@ async fn main() {
             "TORCH_HOME".to_string(),
             "/data/outputs/.cache/torch".to_string(),
         ));
-        if let Ok(token) =
-            std::env::var("HF_TOKEN").or_else(|_| std::env::var("HUGGING_FACE_HUB_TOKEN"))
-        {
-            if !token.is_empty() {
-                daemon_env.push(("HF_TOKEN".to_string(), token.clone()));
-                daemon_env.push(("HUGGING_FACE_HUB_TOKEN".to_string(), token));
-            }
+        if let Some(token) = cfg.daemon.hf_token.clone() {
+            daemon_env.push(("HF_TOKEN".to_string(), token.clone()));
+            daemon_env.push(("HUGGING_FACE_HUB_TOKEN".to_string(), token));
         }
-        if let Ok(model_id) = std::env::var("FLUX_MODEL_ID") {
-            if !model_id.is_empty() {
-                daemon_env.push(("FLUX_MODEL_ID".to_string(), model_id));
-            }
+        if let Some(model_id) = cfg.daemon.flux_model_id.clone() {
+            daemon_env.push(("FLUX_MODEL_ID".to_string(), model_id));
         }
-
-        let daemon_network = std::env::var("DIFFUSION_DAEMON_NETWORK")
-            .ok()
-            .filter(|v| !v.trim().is_empty());
 
         let launcher: Arc<dyn orchestrator::daemon::DaemonLauncher> =
             Arc::new(orchestrator::daemon::DockerDaemonLauncher::new(
                 &image,
                 "diffusion-daemon",
                 daemon_volumes,
-                daemon_port,
-                gpu_devices_boot.clone(),
+                cfg.daemon.port,
+                cfg.gpu_devices.clone(),
                 daemon_env,
-                daemon_network,
+                cfg.daemon.network.clone(),
             ));
         let ds = Arc::new(orchestrator::daemon::DaemonState::new(
             &image,
-            daemon_port,
-            daemon_idle_ttl,
+            cfg.daemon.port,
+            cfg.daemon.idle_ttl,
             client,
             launcher,
         ));
         tracing::info!(
-            "diffusion daemon habilitado: port={daemon_port}, idle_ttl={daemon_idle_ttl}s"
+            "diffusion daemon habilitado: port={}, idle_ttl={}s",
+            cfg.daemon.port,
+            cfg.daemon.idle_ttl
         );
-        if let Some(ref url) = daemon_url_override {
+        if let Some(url) = &cfg.daemon.url_override {
             tracing::info!("DIFFUSION_DAEMON_URL={url} — daemon externo, spawn desabilitado");
         }
 
@@ -616,17 +557,17 @@ async fn main() {
         report_client: Arc::clone(&report_client),
         executor,
         active_jobs,
-        manager_token,
-        gpu_devices: gpu_devices_boot.clone(),
-        gpu_allow_mock: gpu_allow_mock_boot,
+        manager_token: cfg.manager_token.clone(),
+        gpu_devices: cfg.gpu_devices.clone(),
+        gpu_allow_mock: cfg.gpu_allow_mock,
         pairing,
         daemon_state,
-        max_concurrent_jobs,
+        max_concurrent_jobs: cfg.max_concurrent_jobs,
     };
 
     // Heartbeat loop (~2s, D4/D9).
     let heartbeat_active_jobs = Arc::clone(&state.active_jobs);
-    let heartbeat_advertise_url = advertise_url.clone();
+    let heartbeat_advertise_url = cfg.advertise_url.clone();
 
     // GPU telemetry: tenta nvidia-smi no boot; se falhar, warn único e fallback.
     let gpu_telemetry_boot = orchestrator::try_nvidia_smi().await;
@@ -641,7 +582,7 @@ async fn main() {
     // Sweep de containers órfãos no boot (anti-processos fantasmas pós crash).
     orchestrator::sweep_orphan_trainer_containers().await;
     orchestrator::sweep_orphan_workdirs(
-        &std::path::PathBuf::from(&workdir),
+        &std::path::PathBuf::from(&cfg.workdir),
         std::time::Duration::from_secs(86400),
     )
     .await;
@@ -683,10 +624,10 @@ async fn main() {
 
     // Server.
     let app = build_router(state);
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", cfg.port))
         .await
         .expect("bind");
-    tracing::info!("orchestrator ouvindo em 0.0.0.0:{port}");
+    tracing::info!("orchestrator ouvindo em 0.0.0.0:{}", cfg.port);
     axum::serve(listener, app).await.unwrap();
 }
 

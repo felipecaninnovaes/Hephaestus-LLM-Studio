@@ -1,13 +1,14 @@
 # Memória Ativa — Hephaestus LLM Studio
 
 - **Branch atual:** `feat/onboarding-ux-proxy-e-worker-join`
-- **Fatia em andamento:** Documentação e Instalador One-Line — Script `scripts/install.sh` (instalação via curl sem clone do repo) e `README.md` raiz com guia completo de setup e arquitetura.
+- **Fatia em andamento:** Suporte a worker na RunPod — MCP oficial configurado no harness, imagem DinD `hephaestus-runpod-worker` e runbook de template.
 
 ## Checklist Imediato da Sessão Ativa
-- [x] Criar `scripts/install.sh` para download e setup direto via `curl | bash`
-- [x] Criar `README.md` canônico na raiz documentando os 4 modelos e o one-line quickstart
-- [x] Testar instalação via `scripts/install.sh` na VM Ubuntu
-- [x] Validar sintaxe dos scripts (`bash -n`) e commit convencional
+- [x] MCP RunPod em `.omp/mcp.json` (hosted OAuth + docs server)
+- [x] `infra/Dockerfile.runpod-worker` + entrypoint DinD (dockerd interno, rede `heph-engine`, nvidia runtime)
+- [x] Smoke test local do pod privilegiado (`/health` ok, runtime nvidia, rede criada)
+- [x] Runbook `docs/infra/runpod-worker.md` (template via MCP/REST/Console + conectividade)
+- [ ] Validar com conta RunPod real (tier privileged, pod de teste, adoção via UI)
 ## Entregas Concluídas Recentemente
 - [x] Roadmap de Hardening e Padronização da Infraestrutura (`tasks/infra-auditoria.md`) concluído e integrado.
 - [x] Hotfix manager: `report_job` aceita `status: cancelled` pós-abort (commit 4bfb450).

@@ -1,0 +1,37 @@
+# ==============================================================================
+# infra/Dockerfile.runpod-worker — Nó worker Hephaestus para pods RunPod (DinD)
+# ==============================================================================
+# Extende a imagem pública do orchestrator com daemon Docker interno + NVIDIA
+# Container Toolkit, permitindo rodar como POD único na RunPod (que não expõe
+# o docker.sock do host). EXIGE pod em modo PRIVILEGED na RunPod.
+#
+# Build & push (uma vez; a RunPod puxa do GHCR no boot do template):
+#   docker build -f infra/Dockerfile.runpod-worker \
+#     -t ghcr.io/felipecaninnovaes/hephaestus-runpod-worker:latest .
+#   docker push ghcr.io/felipecaninnovaes/hephaestus-runpod-worker:latest
+#
+# Runbook completo: docs/infra/runpod-worker.md
+# ==============================================================================
+FROM ghcr.io/felipecaninnovaes/hephaestus-orchestrator:latest
+
+# Docker daemon + containerd + iptables dentro do pod (DinD privilegiado).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        docker.io containerd iptables ca-certificates curl gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+# NVIDIA Container Toolkit para o daemon interno (--gpus all nos trainers).
+RUN curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+        | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg \
+    && curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+        | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+        > /etc/apt/sources.list.d/nvidia-container-toolkit.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends nvidia-container-toolkit \
+    && rm -rf /var/lib/apt/lists/* \
+    && nvidia-ctk runtime configure --runtime=docker --set-as-default
+
+COPY infra/entrypoint-runpod-worker.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 8082
+ENTRYPOINT ["/entrypoint.sh"]

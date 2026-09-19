@@ -1771,6 +1771,23 @@ fn docker_run_args_gpu_none_no_flags() {
     assert!(args.contains(&"train".to_string()));
 }
 
+#[test]
+fn docker_run_args_with_engine_user() {
+    std::env::set_var("ENGINE_USER", "1000:1000");
+    let args = build_docker_run_args(
+        "hephaestus/trainer-yolo:local",
+        "trainer-yolo-user-test",
+        &[],
+        &[],
+        &[],
+        None,
+    );
+    std::env::remove_var("ENGINE_USER");
+    let user_idx = args.iter().position(|a| a == "--user");
+    assert!(user_idx.is_some(), "expected --user flag in args");
+    assert_eq!(args[user_idx.unwrap() + 1], "1000:1000");
+}
+
 // =========================================================================
 // G.2 — Anti-mock guard tests (D2)
 // =========================================================================
@@ -2057,6 +2074,37 @@ fn resolve_advertise_url_empty_fallback() {
     );
 }
 
+#[test]
+fn pipeline_error_cancelled_display() {
+    let err = PipelineError::Cancelled;
+    assert_eq!(err.to_string(), "job cancelled by user");
+}
+
+#[test]
+fn read_final_metrics_prefers_telemetry_jsonl() {
+    let tmp = tempfile::tempdir().unwrap();
+    let metrics_path = tmp.path().join("metrics.jsonl");
+    let telemetry_path = tmp.path().join("telemetry.jsonl");
+
+    std::fs::write(&metrics_path, r#"{"epoch": 1, "loss": 0.5}"#).unwrap();
+    std::fs::write(&telemetry_path, r#"{"epoch": 2, "loss": 0.2}"#).unwrap();
+
+    let final_m = read_final_metrics(&metrics_path).unwrap();
+    assert_eq!(final_m.epoch, 2);
+    assert_eq!(final_m.loss, Some(0.2));
+}
+
+#[test]
+fn read_final_metrics_falls_back_to_metrics_jsonl() {
+    let tmp = tempfile::tempdir().unwrap();
+    let metrics_path = tmp.path().join("metrics.jsonl");
+
+    std::fs::write(&metrics_path, r#"{"epoch": 1, "loss": 0.5}"#).unwrap();
+
+    let final_m = read_final_metrics(&metrics_path).unwrap();
+    assert_eq!(final_m.epoch, 1);
+    assert_eq!(final_m.loss, Some(0.5));
+}
 // =========================================================================
 // H.1 — Pairing code generation
 // =========================================================================

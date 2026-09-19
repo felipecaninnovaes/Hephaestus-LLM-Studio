@@ -105,12 +105,15 @@ pub async fn run_job(
     .await;
 
     if let Err(err) = result {
+        let is_cancelled = matches!(err, PipelineError::Cancelled);
+        let terminal_status = if is_cancelled { "cancelled" } else { "failed" };
+        let terminal_phase = if is_cancelled { "cancelled" } else { "error" };
         let err_msg = err.to_string();
         if let Err(report_err) = report_for_error
             .report(
                 &job_id,
                 &ReportBody {
-                    status: "failed".to_string(),
+                    status: terminal_status.to_string(),
                     progress: None,
                     epoch: None,
                     step: None,
@@ -118,8 +121,12 @@ pub async fn run_job(
                     error: Some(err_msg.clone()),
                     artifacts: None,
                     meta_content: None,
-                    phase: Some("error".to_string()),
-                    message: Some(err_msg),
+                    phase: Some(terminal_phase.to_string()),
+                    message: Some(if is_cancelled {
+                        "Job cancelado pelo usuário".to_string()
+                    } else {
+                        err_msg
+                    }),
                 },
             )
             .await
@@ -917,9 +924,15 @@ pub async fn run_job_inner(
     // Cancela metrics collector
     metrics_handle.abort();
 
-    // Remove from active jobs
+    let was_cancelled = active_jobs
+        .get(job_id)
+        .map(|e| e.is_cancelled())
+        .unwrap_or(false);
     active_jobs.remove(job_id);
 
+    if was_cancelled {
+        return Err(PipelineError::Cancelled);
+    }
     // 8. Check exit code
     if exit_code != 0 {
         let logs_tail = logs.lines().rev().take(20).collect::<Vec<_>>().join("\n");
@@ -930,20 +943,29 @@ pub async fn run_job_inner(
     }
 
     // 9. Upload artifacts para S3 (D8 — artifacts/<job_id>/)
+    let metrics_filename =
+        if outputs.join("telemetry.jsonl").is_file() && !outputs.join("metrics.jsonl").is_file() {
+            "telemetry.jsonl"
+        } else {
+            "metrics.jsonl"
+        };
     let artifact_specs: Vec<(&str, &str)> = match (dispatch.engine.as_str(), dispatch.mode.as_str())
     {
         ("yolo", "train") => vec![
             ("best.pt", "model"),
             ("last.pt", "model"),
-            ("metrics.jsonl", "metrics"),
+            (metrics_filename, "metrics"),
         ],
         ("yolo", "predict") => vec![("predictions.json", "predictions")],
-        ("autotracker", _) => vec![("boxes.json", "boxes"), ("metrics.jsonl", "metrics")],
-        ("autolabel", _) => vec![("captions.jsonl", "captions"), ("metrics.jsonl", "metrics")],
+        ("autotracker", _) => vec![("boxes.json", "boxes"), (metrics_filename, "metrics")],
+        ("autolabel", _) => vec![
+            ("captions.jsonl", "captions"),
+            (metrics_filename, "metrics"),
+        ],
         ("diffusion", "generate") => vec![], // glob abaixo (D2 ADR-0023)
         ("diffusion", _) => vec![
             ("adapter.safetensors", "model"),
-            ("metrics.jsonl", "metrics"),
+            (metrics_filename, "metrics"),
         ],
         // Já validado acima — seguro unreachable
         _ => unreachable!("unsupported engine/mode validated earlier"),

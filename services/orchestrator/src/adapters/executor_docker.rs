@@ -30,6 +30,14 @@ pub fn build_docker_run_args(
         .unwrap_or_else(|_| "infra_default".to_string());
     cmd_args.push("--network".to_string());
     cmd_args.push(network);
+
+    if let Ok(user) = std::env::var("ENGINE_USER") {
+        if !user.is_empty() {
+            cmd_args.push("--user".to_string());
+            cmd_args.push(user);
+        }
+    }
+
     for (host, container) in volumes {
         cmd_args.push("-v".to_string());
         cmd_args.push(format!("{host}:{container}"));

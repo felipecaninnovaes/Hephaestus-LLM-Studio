@@ -176,27 +176,26 @@ pub(crate) async fn abort_handler(State(state): State<AppState>, body: Bytes) ->
         }
         tracing::info!("abort: job {} stopped", req.job_id);
     } else {
-        // Sem container vivo — reporta falha ou nada (decisão honesta)
+        // Sem container vivo — reporta cancelled (RD-021) em vez de failed
         tracing::info!(
-            "abort: job {} not found in active jobs (already finished?)",
+            "abort: job {} not found in active jobs (already finished or idle)",
             req.job_id
         );
-        // Reporta failed se o job não está mais ativo
         let _ = state
             .report_client
             .report(
                 &req.job_id,
                 &ReportBody {
-                    status: "failed".to_string(),
+                    status: "cancelled".to_string(),
                     progress: None,
                     epoch: None,
                     step: None,
                     metrics: None,
-                    error: Some("job not found or already finished".to_string()),
+                    error: Some("job cancelled by user (inactive on node)".to_string()),
                     artifacts: None,
                     meta_content: None,
-                    phase: None,
-                    message: None,
+                    phase: Some("cancelled".to_string()),
+                    message: Some("Job cancelado pelo usuário".to_string()),
                 },
             )
             .await;

@@ -132,9 +132,15 @@ pub async fn collect_diffusion_artifacts(
     (artifacts, upload_errors)
 }
 
-/// Lê as métricas finais do metrics.jsonl (última linha válida).
+/// Lê as métricas finais de telemetry.jsonl (primário) ou metrics.jsonl (fallback).
 pub fn read_final_metrics(path: &Path) -> Option<MetricsLine> {
-    let content = std::fs::read_to_string(path).ok()?;
+    let telemetry_path = path.with_file_name("telemetry.jsonl");
+    let target = if telemetry_path.exists() {
+        &telemetry_path
+    } else {
+        path
+    };
+    let content = std::fs::read_to_string(target).ok()?;
     let mut last = None;
     for line in content.lines() {
         if let Some(m) = parse_metrics_line(line) {
@@ -345,8 +351,14 @@ pub async fn stream_metrics_and_samples(
             }
         }
 
-        // 2. Lê metrics.jsonl incrementalmente (helper compartilhado com o tail do daemon)
-        let (new_metrics, new_lines_read) = tail_jsonl_lines(&metrics_path_clone, lines_read);
+        // 2. Lê telemetry.jsonl primariamente; fallback para metrics.jsonl (RD-022)
+        let telemetry_path = metrics_path_clone.with_file_name("telemetry.jsonl");
+        let active_path = if telemetry_path.exists() {
+            &telemetry_path
+        } else {
+            &metrics_path_clone
+        };
+        let (new_metrics, new_lines_read) = tail_jsonl_lines(active_path, lines_read);
         lines_read = new_lines_read;
 
         // 3. Envia report se houver novas métricas OU novos artefatos (amostras/checkpoints)

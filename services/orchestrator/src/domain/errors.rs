@@ -46,6 +46,8 @@ pub enum PipelineError {
     DaemonHealthTimeout(String),
     /// Daemon de difusão busy após múltiplas tentativas (D1).
     DaemonBusy,
+    /// Job abortado pelo usuário durante a execução (RD-021).
+    Cancelled,
 }
 
 impl std::fmt::Display for PipelineError {
@@ -75,6 +77,7 @@ impl std::fmt::Display for PipelineError {
             Self::DaemonLaunchFailed(e) => write!(f, "daemon launch failed: {e}"),
             Self::DaemonHealthTimeout(e) => write!(f, "daemon health timeout: {e}"),
             Self::DaemonBusy => write!(f, "daemon busy after retries"),
+            Self::Cancelled => write!(f, "job cancelled by user"),
         }
     }
 }

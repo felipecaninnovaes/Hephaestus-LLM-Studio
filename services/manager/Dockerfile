@@ -20,7 +20,8 @@ RUN mkdir -p services/api-principal/src services/orchestrator/src \
   && touch services/manager/src/main.rs && cargo build --release -p manager
 
 FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
-WORKDIR /app
-COPY --from=build /app/target/release/manager /app/manager
+RUN groupadd -g 1000 studio && useradd -u 1000 -g studio -s /bin/bash -m studio
+COPY --from=build --chown=studio:studio /app/target/release/manager /app/manager
+USER studio
 EXPOSE 8081
 CMD ["/app/manager"]

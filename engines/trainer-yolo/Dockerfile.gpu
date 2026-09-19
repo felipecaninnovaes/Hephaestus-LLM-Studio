@@ -23,6 +23,10 @@ COPY engines/trainer-yolo/src/trainer_yolo/ /app/trainer_yolo/
 # Real training mode (not mock)
 ENV ENGINE_MOCK=0
 
+RUN groupadd -g 1000 studio && useradd -u 1000 -g studio -s /bin/bash -m studio \
+    && chown -R studio:studio /app
+USER studio
+
 # Bake yolo11n.pt base weight into the image layer (~5MB).
 # Sem dependência de rede no runtime para o modelo default.
 RUN python -c "from ultralytics import YOLO; YOLO('yolo11n.pt')"

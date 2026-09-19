@@ -62,10 +62,11 @@ fi
 
 # Rotação de backups antigos (mantém os últimos BACKUP_KEEP)
 echo "Aplicando rotação de backups (manter últimos $BACKUP_KEEP)..."
-COUNT=$(ls -1t "$BACKUP_DIR"/${POSTGRES_DB}_backup_*.sql.gz 2>/dev/null | wc -l)
+mapfile -t BACKUP_FILES < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name "${POSTGRES_DB}_backup_*.sql.gz" -printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2-)
+COUNT=${#BACKUP_FILES[@]}
 if [ "$COUNT" -gt "$BACKUP_KEEP" ]; then
     EXCESS=$((COUNT - BACKUP_KEEP))
-    ls -1t "$BACKUP_DIR"/${POSTGRES_DB}_backup_*.sql.gz | tail -n "$EXCESS" | while read -r old_file; do
+    printf '%s\n' "${BACKUP_FILES[@]}" | tail -n "$EXCESS" | while IFS= read -r old_file; do
         echo "Removendo backup antigo: $(basename "$old_file")"
         rm -f "$old_file"
     done

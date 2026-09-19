@@ -37,5 +37,9 @@ ENV ENGINE_MOCK=0 \
     TORCH_HOME=/outputs/.cache/torch \
     PYTHONUNBUFFERED=1
 
+RUN groupadd -g 1000 studio && useradd -u 1000 -g studio -s /bin/bash -m studio \
+    && chown -R studio:studio /app
+USER studio
+
 ENTRYPOINT ["python", "-m", "trainer_difusao"]
 CMD ["train", "--config", "/dev/null", "--output", "/dev/null"]

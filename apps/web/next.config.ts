@@ -5,6 +5,7 @@ const devOrigins = process.env.DEV_ALLOWED_ORIGIN
   : ["10.15.10.3"];
 
 const nextConfig: NextConfig = {
+  output: "standalone",
   // Dev: aceita acesso via LAN (ex.: http://10.15.10.3:3000 ou DEV_ALLOWED_ORIGIN) — sem isso o
   // Turbopack rejeita o Socket HMR de origem externa (`ERR_INVALID_HTTP_RESPONSE`)
   // e a hidratação não completa: os handlers de /login nunca registram e o

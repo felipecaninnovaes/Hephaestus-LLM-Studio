@@ -25,7 +25,8 @@ RUN mkdir -p services/manager/src services/orchestrator/src \
 # símbolos GLIBC_2.38+ e quebra no bookworm (2.36) — lição 2026-09-05,
 # risco R10 da ADR-0003 materializado por tag mutável do rust:slim.
 FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
-WORKDIR /app
-COPY --from=build /app/target/release/api-principal /app/api-principal
+RUN groupadd -g 1000 studio && useradd -u 1000 -g studio -s /bin/bash -m studio
+COPY --from=build --chown=studio:studio /app/target/release/api-principal /app/api-principal
+USER studio
 EXPOSE 8080
 CMD ["/app/api-principal"]

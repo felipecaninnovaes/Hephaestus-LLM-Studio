@@ -33,6 +33,7 @@ echo "antes: seaweedfs_running=$WAS_RUNNING seaweedfs_container=$HAD_CONTAINER v
 TEST_CODE=0
 OUT_FILE="$(mktemp)"
 
+# shellcheck disable=SC2329 # chamada indireta via trap cleanup EXIT
 cleanup() {
   # 5. Sempre: desfaz SÓ o que o script criou.
   if [[ "$WAS_RUNNING" == "0" && "$HAD_CONTAINER" == "0" ]]; then

@@ -13,6 +13,7 @@ pub mod config;
 pub mod daemon;
 pub mod domain;
 pub mod ports;
+pub mod server;
 
 pub use domain::errors::{PipelineError, ScopedKeyError};
 pub use domain::models::*;
@@ -20,6 +21,7 @@ pub use ports::executor::TrainerExecutor;
 pub use ports::heartbeat::HeartbeatClient;
 pub use ports::reporter::ReportClient;
 pub use ports::storage::S3Port;
+pub use server::{build_router, AppState};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

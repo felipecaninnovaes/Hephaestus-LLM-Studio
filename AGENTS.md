@@ -42,12 +42,13 @@ Dev é CPU-only: `ENGINE_MOCK=1`; testes `@gpu` são manuais, não rodar.
 4. **File Ownership:** paralelismo só com arquivos disjuntos; contratos
    (`packages/`, migrations, openapi) editados sequencialmente antes.
 5. **Regra das Duas Correções:** 2 falhas do mesmo erro = contexto
-   contaminado → parar, registrar em `tasks/active.md`, escalar.
+   contaminado → parar, registrar em `tasks/active.md`, promover a lição a
+   `docs/PITFALLS.md`, escalar.
 6. **Orçamento de contexto (funil L0→L3):** `AGENTS.md` → `docs/REPO_MAP.md` →
    `graft ask --source` / `graft skeleton` → leitura delimitada por offset.
    Proibido ler arquivos inteiros >100 linhas ou o histórico em
    `docs/archive/`. Zona saudável 15–35%; ao atingir ~40%: "Documentar e
-   Limpar" (estado em `tasks/active.md`, sessão nova).
+   Limpar" (estado em `tasks/active.md`, lições em `docs/PITFALLS.md`, sessão nova).
 7. **Arquivos Proibidos & Segredos:** Proibido inspecionar ou expor arquivos
    de segredos locais (`.env`, `env.gpu`, `.env.*`, chaves privadas `*.pem`,
    `*.key`, credenciais de produção). Consultar exclusivamente arquivos
@@ -78,6 +79,7 @@ executa fixes mecânicos** — especifica e despacha.
 - `tasks/active.md` — memória ativa da sessão do coordenador (<70 linhas).
 - `tasks/backlog.md` — backlog único consolidado de dívidas e melhorias (<120 linhas).
 - `tasks/specs/` — especificações detalhadas de fatias em planejamento.
+- `docs/PITFALLS.md` — armadilhas pagas pelo projeto (memória de longo prazo; ler a seção do pilar ANTES de tocar naquele código; critério de admissão no próprio arquivo).
 - `docs/REPO_MAP.md` (L1) — topologia de portas, rotas, tabelas e módulos frontend.
 - `docs/architecture/` — `overview.md` (fluxo entre pilares), `network-and-vram.md` (isolamento/GPU).
 - `docs/services/` — `api-principal.md` (BFF/auth/chunked), `manager.md` (jobs), `orchestrator.md` (nós).

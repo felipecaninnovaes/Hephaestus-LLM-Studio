@@ -8,7 +8,8 @@
     "start": "next start -p 3000",
     "lint": "biome lint .",
     "check": "biome check .",
-    "format": "biome format ."
+    "format": "biome format .",
+    "codegen:contracts": "openapi-typescript ../../packages/contracts/openapi.yaml -o types/api-generated.ts"
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.3.3",
@@ -23,6 +24,7 @@
     "@types/node": "^22.10.2",
     "@types/react": "^19.0.7",
     "@types/react-dom": "^19.0.3",
+    "openapi-typescript": "^7.13.0",
     "typescript": "^5.7.2"
   }
 }

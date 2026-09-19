@@ -1,8 +1,7 @@
 # Memória Ativa — Hephaestus LLM Studio
 
 - **Branch atual:** `fix/trainer-difusao-qlora-flux2-checkpointing`
-- **Fatia em andamento:** Correção de crash QLoRA PEFT no FLUX.2 Klein / SD 1.5 / SDXL (`Flux2Transformer2DModel has no attribute get_input_embeddings`).
----
+- **Fatia em andamento:** Correção de crash QLoRA PEFT no FLUX.2 Klein / SD 1.5 / SDXL (eliminação de `prepare_model_for_kbit_training` e resolução de SDPA dtype mismatch query/key/value).
 
 ## Checklist Imediato da Sessão Ativa
 

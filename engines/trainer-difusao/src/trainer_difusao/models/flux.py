@@ -91,7 +91,7 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             FluxPipeline,  # noqa: F401
             FluxTransformer2DModel,
         )
-        from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+        from peft import LoraConfig, get_peft_model
         from transformers import (
             AutoModelForCausalLM,
             AutoTokenizer,
@@ -854,13 +854,9 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         init_lora_weights="gaussian",
         target_modules=target_modules,
     )
-    if is_quantized:
-        # diffusers ModelMixin não é PreTrainedModel de NLP e não possui get_input_embeddings;
-        # use_gradient_checkpointing=False evita o hook indevido no PEFT, enquanto a
-        # ativação nativa via transformer.enable_gradient_checkpointing() opera com use_reentrant=False.
-        transformer = prepare_model_for_kbit_training(
-            transformer, use_gradient_checkpointing=False
-        )
+    # Gradient checkpointing economiza ~50% VRAM (diffusers usa use_reentrant=False nativo)
+    # Nota: prepare_model_for_kbit_training do PEFT é exclusivo de modelos NLP/transformers;
+    # em diffusers ele quebra o SDPA ao fazer cast de norm_q/norm_k p/ float32 enquanto value é bf16.
     transformer.enable_gradient_checkpointing()
     transformer = get_peft_model(transformer, lora_config)
     if weights_path:

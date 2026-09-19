@@ -20,8 +20,8 @@ O QLoRA baseia-se em três pilares para viabilizar o treinamento de modelos mass
 
 | Componente | Situação Atual | O que falta para QLoRA Canônico |
 |:---|:---|:---|
-| **FLUX (`flux.py`)** | Suporta `4bit` NF4 (`BitsAndBytesConfig`) com persistência em disco + LoRA PEFT. | Falta `prepare_model_for_kbit_training` e otimizadores paginados. |
-| **SD 1.5 (`sd15.py`)** | Aceita parâmetro `quantization: "4bit"`, mas carrega UNet em precisão plena (`FP16`/`BF16`). | Carregar UNet via `BitsAndBytesConfig(load_in_4bit=True)`, remover `.to(device)` e aplicar `prepare_model_for_kbit_training`. |
+| **FLUX (`flux.py`)** | Suporta `4bit` NF4 (`BitsAndBytesConfig`) com persistência em disco + LoRA PEFT. | Otimizadores paginados e congelamento canônico via `requires_grad_(False)`. |
+| **SD 1.5 (`sd15.py`)** | Aceita parâmetro `quantization: "4bit"`, mas carrega UNet em precisão plena (`FP16`/`BF16`). | Carregar UNet via `BitsAndBytesConfig(load_in_4bit=True)`, remover `.to(device)` e LoRA PEFT direta. |
 | **SDXL (`sdxl.py`)** | Aceita parâmetro `quantization: "4bit"`, mas carrega UNet em precisão plena (`FP16`/`BF16`). | Idem ao SD 1.5. |
 | **Otimizadores (`optimizers.py`)** | Suporta `adamw8bit`, `adamw`, `prodigy`. | Adicionar `paged_adamw8bit` e `paged_adamw32bit` via `bitsandbytes.optim`. Falha explícita se bnb ausente em GPU. |
 | **Gerador (`generation/runner.py`)** | Já carrega LoRAs via `pipe.load_lora_weights()`. | **Nenhuma alteração necessária**. QLoRA salva apenas as matrizes LoRA padrão em `.safetensors`. |
@@ -71,11 +71,15 @@ No QLoRA, a quantização 4-bit ocorre no modelo base **durante o treino**. Os p
   - `UNet2DConditionModel.from_single_file(..., quantization_config=bnb_config)`
 - **Atenção crítica:** Remover `.to(device)` para modelos quantizados (BitsAndBytes já posiciona os tensores no dispositivo CUDA; chamar `.to()` em modelo 4/8-bit dispara exceção do PyTorch).
 
-#### 1.3 `flux.py`, `sd15.py` e `sdxl.py`: Estabilização Numérica com `prepare_model_for_kbit_training`
-- Importar `from peft import prepare_model_for_kbit_training`.
-- Executar `model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=False)` antes de `get_peft_model(model, lora_config)`.
-- Em seguida, invocar `model.enable_gradient_checkpointing()` nativo do diffusers.
-- **Atenção crítica para diffusers (`ModelMixin`):** Os modelos do `diffusers` (`Flux2Transformer2DModel`, `FluxTransformer2DModel`, `UNet2DConditionModel`) não possuem `get_input_embeddings`. Passar `use_gradient_checkpointing=True` para o PEFT tenta registrar um forward hook em `model.get_input_embeddings()`, causando crash imediato (`'Flux2Transformer2DModel' object has no attribute 'get_input_embeddings'`). Com `use_gradient_checkpointing=False`, o PEFT realiza com segurança o cast de normalizações para `float32` e o congelamento dos pesos base, enquanto o diffusers gerencia o gradient checkpointing com `use_reentrant=False` nativo.
+#### 1.3 `flux.py`, `sd15.py` e `sdxl.py`: Setup Canônico de LoRA/QLoRA no Diffusers (Proibição de `prepare_model_for_kbit_training`)
+- **Atenção crítica arquitetural:** NÃO utilizar `prepare_model_for_kbit_training` da biblioteca PEFT em modelos `diffusers` (`ModelMixin`: `Flux2Transformer2DModel`, `FluxTransformer2DModel`, `UNet2DConditionModel`).
+- **Motivo do crash:**
+  1. `prepare_model_for_kbit_training` é exclusivo para modelos NLP de `transformers` (`PreTrainedModel`). Ele tenta registrar um forward hook em `model.get_input_embeddings()`, que modelos de difusão não possuem.
+  2. Ele força o cast de parâmetros que não são `Params4bit` para `torch.float32`. No FLUX, as camadas internas de atenção `norm_q` e `norm_k` (QK-norm) são normalizações 1D; ao serem convertidas para `float32`, `query` e `key` tornam-se `float32`, enquanto `value` (sem camada de norma) permanece `bfloat16`. Isso causa falha imediata no kernel SDPA do PyTorch: `Expected query, key, and value to have the same dtype, but got query.dtype: float key.dtype: float and value.dtype: c10::BFloat16 instead`.
+- **Padrão canônico Hephaestus:**
+  1. Congelar pesos base explicitamente (`model.requires_grad_(False)`).
+  2. Ativar gradient checkpointing nativo do diffusers (`model.enable_gradient_checkpointing()`), que utiliza `use_reentrant=False` por padrão sem exigir hooks em inputs.
+  3. Injetar adaptadores LoRA diretamente via `get_peft_model(model, lora_config)`. O PEFT detecta automaticamente as camadas 4-bit (`bnb.nn.Linear4bit`) e preserva a homogeneidade de dtypes (`torch.bfloat16` ou `torch.float16`) em todas as operações de atenção e projeção.
 #### 1.4 `mock.py`: Suporte nos Testes de CI
 - Atualizar gerador sintético de `.safetensors` para aceitar `paged_adamw8bit` e `paged_adamw32bit`, registrando nos metadados do arquivo e garantindo que o pipeline de testes em CPU continue 100% verde.
 

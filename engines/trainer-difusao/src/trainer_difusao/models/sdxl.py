@@ -176,7 +176,7 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         import torch
         import torch.nn.functional as F
         from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
-        from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+        from peft import LoraConfig, get_peft_model
         from transformers import (
             AutoTokenizer,
             BitsAndBytesConfig,
@@ -349,11 +349,8 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
     text_encoder_two.requires_grad_(False)
     unet.requires_grad_(False)
 
-    if is_quantized:
-        # diffusers ModelMixin não é PreTrainedModel de NLP e não possui get_input_embeddings;
-        # use_gradient_checkpointing=False evita o hook indevido no PEFT, enquanto a
-        # ativação nativa via unet.enable_gradient_checkpointing() opera com use_reentrant=False.
-        unet = prepare_model_for_kbit_training(unet, use_gradient_checkpointing=False)
+    # Gradient checkpointing economiza ~50% VRAM (diffusers usa use_reentrant=False nativo)
+    # Nota: prepare_model_for_kbit_training do PEFT é exclusivo de modelos NLP/transformers.
     unet.enable_gradient_checkpointing()
 
     lora_config = LoraConfig(

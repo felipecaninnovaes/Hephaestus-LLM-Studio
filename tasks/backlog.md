@@ -6,7 +6,7 @@ Consolidação única de pendências e melhorias prioritárias. Rotas canônicas
 
 ## 1. Motores & Treino (Prioridade Alta)
 
-- **QLoRA Difusão Canônico:** Implementar técnica canônica (FLUX, SDXL, SD 1.5) com quantização 4-bit na UNet, `prepare_model_for_kbit_training` e Paged Optimizers (`paged_adamw8bit`, `paged_adamw32bit`). Spec: `tasks/specs/qlora-difusao.md`.
+- **QLoRA Difusão Canônico:** Implementar técnica canônica (FLUX, SDXL, SD 1.5) com quantização 4-bit na UNet/Transformer, Paged Optimizers (`paged_adamw8bit`, `paged_adamw32bit`) e gradient checkpointing nativo diffusers. Spec: `tasks/specs/qlora-difusao.md`.
 - **Validação @gpu Difusão & Img2Img:** Validar carregamento com pesos reais (`ENGINE_MOCK=0`) para SDXL/Flux-2-Klein, multi-LoRA PEFT e geração sequencial em daemon quente (ADR-0023).
 - **AutoLabel v2:** Evoluir motor para modelos VLM reais (Florence-2 / Qwen-VL) com aceleração GPU (v1 atual é determinística mock).
 

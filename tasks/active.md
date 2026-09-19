@@ -16,6 +16,7 @@
 - [x] Validação sintática de todos os arquivos compose via `docker compose config`
 - [x] Correção cirúrgica de lint a11y no modal com role dinâmico (`apps/web/components/ui/Modal.tsx`)
 - [x] Paridade nos workflows do Gitea (`ci.yml` com lint e novos composes; `release.yml` com s3-init)
+- [x] Otimização de cache Rust no GitHub Actions (`Swatinem/rust-cache@v2` sem pasta target/ bruta)
 
 ## Entregas Concluídas Recentemente
 - [x] Roadmap de Hardening e Padronização da Infraestrutura (`tasks/infra-auditoria.md`) concluído e integrado.

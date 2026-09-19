@@ -1,6 +1,6 @@
 # Infraestrutura: Nós de Execução e GPU Remota
 
-Guia sobre arquitetura de nós de execução, protocolo de pareamento, telemetria em tempo real e operação de nós GPU dedicados (ex.: TrueNAS / servidores remotos) no Hephaestus LLM Studio.
+Guia sobre arquitetura de nós de execução, protocolo de pareamento, telemetria em tempo real, hardening de segurança e operação de nós GPU dedicados (ex.: TrueNAS / servidores remotos) no Hephaestus LLM Studio.
 
 ---
 
@@ -84,7 +84,26 @@ Para o pipeline de geração interativa no Studio:
 
 ---
 
-## 5. Procedimento Operacional: Sessão GPU no TrueNAS
+## 5. Hardening de Segurança e Isolamento dos Nós Remotos
+
+### 5.1 Segregação de Tokens por Nó
+- **Risco Atual:** O `MANAGER_TOKEN` é compartilhado por todos os nós e serviços. O comprometimento do nó worker concede privilégios administrativos completos sobre o manager.
+- **Diretriz de Hardening:** Migrar para tokens individuais de nó (ex.: gerados no momento do pareamento e armazenados como hash no banco). Isso permite revogar o acesso de um worker específico sem afetar os demais nós do cluster.
+
+### 5.2 Segurança do Docker Socket (`/var/run/docker.sock`)
+O acesso ao socket Docker confere controle root sobre o host do worker. Para mitigar riscos de escape:
+- Nunca expor a porta do daemon Docker TCP na rede externa.
+- Em ambientes multi-usuário ou compartilhados, utilizar um proxy como `docker-socket-proxy` montado em substituição ao socket cru, bloqueando chamadas perigosas (`POST /containers/{id}/exec`, mutações em `/volumes`, etc.).
+
+### 5.3 Regras de Firewall e Roteamento LAN
+- O nó GPU precisa apenas de rota de saída para:
+  - `dev-host:8081` (API do Manager)
+  - `dev-host:8333` (API S3 do SeaweedFS)
+- A porta `8082` do orchestrator deve ser acessível **estritamente pelo IP do dev host**, nunca exposta na internet pública.
+
+---
+
+## 6. Procedimento Operacional: Sessão GPU no TrueNAS
 
 O runbook completo reside em `infra/README-gpu.md`. O fluxo padrão de operação consiste em:
 

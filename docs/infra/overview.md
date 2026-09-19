@@ -1,6 +1,6 @@
 # Infraestrutura: Topologia, Perfis e Ingress
 
-Visão geral do pilar de Infraestrutura do Hephaestus LLM Studio (`infra/`), definindo os perfis de implantação via Docker Compose, topologia de rede, regras de isolamento e proxy reverso.
+Visão geral do pilar de Infraestrutura do Hephaestus LLM Studio (`infra/`), definindo os perfis de implantação via Docker Compose, topologia de rede, regras de isolamento, proxy reverso e diretrizes de hardening e performance para produção.
 
 ---
 
@@ -83,7 +83,66 @@ Em ambiente de produção (`compose.prod.yaml`), o serviço `ingress` utiliza o 
 
 ---
 
-## 5. Operação e Comandos Canônicos
+## 5. Hardening de Segurança e Diretrizes de Produção
+
+### 5.1 Fail-Fast de Credenciais Padrão
+Em desenvolvimento, variáveis como `STUDIO_PASSWORD`, `STUDIO_MASTER_KEY` e `MANAGER_TOKEN` possuem fallbacks relaxados (`changeme`, `studio`).
+- **Regra de Produção:** O ambiente de produção **deve** validar que nenhuma credencial padrão está ativa. No boot do `compose.prod.yaml`, se qualquer variável contiver `changeme` ou `studio`, o serviço deve abortar a inicialização com código de erro 1.
+- **Docker Secrets:** Recomenda-se a transição de variáveis de ambiente puras para Docker Secrets (`/run/secrets/*`) para evitar vazamento em saídas de `docker inspect`.
+
+### 5.2 Execução com Usuários Não-Root
+- Containers de aplicação (`web`, `api-principal`, `manager`) devem rodar sob usuários sem privilégios (`USER node` no frontend; `USER studio:1000` nos binários Rust).
+- **Proteção do Docker Socket:** O `orchestrator` requer acesso ao socket Docker para subir engines. Em produção, deve-se utilizar um proxy de socket restrito (ex.: `docker-socket-proxy`) permitindo apenas verbos de criação de containers efêmeros e bloqueando acesso ao host, privilégios elevados (`privileged: true`) ou volumes do sistema operacional.
+
+---
+
+## 6. Gestão de Recursos e Orçamento de Memória
+
+Para evitar starvation do host e erros fatais de Out-Of-Memory (OOM Killer):
+
+| Serviço | Limite Recomendado de RAM | Limite de CPU | Justificativa |
+| :--- | :--- | :--- | :--- |
+| **`db` (Postgres + pgvector)** | 2.0 GB | 2.0 cores | Acomodar índices vetoriais HNSW e buffers de página. |
+| **`seaweedfs`** | 1.5 GB | 1.5 cores | Operação de I/O e streaming de artefatos grandes. |
+| **`principal` (BFF)** | 1.0 GB | 1.0 core | Uploads em streaming e processamento de requests HTTP. |
+| **`manager`** | 512 MB | 0.5 core | Fila de jobs em memória e despachos assíncronos. |
+| **`orchestrator-local`** | 1.0 GB | 1.0 core | Daemon e gerenciamento de processos sem a engine. |
+| **`web` (Next.js)** | 1.0 GB | 1.0 core | Renderização SSR e roteamento de páginas do Studio. |
+
+Esses limites devem ser declarados via bloco `deploy.resources.limits` no overlay de produção.
+
+---
+
+## 7. Padronização de Logs e Observabilidade
+
+### 7.1 Rotação Uniforme de Logs
+Todos os serviços do Compose devem aplicar a âncora declarativa de rotação de log para evitar esgotamento de disco:
+```yaml
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+```
+*Garantir que todos os serviços (`manager`, `orchestrator`, `embedder`, `db`, `principal`, `web`) herdem `logging: *default-logging`.*
+
+### 7.2 Coleta de Métricas Prometheus
+- O endpoint `/metrics` exposto pelo `api-principal` agrega telemetria dos serviços internos.
+- No Caddy, a rota `/metrics` é protegida e exposta para scrapers externos (Prometheus / VictoriaMetrics).
+
+---
+
+## 8. Otimização de Imagens e Performance de Build
+
+1. **Next.js Standalone Mode (`apps/web`):**
+   - Habilitar `output: 'standalone'` em `next.config.ts`.
+   - Copiar apenas `.next/standalone` e arquivos estáticos no Dockerfile, reduzindo a imagem de ~850 MB para ~150 MB.
+2. **BuildKit Cache Mounts no Rust:**
+   - Adicionar `--mount=type=cache,target=/usr/local/cargo/registry` e `--mount=type=cache,target=/app/target` nos Dockerfiles dos serviços Rust, acelerando rebuilds locais de minutos para segundos.
+
+---
+
+## 9. Operação e Comandos Canônicos
 
 ```bash
 # Subir ambiente dev padrão (CPU / mock)

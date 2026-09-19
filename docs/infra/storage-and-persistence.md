@@ -1,6 +1,6 @@
 # Infraestrutura: Armazenamento e Persistência
 
-Guia canônico sobre as camadas de persistência, banco de dados vetorial/relacional, Object Storage S3 (SeaweedFS) e volumes gerenciados do Hephaestus LLM Studio.
+Guia canônico sobre as camadas de persistência, banco de dados vetorial/relacional, Object Storage S3 (SeaweedFS), volumes gerenciados e estratégias de backup/resiliência do Hephaestus LLM Studio.
 
 ---
 
@@ -32,6 +32,22 @@ O banco de dados do sistema utiliza uma imagem oficial com a extensão `pgvector
     retries: 10
   ```
   *Nota operacional:* A inicialização com volume limpo (`initdb`) requer tempo de inicialização antes de registrar no DNS interno. O `api-principal` depende da condição `service_healthy` do `db` para evitar crash loops. As migrações SQLx são aplicadas automaticamente no boot do `api-principal`.
+
+### 2.1 Tuning do PostgreSQL para Buscas com `pgvector`
+A imagem padrão do Postgres é configurada de forma conservadora (projetada para 128 MB de RAM). Ao indexar dezenas de milhares de vetores de imagens de 512 dimensões (OpenCLIP) utilizando índices HNSW ou IVFFlat, a indexação e busca exigem parâmetros otimizados:
+
+```yaml
+services:
+  db:
+    command: >
+      postgres
+      -c shared_buffers=512MB
+      -c work_mem=32MB
+      -c maintenance_work_mem=128MB
+      -c effective_cache_size=1536MB
+```
+- `maintenance_work_mem`: Determina a velocidade de construção dos índices `CREATE INDEX ... USING hnsw`.
+- `shared_buffers`: Garante que os grafos dos índices HNSW caibam na memória compartilhada, minimizando I/O de disco durante buscas semânticas em tempo real.
 
 ---
 
@@ -99,3 +115,37 @@ volumes:
 
 ### Staging com Hash MD5
 Ao descarregar ou resolver pesos de modelos (ex.: FLUX.2 Klein, SD 1.5, CLIP), o `orchestrator` realiza verificação de integridade via checksum MD5/SHA256 e armazena os artefatos no volume compartilhado `models`, evitando downloads redundantes a cada novo job.
+
+---
+
+## 5. Resiliência, Backups e Prevenção de Desastres
+
+### 5.1 Perigo do `down -v` em Ambiente Real
+Um comando inadvertido como `docker compose down -v` elimina os volumes nomeados `pgdata` e `seaweed_data`, causando perda definitiva e irreversível de metadados, anotações de imagens e checkpoints treinados.
+
+### 5.2 Rotina Canônica de Backup
+
+#### 1. Backup do Banco Relacional e Vetores (PostgreSQL)
+```bash
+# Gerar dump consistente em formato binário customizado comprimido (-Fc)
+docker compose -f infra/compose.yaml exec -T db pg_dump -U studio -d studio -Fc > backup_pg_$(date +%Y%m%d_%H%M%S).dump
+
+# Restauração:
+docker compose -f infra/compose.yaml exec -T db pg_restore -U studio -d studio --clean --if-exists < backup_pg.dump
+```
+
+#### 2. Backup do Object Storage (SeaweedFS S3)
+Para sincronização de dados binários (imagens, datasets, artefatos):
+```bash
+# Via AWS CLI ou rclone apontando para o endpoint local:
+rclone sync :s3:heph-data /mnt/backup/heph-data \
+  --s3-provider=Other \
+  --s3-endpoint=http://127.0.0.1:8333 \
+  --s3-access-key-id=heph \
+  --s3-secret-access-key=heph-local-dev
+```
+
+### 5.3 Garbage Collection de Disco no SeaweedFS
+O SeaweedFS inclui parâmetro de coleta de lixo no comando padrão:
+`-master.volumeSizeLimitMB=1024 -master.garbageThreshold=0.3`
+Ao remover datasets e artefatos pela interface do Studio, o master do SeaweedFS compacta volumes com mais de 30% de espaço liberado, recuperando o espaço físico em disco sem intervenção manual.

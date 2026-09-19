@@ -27,6 +27,10 @@
   - Módulo `services/orchestrator/src/config/mod.rs` criado com `OrchestratorConfig` e `DaemonConfig`.
   - `main.rs` enxugado com eliminação de leituras manuais dispersas de envs.
   - 165 testes passando (14 novos testes de validação fail-fast e fallbacks de config).
+- [x] **Fatia 2: Extração de Modelos de Domínio e Portas (`domain/` e `ports/`):**
+  - Modelos puros e erros migrados para `src/domain/` (`models.rs`, `errors.rs`).
+  - Traits abstratas migradas para `src/ports/` (`storage.rs`, `executor.rs`, `reporter.rs`, `heartbeat.rs`).
+  - `lib.rs` enxugado em quase 300 linhas com re-exports transparentes; 165 testes passando.
 ## Protocolo de Retomada (3 Passos)
 
 1. **Conferir Branch e Active:** Confirmar git branch atual (`git status`) e ler `tasks/active.md` para situar a fatia e checklist em andamento.

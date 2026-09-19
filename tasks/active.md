@@ -1,11 +1,15 @@
 # Memória Ativa — Hephaestus LLM Studio
 
-- **Branch atual:** `develop`
-- **Fatia em andamento:** Nenhuma no momento — Roadmap unificado de consolidação transversal (Waves 0 a 5) concluído e integrado.
+- **Branch atual:** `feat/infra-hardening`
+- **Fatia em andamento:** Roadmap de Hardening e Padronização da Infraestrutura (`tasks/infra-auditoria.md`)
 
 ## Checklist Imediato da Sessão Ativa
-- [x] Waves 0 a 5 do roadmap transversal concluídas e testadas.
-- [x] Integração concluída via merge fast-forward na branch `develop`.
+- [x] Fase 1: Ingress Caddy TLS/headers/metrics, compose.gpu.yaml dinâmico, fail-fast prod (commit c02ac1e)
+- [x] Fase 2: Binds dev 127.0.0.1, fechamento portas prod, rotação de logs (commit 3b143f0)
+- [x] Fase 3: Healthchecks, resolver race condition principal/manager, s3-init sem apk dinâmico (commit c9d8605)
+- [x] Fase 4: Volume models GPU, tuning postgres, parametrização heartbeat, backup/restore unificado (commit 69e84fb)
+- [x] Fase 5: Standalone web, shellcheck scripts, limites de recursos prod (commit 3d5193f)
+- [x] Verificação final em todas as combinações compose (dev, gpu, integ, prod e fail-fast)
 ## Entregas Concluídas Recentemente
 - [x] Wave 0: Fundação de contratos OpenAPI, normalização de políticas VRAM e guardrails do compose prod.
 - [x] Wave 1: Pacotes compartilhados (`engine-kit`, `heph-contracts`, codegen `openapi-typescript`).

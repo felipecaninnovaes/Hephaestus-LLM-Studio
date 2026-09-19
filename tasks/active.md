@@ -1,89 +1,19 @@
 # Memória Ativa — Hephaestus LLM Studio
 
-- **Branch atual:** `develop`
-- **Fatia em andamento:** Integração das fatias de documentação de Infraestrutura (`docs/infra/`) e Modularização do Web Studio (`tasks/web-modularizacao-auditoria.md`).
+- **Branch atual:** `feat/wave-0-fundacao-contratos`
+- **Fatia em andamento:** Wave 0 — Fundação, Contratos Canônicos e Guardrails (`tasks/consolidacao-auditoria-roadmap.md`).
 
-## Checklist Imediato da Sessão Ativa
+## Checklist Imediato da Sessão Ativa (Wave 0)
 
-- [x] Fase 1: Limpeza Rápida, Eliminação de Shims & Resolução de Código Morto (Quick Wins)
-  - [x] TASK-WEB-011: Remover `CleanupJobsModal.tsx` e consolidar `ImportDatasetModal.tsx`
-  - [x] TASK-WEB-011: Eliminar shims `components/studio/Toast.tsx` e `components/studio/ConfirmDialog.tsx`
-  - [x] TASK-WEB-016: Parametrizar `allowedDevOrigins` no `next.config.ts`
-  - [x] TASK-WEB-014: Unificar formatadores duplicados de `formatBytes` em `lib/format.ts`
-- [x] Fase 2: Primitivas Faltantes, Acessibilidade (A11y) & Tokens `@theme`
-  - [x] TASK-WEB-013: Escala declarativa de z-index e tokens de status em `globals.css`
-  - [x] TASK-WEB-003: Hooks `useFocusTrap` e `useBodyScrollLock`
-  - [x] TASK-WEB-003: Foco acessível e scroll lock em `Modal`, `Drawer` e `ConfirmDialog`
-  - [x] TASK-WEB-012: Novas primitivas `Checkbox`, `Switch`, `Alert`, `FormField`, `Table`, `Tooltip`
-- [x] Fase 3: Camada de Domínio Compartilhada (Hooks & Contratos OpenAPI)
-  - [x] TASK-WEB-001: Hook `useJobLifecycle` consumido em `/jobs` e `ActionCenter`
-  - [x] TASK-WEB-002: Hooks `useHardwareTelemetry` e `useVramEstimator` consumidos nas Forjas
-  - [x] TASK-WEB-010: Componente `OrchestratorCard` eliminando clone de 55 linhas
-  - [x] TASK-WEB-014: Modularização de `types/` por domínio com `JobParams` tipado
-- [x] Fase 4: Fatiamento dos Super-Monólitos de Estúdio
-  - [x] TASK-WEB-004: Decompor `ConvergenceChart.tsx` (690 LOC -> `components/studio/charts/*`)
-  - [x] TASK-WEB-007: Decompor `ActionCenter.tsx` (1.718 LOC -> `components/studio/action-center/*`)
-  - [x] TASK-WEB-006: Decompor `ForjaDifusaoSetup.tsx` (1.837 LOC -> `components/studio/diffusion/*`)
-  - [x] TASK-WEB-005: Decompor `GenerationPanel.tsx` (1.846 LOC -> `components/studio/generation/*`)
-- [x] Fase 5: Fatiamento e Desacoplamento das Rotas de Datasets & YOLO
-  - [x] TASK-WEB-008: Decompor `annotate/[imageId]/page.tsx` (806 LOC -> `useAnnotationCanvas`, `useAnnotationSync`, `components/studio/annotation/*`)
-  - [x] TASK-WEB-007: Decompor `datasets/[id]/page.tsx` (1.786 LOC -> `useDatasetGallery`, `useDatasetUpload`, `components/studio/dataset-detail/*`)
-  - [x] Desacoplar `playground/page.tsx` (1.005 LOC -> `useYoloPlayground`, `components/studio/playground/*`)
-  - [x] Desacoplar `models/page.tsx` (423 LOC -> `components/studio/models/*`)
-- [x] Fase 6: Restauração da Arquitetura Next.js 16 (Server Components & Polimento)
-  - [x] Interceptor centralizado de 401 em `lib/api.ts` redirecionando para `/login?expired=1`
-  - [x] TASK-WEB-015: Transformar `app/(studio)/layout.tsx` em Server Component com `StudioShell.tsx`
-  - [x] TASK-WEB-015: Criar `loading.tsx` (skeletons), `error.tsx` e `not-found.tsx` em `app/(studio)/`
-  - [x] Sincronizar `docs/web/architecture.md` com a nova arquitetura e rotas reais
-
-## Documentação Canônica de Infraestrutura
-
-- [x] `docs/infra/overview.md`: Perfis de Compose (dev, prod, gpu, integ), topologia de rede, regras de isolamento e ingress Caddy.
-- [x] `docs/infra/storage-and-persistence.md`: PostgreSQL + pgvector, SeaweedFS S3 (ACLs e bootstrap `s3-init` via SigV4 manual) e volumes de cache/staging.
-- [x] `docs/infra/gpu-nodes.md`: Nós distribuídos, pareamento HMAC, telemetria de VRAM/GPUs e runbook operacional TrueNAS.
-- [x] Registro e alinhamento canônico em `AGENTS.md` (§5) e `docs/REPO_MAP.md` (§6).
----
-## Levantamento Arquitetural Recente
-
-- [x] **Levantamento e Auditoria de Modularização do Orchestrator:**
-  - Autópsia completa de `services/orchestrator/` (`lib.rs` 7.9k LOC, `daemon.rs` 1.1k LOC, `main.rs` 726 LOC).
-  - Mapeamento de duplicidades com `manager` e `api-principal`.
-  - Desenho da nova arquitetura Clean/Hexagonal (`domain/`, `ports/`, `adapters/`, `app/`, `server/`, `daemon/`, `testkit/`).
-  - Plano de autonomia do nó (outbox durável, heartbeat backoff, reaper periódico, GC de disco).
-  - Documento mestre de especificação gerado em `tasks/specs/orchestrator-modularization.md`.
-
-- [x] **Fatia 1: Extração da Camada de Configuração (`config/`):**
-  - Módulo `services/orchestrator/src/config/mod.rs` criado com `OrchestratorConfig` e `DaemonConfig`.
-  - `main.rs` enxugado com eliminação de leituras manuais dispersas de envs.
-  - 165 testes passando (14 novos testes de validação fail-fast e fallbacks de config).
-- [x] **Fatia 2: Extração de Modelos de Domínio e Portas (`domain/` e `ports/`):**
-  - Modelos puros e erros migrados para `src/domain/` (`models.rs`, `errors.rs`).
-  - Traits abstratas migradas para `src/ports/` (`storage.rs`, `executor.rs`, `reporter.rs`, `heartbeat.rs`).
-  - `lib.rs` enxugado em quase 300 linhas com re-exports transparentes; 165 testes passando.
-- [x] **Fatia 3: Extração da Camada HTTP (`server/`):**
-  - Handlers, middlewares, router e `AppState` migrados para `src/server/`.
-  - `main.rs` encolhido em 365 linhas (de ~667 para ~308 linhas); 165 testes passando.
-- [x] **Fatia 4: Modularização do Subsistema Daemon (`daemon/`):**
-  - Arquivo monolítico `daemon.rs` (1.140 linhas) decomposto no diretório `src/daemon/` (`types`, `client`, `launcher`, `state`, `lifecycle`, `tests`).
-  - Eliminado warning pré-existente de método morto `inspect_container_ip`.
-  - 165 testes passando verdes.
-- [x] **Fatia 5: Extração da Camada de Storage e Cache de Pesos (`storage/`):**
-  - Criado `src/storage/` (`scope.rs`, `archive.rs`, `s3.rs`, `cache.rs`, `mod.rs`).
-  - Mais de 400 linhas monolíticas de I/O de storage removidas de `lib.rs`.
-  - 165 testes passando verdes.
-- [x] **Fatia 6: Fatiamento do Pipeline e Unificação de Coleta de Artefatos (`app/` e `stages/`):**
-  - Monólito `run_job_inner` (1.826 linhas) decomposto em `src/app/` (`mod.rs`, `stages/{collector, weights, config, execute}.rs`).
-  - Unificada coleta de artefatos (`collect_diffusion_artifacts`), eliminando duplicação entre daemon e one-shot (P0-4).
-  - Unificado staging de pesos com hash MD5 em `resolve_and_stage_weight` (P1-3).
-  - Mais de 1.800 linhas removidas de `lib.rs`; 165 testes passando verdes.
-- [x] **Fatia 7: Extração de Adaptadores, Telemetria e Segurança (`adapters/`, `telemetry/`, `security/`):**
-  - Criados módulos `src/telemetry/` (`host`, `gpu`, `metrics`), `src/adapters/` (`docker`, `subprocess`, `sweeper`, `http`) e `src/security/` (`pairing`).
-  - Mais de 750 linhas removidas de `lib.rs`; toda lógica de produção de `lib.rs` foi 100% modularizada.
-  - `lib.rs` opera como fachada pura de declaração e re-exports; 165 testes passando verdes.
-- [x] **Fatia 8: Extração da Suíte de Testes Inline (`tests.rs`):**
-  - Suíte de 4.683 linhas migrada para `src/tests.rs` (`#[cfg(test)] mod tests;`).
-  - `lib.rs` reduzido de 7.975 linhas para **43 linhas** (fachada canônica e limpa).
-  - 165 testes passando verdes.
+- [x] RD-001: Padronização OpenAPI (`totalSteps`, `totalEpochs`, `JobParams` tipados, `orchestratorKind`, nulabilidade de `datasetId` em `Job`).
+- [x] RD-002: Normalização de chaves em `vram-table.yaml` e `engines.yaml` (`engine: diffusion`, `flux-2-klein-4b`, modos auxiliares).
+- [x] RD-003: Fail-fast de segredos e fechamento de portas no Compose Prod (`compose.prod.yaml`, remoção de `STUDIO_MASTER_KEY`).
+- [x] Verificação e testes de contrato da Wave 0.
+## Entregas Concluídas Recentemente
+- [x] Modularização completa do Web Studio (`tasks/web-modularizacao-auditoria.md` Fases 1 a 6).
+- [x] Modularização do Orchestrator em 8 fatias (`tasks/specs/orchestrator-modularization.md`).
+- [x] Documentação Canônica de Infraestrutura (`docs/infra/` overview, storage, gpu-nodes).
+- [x] Consolidação transversal e roadmap unificado (`tasks/consolidacao-auditoria-roadmap.md`).
 ## Protocolo de Retomada (3 Passos)
 
 1. **Conferir Branch e Active:** Confirmar git branch atual (`git status`) e ler `tasks/active.md` para situar a fatia e checklist em andamento.

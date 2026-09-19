@@ -27,10 +27,29 @@ services:
   web:
     ports: !override []
 
-  # Em produção, fecha a exposição direta da porta 8080 do BFF
+  # Em produção, fecha a exposição direta da porta 8080 do BFF e impõe segredos
   principal:
+    environment:
+      ENVIRONMENT: production
+      STUDIO_PASSWORD: ${STUDIO_PASSWORD:?Defina STUDIO_PASSWORD em producao}
+      MANAGER_TOKEN: ${MANAGER_TOKEN:?Defina MANAGER_TOKEN em producao}
+      DATABASE_URL: postgres://studio:${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD em producao}@db/studio
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?Defina S3_SECRET_KEY em producao}
     ports: !override []
 
+  # Em produção, fecha a porta do manager e impõe segredos
+  manager:
+    environment:
+      ENVIRONMENT: production
+      MANAGER_TOKEN: ${MANAGER_TOKEN:?Defina MANAGER_TOKEN em producao}
+      DATABASE_URL: postgres://studio:${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD em producao}@db/studio
+    ports: !override []
+
+  # Em produção, fecha a porta do banco de dados no host e impõe senha
+  db:
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD em producao}
+    ports: !override []
 volumes:
   caddy_data:
   caddy_config:

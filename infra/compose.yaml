@@ -36,7 +36,6 @@ services:
     environment:
       DATABASE_URL: postgres://studio:${POSTGRES_PASSWORD:-studio}@db/studio
       STUDIO_PASSWORD: ${STUDIO_PASSWORD:-changeme}
-      STUDIO_MASTER_KEY: ${STUDIO_MASTER_KEY:-changeme}
       MANAGER_URL: http://manager:8081
       MANAGER_TOKEN: ${MANAGER_TOKEN:-changeme}
       STORAGE_BACKEND: ${STORAGE_BACKEND:-s3}

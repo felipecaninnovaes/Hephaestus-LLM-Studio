@@ -1,0 +1,98 @@
+"""
+Pacote de utilitários e infraestrutura interna do trainer_difusao.
+"""
+from trainer_difusao.common_pkg.core import (
+    _die,
+    _seed_bytes,
+    _synthetic_loss,
+    _canonical_model_name,
+    _resolve_output_name,
+)
+from trainer_difusao.common_pkg.metrics import _emit_metric
+from trainer_difusao.common_pkg.runtime import (
+    _prune_checkpoints,
+    _cleanup_cuda,
+    _setup_cache_dir,
+)
+from trainer_difusao.common_pkg.lora_io import (
+    _save_lora_safetensors,
+    _load_lora_weights,
+)
+from trainer_difusao.common_pkg.train_config import (
+    _TRAIN_QUANT_LEVELS,
+    _TRAIN_QUANT_ALIASES,
+    _CONTROL_RATIO_DEFAULT,
+    _CONTROL_RATIO_MAX,
+    _normalize_train_quantization,
+    _validate_train_aux,
+    _count_control_images,
+    _cycling_batches,
+    _caption_cache_key,
+    _build_intx_torchao_config,
+)
+from trainer_difusao.common_pkg.text_embeds import (
+    TextEmbedsCache,
+    _precompute_text_cache,
+    _cached_encode,
+)
+from trainer_difusao.common_pkg.encoder_merge import (
+    TEXT_ENCODER_CUSTOM_CACHE_ENV,
+    _TEXT_ENCODER_CUSTOM_CACHE_DEFAULT,
+    _custom_text_encoder_merge_dir,
+    _text_encoder_cache_slug,
+    _merged_text_encoder_valid,
+    _write_merged_text_encoder_metadata,
+    _load_loose_text_encoder_state,
+    TEXT_ENCODER_CACHE_MAX_GB_ENV,
+    _TEXT_ENCODER_CACHE_MAX_GB_DEFAULT,
+    _custom_text_encoder_cache_root,
+    _merged_text_encoder_tmp_dir,
+    _cleanup_merge_tmp_dir,
+    _publish_merged_text_encoder,
+    _dir_size_bytes,
+    _text_encoder_cache_max_bytes,
+    _sweep_text_encoder_merge_cache,
+)
+
+__all__ = [
+    "_die",
+    "_seed_bytes",
+    "_synthetic_loss",
+    "_canonical_model_name",
+    "_resolve_output_name",
+    "_emit_metric",
+    "_prune_checkpoints",
+    "_cleanup_cuda",
+    "_setup_cache_dir",
+    "_save_lora_safetensors",
+    "_load_lora_weights",
+    "_TRAIN_QUANT_LEVELS",
+    "_TRAIN_QUANT_ALIASES",
+    "_CONTROL_RATIO_DEFAULT",
+    "_CONTROL_RATIO_MAX",
+    "_normalize_train_quantization",
+    "_validate_train_aux",
+    "_count_control_images",
+    "_cycling_batches",
+    "_caption_cache_key",
+    "_build_intx_torchao_config",
+    "TextEmbedsCache",
+    "_precompute_text_cache",
+    "_cached_encode",
+    "TEXT_ENCODER_CUSTOM_CACHE_ENV",
+    "_TEXT_ENCODER_CUSTOM_CACHE_DEFAULT",
+    "_custom_text_encoder_merge_dir",
+    "_text_encoder_cache_slug",
+    "_merged_text_encoder_valid",
+    "_write_merged_text_encoder_metadata",
+    "_load_loose_text_encoder_state",
+    "TEXT_ENCODER_CACHE_MAX_GB_ENV",
+    "_TEXT_ENCODER_CACHE_MAX_GB_DEFAULT",
+    "_custom_text_encoder_cache_root",
+    "_merged_text_encoder_tmp_dir",
+    "_cleanup_merge_tmp_dir",
+    "_publish_merged_text_encoder",
+    "_dir_size_bytes",
+    "_text_encoder_cache_max_bytes",
+    "_sweep_text_encoder_merge_cache",
+]

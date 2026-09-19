@@ -25,7 +25,7 @@ import {
 } from "@/components/icons";
 import { AutolabelReviewModal } from "@/components/studio/AutolabelReviewModal";
 import { AutotrackerReviewModal } from "@/components/studio/AutotrackerReviewModal";
-import ConfirmDialog from "@/components/studio/ConfirmDialog";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import {
 	ConvergenceChart,
 	MetricSparkline,
@@ -35,22 +35,25 @@ import { JobCleanupDialog } from "@/components/studio/JobCleanupDialog";
 import { JobLogViewer } from "@/components/studio/JobLogViewer";
 import { JobProgressLive } from "@/components/studio/JobProgressLive";
 import { JobSamplesGallery } from "@/components/studio/JobSamplesGallery";
-import { showToast } from "@/components/studio/Toast";
+import {
+	JobsHeader,
+	JobsSidebar,
+	JobHeroHeader,
+	JobArtifactsList,
+	JobMetricsChips,
+} from "@/components/studio/jobs";
+import { showToast } from "@/components/ui/Toast";
 import { Badge, jobStatusToBadgeVariant } from "@/components/ui/Badge";
 import { Button, getButtonClasses } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
 import { useJobTelemetry } from "@/hooks/useJobTelemetry";
+import { useJobLifecycle } from "@/hooks/useJobLifecycle";
 import { ApiError } from "@/lib/api";
-import { applyAutolabelCaptions } from "@/lib/autolabel";
-import { applyAutotrackerBoxes } from "@/lib/autotracker";
 import { openActionCenter } from "@/lib/events";
 import { formatBytes, formatDuration } from "@/lib/format";
 import { imageProgressLabel, jobCapabilities } from "@/lib/jobCapabilities";
 import { trainingMetrics } from "@/lib/jobMetrics";
 import {
-	abortJob,
-	deleteJob,
-	downloadArtifact,
 	getJobArtifacts,
 	getJobMetrics,
 	listJobs,
@@ -111,13 +114,31 @@ function JobsPageContent() {
 	const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
 	const [metrics, setMetrics] = useState<Record<string, JobMetricsType[]>>({});
 	const [artifacts, setArtifacts] = useState<Record<string, JobArtifact[]>>({});
-	const [abortTarget, setAbortTarget] = useState<Job | null>(null);
-	const [abortBusy, setAbortBusy] = useState(false);
-	const [deleteTarget, setDeleteTarget] = useState<Job | null>(null);
-	const [deleteBusy, setDeleteBusy] = useState(false);
 	const [cleanupOpen, setCleanupOpen] = useState(false);
-	const [applyBusy, setApplyBusy] = useState(false);
-	const [applyOverwrite, setApplyOverwrite] = useState(false);
+	const {
+		abortTarget,
+		setAbortTarget,
+		abortBusy,
+		handleAbort,
+		deleteTarget,
+		setDeleteTarget,
+		deleteBusy,
+		handleDeleteJob,
+		applyBusy,
+		applyOverwrite,
+		setApplyOverwrite,
+		handleApplyBoxes,
+		handleApplyCaptions,
+		handleDownloadArtifact,
+	} = useJobLifecycle({
+		onSuccess: () => fetchJobs(),
+		onDeleted: (jobId) => {
+			if (selectedJobId === jobId) {
+				selectJob(null);
+			}
+		},
+		onNavigateDataset: (datasetId) => router.push(`/datasets/${datasetId}`),
+	});
 	const [reviewJob, setReviewJob] = useState<Job | null>(null);
 	const [autotrackerReviewJob, setAutotrackerReviewJob] = useState<Job | null>(
 		null,
@@ -334,158 +355,6 @@ function JobsPageContent() {
 		return () => ctrl.abort();
 	}, [selectedJob?.id, jobs]);
 
-	async function handleAbort() {
-		if (!abortTarget) return;
-		setAbortBusy(true);
-		try {
-			await abortJob(abortTarget.id);
-			showToast("Job cancelado com sucesso.", "success");
-			setAbortTarget(null);
-			await fetchJobs();
-		} catch (err) {
-			if (
-				err instanceof ApiError &&
-				(err.code === "job_not_abortable" || err.status === 409)
-			) {
-				showToast("Este job não pode mais ser cancelado.", "info");
-				setAbortTarget(null);
-				return;
-			}
-			showToast("Falha ao cancelar job.", "error");
-		} finally {
-			setAbortBusy(false);
-		}
-	}
-
-	async function handleDeleteJob() {
-		if (!deleteTarget) return;
-		setDeleteBusy(true);
-		try {
-			const res = await deleteJob(deleteTarget.id);
-			showToast(
-				`Job excluído · ${res.artifacts.length} artefatos, ${res.modelsDeleted} modelo(s) do catálogo${res.generationsPreserved > 0 ? ` · ${res.generationsPreserved} geração(ões) da galeria preservadas` : ""}.`,
-				"success",
-			);
-			// Se o job excluído era o selecionado, limpar seleção
-			if (selectedJobId === deleteTarget.id) {
-				selectJob(null);
-			}
-			setDeleteTarget(null);
-			await fetchJobs();
-		} catch (err) {
-			if (
-				err instanceof ApiError &&
-				(err.code === "job_not_terminal" || err.status === 409)
-			) {
-				showToast(
-					"Só jobs concluídos/falhos/cancelados podem ser excluídos.",
-					"info",
-				);
-				setDeleteTarget(null);
-				return;
-			}
-			if (err instanceof ApiError && err.code === "not_found") {
-				showToast("Job já havia sido removido.", "info");
-				// Se o job excluído era o selecionado, limpar seleção
-				if (selectedJobId === deleteTarget.id) {
-					selectJob(null);
-				}
-				setDeleteTarget(null);
-				await fetchJobs();
-				return;
-			}
-			if (err instanceof ApiError && err.code === "queue_unavailable") {
-				showToast("Manager indisponível, tente de novo.", "error");
-				return;
-			}
-			showToast("Falha ao excluir job.", "error");
-		} finally {
-			setDeleteBusy(false);
-		}
-	}
-
-	async function handleApplyBoxes(job: Job) {
-		setApplyBusy(true);
-		try {
-			const result = await applyAutotrackerBoxes(job.id, {
-				overwrite: applyOverwrite,
-			});
-			showToast(
-				`${result.applied} boxes aplicadas, ${result.skipped} ignoradas em ${result.images} imagem(ns).`,
-				"success",
-				job.datasetId
-					? {
-							label: "Abrir dataset",
-							onClick: () => router.push(`/datasets/${job.datasetId}`),
-						}
-					: undefined,
-			);
-			setApplyOverwrite(false);
-			await fetchJobs();
-		} catch (err) {
-			if (err instanceof ApiError) {
-				if (err.code === "unauthorized" || err.status === 401) {
-					router.replace("/login");
-					return;
-				}
-				if (err.code === "job_not_done") {
-					showToast("O job ainda não terminou — aguarde a conclusão.", "info");
-					return;
-				}
-				showToast(autotrackerErrorMessage(err.code), "error");
-				return;
-			}
-			showToast("Falha ao aplicar boxes.", "error");
-		} finally {
-			setApplyBusy(false);
-		}
-	}
-
-	async function handleApplyCaptions(job: Job) {
-		setApplyBusy(true);
-		try {
-			const result = await applyAutolabelCaptions(job.id, {
-				datasetId: job.datasetId,
-				overwrite: applyOverwrite,
-			});
-			showToast(
-				`${result.applied} legendas aplicadas, ${result.skipped} ignoradas em ${result.images} imagem(ns).`,
-				"success",
-				job.datasetId
-					? {
-							label: "Abrir dataset",
-							onClick: () => router.push(`/datasets/${job.datasetId}`),
-						}
-					: undefined,
-			);
-			setApplyOverwrite(false);
-			await fetchJobs();
-		} catch (err) {
-			if (err instanceof ApiError) {
-				if (err.code === "unauthorized" || err.status === 401) {
-					router.replace("/login");
-					return;
-				}
-				if (err.code === "job_not_done") {
-					showToast("O job ainda não terminou — aguarde a conclusão.", "info");
-					return;
-				}
-				showToast(autolabelErrorMessage(err.code), "error");
-				return;
-			}
-			showToast("Falha ao aplicar legendas.", "error");
-		} finally {
-			setApplyBusy(false);
-		}
-	}
-
-	async function handleDownloadArtifact(jobId: string, art: JobArtifact) {
-		try {
-			await downloadArtifact(jobId, art.id, art.path);
-		} catch {
-			showToast("Falha ao baixar artefato.", "error");
-		}
-	}
 
 	function handleResumeFromCheckpoint(job: Job, art: JobArtifact) {
 		const checkpointName =
@@ -721,70 +590,12 @@ function JobsPageContent() {
 			{/* ═══════════════════════════════════════════════
           HEADER — EXECUÇÕES
           ═══════════════════════════════════════════════ */}
-			<div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/10 pb-4">
-				<div>
-					<div className="flex items-center space-x-2.5">
-						<span className="flex size-7 items-center justify-center rounded-lg border border-brand-500/30 bg-brand-500/15 text-brand-400 backdrop-blur-sm">
-							<IconActivity className="size-4" />
-						</span>
-						<h1 className="font-display text-lg font-bold text-white tracking-tight">
-							Execuções
-						</h1>
-						{totalCount > 0 && (
-							<span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-2xs text-zinc-400 backdrop-blur-sm">
-								{totalCount} {totalCount === 1 ? "execução" : "execuções"}
-							</span>
-						)}
-					</div>
-					<p className="mt-1 text-xs text-zinc-400 max-w-2xl">
-						Fila de trabalho em execução e histórico de todos os tipos (YOLO,
-						AutoTracker).
-					</p>
-				</div>
-
-				<div className="flex items-center space-x-2.5 shrink-0">
-					<Button
-						type="button"
-						variant="secondary"
-						size="sm"
-						onClick={() => setCleanupOpen(true)}
-						title="Limpar jobs antigos do histórico"
-					>
-						<IconTrash className="size-3.5 text-rose-400" />
-						<span className="hidden sm:inline">Limpar antigos</span>
-					</Button>
-					<Button
-						type="button"
-						variant="secondary"
-						size="sm"
-						onClick={() => void fetchJobs(true)}
-						disabled={refreshing}
-						title="Atualizar lista e status dos jobs"
-					>
-						<IconRefresh
-							className={`size-3.5 ${refreshing ? "animate-spin text-brand-400" : ""}`}
-						/>
-						<span>Atualizar</span>
-					</Button>
-					<Button
-						type="button"
-						variant="secondary"
-						size="sm"
-						onClick={openActionCenter}
-						title="Abrir Centro de Atividades lateral"
-					>
-						<IconZap className="size-3.5 text-brand-400" />
-						<span className="hidden sm:inline">Centro de Atividades</span>
-					</Button>
-					<Link
-						href="/treino"
-						className={getButtonClasses({ variant: "primary", size: "sm" })}
-					>
-						<IconPlay className="size-3.5" />
-						<span>Novo Treino</span>
-					</Link>
-				</div>
-			</div>
+			<JobsHeader
+				totalCount={totalCount}
+				refreshing={refreshing}
+				onCleanup={() => setCleanupOpen(true)}
+				onRefresh={() => void fetchJobs(true)}
+			/>
 
 			{/* ═══════════════════════════════════════════════
           WORKSPACE DE 2 COLUNAS: LISTA + DETALHE
@@ -793,86 +604,15 @@ function JobsPageContent() {
 				<div className="flex flex-col md:flex-row items-start gap-6">
 					{/* Coluna 1: Lista de Execuções — oculta no modo foco */}
 					{!focusMode && (
-						<aside className="w-full md:w-80 lg:w-96 shrink-0 md:sticky md:top-4 md:max-h-[calc(100vh-2rem)] md:overflow-y-auto overflow-x-hidden [scrollbar-width:thin] space-y-4">
-							{loading ? (
-								<div className="glass-card rounded-2xl p-8 text-center text-xs text-zinc-400 font-mono border border-white/10">
-									Carregando execuções…
-								</div>
-							) : totalCount === 0 ? (
-								<div className="glass-card flex flex-col items-center gap-3 rounded-2xl p-8 text-center border border-white/10">
-									<span className="flex size-10 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-zinc-400 backdrop-blur-sm">
-										<IconActivity className="size-5 text-brand-400/60" />
-									</span>
-									<div className="space-y-1">
-										<p className="text-xs font-semibold text-zinc-200">
-											Nenhuma execução registrada
-										</p>
-										<p className="text-2xs text-zinc-400">
-											Inicie um treino em{" "}
-											<Link
-												href="/treino"
-												className="text-brand-400 hover:text-brand-300 underline underline-offset-2"
-											>
-												Treino YOLO
-											</Link>{" "}
-											ou aguarde jobs do AutoTracker.
-										</p>
-									</div>
-								</div>
-							) : (
-								<div className="space-y-3">
-									{/* ── Jobs Ativos ── */}
-									{activeJobs.length > 0 && (
-										<div className="space-y-2">
-											<div className="flex items-center justify-between px-1">
-												<h3 className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-400">
-													Em Execução
-												</h3>
-												<span className="flex items-center gap-1.5 font-mono text-2xs text-brand-300">
-													<span className="size-1.5 rounded-full bg-brand-400 animate-pulse motion-reduce:animate-none" />
-													{activeJobs.length}
-												</span>
-											</div>
-											<div className="space-y-2">
-												{activeJobs.map((job) => (
-													<JobListItem
-														key={job.id}
-														job={job}
-														isFocused={selectedJob?.id === job.id}
-														onSelect={selectJob}
-													/>
-												))}
-											</div>
-										</div>
-									)}
-
-									{/* ── Jobs Terminais ── */}
-									{terminalJobs.length > 0 && (
-										<div className="space-y-2">
-											<div className="flex items-center justify-between px-1">
-												<h3 className="font-mono text-2xs font-semibold uppercase tracking-[0.08em] text-zinc-400">
-													Histórico
-												</h3>
-												<span className="font-mono text-2xs text-zinc-500">
-													{terminalJobs.length}
-												</span>
-											</div>
-											<div className="space-y-2">
-												{terminalJobs.map((job) => (
-													<JobListItem
-														key={job.id}
-														job={job}
-														isFocused={selectedJob?.id === job.id}
-														onSelect={selectJob}
-														onRerun={handleRerunJob}
-													/>
-												))}
-											</div>
-										</div>
-									)}
-								</div>
-							)}
-						</aside>
+						<JobsSidebar
+							activeJobs={activeJobs}
+							terminalJobs={terminalJobs}
+							selectedJobId={selectedJob?.id ?? null}
+							loading={loading}
+							totalCount={totalCount}
+							onSelectJob={selectJob}
+							onRerunJob={handleRerunJob}
+						/>
 					)}
 
 					{/* Coluna 2: Painel de Detalhe (flex-1 min-w-0) */}
@@ -880,69 +620,17 @@ function JobsPageContent() {
 						{selectedJob ? (
 							<div className="space-y-4">
 								{/* Cabeçalho do Job Selecionado */}
-								<div className="flex items-center justify-between">
-									<div className="flex items-center gap-2">
-										<h2 className="font-display text-sm font-semibold text-zinc-200">
-											{focusMode
-												? "Acompanhando"
-												: isActive(selectedJob.status)
-													? "Execução Ativa"
-													: "Detalhes da Execução"}
-										</h2>
-										<Badge
-											variant={jobStatusToBadgeVariant(selectedJob.status)}
-											pulse={selectedJob.status === "running"}
-										>
-											{STATUS_LABEL[selectedJob.status]}
-										</Badge>
-									</div>
-									<div className="flex items-center gap-3">
-										{focusMode ? (
-											<button
-												type="button"
-												onClick={() => setFocus(false)}
-												className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-2xs font-mono text-zinc-300 transition hover:bg-white/[0.06] active:scale-[0.985] cursor-pointer"
-												title="Sair do modo foco"
-											>
-												<IconX className="size-3" />
-												<span>Sair do foco</span>
-											</button>
-										) : (
-											<button
-												type="button"
-												onClick={() => setFocus(true, selectedJob.id)}
-												className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-2xs font-mono text-zinc-300 transition hover:bg-white/[0.06] active:scale-[0.985] cursor-pointer"
-												title="Acompanhar este job em tela cheia"
-											>
-												<IconActivity className="size-3" />
-												<span>Acompanhar</span>
-											</button>
-										)}
-										{!isActive(selectedJob.status) && (
-											<button
-												type="button"
-												onClick={() => setDeleteTarget(selectedJob)}
-												className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-1 min-h-[40px] text-2xs font-mono text-rose-300 transition hover:border-rose-500/40 hover:bg-rose-500/10 active:scale-[0.985] cursor-pointer"
-												aria-label="Excluir job"
-												title="Excluir este job e seus artefatos"
-											>
-												<IconTrash className="size-3" />
-												<span>Excluir</span>
-											</button>
-										)}
-										{selectedJobId && selectedJobId !== activeJobs[0]?.id && (
-											<button
-												type="button"
-												onClick={() => selectJob(null)}
-												className="text-xs text-zinc-400 hover:text-zinc-200 transition underline underline-offset-2"
-											>
-												{activeJobs.length > 0
-													? "Voltar ao job ativo"
-													: "Ver último job"}
-											</button>
-										)}
-									</div>
-								</div>
+								<JobHeroHeader
+									selectedJob={selectedJob}
+									focusMode={focusMode}
+									isActiveJob={isActive(selectedJob.status)}
+									selectedJobId={selectedJobId}
+									hasActiveJobs={activeJobs.length > 0}
+									activeJobId={activeJobs[0]?.id}
+									onSetFocus={setFocus}
+									onDelete={setDeleteTarget}
+									onSelectJob={selectJob}
+								/>
 
 								{/* Job Hero Card */}
 								<div className="glass-card rounded-2xl p-5 space-y-4 border border-white/10">
@@ -1032,6 +720,7 @@ function JobsPageContent() {
 									{isActive(selectedJob.status) && (
 										<div className="pt-2">
 											<JobProgressLive
+												jobKind={selectedJob.kind}
 												phase={
 													telemetry.phase ||
 													selectedJob.phase ||
@@ -1047,7 +736,9 @@ function JobsPageContent() {
 													telemetry.vramUsedGb ?? selectedJob.vramUsedGb
 												}
 												step={telemetry.step ?? selectedJob.step}
+												totalSteps={telemetry.totalSteps ?? selectedJob.totalSteps}
 												epoch={telemetry.epoch ?? selectedJob.epoch}
+												totalEpochs={telemetry.totalEpochs ?? selectedJob.totalEpochs}
 												isLive={telemetry.isLive}
 												isFinished={telemetry.isFinished}
 											/>
@@ -1065,118 +756,23 @@ function JobsPageContent() {
 													isJobActive={selectedJob.status === "running"}
 												/>
 
-												{selectedTrainingMetrics.length > 0 && (
-													<div className="space-y-2">
-														<div className="flex items-center justify-between">
-															<h3 className="font-mono text-2xs font-semibold uppercase tracking-caps text-zinc-300">
-																Métricas (Epoch{" "}
-																{
-																	selectedTrainingMetrics[
-																		selectedTrainingMetrics.length - 1
-																	].epoch
-																}
-																)
-															</h3>
-															<span className="font-mono text-2xs text-zinc-400">
-																{selectedTrainingMetrics.length} checkpoint(s)
-															</span>
-														</div>
-														<div
-															className={`grid gap-2.5 ${
-																caps.metricChips === "diffusion"
-																	? "grid-cols-2 sm:grid-cols-4"
-																	: "grid-cols-2 sm:grid-cols-3 lg:grid-cols-6"
-															}`}
-														>
-															{(caps.metricChips === "diffusion"
-																? ([
-																		["loss", "Diffusion Loss", false],
-																		["lr", "Learning Rate", false],
-																		["step", "Step", false],
-																		["epoch", "Época", false],
-																	] as const)
-																: ([
-																		["map50", "mAP@50", true],
-																		["map5095", "mAP@50-95", true],
-																		["boxLoss", "Box Loss", false],
-																		["clsLoss", "Cls Loss", false],
-																		["dflLoss", "Dfl Loss", false],
-																		["epoch", "Epochs", false],
-																	] as const)
-															).map(([key, label, isPercent]) => {
-																const jobMetrics = selectedTrainingMetrics;
-																const last = jobMetrics[jobMetrics.length - 1];
-																const val = last[key as keyof JobMetricsType];
-																const isPrimary =
-																	key === "map50" || key === "loss";
-																const series = jobMetrics.map(
-																	(m) =>
-																		(m[
-																			key as keyof JobMetricsType
-																		] as number) ?? 0,
-																);
-																return (
-																	<div
-																		key={key}
-																		className={`rounded-xl border p-3 flex flex-col justify-between backdrop-blur-sm ${
-																			isPrimary
-																				? "border-brand-500/30 bg-brand-500/10"
-																				: "border-white/10 bg-white/[0.02]"
-																		}`}
-																	>
-																		<div>
-																			<span
-																				className={`block font-mono text-2xs font-medium tracking-caps uppercase ${
-																					isPrimary
-																						? "text-brand-300"
-																						: "text-zinc-400"
-																				}`}
-																			>
-																				{label}
-																			</span>
-																			<span className="block font-mono text-base font-semibold text-zinc-100 mt-1">
-																				{typeof val === "number"
-																					? isPercent
-																						? `${(val * 100).toFixed(1)}%`
-																						: key === "lr"
-																							? val.toExponential(2)
-																							: key === "epoch" ||
-																									key === "step"
-																								? val
-																								: val.toFixed(4)
-																					: "—"}
-																			</span>
-																		</div>
-																		<div className="mt-2 pt-2 border-t border-white/[0.04]">
-																			<MetricSparkline
-																				data={series}
-																				color={SPARK_COLORS[key] || "#34d399"}
-																			/>
-																		</div>
-																	</div>
-																);
-															})}
-														</div>
-													</div>
-												)}
+												<JobMetricsChips
+													metrics={selectedTrainingMetrics}
+													metricChipsType={caps.metricChips}
+													step={selectedJob.step}
+													progress={selectedJob.progress}
+												/>
 											</div>
 										)}
 
 									{/* Chip único "Imagens processadas" para autolabel/autotracker (AC-002) */}
 									{caps && caps.metricChips === "progress" && (
-										<div className="pt-3 border-t border-white/10">
-											<div className="rounded-lg bg-white/[0.03] backdrop-blur-sm p-2 border border-white/10 inline-flex items-center gap-2">
-												<span className="text-3xs font-mono text-zinc-400 uppercase tracking-caps">
-													Imagens processadas
-												</span>
-												<span className="text-xs font-semibold text-zinc-200 font-mono tabular-nums">
-													{imageProgressLabel(
-														selectedJob.step,
-														selectedJob.progress,
-													)}
-												</span>
-											</div>
-										</div>
+										<JobMetricsChips
+											metrics={selectedTrainingMetrics}
+											metricChipsType="progress"
+											step={selectedJob.step}
+											progress={selectedJob.progress}
+										/>
 									)}
 
 									{/* Artefatos e Amostras Geradas */}
@@ -1195,89 +791,12 @@ function JobsPageContent() {
 												)}
 
 												{/* Outros Artefatos Gerados */}
-												{artifacts[selectedJob.id].filter(
-													(art) =>
-														art.kind !== "sample" &&
-														!art.path.startsWith("samples/") &&
-														!art.path.includes("sample_epoch_"),
-												).length > 0 && (
-													<div className="space-y-2">
-														<h3 className="font-mono text-2xs font-semibold uppercase tracking-caps text-zinc-300">
-															Artefatos (
-															{
-																artifacts[selectedJob.id].filter(
-																	(art) =>
-																		art.kind !== "sample" &&
-																		!art.path.startsWith("samples/") &&
-																		!art.path.includes("sample_epoch_"),
-																).length
-															}
-															)
-														</h3>
-														<div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-															{artifacts[selectedJob.id]
-																.filter(
-																	(art) =>
-																		art.kind !== "sample" &&
-																		!art.path.startsWith("samples/") &&
-																		!art.path.includes("sample_epoch_"),
-																)
-																.map((art) => (
-																	<div
-																		key={art.id}
-																		className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.02] p-3 backdrop-blur-sm"
-																	>
-																		<div className="min-w-0 mr-2">
-																			<span
-																				className="block text-xs font-semibold text-zinc-200 truncate"
-																				title={art.path}
-																			>
-																				{art.path.split("/").pop()}
-																			</span>
-																			<span className="block font-mono text-2xs text-zinc-400">
-																				{formatBytes(art.bytes)} · {art.kind}
-																			</span>
-																		</div>
-																		<div className="flex items-center gap-2 shrink-0">
-																			{(art.kind === "checkpoint" ||
-																				art.kind === "model" ||
-																				art.path.endsWith(".safetensors")) && (
-																				<Button
-																					type="button"
-																					variant="secondary"
-																					size="sm"
-																					onClick={() =>
-																						handleResumeFromCheckpoint(
-																							selectedJob,
-																							art,
-																						)
-																					}
-																					title="Retomar treino a partir deste checkpoint"
-																				>
-																					<IconSparkles className="size-3.5 text-sky-400" />
-																					<span>Retomar</span>
-																				</Button>
-																			)}
-																			<Button
-																				type="button"
-																				variant="secondary"
-																				size="sm"
-																				onClick={() =>
-																					handleDownloadArtifact(
-																						selectedJob.id,
-																						art,
-																					)
-																				}
-																			>
-																				<IconDownload className="size-3.5" />
-																				<span>Baixar</span>
-																			</Button>
-																		</div>
-																	</div>
-																))}
-														</div>
-													</div>
-												)}
+												<JobArtifactsList
+													job={selectedJob}
+													artifacts={artifacts[selectedJob.id]}
+													onDownload={handleDownloadArtifact}
+													onResume={handleResumeFromCheckpoint}
+												/>
 											</div>
 										)}
 
@@ -1474,6 +993,8 @@ function JobsPageContent() {
 									job={selectedJob}
 									metrics={metrics[selectedJob.id] || []}
 									artifacts={artifacts[selectedJob.id] || []}
+									livePhase={telemetry.phase}
+									livePhaseMessage={telemetry.phaseMessage}
 								/>
 							</div>
 						) : (

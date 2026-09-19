@@ -733,7 +733,13 @@ const ALLOWED_DIFFUSION_BASE_MODELS: &[&str] = &["sdxl", "flux", "sd15", "flux-2
 const ALLOWED_DIFFUSION_BATCH: &[u32] = &[1, 2, 4, 8];
 const ALLOWED_DIFFUSION_RESOLUTIONS: &[u32] = &[256, 512, 768, 1024, 1280, 1328, 1536, 2048];
 const ALLOWED_DIFFUSION_GRAD_ACCUM: &[u32] = &[1, 2, 4, 8];
-const ALLOWED_DIFFUSION_OPTIMIZERS: &[&str] = &["adamw8bit", "adamw", "prodigy"];
+const ALLOWED_DIFFUSION_OPTIMIZERS: &[&str] = &[
+    "adamw8bit",
+    "adamw",
+    "prodigy",
+    "paged_adamw8bit",
+    "paged_adamw32bit",
+];
 const ALLOWED_DIFFUSION_LR_SCHEDULERS: &[&str] =
     &["cosine", "linear", "constant", "constant_with_warmup"];
 const ALLOWED_DIFFUSION_PRECISION: &[&str] = &["fp16", "bf16", "no"];
@@ -861,7 +867,7 @@ fn default_diffusion_grad_accum() -> u32 {
     1
 }
 fn default_diffusion_optimizer() -> String {
-    "adamw8bit".to_string()
+    "paged_adamw8bit".to_string()
 }
 fn default_diffusion_lr_scheduler() -> String {
     "cosine".to_string()
@@ -2792,6 +2798,36 @@ mod tests {
         assert!(yaml.contains("lr_warmup_steps: 50"));
         assert!(yaml.contains(r#"mixed_precision: "bf16""#));
         assert!(yaml.contains(r#"quantization: "8bit""#));
+    }
+
+    #[test]
+    fn diffusion_validate_paged_optimizers() {
+        // Default sem especificar optimizer deve ser paged_adamw8bit
+        let default_json = r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001"}"#;
+        let default_req: DiffusionJobRequest = serde_json::from_str(default_json).unwrap();
+        let default_v = validate_diffusion_request(default_req).unwrap();
+        assert_eq!(default_v.optimizer, "paged_adamw8bit");
+        let default_yaml = generate_diffusion_config_yaml("job-opt-def", &default_v, None);
+        assert!(default_yaml.contains(r#"optimizer: "paged_adamw8bit""#));
+
+        // Paged optimizers aceitos explicitamente
+        for opt in &["paged_adamw8bit", "paged_adamw32bit"] {
+            let json = format!(
+                r#"{{"datasetId":"550e8400-e29b-41d4-a716-446655440001","optimizer":"{opt}"}}"#
+            );
+            let req: DiffusionJobRequest = serde_json::from_str(&json).unwrap();
+            let v = validate_diffusion_request(req).expect(opt);
+            assert_eq!(v.optimizer, *opt);
+            let yaml = generate_diffusion_config_yaml("job-opt", &v, None);
+            assert!(yaml.contains(&format!(r#"optimizer: "{opt}""#)));
+        }
+
+        // Otimizador inválido é rejeitado com mensagem clara
+        let bad_json =
+            r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001","optimizer":"invalid_opt"}"#;
+        let bad_req: DiffusionJobRequest = serde_json::from_str(bad_json).unwrap();
+        let err = validate_diffusion_request(bad_req).unwrap_err();
+        assert!(err.contains("optimizer must be one of"));
     }
 
     #[test]

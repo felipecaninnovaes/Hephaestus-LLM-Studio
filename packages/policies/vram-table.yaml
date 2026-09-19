@@ -4,25 +4,26 @@ defaults:
   default_train_gb: 16
 entries:
   # ── Difusão train (ADR-0018) ──
-  - { engine: diffusion, model: flux, mode: train, vram_min_gb: 8 }
+  - { engine: diffusion, model: flux-2-klein-4b, mode: train, vram_min_gb: 8 }
   - { engine: diffusion, model: flux2-klein-4b, mode: train, vram_min_gb: 8 }
-  - { engine: diffusion, model: sdxl, mode: train, vram_min_gb: 10 }
-  - { engine: diffusion, model: sd15, mode: train, vram_min_gb: 6 }
-  - { engine: difusao, model: flux2-klein-4b, mode: train, vram_min_gb: 8 }
-  - { engine: difusao, model: flux2-klein-9b-8bit, mode: infer, vram_min_gb: 16 }
-  - { engine: difusao, model: flux2-klein-9b, mode: train, vram_min_gb: 28 }
-  - { engine: difusao, model: sdxl-1.0, mode: train, vram_min_gb: 20 }
-  # ── Difusão generate (ADR-0023 D8) — valores espelhados do handler (handlers.rs L1620-1638) ──
-  - { engine: diffusion, model: flux-2-klein-4b, mode: generate, vram_min_gb: 8 }  # 2bit→7, 4bit→8, 6bit→10, 8bit→12, none→16
-  - { engine: diffusion, model: sdxl, mode: generate, vram_min_gb: 8 }             # 2bit→7, 4bit→8, 6bit→10, 8bit→12, none→16
-  - { engine: diffusion, model: sd15, mode: generate, vram_min_gb: 6 }             # fixo 6
-  # ── YOLO ──
+  - { engine: diffusion, model: flux, mode: train, vram_min_gb: 8 }
+  - { engine: diffusion, model: sdxl, mode: train, vram_min_gb: 8 }
+  - { engine: diffusion, model: sd15, mode: train, vram_min_gb: 5 }
+  - { engine: diffusion, model: flux2-klein-9b-8bit, mode: infer, vram_min_gb: 16 }
+  - { engine: diffusion, model: flux2-klein-9b, mode: train, vram_min_gb: 28 }
+  - { engine: diffusion, model: sdxl-1.0, mode: train, vram_min_gb: 20 }
+  # ── Difusão generate (ADR-0023 D8) — valores espelhados do handler ──
+  - { engine: diffusion, model: flux-2-klein-4b, mode: generate, vram_min_gb: 8 }
+  - { engine: diffusion, model: flux2-klein-4b, mode: generate, vram_min_gb: 8 }
+  - { engine: diffusion, model: sdxl, mode: generate, vram_min_gb: 8 }
+  - { engine: diffusion, model: sd15, mode: generate, vram_min_gb: 6 }
+  # ── YOLO train & predict ──
   - { engine: yolo, model: yolo11n, mode: train, vram_min_gb: 6 }
-  # Emenda G.7 (ADR-0010 D9): yolo11n=6 com headroom=2 fecha em 8GB — cabe na
-  # RTX 3060 (12GB) mas NÃO cabe na GTX 1660 Super (6GB físicos). Na 1660S,
-  # yolo11n com batch=8/imgsz=640 ≈ 4-5GB (provado por falha honesta: yolo11x
-  # batch=32 imgsz=640 OOM na 3060; a 1660S só roda yolo11n batch reduzido).
-  # Revisão de entradas/headroom na fatia de policy VRAM aplicada.
   - { engine: yolo, model: yolo11m, mode: train, vram_min_gb: 10 }
-  # yolo11m=10 + headroom=2 = 12GB → exato na RTX 3060 (no limite, validar no smoke).
+  - { engine: yolo, model: predict, mode: predict, vram_min_gb: 4 }
+  # ── Modos auxiliares ──
+  - { engine: autotracker, model: mock, mode: autotrack, vram_min_gb: 4 }
+  - { engine: autolabel, model: mock, mode: autolabel, vram_min_gb: 4 }
+  - { engine: autolabel, model: florence-2-base, mode: autolabel, vram_min_gb: 6 }
+  # ── CLIP ──
   - { engine: clip, model: ViT-B-32, mode: train, vram_min_gb: 10 }

@@ -6,7 +6,8 @@
     "apps/web"
   ],
   "scripts": {
-    "commitlint": "commitlint"
+    "commitlint": "commitlint",
+    "codegen:contracts": "npm run codegen:contracts --workspace=web"
   },
   "devDependencies": {
     "@commitlint/cli": "^19.8.1",

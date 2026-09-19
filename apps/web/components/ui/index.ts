@@ -21,4 +21,10 @@ export * from "./Drawer";
 export * from "./StatCard";
 export * from "./Kbd";
 export * from "./Spinner";
+export * from "./Checkbox";
+export * from "./Switch";
+export * from "./Alert";
+export * from "./FormField";
+export * from "./Table";
+export * from "./Tooltip";
 

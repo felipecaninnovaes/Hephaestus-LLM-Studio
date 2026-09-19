@@ -104,8 +104,23 @@ struct LoginRequest {
     password: String,
 }
 
+/// Resolve se o cookie deve ter a flag Secure:
+/// se `secure_cookie == true` (env) OU `x-forwarded-proto == "https"` (RD-031).
+pub fn should_secure_cookie(secure_cookie: bool, headers: &HeaderMap) -> bool {
+    secure_cookie
+        || headers
+            .get("x-forwarded-proto")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.eq_ignore_ascii_case("https"))
+            .unwrap_or(false)
+}
+
 /// POST /api/auth/login — ordem: 400 (body) → 503 (setup) → 401 (credencial).
-pub async fn login(state: axum::extract::State<AppState>, body: Bytes) -> Response {
+pub async fn login(
+    state: axum::extract::State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     let req: LoginRequest = match serde_json::from_slice(&body) {
         Ok(v) => v,
         Err(_) => {
@@ -157,11 +172,17 @@ pub async fn login(state: axum::extract::State<AppState>, body: Bytes) -> Respon
     }
 
     let (token, iat) = session::issue_jwt(user_id, &state.jwt_secret);
-    let headers = match set_cookie_headers(&token, state.secure_cookie, SESSION_MAX_AGE_SECS) {
+    let is_https = should_secure_cookie(state.secure_cookie, &headers);
+    let cookie_headers = match set_cookie_headers(&token, is_https, SESSION_MAX_AGE_SECS) {
         Ok(h) => h,
         Err(resp) => return resp,
     };
-    (StatusCode::OK, headers, Json(me_response(&user_id, iat))).into_response()
+    (
+        StatusCode::OK,
+        cookie_headers,
+        Json(me_response(&user_id, iat)),
+    )
+        .into_response()
 }
 
 /// GET /api/auth/me — valida o próprio cookie (gate desta rota, D9).
@@ -182,15 +203,16 @@ pub async fn me(state: axum::extract::State<AppState>, headers: HeaderMap) -> Re
 }
 
 /// POST /api/auth/logout — sempre 204 + cookie expirado.
-pub async fn logout(state: axum::extract::State<AppState>) -> Response {
-    let mut headers = HeaderMap::new();
-    let hv: HeaderValue = if state.secure_cookie {
+pub async fn logout(state: axum::extract::State<AppState>, headers: HeaderMap) -> Response {
+    let mut resp_headers = HeaderMap::new();
+    let is_https = should_secure_cookie(state.secure_cookie, &headers);
+    let hv: HeaderValue = if is_https {
         HeaderValue::from_static("heph_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0; Secure")
     } else {
         HeaderValue::from_static("heph_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0")
     };
-    headers.insert(header::SET_COOKIE, hv);
-    (StatusCode::NO_CONTENT, headers).into_response()
+    resp_headers.insert(header::SET_COOKIE, hv);
+    (StatusCode::NO_CONTENT, resp_headers).into_response()
 }
 
 #[cfg(test)]
@@ -220,6 +242,25 @@ mod tests {
             "heph_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"
         );
         assert!(build_cleared_cookie(true).ends_with("; Secure"));
+    }
+
+    #[test]
+    fn test_should_secure_cookie() {
+        let empty = HeaderMap::new();
+        assert!(!should_secure_cookie(false, &empty));
+        assert!(should_secure_cookie(true, &empty));
+
+        let mut http_headers = HeaderMap::new();
+        http_headers.insert("x-forwarded-proto", HeaderValue::from_static("http"));
+        assert!(!should_secure_cookie(false, &http_headers));
+
+        let mut https_headers = HeaderMap::new();
+        https_headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+        assert!(should_secure_cookie(false, &https_headers));
+
+        let mut https_upper = HeaderMap::new();
+        https_upper.insert("x-forwarded-proto", HeaderValue::from_static("HTTPS"));
+        assert!(should_secure_cookie(false, &https_upper));
     }
 
     #[test]
@@ -258,6 +299,7 @@ mod tests {
         };
         let resp = login(
             axum::extract::State(state),
+            HeaderMap::new(),
             Bytes::from(r#"{"password":"x","extra":1}"#),
         )
         .await;

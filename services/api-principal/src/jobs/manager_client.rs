@@ -512,59 +512,85 @@ impl ManagerPort for HttpManager {
         body: &serde_json::Value,
     ) -> Result<CreateJobResponse, ManagerError> {
         let url = format!("{}/internal/jobs", self.base_url);
-        let resp = self
-            .client
-            .post(&url)
-            .header("authorization", self.auth_header())
-            .json(body)
-            .send()
-            .await
-            .map_err(|e| ManagerError::Unavailable(format!("manager request: {e}")))?;
-        let status = resp.status();
-        if status == reqwest::StatusCode::NOT_FOUND {
-            return Err(ManagerError::NotFound);
-        }
-        if status == reqwest::StatusCode::BAD_REQUEST {
-            let msg = resp
-                .text()
+        let mut last_err = ManagerError::Unavailable("unknown error".to_string());
+        for attempt in 0..3 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(150 * (1 << attempt))).await;
+            }
+            let resp = match self
+                .client
+                .post(&url)
+                .header("authorization", self.auth_header())
+                .json(body)
+                .send()
                 .await
-                .unwrap_or_else(|_| "invalid request".into());
-            return Err(ManagerError::InvalidRequest(msg));
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    last_err = ManagerError::Unavailable(format!("manager request: {e}"));
+                    continue;
+                }
+            };
+            let status = resp.status();
+            if status == reqwest::StatusCode::NOT_FOUND {
+                return Err(ManagerError::NotFound);
+            }
+            if status == reqwest::StatusCode::BAD_REQUEST {
+                let msg = resp
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "invalid request".into());
+                return Err(ManagerError::InvalidRequest(msg));
+            }
+            if !status.is_success() {
+                last_err = ManagerError::Unavailable(format!("manager status: {status}"));
+                continue;
+            }
+            return resp
+                .json()
+                .await
+                .map_err(|e| ManagerError::Unavailable(format!("manager body: {e}")));
         }
-        if !status.is_success() {
-            return Err(ManagerError::Unavailable(format!(
-                "manager status: {status}"
-            )));
-        }
-        resp.json()
-            .await
-            .map_err(|e| ManagerError::Unavailable(format!("manager body: {e}")))
+        Err(last_err)
     }
 
     async fn abort_job(&self, id: &str) -> Result<AbortJobResponse, ManagerError> {
         let url = format!("{}/internal/jobs/{id}/abort", self.base_url);
-        let resp = self
-            .client
-            .post(&url)
-            .header("authorization", self.auth_header())
-            .send()
-            .await
-            .map_err(|e| ManagerError::Unavailable(format!("manager request: {e}")))?;
-        let status = resp.status();
-        if status == reqwest::StatusCode::NOT_FOUND {
-            return Err(ManagerError::NotFound);
+        let mut last_err = ManagerError::Unavailable("unknown error".to_string());
+        for attempt in 0..3 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(150 * (1 << attempt))).await;
+            }
+            let resp = match self
+                .client
+                .post(&url)
+                .header("authorization", self.auth_header())
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    last_err = ManagerError::Unavailable(format!("manager request: {e}"));
+                    continue;
+                }
+            };
+            let status = resp.status();
+            if status == reqwest::StatusCode::NOT_FOUND {
+                return Err(ManagerError::NotFound);
+            }
+            if status == reqwest::StatusCode::CONFLICT {
+                return Err(ManagerError::NotAbortable);
+            }
+            if !status.is_success() {
+                last_err = ManagerError::Unavailable(format!("manager status: {status}"));
+                continue;
+            }
+            return resp
+                .json()
+                .await
+                .map_err(|e| ManagerError::Unavailable(format!("manager body: {e}")));
         }
-        if status == reqwest::StatusCode::CONFLICT {
-            return Err(ManagerError::NotAbortable);
-        }
-        if !status.is_success() {
-            return Err(ManagerError::Unavailable(format!(
-                "manager status: {status}"
-            )));
-        }
-        resp.json()
-            .await
-            .map_err(|e| ManagerError::Unavailable(format!("manager body: {e}")))
+        Err(last_err)
     }
 
     async fn delete_job(&self, id: &str) -> Result<serde_json::Value, ManagerError> {

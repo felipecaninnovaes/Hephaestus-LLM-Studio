@@ -37,6 +37,7 @@ echo "antes: db_running=$WAS_RUNNING db_container=$HAD_CONTAINER volume_infra_pg
 
 TEST_CODE=0
 
+# shellcheck disable=SC2329 # chamada indireta via trap cleanup EXIT
 cleanup() {
   # Limpa o banco efêmero de testes.
   compose exec -T db psql -U studio -d postgres -c "DROP DATABASE IF EXISTS studio_test;" >/dev/null 2>&1 || true

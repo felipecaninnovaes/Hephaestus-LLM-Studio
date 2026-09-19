@@ -3,7 +3,7 @@
 # scripts/heph.sh — CLI Operacional Unificada do Hephaestus LLM Studio
 # ==============================================================================
 # Uso:
-#   ./scripts/heph.sh up [--dev|--full|--gpu]
+#   ./scripts/heph.sh up [--dev|--full|--gpu|--prod]
 #   ./scripts/heph.sh down
 #   ./scripts/heph.sh build [--host|--gpu|--all]
 #   ./scripts/heph.sh test [--unit|--db|--storage|--smoke]
@@ -26,7 +26,7 @@ cmd_help() {
     echo "Uso: $0 <comando> [opções]"
     echo ""
     echo "Comandos:"
-    echo "  up [--dev|--full|--gpu]    Inicia os serviços do Studio"
+    echo "  up [--dev|--full|--gpu|--prod] Inicia os serviços do Studio"
     echo "  down                       Encerra os serviços com segurança"
     echo "  build [--host|--gpu|--all] Compila as imagens Docker"
     echo "  test [--unit|--db|--smoke] Executa testes automatizados"
@@ -48,16 +48,15 @@ cmd_up() {
             compose up -d
             ;;
         --gpu)
-            if [ -f "$ROOT_DIR/infra/compose.gpu.yaml" ]; then
-                echo "Iniciando com perfil GPU..."
-                docker compose -f "$COMPOSE_FILE" -f "$ROOT_DIR/infra/compose.gpu.yaml" up -d
-            else
-                echo "compose.gpu.yaml não encontrado." >&2
-                exit 1
-            fi
+            echo "Iniciando nó GPU no TrueNAS..."
+            bash "$ROOT_DIR/scripts/start-truenas.sh"
+            ;;
+        --prod)
+            echo "Iniciando Hephaestus Studio em modo PROD (overlay infra/compose.prod.yaml)..."
+            docker compose -f "$COMPOSE_FILE" -f "$ROOT_DIR/infra/compose.prod.yaml" up -d
             ;;
         *)
-            echo "Opção inválida para 'up': $mode (use --dev, --full ou --gpu)" >&2
+            echo "Opção inválida para 'up': $mode (use --dev, --full, --gpu ou --prod)" >&2
             exit 1
             ;;
     esac

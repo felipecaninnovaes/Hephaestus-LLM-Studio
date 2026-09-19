@@ -12,6 +12,12 @@
 # telemetria nvidia-smi; a seleção do trainer é feita pelo executor com
 # --gpus device=… (ORCH_GPU_DEVICES).
 
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 name: gpu
 
 services:
@@ -21,21 +27,23 @@ services:
       dockerfile: services/orchestrator/Dockerfile
     ports:
       - '8082:8082'
+    logging: *default-logging
     environment:
-      MANAGER_URL: http://10.15.10.3:8081
-      MANAGER_TOKEN: ${MANAGER_TOKEN}
-      S3_ORCH_ENDPOINT_URL: http://10.15.10.3:8333
-      S3_ORCH_BUCKET: ${S3_ORCH_BUCKET:-heph-data}
-      S3_ORCH_ACCESS_KEY: ${S3_ORCH_ACCESS_KEY}
-      S3_ORCH_SECRET_KEY: ${S3_ORCH_SECRET_KEY}
+      MANAGER_URL: "${MANAGER_URL:?Defina MANAGER_URL no env.gpu (ex: http://10.15.10.3:8081)}"
+      MANAGER_TOKEN: "${MANAGER_TOKEN:?Defina MANAGER_TOKEN no env.gpu}"
+      S3_ORCH_ENDPOINT_URL: "${S3_ORCH_ENDPOINT_URL:?Defina S3_ORCH_ENDPOINT_URL no env.gpu (ex: http://10.15.10.3:8333)}"
+      S3_ORCH_BUCKET: "${S3_ORCH_BUCKET:-heph-data}"
+      S3_ORCH_ACCESS_KEY: "${S3_ORCH_ACCESS_KEY:?Defina S3_ORCH_ACCESS_KEY no env.gpu}"
+      S3_ORCH_SECRET_KEY: "${S3_ORCH_SECRET_KEY:?Defina S3_ORCH_SECRET_KEY no env.gpu}"
       ORCH_GPU_DEVICES: ${ORCH_GPU_DEVICES:-0}
-      ORCH_ADVERTISE_URL: http://10.15.1.2:8082
-      ORCH_PAIRING_CODE: ${ORCH_PAIRING_CODE:-heph_p_change_me}
+      ORCH_ADVERTISE_URL: "${ORCH_ADVERTISE_URL:?Defina ORCH_ADVERTISE_URL no env.gpu (ex: http://10.15.1.2:8082)}"
+      ORCH_PAIRING_CODE: "${ORCH_PAIRING_CODE:?Defina ORCH_PAIRING_CODE no env.gpu}"
       ORCH_VOL_DATASETS: gpu_gpu_datasets
       ORCH_VOL_OUTPUTS: gpu_gpu_outputs
       ORCH_GPU_ALLOW_MOCK: ${ORCH_GPU_ALLOW_MOCK:-}
       HF_TOKEN: ${HF_TOKEN:-}
       HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+      HF_HOME: /data/models/huggingface
       FLUX_MODEL_ID: ${FLUX_MODEL_ID:-}
       DIFFUSION_DAEMON_ENABLED: ${DIFFUSION_DAEMON_ENABLED:-0}
       DIFFUSION_DAEMON_PORT: ${DIFFUSION_DAEMON_PORT:-8766}
@@ -49,6 +57,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - gpu_datasets:/data/datasets
       - gpu_outputs:/data/outputs
+      - gpu_models:/data/models
     extra_hosts:
       - "host.docker.internal:host-gateway"
     deploy:
@@ -74,8 +83,8 @@ services:
       - build
     image: hephaestus/trainer-yolo:gpu
     build:
-      context: ../engines/trainer-yolo
-      dockerfile: Dockerfile.gpu
+      context: ..
+      dockerfile: engines/trainer-yolo/Dockerfile.gpu
 
   # Build-only: imagem hephaestus/trainer-difusao:gpu.
   # Build: docker compose -p gpu --profile build build trainer-difusao-gpu
@@ -84,9 +93,10 @@ services:
       - build
     image: hephaestus/trainer-difusao:gpu
     build:
-      context: ../engines/trainer-difusao
-      dockerfile: Dockerfile.gpu
+      context: ..
+      dockerfile: engines/trainer-difusao/Dockerfile.gpu
 
 volumes:
   gpu_datasets:
   gpu_outputs:
+  gpu_models:

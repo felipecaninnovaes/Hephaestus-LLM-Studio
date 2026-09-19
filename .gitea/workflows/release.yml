@@ -51,6 +51,9 @@ jobs:
           - name: web
             context: .
             dockerfile: apps/web/Dockerfile
+          - name: s3-init
+            context: infra
+            dockerfile: infra/Dockerfile.s3-init
           - name: embedder
             context: engines/trainer-clip
             dockerfile: engines/trainer-clip/Dockerfile

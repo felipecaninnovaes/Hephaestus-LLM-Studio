@@ -1,6 +1,7 @@
 FROM rust:1.97.1-slim@sha256:8e8cf8f7fd54a2d23d5a743b3a03f56e26b6c774276c33fa0595111704ebb15c AS build
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
+COPY crates/heph-contracts ./crates/heph-contracts/
 COPY services/api-principal/Cargo.toml ./services/api-principal/
 COPY services/manager/Cargo.toml ./services/manager/
 COPY services/orchestrator/Cargo.toml ./services/orchestrator/
@@ -19,7 +20,8 @@ RUN mkdir -p services/api-principal/src services/orchestrator/src \
   && touch services/manager/src/main.rs && cargo build --release -p manager
 
 FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
-WORKDIR /app
-COPY --from=build /app/target/release/manager /app/manager
+RUN groupadd -g 1000 studio && useradd -u 1000 -g studio -s /bin/bash -m studio
+COPY --from=build --chown=studio:studio /app/target/release/manager /app/manager
+USER studio
 EXPOSE 8081
 CMD ["/app/manager"]

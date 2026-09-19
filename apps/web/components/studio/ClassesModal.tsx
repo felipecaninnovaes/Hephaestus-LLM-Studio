@@ -9,7 +9,7 @@ import { ApiError } from "@/lib/api";
 import { CLASS_RE, MAX_CLASSES, putClasses } from "@/lib/classes";
 import { getDataset } from "@/lib/datasets";
 import type { PutClassInput, StudioClass } from "@/types/studio";
-import { showToast } from "./Toast";
+import { showToast } from "@/components/ui/Toast";
 
 interface Props {
   datasetId: string;
@@ -141,7 +141,12 @@ export default function ClassesModal({
       return;
     }
     const seen = new Set<string>();
-    if (names.some((n) => (seen.has(n) ? true : (seen.add(n), false)))) {
+    const hasDuplicates = names.some((n) => {
+      if (seen.has(n)) return true;
+      seen.add(n);
+      return false;
+    });
+    if (hasDuplicates) {
       setFormError("Há nomes de classe duplicados.");
       return;
     }

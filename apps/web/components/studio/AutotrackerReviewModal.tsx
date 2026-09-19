@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/Button";
 import { ApiError } from "@/lib/api";
 import { applyAutotrackerBoxes, getAutotrackerPreview } from "@/lib/autotracker";
 import type { AutotrackerPreviewResponse, Job } from "@/types/studio";
-import { showToast } from "./Toast";
+import { showToast } from "@/components/ui/Toast";
 
 interface Props {
   open: boolean;

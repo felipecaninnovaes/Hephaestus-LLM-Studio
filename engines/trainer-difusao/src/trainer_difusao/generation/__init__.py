@@ -1,0 +1,74 @@
+"""
+Pacote de geração Text-to-Image (FLUX.2 Klein, SDXL, SD 1.5).
+"""
+from trainer_difusao.generation.config import (
+    load_and_validate_generate_config,
+    _canonical_model_name,
+    _resolve_loras_from_legacy,
+)
+from trainer_difusao.generation.artifacts import (
+    _write_thumb,
+    _is_cancelled,
+    HEPHAESTUS_GENERATION_PNG_KEY,
+    _png_payload_for_generation,
+    _png_info_for_generation,
+    _build_generation_meta,
+)
+from trainer_difusao.generation.progress import (
+    _GENERATE_PROGRESS_BASE,
+    _GENERATE_PROGRESS_SPAN,
+    _SAMPLER_EMIT_MIN_DELTA_PERMILLE,
+    _MOCK_TELEMETRY_SUBSTEPS,
+    _sampler_progress,
+    _should_emit,
+    _make_sampler_callback,
+    _pipe_call_kwargs_with_callback,
+)
+from trainer_difusao.generation.mock import _mock_generate
+from trainer_difusao.generation.pipelines import (
+    pipeline_cache_key,
+    ensure_pipeline,
+)
+from trainer_difusao.generation.text_encoder import (
+    _flux2_repo_id,
+    _text_encoder_merge_dir,
+    _load_flux2_text_encoder_override,
+    _apply_loose_encoder_state,
+    _load_flux2_loose_encoder_merged,
+    _load_flux2_custom_transformer,
+)
+from trainer_difusao.generation.runner import (
+    _real_generate,
+    cmd_generate,
+)
+
+__all__ = [
+    "load_and_validate_generate_config",
+    "_canonical_model_name",
+    "_resolve_loras_from_legacy",
+    "_write_thumb",
+    "_is_cancelled",
+    "HEPHAESTUS_GENERATION_PNG_KEY",
+    "_png_payload_for_generation",
+    "_png_info_for_generation",
+    "_build_generation_meta",
+    "_GENERATE_PROGRESS_BASE",
+    "_GENERATE_PROGRESS_SPAN",
+    "_SAMPLER_EMIT_MIN_DELTA_PERMILLE",
+    "_MOCK_TELEMETRY_SUBSTEPS",
+    "_sampler_progress",
+    "_should_emit",
+    "_make_sampler_callback",
+    "_pipe_call_kwargs_with_callback",
+    "_mock_generate",
+    "pipeline_cache_key",
+    "ensure_pipeline",
+    "_flux2_repo_id",
+    "_text_encoder_merge_dir",
+    "_load_flux2_text_encoder_override",
+    "_apply_loose_encoder_state",
+    "_load_flux2_loose_encoder_merged",
+    "_load_flux2_custom_transformer",
+    "_real_generate",
+    "cmd_generate",
+]

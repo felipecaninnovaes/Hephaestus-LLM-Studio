@@ -3344,9 +3344,9 @@ components:
           description: "Passos de acumulação de gradientes para simular lote maior sem consumir mais VRAM. Padrão 1."
         optimizer:
           type: string
-          enum: [adamw8bit, adamw, prodigy]
-          default: adamw8bit
-          description: "Algoritmo otimizador (adamw8bit = 8-bit AdamW bitsandbytes, adamw = standard AdamW, prodigy = D-Adaptation). Padrão adamw8bit."
+          enum: [adamw8bit, adamw, prodigy, paged_adamw8bit, paged_adamw32bit]
+          default: paged_adamw8bit
+          description: "Algoritmo otimizador (paged_adamw8bit = Paged 8-bit AdamW BitsAndBytes p/ QLoRA, paged_adamw32bit = Paged 32-bit AdamW, adamw8bit = 8-bit AdamW bitsandbytes, adamw = standard AdamW, prodigy = D-Adaptation). Padrão paged_adamw8bit."
         lrScheduler:
           type: string
           enum: [cosine, linear, constant, constant_with_warmup]
@@ -4490,7 +4490,7 @@ components:
           description: "Nome do orquestrador que executa ou executou o job (ADR-0015 D1)."
         orchestratorKind:
           type: [string, "null"]
-          enum: [docker, slurm, "null"]
+          enum: [docker, slurm, local, remoto, "null"]
           description: "Kind do orquestrador (ADR-0015 D1)."
         orchestratorFallback:
           type: boolean
@@ -4507,15 +4507,92 @@ components:
           type: [string, "null"]
           description: "Mensagem amigável legível da fase atual. Origem: coluna jobs.message (ADR-0024), não derivada de metrics."
         vramUsedGb:
-          type: [number, "null"]
           description: "Uso de VRAM medido em tempo real em GB."
+        totalSteps:
+          type: [integer, "null"]
+          description: "Número total estimado de steps do job (derivado de params)."
+        totalEpochs:
+          type: [integer, "null"]
+          description: "Número total planejado de epochs do treino (derivado de params)."
         error:
           type: [string, "null"]
           description: "Mensagem ou stacktrace de erro em caso de falha do job."
         params:
-          type: [object, "null"]
           description: "Parâmetros integrais de configuração do job para reproducibilidade e continuação de treino."
+          anyOf:
+            - $ref: "#/components/schemas/DiffusionJobParams"
+            - $ref: "#/components/schemas/YoloJobParams"
+            - $ref: "#/components/schemas/DiffusionGenerateParams"
+            - type: object
+            - type: "null"
 
+    DiffusionJobParams:
+      type: object
+      description: "Parâmetros serializados de job de treino de difusão."
+      properties:
+        datasetId: { type: string, format: uuid }
+        baseModel: { type: [string, "null"] }
+        customModelId: { type: [string, "null"], format: uuid }
+        textEncoderModelId: { type: [string, "null"], format: uuid }
+        triggerWord: { type: [string, "null"] }
+        epochs: { type: integer }
+        batchSize: { type: integer }
+        learningRate: { type: number }
+        rank: { type: integer }
+        alpha: { type: number }
+        resolution: { type: integer }
+        gradientAccumulationSteps: { type: integer }
+        optimizer: { type: string }
+        lrScheduler: { type: string }
+        lrWarmupSteps: { type: integer }
+        mixedPrecision: { type: string }
+        quantization: { type: string }
+        enableBucket: { type: boolean }
+        checkpointInterval: { type: integer }
+        epochOffset: { type: integer }
+        samplePrompt: { type: [string, "null"] }
+        sampleInterval: { type: integer }
+
+    YoloJobParams:
+      type: object
+      description: "Parâmetros serializados de job de visão/YOLO."
+      properties:
+        model: { type: string }
+        batch: { type: integer }
+        imgsz: { type: integer }
+        optimizer: { type: string }
+        epochs: { type: integer }
+        lr0: { type: number }
+        lrf: { type: number }
+        outputName: { type: [string, "null"] }
+        augment: { type: object }
+
+    DiffusionGenerateParams:
+      type: object
+      description: "Parâmetros serializados de job de geração de difusão."
+      properties:
+        baseModel: { type: string }
+        prompt: { type: string }
+        negativePrompt: { type: [string, "null"] }
+        width: { type: integer }
+        height: { type: integer }
+        steps: { type: integer }
+        guidanceScale: { type: number }
+        seed: { type: integer }
+        quantization: { type: string }
+        sampler: { type: string }
+        upscale: { type: [object, "null"] }
+        distilled: { type: boolean }
+        loraScale: { type: [number, "null"] }
+        batchSize: { type: integer }
+        loras:
+          type: array
+          items: { $ref: "#/components/schemas/LoraRef" }
+        customModelId: { type: [string, "null"], format: uuid }
+        textEncoderModelId: { type: [string, "null"], format: uuid }
+        initImageId: { type: [string, "null"] }
+        initGenerationId: { type: [string, "null"] }
+        initStrength: { type: [number, "null"] }
     JobTelemetryEvent:
       type: object
       required: [timestamp, phase, progress]

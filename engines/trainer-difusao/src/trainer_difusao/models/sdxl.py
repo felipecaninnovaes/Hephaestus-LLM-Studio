@@ -79,6 +79,8 @@ def _generate_sample_sdxl(
     prompt: str,
     output_path: Path,
     seed: int = 42,
+    metrics_path: Path | None = None,
+    epoch: int = 0,
 ) -> None:
     """Gera uma imagem de teste para SDXL com os pesos LoRA ativos e seed fixa determinística.
     
@@ -107,14 +109,42 @@ def _generate_sample_sdxl(
             generator = torch.Generator(
                 device="cuda" if torch.cuda.is_available() else "cpu"
             ).manual_seed(seed)
+            total_sample_steps = 20
+            def step_callback(pipe_obj: Any, step_idx: int, timestep: Any, callback_kwargs: dict[str, Any]) -> dict[str, Any]:
+                if metrics_path is not None:
+                    try:
+                        from trainer_difusao.common_pkg.metrics import _emit_metric
+                        step_num = step_idx + 1
+                        _emit_metric(
+                            metrics_path,
+                            epoch=epoch,
+                            step=step_num,
+                            phase="generating_sample",
+                            message=f"Gerando amostra de validação (passo {step_num}/{total_sample_steps})...",
+                            telemetry_only=True,
+                        )
+                    except Exception:
+                        pass
+                return callback_kwargs
+
             with torch.inference_mode():
-                latents = pipe(
-                    prompt,
-                    generator=generator,
-                    num_inference_steps=20,
-                    guidance_scale=7.0,
-                    output_type="latent",
-                ).images
+                try:
+                    latents = pipe(
+                        prompt,
+                        generator=generator,
+                        num_inference_steps=total_sample_steps,
+                        guidance_scale=7.0,
+                        output_type="latent",
+                        callback_on_step_end=step_callback,
+                    ).images
+                except TypeError:
+                    latents = pipe(
+                        prompt,
+                        generator=generator,
+                        num_inference_steps=total_sample_steps,
+                        guidance_scale=7.0,
+                        output_type="latent",
+                    ).images
                 latents = latents.to(dtype=torch.float32) / vae.config.scaling_factor
                 decoded = vae.decode(latents).sample
                 image = (decoded / 2 + 0.5).clamp(0, 1)
@@ -149,6 +179,7 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         from peft import LoraConfig, get_peft_model
         from transformers import (
             AutoTokenizer,
+            BitsAndBytesConfig,
             CLIPTextModel,
             CLIPTextModelWithProjection,
         )
@@ -216,12 +247,22 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         if (mixed_precision == "bf16" and torch.cuda.is_bf16_supported())
         else torch.float16
     )
-    # Como no SD 1.5, o UNet SDXL hoje carrega em precisão plena (sem
-    # BitsAndBytesConfig): nível validado/normalizado e registrado na telemetry
-    # + metadados; 2bit/6bit (torchao intx) exigem CUDA e seguem o caminho do
-    # Flux quando houver ponto de aplicação — nunca degradação silenciosa.
     quantization = aux["quantization"] or "none"
+    is_4bit = quantization == "4bit"
+    is_8bit = quantization == "8bit"
+    is_quantized = is_4bit or is_8bit
 
+    if is_4bit:
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=target_dtype,
+            bnb_4bit_use_double_quant=True,
+        )
+    elif is_8bit:
+        bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+    else:
+        bnb_config = None
     _emit_metric(
         metrics_path,
         epoch=0,
@@ -267,9 +308,16 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
     ).to(device)
     if custom_checkpoint_path:
         try:
-            unet = UNet2DConditionModel.from_single_file(
-                custom_checkpoint_path, torch_dtype=target_dtype
-            ).to(device)
+            if is_quantized:
+                unet = UNet2DConditionModel.from_single_file(
+                    custom_checkpoint_path,
+                    quantization_config=bnb_config,
+                    torch_dtype=target_dtype,
+                )
+            else:
+                unet = UNet2DConditionModel.from_single_file(
+                    custom_checkpoint_path, torch_dtype=target_dtype
+                ).to(device)
         except Exception as exc:
             _die(
                 f"Falha ao carregar checkpoint sdxl custom "
@@ -280,9 +328,18 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
             flush=True,
         )
     else:
-        unet = UNet2DConditionModel.from_pretrained(
-            model_id, subfolder="unet", torch_dtype=target_dtype, cache_dir=hub_cache
-        ).to(device)
+        if is_quantized:
+            unet = UNet2DConditionModel.from_pretrained(
+                model_id,
+                subfolder="unet",
+                quantization_config=bnb_config,
+                torch_dtype=target_dtype,
+                cache_dir=hub_cache,
+            )
+        else:
+            unet = UNet2DConditionModel.from_pretrained(
+                model_id, subfolder="unet", torch_dtype=target_dtype, cache_dir=hub_cache
+            ).to(device)
     noise_scheduler = DDPMScheduler.from_pretrained(
         model_id, subfolder="scheduler", cache_dir=hub_cache
     )
@@ -292,6 +349,8 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
     text_encoder_two.requires_grad_(False)
     unet.requires_grad_(False)
 
+    # Gradient checkpointing economiza ~50% VRAM (diffusers usa use_reentrant=False nativo)
+    # Nota: prepare_model_for_kbit_training do PEFT é exclusivo de modelos NLP/transformers.
     unet.enable_gradient_checkpointing()
 
     lora_config = LoraConfig(
@@ -414,6 +473,8 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
             sample_prompt,
             sample_baseline_file,
             seed=sample_seed,
+            metrics_path=metrics_path,
+            epoch=0,
         )
         _emit_metric(
             metrics_path,
@@ -609,6 +670,13 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
             and (epoch_idx % sample_interval == 0 or epoch_idx == epochs)
         ):
             sample_file = output / "samples" / f"sample_epoch_{epoch:03d}.png"
+            _emit_metric(
+                metrics_path,
+                epoch=epoch,
+                phase="generating_sample",
+                message=f"Iniciando geração de amostra visual (Época {epoch})...",
+                telemetry_only=True,
+            )
             _generate_sample_sdxl(
                 unet,
                 vae,
@@ -620,6 +688,15 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
                 sample_prompt,
                 sample_file,
                 seed=sample_seed,
+                metrics_path=metrics_path,
+                epoch=epoch,
+            )
+            _emit_metric(
+                metrics_path,
+                epoch=epoch,
+                phase="sample_ready",
+                message=f"Amostra visual da Época {epoch} pronta.",
+                telemetry_only=True,
             )
 
     final_adapter_file = output / f"{base_name}.safetensors"

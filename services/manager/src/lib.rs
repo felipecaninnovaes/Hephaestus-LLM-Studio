@@ -166,49 +166,10 @@ pub struct ArtifactRow {
     pub bytes: i64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct ReportRequest {
-    pub status: String,
-    pub progress: Option<f64>,
-    pub epoch: Option<i32>,
-    pub step: Option<i32>,
-    pub metrics: Option<serde_json::Value>,
-    pub error: Option<String>,
-    pub artifacts: Option<Vec<ArtifactItem>>,
-    /// Conteúdo do generation_meta.json (JSONL) — enviado pelo orquestrador
-    /// para o hook de generations (D5 — ADR-0023). Campo opcional retrocompat.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub meta_content: Option<String>,
-    /// AC-006-A D2/D3: fase/status do job (ex.: "loading_model").
-    /// Campo opcional retrocompat: ausente em orquestradores antigos.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub phase: Option<String>,
-    /// AC-006-A D2/D3: mensagem descritiva da fase.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ArtifactItem {
-    pub kind: String,
-    pub path: String,
-    pub md5: String,
-    pub bytes: i64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct HeartbeatRequest {
-    pub endpoint: String,
-    pub gpus: Vec<String>,
-    pub vram_total: Option<i64>,
-    pub vram_used: Option<i64>,
-    pub cpu: Option<f64>,
-    pub ram: Option<i64>,
-    pub ram_total: Option<i64>,
-    pub jobs_active: i32,
-    /// Maior VRAM individual entre as GPUs (MiB) — capacidade real de 1 job.
-    pub max_gpu_mib: Option<i64>,
-}
+// DTOs wire compartilhados via crate heph-contracts (Wave 1 — RD-010).
+pub use heph_contracts::artifacts::ArtifactItem;
+pub use heph_contracts::heartbeat::HeartbeatBody as HeartbeatRequest;
+pub use heph_contracts::report::ReportBody as ReportRequest;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AbortResponse {
@@ -2142,6 +2103,25 @@ pub async fn report_job(
                 .map_err(|e| ManagerError::Internal(format!("set failed: {e}")))?;
         }
 
+        "cancelled" => {
+            if let Some(err_msg) = &report.error {
+                sqlx::query("UPDATE jobs SET params = params || $2::jsonb WHERE id = $1")
+                    .bind(id)
+                    .bind(serde_json::json!({"error": err_msg}))
+                    .execute(pool)
+                    .await
+                    .map_err(|e| ManagerError::Internal(format!("merge error: {e}")))?;
+            }
+
+            sqlx::query("UPDATE jobs SET status = 'cancelled', finished_at = now(), phase = COALESCE($2, phase), message = COALESCE($3, message) WHERE id = $1")
+                .bind(id)
+                .bind(&report.phase)
+                .bind(&report.message)
+                .execute(pool)
+                .await
+                .map_err(|e| ManagerError::Internal(format!("set cancelled: {e}")))?;
+        }
+
         other => {
             return Err(ManagerError::Internal(format!(
                 "invalid report status: {other}"
@@ -2233,6 +2213,13 @@ pub async fn receive_heartbeat(
     Ok(())
 }
 
+fn node_stale_timeout_secs() -> i64 {
+    std::env::var("NODE_STALE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10)
+}
+
 /// Retorna telemetria do cache (agregação global).
 pub async fn get_telemetry(pool: &PgPool, cache: &TelemetryCache) -> TelemetryResponse {
     let cache = cache.read().await;
@@ -2264,7 +2251,7 @@ pub async fn get_telemetry(pool: &PgPool, cache: &TelemetryCache) -> TelemetryRe
         let state = cache.values().next().unwrap();
         let measured = state
             .last_heartbeat
-            .map(|last| (now - last).num_seconds() <= 10)
+            .map(|last| (now - last).num_seconds() <= node_stale_timeout_secs())
             .unwrap_or(false);
         // ADR D2.3/R5: nó sem heartbeat fresco → mesmo fallback do 0-nós.
         if !measured {
@@ -2309,7 +2296,7 @@ pub async fn get_telemetry(pool: &PgPool, cache: &TelemetryCache) -> TelemetryRe
     for state in cache.values() {
         let is_fresh = state
             .last_heartbeat
-            .map(|last| (now - last).num_seconds() <= 10)
+            .map(|last| (now - last).num_seconds() <= node_stale_timeout_secs())
             .unwrap_or(false);
 
         if is_fresh {
@@ -3956,7 +3943,12 @@ pub async fn dispatch_next(
         .as_ref()
         .and_then(|p| p.get("text_encoder_ref"))
         .cloned();
-    // Resolve imagem do container: se engine for diffusion, usa DIFFUSION_TRAINER_IMAGE
+
+    // Extrai control_package_ref resolvido do params (Wave 2 — RD-020).
+    let control_package_ref = params
+        .as_ref()
+        .and_then(|p| p.get("control_package_ref"))
+        .cloned();
     // (env explícito SEMPRE vence) ou herda tag de TRAINER_IMAGE (fallback p/ TrueNAS :gpu).
     let job_image = match engine.as_str() {
         "diffusion" => resolve_diffusion_image(image),
@@ -4006,6 +3998,11 @@ pub async fn dispatch_next(
         dispatch_body["text_encoder"] = te;
     }
 
+    // Adiciona control_package_ref ao dispatch quando presente (Wave 2 — RD-020).
+    // snake_case: `control_package_ref: {key, md5_zip, bytes}` — casa com PackageRef do orquestrador.
+    if let Some(cpr) = control_package_ref {
+        dispatch_body["control_package_ref"] = cpr;
+    }
     let url = format!("{}/internal/dispatch", orch_endpoint);
 
     if let Err(e) = orch_client.post(&url, &dispatch_body).await {
@@ -4606,5 +4603,23 @@ mod tests {
         let result = super::resolve_diffusion_image("hephaestus/trainer-yolo:gpu");
         assert_eq!(result, "meu-registry/exemplo:tag");
         std::env::remove_var("DIFFUSION_TRAINER_IMAGE");
+    }
+    /// RD-020: Verifica extração e compatibilidade de control_package_ref de params com PackageRef.
+    #[test]
+    fn control_package_ref_extracted_from_params() {
+        let params = serde_json::json!({
+            "control_package_ref": {
+                "key": "packages/ctrl/ctrl.zip",
+                "md5_zip": "0123456789abcdef0123456789abcdef",
+                "bytes": 1024
+            }
+        });
+        let cpr = params.get("control_package_ref").cloned();
+        assert!(cpr.is_some());
+        let pkg: heph_contracts::PackageRef =
+            serde_json::from_value(cpr.unwrap()).expect("parse PackageRef");
+        assert_eq!(pkg.key, "packages/ctrl/ctrl.zip");
+        assert_eq!(pkg.md5_zip, "0123456789abcdef0123456789abcdef");
+        assert_eq!(pkg.bytes, 1024);
     }
 }

@@ -3,13 +3,22 @@ name = "hephaestus-trainer-clip"
 version = "0.1.0"
 description = "Motor de treino OpenCLIP (placeholder — treino real entra em slice posterior)"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "hephaestus-engine-kit",
+]
 
 [tool.uv]
 package = true
 
+[tool.uv.sources]
+hephaestus-engine-kit = { path = "../engine-kit", editable = true }
+
 [project.optional-dependencies]
 serve = ["open_clip_torch>=2.20", "torch", "pillow"]
+test = ["pytest>=7.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [project.scripts]
 trainer-clip-serve = "trainer_clip.serve:main"

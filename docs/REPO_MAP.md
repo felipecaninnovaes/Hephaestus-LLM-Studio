@@ -31,14 +31,14 @@ bind loopback (`127.0.0.1:`) em dev.
 | `web` (apps/web) | `3000:3000` | UI do Studio; rewrites `/api/*` → principal |
 | `principal` (api-principal) | `8080:8080` | Único gateway/BFF público; auth, datasets, storage S3, busca pgvector, proxy p/ manager |
 | `manager` | `8081:8081` | Fila de jobs, VRAM, heartbeat (uso interno; Bearer token) |
-| `orchestrator-local` | `8082:8082` | Executor de engines no nó; telemetria `metrics.jsonl` |
+| `orchestrator-local` | `8082:8082` | Executor de engines no nó; telemetria `telemetry.jsonl` |
 | `db` (postgres+pgvector) | `5432:5432` | Banco relacional |
 | `seaweedfs` (S3) | `127.0.0.1:8333` | Objetos (datasets/checkpoints); presigned URLs |
 | `embedder` (trainer-clip) | `127.0.0.1:8090` | Vetores OpenCLIP 512d |
 | daemon difusão | `:8766` (interno) | Geração quente LoRA (Flux/SDXL/SD1.5), só via orchestrator |
 | `trainer-yolo` / `trainer-difusao` | nenhuma | Jobs efêmeros disparados pelo orchestrator |
 
-GPU real (TrueNAS): `infra/compose.gpu.yaml` / runbook `infra/README-gpu.md`.
+GPU real (TrueNAS): `infra/compose.gpu.yaml` / runbook `infra/README-gpu.md` / arquitetura em `docs/infra/gpu-nodes.md`.
 
 ## 3. Posse de Dados (Postgres único, schema compartilhado)
 
@@ -54,7 +54,8 @@ Migrations canônicas: `services/api-principal/migrations/0001..0018.sql`.
   `preparing`/`dispatched` + `phase`/`message` — ADR-0024/ADR-0025),
   `job_artifacts`, `orchestrators`.
 - Políticas de hardware/engines: `packages/policies/vram-table.yaml`,
-  `packages/policies/engines.yaml`. Contrato HTTP: `packages/contracts/openapi.yaml`.
+  `packages/policies/engines.yaml`. Contratos: `packages/contracts/openapi.yaml` (HTTP público),
+  `crates/heph-contracts` (protocolo interno Rust), `apps/web/types/api-generated.ts` (TypeScript gerado).
 
 ## 4. Rotas públicas da API (`api-principal :8080`, wire `camelCase`)
 
@@ -148,3 +149,16 @@ checkpoint+encoder).
 - `(studio)/models` — upload/download de checkpoints (LoRA/pesos).
 - `(studio)/environments` — nós executores, adoção e monitor de VRAM.
 - `login` — sessão single-user.
+
+## 6. Documentação de Infraestrutura (`docs/infra/`)
+
+- `overview.md` — perfis Compose (`compose.yaml`, `prod`, `gpu`, `integ`), topologia de rede, isolamento de engines e proxy Caddy.
+- `storage-and-persistence.md` — PostgreSQL 16 + pgvector, SeaweedFS S3 (ACLs e script SigV4 `s3-init`) e volumes de cache/staging.
+- `gpu-nodes.md` — arquitetura de nós remotos (TrueNAS), pareamento HMAC, telemetria de VRAM/GPUs e runbook operacional.
+## 7. Pacotes e Bibliotecas Compartilhadas (`crates/`, `packages/`, `engines/engine-kit`)
+
+- `crates/heph-contracts` — DTOs wire compartilhados entre microsserviços Rust (`DispatchRequest`, `ReportBody`, `HeartbeatBody`, `PackageRef`, `ArtifactItem`).
+- `packages/contracts/openapi.yaml` — Fonte canônica única para rotas e contratos da API HTTP pública (wire `camelCase`).
+- `packages/policies/vram-table.yaml` — Fonte canônica para limites e requisitos mínimos de VRAM por arquitetura e modo.
+- `packages/policies/engines.yaml` — Registro canônico de imagens Docker e versões de toolchain (`cuda`, `torch`, `ultralytics`).
+- `engines/engine-kit/` — Biblioteca base Python das engines (`TelemetryEmitter`, `MOCK_MAGIC = b"HEPHMOCK"`, `mock_vector` determinístico com paridade L2).

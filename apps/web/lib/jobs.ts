@@ -1,5 +1,6 @@
 import { apiFetch } from "@/lib/api";
 import type {
+  DiffusionOptimizer,
   Job,
   JobArtifact,
   JobArtifactsResponse,
@@ -58,7 +59,7 @@ export function startDiffusionJob(params: {
   sampleSeed?: number;
   resolution?: number;
   gradientAccumulationSteps?: number;
-  optimizer?: "adamw8bit" | "adamw" | "prodigy";
+  optimizer?: DiffusionOptimizer;
   lrScheduler?: "cosine" | "linear" | "constant" | "constant_with_warmup";
   lrWarmupSteps?: number;
   mixedPrecision?: "fp16" | "bf16" | "no";

@@ -15,16 +15,17 @@ ARG API_INTERNAL_URL=http://principal:8080
 ENV API_INTERNAL_URL=$API_INTERNAL_URL
 RUN npm run build --workspace=web
 
-# Runtime enxuto
+# Runtime enxuto (standalone + usuário não-root)
 FROM node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0
 WORKDIR /app
 ENV NODE_ENV=production
-COPY --from=builder /app/package.json /app/package-lock.json* ./
-COPY --from=builder /app/apps/web/package.json apps/web/
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/apps/web/.next ./apps/web/.next
-COPY --from=builder /app/apps/web/next.config.ts ./apps/web/
-COPY --from=builder /app/apps/web/app ./apps/web/app
+ENV PORT=3000
+ENV HOSTNAME="0.0.0.0"
+RUN groupadd -g 1001 nodejs && useradd -u 1001 -g nodejs nextjs
+COPY --from=builder /app/apps/web/public ./apps/web/public
+COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/static ./apps/web/.next/static
+USER nextjs
 EXPOSE 3000
 WORKDIR /app/apps/web
-CMD ["npm", "run", "start"]
+CMD ["node", "server.js"]

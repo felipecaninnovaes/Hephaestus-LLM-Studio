@@ -5,11 +5,17 @@
 #   docker compose -f infra/compose.yaml -f infra/compose.prod.yaml up -d
 # ==============================================================================
 
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   # Ingress Unificado via Caddy (portas 80 e 443 expostas no host)
   ingress:
     image: caddy:2.8-alpine
-    restart: unless-stopped
+    logging: *default-logging
     ports:
       - "80:80"
       - "443:443"
@@ -22,15 +28,96 @@ services:
       - principal
     networks:
       - default
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:80/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
 
   # Em produção, fecha a exposição direta da porta 3000 do frontend
   web:
     ports: !override []
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1024M
 
-  # Em produção, fecha a exposição direta da porta 8080 do BFF
+  # Em produção, fecha a exposição direta da porta 8080 do BFF e impõe segredos
   principal:
+    environment:
+      ENVIRONMENT: production
+      STUDIO_PASSWORD: ${STUDIO_PASSWORD:?Defina STUDIO_PASSWORD em producao}
+      MANAGER_TOKEN: ${MANAGER_TOKEN:?Defina MANAGER_TOKEN em producao}
+      DATABASE_URL: postgres://studio:${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD em producao}@db/studio
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Defina S3_ACCESS_KEY em producao}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?Defina S3_SECRET_KEY em producao}
     ports: !override []
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1024M
 
+  # Em produção, fecha a porta do manager e impõe segredos
+  manager:
+    environment:
+      ENVIRONMENT: production
+      MANAGER_TOKEN: ${MANAGER_TOKEN:?Defina MANAGER_TOKEN em producao}
+      DATABASE_URL: postgres://studio:${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD em producao}@db/studio
+    ports: !override []
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+  # Em produção, fecha a porta do banco de dados no host e impõe senha
+  db:
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD em producao}
+    ports: !override []
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2048M
+
+  # Em produção, impõe credenciais do bootstrap do bucket S3
+  s3-init:
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Defina S3_ACCESS_KEY em producao}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?Defina S3_SECRET_KEY em producao}
+
+  # Em produção, impõe segredos do orquestrador local
+  orchestrator-local:
+    ports: !override []
+    environment:
+      MANAGER_TOKEN: ${MANAGER_TOKEN:?Defina MANAGER_TOKEN em producao}
+      S3_ORCH_ACCESS_KEY: ${S3_ORCH_ACCESS_KEY:?Defina S3_ORCH_ACCESS_KEY em producao}
+      S3_ORCH_SECRET_KEY: ${S3_ORCH_SECRET_KEY:?Defina S3_ORCH_SECRET_KEY em producao}
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1024M
+
+  # Em produção, fecha as portas internas do SeaweedFS e do embedder no host
+  seaweedfs:
+    ports: !override []
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1536M
+
+  embedder:
+    ports: !override []
 volumes:
   caddy_data:
   caddy_config:

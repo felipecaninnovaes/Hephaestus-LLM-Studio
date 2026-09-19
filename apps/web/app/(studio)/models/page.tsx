@@ -1,49 +1,21 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Button, ConfirmDialog, EmptyState, GlassCard, showToast } from "@/components/ui";
-import { IconBox, IconDownload, IconPencil, IconPlus, IconTrash, IconUpload, IconX } from "@/components/icons";
-import { ApiError } from "@/lib/api";
-import { deleteModel, listModels, updateModel } from "@/lib/models";
-import { formatBytes, formatRelativeTime } from "@/lib/format";
-import ModelUploadModal from "@/components/studio/ModelUploadModal";
+import { useCallback, useEffect, useState } from "react";
 import ModelDownloadModal from "@/components/studio/ModelDownloadModal";
 import {
-  modelSourceLabel,
-  modelErrorMessage,
-  type Model,
-  type ModelSource,
-} from "@/types/studio";
-
-const SOURCE_BADGE_CLASSES: Record<ModelSource, string> = {
-  train: "border-brand-500/35 bg-brand-500/10 text-brand-400",
-  upload: "border-white/15 bg-white/[0.06] text-zinc-300",
-  download: "border-white/15 bg-white/[0.06] text-zinc-300",
-};
-
-function engineBadge(engine: string) {
-  switch (engine) {
-    case "world":
-      return { label: "YOLO-World", className: "border-sky-500/35 bg-sky-500/10 text-sky-400" };
-    case "diffusion":
-      return { label: "Difusão", className: "border-purple-500/35 bg-purple-500/10 text-purple-400" };
-    case "clip":
-      return { label: "CLIP", className: "border-status-success/35 bg-status-success/10 text-status-success" };
-    default:
-      return { label: "YOLO", className: "border-zinc-700/60 bg-zinc-800/40 text-zinc-300" };
-  }
-}
-
-function formatBadge(name: string): string | null {
-  if (name.endsWith(".safetensors")) {
-    return "safetensors";
-  }
-  if (name.endsWith(".pt")) {
-    return ".pt";
-  }
-  return null;
-}
+  ModelCard,
+  ModelHeader,
+  ModelRenameDialog,
+} from "@/components/studio/models";
+import ModelUploadModal from "@/components/studio/ModelUploadModal";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { GlassCard } from "@/components/ui/GlassCard";
+import { showToast } from "@/components/ui/Toast";
+import { ApiError } from "@/lib/api";
+import { deleteModel, listModels, updateModel } from "@/lib/models";
+import { modelErrorMessage, type Model } from "@/types/studio";
 
 export default function ModelsPage() {
   const router = useRouter();
@@ -73,7 +45,9 @@ export default function ModelsPage() {
         return;
       }
       setError(
-        err instanceof ApiError ? modelErrorMessage(err.code) : modelErrorMessage(""),
+        err instanceof ApiError
+          ? modelErrorMessage(err.code)
+          : modelErrorMessage(""),
       );
     } finally {
       setLoading(false);
@@ -81,7 +55,7 @@ export default function ModelsPage() {
   }, [router]);
 
   useEffect(() => {
-    load();
+    void load();
   }, [load]);
 
   function handleDownload(model: Model) {
@@ -108,7 +82,9 @@ export default function ModelsPage() {
       setDeletingModel(null);
     } catch (err) {
       showToast(
-        err instanceof ApiError ? modelErrorMessage(err.code) : "Falha ao remover modelo.",
+        err instanceof ApiError
+          ? modelErrorMessage(err.code)
+          : "Falha ao remover modelo.",
         "error",
       );
     } finally {
@@ -125,13 +101,17 @@ export default function ModelsPage() {
     try {
       const updated = await updateModel(renamingModel.id, clean);
       setModels((prev) =>
-        prev.map((m) => (m.id === updated.id ? { ...m, name: updated.name } : m)),
+        prev.map((m) =>
+          m.id === updated.id ? { ...m, name: updated.name } : m,
+        ),
       );
       showToast("Modelo renomeado com sucesso.", "success");
       setRenamingModel(null);
     } catch (err) {
       showToast(
-        err instanceof ApiError ? modelErrorMessage(err.code) : "Falha ao renomear modelo.",
+        err instanceof ApiError
+          ? modelErrorMessage(err.code)
+          : "Falha ao renomear modelo.",
         "error",
       );
     } finally {
@@ -140,62 +120,31 @@ export default function ModelsPage() {
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 px-4 sm:px-6 py-6">
-      {/* Header */}
-      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-        <div className="min-w-0">
-          <div className="flex items-baseline gap-3">
-            <h1
-              className="font-display tracking-display truncate text-xl font-semibold text-zinc-100 lg:text-2xl"
-              title="Modelos & Pesos"
-            >
-              Modelos & Pesos
-            </h1>
-            <span className="shrink-0 font-mono text-xs text-zinc-400">
-              {models.length} {models.length === 1 ? "modelo" : "modelos"}
-            </span>
-          </div>
-          <p className="mt-0.5 text-xs text-zinc-400">
-            Checkpoints de treino, uploads e downloads. Envie pesos (.pt, .safetensors) ou baixe por URL.
-          </p>
-        </div>
-        <div className="flex min-h-[44px] items-center gap-2">
-          <Button
-            type="button"
-            variant="secondary"
-            size="md"
-            onClick={() => setDownloadOpen(true)}
-          >
-            <IconDownload className="h-4 w-4 text-zinc-400" />
-            Baixar por URL
-          </Button>
-          <Button
-            type="button"
-            variant="primary"
-            size="md"
-            onClick={() => setUploadOpen(true)}
-          >
-            <IconUpload className="h-4 w-4" />
-            Enviar pesos
-          </Button>
-        </div>
-      </div>
+    <div className="mx-auto flex max-w-7xl flex-col gap-6 p-4 sm:p-6 lg:p-8">
+      <ModelHeader
+        onOpenUpload={() => setUploadOpen(true)}
+        onOpenDownload={() => setDownloadOpen(true)}
+      />
 
-      {/* Conteúdo */}
       {loading ? (
-        <p className="py-10 text-center font-mono text-xs text-zinc-400">
-          Carregando modelos…
-        </p>
-      ) : error ? (
-        <div className="glass-card flex flex-col items-center gap-3 rounded-2xl p-10 text-center">
-          <p className="text-sm text-zinc-300">{error}</p>
-          <Button type="button" variant="secondary" size="md" onClick={load}>
-            Tentar novamente
-          </Button>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 2xl:grid-cols-4">
+          {[1, 2, 3, 4].map((i) => (
+            <GlassCard key={i} className="p-4 space-y-3 animate-pulse">
+              <div className="h-4 w-3/4 rounded bg-white/10" />
+              <div className="h-3 w-1/2 rounded bg-white/5" />
+              <div className="h-8 rounded bg-white/5 mt-4" />
+            </GlassCard>
+          ))}
         </div>
+      ) : error ? (
+        <EmptyState
+          title="Falha ao carregar modelos"
+          description={error}
+          actionLabel="Tentar novamente"
+          onAction={() => void load()}
+        />
       ) : models.length === 0 ? (
         <EmptyState
-          icon={<IconBox className="h-6 w-6" />}
           title="Nenhum modelo ainda"
           description="Treine um job YOLO para gerar checkpoints ou envie pesos manualmente."
           actionLabel="Enviar pesos"
@@ -204,118 +153,18 @@ export default function ModelsPage() {
         />
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 2xl:grid-cols-4">
-          {models.map((m) => {
-            const badge = engineBadge(m.engine);
-            const format = formatBadge(m.name);
-            return (
-              <GlassCard key={m.id} interactive className="p-4">
-                {/* Header do card */}
-                <div className="flex items-start justify-between gap-2 mb-3">
-                  <div className="min-w-0 flex-1">
-                    <h3
-                      className="font-mono text-sm font-semibold text-zinc-100 truncate"
-                      title={m.name}
-                    >
-                      {m.name}
-                    </h3>
-                    <div className="mt-1 flex items-center gap-1.5 flex-wrap">
-                      <span
-                        className={`inline-flex items-center rounded px-1.5 py-0.5 font-mono text-3xs font-medium uppercase tracking-[0.06em] border ${badge.className}`}
-                      >
-                        {badge.label}
-                      </span>
-                      {format && (
-                        <span className="inline-flex items-center rounded border border-zinc-700/60 bg-zinc-800/60 px-1.5 py-0.5 font-mono text-3xs text-zinc-400">
-                          {format}
-                        </span>
-                      )}
-                      {m.model && (
-                        <span className="font-mono text-2xs text-zinc-500">
-                          · {m.model}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  <span
-                    className={`shrink-0 rounded-full border px-2 py-0.5 font-mono text-3xs uppercase tracking-[0.06em] ${SOURCE_BADGE_CLASSES[m.source]}`}
-                    title={`Origem: ${modelSourceLabel(m.source)}`}
-                  >
-                    {modelSourceLabel(m.source)}
-                  </span>
-                </div>
-
-                {/* Metadados */}
-                <div className="space-y-1.5 text-2xs">
-                  <div className="flex items-center justify-between">
-                    <span className="text-zinc-500">Tamanho</span>
-                    <span className="font-mono text-zinc-300">
-                      {formatBytes(m.bytes)}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-zinc-500">Criado</span>
-                    <span className="font-mono text-zinc-300">
-                      {formatRelativeTime(m.createdAt)}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-zinc-500">MD5</span>
-                    <span
-                      className="font-mono text-zinc-400 truncate max-w-[140px]"
-                      title={m.md5}
-                    >
-                      {m.md5}
-                    </span>
-                  </div>
-                </div>
-
-                {/* Ações */}
-                <div className="mt-3 pt-3 border-t border-zinc-800/80 flex items-center gap-2">
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    className="flex-1"
-                    onClick={() => handleDownload(m)}
-                    disabled={!m.url}
-                    title={
-                      m.url
-                        ? `Baixar ${m.name}`
-                        : "Download indisponível — sem URL presigned"
-                    }
-                  >
-                    <IconDownload className="h-3.5 w-3.5" />
-                    Baixar
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60"
-                    onClick={() => {
-                      setRenamingModel(m);
-                      setNewModelName(m.name);
-                    }}
-                    title={`Renomear ${m.name}`}
-                    aria-label={`Renomear modelo ${m.name}`}
-                  >
-                    <IconPencil className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="text-zinc-400 hover:text-red-400 hover:bg-red-500/10"
-                    onClick={() => setDeletingModel(m)}
-                    title={`Excluir ${m.name}`}
-                    aria-label={`Excluir modelo ${m.name}`}
-                  >
-                    <IconTrash className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
-              </GlassCard>
-            );
-          })}
+          {models.map((m) => (
+            <ModelCard
+              key={m.id}
+              model={m}
+              onDownload={handleDownload}
+              onRename={(model) => {
+                setRenamingModel(model);
+                setNewModelName(model.name);
+              }}
+              onDelete={setDeletingModel}
+            />
+          ))}
         </div>
       )}
 
@@ -335,88 +184,35 @@ export default function ModelsPage() {
         }
       />
 
-      {/* Modal de Renomear Modelo */}
-      {renamingModel && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-          <GlassCard className="w-full max-w-md p-6 space-y-4 border border-zinc-700/60 bg-zinc-950/90 shadow-2xl">
-            <div className="flex items-center justify-between">
-              <h3 className="font-semibold text-zinc-100 text-base">Renomear Modelo</h3>
-              <button
-                type="button"
-                onClick={() => setRenamingModel(null)}
-                className="text-zinc-400 hover:text-zinc-200"
-              >
-                <IconX className="h-4 w-4" />
-              </button>
-            </div>
-            <p className="text-xs text-zinc-400">
-              Altere o nome do arquivo para fácil identificação nos treinos, catálogo e downloads.
-            </p>
-            <form onSubmit={handleRenameSubmit} className="space-y-4">
-              <div>
-                <label htmlFor="rename-model-name" className="block text-xs font-medium text-zinc-300 mb-1.5">
-                  Novo nome do modelo
-                </label>
-                <input
-                  id="rename-model-name"
-                  type="text"
-                  value={newModelName}
-                  onChange={(e) => setNewModelName(e.target.value)}
-                  className="w-full rounded-md border border-zinc-700/80 bg-zinc-900/90 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 focus:border-brand-500 focus:outline-none font-mono"
-                  placeholder="ex: cyberpunk-flux2-cbrpnk.safetensors"
-                  // biome-ignore lint/a11y/noAutofocus: foco inicial em input de dialog de renomear aberto por ação do usuário; mantém o foco dentro do modal
-                  autoFocus
-                  required
-                />
-              </div>
-              <div className="flex justify-end gap-2 pt-2">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setRenamingModel(null)}
-                  disabled={renameBusy}
-                >
-                  Cancelar
-                </Button>
-                <Button
-                  type="submit"
-                  variant="primary"
-                  size="sm"
-                  disabled={
-                    renameBusy ||
-                    !newModelName.trim() ||
-                    newModelName.trim() === renamingModel.name
-                  }
-                >
-                  {renameBusy ? "Salvando..." : "Salvar"}
-                </Button>
-              </div>
-            </form>
-          </GlassCard>
-        </div>
-      )}
+      <ModelRenameDialog
+        model={renamingModel}
+        name={newModelName}
+        setName={setNewModelName}
+        busy={renameBusy}
+        onClose={() => setRenamingModel(null)}
+        onSubmit={(e) => void handleRenameSubmit(e)}
+      />
 
-      {/* Confirmação de Exclusão */}
+      {/* Confirmação de exclusão */}
       <ConfirmDialog
-        open={deletingModel !== null}
-        title="Excluir modelo"
+        open={Boolean(deletingModel)}
+        title="Excluir Modelo"
         body={
-          <span>
-            Tem certeza que deseja excluir o modelo{" "}
-            <strong className="font-mono text-zinc-100">{deletingModel?.name}</strong>?
-            {deletingModel?.source !== "train"
-              ? " O arquivo será removido do armazenamento de artefatos."
-              : " O registro de modelo será desvinculado."}
-          </span>
+          deletingModel ? (
+            <p>
+              Tem certeza de que deseja excluir o modelo{" "}
+              <strong className="text-zinc-100 font-mono">
+                {deletingModel.name}
+              </strong>
+              ? O checkpoint será removido permanentemente do armazenamento.
+            </p>
+          ) : null
         }
         confirmLabel="Excluir"
         danger
         busy={deleteBusy}
-        onConfirm={handleDeleteConfirm}
-        onClose={() => {
-          if (!deleteBusy) setDeletingModel(null);
-        }}
+        onConfirm={() => void handleDeleteConfirm()}
+        onClose={() => setDeletingModel(null)}
       />
     </div>
   );

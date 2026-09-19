@@ -1,6 +1,7 @@
 const UNITS = ["B", "KB", "MB", "GB", "TB"] as const;
 
-export function formatBytes(n: number): string {
+export function formatBytes(n?: number | null): string {
+  if (n === null || n === undefined) return "—";
   if (!Number.isFinite(n) || n <= 0) return "0 B";
   const idx = Math.min(
     Math.floor(Math.log(n) / Math.log(1024)),

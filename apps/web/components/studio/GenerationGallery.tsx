@@ -37,6 +37,7 @@ import { GERACAO_BROADCAST_CHANNEL, GERACAO_COMPLETED_KEY, generationConfigsJson
 import { copyToClipboard } from "@/lib/clipboard";
 import type { Generation } from "@/types/studio";
 import CompareSlider from "./CompareSlider";
+import { GenerationLightboxModal } from "./gallery";
 
 /* ── Constantes ── */
 
@@ -855,126 +856,16 @@ export default function GenerationGallery() {
       />
 
       {/* ── Lightbox Modal ── */}
-      {lightboxItem && (
-        <Modal
-          open={!!lightboxItem}
-          onClose={() => setLightboxItem(null)}
-          title={`Seed ${lightboxItem.seed}`}
-          maxWidth="xl"
-          bodyClassName="p-0"
-          headerRight={
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => handleDownloadSingle(lightboxItem)}
-            >
-              <IconDownload className="size-3.5" />
-              <span className="ml-1">Baixar</span>
-            </Button>
-          }
-        >
-          <div className="flex flex-col gap-4">
-            {/* Imagem */}
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={getFullImageUrl(lightboxItem)}
-              alt={lightboxItem.prompt}
-              className="w-full rounded-lg object-contain max-h-[60vh]"
-            />
-
-            {/* Metadados */}
-            <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs px-1">
-              <MetaRow label="Prompt" value={lightboxItem.prompt} />
-              {lightboxItem.negativePrompt && (
-                <MetaRow label="Negative" value={lightboxItem.negativePrompt} />
-              )}
-              <MetaRow label="Dimensões" value={`${lightboxItem.width}×${lightboxItem.height}`} mono />
-              <MetaRow label="Seed" value={String(lightboxItem.seed)} mono />
-              <MetaRow label="Base Model" value={String(lightboxItem.params?.base_model || lightboxItem.params?.baseModel || "—")} />
-              {lightboxItem.params?.custom_model_id ? (
-                <MetaRow label="Custom Model" value={String(lightboxItem.params.custom_model_id)} />
-              ) : null}
-              {lightboxItem.params?.text_encoder_model_id ? (
-                <MetaRow label="Text Encoder" value={String(lightboxItem.params.text_encoder_model_id)} />
-              ) : null}
-              {lightboxItem.params?.steps ? (
-                <MetaRow label="Steps" value={String(lightboxItem.params.steps)} mono />
-              ) : null}
-              {lightboxItem.params?.guidance_scale != null ? (
-                <MetaRow label="CFG" value={String(lightboxItem.params.guidance_scale)} mono />
-              ) : null}
-              {lightboxItem.params?.quantization ? (
-                <MetaRow label="Quantização" value={String(lightboxItem.params.quantization)} />
-              ) : null}
-              {lightboxItem.params?.sampler ? (
-                <MetaRow label="Sampler" value={String(lightboxItem.params.sampler)} mono />
-              ) : null}
-              {lightboxItem.params?.upscale != null && typeof lightboxItem.params.upscale === "object" && "scale" in lightboxItem.params.upscale ? (
-                <MetaRow
-                  label="Upscale"
-                  value={`Real-ESRGAN 4x · ${String(lightboxItem.params.upscale.scale)}x`}
-                  mono
-                />
-              ) : null}
-              {lightboxItem.params?.distilled != null ? (
-                <MetaRow label="Destilado" value={lightboxItem.params.distilled ? "Sim" : "Não"} />
-              ) : null}
-              {lightboxItem.params?.loras && Array.isArray(lightboxItem.params.loras) && lightboxItem.params.loras.length > 0 ? (
-                <MetaRow
-                  label="LoRAs"
-                  value={`${lightboxItem.params.loras.length} adaptador(es)`}
-                />
-              ) : null}
-              <MetaRow label="Criado em" value={new Date(lightboxItem.createdAt).toLocaleString("pt-BR")} />
-            </div>
-
-            {/* Ações F4/007 — copiar configs/prompt, aplicar no gerador */}
-            <div className="flex flex-wrap gap-2 px-1 pb-1">
-              <Button
-                type="button"
-                variant="primary"
-                size="sm"
-                onClick={() => handleUseConfigs(lightboxItem)}
-                aria-label={`Usar configs da geração seed ${lightboxItem.seed} no gerador`}
-              >
-                <IconSliders className="size-3.5" />
-                <span className="ml-1">Usar estas configs</span>
-              </Button>
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                onClick={() => handleUseAsInit(lightboxItem)}
-                aria-label={`Usar geração seed ${lightboxItem.seed} como imagem inicial do img2img`}
-                title="Carrega esta imagem como entrada do img2img na aba Gerar"
-              >
-                <IconImage className="size-3.5" />
-                <span className="ml-1">Usar como imagem inicial</span>
-              </Button>
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                onClick={() => void handleCopyConfigs(lightboxItem)}
-                aria-label={`Copiar configs da geração seed ${lightboxItem.seed} em JSON`}
-              >
-                <IconCopy className="size-3.5" />
-                <span className="ml-1">Copiar configs</span>
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => void handleCopyPrompt(lightboxItem)}
-                aria-label={`Copiar prompt da geração seed ${lightboxItem.seed}`}
-              >
-                Copiar prompt
-              </Button>
-            </div>
-          </div>
-        </Modal>
-      )}
+      <GenerationLightboxModal
+        lightboxItem={lightboxItem}
+        onClose={() => setLightboxItem(null)}
+        getFullImageUrl={getFullImageUrl}
+        onDownloadSingle={handleDownloadSingle}
+        onUseConfigs={handleUseConfigs}
+        onUseAsInit={handleUseAsInit}
+        onCopyConfigs={handleCopyConfigs}
+        onCopyPrompt={handleCopyPrompt}
+      />
 
       {/* ── Compare Slider ── */}
       {compareOpen && compareA && compareB && (
@@ -990,28 +881,3 @@ export default function GenerationGallery() {
   );
 }
 
-/* ── Sub-componentes ── */
-
-function MetaRow({
-  label,
-  value,
-  mono = false,
-}: {
-  label: string;
-  value: string;
-  mono?: boolean;
-}) {
-  return (
-    <div className="flex flex-col gap-0.5">
-      <span className="font-mono text-3xs uppercase tracking-caps text-zinc-500">
-        {label}
-      </span>
-      <TruncatedText
-        text={value}
-        lines={3}
-        as="span"
-        className={`text-zinc-200 ${mono ? "font-mono" : ""}`}
-      />
-    </div>
-  );
-}

@@ -18,6 +18,8 @@ interface JobLogViewerProps {
   artifacts?: JobArtifact[];
   compact?: boolean;
   defaultOpen?: boolean;
+  livePhase?: string | null;
+  livePhaseMessage?: string | null;
 }
 
 type LogType = "all" | "stdout" | "stderr";
@@ -37,6 +39,8 @@ export function JobLogViewer({
   artifacts = [],
   compact = false,
   defaultOpen,
+  livePhase,
+  livePhaseMessage,
 }: JobLogViewerProps) {
   const isActive =
     job.status === "running" ||
@@ -53,6 +57,52 @@ export function JobLogViewer({
 
   const terminalRef = useRef<HTMLDivElement | null>(null);
 
+  // Histórico de transições de telemetria ao vivo durante o ciclo do job
+  const [liveLogEntries, setLiveLogEntries] = useState<LogLine[]>([]);
+  const lastMsgRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const currentMsg = livePhaseMessage || job.phaseMessage;
+    const currentPhase = livePhase || job.phase;
+    if (!currentMsg && !currentPhase) return;
+
+    const signature = `${currentPhase || ""}:${currentMsg || ""}`;
+    if (signature === lastMsgRef.current) return;
+    lastMsgRef.current = signature;
+
+    const tag: LogLine["tag"] =
+      currentPhase?.includes("dataset") || currentPhase?.includes("weights") || currentPhase?.includes("container") || currentPhase?.includes("download")
+        ? "ORCH"
+        : currentPhase?.includes("sample") || currentPhase === "generating"
+          ? "DIFFUSION"
+          : "ENGINE";
+
+    const text = currentMsg || `Fase: ${currentPhase}`;
+    const nowTime = new Date().toLocaleTimeString("pt-BR", { hour12: false });
+
+    setLiveLogEntries((prev) => {
+      if (prev.length > 0 && prev[prev.length - 1].text === text) return prev;
+      return [
+        ...prev,
+        {
+          id: `live-${Date.now()}-${prev.length}`,
+          timestamp: nowTime,
+          syntheticTime: false,
+          tag,
+          text,
+        },
+      ];
+    });
+  }, [livePhase, livePhaseMessage, job.phase, job.phaseMessage]);
+
+  // Se o job reiniciar ou trocar, reseta o live log
+  const jobId = job.id;
+  useEffect(() => {
+    if (jobId) {
+      setLiveLogEntries([]);
+      lastMsgRef.current = null;
+    }
+  }, [jobId]);
   // Sintetiza e formata as linhas reais de log e telemetria do orquestrador
   const lines = useMemo<LogLine[]>(() => {
     const list: LogLine[] = [];
@@ -118,6 +168,14 @@ export function JobLogViewer({
             tag: "TRAIN",
             text: parts.join(" "),
           });
+        }
+      });
+    }
+    // 2.5 Eventos de telemetria ao vivo (download, staging, passos de amostras)
+    if (liveLogEntries.length > 0) {
+      liveLogEntries.forEach((entry) => {
+        if (!list.some((l) => l.text === entry.text)) {
+          list.push(entry);
         }
       });
     }
@@ -206,7 +264,7 @@ export function JobLogViewer({
     }
 
     return list;
-  }, [job, metrics, artifacts]);
+  }, [job, metrics, artifacts, liveLogEntries]);
 
   const filteredLines = useMemo(() => {
     if (filter === "stdout") {

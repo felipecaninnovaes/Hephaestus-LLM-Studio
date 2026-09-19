@@ -698,6 +698,39 @@ class TestTrainerDifusao(unittest.TestCase):
             self.assertTrue(torch.equal(out2["hidden"], torch.ones(2, 3)))
             self.assertEqual(len(calls), 1)  # segundo batch veio do cache (hit)
 
+    def test_train_mock_paged_optimizers_metadata(self):
+        for opt_name in ("paged_adamw8bit", "paged_adamw32bit"):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp_path = Path(tmpdir)
+                cfg_path = tmp_path / "config.yaml"
+                out_dir = tmp_path / "output"
+
+                cfg = {
+                    "job_id": f"test-paged-opt-{opt_name}",
+                    "model": "flux",
+                    "seed": 42,
+                    "lora": {
+                        "trigger_word": "testword",
+                        "epochs": 1,
+                        "batch_size": 1,
+                        "optimizer": opt_name,
+                        "rank": 8,
+                        "alpha": 8,
+                    },
+                }
+                with open(cfg_path, "w", encoding="utf-8") as f:
+                    yaml.dump(cfg, f)
+
+                main(["train", "--config", str(cfg_path), "--output", str(out_dir)])
+
+                adapter_file = out_dir / "adapter.safetensors"
+                self.assertTrue(adapter_file.exists())
+                data = adapter_file.read_bytes()
+                header_len = struct.unpack("<Q", data[:8])[0]
+                header_json = json.loads(data[8 : 8 + header_len].decode("utf-8"))
+                meta = header_json.get("__metadata__", {})
+                self.assertEqual(meta.get("optimizer"), opt_name)
+
 if __name__ == "__main__":
     unittest.main()
 

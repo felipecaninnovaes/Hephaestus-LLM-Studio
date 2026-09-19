@@ -716,11 +716,23 @@ async fn run_prepare(state: &AppState, job_id: Uuid, spec: &PrepareSpec) {
     // (b) Reuso por fingerprint; miss ⇒ build.
     let pkg = match try_reuse_package(state, spec).await {
         Some(p) => {
-            report_progress(state, &job_id_str, "reutilizando pacote existente", 0.6).await;
+            report_progress(
+                state,
+                &job_id_str,
+                "Reutilizando pacote existente em cache",
+                0.6,
+            )
+            .await;
             p
         }
         None => {
-            report_progress(state, &job_id_str, "empacotando dataset", 0.1).await;
+            report_progress(
+                state,
+                &job_id_str,
+                "Empacotando dataset (extraindo imagens e metadados)...",
+                0.15,
+            )
+            .await;
             // Fase longa (S3+zip, minutos em datasets grandes): heartbeat
             // antes e depois para o recovery não ver `updated_at` parado.
             touch_prepare(&state.pool, &job_id_str).await;
@@ -728,7 +740,9 @@ async fn run_prepare(state: &AppState, job_id: Uuid, spec: &PrepareSpec) {
             touch_prepare(&state.pool, &job_id_str).await;
             match built {
                 Ok(p) => {
-                    report_progress(state, &job_id_str, "pacote pronto", 0.9).await;
+                    let mb = p.bytes as f64 / (1024.0 * 1024.0);
+                    let msg = format!("Pacote gerado ({:.1} MB) e sincronizado com sucesso", mb);
+                    report_progress(state, &job_id_str, &msg, 0.95).await;
                     p
                 }
                 Err(code) => {

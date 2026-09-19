@@ -70,9 +70,11 @@ report() { # $1=PASS|FAIL $2=[n/6] $3=msg
 }
 
 # --- [1/6] Pré: daemon + senha ---
-docker info >/dev/null 2>&1 \
-  && report PASS "[1/6]" "docker daemon acessível" \
-  || report FAIL "[1/6]" "docker daemon inacessível (docker info falhou)"
+if docker info >/dev/null 2>&1; then
+  report PASS "[1/6]" "docker daemon acessível"
+else
+  report FAIL "[1/6]" "docker daemon inacessível (docker info falhou)"
+fi
 GENERATED=false
 if [[ -z "${STUDIO_PASSWORD:-}" ]]; then
   if command -v openssl >/dev/null 2>&1; then STUDIO_PASSWORD="$(openssl rand -hex 16)"
@@ -83,16 +85,20 @@ export STUDIO_PASSWORD
 report PASS "[1/6]" "STUDIO_PASSWORD pronta (gerada=${GENERATED})"
 
 # --- [2/6] down -v ---
-DOWN_OUT="$(STUDIO_PASSWORD="$STUDIO_PASSWORD" compose down -v --remove-orphans 2>&1)" \
-  && report PASS "[2/6]" "down -v --remove-orphans ok" \
-  || report FAIL "[2/6]" "down -v falhou: $DOWN_OUT"
+if DOWN_OUT="$(STUDIO_PASSWORD="$STUDIO_PASSWORD" compose down -v --remove-orphans 2>&1)"; then
+  report PASS "[2/6]" "down -v --remove-orphans ok"
+else
+  report FAIL "[2/6]" "down -v falhou: $DOWN_OUT"
+fi
 
 # --- [3/6] up -d só backend (web fora: npm run dev ocupa :3000 no host) ---
 UP_ARGS=(up -d); [[ "$DO_BUILD" == true ]] && UP_ARGS+=(--build)
 UP_ARGS+=("${BACKEND_SERVICES[@]}"); [[ "$WITH_WEB" == true ]] && UP_ARGS+=(web)
-UP_OUT="$(STUDIO_PASSWORD="$STUDIO_PASSWORD" compose "${UP_ARGS[@]}" 2>&1)" \
-  && report PASS "[3/6]" "up -d ok" \
-  || report FAIL "[3/6]" "up -d falhou: $UP_OUT"
+if UP_OUT="$(STUDIO_PASSWORD="$STUDIO_PASSWORD" compose "${UP_ARGS[@]}" 2>&1)"; then
+  report PASS "[3/6]" "up -d ok"
+else
+  report FAIL "[3/6]" "up -d falhou: $UP_OUT"
+fi
 
 # --- [4/6] Esperas (timeout total compartilhado) ---
 deadline=$((SECONDS + TIMEOUT))
@@ -106,25 +112,33 @@ while [[ $SECONDS -lt $deadline ]]; do
   if [[ -n "${cid:-}" ]] && [[ "$(docker inspect --format '{{.State.Status}}:{{.State.ExitCode}}' "$cid" 2>/dev/null)" == "exited:0" ]]; then s3_ok=true; break; fi
   sleep 3
 done
-[[ "$s3_ok" == true ]] \
-  && report PASS "[4/6]" "s3-init completed (exit 0)" \
-  || report FAIL "[4/6]" "s3-init não completou em ${TIMEOUT}s"
+if [[ "$s3_ok" == true ]]; then
+  report PASS "[4/6]" "s3-init completed (exit 0)"
+else
+  report FAIL "[4/6]" "s3-init não completou em ${TIMEOUT}s"
+fi
 health_ok=false
 while [[ $SECONDS -lt $deadline ]]; do
   if curl -fsS "$API/health" 2>/dev/null | grep -q '"auth"[[:space:]]*:[[:space:]]*"ready"'; then health_ok=true; break; fi
   sleep 3
 done
-[[ "$health_ok" == true ]] \
-  && report PASS "[4/6]" "/health auth=ready" \
-  || report FAIL "[4/6]" "/health sem auth=ready em ${TIMEOUT}s"
+if [[ "$health_ok" == true ]]; then
+  report PASS "[4/6]" "/health auth=ready"
+else
+  report FAIL "[4/6]" "/health sem auth=ready em ${TIMEOUT}s"
+fi
 
 # --- [5/6] ASSERTS day-one ---
-curl -fsS "$API/health" 2>/dev/null | grep -q '"auth"[[:space:]]*:[[:space:]]*"ready"' \
-  && report PASS "[5/6]" "(1) GET /health auth=ready" \
-  || report FAIL "[5/6]" "(1) GET /health sem auth=ready"
-bash "$ROOT_DIR/infra/scripts/ensure-bucket.sh" >/dev/null 2>&1 \
-  && report PASS "[5/6]" "(2) bucket garantido (ensure-bucket.sh exit 0)" \
-  || report FAIL "[5/6]" "(2) ensure-bucket.sh exit != 0"
+if curl -fsS "$API/health" 2>/dev/null | grep -q '"auth"[[:space:]]*:[[:space:]]*"ready"'; then
+  report PASS "[5/6]" "(1) GET /health auth=ready"
+else
+  report FAIL "[5/6]" "(1) GET /health sem auth=ready"
+fi
+if bash "$ROOT_DIR/infra/scripts/ensure-bucket.sh" >/dev/null 2>&1; then
+  report PASS "[5/6]" "(2) bucket garantido (ensure-bucket.sh exit 0)"
+else
+  report FAIL "[5/6]" "(2) ensure-bucket.sh exit != 0"
+fi
 # (3) login com a senha do shell; se falhar, fallback de autonomia: o
 # principal (S1) loga em JSON o campo estruturado bootstrap_password = 32hex
 # UMA vez quando STUDIO_PASSWORD ausente + users vazia (main.rs); via compose
@@ -137,18 +151,22 @@ else
   EXTRACTED="$(compose logs principal 2>/dev/null | grep -oE '"bootstrap_password":"[0-9a-f]{32}"' | tail -n1 | grep -oE '[0-9a-f]{32}' || true)"
   RETRY="000"
   [[ -n "${EXTRACTED:-}" ]] && RETRY="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$API/api/auth/login" -H 'Content-Type: application/json' -d "{\"password\":\"$EXTRACTED\"}" 2>/dev/null || echo 000)"
-  [[ "$RETRY" == "200" ]] \
-    && report PASS "[5/6]" "(3) login 200 com senha de autonomia dos logs" \
-    || report FAIL "[5/6]" "(3) login falhou (shell=$LOGIN_CODE, autonomia=$RETRY)"
+  if [[ "$RETRY" == "200" ]]; then
+    report PASS "[5/6]" "(3) login 200 com senha de autonomia dos logs"
+  else
+    report FAIL "[5/6]" "(3) login falhou (shell=$LOGIN_CODE, autonomia=$RETRY)"
+  fi
 fi
 # (4) fail-fast honesto: restarting/restart-loop OU Exited (1..) com
 # restart:"no" (morto por erro — o grep antigo dava PASS espúrio). s3-init
 # Exited (0) é o estado ESPERADO e não casa em \([1-9]; Status incluído no
 # formato porque .State sozinho ("exited") não distingue o exit code.
 BAD="$(compose ps --format '{{.Name}} {{.State}} {{.Status}}' 2>/dev/null | grep -E 'restarting|restart-loop|Exited \([1-9]' || true)"
-[[ -z "$BAD" ]] \
-  && report PASS "[5/6]" "(4) nenhum serviço em restart-loop" \
-  || report FAIL "[5/6]" "(4) restart-loop: $BAD"
+if [[ -z "$BAD" ]]; then
+  report PASS "[5/6]" "(4) nenhum serviço em restart-loop"
+else
+  report FAIL "[5/6]" "(4) restart-loop: $BAD"
+fi
 if [[ "$SKIP_SMOKE" == true ]]; then
   report PASS "[5/6]" "(5) smoke pulado (--skip-smoke)"
 else
@@ -156,10 +174,14 @@ else
   # auth) e depois --datasets (storage) em sequência como gate final.
   SMOKE_OK=true
   STUDIO_PASSWORD="$STUDIO_PASSWORD" bash "$ROOT_DIR/scripts/e2e-smoke.sh" --auth >/dev/null 2>&1 || SMOKE_OK=false
-  [[ "$SMOKE_OK" == true ]] && STUDIO_PASSWORD="$STUDIO_PASSWORD" bash "$ROOT_DIR/scripts/e2e-smoke.sh" --datasets >/dev/null 2>&1 || SMOKE_OK=false
-  [[ "$SMOKE_OK" == true ]] \
-    && report PASS "[5/6]" "(5) smoke e2e --auth + --datasets" \
-    || report FAIL "[5/6]" "(5) smoke e2e falhou"
+  if [[ "$SMOKE_OK" == true ]]; then
+    STUDIO_PASSWORD="$STUDIO_PASSWORD" bash "$ROOT_DIR/scripts/e2e-smoke.sh" --datasets >/dev/null 2>&1 || SMOKE_OK=false
+  fi
+  if [[ "$SMOKE_OK" == true ]]; then
+    report PASS "[5/6]" "(5) smoke e2e --auth + --datasets"
+  else
+    report FAIL "[5/6]" "(5) smoke e2e falhou"
+  fi
 fi
 
 # --- [6/6] Resumo ---

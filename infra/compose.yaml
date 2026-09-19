@@ -7,6 +7,12 @@ x-logging: &default-logging
 services:
   db:
     image: pgvector/pgvector:pg16-trixie@sha256:c8483555ce48101872f888c1df8a895ff689d6c7c7a5f7ac266475f9dfe89e0b
+    command: >
+      postgres
+      -c shared_buffers=512MB
+      -c work_mem=32MB
+      -c maintenance_work_mem=128MB
+      -c effective_cache_size=1536MB
     environment:
       POSTGRES_USER: studio
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-studio}
@@ -30,13 +36,12 @@ services:
       context: ..
       dockerfile: services/api-principal/Dockerfile
     ports:
-      - '8080:8080'
+      - '${PRINCIPAL_PUBLISH:-127.0.0.1}:8080:8080'
     restart: unless-stopped
     logging: *default-logging
     environment:
       DATABASE_URL: postgres://studio:${POSTGRES_PASSWORD:-studio}@db/studio
       STUDIO_PASSWORD: ${STUDIO_PASSWORD:-changeme}
-      STUDIO_MASTER_KEY: ${STUDIO_MASTER_KEY:-changeme}
       MANAGER_URL: http://manager:8081
       MANAGER_TOKEN: ${MANAGER_TOKEN:-changeme}
       STORAGE_BACKEND: ${STORAGE_BACKEND:-s3}
@@ -57,6 +62,12 @@ services:
         condition: service_healthy
       s3-init:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8080 && echo -e \"GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && grep -q 200 <&3'"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
 
   # SeaweedFS S3 (ADR-0003 D0, 3b.4): identidade em infra/seaweedfs-s3.json
   # (credenciais LOCAL-DEV — rotacione antes de qualquer exposição além do
@@ -75,6 +86,7 @@ services:
       - '${SEAWEED_PUBLISH:-127.0.0.1}:8333:8333'
       - '127.0.0.1:9333:9333'
     restart: unless-stopped
+    logging: *default-logging
     volumes:
       - seaweed_data:/data
       - ./seaweedfs-s3.json:/etc/seaweedfs/s3.json:ro
@@ -94,11 +106,13 @@ services:
   # e o bucket vai junto; a identidade volta via seaweedfs-s3.json mas o
   # bucket NÃO é auto-criado p/ identidade escopada do orquestrador — sem ele
   # os uploads falham silenciosamente, jobs "done" com zero artefatos).
-  # Script POSIX (sh do busybox, sem bash): só apk de curl+openssl; o retry
-  # cobre a janela entre healthy e S3 100% pronto. Sem ports: isolamento de
-  # engines/serviços intacto. Credenciais = mesmas LOCAL-DEV do compose.
+  # Imagem própria (Dockerfile.s3-init): curl+openssl pré-instalados, sem apk
+  # dinâmico no boot; o retry cobre a janela entre healthy e S3 100% pronto.
+  # Sem ports: isolamento de engines/serviços intacto. Credenciais = mesmas LOCAL-DEV do compose.
   s3-init:
-    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    build:
+      context: .
+      dockerfile: Dockerfile.s3-init
     volumes:
       - ./scripts/ensure-bucket.sh:/ensure-bucket.sh:ro
     environment:
@@ -106,11 +120,12 @@ services:
       S3_BUCKET: ${S3_BUCKET:-heph-data}
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-heph}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-heph-local-dev}
-    command: ["sh", "-c", "apk add --no-cache curl openssl 2>&1 | tail -1; n=0; while ! sh /ensure-bucket.sh; do n=$$(($$n+1)); [ $$n -ge 30 ] && exit 1; sleep 2; done"]
+    command: ["sh", "-c", "n=0; while ! sh /ensure-bucket.sh; do n=$$(($$n+1)); [ $$n -ge 30 ] && exit 1; sleep 2; done"]
     depends_on:
       seaweedfs:
         condition: service_healthy
     restart: "no"
+    logging: *default-logging
 
   # Embedder CLIP (ADR-0004 D1, 3f.3): inferência de embeddings para busca
   # semântica. INFRA local (como o SeaweedFS) — não job do orquestrador
@@ -120,8 +135,8 @@ services:
   # bind só no loopback do host (R3).
   embedder:
     build:
-      context: ../engines/trainer-clip
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: engines/trainer-clip/Dockerfile
     environment:
       ENGINE_MOCK: "1"
       MODEL: ${EMBEDDING_MODEL:-ViT-B-32}
@@ -129,6 +144,7 @@ services:
     ports:
       - '127.0.0.1:8090:8090'
     restart: unless-stopped
+    logging: *default-logging
     volumes:
       - models:/data/models
     healthcheck:
@@ -145,6 +161,7 @@ services:
     ports:
       - '${MANAGER_PUBLISH:-127.0.0.1}:8081:8081'
     restart: unless-stopped
+    logging: *default-logging
     environment:
       DATABASE_URL: postgres://studio:${POSTGRES_PASSWORD:-studio}@db/studio
       MANAGER_TOKEN: ${MANAGER_TOKEN:-changeme}
@@ -155,9 +172,15 @@ services:
       db:
         condition: service_healthy
       principal:
-        condition: service_started
+        condition: service_healthy
       s3-init:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8081 && echo -e \"GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && grep -q 200 <&3'"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
 
   orchestrator-local:
     build:
@@ -166,6 +189,7 @@ services:
     ports:
       - '${ORCHESTRATOR_PUBLISH:-127.0.0.1}:8082:8082'
     restart: unless-stopped
+    logging: *default-logging
     environment:
       MANAGER_URL: ${MANAGER_URL:-http://manager:8081}
       MANAGER_TOKEN: ${MANAGER_TOKEN:-changeme}
@@ -199,6 +223,12 @@ services:
         condition: service_started
       s3-init:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8082 && echo -e \"GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && grep -q 200 <&3'"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
 
   # Build-only: imagem hephaestus/trainer-yolo:local (ADR-0007 D5).
   # Não inicia com `docker compose up` — só com `--profile build`.
@@ -208,8 +238,8 @@ services:
       - build
     image: hephaestus/trainer-yolo:local
     build:
-      context: ../engines/trainer-yolo
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: engines/trainer-yolo/Dockerfile
 
   # Build-only: imagem hephaestus/trainer-difusao:local (ADR-0018 D3).
   # Build: docker compose --profile build build trainer-difusao
@@ -218,15 +248,15 @@ services:
       - build
     image: hephaestus/trainer-difusao:local
     build:
-      context: ../engines/trainer-difusao
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: engines/trainer-difusao/Dockerfile
 
   web:
     build:
       context: ..
       dockerfile: apps/web/Dockerfile
     ports:
-      - '3000:3000'
+      - '${WEB_PUBLISH:-127.0.0.1}:3000:3000'
     environment:
       # resíduo 1.5 — runtime usa proxy /api (ADR-0001 T5); consumida só no ARG do build
       NEXT_PUBLIC_API_URL: http://localhost:8080
@@ -235,6 +265,12 @@ services:
       - principal
     restart: unless-stopped
     logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "node -e 'require(\"http\").get(\"http://localhost:3000/api/health\", res => process.exit(res.statusCode === 200 ? 0 : 1)).on(\"error\", () => process.exit(1))' || node -e 'require(\"http\").get(\"http://localhost:3000\", res => process.exit(res.statusCode === 200 || res.statusCode === 307 ? 0 : 1)).on(\"error\", () => process.exit(1))'"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
 
 volumes:
   pgdata:

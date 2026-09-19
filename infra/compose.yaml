@@ -7,6 +7,12 @@ x-logging: &default-logging
 services:
   db:
     image: pgvector/pgvector:pg16-trixie@sha256:c8483555ce48101872f888c1df8a895ff689d6c7c7a5f7ac266475f9dfe89e0b
+    command: >
+      postgres
+      -c shared_buffers=512MB
+      -c work_mem=32MB
+      -c maintenance_work_mem=128MB
+      -c effective_cache_size=1536MB
     environment:
       POSTGRES_USER: studio
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-studio}

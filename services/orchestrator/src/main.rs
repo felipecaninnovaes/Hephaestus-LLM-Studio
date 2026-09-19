@@ -229,7 +229,11 @@ async fn main() {
     .await;
 
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+        let heartbeat_secs: u64 = std::env::var("HEARTBEAT_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2);
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(heartbeat_secs));
         loop {
             interval.tick().await;
 

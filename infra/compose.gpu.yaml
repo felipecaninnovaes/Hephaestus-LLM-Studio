@@ -43,6 +43,7 @@ services:
       ORCH_GPU_ALLOW_MOCK: ${ORCH_GPU_ALLOW_MOCK:-}
       HF_TOKEN: ${HF_TOKEN:-}
       HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+      HF_HOME: /data/models/huggingface
       FLUX_MODEL_ID: ${FLUX_MODEL_ID:-}
       DIFFUSION_DAEMON_ENABLED: ${DIFFUSION_DAEMON_ENABLED:-0}
       DIFFUSION_DAEMON_PORT: ${DIFFUSION_DAEMON_PORT:-8766}
@@ -56,6 +57,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - gpu_datasets:/data/datasets
       - gpu_outputs:/data/outputs
+      - gpu_models:/data/models
     extra_hosts:
       - "host.docker.internal:host-gateway"
     deploy:
@@ -97,3 +99,4 @@ services:
 volumes:
   gpu_datasets:
   gpu_outputs:
+  gpu_models:

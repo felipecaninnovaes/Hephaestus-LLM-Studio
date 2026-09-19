@@ -2194,6 +2194,13 @@ pub async fn receive_heartbeat(
     Ok(())
 }
 
+fn node_stale_timeout_secs() -> i64 {
+    std::env::var("NODE_STALE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10)
+}
+
 /// Retorna telemetria do cache (agregação global).
 pub async fn get_telemetry(pool: &PgPool, cache: &TelemetryCache) -> TelemetryResponse {
     let cache = cache.read().await;
@@ -2225,7 +2232,7 @@ pub async fn get_telemetry(pool: &PgPool, cache: &TelemetryCache) -> TelemetryRe
         let state = cache.values().next().unwrap();
         let measured = state
             .last_heartbeat
-            .map(|last| (now - last).num_seconds() <= 10)
+            .map(|last| (now - last).num_seconds() <= node_stale_timeout_secs())
             .unwrap_or(false);
         // ADR D2.3/R5: nó sem heartbeat fresco → mesmo fallback do 0-nós.
         if !measured {
@@ -2270,7 +2277,7 @@ pub async fn get_telemetry(pool: &PgPool, cache: &TelemetryCache) -> TelemetryRe
     for state in cache.values() {
         let is_fresh = state
             .last_heartbeat
-            .map(|last| (now - last).num_seconds() <= 10)
+            .map(|last| (now - last).num_seconds() <= node_stale_timeout_secs())
             .unwrap_or(false);
 
         if is_fresh {

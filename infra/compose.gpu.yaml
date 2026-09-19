@@ -12,6 +12,12 @@
 # telemetria nvidia-smi; a seleção do trainer é feita pelo executor com
 # --gpus device=… (ORCH_GPU_DEVICES).
 
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 name: gpu
 
 services:
@@ -21,6 +27,7 @@ services:
       dockerfile: services/orchestrator/Dockerfile
     ports:
       - '8082:8082'
+    logging: *default-logging
     environment:
       MANAGER_URL: "${MANAGER_URL:?Defina MANAGER_URL no env.gpu (ex: http://10.15.10.3:8081)}"
       MANAGER_TOKEN: "${MANAGER_TOKEN:?Defina MANAGER_TOKEN no env.gpu}"

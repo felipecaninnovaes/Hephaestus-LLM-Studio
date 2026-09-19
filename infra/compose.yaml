@@ -30,7 +30,7 @@ services:
       context: ..
       dockerfile: services/api-principal/Dockerfile
     ports:
-      - '8080:8080'
+      - '${PRINCIPAL_PUBLISH:-127.0.0.1}:8080:8080'
     restart: unless-stopped
     logging: *default-logging
     environment:
@@ -74,6 +74,7 @@ services:
       - '${SEAWEED_PUBLISH:-127.0.0.1}:8333:8333'
       - '127.0.0.1:9333:9333'
     restart: unless-stopped
+    logging: *default-logging
     volumes:
       - seaweed_data:/data
       - ./seaweedfs-s3.json:/etc/seaweedfs/s3.json:ro
@@ -110,6 +111,7 @@ services:
       seaweedfs:
         condition: service_healthy
     restart: "no"
+    logging: *default-logging
 
   # Embedder CLIP (ADR-0004 D1, 3f.3): inferência de embeddings para busca
   # semântica. INFRA local (como o SeaweedFS) — não job do orquestrador
@@ -128,6 +130,7 @@ services:
     ports:
       - '127.0.0.1:8090:8090'
     restart: unless-stopped
+    logging: *default-logging
     volumes:
       - models:/data/models
     healthcheck:
@@ -144,6 +147,7 @@ services:
     ports:
       - '${MANAGER_PUBLISH:-127.0.0.1}:8081:8081'
     restart: unless-stopped
+    logging: *default-logging
     environment:
       DATABASE_URL: postgres://studio:${POSTGRES_PASSWORD:-studio}@db/studio
       MANAGER_TOKEN: ${MANAGER_TOKEN:-changeme}
@@ -165,6 +169,7 @@ services:
     ports:
       - '${ORCHESTRATOR_PUBLISH:-127.0.0.1}:8082:8082'
     restart: unless-stopped
+    logging: *default-logging
     environment:
       MANAGER_URL: ${MANAGER_URL:-http://manager:8081}
       MANAGER_TOKEN: ${MANAGER_TOKEN:-changeme}
@@ -225,7 +230,7 @@ services:
       context: ..
       dockerfile: apps/web/Dockerfile
     ports:
-      - '3000:3000'
+      - '${WEB_PUBLISH:-127.0.0.1}:3000:3000'
     environment:
       # resíduo 1.5 — runtime usa proxy /api (ADR-0001 T5); consumida só no ARG do build
       NEXT_PUBLIC_API_URL: http://localhost:8080

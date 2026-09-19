@@ -5,11 +5,17 @@
 #   docker compose -f infra/compose.yaml -f infra/compose.prod.yaml up -d
 # ==============================================================================
 
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   # Ingress Unificado via Caddy (portas 80 e 443 expostas no host)
   ingress:
     image: caddy:2.8-alpine
-    restart: unless-stopped
+    logging: *default-logging
     ports:
       - "80:80"
       - "443:443"
@@ -59,10 +65,18 @@ services:
 
   # Em produção, impõe segredos do orquestrador local
   orchestrator-local:
+    ports: !override []
     environment:
       MANAGER_TOKEN: ${MANAGER_TOKEN:?Defina MANAGER_TOKEN em producao}
       S3_ORCH_ACCESS_KEY: ${S3_ORCH_ACCESS_KEY:?Defina S3_ORCH_ACCESS_KEY em producao}
       S3_ORCH_SECRET_KEY: ${S3_ORCH_SECRET_KEY:?Defina S3_ORCH_SECRET_KEY em producao}
+
+  # Em produção, fecha as portas internas do SeaweedFS e do embedder no host
+  seaweedfs:
+    ports: !override []
+
+  embedder:
+    ports: !override []
 volumes:
   caddy_data:
   caddy_config:

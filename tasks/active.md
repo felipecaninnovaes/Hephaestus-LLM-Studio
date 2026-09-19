@@ -51,6 +51,10 @@
   - Criados módulos `src/telemetry/` (`host`, `gpu`, `metrics`), `src/adapters/` (`docker`, `subprocess`, `sweeper`, `http`) e `src/security/` (`pairing`).
   - Mais de 750 linhas removidas de `lib.rs`; toda lógica de produção de `lib.rs` foi 100% modularizada.
   - `lib.rs` opera como fachada pura de declaração e re-exports; 165 testes passando verdes.
+- [x] **Fatia 8: Extração da Suíte de Testes Inline (`tests.rs`):**
+  - Suíte de 4.683 linhas migrada para `src/tests.rs` (`#[cfg(test)] mod tests;`).
+  - `lib.rs` reduzido de 7.975 linhas para **43 linhas** (fachada canônica e limpa).
+  - 165 testes passando verdes.
 ## Protocolo de Retomada (3 Passos)
 
 1. **Conferir Branch e Active:** Confirmar git branch atual (`git status`) e ler `tasks/active.md` para situar a fatia e checklist em andamento.

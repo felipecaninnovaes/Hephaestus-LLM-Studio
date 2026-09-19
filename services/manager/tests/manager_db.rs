@@ -811,6 +811,52 @@ async fn report_failed_grava_error_em_params() {
 
 #[tokio::test]
 #[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn report_cancelled_grava_status_e_finished_at() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    // Simula transição para cancelling
+    sqlx::query("UPDATE jobs SET status = 'cancelling' WHERE id = $1")
+        .bind(job_id)
+        .execute(&p)
+        .await
+        .unwrap();
+
+    // Report: cancelled (emitido pelo orquestrador pós-abort).
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "cancelled".into(),
+            progress: None,
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: Some("job cancelled by user".into()),
+            artifacts: None,
+            meta_content: None,
+            phase: Some("cancelled".into()),
+            message: Some("Job cancelado pelo usuário".into()),
+        },
+    )
+    .await
+    .expect("report cancelled deve ser aceito");
+
+    let job = manager::get_job(&p, job_id).await.expect("get cancelled");
+    assert_eq!(job.status, "cancelled");
+    assert!(job.finished_at.is_some());
+    assert_eq!(job.phase.as_deref(), Some("cancelled"));
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
 async fn report_invalid_md5_rejeita() {
     let _guard = SERIAL.lock().await;
     let p = pool().await;

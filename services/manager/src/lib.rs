@@ -2103,6 +2103,25 @@ pub async fn report_job(
                 .map_err(|e| ManagerError::Internal(format!("set failed: {e}")))?;
         }
 
+        "cancelled" => {
+            if let Some(err_msg) = &report.error {
+                sqlx::query("UPDATE jobs SET params = params || $2::jsonb WHERE id = $1")
+                    .bind(id)
+                    .bind(serde_json::json!({"error": err_msg}))
+                    .execute(pool)
+                    .await
+                    .map_err(|e| ManagerError::Internal(format!("merge error: {e}")))?;
+            }
+
+            sqlx::query("UPDATE jobs SET status = 'cancelled', finished_at = now(), phase = COALESCE($2, phase), message = COALESCE($3, message) WHERE id = $1")
+                .bind(id)
+                .bind(&report.phase)
+                .bind(&report.message)
+                .execute(pool)
+                .await
+                .map_err(|e| ManagerError::Internal(format!("set cancelled: {e}")))?;
+        }
+
         other => {
             return Err(ManagerError::Internal(format!(
                 "invalid report status: {other}"

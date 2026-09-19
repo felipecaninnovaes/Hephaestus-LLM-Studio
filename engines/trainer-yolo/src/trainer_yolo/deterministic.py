@@ -7,9 +7,7 @@ import hashlib
 import struct
 from typing import Any
 
-from engine_kit.mock import seed_bytes as _engine_seed_bytes
-
-MOCK_MAGIC = b"HEPHMOCK"
+from engine_kit.mock import MOCK_MAGIC, seed_bytes as _engine_seed_bytes
 AUTOTRACK_BOX_COUNT_RANGE = (1, 3)
 
 

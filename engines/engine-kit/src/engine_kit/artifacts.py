@@ -7,6 +7,8 @@ import struct
 from pathlib import Path
 from typing import Optional, Set
 
+from engine_kit.mock import MOCK_MAGIC
+
 
 def prune_checkpoints(
     checkpoints_dir: Path | str,
@@ -86,9 +88,8 @@ def make_fake_safetensors(
 
 def make_fake_artifact(
     output_path: Path | str,
-    magic_bytes: bytes = b"MOCK_ARTIFACT_V1",
+    magic_bytes: bytes = MOCK_MAGIC,
 ) -> Path:
-    """Gera um artefato binário com header de identificação para testes e modo mock."""
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "wb") as f:

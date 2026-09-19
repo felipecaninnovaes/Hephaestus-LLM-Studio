@@ -7,6 +7,7 @@ import os
 import struct
 from typing import Optional
 
+MOCK_MAGIC: bytes = b"HEPHMOCK"
 
 def is_mock(env_val: Optional[str] = None) -> bool:
     """Verifica se o modo MOCK está ativo de forma tolerante (1, true, yes, default 1)."""
@@ -39,7 +40,7 @@ def mock_vector(payload: bytes, dim: int = 512) -> list[float]:
     norm = math.sqrt(sum(x * x for x in vals))
     if norm == 0.0:
         return [0.0] * dim
-    return [round(x / norm, 6) for x in vals]
+    return [x / norm for x in vals]
 
 
 def synthetic_loss(seed: int, epoch: int, total_epochs: int, base_loss: float = 1.0) -> float:

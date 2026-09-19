@@ -47,6 +47,13 @@ export async function apiFetch<T>(path: string, init?: ApiInit): Promise<T> {
     credentials: "same-origin",
   });
   if (!res.ok) {
+    if (res.status === 401 && typeof window !== "undefined") {
+      if (!window.location.pathname.startsWith("/login")) {
+        const returnPath = window.location.pathname + window.location.search;
+        const target = `/login?expired=1&from=${encodeURIComponent(returnPath)}`;
+        window.location.href = target;
+      }
+    }
     let code = "internal";
     let message = "";
     try {

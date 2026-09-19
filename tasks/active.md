@@ -30,7 +30,11 @@
   - [x] TASK-WEB-007: Decompor `datasets/[id]/page.tsx` (1.786 LOC -> `useDatasetGallery`, `useDatasetUpload`, `components/studio/dataset-detail/*`)
   - [x] Desacoplar `playground/page.tsx` (1.005 LOC -> `useYoloPlayground`, `components/studio/playground/*`)
   - [x] Desacoplar `models/page.tsx` (423 LOC -> `components/studio/models/*`)
-- [ ] Fase 6: Restauração da Arquitetura Next.js 16 (Server Components & Polimento)
+- [x] Fase 6: Restauração da Arquitetura Next.js 16 (Server Components & Polimento)
+  - [x] Interceptor centralizado de 401 em `lib/api.ts` redirecionando para `/login?expired=1`
+  - [x] TASK-WEB-015: Transformar `app/(studio)/layout.tsx` em Server Component com `StudioShell.tsx`
+  - [x] TASK-WEB-015: Criar `loading.tsx` (skeletons), `error.tsx` e `not-found.tsx` em `app/(studio)/`
+  - [x] Sincronizar `docs/web/architecture.md` com a nova arquitetura e rotas reais
 ## Levantamento Arquitetural Recente
 
 - [x] **Levantamento e Auditoria de Modularização do Orchestrator:**

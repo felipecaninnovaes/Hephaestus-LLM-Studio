@@ -1,17 +1,20 @@
 # Memória Ativa — Hephaestus LLM Studio
 
-- **Branch atual:** `fix/trainer-difusao-qlora-flux2-checkpointing`
-- **Fatia em andamento:** Correção de crash QLoRA PEFT no FLUX.2 Klein / SD 1.5 / SDXL (eliminação de `prepare_model_for_kbit_training` e resolução de SDPA dtype mismatch query/key/value).
+- **Branch atual:** `feat/web-modularizacao`
+- **Fatia em andamento:** Modularização e saneamento de arquitetura do `apps/web` (`tasks/web-modularizacao-auditoria.md`).
 
 ## Checklist Imediato da Sessão Ativa
 
-- [x] Fase 1: Motor de Treino Difusão (optimizers.py, sd15.py, sdxl.py, flux.py, mock.py, testes)
-- [x] Fase 2: Contratos OpenAPI e Validação no api-principal Rust
-- [x] Fase 3: Políticas de VRAM (vram-table.yaml)
-- [x] Fase 4: Interface Web Studio (types/studio.ts, jobs.ts e ForjaDifusaoSetup.tsx)
-- [x] Fase 5: Validação completa (Python pytest 160/160, Cargo test 708/708, Web build, Docker config)
----
-
+- [x] Fase 1: Limpeza Rápida, Eliminação de Shims & Resolução de Código Morto (Quick Wins)
+  - [x] TASK-WEB-011: Remover `CleanupJobsModal.tsx` e consolidar `ImportDatasetModal.tsx`
+  - [x] TASK-WEB-011: Eliminar shims `components/studio/Toast.tsx` e `components/studio/ConfirmDialog.tsx`
+  - [x] TASK-WEB-016: Parametrizar `allowedDevOrigins` no `next.config.ts`
+  - [x] TASK-WEB-014: Unificar formatadores duplicados de `formatBytes` em `lib/format.ts`
+- [ ] Fase 2: Primitivas Faltantes, Acessibilidade (A11y) & Tokens `@theme`
+- [ ] Fase 3: Camada de Domínio Compartilhada (Hooks & Contratos OpenAPI)
+- [ ] Fase 4: Fatiamento dos Super-Monólitos de Estúdio
+- [ ] Fase 5: Fatiamento e Desacoplamento das Rotas de Datasets & YOLO
+- [ ] Fase 6: Restauração da Arquitetura Next.js 16 (Server Components & Polimento)
 ## Levantamento Arquitetural Recente
 
 - [x] **Levantamento e Auditoria de Modularização do Orchestrator:**

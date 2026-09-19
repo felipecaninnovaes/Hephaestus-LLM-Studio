@@ -31,6 +31,9 @@
   - Modelos puros e erros migrados para `src/domain/` (`models.rs`, `errors.rs`).
   - Traits abstratas migradas para `src/ports/` (`storage.rs`, `executor.rs`, `reporter.rs`, `heartbeat.rs`).
   - `lib.rs` enxugado em quase 300 linhas com re-exports transparentes; 165 testes passando.
+- [x] **Fatia 3: Extração da Camada HTTP (`server/`):**
+  - Handlers, middlewares, router e `AppState` migrados para `src/server/`.
+  - `main.rs` encolhido em 365 linhas (de ~667 para ~308 linhas); 165 testes passando.
 ## Protocolo de Retomada (3 Passos)
 
 1. **Conferir Branch e Active:** Confirmar git branch atual (`git status`) e ler `tasks/active.md` para situar a fatia e checklist em andamento.

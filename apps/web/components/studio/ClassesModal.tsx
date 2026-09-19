@@ -9,7 +9,7 @@ import { ApiError } from "@/lib/api";
 import { CLASS_RE, MAX_CLASSES, putClasses } from "@/lib/classes";
 import { getDataset } from "@/lib/datasets";
 import type { PutClassInput, StudioClass } from "@/types/studio";
-import { showToast } from "./Toast";
+import { showToast } from "@/components/ui/Toast";
 
 interface Props {
   datasetId: string;

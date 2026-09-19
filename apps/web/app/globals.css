@@ -35,7 +35,16 @@
   --color-status-danger: #ef4444;
   --color-status-telemetry: #06b6d4;
   --color-status-runtime: #eab308;
+  --color-status-success-subtle: rgba(52, 211, 153, 0.12);
+  --color-status-success-text: #6ee7b7;
 
+  /* Escala canônica de sobreposição z-index (eliminando saturação de z-50) */
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-drawer: 300;
+  --z-modal: 400;
+  --z-popover: 500;
+  --z-toast: 600;
   /* Escala micro-tipográfica de dados/labels (px absoluto, fiel ao uso corrente).
      2xs ≈ caption compacta, 3xs = micro-caps mono, 4xs = pico em canvas/badges. */
   --text-2xs: 11px;

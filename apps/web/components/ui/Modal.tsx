@@ -2,7 +2,8 @@
 
 import React, { useEffect, type ReactNode } from "react";
 import { IconX } from "@/components/icons";
-
+import { useFocusTrap } from "@/hooks/useFocusTrap";
+import { useBodyScrollLock } from "@/hooks/useBodyScrollLock";
 export interface ModalProps {
   open: boolean;
   onClose: () => void;
@@ -12,6 +13,7 @@ export interface ModalProps {
   children: ReactNode;
   maxWidth?: "sm" | "md" | "lg" | "xl";
   busy?: boolean;
+  role?: "dialog" | "alertdialog";
   ariaLabel?: string;
   className?: string;
   bodyClassName?: string;
@@ -38,6 +40,7 @@ export function Modal({
   children,
   maxWidth = "lg",
   busy = false,
+  role = "dialog",
   ariaLabel,
   className = "",
   bodyClassName = "",
@@ -47,6 +50,9 @@ export function Modal({
   onDragLeave,
   onDrop,
 }: ModalProps) {
+  const containerRef = useFocusTrap<HTMLDivElement>(open && !busy);
+  useBodyScrollLock(open);
+
   useEffect(() => {
     if (!open || busy) return;
     function onKey(e: KeyboardEvent) {
@@ -61,13 +67,14 @@ export function Modal({
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents lint/a11y/noStaticElementInteractions: backdrop suplementar — o fechamento por teclado é global (Escape) e há botão fechar explícito; o backdrop fica fora da tab-order de propósito.
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-modal flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
       onClick={(e) => {
         if (e.target === e.currentTarget && !busy) onClose();
       }}
     >
       <div
-        role="dialog"
+        ref={containerRef}
+        role={role}
         aria-modal="true"
         aria-label={ariaLabel || title}
         onDragOver={onDragOver}

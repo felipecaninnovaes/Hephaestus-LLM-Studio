@@ -12,13 +12,15 @@ import {
 import { Button, getButtonClasses } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Select, type SelectOption, type SelectRefHandle } from "@/components/ui/Select";
-import { getTelemetry, startYoloJob } from "@/lib/jobs";
+import { startYoloJob } from "@/lib/jobs";
+import { useHardwareTelemetry } from "@/hooks/useHardwareTelemetry";
+import { useVramEstimator } from "@/hooks/useVramEstimator";
 import { listDatasets, canTrainYolo, trainDisabledReason } from "@/lib/datasets";
 import { listModels } from "@/lib/models";
 import { formatBytes } from "@/lib/format";
 import { ApiError } from "@/lib/api";
 import { jobErrorMessage } from "@/types/studio";
-import { showToast } from "./Toast";
+import { showToast } from "@/components/ui/Toast";
 import NodeSelect from "./NodeSelect";
 import type { Dataset, Model, Telemetry, YoloAugment } from "@/types/studio";
 import {
@@ -104,36 +106,8 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
   const [busy, setBusy] = useState(false);
   const [topError, setTopError] = useState<string | null>(null);
 
-  // Telemetria de hardware do nó
-  const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function loadTelem() {
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
-        return;
-      }
-      try {
-        const t = await getTelemetry();
-        if (!cancelled) setTelemetry(t);
-      } catch {
-        // Best-effort
-      }
-    }
-    loadTelem();
-    const timer = setInterval(loadTelem, 10000);
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        void loadTelem();
-      }
-    };
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, []);
+  // Telemetria de hardware e VRAM do nó
+  const { telemetry, nodeVramTotalGb, deviceLabel } = useHardwareTelemetry();
 
   // Estimativa preditiva de VRAM em GB
   const estimatedVram = useMemo(
@@ -141,33 +115,8 @@ export default function ForjaYoloSetup({ onJobCreated }: Props) {
     [params.model, params.batch, params.imgsz, params.optimizer],
   );
 
-  const nodeVramTotalGb = useMemo(() => {
-    if (telemetry?.vramTotal && telemetry.vramTotal > 0) {
-      return telemetry.vramTotal > 1000
-        ? Math.round((telemetry.vramTotal / (1024 * 1024 * 1024)) * 10) / 10
-        : telemetry.vramTotal;
-    }
-    return null;
-  }, [telemetry?.vramTotal]);
 
-  const oomRisk = useMemo<"safe" | "warning" | "danger">(() => {
-    if (nodeVramTotalGb != null) {
-      if (estimatedVram > nodeVramTotalGb) return "danger";
-      if (estimatedVram > nodeVramTotalGb * 0.8) return "warning";
-      return "safe";
-    }
-    // Host CPU / Mock ou hardware sem VRAM exposta
-    if (estimatedVram >= 16) return "danger";
-    if (estimatedVram >= 10) return "warning";
-    return "safe";
-  }, [estimatedVram, nodeVramTotalGb]);
-
-  const deviceLabel = useMemo(() => {
-    if (telemetry?.gpus && telemetry.gpus.length > 0) {
-      return `${telemetry.gpus[0]} (${nodeVramTotalGb || 24} GB)`;
-    }
-    return "Host CPU (Modo Mock)";
-  }, [telemetry?.gpus, nodeVramTotalGb]);
+  const { oomRisk } = useVramEstimator(estimatedVram, nodeVramTotalGb, 0.8);
 
   const handleParamChange = <K extends keyof YoloHyperparametersValues>(
     key: K,

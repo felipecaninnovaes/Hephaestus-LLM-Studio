@@ -2,6 +2,8 @@
 
 import React, { useEffect, useState, type ReactNode } from "react";
 import { IconX } from "@/components/icons";
+import { useFocusTrap } from "@/hooks/useFocusTrap";
+import { useBodyScrollLock } from "@/hooks/useBodyScrollLock";
 
 export interface DrawerProps {
   open: boolean;
@@ -43,6 +45,8 @@ export function Drawer({
   const [mounted, setMounted] = useState(open);
   const [visible, setVisible] = useState(false);
 
+  const containerRef = useFocusTrap<HTMLElement>(visible && !busy);
+  useBodyScrollLock(mounted);
   useEffect(() => {
     if (open) {
       setMounted(true);
@@ -70,15 +74,7 @@ export function Drawer({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, busy, onClose]);
 
-  useEffect(() => {
-    if (mounted) {
-      const original = document.body.style.overflow;
-      document.body.style.overflow = "hidden";
-      return () => {
-        document.body.style.overflow = original;
-      };
-    }
-  }, [mounted]);
+
 
   if (!mounted) return null;
 
@@ -91,8 +87,7 @@ export function Drawer({
     : "shadow-[24px_0_60px_rgba(0,0,0,0.85)]";
 
   return (
-    <div className="fixed inset-0 z-50 overflow-hidden pointer-events-none">
-      {/* Backdrop */}
+    <div className="fixed inset-0 z-drawer overflow-hidden pointer-events-none">
       <div
         className={`fixed inset-0 bg-black/60 backdrop-blur-sm transition-opacity duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] pointer-events-auto ${
           visible ? "opacity-100" : "opacity-0"
@@ -105,6 +100,7 @@ export function Drawer({
 
       {/* Drawer Panel */}
       <aside
+        ref={containerRef}
         role="dialog"
         aria-modal="true"
         aria-label={ariaLabel || title}

@@ -10,7 +10,7 @@ export interface ConfirmDialogProps {
   body: ReactNode;
   confirmLabel: string;
   danger?: boolean;
-  busy: boolean;
+  busy?: boolean;
   onConfirm: () => void;
   onClose: () => void;
 }
@@ -21,7 +21,7 @@ export function ConfirmDialog({
   body,
   confirmLabel,
   danger,
-  busy,
+  busy = false,
   onConfirm,
   onClose,
 }: ConfirmDialogProps) {
@@ -30,6 +30,7 @@ export function ConfirmDialog({
       open={open}
       onClose={onClose}
       title={title}
+      role="alertdialog"
       maxWidth="sm"
       busy={busy}
     >

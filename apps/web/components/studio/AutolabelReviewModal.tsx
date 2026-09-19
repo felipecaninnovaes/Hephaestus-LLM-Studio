@@ -16,7 +16,7 @@ import {
 } from "@/components/icons";
 import { getAutolabelPreview, applyAutolabelCaptions } from "@/lib/autolabel";
 import { autolabelErrorMessage, type AutolabelPreviewItem } from "@/types/studio";
-import { showToast } from "@/components/studio/Toast";
+import { showToast } from "@/components/ui/Toast";
 
 export interface AutolabelReviewModalProps {
   open: boolean;

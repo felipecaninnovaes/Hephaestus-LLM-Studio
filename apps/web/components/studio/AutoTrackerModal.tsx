@@ -15,7 +15,7 @@ import {
   modelSourceLabel,
   type Model,
 } from "@/types/studio";
-import { showToast } from "./Toast";
+import { showToast } from "@/components/ui/Toast";
 import { openActionCenter } from "@/lib/events";
 import NodeSelect from "./NodeSelect";
 

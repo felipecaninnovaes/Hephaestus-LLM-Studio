@@ -1,15 +1,40 @@
 # Memória Ativa — Hephaestus LLM Studio
 
-- **Branch atual:** `feat/docs-infra`
-- **Fatia em andamento:** Criação da documentação canônica modular do pilar de Infraestrutura em `docs/infra/` (`overview.md`, `storage-and-persistence.md`, `gpu-nodes.md`).
+- **Branch atual:** `develop`
+- **Fatia em andamento:** Integração das fatias de documentação de Infraestrutura (`docs/infra/`) e Modularização do Web Studio (`tasks/web-modularizacao-auditoria.md`).
 
 ## Checklist Imediato da Sessão Ativa
 
-- [x] Fase 1: Motor de Treino Difusão (optimizers.py, sd15.py, sdxl.py, flux.py, mock.py, testes)
-- [x] Fase 2: Contratos OpenAPI e Validação no api-principal Rust
-- [x] Fase 3: Políticas de VRAM (vram-table.yaml)
-- [x] Fase 4: Interface Web Studio (types/studio.ts, jobs.ts e ForjaDifusaoSetup.tsx)
-- [x] Fase 5: Validação completa (Python pytest 160/160, Cargo test 708/708, Web build, Docker config)
+- [x] Fase 1: Limpeza Rápida, Eliminação de Shims & Resolução de Código Morto (Quick Wins)
+  - [x] TASK-WEB-011: Remover `CleanupJobsModal.tsx` e consolidar `ImportDatasetModal.tsx`
+  - [x] TASK-WEB-011: Eliminar shims `components/studio/Toast.tsx` e `components/studio/ConfirmDialog.tsx`
+  - [x] TASK-WEB-016: Parametrizar `allowedDevOrigins` no `next.config.ts`
+  - [x] TASK-WEB-014: Unificar formatadores duplicados de `formatBytes` em `lib/format.ts`
+- [x] Fase 2: Primitivas Faltantes, Acessibilidade (A11y) & Tokens `@theme`
+  - [x] TASK-WEB-013: Escala declarativa de z-index e tokens de status em `globals.css`
+  - [x] TASK-WEB-003: Hooks `useFocusTrap` e `useBodyScrollLock`
+  - [x] TASK-WEB-003: Foco acessível e scroll lock em `Modal`, `Drawer` e `ConfirmDialog`
+  - [x] TASK-WEB-012: Novas primitivas `Checkbox`, `Switch`, `Alert`, `FormField`, `Table`, `Tooltip`
+- [x] Fase 3: Camada de Domínio Compartilhada (Hooks & Contratos OpenAPI)
+  - [x] TASK-WEB-001: Hook `useJobLifecycle` consumido em `/jobs` e `ActionCenter`
+  - [x] TASK-WEB-002: Hooks `useHardwareTelemetry` e `useVramEstimator` consumidos nas Forjas
+  - [x] TASK-WEB-010: Componente `OrchestratorCard` eliminando clone de 55 linhas
+  - [x] TASK-WEB-014: Modularização de `types/` por domínio com `JobParams` tipado
+- [x] Fase 4: Fatiamento dos Super-Monólitos de Estúdio
+  - [x] TASK-WEB-004: Decompor `ConvergenceChart.tsx` (690 LOC -> `components/studio/charts/*`)
+  - [x] TASK-WEB-007: Decompor `ActionCenter.tsx` (1.718 LOC -> `components/studio/action-center/*`)
+  - [x] TASK-WEB-006: Decompor `ForjaDifusaoSetup.tsx` (1.837 LOC -> `components/studio/diffusion/*`)
+  - [x] TASK-WEB-005: Decompor `GenerationPanel.tsx` (1.846 LOC -> `components/studio/generation/*`)
+- [x] Fase 5: Fatiamento e Desacoplamento das Rotas de Datasets & YOLO
+  - [x] TASK-WEB-008: Decompor `annotate/[imageId]/page.tsx` (806 LOC -> `useAnnotationCanvas`, `useAnnotationSync`, `components/studio/annotation/*`)
+  - [x] TASK-WEB-007: Decompor `datasets/[id]/page.tsx` (1.786 LOC -> `useDatasetGallery`, `useDatasetUpload`, `components/studio/dataset-detail/*`)
+  - [x] Desacoplar `playground/page.tsx` (1.005 LOC -> `useYoloPlayground`, `components/studio/playground/*`)
+  - [x] Desacoplar `models/page.tsx` (423 LOC -> `components/studio/models/*`)
+- [x] Fase 6: Restauração da Arquitetura Next.js 16 (Server Components & Polimento)
+  - [x] Interceptor centralizado de 401 em `lib/api.ts` redirecionando para `/login?expired=1`
+  - [x] TASK-WEB-015: Transformar `app/(studio)/layout.tsx` em Server Component com `StudioShell.tsx`
+  - [x] TASK-WEB-015: Criar `loading.tsx` (skeletons), `error.tsx` e `not-found.tsx` em `app/(studio)/`
+  - [x] Sincronizar `docs/web/architecture.md` com a nova arquitetura e rotas reais
 
 ## Documentação Canônica de Infraestrutura
 
@@ -18,7 +43,6 @@
 - [x] `docs/infra/gpu-nodes.md`: Nós distribuídos, pareamento HMAC, telemetria de VRAM/GPUs e runbook operacional TrueNAS.
 - [x] Registro e alinhamento canônico em `AGENTS.md` (§5) e `docs/REPO_MAP.md` (§6).
 ---
-
 ## Levantamento Arquitetural Recente
 
 - [x] **Levantamento e Auditoria de Modularização do Orchestrator:**

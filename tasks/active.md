@@ -10,7 +10,11 @@
   - [x] TASK-WEB-011: Eliminar shims `components/studio/Toast.tsx` e `components/studio/ConfirmDialog.tsx`
   - [x] TASK-WEB-016: Parametrizar `allowedDevOrigins` no `next.config.ts`
   - [x] TASK-WEB-014: Unificar formatadores duplicados de `formatBytes` em `lib/format.ts`
-- [ ] Fase 2: Primitivas Faltantes, Acessibilidade (A11y) & Tokens `@theme`
+- [x] Fase 2: Primitivas Faltantes, Acessibilidade (A11y) & Tokens `@theme`
+  - [x] TASK-WEB-013: Escala declarativa de z-index e tokens de status em `globals.css`
+  - [x] TASK-WEB-003: Hooks `useFocusTrap` e `useBodyScrollLock`
+  - [x] TASK-WEB-003: Foco acessível e scroll lock em `Modal`, `Drawer` e `ConfirmDialog`
+  - [x] TASK-WEB-012: Novas primitivas `Checkbox`, `Switch`, `Alert`, `FormField`, `Table`, `Tooltip`
 - [ ] Fase 3: Camada de Domínio Compartilhada (Hooks & Contratos OpenAPI)
 - [ ] Fase 4: Fatiamento dos Super-Monólitos de Estúdio
 - [ ] Fase 5: Fatiamento e Desacoplamento das Rotas de Datasets & YOLO

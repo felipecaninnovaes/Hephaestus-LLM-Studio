@@ -1,14 +1,14 @@
 # Memória Ativa — Hephaestus LLM Studio
 
-- **Branch atual:** `feat/wave-0-fundacao-contratos`
-- **Fatia em andamento:** Wave 0 — Fundação, Contratos Canônicos e Guardrails (`tasks/consolidacao-auditoria-roadmap.md`).
+- **Branch atual:** `feat/wave-1-pacotes-compartilhados`
+- **Fatia em andamento:** Wave 1 — Pacotes e Bibliotecas Compartilhadas (`tasks/consolidacao-auditoria-roadmap.md`).
 
-## Checklist Imediato da Sessão Ativa (Wave 0)
+## Checklist Imediato da Sessão Ativa (Wave 1)
 
-- [x] RD-001: Padronização OpenAPI (`totalSteps`, `totalEpochs`, `JobParams` tipados, `orchestratorKind`, nulabilidade de `datasetId` em `Job`).
-- [x] RD-002: Normalização de chaves em `vram-table.yaml` e `engines.yaml` (`engine: diffusion`, `flux-2-klein-4b`, modos auxiliares).
-- [x] RD-003: Fail-fast de segredos e fechamento de portas no Compose Prod (`compose.prod.yaml`, remoção de `STUDIO_MASTER_KEY`).
-- [x] Verificação e testes de contrato da Wave 0.
+- [x] RD-011: Centralização de `MOCK_MAGIC`, precisão de `mock_vector` e testes do `engine-kit`.
+- [x] RD-012: Pipeline de geração de tipos na Web via `openapi-typescript`.
+- [x] RD-010: Criação da crate compartilhada `heph-contracts` no workspace Rust.
+- [x] Verificação e testes da Wave 1.
 ## Entregas Concluídas Recentemente
 - [x] Modularização completa do Web Studio (`tasks/web-modularizacao-auditoria.md` Fases 1 a 6).
 - [x] Modularização do Orchestrator em 8 fatias (`tasks/specs/orchestrator-modularization.md`).

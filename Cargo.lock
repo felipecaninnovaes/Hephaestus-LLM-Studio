@@ -55,6 +55,7 @@ dependencies = [
  "base64",
  "chrono",
  "futures-util",
+ "heph-contracts",
  "hex",
  "http 1.5.0",
  "http-body-util",
@@ -1435,6 +1436,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "heph-contracts"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1990,6 +2000,7 @@ dependencies = [
  "async-trait",
  "axum",
  "chrono",
+ "heph-contracts",
  "reqwest",
  "serde",
  "serde_json",
@@ -2199,6 +2210,7 @@ dependencies = [
  "aws-smithy-types",
  "axum",
  "dashmap",
+ "heph-contracts",
  "hex",
  "http-body-util",
  "md-5 0.10.6",

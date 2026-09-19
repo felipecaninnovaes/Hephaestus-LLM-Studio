@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/heph-contracts",
     "services/api-principal",
     "services/manager",
     "services/orchestrator",

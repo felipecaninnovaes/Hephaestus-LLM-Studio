@@ -166,49 +166,10 @@ pub struct ArtifactRow {
     pub bytes: i64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct ReportRequest {
-    pub status: String,
-    pub progress: Option<f64>,
-    pub epoch: Option<i32>,
-    pub step: Option<i32>,
-    pub metrics: Option<serde_json::Value>,
-    pub error: Option<String>,
-    pub artifacts: Option<Vec<ArtifactItem>>,
-    /// Conteúdo do generation_meta.json (JSONL) — enviado pelo orquestrador
-    /// para o hook de generations (D5 — ADR-0023). Campo opcional retrocompat.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub meta_content: Option<String>,
-    /// AC-006-A D2/D3: fase/status do job (ex.: "loading_model").
-    /// Campo opcional retrocompat: ausente em orquestradores antigos.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub phase: Option<String>,
-    /// AC-006-A D2/D3: mensagem descritiva da fase.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ArtifactItem {
-    pub kind: String,
-    pub path: String,
-    pub md5: String,
-    pub bytes: i64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct HeartbeatRequest {
-    pub endpoint: String,
-    pub gpus: Vec<String>,
-    pub vram_total: Option<i64>,
-    pub vram_used: Option<i64>,
-    pub cpu: Option<f64>,
-    pub ram: Option<i64>,
-    pub ram_total: Option<i64>,
-    pub jobs_active: i32,
-    /// Maior VRAM individual entre as GPUs (MiB) — capacidade real de 1 job.
-    pub max_gpu_mib: Option<i64>,
-}
+// DTOs wire compartilhados via crate heph-contracts (Wave 1 — RD-010).
+pub use heph_contracts::artifacts::ArtifactItem;
+pub use heph_contracts::heartbeat::HeartbeatBody as HeartbeatRequest;
+pub use heph_contracts::report::ReportBody as ReportRequest;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AbortResponse {

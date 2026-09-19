@@ -94,5 +94,9 @@ jobs:
           file: ${{ matrix.dockerfile }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.description=Hephaestus LLM Studio - ${{ matrix.target-name || matrix.name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

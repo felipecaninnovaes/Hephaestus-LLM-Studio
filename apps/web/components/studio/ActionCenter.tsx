@@ -44,16 +44,12 @@ import {
 	SubmodulePills,
 } from "@/components/ui";
 import { ApiError } from "@/lib/api";
-import { applyAutolabelCaptions } from "@/lib/autolabel";
-import { applyAutotrackerBoxes } from "@/lib/autotracker";
+import { useJobLifecycle } from "@/hooks/useJobLifecycle";
 import { copyToClipboard } from "@/lib/clipboard";
 import { formatBytes, formatDuration, formatRelativeTime } from "@/lib/format";
 import { imageProgressLabel, jobCapabilities } from "@/lib/jobCapabilities";
 import { latestTrainingMetric } from "@/lib/jobMetrics";
 import {
-	abortJob,
-	deleteJob,
-	downloadArtifact,
 	getJobArtifacts,
 	getJobMetrics,
 	getTelemetry,
@@ -106,17 +102,33 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
 	// Detalhes sob demanda (métricas e artefatos por jobId)
 	const [metrics, setMetrics] = useState<Record<string, JobMetricsType[]>>({});
 	const [artifacts, setArtifacts] = useState<Record<string, JobArtifact[]>>({});
-	const [abortTarget, setAbortTarget] = useState<Job | null>(null);
-	const [abortBusy, setAbortBusy] = useState(false);
-	const [applyBusy, setApplyBusy] = useState(false);
-	const [applyOverwrite, setApplyOverwrite] = useState(false);
 	const [reviewJob, setReviewJob] = useState<Job | null>(null);
 	const [autotrackerReviewJob, setAutotrackerReviewJob] = useState<Job | null>(
 		null,
 	);
-	const [deleteTarget, setDeleteTarget] = useState<Job | null>(null);
-	const [deleteBusy, setDeleteBusy] = useState(false);
 	const [cleanupOpen, setCleanupOpen] = useState(false);
+	const {
+		abortTarget,
+		setAbortTarget,
+		abortBusy,
+		handleAbort,
+		deleteTarget,
+		setDeleteTarget,
+		deleteBusy,
+		handleDeleteJob,
+		applyBusy,
+		applyOverwrite,
+		setApplyOverwrite,
+		handleApplyBoxes,
+		handleApplyCaptions,
+		handleDownloadArtifact: handleDownload,
+	} = useJobLifecycle({
+		onSuccess: () => fetchData(),
+		onNavigateDataset: (datasetId) => {
+			onClose();
+			router.push(`/datasets/${datasetId}`);
+		},
+	});
 
 	const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -211,153 +223,6 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
 		return () => ctrl.abort();
 	}, [expandedId]);
 
-	// Ações de cancelamento de job
-	async function handleAbort() {
-		if (!abortTarget) return;
-		setAbortBusy(true);
-		try {
-			await abortJob(abortTarget.id);
-			showToast("Job cancelado com sucesso.", "success");
-			setAbortTarget(null);
-			await fetchData();
-		} catch (err) {
-			if (
-				err instanceof ApiError &&
-				(err.code === "job_not_abortable" || err.status === 409)
-			) {
-				showToast("Este job não pode mais ser cancelado.", "info");
-				setAbortTarget(null);
-				return;
-			}
-			showToast("Falha ao cancelar job.", "error");
-		} finally {
-			setAbortBusy(false);
-		}
-	}
-
-	// Ação de excluir job terminal
-	async function handleDeleteJob() {
-		if (!deleteTarget) return;
-		setDeleteBusy(true);
-		try {
-			const res = await deleteJob(deleteTarget.id);
-			showToast(
-				`Job excluído · ${res.artifacts.length} artefatos, ${res.modelsDeleted} modelo(s) do catálogo${res.generationsPreserved > 0 ? ` · ${res.generationsPreserved} geração(ões) da galeria preservadas` : ""}.`,
-				"success",
-			);
-			setDeleteTarget(null);
-			await fetchData();
-		} catch (err) {
-			if (
-				err instanceof ApiError &&
-				(err.code === "job_not_terminal" || err.status === 409)
-			) {
-				showToast(
-					"Só jobs concluídos/falhos/cancelados podem ser excluídos.",
-					"info",
-				);
-				setDeleteTarget(null);
-				return;
-			}
-			if (err instanceof ApiError && err.code === "not_found") {
-				showToast("Job já havia sido removido.", "info");
-				setDeleteTarget(null);
-				await fetchData();
-				return;
-			}
-			if (err instanceof ApiError && err.code === "queue_unavailable") {
-				showToast("Manager indisponível, tente de novo.", "error");
-				return;
-			}
-			showToast("Falha ao excluir job.", "error");
-		} finally {
-			setDeleteBusy(false);
-		}
-	}
-
-	// Ação de aplicar boxes do AutoTracker
-	async function handleApplyBoxes(job: Job) {
-		setApplyBusy(true);
-		try {
-			const result = await applyAutotrackerBoxes(job.id, {
-				overwrite: applyOverwrite,
-			});
-			showToast(
-				`${result.applied} boxes aplicadas em ${result.images} imagens.`,
-				"success",
-				job.datasetId
-					? {
-							label: "Abrir dataset",
-							onClick: () => {
-								onClose();
-								router.push(`/datasets/${job.datasetId}`);
-							},
-						}
-					: undefined,
-			);
-			if (typeof window !== "undefined" && job.datasetId) {
-				window.dispatchEvent(
-					new CustomEvent("hephaestus:dataset-updated", {
-						detail: { datasetId: job.datasetId },
-					}),
-				);
-			}
-			setApplyOverwrite(false);
-			await fetchData();
-		} catch (err) {
-			if (err instanceof ApiError) {
-				showToast(autotrackerErrorMessage(err.code), "error");
-				return;
-			}
-			showToast("Falha ao aplicar boxes ao dataset.", "error");
-		} finally {
-			setApplyBusy(false);
-		}
-	}
-
-	// Ação de aplicar legendas do AutoLabel
-	async function handleApplyCaptions(job: Job) {
-		setApplyBusy(true);
-		try {
-			const result = await applyAutolabelCaptions(job.id, {
-				datasetId: job.datasetId,
-				overwrite: applyOverwrite,
-			});
-			showToast(
-				`${result.applied} legendas aplicadas, ${result.skipped} ignoradas em ${result.images} imagens.`,
-				"success",
-				job.datasetId
-					? {
-							label: "Abrir dataset",
-							onClick: () => {
-								onClose();
-								router.push(`/datasets/${job.datasetId}`);
-							},
-						}
-					: undefined,
-			);
-			setApplyOverwrite(false);
-			await fetchData();
-		} catch (err) {
-			if (err instanceof ApiError) {
-				showToast(autolabelErrorMessage(err.code), "error");
-				return;
-			}
-			showToast("Falha ao aplicar legendas ao dataset.", "error");
-		} finally {
-			setApplyBusy(false);
-		}
-	}
-
-	// Ação de download de artefato
-	async function handleDownload(jobId: string, art: JobArtifact) {
-		try {
-			const filename = art.path.split("/").pop() || "artefato.bin";
-			await downloadArtifact(jobId, art.id, filename);
-		} catch {
-			showToast("Falha ao baixar artefato.", "error");
-		}
-	}
 
 	function handleResume(job: Job, art: JobArtifact) {
 		const checkpointName =

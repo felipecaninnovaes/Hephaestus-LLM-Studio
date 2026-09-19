@@ -20,7 +20,9 @@ import {
 import { Button, getButtonClasses } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Select, type SelectOption, type SelectRefHandle } from "@/components/ui/Select";
-import { getTelemetry, startDiffusionJob } from "@/lib/jobs";
+import { startDiffusionJob } from "@/lib/jobs";
+import { useHardwareTelemetry } from "@/hooks/useHardwareTelemetry";
+import { useVramEstimator } from "@/hooks/useVramEstimator";
 import { listDatasets, canTrainDiffusion, trainDiffusionDisabledReason } from "@/lib/datasets";
 import { listModels } from "@/lib/models";
 import { formatBytes } from "@/lib/format";
@@ -200,46 +202,8 @@ export default function ForjaDifusaoSetup({
     }
   }, [propEpochOffset]);
 
-  // Telemetria de hardware
-  const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function loadTelem() {
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
-        return;
-      }
-      try {
-        const t = await getTelemetry();
-        if (!cancelled) setTelemetry(t);
-      } catch {
-        // Best-effort
-      }
-    }
-    loadTelem();
-    const timer = setInterval(loadTelem, 10000);
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        void loadTelem();
-      }
-    };
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, []);
-
-
-  const nodeVramTotalGb = useMemo(() => {
-    if (telemetry?.vramTotal && telemetry.vramTotal > 0) {
-      return telemetry.vramTotal > 1000
-        ? Math.round((telemetry.vramTotal / (1024 * 1024 * 1024)) * 10) / 10
-        : telemetry.vramTotal;
-    }
-    return null;
-  }, [telemetry?.vramTotal]);
+  // Telemetria de hardware e VRAM do nó
+  const { telemetry, nodeVramTotalGb, deviceLabel } = useHardwareTelemetry();
 
   function applyPreset(preset: Partial<DiffusionPreset> & { name: string }) {
     if (preset.baseModel) {
@@ -611,23 +575,7 @@ export default function ForjaDifusaoSetup({
     [trainEffectiveArch, params.baseModel, params.batchSize, params.rank, resolution, optimizer, mixedPrecision, quantization],
   );
 
-  const oomRisk = useMemo<"safe" | "warning" | "danger">(() => {
-    if (nodeVramTotalGb != null) {
-      if (estimatedVram > nodeVramTotalGb) return "danger";
-      if (estimatedVram > nodeVramTotalGb * 0.85) return "warning";
-      return "safe";
-    }
-    if (estimatedVram >= 16) return "danger";
-    if (estimatedVram >= 12) return "warning";
-    return "safe";
-  }, [estimatedVram, nodeVramTotalGb]);
-
-  const deviceLabel = useMemo(() => {
-    if (telemetry?.gpus && telemetry.gpus.length > 0) {
-      return `${telemetry.gpus[0]} (${nodeVramTotalGb || 24} GB)`;
-    }
-    return "Host CPU (Modo Mock)";
-  }, [telemetry?.gpus, nodeVramTotalGb]);
+  const { oomRisk } = useVramEstimator(estimatedVram, nodeVramTotalGb);
 
   const trainBaseOptions = useMemo<SelectOption<string>[]>(() => {
     const opts: SelectOption<string>[] = [

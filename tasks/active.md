@@ -15,7 +15,11 @@
   - [x] TASK-WEB-003: Hooks `useFocusTrap` e `useBodyScrollLock`
   - [x] TASK-WEB-003: Foco acessível e scroll lock em `Modal`, `Drawer` e `ConfirmDialog`
   - [x] TASK-WEB-012: Novas primitivas `Checkbox`, `Switch`, `Alert`, `FormField`, `Table`, `Tooltip`
-- [ ] Fase 3: Camada de Domínio Compartilhada (Hooks & Contratos OpenAPI)
+- [x] Fase 3: Camada de Domínio Compartilhada (Hooks & Contratos OpenAPI)
+  - [x] TASK-WEB-001: Hook `useJobLifecycle` consumido em `/jobs` e `ActionCenter`
+  - [x] TASK-WEB-002: Hooks `useHardwareTelemetry` e `useVramEstimator` consumidos nas Forjas
+  - [x] TASK-WEB-010: Componente `OrchestratorCard` eliminando clone de 55 linhas
+  - [x] TASK-WEB-014: Modularização de `types/` por domínio com `JobParams` tipado
 - [ ] Fase 4: Fatiamento dos Super-Monólitos de Estúdio
 - [ ] Fase 5: Fatiamento e Desacoplamento das Rotas de Datasets & YOLO
 - [ ] Fase 6: Restauração da Arquitetura Next.js 16 (Server Components & Polimento)

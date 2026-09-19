@@ -40,17 +40,13 @@ import { Badge, jobStatusToBadgeVariant } from "@/components/ui/Badge";
 import { Button, getButtonClasses } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
 import { useJobTelemetry } from "@/hooks/useJobTelemetry";
+import { useJobLifecycle } from "@/hooks/useJobLifecycle";
 import { ApiError } from "@/lib/api";
-import { applyAutolabelCaptions } from "@/lib/autolabel";
-import { applyAutotrackerBoxes } from "@/lib/autotracker";
 import { openActionCenter } from "@/lib/events";
 import { formatBytes, formatDuration } from "@/lib/format";
 import { imageProgressLabel, jobCapabilities } from "@/lib/jobCapabilities";
 import { trainingMetrics } from "@/lib/jobMetrics";
 import {
-	abortJob,
-	deleteJob,
-	downloadArtifact,
 	getJobArtifacts,
 	getJobMetrics,
 	listJobs,
@@ -111,13 +107,31 @@ function JobsPageContent() {
 	const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
 	const [metrics, setMetrics] = useState<Record<string, JobMetricsType[]>>({});
 	const [artifacts, setArtifacts] = useState<Record<string, JobArtifact[]>>({});
-	const [abortTarget, setAbortTarget] = useState<Job | null>(null);
-	const [abortBusy, setAbortBusy] = useState(false);
-	const [deleteTarget, setDeleteTarget] = useState<Job | null>(null);
-	const [deleteBusy, setDeleteBusy] = useState(false);
 	const [cleanupOpen, setCleanupOpen] = useState(false);
-	const [applyBusy, setApplyBusy] = useState(false);
-	const [applyOverwrite, setApplyOverwrite] = useState(false);
+	const {
+		abortTarget,
+		setAbortTarget,
+		abortBusy,
+		handleAbort,
+		deleteTarget,
+		setDeleteTarget,
+		deleteBusy,
+		handleDeleteJob,
+		applyBusy,
+		applyOverwrite,
+		setApplyOverwrite,
+		handleApplyBoxes,
+		handleApplyCaptions,
+		handleDownloadArtifact,
+	} = useJobLifecycle({
+		onSuccess: () => fetchJobs(),
+		onDeleted: (jobId) => {
+			if (selectedJobId === jobId) {
+				selectJob(null);
+			}
+		},
+		onNavigateDataset: (datasetId) => router.push(`/datasets/${datasetId}`),
+	});
 	const [reviewJob, setReviewJob] = useState<Job | null>(null);
 	const [autotrackerReviewJob, setAutotrackerReviewJob] = useState<Job | null>(
 		null,
@@ -334,158 +348,6 @@ function JobsPageContent() {
 		return () => ctrl.abort();
 	}, [selectedJob?.id, jobs]);
 
-	async function handleAbort() {
-		if (!abortTarget) return;
-		setAbortBusy(true);
-		try {
-			await abortJob(abortTarget.id);
-			showToast("Job cancelado com sucesso.", "success");
-			setAbortTarget(null);
-			await fetchJobs();
-		} catch (err) {
-			if (
-				err instanceof ApiError &&
-				(err.code === "job_not_abortable" || err.status === 409)
-			) {
-				showToast("Este job não pode mais ser cancelado.", "info");
-				setAbortTarget(null);
-				return;
-			}
-			showToast("Falha ao cancelar job.", "error");
-		} finally {
-			setAbortBusy(false);
-		}
-	}
-
-	async function handleDeleteJob() {
-		if (!deleteTarget) return;
-		setDeleteBusy(true);
-		try {
-			const res = await deleteJob(deleteTarget.id);
-			showToast(
-				`Job excluído · ${res.artifacts.length} artefatos, ${res.modelsDeleted} modelo(s) do catálogo${res.generationsPreserved > 0 ? ` · ${res.generationsPreserved} geração(ões) da galeria preservadas` : ""}.`,
-				"success",
-			);
-			// Se o job excluído era o selecionado, limpar seleção
-			if (selectedJobId === deleteTarget.id) {
-				selectJob(null);
-			}
-			setDeleteTarget(null);
-			await fetchJobs();
-		} catch (err) {
-			if (
-				err instanceof ApiError &&
-				(err.code === "job_not_terminal" || err.status === 409)
-			) {
-				showToast(
-					"Só jobs concluídos/falhos/cancelados podem ser excluídos.",
-					"info",
-				);
-				setDeleteTarget(null);
-				return;
-			}
-			if (err instanceof ApiError && err.code === "not_found") {
-				showToast("Job já havia sido removido.", "info");
-				// Se o job excluído era o selecionado, limpar seleção
-				if (selectedJobId === deleteTarget.id) {
-					selectJob(null);
-				}
-				setDeleteTarget(null);
-				await fetchJobs();
-				return;
-			}
-			if (err instanceof ApiError && err.code === "queue_unavailable") {
-				showToast("Manager indisponível, tente de novo.", "error");
-				return;
-			}
-			showToast("Falha ao excluir job.", "error");
-		} finally {
-			setDeleteBusy(false);
-		}
-	}
-
-	async function handleApplyBoxes(job: Job) {
-		setApplyBusy(true);
-		try {
-			const result = await applyAutotrackerBoxes(job.id, {
-				overwrite: applyOverwrite,
-			});
-			showToast(
-				`${result.applied} boxes aplicadas, ${result.skipped} ignoradas em ${result.images} imagem(ns).`,
-				"success",
-				job.datasetId
-					? {
-							label: "Abrir dataset",
-							onClick: () => router.push(`/datasets/${job.datasetId}`),
-						}
-					: undefined,
-			);
-			setApplyOverwrite(false);
-			await fetchJobs();
-		} catch (err) {
-			if (err instanceof ApiError) {
-				if (err.code === "unauthorized" || err.status === 401) {
-					router.replace("/login");
-					return;
-				}
-				if (err.code === "job_not_done") {
-					showToast("O job ainda não terminou — aguarde a conclusão.", "info");
-					return;
-				}
-				showToast(autotrackerErrorMessage(err.code), "error");
-				return;
-			}
-			showToast("Falha ao aplicar boxes.", "error");
-		} finally {
-			setApplyBusy(false);
-		}
-	}
-
-	async function handleApplyCaptions(job: Job) {
-		setApplyBusy(true);
-		try {
-			const result = await applyAutolabelCaptions(job.id, {
-				datasetId: job.datasetId,
-				overwrite: applyOverwrite,
-			});
-			showToast(
-				`${result.applied} legendas aplicadas, ${result.skipped} ignoradas em ${result.images} imagem(ns).`,
-				"success",
-				job.datasetId
-					? {
-							label: "Abrir dataset",
-							onClick: () => router.push(`/datasets/${job.datasetId}`),
-						}
-					: undefined,
-			);
-			setApplyOverwrite(false);
-			await fetchJobs();
-		} catch (err) {
-			if (err instanceof ApiError) {
-				if (err.code === "unauthorized" || err.status === 401) {
-					router.replace("/login");
-					return;
-				}
-				if (err.code === "job_not_done") {
-					showToast("O job ainda não terminou — aguarde a conclusão.", "info");
-					return;
-				}
-				showToast(autolabelErrorMessage(err.code), "error");
-				return;
-			}
-			showToast("Falha ao aplicar legendas.", "error");
-		} finally {
-			setApplyBusy(false);
-		}
-	}
-
-	async function handleDownloadArtifact(jobId: string, art: JobArtifact) {
-		try {
-			await downloadArtifact(jobId, art.id, art.path);
-		} catch {
-			showToast("Falha ao baixar artefato.", "error");
-		}
-	}
 
 	function handleResumeFromCheckpoint(job: Job, art: JobArtifact) {
 		const checkpointName =

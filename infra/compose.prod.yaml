@@ -34,6 +34,7 @@ services:
       STUDIO_PASSWORD: ${STUDIO_PASSWORD:?Defina STUDIO_PASSWORD em producao}
       MANAGER_TOKEN: ${MANAGER_TOKEN:?Defina MANAGER_TOKEN em producao}
       DATABASE_URL: postgres://studio:${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD em producao}@db/studio
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Defina S3_ACCESS_KEY em producao}
       S3_SECRET_KEY: ${S3_SECRET_KEY:?Defina S3_SECRET_KEY em producao}
     ports: !override []
 
@@ -44,12 +45,24 @@ services:
       MANAGER_TOKEN: ${MANAGER_TOKEN:?Defina MANAGER_TOKEN em producao}
       DATABASE_URL: postgres://studio:${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD em producao}@db/studio
     ports: !override []
-
   # Em produção, fecha a porta do banco de dados no host e impõe senha
   db:
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD em producao}
     ports: !override []
+
+  # Em produção, impõe credenciais do bootstrap do bucket S3
+  s3-init:
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Defina S3_ACCESS_KEY em producao}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?Defina S3_SECRET_KEY em producao}
+
+  # Em produção, impõe segredos do orquestrador local
+  orchestrator-local:
+    environment:
+      MANAGER_TOKEN: ${MANAGER_TOKEN:?Defina MANAGER_TOKEN em producao}
+      S3_ORCH_ACCESS_KEY: ${S3_ORCH_ACCESS_KEY:?Defina S3_ORCH_ACCESS_KEY em producao}
+      S3_ORCH_SECRET_KEY: ${S3_ORCH_SECRET_KEY:?Defina S3_ORCH_SECRET_KEY em producao}
 volumes:
   caddy_data:
   caddy_config:

@@ -22,15 +22,15 @@ services:
     ports:
       - '8082:8082'
     environment:
-      MANAGER_URL: http://10.15.10.3:8081
-      MANAGER_TOKEN: ${MANAGER_TOKEN}
-      S3_ORCH_ENDPOINT_URL: http://10.15.10.3:8333
-      S3_ORCH_BUCKET: ${S3_ORCH_BUCKET:-heph-data}
-      S3_ORCH_ACCESS_KEY: ${S3_ORCH_ACCESS_KEY}
-      S3_ORCH_SECRET_KEY: ${S3_ORCH_SECRET_KEY}
+      MANAGER_URL: "${MANAGER_URL:?Defina MANAGER_URL no env.gpu (ex: http://10.15.10.3:8081)}"
+      MANAGER_TOKEN: "${MANAGER_TOKEN:?Defina MANAGER_TOKEN no env.gpu}"
+      S3_ORCH_ENDPOINT_URL: "${S3_ORCH_ENDPOINT_URL:?Defina S3_ORCH_ENDPOINT_URL no env.gpu (ex: http://10.15.10.3:8333)}"
+      S3_ORCH_BUCKET: "${S3_ORCH_BUCKET:-heph-data}"
+      S3_ORCH_ACCESS_KEY: "${S3_ORCH_ACCESS_KEY:?Defina S3_ORCH_ACCESS_KEY no env.gpu}"
+      S3_ORCH_SECRET_KEY: "${S3_ORCH_SECRET_KEY:?Defina S3_ORCH_SECRET_KEY no env.gpu}"
       ORCH_GPU_DEVICES: ${ORCH_GPU_DEVICES:-0}
-      ORCH_ADVERTISE_URL: http://10.15.1.2:8082
-      ORCH_PAIRING_CODE: ${ORCH_PAIRING_CODE:-heph_p_change_me}
+      ORCH_ADVERTISE_URL: "${ORCH_ADVERTISE_URL:?Defina ORCH_ADVERTISE_URL no env.gpu (ex: http://10.15.1.2:8082)}"
+      ORCH_PAIRING_CODE: "${ORCH_PAIRING_CODE:?Defina ORCH_PAIRING_CODE no env.gpu}"
       ORCH_VOL_DATASETS: gpu_gpu_datasets
       ORCH_VOL_OUTPUTS: gpu_gpu_outputs
       ORCH_GPU_ALLOW_MOCK: ${ORCH_GPU_ALLOW_MOCK:-}

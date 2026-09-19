@@ -1,7 +1,14 @@
 # Caddyfile — Reverse Proxy e Ingress do Hephaestus LLM Studio
-:80 {
+:80, :443 {
+    tls internal
+
     # Compressão automática gzip/zstd
     encode zstd gzip
+
+    # Health check direto (ingress)
+    handle /health {
+        reverse_proxy principal:8080
+    }
 
     # API Principal (BFF) — flushing imediato para SSE de telemetria (RD-030)
     handle /api/* {
@@ -11,8 +18,10 @@
         }
     }
 
-    # Métricas públicas do cluster (para Prometheus scraper)
+    # Métricas restritas à rede privada/local (scraper interno)
     handle /metrics {
+        @blocked not remote_ip 127.0.0.1 ::1 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+        respond @blocked "Forbidden" 403
         reverse_proxy principal:8080
     }
 
@@ -21,8 +30,10 @@
         reverse_proxy web:3000
     }
 
-    # Security headers básicos
+    # Security headers
     header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
         X-Content-Type-Options nosniff
         X-Frame-Options DENY
         Referrer-Policy no-referrer-when-downgrade

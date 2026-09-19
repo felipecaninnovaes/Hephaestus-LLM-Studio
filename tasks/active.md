@@ -14,6 +14,8 @@
 - [x] Criação de arquivos de apoio: `compose/.env.example`, `compose/Caddyfile`, `compose/seaweedfs-s3.json`, `compose/ensure-bucket.sh`, `compose/README.md`
 - [x] Criação de `scripts/setup.sh` (assistente interativo + flag `--auto` para geração segura de credenciais)
 - [x] Validação sintática de todos os arquivos compose via `docker compose config`
+- [x] Correção cirúrgica de lint a11y no modal com role dinâmico (`apps/web/components/ui/Modal.tsx`)
+- [x] Paridade nos workflows do Gitea (`ci.yml` com lint e novos composes; `release.yml` com s3-init)
 
 ## Entregas Concluídas Recentemente
 - [x] Roadmap de Hardening e Padronização da Infraestrutura (`tasks/infra-auditoria.md`) concluído e integrado.

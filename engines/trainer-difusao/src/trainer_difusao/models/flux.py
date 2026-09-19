@@ -855,11 +855,13 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         target_modules=target_modules,
     )
     if is_quantized:
+        # diffusers ModelMixin não é PreTrainedModel de NLP e não possui get_input_embeddings;
+        # use_gradient_checkpointing=False evita o hook indevido no PEFT, enquanto a
+        # ativação nativa via transformer.enable_gradient_checkpointing() opera com use_reentrant=False.
         transformer = prepare_model_for_kbit_training(
-            transformer, use_gradient_checkpointing=True
+            transformer, use_gradient_checkpointing=False
         )
-    else:
-        transformer.enable_gradient_checkpointing()
+    transformer.enable_gradient_checkpointing()
     transformer = get_peft_model(transformer, lora_config)
     if weights_path:
         _load_lora_weights(transformer, weights_path)

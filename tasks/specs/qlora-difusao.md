@@ -73,11 +73,9 @@ No QLoRA, a quantização 4-bit ocorre no modelo base **durante o treino**. Os p
 
 #### 1.3 `flux.py`, `sd15.py` e `sdxl.py`: Estabilização Numérica com `prepare_model_for_kbit_training`
 - Importar `from peft import prepare_model_for_kbit_training`.
-- Executar `model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)` antes de `get_peft_model(model, lora_config)`.
-- Isso garante:
-  1. Cast de camadas de normalização (`RMSNorm`, `LayerNorm`, `GroupNorm`) para `torch.float32` prevenindo `NaN loss`.
-  2. Ativação de hooks de gradiente nas entradas para compatibilidade entre `gradient_checkpointing` e pesos congelados.
-
+- Executar `model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=False)` antes de `get_peft_model(model, lora_config)`.
+- Em seguida, invocar `model.enable_gradient_checkpointing()` nativo do diffusers.
+- **Atenção crítica para diffusers (`ModelMixin`):** Os modelos do `diffusers` (`Flux2Transformer2DModel`, `FluxTransformer2DModel`, `UNet2DConditionModel`) não possuem `get_input_embeddings`. Passar `use_gradient_checkpointing=True` para o PEFT tenta registrar um forward hook em `model.get_input_embeddings()`, causando crash imediato (`'Flux2Transformer2DModel' object has no attribute 'get_input_embeddings'`). Com `use_gradient_checkpointing=False`, o PEFT realiza com segurança o cast de normalizações para `float32` e o congelamento dos pesos base, enquanto o diffusers gerencia o gradient checkpointing com `use_reentrant=False` nativo.
 #### 1.4 `mock.py`: Suporte nos Testes de CI
 - Atualizar gerador sintético de `.safetensors` para aceitar `paged_adamw8bit` e `paged_adamw32bit`, registrando nos metadados do arquivo e garantindo que o pipeline de testes em CPU continue 100% verde.
 

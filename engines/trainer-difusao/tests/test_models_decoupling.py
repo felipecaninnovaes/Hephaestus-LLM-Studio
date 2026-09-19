@@ -2,6 +2,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
+try:
+    import torch
+    from diffusers import FluxTransformer2DModel, UNet2DConditionModel
+    from peft import prepare_model_for_kbit_training
+    HAS_DIFFUSERS_PEFT = True
+except ImportError:
+    HAS_DIFFUSERS_PEFT = False
 from trainer_difusao.models import (
     BaseModelTrainer,
     FluxTrainer,
@@ -94,6 +101,55 @@ class TestModelsDecoupling(unittest.TestCase):
             # Se a quantização requisitada for 8bit, rejeita
             self.assertFalse(_is_cache_valid(comp_dir, "black-forest-labs/FLUX.2-klein-base-4B", "8bit"))
 
+    @unittest.skipUnless(HAS_DIFFUSERS_PEFT, "requer torch, diffusers e peft instalados")
+    def test_qlora_prepare_diffusers_models_without_get_input_embeddings(self):
+        """Garante que modelos diffusers quantizados (Flux, SD 1.5, SDXL) funcionem
+        com prepare_model_for_kbit_training(use_gradient_checkpointing=False)
+        seguido de enable_gradient_checkpointing(), evitando o crash de
+        get_input_embeddings ausente em ModelMixin do diffusers.
+        """
+        # 1. FluxTransformer2DModel
+        flux_model = FluxTransformer2DModel(
+            num_layers=1,
+            num_single_layers=1,
+            attention_head_dim=16,
+            num_attention_heads=2,
+            in_channels=4,
+        )
+        flux_model.is_loaded_in_4bit = True
+        self.assertFalse(hasattr(flux_model, "get_input_embeddings"))
+
+        # Valida que use_gradient_checkpointing=True reproduz o bug
+        with self.assertRaises(AttributeError) as ctx:
+            prepare_model_for_kbit_training(flux_model, use_gradient_checkpointing=True)
+        self.assertIn("get_input_embeddings", str(ctx.exception))
+
+        # Valida correção arquitetural
+        prepared = prepare_model_for_kbit_training(flux_model, use_gradient_checkpointing=False)
+        prepared.enable_gradient_checkpointing()
+        self.assertTrue(prepared.is_gradient_checkpointing)
+
+        # 2. UNet2DConditionModel (SD 1.5 / SDXL)
+        unet = UNet2DConditionModel(
+            sample_size=16,
+            in_channels=4,
+            out_channels=4,
+            layers_per_block=1,
+            block_out_channels=(32, 64),
+            down_block_types=("DownBlock2D", "CrossAttnDownBlock2D"),
+            up_block_types=("CrossAttnUpBlock2D", "UpBlock2D"),
+            cross_attention_dim=16,
+        )
+        unet.is_loaded_in_4bit = True
+        self.assertFalse(hasattr(unet, "get_input_embeddings"))
+
+        with self.assertRaises(AttributeError) as ctx:
+            prepare_model_for_kbit_training(unet, use_gradient_checkpointing=True)
+        self.assertIn("get_input_embeddings", str(ctx.exception))
+
+        prepared_unet = prepare_model_for_kbit_training(unet, use_gradient_checkpointing=False)
+        prepared_unet.enable_gradient_checkpointing()
+        self.assertTrue(prepared_unet.is_gradient_checkpointing)
 
 if __name__ == "__main__":
     unittest.main()

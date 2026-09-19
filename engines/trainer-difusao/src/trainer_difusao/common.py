@@ -4,9 +4,10 @@ Preserva 100% da superfície de importação e targets de mock.patch dos testes.
 """
 from __future__ import annotations
 
+import os
+import shutil
 import typing
 from typing import Any
-
 from trainer_difusao.common_pkg import (
     _die,
     _seed_bytes,

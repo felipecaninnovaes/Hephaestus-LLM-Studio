@@ -350,9 +350,11 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
     unet.requires_grad_(False)
 
     if is_quantized:
-        unet = prepare_model_for_kbit_training(unet, use_gradient_checkpointing=True)
-    else:
-        unet.enable_gradient_checkpointing()
+        # diffusers ModelMixin não é PreTrainedModel de NLP e não possui get_input_embeddings;
+        # use_gradient_checkpointing=False evita o hook indevido no PEFT, enquanto a
+        # ativação nativa via unet.enable_gradient_checkpointing() opera com use_reentrant=False.
+        unet = prepare_model_for_kbit_training(unet, use_gradient_checkpointing=False)
+    unet.enable_gradient_checkpointing()
 
     lora_config = LoraConfig(
         r=rank,

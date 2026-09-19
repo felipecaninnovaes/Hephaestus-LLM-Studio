@@ -1,8 +1,7 @@
 # Memória Ativa — Hephaestus LLM Studio
 
-- **Branch atual:** `feat/orchestrator-modularization`
-- **Fatia em andamento:** Modularização, desacoplamento e autonomia do Orchestrator (`tasks/specs/orchestrator-modularization.md`).
-
+- **Branch atual:** `fix/trainer-difusao-qlora-flux2-checkpointing`
+- **Fatia em andamento:** Correção de crash QLoRA PEFT no FLUX.2 Klein / SD 1.5 / SDXL (`Flux2Transformer2DModel has no attribute get_input_embeddings`).
 ---
 
 ## Checklist Imediato da Sessão Ativa

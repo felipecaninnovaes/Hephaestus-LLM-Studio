@@ -106,23 +106,26 @@ export interface JobTelemetryEvent {
 
 export interface DiffusionJobParams {
   baseModel?: string;
-  base_model?: string;
   triggerWord?: string;
-  trigger_word?: string;
   epochs?: number;
   batchSize?: number;
-  batch_size?: number;
   learningRate?: string | number;
-  learning_rate?: string | number;
   rank?: number;
   alpha?: number;
   optimizer?: string;
   resolution?: number;
   mixedPrecision?: string;
-  mixed_precision?: string;
   quantization?: string;
   gradientAccumulationSteps?: number;
-  gradient_accumulation_steps?: number;
+  customModelId?: string | null;
+  textEncoderModelId?: string | null;
+  lrScheduler?: string;
+  lrWarmupSteps?: number;
+  enableBucket?: boolean;
+  checkpointInterval?: number;
+  epochOffset?: number;
+  samplePrompt?: string | null;
+  sampleInterval?: number;
   [key: string]: unknown;
 }
 
@@ -149,7 +152,7 @@ export interface Job {
   engine: string;
   model: string;
   mode: string | null;
-  datasetId: string;
+  datasetId: string | null;
   status: JobStatus;
   queueReason: string | null;
   queuePosition: number | null;

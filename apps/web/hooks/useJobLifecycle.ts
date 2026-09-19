@@ -160,7 +160,7 @@ export function useJobLifecycle(options: UseJobLifecycleOptions = {}) {
     setApplyBusy(true);
     try {
       const result = await applyAutolabelCaptions(job.id, {
-        datasetId,
+        datasetId: datasetId ?? undefined,
         overwrite: applyOverwrite,
       });
       showToast(

@@ -190,22 +190,24 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
       datasetId: job.datasetId,
       epochOffset,
       initialPreset: job.params
-        ? {
-            name: `${job.model} (Retomada Ep.${epochOffset})`,
-            baseModel: (job.params as Record<string, unknown>).base_model ?? "flux",
-            triggerWord: (job.params as Record<string, unknown>).trigger_word ?? "",
-            epochs: (job.params as Record<string, unknown>).epochs ?? 10,
-            batchSize: (job.params as Record<string, unknown>).batch_size ?? 1,
-            learningRate: String((job.params as Record<string, unknown>).learning_rate ?? "1e-4"),
-            rank: (job.params as Record<string, unknown>).rank ?? 16,
-            alpha: (job.params as Record<string, unknown>).alpha ?? 16,
-            resolution: (job.params as Record<string, unknown>).resolution ?? 512,
-            gradientAccumulationSteps:
-              (job.params as Record<string, unknown>).gradient_accumulation_steps ?? 1,
-            optimizer: (job.params as Record<string, unknown>).optimizer ?? "adamw8bit",
-            mixedPrecision: (job.params as Record<string, unknown>).mixed_precision ?? "fp16",
-            quantization: (job.params as Record<string, unknown>).quantization ?? "none",
-          }
+        ? (() => {
+            const p = job.params as Record<string, unknown>;
+            return {
+              name: `${job.model} (Retomada Ep.${epochOffset})`,
+              baseModel: p.baseModel ?? p.base_model ?? "flux",
+              triggerWord: p.triggerWord ?? p.trigger_word ?? "",
+              epochs: p.epochs ?? 10,
+              batchSize: p.batchSize ?? p.batch_size ?? 1,
+              learningRate: String(p.learningRate ?? p.learning_rate ?? "1e-4"),
+              rank: p.rank ?? 16,
+              alpha: p.alpha ?? 16,
+              resolution: p.resolution ?? 512,
+              gradientAccumulationSteps: p.gradientAccumulationSteps ?? p.gradient_accumulation_steps ?? 1,
+              optimizer: p.optimizer ?? "adamw8bit",
+              mixedPrecision: p.mixedPrecision ?? p.mixed_precision ?? "fp16",
+              quantization: p.quantization ?? "none",
+            };
+          })()
         : undefined,
     };
 
@@ -227,22 +229,24 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
         datasetId: job.datasetId,
         epochOffset: 0,
         initialPreset: job.params
-          ? {
-              name: `${job.model} (Repetir)`,
-              baseModel: (job.params as Record<string, unknown>).base_model ?? "flux",
-              triggerWord: (job.params as Record<string, unknown>).trigger_word ?? "",
-              epochs: (job.params as Record<string, unknown>).epochs ?? 10,
-              batchSize: (job.params as Record<string, unknown>).batch_size ?? 1,
-              learningRate: String((job.params as Record<string, unknown>).learning_rate ?? "1e-4"),
-              rank: (job.params as Record<string, unknown>).rank ?? 16,
-              alpha: (job.params as Record<string, unknown>).alpha ?? 16,
-              resolution: (job.params as Record<string, unknown>).resolution ?? 512,
-              gradientAccumulationSteps:
-                (job.params as Record<string, unknown>).gradient_accumulation_steps ?? 1,
-              optimizer: (job.params as Record<string, unknown>).optimizer ?? "adamw8bit",
-              mixedPrecision: (job.params as Record<string, unknown>).mixed_precision ?? "fp16",
-              quantization: (job.params as Record<string, unknown>).quantization ?? "none",
-            }
+          ? (() => {
+              const p = job.params as Record<string, unknown>;
+              return {
+                name: `${job.model} (Repetir)`,
+                baseModel: p.baseModel ?? p.base_model ?? "flux",
+                triggerWord: p.triggerWord ?? p.trigger_word ?? "",
+                epochs: p.epochs ?? 10,
+                batchSize: p.batchSize ?? p.batch_size ?? 1,
+                learningRate: String(p.learningRate ?? p.learning_rate ?? "1e-4"),
+                rank: p.rank ?? 16,
+                alpha: p.alpha ?? 16,
+                resolution: p.resolution ?? 512,
+                gradientAccumulationSteps: p.gradientAccumulationSteps ?? p.gradient_accumulation_steps ?? 1,
+                optimizer: p.optimizer ?? "adamw8bit",
+                mixedPrecision: p.mixedPrecision ?? p.mixed_precision ?? "fp16",
+                quantization: p.quantization ?? "none",
+              };
+            })()
           : undefined,
       };
 

@@ -1,7 +1,7 @@
 # Memória Ativa — Hephaestus LLM Studio
 
-- **Branch atual:** `feat/qlora-difusao`
-- **Fatia em andamento:** Implementação de QLoRA para Modelos de Difusão (FLUX, SDXL e SD 1.5) conforme `tasks/specs/qlora-difusao.md`.
+- **Branch atual:** `feat/orchestrator-modularization`
+- **Fatia em andamento:** Modularização, desacoplamento e autonomia do Orchestrator (`tasks/specs/orchestrator-modularization.md`).
 
 ---
 
@@ -23,6 +23,10 @@
   - Plano de autonomia do nó (outbox durável, heartbeat backoff, reaper periódico, GC de disco).
   - Documento mestre de especificação gerado em `tasks/specs/orchestrator-modularization.md`.
 
+- [x] **Fatia 1: Extração da Camada de Configuração (`config/`):**
+  - Módulo `services/orchestrator/src/config/mod.rs` criado com `OrchestratorConfig` e `DaemonConfig`.
+  - `main.rs` enxugado com eliminação de leituras manuais dispersas de envs.
+  - 165 testes passando (14 novos testes de validação fail-fast e fallbacks de config).
 ## Protocolo de Retomada (3 Passos)
 
 1. **Conferir Branch e Active:** Confirmar git branch atual (`git status`) e ler `tasks/active.md` para situar a fatia e checklist em andamento.

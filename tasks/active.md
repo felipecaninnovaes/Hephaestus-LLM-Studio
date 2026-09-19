@@ -47,6 +47,10 @@
   - Unificada coleta de artefatos (`collect_diffusion_artifacts`), eliminando duplicação entre daemon e one-shot (P0-4).
   - Unificado staging de pesos com hash MD5 em `resolve_and_stage_weight` (P1-3).
   - Mais de 1.800 linhas removidas de `lib.rs`; 165 testes passando verdes.
+- [x] **Fatia 7: Extração de Adaptadores, Telemetria e Segurança (`adapters/`, `telemetry/`, `security/`):**
+  - Criados módulos `src/telemetry/` (`host`, `gpu`, `metrics`), `src/adapters/` (`docker`, `subprocess`, `sweeper`, `http`) e `src/security/` (`pairing`).
+  - Mais de 750 linhas removidas de `lib.rs`; toda lógica de produção de `lib.rs` foi 100% modularizada.
+  - `lib.rs` opera como fachada pura de declaração e re-exports; 165 testes passando verdes.
 ## Protocolo de Retomada (3 Passos)
 
 1. **Conferir Branch e Active:** Confirmar git branch atual (`git status`) e ler `tasks/active.md` para situar a fatia e checklist em andamento.

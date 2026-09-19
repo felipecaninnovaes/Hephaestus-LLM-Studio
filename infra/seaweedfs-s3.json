@@ -19,6 +19,7 @@
         }
       ],
       "actions": [
+        "List:heph-data",
         "Read:heph-data/packages/*",
         "List:heph-data/packages/*",
         "Read:heph-data/artifacts/*",

@@ -38,6 +38,10 @@
   - Arquivo monolítico `daemon.rs` (1.140 linhas) decomposto no diretório `src/daemon/` (`types`, `client`, `launcher`, `state`, `lifecycle`, `tests`).
   - Eliminado warning pré-existente de método morto `inspect_container_ip`.
   - 165 testes passando verdes.
+- [x] **Fatia 5: Extração da Camada de Storage e Cache de Pesos (`storage/`):**
+  - Criado `src/storage/` (`scope.rs`, `archive.rs`, `s3.rs`, `cache.rs`, `mod.rs`).
+  - Mais de 400 linhas monolíticas de I/O de storage removidas de `lib.rs`.
+  - 165 testes passando verdes.
 ## Protocolo de Retomada (3 Passos)
 
 1. **Conferir Branch e Active:** Confirmar git branch atual (`git status`) e ler `tasks/active.md` para situar a fatia e checklist em andamento.

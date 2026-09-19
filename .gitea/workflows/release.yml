@@ -107,8 +107,10 @@ jobs:
           fi
           BUILD_ARGS=""
           for t in $TAGS; do BUILD_ARGS="$BUILD_ARGS -t $t"; done
-          BUILD_ARGS="$BUILD_ARGS --label org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
-          BUILD_ARGS="$BUILD_ARGS --label org.opencontainers.image.revision=$GITHUB_SHA"
+          SERVER_URL="${GITEA_SERVER_URL:-$GITHUB_SERVER_URL}"
+          REPO="${GITEA_REPOSITORY:-$GITHUB_REPOSITORY}"
+          BUILD_ARGS="$BUILD_ARGS --label org.opencontainers.image.source=$SERVER_URL/$REPO"
+          BUILD_ARGS="$BUILD_ARGS --label org.opencontainers.image.revision=${GITEA_SHA:-$GITHUB_SHA}"
           BUILD_ARGS="$BUILD_ARGS --label org.opencontainers.image.description=Hephaestus LLM Studio - $RAW_NAME"
           docker build $BUILD_ARGS -f "${{ matrix.dockerfile }}" "${{ matrix.context }}"
       - name: push

@@ -3,9 +3,12 @@
     # Compressão automática gzip/zstd
     encode zstd gzip
 
-    # API Principal (BFF)
+    # API Principal (BFF) — flushing imediato para SSE de telemetria (RD-030)
     handle /api/* {
-        reverse_proxy principal:8080
+        reverse_proxy principal:8080 {
+            flush_interval -1
+            header_up X-Forwarded-Proto {scheme}
+        }
     }
 
     # Métricas públicas do cluster (para Prometheus scraper)

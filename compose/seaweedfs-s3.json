@@ -1,0 +1,33 @@
+{
+  "identities": [
+    {
+      "name": "heph-admin",
+      "credentials": [
+        {
+          "accessKey": "heph",
+          "secretKey": "heph-local-dev"
+        }
+      ],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging", "UserManagement"]
+    },
+    {
+      "name": "heph-orchestrator",
+      "credentials": [
+        {
+          "accessKey": "heph-orch",
+          "secretKey": "heph-orch-local-dev"
+        }
+      ],
+      "actions": [
+        "List:heph-data",
+        "Read:heph-data/packages/*",
+        "List:heph-data/packages/*",
+        "Read:heph-data/artifacts/*",
+        "Write:heph-data/artifacts/*",
+        "List:heph-data/artifacts/*",
+        "Read:heph-data/models/*",
+        "List:heph-data/models/*"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,79 @@
+# ==============================================================================
+# compose/remote-node.yaml — Nó Worker de Execução Remoto (GPU / TrueNAS)
+# ==============================================================================
+# Sobe exclusivamente o Orquestrador com aceleração NVIDIA CUDA em um nó remoto.
+# Ele se registra no Control Plane via código de pareamento e reporta métricas/VRAM.
+#
+# Pré-requisitos:
+#   - Driver NVIDIA instalado e NVIDIA Container Toolkit configurado
+#   - Socket do Docker acessível (/var/run/docker.sock)
+#   - Variáveis configuradas em .env (CONTROL_PLANE_IP, NODE_IP, MANAGER_TOKEN, etc.)
+#
+# Uso:
+#   docker compose -f compose/remote-node.yaml up -d
+# ==============================================================================
+
+name: hephaestus-remote-node
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  orchestrator-gpu:
+    image: ${REGISTRY_PREFIX:-ghcr.io/felipecaninnovaes/hephaestus}-orchestrator:${HEPH_TAG:-latest}
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "${ORCHESTRATOR_PUBLISH:-0.0.0.0}:8082:8082"
+    environment:
+      MANAGER_URL: "http://${CONTROL_PLANE_IP:?Defina CONTROL_PLANE_IP no .env}:8081"
+      MANAGER_TOKEN: "${MANAGER_TOKEN:?Defina MANAGER_TOKEN no .env}"
+      S3_ORCH_ENDPOINT_URL: "http://${CONTROL_PLANE_IP:?Defina CONTROL_PLANE_IP no .env}:8333"
+      S3_ORCH_BUCKET: "${S3_BUCKET:-heph-data}"
+      S3_ORCH_ACCESS_KEY: "${S3_ORCH_ACCESS_KEY:-heph-orch}"
+      S3_ORCH_SECRET_KEY: "${S3_ORCH_SECRET_KEY:-heph-orch-local-dev}"
+      ORCH_WORKDIR: /data
+      EXEC_MODE: docker
+      ORCH_GPU_DEVICES: ${ORCH_GPU_DEVICES:-all}
+      ORCH_ADVERTISE_URL: "http://${NODE_IP:?Defina NODE_IP no .env}:8082"
+      ORCH_PAIRING_CODE: "${ORCH_PAIRING_CODE:?Defina ORCH_PAIRING_CODE no .env}"
+      ORCH_VOL_DATASETS: hephaestus-remote-node_datasets
+      ORCH_VOL_OUTPUTS: hephaestus-remote-node_outputs
+      HF_TOKEN: ${HF_TOKEN:-}
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+      HF_HOME: /data/models/huggingface
+      FLUX_MODEL_ID: ${FLUX_MODEL_ID:-}
+      DIFFUSION_DAEMON_ENABLED: ${DIFFUSION_DAEMON_ENABLED:-1}
+      DIFFUSION_DAEMON_PORT: "8766"
+      DIFFUSION_DAEMON_IDLE_TTL_S: "600"
+      DIFFUSION_DAEMON_NETWORK: hephaestus-remote-node_default
+      ENGINE_NETWORK: hephaestus-remote-node_default
+      PORT: "8082"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - datasets:/data/datasets
+      - models:/data/models
+      - outputs:/data/outputs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8082 && echo -e \"GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && grep -q 200 <&3'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  datasets:
+  models:
+  outputs:

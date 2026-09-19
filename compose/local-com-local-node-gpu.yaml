@@ -1,0 +1,255 @@
+# ==============================================================================
+# compose/local-com-local-node-gpu.yaml — Instalação Completa com GPU NVIDIA
+# ==============================================================================
+# Sobe o Control Plane e o Nó Local com aceleração de hardware NVIDIA CUDA.
+# Utiliza as imagens com tag :gpu para os motores de treinamento e inferência.
+#
+# Pré-requisitos:
+#   - Driver NVIDIA instalado no host
+#   - NVIDIA Container Toolkit configurado no Docker
+#
+# Uso:
+#   docker compose -f compose/local-com-local-node-gpu.yaml up -d
+# ==============================================================================
+
+name: hephaestus-local-gpu
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # Ingress / Proxy Reverso Unificado
+  ingress:
+    image: caddy:2.8-alpine
+    logging: *default-logging
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+      - principal
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:80/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # Frontend Studio (Next.js)
+  web:
+    image: ${REGISTRY_PREFIX:-ghcr.io/felipecaninnovaes/hephaestus}-web:${HEPH_TAG:-latest}
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8080
+      API_INTERNAL_URL: http://principal:8080
+    depends_on:
+      - principal
+    healthcheck:
+      test: ["CMD-SHELL", "node -e 'require(\"http\").get(\"http://localhost:3000/api/health\", res => process.exit(res.statusCode === 200 ? 0 : 1)).on(\"error\", () => process.exit(1))' || node -e 'require(\"http\").get(\"http://localhost:3000\", res => process.exit(res.statusCode === 200 || res.statusCode === 307 ? 0 : 1)).on(\"error\", () => process.exit(1))'"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  # BFF / API Principal
+  principal:
+    image: ${REGISTRY_PREFIX:-ghcr.io/felipecaninnovaes/hephaestus}-principal:${HEPH_TAG:-latest}
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      DATABASE_URL: postgres://studio:${POSTGRES_PASSWORD:-studio}@db/studio
+      STUDIO_PASSWORD: ${STUDIO_PASSWORD:-changeme}
+      MANAGER_URL: http://manager:8081
+      MANAGER_TOKEN: ${MANAGER_TOKEN:-changeme}
+      STORAGE_BACKEND: s3
+      S3_ENDPOINT_URL: http://seaweedfs:8333
+      S3_BUCKET: ${S3_BUCKET:-heph-data}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-heph}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-heph-local-dev}
+      S3_PUBLIC_ENDPOINT_URL: ${S3_PUBLIC_ENDPOINT_URL:-http://localhost:8333}
+      S3_URL_TTL_SECS: 3600
+      EMBEDDING_BACKEND: mock
+      EMBEDDER_URL: http://embedder:8090
+      EMBEDDING_MODEL: ViT-B-32
+    depends_on:
+      db:
+        condition: service_healthy
+      seaweedfs:
+        condition: service_healthy
+      s3-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8080 && echo -e \"GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && grep -q 200 <&3'"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # Fila de Jobs e Despacho
+  manager:
+    image: ${REGISTRY_PREFIX:-ghcr.io/felipecaninnovaes/hephaestus}-manager:${HEPH_TAG:-latest}
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      DATABASE_URL: postgres://studio:${POSTGRES_PASSWORD:-studio}@db/studio
+      MANAGER_TOKEN: ${MANAGER_TOKEN:-changeme}
+      TRAINER_IMAGE: ${TRAINER_IMAGE:-ghcr.io/felipecaninnovaes/hephaestus-trainer-yolo:gpu}
+      DIFFUSION_TRAINER_IMAGE: ${DIFFUSION_TRAINER_IMAGE:-ghcr.io/felipecaninnovaes/hephaestus-trainer-difusao:gpu}
+      AUTO_ADOPT_LOCAL: "1"
+    depends_on:
+      db:
+        condition: service_healthy
+      principal:
+        condition: service_healthy
+      s3-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8081 && echo -e \"GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && grep -q 200 <&3'"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # Nó Local de Execução com GPU (Data Plane)
+  orchestrator-local:
+    image: ${REGISTRY_PREFIX:-ghcr.io/felipecaninnovaes/hephaestus}-orchestrator:${HEPH_TAG:-latest}
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      MANAGER_URL: http://manager:8081
+      MANAGER_TOKEN: ${MANAGER_TOKEN:-changeme}
+      S3_ORCH_ENDPOINT_URL: http://seaweedfs:8333
+      S3_ORCH_BUCKET: ${S3_BUCKET:-heph-data}
+      S3_ORCH_ACCESS_KEY: ${S3_ORCH_ACCESS_KEY:-heph-orch}
+      S3_ORCH_SECRET_KEY: ${S3_ORCH_SECRET_KEY:-heph-orch-local-dev}
+      ORCH_WORKDIR: /data
+      EXEC_MODE: ${EXEC_MODE:-docker}
+      ORCH_GPU_DEVICES: ${ORCH_GPU_DEVICES:-all}
+      ORCH_VOL_DATASETS: hephaestus-local-gpu_datasets
+      ORCH_VOL_OUTPUTS: hephaestus-local-gpu_outputs
+      HF_TOKEN: ${HF_TOKEN:-}
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+      HF_HOME: /data/models/huggingface
+      DIFFUSION_DAEMON_ENABLED: ${DIFFUSION_DAEMON_ENABLED:-1}
+      DIFFUSION_DAEMON_PORT: "8766"
+      DIFFUSION_DAEMON_IDLE_TTL_S: "600"
+      DIFFUSION_DAEMON_NETWORK: hephaestus-local-gpu_default
+      ENGINE_NETWORK: hephaestus-local-gpu_default
+      PORT: "8082"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - datasets:/data/datasets
+      - models:/data/models
+      - outputs:/data/outputs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on:
+      manager:
+        condition: service_started
+      s3-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8082 && echo -e \"GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && grep -q 200 <&3'"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # Embedder CLIP para Busca Semântica
+  embedder:
+    image: ${REGISTRY_PREFIX:-ghcr.io/felipecaninnovaes/hephaestus}-embedder:${HEPH_TAG:-latest}
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      ENGINE_MOCK: "1"
+      MODEL: ViT-B-32
+      PORT: "8090"
+    volumes:
+      - models:/data/models
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request as u; u.urlopen(\"http://localhost:8090/health\", timeout=3)'"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # Banco de Dados com pgvector
+  db:
+    image: pgvector/pgvector:pg16-trixie@sha256:c8483555ce48101872f888c1df8a895ff689d6c7c7a5f7ac266475f9dfe89e0b
+    restart: unless-stopped
+    logging: *default-logging
+    command: >
+      postgres
+      -c shared_buffers=512MB
+      -c work_mem=32MB
+      -c maintenance_work_mem=128MB
+      -c effective_cache_size=1536MB
+    environment:
+      POSTGRES_USER: studio
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-studio}
+      POSTGRES_DB: studio
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U studio -d studio"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Storage S3 SeaweedFS
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.45_full@sha256:04851d83f42aad1ae898d1b190e2140fd1cef1015bc1a1b783282fefcf65e03b
+    restart: unless-stopped
+    logging: *default-logging
+    command: "server -s3 -ip.bind=0.0.0.0 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json -dir=/data -master.volumeSizeLimitMB=1024 -master.garbageThreshold=0.3"
+    ports:
+      - "${SEAWEED_PUBLISH:-127.0.0.1}:8333:8333"
+    volumes:
+      - seaweed_data:/data
+      - ./seaweedfs-s3.json:/etc/seaweedfs/s3.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -S -O /dev/null http://localhost:8333/ 2>&1 | grep -q HTTP/1.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # Inicializador do Bucket S3
+  s3-init:
+    image: ${REGISTRY_PREFIX:-ghcr.io/felipecaninnovaes/hephaestus}-s3-init:${HEPH_TAG:-latest}
+    restart: "no"
+    logging: *default-logging
+    volumes:
+      - ./ensure-bucket.sh:/ensure-bucket.sh:ro
+    environment:
+      S3_ENDPOINT_URL: http://seaweedfs:8333
+      S3_BUCKET: ${S3_BUCKET:-heph-data}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-heph}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-heph-local-dev}
+    command: ["sh", "-c", "n=0; while ! sh /ensure-bucket.sh; do n=$$(($$n+1)); [ $$n -ge 30 ] && exit 1; sleep 2; done"]
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+
+volumes:
+  caddy_data:
+  caddy_config:
+  pgdata:
+  seaweed_data:
+  datasets:
+  models:
+  outputs:

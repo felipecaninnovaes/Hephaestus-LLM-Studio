@@ -1,23 +1,24 @@
 # Memória Ativa — Hephaestus LLM Studio
 
-- **Branch atual:** `develop`
-- **Fatia em andamento:** Nenhuma no momento — Roadmap de Hardening e Padronização da Infraestrutura (`tasks/infra-auditoria.md`) concluído e integrado.
+- **Branch atual:** `feat/public-release-compose-ghcr`
+- **Fatia em andamento:** Preparação para Release Público — Workflows GitHub Actions (CI & GHCR Release), pasta `compose/` com os 4 modelos autônomos e script `setup.sh`.
 
 ## Checklist Imediato da Sessão Ativa
-- [x] Fase 1: Ingress Caddy TLS/headers/metrics, compose.gpu.yaml dinâmico, fail-fast prod (commit c02ac1e)
-- [x] Fase 2: Binds dev 127.0.0.1, fechamento portas prod, rotação de logs (commit 3b143f0)
-- [x] Fase 3: Healthchecks, resolver race condition principal/manager, s3-init sem apk dinâmico (commit c9d8605)
-- [x] Fase 4: Volume models GPU, tuning postgres, parametrização heartbeat, backup/restore unificado (commit 69e84fb)
-- [x] Fase 5: Standalone web, shellcheck scripts, limites de recursos prod (commit 3d5193f)
-- [x] Verificação final em todas as combinações compose (dev, gpu, integ, prod e fail-fast)
-- [x] Hotfix manager: `report_job` aceita `status: cancelled` pós-abort (commit 4bfb450, imagem recriada no dev host)
+- [x] Criação de `.github/workflows/ci.yml` (matriz Rust, Web, Python, Compose)
+- [x] Criação de `.github/workflows/release.yml` para publicação no GHCR (`ghcr.io/felipecaninnovaes/hephaestus-*`)
+- [x] Criação da pasta `compose/` com os 4 modelos canônicos:
+  - [x] `compose/local-com-local-node.yaml` (CPU/Mock)
+  - [x] `compose/local-com-local-node-gpu.yaml` (NVIDIA GPU local)
+  - [x] `compose/local-sem-node.yaml` (Control Plane para nós remotos)
+  - [x] `compose/remote-node.yaml` (Worker GPU remoto / TrueNAS)
+- [x] Criação de arquivos de apoio: `compose/.env.example`, `compose/Caddyfile`, `compose/seaweedfs-s3.json`, `compose/ensure-bucket.sh`, `compose/README.md`
+- [x] Criação de `scripts/setup.sh` (assistente interativo + flag `--auto` para geração segura de credenciais)
+- [x] Validação sintática de todos os arquivos compose via `docker compose config`
+
 ## Entregas Concluídas Recentemente
-- [x] Wave 0: Fundação de contratos OpenAPI, normalização de políticas VRAM e guardrails do compose prod.
-- [x] Wave 1: Pacotes compartilhados (`engine-kit`, `heph-contracts`, codegen `openapi-typescript`).
-- [x] Wave 2: Execução e orquestração (`control_package_ref`, abort semântico, `telemetry.jsonl`, non-root).
-- [x] Wave 3: Borda e serviços (`flush_interval -1`, cookie HTTPS dinâmico, retries no manager client).
-- [x] Wave 4: Frontend e interface (tipos estritos camelCase, decomposição de jobs/page e gallery).
-- [x] Wave 5: Observabilidade, E2E e limpeza final (paridade golden, sync docs, encerramento do roadmap).
+- [x] Roadmap de Hardening e Padronização da Infraestrutura (`tasks/infra-auditoria.md`) concluído e integrado.
+- [x] Hotfix manager: `report_job` aceita `status: cancelled` pós-abort (commit 4bfb450).
+
 ## Protocolo de Retomada (3 Passos)
 
 1. **Conferir Branch e Active:** Confirmar git branch atual (`git status`) e ler `tasks/active.md` para situar a fatia e checklist em andamento.

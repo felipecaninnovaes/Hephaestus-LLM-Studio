@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16-trixie@sha256:c8483555ce48101872f888c1df8a895ff689d6c7c7a5f7ac266475f9dfe89e0b
+        env:
+          POSTGRES_USER: studio
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: studio_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U studio -d studio_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Cargo Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: fmt (padrão rustfmt, workspace inteiro)
+        run: cargo fmt --all --check
+
+      - name: check (workspace, sem banco — regra ADR-0002 D10)
+        run: cargo check --workspace
+
+      - name: test — units + contract (sem banco, workspace)
+        run: cargo test --workspace
+
+      - name: test — integração de banco (--ignored, migrações no setup do teste)
+        env:
+          DATABASE_URL: postgres://studio:test@127.0.0.1:5432/studio_test
+        run: |
+          cargo test -p api-principal --test datasets_db -- --ignored
+          cargo test -p manager --test manager_db -- --ignored
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint web
+        run: npm run lint --workspace=web
+
+      - name: Build web
+        run: npm run build --workspace=web
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Valida compose dev e overlays
+        run: |
+          docker compose -f infra/compose.yaml -f infra/compose.integ.yaml config -q
+          POSTGRES_PASSWORD=test MANAGER_TOKEN=test S3_ACCESS_KEY=test S3_SECRET_KEY=test S3_ORCH_ACCESS_KEY=test S3_ORCH_SECRET_KEY=test STUDIO_PASSWORD=test \
+            docker compose -f infra/compose.yaml -f infra/compose.prod.yaml config -q
+          MANAGER_URL=http://localhost:8081 MANAGER_TOKEN=test S3_ORCH_ENDPOINT_URL=http://localhost:8333 S3_ORCH_ACCESS_KEY=test S3_ORCH_SECRET_KEY=test ORCH_ADVERTISE_URL=http://localhost:8082 ORCH_PAIRING_CODE=test \
+            docker compose -f infra/compose.gpu.yaml config -q
+          docker compose -f infra/compose.spike.yaml config -q
+
+      - name: Valida modelos da pasta compose/
+        run: |
+          docker compose -f compose/local-com-local-node.yaml config -q
+          docker compose -f compose/local-com-local-node-gpu.yaml config -q
+          docker compose -f compose/local-sem-node.yaml config -q
+          docker compose -f compose/remote-node.yaml --env-file compose/.env.example config -q
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile check
+        run: python -m compileall engines/*/src
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Add uv to PATH
+        run: echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Test engine-kit
+        run: cd engines/engine-kit && uv run --extra test pytest
+
+      - name: Test trainer-yolo
+        run: cd engines/trainer-yolo && uv run --extra test pytest
+
+      - name: Test trainer-difusao
+        run: cd engines/trainer-difusao && uv run --extra test pytest
+
+      - name: Test trainer-clip
+        run: cd engines/trainer-clip && uv run --extra test pytest

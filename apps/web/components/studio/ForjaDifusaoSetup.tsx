@@ -26,7 +26,7 @@ import { listModels } from "@/lib/models";
 import { formatBytes } from "@/lib/format";
 import { ApiError } from "@/lib/api";
 import { diffusionErrorMessage } from "@/types/studio";
-import { showToast } from "./Toast";
+import { showToast } from "@/components/ui/Toast";
 import NodeSelect from "./NodeSelect";
 import type { Dataset, Model, Telemetry, DiffusionPreset, DiffusionOptimizer } from "@/types/studio";
 

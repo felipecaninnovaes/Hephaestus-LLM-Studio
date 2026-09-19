@@ -18,7 +18,7 @@ import { Select, type SelectOption } from "@/components/ui/Select";
 import { ApiError } from "@/lib/api";
 import { startAutolabelJob } from "@/lib/autolabel";
 import { autolabelErrorMessage, type AutolabelModel, type StudioClass } from "@/types/studio";
-import { showToast } from "./Toast";
+import { showToast } from "@/components/ui/Toast";
 import { openActionCenter } from "@/lib/events";
 import NodeSelect from "./NodeSelect";
 

@@ -28,7 +28,7 @@ import { createDataset } from "@/lib/datasets";
 import { formatBytes } from "@/lib/format";
 import { uploadImages } from "@/lib/images";
 import { TYPE_LABELS, type Dataset, type DatasetType } from "@/types/studio";
-import { showToast } from "./Toast";
+import { showToast } from "@/components/ui/Toast";
 
 const TYPES = Object.keys(TYPE_LABELS) as DatasetType[];
 const TYPE_OPTIONS: SelectOption<DatasetType>[] = TYPES.map((t) => ({

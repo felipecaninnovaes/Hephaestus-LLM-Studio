@@ -31,7 +31,7 @@ import {
 } from "@/components/icons";
 import { AutolabelReviewModal } from "@/components/studio/AutolabelReviewModal";
 import { AutotrackerReviewModal } from "@/components/studio/AutotrackerReviewModal";
-import ConfirmDialog from "@/components/studio/ConfirmDialog";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { JobCleanupDialog } from "@/components/studio/JobCleanupDialog";
 import { JobLogViewer } from "@/components/studio/JobLogViewer";
 import {
@@ -73,7 +73,7 @@ import {
 } from "@/types/studio";
 import { JOB_STATUS_CONFIG, JobArtifactsList } from "./JobCard";
 import { JobSamplesGallery } from "./JobSamplesGallery";
-import { showToast } from "./Toast";
+import { showToast } from "@/components/ui/Toast";
 
 export interface SystemNotification {
 	id: string;

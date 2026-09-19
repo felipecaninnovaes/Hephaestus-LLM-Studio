@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/Button";
 import { IconCheck, IconAlertTriangle, IconTrash, IconCopy } from "@/components/icons";
 import type { UploadResultItem } from "@/types/studio";
 import { copyToClipboard } from "@/lib/clipboard";
-
+import { formatBytes } from "@/lib/format";
 export interface UploadAuditModalProps {
   open: boolean;
   onClose: () => void;
@@ -31,12 +31,6 @@ export function UploadAuditModal({
     setTimeout(() => setCopiedKey(null), 1500);
   }
 
-  function formatBytes(bytes?: number | null) {
-    if (!bytes || bytes <= 0) return "—";
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-  }
 
   const currentList = tab === "stored" ? stored : tab === "duplicate" ? duplicate : rejected;
 

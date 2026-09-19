@@ -24,8 +24,8 @@ import { TruncatedText } from "@/components/ui/TruncatedText";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Modal } from "@/components/ui/Modal";
 import { Input } from "@/components/ui/Input";
-import ConfirmDialog from "@/components/studio/ConfirmDialog";
-import { showToast } from "@/components/studio/Toast";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { showToast } from "@/components/ui/Toast";
 import { formatRelativeTime } from "@/lib/format";
 
 /* ── Helpers ────────────────────────────────────────────────── */

@@ -4,7 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Dataset } from "@/types/studio";
 import { ApiError } from "@/lib/api";
-import { showToast } from "@/components/studio/Toast";
+import { showToast } from "@/components/ui/Toast";
 import { exportDataset, exportErrorMessage } from "@/lib/backup";
 import {
   IconDownload,

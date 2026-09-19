@@ -58,7 +58,7 @@ import type {
   StudioClass,
 } from "@/types/studio";
 import ClassesModal from "@/components/studio/ClassesModal";
-import ImportDatasetModal from "@/components/studio/ImportDatasetModal";
+import CreateDatasetModal from "@/components/studio/CreateDatasetModal";
 import TrainYoloModal from "@/components/studio/TrainYoloModal";
 import AutoTrackerModal from "@/components/studio/AutoTrackerModal";
 import AutoLabelModal from "@/components/studio/AutoLabelModal";
@@ -1692,7 +1692,14 @@ export default function DatasetGalleryPage() {
           onSaved={handleClassesSaved}
         />
       )}
-      {importOpen && <ImportDatasetModal onClose={() => setImportOpen(false)} />}
+      {importOpen && (
+        <CreateDatasetModal
+          open={importOpen}
+          initialMode="import"
+          onClose={() => setImportOpen(false)}
+          onCreated={(created) => router.push(`/datasets/${created.id}`)}
+        />
+      )}
       {trainOpen && dataset && (
         <TrainYoloModal
           open

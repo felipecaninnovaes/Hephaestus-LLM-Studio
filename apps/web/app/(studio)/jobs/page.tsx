@@ -25,7 +25,7 @@ import {
 } from "@/components/icons";
 import { AutolabelReviewModal } from "@/components/studio/AutolabelReviewModal";
 import { AutotrackerReviewModal } from "@/components/studio/AutotrackerReviewModal";
-import ConfirmDialog from "@/components/studio/ConfirmDialog";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import {
 	ConvergenceChart,
 	MetricSparkline,
@@ -35,7 +35,7 @@ import { JobCleanupDialog } from "@/components/studio/JobCleanupDialog";
 import { JobLogViewer } from "@/components/studio/JobLogViewer";
 import { JobProgressLive } from "@/components/studio/JobProgressLive";
 import { JobSamplesGallery } from "@/components/studio/JobSamplesGallery";
-import { showToast } from "@/components/studio/Toast";
+import { showToast } from "@/components/ui/Toast";
 import { Badge, jobStatusToBadgeVariant } from "@/components/ui/Badge";
 import { Button, getButtonClasses } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";

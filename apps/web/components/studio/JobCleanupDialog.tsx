@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/Button";
 import { IconTrash } from "@/components/icons";
 import { cleanupJobs } from "@/lib/jobs";
 import { ApiError } from "@/lib/api";
-import { showToast } from "@/components/studio/Toast";
+import { showToast } from "@/components/ui/Toast";
 import type { JobCleanupResponse } from "@/types/studio";
 
 interface TerminalJobPreview {

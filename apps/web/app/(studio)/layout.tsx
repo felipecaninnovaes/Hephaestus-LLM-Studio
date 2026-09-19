@@ -4,9 +4,8 @@ import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import Sidebar from "@/components/studio/Sidebar";
 import ActionCenter from "@/components/studio/ActionCenter";
-import { ToastHost } from "@/components/studio/Toast";
 import { IconMenu, IconZap } from "@/components/icons";
-import { Badge, Button } from "@/components/ui";
+import { Badge, Button, ToastHost } from "@/components/ui";
 
 import { ACTION_CENTER_EVENT } from "@/lib/events";
 

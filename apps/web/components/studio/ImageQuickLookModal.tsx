@@ -4,6 +4,7 @@ import React, { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { getImage, putCaption } from "@/lib/images";
 import { copyToClipboard } from "@/lib/clipboard";
+import { formatBytes } from "@/lib/format";
 import { Button } from "@/components/ui/Button";
 import {
   IconX,
@@ -15,7 +16,7 @@ import {
   IconSparkles,
   IconCheck,
 } from "@/components/icons";
-import { showToast } from "@/components/studio/Toast";
+import { showToast } from "@/components/ui/Toast";
 import type { ImageItem, ImageDetail, Dataset, StudioClass } from "@/types/studio";
 
 export interface ImageQuickLookModalProps {
@@ -145,12 +146,6 @@ export function ImageQuickLookModal({
     }
   }
 
-  function formatBytes(bytes?: number | null) {
-    if (!bytes || bytes <= 0) return "—";
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-  }
 
   const boxes = detail?.boxes ?? [];
   const classesMap = new Map<string, StudioClass>((dataset?.classes ?? []).map((c: StudioClass) => [c.id, c]));

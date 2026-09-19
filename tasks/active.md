@@ -1,7 +1,7 @@
 # Memória Ativa — Hephaestus LLM Studio
 
-- **Branch atual:** `fix/trainer-difusao-qlora-flux2-checkpointing`
-- **Fatia em andamento:** Correção de crash QLoRA PEFT no FLUX.2 Klein / SD 1.5 / SDXL (eliminação de `prepare_model_for_kbit_training` e resolução de SDPA dtype mismatch query/key/value).
+- **Branch atual:** `feat/docs-infra`
+- **Fatia em andamento:** Criação da documentação canônica modular do pilar de Infraestrutura em `docs/infra/` (`overview.md`, `storage-and-persistence.md`, `gpu-nodes.md`).
 
 ## Checklist Imediato da Sessão Ativa
 
@@ -10,6 +10,13 @@
 - [x] Fase 3: Políticas de VRAM (vram-table.yaml)
 - [x] Fase 4: Interface Web Studio (types/studio.ts, jobs.ts e ForjaDifusaoSetup.tsx)
 - [x] Fase 5: Validação completa (Python pytest 160/160, Cargo test 708/708, Web build, Docker config)
+
+## Documentação Canônica de Infraestrutura
+
+- [x] `docs/infra/overview.md`: Perfis de Compose (dev, prod, gpu, integ), topologia de rede, regras de isolamento e ingress Caddy.
+- [x] `docs/infra/storage-and-persistence.md`: PostgreSQL + pgvector, SeaweedFS S3 (ACLs e bootstrap `s3-init` via SigV4 manual) e volumes de cache/staging.
+- [x] `docs/infra/gpu-nodes.md`: Nós distribuídos, pareamento HMAC, telemetria de VRAM/GPUs e runbook operacional TrueNAS.
+- [x] Registro e alinhamento canônico em `AGENTS.md` (§5) e `docs/REPO_MAP.md` (§6).
 ---
 
 ## Levantamento Arquitetural Recente

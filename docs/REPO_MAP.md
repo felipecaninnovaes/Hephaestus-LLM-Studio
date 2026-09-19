@@ -38,7 +38,7 @@ bind loopback (`127.0.0.1:`) em dev.
 | daemon difusão | `:8766` (interno) | Geração quente LoRA (Flux/SDXL/SD1.5), só via orchestrator |
 | `trainer-yolo` / `trainer-difusao` | nenhuma | Jobs efêmeros disparados pelo orchestrator |
 
-GPU real (TrueNAS): `infra/compose.gpu.yaml` / runbook `infra/README-gpu.md`.
+GPU real (TrueNAS): `infra/compose.gpu.yaml` / runbook `infra/README-gpu.md` / arquitetura em `docs/infra/gpu-nodes.md`.
 
 ## 3. Posse de Dados (Postgres único, schema compartilhado)
 
@@ -148,3 +148,9 @@ checkpoint+encoder).
 - `(studio)/models` — upload/download de checkpoints (LoRA/pesos).
 - `(studio)/environments` — nós executores, adoção e monitor de VRAM.
 - `login` — sessão single-user.
+
+## 6. Documentação de Infraestrutura (`docs/infra/`)
+
+- `overview.md` — perfis Compose (`compose.yaml`, `prod`, `gpu`, `integ`), topologia de rede, isolamento de engines e proxy Caddy.
+- `storage-and-persistence.md` — PostgreSQL 16 + pgvector, SeaweedFS S3 (ACLs e script SigV4 `s3-init`) e volumes de cache/staging.
+- `gpu-nodes.md` — arquitetura de nós remotos (TrueNAS), pareamento HMAC, telemetria de VRAM/GPUs e runbook operacional.

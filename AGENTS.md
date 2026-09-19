@@ -79,6 +79,7 @@ executa fixes mecânicos** — especifica e despacha.
 - `docs/services/` — `api-principal.md` (BFF/auth/chunked), `manager.md` (jobs), `orchestrator.md` (nós).
 - `docs/engines/` — `engine-kit.md` (primitives), `trainer-difusao.md`, `trainer-yolo.md`, `trainer-clip.md`.
 - `docs/web/` — `architecture.md` (Next.js 16/proxy), `state-and-realtime.md` (SSE/galeria).
+- `docs/infra/` — `overview.md` (perfis compose/ingress), `storage-and-persistence.md` (S3/pgvector), `gpu-nodes.md` (nós remotos/pareamento).
 - `packages/contracts/openapi.yaml` — fonte única da verdade para contratos HTTP e payloads.
 - `packages/policies/vram-table.yaml` — fonte única da verdade para consumo e limites de VRAM.
 - `IDEIA.md` — intenção do produto (nunca contradizer em silêncio; expor conflitos).

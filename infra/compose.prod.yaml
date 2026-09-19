@@ -28,6 +28,12 @@ services:
       - principal
     networks:
       - default
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:80/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
 
   # Em produção, fecha a exposição direta da porta 3000 do frontend
   web:

@@ -20,7 +20,11 @@
   - [x] TASK-WEB-002: Hooks `useHardwareTelemetry` e `useVramEstimator` consumidos nas Forjas
   - [x] TASK-WEB-010: Componente `OrchestratorCard` eliminando clone de 55 linhas
   - [x] TASK-WEB-014: Modularização de `types/` por domínio com `JobParams` tipado
-- [ ] Fase 4: Fatiamento dos Super-Monólitos de Estúdio
+- [x] Fase 4: Fatiamento dos Super-Monólitos de Estúdio
+  - [x] TASK-WEB-004: Decompor `ConvergenceChart.tsx` (690 LOC -> `components/studio/charts/*`)
+  - [x] TASK-WEB-007: Decompor `ActionCenter.tsx` (1.718 LOC -> `components/studio/action-center/*`)
+  - [x] TASK-WEB-006: Decompor `ForjaDifusaoSetup.tsx` (1.837 LOC -> `components/studio/diffusion/*`)
+  - [x] TASK-WEB-005: Decompor `GenerationPanel.tsx` (1.846 LOC -> `components/studio/generation/*`)
 - [ ] Fase 5: Fatiamento e Desacoplamento das Rotas de Datasets & YOLO
 - [ ] Fase 6: Restauração da Arquitetura Next.js 16 (Server Components & Polimento)
 ## Levantamento Arquitetural Recente

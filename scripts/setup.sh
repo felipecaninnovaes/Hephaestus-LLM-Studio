@@ -30,13 +30,41 @@ command -v openssl >/dev/null 2>&1 || {
 command -v docker >/dev/null 2>&1 || {
     echo "AVISO: 'docker' não foi encontrado no PATH. Certifique-se de que o Docker está instalado." >&2
 }
-
 AUTO_MODE=0
 if [ "${1:-}" = "--auto" ]; then
     AUTO_MODE=1
 fi
 
+# Detecção de Hardware (GPU NVIDIA)
+HAS_NVIDIA_GPU=0
+GPU_INFO=""
+if command -v nvidia-smi >/dev/null 2>&1; then
+    GPU_INFO="$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | head -n 1 || true)"
+    if [ -n "$GPU_INFO" ]; then
+        HAS_NVIDIA_GPU=1
+    fi
+fi
+
+if [ "$HAS_NVIDIA_GPU" -eq 1 ]; then
+    echo "[✓] GPU NVIDIA detectada: $GPU_INFO"
+    RECOMMENDED_PROFILE="compose/local-com-local-node-gpu.yaml"
+    PROFILE_DESC="Máquina única com GPU NVIDIA local"
+    DEFAULT_MANAGER_PUBLISH="127.0.0.1"
+    DEFAULT_SEAWEED_PUBLISH="127.0.0.1"
+    DEFAULT_TRAINER_IMAGE="ghcr.io/felipecaninnovaes/hephaestus-trainer-yolo:latest"
+    DEFAULT_DIFFUSION_IMAGE="ghcr.io/felipecaninnovaes/hephaestus-trainer-difusao:latest"
+else
+    echo "[i] Nenhuma GPU NVIDIA detectada neste host (modo CPU / Host sem GPU)."
+    RECOMMENDED_PROFILE="compose/local-sem-node.yaml"
+    PROFILE_DESC="Servidor Central / Control Plane Puro (para workers GPU externos como TrueNAS)"
+    DEFAULT_MANAGER_PUBLISH="0.0.0.0"
+    DEFAULT_SEAWEED_PUBLISH="0.0.0.0"
+    DEFAULT_TRAINER_IMAGE="hephaestus/trainer-yolo:gpu"
+    DEFAULT_DIFFUSION_IMAGE="hephaestus/trainer-difusao:gpu"
+fi
+
 # Geração de Segredos Criptográficos
+echo ""
 echo "[1/4] Gerando credenciais aleatórias seguras..."
 GENERATED_STUDIO_PASSWORD="heph_$(openssl rand -hex 12)"
 GENERATED_STUDIO_MASTER_KEY="$(openssl rand -hex 32)"
@@ -49,8 +77,33 @@ GENERATED_S3_ORCH_SECRET_KEY="$(openssl rand -hex 24)"
 GENERATED_ORCH_PAIRING_CODE="pair_$(openssl rand -hex 16)"
 
 STUDIO_PASSWORD="$GENERATED_STUDIO_PASSWORD"
+MANAGER_PUBLISH="$DEFAULT_MANAGER_PUBLISH"
+SEAWEED_PUBLISH="$DEFAULT_SEAWEED_PUBLISH"
+TRAINER_IMAGE="$DEFAULT_TRAINER_IMAGE"
+DIFFUSION_TRAINER_IMAGE="$DEFAULT_DIFFUSION_IMAGE"
+
+# Modo Proxy por padrão (S3_PUBLIC_URL vazia)
+S3_PUBLIC_URL=""
 
 if [ "$AUTO_MODE" -eq 0 ]; then
+    if [ "$HAS_NVIDIA_GPU" -eq 0 ]; then
+        echo ""
+        echo "-----------------------------------------------------------------"
+        echo "Aviso: Sem GPU local, este host pode atuar como:"
+        echo "  [1] Servidor Central (Control Plane) para nós remotos com GPU (ex: TrueNAS)"
+        echo "  [2] Instalação CPU autônoma (apenas desenvolvimento / mocks / sem difusão)"
+        echo "-----------------------------------------------------------------"
+        read -rp "Deseja configurar este host como Servidor Central para nós remotos? [S/n]: " RESP_CENTRAL
+        if [[ "$RESP_CENTRAL" =~ ^[Nn]$ ]]; then
+            RECOMMENDED_PROFILE="compose/local-com-local-node.yaml"
+            PROFILE_DESC="Máquina única (CPU / Mock / Desenvolvimento)"
+            MANAGER_PUBLISH="127.0.0.1"
+            SEAWEED_PUBLISH="127.0.0.1"
+            TRAINER_IMAGE="ghcr.io/felipecaninnovaes/hephaestus-trainer-yolo:latest"
+            DIFFUSION_TRAINER_IMAGE="ghcr.io/felipecaninnovaes/hephaestus-trainer-difusao:latest"
+        fi
+    fi
+
     echo ""
     read -rp "Deseja definir uma senha personalizada para a interface do Studio? [s/N]: " RESP_SENHA
     if [[ "$RESP_SENHA" =~ ^[Ss]$ ]]; then
@@ -60,19 +113,16 @@ if [ "$AUTO_MODE" -eq 0 ]; then
             STUDIO_PASSWORD="$CUSTOM_PASS"
         fi
     fi
-fi
 
-# Configuração de IP / Hostname para S3 Public Endpoint
-DEFAULT_S3_PUBLIC="http://localhost:8333"
-S3_PUBLIC_URL="$DEFAULT_S3_PUBLIC"
-
-if [ "$AUTO_MODE" -eq 0 ]; then
     echo ""
-    read -rp "O Studio será acessado por outros computadores na rede local? [s/N]: " RESP_LAN
-    if [[ "$RESP_LAN" =~ ^[Ss]$ ]]; then
+    echo "Por padrão, o Studio opera em Modo Proxy Seguro através do Caddy (:80/:443)."
+    echo "Isso elimina problemas de CORS, certificados adicionais e portas de storage bloqueadas."
+    read -rp "Deseja habilitar URLs diretas presigned S3 em vez do Modo Proxy? [s/N]: " RESP_DIRECT_S3
+    if [[ "$RESP_DIRECT_S3" =~ ^[Ss]$ ]]; then
         read -rp "Informe o IP local desta máquina (ex: 192.168.1.100): " LAN_IP
         if [ -n "$LAN_IP" ]; then
             S3_PUBLIC_URL="http://${LAN_IP}:8333"
+            SEAWEED_PUBLISH="0.0.0.0"
         fi
     fi
 fi
@@ -91,8 +141,8 @@ REGISTRY_PREFIX=ghcr.io/felipecaninnovaes/hephaestus
 HEPH_TAG=latest
 
 # Imagens sob demanda para o orquestrador
-TRAINER_IMAGE=ghcr.io/felipecaninnovaes/hephaestus-trainer-yolo:latest
-DIFFUSION_TRAINER_IMAGE=ghcr.io/felipecaninnovaes/hephaestus-trainer-difusao:latest
+TRAINER_IMAGE=${TRAINER_IMAGE}
+DIFFUSION_TRAINER_IMAGE=${DIFFUSION_TRAINER_IMAGE}
 
 # Credenciais do Studio e BFF
 STUDIO_PASSWORD=${STUDIO_PASSWORD}
@@ -113,8 +163,8 @@ S3_ORCH_SECRET_KEY=${GENERATED_S3_ORCH_SECRET_KEY}
 
 # Endereçamento
 S3_PUBLIC_ENDPOINT_URL=${S3_PUBLIC_URL}
-MANAGER_PUBLISH=127.0.0.1
-SEAWEED_PUBLISH=127.0.0.1
+MANAGER_PUBLISH=${MANAGER_PUBLISH}
+SEAWEED_PUBLISH=${SEAWEED_PUBLISH}
 
 # Pareamento de Nós Remotos
 ORCH_PAIRING_CODE=${GENERATED_ORCH_PAIRING_CODE}
@@ -183,18 +233,17 @@ echo "Interface Web:   http://localhost (ou http://<seu-ip>)"
 echo "Senha do Studio: $STUDIO_PASSWORD"
 echo "Código de Nó:    $GENERATED_ORCH_PAIRING_CODE"
 echo "-----------------------------------------------------------------"
+echo "Perfil Recomendado para este Host:"
+echo "-----------------------------------------------------------------"
+echo "-> $PROFILE_DESC"
 echo ""
-echo "Para iniciar o Studio, escolha um dos modelos abaixo:"
-echo ""
-echo "1) Máquina única com GPU NVIDIA (Recomendado se você tem GPU):"
-echo "   docker compose -f compose/local-com-local-node-gpu.yaml up -d"
-echo ""
-echo "2) Máquina única (CPU / Mock / Desenvolvimento):"
-echo "   docker compose -f compose/local-com-local-node.yaml up -d"
-echo ""
-echo "3) Servidor central (para conectar nós/workers externos):"
-echo "   docker compose -f compose/local-sem-node.yaml up -d"
-echo ""
-echo "4) Nó worker remoto (TrueNAS ou máquina dedicada com GPU):"
-echo "   docker compose -f compose/remote-node.yaml up -d"
+echo "Comando para iniciar:"
+echo "   docker compose -f $RECOMMENDED_PROFILE up -d"
+echo "-----------------------------------------------------------------"
+if [ "$RECOMMENDED_PROFILE" = "compose/local-sem-node.yaml" ]; then
+    echo ""
+    echo "Conexão de Worker Remoto (ex: TrueNAS com GPU):"
+    echo "   Para gerar o arquivo de configuração pronto para o worker remoto, execute:"
+    echo "   ./scripts/heph.sh export-worker-env"
+fi
 echo "================================================================="

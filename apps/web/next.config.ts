@@ -30,6 +30,20 @@ const nextConfig: NextConfig = {
       },
     ];
   },
+  async redirects() {
+    return [
+      {
+        source: "/orchestrators",
+        destination: "/environments",
+        permanent: true,
+      },
+      {
+        source: "/orquestradores",
+        destination: "/environments",
+        permanent: true,
+      },
+    ];
+  },
 };
 
 export default nextConfig;

@@ -488,7 +488,7 @@ export const Select = forwardRef<SelectRefHandle, SelectProps<any>>(
 								left: menuCoords.left,
 								right: menuCoords.right,
 								width: menuCoords.width,
-								zIndex: 50,
+								zIndex: 500,
 							}}
 							className={`glass-menu rounded-xl p-1.5 shadow-2xl ${widthClasses} ${menuClassName}`}
 						>

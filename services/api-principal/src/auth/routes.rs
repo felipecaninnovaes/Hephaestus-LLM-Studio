@@ -197,6 +197,7 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
     ("GET", "/api/generations", &[200, 400, 401, 503]),
     ("POST", "/api/generations/inputs", &[201, 400, 401]),
     ("GET", "/api/generations/:id/data", &[200, 401, 404, 503]),
+    ("GET", "/api/generations/:id/thumb", &[200, 401, 404, 503]),
     ("POST", "/api/generations/delete", &[204, 400, 401, 503]),
     ("POST", "/api/generations/export", &[200, 400, 401, 503]),
 ];
@@ -557,6 +558,10 @@ pub fn build(state: AppState) -> axum::Router {
         .route(
             "/api/generations/:id/data",
             get(generations::handlers::get_generation_data),
+        )
+        .route(
+            "/api/generations/:id/thumb",
+            get(generations::handlers::get_generation_thumb),
         )
         .route(
             "/api/generations/delete",

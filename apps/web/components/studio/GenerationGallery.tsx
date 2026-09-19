@@ -1,6 +1,6 @@
 "use client";
 
-import React, {
+import {
   useCallback,
   useEffect,
   useMemo,
@@ -12,7 +12,6 @@ import {
   IconCopy,
   IconDownload,
   IconImage,
-  IconSliders,
   IconTrash,
   IconX,
   IconZoomIn,
@@ -22,8 +21,6 @@ import {
   Button,
   ConfirmDialog,
   EmptyState,
-  GlassCard,
-  Modal,
   TruncatedText,
   showToast,
 } from "@/components/ui";
@@ -32,6 +29,7 @@ import {
   deleteGenerations,
   exportGenerations,
   getGenerationDataUrl,
+  getGenerationThumbUrl,
 } from "@/lib/generations";
 import { GERACAO_BROADCAST_CHANNEL, GERACAO_COMPLETED_KEY, generationConfigsJson, geracaoFormFromGeneration, publishGeracaoForm, publishGeracaoInitSource } from "@/lib/geracao-storage";
 import { copyToClipboard } from "@/lib/clipboard";
@@ -482,7 +480,7 @@ export default function GenerationGallery() {
 
   /* ── Image URL helper ── */
   const getImageUrl = useCallback((gen: Generation): string => {
-    return gen.thumbUrl || gen.url || getGenerationDataUrl(gen.id);
+    return gen.thumbUrl || getGenerationThumbUrl(gen.id) || gen.url || getGenerationDataUrl(gen.id);
   }, []);
 
   /* ── Copiar configs (Slice F4/007): JSON legível p/ reprodução.
@@ -662,15 +660,18 @@ export default function GenerationGallery() {
               <div
                 key={gen.id}
                 className="group relative aspect-square rounded-xl overflow-hidden border border-white/5 bg-zinc-900/60 transition-all hover:border-brand-500/30 hover:shadow-lg hover:shadow-brand-500/5"
+                style={{
+                  contentVisibility: "auto",
+                  containIntrinsicSize: "200px 200px",
+                }}
               >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
+                {/* biome-ignore lint/performance/noImgElement: miniatura leve da galeria */}
                 <img
                   src={getImageUrl(gen)}
                   alt={gen.prompt}
                   loading="lazy"
                   decoding="async"
                   className="absolute inset-0 w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-                  style={{ contentVisibility: "auto" }}
                 />
 
                 {/* Overlay gradiente */}

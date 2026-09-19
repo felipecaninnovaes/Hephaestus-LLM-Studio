@@ -1,6 +1,5 @@
 import { apiFetch } from "@/lib/api";
 import type {
-  Generation,
   GenerationList,
   GenerationIdsRequest,
 } from "@/types/studio";
@@ -58,7 +57,7 @@ export async function exportGenerations(ids: string[]): Promise<void> {
   let filename = "geracoes.zip";
   if (disposition) {
     const match = disposition.match(/filename="?([^";]+)"?/i);
-    if (match && match[1]) filename = match[1].trim();
+    if (match?.[1]) filename = match[1].trim();
   }
 
   const blob = await res.blob();
@@ -80,4 +79,11 @@ export async function exportGenerations(ids: string[]): Promise<void> {
  */
 export function getGenerationDataUrl(id: string): string {
   return `/api/generations/${id}/data`;
+}
+
+/**
+ * GET /api/generations/:id/thumb — retorna URL da miniatura (proxy) de uma geração.
+ */
+export function getGenerationThumbUrl(id: string): string {
+  return `/api/generations/${id}/thumb`;
 }

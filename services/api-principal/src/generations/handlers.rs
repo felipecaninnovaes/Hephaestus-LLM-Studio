@@ -106,20 +106,19 @@ fn not_found() -> Response {
 ///
 /// `S3_PUBLIC_ENDPOINT_URL` setado ⇒ presigned URLs; senão NULL.
 async fn to_public(gen: &InternalGeneration, state: &AppState) -> Generation {
-    let presign = state.storage_config.public_endpoint.is_some();
-    let url = if presign {
-        state.storage.presign_get(&gen.s3_key).await.ok()
-    } else {
-        None
-    };
-    let thumb_url: Option<String> = if presign {
-        if let Some(ref key) = gen.thumb_s3_key {
+    let (url, thumb_url) = if state.storage_config.public_endpoint.is_some() {
+        let u = state.storage.presign_get(&gen.s3_key).await.ok();
+        let tu = if let Some(key) = &gen.thumb_s3_key {
             state.storage.presign_get(key).await.ok()
         } else {
-            None
-        }
+            Some(format!("/api/generations/{}/thumb", gen.id))
+        };
+        (u, tu)
     } else {
-        None
+        (
+            Some(format!("/api/generations/{}/data", gen.id)),
+            Some(format!("/api/generations/{}/thumb", gen.id)),
+        )
     };
     Generation {
         id: gen.id.clone(),
@@ -265,6 +264,99 @@ pub async fn get_generation_data(
         bytes,
     )
         .into_response()
+}
+
+/// Gera miniatura JPEG otimizada (max_side preservando aspect ratio).
+fn generate_thumb_from_bytes(bytes: &[u8], max_side: u32) -> Result<Vec<u8>, ()> {
+    let cursor = std::io::Cursor::new(bytes);
+    let reader = image::ImageReader::new(cursor)
+        .with_guessed_format()
+        .map_err(|_| ())?;
+    let dyn_img = reader.decode().map_err(|_| ())?;
+    let thumb = dyn_img.thumbnail(max_side, max_side);
+    let mut out = std::io::Cursor::new(Vec::new());
+    thumb
+        .write_to(&mut out, image::ImageFormat::Jpeg)
+        .map_err(|_| ())?;
+    Ok(out.into_inner())
+}
+
+/// GET /api/generations/:id/thumb — proxy binário da miniatura da imagem gerada.
+///
+/// Se `thumb_s3_key` existir e estiver no storage, serve diretamente como `image/jpeg`.
+/// Caso contrário, busca o objeto original (`s3_key`), redimensiona sob demanda para
+/// no máximo 400x400 pixels em JPEG, e serve com cache imutável (ADR-0023 D5).
+pub async fn get_generation_thumb(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Response {
+    let _uid = match parse_uuid(&id) {
+        Some(u) => u,
+        None => return not_found(),
+    };
+
+    let gen = match state.manager.get_generation(&id).await {
+        Ok(g) => g,
+        Err(ManagerError::NotFound) => return not_found(),
+        Err(ManagerError::Unavailable(_)) => return queue_unavailable(),
+        Err(_) => return queue_unavailable(),
+    };
+
+    // 1. Tentar servir thumbnail pré-gerada se houver thumb_s3_key
+    if let Some(thumb_key) = &gen.thumb_s3_key {
+        if let Ok(bytes) = state.storage.get(thumb_key).await {
+            return (
+                StatusCode::OK,
+                [
+                    (axum::http::header::CONTENT_TYPE, "image/jpeg".to_string()),
+                    (
+                        axum::http::header::CACHE_CONTROL,
+                        "private, max-age=31536000, immutable".to_string(),
+                    ),
+                ],
+                bytes,
+            )
+                .into_response();
+        }
+    }
+
+    // 2. Se não houver thumb_s3_key ou se não existir no storage:
+    // Carrega objeto principal e gera thumbnail leve sob demanda.
+    let bytes = match state.storage.get(&gen.s3_key).await {
+        Ok(b) => b,
+        Err(StorageError::NotFound) => return storage_unavailable(),
+        Err(StorageError::Unavailable(_)) => return storage_unavailable(),
+    };
+
+    match generate_thumb_from_bytes(&bytes, 400) {
+        Ok(thumb_bytes) => (
+            StatusCode::OK,
+            [
+                (axum::http::header::CONTENT_TYPE, "image/jpeg".to_string()),
+                (
+                    axum::http::header::CACHE_CONTROL,
+                    "private, max-age=31536000, immutable".to_string(),
+                ),
+            ],
+            thumb_bytes,
+        )
+            .into_response(),
+        Err(_) => {
+            let ct = content_type_for(&gen.filename);
+            (
+                StatusCode::OK,
+                [
+                    (axum::http::header::CONTENT_TYPE, ct.to_string()),
+                    (
+                        axum::http::header::CACHE_CONTROL,
+                        "private, max-age=31536000, immutable".to_string(),
+                    ),
+                ],
+                bytes,
+            )
+                .into_response()
+        }
+    }
 }
 
 /// POST /api/generations/delete — soft-delete em lote (≤100 IDs, idempotente).
@@ -470,6 +562,27 @@ mod tests {
             manager: std::sync::Arc::new(manager),
             model_download_allowed_hosts: vec![],
         }
+    }
+
+    fn test_state_with_storage(manager: MockManager) -> (AppState, std::sync::Arc<MockStorage>) {
+        let storage = std::sync::Arc::new(MockStorage::new());
+        let state = AppState {
+            pool: sqlx::PgPool::connect_lazy("postgres://n/n").expect("lazy"),
+            jwt_secret: [0x42; 32],
+            secure_cookie: false,
+            setup_required: false,
+            storage: storage.clone(),
+            storage_config: crate::storage::StorageConfig {
+                bucket: "heph-test".into(),
+                public_endpoint: None,
+                url_ttl_secs: 60,
+            },
+            embedder: std::sync::Arc::new(crate::search::MockEmbedder::new()),
+            embedding_model: "ViT-B-32".to_string(),
+            manager: std::sync::Arc::new(manager),
+            model_download_allowed_hosts: vec![],
+        };
+        (state, storage)
     }
 
     fn make_generation(id: &str, job_id: &str) -> InternalGeneration {
@@ -695,6 +808,132 @@ mod tests {
         )
         .await;
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    // --- get_generation_thumb ---
+
+    #[tokio::test]
+    async fn get_generation_thumb_404_invalid_uuid() {
+        let mock = MockManager::default();
+        let state = test_state(mock);
+        let resp =
+            get_generation_thumb(axum::extract::State(state), Path("not-a-uuid".to_string())).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn get_generation_thumb_404_not_found() {
+        let mut mock = MockManager::default();
+        mock.get_generation_not_found = true;
+        let state = test_state(mock);
+        let resp = get_generation_thumb(
+            axum::extract::State(state),
+            Path(uuid::Uuid::new_v4().to_string()),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn get_generation_thumb_503_manager_offline() {
+        let mut mock = MockManager::default();
+        mock.fail = true;
+        let state = test_state(mock);
+        let resp = get_generation_thumb(
+            axum::extract::State(state),
+            Path(uuid::Uuid::new_v4().to_string()),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn get_generation_thumb_200_existing_thumb() {
+        let mock = MockManager::default();
+        let gen_id = "11111111-1111-1111-1111-111111111111";
+        let job_id = "22222222-2222-2222-2222-222222222222";
+        let gen = make_generation(gen_id, job_id);
+        mock.generations_by_id
+            .write()
+            .unwrap()
+            .insert(gen_id.to_string(), gen);
+
+        let (state, storage) = test_state_with_storage(mock);
+        // MockStorage armazena thumbnail bytes
+        let thumb_bytes = b"fake-jpeg-thumb-content".to_vec();
+        storage
+            .put_bytes(
+                &format!("artifacts/{job_id}/thumb.jpg"),
+                thumb_bytes.clone(),
+            )
+            .await;
+
+        let resp =
+            get_generation_thumb(axum::extract::State(state), Path(gen_id.to_string())).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .unwrap(),
+            "image/jpeg"
+        );
+        assert_eq!(
+            resp.headers()
+                .get(axum::http::header::CACHE_CONTROL)
+                .unwrap(),
+            "private, max-age=31536000, immutable"
+        );
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(body.as_ref(), thumb_bytes.as_slice());
+    }
+
+    #[tokio::test]
+    async fn get_generation_thumb_200_generated_on_the_fly() {
+        let mock = MockManager::default();
+        let gen_id = "33333333-3333-3333-3333-333333333333";
+        let job_id = "44444444-4444-4444-4444-444444444444";
+        let mut gen = make_generation(gen_id, job_id);
+        gen.thumb_s3_key = None; // Sem thumb pré-gerada
+        mock.generations_by_id
+            .write()
+            .unwrap()
+            .insert(gen_id.to_string(), gen);
+
+        let (state, storage) = test_state_with_storage(mock);
+        // Gera uma imagem PNG válida de 64x64 para simular o original
+        let mut png_bytes = Vec::new();
+        let img = image::RgbImage::new(64, 64);
+        img.write_to(
+            &mut std::io::Cursor::new(&mut png_bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+
+        storage
+            .put_bytes(&format!("artifacts/{job_id}/generated.png"), png_bytes)
+            .await;
+
+        let resp =
+            get_generation_thumb(axum::extract::State(state), Path(gen_id.to_string())).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .unwrap(),
+            "image/jpeg"
+        );
+        assert_eq!(
+            resp.headers()
+                .get(axum::http::header::CACHE_CONTROL)
+                .unwrap(),
+            "private, max-age=31536000, immutable"
+        );
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(body.starts_with(b"\xff\xd8\xff"), "deve ser JPEG valido");
     }
 
     // --- content_type_for ---

@@ -2424,6 +2424,46 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/generations/{id}/thumb:
+    get:
+      operationId: getGenerationThumb
+      tags: [generations]
+      summary: Proxy binário da miniatura (thumbnail) da imagem gerada
+      description: |
+        Retorna a miniatura otimizada da imagem gerada (ADR-0023 D5). Se o
+        objeto de thumbnail existir no storage, serve diretamente; senão, gera
+        sob demanda a partir do objeto principal com cache imutável.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Miniatura binária (image/jpeg ou image/webp).
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+            image/webp:
+              schema: { type: string, format: binary }
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Geração inexistente (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/generations/delete:
     post:
       operationId: deleteGenerations
@@ -3572,11 +3612,11 @@ components:
         url:
           type: string
           nullable: true
-          description: "URL presigned GET (null sem S3_PUBLIC_ENDPOINT_URL)."
+          description: "URL da imagem (presigned GET direto quando S3_PUBLIC_ENDPOINT_URL estiver configurado, ou proxy `/api/generations/{id}/data`)."
         thumbUrl:
           type: string
           nullable: true
-          description: "URL presigned GET da miniatura (null sem S3_PUBLIC_ENDPOINT_URL)."
+          description: "URL da miniatura otimizada (presigned GET direto quando S3_PUBLIC_ENDPOINT_URL estiver configurado, ou proxy `/api/generations/{id}/thumb`)."
         width:
           type: integer
           description: "Largura da imagem em pixels."

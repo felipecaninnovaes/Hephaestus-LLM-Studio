@@ -75,6 +75,7 @@ export function Modal({
         if (e.target === e.currentTarget && !busy) onClose();
       }}
     >
+      {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole lint/a11y/noStaticElementInteractions: o role (dialog/alertdialog) é passado dinamicamente via prop */}
       <div
         ref={containerRef}
         role={role}

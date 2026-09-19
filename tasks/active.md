@@ -1,7 +1,7 @@
 # Memória Ativa — Hephaestus LLM Studio
 
-- **Branch atual:** `feat/infra-hardening`
-- **Fatia em andamento:** Roadmap de Hardening e Padronização da Infraestrutura (`tasks/infra-auditoria.md`)
+- **Branch atual:** `develop`
+- **Fatia em andamento:** Nenhuma no momento — Roadmap de Hardening e Padronização da Infraestrutura (`tasks/infra-auditoria.md`) concluído e integrado.
 
 ## Checklist Imediato da Sessão Ativa
 - [x] Fase 1: Ingress Caddy TLS/headers/metrics, compose.gpu.yaml dinâmico, fail-fast prod (commit c02ac1e)

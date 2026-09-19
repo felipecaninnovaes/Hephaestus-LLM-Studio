@@ -34,6 +34,10 @@
 - [x] **Fatia 3: Extração da Camada HTTP (`server/`):**
   - Handlers, middlewares, router e `AppState` migrados para `src/server/`.
   - `main.rs` encolhido em 365 linhas (de ~667 para ~308 linhas); 165 testes passando.
+- [x] **Fatia 4: Modularização do Subsistema Daemon (`daemon/`):**
+  - Arquivo monolítico `daemon.rs` (1.140 linhas) decomposto no diretório `src/daemon/` (`types`, `client`, `launcher`, `state`, `lifecycle`, `tests`).
+  - Eliminado warning pré-existente de método morto `inspect_container_ip`.
+  - 165 testes passando verdes.
 ## Protocolo de Retomada (3 Passos)
 
 1. **Conferir Branch e Active:** Confirmar git branch atual (`git status`) e ler `tasks/active.md` para situar a fatia e checklist em andamento.

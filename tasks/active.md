@@ -14,6 +14,15 @@
 - [x] Fase 5: Validação completa (Python pytest 160/160, Cargo test 708/708, Web build, Docker config)
 ---
 
+## Levantamento Arquitetural Recente
+
+- [x] **Levantamento e Auditoria de Modularização do Orchestrator:**
+  - Autópsia completa de `services/orchestrator/` (`lib.rs` 7.9k LOC, `daemon.rs` 1.1k LOC, `main.rs` 726 LOC).
+  - Mapeamento de duplicidades com `manager` e `api-principal`.
+  - Desenho da nova arquitetura Clean/Hexagonal (`domain/`, `ports/`, `adapters/`, `app/`, `server/`, `daemon/`, `testkit/`).
+  - Plano de autonomia do nó (outbox durável, heartbeat backoff, reaper periódico, GC de disco).
+  - Documento mestre de especificação gerado em `tasks/specs/orchestrator-modularization.md`.
+
 ## Protocolo de Retomada (3 Passos)
 
 1. **Conferir Branch e Active:** Confirmar git branch atual (`git status`) e ler `tasks/active.md` para situar a fatia e checklist em andamento.

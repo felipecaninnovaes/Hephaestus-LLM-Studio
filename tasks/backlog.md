@@ -18,6 +18,11 @@ Consolidação única de pendências e melhorias prioritárias. Rotas canônicas
   - Tratar abort durante `preparing` e `dispatched` para evitar estado preso ou término incorreto em `failed` em vez de `cancelled`.
   - Ancorar watchdog de `preparing` no `updated_at` (heartbeat do worker) para builds longos (>60min).
   - Spec: `tasks/specs/backend-autonomia.md`.
+- **Modularização e Autonomia do Orchestrator (P0–P3):**
+  - Decomposição do monólito `lib.rs` (7.9k LOC) em Clean Architecture (`domain/`, `ports/`, `adapters/`, `app/`, `server/`, `daemon/`, `testkit/`).
+  - Autonomia do nó: spool outbox local durável para reports, heartbeat com backoff/jitter, reaper periódico de containers órfãos e GC por watermark.
+  - Eliminação de duplicidades (DTOs espelho entre orchestrator/manager, montagem de flags Docker e globs de artefatos).
+  - Spec: `tasks/specs/orchestrator-modularization.md`.
 - **Packaging & Reuso:**
   - Assinar `build_package_diffusion` com `fingerprint` para permitir reuso de pacotes em treinos de difusão.
   - Marcar `dataset_versions` como `complete` apenas pós-upload confirmado para evitar reuso de versões órfãs.

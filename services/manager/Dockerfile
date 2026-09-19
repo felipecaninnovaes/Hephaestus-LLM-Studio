@@ -1,6 +1,7 @@
 FROM rust:1.97.1-slim@sha256:8e8cf8f7fd54a2d23d5a743b3a03f56e26b6c774276c33fa0595111704ebb15c AS build
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
+COPY crates/heph-contracts ./crates/heph-contracts/
 COPY services/api-principal/Cargo.toml ./services/api-principal/
 COPY services/manager/Cargo.toml ./services/manager/
 COPY services/orchestrator/Cargo.toml ./services/orchestrator/

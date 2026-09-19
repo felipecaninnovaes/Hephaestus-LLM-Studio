@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
+COPY crates/heph-contracts ./crates/heph-contracts/
 COPY services/api-principal/Cargo.toml ./services/api-principal/
 COPY services/manager/Cargo.toml ./services/manager/
 COPY services/orchestrator/Cargo.toml ./services/orchestrator/

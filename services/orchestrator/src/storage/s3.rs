@@ -132,10 +132,13 @@ impl S3Port for S3Client {
     }
 
     async fn ping(&self) -> bool {
-        // HEAD bucket = operação barata que prova acessibilidade (D11 /ready).
+        // Prova de acessibilidade S3 no escopo do orquestrador (artifacts/):
+        // heph-orchestrator tem menor privilégio e não possui permissão HeadBucket na raiz.
         self.client
-            .head_bucket()
+            .list_objects_v2()
             .bucket(&self.bucket)
+            .prefix("artifacts/")
+            .max_keys(1)
             .send()
             .await
             .is_ok()

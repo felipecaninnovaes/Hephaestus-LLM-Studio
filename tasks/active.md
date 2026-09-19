@@ -10,6 +10,7 @@
 - [x] Fase 4: Volume models GPU, tuning postgres, parametrização heartbeat, backup/restore unificado (commit 69e84fb)
 - [x] Fase 5: Standalone web, shellcheck scripts, limites de recursos prod (commit 3d5193f)
 - [x] Verificação final em todas as combinações compose (dev, gpu, integ, prod e fail-fast)
+- [x] Hotfix manager: `report_job` aceita `status: cancelled` pós-abort (commit 4bfb450, imagem recriada no dev host)
 ## Entregas Concluídas Recentemente
 - [x] Wave 0: Fundação de contratos OpenAPI, normalização de políticas VRAM e guardrails do compose prod.
 - [x] Wave 1: Pacotes compartilhados (`engine-kit`, `heph-contracts`, codegen `openapi-typescript`).

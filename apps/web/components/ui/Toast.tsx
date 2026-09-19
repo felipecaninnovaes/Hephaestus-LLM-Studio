@@ -1,6 +1,8 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
+import { usePortalRoot } from "@/hooks/usePortalRoot";
 
 export type ToastType = "success" | "error" | "info";
 
@@ -66,9 +68,10 @@ const DOT_BY_TYPE: Record<ToastType, string> = {
 
 export function ToastHost() {
   const items = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-  if (items.length === 0) return null;
-  return (
-    <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-2 items-end max-w-[calc(100vw-2.5rem)]">
+  const portalRoot = usePortalRoot();
+  if (items.length === 0 || !portalRoot) return null;
+  return createPortal(
+    <div className="fixed bottom-5 right-5 z-toast flex flex-col gap-2 items-end max-w-[calc(100vw-2.5rem)]">
       {items.map((toast) => (
         <div
           key={toast.id}
@@ -96,5 +99,5 @@ export function ToastHost() {
         </div>
       ))}
     </div>
-  );
+  , portalRoot);
 }

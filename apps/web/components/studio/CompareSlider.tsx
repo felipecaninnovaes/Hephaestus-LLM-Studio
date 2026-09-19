@@ -2,9 +2,11 @@
 
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Modal } from "@/components/ui";
 import { TruncatedText } from "@/components/ui";
 import type { Generation } from "@/types/studio";
+import { usePortalRoot } from "@/hooks/usePortalRoot";
 
 /* ═══════════════════════════════════════════════════════════════════
    CompareSlider — comparador side-by-side de 2 imagens (G.8 D6)
@@ -26,6 +28,7 @@ export default function CompareSlider({
   imageB,
   getFullImageUrl,
 }: CompareSliderProps) {
+  const portalRoot = usePortalRoot();
   const [position, setPosition] = useState(50);
   const containerRef = useRef<HTMLDivElement>(null);
   const isDragging = useRef(false);
@@ -82,7 +85,7 @@ export default function CompareSlider({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
-  if (!open) return null;
+  if (!open || !portalRoot) return null;
 
   const urlA = getFullImageUrl(imageA);
   const urlB = getFullImageUrl(imageB);
@@ -91,10 +94,10 @@ export default function CompareSlider({
   const baseA = String(imageA.params?.base_model || imageA.params?.baseModel || "—");
   const baseB = String(imageB.params?.base_model || imageB.params?.baseModel || "—");
 
-  return (
+  return createPortal(
     // biome-ignore lint/a11y/useKeyWithClickEvents lint/a11y/noStaticElementInteractions: backdrop suplementar — o fechamento por teclado é global (Escape) e há botão fechar explícito; o backdrop fica fora da tab-order de propósito.
     <div
-      className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-modal flex flex-col items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
       onClick={onClose}
     >
       {/* Header */}
@@ -198,5 +201,5 @@ export default function CompareSlider({
         ✕
       </button>
     </div>
-  );
+  , portalRoot);
 }

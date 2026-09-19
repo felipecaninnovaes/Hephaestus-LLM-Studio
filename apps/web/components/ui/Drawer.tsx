@@ -1,9 +1,11 @@
 "use client";
 
 import React, { useEffect, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { IconX } from "@/components/icons";
 import { useFocusTrap } from "@/hooks/useFocusTrap";
 import { useBodyScrollLock } from "@/hooks/useBodyScrollLock";
+import { usePortalRoot } from "@/hooks/usePortalRoot";
 
 export interface DrawerProps {
   open: boolean;
@@ -42,6 +44,7 @@ export function Drawer({
   footer,
   showCloseButton = true,
 }: DrawerProps) {
+  const portalRoot = usePortalRoot();
   const [mounted, setMounted] = useState(open);
   const [visible, setVisible] = useState(false);
 
@@ -76,7 +79,7 @@ export function Drawer({
 
 
 
-  if (!mounted) return null;
+  if (!mounted || !portalRoot) return null;
 
   const isRight = side === "right";
   const translateHidden = isRight ? "translate-x-full" : "-translate-x-full";
@@ -86,7 +89,7 @@ export function Drawer({
     ? "shadow-[-24px_0_60px_rgba(0,0,0,0.85)]"
     : "shadow-[24px_0_60px_rgba(0,0,0,0.85)]";
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-drawer overflow-hidden pointer-events-none">
       <div
         className={`fixed inset-0 bg-black/60 backdrop-blur-sm transition-opacity duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] pointer-events-auto ${
@@ -173,7 +176,7 @@ export function Drawer({
         )}
       </aside>
     </div>
-  );
+  , portalRoot);
 }
 
 export default Drawer;

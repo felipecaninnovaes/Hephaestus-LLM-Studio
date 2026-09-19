@@ -91,9 +91,10 @@ jobs:
           git checkout "$GITHUB_SHA"
       - name: install (lockfile da raiz, workspaces)
         run: npm ci
+      - name: lint
+        run: npm run lint --workspace=web
       - name: build
         run: npm run build --workspace=web
-
   compose:
     runs-on: ubuntu-latest
     container:
@@ -112,7 +113,12 @@ jobs:
         run: docker compose -f infra/compose.yaml -f infra/compose.integ.yaml config -q
       - name: valida compose do spike
         run: docker compose -f infra/compose.spike.yaml config -q
-
+      - name: valida modelos da pasta compose/
+        run: |
+          docker compose -f compose/local-com-local-node.yaml config -q
+          docker compose -f compose/local-com-local-node-gpu.yaml config -q
+          docker compose -f compose/local-sem-node.yaml config -q
+          docker compose -f compose/remote-node.yaml --env-file compose/.env.example config -q
   python:
     runs-on: ubuntu-latest
     container:

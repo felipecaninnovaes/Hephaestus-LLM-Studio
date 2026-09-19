@@ -25,7 +25,11 @@
   - [x] TASK-WEB-007: Decompor `ActionCenter.tsx` (1.718 LOC -> `components/studio/action-center/*`)
   - [x] TASK-WEB-006: Decompor `ForjaDifusaoSetup.tsx` (1.837 LOC -> `components/studio/diffusion/*`)
   - [x] TASK-WEB-005: Decompor `GenerationPanel.tsx` (1.846 LOC -> `components/studio/generation/*`)
-- [ ] Fase 5: Fatiamento e Desacoplamento das Rotas de Datasets & YOLO
+- [x] Fase 5: Fatiamento e Desacoplamento das Rotas de Datasets & YOLO
+  - [x] TASK-WEB-008: Decompor `annotate/[imageId]/page.tsx` (806 LOC -> `useAnnotationCanvas`, `useAnnotationSync`, `components/studio/annotation/*`)
+  - [x] TASK-WEB-007: Decompor `datasets/[id]/page.tsx` (1.786 LOC -> `useDatasetGallery`, `useDatasetUpload`, `components/studio/dataset-detail/*`)
+  - [x] Desacoplar `playground/page.tsx` (1.005 LOC -> `useYoloPlayground`, `components/studio/playground/*`)
+  - [x] Desacoplar `models/page.tsx` (423 LOC -> `components/studio/models/*`)
 - [ ] Fase 6: Restauração da Arquitetura Next.js 16 (Server Components & Polimento)
 ## Levantamento Arquitetural Recente
 

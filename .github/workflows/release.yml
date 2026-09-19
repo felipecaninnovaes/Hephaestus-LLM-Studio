@@ -33,31 +33,28 @@ jobs:
           - name: web
             context: .
             dockerfile: apps/web/Dockerfile
+          - name: s3-init
+            context: .
+            dockerfile: infra/Dockerfile.s3-init
           - name: embedder
-            context: engines/trainer-clip
+            context: .
             dockerfile: engines/trainer-clip/Dockerfile
           - name: trainer-yolo
-            context: engines/trainer-yolo
+            context: .
             dockerfile: engines/trainer-yolo/Dockerfile
           - name: trainer-difusao
-            context: engines/trainer-difusao
+            context: .
             dockerfile: engines/trainer-difusao/Dockerfile
           - name: trainer-yolo-gpu
-            context: engines/trainer-yolo
+            context: .
             dockerfile: engines/trainer-yolo/Dockerfile.gpu
             gpu: true
             target-name: trainer-yolo
           - name: trainer-difusao-gpu
-            context: engines/trainer-difusao
+            context: .
             dockerfile: engines/trainer-difusao/Dockerfile.gpu
             gpu: true
             target-name: trainer-difusao
-          - name: web
-            context: .
-            dockerfile: apps/web/Dockerfile
-          - name: s3-init
-            context: infra
-            dockerfile: infra/Dockerfile.s3-init
     steps:
       - name: Checkout
         uses: actions/checkout@v4

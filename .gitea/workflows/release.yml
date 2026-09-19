@@ -52,25 +52,27 @@ jobs:
             context: .
             dockerfile: apps/web/Dockerfile
           - name: s3-init
-            context: infra
+            context: .
             dockerfile: infra/Dockerfile.s3-init
           - name: embedder
-            context: engines/trainer-clip
+            context: .
             dockerfile: engines/trainer-clip/Dockerfile
           - name: trainer-yolo
-            context: engines/trainer-yolo
+            context: .
             dockerfile: engines/trainer-yolo/Dockerfile
           - name: trainer-difusao
-            context: engines/trainer-difusao
+            context: .
             dockerfile: engines/trainer-difusao/Dockerfile
           - name: trainer-yolo-gpu
-            context: engines/trainer-yolo
+            context: .
             dockerfile: engines/trainer-yolo/Dockerfile.gpu
             gpu: true
+            target-name: trainer-yolo
           - name: trainer-difusao-gpu
-            context: engines/trainer-difusao
+            context: .
             dockerfile: engines/trainer-difusao/Dockerfile.gpu
             gpu: true
+            target-name: trainer-difusao
     container:
       image: docker:29-cli@sha256:eccaacfeed644c7de222ff047483568cb988dde95476fbaaf10ea2d04921bb66
       options: >-
@@ -96,7 +98,8 @@ jobs:
       - name: build
         run: |
           set -euo pipefail
-          IMAGE="$REGISTRY/$IMAGE_OWNER/$NAMESPACE/${{ matrix.name }}"
+          RAW_NAME="${{ matrix.target-name || matrix.name }}"
+          IMAGE="$REGISTRY/$IMAGE_OWNER/$NAMESPACE/$RAW_NAME"
           if [ "${{ matrix.gpu }}" = "true" ]; then
             TAGS="$IMAGE:gpu $IMAGE:gpu-$SHA_SHORT"
           else
@@ -108,7 +111,8 @@ jobs:
       - name: push
         run: |
           set -euo pipefail
-          IMAGE="$REGISTRY/$IMAGE_OWNER/$NAMESPACE/${{ matrix.name }}"
+          RAW_NAME="${{ matrix.target-name || matrix.name }}"
+          IMAGE="$REGISTRY/$IMAGE_OWNER/$NAMESPACE/$RAW_NAME"
           if [ "${{ matrix.gpu }}" = "true" ]; then
             docker push "$IMAGE:gpu"
             docker push "$IMAGE:gpu-$SHA_SHORT"

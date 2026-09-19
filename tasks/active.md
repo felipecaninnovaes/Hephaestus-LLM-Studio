@@ -42,6 +42,11 @@
   - Criado `src/storage/` (`scope.rs`, `archive.rs`, `s3.rs`, `cache.rs`, `mod.rs`).
   - Mais de 400 linhas monolíticas de I/O de storage removidas de `lib.rs`.
   - 165 testes passando verdes.
+- [x] **Fatia 6: Fatiamento do Pipeline e Unificação de Coleta de Artefatos (`app/` e `stages/`):**
+  - Monólito `run_job_inner` (1.826 linhas) decomposto em `src/app/` (`mod.rs`, `stages/{collector, weights, config, execute}.rs`).
+  - Unificada coleta de artefatos (`collect_diffusion_artifacts`), eliminando duplicação entre daemon e one-shot (P0-4).
+  - Unificado staging de pesos com hash MD5 em `resolve_and_stage_weight` (P1-3).
+  - Mais de 1.800 linhas removidas de `lib.rs`; 165 testes passando verdes.
 ## Protocolo de Retomada (3 Passos)
 
 1. **Conferir Branch e Active:** Confirmar git branch atual (`git status`) e ler `tasks/active.md` para situar a fatia e checklist em andamento.

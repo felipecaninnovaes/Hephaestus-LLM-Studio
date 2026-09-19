@@ -3917,7 +3917,12 @@ pub async fn dispatch_next(
         .as_ref()
         .and_then(|p| p.get("text_encoder_ref"))
         .cloned();
-    // Resolve imagem do container: se engine for diffusion, usa DIFFUSION_TRAINER_IMAGE
+
+    // Extrai control_package_ref resolvido do params (Wave 2 — RD-020).
+    let control_package_ref = params
+        .as_ref()
+        .and_then(|p| p.get("control_package_ref"))
+        .cloned();
     // (env explícito SEMPRE vence) ou herda tag de TRAINER_IMAGE (fallback p/ TrueNAS :gpu).
     let job_image = match engine.as_str() {
         "diffusion" => resolve_diffusion_image(image),
@@ -3967,6 +3972,11 @@ pub async fn dispatch_next(
         dispatch_body["text_encoder"] = te;
     }
 
+    // Adiciona control_package_ref ao dispatch quando presente (Wave 2 — RD-020).
+    // snake_case: `control_package_ref: {key, md5_zip, bytes}` — casa com PackageRef do orquestrador.
+    if let Some(cpr) = control_package_ref {
+        dispatch_body["control_package_ref"] = cpr;
+    }
     let url = format!("{}/internal/dispatch", orch_endpoint);
 
     if let Err(e) = orch_client.post(&url, &dispatch_body).await {
@@ -4567,5 +4577,23 @@ mod tests {
         let result = super::resolve_diffusion_image("hephaestus/trainer-yolo:gpu");
         assert_eq!(result, "meu-registry/exemplo:tag");
         std::env::remove_var("DIFFUSION_TRAINER_IMAGE");
+    }
+    /// RD-020: Verifica extração e compatibilidade de control_package_ref de params com PackageRef.
+    #[test]
+    fn control_package_ref_extracted_from_params() {
+        let params = serde_json::json!({
+            "control_package_ref": {
+                "key": "packages/ctrl/ctrl.zip",
+                "md5_zip": "0123456789abcdef0123456789abcdef",
+                "bytes": 1024
+            }
+        });
+        let cpr = params.get("control_package_ref").cloned();
+        assert!(cpr.is_some());
+        let pkg: heph_contracts::PackageRef =
+            serde_json::from_value(cpr.unwrap()).expect("parse PackageRef");
+        assert_eq!(pkg.key, "packages/ctrl/ctrl.zip");
+        assert_eq!(pkg.md5_zip, "0123456789abcdef0123456789abcdef");
+        assert_eq!(pkg.bytes, 1024);
     }
 }

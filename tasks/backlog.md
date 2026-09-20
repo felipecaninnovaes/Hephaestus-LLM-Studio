@@ -32,6 +32,14 @@ Consolidação única de pendências e melhorias prioritárias. Rotas canônicas
 - **Segurança & Credenciais de Nós:**
   - Adicionar credenciais dedicadas por nó (`heph_o_*`), rotação de tokens e rate-limit de pareamento.
 
+- **Observabilidade & Reprodutibilidade do Treino (análise registrada 2026-09-20 — nada implementado):**
+  - [ ] C2b (regressão, P0): `parse_metrics_line` do orchestrator não achata `v["metrics"]` do `telemetry.jsonl` (coletor prioriza esse arquivo desde RD-022/ADR-0023) → `loss`/`lr` nunca persistam em `jobs.metrics` → gráfico de loss vazio em runtime e pós-refresh.
+  - [ ] C1: "Repetir Treino"/"Retomar" do ActionCenter gravam chaves sessionStorage órfãs (`heph_resume_job`/`heph_rerun_yolo` — zero consumidores); `training_config.json` (snake_case aninhado em `lora:`) é incompatível com o importador de preset da Forja.
+  - [ ] C2a/C2c: logs do job não são persistidos em lugar nenhum (`JobLogViewer` sintetiza linhas de estado React + SSE transitório → refresh apaga tudo); fases de split/cache latent emitidas só como `print` no daemon.
+  - [ ] F1: ETA de treino a partir dos deltas step/timestamp do SSE (depende de C2b; só web).
+  - [ ] F2: ZIP de artefatos pós-treino — streaming no BFF (zip stored) + rota nova + bump de openapi.
+  - Spec completa com linhas exatas e sequência de execução: `tasks/specs/treino-observabilidade.md`.
+
 ---
 
 ## 3. Storage, Dados & Curadoria (Prioridade Média)

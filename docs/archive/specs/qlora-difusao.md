@@ -4,7 +4,7 @@ Documento de mapeamento, arquitetura e checklist executivo para a implementaçã
 
 - **Data:** 2026-09-18
 - **Escopo:** Modelos de Difusão (`FLUX.2 Klein 4B / FLUX.1`, `SDXL 1.0`, `SD 1.5`), Otimizadores Paginados (`bitsandbytes`), Contratos OpenAPI, Validação no BFF Rust e Interface de Treino (`apps/web`).
-- **Status:** Planejado / Pronto para execução
+- **Status:** Concluída — código, contratos, políticas e UI aplicados; verificada item-a-item contra o código real em 2026-09-20 e arquivada.
 
 ---
 
@@ -150,7 +150,7 @@ No QLoRA, a quantização 4-bit ocorre no modelo base **durante o treino**. Os p
 - [x] **2. Quantização UNet e Preparação K-Bit**
   - [x] Injetar `BitsAndBytesConfig` (4-bit NF4 com double quant) no carregamento de `UNet2DConditionModel` em `sd15.py` e `sdxl.py`.
   - [x] Remover chamadas `.to(device)` para modelos quantizados.
-  - [x] Aplicar `prepare_model_for_kbit_training` em `flux.py`, `sd15.py` e `sdxl.py`.
+  - [x] NÃO aplicar `prepare_model_for_kbit_training` (proibição da §1.3 para modelos diffusers — o checklist original estava escrito ao contrário); aplicar o padrão canônico §1.3 em `flux.py`, `sd15.py` e `sdxl.py`: `requires_grad_(False)` + `enable_gradient_checkpointing()` + `get_peft_model` (evidências: `flux.py:838,860-861`, `sd15.py:292-298,306`, `sdxl.py:347-354,362`, travado por `tests/test_models_decoupling.py:107`).
 - [x] **3. Suporte no Mock e Testes Python**
   - [x] Atualizar `mock.py` para suportar os novos otimizadores.
   - [x] Adicionar testes unitários em `engines/trainer-difusao/tests/test_optimizers.py`.

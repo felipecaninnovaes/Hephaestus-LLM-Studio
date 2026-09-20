@@ -6,7 +6,7 @@ Consolidação única de pendências e melhorias prioritárias. Rotas canônicas
 
 ## 1. Motores & Treino (Prioridade Alta)
 
-- **QLoRA Difusão Canônico:** Implementar técnica canônica (FLUX, SDXL, SD 1.5) com quantização 4-bit na UNet/Transformer, Paged Optimizers (`paged_adamw8bit`, `paged_adamw32bit`) e gradient checkpointing nativo diffusers. Spec: `tasks/specs/qlora-difusao.md`.
+- [x] **QLoRA Difusão Canônico:** quantização 4-bit NF4 na UNet/Transformer + Paged Optimizers + gradient checkpointing nativo diffusers (Quitado 2026-09-20; spec arquivada em `docs/archive/specs/qlora-difusao.md`).
 - **Validação @gpu Difusão & Img2Img:** Validar carregamento com pesos reais (`ENGINE_MOCK=0`) para SDXL/Flux-2-Klein, multi-LoRA PEFT e geração sequencial em daemon quente (ADR-0023).
 - **AutoLabel v2:** Evoluir motor para modelos VLM reais (Florence-2 / Qwen-VL) com aceleração GPU (v1 atual é determinística mock).
 
@@ -45,7 +45,7 @@ Consolidação única de pendências e melhorias prioritárias. Rotas canônicas
 ## 3. Storage, Dados & Curadoria (Prioridade Média)
 
 - **Lixeira & Garbage Collection com TTL:**
-  - Implementar cron/purge agendado para exclusão física no S3 e sweep de registros expirados (`images.deleted_at`, `generations.deleted_at`, `generation_inputs/`).
+  - [x] TTL/purge agendado para exclusão física no S3 (`sweep_expired_trash` >30d + `generation_inputs/` >7d em `storage/gc.rs`, GC 10min). Falta ainda purge físico de `generations.deleted_at`.
 - **Upload Chunked de Modelos & Conexão BFF:**
   - [x] TTL/GC de sessões de upload chunked órfãs em memória e disco temporário (`sweep_expired_upload_sessions` via GC periódico).
   - [x] Retries com backoff exponencial no cliente HTTP do manager para `create_job` e `abort_job` (Quitado: Wave 3 `RD-032`).
@@ -60,9 +60,21 @@ Consolidação única de pendências e melhorias prioritárias. Rotas canônicas
 ## 4. Frontend & Interface (Prioridade Média-Baixa)
 
 - **Acessibilidade & Modais:**
-  - Focus-trap e foco inicial nos modais base (`Modal.tsx`, `ImportDatasetModal`).
+  - [x] Focus-trap, scroll lock e restauração de foco nos diálogos base (`useFocusTrap`/`useBodyScrollLock` em `Modal`/`Drawer`/`ConfirmDialog`; shims antigos removidos).
+- **Acessibilidade — hit-area:**
   - Ajuste de hit-area mínima em `SegmentedControl` (WCAG 2.5.8).
 - **Refinamento de Estado:**
   - Eliminar duplicação da lógica `canTrain`/`trainDisabledReason` na galeria de datasets.
   - Desativar polling de telemetria da sidebar quando o drawer estiver fechado.
   - Push-down de paginação/filtro de quantização no BFF/manager para evitar degradação em memória.
+
+---
+
+## 5. Resíduos de Specs (verificação item-a-item 2026-09-20)
+
+- **`backend-autonomia.md` (FICAR):** cache/ETag ou pub-sub no SSE (1.10); streaming no `get_artifact_data` (1.11); watchdog por job `running` sem telemetria (5.3); agendar `cleanup_jobs` no worker do manager (5.5); forward de `x-request-id`/`traceparent` na malha (4.2); `/ready` com checagens profundas (4.3); mascarar senha de bootstrap no log (4.4). Já tem dono acima: 1.12 (`updated_at`), 5.7 (Reconciliação Storage).
+- **`orchestrator-modularization.md` (FICAR):** §5 Autonomia 0/5 — além da linha 23, faltam admissão atômica no dispatch (P0-3, `server/handlers.rs:106-123`), `testkit/`+`tests/` fora do `src` (P1-6), `/ready` com Docker/disco (P2-3), docker_args unificado executor×daemon (P0-5), bypass de auth sem token (P3-1) e SIGTERM/graceful shutdown.
+- **`consolidacao-auditoria-roadmap.md` (FICAR):** api-principal consumir `heph-contracts` + dispatch tipado no manager (RD-010 — 0× no BFF, `manager/lib.rs:3958`); eliminar duplicatas `flux2-klein-4b`/linha `difusao` em `packages/policies/{vram-table,engines}.yaml` (RD-002); `--user` default no `docker run` sem opt-in via env (RD-023); E2E hermético mock no CI (RD-050).
+- **`web-modularizacao-auditoria.md` (FICAR):** `ui/Select.tsx` 643L (extrair `useFloatingPosition`/`useListboxNavigation` e consumir `FormField` — TASK-WEB-009); `jobs/page.tsx` 1114L; `datasets/[id]/page.tsx` 392L > teto (busca CLIP não extraída); eliminar ~40 `as any` de fallback snake_case (RD-040) e boundaries per-rota (015).
+- **`infra-auditoria.md` (FICAR):** gerar identidade S3 do SeaweedFS a partir de env/template fora do versionamento (INFRA-03 — `infra/seaweedfs-s3.json` commitado); CI com `compose up` de integração real (INFRA-20); `USER` no Dockerfile do orchestrator (INFRA-05); CSP no Caddyfile + digest da imagem caddy (INFRA-01); `set -euo pipefail` no `doctor.sh` (INFRA-18).
+- **`infra-autonomia.md` (FICAR):** redes segmentadas frontend/backend/engine (1.3); `HEALTHCHECK` nos Dockerfiles (2.5); cargo-chef (2.4); lifecycle/expiração de artefatos não consolidados no S3 (3.3); remover IPs literais de `infra/env.gpu.example` e defaults de `start-truenas.sh` (4.1); converter scripts legados (`start-host*`, `build-*`) em delegações do `heph.sh` (6.1).

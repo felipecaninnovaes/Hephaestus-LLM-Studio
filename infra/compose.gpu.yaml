@@ -53,6 +53,7 @@ services:
       ENGINE_NETWORK: ${ENGINE_NETWORK:-${COMPOSE_PROJECT_NAME:-gpu}_default}
       EXEC_MODE: docker
       PORT: '8082'
+      TRAINER_TIMEOUT_SECS: ${TRAINER_TIMEOUT_SECS:-7200}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - gpu_datasets:/data/datasets

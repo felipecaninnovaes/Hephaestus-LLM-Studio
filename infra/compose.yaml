@@ -211,6 +211,7 @@ services:
       DIFFUSION_DAEMON_NETWORK: ${DIFFUSION_DAEMON_NETWORK:-${COMPOSE_PROJECT_NAME:-infra}_default}
       ENGINE_NETWORK: ${ENGINE_NETWORK:-${COMPOSE_PROJECT_NAME:-infra}_default}
       PORT: "8082"
+      TRAINER_TIMEOUT_SECS: ${TRAINER_TIMEOUT_SECS:-7200}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - datasets:/data/datasets

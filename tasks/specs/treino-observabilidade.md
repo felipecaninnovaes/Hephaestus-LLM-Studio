@@ -73,7 +73,7 @@ sugerida ao final.
   logs; orquestrador nunca reporta stdout da engine.
 - Refresh → estado zero. Fix exige decisão de design:
   - (a) **Recomendado:** upload incremental de `telemetry.jsonl` como artefato
-    (o tail já existe — `services/orchestrator/src/stages/collector.rs`) +
+    (o tail já existe — `services/orchestrator/src/app/stages/collector.rs`) +
     `GET /api/jobs/:id/logs?offset=` no BFF lendo o objeto via StoragePort.
   - (b) Tabela `job_log_lines` no manager alimentada por `report_job`.
 - (a) evita schema novo e sobrevive à modularização do orquestrador.
@@ -81,7 +81,7 @@ sugerida ao final.
 ### C2b. Gráfico de loss vazio — REGRESSÃO concreta (provável RD-022/ADR-0023)
 Cadeia verificada:
 1. Collector prioriza `telemetry.jsonl` sobre `metrics.jsonl`
-   (`services/orchestrator/src/stages/collector.rs:354-358`;
+   (`services/orchestrator/src/app/stages/collector.rs:354-358`;
    `services/orchestrator/src/app/mod.rs:946-951`; `read_final_metrics` :136-140).
 2. Em `telemetry.jsonl`, `loss`/`lr` vão **aninhados sob `"metrics"`**
    (`engines/engine-kit/src/engine_kit/telemetry.py:78-80`); só o espelho legado
@@ -99,11 +99,18 @@ Cadeia verificada:
 ### C2c. Fases de pré-processamento (split/cache latent) sem telemetria
 - O pré-compute emite só `print("[INFO] ...")`
   (`engines/trainer-difusao/src/trainer_difusao/common_pkg/text_embeds.py:88-108`);
-  não há `emitter.emit(phase=...)` para split de dataset nem cache de latents/text
-  embeddings. No modo daemon (hot path ADR-0023) o stdout não é roteado por job →
-  invisível no log do job.
+  não há `emitter.emit(phase=...)` para preparação de dataset nem cache de
+  latents/text embeddings. No modo daemon (hot path ADR-0023) o stdout não é
+  roteado por job → invisível no log do job.
 - **Fix:** emitir fases estruturadas (`preparing_dataset`, `preparing_cache` com
   progresso i/N) junto de C2a.
+- **Quitado 2026-09-20:** implementado via `_emit_metric(..., telemetry_only=True)`
+  (não contamina `metrics.jsonl`); progresso 0.07 dataset → 0.07–0.08 cache em
+  chunks `i/N` → 0.08 `dataset_ready`; flux/sd15/sdxl/mock repassam
+  `metrics_path`. **Achado:** não existe split train/val no trainer-difusao —
+  `preparing_dataset` cobre scan + bucketing + dataset de controle. Pendência
+  levada à Wave 2: labels `preparing_dataset`/`preparing_cache` em
+  `PHASE_LABELS` (`JobProgressLive.tsx:30`).
 
 ---
 

@@ -54,6 +54,7 @@ import { formatBytes, formatDuration } from "@/lib/format";
 import { imageProgressLabel, jobCapabilities } from "@/lib/jobCapabilities";
 import { trainingMetrics } from "@/lib/jobMetrics";
 import {
+	downloadJobArtifactsZip,
 	getJobArtifacts,
 	getJobMetrics,
 	listJobs,
@@ -119,6 +120,7 @@ function JobsPageContent() {
 	const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
 	const [metrics, setMetrics] = useState<Record<string, JobMetricsType[]>>({});
 	const [artifacts, setArtifacts] = useState<Record<string, JobArtifact[]>>({});
+	const [zipBusy, setZipBusy] = useState(false);
 	const [cleanupOpen, setCleanupOpen] = useState(false);
 	const {
 		abortTarget,
@@ -401,6 +403,21 @@ function JobsPageContent() {
 			router.push("/treino");
 		} else {
 			router.push("/treino");
+		}
+	}
+
+	async function handleDownloadArtifactsZip(job: Job) {
+		if (zipBusy) return;
+		setZipBusy(true);
+		try {
+			await downloadJobArtifactsZip(job.id);
+		} catch (e) {
+			showToast(
+				e instanceof Error ? `Falha ao baixar ZIP: ${e.message}` : "Falha ao baixar ZIP",
+				"error",
+			);
+		} finally {
+			setZipBusy(false);
 		}
 	}
 
@@ -774,6 +791,22 @@ function JobsPageContent() {
 												>
 													<IconRefresh className="size-3.5 text-brand-400" />
 													<span>Repetir Treino</span>
+												</Button>
+											)}
+
+										{/* F2: ZIP de todos os artefatos (BFF stored) */}
+										{!isActive(selectedJob.status) &&
+											(artifacts[selectedJob.id]?.length ?? 0) > 0 && (
+												<Button
+													type="button"
+													variant="secondary"
+													size="sm"
+													disabled={zipBusy}
+													onClick={() => void handleDownloadArtifactsZip(selectedJob)}
+													title="Baixar todos os artefatos do job (modelo, config, métricas, amostras e logs) em um único ZIP"
+												>
+													<IconDownload className="size-3.5 text-zinc-400" />
+													<span>{zipBusy ? "Montando ZIP…" : "Baixar artefatos (.zip)"}</span>
 												</Button>
 											)}
 

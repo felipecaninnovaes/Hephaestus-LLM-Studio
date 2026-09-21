@@ -186,6 +186,52 @@ export async function downloadArtifact(
   }
 }
 
+/** Extrai o filename do header Content-Disposition (fallback para o padrão). */
+export function filenameFromDisposition(
+  disposition: string | null,
+  fallback: string,
+): string {
+  if (disposition) {
+    const match = disposition.match(/filename="?([^";]+)"?/i);
+    if (match?.[1]) {
+      const name = match[1].trim();
+      if (name) return name;
+    }
+  }
+  return fallback;
+}
+
+/**
+ * GET /api/jobs/:id/artifacts/zip — baixa todos os artefatos do job como ZIP (F2).
+ * Streaming sem timeout client-side agressivo: o ZIP é `stored` (sem compressão)
+ * e jobs grandes podem levar minutos. Zero artefatos → o BFF responde 404.
+ */
+export async function downloadJobArtifactsZip(jobId: string): Promise<void> {
+  const fallback = `${jobId}-artifacts.zip`;
+  const res = await fetch(`/api/jobs/${jobId}/artifacts/zip`, {
+    credentials: "same-origin",
+  });
+  if (!res.ok) {
+    throw new Error(`Falha ao baixar ZIP de artefatos: ${res.status}`);
+  }
+  const targetFilename = filenameFromDisposition(
+    res.headers.get("content-disposition"),
+    fallback,
+  );
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = targetFilename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+}
+
 /** POST /api/jobs/:id/abort — cancela um job. */
 export function abortJob(jobId: string): Promise<void> {
   return apiFetch(`/api/jobs/${jobId}/abort`, { method: "POST" });

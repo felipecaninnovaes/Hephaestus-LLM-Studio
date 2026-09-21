@@ -33,6 +33,8 @@ const PHASE_LABELS: Record<string, string> = {
   packaging_dataset: "Empacotando Dataset",
   downloading_dataset: "Sincronizando Dataset",
   extracting_dataset: "Extraindo Dataset",
+  preparing_dataset: "Preparando Dataset",
+  preparing_cache: "Pré-computando Cache",
   downloading: "Download de Pesos",
   downloading_weights: "Download de Pesos",
   starting_container: "Iniciando Nó GPU",

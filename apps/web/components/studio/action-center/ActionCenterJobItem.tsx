@@ -1,10 +1,13 @@
 "use client";
 
+import { useState } from "react";
+
 import { useRouter } from "next/navigation";
 import {
   IconActivity,
   IconCheck,
   IconChevronDown,
+  IconDownload,
   IconRefresh,
   IconSparkles,
   IconTarget,
@@ -22,6 +25,7 @@ import { copyToClipboard } from "@/lib/clipboard";
 import { formatDuration, formatRelativeTime } from "@/lib/format";
 import { imageProgressLabel, jobCapabilities } from "@/lib/jobCapabilities";
 import { latestTrainingMetric } from "@/lib/jobMetrics";
+import { downloadJobArtifactsZip } from "@/lib/jobs";
 import type {
   Job,
   JobArtifact,
@@ -91,6 +95,7 @@ export function ActionCenterJobItem({
   const duration = formatDuration(job.createdAt, job.finishedAt);
   const latestMetric = latestTrainingMetric(metrics);
   const caps = jobCapabilities(job);
+  const [zipBusy, setZipBusy] = useState(false);
 
   return (
     <div
@@ -553,6 +558,33 @@ export function ActionCenterJobItem({
                   <span>Repetir Treino</span>
                 </Button>
               )}
+
+            {/* F2: ZIP de todos os artefatos — jobs terminais com artefatos */}
+            {!isActive && (artifacts?.length ?? 0) > 0 && (
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={zipBusy}
+                onClick={async () => {
+                  if (zipBusy) return;
+                  setZipBusy(true);
+                  try {
+                    await downloadJobArtifactsZip(job.id);
+                  } catch (e) {
+                    showToast(
+                      e instanceof Error ? `Falha ao baixar ZIP: ${e.message}` : "Falha ao baixar ZIP",
+                      "error",
+                    );
+                  } finally {
+                    setZipBusy(false);
+                  }
+                }}
+                leftIcon={<IconDownload />}
+                title="Baixar todos os artefatos do job (modelo, config, métricas, amostras e logs) em um único ZIP"
+              >
+                <span>{zipBusy ? "Montando ZIP…" : "Artefatos (.zip)"}</span>
+              </Button>
+            )}
 
             {/* Cancelar Job ativo */}
             {isActive && (

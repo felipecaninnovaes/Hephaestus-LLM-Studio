@@ -102,7 +102,21 @@ pub fn parse_metrics_line(line: &str) -> Option<MetricsLine> {
         line.to_string()
     };
     let v: serde_json::Value = serde_json::from_str(&clean_line).ok()?;
-    let epoch = v.get("epoch").and_then(|e| e.as_i64()).or_else(|| {
+    // C2b (RD-022/ADR-0023): telemetry.jsonl aninha loss/lr sob "metrics"
+    // (engine-kit/telemetry.py, trainer-difusao/common_pkg/metrics.py); só o
+    // espelho legado metrics.jsonl achata no topo. Topo vence; aninhado é fallback.
+    let nested = v.get("metrics");
+    let num = |key: &str| -> Option<f64> {
+        v.get(key)
+            .and_then(|x| x.as_f64())
+            .or_else(|| nested.and_then(|m| m.get(key)).and_then(|x| x.as_f64()))
+    };
+    let int = |key: &str| -> Option<i64> {
+        v.get(key)
+            .and_then(|x| x.as_i64())
+            .or_else(|| nested.and_then(|m| m.get(key)).and_then(|x| x.as_i64()))
+    };
+    let epoch = int("epoch").or_else(|| {
         if v.get("phase").is_some() || v.get("progress").is_some() {
             Some(0)
         } else {
@@ -123,14 +137,14 @@ pub fn parse_metrics_line(line: &str) -> Option<MetricsLine> {
         .or_else(|| v.get("vram_used_gb"))
         .and_then(|x| x.as_f64());
     Some(MetricsLine {
-        box_loss: v.get("box_loss").and_then(|x| x.as_f64()).unwrap_or(0.0),
-        cls_loss: v.get("cls_loss").and_then(|x| x.as_f64()).unwrap_or(0.0),
-        dfl_loss: v.get("dfl_loss").and_then(|x| x.as_f64()).unwrap_or(0.0),
-        map50: v.get("mAP50").and_then(|x| x.as_f64()).unwrap_or(0.0),
-        map50_95: v.get("mAP50-95").and_then(|x| x.as_f64()).unwrap_or(0.0),
-        loss: v.get("loss").and_then(|x| x.as_f64()),
-        lr: v.get("lr").and_then(|x| x.as_f64()),
-        step: v.get("step").and_then(|x| x.as_i64()),
+        box_loss: num("box_loss").unwrap_or(0.0),
+        cls_loss: num("cls_loss").unwrap_or(0.0),
+        dfl_loss: num("dfl_loss").unwrap_or(0.0),
+        map50: num("mAP50").unwrap_or(0.0),
+        map50_95: num("mAP50-95").unwrap_or(0.0),
+        loss: num("loss"),
+        lr: num("lr"),
+        step: int("step"),
         epoch,
         progress: v.get("progress").and_then(|p| p.as_f64()),
         phase,
@@ -208,5 +222,57 @@ pub fn telemetry_report_for_line(line: &MetricsLine, total_epochs: i32) -> Repor
         meta_content: None,
         phase: line.phase.clone(),
         message: line.message.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Linha telemetry.jsonl canônica: loss/lr aninhados sob "metrics".
+    fn nested_line() -> &'static str {
+        r#"{"timestamp":"2026-09-20T00:00:00Z","phase":"training","phaseMessage":"Treinando","progress":0.5,"step":30,"epoch":3,"metrics":{"loss":0.0452,"lr":0.0001}}"#
+    }
+
+    #[test]
+    fn parse_telemetry_nested_metrics() {
+        let m = parse_metrics_line(nested_line()).expect("linha aninhada deve parsear");
+        assert_eq!(m.epoch, 3);
+        assert_eq!(m.step, Some(30));
+        assert_eq!(m.loss, Some(0.0452));
+        assert_eq!(m.lr, Some(0.0001));
+        assert!(m.is_training_metric());
+        let report = telemetry_report_for_line(&m, 10);
+        assert!(report.metrics.is_some());
+    }
+
+    #[test]
+    fn parse_legacy_flat_unchanged() {
+        let line = r#"{"epoch":3,"step":30,"loss":0.0452,"lr":0.0001}"#;
+        let m = parse_metrics_line(line).expect("linha flat deve parsear");
+        assert_eq!(m.epoch, 3);
+        assert_eq!(m.step, Some(30));
+        assert_eq!(m.loss, Some(0.0452));
+        assert_eq!(m.lr, Some(0.0001));
+        assert!(m.is_training_metric());
+    }
+
+    #[test]
+    fn parse_top_wins_over_nested() {
+        let line = r#"{"epoch":3,"step":30,"loss":0.09,"metrics":{"loss":0.0452,"lr":0.0001}}"#;
+        let m = parse_metrics_line(line).expect("deve parsear");
+        assert_eq!(m.loss, Some(0.09));
+        assert_eq!(m.lr, Some(0.0001));
+    }
+
+    #[test]
+    fn parse_empty_and_status_not_training() {
+        assert!(parse_metrics_line("{}").is_none());
+        let status = r#"{"phase":"preparing","phaseMessage":"Preparando","progress":0.05,"step":0,"epoch":0}"#;
+        let m = parse_metrics_line(status).expect("evento de status deve parsear");
+        assert_eq!(m.epoch, 0);
+        assert!(!m.is_training_metric());
+        let report = telemetry_report_for_line(&m, 10);
+        assert!(report.metrics.is_none());
     }
 }

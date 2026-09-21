@@ -58,6 +58,11 @@ import {
 	getJobMetrics,
 	listJobs,
 } from "@/lib/jobs";
+import {
+	buildDiffusionResume,
+	buildDiffusionRerun,
+	buildYoloRerun,
+} from "@/lib/paramsToPreset";
 import type {
 	Job,
 	JobArtifact,
@@ -357,69 +362,7 @@ function JobsPageContent() {
 
 
 	function handleResumeFromCheckpoint(job: Job, art: JobArtifact) {
-		const checkpointName =
-			art.path.split("/").pop() || "checkpoint.safetensors";
-		const match = art.path.match(/epoch_(\d+)/);
-		const epochOffset = match ? parseInt(match[1], 10) : (job.epoch ?? 0);
-
-		const resumeData = {
-			resumeCheckpoint: {
-				id: art.id,
-				name: checkpointName,
-				epoch: epochOffset,
-			},
-			epochOffset,
-			initialPreset: job.params
-				? {
-						baseModel: (job.params.baseModel ||
-							(job.params as any).base_model ||
-							job.model) as any,
-						triggerWord: (job.params.triggerWord ??
-							(job.params as any).trigger_word ??
-							"") as string,
-						rank: typeof job.params.rank === "number" ? job.params.rank : 16,
-						alpha: typeof job.params.alpha === "number" ? job.params.alpha : 16,
-						resolution:
-							typeof job.params.resolution === "number"
-								? job.params.resolution
-								: 1024,
-						gradientAccumulationSteps:
-							typeof job.params.gradientAccumulationSteps === "number"
-								? job.params.gradientAccumulationSteps
-								: typeof (job.params as any).gradient_accumulation_steps ===
-										"number"
-									? (job.params as any).gradient_accumulation_steps
-									: 1,
-						optimizer:
-							((job.params.optimizer ||
-								(job.params as any).optimizer) as any) || "adamw8bit",
-						lrScheduler:
-							((job.params.lrScheduler ||
-								(job.params as any).lr_scheduler) as any) || "cosine",
-						mixedPrecision:
-							((job.params.mixedPrecision ||
-								(job.params as any).mixed_precision) as any) || "fp16",
-						quantization:
-							((job.params.quantization ||
-								(job.params as any).quantization) as any) || "4bit",
-						controlDatasetId:
-							(job.params.controlDatasetId ??
-								(job.params as any).control_dataset_id ??
-								"") as string,
-						cacheTextEmbeddings: Boolean(
-							job.params.cacheTextEmbeddings ??
-								(job.params as any).cache_text_embeddings ??
-								false,
-						),
-						checkpointInterval:
-							typeof job.params.checkpointInterval === "number"
-								? job.params.checkpointInterval
-								: typeof (job.params as any).checkpoint_interval === "number"
-									? (job.params as any).checkpoint_interval
-									: 1,
-					}
-				: undefined,
-		};
+		const resumeData = buildDiffusionResume(job, art);
 
 		try {
 			sessionStorage.setItem(
@@ -430,108 +373,12 @@ function JobsPageContent() {
 			// Best-effort
 		}
 
-		router.push(
-			`/difusao?checkpointId=${art.id}&checkpointName=${encodeURIComponent(checkpointName)}&epochOffset=${epochOffset}`,
-		);
+		router.push("/difusao");
 	}
 
 	function handleRerunJob(job: Job) {
 		if (job.engine === "diffusion") {
-			const resumeData = {
-				datasetId: job.datasetId,
-				epochOffset: 0,
-				initialPreset: job.params
-					? {
-							baseModel: (job.params.baseModel ||
-								(job.params as any).base_model ||
-								job.model) as any,
-							triggerWord: (job.params.triggerWord ??
-								(job.params as any).trigger_word ??
-								"") as string,
-							rank: typeof job.params.rank === "number" ? job.params.rank : 16,
-							alpha:
-								typeof job.params.alpha === "number" ? job.params.alpha : 16,
-							resolution:
-								typeof job.params.resolution === "number"
-									? job.params.resolution
-									: 1024,
-							gradientAccumulationSteps:
-								typeof job.params.gradientAccumulationSteps === "number"
-									? job.params.gradientAccumulationSteps
-									: typeof (job.params as any).gradient_accumulation_steps ===
-											"number"
-										? (job.params as any).gradient_accumulation_steps
-										: 1,
-							optimizer:
-								((job.params.optimizer ||
-									(job.params as any).optimizer) as any) || "adamw8bit",
-							lrScheduler:
-								((job.params.lrScheduler ||
-									(job.params as any).lr_scheduler) as any) || "cosine",
-							mixedPrecision:
-								((job.params.mixedPrecision ||
-									(job.params as any).mixed_precision) as any) || "fp16",
-							quantization:
-								((job.params.quantization ||
-									(job.params as any).quantization) as any) || "4bit",
-							controlDatasetId:
-								(job.params.controlDatasetId ??
-									(job.params as any).control_dataset_id ??
-									"") as string,
-							cacheTextEmbeddings: Boolean(
-								job.params.cacheTextEmbeddings ??
-									(job.params as any).cache_text_embeddings ??
-									false,
-							),
-							checkpointInterval:
-								typeof job.params.checkpointInterval === "number"
-									? job.params.checkpointInterval
-									: typeof (job.params as any).checkpoint_interval === "number"
-										? (job.params as any).checkpoint_interval
-										: 1,
-							epochs:
-								typeof job.params.epochs === "number"
-									? job.params.epochs
-									: typeof (job.params as any).epochs === "number"
-										? (job.params as any).epochs
-										: 10,
-							batchSize:
-								typeof job.params.batchSize === "number"
-									? job.params.batchSize
-									: typeof (job.params as any).batch_size === "number"
-										? (job.params as any).batch_size
-										: 1,
-							learningRate:
-								job.params.learningRate != null
-									? String(job.params.learningRate)
-									: (job.params as any).learning_rate != null
-										? String((job.params as any).learning_rate)
-										: "0.0001",
-							enableSamples:
-								job.params.enableSamples ??
-								(job.params as any).enable_samples ??
-								Boolean(
-									job.params.samplePrompt || (job.params as any).sample_prompt,
-								),
-							samplePrompt:
-								job.params.samplePrompt ??
-								(job.params as any).sample_prompt ??
-								"",
-							sampleInterval:
-								typeof job.params.sampleInterval === "number"
-									? job.params.sampleInterval
-									: typeof (job.params as any).sample_interval === "number"
-										? (job.params as any).sample_interval
-										: 1,
-							sampleSeed:
-								job.params.sampleSeed != null
-									? String(job.params.sampleSeed)
-									: (job.params as any).sample_seed != null
-										? String((job.params as any).sample_seed)
-										: "42",
-						}
-					: undefined,
-			};
+			const resumeData = buildDiffusionRerun(job);
 
 			try {
 				sessionStorage.setItem(
@@ -542,9 +389,18 @@ function JobsPageContent() {
 				// Best-effort
 			}
 
-			router.push(`/difusao?datasetId=${job.datasetId}`);
+			router.push("/difusao");
+		} else if (job.engine === "yolo") {
+			// Rerun YOLO: mesma chave do ActionCenter, consumida por /treino.
+			try {
+				sessionStorage.setItem("heph_rerun_yolo", JSON.stringify(buildYoloRerun(job)));
+			} catch {
+				// Best-effort
+			}
+
+			router.push("/treino");
 		} else {
-			router.push(`/treino?datasetId=${job.datasetId}`);
+			router.push("/treino");
 		}
 	}
 
@@ -558,15 +414,22 @@ function JobsPageContent() {
 			return;
 		}
 
-		// Fallback gerando direto de job.params ou dados do job
-		const configData = job.params || {
-			jobId: job.id,
-			engine: job.engine,
-			model: job.model,
-			datasetId: job.datasetId,
-			epoch: job.epoch,
-			metrics: job.metrics,
-			createdAt: job.createdAt,
+		// Fallback honesto: o artefato kind:"config" não existe (job pode ter
+		// falhado antes do upload) — rotula a origem para nunca passar por
+		// config real da engine.
+		const configData = {
+			_source: "job.params" as const,
+			...(job.params
+				? job.params
+				: {
+						jobId: job.id,
+						engine: job.engine,
+						model: job.model,
+						datasetId: job.datasetId,
+						epoch: job.epoch,
+						metrics: job.metrics,
+						createdAt: job.createdAt,
+					}),
 		};
 
 		const blob = new Blob([JSON.stringify(configData, null, 2)], {
@@ -575,12 +438,15 @@ function JobsPageContent() {
 		const url = URL.createObjectURL(blob);
 		const a = document.createElement("a");
 		a.href = url;
-		a.download = `training_config_${job.id.slice(0, 8)}.json`;
+		a.download = `job_params_${job.id.slice(0, 8)}.json`;
 		document.body.appendChild(a);
 		a.click();
 		document.body.removeChild(a);
 		URL.revokeObjectURL(url);
-		showToast("Configuração JSON de treino baixada com sucesso.", "success");
+		showToast(
+			"Artefato de config ausente — JSON gerado a partir de job.params (não é a config real da engine).",
+			"info",
+		);
 	}
 
 	const totalCount = activeJobs.length + terminalJobs.length;
@@ -918,7 +784,7 @@ function JobsPageContent() {
 													variant="secondary"
 													size="sm"
 													onClick={() => handleDownloadJobConfig(selectedJob)}
-													title="Baixar JSON com os parâmetros de configuração deste treino"
+													title="Baixar training_config.json da engine; quando o artefato não existe, gera job_params_<id>.json rotulado com _source job.params"
 												>
 													<IconDownload className="size-3.5 text-zinc-400" />
 													<span>Baixar JSON de Treino</span>

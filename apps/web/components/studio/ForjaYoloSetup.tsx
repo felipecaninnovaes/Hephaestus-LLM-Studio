@@ -74,37 +74,76 @@ export function estimateYoloVramGb(
 interface Props {
   onJobCreated?: (jobId: string) => void;
   initialTelemetry?: Telemetry | null;
+  initialDatasetId?: string;
+  initialParams?: Partial<YoloHyperparametersValues>;
+  initialWeightsId?: string;
+  initialOutputName?: string;
 }
 
-export default function ForjaYoloSetup({ onJobCreated }: Props) {
+export default function ForjaYoloSetup({
+  onJobCreated,
+  initialDatasetId,
+  initialParams,
+  initialWeightsId,
+  initialOutputName,
+}: Props) {
   const firstRef = useRef<SelectRefHandle>(null);
 
   // Datasets
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [datasetsLoading, setDatasetsLoading] = useState(true);
-  const [selectedDatasetId, setSelectedDatasetId] = useState<string>("");
+  const [selectedDatasetId, setSelectedDatasetId] = useState<string>(
+    initialDatasetId ?? "",
+  );
 
   // Models (for weights selector)
   const [yoloModels, setYoloModels] = useState<Model[]>([]);
-  const [selectedWeightId, setSelectedWeightId] = useState<string>("");
+  const [selectedWeightId, setSelectedWeightId] = useState<string>(
+    initialWeightsId ?? "",
+  );
   const [selectedOrchestratorId, setSelectedOrchestratorId] = useState<string | null>(null);
 
   // Form fields — mirrors TrainYoloModal defaults
   const [params, setParams] = useState<YoloHyperparametersValues>({
-    model: "yolo11m",
-    epochs: 100,
-    batch: 16,
-    imgsz: 640,
-    lr0: "0.01",
-    optimizer: "AdamW",
+    model: initialParams?.model ?? "yolo11m",
+    epochs: initialParams?.epochs ?? 100,
+    batch: initialParams?.batch ?? 16,
+    imgsz: initialParams?.imgsz ?? 640,
+    lr0: initialParams?.lr0 ?? "0.01",
+    optimizer: initialParams?.optimizer ?? "AdamW",
     augment: {
-      mosaic: true,
-      mixupFlip: true,
+      mosaic: initialParams?.augment?.mosaic ?? true,
+      mixupFlip: initialParams?.augment?.mixupFlip ?? true,
     },
   });
-  const [outputName, setOutputName] = useState("");
+  const [outputName, setOutputName] = useState(initialOutputName ?? "");
   const [busy, setBusy] = useState(false);
   const [topError, setTopError] = useState<string | null>(null);
+
+  // /treino injeta o rerun lido de `heph_rerun_yolo` via props — o form monta
+  // antes dos valores chegarem. Aplica uma única vez, sem sobrescrever
+  // edições posteriores do usuário.
+  const rerunAppliedRef = useRef(false);
+  useEffect(() => {
+    if (rerunAppliedRef.current) return;
+    const hasRerun =
+      (initialDatasetId ?? "") !== "" ||
+      initialParams !== undefined ||
+      (initialWeightsId ?? "") !== "" ||
+      (initialOutputName ?? "") !== "";
+    if (!hasRerun) return;
+    rerunAppliedRef.current = true;
+    if (initialDatasetId) setSelectedDatasetId(initialDatasetId);
+    if (initialParams) {
+      setParams((prev) => ({
+        ...prev,
+        ...initialParams,
+        augment: { ...prev.augment, ...initialParams.augment },
+      }));
+    }
+    if (initialWeightsId) setSelectedWeightId(initialWeightsId);
+    if (initialOutputName) setOutputName(initialOutputName);
+  }, [initialDatasetId, initialParams, initialWeightsId, initialOutputName]);
 
   // Telemetria de hardware e VRAM do nó
   const { telemetry, nodeVramTotalGb, deviceLabel } = useHardwareTelemetry();

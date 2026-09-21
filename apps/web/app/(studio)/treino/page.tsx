@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   IconPlay,
@@ -7,9 +8,39 @@ import {
 } from "@/components/icons";
 import ForjaYoloSetup from "@/components/studio/ForjaYoloSetup";
 import { Button } from "@/components/ui/Button";
+import { parseYoloRerun, type YoloFormPreset } from "@/lib/paramsToPreset";
 
 export default function TreinoPage() {
   const router = useRouter();
+  // Rerun YOLO (C1): ActionCenter escreve `heph_rerun_yolo` — lido uma vez,
+  // removido, e usado para pré-preencher dataset+params do form.
+  const [rerunDatasetId, setRerunDatasetId] = useState<string>("");
+  const [rerunParams, setRerunParams] = useState<YoloFormPreset | undefined>(
+    undefined,
+  );
+  const [rerunWeightsId, setRerunWeightsId] = useState<string>("");
+  const [rerunOutputName, setRerunOutputName] = useState<string>("");
+  const [rerunReady, setRerunReady] = useState(false);
+
+  useEffect(() => {
+    try {
+      const stored = sessionStorage.getItem("heph_rerun_yolo");
+      if (stored) {
+        sessionStorage.removeItem("heph_rerun_yolo");
+        const parsed = parseYoloRerun(stored);
+        if (parsed) {
+          setRerunDatasetId(parsed.datasetId);
+          setRerunParams(parsed.params);
+          setRerunWeightsId(parsed.weightsId);
+          setRerunOutputName(parsed.outputName);
+        }
+      }
+    } catch {
+      // Ignora falha de parse/storage
+    } finally {
+      setRerunReady(true);
+    }
+  }, []);
 
   function handleJobCreated(jobId: string) {
     // Navega para Execuções com query param para auto-seleção do job criado.
@@ -59,7 +90,15 @@ export default function TreinoPage() {
       <div className="flex justify-center">
         <div className="w-full max-w-xl">
           <div className="glass-card rounded-2xl p-5 border border-white/10">
-            <ForjaYoloSetup onJobCreated={handleJobCreated} />
+            {rerunReady && (
+              <ForjaYoloSetup
+                onJobCreated={handleJobCreated}
+                initialDatasetId={rerunDatasetId || undefined}
+                initialParams={rerunParams}
+                initialWeightsId={rerunWeightsId || undefined}
+                initialOutputName={rerunOutputName || undefined}
+              />
+            )}
           </div>
         </div>
       </div>

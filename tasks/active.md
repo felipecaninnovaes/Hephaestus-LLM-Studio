@@ -1,12 +1,14 @@
 # Memória Ativa — Hephaestus LLM Studio
 
 - **Branch atual:** `fix/treino-observabilidade`
-- **Fatia em andamento:** Observabilidade & Reprodutibilidade do Treino (spec
-  `tasks/specs/treino-observabilidade.md`) — Wave 1: C2b/C1/C2c/F1; Wave 2: C2a/F2.
-- **⚠ CONSTRAINT (2026-09-20):** treino em andamento — proibido `docker compose
-  up/restart/down/build` e qualquer kill de portas dos serviços/engines. Só
-  `apps/web` pode ser reiniciada. Deploy das correções de orquestrador/manager/BFF
-  fica para janela segura; nesta fatia apenas código + testes.
+- **Fatia em andamento:** Observabilidade & Reprodutibilidade do Treino —
+  **código 100% commitado e verde** (C1/C2a/C2b/C2c/F1/F2; spec
+  `tasks/specs/treino-observabilidade.md`). Falta apenas o **deploy na janela
+  segura** (fim do treino atual): rebuild de imagens + restart de orchestrator,
+  api-principal e trainer-difusao. Web já está viva no dev server.
+- **Pendência do provider:** subagentes (`opencode-go/muse-spark`) sem fundos
+  desde 2026-09-20 (402) — Wave 2 executada inline pelo coordenador. Recarregar
+  ou repontar os roles em `.omp/` antes da próxima delegação.
 
 ## Checklist Imediato da Sessão Ativa
 - [x] MCP RunPod em `.omp/mcp.json` (hosted OAuth + docs server)

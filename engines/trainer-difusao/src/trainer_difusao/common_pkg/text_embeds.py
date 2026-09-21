@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from trainer_difusao.common_pkg.metrics import _emit_metric
 from trainer_difusao.common_pkg.train_config import _caption_cache_key
 
 
@@ -60,6 +61,7 @@ def _precompute_text_cache(
     captions: list[str],
     encode_fn: Any,
     batch_size: int = 32,
+    metrics_path: Path | None = None,
 ) -> None:
     """Pré-computa UMA vez os prompt embeddings de todas as captions do dataset."""
     if not cache.enabled:
@@ -67,6 +69,17 @@ def _precompute_text_cache(
     uniq = list(dict.fromkeys(c for c in captions if isinstance(c, str)))
     if not uniq:
         return
+    total = len(uniq)
+    if metrics_path is not None:
+        _emit_metric(
+            metrics_path,
+            epoch=0,
+            step=0,
+            progress=0.07,
+            phase="preparing_cache",
+            message=f"Pré-computando cache de text embeddings: 0/{total} captions...",
+            telemetry_only=True,
+        )
     try:
         i = 0
         bs = batch_size
@@ -95,6 +108,19 @@ def _precompute_text_cache(
             for k, cap in enumerate(chunk):
                 cache.put(cap, {name: t[k].detach().cpu() for name, t in out.items()})
             i += len(chunk)
+            if metrics_path is not None:
+                done = min(i, total)
+                _emit_metric(
+                    metrics_path,
+                    epoch=0,
+                    step=0,
+                    progress=round(0.07 + 0.01 * done / total, 4),
+                    phase="preparing_cache",
+                    message=(
+                        f"Pré-computando cache de text embeddings: {done}/{total} captions..."
+                    ),
+                    telemetry_only=True,
+                )
     except Exception as e:
         cache.enabled = False
         print(
@@ -106,6 +132,16 @@ def _precompute_text_cache(
         f"[INFO] Cache de text embeddings pré-computado: {len(uniq)} captions únicas.",
         flush=True,
     )
+    if metrics_path is not None:
+        _emit_metric(
+            metrics_path,
+            epoch=0,
+            step=0,
+            progress=0.08,
+            phase="preparing_cache",
+            message=f"Cache de text embeddings pré-computado: {total} captions únicas.",
+            telemetry_only=True,
+        )
 
 
 def _cached_encode(captions: list[str], encode_fn: Any, cache: TextEmbedsCache) -> dict[str, Any]:

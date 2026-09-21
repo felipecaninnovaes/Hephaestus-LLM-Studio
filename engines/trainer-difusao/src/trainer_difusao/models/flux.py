@@ -887,6 +887,7 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         resolution=resolution,
         trigger_word=trigger_word,
         enable_bucket=enable_bucket,
+        metrics_path=metrics_path,
     )
     if len(dataset) == 0:
         _die(f"Nenhum par imagem+legenda (.txt) encontrado em: {dataset_path}")
@@ -906,6 +907,7 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             trigger_word="",
             enable_bucket=enable_bucket,
             empty_captions=True,
+            metrics_path=metrics_path,
         )
         control_iter = _cycling_batches(
             build_dataloader(control_dataset, batch_size, seed=seed)
@@ -969,6 +971,7 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             [c for _, c in dataset.samples]
             + ([c for _, c in control_dataset.samples] if control_dataset else []),
             _encode_flux_all,
+            metrics_path=metrics_path,
         )
 
     # Amostra baseline (Época 0) para comparação pré-treino (apenas se não estiver retomando)

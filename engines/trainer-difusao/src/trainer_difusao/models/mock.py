@@ -210,6 +210,28 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
                 f"[MOCK] Arquivo de pesos especificado mas não encontrado: {w_path}",
                 flush=True,
             )
+    _emit_metric(
+        metrics_path,
+        epoch=0,
+        step=0,
+        progress=0.02,
+        phase="preparing_dataset",
+        message=(
+            f"Preparando dataset (mock): {base_model}, {epochs} épocas, "
+            f"{control_n} imagens de controle."
+        ),
+        telemetry_only=True,
+    )
+    if cache_text_embeddings:
+        _emit_metric(
+            metrics_path,
+            epoch=0,
+            step=0,
+            progress=0.04,
+            phase="preparing_cache",
+            message="Pré-computando cache de text embeddings (mock: no-op)...",
+            telemetry_only=True,
+        )
 
     # Amostra baseline Época 0 (se configurada e sem epoch_offset)
     if sample_prompt and epoch_offset == 0:

@@ -323,8 +323,8 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         resolution=resolution,
         trigger_word=trigger_word,
         enable_bucket=enable_bucket,
+        metrics_path=metrics_path,
     )
-    dataloader = build_dataloader(dataset, batch_size, seed=seed)
 
     # Dataset de controle (prior-preservation): mesma resolução/bucketing do
     # principal, caption VAZIA (sem trigger word). Intercalação por step via
@@ -341,6 +341,7 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
             trigger_word="",
             enable_bucket=enable_bucket,
             empty_captions=True,
+            metrics_path=metrics_path,
         )
         control_loader = build_dataloader(control_dataset, batch_size, seed=seed)
         control_iter = _cycling_batches(control_loader)
@@ -372,8 +373,8 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
                         ).input_ids.to(device)
                     )[0].to(dtype=target_dtype)
                 },
+                metrics_path=metrics_path,
             )
-
     _emit_metric(
         metrics_path,
         epoch=0,

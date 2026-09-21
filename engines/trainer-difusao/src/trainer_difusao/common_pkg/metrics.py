@@ -62,6 +62,7 @@ def _emit_metric(
                 "timestamp": now_iso,
                 "phase": t_phase,
                 "phaseMessage": t_msg,
+                "message": t_msg,
                 "progress": round(t_prog, 4),
                 "step": step,
                 "epoch": epoch,

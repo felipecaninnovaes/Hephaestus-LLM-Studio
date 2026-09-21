@@ -98,11 +98,13 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
     ("GET", "/api/jobs/:id/events", &[200, 401, 404, 503]),
     ("GET", "/api/jobs/:id/metrics", &[200, 401, 404, 503]),
     ("GET", "/api/jobs/:id/artifacts", &[200, 401, 404, 503]),
+    ("GET", "/api/jobs/:id/logs", &[200, 401, 404, 503]),
     (
         "GET",
         "/api/jobs/:id/artifacts/:artifactId/data",
         &[200, 401, 404, 503],
     ),
+    ("GET", "/api/jobs/:id/artifacts/zip", &[200, 401, 404, 503]),
     ("GET", "/api/telemetry", &[200, 401, 503]),
     ("POST", "/api/jobs/yolo", &[202, 400, 401, 404, 409, 503]),
     (
@@ -449,6 +451,11 @@ pub fn build(state: AppState) -> axum::Router {
         .route(
             "/api/jobs/:id/artifacts/:artifactId/data",
             get(jobs::handlers::get_artifact_data),
+        )
+        .route("/api/jobs/:id/logs", get(jobs::handlers::get_job_logs))
+        .route(
+            "/api/jobs/:id/artifacts/zip",
+            get(jobs::handlers::download_artifacts_zip),
         )
         .route("/api/telemetry", get(jobs::handlers::get_telemetry))
         .route("/api/jobs/yolo", post(jobs::handlers::submit_yolo_job))

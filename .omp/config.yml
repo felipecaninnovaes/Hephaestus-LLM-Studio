@@ -5,16 +5,16 @@ modelRoles:
   # hephaestus (coordenador / sessão principal)
   # openrouter/qwen/qwen3.8-flash trava sem entregar token (testado 2026-09-17);
   # mesmo modelo via gateway opencode-go responde.
-  default: "o1pencode-go/muse-spark-1.3-contributor:high"
+  default: "openrouter/qwen/qwen3.8-flash"
   #default: "google-antigravity/gemini-3.8-flash:medium"
   # agente "plan" do opencode (modo plan)
   plan: "openrouter/qwen/qwen3.8-flash:high"
   # workers (implementadores, revisores, fixer, docs-sync, explore, ui-designer, visao)
-  worker: "opencode-go/muse-spark-1.3-contributor"
+  worker: "openrouter/meta/muse-spark-1.3-contributor"
   # workers com variant high do opencode (architect, reviewer, guardian, ui-designer)
-  worker-high: "opencode-go/muse-spark-1.3-contributor:high"
+  worker-high: "openrouter/meta/muse-spark-1.3-contributor:high"
   # reviewer-max (escalada) — sem sufixo: o modelo não expõe níveis de effort
-  max: "openrouter/qwen/qwen3.8-max"
+  max: "openrouter/meta/muse-spark-1.3-contributor:high"
 
 bash:
   patterns:

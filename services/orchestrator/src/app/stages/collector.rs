@@ -89,6 +89,46 @@ async fn upload_one(
     })
 }
 
+/// C2a: sobe (ou ressobe, overwrite) o snapshot atual do `telemetry.jsonl`
+/// como artefato `logs/telemetry.jsonl` (kind `logs`).
+///
+/// Objeto MÚTVEL por design: cada ciclo reenvia o arquivo inteiro sob a mesma
+/// key. O manager deduplica reports por `(job_id, path)` (md5/bytes do ROW
+/// ficam do primeiro report — honesto: consumidores do log — BFF `/logs` e
+/// `/artifacts/zip` — leem o objeto, nunca confiam no md5 deste kind).
+/// Best-effort: falha loga warn e não abate o job.
+pub async fn upload_telemetry_snapshot(
+    s3: &Arc<dyn S3Port>,
+    job_id: &str,
+    telemetry_path: &Path,
+) -> Option<ArtifactReport> {
+    let size = std::fs::metadata(telemetry_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    if size == 0 {
+        return None;
+    }
+    match upload_one(
+        s3,
+        job_id,
+        "logs/telemetry.jsonl".to_string(),
+        telemetry_path,
+        "logs",
+    )
+    .await
+    {
+        Ok(rep) => Some(rep),
+        Err(e) => {
+            tracing::warn!(
+                job_id = %job_id,
+                error = %e,
+                "falha best-effort no upload live de telemetry.jsonl (C2a)"
+            );
+            None
+        }
+    }
+}
+
 /// Coleta os artefatos de geração de difusão (`generated_*`, `thumb_*`,
 /// `generation_meta.json`, `generated.png` legado) com upload via
 /// `put_with_retry`.
@@ -211,6 +251,8 @@ pub async fn stream_metrics_and_samples(
     let mut lines_read: usize = 0;
     let mut uploaded_samples = std::collections::HashSet::<String>::new();
     let mut uploaded_checkpoints = std::collections::HashSet::<String>::new();
+    // C2a: bytes do último snapshot de telemetry.jsonl enviado (growth-gate).
+    let mut telemetry_uploaded_bytes: i64 = 0;
     loop {
         interval.tick().await;
 
@@ -360,6 +402,22 @@ pub async fn stream_metrics_and_samples(
         };
         let (new_metrics, new_lines_read) = tail_jsonl_lines(active_path, lines_read);
         lines_read = new_lines_read;
+
+        // C2a: re-upload do snapshot do telemetry.jsonl quando ele cresce —
+        // logs de treino ficam persistidos em S3 DURANTE a execução (o report
+        // de artefato é idempotente por path no manager; só interessa anunciar
+        // enquanto não anunciado — o growth-gate já cobre a parte do objeto).
+        if active_path == telemetry_path.as_path() {
+            if let Ok(size) = std::fs::metadata(active_path) {
+                let size = size.len() as i64;
+                if size > telemetry_uploaded_bytes {
+                    if let Some(rep) = upload_telemetry_snapshot(&s3, &job_id, active_path).await {
+                        telemetry_uploaded_bytes = size;
+                        new_live_artifacts.push(rep);
+                    }
+                }
+            }
+        }
 
         // 3. Envia report se houver novas métricas OU novos artefatos (amostras/checkpoints)
         if !new_metrics.is_empty() {

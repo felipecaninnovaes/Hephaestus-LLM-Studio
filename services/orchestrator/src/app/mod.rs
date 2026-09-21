@@ -25,7 +25,7 @@ use crate::{tail_jsonl_lines, telemetry_report_for_line};
 
 use stages::collector::{
     collect_diffusion_artifacts, read_final_metrics, read_generation_meta_content,
-    stream_metrics_and_samples,
+    stream_metrics_and_samples, upload_telemetry_snapshot,
 };
 use stages::config::{extract_epochs, replace_config_placeholders};
 use stages::execute::resolve_subcommand_args;
@@ -697,9 +697,16 @@ pub async fn run_job_inner(
         let telemetry_report_client = Arc::clone(&report_client);
         let telemetry_path_clone = telemetry_abs.clone();
         let telemetry_job_id = job_id.clone();
+        // C2a: upload periódico do snapshot de logs também no caminho daemon
+        // (a cada ~5s de ticks de 500ms, só quando o arquivo cresce; o report
+        // do artefato é anunciado uma única vez — dedupe por path no manager).
+        let telemetry_s3 = Arc::clone(&s3);
         let telemetry_handle = tokio::spawn(async move {
             let mut lines_read: usize = 0;
             let mut interval = tokio::time::interval(Duration::from_millis(500));
+            let mut upload_ticks: u32 = 0;
+            let mut telemetry_uploaded_bytes: i64 = 0;
+            let mut telemetry_artifact_reported = false;
             loop {
                 interval.tick().await;
                 let (new_lines, new_offset) = tail_jsonl_lines(&telemetry_path_clone, lines_read);
@@ -709,6 +716,44 @@ pub async fn run_job_inner(
                     let _ = telemetry_report_client
                         .report(&telemetry_job_id, &body)
                         .await;
+                }
+                upload_ticks += 1;
+                if upload_ticks >= 10 {
+                    upload_ticks = 0;
+                    if let Ok(meta) = std::fs::metadata(&telemetry_path_clone) {
+                        let size = meta.len() as i64;
+                        if size > telemetry_uploaded_bytes {
+                            if let Some(rep) = upload_telemetry_snapshot(
+                                &telemetry_s3,
+                                &telemetry_job_id,
+                                &telemetry_path_clone,
+                            )
+                            .await
+                            {
+                                telemetry_uploaded_bytes = size;
+                                if !telemetry_artifact_reported {
+                                    telemetry_artifact_reported = true;
+                                    let _ = telemetry_report_client
+                                        .report(
+                                            &telemetry_job_id,
+                                            &ReportBody {
+                                                status: "running".to_string(),
+                                                progress: None,
+                                                epoch: None,
+                                                step: None,
+                                                metrics: None,
+                                                error: None,
+                                                artifacts: Some(vec![rep]),
+                                                meta_content: None,
+                                                phase: None,
+                                                message: None,
+                                            },
+                                        )
+                                        .await;
+                                }
+                            }
+                        }
+                    }
                 }
             }
         });
@@ -756,7 +801,14 @@ pub async fn run_job_inner(
         }
 
         // (d) Coleta artefatos do output_dir igual one-shot (glob unificado — P0-4)
-        let (artifacts, upload_errors) = collect_diffusion_artifacts(&s3, job_id, &outputs).await;
+        let (mut artifacts, upload_errors) =
+            collect_diffusion_artifacts(&s3, job_id, &outputs).await;
+
+        // C2a: snapshot final dos logs (cobre o intervalo desde o último tick
+        // periódico; best-effort, não entra no gate de upload_errors).
+        if let Some(rep) = upload_telemetry_snapshot(&s3, job_id, &telemetry_abs).await {
+            artifacts.push(rep);
+        }
 
         // Incidente galeria vazia: upload persistente falhou → o job falhou do
         // ponto de vista do usuário; reportar done seria mentira.
@@ -1217,6 +1269,15 @@ pub async fn run_job_inner(
             "upload de artefatos falhou: {}",
             upload_errors.join("; ")
         )));
+    }
+
+    // C2a: snapshot final dos logs no caminho one-shot (o loop live pode ter
+    // parado com o tick no meio; best-effort).
+    let telemetry_oneshot = metrics_path.with_file_name("telemetry.jsonl");
+    if telemetry_oneshot.is_file() {
+        if let Some(rep) = upload_telemetry_snapshot(&s3, job_id, &telemetry_oneshot).await {
+            artifacts.push(rep);
+        }
     }
 
     // 10. Lê métricas finais para o report done

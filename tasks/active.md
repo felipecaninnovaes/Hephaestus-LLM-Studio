@@ -1,7 +1,12 @@
 # Memória Ativa — Hephaestus LLM Studio
 
-- **Branch atual:** `feat/onboarding-ux-proxy-e-worker-join`
-- **Fatia em andamento:** Suporte a worker na RunPod — MCP oficial configurado no harness, imagem DinD `hephaestus-runpod-worker` e runbook de template.
+- **Branch atual:** `fix/treino-observabilidade`
+- **Fatia em andamento:** Observabilidade & Reprodutibilidade do Treino (spec
+  `tasks/specs/treino-observabilidade.md`) — Wave 1: C2b/C1/C2c/F1; Wave 2: C2a/F2.
+- **⚠ CONSTRAINT (2026-09-20):** treino em andamento — proibido `docker compose
+  up/restart/down/build` e qualquer kill de portas dos serviços/engines. Só
+  `apps/web` pode ser reiniciada. Deploy das correções de orquestrador/manager/BFF
+  fica para janela segura; nesta fatia apenas código + testes.
 
 ## Checklist Imediato da Sessão Ativa
 - [x] MCP RunPod em `.omp/mcp.json` (hosted OAuth + docs server)

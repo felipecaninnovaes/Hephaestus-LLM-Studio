@@ -50,6 +50,18 @@ sugerida ao final.
   — nunca entregar como config real.
 - Esforço: pequeno (~100 LOC), só `apps/web` (+ opcional orquestrador).
 
+### Nota de não-escopo (2026-09-20 — decisão do coordenador)
+- "Retomar" neste spec = **continuação por pesos LoRA + `epoch_offset`**,
+  mecanismo que já existe na engine (`weights_path`/`epoch_offset`; coberto por
+  `engines/trainer-difusao/tests/test_train.py:416` `test_train_mock_resume_with_offset_and_weights`)
+  e já funciona via `/jobs` (`handleResumeFromCheckpoint`). O que a C1 conserta é
+  só o roteamento UI (chave órfã do ActionCenter) + mapper de preset.
+- Resume de **estado de otimizador/scheduler/global_step** NÃO existe no repo e
+  NÃO é prometido por esta spec. Implementadores da C1 são proibidos de escalar
+  o fix para dentro da engine ou do contrato de dispatch.
+- Remover junto os query params mortos `?resume=1&checkpointId=...&epochOffset=...`
+  do `router.push` do ActionCenter (`ActionCenter.tsx:222`) — ninguém os parseia.
+
 ---
 
 ## C2. Logs perdem no refresh; gráfico de loss sumiu; cache latent sem log

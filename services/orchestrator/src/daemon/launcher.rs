@@ -67,6 +67,16 @@ impl DockerDaemonLauncher {
         args.push("--network".to_string());
         args.push(net);
 
+        // uid do engine — mesmo contrato do executor one-shot (DockerExecutor):
+        // sem isto o daemon (USER studio, uid 1000) não consegue escrever nos
+        // diretórios de job criados pelo orquestrador (root) no dataset compartilhado.
+        if let Ok(user) = std::env::var("ENGINE_USER") {
+            if !user.is_empty() {
+                args.push("--user".to_string());
+                args.push(user);
+            }
+        }
+
         // Detached mode (D1) — sem --rm (daemon persiste)
         args.push("-d".to_string());
 

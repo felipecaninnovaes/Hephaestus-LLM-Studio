@@ -6,6 +6,13 @@
   `tasks/specs/treino-observabilidade.md`). Falta apenas o **deploy na janela
   segura** (fim do treino atual): rebuild de imagens + restart de orchestrator,
   api-principal e trainer-difusao. Web já está viva no dev server.
+- **HOTFIX permissões nó GPU (2026-09-22):** engines uid 1000 não escreviam em
+  dir de job root:0755 (EACCES pós-geração). Bridge NO NÓ: `ENGINE_USER: "0:0"`
+  em `infra/compose.gpu.yaml` (+`.bak-perms`). Fix permanente na branch
+  `fix/permissoes-volume-engine-uid` (create_dir_all_open 0777 + probe engine).
+  **Ao deployar o fix: remover ENGINE_USER do compose do nó e reiniciar
+  orchestrator-gpu; depois `docker exec gpu-orchestrator-gpu-1 find /data/outputs /data/datasets -type d -exec chmod a+rwX {} +`**
+  (dirs criados root durante a bridge).
 - **Pendência do provider:** subagentes (`opencode-go/muse-spark`) sem fundos
   desde 2026-09-20 (402) — Wave 2 executada inline pelo coordenador. Recarregar
   ou repontar os roles em `.omp/` antes da próxima delegação.

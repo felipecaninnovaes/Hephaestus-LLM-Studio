@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::domain::errors::PipelineError;
 use crate::ports::storage::S3Port;
 
-use super::archive::compute_file_md5;
+use super::{archive::compute_file_md5, create_dir_all_open};
 
 /// Baixa e faz cache de pesos no nó orquestrador com base no MD5.
 ///
@@ -34,9 +34,7 @@ pub async fn stage_cached_weight_with_progress(
     expected_md5: &str,
     on_progress: Option<&(dyn Fn(u64, Option<u64>) + Send + Sync)>,
 ) -> Result<(), PipelineError> {
-    tokio::fs::create_dir_all(cache_dir)
-        .await
-        .map_err(|e| PipelineError::Other(format!("create weights cache dir: {e}")))?;
+    create_dir_all_open(cache_dir).await?;
 
     let ext = dest_file
         .extension()

@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -53,3 +54,27 @@ class TestTelemetryEmitter(unittest.TestCase):
         self.assertEqual(ev["phase"], "error")
         self.assertIn("Failure occurred: Invalid batch size", ev["message"])
         self.assertEqual(ev["metrics"]["error_type"], "ValueError")
+
+    @unittest.skipUnless(hasattr(os, "getuid") and os.getuid() != 0, "root ignora DAC")
+    def test_unwritable_output_dir_fails_fast(self):
+        """Saída não-gravável (dir root 0755 vs engine uid 1000) deve abortar na
+        construção do emissor, antes de qualquer trabalho custoso."""
+        blocked = self.tmp_dir / "job-root-owned"
+        blocked.mkdir()
+        blocked.chmod(0o555)
+        try:
+            with self.assertRaises(RuntimeError) as ctx:
+                TelemetryEmitter(blocked / "inside")
+            self.assertIn("Sem permissão de escrita", str(ctx.exception))
+        finally:
+            blocked.chmod(0o755)
+
+    @unittest.skipUnless(hasattr(os, "getuid") and os.getuid() != 0, "root ignora DAC")
+    def test_writable_existing_dir_passes_probe(self):
+        out = self.tmp_dir / "job-ok"
+        out.mkdir()
+        out.chmod(0o777)
+        emitter = TelemetryEmitter(out)
+        self.assertFalse((out / ".write-probe").exists())
+        self.assertTrue(out.is_dir())
+        _ = emitter

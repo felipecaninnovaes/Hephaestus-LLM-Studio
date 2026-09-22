@@ -18,8 +18,8 @@ use crate::ports::executor::TrainerExecutor;
 use crate::ports::reporter::ReportClient;
 use crate::ports::storage::S3Port;
 use crate::storage::{
-    compute_file_md5, init_image_ext, put_with_retry, scoped_init_image_key, scoped_key,
-    unzip_safe, S3Scope,
+    compute_file_md5, create_dir_all_open, init_image_ext, put_with_retry, scoped_init_image_key,
+    scoped_key, unzip_safe, S3Scope,
 };
 use crate::{tail_jsonl_lines, telemetry_report_for_line};
 
@@ -177,12 +177,8 @@ pub async fn run_job_inner(
     let outputs = job_workdir.join("outputs").join(job_id);
     let temp_dir = job_workdir.join("tmp").join(job_id);
     let weights_cache_dir = job_workdir.join("outputs").join(".weights-cache");
-    tokio::fs::create_dir_all(&datasets_cache)
-        .await
-        .map_err(|e| PipelineError::Other(format!("create datasets-cache: {e}")))?;
-    tokio::fs::create_dir_all(&outputs)
-        .await
-        .map_err(|e| PipelineError::Other(format!("create outputs: {e}")))?;
+    create_dir_all_open(&datasets_cache).await?;
+    create_dir_all_open(&outputs).await?;
     tokio::fs::create_dir_all(&temp_dir)
         .await
         .map_err(|e| PipelineError::Other(format!("create temp: {e}")))?;
@@ -361,9 +357,7 @@ pub async fn run_job_inner(
         })?;
 
         let weights_dir = outputs.join("weights");
-        tokio::fs::create_dir_all(&weights_dir)
-            .await
-            .map_err(|e| PipelineError::Other(format!("create weights dir: {e}")))?;
+        create_dir_all_open(&weights_dir).await?;
 
         let weights_file = weights_dir.join(filename);
         let on_w = make_progress_reporter(
@@ -391,9 +385,7 @@ pub async fn run_job_inner(
     let mut lora_staged_paths: Vec<String> = Vec::new();
     let weights_dir = outputs.join("weights");
     if !dispatch.loras.is_empty() {
-        tokio::fs::create_dir_all(&weights_dir)
-            .await
-            .map_err(|e| PipelineError::Other(format!("create weights dir: {e}")))?;
+        create_dir_all_open(&weights_dir).await?;
     }
     for (i, lora) in dispatch.loras.iter().enumerate() {
         let lora_file = weights_dir.join(format!("lora_{i}.safetensors"));
@@ -413,9 +405,7 @@ pub async fn run_job_inner(
     //     Pesos ficam em outputs/<job_id>/weights/custom.safetensors
     let mut custom_staged_path: Option<String> = None;
     if let Some(custom) = dispatch.custom_checkpoint.as_ref() {
-        tokio::fs::create_dir_all(&weights_dir)
-            .await
-            .map_err(|e| PipelineError::Other(format!("create weights dir: {e}")))?;
+        create_dir_all_open(&weights_dir).await?;
         let custom_file = weights_dir.join("custom.safetensors");
         let on_c = make_progress_reporter(
             &report_client,
@@ -442,9 +432,7 @@ pub async fn run_job_inner(
     //     falha honesta em qualquer etapa — nunca fallback silencioso p/ o oficial).
     let mut text_encoder_staged_path: Option<String> = None;
     if let Some(encoder) = dispatch.text_encoder.as_ref() {
-        tokio::fs::create_dir_all(&weights_dir)
-            .await
-            .map_err(|e| PipelineError::Other(format!("create weights dir: {e}")))?;
+        create_dir_all_open(&weights_dir).await?;
         let encoder_file = weights_dir.join("text_encoder.safetensors");
         resolve_and_stage_weight(
             &s3,
@@ -469,9 +457,7 @@ pub async fn run_job_inner(
         let scoped_ikey = scoped_init_image_key(&init.s3_key)
             .map_err(|e| PipelineError::S3Download(format!("invalid init_image_ref key: {e}")))?;
         let inputs_dir = outputs.join("inputs");
-        tokio::fs::create_dir_all(&inputs_dir)
-            .await
-            .map_err(|e| PipelineError::Other(format!("create inputs dir: {e}")))?;
+        create_dir_all_open(&inputs_dir).await?;
         let ext = init_image_ext(&init.s3_key);
         let init_file = inputs_dir.join(format!("init.{ext}"));
         s3.get_to_file(&scoped_ikey, &init_file)
@@ -519,9 +505,7 @@ pub async fn run_job_inner(
             });
         }
         let control_dir = datasets_cache.join("control");
-        tokio::fs::create_dir_all(&control_dir)
-            .await
-            .map_err(|e| PipelineError::Other(format!("create control dir: {e}")))?;
+        create_dir_all_open(&control_dir).await?;
         unzip_safe(&control_zip, &control_dir)?;
         control_staged_path = Some(format!("/datasets/datasets-cache/{job_id}/control"));
     }

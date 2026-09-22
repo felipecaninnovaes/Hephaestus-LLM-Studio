@@ -22,11 +22,32 @@ class TelemetryEmitter:
         legacy_filename: Optional[str] = "metrics.jsonl",
     ):
         self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self._ensure_writable()
         self.telemetry_path = self.output_dir / filename
         self.legacy_path = self.output_dir / legacy_filename if legacy_filename else None
         self._current_phase = "init"
         self._last_progress = 0.0
+
+    def _ensure_writable(self) -> None:
+        """Fail-fast: saída não-gravável aborta ANTES de gastar GPU.
+
+        Engines rodam como uid 1000 (`studio`) sobre volumes compartilhados com
+        o orquestrador (root); sem permissão de escrita o único desfecho do job
+        é EACCES nos artefatos — melhor morrer em segundos do que após a geração
+        (docs/PITFALLS.md, infra).
+        """
+        try:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            probe = self.output_dir / ".write-probe"
+            probe.write_bytes(b"")
+            probe.unlink()
+        except OSError as exc:
+            uid = os.getuid() if hasattr(os, "getuid") else -1
+            raise RuntimeError(
+                f"Sem permissão de escrita em {self.output_dir} "
+                f"(errno {exc.errno}: {exc.strerror}); uid efetivo do engine = {uid}. "
+                "Verifique dono/modo do diretório no volume compartilhado com o orquestrador."
+            ) from exc
 
     def emit(
         self,

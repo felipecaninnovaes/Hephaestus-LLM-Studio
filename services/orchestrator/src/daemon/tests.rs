@@ -54,6 +54,31 @@ fn build_daemon_args_structure() {
     assert!(args.contains(&"8766".to_string()));
 }
 
+/// ENGINE_USER também vale para o daemon: sem `--user`, o container herda
+/// `USER studio` da imagem (uid 1000) e não escreve em diretórios de job
+/// criados pelo orquestrador (root) no dataset compartilhado.
+#[test]
+fn build_daemon_args_with_engine_user() {
+    std::env::set_var("ENGINE_USER", "1000:1000");
+    let launcher = DockerDaemonLauncher::new(
+        "hephaestus/trainer-difusao:gpu",
+        "diffusion-daemon",
+        vec![("gpu_gpu_outputs".into(), "/outputs".into())],
+        8766,
+        Some("0".into()),
+        vec![],
+        Some("gpu_default".into()),
+    );
+    let args = launcher.build_daemon_args();
+    std::env::remove_var("ENGINE_USER");
+
+    let idx = args
+        .iter()
+        .position(|a| a == "--user")
+        .expect("daemon deve receber --user quando ENGINE_USER está definido");
+    assert_eq!(args[idx + 1], "1000:1000");
+}
+
 /// Modo compose: network_name=Some → --network <net>, URL diffusion-daemon:<port>
 #[test]
 fn build_daemon_args_compose_network() {

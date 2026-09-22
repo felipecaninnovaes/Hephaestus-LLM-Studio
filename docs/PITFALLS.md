@@ -45,6 +45,7 @@ aqui com a fonte. Trabalho futuro → `tasks/backlog.md`.
 - **Partição de rede permite dupla execução** → recovery por heartbeat não distingue nó morto de nó isolado → risco ACEITO: artefatos são last-write-wins por `job_id` com md5 determinístico por (params, seed); mudar isso exige fencing, não retry. (ADR-0011 R3)
 - **`--gpus "device=N"` pega a GPU errada após reboot** → N é índice nvidia-smi do HOST e a ordem pode mudar → smoke valida `nvidia-smi -L` antes da sessão GPU. (ADR-0010 D9)
 - **Daemon de difusão sobe com imagem `:local` inexistente no nó (exit 125)** → `DockerDaemonLauncher` resolve a imagem pelo env PRÓPRIO do orquestrador (`DIFFUSION_TRAINER_IMAGE`, default `:local`), NUNCA pelo `dispatch.image` do manager → a tag vive em duas fontes de verdade que precisam estar alinhadas nos dois composes; segunda mordida após o bug do nome `TRAINER_IMAGE_DIFFUSION`. (ADR-0023 D1; 2ª recorrência — main.rs:101)
+- **Engine GPU morre em EACCES gravando `/outputs/<job>/` só no fim do job** → raiz do dataset ZFS é 0777 mas subdir criado pelo orquestrador (root) nasce 0755 (umask; permissão do pai NÃO propaga) e a imagem do engine roda uid 1000 (`USER studio`) → todo dir de job compartilhado passa por `create_dir_all_open` (0o777); `TelemetryEmitter` probeia escrita e falha rápido. (nó GPU 2026-09-22; hotfix `fix/permissoes-volume-engine-uid`)
 
 ## Engines — Python/ultralytics
 

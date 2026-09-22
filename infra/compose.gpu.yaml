@@ -45,6 +45,11 @@ services:
       HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
       HF_HOME: /data/models/huggingface
       FLUX_MODEL_ID: ${FLUX_MODEL_ID:-}
+      # Imagem do daemon de difusão (D1 — ADR-0023): o launcher do daemon usa o
+      # env PRÓPRIO do orquestrador, não o dispatch.image do manager. Sem isto
+      # caía no default `:local`, inexistente no nó (build do profile gpu é `:gpu`)
+      # → "docker run daemon failed (exit 125)".
+      DIFFUSION_TRAINER_IMAGE: ${DIFFUSION_TRAINER_IMAGE:-hephaestus/trainer-difusao:gpu}
       DIFFUSION_DAEMON_ENABLED: ${DIFFUSION_DAEMON_ENABLED:-0}
       DIFFUSION_DAEMON_PORT: ${DIFFUSION_DAEMON_PORT:-8766}
       DIFFUSION_DAEMON_IDLE_TTL_S: ${DIFFUSION_DAEMON_IDLE_TTL_S:-600}

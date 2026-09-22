@@ -1,6 +1,6 @@
 # Memória Ativa — Hephaestus LLM Studio
 
-- **Branch atual:** `fix/treino-observabilidade`
+- **Branch atual:** `chore/daemon-imagem-gpu` (aberta de `develop`; push/merge aguardam ordem)
 - **Fatia em andamento:** Observabilidade & Reprodutibilidade do Treino —
   **código 100% commitado e verde** (C1/C2a/C2b/C2c/F1/F2; spec
   `tasks/specs/treino-observabilidade.md`). Falta apenas o **deploy na janela
@@ -19,6 +19,7 @@
 ## Entregas Concluídas Recentemente
 - [x] Roadmap de Hardening e Padronização da Infraestrutura (`tasks/infra-auditoria.md`) concluído e integrado.
 - [x] Hotfix manager: `report_job` aceita `status: cancelled` pós-abort (commit 4bfb450).
+- [x] Hotfix daemon difusão exit 125 no nó GPU: `DIFFUSION_TRAINER_IMAGE` propagado aos dois composes + `env.gpu.example`; tag `:local→:gpu` aplicada direto no TrueNAS (contorna até deploy); smoke `/health` 200 via DNS `diffusion-daemon:8766` dentro do `orchestrator-gpu`. Lição promovida a PITFALLS (2ª recorrência).
 
 ## Protocolo de Retomada (3 Passos)
 

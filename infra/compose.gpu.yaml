@@ -26,7 +26,7 @@ services:
       context: ..
       dockerfile: services/orchestrator/Dockerfile
     ports:
-      - '8082:8082'
+      - "8082:8082"
     logging: *default-logging
     environment:
       MANAGER_URL: "${MANAGER_URL:?Defina MANAGER_URL no env.gpu (ex: http://10.15.10.3:8081)}"
@@ -57,7 +57,8 @@ services:
       DIFFUSION_DAEMON_NETWORK: ${DIFFUSION_DAEMON_NETWORK:-${COMPOSE_PROJECT_NAME:-gpu}_default}
       ENGINE_NETWORK: ${ENGINE_NETWORK:-${COMPOSE_PROJECT_NAME:-gpu}_default}
       EXEC_MODE: docker
-      PORT: '8082'
+      ENGINE_USER: "0:0"
+      PORT: "8082"
       ENABLE_TEXT_ENCODER_UNLOAD: ${ENABLE_TEXT_ENCODER_UNLOAD:-0}
       TRAINER_TIMEOUT_SECS: ${TRAINER_TIMEOUT_SECS:-7200}
     volumes:
@@ -75,7 +76,11 @@ services:
               count: all
               capabilities: [gpu]
     healthcheck:
-      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8082 && echo -e \"GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && grep -q 200 <&3'"]
+      test:
+        [
+          "CMD-SHELL",
+          "bash -c 'exec 3<>/dev/tcp/localhost/8082 && echo -e \"GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && grep -q 200 <&3'",
+        ]
       interval: 10s
       timeout: 5s
       retries: 5

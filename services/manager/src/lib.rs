@@ -3863,6 +3863,7 @@ pub async fn dispatch_next(
              LIMIT 1 \
              FOR UPDATE OF o",
         )
+        .bind(required_gb)
         .fetch_optional(&mut *tx)
         .await
         .map_err(|e| ManagerError::Internal(format!("find orchestrator: {e}")))?;

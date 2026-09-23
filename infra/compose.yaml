@@ -168,6 +168,9 @@ services:
       TRAINER_IMAGE: ${TRAINER_IMAGE:-hephaestus/trainer-yolo:local}
       DIFFUSION_TRAINER_IMAGE: ${DIFFUSION_TRAINER_IMAGE:-hephaestus/trainer-difusao:local}
       AUTO_ADOPT_LOCAL: ${AUTO_ADOPT_LOCAL:-1}
+      VRAM_TABLE_PATH: /etc/hephaestus/vram-table.yaml
+    volumes:
+      - ../packages/policies/vram-table.yaml:/etc/hephaestus/vram-table.yaml:ro
     depends_on:
       db:
         condition: service_healthy

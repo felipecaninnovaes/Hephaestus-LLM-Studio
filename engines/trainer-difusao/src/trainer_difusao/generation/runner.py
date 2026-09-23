@@ -283,7 +283,7 @@ def _real_generate(
                         diffusers, "QwenImage21Transformer2DModel", getattr(diffusers, "QwenImageTransformer2DModel", None)
                     )
                     if TransformerCls is not None:
-                        print("[DIFFUSION-GEN] Aplicando quantização 4-bit no Transformer para aceleração máxima em VRAM...", flush=True)
+                        print("[DIFFUSION-GEN] Aplicando quantização 4-bit no Transformer...", flush=True)
                         pipe_kwargs["transformer"] = TransformerCls.from_pretrained(
                             model_repo,
                             subfolder="transformer",
@@ -292,14 +292,27 @@ def _real_generate(
                             cache_dir=hub_cache,
                         )
                 except Exception as e:
-                    print(f"[WARN] Falha ao quantizar transformer ({e}). Usando sequential offload.", flush=True)
+                    print(f"[WARN] Falha ao quantizar transformer ({e}).", flush=True)
+
+                try:
+                    from transformers import Qwen3VLForConditionalGeneration
+                    print("[DIFFUSION-GEN] Aplicando quantização 4-bit no Text Encoder...", flush=True)
+                    pipe_kwargs["text_encoder"] = Qwen3VLForConditionalGeneration.from_pretrained(
+                        model_repo,
+                        subfolder="text_encoder",
+                        quantization_config=quantization_config,
+                        torch_dtype=pipe_dtype,
+                        cache_dir=hub_cache,
+                    )
+                except Exception as e:
+                    print(f"[WARN] Falha ao quantizar text_encoder ({e}).", flush=True)
 
             pipe = QwenPipelineCls.from_pretrained(
                 model_repo,
                 **pipe_kwargs,
             )
             if device == "cuda":
-                if "transformer" in pipe_kwargs:
+                if "text_encoder" in pipe_kwargs:
                     pipe.enable_model_cpu_offload()
                 else:
                     pipe.enable_sequential_cpu_offload()

@@ -44,6 +44,8 @@ services:
       HF_TOKEN: ${HF_TOKEN:-}
       HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
       HF_HOME: /data/models/huggingface
+      HF_HUB_DISABLE_XET: "1"
+      HF_HUB_ENABLE_HF_TRANSFER: "0"
       FLUX_MODEL_ID: ${FLUX_MODEL_ID:-}
       # Imagem do daemon de difusão (D1 — ADR-0023): o launcher do daemon usa o
       # env PRÓPRIO do orquestrador, não o dispatch.image do manager. Sem isto

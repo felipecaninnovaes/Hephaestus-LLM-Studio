@@ -886,6 +886,8 @@ pub async fn run_job_inner(
             "TORCH_HOME".to_string(),
             "/outputs/.cache/torch".to_string(),
         ));
+        exec_env.push(("HF_HUB_DISABLE_XET".to_string(), "1".to_string()));
+        exec_env.push(("HF_HUB_ENABLE_HF_TRANSFER".to_string(), "0".to_string()));
         if let Ok(v) = std::env::var("ENABLE_TEXT_ENCODER_UNLOAD") {
             if !v.trim().is_empty() {
                 exec_env.push((

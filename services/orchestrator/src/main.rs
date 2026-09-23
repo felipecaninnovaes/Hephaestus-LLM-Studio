@@ -147,6 +147,8 @@ async fn main() {
             "TORCH_HOME".to_string(),
             "/data/outputs/.cache/torch".to_string(),
         ));
+        daemon_env.push(("HF_HUB_DISABLE_XET".to_string(), "1".to_string()));
+        daemon_env.push(("HF_HUB_ENABLE_HF_TRANSFER".to_string(), "0".to_string()));
         if let Some(token) = cfg.daemon.hf_token.clone() {
             daemon_env.push(("HF_TOKEN".to_string(), token.clone()));
             daemon_env.push(("HUGGING_FACE_HUB_TOKEN".to_string(), token));

@@ -29,8 +29,10 @@ def _cleanup_cuda() -> None:
 
 
 def _setup_cache_dir(hf_token: str | None = None) -> str:
-    """Configura diretório de cache persistente para Hugging Face e PyTorch no volume /outputs."""
-    if Path("/outputs").exists():
+    """Configura diretório de cache persistente para Hugging Face e PyTorch no volume /data/outputs ou /outputs."""
+    if Path("/data/outputs").exists():
+        cache_base = Path("/data/outputs/.cache/huggingface")
+    elif Path("/outputs").exists():
         cache_base = Path("/outputs/.cache/huggingface")
     else:
         cache_base = Path.home() / ".cache" / "huggingface"
@@ -49,6 +51,8 @@ def _setup_cache_dir(hf_token: str | None = None) -> str:
     os.environ["TRANSFORMERS_CACHE"] = hub_cache_str
     os.environ["DIFFUSERS_CACHE"] = hub_cache_str
     os.environ["TORCH_HOME"] = torch_cache_str
+    os.environ["HF_HUB_DISABLE_XET"] = "1"
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 
     token = (
         hf_token

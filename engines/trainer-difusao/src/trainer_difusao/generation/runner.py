@@ -14,6 +14,7 @@ from typing import Any
 import yaml
 from engine_kit.mock import is_mock
 from trainer_difusao.common_pkg.core import _die
+from trainer_difusao.common import _setup_cache_dir
 from trainer_difusao.generation.artifacts import (
     _build_generation_meta,
     _is_cancelled,
@@ -76,6 +77,7 @@ def _real_generate(
         if device == "cuda" and torch.cuda.is_bf16_supported()
         else (torch.float16 if device == "cuda" else torch.float32)
     )
+    hub_cache = _setup_cache_dir()
 
     emitter.emit(
         phase="preparing",
@@ -273,6 +275,7 @@ def _real_generate(
             pipe = QwenImage21Pipeline.from_pretrained(
                 model_repo,
                 torch_dtype=pipe_dtype,
+                cache_dir=hub_cache,
             )
             if quantization_config is None and device == "cuda":
                 pipe.to(device)

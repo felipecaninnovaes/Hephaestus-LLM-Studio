@@ -2779,7 +2779,7 @@ paths:
                   description: "Hint: tipo do modelo diffusion (lora, checkpoint ou text_encoder). Sniff do servidor é autoritativo."
                 arch:
                   type: string
-                  enum: [flux-2-klein-4b, sdxl, sd15]
+                  enum: [flux-2-klein-4b, sdxl, sd15, qwen-image-2.1]
                   description: "Hint: arquitetura do modelo diffusion. Sniff do servidor é autoritativo."
       responses:
         "201":
@@ -3401,7 +3401,7 @@ components:
           description: "PK do dataset com imagens e legendas. Não-UUID ou inexistente ⇒ 404 `not_found`."
         baseModel:
           type: [string, "null"]
-          enum: [sdxl, flux, sd15, flux-2-klein-4b]
+          enum: [sdxl, flux, sd15, flux-2-klein-4b, qwen-image-2.1]
           default: sdxl
           description: "Modelo de difusão base para treino do adaptador LoRA. XOR com customModelId."
         customModelId:
@@ -3543,7 +3543,7 @@ components:
       properties:
         baseModel:
           type: string
-          enum: [sdxl, flux, sd15, flux-2-klein-4b]
+          enum: [sdxl, flux, sd15, flux-2-klein-4b, qwen-image-2.1]
           default: flux-2-klein-4b
           description: "Modelo base para geração Text-to-Image. XOR com customModelId."
         prompt:
@@ -5061,7 +5061,7 @@ components:
           description: "Hint diffusion; sniff do servidor é autoritativo."
         arch:
           type: string
-          enum: [flux-2-klein-4b, sdxl, sd15]
+          enum: [flux-2-klein-4b, sdxl, sd15, qwen-image-2.1]
           description: "Hint diffusion; sniff do servidor é autoritativo."
         size:
           type: integer
@@ -5182,7 +5182,7 @@ components:
         arch:
           type: string
           nullable: true
-          enum: [flux-2-klein-4b, sdxl, sd15]
+          enum: [flux-2-klein-4b, sdxl, sd15, qwen-image-2.1]
           description: "Arquitetura do modelo (ADR-0023 D4). Null para engines não-difusão."
 
     StorageUsage:

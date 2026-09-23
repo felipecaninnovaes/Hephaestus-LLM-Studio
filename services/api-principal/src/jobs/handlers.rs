@@ -2114,6 +2114,10 @@ pub async fn submit_diffusion_job(
     if let Some(control_ref) = control_package_ref {
         manager_body["params"]["control_package_ref"] = control_ref;
     }
+    // ADR-0015 D2: insere orchestrator_hint no body quando presente.
+    if let Some(orch_id) = &req.orchestrator_id {
+        manager_body["orchestrator_hint"] = serde_json::json!(orch_id);
+    }
 
     // 9. Aceite assíncrono: dedupe → create → insert → spawn → 202.
     //    NOTA P4a+P4b: `build_package_diffusion` ainda não grava fingerprint

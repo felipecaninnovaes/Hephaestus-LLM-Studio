@@ -54,6 +54,13 @@ def _generate_sample_flux(
 
         has_embeds = sample_embeds is not None and "prompt_embeds" in sample_embeds
         device = "cuda" if torch.cuda.is_available() else "cpu"
+        orig_vae_dtype = getattr(vae, "dtype", None)
+        target_dtype = getattr(transformer, "dtype", None)
+        if target_dtype is not None and orig_vae_dtype is not None and orig_vae_dtype != target_dtype:
+            try:
+                vae.to(dtype=target_dtype)
+            except Exception:
+                pass
         try:
             if is_flux2:
                 try:
@@ -131,6 +138,11 @@ def _generate_sample_flux(
                 os.replace(tmp_path, output_path)
                 print(f"[FLUX] Amostra de validação salva (seed={seed}, steps=20, cfg=3.5) em: {output_path}", flush=True)
         finally:
+            if orig_vae_dtype is not None and getattr(vae, "dtype", None) != orig_vae_dtype:
+                try:
+                    vae.to(dtype=orig_vae_dtype)
+                except Exception:
+                    pass
             if was_training:
                 transformer.train()
     except Exception as e:

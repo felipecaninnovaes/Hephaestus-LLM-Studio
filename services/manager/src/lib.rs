@@ -3834,7 +3834,7 @@ pub async fn dispatch_next(
                AND NOT EXISTS (SELECT 1 FROM jobs j \
                                WHERE j.orchestrator_id = o.id \
                                  AND j.status IN ('dispatched','running','cancelling')) \
-               AND ($2::int IS NULL OR o.vram_total_gb IS NULL OR o.vram_total_gb >= $2) \
+               AND ($2::int IS NULL OR (o.vram_total_gb IS NOT NULL AND o.vram_total_gb >= $2)) \
              FOR UPDATE OF o",
         )
         .bind(hint_id)
@@ -3842,7 +3842,6 @@ pub async fn dispatch_next(
         .fetch_optional(&mut *tx)
         .await
         .map_err(|e| ManagerError::Internal(format!("find hinted orchestrator: {e}")))?;
-
         if let Some(o) = hinted {
             selected_orch = Some(o);
         } else {
@@ -3857,14 +3856,13 @@ pub async fn dispatch_next(
                AND NOT EXISTS (SELECT 1 FROM jobs j \
                                WHERE j.orchestrator_id = o.id \
                                  AND j.status IN ('dispatched','running','cancelling')) \
-               AND ($1::int IS NULL OR o.vram_total_gb IS NULL OR o.vram_total_gb >= $1) \
+               AND ($1::int IS NULL OR (o.vram_total_gb IS NOT NULL AND o.vram_total_gb >= $1)) \
              ORDER BY (o.vram_total_gb IS NULL) ASC, \
                       o.vram_total_gb DESC NULLS LAST, \
                       o.name ASC \
              LIMIT 1 \
              FOR UPDATE OF o",
         )
-        .bind(required_gb)
         .fetch_optional(&mut *tx)
         .await
         .map_err(|e| ManagerError::Internal(format!("find orchestrator: {e}")))?;

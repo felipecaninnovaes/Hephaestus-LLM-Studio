@@ -1706,10 +1706,10 @@ pub fn diffusion_generate_vram_min_gb(arch: &str, quantization: &str) -> i32 {
     match arch {
         "sd15" => 6,
         "qwen-image-2.1" => match quantization {
-            "2bit" => 8,
-            "4bit" | "4bit-nf4" => 10,
-            "6bit" => 12,
-            "8bit" | "8bit-bnb" => 14,
+            "2bit" => 7,
+            "4bit" | "4bit-nf4" => 8,
+            "6bit" => 10,
+            "8bit" | "8bit-bnb" => 12,
             _ => 16,
         },
         "sdxl" | "flux" | "flux-2-klein-4b" => match quantization {

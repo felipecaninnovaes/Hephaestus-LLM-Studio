@@ -2067,7 +2067,7 @@ pub async fn submit_diffusion_job(
     //    ~10 GB; fatia: custom flux-2 custa como flux-2-klein-4b).
     let vram_min = match effective_base.as_str() {
         "sd15" => 8,
-        "qwen-image-2.1" => 16,
+        "qwen-image-2.1" => 10,
         "flux" | "flux-2-klein-4b" => 10,
         _ => 12, // sdxl e default
     };

@@ -8,19 +8,23 @@ from pathlib import Path
 from typing import Any
 
 from trainer_difusao.common import (
+    ENABLE_TEXT_ENCODER_UNLOAD,
+    TextEmbedsCache,
     _cached_encode,
+    _cleanup_cuda,
     _cycling_batches,
     _die,
     _emit_metric,
     _load_lora_weights,
+    _offload_encoders_to_cpu,
     _precompute_text_cache,
+    _precompute_text_cache_with_cleanup,
+    _prune_checkpoints,
     _resolve_output_name,
     _save_lora_safetensors,
     _setup_cache_dir,
+    _temporary_device_encoders,
     _validate_train_aux,
-    TextEmbedsCache,
-    _prune_checkpoints,
-    _cleanup_cuda,
 )
 from trainer_difusao.dataset import DiffusionDataset, build_dataloader
 from trainer_difusao.models.base import BaseModelTrainer
@@ -423,7 +427,8 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
             )
             return {"hidden": hidden, "pooled": pooled}
 
-        if ENABLE_TEXT_ENCODER_UNLOAD:
+        should_unload = ENABLE_TEXT_ENCODER_UNLOAD and epoch_offset == 0
+        if should_unload:
             _precompute_text_cache_with_cleanup(
                 text_cache,
                 [c for _, c in dataset.samples]
@@ -441,7 +446,6 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
                 _encode_sdxl_all,
                 metrics_path=metrics_path,
             )
-
     _emit_metric(
         metrics_path,
         epoch=0,
@@ -475,20 +479,21 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
             message=f"Gerando amostra baseline pré-treino (Época 0): '{sample_prompt[:40]}...'",
         )
         sample_baseline_file = output / "samples" / "sample_epoch_000.png"
-        _generate_sample_sdxl(
-            unet,
-            vae,
-            text_encoder_one,
-            text_encoder_two,
-            tokenizer_one,
-            tokenizer_two,
-            noise_scheduler,
-            sample_prompt,
-            sample_baseline_file,
-            seed=sample_seed,
-            metrics_path=metrics_path,
-            epoch=0,
-        )
+        with _temporary_device_encoders([text_encoder_one, text_encoder_two], device):
+            _generate_sample_sdxl(
+                unet,
+                vae,
+                text_encoder_one,
+                text_encoder_two,
+                tokenizer_one,
+                tokenizer_two,
+                noise_scheduler,
+                sample_prompt,
+                sample_baseline_file,
+                seed=sample_seed,
+                metrics_path=metrics_path,
+                epoch=0,
+            )
         _emit_metric(
             metrics_path,
             epoch=0,
@@ -555,7 +560,13 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
             ).long()
             noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
-            cached = _cached_encode(prompts, _encode_sdxl_batch, text_cache)
+            cached = _cached_encode(
+                prompts,
+                _encode_sdxl_batch,
+                text_cache,
+                encoders=[text_encoder_one, text_encoder_two],
+                device=device,
+            )
             prompt_embeds = cached["hidden"].to(device, dtype=target_dtype)
             pooled_prompt_embeds = cached["pooled"].to(device, dtype=target_dtype)
 
@@ -690,20 +701,21 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
                 message=f"Iniciando geração de amostra visual (Época {epoch})...",
                 telemetry_only=True,
             )
-            _generate_sample_sdxl(
-                unet,
-                vae,
-                text_encoder_one,
-                text_encoder_two,
-                tokenizer_one,
-                tokenizer_two,
-                noise_scheduler,
-                sample_prompt,
-                sample_file,
-                seed=sample_seed,
-                metrics_path=metrics_path,
-                epoch=epoch,
-            )
+            with _temporary_device_encoders([text_encoder_one, text_encoder_two], device):
+                _generate_sample_sdxl(
+                    unet,
+                    vae,
+                    text_encoder_one,
+                    text_encoder_two,
+                    tokenizer_one,
+                    tokenizer_two,
+                    noise_scheduler,
+                    sample_prompt,
+                    sample_file,
+                    seed=sample_seed,
+                    metrics_path=metrics_path,
+                    epoch=epoch,
+                )
             _emit_metric(
                 metrics_path,
                 epoch=epoch,

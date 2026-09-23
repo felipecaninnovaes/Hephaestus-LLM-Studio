@@ -154,6 +154,14 @@ async fn main() {
         if let Some(model_id) = cfg.daemon.flux_model_id.clone() {
             daemon_env.push(("FLUX_MODEL_ID".to_string(), model_id));
         }
+        if let Ok(v) = std::env::var("ENABLE_TEXT_ENCODER_UNLOAD") {
+            if !v.trim().is_empty() {
+                daemon_env.push((
+                    "ENABLE_TEXT_ENCODER_UNLOAD".to_string(),
+                    v.trim().to_string(),
+                ));
+            }
+        }
 
         let launcher: Arc<dyn orchestrator::daemon::DaemonLauncher> =
             Arc::new(orchestrator::daemon::DockerDaemonLauncher::new(

@@ -31,9 +31,14 @@ from trainer_difusao.common_pkg.train_config import (
     _build_intx_torchao_config,
 )
 from trainer_difusao.common_pkg.text_embeds import (
+    ENABLE_TEXT_ENCODER_UNLOAD,
     TextEmbedsCache,
-    _precompute_text_cache,
     _cached_encode,
+    _cleanup_encoders,
+    _offload_encoders_to_cpu,
+    _precompute_text_cache,
+    _precompute_text_cache_with_cleanup,
+    _temporary_device_encoders,
 )
 from trainer_difusao.common_pkg.encoder_merge import (
     TEXT_ENCODER_CUSTOM_CACHE_ENV,
@@ -76,8 +81,13 @@ __all__ = [
     "_cycling_batches",
     "_caption_cache_key",
     "_build_intx_torchao_config",
+    "ENABLE_TEXT_ENCODER_UNLOAD",
     "TextEmbedsCache",
     "_precompute_text_cache",
+    "_precompute_text_cache_with_cleanup",
+    "_cleanup_encoders",
+    "_offload_encoders_to_cpu",
+    "_temporary_device_encoders",
     "_cached_encode",
     "TEXT_ENCODER_CUSTOM_CACHE_ENV",
     "_TEXT_ENCODER_CUSTOM_CACHE_DEFAULT",

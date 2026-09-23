@@ -886,6 +886,14 @@ pub async fn run_job_inner(
             "TORCH_HOME".to_string(),
             "/outputs/.cache/torch".to_string(),
         ));
+        if let Ok(v) = std::env::var("ENABLE_TEXT_ENCODER_UNLOAD") {
+            if !v.trim().is_empty() {
+                exec_env.push((
+                    "ENABLE_TEXT_ENCODER_UNLOAD".to_string(),
+                    v.trim().to_string(),
+                ));
+            }
+        }
     }
 
     // Repassa token do Hugging Face para download de modelos restritos/gated

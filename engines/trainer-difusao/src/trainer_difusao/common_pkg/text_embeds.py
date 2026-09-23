@@ -1,10 +1,10 @@
 """Cache e pré-computação em disco de embeddings de texto do dataset."""
 from __future__ import annotations
 
+import contextlib
 import os
 from pathlib import Path
 from typing import Any
-
 from trainer_difusao.common_pkg.metrics import _emit_metric
 from trainer_difusao.common_pkg.train_config import _caption_cache_key
 
@@ -145,28 +145,54 @@ def _precompute_text_cache(
         )
 
 
-def _cleanup_encoders(
-    encoders: list[Any], cleanup_kwargs: dict[str, Any] = {}
-) -> None:
-    """Descarrega encoders de texto da VRAM (aceleração para pré-compute com cache)."""
+def _offload_encoders_to_cpu(encoders: list[Any]) -> None:
+    """Move encoders de texto para CPU e limpa cache CUDA para liberar VRAM."""
     try:
         import torch
 
-        if not torch.cuda.is_available():
-            return
-        # Coleta de lixo e limpeza de cache CUDA
-        torch.cuda.empty_cache()
-        # Descarrega cada encoder explicitamente
         for enc in encoders:
-            if enc is not None and hasattr(enc, "weight") or hasattr(enc, "parameters"):
-                del enc
-        # Coleta adicional de lixo para garantir liberação de memória
+            if enc is not None and hasattr(enc, "to"):
+                enc.to("cpu")
         import gc
 
         gc.collect()
-        print("[INFO] Text encoders descarregados da VRAM após pré-compute.", flush=True)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print("[INFO] Text encoders descarregados para CPU (VRAM liberada).", flush=True)
     except Exception as e:
-        print(f"[WARN] Falha ao descarregar text encoders: {e}", flush=True)
+        print(f"[WARN] Falha ao descarregar text encoders para CPU: {e}", flush=True)
+
+
+# Alias retrocompatível
+_cleanup_encoders = _offload_encoders_to_cpu
+
+
+@contextlib.contextmanager
+def _temporary_device_encoders(encoders: list[Any], device: Any):
+    """Garante que encoders estejam em `device` durante o bloco e retorna para CPU ao sair."""
+    if not ENABLE_TEXT_ENCODER_UNLOAD or not encoders or device is None:
+        yield
+        return
+
+    try:
+        for enc in encoders:
+            if enc is not None and hasattr(enc, "to"):
+                enc.to(device)
+        yield
+    finally:
+        try:
+            import torch
+
+            for enc in encoders:
+                if enc is not None and hasattr(enc, "to"):
+                    enc.to("cpu")
+            import gc
+
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception as e:
+            print(f"[WARN] Falha ao retornar text encoders para CPU: {e}", flush=True)
 
 
 def _precompute_text_cache_with_cleanup(
@@ -176,27 +202,22 @@ def _precompute_text_cache_with_cleanup(
     batch_size: int = 32,
     metrics_path: Path | None = None,
     unload_encoders: bool = False,
-    encoders: list[Any] = None,
+    encoders: list[Any] | None = None,
     cleanup_kwargs: dict[str, Any] = {},
 ) -> None:
-    """Pré-computa embeddings + opcionalmente descarrega encoders da VRAM.
-    
-    Args:
-        cache: Instância de TextEmbedsCache.
-        captions: Lista de captions para pré-computar.
-        encode_fn: Função que recebe captions e retorna embeddings em GPU.
-        batch_size: Tamanho do batch para pré-compute.
-        metrics_path: Caminho para arquivo de métricas (telemetria).
-        unload_encoders: Se True, descarta text encoders da VRAM após pré-compute.
-        encoders: Lista de encoders a descarregar (ex: [text_encoder_one, text_encoder_two]).
-        cleanup_kwargs: Parâmetros adicionais para função de cleanup.
-    """
+    """Pré-computa embeddings + opcionalmente move encoders para CPU (liberando VRAM)."""
     _precompute_text_cache(cache, captions, encode_fn, batch_size, metrics_path)
     if unload_encoders and encoders:
-        _cleanup_encoders(encoders, **cleanup_kwargs)
+        _offload_encoders_to_cpu(encoders)
 
 
-def _cached_encode(captions: list[str], encode_fn: Any, cache: TextEmbedsCache) -> dict[str, Any]:
+def _cached_encode(
+    captions: list[str],
+    encode_fn: Any,
+    cache: TextEmbedsCache,
+    encoders: list[Any] | None = None,
+    device: Any = None,
+) -> dict[str, Any]:
     """Resolve os embeddings do batch via cache (hit) ou encoder (miss com warm)."""
     import torch
 
@@ -205,7 +226,8 @@ def _cached_encode(captions: list[str], encode_fn: Any, cache: TextEmbedsCache) 
     hits = [cache.get(c) for c in captions]
     miss_idx = [i for i, h in enumerate(hits) if h is None]
     if miss_idx:
-        out = encode_fn([captions[i] for i in miss_idx])
+        with _temporary_device_encoders(encoders or [], device):
+            out = encode_fn([captions[i] for i in miss_idx])
         for k, i in enumerate(miss_idx):
             payload = {name: t[k].detach().cpu() for name, t in out.items()}
             cache.put(captions[i], payload)

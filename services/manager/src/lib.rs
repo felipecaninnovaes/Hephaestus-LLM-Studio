@@ -394,6 +394,16 @@ pub fn new_telemetry_cache() -> TelemetryCache {
 pub struct VramTable {
     pub defaults: VramDefaults,
     pub entries: Vec<VramEntry>,
+    #[serde(default)]
+    pub features: Vec<VramFeature>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VramFeature {
+    pub engine: String,
+    pub feature: String,
+    #[serde(default)]
+    pub default: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

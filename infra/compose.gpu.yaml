@@ -58,6 +58,7 @@ services:
       ENGINE_NETWORK: ${ENGINE_NETWORK:-${COMPOSE_PROJECT_NAME:-gpu}_default}
       EXEC_MODE: docker
       PORT: '8082'
+      ENABLE_TEXT_ENCODER_UNLOAD: ${ENABLE_TEXT_ENCODER_UNLOAD:-0}
       TRAINER_TIMEOUT_SECS: ${TRAINER_TIMEOUT_SECS:-7200}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

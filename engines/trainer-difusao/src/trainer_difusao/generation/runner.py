@@ -14,7 +14,7 @@ from typing import Any
 import yaml
 from engine_kit.mock import is_mock
 from trainer_difusao.common_pkg.core import _die
-from trainer_difusao.common import _setup_cache_dir
+from trainer_difusao.common import _ensure_qwen_diffusers_compat, _setup_cache_dir
 from trainer_difusao.generation.artifacts import (
     _build_generation_meta,
     _is_cancelled,
@@ -260,19 +260,20 @@ def _real_generate(
                 pipe.to(device)
 
         elif base_model == "qwen-image-2.1":
-            try:
-                from diffusers import QwenImage21Pipeline
-            except ImportError:
-                try:
-                    from diffusers import QwenImagePipeline as QwenImage21Pipeline
-                except ImportError:
-                    _die(
-                        "QwenImage21Pipeline não disponível na versão instalada do diffusers. "
-                        "Instale diffusers>=0.41.0.dev0 ou git+https://github.com/huggingface/diffusers.git"
-                    )
+            _ensure_qwen_diffusers_compat()
+            import diffusers
+
+            QwenPipelineCls = getattr(
+                diffusers, "QwenImage21Pipeline", getattr(diffusers, "QwenImagePipeline", None)
+            )
+            if QwenPipelineCls is None:
+                _die(
+                    "QwenImage21Pipeline não disponível na versão instalada do diffusers. "
+                    "Instale diffusers>=0.41.0.dev0 ou git+https://github.com/huggingface/diffusers.git"
+                )
             model_repo = os.environ.get("QWEN_IMAGE_MODEL_ID", "Qwen/Qwen-Image-2.1")
             print(f"[DIFFUSION-GEN] Carregando Qwen-Image-2.1: {model_repo}", flush=True)
-            pipe = QwenImage21Pipeline.from_pretrained(
+            pipe = QwenPipelineCls.from_pretrained(
                 model_repo,
                 torch_dtype=pipe_dtype,
                 cache_dir=hub_cache,

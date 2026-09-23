@@ -72,3 +72,22 @@ def _setup_cache_dir(hf_token: str | None = None) -> str:
             print(f"[WARN] Falha ao registrar token no huggingface_hub: {e}", flush=True)
 
     return hub_cache_str
+
+
+def _ensure_qwen_diffusers_compat() -> None:
+    """Registra aliases em diffusers para compatibilidade entre model_index.json e diffusers."""
+    try:
+        import diffusers
+    except ImportError:
+        return
+
+    pairs = [
+        ("QwenImage21Transformer2DModel", "QwenImageTransformer2DModel"),
+        ("QwenImage21Pipeline", "QwenImagePipeline"),
+        ("AutoencoderKLQwenImage21", "AutoencoderKLQwenImage"),
+    ]
+    for a, b in pairs:
+        if not hasattr(diffusers, a) and hasattr(diffusers, b):
+            setattr(diffusers, a, getattr(diffusers, b))
+        elif not hasattr(diffusers, b) and hasattr(diffusers, a):
+            setattr(diffusers, b, getattr(diffusers, a))

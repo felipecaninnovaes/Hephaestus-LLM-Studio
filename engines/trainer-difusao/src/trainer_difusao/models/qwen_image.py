@@ -12,6 +12,7 @@ from engine_kit.mock import is_mock
 from trainer_difusao.common import (
     _cleanup_cuda,
     _die,
+    _ensure_qwen_diffusers_compat,
     _emit_metric,
     _normalize_train_quantization,
     _resolve_output_name,
@@ -33,6 +34,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path) -> None:
         from peft import LoraConfig, get_peft_model
     except ImportError as exc:
         _die(f"Dependência ausente para treino real de Qwen-Image-2.1: {exc}")
+    _ensure_qwen_diffusers_compat()
 
     try:
         from diffusers import (

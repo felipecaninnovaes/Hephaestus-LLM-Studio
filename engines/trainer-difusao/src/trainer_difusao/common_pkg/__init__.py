@@ -13,6 +13,7 @@ from trainer_difusao.common_pkg.runtime import (
     _prune_checkpoints,
     _cleanup_cuda,
     _setup_cache_dir,
+    _ensure_qwen_diffusers_compat,
 )
 from trainer_difusao.common_pkg.lora_io import (
     _save_lora_safetensors,
@@ -72,6 +73,7 @@ __all__ = [
     "_prune_checkpoints",
     "_cleanup_cuda",
     "_setup_cache_dir",
+    "_ensure_qwen_diffusers_compat",
     "_save_lora_safetensors",
     "_load_lora_weights",
     "_TRAIN_QUANT_LEVELS",

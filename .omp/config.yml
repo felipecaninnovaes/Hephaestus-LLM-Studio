@@ -6,9 +6,9 @@ modelRoles:
   # openrouter/qwen/qwen3.8-flash trava sem entregar token (testado 2026-09-17);
   # mesmo modelo via gateway opencode-go responde.
   #default: "openrouter/qwen/qwen3.8-flash"
-  default: "google-antigravity/gemini-3.8-flash:medium"
+  default: "openrouter/meta/muse-spark-1.3-contributor"
   # agente "plan" do opencode (modo plan)
-  plan: "openrouter/qwen/qwen3.8-flash:high"
+  plan: "openrouter/meta/muse-spark-1.3-contributor"
   # workers (implementadores, revisores, fixer, docs-sync, explore, ui-designer, visao)
   worker: "openrouter/meta/muse-spark-1.3-contributor"
   # workers com variant high do opencode (architect, reviewer, guardian, ui-designer)

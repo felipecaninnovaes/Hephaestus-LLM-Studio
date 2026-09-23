@@ -68,10 +68,12 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
         arch = str(arch).strip().lower() if arch else None
         if arch in ("flux", "flux2", "flux-2", "flux2-klein-4b", "flux.2-klein-4b"):
             arch = "flux-2-klein-4b"
-        if arch not in ("sdxl", "sd15", "flux-2-klein-4b"):
+        elif arch in ("qwen", "qwen-image", "qwen-image-2.1", "qwen2.1", "qwen_image", "qwen-image-2-1"):
+            arch = "qwen-image-2.1"
+        if arch not in ("sdxl", "sd15", "flux-2-klein-4b", "qwen-image-2.1"):
             _die(
                 "custom_checkpoint_path exige campo 'arch' válido "
-                "('sdxl', 'sd15' ou 'flux-2-klein-4b')."
+                "('sdxl', 'sd15', 'flux-2-klein-4b' ou 'qwen-image-2.1')."
             )
     else:
         custom_checkpoint_path = None
@@ -97,13 +99,13 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
         )
 
     if custom_checkpoint_path:
-        if arch not in ("sdxl", "sd15", "flux-2-klein-4b"):
+        if arch not in ("sdxl", "sd15", "flux-2-klein-4b", "qwen-image-2.1"):
             _die(
                 "Arquitetura custom não suportada: "
-                f"{arch}. Use 'sdxl', 'sd15' ou 'flux-2-klein-4b'."
+                f"{arch}. Use 'sdxl', 'sd15', 'flux-2-klein-4b' ou 'qwen-image-2.1'."
             )
         base_model = arch
-    elif base_model not in ("flux-2-klein-4b", "sdxl", "sd15"):
+    elif base_model not in ("flux-2-klein-4b", "sdxl", "sd15", "qwen-image-2.1"):
         _die(f"Modelo base de difusão não suportado: {raw_base_model}")
 
     width = int(gen_cfg.get("width", 1024))
@@ -116,7 +118,7 @@ def load_and_validate_generate_config(cfg: dict[str, Any]) -> dict[str, Any]:
         _die(f"Steps inválido: {steps}. Deve estar entre 1 e 100.")
 
     guidance_scale = float(
-        gen_cfg.get("guidance_scale", 3.5 if "flux" in base_model else 7.0)
+        gen_cfg.get("guidance_scale", 3.5 if ("flux" in base_model or "qwen" in base_model) else 7.0)
     )
     if guidance_scale < 1.0 or guidance_scale > 30.0:
         _die(f"Guidance scale inválido: {guidance_scale}. Deve estar entre 1.0 e 30.0.")

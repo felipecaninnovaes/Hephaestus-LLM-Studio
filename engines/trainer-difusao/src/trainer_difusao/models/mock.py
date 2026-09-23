@@ -52,6 +52,8 @@ def _generate_mock_safetensors(output_file: Path, lora_params: dict[str, Any]) -
 
     if "flux" in base_model:
         tensor_name = "transformer.single_transformer_blocks.0.linear1.lora_A.weight"
+    elif "qwen" in base_model:
+        tensor_name = "transformer.layers.0.attention.to_q.lora_A.weight"
     else:
         tensor_name = "lora_unet_up_blocks_0_attentions_0_proj_in.lora_down.weight"
 

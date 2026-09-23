@@ -252,6 +252,27 @@ def _real_generate(
             if device == "cuda":
                 pipe.to(device)
 
+        elif base_model == "qwen-image-2.1":
+            try:
+                from diffusers import QwenImage21Pipeline
+            except ImportError:
+                try:
+                    from diffusers import QwenImagePipeline as QwenImage21Pipeline
+                except ImportError:
+                    _die(
+                        "QwenImage21Pipeline não disponível na versão instalada do diffusers. "
+                        "Instale diffusers>=0.41.0.dev0 ou git+https://github.com/huggingface/diffusers.git"
+                    )
+            model_repo = os.environ.get("QWEN_IMAGE_MODEL_ID", "Qwen/Qwen-Image-2.1")
+            print(f"[DIFFUSION-GEN] Carregando Qwen-Image-2.1: {model_repo}", flush=True)
+            pipe = QwenImage21Pipeline.from_pretrained(
+                model_repo,
+                torch_dtype=pipe_dtype,
+            )
+            if quantization_config is None and device == "cuda":
+                pipe.to(device)
+            else:
+                pipe.enable_model_cpu_offload()
         else:
             _die(f"Modelo não suportado para geração real: {base_model}")
 
@@ -320,7 +341,7 @@ def _real_generate(
     init_image = None
     call_pipe = pipe
     if is_img2img:
-        if base_model == "flux-2-klein-4b":
+        if base_model in ("flux-2-klein-4b", "qwen-image-2.1"):
             call_pipe = pipe
         elif base_model == "sdxl":
             from diffusers import StableDiffusionXLImg2ImgPipeline as _I2I
@@ -459,6 +480,29 @@ def _real_generate(
                             flush=True,
                         )
                         image = call_pipe(**sd_kwargs).images[0]
+            elif base_model == "qwen-image-2.1":
+                qwen_call_kwargs: dict[str, Any] = {
+                    "prompt": prompt,
+                    "generator": generator,
+                    "num_inference_steps": steps,
+                    "guidance_scale": guidance,
+                    "width": width,
+                    "height": height,
+                }
+                if is_img2img:
+                    qwen_call_kwargs["image"] = init_image
+                with torch.inference_mode():
+                    try:
+                        image = call_pipe(**qwen_call_kwargs, **sampler_cb_kwargs).images[0]
+                    except TypeError as exc:
+                        if "callback_on_step_end" not in str(exc):
+                            raise
+                        print(
+                            f"[DIFFUSION-GEN] [AVISO] pipeline não suporta callback "
+                            f"de progresso ({exc}). Seguindo sem telemetria fina.",
+                            flush=True,
+                        )
+                        image = call_pipe(**qwen_call_kwargs).images[0]
             else:
                 _die(f"Modelo não suportado para inferência: {base_model}")
 

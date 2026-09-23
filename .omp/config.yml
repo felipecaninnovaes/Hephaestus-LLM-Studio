@@ -5,8 +5,8 @@ modelRoles:
   # hephaestus (coordenador / sessão principal)
   # openrouter/qwen/qwen3.8-flash trava sem entregar token (testado 2026-09-17);
   # mesmo modelo via gateway opencode-go responde.
-  default: "openrouter/qwen/qwen3.8-flash"
-  #default: "google-antigravity/gemini-3.8-flash:medium"
+  #default: "openrouter/qwen/qwen3.8-flash"
+  default: "google-antigravity/gemini-3.8-flash:medium"
   # agente "plan" do opencode (modo plan)
   plan: "openrouter/qwen/qwen3.8-flash:high"
   # workers (implementadores, revisores, fixer, docs-sync, explore, ui-designer, visao)

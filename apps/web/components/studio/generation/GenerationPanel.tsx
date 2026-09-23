@@ -62,7 +62,7 @@ export function GenerationPanel() {
 
 	/* ── Form state ── */
 	const [baseModel, setBaseModel] = useState<
-		"flux-2-klein-4b" | "sdxl" | "sd15"
+		"flux-2-klein-4b" | "sdxl" | "sd15" | "qwen-image-2.1"
 	>("flux-2-klein-4b");
 	const [customModelId, setCustomModelId] = useState<string>("");
 	const [textEncoderModelId, setTextEncoderModelId] = useState<string>("");
@@ -354,7 +354,7 @@ export function GenerationPanel() {
 
 	const handleBaseModelChange = useCallback(
 		(modelVal: string) => {
-			const b = modelVal as "flux-2-klein-4b" | "sdxl" | "sd15";
+			const b = modelVal as "flux-2-klein-4b" | "sdxl" | "sd15" | "qwen-image-2.1";
 			setBaseModel(b);
 			setSampler((prev) =>
 				b === "flux-2-klein-4b"
@@ -380,6 +380,12 @@ export function GenerationPanel() {
 				setWidth(512);
 				setHeight(512);
 				setShowNegative(true);
+			} else if (b === "qwen-image-2.1") {
+				setGuidanceScale(3.5);
+				setSteps(25);
+				setWidth(1024);
+				setHeight(1024);
+				setShowNegative(false);
 			}
 		},
 		[distilled],
@@ -393,7 +399,8 @@ export function GenerationPanel() {
 				nextBase = val.slice("preset:".length) as
 					| "flux-2-klein-4b"
 					| "sdxl"
-					| "sd15";
+					| "sd15"
+					| "qwen-image-2.1";
 				setBaseModel(nextBase);
 				setCustomModelId("");
 			} else {

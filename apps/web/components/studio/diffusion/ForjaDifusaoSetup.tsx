@@ -703,7 +703,7 @@ export function ForjaDifusaoSetup({
       estimateDiffusionVramGb(
         trainEffectiveArch === "flux-2-klein-4b"
           ? "flux"
-          : trainEffectiveArch === "sdxl" || trainEffectiveArch === "sd15"
+          : trainEffectiveArch === "sdxl" || trainEffectiveArch === "sd15" || trainEffectiveArch === "qwen-image-2.1"
             ? trainEffectiveArch
             : params.baseModel,
         params.batchSize,
@@ -743,6 +743,11 @@ export function ForjaDifusaoSetup({
         value: "preset:sd15",
         label: "SD 1.5 (oficial)",
         description: "Leve p/ GPUs menores",
+      },
+      {
+        value: "preset:qwen-image-2.1",
+        label: "Qwen-Image-2.1 (oficial)",
+        description: "7B Single-Stream DiT · 1024/2048px",
       },
     ];
     const byArch: Record<string, Model[]> = {};
@@ -1048,7 +1053,12 @@ export function ForjaDifusaoSetup({
             if (val.startsWith("preset:")) {
               const base = val.replace("preset:", "") as DiffusionBaseModel;
               setCustomModelId("");
-              setParams((p) => ({ ...p, baseModel: base }));
+              if (base === "qwen-image-2.1") {
+                setParams((p) => ({ ...p, baseModel: base, learningRate: "0.0002" }));
+                setResolution(1024);
+              } else {
+                setParams((p) => ({ ...p, baseModel: base }));
+              }
               if (base !== "flux") setTextEncoderModelId("");
             } else {
               setCustomModelId(val);

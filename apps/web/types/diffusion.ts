@@ -8,7 +8,7 @@ export type DiffusionOptimizer =
 export interface DiffusionJobRequest {
   datasetId: string;
   /** "flux" (FLUX.2 Klein 4B), "sdxl" (SDXL 1.0) ou "sd15" (Stable Diffusion 1.5). XOR com customModelId; ambos ausentes ⇒ "sdxl" (retrocompat). */
-  baseModel?: "sdxl" | "flux" | "sd15";
+  baseModel?: "sdxl" | "flux" | "sd15" | "qwen-image-2.1";
   /** UUID de checkpoint custom (kind=checkpoint). XOR com baseModel. */
   customModelId?: string | null;
   /** UUID de text encoder custom (kind=text_encoder). Só vale p/ arch flux-2-klein-4b; omitido = encoder oficial BFL. */
@@ -46,7 +46,7 @@ export interface DiffusionPreset {
   name: string;
   description?: string;
   version?: string;
-  baseModel: "sdxl" | "flux" | "sd15";
+  baseModel: "sdxl" | "flux" | "sd15" | "qwen-image-2.1";
   triggerWord?: string;
   epochs: number;
   batchSize: number;
@@ -87,7 +87,7 @@ export function diffusionErrorMessage(code: string): string {
 }
 
 export interface DiffusionGenerateJobRequest {
-  baseModel?: "flux-2-klein-4b" | "sdxl" | "sd15";
+  baseModel?: "flux-2-klein-4b" | "sdxl" | "sd15" | "qwen-image-2.1";
   customModelId?: string | null;
   /** UUID de text encoder custom (kind=text_encoder). Só vale p/ arch flux-2-klein-4b; omitido = encoder oficial BFL. */
   textEncoderModelId?: string | null;

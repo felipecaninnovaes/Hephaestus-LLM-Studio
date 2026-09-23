@@ -12,7 +12,7 @@ export interface Model {
   jobId: string | null;
   createdAt: string;
   kind?: "lora" | "checkpoint" | "text_encoder" | null;
-  arch?: "flux-2-klein-4b" | "sdxl" | "sd15" | null;
+  arch?: "flux-2-klein-4b" | "sdxl" | "sd15" | "qwen-image-2.1" | null;
 }
 
 export interface ModelListResponse {

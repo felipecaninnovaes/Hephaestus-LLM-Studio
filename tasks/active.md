@@ -1,11 +1,10 @@
 # Memória Ativa — Hephaestus LLM Studio
 
-- **Branch atual:** `chore/daemon-imagem-gpu` (aberta de `develop`; push/merge aguardam ordem)
-- **Fatia em andamento:** Observabilidade & Reprodutibilidade do Treino —
-  **código 100% commitado e verde** (C1/C2a/C2b/C2c/F1/F2; spec
-  `tasks/specs/treino-observabilidade.md`). Falta apenas o **deploy na janela
-  segura** (fim do treino atual): rebuild de imagens + restart de orchestrator,
-  api-principal e trainer-difusao. Web já está viva no dev server.
+- **Branch atual:** `feat/engine-qwen-image-2-1` (aberta de `develop`)
+- **Fatia em andamento:** Suporte ao Modelo Qwen-Image-2.1 (Treino & Geração) —
+  **código 100% implementado e verde** nos 5 pilares (Contracts, Policies, Engine Difusão, Services Rust, Apps Web).
+  Spec: `tasks/specs/qwen-image-2-1.md`.
+  Verificação canônica completa executada: cargo test 746 ok, pytest difusao 205 ok, turbopack build ok, compose config ok.
 - **HOTFIX permissões nó GPU (2026-09-22):** engines uid 1000 não escreviam em
   dir de job root:0755 (EACCES pós-geração). Bridge NO NÓ: `ENGINE_USER: "0:0"`
   em `infra/compose.gpu.yaml` (+`.bak-perms`). Fix permanente na branch
@@ -24,6 +23,7 @@
 - [x] Runbook `docs/infra/runpod-worker.md` (template via MCP/REST/Console + conectividade)
 - [ ] Validar com conta RunPod real (tier privileged, pod de teste, adoção via UI)
 ## Entregas Concluídas Recentemente
+- [x] Suporte transversal ao Qwen-Image-2.1 (`packages/`, `engines/trainer-difusao`, `services/`, `apps/web`).
 - [x] Roadmap de Hardening e Padronização da Infraestrutura (`tasks/infra-auditoria.md`) concluído e integrado.
 - [x] Hotfix manager: `report_job` aceita `status: cancelled` pós-abort (commit 4bfb450).
 - [x] Hotfix daemon difusão exit 125 no nó GPU: `DIFFUSION_TRAINER_IMAGE` propagado aos dois composes + `env.gpu.example`; tag `:local→:gpu` aplicada direto no TrueNAS (contorna até deploy); smoke `/health` 200 via DNS `diffusion-daemon:8766` dentro do `orchestrator-gpu`. Lição promovida a PITFALLS (2ª recorrência).

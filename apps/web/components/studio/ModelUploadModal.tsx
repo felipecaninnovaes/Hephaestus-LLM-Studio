@@ -44,6 +44,7 @@ const ARCH_OPTIONS: SelectOption<string>[] = [
 	{ value: "sdxl", label: "SDXL" },
 	{ value: "sd15", label: "SD 1.5" },
 	{ value: "flux-2-klein-4b", label: "FLUX.2 Klein 4B" },
+	{ value: "qwen-image-2.1", label: "Qwen-Image-2.1" },
 ];
 // Limite do chunked: acima de 96 MiB o proxy Next bufferizaria o multipart
 // inteiro em RAM (OOM do next-server com 8 GB). Partes ≤ 96 MiB são seguras.

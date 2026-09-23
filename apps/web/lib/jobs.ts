@@ -42,7 +42,7 @@ export function startYoloJob(params: {
 /** POST /api/jobs/diffusion — cria job de treino de difusão LoRA. Retorna 202 (preparing|queued). */
 export function startDiffusionJob(params: {
   datasetId: string;
-  baseModel?: "sdxl" | "flux" | "sd15" | null;
+  baseModel?: "sdxl" | "flux" | "sd15" | "qwen-image-2.1" | null;
   customModelId?: string | null;
   textEncoderModelId?: string | null;
   triggerWord?: string;

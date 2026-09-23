@@ -14,7 +14,7 @@ import type { Generation, LoraRef } from "@/types/studio";
 export const GERACAO_FORM_KEY = "geracao:form:v1";
 const GERACAO_FORM_VERSION = 1;
 
-export type GeracaoBaseModel = "flux-2-klein-4b" | "sdxl" | "sd15";
+export type GeracaoBaseModel = "flux-2-klein-4b" | "sdxl" | "sd15" | "qwen-image-2.1";
 export type GeracaoQuantization = "none" | "2bit" | "4bit" | "6bit" | "8bit";
 export type GeracaoSampler =
   | "default"
@@ -60,7 +60,7 @@ export interface GeracaoFormState {
   initStrength: number;
 }
 
-const BASE_MODELS: readonly GeracaoBaseModel[] = ["flux-2-klein-4b", "sdxl", "sd15"];
+const BASE_MODELS: readonly GeracaoBaseModel[] = ["flux-2-klein-4b", "sdxl", "sd15", "qwen-image-2.1"];
 const QUANTIZATIONS: readonly GeracaoQuantization[] = ["none", "2bit", "4bit", "6bit", "8bit"];
 const SAMPLERS: readonly GeracaoSampler[] = [
   "default",

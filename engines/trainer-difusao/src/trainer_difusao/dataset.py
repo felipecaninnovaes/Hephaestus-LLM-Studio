@@ -6,6 +6,7 @@ import random
 from pathlib import Path
 from typing import Any
 
+from trainer_difusao.common import _die
 from trainer_difusao.common_pkg.metrics import _emit_metric
 
 # Passo de alinhamento das dimensões do bucket (exigência dos VAEs de difusão).
@@ -55,7 +56,7 @@ class DiffusionDataset:
 
     def __init__(
         self,
-        dataset_path: Path,
+        dataset_path: Path | str,
         resolution: int = 512,
         trigger_word: str = "",
         enable_bucket: bool = False,
@@ -63,6 +64,7 @@ class DiffusionDataset:
         metrics_path: Path | None = None,
     ):
         """Inicializa o dataset (com ``empty_captions`` a legenda é sempre "" — controle/regularização)."""
+        dataset_path = Path(dataset_path)
         self.samples: list[tuple[Path, str]] = []
         self.resolution = resolution
         self.trigger_word = trigger_word.strip()

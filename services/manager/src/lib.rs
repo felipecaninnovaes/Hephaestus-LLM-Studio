@@ -727,9 +727,12 @@ pub async fn create_job(
                     } else {
                         arch_val
                     };
-                    if !matches!(arch_norm, "sdxl" | "sd15" | "flux-2-klein-4b") {
+                    if !matches!(
+                        arch_norm,
+                        "sdxl" | "sd15" | "flux-2-klein-4b" | "qwen-image-2.1"
+                    ) {
                         return Err(ManagerError::InvalidRequest(format!(
-                            "customModelId arch must be 'sdxl', 'sd15' or 'flux-2-klein-4b', got '{arch_val}'"
+                            "customModelId arch must be 'sdxl', 'sd15', 'flux-2-klein-4b' or 'qwen-image-2.1', got '{arch_val}'"
                         )));
                     }
                     let resolved = ResolvedCheckpoint { s3_key, md5: hash };
@@ -2662,9 +2665,10 @@ fn validate_create_model(req: &CreateModelRequest) -> Result<(), ManagerError> {
         }
     }
     if let Some(ref arch) = req.arch {
-        if arch != "flux-2-klein-4b" && arch != "sdxl" && arch != "sd15" {
+        if arch != "flux-2-klein-4b" && arch != "sdxl" && arch != "sd15" && arch != "qwen-image-2.1"
+        {
             return Err(ManagerError::InvalidRequest(format!(
-                "arch must be 'flux-2-klein-4b', 'sdxl', or 'sd15', got '{}'",
+                "arch must be 'flux-2-klein-4b', 'sdxl', 'sd15', or 'qwen-image-2.1', got '{}'",
                 arch
             )));
         }
@@ -2672,7 +2676,8 @@ fn validate_create_model(req: &CreateModelRequest) -> Result<(), ManagerError> {
     // kind=checkpoint exige arch (D4 — flux custom fora da v1 no upload).
     if req.kind.as_deref() == Some("checkpoint") && req.arch.is_none() {
         return Err(ManagerError::InvalidRequest(
-            "checkpoint requires arch ('flux-2-klein-4b', 'sdxl', or 'sd15')".into(),
+            "checkpoint requires arch ('flux-2-klein-4b', 'sdxl', 'sd15', or 'qwen-image-2.1')"
+                .into(),
         ));
     }
     // kind=text_encoder só admite arch flux-2-klein-4b (encoder swap do Qwen3).
@@ -3115,6 +3120,9 @@ pub fn normalize_diffusion_arch(raw: &str) -> Option<String> {
         "flux" | "flux2" | "flux-2-klein" | "flux-2-klein-4b" | "flux2-klein-4b" => {
             Some("flux-2-klein-4b".to_string())
         }
+        "qwen" | "qwen-image" | "qwen-image-2.1" | "qwen2.1" | "qwen_image" | "qwen-image-2-1" => {
+            Some("qwen-image-2.1".to_string())
+        }
         _ => None,
     }
 }
@@ -3225,6 +3233,9 @@ pub fn compute_model_name(
         "flux" | "flux-2-klein-4b" => "flux2".to_string(),
         "sdxl" => "sdxl".to_string(),
         "sd15" => "sd15".to_string(),
+        "qwen" | "qwen-image" | "qwen-image-2.1" | "qwen2.1" | "qwen_image" | "qwen-image-2-1" => {
+            "qwen2.1".to_string()
+        }
         other => slugify(other),
     };
 

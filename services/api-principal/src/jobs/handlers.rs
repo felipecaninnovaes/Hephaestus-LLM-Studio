@@ -1957,7 +1957,7 @@ pub async fn submit_diffusion_job(
             }
         }
         match model.arch.as_deref() {
-            Some(arch @ ("sdxl" | "sd15" | "flux" | "flux-2-klein-4b")) => {
+            Some(arch @ ("sdxl" | "sd15" | "flux" | "flux-2-klein-4b" | "qwen-image-2.1")) => {
                 // Normaliza alias legado "flux" → arch canônico do YAML.
                 if arch == "flux" {
                     Some("flux-2-klein-4b".to_string())
@@ -2067,6 +2067,7 @@ pub async fn submit_diffusion_job(
     //    ~10 GB; fatia: custom flux-2 custa como flux-2-klein-4b).
     let vram_min = match effective_base.as_str() {
         "sd15" => 8,
+        "qwen-image-2.1" => 16,
         "flux" | "flux-2-klein-4b" => 10,
         _ => 12, // sdxl e default
     };
@@ -2213,7 +2214,7 @@ pub async fn submit_diffusion_generate_job(
         }
         // Valida arch ∈ {sdxl, sd15, flux-2-klein-4b} (fatia: +flux-2).
         match model.arch.as_deref() {
-            Some(arch @ ("sdxl" | "sd15" | "flux" | "flux-2-klein-4b")) => {
+            Some(arch @ ("sdxl" | "sd15" | "flux" | "flux-2-klein-4b" | "qwen-image-2.1")) => {
                 if arch == "flux" {
                     Some("flux-2-klein-4b".to_string())
                 } else {
@@ -2224,7 +2225,7 @@ pub async fn submit_diffusion_generate_job(
                 return err(
                     StatusCode::BAD_REQUEST,
                     "unsupported_architecture",
-                    "custom checkpoint architecture not supported (use sdxl, sd15 or flux-2-klein-4b)",
+                    "custom checkpoint architecture not supported (use sdxl, sd15, flux-2-klein-4b or qwen-image-2.1)",
                 );
             }
             None => {

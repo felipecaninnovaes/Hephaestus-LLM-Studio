@@ -2,9 +2,10 @@
 
 - **Branch atual:** `feat/engine-qwen-image-2-1` (aberta de `develop`)
 - **Fatia em andamento:** Suporte ao Modelo Qwen-Image-2.1 (Treino & Geração) —
-  **código 100% implementado e verde** nos 5 pilares (Contracts, Policies, Engine Difusão, Services Rust, Apps Web).
+  **100% implementado, testado e validado na GPU remota (TrueNAS RTX 3060 12GB)**.
+  Treino real concluído de ponta a ponta com loss=0.3813 (Job `fabf885f`, adapter registrado no catálogo: `simple-qwen2.1-fabf885f.safetensors`).
+  Geração validada no nó GPU com pipeline residente.
   Spec: `tasks/specs/qwen-image-2-1.md`.
-  Verificação canônica completa executada: cargo test 746 ok, pytest difusao 205 ok, turbopack build ok, compose config ok.
 - **HOTFIX permissões nó GPU (2026-09-22):** engines uid 1000 não escreviam em
   dir de job root:0755 (EACCES pós-geração). Bridge NO NÓ: `ENGINE_USER: "0:0"`
   em `infra/compose.gpu.yaml` (+`.bak-perms`). Fix permanente na branch

@@ -22,6 +22,7 @@ from trainer_difusao.common import (
     _emit_metric,
     _load_lora_weights,
     _offload_encoders_to_cpu,
+    _precompute_sample_embeds_flux,
     _precompute_text_cache,
     _precompute_text_cache_with_cleanup,
     _prune_checkpoints,
@@ -943,6 +944,23 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     lr_scheduler = _create_lr_scheduler(
         optimizer, lr_scheduler_name, total_train_steps, lr_warmup_steps
     )
+    # Pré-computa embeddings da amostra se sample_prompt fornecido (antes de offload dos encoders)
+    sample_embeds = None
+    if sample_prompt:
+        try:
+            sample_embeds = _precompute_sample_embeds_flux(
+                tokenizer_one=tokenizer_one,
+                tokenizer_two=tokenizer_two,
+                text_encoder_one=text_encoder_one,
+                text_encoder_two=text_encoder_two,
+                prompt=sample_prompt,
+                device=device,
+                is_flux2=is_flux2,
+                dtype=target_dtype,
+            )
+        except Exception as e:
+            print(f"[WARN] Falha ao pré-computar sample embeds FLUX: {e}", flush=True)
+
 
     # Cache de text embeddings pré-computado UMA vez no início (miss → on-the-fly
     # + warm; falha → segue sem cache). O que é cacheado por arch:
@@ -1000,23 +1018,23 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             message=f"Gerando amostra baseline pré-treino (Época 0): '{sample_prompt[:40]}...'",
         )
         sample_baseline_file = output / "samples" / "sample_epoch_000.png"
-        with _temporary_device_encoders([text_encoder_one, text_encoder_two], device):
-            _generate_sample_flux(
-                transformer=transformer,
-                vae=vae,
-                text_encoder_one=text_encoder_one,
-                text_encoder_two=text_encoder_two,
-                tokenizer_one=tokenizer_one,
-                tokenizer_two=tokenizer_two,
-                scheduler=noise_scheduler,
-                prompt=sample_prompt,
-                output_path=sample_baseline_file,
-                seed=sample_seed,
-                is_flux2=is_flux2,
-                resolution=resolution,
-                metrics_path=metrics_path,
-                epoch=0,
-            )
+        _generate_sample_flux(
+            transformer=transformer,
+            vae=vae,
+            text_encoder_one=text_encoder_one,
+            text_encoder_two=text_encoder_two,
+            tokenizer_one=tokenizer_one,
+            tokenizer_two=tokenizer_two,
+            scheduler=noise_scheduler,
+            prompt=sample_prompt,
+            output_path=sample_baseline_file,
+            seed=sample_seed,
+            is_flux2=is_flux2,
+            resolution=resolution,
+            metrics_path=metrics_path,
+            epoch=0,
+            sample_embeds=sample_embeds,
+        )
         _emit_metric(
             metrics_path,
             epoch=0,
@@ -1303,23 +1321,23 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                 telemetry_only=True,
             )
             sample_file = output / "samples" / f"sample_epoch_{epoch:03d}.png"
-            with _temporary_device_encoders([text_encoder_one, text_encoder_two], device):
-                _generate_sample_flux(
-                    transformer=transformer,
-                    vae=vae,
-                    text_encoder_one=text_encoder_one,
-                    text_encoder_two=text_encoder_two,
-                    tokenizer_one=tokenizer_one,
-                    tokenizer_two=tokenizer_two,
-                    scheduler=noise_scheduler,
-                    prompt=sample_prompt,
-                    output_path=sample_file,
-                    seed=sample_seed,
-                    is_flux2=is_flux2,
-                    resolution=resolution,
-                    metrics_path=metrics_path,
-                    epoch=epoch,
-                )
+            _generate_sample_flux(
+                transformer=transformer,
+                vae=vae,
+                text_encoder_one=text_encoder_one,
+                text_encoder_two=text_encoder_two,
+                tokenizer_one=tokenizer_one,
+                tokenizer_two=tokenizer_two,
+                scheduler=noise_scheduler,
+                prompt=sample_prompt,
+                output_path=sample_file,
+                seed=sample_seed,
+                is_flux2=is_flux2,
+                resolution=resolution,
+                metrics_path=metrics_path,
+                epoch=epoch,
+                sample_embeds=sample_embeds,
+            )
             _emit_metric(
                 metrics_path,
                 epoch=epoch,

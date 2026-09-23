@@ -12,6 +12,9 @@ from trainer_difusao.common_pkg.text_embeds import (
     _cached_encode,
     _cleanup_encoders,
     _offload_encoders_to_cpu,
+    _precompute_sample_embeds_flux,
+    _precompute_sample_embeds_sd15,
+    _precompute_sample_embeds_sdxl,
     _precompute_text_cache,
     _precompute_text_cache_with_cleanup,
     _temporary_device_encoders,
@@ -124,3 +127,108 @@ def test_cached_encode_hit_and_miss(tmp_path: Path, monkeypatch):
     assert res["hidden"].shape[0] == 2
     # After cached_encode finishes, enc is back on cpu
     assert enc.device == "cpu"
+
+
+def test_precompute_sample_embeds_sd15():
+    class DummyTokenizer:
+        model_max_length = 77
+
+        def __call__(self, text, **kwargs):
+            class Output:
+                input_ids = torch.zeros(1, 77, dtype=torch.long)
+            return Output()
+
+    class DummyTextEncoder:
+        def __call__(self, input_ids):
+            return [torch.ones(1, 77, 768)]
+
+    embeds = _precompute_sample_embeds_sd15(
+        DummyTokenizer(),
+        DummyTextEncoder(),
+        "a cat in space",
+        device="cpu",
+        dtype=torch.float32,
+    )
+    assert "prompt_embeds" in embeds
+    assert "negative_prompt_embeds" in embeds
+    assert embeds["prompt_embeds"].shape == (1, 77, 768)
+    assert embeds["negative_prompt_embeds"].shape == (1, 77, 768)
+
+
+def test_precompute_sample_embeds_sdxl():
+    class DummyTokenizer:
+        model_max_length = 77
+
+        def __call__(self, text, **kwargs):
+            class Output:
+                input_ids = torch.zeros(1, 77, dtype=torch.long)
+            return Output()
+
+    class DummyEncoderOne:
+        def __call__(self, input_ids, output_hidden_states=False):
+            class Out:
+                hidden_states = [None, torch.ones(1, 77, 768), torch.ones(1, 77, 768)]
+            return Out()
+
+    class DummyEncoderTwo:
+        def __call__(self, input_ids, output_hidden_states=False):
+            class Out:
+                hidden_states = [None, torch.ones(1, 77, 1280), torch.ones(1, 77, 1280)]
+                text_embeds = torch.ones(1, 1280)
+            return Out()
+
+    embeds = _precompute_sample_embeds_sdxl(
+        DummyTokenizer(),
+        DummyTokenizer(),
+        DummyEncoderOne(),
+        DummyEncoderTwo(),
+        "a modern architectural house",
+        device="cpu",
+        dtype=torch.float32,
+    )
+    assert "prompt_embeds" in embeds
+    assert "pooled_prompt_embeds" in embeds
+    assert "negative_prompt_embeds" in embeds
+    assert "negative_pooled_prompt_embeds" in embeds
+    assert embeds["prompt_embeds"].shape == (1, 77, 2048)
+    assert embeds["pooled_prompt_embeds"].shape == (1, 1280)
+    class DummyTokenizerOne:
+        model_max_length = 77
+
+        def __call__(self, text, **kwargs):
+            class Output:
+                input_ids = torch.zeros(1, 77, dtype=torch.long)
+                def to(self, device): return self
+            return Output()
+
+    class DummyTokenizerTwo:
+        def __call__(self, text, **kwargs):
+            class Output:
+                input_ids = torch.zeros(1, 512, dtype=torch.long)
+                def to(self, device): return self
+            return Output()
+
+    class DummyEncoderOne:
+        def __call__(self, input_ids):
+            class Out:
+                pooler_output = torch.ones(1, 768)
+            return Out()
+
+    class DummyEncoderTwo:
+        def __call__(self, input_ids):
+            return [torch.ones(1, 512, 4096)]
+
+    embeds = _precompute_sample_embeds_flux(
+        DummyTokenizerOne(),
+        DummyTokenizerTwo(),
+        DummyEncoderOne(),
+        DummyEncoderTwo(),
+        "a majestic lion",
+        device="cpu",
+        is_flux2=False,
+        dtype=torch.float32,
+    )
+    assert "prompt_embeds" in embeds
+    assert "pooled_prompt_embeds" in embeds
+    assert embeds["prompt_embeds"].shape == (1, 512, 4096)
+    assert embeds["pooled_prompt_embeds"].shape == (1, 768)

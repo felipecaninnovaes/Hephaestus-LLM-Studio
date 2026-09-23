@@ -17,6 +17,7 @@ from trainer_difusao.common import (
     _emit_metric,
     _load_lora_weights,
     _offload_encoders_to_cpu,
+    _precompute_sample_embeds_sdxl,
     _precompute_text_cache,
     _precompute_text_cache_with_cleanup,
     _prune_checkpoints,
@@ -85,6 +86,7 @@ def _generate_sample_sdxl(
     seed: int = 42,
     metrics_path: Path | None = None,
     epoch: int = 0,
+    sample_embeds: dict[str, Any] | None = None,
 ) -> None:
     """Gera uma imagem de teste para SDXL com os pesos LoRA ativos e seed fixa determinística.
     
@@ -99,20 +101,20 @@ def _generate_sample_sdxl(
         output_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = output_path.with_name(f".tmp_{output_path.name}")
 
+        has_embeds = sample_embeds is not None and "prompt_embeds" in sample_embeds
+        device = "cuda" if torch.cuda.is_available() else "cpu"
         try:
             pipe = StableDiffusionXLPipeline(
                 vae=vae,
-                text_encoder=text_encoder_one,
-                text_encoder_2=text_encoder_two,
-                tokenizer=tokenizer_one,
-                tokenizer_2=tokenizer_two,
+                text_encoder=None if has_embeds else text_encoder_one,
+                text_encoder_2=None if has_embeds else text_encoder_two,
+                tokenizer=None if has_embeds else tokenizer_one,
+                tokenizer_2=None if has_embeds else tokenizer_two,
                 unet=unet,
                 scheduler=noise_scheduler,
             )
             pipe.set_progress_bar_config(disable=True)
-            generator = torch.Generator(
-                device="cuda" if torch.cuda.is_available() else "cpu"
-            ).manual_seed(seed)
+            generator = torch.Generator(device=device).manual_seed(seed)
             total_sample_steps = 20
             def step_callback(pipe_obj: Any, step_idx: int, timestep: Any, callback_kwargs: dict[str, Any]) -> dict[str, Any]:
                 if metrics_path is not None:
@@ -131,24 +133,27 @@ def _generate_sample_sdxl(
                         pass
                 return callback_kwargs
 
-            with torch.inference_mode():
+                pipe_kwargs = {
+                    "generator": generator,
+                    "num_inference_steps": total_sample_steps,
+                    "guidance_scale": 7.0,
+                    "output_type": "latent",
+                }
+                if has_embeds:
+                    pipe_kwargs["prompt_embeds"] = sample_embeds["prompt_embeds"].to(device)
+                    if sample_embeds.get("pooled_prompt_embeds") is not None:
+                        pipe_kwargs["pooled_prompt_embeds"] = sample_embeds["pooled_prompt_embeds"].to(device)
+                    if sample_embeds.get("negative_prompt_embeds") is not None:
+                        pipe_kwargs["negative_prompt_embeds"] = sample_embeds["negative_prompt_embeds"].to(device)
+                    if sample_embeds.get("negative_pooled_prompt_embeds") is not None:
+                        pipe_kwargs["negative_pooled_prompt_embeds"] = sample_embeds["negative_pooled_prompt_embeds"].to(device)
+                else:
+                    pipe_kwargs["prompt"] = prompt
+
                 try:
-                    latents = pipe(
-                        prompt,
-                        generator=generator,
-                        num_inference_steps=total_sample_steps,
-                        guidance_scale=7.0,
-                        output_type="latent",
-                        callback_on_step_end=step_callback,
-                    ).images
+                    latents = pipe(**pipe_kwargs, callback_on_step_end=step_callback).images
                 except TypeError:
-                    latents = pipe(
-                        prompt,
-                        generator=generator,
-                        num_inference_steps=total_sample_steps,
-                        guidance_scale=7.0,
-                        output_type="latent",
-                    ).images
+                    latents = pipe(**pipe_kwargs).images
                 latents = latents.to(dtype=torch.float32) / vae.config.scaling_factor
                 decoded = vae.decode(latents).sample
                 image = (decoded / 2 + 0.5).clamp(0, 1)
@@ -411,6 +416,22 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
     lr_scheduler = _create_lr_scheduler(
         optimizer, lr_scheduler_name, total_train_steps, lr_warmup_steps
     )
+    # Pré-computa embeddings da amostra se sample_prompt fornecido (antes de offload dos encoders)
+    sample_embeds = None
+    if sample_prompt:
+        try:
+            sample_embeds = _precompute_sample_embeds_sdxl(
+                tokenizer_one=tokenizer_one,
+                tokenizer_two=tokenizer_two,
+                text_encoder_one=text_encoder_one,
+                text_encoder_two=text_encoder_two,
+                prompt=sample_prompt,
+                device=device,
+                dtype=target_dtype,
+            )
+        except Exception as e:
+            print(f"[WARN] Falha ao pré-computar sample embeds SDXL: {e}", flush=True)
+
 
     # Cache de text embeddings (SDXL: saída combinada dos dois CLIP + pooled),
     # pré-computado UMA vez no início; miss → on-the-fly + warm; falha → sem cache.
@@ -479,21 +500,21 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
             message=f"Gerando amostra baseline pré-treino (Época 0): '{sample_prompt[:40]}...'",
         )
         sample_baseline_file = output / "samples" / "sample_epoch_000.png"
-        with _temporary_device_encoders([text_encoder_one, text_encoder_two], device):
-            _generate_sample_sdxl(
-                unet,
-                vae,
-                text_encoder_one,
-                text_encoder_two,
-                tokenizer_one,
-                tokenizer_two,
-                noise_scheduler,
-                sample_prompt,
-                sample_baseline_file,
-                seed=sample_seed,
-                metrics_path=metrics_path,
-                epoch=0,
-            )
+        _generate_sample_sdxl(
+            unet,
+            vae,
+            text_encoder_one,
+            text_encoder_two,
+            tokenizer_one,
+            tokenizer_two,
+            noise_scheduler,
+            sample_prompt,
+            sample_baseline_file,
+            seed=sample_seed,
+            metrics_path=metrics_path,
+            epoch=0,
+            sample_embeds=sample_embeds,
+        )
         _emit_metric(
             metrics_path,
             epoch=0,
@@ -701,21 +722,21 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
                 message=f"Iniciando geração de amostra visual (Época {epoch})...",
                 telemetry_only=True,
             )
-            with _temporary_device_encoders([text_encoder_one, text_encoder_two], device):
-                _generate_sample_sdxl(
-                    unet,
-                    vae,
-                    text_encoder_one,
-                    text_encoder_two,
-                    tokenizer_one,
-                    tokenizer_two,
-                    noise_scheduler,
-                    sample_prompt,
-                    sample_file,
-                    seed=sample_seed,
-                    metrics_path=metrics_path,
-                    epoch=epoch,
-                )
+            _generate_sample_sdxl(
+                unet,
+                vae,
+                text_encoder_one,
+                text_encoder_two,
+                tokenizer_one,
+                tokenizer_two,
+                noise_scheduler,
+                sample_prompt,
+                sample_file,
+                seed=sample_seed,
+                metrics_path=metrics_path,
+                epoch=epoch,
+                sample_embeds=sample_embeds,
+            )
             _emit_metric(
                 metrics_path,
                 epoch=epoch,

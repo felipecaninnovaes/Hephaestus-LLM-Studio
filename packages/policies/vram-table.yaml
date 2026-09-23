@@ -12,6 +12,8 @@ entries:
   - { engine: diffusion, model: flux2-klein-9b-8bit, mode: infer, vram_min_gb: 16 }
   - { engine: diffusion, model: flux2-klein-9b, mode: train, vram_min_gb: 28 }
   - { engine: diffusion, model: sdxl-1.0, mode: train, vram_min_gb: 20 }
+  # ── Feature flags de performance (adr-difusao-vram) ──
+  - { engine: diffusion, feature: text_encoder_unload, default: false }
   # ── Difusão generate (ADR-0023 D8) — valores espelhados do handler ──
   - { engine: diffusion, model: flux-2-klein-4b, mode: generate, vram_min_gb: 8 }
   - { engine: diffusion, model: flux2-klein-4b, mode: generate, vram_min_gb: 8 }

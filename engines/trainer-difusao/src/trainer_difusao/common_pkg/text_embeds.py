@@ -1,6 +1,4 @@
-"""
-Cache e pré-computação em disco de embeddings de texto do dataset.
-"""
+"""Cache e pré-computação em disco de embeddings de texto do dataset."""
 from __future__ import annotations
 
 import os
@@ -10,9 +8,12 @@ from typing import Any
 from trainer_difusao.common_pkg.metrics import _emit_metric
 from trainer_difusao.common_pkg.train_config import _caption_cache_key
 
+# Flag de performance para descarregar text encoders após pré-compute (adr-difusao-vram).
+ENABLE_TEXT_ENCODER_UNLOAD = os.environ.get("ENABLE_TEXT_ENCODER_UNLOAD", "false").lower() in ("true", "1", "yes")
+
 
 class TextEmbedsCache:
-    """Cache em disco dos prompt embeddings: ``{output}/text_embeds_cache/{sha256(caption)[:16]}.pt``."""
+    """Cache em disco dos prompt embeddings: ``{output}/text_embeds_cache/{sha256(caption)[:16]}.pt``."""\
 
     def __init__(self, output: Path, enabled: bool):
         self.enabled = bool(enabled)
@@ -142,6 +143,57 @@ def _precompute_text_cache(
             message=f"Cache de text embeddings pré-computado: {total} captions únicas.",
             telemetry_only=True,
         )
+
+
+def _cleanup_encoders(
+    encoders: list[Any], cleanup_kwargs: dict[str, Any] = {}
+) -> None:
+    """Descarrega encoders de texto da VRAM (aceleração para pré-compute com cache)."""
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return
+        # Coleta de lixo e limpeza de cache CUDA
+        torch.cuda.empty_cache()
+        # Descarrega cada encoder explicitamente
+        for enc in encoders:
+            if enc is not None and hasattr(enc, "weight") or hasattr(enc, "parameters"):
+                del enc
+        # Coleta adicional de lixo para garantir liberação de memória
+        import gc
+
+        gc.collect()
+        print("[INFO] Text encoders descarregados da VRAM após pré-compute.", flush=True)
+    except Exception as e:
+        print(f"[WARN] Falha ao descarregar text encoders: {e}", flush=True)
+
+
+def _precompute_text_cache_with_cleanup(
+    cache: TextEmbedsCache,
+    captions: list[str],
+    encode_fn: Any,
+    batch_size: int = 32,
+    metrics_path: Path | None = None,
+    unload_encoders: bool = False,
+    encoders: list[Any] = None,
+    cleanup_kwargs: dict[str, Any] = {},
+) -> None:
+    """Pré-computa embeddings + opcionalmente descarrega encoders da VRAM.
+    
+    Args:
+        cache: Instância de TextEmbedsCache.
+        captions: Lista de captions para pré-computar.
+        encode_fn: Função que recebe captions e retorna embeddings em GPU.
+        batch_size: Tamanho do batch para pré-compute.
+        metrics_path: Caminho para arquivo de métricas (telemetria).
+        unload_encoders: Se True, descarta text encoders da VRAM após pré-compute.
+        encoders: Lista de encoders a descarregar (ex: [text_encoder_one, text_encoder_two]).
+        cleanup_kwargs: Parâmetros adicionais para função de cleanup.
+    """
+    _precompute_text_cache(cache, captions, encode_fn, batch_size, metrics_path)
+    if unload_encoders and encoders:
+        _cleanup_encoders(encoders, **cleanup_kwargs)
 
 
 def _cached_encode(captions: list[str], encode_fn: Any, cache: TextEmbedsCache) -> dict[str, Any]:

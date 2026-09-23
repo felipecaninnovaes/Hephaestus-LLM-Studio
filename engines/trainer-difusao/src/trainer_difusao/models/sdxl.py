@@ -423,13 +423,24 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
             )
             return {"hidden": hidden, "pooled": pooled}
 
-        _precompute_text_cache(
-            text_cache,
-            [c for _, c in dataset.samples]
-            + ([c for _, c in control_dataset.samples] if control_dataset else []),
-            _encode_sdxl_all,
-            metrics_path=metrics_path,
-        )
+        if ENABLE_TEXT_ENCODER_UNLOAD:
+            _precompute_text_cache_with_cleanup(
+                text_cache,
+                [c for _, c in dataset.samples]
+                + ([c for _, c in control_dataset.samples] if control_dataset else []),
+                _encode_sdxl_all,
+                metrics_path=metrics_path,
+                unload_encoders=True,
+                encoders=[text_encoder_one, text_encoder_two],
+            )
+        else:
+            _precompute_text_cache(
+                text_cache,
+                [c for _, c in dataset.samples]
+                + ([c for _, c in control_dataset.samples] if control_dataset else []),
+                _encode_sdxl_all,
+                metrics_path=metrics_path,
+            )
 
     _emit_metric(
         metrics_path,

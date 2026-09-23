@@ -456,14 +456,24 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
             epoch=0,
             sample_embeds=sample_embeds,
         )
-        _emit_metric(
-            metrics_path,
-            epoch=0,
-            step=6,
-            progress=0.10,
-            phase="baseline_ready",
-            message="Amostra baseline gerada com sucesso (Época 0).",
-        )
+        if sample_baseline_file.exists():
+            _emit_metric(
+                metrics_path,
+                epoch=0,
+                step=6,
+                progress=0.10,
+                phase="baseline_ready",
+                message="Amostra baseline gerada com sucesso (Época 0).",
+            )
+        else:
+            _emit_metric(
+                metrics_path,
+                epoch=0,
+                step=6,
+                progress=0.10,
+                phase="baseline_failed",
+                message="Falha ao gerar amostra baseline pré-treino.",
+            )
 
     _emit_metric(
         metrics_path,
@@ -671,13 +681,22 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
                 epoch=epoch,
                 sample_embeds=sample_embeds,
             )
-            _emit_metric(
-                metrics_path,
-                epoch=epoch,
-                phase="sample_ready",
-                message=f"Amostra visual da Época {epoch} pronta.",
-                telemetry_only=True,
-            )
+            if sample_file.exists():
+                _emit_metric(
+                    metrics_path,
+                    epoch=epoch,
+                    phase="sample_ready",
+                    message=f"Amostra visual da Época {epoch} pronta.",
+                    telemetry_only=True,
+                )
+            else:
+                _emit_metric(
+                    metrics_path,
+                    epoch=epoch,
+                    phase="sample_failed",
+                    message=f"Falha ao gerar amostra visual da Época {epoch}.",
+                    telemetry_only=True,
+                )
 
     # Salva adapter final com nome semântico configurado
     final_adapter_file = output / f"{base_name}.safetensors"

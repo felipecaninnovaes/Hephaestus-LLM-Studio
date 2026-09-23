@@ -343,6 +343,7 @@ def _precompute_sample_embeds_flux(
     with torch.no_grad():
         if is_flux2:
             from trainer_difusao.models.flux_pkg.encoding import _encode_qwen3_prompt
+
             prompt_embeds = _encode_qwen3_prompt(
                 text_encoder_one,
                 tokenizer_one,
@@ -350,8 +351,16 @@ def _precompute_sample_embeds_flux(
                 device,
                 dtype=dtype,
             )
+            negative_prompt_embeds = _encode_qwen3_prompt(
+                text_encoder_one,
+                tokenizer_one,
+                [""],
+                device,
+                dtype=dtype,
+            )
             return {
                 "prompt_embeds": prompt_embeds,
+                "negative_prompt_embeds": negative_prompt_embeds,
                 "pooled_prompt_embeds": None,
             }
 

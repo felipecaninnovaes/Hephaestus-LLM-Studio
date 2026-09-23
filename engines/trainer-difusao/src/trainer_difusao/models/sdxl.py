@@ -132,7 +132,7 @@ def _generate_sample_sdxl(
                     except Exception:
                         pass
                 return callback_kwargs
-
+            with torch.inference_mode():
                 pipe_kwargs = {
                     "generator": generator,
                     "num_inference_steps": total_sample_steps,
@@ -515,14 +515,24 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
             epoch=0,
             sample_embeds=sample_embeds,
         )
-        _emit_metric(
-            metrics_path,
-            epoch=0,
-            step=6,
-            progress=0.10,
-            phase="baseline_ready",
-            message="Amostra baseline SDXL gerada com sucesso (Época 0).",
-        )
+        if sample_baseline_file.exists():
+            _emit_metric(
+                metrics_path,
+                epoch=0,
+                step=6,
+                progress=0.10,
+                phase="baseline_ready",
+                message="Amostra baseline SDXL gerada com sucesso (Época 0).",
+            )
+        else:
+            _emit_metric(
+                metrics_path,
+                epoch=0,
+                step=6,
+                progress=0.10,
+                phase="baseline_failed",
+                message="Falha ao gerar amostra baseline SDXL pré-treino.",
+            )
 
     _emit_metric(
         metrics_path,
@@ -737,13 +747,22 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
                 epoch=epoch,
                 sample_embeds=sample_embeds,
             )
-            _emit_metric(
-                metrics_path,
-                epoch=epoch,
-                phase="sample_ready",
-                message=f"Amostra visual da Época {epoch} pronta.",
-                telemetry_only=True,
-            )
+            if sample_file.exists():
+                _emit_metric(
+                    metrics_path,
+                    epoch=epoch,
+                    phase="sample_ready",
+                    message=f"Amostra visual da Época {epoch} pronta.",
+                    telemetry_only=True,
+                )
+            else:
+                _emit_metric(
+                    metrics_path,
+                    epoch=epoch,
+                    phase="sample_failed",
+                    message=f"Falha ao gerar amostra visual da Época {epoch}.",
+                    telemetry_only=True,
+                )
 
     final_adapter_file = output / f"{base_name}.safetensors"
     metadata = {

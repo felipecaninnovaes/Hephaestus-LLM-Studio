@@ -78,6 +78,8 @@ def _generate_sample_flux(
                         }
                         if has_embeds:
                             pipe_kwargs["prompt_embeds"] = sample_embeds["prompt_embeds"].to(device)
+                            if sample_embeds.get("negative_prompt_embeds") is not None:
+                                pipe_kwargs["negative_prompt_embeds"] = sample_embeds["negative_prompt_embeds"].to(device)
                         else:
                             pipe_kwargs["prompt"] = prompt
 
@@ -90,8 +92,9 @@ def _generate_sample_flux(
                         print(f"[FLUX-KLEIN] Amostra de validação salva (seed={seed}) em: {output_path}", flush=True)
                         return
                 except Exception as e:
-                    print(f"[WARN] Tentativa com Flux2KleinPipeline: {e}. Tentando fallback...", flush=True)
-
+                    import traceback
+                    print(f"[ERROR] Falha ao gerar amostra com Flux2KleinPipeline:\n{traceback.format_exc()}", flush=True)
+                    return
             from diffusers import FluxPipeline
 
             pipe = FluxPipeline(

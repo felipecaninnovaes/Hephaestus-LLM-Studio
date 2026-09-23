@@ -48,3 +48,10 @@ Daemon HTTP de longa duração para inferência interativa, gerenciado pelo orch
 
 - **Configuração de Treino/Geração**: Esquemas de parâmetros e respostas documentados no OpenAPI canônico em `packages/contracts/openapi.yaml`.
 - **Modo Mock (`ENGINE_MOCK=1`)**: Não importa dependências pesadas de CUDA nem aloca memória gráfica; gera imagens sintéticas com padrões geométricos determinísticos através de `engine_kit.mock.seed_bytes`.
+
+---
+
+## Adicionando um Novo Modelo
+
+Para o checklist passo a passo transversal (Contracts, Engines, Services, Apps, Infra), consulte o guia canônico:
+- [`docs/engines/novo-modelo.md`](novo-modelo.md)

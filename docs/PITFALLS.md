@@ -29,6 +29,7 @@ aqui com a fonte. Trabalho futuro → `tasks/backlog.md`.
 - **Rota protegida sem cookie cai em 404 cru em vez de 401** → `.layer()` do axum 0.7 NÃO cobre caminhos não roteados pelo matchit → gate com `.route_layer()` + isenção por prefixo (`/api/auth/*`, `/health`). (ADR-0001)
 - **Referência inexistente a catálogo responde 503** → `submit_yolo_job` mapeia todo `Err(_)` do manager como 503, mascarando NotFound → handlers novos distinguem `NotFound → 404` / `InvalidRequest → 400`; corrigir o legado exige escopo separado. (ADR-0013, ADR-0014 R6)
 - **Wire camelCase vs JSONB snake_case** → `params` interno (ex.: `package_ref`) é snake_case; o contrato público é camelCase → nunca vazar shape interno no wire; codegen espelha `openapi.yaml`, não o Postgres. (ADR-0007, `packages/contracts`)
+- **Registro de modelo treinado falha com 500 no manager** → a tabela `models` tem CHECK CONSTRAINT `models_arch_check` restringindo os slugs válidos → ao introduzir nova arquitetura/modelo, SEMPRE criar migration expandindo a constraint no banco antes de rodar o primeiro treino. (fatia qwen-image-2.1; migration 0019)
 
 ## Storage — S3/SeaweedFS
 
@@ -46,6 +47,7 @@ aqui com a fonte. Trabalho futuro → `tasks/backlog.md`.
 - **`--gpus "device=N"` pega a GPU errada após reboot** → N é índice nvidia-smi do HOST e a ordem pode mudar → smoke valida `nvidia-smi -L` antes da sessão GPU. (ADR-0010 D9)
 - **Daemon de difusão sobe com imagem `:local` inexistente no nó (exit 125)** → `DockerDaemonLauncher` resolve a imagem pelo env PRÓPRIO do orquestrador (`DIFFUSION_TRAINER_IMAGE`, default `:local`), NUNCA pelo `dispatch.image` do manager → a tag vive em duas fontes de verdade que precisam estar alinhadas nos dois composes; segunda mordida após o bug do nome `TRAINER_IMAGE_DIFFUSION`. (ADR-0023 D1; 2ª recorrência — main.rs:101)
 - **Engine GPU morre em EACCES gravando `/outputs/<job>/` só no fim do job** → raiz do dataset ZFS é 0777 mas subdir criado pelo orquestrador (root) nasce 0755 (umask; permissão do pai NÃO propaga) e a imagem do engine roda uid 1000 (`USER studio`) → todo dir de job compartilhado passa por `create_dir_all_open` (0o777); `TelemetryEmitter` probeia escrita e falha rápido. (nó GPU 2026-09-22; hotfix `fix/permissoes-volume-engine-uid`)
+- **Agendamento automático de GPU cai em loop ou seleciona CPU** → query SQL `eligible` com `$1::int` sem `.bind(required_gb)` quebra no Postgres; e binário do manager embutia `vram-table` antiga sem reload → bind obrigatório em todo `$N`; `vram-table.yaml` montada como volume no container com `VRAM_TABLE_PATH`. (fatia qwen-image-2.1)
 
 ## Engines — Python/ultralytics
 
@@ -53,6 +55,9 @@ aqui com a fonte. Trabalho futuro → `tasks/backlog.md`.
 - **VRAM do card parece "inflada"** → `nvidia-smi memory.used` é GLOBAL por GPU (inclui host/outros containers) → é o número correto para o card do nó; não subtrair processos. (ADR-0010)
 - **`jobs.engine='world'` mente sobre o executor** → `engine='world'` vive SÓ na tabela `models`; o job roda `engine='autotracker'` (imagem trainer-yolo) → dispatch/rotaamento leem `jobs.engine`, catálogo lê `models.engine`. (ADR-0014)
 - **`uv run pytest` falha na raiz do repo** → não há projeto uv raiz; uv é POR engine (`cd engines/<engine>`). (AGENTS §2)
+- **Text encoder VLM (Qwen2.5-VL / 7B) estoura VRAM em OOM no boot do treino** → encoders de visão-linguagem em FP16 consom ~14GB sozinhos → pré-computação de embeddings de prompts únicos DEVE rodar na CPU (RAM do host) com descarregamento explícito (`del` + `gc.collect()`) antes de alocar o Transformer 4-bit na GPU. (fatia qwen-image-2.1)
+- **VAE de modelo DiT (ex.: Qwen-Image) quebra com 3 canais** → VAE nativo RGBA tem `in_channels=4`; datasets comuns são RGB (3 canais) → inspecionar `pixel_values.shape[1] == 3` e concatenar canal Alpha opaco (1.0) antes de `vae.encode`. (fatia qwen-image-2.1)
+- **Transformer com sequência conjunta quebra no loss / _unpack_latents** → o DiT opera sobre sequência concatenada texto+imagem e o output contém ambos os domínios → SEMPRE fatiar exclusivamente os tokens do target (`pred[:, -packed_noisy.shape[1] :]`) antes de desempacotar ou calcular loss. (fatia qwen-image-2.1)
 
 ## Frontend — apps/web
 

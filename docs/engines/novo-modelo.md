@@ -22,6 +22,13 @@ Seguir a ordem sequencial dos pilares garante zero quebras em contratos, CI dete
      - `DiffusionBaseModel` (para difusão) ou `YoloBaseModel` (para detecção).
      - Exemplos: `flux-2-klein-4b`, `sdxl-1.0`, `sd15`, `yolo11n`.
 
+3. **Migrations de Banco (`services/api-principal/migrations/`):**
+   - A tabela `models` possui a CHECK CONSTRAINT `models_arch_check` limitando os valores de `arch`.
+   - Adicionar uma migration SQL não-destrutiva expandindo a constraint para aceitar o novo identificador:
+     ```sql
+     ALTER TABLE models DROP CONSTRAINT models_arch_check;
+     ALTER TABLE models ADD CONSTRAINT models_arch_check CHECK (arch IS NULL OR arch IN ('flux-2-klein-4b', 'sdxl', 'sd15', 'novo-modelo-4b'));
+     ```
 ---
 
 ## 2. Pilar Engines (`engines/`)

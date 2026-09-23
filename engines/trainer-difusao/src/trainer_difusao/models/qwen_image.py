@@ -79,20 +79,24 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path) -> None:
         message=f"Inicializando treino Qwen-Image-2.1 ({model_repo})...",
     )
 
-    if QwenImageTransformer2DModel is None:
-        _die("QwenImageTransformer2DModel não está disponível na versão instalada do diffusers.")
+    import diffusers
+    TransformerCls = getattr(
+        diffusers, "QwenImage21Transformer2DModel", getattr(diffusers, "QwenImageTransformer2DModel", None)
+    )
+    if TransformerCls is None:
+        _die("QwenImage21Transformer2DModel não está disponível na versão instalada do diffusers.")
 
     print(f"[DIFFUSION-TRAIN] Carregando Transformer de {model_repo}...", flush=True)
-    hub_cache, hf_token = _setup_cache_dir()
+    hf_token = os.environ.get("HF_TOKEN")
+    hub_cache = _setup_cache_dir(hf_token=hf_token)
 
-    transformer = QwenImageTransformer2DModel.from_pretrained(
+    transformer = TransformerCls.from_pretrained(
         model_repo,
         subfolder="transformer",
         torch_dtype=target_dtype,
         cache_dir=hub_cache,
         token=hf_token,
     )
-
     lora_config = LoraConfig(
         r=rank,
         lora_alpha=alpha,
@@ -104,9 +108,9 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path) -> None:
     from trainer_difusao.optimizers import _create_lr_scheduler, _create_optimizer
 
     optimizer = _create_optimizer(
-        [p for p in transformer.parameters() if p.requires_grad],
-        learning_rate=learning_rate,
-        optimizer_type=lora_cfg.get("optimizer", "adamw"),
+        transformer,
+        lora_cfg.get("optimizer", "adamw8bit"),
+        learning_rate,
     )
 
     # Finalização e salvamento do adapter LoRA

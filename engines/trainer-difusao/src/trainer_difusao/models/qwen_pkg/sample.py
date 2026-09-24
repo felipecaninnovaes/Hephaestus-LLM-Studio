@@ -76,8 +76,8 @@ def _generate_sample_qwen(
         try:
             PipelineCls = getattr(
                 diffusers,
-                "QwenImage21Pipeline",
-                getattr(diffusers, "QwenImagePipeline", None),
+                "QwenImagePipeline",
+                getattr(diffusers, "QwenImage21Pipeline", None),
             )
             if PipelineCls is None:
                 print(
@@ -86,13 +86,28 @@ def _generate_sample_qwen(
                 )
                 return
 
-            pipe = PipelineCls(
-                scheduler=scheduler,
-                vae=vae,
-                text_encoder=None,
-                tokenizer=None,
-                transformer=transformer,
-            )
+            pipe_kwargs_init: dict[str, Any] = {
+                "scheduler": scheduler,
+                "vae": vae,
+                "text_encoder": None,
+                "transformer": transformer,
+            }
+            import inspect
+
+            sig = inspect.signature(PipelineCls.__init__)
+            if "tokenizer" in sig.parameters:
+                pipe_kwargs_init["tokenizer"] = None
+            if "processor" in sig.parameters:
+                class _DummyProcessor:
+                    def apply_chat_template(self, *args, **kwargs):
+                        return [[0] * 34]
+                    class tokenizer:
+                        @staticmethod
+                        def encode(*args, **kwargs):
+                            return [0]
+                pipe_kwargs_init["processor"] = _DummyProcessor()
+
+            pipe = PipelineCls(**pipe_kwargs_init)
             if hasattr(pipe, "set_progress_bar_config"):
                 pipe.set_progress_bar_config(disable=True)
 

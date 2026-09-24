@@ -605,19 +605,20 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 pred_img = pred[:, -packed_noisy.shape[1] :]
             else:
                 pred_img = pred
-            if PipelineCls is not None and hasattr(PipelineCls, "_unpack_latents"):
-                pred = PipelineCls._unpack_latents(
-                    pred_img,
-                    latent_h * vae_scale_factor,
-                    latent_w * vae_scale_factor,
-                    vae_scale_factor,
+            # Empacota o target no mesmo espaço de tokens que pred_img (evita desempacotamento e shape mismatch em aspect ratios variados)
+            target_in = target.permute(0, 2, 1, 3, 4)
+            if PipelineCls is not None and hasattr(PipelineCls, "_pack_latents"):
+                packed_target = PipelineCls._pack_latents(
+                    target_in,
+                    batch_size=bsz,
+                    num_channels_latents=latents.shape[1],
+                    height=latent_h,
+                    width=latent_w,
                 )
-                pred_target = target
             else:
-                pred = pred_img
-                pred_target = target.flatten(2).transpose(1, 2)
+                packed_target = target_in.flatten(2).transpose(1, 2)
 
-            loss = F.mse_loss(pred.float(), pred_target.float(), reduction="mean")
+            loss = F.mse_loss(pred_img.float(), packed_target.float(), reduction="mean")
             cur_loss_raw = loss.item()
             loss = loss / grad_accum
             loss.backward()

@@ -58,7 +58,7 @@ aqui com a fonte. Trabalho futuro → `tasks/backlog.md`.
 - **Text encoder VLM (Qwen2.5-VL / 7B) estoura VRAM ou CPU** → em FP16 consome ~14GB, mas em BitsAndBytes 4-bit consome ~6.8GB na GPU → pré-computação DEVE rodar em batch na GPU com 4-bit, fallback para CPU se sem CUDA, e descarregamento explícito com `release_memory()` antes de alocar o Transformer. (fatia qwen-image-2.1)
 - **Amostra de validação em resolução alta (1280px) ou VAE sem tiling estoura VRAM (OOM)** → thumbnails de amostra devem ter resolução limitada (`min(resolution, 512)` como no FLUX), o VAE deve ter `enable_tiling()` e `enable_slicing()` ativados, e o `finally` da amostragem deve invocar `torch.cuda.empty_cache()`. (fatia qwen-image-2.1)
 - **VAE de modelo DiT (ex.: Qwen-Image) quebra com 3 canais** → VAE nativo RGBA tem `in_channels=4`; datasets comuns são RGB (3 canais) → inspecionar `pixel_values.shape[1] == 3` e concatenar canal Alpha opaco (1.0) antes de `vae.encode`. (fatia qwen-image-2.1)
-- **Transformer com sequência conjunta quebra no loss / _unpack_latents** → o DiT opera sobre sequência concatenada texto+imagem e o output contém ambos os domínios → SEMPRE fatiar exclusivamente os tokens do target (`pred[:, -packed_noisy.shape[1] :]`) antes de desempacotar ou calcular loss. (fatia qwen-image-2.1)
+- **Transformer com sequência conjunta / bucketing quebra no loss com _unpack_latents** → desempacotar latents com `_unpack_latents` assume proporção fixa e colide em aspect ratios variados (ex: 832x1920) gerando shape mismatch na dimensão 4 → SEMPRE empacotar o target com `_pack_latents` e calcular a MSE loss diretamente no espaço de tokens empacotados (`[bsz, num_tokens, channels]`), idêntico ao padrão FLUX. (fatia qwen-image-2.1)
 
 ## Frontend — apps/web
 

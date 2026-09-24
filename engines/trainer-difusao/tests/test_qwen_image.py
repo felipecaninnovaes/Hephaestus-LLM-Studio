@@ -373,6 +373,38 @@ class TestQwenImage(unittest.TestCase):
         self.assertEqual(t_lines[0]["step"], 1)
         self.assertIn("Época 1/5 · Step 1/15", t_lines[0]["message"])
         self.assertEqual(t_lines[1]["phase"], "epoch_complete")
+    def test_qwen_batched_prompt_encoding_logic(self):
+        """Valida que a lógica de chunking de prompts e desempacotamento de tensors produz shapes consistentes."""
+        import torch
+        unique_prompts = [f"Prompt número {i}" for i in range(15)]
+        prompt_cache = {}
+        bs = 4
+
+        class DummyPipeline:
+            def encode_prompt(self, chunk, device=None):
+                n = len(chunk)
+                pes = torch.randn(n, 16, 4096)
+                pe_masks = torch.ones(n, 16)
+                ipms = torch.ones(n, 16)
+                return pes, pe_masks, ipms
+
+        pipeline = DummyPipeline()
+        for i in range(0, len(unique_prompts), bs):
+            chunk = unique_prompts[i : i + bs]
+            encoded = pipeline.encode_prompt(chunk)
+            pes, pe_masks, ipms = encoded
+            for idx, p_text in enumerate(chunk):
+                pe_item = pes[idx : idx + 1]
+                mask_item = pe_masks[idx : idx + 1]
+                ipm_item = ipms[idx : idx + 1]
+                prompt_cache[p_text] = (pe_item, mask_item, ipm_item)
+
+        self.assertEqual(len(prompt_cache), 15)
+        first_pe, first_mask, first_ipm = prompt_cache["Prompt número 0"]
+        self.assertEqual(first_pe.shape, (1, 16, 4096))
+        self.assertEqual(first_mask.shape, (1, 16))
+        self.assertEqual(first_ipm.shape, (1, 16))
+
 
 if __name__ == "__main__":
     unittest.main()

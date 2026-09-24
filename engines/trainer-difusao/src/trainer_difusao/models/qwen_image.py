@@ -124,7 +124,31 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
     unique_prompts = list({cap for _, cap in dataset.samples})
 
     if PipelineCls is not None:
-        print(f"[DIFFUSION-TRAIN] Pré-computando embeddings de texto ({len(unique_prompts)} prompts) na CPU...", flush=True)
+        total_prompts = len(unique_prompts)
+        use_cuda = (device == "cuda") and torch.cuda.is_available()
+        text_enc = None
+        if use_cuda:
+            try:
+                from transformers import BitsAndBytesConfig, Qwen3VLForConditionalGeneration
+
+                bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16)
+                print(f"[DIFFUSION-TRAIN] Carregando Text Encoder 4-bit na GPU para acelerar pré-computação...", flush=True)
+                text_enc = Qwen3VLForConditionalGeneration.from_pretrained(
+                    model_repo,
+                    subfolder="text_encoder",
+                    quantization_config=bnb_config,
+                    torch_dtype=torch.bfloat16,
+                    device_map="cuda:0",
+                    cache_dir=hub_cache,
+                    token=hf_token,
+                )
+            except Exception as bnb_err:
+                print(f"[WARN] Falha ao carregar Text Encoder 4-bit na GPU ({bnb_err}). Fallback para CPU.", flush=True)
+                use_cuda = False
+                text_enc = None
+
+        dev_desc = "GPU (4-bit)" if use_cuda else "CPU"
+        print(f"[DIFFUSION-TRAIN] Pré-computando embeddings de texto ({total_prompts} prompts) na {dev_desc}...", flush=True)
         try:
             tokenizer = AutoTokenizer.from_pretrained(
                 model_repo,
@@ -132,61 +156,102 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 cache_dir=hub_cache,
                 token=hf_token,
             )
+            pipe_kwargs = {
+                "tokenizer": tokenizer,
+                "vae": None,
+                "transformer": None,
+                "torch_dtype": torch.bfloat16,
+                "cache_dir": hub_cache,
+                "token": hf_token,
+            }
+            if text_enc is not None:
+                pipe_kwargs["text_encoder"] = text_enc
+
             text_pipeline = PipelineCls.from_pretrained(
                 model_repo,
-                tokenizer=tokenizer,
-                vae=None,
-                transformer=None,
-                torch_dtype=torch.bfloat16,
-                cache_dir=hub_cache,
-                token=hf_token,
+                **pipe_kwargs,
             )
-            # Mantém estritamente na CPU do host para preservar 100% da VRAM da GPU
+            encode_device = torch.device("cuda:0") if use_cuda else torch.device("cpu")
+            bs = 8 if use_cuda else 4
+            done = 0
             with torch.no_grad():
-                for p_text in unique_prompts:
-                    encoded = text_pipeline.encode_prompt(p_text)
+                i = 0
+                while i < total_prompts:
+                    chunk = unique_prompts[i : i + bs]
+                    try:
+                        encoded = text_pipeline.encode_prompt(chunk, device=encode_device)
+                    except Exception as enc_err:
+                        if use_cuda and "out of memory" in str(enc_err).lower() and bs > 1:
+                            import gc
+                            gc.collect()
+                            torch.cuda.empty_cache()
+                            bs = max(1, bs // 2)
+                            print(f"[WARN] OOM na pré-computação de texto — reduzindo batch para {bs}.", flush=True)
+                            continue
+                        raise
+
                     if len(encoded) == 3:
-                        pe, pe_mask, ipm = encoded
+                        pes, pe_masks, ipms = encoded
                     else:
-                        pe, pe_mask = encoded
-                        ipm = None
-                    prompt_cache[p_text] = (
-                        pe.cpu(),
-                        pe_mask.cpu() if pe_mask is not None else None,
-                        ipm.cpu() if ipm is not None else None,
-                    )
+                        pes, pe_masks = encoded
+                        ipms = None
+
+                    for idx, p_text in enumerate(chunk):
+                        pe_item = pes[idx : idx + 1].detach().cpu()
+                        mask_item = pe_masks[idx : idx + 1].detach().cpu() if pe_masks is not None else None
+                        ipm_item = ipms[idx : idx + 1].detach().cpu() if ipms is not None else None
+                        prompt_cache[p_text] = (pe_item, mask_item, ipm_item)
+
+                    i += len(chunk)
+                    done = min(i, total_prompts)
+                    if metrics_path is not None and (done % (bs * 4) == 0 or done == total_prompts):
+                        _emit_metric(
+                            metrics_path,
+                            epoch=epoch_offset,
+                            step=0,
+                            progress=round(0.01 + 0.03 * (done / max(1, total_prompts)), 4),
+                            phase="preparing_cache",
+                            message=f"Pré-computando text embeddings na {dev_desc} ({done}/{total_prompts})...",
+                            telemetry_only=True,
+                        )
+
                 if sample_prompt:
-                    encoded_sample = text_pipeline.encode_prompt(sample_prompt)
+                    encoded_sample = text_pipeline.encode_prompt([sample_prompt], device=encode_device)
                     if len(encoded_sample) == 3:
                         sample_pe, sample_pe_mask, sample_ipm = encoded_sample
                     else:
                         sample_pe, sample_pe_mask = encoded_sample
                         sample_ipm = None
                     sample_embeds = {
-                        "prompt_embeds": sample_pe.cpu(),
-                        "prompt_embeds_mask": sample_pe_mask.cpu() if sample_pe_mask is not None else None,
-                        "image_pad_mask": sample_ipm.cpu() if sample_ipm is not None else None,
+                        "prompt_embeds": sample_pe[0:1].detach().cpu(),
+                        "prompt_embeds_mask": sample_pe_mask[0:1].detach().cpu() if sample_pe_mask is not None else None,
+                        "image_pad_mask": sample_ipm[0:1].detach().cpu() if sample_ipm is not None else None,
                     }
+
             del text_pipeline
+            if text_enc is not None:
+                del text_enc
             release_memory()
             print(
-                f"[DIFFUSION] Embeddings pré-computados com sucesso ({len(prompt_cache)} prompts cacheados). Text encoder descarregado da memória (RAM/VRAM liberadas).",
+                f"[DIFFUSION] Embeddings pré-computados com sucesso ({len(prompt_cache)} prompts cacheados na {dev_desc}). Text encoder descarregado da memória (RAM/VRAM liberadas).",
                 flush=True,
             )
             _emit_metric(
                 metrics_path,
                 epoch=epoch_offset,
                 step=0,
-                progress=0.03,
+                progress=0.04,
                 phase="preparing_cache",
                 message=f"Embeddings pré-computados ({len(prompt_cache)} prompts). Text encoder descarregado.",
             )
         except Exception as exc:
-            print(f"[DIFFUSION-TRAIN] Aviso: falha na pré-computação com pipeline na CPU: {exc}. Criando fallbacks sintéticos.", flush=True)
+            print(f"[DIFFUSION-TRAIN] Aviso: falha na pré-computação de embeddings: {exc}. Criando fallbacks sintéticos.", flush=True)
             try:
                 del text_pipeline
             except NameError:
                 pass
+            if text_enc is not None:
+                del text_enc
             release_memory()
     # 4. Carrega VAE
     print(f"[DIFFUSION-TRAIN] Carregando VAE de {model_repo}...", flush=True)

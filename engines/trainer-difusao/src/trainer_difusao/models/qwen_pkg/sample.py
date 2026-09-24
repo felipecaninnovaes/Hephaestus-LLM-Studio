@@ -61,8 +61,14 @@ def _generate_sample_qwen(
         has_embeds = sample_embeds is not None and "prompt_embeds" in sample_embeds
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
+        orig_vae_dev = getattr(vae, "device", None)
         orig_vae_dtype = getattr(vae, "dtype", None)
         target_dtype = getattr(transformer, "dtype", None)
+        if hasattr(vae, "to") and orig_vae_dev is not None and str(orig_vae_dev) != str(device):
+            try:
+                vae.to(device)
+            except Exception:
+                pass
         if (
             target_dtype is not None
             and orig_vae_dtype is not None
@@ -217,6 +223,11 @@ def _generate_sample_qwen(
                 ctypes.CDLL("libc.so.6").malloc_trim(0)
             except Exception:
                 pass
+            if hasattr(vae, "to") and orig_vae_dev is not None and str(orig_vae_dev) != str(device):
+                try:
+                    vae.to(orig_vae_dev)
+                except Exception:
+                    pass
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.ipc_collect()

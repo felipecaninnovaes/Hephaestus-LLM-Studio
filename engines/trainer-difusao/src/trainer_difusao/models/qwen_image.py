@@ -293,6 +293,51 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
     vae_scale_factor = 8
     if hasattr(vae, "temperal_downsample"):
         vae_scale_factor = 2 ** len(vae.temperal_downsample)
+    # Pré-computa latents de imagem na GPU e descarrega o VAE para CPU (poupa 1.37 GB de VRAM no treino)
+    latents_cache: dict[int, torch.Tensor] = {}
+    total_dataset_samples = len(dataset)
+    print(f"[DIFFUSION-TRAIN] Pré-computando latents ({total_dataset_samples} imagens) na GPU...", flush=True)
+    _emit_metric(
+        metrics_path,
+        epoch=epoch_offset,
+        step=0,
+        progress=0.038,
+        phase="preparing_latents",
+        message=f"Pré-computando latents na GPU (0/{total_dataset_samples})...",
+        telemetry_only=True,
+    )
+    with torch.no_grad():
+        for s_idx in range(total_dataset_samples):
+            s_item = dataset[s_idx]
+            pv = s_item["pixel_values"].unsqueeze(0).to(device)
+            if pv.ndim == 4:
+                pv = pv.unsqueeze(2)
+            if pv.shape[1] == 3:
+                alpha = torch.ones((1, 1, *pv.shape[2:]), device=device, dtype=pv.dtype)
+                pv = torch.cat([pv, alpha], dim=1)
+            l = vae.encode(pv.float()).latent_dist.sample().to(dtype=target_dtype)
+            if latents_mean is not None and latents_std is not None:
+                l = (l - latents_mean) * latents_std
+            latents_cache[s_idx] = l.cpu()
+            done_l = s_idx + 1
+            if done_l % 50 == 0 or done_l == total_dataset_samples:
+                _emit_metric(
+                    metrics_path,
+                    epoch=epoch_offset,
+                    step=0,
+                    progress=round(0.038 + 0.004 * (done_l / max(1, total_dataset_samples)), 4),
+                    phase="preparing_latents",
+                    message=f"Pré-computando latents ({done_l}/{total_dataset_samples})...",
+                    telemetry_only=True,
+                )
+
+    # Descarrega VAE para CPU liberando 1.37 GB de VRAM para o Transformer DiT
+    vae = vae.to("cpu")
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+    print("[DIFFUSION-TRAIN] VAE descarregado para CPU. 1.37 GB VRAM liberados para o Transformer DiT.", flush=True)
+
 
     # 5. Carrega Transformer com quantização 4-bit (se selecionada) e LoRA
     transformer_kwargs = {
@@ -450,30 +495,34 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         optimizer.zero_grad()
 
         for batch in dataloader:
-            pixel_values = batch["pixel_values"].to(device)
             captions = batch["prompt"]
-            bsz = pixel_values.shape[0]
+            bsz = len(captions)
+            indices = batch.get("index", None)
 
-            # Qwen-Image VAE exige formato 5D: [B, C, F, H, W] com F=1
-            if pixel_values.ndim == 4:
-                pixel_values = pixel_values.unsqueeze(2)
+            if indices is not None:
+                idx_list = indices.tolist() if isinstance(indices, torch.Tensor) else list(indices)
+            else:
+                idx_list = []
 
-            # Qwen-Image VAE possui in_channels=4 (suporte a RGBA). Se a entrada for RGB (3 canais),
-            # concatena canal Alpha opaco (1.0) para suprir os 4 canais requeridos pelo encoder.
-            if pixel_values.shape[1] == 3:
-                alpha = torch.ones(
-                    (pixel_values.shape[0], 1, *pixel_values.shape[2:]),
-                    device=device,
-                    dtype=pixel_values.dtype,
-                )
-                pixel_values = torch.cat([pixel_values, alpha], dim=1)
-            # Codifica imagens com VAE em latents
-            with torch.no_grad():
-                latents = vae.encode(pixel_values.float()).latent_dist.sample()
-                latents = latents.to(dtype=target_dtype)
-                if latents_mean is not None and latents_std is not None:
-                    latents = (latents - latents_mean) * latents_std
-
+            if idx_list and all(idx in latents_cache for idx in idx_list):
+                latents = torch.cat([latents_cache[idx].to(device) for idx in idx_list], dim=0)
+            else:
+                pixel_values = batch["pixel_values"].to(device)
+                if pixel_values.ndim == 4:
+                    pixel_values = pixel_values.unsqueeze(2)
+                if pixel_values.shape[1] == 3:
+                    alpha = torch.ones(
+                        (pixel_values.shape[0], 1, *pixel_values.shape[2:]),
+                        device=device,
+                        dtype=pixel_values.dtype,
+                    )
+                    pixel_values = torch.cat([pixel_values, alpha], dim=1)
+                with torch.no_grad():
+                    vae_dev = vae.to(device) if getattr(vae, "device", None) != torch.device(device) else vae
+                    latents = vae_dev.encode(pixel_values.float()).latent_dist.sample()
+                    latents = latents.to(dtype=target_dtype)
+                    if latents_mean is not None and latents_std is not None:
+                        latents = (latents - latents_mean) * latents_std
             # Flow matching noise scheduling
             noise = torch.randn_like(latents)
             u = torch.sigmoid(torch.randn(bsz, device=device))

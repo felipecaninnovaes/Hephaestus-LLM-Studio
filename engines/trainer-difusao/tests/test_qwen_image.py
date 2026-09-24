@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 
 import yaml
@@ -200,7 +201,10 @@ class TestQwenImage(unittest.TestCase):
         mock_result.images = [mock_img]
         mock_pipe_instance.return_value = mock_result
 
-        with patch("diffusers.QwenImagePipeline", return_value=mock_pipe_instance):
+        import diffusers
+        p1 = patch("diffusers.QwenImagePipeline", return_value=mock_pipe_instance)
+        p2 = patch("diffusers.QwenImage21Pipeline", return_value=mock_pipe_instance) if hasattr(diffusers, "QwenImage21Pipeline") else None
+        with p1, (p2 if p2 else nullcontext()):
             sample_embeds = {
                 "prompt_embeds": torch.randn(1, 16, 64),
                 "prompt_embeds_mask": torch.ones(1, 16, dtype=torch.bool),

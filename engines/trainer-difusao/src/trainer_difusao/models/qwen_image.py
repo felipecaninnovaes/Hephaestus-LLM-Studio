@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import gc
 import math
 import os
 import shutil

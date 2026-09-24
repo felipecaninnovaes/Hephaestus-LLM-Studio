@@ -73,11 +73,20 @@ def _generate_sample_qwen(
             except Exception:
                 pass
 
+        if hasattr(transformer, "config") and not hasattr(transformer.config, "guidance_embeds"):
+            try:
+                from diffusers.configuration_utils import FrozenDict
+                cfg_dict = dict(transformer.config)
+                cfg_dict["guidance_embeds"] = False
+                transformer.config = FrozenDict(cfg_dict)
+            except Exception:
+                pass
+
         try:
             PipelineCls = getattr(
                 diffusers,
-                "QwenImagePipeline",
-                getattr(diffusers, "QwenImage21Pipeline", None),
+                "QwenImage21Pipeline",
+                getattr(diffusers, "QwenImagePipeline", None),
             )
             if PipelineCls is None:
                 print(

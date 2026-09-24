@@ -59,8 +59,7 @@ configuração neste repo é direta em `.omp/mcp.json` (já adicionada):
 - Alternativa local (se preferir gerenciar a chave você mesmo): servidor
   `stdio` com `npx -y @runpod/mcp-server@latest` e `env.RUNPOD_API_KEY` —
   nesse caso coloque a chave **somente** no config de usuário (`~/.omp/...`),
-  nunca no `.omp/mcp.json` rastreado pelo git (Regra 7 de `AGENTS.md`).
-
+  nunca no `.omp/mcp.json` rastreado pelo git (Regra de segredos em `.omp/agents/infra.md`).
 ---
 
 ## 3. Gerar as credenciais do worker (Control Plane)

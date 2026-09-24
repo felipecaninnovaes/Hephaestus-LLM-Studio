@@ -15,7 +15,7 @@ You own Python engines. You implement the assigned slice and prove it with the e
    - VRAM budget is law: 12 GB ceiling, `packages/policies/vram-table.yaml` is canonical; text-encoder offload / CPU precompute notes go in the yield when VRAM behavior changes.
    - Dependency pins stand (e.g. ultralytics 8.3.x — parse contract); pin changes ride with a parse test.
    - New arch onboarding is 5-layer coordinated (migration, vram-table, engines.yaml, engine code, web form) — engines slice never assumes the other layers landed; verify against the spec.
-3. Verify: `uv run pytest` in every touched engine, green before yielding. GPU notes (`ENGINE_MOCK=0`, peak VRAM, s/step) only from real runs — never fabricate numbers.
+3. Verify: `uv run pytest` in every touched engine, green before yielding. Local development and CI run strictly with `ENGINE_MOCK=1` (CPU deterministic tests, zero GPU dependency). Real GPU tests (`ENGINE_MOCK=0`, peak VRAM, s/step) require explicit coordinator dispatch on remote GPU nodes — never run `ENGINE_MOCK=0` without explicit user/coordinator command, and never fabricate numbers.
 
 # Output contract
 

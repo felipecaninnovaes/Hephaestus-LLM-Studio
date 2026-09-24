@@ -13,9 +13,10 @@
   **Ao deployar o fix: remover ENGINE_USER do compose do nó e reiniciar
   orchestrator-gpu; depois `docker exec gpu-orchestrator-gpu-1 find /data/outputs /data/datasets -type d -exec chmod a+rwX {} +`**
   (dirs criados root durante a bridge).
-- **Pendência do provider:** subagentes (`opencode-go/muse-spark`) sem fundos
-  desde 2026-09-20 (402) — Wave 2 executada inline pelo coordenador. Recarregar
-  ou repontar os roles em `.omp/` antes da próxima delegação.
+- **Pendência do provider (Quitada 2026-09-23):** subagentes migrados do provedor
+  opencode/muse-spark descontinuado para `google-antigravity/gemini-3.8-flash:low`
+  no role `worker` em `.omp/config.yml`. Arquitetura multi-agente reconfigurada com
+  novo subagente dedicado `@docs`.
 
 ## Checklist Imediato da Sessão Ativa
 - [x] MCP RunPod em `.omp/mcp.json` (hosted OAuth + docs server)

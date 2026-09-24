@@ -15,7 +15,7 @@ este arquivo é a única memória lida inteira).
    errado no wire, superfície de segurança.
 
 NÃO gravar: transient resolvido na hora sem chance de retorno; comportamento
-óbvio de framework; nada que já seja regra inegociável do `AGENTS.md`.
+óbvio de framework; nada que já seja regra inegociável em `.omp/agents/`.
 Roteamento: decisão com ressalva → fica no `Gotcha:` da ADR; se a ressalva
 ultrapassa a decisão (vale para qualquer sessão futura no pilar), duplica-se
 aqui com a fonte. Trabalho futuro → `tasks/backlog.md`.

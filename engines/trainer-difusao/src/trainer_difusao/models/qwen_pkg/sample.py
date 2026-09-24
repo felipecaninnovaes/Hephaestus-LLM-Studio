@@ -111,7 +111,10 @@ def _generate_sample_qwen(
             if hasattr(pipe, "set_progress_bar_config"):
                 pipe.set_progress_bar_config(disable=True)
 
-            generator = torch.Generator(device=device).manual_seed(seed)
+            exec_dev = getattr(pipe, "_execution_device", None) or getattr(transformer, "device", None)
+            if not isinstance(exec_dev, (str, torch.device)):
+                exec_dev = "cuda" if torch.cuda.is_available() else "cpu"
+            generator = torch.Generator(device=exec_dev).manual_seed(seed)
             with torch.inference_mode():
                 pipe_kwargs: dict[str, Any] = {
                     "generator": generator,

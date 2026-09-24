@@ -329,5 +329,50 @@ class TestQwenImage(unittest.TestCase):
             self.assertEqual(len(called_with), 1)
             self.assertIn("guidance_scale", called_with[0])
 
+    def test_qwen_train_step_metrics_emission(self):
+        from trainer_difusao.common import _emit_metric
+        metrics_file = self.tmp_path / "test_steps" / "metrics.jsonl"
+        telemetry_file = self.tmp_path / "test_steps" / "telemetry.jsonl"
+
+        # Emite métrica de passo de treino
+        _emit_metric(
+            metrics_file,
+            epoch=1,
+            step=1,
+            loss=0.3456,
+            lr=2e-4,
+            progress=0.11,
+            phase="training",
+            message="Época 1/5 · Step 1/15 · Loss: 0.3456",
+        )
+        # Emite métrica de conclusão de época
+        _emit_metric(
+            metrics_file,
+            epoch=1,
+            step=3,
+            loss=0.3200,
+            lr=2e-4,
+            progress=0.23,
+            phase="epoch_complete",
+            message="Época 1/5 concluída - Loss Média: 0.3200",
+        )
+
+        self.assertTrue(metrics_file.exists())
+        self.assertTrue(telemetry_file.exists())
+
+        lines = [json.loads(line) for line in metrics_file.read_text().splitlines() if line.strip()]
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[0]["phase"], "training")
+        self.assertEqual(lines[0]["step"], 1)
+        self.assertEqual(lines[0]["loss"], 0.3456)
+        self.assertEqual(lines[1]["phase"], "epoch_complete")
+
+        t_lines = [json.loads(line) for line in telemetry_file.read_text().splitlines() if line.strip()]
+        self.assertEqual(len(t_lines), 2)
+        self.assertEqual(t_lines[0]["phase"], "training")
+        self.assertEqual(t_lines[0]["step"], 1)
+        self.assertIn("Época 1/5 · Step 1/15", t_lines[0]["message"])
+        self.assertEqual(t_lines[1]["phase"], "epoch_complete")
+
 if __name__ == "__main__":
     unittest.main()

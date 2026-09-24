@@ -113,7 +113,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         enable_bucket=bool(cfg.get("enable_bucket", True)),
     )
     dataloader = build_dataloader(dataset, batch_size=batch_size, seed=seed)
-    total_steps = len(dataloader) * epochs // grad_accum
+    total_steps = max(1, math.ceil(len(dataloader) * epochs / grad_accum))
 
     # 2. Resolução de classes Diffusers para Qwen-Image
     PipelineCls = getattr(diffusers, "QwenImage21Pipeline", getattr(diffusers, "QwenImagePipeline", None))
@@ -275,11 +275,9 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         metrics_path,
         epoch=epoch_offset,
         step=0,
-        loss=1.0,
-        lr=learning_rate,
         progress=0.05,
-        phase="training",
-        message=f"Iniciando loop de treino LoRA: {epochs} épocas, {len(dataset)} imagens.",
+        phase="training_started",
+        message=f"Iniciando loop de treino LoRA: {epochs} épocas, {len(dataset)} imagens, {total_steps} passos totais.",
     )
 
     # Scheduler para amostragem determinística de validação
@@ -473,7 +471,8 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             loss.backward()
 
             steps_in_epoch += 1
-            if steps_in_epoch % grad_accum == 0 or steps_in_epoch == len(dataloader):
+            is_accum_step = (steps_in_epoch % grad_accum == 0 or steps_in_epoch == len(dataloader))
+            if is_accum_step:
                 torch.nn.utils.clip_grad_norm_(transformer.parameters(), 1.0)
                 optimizer.step()
                 if lr_scheduler is not None:
@@ -481,25 +480,55 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 optimizer.zero_grad()
                 global_step += 1
 
+                effective_lr = (
+                    lr_scheduler.get_last_lr()[0] if lr_scheduler and hasattr(lr_scheduler, "get_last_lr") else learning_rate
+                )
+                safe_loss = (
+                    None
+                    if (math.isnan(cur_loss_raw) or math.isinf(cur_loss_raw))
+                    else round(cur_loss_raw, 4)
+                )
+                current_progress = round(
+                    min(0.99, max(0.05, 0.05 + 0.90 * (global_step / max(1, total_steps)))), 4
+                )
+                emit_interval = 1 if total_steps <= 100 else (5 if total_steps <= 500 else 10)
+                if global_step % emit_interval == 0 or steps_in_epoch == len(dataloader):
+                    _emit_metric(
+                        metrics_path,
+                        epoch=epoch,
+                        step=global_step,
+                        loss=safe_loss,
+                        lr=effective_lr,
+                        progress=current_progress,
+                        phase="training",
+                        message=f"Época {epoch}/{epochs} · Step {global_step}/{total_steps} · Loss: {safe_loss}",
+                    )
+                    print(
+                        f"[TRAIN] Época {epoch}/{epochs} · Step {global_step}/{total_steps} · Loss: {safe_loss} · LR: {effective_lr:.2e}",
+                        flush=True,
+                    )
+
             if not math.isnan(cur_loss_raw) and not math.isinf(cur_loss_raw):
                 epoch_loss += cur_loss_raw
 
-            effective_lr = (
-                lr_scheduler.get_last_lr()[0] if lr_scheduler and hasattr(lr_scheduler, "get_last_lr") else learning_rate
-            )
-
         # Métrica da época
         avg_loss = round(epoch_loss / max(1, steps_in_epoch), 4)
-        progress = round(min(0.99, max(0.05, epoch_idx / epochs)), 4)
+        epoch_progress = round(
+            min(0.99, max(0.05, 0.05 + 0.90 * (epoch_idx / epochs))), 4
+        )
         _emit_metric(
             metrics_path,
             epoch=epoch,
             step=global_step,
             loss=avg_loss,
             lr=effective_lr,
-            progress=progress,
-            phase="training",
-            message=f"Época {epoch}/{epochs} concluída - Loss: {avg_loss}",
+            progress=epoch_progress,
+            phase="epoch_complete",
+            message=f"Época {epoch}/{epochs} concluída - Loss Média: {avg_loss}",
+        )
+        print(
+            f"[TRAIN] Época {epoch}/{epochs} concluída - Loss Média: {avg_loss}",
+            flush=True,
         )
 
         if sample_prompt and sample_interval > 0 and (epoch_idx % sample_interval == 0 or epoch_idx == epochs):

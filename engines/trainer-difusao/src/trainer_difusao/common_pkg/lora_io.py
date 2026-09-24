@@ -4,9 +4,16 @@ I/O atômico de adaptadores e pesos LoRA (.safetensors).
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
+__all__ = [
+    "_save_lora_safetensors",
+    "_load_lora_weights",
+    "save_adapter_checkpoint",
+    "save_final_adapter",
+]
 
 _LORA_KEY_PREFIXES_TO_STRIP = (
     "base_model.model.",
@@ -68,3 +75,37 @@ def _load_lora_weights(model: Any, weights_path: Path | str) -> None:
     state_dict = safetensors.torch.load_file(str(path))
     set_peft_model_state_dict(model, state_dict)
     print("[INFO] Pesos LoRA injetados com sucesso no modelo para continuação de treino.", flush=True)
+
+
+def save_adapter_checkpoint(
+    model: Any,
+    checkpoints_dir: Path,
+    base_name: str,
+    epoch: int,
+    metadata: dict[str, str],
+) -> Path:
+    """Cria checkpoints_dir, grava {base_name}_epoch_{epoch:03d}.safetensors via _save_lora_safetensors e retorna o Path."""
+    checkpoints_dir = Path(checkpoints_dir)
+    checkpoints_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_file = checkpoints_dir / f"{base_name}_epoch_{epoch:03d}.safetensors"
+    _save_lora_safetensors(model, ckpt_file, metadata)
+    return ckpt_file
+
+
+def save_final_adapter(
+    model: Any,
+    output_dir: Path,
+    base_name: str,
+    metadata: dict[str, str],
+) -> Path:
+    """Salva atomicamente {base_name}.safetensors via _save_lora_safetensors, e se base_name != 'adapter', copia para adapter.safetensors. Retorna o Path final."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    final_adapter_file = output_dir / f"{base_name}.safetensors"
+    _save_lora_safetensors(model, final_adapter_file, metadata)
+    if base_name != "adapter":
+        canonical_file = output_dir / "adapter.safetensors"
+        tmp_canonical = output_dir / f".tmp_{canonical_file.name}"
+        shutil.copy2(final_adapter_file, tmp_canonical)
+        os.replace(tmp_canonical, canonical_file)
+    return final_adapter_file

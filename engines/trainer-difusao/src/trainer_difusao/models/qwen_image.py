@@ -3,24 +3,24 @@
 from __future__ import annotations
 
 import copy
-import gc
 import math
 import os
-import shutil
 from pathlib import Path
 from typing import Any
 
 from engine_kit.mock import is_mock
+from engine_kit.vram import release_memory
+
 from trainer_difusao.common import (
-    _cleanup_cuda,
     _die,
     _ensure_qwen_diffusers_compat,
     _emit_metric,
     _normalize_train_quantization,
     _resolve_output_name,
-    _save_lora_safetensors,
     _setup_cache_dir,
     _validate_train_aux,
+    save_adapter_checkpoint,
+    save_final_adapter,
 )
 from trainer_difusao.dataset import DiffusionDataset, build_dataloader
 from trainer_difusao.models.base import BaseModelTrainer
@@ -28,15 +28,7 @@ from trainer_difusao.models.mock import _mock_train
 from transformers import AutoTokenizer
 from trainer_difusao.models.qwen_pkg import _generate_sample_qwen
 
-def _release_system_memory() -> None:
-    """Força coleta de lixo e devolução de páginas de memória (arenas malloc) ao kernel Linux."""
-    import gc
-    import ctypes
-    gc.collect()
-    try:
-        ctypes.CDLL("libc.so.6").malloc_trim(0)
-    except Exception:
-        pass
+_release_system_memory = release_memory
 
 
 def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
@@ -176,8 +168,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                         "image_pad_mask": sample_ipm.cpu() if sample_ipm is not None else None,
                     }
             del text_pipeline
-            _release_system_memory()
-            _cleanup_cuda()
+            release_memory()
             print(
                 f"[DIFFUSION] Embeddings pré-computados com sucesso ({len(prompt_cache)} prompts cacheados). Text encoder descarregado da memória (RAM/VRAM liberadas).",
                 flush=True,
@@ -192,8 +183,11 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             )
         except Exception as exc:
             print(f"[DIFFUSION-TRAIN] Aviso: falha na pré-computação com pipeline na CPU: {exc}. Criando fallbacks sintéticos.", flush=True)
-            _release_system_memory()
-            _cleanup_cuda()
+            try:
+                del text_pipeline
+            except NameError:
+                pass
+            release_memory()
     # 4. Carrega VAE
     print(f"[DIFFUSION-TRAIN] Carregando VAE de {model_repo}...", flush=True)
     _emit_metric(
@@ -259,8 +253,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         subfolder="transformer",
         **transformer_kwargs,
     )
-    _release_system_memory()
-    _cleanup_cuda()
+    release_memory()
 
     lora_config = LoraConfig(
         r=rank,
@@ -603,14 +596,16 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 )
 
         if epoch_idx % checkpoint_interval == 0 or epoch_idx == epochs:
-            ckpt_file = checkpoints_dir / f"{base_name}_epoch_{epoch:03d}.safetensors"
-            _save_lora_safetensors(transformer, ckpt_file, {**metadata, "epoch": str(epoch)})
+            save_adapter_checkpoint(
+                transformer,
+                checkpoints_dir,
+                base_name,
+                epoch,
+                {**metadata, "epoch": str(epoch)},
+            )
 
     # 8. Salva adaptador final
-    final_adapter_file = output_path / f"{base_name}.safetensors"
-    _save_lora_safetensors(transformer, final_adapter_file, metadata)
-    if base_name != "adapter":
-        shutil.copy2(final_adapter_file, output_path / "adapter.safetensors")
+    final_adapter_file = save_final_adapter(transformer, output_path, base_name, metadata)
 
     _emit_metric(
         metrics_path,

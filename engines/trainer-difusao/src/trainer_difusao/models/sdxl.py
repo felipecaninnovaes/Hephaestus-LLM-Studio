@@ -3,7 +3,6 @@
 import math
 import os
 import random
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -22,154 +21,26 @@ from trainer_difusao.common import (
     _precompute_text_cache_with_cleanup,
     _prune_checkpoints,
     _resolve_output_name,
-    _save_lora_safetensors,
     _setup_cache_dir,
+    save_adapter_checkpoint,
+    save_final_adapter,
     _temporary_device_encoders,
     _validate_train_aux,
 )
 from trainer_difusao.dataset import DiffusionDataset, build_dataloader
 from trainer_difusao.models.base import BaseModelTrainer
 from trainer_difusao.optimizers import _create_lr_scheduler, _create_optimizer
+from trainer_difusao.models.sd_pkg import (
+    _compute_sdxl_embeddings,
+    _generate_sample_sdxl,
+)
 
-
-def _compute_sdxl_embeddings(
-    prompts: list[str],
-    tokenizer_one: Any,
-    tokenizer_two: Any,
-    text_encoder_one: Any,
-    text_encoder_two: Any,
-    device: Any,
-    target_dtype: Any = None,
-) -> tuple[Any, Any]:
-    import torch
-
-    with torch.no_grad():
-        tokens_one = tokenizer_one(
-            prompts,
-            padding="max_length",
-            max_length=tokenizer_one.model_max_length,
-            truncation=True,
-            return_tensors="pt",
-        ).input_ids.to(device)
-        enc_one = text_encoder_one(tokens_one, output_hidden_states=True)
-        hidden_states_one = enc_one.hidden_states[-2]
-
-        tokens_two = tokenizer_two(
-            prompts,
-            padding="max_length",
-            max_length=tokenizer_two.model_max_length,
-            truncation=True,
-            return_tensors="pt",
-        ).input_ids.to(device)
-        enc_two = text_encoder_two(tokens_two, output_hidden_states=True)
-        hidden_states_two = enc_two.hidden_states[-2]
-        pooled_embeds = enc_two.text_embeds
-        # Concatena canais de embedding (768 + 1280 = 2048)
-        prompt_embeds = torch.concat([hidden_states_one, hidden_states_two], dim=-1)
-        if target_dtype is not None:
-            prompt_embeds = prompt_embeds.to(dtype=target_dtype)
-            pooled_embeds = pooled_embeds.to(dtype=target_dtype)
-
-    return prompt_embeds, pooled_embeds
-
-
-def _generate_sample_sdxl(
-    unet: Any,
-    vae: Any,
-    text_encoder_one: Any,
-    text_encoder_two: Any,
-    tokenizer_one: Any,
-    tokenizer_two: Any,
-    noise_scheduler: Any,
-    prompt: str,
-    output_path: Path,
-    seed: int = 42,
-    metrics_path: Path | None = None,
-    epoch: int = 0,
-    sample_embeds: dict[str, Any] | None = None,
-) -> None:
-    """Gera uma imagem de teste para SDXL com os pesos LoRA ativos e seed fixa determinística.
-    
-    Chama unet.eval() durante a inferência e grava atomicamente via arquivo temporário (.tmp_*).
-    """
-    try:
-        import torch
-        from diffusers import StableDiffusionXLPipeline
-
-        was_training = getattr(unet, "training", False)
-        unet.eval()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = output_path.with_name(f".tmp_{output_path.name}")
-
-        has_embeds = sample_embeds is not None and "prompt_embeds" in sample_embeds
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        try:
-            pipe = StableDiffusionXLPipeline(
-                vae=vae,
-                text_encoder=None if has_embeds else text_encoder_one,
-                text_encoder_2=None if has_embeds else text_encoder_two,
-                tokenizer=None if has_embeds else tokenizer_one,
-                tokenizer_2=None if has_embeds else tokenizer_two,
-                unet=unet,
-                scheduler=noise_scheduler,
-            )
-            pipe.set_progress_bar_config(disable=True)
-            generator = torch.Generator(device=device).manual_seed(seed)
-            total_sample_steps = 20
-            def step_callback(pipe_obj: Any, step_idx: int, timestep: Any, callback_kwargs: dict[str, Any]) -> dict[str, Any]:
-                if metrics_path is not None:
-                    try:
-                        from trainer_difusao.common_pkg.metrics import _emit_metric
-                        step_num = step_idx + 1
-                        _emit_metric(
-                            metrics_path,
-                            epoch=epoch,
-                            step=step_num,
-                            phase="generating_sample",
-                            message=f"Gerando amostra de validação (passo {step_num}/{total_sample_steps})...",
-                            telemetry_only=True,
-                        )
-                    except Exception:
-                        pass
-                return callback_kwargs
-            with torch.inference_mode():
-                pipe_kwargs = {
-                    "generator": generator,
-                    "num_inference_steps": total_sample_steps,
-                    "guidance_scale": 7.0,
-                    "output_type": "latent",
-                }
-                if has_embeds:
-                    pipe_kwargs["prompt_embeds"] = sample_embeds["prompt_embeds"].to(device)
-                    if sample_embeds.get("pooled_prompt_embeds") is not None:
-                        pipe_kwargs["pooled_prompt_embeds"] = sample_embeds["pooled_prompt_embeds"].to(device)
-                    if sample_embeds.get("negative_prompt_embeds") is not None:
-                        pipe_kwargs["negative_prompt_embeds"] = sample_embeds["negative_prompt_embeds"].to(device)
-                    if sample_embeds.get("negative_pooled_prompt_embeds") is not None:
-                        pipe_kwargs["negative_pooled_prompt_embeds"] = sample_embeds["negative_pooled_prompt_embeds"].to(device)
-                else:
-                    pipe_kwargs["prompt"] = prompt
-
-                try:
-                    latents = pipe(**pipe_kwargs, callback_on_step_end=step_callback).images
-                except TypeError:
-                    latents = pipe(**pipe_kwargs).images
-                latents = latents.to(dtype=torch.float32) / vae.config.scaling_factor
-                decoded = vae.decode(latents).sample
-                image = (decoded / 2 + 0.5).clamp(0, 1)
-                image = image.cpu().permute(0, 2, 3, 1).float().numpy()
-                img = pipe.numpy_to_pil(image)[0]
-                img.save(tmp_path)
-                os.replace(tmp_path, output_path)
-                print(
-                    f"[SDXL] Amostra de validação salva (seed={seed}) em: {output_path}",
-                    flush=True,
-                )
-        finally:
-            if was_training:
-                unet.train()
-    except Exception as e:
-        print(f"[WARN] Falha ao gerar amostra de validação SDXL: {e}", flush=True)
+__all__ = [
+    "_compute_sdxl_embeddings",
+    "_generate_sample_sdxl",
+    "_real_train_sdxl",
+    "SDXLTrainer",
+]
 
 
 def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
@@ -698,11 +569,11 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         # Salva checkpoint da época respeitando checkpoint_interval
         if epoch_idx % checkpoint_interval == 0 or epoch_idx == epochs:
             checkpoints_dir = output / "checkpoints"
-            checkpoints_dir.mkdir(parents=True, exist_ok=True)
-            ckpt_file = checkpoints_dir / f"{base_name}_epoch_{epoch:03d}.safetensors"
-            _save_lora_safetensors(
+            save_adapter_checkpoint(
                 unet,
-                ckpt_file,
+                checkpoints_dir,
+                base_name,
+                epoch,
                 metadata={
                     "format": "pt",
                     "framework": "diffusers",
@@ -764,7 +635,6 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
                     telemetry_only=True,
                 )
 
-    final_adapter_file = output / f"{base_name}.safetensors"
     metadata = {
         "format": "pt",
         "framework": "diffusers",
@@ -775,10 +645,7 @@ def _real_train_sdxl(cfg: dict[str, Any], output: Path) -> None:
         "trigger_word": trigger_word,
         "quantization": quantization,
     }
-    _save_lora_safetensors(unet, final_adapter_file, metadata)
-    if base_name != "adapter":
-        shutil.copy2(final_adapter_file, output / "adapter.safetensors")
-
+    final_adapter_file = save_final_adapter(unet, output, base_name, metadata)
     _emit_metric(
         metrics_path,
         epoch=epochs,

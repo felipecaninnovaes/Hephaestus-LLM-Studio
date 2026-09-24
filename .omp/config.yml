@@ -2,9 +2,9 @@
 # Agentes vivem em .omp/agents/*.md; este arquivo resolve modelos e guard-rails.
 
 modelRoles:
-  default: "openrouter/meta/muse-spark-1.3-contributor"
-  plan: "openrouter/meta/muse-spark-1.3-contributor"
-  worker: "openrouter/meta/muse-spark-1.3-contributor"
+  default:  "google-antigravity/gemini-3.8-flash:high" # MODELO CARO
+  plan: "openrouter/z-ai/glm-5.3-flash" # MODELO INTERMEDIARIO
+  worker: "openrouter/meta/muse-spark-1.3-contributor" # MODELO BARATO
 
 bash:
   patterns:

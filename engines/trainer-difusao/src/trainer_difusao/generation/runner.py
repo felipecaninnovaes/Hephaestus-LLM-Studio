@@ -342,15 +342,39 @@ def _real_generate(
                         pipe_kwargs["text_encoder"] = te_mod
                 except Exception as e:
                     print(f"[WARN] Falha ao quantizar/salvar text_encoder ({e}).", flush=True)
+            if "tokenizer" not in pipe_kwargs:
+                from transformers import AutoTokenizer
+
+                try:
+                    hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+                    tok = AutoTokenizer.from_pretrained(
+                        model_repo,
+                        subfolder="processor",
+                        cache_dir=hub_cache,
+                        token=hf_token,
+                    )
+                    pipe_kwargs["tokenizer"] = tok
+                except Exception as e:
+                    print(
+                        f"[DIFFUSION-GEN] Aviso ao carregar tokenizer de processor: {e}",
+                        flush=True,
+                    )
             pipe = QwenPipelineCls.from_pretrained(
                 model_repo,
                 **pipe_kwargs,
             )
             if device == "cuda":
-                if "text_encoder" in pipe_kwargs:
-                    pipe.enable_model_cpu_offload()
+                if quantization_config is None:
+                    try:
+                        pipe.enable_model_cpu_offload()
+                    except Exception:
+                        pipe.to(device)
                 else:
-                    pipe.enable_sequential_cpu_offload()
+                    pipe.enable_model_cpu_offload()
+            try:
+                pipe.enable_vae_slicing()
+            except Exception:
+                pass
         else:
             _die(f"Modelo não suportado para geração real: {base_model}")
 

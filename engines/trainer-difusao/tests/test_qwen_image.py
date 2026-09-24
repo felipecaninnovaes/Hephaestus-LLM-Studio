@@ -126,6 +126,112 @@ class TestQwenImage(unittest.TestCase):
         self.assertTrue((output_dir / "thumb_0001.jpg").exists())
         self.assertTrue((output_dir / "thumb_0002.jpg").exists())
 
+    def test_mock_train_qwen_image_with_samples(self):
+        dataset_dir = self.tmp_path / "dataset_samples"
+        dataset_dir.mkdir(parents=True)
+        img_file = dataset_dir / "sample.jpg"
+        from PIL import Image
+
+        Image.new("RGB", (256, 256), color="blue").save(img_file)
+        (dataset_dir / "sample.txt").write_text("a photo of a dragon", encoding="utf-8")
+
+        output_dir = self.tmp_path / "train_output_samples"
+        cfg = {
+            "dataset_path": str(dataset_dir),
+            "model": "qwen-image-2.1",
+            "seed": 42,
+            "samples": {
+                "prompt": "a majestic dragon on a mountain",
+                "interval": 1,
+                "seed": 123,
+            },
+            "lora": {
+                "rank": 16,
+                "alpha": 16,
+                "epochs": 2,
+                "learning_rate": 0.0002,
+                "trigger_word": "qwen_dragon",
+            },
+        }
+        cfg_file = self.tmp_path / "train_samples_cfg.yaml"
+        with open(cfg_file, "w", encoding="utf-8") as f:
+            yaml.dump(cfg, f)
+
+        cmd_train(["--config", str(cfg_file), "--output", str(output_dir)])
+
+        # Valida que sample_epoch_000.png e sample_epoch_001.png foram produzidos
+        sample_0 = output_dir / "samples" / "sample_epoch_000.png"
+        sample_1 = output_dir / "samples" / "sample_epoch_001.png"
+        sample_2 = output_dir / "samples" / "sample_epoch_002.png"
+
+        self.assertTrue(sample_0.exists(), "sample_epoch_000.png deve ser produzido (baseline época 0)")
+        self.assertTrue(sample_1.exists(), "sample_epoch_001.png deve ser produzido (amostra época 1)")
+        self.assertTrue(sample_2.exists(), "sample_epoch_002.png deve ser produzido (amostra época 2)")
+
+    def test_generate_sample_qwen_unit(self):
+        from unittest.mock import MagicMock, patch
+        from PIL import Image
+        import torch
+        from trainer_difusao.models.qwen_pkg import _generate_sample_qwen
+
+        mock_transformer = MagicMock()
+        mock_transformer.training = True
+        mock_transformer.dtype = torch.float32
+
+        def set_eval():
+            mock_transformer.training = False
+
+        def set_train():
+            mock_transformer.training = True
+
+        mock_transformer.eval.side_effect = set_eval
+        mock_transformer.train.side_effect = set_train
+
+        mock_vae = MagicMock()
+        mock_vae.dtype = torch.float32
+        mock_scheduler = MagicMock()
+
+        output_img = self.tmp_path / "unit_samples" / "sample_epoch_000.png"
+        metrics_file = self.tmp_path / "unit_metrics.jsonl"
+
+        mock_pipe_instance = MagicMock()
+        mock_img = Image.new("RGB", (64, 64), color="green")
+        mock_result = MagicMock()
+        mock_result.images = [mock_img]
+        mock_pipe_instance.return_value = mock_result
+
+        with patch("diffusers.QwenImagePipeline", return_value=mock_pipe_instance):
+            sample_embeds = {
+                "prompt_embeds": torch.randn(1, 16, 64),
+                "prompt_embeds_mask": torch.ones(1, 16, dtype=torch.bool),
+            }
+            _generate_sample_qwen(
+                transformer=mock_transformer,
+                vae=mock_vae,
+                scheduler=mock_scheduler,
+                prompt="test unit prompt",
+                output_path=output_img,
+                seed=42,
+                resolution=64,
+                metrics_path=metrics_file,
+                epoch=0,
+                sample_embeds=sample_embeds,
+            )
+
+            # Verifica que o arquivo final foi salvo atomicamente e existe
+            self.assertTrue(output_img.exists())
+            # Verifica que nenhum arquivo .tmp_ sobrou
+            tmp_img = output_img.with_name(f".tmp_{output_img.name}")
+            self.assertFalse(tmp_img.exists())
+            # Verifica que o transformer retornou para o modo train
+            self.assertTrue(mock_transformer.training)
+            # Verifica chamada do pipeline com prompt_embeds
+            call_kwargs = mock_pipe_instance.call_args[1]
+            self.assertIn("prompt_embeds", call_kwargs)
+            self.assertEqual(call_kwargs["num_inference_steps"], 20)
+            self.assertEqual(call_kwargs["height"], 64)
+            self.assertEqual(call_kwargs["width"], 64)
+
 
 if __name__ == "__main__":
     unittest.main()

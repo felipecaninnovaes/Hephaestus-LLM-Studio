@@ -24,6 +24,8 @@ from trainer_difusao.common import (
 from trainer_difusao.dataset import DiffusionDataset, build_dataloader
 from trainer_difusao.models.base import BaseModelTrainer
 from trainer_difusao.models.mock import _mock_train
+from transformers import AutoTokenizer
+from trainer_difusao.models.qwen_pkg import _generate_sample_qwen
 
 
 def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
@@ -54,6 +56,12 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
     quantization = _normalize_train_quantization(raw_quant, default="4bit")
     base_name = _resolve_output_name(cfg)
     seed = int(cfg.get("seed", 42))
+
+    samples_cfg = cfg.get("samples", {})
+    sample_prompt = str(samples_cfg.get("prompt", "") or "").strip()
+    sample_interval = int(samples_cfg.get("interval", 1))
+    sample_seed = int(samples_cfg.get("seed", seed))
+    sample_embeds: dict[str, Any] | None = None
 
     checkpoint_interval = max(1, int(cfg.get("checkpoint_interval") or lora_cfg.get("checkpoint_interval") or 1))
     epoch_offset = max(0, int(cfg.get("epoch_offset") or lora_cfg.get("epoch_offset") or 0))
@@ -115,8 +123,15 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
     if PipelineCls is not None:
         print(f"[DIFFUSION-TRAIN] Pré-computando embeddings de texto ({len(unique_prompts)} prompts) na CPU...", flush=True)
         try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_repo,
+                subfolder="processor",
+                cache_dir=hub_cache,
+                token=hf_token,
+            )
             text_pipeline = PipelineCls.from_pretrained(
                 model_repo,
+                tokenizer=tokenizer,
                 vae=None,
                 transformer=None,
                 torch_dtype=torch.float32,
@@ -126,12 +141,17 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             # Mantém estritamente na CPU do host para preservar 100% da VRAM da GPU
             with torch.no_grad():
                 for p_text in unique_prompts:
-                    pe, pe_mask, ipm = text_pipeline.encode_prompt(p_text)
+                    pe, pe_mask = text_pipeline.encode_prompt(p_text)
                     prompt_cache[p_text] = (
                         pe.cpu(),
                         pe_mask.cpu() if pe_mask is not None else None,
-                        ipm.cpu() if ipm is not None else None,
                     )
+                if sample_prompt:
+                    sample_pe, sample_pe_mask = text_pipeline.encode_prompt(sample_prompt)
+                    sample_embeds = {
+                        "prompt_embeds": sample_pe.cpu(),
+                        "prompt_embeds_mask": sample_pe_mask.cpu() if sample_pe_mask is not None else None,
+                    }
             del text_pipeline
             import gc
             gc.collect()
@@ -166,11 +186,6 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
     transformer_kwargs = {
         "torch_dtype": target_dtype,
         "cache_dir": hub_cache,
-        "token=hf_token": hf_token,
-    }
-    transformer_kwargs = {
-        "torch_dtype": target_dtype,
-        "cache_dir": hub_cache,
         "token": hf_token,
     }
     if quantization in ("4bit", "4bit-nf4") and device == "cuda":
@@ -193,7 +208,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         r=rank,
         lora_alpha=alpha,
         init_lora_weights="gaussian",
-        target_modules=["to_k", "to_q", "to_v", "to_out.0"],
+        target_modules=["to_k", "to_q", "to_v", "to_out.0", "add_k_proj", "add_q_proj", "add_v_proj"],
     )
     transformer.add_adapter(lora_config)
     try:
@@ -241,6 +256,64 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         phase="training",
         message=f"Iniciando loop de treino LoRA: {epochs} épocas, {len(dataset)} imagens.",
     )
+
+    # Scheduler para amostragem determinística de validação
+    try:
+        from diffusers import FlowMatchEulerDiscreteScheduler
+        noise_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
+            model_repo,
+            subfolder="scheduler",
+            cache_dir=hub_cache,
+            token=hf_token,
+        )
+    except Exception:
+        try:
+            from diffusers import FlowMatchEulerDiscreteScheduler
+            noise_scheduler = FlowMatchEulerDiscreteScheduler()
+        except Exception:
+            noise_scheduler = None
+
+    # Amostra baseline Época 0 (se configurada e sem epoch_offset)
+    if sample_prompt and epoch_offset == 0:
+        _emit_metric(
+            metrics_path,
+            epoch=0,
+            step=0,
+            progress=0.04,
+            phase="generating_baseline_sample",
+            message=f"Gerando amostra baseline pré-treino (Época 0): '{sample_prompt[:40]}...'",
+        )
+        sample_baseline_file = output_path / "samples" / "sample_epoch_000.png"
+        _generate_sample_qwen(
+            transformer=transformer,
+            vae=vae,
+            scheduler=noise_scheduler,
+            prompt=sample_prompt,
+            output_path=sample_baseline_file,
+            seed=sample_seed,
+            resolution=resolution,
+            metrics_path=metrics_path,
+            epoch=0,
+            sample_embeds=sample_embeds,
+        )
+        if sample_baseline_file.exists():
+            _emit_metric(
+                metrics_path,
+                epoch=0,
+                step=0,
+                progress=0.05,
+                phase="baseline_ready",
+                message="Amostra baseline gerada com sucesso (Época 0).",
+            )
+        else:
+            _emit_metric(
+                metrics_path,
+                epoch=0,
+                step=0,
+                progress=0.05,
+                phase="baseline_failed",
+                message="Falha ao gerar amostra baseline pré-treino.",
+            )
 
     # 7. Loop de Treino Real
     for epoch_idx in range(1, epochs + 1):
@@ -303,15 +376,12 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             # Recupera prompt embeds do cache
             embed_list = []
             mask_list = []
-            pad_mask_list = []
             for cap in captions:
                 if cap in prompt_cache:
-                    pe, pm, ipm = prompt_cache[cap]
+                    pe, pm = prompt_cache[cap]
                     embed_list.append(pe.to(device, dtype=target_dtype))
                     if pm is not None:
                         mask_list.append(pm.to(device))
-                    if ipm is not None:
-                        pad_mask_list.append(ipm.to(device))
                 else:
                     # Dummy embed se prompt_cache não cobriu
                     dummy_e = torch.zeros((1, 64, transformer.config.in_channels), device=device, dtype=target_dtype)
@@ -320,18 +390,6 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             batch_embeds = torch.cat(embed_list, dim=0) if embed_list else None
             batch_mask = torch.cat(mask_list, dim=0) if len(mask_list) == len(embed_list) else None
 
-            # img_shapes: lista por amostra de [(frame, height, width)] em tokens latentes
-            img_shapes = [[(1, latent_h, latent_w)] for _ in range(bsz)]
-
-            # img_mask: abrange a sequência VLM (False nas posições de texto, True nos slots 2x2 do target)
-            if pad_mask_list and len(pad_mask_list) == len(embed_list):
-                base_pad_mask = torch.cat(pad_mask_list, dim=0)
-            else:
-                base_pad_mask = torch.zeros((bsz, batch_embeds.shape[1]), device=device, dtype=torch.bool)
-            num_target_slots = (latent_h * latent_w) // 4
-            target_slots = base_pad_mask.new_ones((bsz, num_target_slots), dtype=torch.bool)
-            img_mask = torch.cat([base_pad_mask, target_slots], dim=1)
-
             # Forward pass no Transformer
             pred = transformer(
                 hidden_states=packed_noisy,
@@ -339,7 +397,6 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 encoder_hidden_states_mask=batch_mask,
                 timestep=timesteps / 1000.0,
                 img_shapes=img_shapes,
-                img_mask=img_mask,
                 return_dict=False,
             )[0]
 
@@ -357,6 +414,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 )
                 pred_target = target
             else:
+                pred = pred_img
                 pred_target = target.flatten(2).transpose(1, 2)
 
             loss = F.mse_loss(pred.float(), pred_target.float(), reduction="mean")
@@ -393,6 +451,44 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             phase="training",
             message=f"Época {epoch}/{epochs} concluída - Loss: {avg_loss}",
         )
+
+        if sample_prompt and sample_interval > 0 and (epoch_idx % sample_interval == 0 or epoch_idx == epochs):
+            _emit_metric(
+                metrics_path,
+                epoch=epoch,
+                phase="generating_sample",
+                message=f"Iniciando geração de amostra visual (Época {epoch})...",
+                telemetry_only=True,
+            )
+            sample_file = output_path / "samples" / f"sample_epoch_{epoch:03d}.png"
+            _generate_sample_qwen(
+                transformer=transformer,
+                vae=vae,
+                scheduler=noise_scheduler,
+                prompt=sample_prompt,
+                output_path=sample_file,
+                seed=sample_seed,
+                resolution=resolution,
+                metrics_path=metrics_path,
+                epoch=epoch,
+                sample_embeds=sample_embeds,
+            )
+            if sample_file.exists():
+                _emit_metric(
+                    metrics_path,
+                    epoch=epoch,
+                    phase="sample_ready",
+                    message=f"Amostra visual da Época {epoch} pronta.",
+                    telemetry_only=True,
+                )
+            else:
+                _emit_metric(
+                    metrics_path,
+                    epoch=epoch,
+                    phase="sample_failed",
+                    message=f"Falha ao gerar amostra visual da Época {epoch}.",
+                    telemetry_only=True,
+                )
 
         if epoch_idx % checkpoint_interval == 0 or epoch_idx == epochs:
             ckpt_file = checkpoints_dir / f"{base_name}_epoch_{epoch:03d}.safetensors"

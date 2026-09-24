@@ -104,7 +104,7 @@ def _generate_sample_qwen(
                     class tokenizer:
                         @staticmethod
                         def encode(*args, **kwargs):
-                            return [0]
+                            return [151655]
                 pipe_kwargs_init["processor"] = _DummyProcessor()
 
             pipe = PipelineCls(**pipe_kwargs_init)
@@ -131,8 +131,11 @@ def _generate_sample_qwen(
                             pem.to(device) if hasattr(pem, "to") else pem
                         )
                 else:
-                    pipe_kwargs["prompt"] = prompt
-
+                    print(
+                        f"[WARN] Amostra de validação cancelada: sample_embeds ausente para '{prompt[:40]}'.",
+                        flush=True,
+                    )
+                    return
                 try:
                     out = pipe(**pipe_kwargs, callback_on_step_end=step_callback)
                 except TypeError:

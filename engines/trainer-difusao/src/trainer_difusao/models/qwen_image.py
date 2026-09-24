@@ -141,19 +141,29 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             # Mantém estritamente na CPU do host para preservar 100% da VRAM da GPU
             with torch.no_grad():
                 for p_text in unique_prompts:
-                    pe, pe_mask = text_pipeline.encode_prompt(p_text)
+                    encoded = text_pipeline.encode_prompt(p_text)
+                    if len(encoded) == 3:
+                        pe, pe_mask, ipm = encoded
+                    else:
+                        pe, pe_mask = encoded
+                        ipm = None
                     prompt_cache[p_text] = (
                         pe.cpu(),
                         pe_mask.cpu() if pe_mask is not None else None,
+                        ipm.cpu() if ipm is not None else None,
                     )
                 if sample_prompt:
-                    sample_pe, sample_pe_mask = text_pipeline.encode_prompt(sample_prompt)
+                    encoded_sample = text_pipeline.encode_prompt(sample_prompt)
+                    if len(encoded_sample) == 3:
+                        sample_pe, sample_pe_mask, sample_ipm = encoded_sample
+                    else:
+                        sample_pe, sample_pe_mask = encoded_sample
+                        sample_ipm = None
                     sample_embeds = {
                         "prompt_embeds": sample_pe.cpu(),
                         "prompt_embeds_mask": sample_pe_mask.cpu() if sample_pe_mask is not None else None,
+                        "image_pad_mask": sample_ipm.cpu() if sample_ipm is not None else None,
                     }
-            del text_pipeline
-            import gc
             gc.collect()
             _cleanup_cuda()
         except Exception as exc:
@@ -376,12 +386,18 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             # Recupera prompt embeds do cache
             embed_list = []
             mask_list = []
+            pad_mask_list = []
             for cap in captions:
                 if cap in prompt_cache:
-                    pe, pm = prompt_cache[cap]
+                    cached_val = prompt_cache[cap]
+                    pe = cached_val[0]
+                    pm = cached_val[1]
+                    ipm = cached_val[2] if len(cached_val) > 2 else None
                     embed_list.append(pe.to(device, dtype=target_dtype))
                     if pm is not None:
                         mask_list.append(pm.to(device))
+                    if ipm is not None:
+                        pad_mask_list.append(ipm.to(device))
                 else:
                     # Dummy embed se prompt_cache não cobriu
                     dummy_e = torch.zeros((1, 64, transformer.config.in_channels), device=device, dtype=target_dtype)
@@ -390,21 +406,40 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             batch_embeds = torch.cat(embed_list, dim=0) if embed_list else None
             batch_mask = torch.cat(mask_list, dim=0) if len(mask_list) == len(embed_list) else None
 
+            # Monta kwargs do transformer dinamicamente de acordo com a assinatura do diffusers
+            import inspect
+            trans_sig = inspect.signature(transformer.forward)
+            trans_kwargs: dict[str, Any] = {
+                "hidden_states": packed_noisy,
+                "encoder_hidden_states": batch_embeds,
+                "timestep": timesteps / 1000.0,
+                "return_dict": False,
+            }
+            if "encoder_hidden_states_mask" in trans_sig.parameters:
+                trans_kwargs["encoder_hidden_states_mask"] = batch_mask
+
+            if "img_mask" in trans_sig.parameters:
+                # QwenImage21Transformer2DModel consome unpatched latents e img_mask para sequência conjunta
+                trans_kwargs["img_shapes"] = [[(1, latent_h, latent_w)] for _ in range(bsz)]
+                num_target_slots = (latent_h * latent_w) // 4
+                if pad_mask_list and len(pad_mask_list) == len(embed_list):
+                    base_pad_mask = torch.cat(pad_mask_list, dim=0)
+                else:
+                    base_pad_mask = torch.zeros((bsz, batch_embeds.shape[1]), device=device, dtype=torch.bool)
+                target_slots = base_pad_mask.new_ones((bsz, num_target_slots), dtype=torch.bool)
+                trans_kwargs["img_mask"] = torch.cat([base_pad_mask, target_slots], dim=1)
+            else:
+                trans_kwargs["img_shapes"] = [(1, latent_h // 2, latent_w // 2)] * bsz
+
             # Forward pass no Transformer
-            pred = transformer(
-                hidden_states=packed_noisy,
-                encoder_hidden_states=batch_embeds,
-                encoder_hidden_states_mask=batch_mask,
-                timestep=timesteps / 1000.0,
-                img_shapes=img_shapes,
-                return_dict=False,
-            )[0]
+            pred = transformer(**trans_kwargs)[0]
 
             # O transformer opera sobre a sequência conjunta (texto + imagem).
-            # Isola exclusivamente os tokens da imagem do target no final da sequência.
-            pred_img = pred[:, -packed_noisy.shape[1] :]
-
-            # Desempacota pred se helper existir
+            # Isola exclusivamente os tokens da imagem do target no final da sequência se saída for conjunta.
+            if pred.shape[1] > packed_noisy.shape[1]:
+                pred_img = pred[:, -packed_noisy.shape[1] :]
+            else:
+                pred_img = pred
             if PipelineCls is not None and hasattr(PipelineCls, "_unpack_latents"):
                 pred = PipelineCls._unpack_latents(
                     pred_img,

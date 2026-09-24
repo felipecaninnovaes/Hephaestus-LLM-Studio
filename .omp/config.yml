@@ -3,7 +3,7 @@
 
 modelRoles:
   default:  "google-antigravity/gemini-3.8-flash:high" # MODELO CARO
-  plan: "openrouter/z-ai/glm-5.3-flash" # MODELO INTERMEDIARIO
+  plan: "google-antigravity/gemini-3.8-flash:medium" # MODELO INTERMEDIARIO
   worker: "openrouter/meta/muse-spark-1.3-contributor" # MODELO BARATO
 
 bash:

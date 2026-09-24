@@ -125,7 +125,17 @@ def _generate_sample_qwen(
             pipe = PipelineCls(**pipe_kwargs_init)
             if hasattr(pipe, "set_progress_bar_config"):
                 pipe.set_progress_bar_config(disable=True)
-
+            if hasattr(pipe, "vae") and pipe.vae is not None:
+                if hasattr(pipe.vae, "enable_tiling"):
+                    try:
+                        pipe.vae.enable_tiling()
+                    except Exception:
+                        pass
+                if hasattr(pipe.vae, "enable_slicing"):
+                    try:
+                        pipe.vae.enable_slicing()
+                    except Exception:
+                        pass
             exec_dev = getattr(pipe, "_execution_device", None) or getattr(transformer, "device", None)
             if not isinstance(exec_dev, (str, torch.device)):
                 exec_dev = "cuda" if torch.cuda.is_available() else "cpu"
@@ -160,6 +170,11 @@ def _generate_sample_qwen(
                     if pem is not None:
                         pipe_kwargs["prompt_embeds_mask"] = (
                             pem.to(device) if hasattr(pem, "to") else pem
+                        )
+                    ipm = sample_embeds.get("image_pad_mask")
+                    if ipm is not None:
+                        pipe_kwargs["image_pad_mask"] = (
+                            ipm.to(device) if hasattr(ipm, "to") else ipm
                         )
                 else:
                     print(

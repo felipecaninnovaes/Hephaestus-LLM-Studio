@@ -235,7 +235,99 @@ class TestQwenImage(unittest.TestCase):
             self.assertEqual(call_kwargs["num_inference_steps"], 20)
             self.assertEqual(call_kwargs["height"], 64)
             self.assertEqual(call_kwargs["width"], 64)
+            self.assertEqual(call_kwargs.get("true_cfg_scale", call_kwargs.get("guidance_scale")), 3.5)
 
+    def test_release_system_memory(self):
+        from trainer_difusao.models.qwen_image import _release_system_memory
+        # Deve executar sem levantar exceção em qualquer ambiente
+        _release_system_memory()
+
+    def test_generate_sample_qwen_guidance_dispatch(self):
+        from unittest.mock import MagicMock, patch
+        from PIL import Image
+        import torch
+        from trainer_difusao.models.qwen_pkg import _generate_sample_qwen
+
+        mock_transformer = MagicMock()
+        mock_transformer.training = True
+        mock_transformer.dtype = torch.float32
+        mock_vae = MagicMock()
+        mock_vae.dtype = torch.float32
+        mock_scheduler = MagicMock()
+
+        sample_embeds = {
+            "prompt_embeds": torch.randn(1, 16, 64),
+            "prompt_embeds_mask": torch.ones(1, 16, dtype=torch.bool),
+        }
+
+        # Sub-caso 1: Pipeline cuja assinatura aceita explicitamente true_cfg_scale
+        class MockPipeTrueCfg:
+            def __call__(self, prompt_embeds=None, true_cfg_scale=3.5, **kwargs):
+                res = MagicMock()
+                res.images = [Image.new("RGB", (64, 64))]
+                return res
+
+        pipe_inst1 = MockPipeTrueCfg()
+        with patch("diffusers.QwenImage21Pipeline", return_value=pipe_inst1, create=True), \
+             patch("diffusers.QwenImagePipeline", return_value=pipe_inst1):
+            out_img = self.tmp_path / "sample_true_cfg.png"
+            _generate_sample_qwen(
+                transformer=mock_transformer,
+                vae=mock_vae,
+                scheduler=mock_scheduler,
+                prompt="dragon",
+                output_path=out_img,
+                sample_embeds=sample_embeds,
+            )
+            self.assertTrue(out_img.exists())
+
+        # Sub-caso 2: Pipeline legado cuja assinatura aceita guidance_scale
+        class MockPipeGuidance:
+            def __call__(self, prompt_embeds=None, guidance_scale=3.5, **kwargs):
+                res = MagicMock()
+                res.images = [Image.new("RGB", (64, 64))]
+                return res
+
+        pipe_inst2 = MockPipeGuidance()
+        with patch("diffusers.QwenImage21Pipeline", return_value=pipe_inst2, create=True), \
+             patch("diffusers.QwenImagePipeline", return_value=pipe_inst2):
+            out_img = self.tmp_path / "sample_guidance.png"
+            _generate_sample_qwen(
+                transformer=mock_transformer,
+                vae=mock_vae,
+                scheduler=mock_scheduler,
+                prompt="dragon",
+                output_path=out_img,
+                sample_embeds=sample_embeds,
+            )
+            self.assertTrue(out_img.exists())
+
+        # Sub-caso 3: Pipeline que levanta TypeError com true_cfg_scale e faz fallback para guidance_scale
+        called_with = []
+        class MockPipeFallback:
+            def __call__(self, **kwargs):
+                if "true_cfg_scale" in kwargs:
+                    raise TypeError("unexpected keyword argument 'true_cfg_scale'")
+                called_with.append(kwargs)
+                res = MagicMock()
+                res.images = [Image.new("RGB", (64, 64))]
+                return res
+
+        pipe_inst3 = MockPipeFallback()
+        with patch("diffusers.QwenImage21Pipeline", return_value=pipe_inst3, create=True), \
+             patch("diffusers.QwenImagePipeline", return_value=pipe_inst3):
+            out_img = self.tmp_path / "sample_fallback.png"
+            _generate_sample_qwen(
+                transformer=mock_transformer,
+                vae=mock_vae,
+                scheduler=mock_scheduler,
+                prompt="dragon",
+                output_path=out_img,
+                sample_embeds=sample_embeds,
+            )
+            self.assertTrue(out_img.exists())
+            self.assertEqual(len(called_with), 1)
+            self.assertIn("guidance_scale", called_with[0])
 
 if __name__ == "__main__":
     unittest.main()

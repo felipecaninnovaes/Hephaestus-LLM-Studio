@@ -28,6 +28,16 @@ from trainer_difusao.models.mock import _mock_train
 from transformers import AutoTokenizer
 from trainer_difusao.models.qwen_pkg import _generate_sample_qwen
 
+def _release_system_memory() -> None:
+    """Força coleta de lixo e devolução de páginas de memória (arenas malloc) ao kernel Linux."""
+    import gc
+    import ctypes
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
+
 
 def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
     """Pipeline real de treino LoRA para Qwen-Image-2.1 na GPU."""
@@ -135,7 +145,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 tokenizer=tokenizer,
                 vae=None,
                 transformer=None,
-                torch_dtype=torch.float32,
+                torch_dtype=torch.bfloat16,
                 cache_dir=hub_cache,
                 token=hf_token,
             )
@@ -165,11 +175,13 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                         "prompt_embeds_mask": sample_pe_mask.cpu() if sample_pe_mask is not None else None,
                         "image_pad_mask": sample_ipm.cpu() if sample_ipm is not None else None,
                     }
-            gc.collect()
+            del text_pipeline
+            _release_system_memory()
             _cleanup_cuda()
         except Exception as exc:
             print(f"[DIFFUSION-TRAIN] Aviso: falha na pré-computação com pipeline na CPU: {exc}. Criando fallbacks sintéticos.", flush=True)
-
+            _release_system_memory()
+            _cleanup_cuda()
     # 4. Carrega VAE
     print(f"[DIFFUSION-TRAIN] Carregando VAE de {model_repo}...", flush=True)
     vae = VaeCls.from_pretrained(
@@ -214,6 +226,8 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         subfolder="transformer",
         **transformer_kwargs,
     )
+    _release_system_memory()
+    _cleanup_cuda()
 
     lora_config = LoraConfig(
         r=rank,

@@ -128,10 +128,21 @@ def _generate_sample_qwen(
                 pipe_kwargs: dict[str, Any] = {
                     "generator": generator,
                     "num_inference_steps": total_sample_steps,
-                    "guidance_scale": 3.5,
                     "height": resolution,
                     "width": resolution,
                 }
+                try:
+                    call_sig = inspect.signature(pipe.__call__)
+                    call_params = call_sig.parameters
+                except Exception:
+                    call_params = {}
+
+                if "true_cfg_scale" in call_params:
+                    pipe_kwargs["true_cfg_scale"] = 3.5
+                elif "guidance_scale" in call_params:
+                    pipe_kwargs["guidance_scale"] = 3.5
+                else:
+                    pipe_kwargs["true_cfg_scale"] = 3.5
                 if has_embeds:
                     pe = sample_embeds["prompt_embeds"]
                     pipe_kwargs["prompt_embeds"] = (
@@ -148,11 +159,28 @@ def _generate_sample_qwen(
                         flush=True,
                     )
                     return
-                try:
-                    out = pipe(**pipe_kwargs, callback_on_step_end=step_callback)
-                except TypeError:
-                    out = pipe(**pipe_kwargs)
+                def _invoke_pipe(kwargs: dict[str, Any]) -> Any:
+                    try:
+                        return pipe(**kwargs, callback_on_step_end=step_callback)
+                    except TypeError:
+                        return pipe(**kwargs)
 
+                try:
+                    out = _invoke_pipe(pipe_kwargs)
+                except TypeError as err:
+                    err_msg = str(err).lower()
+                    if "true_cfg_scale" in pipe_kwargs and ("true_cfg_scale" in err_msg or "unexpected keyword" in err_msg):
+                        alt_kwargs = dict(pipe_kwargs)
+                        alt_kwargs.pop("true_cfg_scale", None)
+                        alt_kwargs["guidance_scale"] = 3.5
+                        out = _invoke_pipe(alt_kwargs)
+                    elif "guidance_scale" in pipe_kwargs and ("guidance_scale" in err_msg or "unexpected keyword" in err_msg):
+                        alt_kwargs = dict(pipe_kwargs)
+                        alt_kwargs.pop("guidance_scale", None)
+                        alt_kwargs["true_cfg_scale"] = 3.5
+                        out = _invoke_pipe(alt_kwargs)
+                    else:
+                        raise
                 image = out.images[0]
                 image.save(tmp_path)
                 os.replace(tmp_path, output_path)
@@ -175,6 +203,18 @@ def _generate_sample_qwen(
                     except Exception:
                         pass
         finally:
+            if "pipe" in locals():
+                try:
+                    del pipe
+                except Exception:
+                    pass
+            import gc
+            import ctypes
+            gc.collect()
+            try:
+                ctypes.CDLL("libc.so.6").malloc_trim(0)
+            except Exception:
+                pass
             if (
                 orig_vae_dtype is not None
                 and getattr(vae, "dtype", None) != orig_vae_dtype

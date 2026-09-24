@@ -124,12 +124,14 @@ def _generate_sample_qwen(
             if not isinstance(exec_dev, (str, torch.device)):
                 exec_dev = "cuda" if torch.cuda.is_available() else "cpu"
             generator = torch.Generator(device=exec_dev).manual_seed(seed)
+            sample_res = min(resolution, 512)
+            sample_res = max(16, (sample_res // 16) * 16)
             with torch.inference_mode():
                 pipe_kwargs: dict[str, Any] = {
                     "generator": generator,
                     "num_inference_steps": total_sample_steps,
-                    "height": resolution,
-                    "width": resolution,
+                    "height": sample_res,
+                    "width": sample_res,
                 }
                 try:
                     call_sig = inspect.signature(pipe.__call__)
@@ -215,6 +217,9 @@ def _generate_sample_qwen(
                 ctypes.CDLL("libc.so.6").malloc_trim(0)
             except Exception:
                 pass
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
             if (
                 orig_vae_dtype is not None
                 and getattr(vae, "dtype", None) != orig_vae_dtype

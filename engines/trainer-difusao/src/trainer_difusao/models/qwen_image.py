@@ -270,6 +270,16 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         cache_dir=hub_cache,
         token=hf_token,
     ).to(device)
+    if hasattr(vae, "enable_tiling"):
+        try:
+            vae.enable_tiling()
+        except Exception:
+            pass
+    if hasattr(vae, "enable_slicing"):
+        try:
+            vae.enable_slicing()
+        except Exception:
+            pass
     vae.eval()
     vae.requires_grad_(False)
 
@@ -428,6 +438,8 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 phase="baseline_failed",
                 message="Falha ao gerar amostra baseline pré-treino.",
             )
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     # 7. Loop de Treino Real
     for epoch_idx in range(1, epochs + 1):

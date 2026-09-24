@@ -278,68 +278,51 @@ def _real_generate(
                 "cache_dir": hub_cache,
             }
             if quantization_config is not None and device == "cuda":
-                from trainer_difusao.models.flux_pkg.quant_cache import _is_cache_valid, _save_quant_metadata
-                base_dir = (
-                    Path("/data/outputs")
-                    if Path("/data/outputs").exists()
-                    else (Path("/outputs") if Path("/outputs").exists() else Path.home() / ".cache" / "hephaestus")
+                from trainer_difusao.loaders import (
+                    load_or_quantize_text_encoder,
+                    load_or_quantize_transformer,
+                    resolve_quant_base_dir,
                 )
-                quant_base = base_dir / ".cache" / "quantized" / f"qwen_image_2_1_{quant}"
-                trans_cache_dir = quant_base / "transformer"
-                text_cache_dir = quant_base / "text_encoder"
 
+                quant_base = resolve_quant_base_dir(
+                    model_repo, quant, subfolder=f"qwen_image_2_1_{quant}"
+                )
                 TransformerCls = getattr(
-                    diffusers, "QwenImage21Transformer2DModel", getattr(diffusers, "QwenImageTransformer2DModel", None)
+                    diffusers,
+                    "QwenImage21Transformer2DModel",
+                    getattr(diffusers, "QwenImageTransformer2DModel", None),
                 )
-
-                # 1. Carrega do cache ou quantiza e persiste o Transformer
-                if _is_cache_valid(trans_cache_dir, model_repo, quant) and TransformerCls is not None:
-                    print(f"[DIFFUSION-GEN] Carregando Transformer {quant} do cache persistente: {trans_cache_dir}", flush=True)
-                    pipe_kwargs["transformer"] = TransformerCls.from_pretrained(
-                        trans_cache_dir,
-                        torch_dtype=pipe_dtype,
-                    )
-                elif TransformerCls is not None:
+                if TransformerCls is not None:
                     try:
-                        print(f"[DIFFUSION-GEN] Quantizando Transformer em {quant} (BitsAndBytes)...", flush=True)
-                        t_mod = TransformerCls.from_pretrained(
-                            model_repo,
+                        pipe_kwargs["transformer"] = load_or_quantize_transformer(
+                            model_id=model_repo,
+                            transformer_cls=TransformerCls,
                             subfolder="transformer",
+                            target_dtype=pipe_dtype,
+                            quant_format=quant,
                             quantization_config=quantization_config,
-                            torch_dtype=pipe_dtype,
-                            cache_dir=hub_cache,
+                            quant_base=quant_base,
+                            transformer_cache_dir=quant_base / "transformer",
+                            hub_cache=hub_cache,
                         )
-                        trans_cache_dir.mkdir(parents=True, exist_ok=True)
-                        t_mod.save_pretrained(trans_cache_dir)
-                        _save_quant_metadata(quant_base, model_repo, quant, quant, pipe_dtype, False)
-                        print(f"[DIFFUSION-GEN] Transformer {quant} salvo no cache persistente: {trans_cache_dir}", flush=True)
-                        pipe_kwargs["transformer"] = t_mod
                     except Exception as e:
                         print(f"[WARN] Falha ao quantizar/salvar transformer ({e}).", flush=True)
 
-                # 2. Carrega do cache ou quantiza e persiste o Text Encoder
                 try:
                     from transformers import Qwen3VLForConditionalGeneration
-                    if _is_cache_valid(text_cache_dir, model_repo, quant):
-                        print(f"[DIFFUSION-GEN] Carregando Text Encoder {quant} do cache persistente: {text_cache_dir}", flush=True)
-                        pipe_kwargs["text_encoder"] = Qwen3VLForConditionalGeneration.from_pretrained(
-                            text_cache_dir,
-                            torch_dtype=pipe_dtype,
-                        )
-                    else:
-                        print(f"[DIFFUSION-GEN] Quantizando Text Encoder em {quant} (BitsAndBytes)...", flush=True)
-                        te_mod = Qwen3VLForConditionalGeneration.from_pretrained(
-                            model_repo,
-                            subfolder="text_encoder",
-                            quantization_config=quantization_config,
-                            torch_dtype=pipe_dtype,
-                            cache_dir=hub_cache,
-                        )
-                        text_cache_dir.mkdir(parents=True, exist_ok=True)
-                        te_mod.save_pretrained(text_cache_dir)
-                        _save_quant_metadata(quant_base, model_repo, quant, quant, pipe_dtype, False)
-                        print(f"[DIFFUSION-GEN] Text Encoder {quant} salvo no cache persistente: {text_cache_dir}", flush=True)
-                        pipe_kwargs["text_encoder"] = te_mod
+
+                    pipe_kwargs["text_encoder"] = load_or_quantize_text_encoder(
+                        model_id=model_repo,
+                        encoder_cls=Qwen3VLForConditionalGeneration,
+                        encoder_type="qwen3-vl",
+                        subfolder="text_encoder",
+                        target_dtype=pipe_dtype,
+                        quant_format=quant,
+                        quantization_config=quantization_config,
+                        quant_base=quant_base,
+                        text_encoder_cache_dir=quant_base / "text_encoder",
+                        hub_cache=hub_cache,
+                    )
                 except Exception as e:
                     print(f"[WARN] Falha ao quantizar/salvar text_encoder ({e}).", flush=True)
             if "tokenizer" not in pipe_kwargs:

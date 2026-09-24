@@ -178,12 +178,32 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             del text_pipeline
             _release_system_memory()
             _cleanup_cuda()
+            print(
+                f"[DIFFUSION] Embeddings pré-computados com sucesso ({len(prompt_cache)} prompts cacheados). Text encoder descarregado da memória (RAM/VRAM liberadas).",
+                flush=True,
+            )
+            _emit_metric(
+                metrics_path,
+                epoch=epoch_offset,
+                step=0,
+                progress=0.03,
+                phase="preparing_cache",
+                message=f"Embeddings pré-computados ({len(prompt_cache)} prompts). Text encoder descarregado.",
+            )
         except Exception as exc:
             print(f"[DIFFUSION-TRAIN] Aviso: falha na pré-computação com pipeline na CPU: {exc}. Criando fallbacks sintéticos.", flush=True)
             _release_system_memory()
             _cleanup_cuda()
     # 4. Carrega VAE
     print(f"[DIFFUSION-TRAIN] Carregando VAE de {model_repo}...", flush=True)
+    _emit_metric(
+        metrics_path,
+        epoch=epoch_offset,
+        step=0,
+        progress=0.035,
+        phase="loading_model",
+        message=f"Carregando VAE na GPU ({model_repo})...",
+    )
     vae = VaeCls.from_pretrained(
         model_repo,
         subfolder="vae",
@@ -221,6 +241,14 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         )
 
     print(f"[DIFFUSION-TRAIN] Carregando Transformer de {model_repo} (quant={quantization})...", flush=True)
+    _emit_metric(
+        metrics_path,
+        epoch=epoch_offset,
+        step=0,
+        progress=0.04,
+        phase="load_transformer",
+        message=f"Carregando Transformer na GPU (quant={quantization})...",
+    )
     transformer = TransformerCls.from_pretrained(
         model_repo,
         subfolder="transformer",

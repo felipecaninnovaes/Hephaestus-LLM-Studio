@@ -239,6 +239,11 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             bnb_4bit_use_double_quant=True,
             bnb_4bit_compute_dtype=torch.bfloat16,
         )
+    elif quantization in ("8bit", "8bit-bnb") and device == "cuda":
+        from transformers import BitsAndBytesConfig
+        transformer_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_8bit=True,
+        )
 
     print(f"[DIFFUSION-TRAIN] Carregando Transformer de {model_repo} (quant={quantization})...", flush=True)
     _emit_metric(

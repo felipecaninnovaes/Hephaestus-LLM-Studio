@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 import pytest
-import torch
+torch = pytest.importorskip("torch")
 
 from trainer_difusao.common_pkg.text_embeds import (
     ENABLE_TEXT_ENCODER_UNLOAD,

@@ -14,6 +14,12 @@ from trainer_difusao.generate import cmd_generate, load_and_validate_generate_co
 from trainer_difusao.models import BaseModelTrainer, QwenImageTrainer, get_trainer
 from trainer_difusao.train import cmd_train
 
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
+
 
 class TestQwenImage(unittest.TestCase):
     def setUp(self):
@@ -169,6 +175,7 @@ class TestQwenImage(unittest.TestCase):
         self.assertTrue(sample_1.exists(), "sample_epoch_001.png deve ser produzido (amostra época 1)")
         self.assertTrue(sample_2.exists(), "sample_epoch_002.png deve ser produzido (amostra época 2)")
 
+    @unittest.skipUnless(HAS_TORCH, "requer torch")
     def test_generate_sample_qwen_unit(self):
         from unittest.mock import MagicMock, patch
         from PIL import Image
@@ -242,6 +249,7 @@ class TestQwenImage(unittest.TestCase):
         # Deve executar sem levantar exceção em qualquer ambiente
         _release_system_memory()
 
+    @unittest.skipUnless(HAS_TORCH, "requer torch")
     def test_generate_sample_qwen_guidance_dispatch(self):
         from unittest.mock import MagicMock, patch
         from PIL import Image
@@ -373,6 +381,7 @@ class TestQwenImage(unittest.TestCase):
         self.assertEqual(t_lines[0]["step"], 1)
         self.assertIn("Época 1/5 · Step 1/15", t_lines[0]["message"])
         self.assertEqual(t_lines[1]["phase"], "epoch_complete")
+    @unittest.skipUnless(HAS_TORCH, "requer torch")
     def test_qwen_batched_prompt_encoding_logic(self):
         """Valida que a lógica de chunking de prompts e desempacotamento de tensors produz shapes consistentes."""
         import torch
@@ -414,6 +423,7 @@ class TestQwenImage(unittest.TestCase):
         self.assertNotIn("alpha = torch.ones", src)
         self.assertIn("alpha_channel = torch.ones", src)
 
+    @unittest.skipUnless(HAS_TORCH, "requer torch")
     def test_qwen_sample_does_not_pass_image_pad_mask_when_unsupported(self):
         """Garante que _generate_sample_qwen não injeta image_pad_mask se o pipeline não o aceita."""
         from unittest.mock import MagicMock

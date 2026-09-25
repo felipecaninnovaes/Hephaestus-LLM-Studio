@@ -8,10 +8,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import torch
-import torch.nn as nn
-from peft import LoraConfig, get_peft_model
-from safetensors.torch import load_file
+try:
+    import torch
+    import torch.nn as nn
+    from peft import LoraConfig, get_peft_model
+    from safetensors.torch import load_file
+    HAS_TORCH_PEFT = True
+except ImportError:
+    HAS_TORCH_PEFT = False
 
 from trainer_difusao.common_pkg.lora_io import (
     save_adapter_checkpoint,
@@ -38,6 +42,7 @@ class TestSdPkgExports(unittest.TestCase):
         self.assertIs(_generate_sample_sdxl, _reexported_sample_sdxl)
 
 
+@unittest.skipUnless(HAS_TORCH_PEFT, "requer torch, peft e safetensors")
 class TestSdxlEmbeddings(unittest.TestCase):
     def test_compute_sdxl_embeddings_shapes_and_dtype(self):
         class DummyTokenizer:
@@ -93,6 +98,7 @@ class TestSdxlEmbeddings(unittest.TestCase):
         self.assertEqual(pooled_embeds.dtype, torch.float16)
 
 
+@unittest.skipUnless(HAS_TORCH_PEFT, "requer torch, peft e safetensors")
 class TestLoraIoHelpers(unittest.TestCase):
     def setUp(self):
         self.model = get_peft_model(
@@ -151,6 +157,7 @@ class TestLoraIoHelpers(unittest.TestCase):
             self.assertTrue(expected.exists())
 
 
+@unittest.skipUnless(HAS_TORCH_PEFT, "requer torch, peft e safetensors")
 class TestSampleGeneration(unittest.TestCase):
     def test_generate_sample_sd15_restores_unet_train_mode(self):
         class DummyUnet:

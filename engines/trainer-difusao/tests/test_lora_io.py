@@ -4,12 +4,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import torch
-import torch.nn as nn
-from peft import LoraConfig, get_peft_model
-from safetensors.torch import load_file
+try:
+    import torch
+    import torch.nn as nn
+    from peft import LoraConfig, get_peft_model
+    from safetensors.torch import load_file
+    HAS_TORCH_PEFT = True
+except ImportError:
+    HAS_TORCH_PEFT = False
 
 
+@unittest.skipUnless(HAS_TORCH_PEFT, "requer torch, peft e safetensors")
 class TestSaveLoraKeys(unittest.TestCase):
     def test_saved_keys_are_canonical_without_peft_prefix(self):
         from peft import get_peft_model_state_dict

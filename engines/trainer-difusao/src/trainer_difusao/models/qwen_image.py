@@ -26,7 +26,6 @@ from trainer_difusao.common import (
 from trainer_difusao.dataset import DiffusionDataset, build_dataloader
 from trainer_difusao.models.base import BaseModelTrainer
 from trainer_difusao.models.mock import _mock_train
-from transformers import AutoTokenizer
 from trainer_difusao.models.qwen_pkg import _generate_sample_qwen
 
 _release_system_memory = release_memory
@@ -44,6 +43,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         import torch
         import torch.nn.functional as F
         from peft import LoraConfig
+        from transformers import AutoTokenizer
     except ImportError as exc:
         _die(f"Dependência ausente para treino real de Qwen-Image-2.1: {exc}")
     _ensure_qwen_diffusers_compat()

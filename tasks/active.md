@@ -1,9 +1,9 @@
 # Memória Ativa — Hephaestus LLM Studio
 
-- **Branch atual:** `feat/api-principal-contracts-modularizacao`
-- **Fatia em andamento:** Consumo Canônico de `heph-contracts` no BFF `api-principal` & Modularização de `jobs/`.
-- **Última fatia integrada:** Autonomia e Resiliência do Orchestrator (`feat/orchestrator-autonomia` mergeada em `develop` commit `5a75408`).
-  Auditado e aprovado pelo `@reviewer`, 776 testes unitários passando em todo o workspace Rust.
+- **Branch atual:** `develop`
+- **Fatia em andamento:** Nenhuma (Aguardando definição da próxima fatia).
+- **Última fatia integrada:** Consumo Canônico de `heph-contracts` no BFF `api-principal` & Modularização de `jobs/handlers` (`feat/api-principal-contracts-modularizacao` mergeada com sucesso em `develop`).
+  Auditado e aprovado pelo `@reviewer`, 786 testes unitários/contrato passando em todo o workspace Rust (10 novos testes).
 - **HOTFIX permissões nó GPU (2026-09-22):** engines uid 1000 não escreviam em
   dir de job root:0755 (EACCES pós-geração). Bridge NO NÓ: `ENGINE_USER: "0:0"`
   em `infra/compose.gpu.yaml` (+`.bak-perms`). Fix permanente na branch

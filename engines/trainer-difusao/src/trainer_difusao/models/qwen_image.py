@@ -229,9 +229,16 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                         "image_pad_mask": sample_ipm[0:1].detach().cpu() if sample_ipm is not None else None,
                     }
 
+            if "pipe_kwargs" in locals() and isinstance(pipe_kwargs, dict):
+                pipe_kwargs.clear()
+                del pipe_kwargs
             if "text_pipeline" in locals() and text_pipeline is not None:
                 if hasattr(text_pipeline, "text_encoder"):
                     text_pipeline.text_encoder = None
+                if hasattr(text_pipeline, "tokenizer"):
+                    text_pipeline.tokenizer = None
+                if hasattr(text_pipeline, "processor"):
+                    text_pipeline.processor = None
                 for k in list(getattr(text_pipeline, "components", {}).keys()):
                     try:
                         setattr(text_pipeline, k, None)
@@ -240,10 +247,16 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 del text_pipeline
             if text_enc is not None:
                 del text_enc
+            if "tokenizer" in locals() and tokenizer is not None:
+                del tokenizer
             if "encoded" in locals():
                 del encoded
             if "encoded_sample" in locals():
                 del encoded_sample
+            if "pes" in locals():
+                del pes
+            if "sample_pe" in locals():
+                del sample_pe
             release_memory()
             print(
                 f"[DIFFUSION] Embeddings pré-computados com sucesso ({len(prompt_cache)} prompts cacheados na {dev_desc}). Text encoder descarregado da memória (RAM/VRAM liberadas).",
@@ -259,6 +272,9 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             )
         except Exception as exc:
             print(f"[DIFFUSION-TRAIN] Aviso: falha na pré-computação de embeddings: {exc}. Criando fallbacks sintéticos.", flush=True)
+            if "pipe_kwargs" in locals() and isinstance(pipe_kwargs, dict):
+                pipe_kwargs.clear()
+                del pipe_kwargs
             if "text_pipeline" in locals() and text_pipeline is not None:
                 if hasattr(text_pipeline, "text_encoder"):
                     text_pipeline.text_encoder = None

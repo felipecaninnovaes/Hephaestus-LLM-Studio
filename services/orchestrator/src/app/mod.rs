@@ -4,6 +4,7 @@
 //! `run_job_inner` vive aqui, delgado, delegando coleção de artefatos,
 //! staging de pesos, templating de config e ramificação de subcomando.
 
+pub mod outbox;
 pub mod stages;
 
 use std::path::PathBuf;
@@ -845,8 +846,19 @@ pub async fn run_job_inner(
     // =========================================================================
     // 7. Execute trainer (D5 :301–309)
     let container_name = format!("trainer-{}-{}", dispatch.engine, job_id);
-    let active_state = ActiveJobState::new(container_name.clone());
-    active_jobs.insert(job_id.to_string(), active_state);
+    if let Some(mut entry) = active_jobs.get_mut(job_id) {
+        if entry.is_cancelled() {
+            tracing::info!(
+                job_id = %job_id,
+                "job abortado durante a preparação; cancelando antes de executar container"
+            );
+            return Err(PipelineError::Cancelled);
+        }
+        entry.container_name = container_name.clone();
+    } else {
+        let active_state = ActiveJobState::new(container_name.clone());
+        active_jobs.insert(job_id.to_string(), active_state);
+    }
 
     let volumes = vec![
         (vol_datasets, "/datasets".to_string()),

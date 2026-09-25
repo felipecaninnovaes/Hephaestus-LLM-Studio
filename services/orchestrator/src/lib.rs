@@ -16,6 +16,9 @@ pub mod storage;
 pub mod telemetry;
 
 pub use adapters::*;
+pub use app::outbox::{
+    drain_outbox, is_unrecoverable_error, spawn_outbox_drain_worker, OutboxItem, OutboxReportClient,
+};
 pub use app::stages::collector::{
     collect_diffusion_artifacts, read_final_metrics, read_generation_meta_content,
 };
@@ -32,7 +35,7 @@ pub use ports::heartbeat::HeartbeatClient;
 pub use ports::reporter::ReportClient;
 pub use ports::storage::S3Port;
 pub use security::*;
-pub use server::{build_router, AppState};
+pub use server::{build_router, AdmissionError, AppState};
 pub use storage::{
     compute_file_md5, init_image_ext, put_with_retry, scoped_init_image_key, scoped_key,
     stage_cached_weight, stage_cached_weight_with_progress, unzip_safe, S3Client, S3Scope,

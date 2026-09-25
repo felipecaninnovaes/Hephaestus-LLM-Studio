@@ -68,6 +68,30 @@ pub(crate) async fn metrics_handler(State(state): State<AppState>) -> Response {
         .into_response()
 }
 
+fn validate_dispatch_request(req: &DispatchRequest) -> Result<(), &'static str> {
+    if req.job_id.is_empty() {
+        return Err("job_id is required");
+    }
+    if req.engine.is_empty() {
+        return Err("engine is required");
+    }
+    if req.image.is_empty() {
+        return Err("image is required");
+    }
+    if req.workdir.is_empty() {
+        return Err("workdir is required");
+    }
+    if let Some(pr) = &req.package_ref {
+        if pr.key.is_empty() {
+            return Err("package_ref.key is required");
+        }
+        if pr.md5_zip.is_empty() {
+            return Err("package_ref.md5_zip is required");
+        }
+    }
+    Ok(())
+}
+
 /// POST /internal/dispatch — recebe job do manager (D4 :263–267).
 pub(crate) async fn dispatch_handler(State(state): State<AppState>, body: Bytes) -> Response {
     if body.is_empty() {
@@ -81,46 +105,23 @@ pub(crate) async fn dispatch_handler(State(state): State<AppState>, body: Bytes)
         }
     };
 
-    // Validação básica do body
-    if req.job_id.is_empty() {
-        return bad_request("job_id is required");
-    }
-    if req.engine.is_empty() {
-        return bad_request("engine is required");
-    }
-    if req.image.is_empty() {
-        return bad_request("image is required");
-    }
-    if req.workdir.is_empty() {
-        return bad_request("workdir is required");
-    }
-    if let Some(pr) = &req.package_ref {
-        if pr.key.is_empty() {
-            return bad_request("package_ref.key is required");
-        }
-        if pr.md5_zip.is_empty() {
-            return bad_request("package_ref.md5_zip is required");
-        }
+    if let Err(msg) = validate_dispatch_request(&req) {
+        return bad_request(msg);
     }
 
-    // Semáforo local de GPU/VRAM: rejeita com HTTP 503 se atingiu capacidade máxima
-    if state.active_jobs.len() >= state.max_concurrent_jobs {
-        return error_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "node_busy",
-            "GPU node is currently at maximum capacity",
-        );
+    // Admissão atômica (P0-3): semáforo de capacidade e idempotência sob lock
+    if let Err(err) = state.try_admit(req.job_id.clone(), ActiveJobState::new(String::new())) {
+        return match err {
+            super::state::AdmissionError::CapacityExceeded => error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "node_busy",
+                "GPU node is currently at maximum capacity",
+            ),
+            super::state::AdmissionError::DuplicateJobId => {
+                conflict("job already dispatched (duplicate job_id)")
+            }
+        };
     }
-
-    // Idempotência R4: se já existe job com MESMO job_id em memória → 409
-    if state.active_jobs.contains_key(&req.job_id) {
-        return conflict("job already dispatched (duplicate job_id)");
-    }
-
-    // Registra job ativo (para idempotência)
-    state
-        .active_jobs
-        .insert(req.job_id.clone(), ActiveJobState::new(String::new()));
 
     let s3 = Arc::clone(&state.s3);
     let report_client = Arc::clone(&state.report_client);

@@ -229,9 +229,21 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                         "image_pad_mask": sample_ipm[0:1].detach().cpu() if sample_ipm is not None else None,
                     }
 
-            del text_pipeline
+            if "text_pipeline" in locals() and text_pipeline is not None:
+                if hasattr(text_pipeline, "text_encoder"):
+                    text_pipeline.text_encoder = None
+                for k in list(getattr(text_pipeline, "components", {}).keys()):
+                    try:
+                        setattr(text_pipeline, k, None)
+                    except Exception:
+                        pass
+                del text_pipeline
             if text_enc is not None:
                 del text_enc
+            if "encoded" in locals():
+                del encoded
+            if "encoded_sample" in locals():
+                del encoded_sample
             release_memory()
             print(
                 f"[DIFFUSION] Embeddings pré-computados com sucesso ({len(prompt_cache)} prompts cacheados na {dev_desc}). Text encoder descarregado da memória (RAM/VRAM liberadas).",
@@ -247,10 +259,15 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             )
         except Exception as exc:
             print(f"[DIFFUSION-TRAIN] Aviso: falha na pré-computação de embeddings: {exc}. Criando fallbacks sintéticos.", flush=True)
-            try:
+            if "text_pipeline" in locals() and text_pipeline is not None:
+                if hasattr(text_pipeline, "text_encoder"):
+                    text_pipeline.text_encoder = None
+                for k in list(getattr(text_pipeline, "components", {}).keys()):
+                    try:
+                        setattr(text_pipeline, k, None)
+                    except Exception:
+                        pass
                 del text_pipeline
-            except NameError:
-                pass
             if text_enc is not None:
                 del text_enc
             release_memory()

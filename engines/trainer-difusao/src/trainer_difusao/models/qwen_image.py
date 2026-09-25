@@ -6,16 +6,18 @@ import copy
 from contextlib import nullcontext
 import math
 import os
+import time
 from pathlib import Path
 from typing import Any
 
 from engine_kit.mock import is_mock
-from engine_kit.vram import cleanup_cuda, release_memory
+from engine_kit.vram import cleanup_cuda, release_memory, vram_allocated_gb, vram_reserved_gb
 
 from trainer_difusao.common import (
     _die,
     _ensure_qwen_diffusers_compat,
     _emit_metric,
+    _format_eta,
     _normalize_train_quantization,
     _resolve_output_name,
     _setup_cache_dir,
@@ -519,6 +521,10 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             )
     release_memory()
 
+    avg_step_time: float | None = None
+    loss_ema: float | None = None
+    step_start_time = time.time()
+
     # 7. Loop de Treino Real
     for epoch_idx in range(1, epochs + 1):
         epoch = epoch_idx + epoch_offset
@@ -666,6 +672,12 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             del pred, pred_img, packed_target, target, loss, trans_kwargs, batch_embeds, embed_list, mask_list, pad_mask_list
 
             steps_in_epoch += 1
+            micro_idx = ((steps_in_epoch - 1) % grad_accum) + 1
+            if grad_accum > 1:
+                print(
+                    f"[TRAIN] Época {epoch}/{epochs} · Micro-passo {micro_idx}/{grad_accum} · Loss: {cur_loss_raw:.4f}",
+                    flush=True,
+                )
             is_accum_step = (steps_in_epoch % grad_accum == 0 or steps_in_epoch == len(dataloader))
             if is_accum_step:
                 torch.nn.utils.clip_grad_norm_(transformer.parameters(), 1.0)
@@ -674,6 +686,25 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                     lr_scheduler.step()
                 optimizer.zero_grad()
                 global_step += 1
+
+                now = time.time()
+                dt = max(0.001, now - step_start_time)
+                step_start_time = now
+
+                if avg_step_time is None:
+                    avg_step_time = dt
+                else:
+                    avg_step_time = 0.9 * avg_step_time + 0.1 * dt
+
+                if not (math.isnan(cur_loss_raw) or math.isinf(cur_loss_raw)):
+                    if loss_ema is None:
+                        loss_ema = cur_loss_raw
+                    else:
+                        loss_ema = 0.9 * loss_ema + 0.1 * cur_loss_raw
+
+                remaining_steps = max(0, total_steps - global_step)
+                eta_s = int(remaining_steps * avg_step_time)
+                eta_str = _format_eta(eta_s)
 
                 effective_lr = (
                     lr_scheduler.get_last_lr()[0] if lr_scheduler and hasattr(lr_scheduler, "get_last_lr") else learning_rate
@@ -686,7 +717,11 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 current_progress = round(
                     min(0.99, max(0.05, 0.05 + 0.90 * (global_step / max(1, total_steps)))), 4
                 )
-                emit_interval = 1 if total_steps <= 100 else (5 if total_steps <= 500 else 10)
+                if avg_step_time >= 5.0:
+                    emit_interval = 1
+                else:
+                    emit_interval = 1 if total_steps <= 100 else (5 if total_steps <= 500 else 10)
+
                 if global_step % emit_interval == 0 or steps_in_epoch == len(dataloader):
                     _emit_metric(
                         metrics_path,
@@ -697,12 +732,23 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                         progress=current_progress,
                         phase="training",
                         message=f"Época {epoch}/{epochs} · Step {global_step}/{total_steps} · Loss: {safe_loss}",
+                        total_steps=total_steps,
+                        total_epochs=epochs,
+                        step_time_s=round(dt, 2),
+                        eta_s=eta_s,
+                        eta_formatted=eta_str,
+                        loss_ema=round(loss_ema, 4) if loss_ema is not None else None,
                     )
+                    vram_alloc = vram_allocated_gb() or 0.0
+                    vram_res = vram_reserved_gb() or 0.0
+                    loss_ema_val = loss_ema if loss_ema is not None else (safe_loss if safe_loss is not None else 0.0)
                     print(
-                        f"[TRAIN] Época {epoch}/{epochs} · Step {global_step}/{total_steps} · Loss: {safe_loss} · LR: {effective_lr:.2e}",
+                        f"[TRAIN] Época {epoch}/{epochs} · Step {global_step}/{total_steps} ({current_progress*100:.1f}%)\n"
+                        f"  ├─ Loss: {safe_loss} (EMA: {loss_ema_val:.4f}) · LR: {effective_lr:.2e}\n"
+                        f"  ├─ Velocidade: {dt:.1f}s/step · ETA: {eta_str}\n"
+                        f"  └─ VRAM: {vram_alloc:.2f} GB alocada | {vram_res:.2f} GB reservada",
                         flush=True,
                     )
-
             if not math.isnan(cur_loss_raw) and not math.isinf(cur_loss_raw):
                 epoch_loss += cur_loss_raw
 
@@ -711,6 +757,9 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         epoch_progress = round(
             min(0.99, max(0.05, 0.05 + 0.90 * (epoch_idx / epochs))), 4
         )
+        remaining_steps = max(0, total_steps - global_step)
+        eta_s = int(remaining_steps * avg_step_time) if avg_step_time is not None else None
+        eta_str = _format_eta(eta_s) if eta_s is not None else "N/A"
         _emit_metric(
             metrics_path,
             epoch=epoch,
@@ -720,6 +769,12 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             progress=epoch_progress,
             phase="epoch_complete",
             message=f"Época {epoch}/{epochs} concluída - Loss Média: {avg_loss}",
+            total_steps=total_steps,
+            total_epochs=epochs,
+            step_time_s=round(avg_step_time, 2) if avg_step_time is not None else None,
+            eta_s=eta_s,
+            eta_formatted=eta_str,
+            loss_ema=round(loss_ema, 4) if loss_ema is not None else None,
         )
         print(
             f"[TRAIN] Época {epoch}/{epochs} concluída - Loss Média: {avg_loss}",
@@ -790,6 +845,8 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 epoch,
                 {**metadata, "epoch": str(epoch)},
             )
+        step_start_time = time.time()
+
 
     # 8. Salva adaptador final
     final_adapter_file = save_final_adapter(transformer, output_path, base_name, metadata)
@@ -799,10 +856,16 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         epoch=epochs,
         step=global_step,
         loss=avg_loss if "avg_loss" in locals() else 0.05,
-        lr=learning_rate,
+        lr=effective_lr,
         progress=1.0,
         phase="completed",
         message="Treino Qwen-Image-2.1 finalizado com sucesso!",
+        total_steps=total_steps,
+        total_epochs=epochs,
+        step_time_s=round(avg_step_time, 2) if avg_step_time is not None else None,
+        eta_s=0,
+        eta_formatted="0s",
+        loss_ema=round(loss_ema, 4) if loss_ema is not None else None,
     )
     print(f"Treino Qwen-Image-2.1 finalizado com sucesso! Checkpoint salvo em: {final_adapter_file}", flush=True)
 

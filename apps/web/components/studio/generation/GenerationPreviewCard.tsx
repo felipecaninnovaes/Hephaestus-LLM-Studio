@@ -54,6 +54,11 @@ export function GenerationPreviewCard({
             }
             progress={telemetry.progress || activeJob?.progress || 0}
             vramUsedGb={telemetry.vramUsedGb ?? activeJob?.vramUsedGb}
+            vramReservedGb={telemetry.vramReservedGb ?? activeJob?.vramReservedGb}
+            stepTimeSeconds={telemetry.stepTimeSeconds}
+            speed={telemetry.speed}
+            etaSeconds={telemetry.etaSeconds}
+            etaFormatted={telemetry.etaFormatted}
             step={telemetry.step ?? activeJob?.step}
             totalSteps={telemetry.totalSteps ?? activeJob?.totalSteps ?? null}
             isLive={telemetry.isLive}

@@ -17,6 +17,11 @@ export interface JobProgressLiveProps {
   phaseMessage?: string | null;
   progress?: number;
   vramUsedGb?: number | null;
+  vramReservedGb?: number | null;
+  stepTimeSeconds?: number | null;
+  speed?: string | null;
+  etaSeconds?: number | null;
+  etaFormatted?: string | null;
   step?: number | null;
   totalSteps?: number | null;
   epoch?: number | null;
@@ -69,6 +74,11 @@ export function JobProgressLive({
   phaseMessage,
   progress = 0,
   vramUsedGb,
+  vramReservedGb,
+  stepTimeSeconds,
+  speed,
+  etaSeconds,
+  etaFormatted,
   step,
   totalSteps,
   epoch,
@@ -93,6 +103,33 @@ export function JobProgressLive({
   const isError = rawPhase === "error" || rawPhase === "failed";
 
   const isRunning = isLive && !isFinished;
+
+  const hasUsed = vramUsedGb !== undefined && vramUsedGb !== null && vramUsedGb > 0;
+  const hasReserved = vramReservedGb !== undefined && vramReservedGb !== null && vramReservedGb > 0;
+  const hasVram = hasUsed || hasReserved;
+  const vramLabel =
+    hasUsed && hasReserved
+      ? `${vramUsedGb?.toFixed(1)} / ${vramReservedGb?.toFixed(1)} GB VRAM`
+      : hasUsed
+        ? `${vramUsedGb?.toFixed(1)} GB VRAM`
+        : hasReserved
+          ? `${vramReservedGb?.toFixed(1)} GB VRAM`
+          : null;
+  const vramTooltip =
+    hasUsed && hasReserved
+      ? `VRAM: ${vramUsedGb?.toFixed(2)} GB alocada / ${vramReservedGb?.toFixed(2)} GB reservada`
+      : hasUsed
+        ? `VRAM: ${vramUsedGb?.toFixed(2)} GB alocada`
+        : hasReserved
+          ? `VRAM: ${vramReservedGb?.toFixed(2)} GB reservada`
+          : undefined;
+
+  const speedLabel = speed
+    ? speed
+    : typeof stepTimeSeconds === "number" && Number.isFinite(stepTimeSeconds) && stepTimeSeconds > 0
+      ? `${stepTimeSeconds.toFixed(1)}s/step`
+      : null;
+
   /* F1 — janela rolante p/ ETA: o componente recebe snapshots, não o stream;
      acumula amostras (step/totalSteps/phase + wall-clock) num buffer limitado.
      Step retrocedendo = job novo reutilizando o card → zera o buffer. */
@@ -120,16 +157,34 @@ export function JobProgressLive({
         totalSteps,
         epoch: epoch ?? null,
         totalEpochs: totalEpochs ?? null,
+        vramUsedGb: vramUsedGb ?? null,
+        vramReservedGb: vramReservedGb ?? null,
+        stepTimeSeconds: stepTimeSeconds ?? null,
+        speed: speed ?? null,
+        etaSeconds: etaSeconds ?? null,
+        etaFormatted: etaFormatted ?? null,
       });
       if (buf.length > 64) buf.splice(0, buf.length - 64);
     }
   }
-  const etaMs = isRunning ? estimateTrainingEtaMs(samplesRef.current) : null;
-  const showEta =
-    etaMs !== null &&
-    typeof step === "number" &&
-    typeof totalSteps === "number" &&
-    step < totalSteps;
+  const clientEtaMs = isRunning ? estimateTrainingEtaMs(samplesRef.current) : null;
+  let displayEta: string | null = null;
+  if (isRunning) {
+    if (etaFormatted && etaFormatted.trim().length > 0) {
+      const clean = etaFormatted.trim();
+      displayEta = clean.toLowerCase().startsWith("eta") ? clean : `ETA ~${clean}`;
+    } else if (typeof etaSeconds === "number" && Number.isFinite(etaSeconds) && etaSeconds >= 0) {
+      displayEta = `ETA ~${formatDurationMs(etaSeconds * 1000)}`;
+    } else if (
+      clientEtaMs !== null &&
+      typeof step === "number" &&
+      typeof totalSteps === "number" &&
+      step < totalSteps
+    ) {
+      displayEta = `ETA ~${formatDurationMs(clientEtaMs)}`;
+    }
+  }
+  const showEta = displayEta !== null;
   if (compact) {
     return (
       <div className={`space-y-1.5 ${className}`}>
@@ -144,16 +199,27 @@ export function JobProgressLive({
             <span className="font-mono font-medium text-zinc-200 truncate">
               {displayPhase}
             </span>
-            {vramUsedGb !== undefined && vramUsedGb !== null && vramUsedGb > 0 && (
-              <span className="font-mono text-3xs text-zinc-400 bg-white/5 px-1.5 py-0.5 rounded border border-white/10">
-                {vramUsedGb.toFixed(1)} GB VRAM
+            {hasVram && vramLabel && (
+              <span
+                className="font-mono text-3xs text-zinc-400 bg-white/5 px-1.5 py-0.5 rounded border border-white/10 whitespace-nowrap flex-shrink-0"
+                title={vramTooltip}
+              >
+                {vramLabel}
+              </span>
+            )}
+            {speedLabel && !isFinished && (
+              <span
+                className="hidden sm:inline-block font-mono text-3xs text-zinc-400 bg-white/5 px-1.5 py-0.5 rounded border border-white/10 tabular-nums whitespace-nowrap flex-shrink-0"
+                title="Velocidade"
+              >
+                {speedLabel}
               </span>
             )}
           </div>
-          <span className="flex items-baseline gap-1.5">
-            {showEta && etaMs !== null && (
-              <span className="font-mono text-3xs text-zinc-500 tabular-nums">
-                ETA ~{formatDurationMs(etaMs)}
+          <span className="flex items-baseline gap-1.5 flex-shrink-0">
+            {showEta && displayEta && (
+              <span className="font-mono text-3xs text-zinc-500 tabular-nums whitespace-nowrap">
+                {displayEta}
               </span>
             )}
             <span className="font-mono text-zinc-300 font-semibold">{percent}%</span>
@@ -184,8 +250,7 @@ export function JobProgressLive({
     >
       {/* Top Header */}
       <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5 min-w-0">
-          {/* Status Indicator Dot */}
+        <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <div className="relative flex h-2.5 w-2.5 flex-shrink-0 items-center justify-center">
             {isLive && !isFinished ? (
               <>
@@ -202,18 +267,30 @@ export function JobProgressLive({
           </div>
 
           {/* Phase Badge */}
-          <span className="font-mono text-xs font-semibold uppercase tracking-wider text-violet-300 truncate">
+          <span className="font-mono text-xs font-semibold uppercase tracking-wider text-violet-300 whitespace-nowrap flex-shrink-0">
             {displayPhase}
           </span>
 
           {/* VRAM Pill */}
-          {vramUsedGb !== undefined && vramUsedGb !== null && vramUsedGb > 0 && (
-            <span className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-0.5 font-mono text-2xs font-medium text-zinc-300">
+          {hasVram && vramLabel && (
+            <span
+              className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-0.5 font-mono text-2xs font-medium text-zinc-300 whitespace-nowrap flex-shrink-0"
+              title={vramTooltip}
+            >
               <span className="h-1.5 w-1.5 rounded-full bg-violet-400" />
-              {vramUsedGb.toFixed(1)} GB VRAM
+              {vramLabel}
             </span>
           )}
 
+          {/* Speed Badge */}
+          {speedLabel && !isFinished && (
+            <span
+              className="hidden sm:inline-flex items-center gap-1 font-mono text-2xs text-zinc-400 bg-white/[0.03] border border-white/5 px-2 py-0.5 rounded tabular-nums whitespace-nowrap flex-shrink-0"
+              title="Velocidade de processamento"
+            >
+              {speedLabel}
+            </span>
+          )}
           {/* Badges de progresso contextual */}
           {isGeneratingSample && step !== null && step !== undefined && step > 0 && (
             <span className="inline-flex items-center gap-1 font-mono text-2xs text-amber-300 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded animate-pulse">
@@ -222,31 +299,31 @@ export function JobProgressLive({
             </span>
           )}
           {!isGeneratingSample && isGenerationJob && step !== null && step !== undefined && totalSteps !== null && totalSteps !== undefined && totalSteps > 0 && (
-            <span className="hidden sm:inline-block font-mono text-2xs text-zinc-400 bg-white/[0.03] border border-white/5 px-2 py-0.5 rounded">
+            <span className="hidden sm:inline-block font-mono text-2xs text-zinc-400 bg-white/[0.03] border border-white/5 px-2 py-0.5 rounded whitespace-nowrap flex-shrink-0">
               Imagem {step + 1}/{totalSteps}
             </span>
           )}
           {!isGeneratingSample && !isGenerationJob && epoch !== null && epoch !== undefined && epoch > 0 && (
-            <span className="hidden sm:inline-block font-mono text-2xs text-zinc-400 bg-white/[0.03] border border-white/5 px-2 py-0.5 rounded">
+            <span className="hidden sm:inline-block font-mono text-2xs text-zinc-400 bg-white/[0.03] border border-white/5 px-2 py-0.5 rounded whitespace-nowrap flex-shrink-0">
               Época {epoch}
               {totalEpochs ? `/${totalEpochs}` : ""}
             </span>
           )}
           {!isGeneratingSample && !isGenerationJob && step !== null && step !== undefined && step > 0 && (
-            <span className="hidden md:inline-block font-mono text-2xs text-zinc-400 bg-white/[0.03] border border-white/5 px-2 py-0.5 rounded">
+            <span className="hidden md:inline-block font-mono text-2xs text-zinc-400 bg-white/[0.03] border border-white/5 px-2 py-0.5 rounded whitespace-nowrap flex-shrink-0">
               Passo {step}{totalSteps ? `/${totalSteps}` : ""}
             </span>
           )}
         </div>
 
         {/* Progress Percentage + ETA */}
-        <div className="flex items-baseline gap-2">
-          {showEta && etaMs !== null && (
+        <div className="flex items-baseline gap-2 shrink-0 ml-auto pl-2">
+          {showEta && displayEta && (
             <span
-              className="font-mono text-2xs font-medium text-zinc-400 tabular-nums"
+              className="font-mono text-2xs font-medium text-zinc-400 tabular-nums whitespace-nowrap"
               title="Tempo estimado restante de treino"
             >
-              ETA ~{formatDurationMs(etaMs)}
+              {displayEta}
             </span>
           )}
           <div className="font-mono text-sm font-bold text-white tabular-nums">

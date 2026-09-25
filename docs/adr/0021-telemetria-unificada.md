@@ -27,6 +27,11 @@ O estúdio requer um padrão universal, extensível e leve de telemetria de exec
   - `epoch`: Época atual (inteiro opcional).
   - `totalEpochs`: Total de épocas (inteiro opcional).
   - `vramUsedGb`: Uso medido de VRAM em gigabytes (float opcional).
+  - `vramReservedGb`: Total de VRAM reservada/alocada no allocator em gigabytes (float opcional).
+  - `stepTimeSeconds`: Tempo de execução da última iteração/passo em segundos (float opcional).
+  - `speed`: Velocidade de processamento formatada (ex.: `1.45 s/it` ou `2.10 it/s`, string opcional).
+  - `etaSeconds`: Tempo restante estimado para conclusão do job em segundos (float opcional).
+  - `etaFormatted`: Estimativa legível de tempo restante (ex.: `02m 45s`, `01h 12m`, string opcional).
   - `metrics`: Dicionário chave-valor com métricas numéricas instantâneas (ex.: `loss`, `lr`, `mAP50`, `it_s`, `eta_seconds`).
 - No modelo de job (`JobResponse`), adicionados os campos de snapshot do último evento: `phase`, `phaseMessage`, `vramUsedGb`.
 
@@ -53,7 +58,7 @@ O estúdio requer um padrão universal, extensível e leve de telemetria de exec
 - Hook `useJobTelemetry(jobId)`:
   - Estabelece conexão `EventSource` com `/api/jobs/${jobId}/events`.
   - Possui fallback transparente para polling em `GET /api/jobs/${jobId}` caso o navegador ou proxy interrompa a conexão SSE.
-  - Devolve: `{ phase, phaseMessage, progress, vramUsedGb, metrics, isLive, error }`.
+  - Devolve: `{ phase, phaseMessage, progress, vramUsedGb, vramReservedGb, stepTimeSeconds, speed, etaSeconds, etaFormatted, metrics, isLive, error }`.
 - Componente `JobProgressLive`:
   - Pílula de fase com indicador visual pulsante em Vidro Óptico.
   - Barra de progresso contínua e suave (0–100%).

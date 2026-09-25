@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from engine_kit.telemetry import format_eta
+
 from engine_kit.telemetry import TelemetryEmitter
 
 
@@ -47,6 +49,52 @@ class TestTelemetryEmitter(unittest.TestCase):
         self.assertEqual(len(legacy_lines), 1)
         legacy_data = json.loads(legacy_lines[0])
         self.assertEqual(legacy_data["loss"], 0.42)
+
+    def test_emit_extended_telemetry_fields(self):
+        emitter = TelemetryEmitter(self.tmp_dir)
+        ev = emitter.emit(
+            phase="training",
+            message="Step 10/100",
+            progress=0.10,
+            step=10,
+            total_steps=100,
+            vram_used_gb=8.5,
+            vram_reserved_gb=11.2,
+            step_time_seconds=2.45,
+            eta_seconds=220,
+            metrics={"loss": 0.35, "loss_ema": 0.38, "lr": 1e-4},
+        )
+
+        self.assertEqual(ev["step"], 10)
+        self.assertEqual(ev["totalSteps"], 100)
+        self.assertEqual(ev["vramUsedGb"], 8.5)
+        self.assertEqual(ev["vramReservedGb"], 11.2)
+        self.assertEqual(ev["stepTimeSeconds"], 2.45)
+        self.assertEqual(ev["speed"], "2.5s/step")
+        self.assertEqual(ev["etaSeconds"], 220)
+        self.assertEqual(ev["etaFormatted"], "3m 40s")
+        self.assertEqual(ev["metrics"]["loss"], 0.35)
+        self.assertEqual(ev["metrics"]["lossEma"], 0.38)
+        self.assertEqual(ev["metrics"]["lr"], 1e-4)
+
+        telemetry_file = self.tmp_dir / "telemetry.jsonl"
+        lines = [json.loads(line) for line in telemetry_file.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(lines[-1]["vramReservedGb"], 11.2)
+        self.assertEqual(lines[-1]["stepTimeSeconds"], 2.45)
+        self.assertEqual(lines[-1]["speed"], "2.5s/step")
+        self.assertEqual(lines[-1]["etaSeconds"], 220)
+        self.assertEqual(lines[-1]["etaFormatted"], "3m 40s")
+        self.assertEqual(lines[-1]["metrics"]["lossEma"], 0.38)
+
+    def test_format_eta(self):
+        self.assertEqual(format_eta(None), "N/A")
+        self.assertEqual(format_eta(-10), "N/A")
+        self.assertEqual(format_eta(0), "0s")
+        self.assertEqual(format_eta(45), "45s")
+        self.assertEqual(format_eta(60), "1m")
+        self.assertEqual(format_eta(125), "2m 5s")
+        self.assertEqual(format_eta(3600), "1h")
+        self.assertEqual(format_eta(8100), "2h 15m")
 
     def test_emit_error(self):
         emitter = TelemetryEmitter(self.tmp_dir)

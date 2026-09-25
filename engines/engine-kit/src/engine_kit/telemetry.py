@@ -12,6 +12,22 @@ from pathlib import Path
 from typing import Any, Optional
 
 
+def format_eta(seconds: Optional[int | float]) -> str:
+    """Formata segundos em representação legível humana de ETA (ex.: '2h 15m', '45s')."""
+    if seconds is None or seconds < 0:
+        return "N/A"
+    sec = int(round(seconds))
+    if sec < 60:
+        return f"{sec}s"
+    m = sec // 60
+    s = sec % 60
+    if m < 60:
+        return f"{m}m {s}s" if s > 0 else f"{m}m"
+    h = m // 60
+    rem_m = m % 60
+    return f"{h}h {rem_m}m" if rem_m > 0 else f"{h}h"
+
+
 class TelemetryEmitter:
     """Emissor atômico de telemetria estruturada."""
 
@@ -60,6 +76,11 @@ class TelemetryEmitter:
         total_epochs: Optional[int] = None,
         metrics: Optional[dict[str, Any]] = None,
         vram_used_gb: Optional[float] = None,
+        vram_reserved_gb: Optional[float] = None,
+        step_time_seconds: Optional[float] = None,
+        speed: Optional[str] = None,
+        eta_seconds: Optional[int] = None,
+        eta_formatted: Optional[str] = None,
     ) -> dict[str, Any]:
         """Emite um evento estruturado de telemetria com flush imediato."""
         self._current_phase = phase
@@ -68,9 +89,23 @@ class TelemetryEmitter:
         # Tenta capturar VRAM alocada via PyTorch se disponível
         if vram_used_gb is None:
             try:
-                import torch
-                if torch.cuda.is_available():
-                    vram_used_gb = round(torch.cuda.memory_allocated() / (1024 ** 3), 2)
+                from engine_kit.vram import vram_allocated_gb
+                vram_used_gb = vram_allocated_gb()
+            except Exception:
+                pass
+            if vram_used_gb is None:
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        vram_used_gb = round(torch.cuda.memory_allocated() / (1024 ** 3), 2)
+                except Exception:
+                    pass
+
+        # Tenta capturar VRAM reservada via PyTorch se disponível
+        if vram_reserved_gb is None:
+            try:
+                from engine_kit.vram import vram_reserved_gb as _get_vram_reserved
+                vram_reserved_gb = _get_vram_reserved()
             except Exception:
                 pass
 
@@ -92,9 +127,30 @@ class TelemetryEmitter:
             event["totalEpochs"] = int(total_epochs)
         if vram_used_gb is not None:
             event["vramUsedGb"] = float(vram_used_gb)
+        if vram_reserved_gb is not None:
+            event["vramReservedGb"] = float(vram_reserved_gb)
+        if step_time_seconds is not None:
+            event["stepTimeSeconds"] = float(step_time_seconds)
+        if speed is not None:
+            event["speed"] = str(speed)
+        elif step_time_seconds is not None:
+            event["speed"] = f"{step_time_seconds:.1f}s/step"
+        if eta_seconds is not None:
+            event["etaSeconds"] = int(eta_seconds)
+        if eta_formatted is not None:
+            event["etaFormatted"] = str(eta_formatted)
+        elif eta_seconds is not None:
+            event["etaFormatted"] = format_eta(eta_seconds)
         if metrics:
-            event["metrics"] = {k: v for k, v in metrics.items() if v is not None}
-
+            clean_metrics: dict[str, Any] = {}
+            for k, v in metrics.items():
+                if v is None:
+                    continue
+                if k == "loss_ema":
+                    clean_metrics["lossEma"] = v
+                else:
+                    clean_metrics[k] = v
+            event["metrics"] = clean_metrics
         line = json.dumps(event) + "\n"
 
         # 1. Grava no telemetry.jsonl canônico

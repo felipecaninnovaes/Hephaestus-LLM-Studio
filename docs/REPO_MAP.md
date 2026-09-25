@@ -60,7 +60,8 @@ Migrations canônicas: `services/api-principal/migrations/0001..0018.sql`.
 ## 4. Rotas públicas da API (`api-principal :8080`, wire `camelCase`)
 
 Fonte: tabela de contrato em `services/api-principal/src/auth/routes.rs`
-(validada por teste de contrato). Grupos:
+(validada por teste de contrato). Handlers de jobs decompostos em `services/api-principal/src/jobs/handlers/`
+(`submit`, `lifecycle`, `query`, `stream`, `artifacts`, `apply`, `helpers`, `types`, `tests`). Grupos:
 - **Auth:** `POST /api/auth/login|logout`, `GET /api/auth/me`; `GET /health|/ready`.
 - **Datasets:** CRUD `/api/datasets[/:id]`; upload `POST /:id/upload`;
   galeria `GET /:id/images` (+ `/data`, `/boxes`, `DELETE /:id/images/:imageId`,
@@ -157,7 +158,7 @@ checkpoint+encoder).
 - `gpu-nodes.md` — arquitetura de nós remotos (TrueNAS), pareamento HMAC, telemetria de VRAM/GPUs e runbook operacional.
 ## 7. Pacotes e Bibliotecas Compartilhadas (`crates/`, `packages/`, `engines/engine-kit`)
 
-- `crates/heph-contracts` — DTOs wire compartilhados entre microsserviços Rust (`DispatchRequest`, `ReportBody`, `HeartbeatBody`, `PackageRef`, `ArtifactItem`).
+- `crates/heph-contracts` — DTOs wire e tipos de protocolo interno compartilhados entre microsserviços Rust (`job_status.rs`, `jobs.rs`, `nodes.rs`, `models.rs`, `telemetry.rs`, `dispatch.rs`, `report.rs`, `heartbeat.rs`, `artifacts.rs`).
 - `packages/contracts/openapi.yaml` — Fonte canônica única para rotas e contratos da API HTTP pública (wire `camelCase`).
 - `packages/policies/vram-table.yaml` — Fonte canônica para limites e requisitos mínimos de VRAM por arquitetura e modo.
 - `packages/policies/engines.yaml` — Registro canônico de imagens Docker e versões de toolchain (`cuda`, `torch`, `ultralytics`).

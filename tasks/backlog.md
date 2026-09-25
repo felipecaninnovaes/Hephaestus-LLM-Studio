@@ -24,6 +24,8 @@ Consolidação única de pendências e melhorias prioritárias. Rotas canônicas
   - [x] Eliminação de duplicidades de DTOs espelho entre orchestrator/manager via `heph-contracts` (Quitado: Wave 1 `RD-010`).
   - [x] Despacho íntegro de `control_package_ref` no `dispatch_next` (Quitado: Wave 2 `RD-020`).
   - Specs: `tasks/specs/orchestrator-modularization.md` e `tasks/specs/backend-autonomia.md`.
+- **Dívidas Técnicas & Modularização `api-principal`:**
+  - [x] Consumir `heph-contracts` no BFF `api-principal`, deletar DTOs `Internal*` duplicados e decompor monólito `jobs/handlers.rs` em submódulos coesos preservando contrato OpenAPI wire `camelCase` (TASK-API-001 / fatia `feat/api-principal-contracts-modularizacao` quitada 2026-09-25; spec `tasks/specs/api-principal-modularizacao-auditoria.md`).
 - **Packaging & Reuso:**
   - Assinar `build_package_diffusion` com `fingerprint` para permitir reuso de pacotes em treinos de difusão.
   - Marcar `dataset_versions` como `complete` apenas pós-upload confirmado para evitar reuso de versões órfãs.

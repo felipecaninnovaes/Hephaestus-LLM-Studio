@@ -1,9 +1,9 @@
 # Memória Ativa — Hephaestus LLM Studio
 
-- **Branch atual:** `feat/orchestrator-autonomia`
-- **Fatia em andamento:** Autonomia e Resiliência do Orchestrator (P0-3 Admissão Atômica, P0-2 Spool Outbox de Reports, P2-1 Heartbeat Backoff/Jitter, P2-2 Sweeper Reaper, P2-5 Graceful Shutdown).
-- **Última fatia integrada:** Otimização e Modularização das Engines (`refactor/modularizacao-engines` mergeada com sucesso em `develop`).
-  Auditado e aprovado pelo `@reviewer`, CI 100% verde (Rust, Web, Compose e Python com 227 testes de difusão e suites de todas as engines).
+- **Branch atual:** `feat/api-principal-contracts-modularizacao`
+- **Fatia em andamento:** Consumo Canônico de `heph-contracts` no BFF `api-principal` & Modularização de `jobs/`.
+- **Última fatia integrada:** Autonomia e Resiliência do Orchestrator (`feat/orchestrator-autonomia` mergeada em `develop` commit `5a75408`).
+  Auditado e aprovado pelo `@reviewer`, 776 testes unitários passando em todo o workspace Rust.
 - **HOTFIX permissões nó GPU (2026-09-22):** engines uid 1000 não escreviam em
   dir de job root:0755 (EACCES pós-geração). Bridge NO NÓ: `ENGINE_USER: "0:0"`
   em `infra/compose.gpu.yaml` (+`.bak-perms`). Fix permanente na branch
@@ -17,14 +17,19 @@
   novo subagente dedicado `@docs`.
 
 ## Checklist Imediato da Sessão Ativa
-- [x] P0-3: Admissão Atômica no Dispatch (`server/handlers.rs` sem race condition TOCTOU)
-- [x] P0-2: Spool Outbox durável para reports em disco (`app/outbox.rs` com drain em background)
-- [x] P2-1: Heartbeat com backoff adaptativo e jitter após falhas (`adapters/heartbeat_http.rs`)
-- [x] P2-2: Reaper periódico de containers órfãos no sweeper (`adapters/sweeper.rs`)
-- [x] P2-5: Graceful shutdown via SIGTERM/SIGINT com drain e liberação de GPU
-- [x] Validação com suíte de testes do orchestrator e workspace
-- [x] Auditoria com @reviewer
+- [x] Fase 1: Mapear e migrar `services/api-principal/src/jobs/manager_client.rs` para consumir structs canônicas de `crates/heph-contracts`
+- [x] Fase 1: Validação de compilação e testes de integração de `manager_client`
+- [x] Fase 2: Decomposição de `services/api-principal/src/jobs/handlers.rs` (5.800 linhas) em submódulos coesos (`submit`, `lifecycle`, `query`, `stream`, `artifacts`)
+- [x] Fase 2: Validação de compatibilidade com `packages/contracts/openapi.yaml` e 100% dos testes do BFF
+- [x] Fase 3: Auditoria com @reviewer (Gate Obrigatório)
+- [x] Fase 3: Sincronização de documentação com @docs
+
 ## Entregas Concluídas Recentemente
+- [x] Consumo Canônico de `heph-contracts` & Modularização de `jobs/` (`feat/api-principal-contracts-modularizacao`):
+  - **Centralização de DTOs e Tipos Canônicos:** Centralização de DTOs e tipos de protocolo interno em `crates/heph-contracts` (`job_status.rs`, `jobs.rs`, `nodes.rs`, `models.rs`).
+  - **Migração do Manager Client:** Migração de `services/api-principal/src/jobs/manager_client.rs` para consumir `heph-contracts`, eliminando ~260 linhas de DTOs `Internal*` duplicados manualmente.
+  - **Decomposição Modular de Handlers:** Decomposição do monólito `services/api-principal/src/jobs/handlers.rs` (5.800 linhas) na pasta modular `services/api-principal/src/jobs/handlers/` (`mod.rs`, `types.rs`, `helpers.rs`, `query.rs`, `stream.rs`, `artifacts.rs`, `submit.rs`, `lifecycle.rs`, `apply.rs`, `tests.rs`), preservando 100% do wire OpenAPI `camelCase` e das rotas.
+  - **Auditoria e Cobertura:** Aprovado pelo `@reviewer`, 786 testes unitários/contrato passando no workspace Rust (10 novos testes de contrato).
 - [x] Autonomia e Resiliência do Orchestrator (`feat/orchestrator-autonomia`):
   - **P0-3 (Admissão atômica no dispatch):** transição para `state.try_admit` sob Mutex eliminando janela de concorrência TOCTOU e rejeitando duplicidade de `job_id` com HTTP 409 Conflict.
   - **P0-2 (Spool Outbox durável em disco):** persistência atômica (write temp + rename) em `$ORCH_WORKDIR/.outbox/` com drain periódico em background (5s) e flush no shutdown, garantindo entrega at-least-once de relatórios de conclusão/erro mesmo com o manager temporariamente fora do ar.

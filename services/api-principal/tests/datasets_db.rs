@@ -5868,6 +5868,7 @@ async fn t4_job_abort_estados() {
         let mock = {
             let mut m = api_principal::jobs::manager_client::MockManager::default();
             m.abort_job_result = Some(api_principal::jobs::manager_client::AbortJobResponse {
+                job_id: None,
                 status: "cancelling".to_string(),
             });
             m
@@ -7964,6 +7965,7 @@ impl api_principal::jobs::manager_client::ManagerPort for RaceManager {
             a.push(id.to_string());
         }
         Ok(api_principal::jobs::manager_client::AbortJobResponse {
+            job_id: None,
             status: "cancelled".into(),
         })
     }

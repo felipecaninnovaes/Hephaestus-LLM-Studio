@@ -47,7 +47,7 @@ Consolidação única de pendências e melhorias prioritárias. Rotas canônicas
   - [x] C2a/C2c: logs do job não são persistidos em lugar nenhum (`JobLogViewer` sintetiza linhas de estado React + SSE transitório → refresh apaga tudo); fases de split/cache latent emitidas só como `print` no daemon. (C2c quitado commit 38be5d9 — sem split train/val no repo, `preparing_dataset` cobre scan/bucketing; C2a quitado commits 7c89958/9863021 — snapshot incremental `logs/telemetry.jsonl` no orquestrador + `GET /api/jobs/:id/logs` no BFF + histórico paginado no viewer.)
   - [x] F1: ETA de treino a partir dos deltas step/timestamp do SSE (depende de C2b; só web). (Quitado 2026-09-20 commit b8b3844 — mediana P50, janela 30, stalls>120s descartados.)
   - [x] F2: ZIP de artefatos pós-treino — streaming no BFF (zip stored) + rota nova + bump de openapi. (Quitado 2026-09-20 commits 7366c9b/9863021 — `GET /api/jobs/:id/artifacts/zip` no padrão ADR-0006 + botões em /jobs e ActionCenter.)
-  - Spec completa com linhas exatas e sequência de execução: `tasks/specs/treino-observabilidade.md`.
+  - Spec completa com linhas exatas e sequência de execução arquivada em: `docs/archive/specs/treino-observabilidade.md`.
 
 ---
 

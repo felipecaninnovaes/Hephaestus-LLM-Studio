@@ -46,7 +46,7 @@ não desligar gradient checkpointing por suposição — as melhorias abaixo sã
   encode on-the-fly (mesma política try/except de `_precompute_text_cache`).
 - Flag: `lora.cache_latents` default `True`; env `HEPH_LATENT_CACHE=0` desliga.
   Fase estruturada `preparing_cache` na telemetria (**alinhar com C2c de
-  `tasks/specs/treino-observabilidade.md`** — emitir i/N, não só print).
+  `docs/archive/specs/treino-observabilidade.md`** — emitir i/N, não só print).
 - Custo de disco: ~1MB/imagem em 1024² (32ch→64ch packed ×2 tensores bf16);
   10k imagens ≈ 10–20GB em `/outputs` junto do cache de texto. Documentar.
 

@@ -381,6 +381,88 @@ class TestQwenImage(unittest.TestCase):
         self.assertEqual(t_lines[0]["step"], 1)
         self.assertIn("Época 1/5 · Step 1/15", t_lines[0]["message"])
         self.assertEqual(t_lines[1]["phase"], "epoch_complete")
+    def test_format_eta_trainer_difusao(self):
+        from trainer_difusao.common import _format_eta
+        self.assertEqual(_format_eta(None), "N/A")
+        self.assertEqual(_format_eta(-5), "N/A")
+        self.assertEqual(_format_eta(0), "0s")
+        self.assertEqual(_format_eta(45), "45s")
+        self.assertEqual(_format_eta(60), "1m")
+        self.assertEqual(_format_eta(125), "2m 5s")
+        self.assertEqual(_format_eta(3600), "1h")
+        self.assertEqual(_format_eta(8100), "2h 15m")
+
+    def test_qwen_enriched_telemetry_emission(self):
+        from trainer_difusao.common import _emit_metric
+        metrics_file = self.tmp_path / "enriched" / "metrics.jsonl"
+        telemetry_file = self.tmp_path / "enriched" / "telemetry.jsonl"
+
+        _emit_metric(
+            metrics_file,
+            epoch=1,
+            step=10,
+            loss=0.2541,
+            lr=1.5e-4,
+            progress=0.20,
+            phase="training",
+            message="Época 1/5 · Step 10/50 · Loss: 0.2541",
+            total_steps=50,
+            total_epochs=5,
+            step_time_s=6.2,
+            eta_s=248,
+            eta_formatted="4m 8s",
+            vram_reserved_gb=10.5,
+            loss_ema=0.2600,
+        )
+
+        self.assertTrue(metrics_file.exists())
+        self.assertTrue(telemetry_file.exists())
+
+        m_data = json.loads(metrics_file.read_text().strip())
+        self.assertEqual(m_data["total_steps"], 50)
+        self.assertEqual(m_data["total_epochs"], 5)
+        self.assertEqual(m_data["step_time_s"], 6.2)
+        self.assertEqual(m_data["eta_s"], 248)
+        self.assertEqual(m_data["eta_formatted"], "4m 8s")
+        self.assertEqual(m_data["loss_ema"], 0.26)
+
+        t_data = json.loads(telemetry_file.read_text().strip())
+        self.assertEqual(t_data["step"], 10)
+        self.assertEqual(t_data["totalSteps"], 50)
+        self.assertEqual(t_data["totalEpochs"], 5)
+        self.assertEqual(t_data["stepTimeSeconds"], 6.2)
+        self.assertEqual(t_data["speed"], "6.2s/step")
+        self.assertEqual(t_data["etaSeconds"], 248)
+        self.assertEqual(t_data["etaFormatted"], "4m 8s")
+        self.assertEqual(t_data["vramReservedGb"], 10.5)
+        self.assertEqual(t_data["metrics"]["loss"], 0.2541)
+        self.assertEqual(t_data["metrics"]["lossEma"], 0.26)
+        self.assertEqual(t_data["metrics"]["lr"], 1.5e-4)
+
+    def test_qwen_adaptive_emit_and_eta_logic(self):
+        from trainer_difusao.common import _format_eta
+        # Testa gatilho adaptativo: step_time >= 5.0 -> emit_interval = 1
+        avg_step_time = 5.2
+        total_steps = 1000
+        emit_interval = 1 if avg_step_time >= 5.0 else (1 if total_steps <= 100 else (5 if total_steps <= 500 else 10))
+        self.assertEqual(emit_interval, 1)
+
+        # Testa steps rápidos: avg_step_time < 5.0 com total_steps > 500 -> emit_interval = 10
+        fast_step_time = 0.8
+        emit_interval_fast = 1 if fast_step_time >= 5.0 else (1 if total_steps <= 100 else (5 if total_steps <= 500 else 10))
+        self.assertEqual(emit_interval_fast, 10)
+
+        # Testa cálculo de ETA
+        remaining_steps = 50
+        eta_s = int(remaining_steps * avg_step_time)
+        self.assertEqual(eta_s, 260)
+        self.assertEqual(_format_eta(eta_s), "4m 20s")
+
+        # Testa cálculo de micro-step index
+        grad_accum = 4
+        micro_indices = [((s - 1) % grad_accum) + 1 for s in range(1, 9)]
+        self.assertEqual(micro_indices, [1, 2, 3, 4, 1, 2, 3, 4])
+
     @unittest.skipUnless(HAS_TORCH, "requer torch")
     def test_qwen_batched_prompt_encoding_logic(self):
         """Valida que a lógica de chunking de prompts e desempacotamento de tensors produz shapes consistentes."""

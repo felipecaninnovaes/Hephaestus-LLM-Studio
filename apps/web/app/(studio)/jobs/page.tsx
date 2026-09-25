@@ -618,6 +618,13 @@ function JobsPageContent() {
 												vramUsedGb={
 													telemetry.vramUsedGb ?? selectedJob.vramUsedGb
 												}
+												vramReservedGb={
+													telemetry.vramReservedGb ?? selectedJob.vramReservedGb
+												}
+												stepTimeSeconds={telemetry.stepTimeSeconds}
+												speed={telemetry.speed}
+												etaSeconds={telemetry.etaSeconds}
+												etaFormatted={telemetry.etaFormatted}
 												step={telemetry.step ?? selectedJob.step}
 												totalSteps={telemetry.totalSteps ?? selectedJob.totalSteps}
 												epoch={telemetry.epoch ?? selectedJob.epoch}

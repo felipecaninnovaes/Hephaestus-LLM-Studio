@@ -8,7 +8,7 @@ from trainer_difusao.common_pkg.core import (
     _canonical_model_name,
     _resolve_output_name,
 )
-from trainer_difusao.common_pkg.metrics import _emit_metric
+from trainer_difusao.common_pkg.metrics import _emit_metric, _format_eta
 from trainer_difusao.common_pkg.runtime import (
     _prune_checkpoints,
     _cleanup_cuda,
@@ -72,6 +72,7 @@ __all__ = [
     "_canonical_model_name",
     "_resolve_output_name",
     "_emit_metric",
+    "_format_eta",
     "_prune_checkpoints",
     "_cleanup_cuda",
     "_setup_cache_dir",

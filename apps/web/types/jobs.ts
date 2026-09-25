@@ -99,6 +99,11 @@ export interface JobTelemetryEvent {
   epoch?: number | null;
   totalEpochs?: number | null;
   vramUsedGb?: number | null;
+  vramReservedGb?: number | null;
+  stepTimeSeconds?: number | null;
+  speed?: string | null;
+  etaSeconds?: number | null;
+  etaFormatted?: string | null;
   metrics?: Record<string, number | string | boolean | null> | null;
 }
 
@@ -173,6 +178,7 @@ export interface Job {
   phase?: string | null;
   phaseMessage?: string | null;
   vramUsedGb?: number | null;
+  vramReservedGb?: number | null;
   params?: JobParams | null;
 }
 

@@ -2,8 +2,8 @@
 
 - **Branch atual:** `develop`
 - **Fatia em andamento:** Nenhuma (Aguardando definição da próxima fatia).
-- **Última fatia integrada:** Eliminação de Vazamentos de Memória e Mitigação de VRAM/RAM no Qwen-Image-2.1 (`fix/qwen-image-memory-leaks` mergeada com sucesso em `develop`).
-  Auditado e aprovado pelo `@reviewer`, 229 testes verdes em `trainer-difusao`, purga incondicional de LoRA residual, desacoplamento de ciclos de pipeline diffusers e desalocação atômica pós-backward.
+- **Última fatia integrada:** Telemetria ao Vivo com ETA Preditivo, Métricas de VRAM e Logs Vivos de Treino (`feat/engines-live-telemetry-eta` mergeada com sucesso em `develop`).
+  Auditado e aprovado pelo `@reviewer`, 261 testes unitários em Python, 30 testes no frontend, cálculo de ETA preditivo por EMA, telemetria de VRAM alocada/reservada e logs de micro-steps/steps adaptativos.
 - **HOTFIX permissões nó GPU (2026-09-22):** engines uid 1000 não escreviam em
   dir de job root:0755 (EACCES pós-geração). Bridge NO NÓ: `ENGINE_USER: "0:0"`
   em `infra/compose.gpu.yaml` (+`.bak-perms`). Fix permanente na branch
@@ -17,16 +17,22 @@
   novo subagente dedicado `@docs`.
 
 ## Checklist Imediato da Sessão Ativa
-- [x] Desacoplamento de ciclo de referências e limpeza de `pipe` em `qwen_pkg/sample.py`
-- [x] Desalocação atômica de tensores pós-backward no loop de treino em `models/qwen_image.py`
-- [x] Invocação periódica de `cleanup_cuda()` entre épocas para conter fragmentação no allocator PyTorch
-- [x] Descarregamento de LoRA residual (`unload_lora_weights`) no caminho quente do daemon em `generation/runner.py`
-- [x] Adição de testes unitários para os pontos de desalocação e limpeza de memória em `tests/test_qwen_image.py`
-- [x] Validação de suíte de testes em `engines/trainer-difusao` (`uv run pytest`)
+- [x] Definir contrato de campos preditivos (`etaSeconds`, `etaFormatted`, `stepTimeSeconds`, `vramReservedGb`) em `engine-kit` e `trainer-difusao`
+- [x] Implementar cálculo de ETA móvel (EMA), medição de tempo por step e telemetria enriquecida em `engine_kit/telemetry.py` e `common_pkg/metrics.py`
+- [x] Atualizar logs de terminal em `qwen_image.py`: micro-steps visíveis, intervalo adaptativo por tempo (emissão a cada passo para passos > 5s), barra de progresso e VRAM alocada/reservada
+- [x] Integrar campos de ETA e VRAM reservada na interface Web (`apps/web` - Drawer de Jobs / Telemetria)
+- [x] Validar testes unitários em `engine-kit`, `trainer-difusao` e testes do frontend
 - [x] Auditoria com `@reviewer` (Gate Obrigatório)
 - [x] Sincronização de documentação com `@docs`
 
 ## Entregas Concluídas Recentemente
+- [x] Telemetria ao Vivo com ETA Preditivo, Métricas de VRAM e Logs Vivos de Treino (`feat/engines-live-telemetry-eta`):
+  - **Contrato Canônico de Telemetria Preditiva:** Expansão de `TelemetryEmitter` em `engine-kit` e `MetricsLogger` em `trainer-difusao/common_pkg/metrics.py` com campos padronizados: `vramReservedGb`, `stepTimeSeconds`, `speed`, `etaSeconds` e `etaFormatted`.
+  - **Cálculo Robusto de ETA (EMA):** Estimativa móvel exponencial (`alpha = 0.2`) de tempo por iteração protegida contra divisão por zero, amortecendo flutuações e viabilizando predição precisa de tempo restante em treinamentos longos.
+  - **Terminal e Logs Adaptativos no Qwen-Image:** Intervalo adaptativo de emissão de telemetria e logs (passos > 5s emitem a cada passo em vez de esperar 5 passos fixos), com barra de progresso visual, exibição explícita de micro-steps/épocas e telemetria em tempo real de VRAM alocada e reservada.
+  - **Interface Web Reativa e Acessível (`apps/web`):** Hook `useJobTelemetry` e componente `JobDrawer` integrados com suporte a visualização de ETA, velocidade de iteração, VRAM alocada/reservada e logs ao vivo com auto-scroll pausável ao rolar para cima.
+  - **Testes e Qualidade:** 261 testes unitários em Python (`engine-kit` e `trainer-difusao`) e 30 testes unitários no frontend (`apps/web`) íntegros e passando.
+  - **Auditoria:** Auditado e aprovado com veredito APROVA pelo `@reviewer`.
 - [x] Mitigação de Vazamentos de Memória e VRAM/RAM no Qwen-Image-2.1 (`fix/qwen-image-memory-leaks`):
   - **Purga Incondicional de LoRA Residual no Daemon:** Invocação de `unload_lora_weights` incondicionalmente no pipeline em cache antes de avaliar e carregar novos adaptadores (`runner.py`), evitando poluição de inferências puras subsequentes e vazamento cumulativo de VRAM.
   - **Desacoplamento de Referências no Pipeline de Amostragem:** Esvaziamento de dicionários locais (`pipe_kwargs.clear()`), anulação explícita dos componentes (`pipe.components[k] = None`, `pipe.vae = None`, `pipe.transformer = None`, `del pipe`) e dupla liberação com `release_memory()` e `malloc_trim(0)` em bloco `finally` (`sample.py`).

@@ -17,28 +17,46 @@ O ciclo de vida da infraestrutura é modularizado em overlays declarativos do Do
 
 ---
 
-## 2. Topologia de Rede e Comunicação
+## 2. Topologia de Rede e Segmentação em Zonas
 
-Todos os serviços locais comunicam-se através de uma rede bridge Docker isolada (`infra_default`):
+A infraestrutura abandona o modelo de rede plana (*flat network*) e adota isolamento estrito segmentado em 3 redes bridge Docker (`frontend_net`, `backend_net` e `engine_net`):
+
+1. **`frontend_net` (`${COMPOSE_PROJECT_NAME:-infra}_frontend_net`):**
+   - **Integrantes:** `ingress` (Caddy, em prod), `web` (Next.js) e `principal` (BFF Axum).
+   - **Finalidade:** Tráfego de borda e SSR. O container `web` tem isolamento estrito: **não tem acesso direto ao banco de dados (`db`) nem ao S3 (`seaweedfs`)**. Qualquer requisição para dados passa pelo proxy `/api/*` encaminhado ao `principal`.
+2. **`backend_net` (`${COMPOSE_PROJECT_NAME:-infra}_backend_net`):**
+   - **Integrantes:** `principal`, `manager`, `db` (Postgres + pgvector), `seaweedfs`, `s3-init`, `embedder` (CLIP) e `orchestrator-local`.
+   - **Finalidade:** Comunicação e persistência interna de dados, orquestração e gerenciamento de jobs.
+3. **`engine_net` (`${COMPOSE_PROJECT_NAME:-infra}_engine_net`):**
+   - **Integrantes:** `orchestrator-local`, `seaweedfs` e containers de treinamento/inferência das engines (`trainer-yolo`, `trainer-difusao`, `diffusion-daemon`).
+   - **Finalidade:** Isolamento de execução de workloads de IA. `seaweedfs` e `orchestrator-local` atuam como ponte segura (*dual-homed*), permitindo que os containers de treino façam download/upload de artefatos no S3 sem acesso ao banco de dados ou aos serviços de frontend.
 
 ```
-                                  [ Caddy (Ingress :80/:443) ]  (Overlay Prod)
-                                                |
-                               +----------------+----------------+
-                               |                                 |
-                               v (Proxy /api/*)                  v (Proxy /*)
-                     [ api-principal :8080 ]               [ web :3000 ]
-                               |
-                   +-----------+-----------+
-                   |                       |
-                   v                       v
-          [ manager :8081 ]       [ seaweedfs :8333 ] <----+ [ s3-init ] (Run-once)
-                   |                       ^
-                   v                       |
-       [ orchestrator-local :8082 ] -------+
-                   | (Docker Socket /var/run/docker.sock)
-                   v
-       [ trainer-yolo / difusao ] (Containers efêmeros sem porta)
+  [ Borda / Ingress ]
+          |
+          v
+   ( frontend_net ) --------------------------------------------+
+          |                                                     |
+          v                                                     v
+    [ web :3000 ]                                     [ api-principal :8080 ]
+  (Next.js / SSR)                                       (BFF / Gateway)
+                                                                |
+   ( backend_net ) <--------------------------------------------+
+          |
+          +-------------------+--------------------+--------------------+
+          |                   |                    |                    |
+          v                   v                    v                    v
+     [ db :5432 ]      [ manager :8081 ]    [ embedder :8083 ]   [ seaweedfs :8333 ] <---+ [ s3-init ]
+   (Postgres/pgvector)   (Job Manager)        (CLIP Embeddings)    (S3 Storage)
+                              |                                         ^
+                              v                                         |
+                 [ orchestrator-local :8082 ] --------------------------+
+                              |
+   ( engine_net ) <-----------+ (Docker Socket /var/run/docker.sock)
+          |
+          v
+   [ trainer-yolo / difusao / diffusion-daemon ]
+   (Containers efêmeros sem porta exposta)
 ```
 
 ---

@@ -1,7 +1,7 @@
 # Memória Ativa — Hephaestus LLM Studio
 
-- **Branch atual:** `develop`
-- **Fatia em andamento:** Nenhuma (Aguardando definição da próxima fatia).
+- **Branch atual:** `feat/infra-redes-segmentadas`
+- **Fatia em andamento:** Hardening de Infraestrutura & Segmentação de Redes Docker (`infra/`).
 - **Última fatia integrada:** Modularização, Acessibilidade e Polling Resiliente do Frontend (`feat/web-ui-modularizacao-a11y` mergeada com sucesso em `develop`).
   Auditado e aprovado pelo `@reviewer`, 16 testes frontend passando, build Next.js 100% verde (14 rotas) e 786 testes no workspace Rust.
 - **HOTFIX permissões nó GPU (2026-09-22):** engines uid 1000 não escreviam em
@@ -17,14 +17,21 @@
   novo subagente dedicado `@docs`.
 
 ## Checklist Imediato da Sessão Ativa
-- [x] Ajustar hit-area mínima em `SegmentedControl.tsx` para conformidade com WCAG 2.5.8
-- [x] Otimizar polling de telemetria em `Sidebar.tsx` (desativar em background / abas ocultas e desacelerar quando inativo)
-- [x] Unificar lógica `canTrainDataset` / `trainDisabledReason` em `lib/datasets.ts`, `DatasetCard.tsx` e `DatasetMenu.tsx`
-- [x] Extrair hooks `useFloatingPosition` e `useListboxNavigation` de `components/ui/Select.tsx` e tipar estritamente
-- [x] Validar `next build` e `bunx tsc --noEmit`
+- [x] Segmentar redes em `infra/compose.yaml` e `compose.prod.yaml` (`frontend_net`, `backend_net`, `engine_net`)
+- [x] Atualizar referências e defaults de `DIFFUSION_DAEMON_NETWORK` e `ENGINE_NETWORK` para `infra_engine_net`
+- [x] Validar compilação sintática de todos os perfis compose (`dev`, `prod`, `integ`, `gpu`)
+- [x] Validar testes do workspace Rust e frontend
 - [x] Auditoria com @reviewer (Gate Obrigatório)
 - [x] Sincronização de documentação com @docs
 ## Entregas Concluídas Recentemente
+- [x] Hardening de Infraestrutura & Segmentação de Redes Docker (`feat/infra-redes-segmentadas`):
+  - **Segmentação em 3 Redes:** Fim da rede flat através da criação de `frontend_net`, `backend_net` e `engine_net` com escopos estritos.
+  - **Isolamento Estrito de `web`:** Next.js isolado na `frontend_net`, sem acesso de rede ao banco de dados (`db`) nem ao S3 (`seaweedfs`).
+  - **Roteamento de Ingress em Produção:** Serviço `ingress` (Caddy) restrito exclusivamente à `frontend_net` (`ports: 80/443`).
+  - **Ponte Segura para Workloads:** `seaweedfs` e `orchestrator-local` configurados como pontes seguras (*dual-homed*) em `backend_net` e `engine_net`, viabilizando I/O de artefatos de treino sem expor banco ou frontend.
+  - **Engines e Daemons:** `ENGINE_NETWORK` e `DIFFUSION_DAEMON_NETWORK` padronizados para `${COMPOSE_PROJECT_NAME:-infra}_engine_net`.
+  - **Validação de Sintaxe e Testes:** 4 perfis compose validados sintaticamente (`dev`, `prod`, `integ`, `gpu`), 786 testes verdes no workspace Rust e suíte de testes de interface Next.js.
+  - **Auditoria:** Auditado e aprovado pelo `@reviewer`.
 - [x] Modularização e Acessibilidade Frontend (`feat/web-ui-modularizacao-a11y`):
   - **Acessibilidade WCAG 2.5.8:** Target size mínimo de 32x32px (`min-h-[32px] min-w-[32px]`) em botões de opção do `SegmentedControl`.
   - **Polling inteligente de telemetria em `Sidebar.tsx`:** Listener de `visibilitychange` interrompendo `setInterval` quando em abas ocultas e retomando com fetch imediato ao voltar à aba visível.

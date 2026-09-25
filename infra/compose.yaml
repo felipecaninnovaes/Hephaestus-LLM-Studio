@@ -30,6 +30,8 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    networks:
+      - backend_net
 
   principal:
     build:
@@ -68,6 +70,9 @@ services:
       timeout: 3s
       retries: 10
       start_period: 5s
+    networks:
+      - frontend_net
+      - backend_net
 
   # SeaweedFS S3 (ADR-0003 D0, 3b.4): identidade em infra/seaweedfs-s3.json
   # (credenciais LOCAL-DEV — rotacione antes de qualquer exposição além do
@@ -101,6 +106,9 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
+    networks:
+      - backend_net
+      - engine_net
 
   # s3-init (run-once): garante o bucket S3 após `down -v` (seaweed_data some
   # e o bucket vai junto; a identidade volta via seaweedfs-s3.json mas o
@@ -126,6 +134,8 @@ services:
         condition: service_healthy
     restart: "no"
     logging: *default-logging
+    networks:
+      - backend_net
 
   # Embedder CLIP (ADR-0004 D1, 3f.3): inferência de embeddings para busca
   # semântica. INFRA local (como o SeaweedFS) — não job do orquestrador
@@ -153,6 +163,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 6
+    networks:
+      - backend_net
 
   manager:
     build:
@@ -184,6 +196,8 @@ services:
       timeout: 3s
       retries: 10
       start_period: 5s
+    networks:
+      - backend_net
 
   orchestrator-local:
     build:
@@ -214,8 +228,8 @@ services:
       DIFFUSION_DAEMON_PORT: ${DIFFUSION_DAEMON_PORT:-8766}
       DIFFUSION_DAEMON_IDLE_TTL_S: ${DIFFUSION_DAEMON_IDLE_TTL_S:-600}
       DIFFUSION_DAEMON_URL: ${DIFFUSION_DAEMON_URL:-}
-      DIFFUSION_DAEMON_NETWORK: ${DIFFUSION_DAEMON_NETWORK:-${COMPOSE_PROJECT_NAME:-infra}_default}
-      ENGINE_NETWORK: ${ENGINE_NETWORK:-${COMPOSE_PROJECT_NAME:-infra}_default}
+      DIFFUSION_DAEMON_NETWORK: ${DIFFUSION_DAEMON_NETWORK:-${COMPOSE_PROJECT_NAME:-infra}_engine_net}
+      ENGINE_NETWORK: ${ENGINE_NETWORK:-${COMPOSE_PROJECT_NAME:-infra}_engine_net}
       PORT: "8082"
       ENABLE_TEXT_ENCODER_UNLOAD: ${ENABLE_TEXT_ENCODER_UNLOAD:-0}
       TRAINER_TIMEOUT_SECS: ${TRAINER_TIMEOUT_SECS:-7200}
@@ -237,6 +251,9 @@ services:
       timeout: 3s
       retries: 10
       start_period: 5s
+    networks:
+      - backend_net
+      - engine_net
 
   # Build-only: imagem hephaestus/trainer-yolo:local (ADR-0007 D5).
   # Não inicia com `docker compose up` — só com `--profile build`.
@@ -279,6 +296,8 @@ services:
       timeout: 5s
       retries: 6
       start_period: 15s
+    networks:
+      - frontend_net
 
 volumes:
   pgdata:
@@ -286,3 +305,11 @@ volumes:
   datasets:
   models:
   outputs:
+
+networks:
+  frontend_net:
+    name: ${COMPOSE_PROJECT_NAME:-infra}_frontend_net
+  backend_net:
+    name: ${COMPOSE_PROJECT_NAME:-infra}_backend_net
+  engine_net:
+    name: ${COMPOSE_PROJECT_NAME:-infra}_engine_net

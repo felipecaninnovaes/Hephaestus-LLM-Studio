@@ -7,8 +7,8 @@ use axum::{
     response::Response,
 };
 
-use crate::error::error_response;
 use super::state::AppState;
+use crate::error::error_response;
 
 pub async fn request_id_middleware(
     req: axum::http::Request<axum::body::Body>,

@@ -3,11 +3,11 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use super::election::select_eligible_orchestrator;
+use super::payload::{build_dispatch_payload, BuildPayloadInput};
 use crate::error::ManagerError;
 use crate::orchestrator::client::OrchestratorClient;
 use crate::policy::vram::VramTable;
-use super::election::select_eligible_orchestrator;
-use super::payload::{build_dispatch_payload, BuildPayloadInput};
 
 type QueuedJobRow = (
     Uuid,

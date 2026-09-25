@@ -1,13 +1,13 @@
 //! Consultas e mapeamentos SQL compartilhados de jobs (MM-13).
 
-use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use sqlx::postgres::PgRow;
 use sqlx::{PgPool, Row};
+use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::error::ManagerError;
 use super::types::JobRow;
+use crate::error::ManagerError;
 
 pub const SELECT_JOB_FIELDS: &str =
     "SELECT j.id, j.kind, j.engine, j.model, j.mode, j.dataset_id, j.status, j.queue_reason, \
@@ -20,9 +20,7 @@ pub const SELECT_JOB_FIELDS: &str =
      LEFT JOIN orchestrators o ON o.id = j.orchestrator_id";
 
 /// Constrói o mapa de posições na fila (1-indexed por created_at) para jobs queued.
-pub async fn fetch_queue_positions(
-    pool: &PgPool,
-) -> Result<HashMap<String, i32>, ManagerError> {
+pub async fn fetch_queue_positions(pool: &PgPool) -> Result<HashMap<String, i32>, ManagerError> {
     let queue_rows: Vec<(Uuid,)> =
         sqlx::query_as("SELECT id FROM jobs WHERE status = 'queued' ORDER BY created_at")
             .fetch_all(pool)
@@ -36,10 +34,7 @@ pub async fn fetch_queue_positions(
 }
 
 /// Mapeia uma linha PostgreSQL (PgRow) para o DTO JobRow com posições calculadas.
-pub fn row_to_job_row(
-    r: &PgRow,
-    pos_map: &HashMap<String, i32>,
-) -> JobRow {
+pub fn row_to_job_row(r: &PgRow, pos_map: &HashMap<String, i32>) -> JobRow {
     let id: Uuid = r.get("id");
     let id_str = id.to_string();
     let status: String = r.get("status");

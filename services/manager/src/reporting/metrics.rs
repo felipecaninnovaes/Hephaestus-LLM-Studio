@@ -1,7 +1,7 @@
 //! Processamento, agregação e persistência de métricas de jobs (MM-11).
 
-use std::collections::HashMap;
 use sqlx::{PgConnection, PgPool};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::error::ManagerError;

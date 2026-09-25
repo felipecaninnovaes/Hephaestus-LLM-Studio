@@ -3,7 +3,6 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::error::ManagerError;
 use super::artifacts::{
     done_artifacts_violation, save_intermediate_artifacts, validate_and_save_done_artifacts,
     ReportRequest,
@@ -11,6 +10,7 @@ use super::artifacts::{
 use super::generations::hook_generations_on_done;
 use super::metrics::{upsert_metrics, upsert_metrics_conn};
 use super::models::hook_models_on_done;
+use crate::error::ManagerError;
 
 /// Processa um report do orquestrador.
 ///

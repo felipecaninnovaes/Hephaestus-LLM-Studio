@@ -65,10 +65,7 @@ pub async fn list_jobs_handler(
 }
 
 /// GET /internal/jobs/:id — detalhe de um job.
-pub async fn get_job_handler(
-    State(state): State<AppState>,
-    JobId(uuid): JobId,
-) -> Response {
+pub async fn get_job_handler(State(state): State<AppState>, JobId(uuid): JobId) -> Response {
     match crate::get_job(&state.pool, uuid).await {
         Ok(job) => (StatusCode::OK, Json(job)).into_response(),
         Err(ManagerError::NotFound) => not_found(),
@@ -78,10 +75,7 @@ pub async fn get_job_handler(
 }
 
 /// GET /internal/jobs/:id/artifacts — lista artefatos de um job.
-pub async fn list_artifacts_handler(
-    State(state): State<AppState>,
-    JobId(uuid): JobId,
-) -> Response {
+pub async fn list_artifacts_handler(State(state): State<AppState>, JobId(uuid): JobId) -> Response {
     match crate::get_job_artifacts(&state.pool, uuid).await {
         Ok(arts) => (StatusCode::OK, Json(ArtifactsListResponse { items: arts })).into_response(),
         Err(ManagerError::NotFound) => not_found(),
@@ -91,10 +85,7 @@ pub async fn list_artifacts_handler(
 }
 
 /// POST /internal/jobs/:id/abort — aborta um job.
-pub async fn abort_job_handler(
-    State(state): State<AppState>,
-    JobId(uuid): JobId,
-) -> Response {
+pub async fn abort_job_handler(State(state): State<AppState>, JobId(uuid): JobId) -> Response {
     match crate::abort_job(&state.pool, uuid, state.orch_client.as_ref()).await {
         Ok(status) => (StatusCode::OK, Json(AbortResponse { status })).into_response(),
         Err(ManagerError::NotFound) => not_found(),
@@ -111,10 +102,7 @@ pub async fn abort_job_handler(
 
 /// DELETE /internal/jobs/:id — apaga um job terminal (AC-003).
 /// Guarda: não-terminal → 409 job_not_terminal; inexistente → 404.
-pub async fn delete_job_handler(
-    State(state): State<AppState>,
-    JobId(uuid): JobId,
-) -> Response {
+pub async fn delete_job_handler(State(state): State<AppState>, JobId(uuid): JobId) -> Response {
     match crate::delete_job(&state.pool, uuid).await {
         Ok(deleted) => (StatusCode::OK, Json(deleted)).into_response(),
         Err(ManagerError::NotFound) => not_found(),
@@ -211,10 +199,7 @@ pub async fn prepare_fail_handler(
 }
 
 /// POST /internal/jobs/:id/prepare-cancel — cancelamento de preparação pelo BFF.
-pub async fn prepare_cancel_handler(
-    State(state): State<AppState>,
-    JobId(uuid): JobId,
-) -> Response {
+pub async fn prepare_cancel_handler(State(state): State<AppState>, JobId(uuid): JobId) -> Response {
     match crate::prepare_cancel(&state.pool, uuid).await {
         Ok(()) => (
             StatusCode::OK,

@@ -3,9 +3,9 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::error::ManagerError;
 use super::resolve::*;
 use super::types::{CreateJobRequest, CreateJobResponse};
+use crate::error::ManagerError;
 
 /// Cria um job. Retorna (job_id, status, queue_position).
 ///

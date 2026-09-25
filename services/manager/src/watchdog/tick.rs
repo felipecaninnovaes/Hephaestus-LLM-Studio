@@ -1,8 +1,8 @@
 //! Tick periódico do watchdog para nós degradados/offline e expirações (MM-09).
 
-use sqlx::PgPool;
-use crate::error::ManagerError;
 use super::prepare::{gc_dataset_versions, watchdog_prepare_timeout};
+use crate::error::ManagerError;
+use sqlx::PgPool;
 
 /// Tick do watchdog: transições online→degraded→offline com re-queue dos jobs.
 /// Chamada pelo worker loop (~2s).

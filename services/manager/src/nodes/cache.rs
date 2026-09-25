@@ -20,7 +20,6 @@ pub struct TelemetryState {
     pub last_heartbeat: Option<DateTime<Utc>>,
 }
 
-
 pub type TelemetryCache = Arc<RwLock<HashMap<Uuid, TelemetryState>>>;
 
 pub fn new_telemetry_cache() -> TelemetryCache {

@@ -3,8 +3,8 @@
 use sqlx::PgConnection;
 use uuid::Uuid;
 
-use crate::error::ManagerError;
 use super::artifacts::ReportRequest;
+use crate::error::ManagerError;
 
 /// Hook generations (D5 — ADR-0023): job diffusion generate done com
 /// artefato generated_meta → parse JSONL → INSERT em generations.
@@ -14,19 +14,18 @@ pub async fn hook_generations_on_done(
     id: Uuid,
     report: &ReportRequest,
 ) -> Result<(), ManagerError> {
-    let job_meta: Option<(String, String)> = match sqlx::query_as::<_, (String, String)>(
-        "SELECT engine, mode FROM jobs WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_optional(&mut *conn)
-    .await
-    {
-        Ok(opt) => opt,
-        Err(e) => {
-            tracing::warn!("hook generations: falha ao ler engine/mode do job {id}: {e}");
-            None
-        }
-    };
+    let job_meta: Option<(String, String)> =
+        match sqlx::query_as::<_, (String, String)>("SELECT engine, mode FROM jobs WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&mut *conn)
+            .await
+        {
+            Ok(opt) => opt,
+            Err(e) => {
+                tracing::warn!("hook generations: falha ao ler engine/mode do job {id}: {e}");
+                None
+            }
+        };
 
     let (engine, mode) = match job_meta {
         Some(m) => m,
@@ -70,10 +69,7 @@ pub async fn hook_generations_on_done(
             }
             match serde_json::from_str::<serde_json::Value>(line) {
                 Ok(entry) => {
-                    let filename = entry
-                        .get("filename")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+                    let filename = entry.get("filename").and_then(|v| v.as_str()).unwrap_or("");
                     if filename.is_empty() {
                         continue;
                     }
@@ -86,14 +82,8 @@ pub async fn hook_generations_on_done(
                     let seed = entry.get("seed").and_then(|v| v.as_i64()).unwrap_or(0);
                     let prompt = entry.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
                     let negative_prompt = entry.get("negative_prompt").and_then(|v| v.as_str());
-                    let width = entry
-                        .get("width")
-                        .and_then(|v| v.as_i64())
-                        .unwrap_or(512) as i32;
-                    let height = entry
-                        .get("height")
-                        .and_then(|v| v.as_i64())
-                        .unwrap_or(512) as i32;
+                    let width = entry.get("width").and_then(|v| v.as_i64()).unwrap_or(512) as i32;
+                    let height = entry.get("height").and_then(|v| v.as_i64()).unwrap_or(512) as i32;
 
                     // Params = RESTO da linha (batch_index, batch_size, etc.)
                     let mut gen_params = entry.clone();

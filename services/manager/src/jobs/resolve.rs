@@ -108,10 +108,7 @@ pub async fn resolve_weights_ref(
                 )));
             }
 
-            let weights_ref = WeightsRef {
-                s3_key,
-                md5: hash,
-            };
+            let weights_ref = WeightsRef { s3_key, md5: hash };
 
             // ADR-0012 D5/I.2b: predict com variant → jobs.model = variante (ex.: yolo11m).
             if req_model == "predict" {
@@ -152,7 +149,8 @@ pub async fn resolve_orchestrator_hint(
     match orch_status {
         None => Err(ManagerError::NotFound),
         Some((status,)) if status != "online" => Err(ManagerError::InvalidRequest(
-            "nó de execução indisponível (offline ou revogado) — escolha outro ou Automático".into(),
+            "nó de execução indisponível (offline ou revogado) — escolha outro ou Automático"
+                .into(),
         )),
         _ => Ok(hint_uuid),
     }
@@ -189,9 +187,7 @@ pub async fn resolve_loras(
                 .bind(model_uuid)
                 .fetch_optional(pool)
                 .await
-                .map_err(|e| {
-                    ManagerError::Internal(format!("resolve lora model {i}: {e}"))
-                })?;
+                .map_err(|e| ManagerError::Internal(format!("resolve lora model {i}: {e}")))?;
 
         match row {
             None => {
@@ -222,9 +218,8 @@ pub async fn resolve_custom_checkpoint(
     pool: &PgPool,
     custom_id_str: &str,
 ) -> Result<ResolvedCheckpoint, ManagerError> {
-    let custom_uuid = Uuid::parse_str(custom_id_str).map_err(|_| {
-        ManagerError::InvalidRequest("customModelId must be a valid UUID".into())
-    })?;
+    let custom_uuid = Uuid::parse_str(custom_id_str)
+        .map_err(|_| ManagerError::InvalidRequest("customModelId must be a valid UUID".into()))?;
 
     let row: Option<(String, String, Option<String>, Option<String>)> =
         sqlx::query_as("SELECT s3_key, hash, kind, arch FROM models WHERE id = $1")
@@ -234,7 +229,9 @@ pub async fn resolve_custom_checkpoint(
             .map_err(|e| ManagerError::Internal(format!("resolve custom model: {e}")))?;
 
     match row {
-        None => Err(ManagerError::InvalidRequest("customModelId not found".into())),
+        None => Err(ManagerError::InvalidRequest(
+            "customModelId not found".into(),
+        )),
         Some((s3_key, hash, kind, arch)) => {
             if kind.as_deref() != Some("checkpoint") {
                 return Err(ManagerError::InvalidRequest(format!(
@@ -279,7 +276,9 @@ pub async fn resolve_text_encoder(
             .map_err(|e| ManagerError::Internal(format!("resolve text encoder: {e}")))?;
 
     match row {
-        None => Err(ManagerError::InvalidRequest("textEncoderModelId not found".into())),
+        None => Err(ManagerError::InvalidRequest(
+            "textEncoderModelId not found".into(),
+        )),
         Some((s3_key, hash, kind, _arch)) => {
             if kind.as_deref() != Some("text_encoder") {
                 return Err(ManagerError::InvalidRequest(format!(
@@ -315,7 +314,10 @@ pub async fn resolve_init_image(
     params: &serde_json::Value,
 ) -> Result<Option<ResolvedInitImage>, ManagerError> {
     if params.get("initImageId").and_then(|v| v.as_str()).is_some()
-        && params.get("initGenerationId").and_then(|v| v.as_str()).is_some()
+        && params
+            .get("initGenerationId")
+            .and_then(|v| v.as_str())
+            .is_some()
     {
         return Err(ManagerError::InvalidRequest(
             "use either initImageId or initGenerationId, not both".into(),
@@ -323,9 +325,8 @@ pub async fn resolve_init_image(
     }
 
     if let Some(init_id_str) = params.get("initImageId").and_then(|v| v.as_str()) {
-        let init_uuid = Uuid::parse_str(init_id_str).map_err(|_| {
-            ManagerError::InvalidRequest("initImageId must be a valid UUID".into())
-        })?;
+        let init_uuid = Uuid::parse_str(init_id_str)
+            .map_err(|_| ManagerError::InvalidRequest("initImageId must be a valid UUID".into()))?;
 
         let row: Option<(String, String)> =
             sqlx::query_as("SELECT s3_key, md5 FROM generation_inputs WHERE id = $1")
@@ -352,16 +353,17 @@ pub async fn resolve_init_image(
             ManagerError::InvalidRequest("initGenerationId must be a valid UUID".into())
         })?;
 
-        let row: Option<(String,)> = sqlx::query_as(
-            "SELECT s3_key FROM generations WHERE id = $1 AND deleted_at IS NULL",
-        )
-        .bind(gen_uuid)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| ManagerError::Internal(format!("resolve init generation: {e}")))?;
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT s3_key FROM generations WHERE id = $1 AND deleted_at IS NULL")
+                .bind(gen_uuid)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| ManagerError::Internal(format!("resolve init generation: {e}")))?;
 
         match row {
-            None => Err(ManagerError::InvalidRequest("initGenerationId not found".into())),
+            None => Err(ManagerError::InvalidRequest(
+                "initGenerationId not found".into(),
+            )),
             Some((s3_key,)) => Ok(Some(ResolvedInitImage { s3_key, md5: None })),
         }
     } else {

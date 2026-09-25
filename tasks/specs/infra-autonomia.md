@@ -20,14 +20,14 @@ Data do levantamento: 2026-09-18.
   - **Problema:** O comando one-shot `docker run` não passa `--network`, jogando containers na bridge padrão do Docker e quebrando resolução DNS interna de containers. O daemon de difusão faz fallback para `--network host`, violando a regra inegociável de isolamento de rede das engines.
   - **Ação:** Passar explicitamente `--network ${ENGINE_NETWORK:-infra_default}` no executor Docker e eliminar o fallback de rede host.
 
-- [ ] **1.3 Segregar redes no Docker Compose (Fim da Rede Flat)**
+- [x] **1.3 Segregar redes no Docker Compose (Fim da Rede Flat)**
   - **Severidade:** Alto
-  - **Arquivo:** `infra/compose.yaml`
-  - **Problema:** Todos os serviços residem na mesma rede `infra_default`, permitindo comunicação direta arbitrária (ex.: frontend acessando porta do Postgres).
-  - **Ação:** Implementar redes segmentadas:
-    - `frontend_net`: `web` e `principal`.
-    - `backend_net`: `principal`, `manager`, `db`, `seaweedfs`, `embedder`.
-    - `engine_net`: `orchestrator` e containers de treino.
+  - **Arquivo:** `infra/compose.yaml`, `infra/compose.prod.yaml`
+  - **Status:** Quitado (fatia `feat/infra-redes-segmentadas`).
+  - **Implementado:** Redes segmentadas com isolamento estrito:
+    - `frontend_net`: `ingress` (prod), `web` e `principal`. `web` sem acesso a `db` ou `seaweedfs`.
+    - `backend_net`: `principal`, `manager`, `db`, `seaweedfs`, `s3-init`, `embedder` e `orchestrator-local`.
+    - `engine_net`: `orchestrator-local`, `seaweedfs` (ponte segura para artefatos) e containers efêmeros de treino/daemon (`ENGINE_NETWORK=${COMPOSE_PROJECT_NAME:-infra}_engine_net`).
 
 - [ ] **1.4 Implementar Ingress / Reverse Proxy Unificado (Caddy / Traefik / Nginx)**
   - **Severidade:** Alto

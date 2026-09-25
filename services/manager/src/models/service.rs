@@ -217,7 +217,9 @@ pub async fn create_model(
 
     match row {
         Ok(Some(r)) => Ok(db_row_to_model_item(r)),
-        Ok(None) => Err(ManagerError::Internal("insert model: no row returned".into())),
+        Ok(None) => Err(ManagerError::Internal(
+            "insert model: no row returned".into(),
+        )),
         Err(e) => {
             if e.as_database_error()
                 .map(|db| db.is_unique_violation())

@@ -7219,16 +7219,22 @@ async fn prepare_cancel_transicao_sucesso_e_conflict() {
     assert_eq!(resp.status, "preparing");
 
     // 2. Executa prepare_cancel(&p, job_id). Deve retornar Ok(()) e status == "cancelled".
-    manager::prepare_cancel(&p, job_id).await.expect("prepare_cancel");
+    manager::prepare_cancel(&p, job_id)
+        .await
+        .expect("prepare_cancel");
     let job = manager::get_job(&p, job_id).await.expect("get job");
     assert_eq!(job.status, "cancelled");
 
     // 3. Nova chamada com job já cancelado deve retornar Ok(()) (idempotência).
-    manager::prepare_cancel(&p, job_id).await.expect("prepare_cancel idempotente");
+    manager::prepare_cancel(&p, job_id)
+        .await
+        .expect("prepare_cancel idempotente");
 
     // 4. Chamada para UUID inexistente deve retornar Err(ManagerError::NotFound).
     let fake_id = uuid::Uuid::new_v4();
-    let err = manager::prepare_cancel(&p, fake_id).await.expect_err("not found");
+    let err = manager::prepare_cancel(&p, fake_id)
+        .await
+        .expect_err("not found");
     assert!(matches!(err, ManagerError::NotFound));
 
     // 5. Chamada para job que está em running deve retornar Err(ManagerError::Conflict("job_not_cancelling")).
@@ -7242,7 +7248,9 @@ async fn prepare_cancel_transicao_sucesso_e_conflict() {
         .await
         .unwrap();
 
-    let err = manager::prepare_cancel(&p, running_id).await.expect_err("conflict");
+    let err = manager::prepare_cancel(&p, running_id)
+        .await
+        .expect_err("conflict");
     assert!(matches!(&err, ManagerError::Conflict(msg) if msg == "job_not_cancelling"));
 }
 

@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use super::cache::TelemetryCache;
 use crate::error::ManagerError;
 use crate::orchestrator::OrchestratorClient;
-use super::cache::TelemetryCache;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct OrchestratorItem {

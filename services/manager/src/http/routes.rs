@@ -13,7 +13,10 @@ use super::state::AppState;
 
 pub fn build_router(state: AppState) -> Router {
     let api = Router::new()
-        .route("/internal/jobs", post(create_job_handler).get(list_jobs_handler))
+        .route(
+            "/internal/jobs",
+            post(create_job_handler).get(list_jobs_handler),
+        )
         .route(
             "/internal/jobs/:id",
             get(get_job_handler).delete(delete_job_handler),

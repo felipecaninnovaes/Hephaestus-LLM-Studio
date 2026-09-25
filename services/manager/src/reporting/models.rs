@@ -3,9 +3,9 @@
 use sqlx::PgConnection;
 use uuid::Uuid;
 
+use super::artifacts::ArtifactItem;
 use crate::constants::{classify_diffusion_model_kind, normalize_diffusion_arch};
 use crate::error::ManagerError;
-use super::artifacts::ArtifactItem;
 
 /// Sanitiza uma string para slug seguro (apenas a-z, 0-9 e hífen).
 pub fn slugify(s: &str) -> String {
@@ -13,7 +13,9 @@ pub fn slugify(s: &str) -> String {
     let mut last_dash = true; // evita dash inicial
     for c in s.chars() {
         let normalized = match c {
-            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'À' | 'Á' | 'Â' | 'Ã' | 'Ä' | 'Å' => 'a',
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'À' | 'Á' | 'Â' | 'Ã' | 'Ä' | 'Å' => {
+                'a'
+            }
             'è' | 'é' | 'ê' | 'ë' | 'È' | 'É' | 'Ê' | 'Ë' => 'e',
             'ì' | 'í' | 'î' | 'ï' | 'Ì' | 'Í' | 'Î' | 'Ï' => 'i',
             'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'Ò' | 'Ó' | 'Ô' | 'Õ' | 'Ö' => 'o',
@@ -188,22 +190,21 @@ pub async fn hook_models_on_done(
         Option<String>,
     );
 
-
     let job_info: Option<JobModelHookInfo> = match sqlx::query_as::<_, JobModelHookInfo>(
         "SELECT engine, model, mode, kind, dataset_id, params, config_yaml FROM jobs WHERE id = $1",
     )
-        .bind(id)
-        .fetch_optional(&mut *conn)
-        .await
-        {
-            Ok(opt) => opt,
-            Err(e) => {
-                tracing::warn!(
-                    "hook models: falha ao ler engine/model/dataset_id/params do job {id}: {e}"
-                );
-                None
-            }
-        };
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await
+    {
+        Ok(opt) => opt,
+        Err(e) => {
+            tracing::warn!(
+                "hook models: falha ao ler engine/model/dataset_id/params do job {id}: {e}"
+            );
+            None
+        }
+    };
 
     let (engine, model, mode, kind, dataset_id, job_params, config_yaml) = match job_info {
         Some(info) => info,

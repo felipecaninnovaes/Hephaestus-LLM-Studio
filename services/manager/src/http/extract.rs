@@ -25,12 +25,26 @@ macro_rules! impl_path_uuid {
         {
             type Rejection = Response;
 
-            async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+            async fn from_request_parts(
+                parts: &mut Parts,
+                state: &S,
+            ) -> Result<Self, Self::Rejection> {
                 let Path(id_str) = Path::<String>::from_request_parts(parts, state)
                     .await
-                    .map_err(|_| if $is_not_found { not_found() } else { bad_request("invalid uuid") })?;
-                let u = id_str.parse::<Uuid>()
-                    .map_err(|_| if $is_not_found { not_found() } else { bad_request("invalid uuid") })?;
+                    .map_err(|_| {
+                        if $is_not_found {
+                            not_found()
+                        } else {
+                            bad_request("invalid uuid")
+                        }
+                    })?;
+                let u = id_str.parse::<Uuid>().map_err(|_| {
+                    if $is_not_found {
+                        not_found()
+                    } else {
+                        bad_request("invalid uuid")
+                    }
+                })?;
                 Ok(Self(u))
             }
         }

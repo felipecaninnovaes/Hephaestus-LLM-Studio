@@ -1,7 +1,7 @@
 //! Recuperação de jobs no boot do manager (ADR-0007, MM-09).
 
-use sqlx::PgPool;
 use crate::error::ManagerError;
+use sqlx::PgPool;
 
 /// Recupera jobs órfãos no boot do manager (F4.3):
 /// - `cancelling` → `cancelled` (com finished_at=now(), queue_reason='recovered_cancel')

@@ -1,7 +1,7 @@
 //! Watchdog de expiração de preparação e GC de dataset versions (ADR-0025, MM-09).
 
-use sqlx::PgPool;
 use crate::error::ManagerError;
+use sqlx::PgPool;
 
 /// Watchdog de preparação (ADR-0025 D3): `preparing` com created_at > N minutos
 /// → `failed` (`params.error = 'prepare_timeout'`).

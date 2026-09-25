@@ -61,8 +61,14 @@ def _generate_sample_qwen(
         has_embeds = sample_embeds is not None and "prompt_embeds" in sample_embeds
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
+        orig_vae_dev = getattr(vae, "device", None)
         orig_vae_dtype = getattr(vae, "dtype", None)
         target_dtype = getattr(transformer, "dtype", None)
+        if hasattr(vae, "to") and orig_vae_dev is not None and str(orig_vae_dev) != str(device):
+            try:
+                vae.to(device)
+            except Exception:
+                pass
         if (
             target_dtype is not None
             and orig_vae_dtype is not None
@@ -119,17 +125,29 @@ def _generate_sample_qwen(
             pipe = PipelineCls(**pipe_kwargs_init)
             if hasattr(pipe, "set_progress_bar_config"):
                 pipe.set_progress_bar_config(disable=True)
-
+            if hasattr(pipe, "vae") and pipe.vae is not None:
+                if hasattr(pipe.vae, "enable_tiling"):
+                    try:
+                        pipe.vae.enable_tiling()
+                    except Exception:
+                        pass
+                if hasattr(pipe.vae, "enable_slicing"):
+                    try:
+                        pipe.vae.enable_slicing()
+                    except Exception:
+                        pass
             exec_dev = getattr(pipe, "_execution_device", None) or getattr(transformer, "device", None)
             if not isinstance(exec_dev, (str, torch.device)):
                 exec_dev = "cuda" if torch.cuda.is_available() else "cpu"
             generator = torch.Generator(device=exec_dev).manual_seed(seed)
+            sample_res = min(resolution, 512)
+            sample_res = max(16, (sample_res // 16) * 16)
             with torch.inference_mode():
                 pipe_kwargs: dict[str, Any] = {
                     "generator": generator,
                     "num_inference_steps": total_sample_steps,
-                    "height": resolution,
-                    "width": resolution,
+                    "height": sample_res,
+                    "width": sample_res,
                 }
                 try:
                     call_sig = inspect.signature(pipe.__call__)
@@ -153,6 +171,12 @@ def _generate_sample_qwen(
                         pipe_kwargs["prompt_embeds_mask"] = (
                             pem.to(device) if hasattr(pem, "to") else pem
                         )
+                    if "image_pad_mask" in call_params:
+                        ipm = sample_embeds.get("image_pad_mask")
+                        if ipm is not None:
+                            pipe_kwargs["image_pad_mask"] = (
+                                ipm.to(device) if hasattr(ipm, "to") else ipm
+                            )
                 else:
                     print(
                         f"[WARN] Amostra de validação cancelada: sample_embeds ausente para '{prompt[:40]}'.",
@@ -215,6 +239,14 @@ def _generate_sample_qwen(
                 ctypes.CDLL("libc.so.6").malloc_trim(0)
             except Exception:
                 pass
+            if hasattr(vae, "to") and orig_vae_dev is not None and str(orig_vae_dev) != str(device):
+                try:
+                    vae.to(orig_vae_dev)
+                except Exception:
+                    pass
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
             if (
                 orig_vae_dtype is not None
                 and getattr(vae, "dtype", None) != orig_vae_dtype

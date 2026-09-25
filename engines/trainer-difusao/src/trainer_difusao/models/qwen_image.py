@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import nullcontext
 import math
 import os
 from pathlib import Path
@@ -70,7 +71,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
     epoch_offset = max(0, int(cfg.get("epoch_offset") or lora_cfg.get("epoch_offset") or 0))
     grad_accum = max(1, int(lora_cfg.get("gradient_accumulation_steps", 1)))
     batch_size = max(1, int(lora_cfg.get("batch_size", 1)))
-    resolution = int(cfg.get("resolution", 1024))
+    resolution = int(cfg.get("resolution") or lora_cfg.get("resolution") or 1024)
 
     raw_dataset_path = cfg.get("dataset_path")
     if not raw_dataset_path:
@@ -124,7 +125,31 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
     unique_prompts = list({cap for _, cap in dataset.samples})
 
     if PipelineCls is not None:
-        print(f"[DIFFUSION-TRAIN] Pré-computando embeddings de texto ({len(unique_prompts)} prompts) na CPU...", flush=True)
+        total_prompts = len(unique_prompts)
+        use_cuda = (device == "cuda") and torch.cuda.is_available()
+        text_enc = None
+        if use_cuda:
+            try:
+                from transformers import BitsAndBytesConfig, Qwen3VLForConditionalGeneration
+
+                bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16)
+                print(f"[DIFFUSION-TRAIN] Carregando Text Encoder 4-bit na GPU para acelerar pré-computação...", flush=True)
+                text_enc = Qwen3VLForConditionalGeneration.from_pretrained(
+                    model_repo,
+                    subfolder="text_encoder",
+                    quantization_config=bnb_config,
+                    torch_dtype=torch.bfloat16,
+                    device_map="cuda:0",
+                    cache_dir=hub_cache,
+                    token=hf_token,
+                )
+            except Exception as bnb_err:
+                print(f"[WARN] Falha ao carregar Text Encoder 4-bit na GPU ({bnb_err}). Fallback para CPU.", flush=True)
+                use_cuda = False
+                text_enc = None
+
+        dev_desc = "GPU (4-bit)" if use_cuda else "CPU"
+        print(f"[DIFFUSION-TRAIN] Pré-computando embeddings de texto ({total_prompts} prompts) na {dev_desc}...", flush=True)
         try:
             tokenizer = AutoTokenizer.from_pretrained(
                 model_repo,
@@ -132,61 +157,135 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 cache_dir=hub_cache,
                 token=hf_token,
             )
+            pipe_kwargs = {
+                "tokenizer": tokenizer,
+                "vae": None,
+                "transformer": None,
+                "torch_dtype": torch.bfloat16,
+                "cache_dir": hub_cache,
+                "token": hf_token,
+            }
+            if text_enc is not None:
+                pipe_kwargs["text_encoder"] = text_enc
+
             text_pipeline = PipelineCls.from_pretrained(
                 model_repo,
-                tokenizer=tokenizer,
-                vae=None,
-                transformer=None,
-                torch_dtype=torch.bfloat16,
-                cache_dir=hub_cache,
-                token=hf_token,
+                **pipe_kwargs,
             )
-            # Mantém estritamente na CPU do host para preservar 100% da VRAM da GPU
+            encode_device = torch.device("cuda:0") if use_cuda else torch.device("cpu")
+            bs = 8 if use_cuda else 4
+            done = 0
             with torch.no_grad():
-                for p_text in unique_prompts:
-                    encoded = text_pipeline.encode_prompt(p_text)
+                i = 0
+                while i < total_prompts:
+                    chunk = unique_prompts[i : i + bs]
+                    try:
+                        encoded = text_pipeline.encode_prompt(chunk, device=encode_device)
+                    except Exception as enc_err:
+                        if use_cuda and "out of memory" in str(enc_err).lower() and bs > 1:
+                            import gc
+                            gc.collect()
+                            torch.cuda.empty_cache()
+                            bs = max(1, bs // 2)
+                            print(f"[WARN] OOM na pré-computação de texto — reduzindo batch para {bs}.", flush=True)
+                            continue
+                        raise
+
                     if len(encoded) == 3:
-                        pe, pe_mask, ipm = encoded
+                        pes, pe_masks, ipms = encoded
                     else:
-                        pe, pe_mask = encoded
-                        ipm = None
-                    prompt_cache[p_text] = (
-                        pe.cpu(),
-                        pe_mask.cpu() if pe_mask is not None else None,
-                        ipm.cpu() if ipm is not None else None,
-                    )
+                        pes, pe_masks = encoded
+                        ipms = None
+
+                    for idx, p_text in enumerate(chunk):
+                        pe_item = pes[idx : idx + 1].detach().cpu()
+                        mask_item = pe_masks[idx : idx + 1].detach().cpu() if pe_masks is not None else None
+                        ipm_item = ipms[idx : idx + 1].detach().cpu() if ipms is not None else None
+                        prompt_cache[p_text] = (pe_item, mask_item, ipm_item)
+
+                    i += len(chunk)
+                    done = min(i, total_prompts)
+                    if metrics_path is not None and (done % (bs * 4) == 0 or done == total_prompts):
+                        _emit_metric(
+                            metrics_path,
+                            epoch=epoch_offset,
+                            step=0,
+                            progress=round(0.01 + 0.03 * (done / max(1, total_prompts)), 4),
+                            phase="preparing_cache",
+                            message=f"Pré-computando text embeddings na {dev_desc} ({done}/{total_prompts})...",
+                            telemetry_only=True,
+                        )
+
                 if sample_prompt:
-                    encoded_sample = text_pipeline.encode_prompt(sample_prompt)
+                    encoded_sample = text_pipeline.encode_prompt([sample_prompt], device=encode_device)
                     if len(encoded_sample) == 3:
                         sample_pe, sample_pe_mask, sample_ipm = encoded_sample
                     else:
                         sample_pe, sample_pe_mask = encoded_sample
                         sample_ipm = None
                     sample_embeds = {
-                        "prompt_embeds": sample_pe.cpu(),
-                        "prompt_embeds_mask": sample_pe_mask.cpu() if sample_pe_mask is not None else None,
-                        "image_pad_mask": sample_ipm.cpu() if sample_ipm is not None else None,
+                        "prompt_embeds": sample_pe[0:1].detach().cpu(),
+                        "prompt_embeds_mask": sample_pe_mask[0:1].detach().cpu() if sample_pe_mask is not None else None,
+                        "image_pad_mask": sample_ipm[0:1].detach().cpu() if sample_ipm is not None else None,
                     }
-            del text_pipeline
+
+            if "pipe_kwargs" in locals() and isinstance(pipe_kwargs, dict):
+                pipe_kwargs.clear()
+                del pipe_kwargs
+            if "text_pipeline" in locals() and text_pipeline is not None:
+                if hasattr(text_pipeline, "text_encoder"):
+                    text_pipeline.text_encoder = None
+                if hasattr(text_pipeline, "tokenizer"):
+                    text_pipeline.tokenizer = None
+                if hasattr(text_pipeline, "processor"):
+                    text_pipeline.processor = None
+                for k in list(getattr(text_pipeline, "components", {}).keys()):
+                    try:
+                        setattr(text_pipeline, k, None)
+                    except Exception:
+                        pass
+                del text_pipeline
+            if text_enc is not None:
+                del text_enc
+            if "tokenizer" in locals() and tokenizer is not None:
+                del tokenizer
+            if "encoded" in locals():
+                del encoded
+            if "encoded_sample" in locals():
+                del encoded_sample
+            if "pes" in locals():
+                del pes
+            if "sample_pe" in locals():
+                del sample_pe
             release_memory()
             print(
-                f"[DIFFUSION] Embeddings pré-computados com sucesso ({len(prompt_cache)} prompts cacheados). Text encoder descarregado da memória (RAM/VRAM liberadas).",
+                f"[DIFFUSION] Embeddings pré-computados com sucesso ({len(prompt_cache)} prompts cacheados na {dev_desc}). Text encoder descarregado da memória (RAM/VRAM liberadas).",
                 flush=True,
             )
             _emit_metric(
                 metrics_path,
                 epoch=epoch_offset,
                 step=0,
-                progress=0.03,
+                progress=0.04,
                 phase="preparing_cache",
                 message=f"Embeddings pré-computados ({len(prompt_cache)} prompts). Text encoder descarregado.",
             )
         except Exception as exc:
-            print(f"[DIFFUSION-TRAIN] Aviso: falha na pré-computação com pipeline na CPU: {exc}. Criando fallbacks sintéticos.", flush=True)
-            try:
+            print(f"[DIFFUSION-TRAIN] Aviso: falha na pré-computação de embeddings: {exc}. Criando fallbacks sintéticos.", flush=True)
+            if "pipe_kwargs" in locals() and isinstance(pipe_kwargs, dict):
+                pipe_kwargs.clear()
+                del pipe_kwargs
+            if "text_pipeline" in locals() and text_pipeline is not None:
+                if hasattr(text_pipeline, "text_encoder"):
+                    text_pipeline.text_encoder = None
+                for k in list(getattr(text_pipeline, "components", {}).keys()):
+                    try:
+                        setattr(text_pipeline, k, None)
+                    except Exception:
+                        pass
                 del text_pipeline
-            except NameError:
-                pass
+            if text_enc is not None:
+                del text_enc
             release_memory()
     # 4. Carrega VAE
     print(f"[DIFFUSION-TRAIN] Carregando VAE de {model_repo}...", flush=True)
@@ -205,6 +304,16 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         cache_dir=hub_cache,
         token=hf_token,
     ).to(device)
+    if hasattr(vae, "enable_tiling"):
+        try:
+            vae.enable_tiling()
+        except Exception:
+            pass
+    if hasattr(vae, "enable_slicing"):
+        try:
+            vae.enable_slicing()
+        except Exception:
+            pass
     vae.eval()
     vae.requires_grad_(False)
 
@@ -218,6 +327,51 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
     vae_scale_factor = 8
     if hasattr(vae, "temperal_downsample"):
         vae_scale_factor = 2 ** len(vae.temperal_downsample)
+    # Pré-computa latents de imagem na GPU e descarrega o VAE para CPU (poupa 1.37 GB de VRAM no treino)
+    latents_cache: dict[int, torch.Tensor] = {}
+    total_dataset_samples = len(dataset)
+    print(f"[DIFFUSION-TRAIN] Pré-computando latents ({total_dataset_samples} imagens) na GPU...", flush=True)
+    _emit_metric(
+        metrics_path,
+        epoch=epoch_offset,
+        step=0,
+        progress=0.038,
+        phase="preparing_latents",
+        message=f"Pré-computando latents na GPU (0/{total_dataset_samples})...",
+        telemetry_only=True,
+    )
+    with torch.no_grad():
+        for s_idx in range(total_dataset_samples):
+            s_item = dataset[s_idx]
+            pv = s_item["pixel_values"].unsqueeze(0).to(device)
+            if pv.ndim == 4:
+                pv = pv.unsqueeze(2)
+            if pv.shape[1] == 3:
+                alpha_channel = torch.ones((1, 1, *pv.shape[2:]), device=device, dtype=pv.dtype)
+                pv = torch.cat([pv, alpha_channel], dim=1)
+            l = vae.encode(pv.float()).latent_dist.sample().to(dtype=target_dtype)
+            if latents_mean is not None and latents_std is not None:
+                l = (l - latents_mean) * latents_std
+            latents_cache[s_idx] = l.cpu()
+            done_l = s_idx + 1
+            if done_l % 50 == 0 or done_l == total_dataset_samples:
+                _emit_metric(
+                    metrics_path,
+                    epoch=epoch_offset,
+                    step=0,
+                    progress=round(0.038 + 0.004 * (done_l / max(1, total_dataset_samples)), 4),
+                    phase="preparing_latents",
+                    message=f"Pré-computando latents ({done_l}/{total_dataset_samples})...",
+                    telemetry_only=True,
+                )
+
+    # Descarrega VAE para CPU liberando 1.37 GB de VRAM para o Transformer DiT
+    vae = vae.to("cpu")
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+    print("[DIFFUSION-TRAIN] VAE descarregado para CPU. 1.37 GB VRAM liberados para o Transformer DiT.", flush=True)
+
 
     # 5. Carrega Transformer com quantização 4-bit (se selecionada) e LoRA
     transformer_kwargs = {
@@ -363,6 +517,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 phase="baseline_failed",
                 message="Falha ao gerar amostra baseline pré-treino.",
             )
+    release_memory()
 
     # 7. Loop de Treino Real
     for epoch_idx in range(1, epochs + 1):
@@ -373,30 +528,34 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         optimizer.zero_grad()
 
         for batch in dataloader:
-            pixel_values = batch["pixel_values"].to(device)
             captions = batch["prompt"]
-            bsz = pixel_values.shape[0]
+            bsz = len(captions)
+            indices = batch.get("index", None)
 
-            # Qwen-Image VAE exige formato 5D: [B, C, F, H, W] com F=1
-            if pixel_values.ndim == 4:
-                pixel_values = pixel_values.unsqueeze(2)
+            if indices is not None:
+                idx_list = indices.tolist() if isinstance(indices, torch.Tensor) else list(indices)
+            else:
+                idx_list = []
 
-            # Qwen-Image VAE possui in_channels=4 (suporte a RGBA). Se a entrada for RGB (3 canais),
-            # concatena canal Alpha opaco (1.0) para suprir os 4 canais requeridos pelo encoder.
-            if pixel_values.shape[1] == 3:
-                alpha = torch.ones(
-                    (pixel_values.shape[0], 1, *pixel_values.shape[2:]),
-                    device=device,
-                    dtype=pixel_values.dtype,
-                )
-                pixel_values = torch.cat([pixel_values, alpha], dim=1)
-            # Codifica imagens com VAE em latents
-            with torch.no_grad():
-                latents = vae.encode(pixel_values.float()).latent_dist.sample()
-                latents = latents.to(dtype=target_dtype)
-                if latents_mean is not None and latents_std is not None:
-                    latents = (latents - latents_mean) * latents_std
-
+            if idx_list and all(idx in latents_cache for idx in idx_list):
+                latents = torch.cat([latents_cache[idx].to(device) for idx in idx_list], dim=0)
+            else:
+                pixel_values = batch["pixel_values"].to(device)
+                if pixel_values.ndim == 4:
+                    pixel_values = pixel_values.unsqueeze(2)
+                if pixel_values.shape[1] == 3:
+                    alpha_channel = torch.ones(
+                        (pixel_values.shape[0], 1, *pixel_values.shape[2:]),
+                        device=device,
+                        dtype=pixel_values.dtype,
+                    )
+                    pixel_values = torch.cat([pixel_values, alpha_channel], dim=1)
+                with torch.no_grad():
+                    vae_dev = vae.to(device) if getattr(vae, "device", None) != torch.device(device) else vae
+                    latents = vae_dev.encode(pixel_values.float()).latent_dist.sample()
+                    latents = latents.to(dtype=target_dtype)
+                    if latents_mean is not None and latents_std is not None:
+                        latents = (latents - latents_mean) * latents_std
             # Flow matching noise scheduling
             noise = torch.randn_like(latents)
             u = torch.sigmoid(torch.randn(bsz, device=device))
@@ -470,8 +629,9 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             else:
                 trans_kwargs["img_shapes"] = [(1, latent_h // 2, latent_w // 2)] * bsz
 
-            # Forward pass no Transformer
-            pred = transformer(**trans_kwargs)[0]
+            # Forward pass no Transformer sob autocast para economizar VRAM no backward pass
+            with torch.cuda.amp.autocast(dtype=target_dtype) if device == "cuda" else nullcontext():
+                pred = transformer(**trans_kwargs)[0]
 
             # O transformer opera sobre a sequência conjunta (texto + imagem).
             # Isola exclusivamente os tokens da imagem do target no final da sequência se saída for conjunta.
@@ -479,19 +639,20 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 pred_img = pred[:, -packed_noisy.shape[1] :]
             else:
                 pred_img = pred
-            if PipelineCls is not None and hasattr(PipelineCls, "_unpack_latents"):
-                pred = PipelineCls._unpack_latents(
-                    pred_img,
-                    latent_h * vae_scale_factor,
-                    latent_w * vae_scale_factor,
-                    vae_scale_factor,
+            # Empacota o target no mesmo espaço de tokens que pred_img (evita desempacotamento e shape mismatch em aspect ratios variados)
+            target_in = target.permute(0, 2, 1, 3, 4)
+            if PipelineCls is not None and hasattr(PipelineCls, "_pack_latents"):
+                packed_target = PipelineCls._pack_latents(
+                    target_in,
+                    batch_size=bsz,
+                    num_channels_latents=latents.shape[1],
+                    height=latent_h,
+                    width=latent_w,
                 )
-                pred_target = target
             else:
-                pred = pred_img
-                pred_target = target.flatten(2).transpose(1, 2)
+                packed_target = target_in.flatten(2).transpose(1, 2)
 
-            loss = F.mse_loss(pred.float(), pred_target.float(), reduction="mean")
+            loss = F.mse_loss(pred_img.float(), packed_target.float(), reduction="mean")
             cur_loss_raw = loss.item()
             loss = loss / grad_accum
             loss.backward()

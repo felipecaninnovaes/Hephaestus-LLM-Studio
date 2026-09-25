@@ -125,10 +125,7 @@ pub fn build_dispatch_payload(input: BuildPayloadInput<'_>) -> DispatchPayload {
         .cloned();
 
     // Extrai init_image_ref resolvido do params (img2img — S4 feat/img2img).
-    let init_image_ref = input
-        .params
-        .and_then(|p| p.get("init_image_ref"))
-        .cloned();
+    let init_image_ref = input.params.and_then(|p| p.get("init_image_ref")).cloned();
 
     // Extrai text_encoder_ref resolvido do params (fatia feat/pesos-custom-flux2).
     let text_encoder_ref = input

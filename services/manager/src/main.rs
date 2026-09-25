@@ -4,8 +4,8 @@
 //! pool com retry, boot (auto-adoção + recovery), worker de dispatch em background
 //! e inicialização do servidor HTTP axum.
 
-use std::sync::Arc;
 use sqlx::PgPool;
+use std::sync::Arc;
 
 use manager::config::ManagerConfig;
 use manager::http::{build_router, AppState};
@@ -67,7 +67,9 @@ async fn main() {
     );
 
     // State.
-    let orch_client = Arc::new(HttpOrchestratorClient::new(Some(config.manager_token.clone())));
+    let orch_client = Arc::new(HttpOrchestratorClient::new(Some(
+        config.manager_token.clone(),
+    )));
     let state = AppState {
         pool: pool.clone(),
         token: config.manager_token,
@@ -132,9 +134,9 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use manager::config::resolve_manager_token;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use manager::config::resolve_manager_token;
     use tower::ServiceExt;
 
     struct NoopOrch;

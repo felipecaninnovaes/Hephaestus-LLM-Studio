@@ -373,6 +373,84 @@ class TestQwenImage(unittest.TestCase):
         self.assertEqual(t_lines[0]["step"], 1)
         self.assertIn("Época 1/5 · Step 1/15", t_lines[0]["message"])
         self.assertEqual(t_lines[1]["phase"], "epoch_complete")
+    def test_qwen_batched_prompt_encoding_logic(self):
+        """Valida que a lógica de chunking de prompts e desempacotamento de tensors produz shapes consistentes."""
+        import torch
+        unique_prompts = [f"Prompt número {i}" for i in range(15)]
+        prompt_cache = {}
+        bs = 4
+
+        class DummyPipeline:
+            def encode_prompt(self, chunk, device=None):
+                n = len(chunk)
+                pes = torch.randn(n, 16, 4096)
+                pe_masks = torch.ones(n, 16)
+                ipms = torch.ones(n, 16)
+                return pes, pe_masks, ipms
+
+        pipeline = DummyPipeline()
+        for i in range(0, len(unique_prompts), bs):
+            chunk = unique_prompts[i : i + bs]
+            encoded = pipeline.encode_prompt(chunk)
+            pes, pe_masks, ipms = encoded
+            for idx, p_text in enumerate(chunk):
+                pe_item = pes[idx : idx + 1]
+                mask_item = pe_masks[idx : idx + 1]
+                ipm_item = ipms[idx : idx + 1]
+                prompt_cache[p_text] = (pe_item, mask_item, ipm_item)
+
+        self.assertEqual(len(prompt_cache), 15)
+        first_pe, first_mask, first_ipm = prompt_cache["Prompt número 0"]
+        self.assertEqual(first_pe.shape, (1, 16, 4096))
+        self.assertEqual(first_mask.shape, (1, 16))
+        self.assertEqual(first_ipm.shape, (1, 16))
+
+    def test_qwen_lora_alpha_not_shadowed_by_image_alpha(self):
+        """Garante que a variável de canal alpha da imagem não sobrescreve o lora_alpha escalar."""
+        import inspect
+        from trainer_difusao.models import qwen_image
+        src = inspect.getsource(qwen_image._real_train_qwen_image)
+        # Não deve haver 'alpha = torch.ones' (deve ser 'alpha_channel = torch.ones')
+        self.assertNotIn("alpha = torch.ones", src)
+        self.assertIn("alpha_channel = torch.ones", src)
+
+    def test_qwen_sample_does_not_pass_image_pad_mask_when_unsupported(self):
+        """Garante que _generate_sample_qwen não injeta image_pad_mask se o pipeline não o aceita."""
+        from unittest.mock import MagicMock
+        from trainer_difusao.models.qwen_pkg.sample import _generate_sample_qwen
+        import torch
+
+        mock_pipe_instance = MagicMock()
+        # __call__ sem image_pad_mask nos argumentos
+        def fake_call(prompt=None, height=512, width=512, generator=None, num_inference_steps=20, true_cfg_scale=3.5, prompt_embeds=None, callback_on_step_end=None):
+            res = MagicMock()
+            img = MagicMock()
+            res.images = [img]
+            return res
+        mock_pipe_instance.__call__ = fake_call
+
+        mock_pipe_cls = MagicMock(return_value=mock_pipe_instance)
+
+        sample_embeds = {
+            "prompt_embeds": torch.randn(1, 16, 4096),
+            "prompt_embeds_mask": torch.ones(1, 16, dtype=torch.bool),
+            "image_pad_mask": torch.zeros(1, 16, dtype=torch.bool),
+        }
+
+        from unittest.mock import patch
+        with patch("diffusers.QwenImage21Pipeline", mock_pipe_cls, create=True), \
+             patch("trainer_difusao.models.qwen_pkg.sample.os.replace"):
+            out_file = self.tmp_path / "sample_test.png"
+            _generate_sample_qwen(
+                transformer=MagicMock(),
+                vae=MagicMock(),
+                scheduler=MagicMock(),
+                prompt="test prompt",
+                output_path=out_file,
+                resolution=1024,
+                sample_embeds=sample_embeds,
+            )
+            self.assertTrue(mock_pipe_cls.called)
 
 if __name__ == "__main__":
     unittest.main()

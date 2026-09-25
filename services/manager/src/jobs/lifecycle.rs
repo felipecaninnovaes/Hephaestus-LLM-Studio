@@ -3,11 +3,11 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::error::ManagerError;
 use super::repo::{fetch_queue_positions, row_to_job_row, SELECT_JOB_FIELDS};
 use super::types::{
     ArtifactRow, JobRow, ListJobsResponse, PrepareCompleteRequest, PrepareFailRequest,
 };
+use crate::error::ManagerError;
 
 /// Valida md5: hex lowercase de 32 chars.
 pub fn is_valid_md5(s: &str) -> bool {
@@ -63,10 +63,7 @@ pub async fn list_jobs(
         .await
         .map_err(|e| ManagerError::Internal(format!("list jobs: {e}")))?;
 
-    let items = rows
-        .iter()
-        .map(|r| row_to_job_row(r, &pos_map))
-        .collect();
+    let items = rows.iter().map(|r| row_to_job_row(r, &pos_map)).collect();
 
     Ok(ListJobsResponse {
         items,

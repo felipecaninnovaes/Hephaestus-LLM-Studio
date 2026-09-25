@@ -1,10 +1,10 @@
 //! Estado global compartilhado da aplicação HTTP (MM-06).
 
-use std::sync::Arc;
-use sqlx::PgPool;
 use crate::orchestrator::OrchestratorClient;
 use crate::policy::VramTable;
 use crate::TelemetryCache;
+use sqlx::PgPool;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct AppState {

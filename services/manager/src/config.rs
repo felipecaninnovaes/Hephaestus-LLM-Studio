@@ -48,8 +48,8 @@ pub struct ManagerConfig {
 
 impl ManagerConfig {
     pub fn from_env() -> Result<Self, String> {
-        let database_url = std::env::var("DATABASE_URL")
-            .map_err(|_| "DATABASE_URL obrigatório".to_string())?;
+        let database_url =
+            std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL obrigatório".to_string())?;
         let environment = std::env::var("ENVIRONMENT").unwrap_or_else(|_| "development".into());
         let is_prod = environment.eq_ignore_ascii_case("production");
 
@@ -64,9 +64,8 @@ impl ManagerConfig {
             .unwrap_or_else(|_| "8081".into())
             .parse()
             .map_err(|e| format!("PORT deve ser um número: {e}"))?;
-        let auto_adopt_local = auto_adopt_enabled(
-            std::env::var("AUTO_ADOPT_LOCAL").ok().as_deref(),
-        );
+        let auto_adopt_local =
+            auto_adopt_enabled(std::env::var("AUTO_ADOPT_LOCAL").ok().as_deref());
         let vram_table_path = std::env::var("VRAM_TABLE_PATH").ok();
 
         Ok(Self {

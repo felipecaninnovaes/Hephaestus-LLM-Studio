@@ -142,7 +142,7 @@ class DiffusionDataset:
         # HWC -> CHW
         img_tensor = torch.from_numpy(img_np).permute(2, 0, 1)
 
-        return {"pixel_values": img_tensor, "prompt": caption}
+        return {"pixel_values": img_tensor, "prompt": caption, "index": idx}
 
 
 class BucketBatchSampler:

@@ -4,8 +4,8 @@ use chrono::Utc;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::error::ManagerError;
 use super::cache::TelemetryCache;
+use crate::error::ManagerError;
 pub use heph_contracts::heartbeat::HeartbeatBody as HeartbeatRequest;
 
 /// Recebe heartbeat do orquestrador.

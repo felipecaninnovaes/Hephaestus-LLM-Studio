@@ -1,12 +1,12 @@
 //! Exclusão pontual e limpeza em lote de jobs terminais (AC-003, MM-13).
 
-use std::collections::{BTreeSet, HashSet};
 use sqlx::PgPool;
+use std::collections::{BTreeSet, HashSet};
 use uuid::Uuid;
 
+use super::types::{CleanupResult, DeletedJob};
 use crate::constants::TERMINAL_STATUSES;
 use crate::error::ManagerError;
-use super::types::{CleanupResult, DeletedJob};
 
 /// Monta a lista exata de chaves S3 a varrer num job (origem dupla:
 /// artifacts + `models.s3_key` de órfãos de bytes, excluindo chaves de

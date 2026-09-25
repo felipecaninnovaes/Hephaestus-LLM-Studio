@@ -729,7 +729,8 @@ autolabel:
 // Diffusion Job (ADR-0018 D1)
 // ---------------------------------------------------------------------------
 
-const ALLOWED_DIFFUSION_BASE_MODELS: &[&str] = &["sdxl", "flux", "sd15", "flux-2-klein-4b"];
+pub const ALLOWED_DIFFUSION_BASE_MODELS: &[&str] =
+    &["sdxl", "flux", "sd15", "flux-2-klein-4b", "qwen-image-2.1"];
 const ALLOWED_DIFFUSION_BATCH: &[u32] = &[1, 2, 4, 8];
 const ALLOWED_DIFFUSION_RESOLUTIONS: &[u32] = &[256, 512, 768, 1024, 1280, 1328, 1536, 2048];
 const ALLOWED_DIFFUSION_GRAD_ACCUM: &[u32] = &[1, 2, 4, 8];
@@ -1704,6 +1705,13 @@ output_path: "{{output_path}}"
 pub fn diffusion_generate_vram_min_gb(arch: &str, quantization: &str) -> i32 {
     match arch {
         "sd15" => 6,
+        "qwen-image-2.1" => match quantization {
+            "2bit" => 7,
+            "4bit" | "4bit-nf4" => 8,
+            "6bit" => 10,
+            "8bit" | "8bit-bnb" => 12,
+            _ => 16,
+        },
         "sdxl" | "flux" | "flux-2-klein-4b" => match quantization {
             "2bit" => 7,
             "4bit" | "4bit-nf4" => 8,

@@ -220,7 +220,7 @@ pub fn url_basename(url: &url::Url) -> String {
 // ---------------------------------------------------------------------------
 
 /// Arquiteturas de difusão suportadas.
-pub const ALLOWED_ARCHS: &[&str] = &["flux-2-klein-4b", "sdxl", "sd15"];
+pub const ALLOWED_ARCHS: &[&str] = &["flux-2-klein-4b", "sdxl", "sd15", "qwen-image-2.1"];
 
 /// Kinds de modelo suportados (text_encoder = text encoders custom flux-2,
 /// fatia feat/pesos-custom-flux2 — só admite arch flux-2-klein-4b, regra
@@ -318,6 +318,20 @@ pub fn sniff_safetensors(
     });
 
     if is_lora {
+        if let Some(serde_json::Value::Object(meta)) = keys.get("__metadata__") {
+            if let Some(serde_json::Value::String(bm)) = meta.get("base_model") {
+                if bm.contains("qwen") {
+                    return Ok(SafetensorsSniff {
+                        kind: "lora".to_string(),
+                        arch: "qwen-image-2.1".to_string(),
+                        confidence: 0.95,
+                    });
+                }
+            }
+        }
+        let has_qwen = key_names
+            .iter()
+            .any(|k| k.contains("qwen") || k.contains("qwen_image"));
         // Deriva arch a partir dos prefixos das chaves.
         let has_transformer = key_names
             .iter()
@@ -326,7 +340,9 @@ pub fn sniff_safetensors(
         let has_conditioner = key_names.iter().any(|k| k.starts_with("conditioner."));
         let has_unet = key_names.iter().any(|k| k.starts_with("unet."));
 
-        let arch = if has_transformer || has_guidance {
+        let arch = if has_qwen {
+            "qwen-image-2.1".to_string()
+        } else if has_transformer || has_guidance {
             // Flux LoRA: transformer.* ou transformer_blocks.* ou guidance_embedder
             "flux-2-klein-4b".to_string()
         } else if has_conditioner {
@@ -763,6 +779,17 @@ mod tests {
         let sniff = sniff_safetensors(&map).unwrap();
         assert_eq!(sniff.kind, "lora");
         assert_eq!(sniff.arch, "flux-2-klein-4b");
+    }
+    #[test]
+    fn sniff_qwen_lora() {
+        let header = build_fake_safetensors_header(&[
+            "transformer.layers.0.attention.to_q.lora_A.weight",
+            "qwen_image_blocks.0.lora_B.weight",
+        ]);
+        let map = parse_safetensors_header(&header).unwrap();
+        let sniff = sniff_safetensors(&map).unwrap();
+        assert_eq!(sniff.kind, "lora");
+        assert_eq!(sniff.arch, "qwen-image-2.1");
     }
 
     #[test]

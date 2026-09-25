@@ -12,20 +12,26 @@ from pathlib import Path
 from typing import Any
 
 from trainer_difusao.common import (
+    ENABLE_TEXT_ENCODER_UNLOAD,
+    TextEmbedsCache,
     _build_intx_torchao_config,
     _cached_encode,
+    _cleanup_cuda,
     _cycling_batches,
     _die,
     _emit_metric,
     _load_lora_weights,
+    _offload_encoders_to_cpu,
+    _precompute_sample_embeds_flux,
     _precompute_text_cache,
-    _resolve_output_name,
-    _save_lora_safetensors,
-    _setup_cache_dir,
-    _validate_train_aux,
-    TextEmbedsCache,
+    _precompute_text_cache_with_cleanup,
     _prune_checkpoints,
-    _cleanup_cuda,
+    _resolve_output_name,
+    save_adapter_checkpoint,
+    save_final_adapter,
+    _setup_cache_dir,
+    _temporary_device_encoders,
+    _validate_train_aux,
 )
 from trainer_difusao.dataset import DiffusionDataset, build_dataloader
 from trainer_difusao.models.base import BaseModelTrainer
@@ -46,6 +52,11 @@ from trainer_difusao.models.flux_pkg import (
     _prepare_latent_image_ids,
     _prepare_text_ids,
     _save_quant_metadata,
+)
+from trainer_difusao.loaders import (
+    load_or_quantize_text_encoder,
+    load_or_quantize_transformer,
+    resolve_quant_base_dir,
 )
 
 __all__ = [
@@ -268,21 +279,11 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     # subfolder E na validade do metadata.json (defesa em profundidade).
     custom_identity = _custom_checkpoint_identity(custom_checkpoint_path)
     if is_quantized:
-        model_slug = re.sub(r"[^a-zA-Z0-9_\-\.]", "_", model_id)
-        if custom_identity:
-            import hashlib as _hl
-
-            custom_slug = _hl.md5(custom_identity.encode("utf-8")).hexdigest()[:12]
-            model_slug = f"{model_slug}_custom{custom_slug}"
-        if text_encoder_path:
-            from trainer_difusao.common import _text_encoder_cache_slug as _enc_slug_fn
-
-            model_slug = f"{model_slug}_enc{_enc_slug_fn(text_encoder_path)}"
-        subfolder_quant = f"{model_slug}_{quant_format}"
-        quant_base = (
-            Path(f"/outputs/.cache/quantized/{subfolder_quant}")
-            if Path("/outputs").exists()
-            else Path.home() / ".cache" / "hephaestus" / "quantized" / subfolder_quant
+        quant_base = resolve_quant_base_dir(
+            model_id=model_id,
+            quant_format=quant_format,
+            custom_identity=custom_identity,
+            text_encoder_path=text_encoder_path,
         )
         if force_requantize and quant_base.exists():
             print(
@@ -295,7 +296,6 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         text_encoder_cache_dir = quant_base / ("text_encoder" if is_flux2 else "text_encoder_2")
         quant_base.mkdir(parents=True, exist_ok=True)
     else:
-        subfolder_quant = None
         quant_base = None
         transformer_cache_dir = None
         text_encoder_cache_dir = None
@@ -306,146 +306,52 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     )
 
     # 1. Carregamento do Transformer (DiT): do cache quantizado se já existir e for válido, senão quantiza e salva
-    transformer_is_cached = (
-        not force_requantize
-        and _is_cache_valid(
-            transformer_cache_dir,
-            expected_model_id=model_id,
-            expected_quant=quant_format,
-            expected_custom=custom_identity,
-        )
-    )
-    if transformer_is_cached:
-        _emit_metric(
+    transformer = load_or_quantize_transformer(
+        model_id=model_id,
+        transformer_cls=Flux2Transformer_cls,
+        subfolder="transformer",
+        target_dtype=target_dtype,
+        quant_format=quant_format,
+        quant_label=quant_label,
+        bnb_config=bnb_config,
+        torchao_quant_cfg=torchao_quant_cfg,
+        custom_checkpoint_path=custom_checkpoint_path,
+        custom_identity=custom_identity,
+        text_encoder_path=text_encoder_path,
+        force_requantize=force_requantize,
+        quant_base=quant_base,
+        transformer_cache_dir=transformer_cache_dir,
+        hub_cache=hub_cache,
+        hf_token=hf_token,
+        is_flux2=is_flux2,
+        on_cached=lambda p: _emit_metric(
             metrics_path,
             epoch=0,
             step=2,
             progress=0.03,
             phase="load_transformer",
             message=f"Carregando Transformer quantizado em {quant_label} do cache persistente...",
-        )
-        print(
-            f"Carregando Transformer quantizado em {quant_label} do cache persistente validado: {transformer_cache_dir}",
-            flush=True,
-        )
-        transformer = Flux2Transformer_cls.from_pretrained(
-            transformer_cache_dir,
-            torch_dtype=target_dtype,
-        )
-    else:
-        if transformer_cache_dir and transformer_cache_dir.exists():
-            print(
-                f"[INFO] Cache do transformer em {transformer_cache_dir} é inválido ou pertence a outro modelo. Refazendo quantização...",
-                flush=True,
-            )
-            shutil.rmtree(transformer_cache_dir, ignore_errors=True)
-
-        step_msg_trans = (
-            f"Baixando e quantizando Transformer FLUX em {quant_label} ({model_id})..."
-            if is_quantized
-            else f"Baixando e carregando Transformer FLUX em precisão plena ({model_id})..."
-        )
-        _emit_metric(
+        ),
+        on_loading=lambda is_quant: _emit_metric(
             metrics_path,
             epoch=0,
             step=2,
             progress=0.02,
-            phase="quantizing_transformer" if is_quantized else "load_transformer",
-            message=step_msg_trans,
-        )
-        print(step_msg_trans, flush=True)
-        try:
-            # 2bit/6bit: torchao intx weight-only exige diffusers.TorchAoConfig
-            # (quant_type=IntxWeightOnlyConfig). BitsAndBytes não cobre esses
-            # níveis — passar quantization_config=None seria precisão plena
-            # silenciosa; aqui o config torchao é sempre aplicado quando pedido.
-            if torchao_quant_cfg is not None:
-                from diffusers import TorchAoConfig as _DiffTorchAoConfig
-
-                effective_quant_cfg: Any = _DiffTorchAoConfig(quant_type=torchao_quant_cfg)
-            else:
-                effective_quant_cfg = bnb_config
-            transformer = Flux2Transformer_cls.from_pretrained(
-                model_id,
-                subfolder="transformer",
-                quantization_config=effective_quant_cfg,
-                torch_dtype=target_dtype,
-                cache_dir=hub_cache,
-                token=hf_token,
-            )
-            if custom_checkpoint_path:
-                # Base custom: transformer do arquivo sobre o carregado do repo.
-                # from_single_file sem quantização e depois quantizar seria
-                # silenciosamente divergente — aplica o state_dict com falha
-                # honesta se o layout não for reconhecido.
-                try:
-                    from safetensors.torch import load_file as _st_load
-
-                    custom_state = _st_load(custom_checkpoint_path)
-                except Exception as exc:
-                    _die(
-                        f"Falha ao ler checkpoint flux-2 custom "
-                        f"({custom_checkpoint_path}): {exc}"
-                    )
-                try:
-                    missing, unexpected = transformer.load_state_dict(
-                        custom_state, strict=False
-                    )
-                except Exception as exc:
-                    _die(
-                        f"Falha ao aplicar checkpoint flux-2 custom "
-                        f"({custom_checkpoint_path}): layout não reconhecido ({exc})"
-                    )
-                if missing or unexpected:
-                    _die(
-                        f"Checkpoint flux-2 custom ({custom_checkpoint_path}) com "
-                        f"layout não reconhecido: {len(missing)} chave(s) "
-                        f"ausente(s), {len(unexpected)} inesperada(s)."
-                    )
-                print(
-                    f"[FLUX] Checkpoint custom aplicado ao transformer: "
-                    f"{custom_checkpoint_path}",
-                    flush=True,
-                )
-        except Exception as e:
-            if (
-                "gated" in str(e).lower()
-                or "401" in str(e)
-                or "403" in str(e)
-                or "not a valid model identifier" in str(e).lower()
-            ):
-                _die(
-                    f"Falha ao baixar modelo FLUX ({model_id}). Este repositório é restrito no Hugging Face.\n"
-                    f"1. Aceite a licença do modelo em https://huggingface.co/{model_id}\n"
-                    f"2. Defina a variável HF_TOKEN no env.gpu com o seu token de acesso: https://huggingface.co/settings/tokens\n"
-                    f"Erro original: {e}"
-                )
-            raise
-        if transformer_cache_dir and quant_base:
-            try:
-                transformer_cache_dir.mkdir(parents=True, exist_ok=True)
-                transformer.save_pretrained(transformer_cache_dir)
-                _save_quant_metadata(
-                    quant_base, model_id, quant_label, quant_format, target_dtype,
-                    is_flux2, custom_checkpoint=custom_identity,
-                )
-                print(
-                    f"Transformer {quant_label} persistido em cache para execuções futuras: {transformer_cache_dir}",
-                    flush=True,
-                )
-            except Exception as e:
-                print(
-                    f"[WARN] Não foi possível persistir transformer quantizado em disco: {e}",
-                    flush=True,
-                )
-
-    _emit_metric(
-        metrics_path,
-        epoch=0,
-        step=3,
-        progress=0.04,
-        phase="transformer_ready",
-        message=f"Transformer FLUX ({quant_label}) carregado com sucesso.",
+            phase="quantizing_transformer" if is_quant else "load_transformer",
+            message=(
+                f"Baixando e quantizando Transformer FLUX em {quant_label} ({model_id})..."
+                if is_quant
+                else f"Baixando e carregando Transformer FLUX em precisão plena ({model_id})..."
+            ),
+        ),
+        on_ready=lambda _: _emit_metric(
+            metrics_path,
+            epoch=0,
+            step=3,
+            progress=0.04,
+            phase="transformer_ready",
+            message=f"Transformer FLUX ({quant_label}) carregado com sucesso.",
+        ),
     )
 
     # 2. Carregamento do(s) Text Encoder(s)
@@ -453,278 +359,46 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         tokenizer_two = None
         text_encoder_two = None
 
-        text_enc_is_cached = (
-            not force_requantize
-            and _is_cache_valid(
-                text_encoder_cache_dir,
-                expected_model_id=model_id,
-                expected_quant=quant_format,
-                expected_custom=custom_identity,
-            )
-        )
-        if text_enc_is_cached:
-            _emit_metric(
+        text_encoder_one = load_or_quantize_text_encoder(
+            model_id=model_id,
+            encoder_type="qwen3",
+            subfolder="text_encoder",
+            encoder_cls=AutoModelForCausalLM,
+            target_dtype=target_dtype,
+            quant_format=quant_format,
+            quant_label=quant_label,
+            bnb_config=bnb_config,
+            torchao_quant_cfg=torchao_quant_cfg,
+            text_encoder_path=text_encoder_path,
+            custom_identity=custom_identity,
+            force_requantize=force_requantize,
+            quant_base=quant_base,
+            text_encoder_cache_dir=text_encoder_cache_dir,
+            hub_cache=hub_cache,
+            hf_token=hf_token,
+            is_flux2=True,
+            on_cached=lambda p: _emit_metric(
                 metrics_path,
                 epoch=0,
                 step=4,
                 progress=0.05,
                 phase="load_text_encoder",
                 message=f"Carregando Text Encoder Qwen3 quantizado em {quant_label} do cache persistente...",
-            )
-            print(
-                f"Carregando Text Encoder Qwen3 quantizado em {quant_label} do cache persistente: {text_encoder_cache_dir}",
-                flush=True,
-            )
-            text_encoder_one = AutoModelForCausalLM.from_pretrained(
-                text_encoder_cache_dir,
-                torch_dtype=target_dtype,
-            )
-        else:
-            if text_encoder_cache_dir and text_encoder_cache_dir.exists():
-                print(
-                    f"[INFO] Cache do text encoder em {text_encoder_cache_dir} é inválido ou pertence a outro modelo. Refazendo quantização...",
-                    flush=True,
-                )
-                shutil.rmtree(text_encoder_cache_dir, ignore_errors=True)
-
-            step_msg_enc = (
-                f"Baixando e quantizando Text Encoder Qwen3 em {quant_label} ({model_id})..."
-                if is_quantized
-                else f"Baixando e carregando Text Encoder Qwen3 em precisão plena ({model_id})..."
-            )
-            _emit_metric(
+            ),
+            on_loading=lambda is_quant: _emit_metric(
                 metrics_path,
                 epoch=0,
                 step=4,
                 progress=0.04,
-                phase="quantizing_text_encoder" if is_quantized else "load_text_encoder",
-                message=step_msg_enc,
-            )
-            print(step_msg_enc, flush=True)
-            # Mesmo roteamento torchao do transformer: text encoder Qwen3 também
-            # carrega quantizado em 2bit/6bit via transformers.TorchAoConfig.
-            if torchao_quant_cfg is not None:
-                from transformers import TorchAoConfig as _HfTorchAoConfig
+                phase="quantizing_text_encoder" if is_quant else "load_text_encoder",
+                message=(
+                    f"Baixando e quantizando Text Encoder Qwen3 em {quant_label} ({model_id})..."
+                    if is_quant
+                    else f"Baixando e carregando Text Encoder Qwen3 em precisão plena ({model_id})..."
+                ),
+            ),
+        )
 
-                text_quant_cfg: Any = _HfTorchAoConfig(quant_type=torchao_quant_cfg)
-            else:
-                text_quant_cfg = bnb_config
-            text_encoder_one = AutoModelForCausalLM.from_pretrained(
-                model_id,
-                subfolder="text_encoder",
-                quantization_config=text_quant_cfg,
-                torch_dtype=target_dtype,
-                cache_dir=hub_cache,
-                token=hf_token,
-            )
-            if text_encoder_path:
-                # Override honest: mesmo esquema da geração (dir HF completo
-                # ou .safetensors solto). Arquivo solto + quant: os pesos
-                # custom NÃO podem ser aplicados via load_state_dict sobre um
-                # modelo já quantizado — usa-se o cache de merge compartilhado
-                # (bf16 mesclado em disco; quant por carga), mesmo padrão da
-                # geração (_load_flux2_loose_encoder_merged).
-                from trainer_difusao.common import (
-                    _cleanup_merge_tmp_dir,
-                    _custom_text_encoder_merge_dir,
-                    _load_loose_text_encoder_state,
-                    _merged_text_encoder_tmp_dir,
-                    _merged_text_encoder_valid,
-                    _publish_merged_text_encoder,
-                    _sweep_text_encoder_merge_cache,
-                    _write_merged_text_encoder_metadata,
-                )
-
-                enc_p = Path(text_encoder_path)
-                if enc_p.is_dir():
-                    try:
-                        text_encoder_one = AutoModelForCausalLM.from_pretrained(
-                            str(enc_p),
-                            quantization_config=text_quant_cfg,
-                            torch_dtype=target_dtype,
-                        )
-                    except Exception as exc:
-                        _die(
-                            f"Falha ao carregar text_encoder custom de dir "
-                            f"({text_encoder_path}): {exc}"
-                        )
-                    print(
-                        f"[FLUX] Text encoder custom (dir): {text_encoder_path}",
-                        flush=True,
-                    )
-                elif enc_p.is_file() and text_quant_cfg is not None:
-                    # Rota merge: encoder base em bf16 (SEM quant) → aplica
-                    # state_dict → persist merged → recarrega quantizado.
-                    # O base já carregado acima veio quantizado — recarrega em
-                    # bf16 p/ o merge (custo pago 1x: merged fica em disco).
-                    enc_merged_dir, enc_md5 = _custom_text_encoder_merge_dir(
-                        text_encoder_path
-                    )
-                    if _merged_text_encoder_valid(enc_merged_dir, enc_md5):
-                        try:
-                            text_encoder_one = (
-                                AutoModelForCausalLM.from_pretrained(
-                                    str(enc_merged_dir),
-                                    quantization_config=text_quant_cfg,
-                                    torch_dtype=target_dtype,
-                                )
-                            )
-                        except Exception as exc:
-                            _die(
-                                f"Falha ao carregar text_encoder custom do cache "
-                                f"de merge ({enc_merged_dir}): {exc}"
-                            )
-                        print(
-                            f"[FLUX] Text encoder custom (merge em cache: "
-                            f"{enc_merged_dir}): {text_encoder_path}",
-                            flush=True,
-                        )
-                    else:
-                        try:
-                            merge_base = AutoModelForCausalLM.from_pretrained(
-                                model_id,
-                                subfolder="text_encoder",
-                                torch_dtype=target_dtype,
-                                cache_dir=hub_cache,
-                                token=hf_token,
-                            )
-                        except Exception as exc:
-                            _die(
-                                f"Falha ao carregar text encoder base do repo "
-                                f"({model_id}) para aplicar override "
-                                f"({text_encoder_path}): {exc}"
-                            )
-                        enc_state = _load_loose_text_encoder_state(
-                            text_encoder_path
-                        )
-                        try:
-                            enc_missing, enc_unexpected = (
-                                merge_base.load_state_dict(enc_state, strict=False)
-                            )
-                        except Exception as exc:
-                            _die(
-                                f"Falha ao aplicar text_encoder custom "
-                                f"({text_encoder_path}): layout não "
-                                f"reconhecido ({exc})"
-                            )
-                        _ign = {"lm_head.weight", "model.lm_head.weight"}
-                        _enc_miss = [k for k in (enc_missing or []) if k not in _ign]
-                        _enc_unexp = [k for k in (enc_unexpected or []) if k not in _ign]
-                        if _enc_miss or _enc_unexp:
-                            _die(
-                                f"text_encoder custom ({text_encoder_path}) com "
-                                f"layout não reconhecido: "
-                                f"{len(_enc_miss)} chave(s) "
-                                f"ausente(s) {_enc_miss[:5]}, "
-                                f"{len(_enc_unexp)} inesperada(s) "
-                                f"{_enc_unexp[:5]}."
-                            )
-                        if hasattr(merge_base, "tie_weights"):
-                            try:
-                                merge_base.tie_weights()
-                            except Exception:
-                                pass
-                        enc_parent = enc_merged_dir.parent
-                        enc_tmp = _merged_text_encoder_tmp_dir(enc_merged_dir)
-                        try:
-                            enc_parent.mkdir(parents=True, exist_ok=True)
-                            _cleanup_merge_tmp_dir(enc_tmp)
-                            merge_base.save_pretrained(str(enc_tmp))
-                            _write_merged_text_encoder_metadata(
-                                enc_tmp, md5=enc_md5,
-                                basename=enc_p.name, model_id=model_id,
-                            )
-                            _publish_merged_text_encoder(enc_tmp, enc_merged_dir)
-                        except SystemExit:
-                            raise
-                        except Exception as exc:
-                            if _merged_text_encoder_valid(enc_merged_dir, enc_md5):
-                                _cleanup_merge_tmp_dir(enc_tmp)
-                                print(
-                                    f"[FLUX] Text encoder custom (merge concorrente "
-                                    f"detectado em {enc_merged_dir}): {text_encoder_path}",
-                                    flush=True,
-                                )
-                            else:
-                                _cleanup_merge_tmp_dir(enc_tmp)
-                                _die(
-                                    f"Falha ao persistir cache de merge do "
-                                    f"text_encoder custom ({enc_merged_dir}): {exc}"
-                                )
-                        try:
-                            text_encoder_one = (
-                                AutoModelForCausalLM.from_pretrained(
-                                    str(enc_merged_dir),
-                                    quantization_config=text_quant_cfg,
-                                    torch_dtype=target_dtype,
-                                )
-                            )
-                        except Exception as exc:
-                            _die(
-                                f"Falha ao carregar text_encoder custom do cache "
-                                f"de merge ({enc_merged_dir}): {exc}"
-                            )
-                        print(
-                            f"[FLUX] Text encoder custom (merge novo executado: "
-                            f"{enc_merged_dir}): {text_encoder_path}",
-                            flush=True,
-                        )
-                        _sweep_text_encoder_merge_cache(enc_merged_dir)
-                elif enc_p.is_file():
-                    enc_state = _load_loose_text_encoder_state(text_encoder_path)
-                    try:
-                        enc_missing, enc_unexpected = (
-                            text_encoder_one.load_state_dict(enc_state, strict=False)
-                        )
-                    except Exception as exc:
-                        _die(
-                            f"Falha ao aplicar text_encoder custom "
-                            f"({text_encoder_path}): layout não reconhecido ({exc})"
-                        )
-                    _ign = {"lm_head.weight", "model.lm_head.weight"}
-                    _enc_miss = [k for k in (enc_missing or []) if k not in _ign]
-                    _enc_unexp = [k for k in (enc_unexpected or []) if k not in _ign]
-                    if _enc_miss or _enc_unexp:
-                        _die(
-                            f"text_encoder custom ({text_encoder_path}) com layout "
-                            f"não reconhecido: "
-                            f"{len(_enc_miss)} chave(s) "
-                            f"ausente(s) {_enc_miss[:5]}, "
-                            f"{len(_enc_unexp)} inesperada(s) "
-                            f"{_enc_unexp[:5]}."
-                        )
-                    if hasattr(text_encoder_one, "tie_weights"):
-                        try:
-                            text_encoder_one.tie_weights()
-                        except Exception:
-                            pass
-                    print(
-                        f"[FLUX] Text encoder custom (.safetensors sobre repo): "
-                        f"{text_encoder_path}",
-                        flush=True,
-                    )
-                else:
-                    _die(
-                        f"text_encoder_path não encontrado: {text_encoder_path}. "
-                        "Use um diretório HF ou arquivo .safetensors válido."
-                    )
-            if text_encoder_cache_dir and quant_base:
-                try:
-                    text_encoder_cache_dir.mkdir(parents=True, exist_ok=True)
-                    text_encoder_one.save_pretrained(text_encoder_cache_dir)
-                    _save_quant_metadata(
-                        quant_base, model_id, quant_label, quant_format, target_dtype,
-                        is_flux2, custom_checkpoint=custom_identity,
-                    )
-                    print(
-                        f"Text Encoder Qwen3 {quant_label} persistido em cache para execuções futuras: {text_encoder_cache_dir}",
-                        flush=True,
-                    )
-                except Exception as e:
-                    print(
-                        f"[WARN] Não foi possível persistir Text Encoder Qwen3 quantizado em disco: {e}",
-                        flush=True,
-                    )
         if text_encoder_path and Path(text_encoder_path).is_dir():
             tokenizer_one = AutoTokenizer.from_pretrained(
                 str(text_encoder_path), cache_dir=hub_cache, token=hf_token
@@ -735,78 +409,38 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             )
     else:
         # FLUX.1: utiliza Text Encoder CLIP + T5-XXL
-        t5_is_cached = (
-            not force_requantize
-            and _is_cache_valid(
-                text_encoder_cache_dir,
-                expected_model_id=model_id,
-                expected_quant=quant_format,
-                expected_custom=custom_identity,
-            )
-        )
-        if t5_is_cached:
-            _emit_metric(
+        text_encoder_two = load_or_quantize_text_encoder(
+            model_id=model_id,
+            encoder_type="t5",
+            subfolder="text_encoder_2",
+            encoder_cls=T5EncoderModel,
+            target_dtype=target_dtype,
+            quant_format=quant_format,
+            quant_label=quant_label,
+            bnb_config=bnb_config,
+            torchao_quant_cfg=torchao_quant_cfg,
+            custom_identity=custom_identity,
+            force_requantize=force_requantize,
+            quant_base=quant_base,
+            text_encoder_cache_dir=text_encoder_cache_dir,
+            hub_cache=hub_cache,
+            hf_token=hf_token,
+            is_flux2=False,
+            on_cached=lambda p: _emit_metric(
                 metrics_path,
                 epoch=0,
                 step=4,
                 progress=0.05,
                 phase="load_text_encoder",
                 message=f"Carregando Text Encoder T5 quantizado em {quant_label} do cache persistente...",
-            )
-            print(
-                f"Carregando Text Encoder T5 quantizado em {quant_label} do cache persistente: {text_encoder_cache_dir}",
-                flush=True,
-            )
-            text_encoder_two = T5EncoderModel.from_pretrained(
-                text_encoder_cache_dir,
-                torch_dtype=target_dtype,
-            )
-        else:
-            if text_encoder_cache_dir and text_encoder_cache_dir.exists():
-                print(
-                    f"[INFO] Cache do text encoder T5 em {text_encoder_cache_dir} é inválido ou pertence a outro modelo. Refazendo quantização...",
-                    flush=True,
-                )
-                shutil.rmtree(text_encoder_cache_dir, ignore_errors=True)
-
-            step_msg_t5 = (
+            ),
+            on_loading=lambda is_quant: print(
                 f"Baixando e quantizando Text Encoder T5 em {quant_label} ({model_id})..."
-                if is_quantized
-                else f"Baixando e carregando Text Encoder T5 em precisão plena ({model_id})..."
-            )
-            print(step_msg_t5, flush=True)
-            # T5-XXL também carrega quantizado em 2bit/6bit via transformers.TorchAoConfig.
-            if torchao_quant_cfg is not None:
-                from transformers import TorchAoConfig as _HfTorchAoConfig2
-
-                t5_quant_cfg: Any = _HfTorchAoConfig2(quant_type=torchao_quant_cfg)
-            else:
-                t5_quant_cfg = bnb_config
-            text_encoder_two = T5EncoderModel.from_pretrained(
-                model_id,
-                subfolder="text_encoder_2",
-                quantization_config=t5_quant_cfg,
-                torch_dtype=target_dtype,
-                cache_dir=hub_cache,
-                token=hf_token,
-            )
-            if text_encoder_cache_dir and quant_base:
-                try:
-                    text_encoder_cache_dir.mkdir(parents=True, exist_ok=True)
-                    text_encoder_two.save_pretrained(text_encoder_cache_dir)
-                    _save_quant_metadata(
-                        quant_base, model_id, quant_label, quant_format, target_dtype,
-                        is_flux2, custom_checkpoint=custom_identity,
-                    )
-                    print(
-                        f"Text Encoder T5 {quant_label} persistido em cache para execuções futuras: {text_encoder_cache_dir}",
-                        flush=True,
-                    )
-                except Exception as e:
-                    print(
-                        f"[WARN] Não foi possível persistir Text Encoder T5 quantizado em disco: {e}",
-                        flush=True,
-                    )
+                if is_quant
+                else f"Baixando e carregando Text Encoder T5 em precisão plena ({model_id})...",
+                flush=True,
+            ),
+        )
 
         tokenizer_one = AutoTokenizer.from_pretrained(
             model_id, subfolder="tokenizer", use_fast=False, cache_dir=hub_cache, token=hf_token
@@ -887,6 +521,7 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         resolution=resolution,
         trigger_word=trigger_word,
         enable_bucket=enable_bucket,
+        metrics_path=metrics_path,
     )
     if len(dataset) == 0:
         _die(f"Nenhum par imagem+legenda (.txt) encontrado em: {dataset_path}")
@@ -906,6 +541,7 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             trigger_word="",
             enable_bucket=enable_bucket,
             empty_captions=True,
+            metrics_path=metrics_path,
         )
         control_iter = _cycling_batches(
             build_dataloader(control_dataset, batch_size, seed=seed)
@@ -937,6 +573,23 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
     lr_scheduler = _create_lr_scheduler(
         optimizer, lr_scheduler_name, total_train_steps, lr_warmup_steps
     )
+    # Pré-computa embeddings da amostra se sample_prompt fornecido (antes de offload dos encoders)
+    sample_embeds = None
+    if sample_prompt:
+        try:
+            sample_embeds = _precompute_sample_embeds_flux(
+                tokenizer_one=tokenizer_one,
+                tokenizer_two=tokenizer_two,
+                text_encoder_one=text_encoder_one,
+                text_encoder_two=text_encoder_two,
+                prompt=sample_prompt,
+                device=device,
+                is_flux2=is_flux2,
+                dtype=target_dtype,
+            )
+        except Exception as e:
+            print(f"[WARN] Falha ao pré-computar sample embeds FLUX: {e}", flush=True)
+
 
     # Cache de text embeddings pré-computado UMA vez no início (miss → on-the-fly
     # + warm; falha → segue sem cache). O que é cacheado por arch:
@@ -963,13 +616,25 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                 ).to(device)
                 hidden = text_encoder_two(t5_inputs.input_ids)[0]
                 return {"hidden": hidden, "pooled": pooled}
-
-        _precompute_text_cache(
-            text_cache,
-            [c for _, c in dataset.samples]
-            + ([c for _, c in control_dataset.samples] if control_dataset else []),
-            _encode_flux_all,
-        )
+        should_unload = ENABLE_TEXT_ENCODER_UNLOAD and epoch_offset == 0
+        if should_unload:
+            _precompute_text_cache_with_cleanup(
+                text_cache,
+                [c for _, c in dataset.samples]
+                + ([c for _, c in control_dataset.samples] if control_dataset else []),
+                _encode_flux_all,
+                metrics_path=metrics_path,
+                unload_encoders=True,
+                encoders=[text_encoder_one, text_encoder_two],
+            )
+        else:
+            _precompute_text_cache(
+                text_cache,
+                [c for _, c in dataset.samples]
+                + ([c for _, c in control_dataset.samples] if control_dataset else []),
+                _encode_flux_all,
+                metrics_path=metrics_path,
+            )
 
     # Amostra baseline (Época 0) para comparação pré-treino (apenas se não estiver retomando)
     if sample_prompt and epoch_offset == 0:
@@ -997,15 +662,26 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
             resolution=resolution,
             metrics_path=metrics_path,
             epoch=0,
+            sample_embeds=sample_embeds,
         )
-        _emit_metric(
-            metrics_path,
-            epoch=0,
-            step=9,
-            progress=0.10,
-            phase="baseline_ready",
-            message="Amostra baseline gerada com sucesso (Época 0).",
-        )
+        if sample_baseline_file.exists():
+            _emit_metric(
+                metrics_path,
+                epoch=0,
+                step=9,
+                progress=0.10,
+                phase="baseline_ready",
+                message="Amostra baseline gerada com sucesso (Época 0).",
+            )
+        else:
+            _emit_metric(
+                metrics_path,
+                epoch=0,
+                step=9,
+                progress=0.10,
+                phase="baseline_failed",
+                message="Falha ao gerar amostra baseline pré-treino.",
+            )
 
     _emit_metric(
         metrics_path,
@@ -1110,9 +786,13 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                     img_ids = _prepare_flux2_latent_ids(latents)
                     packed_latents = _pack_latents_flux2(latents)
 
-                    prompt_embeds = _cached_encode(captions, _encode_flux2_batch, text_cache)["hidden"].to(
-                        device, dtype=target_dtype
-                    )
+                    prompt_embeds = _cached_encode(
+                        captions,
+                        _encode_flux2_batch,
+                        text_cache,
+                        encoders=[text_encoder_one, text_encoder_two],
+                        device=device,
+                    )["hidden"].to(device, dtype=target_dtype)
                     txt_ids = _prepare_flux2_text_ids(prompt_embeds)
                     pooled_prompt_embeds = None
                 else:
@@ -1127,7 +807,13 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                         target_dtype,
                     )
 
-                    cached = _cached_encode(captions, _encode_flux1_batch, text_cache)
+                    cached = _cached_encode(
+                        captions,
+                        _encode_flux1_batch,
+                        text_cache,
+                        encoders=[text_encoder_one, text_encoder_two],
+                        device=device,
+                    )
                     prompt_embeds = cached["hidden"].to(device, dtype=target_dtype)
                     pooled_prompt_embeds = cached["pooled"].to(device, dtype=target_dtype)
                     txt_ids = _prepare_text_ids(prompt_embeds.shape[1], device, prompt_embeds.dtype, batch_size=bsz)
@@ -1244,11 +930,11 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         # Salva checkpoint da época respeitando checkpoint_interval
         if epoch_idx % checkpoint_interval == 0 or epoch_idx == epochs:
             checkpoints_dir = output / "checkpoints"
-            checkpoints_dir.mkdir(parents=True, exist_ok=True)
-            ckpt_file = checkpoints_dir / f"{base_name}_epoch_{epoch:03d}.safetensors"
-            _save_lora_safetensors(
+            save_adapter_checkpoint(
                 transformer,
-                ckpt_file,
+                checkpoints_dir,
+                base_name,
+                epoch,
                 metadata={
                     "format": "pt",
                     "model_type": "lora",
@@ -1289,17 +975,26 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
                 resolution=resolution,
                 metrics_path=metrics_path,
                 epoch=epoch,
+                sample_embeds=sample_embeds,
             )
-            _emit_metric(
-                metrics_path,
-                epoch=epoch,
-                phase="sample_ready",
-                message=f"Amostra visual da Época {epoch} pronta.",
-                telemetry_only=True,
-            )
+            if sample_file.exists():
+                _emit_metric(
+                    metrics_path,
+                    epoch=epoch,
+                    phase="sample_ready",
+                    message=f"Amostra visual da Época {epoch} pronta.",
+                    telemetry_only=True,
+                )
+            else:
+                _emit_metric(
+                    metrics_path,
+                    epoch=epoch,
+                    phase="sample_failed",
+                    message=f"Falha ao gerar amostra visual da Época {epoch}.",
+                    telemetry_only=True,
+                )
 
     # Salva adaptador LoRA final em safetensors com metadados
-    final_adapter_file = output / f"{base_name}.safetensors"
     metadata = {
         "format": "pt",
         "model_type": "lora",
@@ -1309,9 +1004,7 @@ def _real_train_flux(cfg: dict[str, Any], output: Path) -> None:
         "trigger_word": trigger_word,
         "quantization": quantization,
     }
-    _save_lora_safetensors(transformer, final_adapter_file, metadata)
-    if base_name != "adapter":
-        shutil.copy2(final_adapter_file, output / "adapter.safetensors")
+    final_adapter_file = save_final_adapter(transformer, output, base_name, metadata)
 
     _emit_metric(
         metrics_path,

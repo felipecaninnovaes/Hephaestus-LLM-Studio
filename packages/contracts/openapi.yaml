@@ -2244,6 +2244,99 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/jobs/{id}/logs:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: "PK do job. UUID inválido ⇒ 404 `not_found` (D8)."
+      - name: offset
+        in: query
+        required: false
+        schema: { type: integer, format: int64, minimum: 0, default: 0 }
+        description: "Nº de linhas RAW do jsonl já consumidas (paginação por linha)."
+      - name: limit
+        in: query
+        required: false
+        schema: { type: integer, format: int64, minimum: 1, maximum: 2000, default: 500 }
+        description: "Linhas por página (máx 2000)."
+    get:
+      operationId: getJobLogs
+      tags: [jobs]
+      summary: Histórico persistido de logs do job (C2a)
+      description: |
+        Páginas o artefato de log do job — `logs/telemetry.jsonl` (snapshot
+        incremental reenviado pelo orquestrador durante a execução), com
+        fallback legado para `metrics.jsonl` (job antigo) e para `telemetry.jsonl`
+        em qualquer path. Linhas do wire espelham o jsonl por linha (camelCase);
+        linha malformada vira `message` bruta com demais campos nulos (nunca drop).
+        Job sem artefato de log ⇒ 200 `{lines: [], eof: true}` (ausência de log
+        é estado válido). Storage fora ⇒ 503 `storage_unavailable`.
+      responses:
+        "200":
+          description: Página de linhas de log persistidas.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobLogPage" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Job inexistente ou id não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager ou storage indisponível (`code: queue_unavailable` ou `storage_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/jobs/{id}/artifacts/zip:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: "PK do job. UUID inválido ⇒ 404 `not_found` (D8)."
+    get:
+      operationId: downloadJobArtifactsZip
+      tags: [jobs]
+      summary: ZIP de todos os artefatos do job (F2)
+      description: |
+        ZIP `stored` (sem compressão — safetensors/png já comprimem) de todos os
+        artefatos reportados do job, incluindo `logs/telemetry.jsonl` sob
+        `logs/`. Padrão de produção do zip de gerações (ADR-0006): spool por
+        objeto via StoragePort (um por vez), `ZipWriter` em spawn_blocking,
+        streaming no body. Nome do download: `params.outputName` sanitizado +
+        `-artifacts.zip` (fallback `job-<id>.zip`). Artefato órfão (row sem
+        objeto) é ignorado com aviso — o zip segue com o resto. Job sem
+        artefatos ⇒ 404.
+      responses:
+        "200":
+          description: ZIP dos artefatos (Content-Disposition attachment).
+          content:
+            application/zip:
+              schema: { type: string, format: binary }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Job inexistente, id não-UUID, ou job sem artefatos (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager ou storage indisponível (`code: queue_unavailable` ou `storage_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/telemetry:
     get:
       operationId: getTelemetry
@@ -2686,7 +2779,7 @@ paths:
                   description: "Hint: tipo do modelo diffusion (lora, checkpoint ou text_encoder). Sniff do servidor é autoritativo."
                 arch:
                   type: string
-                  enum: [flux-2-klein-4b, sdxl, sd15]
+                  enum: [flux-2-klein-4b, sdxl, sd15, qwen-image-2.1]
                   description: "Hint: arquitetura do modelo diffusion. Sniff do servidor é autoritativo."
       responses:
         "201":
@@ -3308,7 +3401,7 @@ components:
           description: "PK do dataset com imagens e legendas. Não-UUID ou inexistente ⇒ 404 `not_found`."
         baseModel:
           type: [string, "null"]
-          enum: [sdxl, flux, sd15, flux-2-klein-4b]
+          enum: [sdxl, flux, sd15, flux-2-klein-4b, qwen-image-2.1]
           default: sdxl
           description: "Modelo de difusão base para treino do adaptador LoRA. XOR com customModelId."
         customModelId:
@@ -3450,7 +3543,7 @@ components:
       properties:
         baseModel:
           type: string
-          enum: [sdxl, flux, sd15, flux-2-klein-4b]
+          enum: [sdxl, flux, sd15, flux-2-klein-4b, qwen-image-2.1]
           default: flux-2-klein-4b
           description: "Modelo base para geração Text-to-Image. XOR com customModelId."
         prompt:
@@ -4794,6 +4887,30 @@ components:
           type: array
           items: { $ref: "#/components/schemas/JobArtifact" }
 
+    JobLogLine:
+      type: object
+      additionalProperties: false
+      description: "Uma linha persistida do jsonl de telemetria (C2a); campos ausentes na linha vêm null; linha malformada chega como `message` bruta."
+      properties:
+        timestamp: { type: [string, "null"], format: date-time, description: "ISO-8601 do evento, quando presente." }
+        phase: { type: [string, "null"], description: "Fase do engine-kit (training, preparing_dataset, ...)." }
+        message: { type: [string, "null"], description: "`message` canônica, fallback `phaseMessage`, senão a linha bruta." }
+        progress: { type: [number, "null"], description: "Progresso 0–1 da linha, quando presente." }
+        epoch: { type: [integer, "null"], format: int64 }
+        step: { type: [integer, "null"], format: int64 }
+
+    JobLogPage:
+      type: object
+      required: [lines, nextOffset, eof]
+      additionalProperties: false
+      description: "Página de logs do job; `offset` do pedido conta LINHAS RAW do jsonl consumidas."
+      properties:
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/JobLogLine" }
+        nextOffset: { type: integer, format: int64, description: "Offset a usar no próximo pedido." }
+        eof: { type: boolean, description: "true quando não há mais linhas no artefato." }
+
     Telemetry:
       type: object
       required: [measured, gpus, jobsActive]
@@ -4944,7 +5061,7 @@ components:
           description: "Hint diffusion; sniff do servidor é autoritativo."
         arch:
           type: string
-          enum: [flux-2-klein-4b, sdxl, sd15]
+          enum: [flux-2-klein-4b, sdxl, sd15, qwen-image-2.1]
           description: "Hint diffusion; sniff do servidor é autoritativo."
         size:
           type: integer
@@ -5065,7 +5182,7 @@ components:
         arch:
           type: string
           nullable: true
-          enum: [flux-2-klein-4b, sdxl, sd15]
+          enum: [flux-2-klein-4b, sdxl, sd15, qwen-image-2.1]
           description: "Arquitetura do modelo (ADR-0023 D4). Null para engines não-difusão."
 
     StorageUsage:

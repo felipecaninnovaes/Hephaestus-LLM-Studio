@@ -49,7 +49,7 @@ class TestTrainerDifusao(unittest.TestCase):
             # Executa comando train para FLUX.2 Klein 4B
             main(["train", "--config", str(cfg_path), "--output", str(out_dir)])
 
-            # Verifica metrics.jsonl
+            # Verifica metrics.jsonl (fases prep vão só p/ telemetry.jsonl: telemetry_only=True)
             metrics_file = out_dir / "metrics.jsonl"
             self.assertTrue(metrics_file.exists())
             lines = [
@@ -215,6 +215,7 @@ class TestTrainerDifusao(unittest.TestCase):
             main(["train", "--config", str(cfg_path), "--output", str(out_dir)])
 
             # Verifica métricas com lr e evento baseline na época 0
+            # (fases prep vão só p/ telemetry.jsonl: telemetry_only=True)
             metrics_file = out_dir / "metrics.jsonl"
             self.assertTrue(metrics_file.exists())
             lines = [json.loads(l) for l in metrics_file.read_text().splitlines() if l.strip()]
@@ -566,6 +567,59 @@ class TestTrainerDifusao(unittest.TestCase):
             self.assertNotIn("control_dataset_images", lines[1]["message"])
             # Mock não cria cache em disco — é no-op com telemetry apenas.
             self.assertFalse((out_dir / "text_embeds_cache").exists())
+    def test_train_mock_prep_phases_in_telemetry(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            cfg_path = tmp_path / "config.yaml"
+            out_dir = tmp_path / "output"
+            control_dir = tmp_path / "control"
+            control_dir.mkdir()
+            for i in range(2):
+                Image.new("RGB", (64, 64), (200, 200, 200)).save(control_dir / f"c{i}.png")
+
+            cfg = {
+                "job_id": "test-diff-job-prep-phases",
+                "model": "flux",
+                "seed": 42,
+                "control_dataset_path": str(control_dir),
+                "cache_text_embeddings": True,
+                "lora": {"epochs": 1, "batch_size": 1},
+            }
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                yaml.dump(cfg, f)
+
+            main(["train", "--config", str(cfg_path), "--output", str(out_dir)])
+
+            # metrics.jsonl: prep vai só p/ telemetry (telemetry_only=True) → só 1 linha training
+            metrics_lines = [
+                json.loads(l)
+                for l in (out_dir / "metrics.jsonl").read_text().splitlines()
+                if l.strip()
+            ]
+            self.assertEqual(len(metrics_lines), 1)
+            self.assertEqual(metrics_lines[0]["phase"], "training")
+
+            # telemetry.jsonl (canal do collector): preparing_dataset + preparing_cache + training
+            telemetry_file = out_dir / "telemetry.jsonl"
+            self.assertTrue(telemetry_file.exists())
+            events = [json.loads(l) for l in telemetry_file.read_text().splitlines() if l.strip()]
+            phases = [e["phase"] for e in events]
+            self.assertIn("preparing_dataset", phases)
+            self.assertIn("preparing_cache", phases)
+            self.assertIn("training", phases)
+            # Ordem: dataset antes do cache antes do training
+            self.assertLess(phases.index("preparing_dataset"), phases.index("preparing_cache"))
+            self.assertLess(phases.index("preparing_cache"), phases.index("training"))
+            # Progresso coerente 0→~0.10 antes do training (training usa ep/epochs)
+            for e in events:
+                if e["phase"] in ("preparing_dataset", "preparing_cache"):
+                    self.assertGreater(e["progress"], 0.0)
+                    self.assertLessEqual(e["progress"], 0.10)
+                    self.assertEqual(e["epoch"], 0)
+                    self.assertIn("message", e)
+                    self.assertIn("timestamp", e)
 
     def test_train_mock_rejects_missing_control_dataset(self):
         with tempfile.TemporaryDirectory() as tmpdir:

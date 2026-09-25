@@ -48,3 +48,10 @@ Subpacote dedicado à anotação automática e geração de descrições visuais
 
 - Parâmetros de entrada e saída são canônicos em `packages/contracts/openapi.yaml`.
 - Limites de memória de GPU e alocações de lote por resolução são canônicos em `packages/policies/vram-table.yaml`.
+
+---
+
+## Adicionando um Novo Modelo
+
+Para o checklist transversal dos 4 Pilares ao introduzir novas variantes de modelos, consulte:
+- [`docs/engines/novo-modelo.md`](novo-modelo.md)

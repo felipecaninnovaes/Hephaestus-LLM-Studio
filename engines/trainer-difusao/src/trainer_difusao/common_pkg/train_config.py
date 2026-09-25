@@ -15,8 +15,15 @@ _TRAIN_QUANT_LEVELS = ("none", "2bit", "4bit", "6bit", "8bit")
 _TRAIN_QUANT_ALIASES = {
     "4bit-nf4": "4bit",
     "nf4": "4bit",
+    "q4": "4bit",
+    "q4_0": "4bit",
+    "q4_k_m": "4bit",
     "8bit-bnb": "8bit",
     "int8": "8bit",
+    "q8": "8bit",
+    "q8_0": "8bit",
+    "fp16": "none",
+    "bf16": "none",
 }
 
 # Fração default/máxima de steps com prior-preservation (estilo DreamBooth, 10%).

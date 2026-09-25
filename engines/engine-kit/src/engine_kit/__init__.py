@@ -11,7 +11,16 @@ from engine_kit.mock import (
     MOCK_MAGIC,
 )
 from engine_kit.runtime import die, atomic_write, is_cancelled
-from engine_kit.vram import vram_allocated_gb, vram_reserved_gb, cleanup_cuda, require_cuda
+from engine_kit.vram import (
+    vram_allocated_gb,
+    vram_reserved_gb,
+    cleanup_cuda,
+    require_cuda,
+    vram_guard,
+    release_memory,
+    get_vram_usage,
+    log_vram,
+)
 from engine_kit.httpd import JSONHandlerMixin, run_daemon
 from engine_kit.artifacts import prune_checkpoints, make_fake_safetensors, make_fake_artifact
 
@@ -30,6 +39,10 @@ __all__ = [
     "vram_reserved_gb",
     "cleanup_cuda",
     "require_cuda",
+    "vram_guard",
+    "release_memory",
+    "get_vram_usage",
+    "log_vram",
     "JSONHandlerMixin",
     "run_daemon",
     "prune_checkpoints",

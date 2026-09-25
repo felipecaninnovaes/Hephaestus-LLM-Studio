@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from trainer_difusao.common import _die
+from trainer_difusao.common_pkg.metrics import _emit_metric
 
 # Passo de alinhamento das dimensões do bucket (exigência dos VAEs de difusão).
 _BUCKET_STEP = 64
@@ -55,13 +56,15 @@ class DiffusionDataset:
 
     def __init__(
         self,
-        dataset_path: Path,
+        dataset_path: Path | str,
         resolution: int = 512,
         trigger_word: str = "",
         enable_bucket: bool = False,
         empty_captions: bool = False,
+        metrics_path: Path | None = None,
     ):
         """Inicializa o dataset (com ``empty_captions`` a legenda é sempre "" — controle/regularização)."""
+        dataset_path = Path(dataset_path)
         self.samples: list[tuple[Path, str]] = []
         self.resolution = resolution
         self.trigger_word = trigger_word.strip()
@@ -99,6 +102,17 @@ class DiffusionDataset:
             self._build_buckets()
         else:
             self.bucket_dims = [(resolution, resolution)] * len(self.samples)
+        if metrics_path is not None:
+            scope = " (controle)" if self.empty_captions else ""
+            _emit_metric(
+                metrics_path,
+                epoch=0,
+                step=0,
+                progress=0.07,
+                phase="preparing_dataset",
+                message=(f"Preparando dataset{scope}: {len(self.samples)} imagens encontradas."),
+                telemetry_only=True,
+            )
 
     def _build_buckets(self) -> None:
         from PIL import Image
@@ -128,7 +142,7 @@ class DiffusionDataset:
         # HWC -> CHW
         img_tensor = torch.from_numpy(img_np).permute(2, 0, 1)
 
-        return {"pixel_values": img_tensor, "prompt": caption}
+        return {"pixel_values": img_tensor, "prompt": caption, "index": idx}
 
 
 class BucketBatchSampler:

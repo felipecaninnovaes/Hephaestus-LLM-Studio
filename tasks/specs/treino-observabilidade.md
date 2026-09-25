@@ -1,6 +1,8 @@
 # Spec em análise — Telemetria, Logs, Repetir Treino, ETA e ZIP de Artefatos
 
-Origem: sugestões do usuário (2026-09-20). **Status: analisado, nada implementado.**
+Origem: sugestões do usuário (2026-09-20). **Status: IMPLEMENTADO — fatia
+`fix/treino-observabilidade` (2026-09-20/21); deploy de orquestrador/BFF/engines
+pendente de janela segura (treino em andamento impediu restart dos serviços).**
 Toda causa raiz abaixo foi verificada no código (linhas exatas). Ordem de execução
 sugerida ao final.
 
@@ -50,6 +52,18 @@ sugerida ao final.
   — nunca entregar como config real.
 - Esforço: pequeno (~100 LOC), só `apps/web` (+ opcional orquestrador).
 
+### Nota de não-escopo (2026-09-20 — decisão do coordenador)
+- "Retomar" neste spec = **continuação por pesos LoRA + `epoch_offset`**,
+  mecanismo que já existe na engine (`weights_path`/`epoch_offset`; coberto por
+  `engines/trainer-difusao/tests/test_train.py:416` `test_train_mock_resume_with_offset_and_weights`)
+  e já funciona via `/jobs` (`handleResumeFromCheckpoint`). O que a C1 conserta é
+  só o roteamento UI (chave órfã do ActionCenter) + mapper de preset.
+- Resume de **estado de otimizador/scheduler/global_step** NÃO existe no repo e
+  NÃO é prometido por esta spec. Implementadores da C1 são proibidos de escalar
+  o fix para dentro da engine ou do contrato de dispatch.
+- Remover junto os query params mortos `?resume=1&checkpointId=...&epochOffset=...`
+  do `router.push` do ActionCenter (`ActionCenter.tsx:222`) — ninguém os parseia.
+
 ---
 
 ## C2. Logs perdem no refresh; gráfico de loss sumiu; cache latent sem log
@@ -61,15 +75,21 @@ sugerida ao final.
   logs; orquestrador nunca reporta stdout da engine.
 - Refresh → estado zero. Fix exige decisão de design:
   - (a) **Recomendado:** upload incremental de `telemetry.jsonl` como artefato
-    (o tail já existe — `services/orchestrator/src/stages/collector.rs`) +
+    (o tail já existe — `services/orchestrator/src/app/stages/collector.rs`) +
     `GET /api/jobs/:id/logs?offset=` no BFF lendo o objeto via StoragePort.
   - (b) Tabela `job_log_lines` no manager alimentada por `report_job`.
 - (a) evita schema novo e sobrevive à modularização do orquestrador.
+- **Quitado 2026-09-21 (opção (a)):** orquestrador faz upload incremental de
+  `telemetry.jsonl` para `artifacts/<job>/logs/telemetry.jsonl` (commit 7c89958
+  one-shot+daemon com growth-gate e anúncio único; dedupe por path no manager);
+  BFF `GET /api/jobs/{id}/logs?offset=&limit=` pagina o objeto via StoragePort
+  (7366c9b); `JobLogViewer` consome com dedupe por texto contra SSE/sintetizado
+  e degrada honestamente enquanto o endpoint não estiver deployado (9863021).
 
 ### C2b. Gráfico de loss vazio — REGRESSÃO concreta (provável RD-022/ADR-0023)
 Cadeia verificada:
 1. Collector prioriza `telemetry.jsonl` sobre `metrics.jsonl`
-   (`services/orchestrator/src/stages/collector.rs:354-358`;
+   (`services/orchestrator/src/app/stages/collector.rs:354-358`;
    `services/orchestrator/src/app/mod.rs:946-951`; `read_final_metrics` :136-140).
 2. Em `telemetry.jsonl`, `loss`/`lr` vão **aninhados sob `"metrics"`**
    (`engines/engine-kit/src/engine_kit/telemetry.py:78-80`); só o espelho legado
@@ -87,11 +107,18 @@ Cadeia verificada:
 ### C2c. Fases de pré-processamento (split/cache latent) sem telemetria
 - O pré-compute emite só `print("[INFO] ...")`
   (`engines/trainer-difusao/src/trainer_difusao/common_pkg/text_embeds.py:88-108`);
-  não há `emitter.emit(phase=...)` para split de dataset nem cache de latents/text
-  embeddings. No modo daemon (hot path ADR-0023) o stdout não é roteado por job →
-  invisível no log do job.
+  não há `emitter.emit(phase=...)` para preparação de dataset nem cache de
+  latents/text embeddings. No modo daemon (hot path ADR-0023) o stdout não é
+  roteado por job → invisível no log do job.
 - **Fix:** emitir fases estruturadas (`preparing_dataset`, `preparing_cache` com
   progresso i/N) junto de C2a.
+- **Quitado 2026-09-20:** implementado via `_emit_metric(..., telemetry_only=True)`
+  (não contamina `metrics.jsonl`); progresso 0.07 dataset → 0.07–0.08 cache em
+  chunks `i/N` → 0.08 `dataset_ready`; flux/sd15/sdxl/mock repassam
+  `metrics_path`. **Achado:** não existe split train/val no trainer-difusao —
+  `preparing_dataset` cobre scan + bucketing + dataset de controle. Pendência
+  levada à Wave 2: labels `preparing_dataset`/`preparing_cache` em
+  `PHASE_LABELS` (`JobProgressLive.tsx:30`).
 
 ---
 
@@ -106,6 +133,10 @@ Cadeia verificada:
   sample/checkpoint inflam a média → janela rolante (P50 ou descartando outliers).
 - Escopo: só `apps/web` (`lib/jobMetrics.ts` + `JobProgressLive`), ~50–80 LOC.
 - **Depende de C2b** para funcionar com dados persistidos.
+- **Quitado 2026-09-20 (commit b8b3844):** mediana P50 de ms/step, janela 30
+  deltas, só `phase === "training"`, stalls >120s (sample/checkpoint) e step
+  retrocedido descartados; `estimateTrainingEtaMs` em `lib/jobMetrics.ts` +
+  badge no `JobProgressLive` (compact/full).
 
 ## F2. ZIP de artefatos pós-treino (feature — decisão de arquitetura)
 - Inventário pronto: `GET /api/jobs/:id/artifacts` + proxy por objeto
@@ -121,6 +152,12 @@ Cadeia verificada:
   (`importDataset`/`runBackupImport` em `apps/web/components/studio/CreateDatasetModal.tsx`).
 - Exige: rota nova + bump de `packages/contracts/openapi.yaml` (edição sequencial
   por regra de ownership). Esforço: médio.
+- **Quitado 2026-09-21 (streaming no BFF):** `GET /api/jobs/{id}/artifacts/zip`
+  stored, padrão ADR-0006 (spool por objeto via `get_to_file`, `ZipWriter` em
+  `spawn_blocking`, `ReaderStream` no body — nunca o job inteiro em RAM),
+  filename `outputName` sanitizado; bump único do openapi com as duas rotas +
+  `JobLogLine`/`JobLogPage` (7366c9b); botões em `/jobs` e ActionCenter (9863021).
+  ⚠ Alinhar timeout do Caddy/proxy antes de expor para jobs de vários GB.
 
 ---
 

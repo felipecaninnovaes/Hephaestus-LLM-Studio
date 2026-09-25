@@ -23,6 +23,7 @@ def _generate_sample_flux(
     resolution: int = 512,
     metrics_path: Path | None = None,
     epoch: int = 0,
+    sample_embeds: dict[str, Any] | None = None,
 ) -> None:
     """Gera uma imagem de teste para FLUX.2 Klein ou FLUX.1 com pesos LoRA ativos e seed fixa determinística."""
     try:
@@ -51,6 +52,15 @@ def _generate_sample_flux(
                     pass
             return callback_kwargs
 
+        has_embeds = sample_embeds is not None and "prompt_embeds" in sample_embeds
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        orig_vae_dtype = getattr(vae, "dtype", None)
+        target_dtype = getattr(transformer, "dtype", None)
+        if target_dtype is not None and orig_vae_dtype is not None and orig_vae_dtype != target_dtype:
+            try:
+                vae.to(dtype=target_dtype)
+            except Exception:
+                pass
         try:
             if is_flux2:
                 try:
@@ -58,77 +68,81 @@ def _generate_sample_flux(
 
                     pipe = Flux2KleinPipeline(
                         scheduler=scheduler,
-                        text_encoder=text_encoder_one,
-                        tokenizer=tokenizer_one,
+                        text_encoder=None if has_embeds else text_encoder_one,
+                        tokenizer=None if has_embeds else tokenizer_one,
                         vae=vae,
                         transformer=transformer,
                     )
                     pipe.set_progress_bar_config(disable=True)
-                    generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(seed)
+                    generator = torch.Generator(device=device).manual_seed(seed)
                     with torch.inference_mode():
+                        pipe_kwargs = {
+                            "generator": generator,
+                            "num_inference_steps": total_sample_steps,
+                            "guidance_scale": 3.5,
+                            "height": resolution,
+                            "width": resolution,
+                        }
+                        if has_embeds:
+                            pipe_kwargs["prompt_embeds"] = sample_embeds["prompt_embeds"].to(device)
+                            if sample_embeds.get("negative_prompt_embeds") is not None:
+                                pipe_kwargs["negative_prompt_embeds"] = sample_embeds["negative_prompt_embeds"].to(device)
+                        else:
+                            pipe_kwargs["prompt"] = prompt
+
                         try:
-                            image = pipe(
-                                prompt=prompt,
-                                generator=generator,
-                                num_inference_steps=total_sample_steps,
-                                guidance_scale=3.5,
-                                height=resolution,
-                                width=resolution,
-                                callback_on_step_end=step_callback,
-                            ).images[0]
+                            image = pipe(**pipe_kwargs, callback_on_step_end=step_callback).images[0]
                         except TypeError:
-                            image = pipe(
-                                prompt=prompt,
-                                generator=generator,
-                                num_inference_steps=total_sample_steps,
-                                guidance_scale=3.5,
-                                height=resolution,
-                                width=resolution,
-                            ).images[0]
+                            image = pipe(**pipe_kwargs).images[0]
                         image.save(tmp_path)
                         os.replace(tmp_path, output_path)
                         print(f"[FLUX-KLEIN] Amostra de validação salva (seed={seed}) em: {output_path}", flush=True)
                         return
                 except Exception as e:
-                    print(f"[WARN] Tentativa com Flux2KleinPipeline: {e}. Tentando fallback...", flush=True)
-
+                    import traceback
+                    print(f"[ERROR] Falha ao gerar amostra com Flux2KleinPipeline:\n{traceback.format_exc()}", flush=True)
+                    return
             from diffusers import FluxPipeline
 
             pipe = FluxPipeline(
                 scheduler=scheduler,
-                text_encoder=text_encoder_one,
-                text_encoder_2=text_encoder_two,
-                tokenizer=tokenizer_one,
-                tokenizer_2=tokenizer_two,
+                text_encoder=None if has_embeds else text_encoder_one,
+                text_encoder_2=None if has_embeds else text_encoder_two,
+                tokenizer=None if has_embeds else tokenizer_one,
+                tokenizer_2=None if has_embeds else tokenizer_two,
                 vae=vae,
                 transformer=transformer,
             )
             pipe.set_progress_bar_config(disable=True)
-            generator = torch.Generator(device="cuda" if torch.cuda.is_available() else "cpu").manual_seed(seed)
+            generator = torch.Generator(device=device).manual_seed(seed)
             with torch.inference_mode():
+                pipe_kwargs = {
+                    "generator": generator,
+                    "num_inference_steps": total_sample_steps,
+                    "guidance_scale": 3.5,
+                    "height": resolution,
+                    "width": resolution,
+                }
+                if has_embeds:
+                    pipe_kwargs["prompt_embeds"] = sample_embeds["prompt_embeds"].to(device)
+                    if sample_embeds.get("pooled_prompt_embeds") is not None:
+                        pipe_kwargs["pooled_prompt_embeds"] = sample_embeds["pooled_prompt_embeds"].to(device)
+                else:
+                    pipe_kwargs["prompt"] = prompt
+
                 try:
-                    image = pipe(
-                        prompt=prompt,
-                        generator=generator,
-                        num_inference_steps=total_sample_steps,
-                        guidance_scale=3.5,
-                        height=resolution,
-                        width=resolution,
-                        callback_on_step_end=step_callback,
-                    ).images[0]
+                    image = pipe(**pipe_kwargs, callback_on_step_end=step_callback).images[0]
                 except TypeError:
-                    image = pipe(
-                        prompt=prompt,
-                        generator=generator,
-                        num_inference_steps=total_sample_steps,
-                        guidance_scale=3.5,
-                        height=resolution,
-                        width=resolution,
-                    ).images[0]
+                    image = pipe(**pipe_kwargs).images[0]
                 image.save(tmp_path)
                 os.replace(tmp_path, output_path)
                 print(f"[FLUX] Amostra de validação salva (seed={seed}, steps=20, cfg=3.5) em: {output_path}", flush=True)
         finally:
+            if orig_vae_dtype is not None and getattr(vae, "dtype", None) != orig_vae_dtype:
+                try:
+                    vae.to(dtype=orig_vae_dtype)
+                except Exception:
+                    pass
             if was_training:
                 transformer.train()
     except Exception as e:

@@ -3,121 +3,40 @@
 import math
 import os
 import random
-import shutil
 from pathlib import Path
 from typing import Any
 
 from trainer_difusao.common import (
+    ENABLE_TEXT_ENCODER_UNLOAD,
+    TextEmbedsCache,
     _cached_encode,
+    _cleanup_cuda,
     _cycling_batches,
     _die,
     _emit_metric,
     _load_lora_weights,
+    _offload_encoders_to_cpu,
+    _precompute_sample_embeds_sd15,
     _precompute_text_cache,
-    _resolve_output_name,
-    _save_lora_safetensors,
-    _setup_cache_dir,
-    _validate_train_aux,
-    TextEmbedsCache,
+    _precompute_text_cache_with_cleanup,
     _prune_checkpoints,
-    _cleanup_cuda,
+    _resolve_output_name,
+    _setup_cache_dir,
+    save_adapter_checkpoint,
+    save_final_adapter,
+    _temporary_device_encoders,
+    _validate_train_aux,
 )
 from trainer_difusao.dataset import DiffusionDataset, build_dataloader
 from trainer_difusao.models.base import BaseModelTrainer
 from trainer_difusao.optimizers import _create_lr_scheduler, _create_optimizer
+from trainer_difusao.models.sd_pkg.sample import _generate_sample_sd15
 
-
-def _generate_sample_sd15(
-    unet: Any,
-    vae: Any,
-    text_encoder: Any,
-    tokenizer: Any,
-    noise_scheduler: Any,
-    prompt: str,
-    output_path: Path,
-    seed: int = 42,
-    metrics_path: Path | None = None,
-    epoch: int = 0,
-) -> None:
-    """Gera uma imagem de teste para SD 1.5 com os pesos LoRA ativos e seed fixa determinística.
-    
-    Chama unet.eval() durante a inferência e grava atomicamente via arquivo temporário (.tmp_*).
-    """
-    try:
-        import torch
-        from diffusers import StableDiffusionPipeline
-
-        was_training = getattr(unet, "training", False)
-        unet.eval()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = output_path.with_name(f".tmp_{output_path.name}")
-
-        try:
-            pipe = StableDiffusionPipeline(
-                vae=vae,
-                text_encoder=text_encoder,
-                tokenizer=tokenizer,
-                unet=unet,
-                scheduler=noise_scheduler,
-                safety_checker=None,
-                feature_extractor=None,
-                requires_safety_checker=False,
-            )
-            pipe.set_progress_bar_config(disable=True)
-            generator = torch.Generator(
-                device="cuda" if torch.cuda.is_available() else "cpu"
-            ).manual_seed(seed)
-            total_sample_steps = 20
-            def step_callback(pipe_obj: Any, step_idx: int, timestep: Any, callback_kwargs: dict[str, Any]) -> dict[str, Any]:
-                if metrics_path is not None:
-                    try:
-                        from trainer_difusao.common_pkg.metrics import _emit_metric
-                        step_num = step_idx + 1
-                        _emit_metric(
-                            metrics_path,
-                            epoch=epoch,
-                            phase="generating_sample",
-                            message=f"Gerando amostra de validação (passo {step_num}/{total_sample_steps})...",
-                            telemetry_only=True,
-                        )
-                    except Exception:
-                        pass
-                return callback_kwargs
-
-            with torch.inference_mode():
-                try:
-                    latents = pipe(
-                        prompt,
-                        generator=generator,
-                        num_inference_steps=total_sample_steps,
-                        guidance_scale=7.5,
-                        output_type="latent",
-                        callback_on_step_end=step_callback,
-                    ).images
-                except TypeError:
-                    latents = pipe(
-                        prompt,
-                        generator=generator,
-                        num_inference_steps=total_sample_steps,
-                        guidance_scale=7.5,
-                        output_type="latent",
-                    ).images
-                latents = latents.to(dtype=torch.float32) / 0.18215
-                decoded = vae.decode(latents).sample
-                image = (decoded / 2 + 0.5).clamp(0, 1)
-                image = image.cpu().permute(0, 2, 3, 1).float().numpy()
-                img = pipe.numpy_to_pil(image)[0]
-                img.save(tmp_path)
-                os.replace(tmp_path, output_path)
-                print(
-                    f"[SD 1.5] Amostra de validação salva (seed={seed}) em: {output_path}",
-                    flush=True,
-                )
-        finally:
-            if was_training:
-                unet.train()
-    except Exception as e:
-        print(f"[WARN] Falha ao gerar amostra de validação SD 1.5: {e}", flush=True)
+__all__ = [
+    "_generate_sample_sd15",
+    "_real_train_sd15",
+    "SD15Trainer",
+]
 
 
 def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
@@ -323,8 +242,8 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         resolution=resolution,
         trigger_word=trigger_word,
         enable_bucket=enable_bucket,
+        metrics_path=metrics_path,
     )
-    dataloader = build_dataloader(dataset, batch_size, seed=seed)
 
     # Dataset de controle (prior-preservation): mesma resolução/bucketing do
     # principal, caption VAZIA (sem trigger word). Intercalação por step via
@@ -341,6 +260,7 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
             trigger_word="",
             enable_bucket=enable_bucket,
             empty_captions=True,
+            metrics_path=metrics_path,
         )
         control_loader = build_dataloader(control_dataset, batch_size, seed=seed)
         control_iter = _cycling_batches(control_loader)
@@ -351,29 +271,65 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
     lr_scheduler = _create_lr_scheduler(
         optimizer, lr_scheduler_name, total_train_steps, lr_warmup_steps
     )
+    # Pré-computa embeddings da amostra se sample_prompt fornecido (antes de offload dos encoders)
+    sample_embeds = None
+    if sample_prompt:
+        try:
+            sample_embeds = _precompute_sample_embeds_sd15(
+                tokenizer=tokenizer,
+                text_encoder=text_encoder,
+                prompt=sample_prompt,
+                device=device,
+                dtype=target_dtype,
+            )
+        except Exception as e:
+            print(f"[WARN] Falha ao pré-computar sample embeds SD 1.5: {e}", flush=True)
+
 
     # Cache de text embeddings (SD: saída do CLIP text encoder), pré-computado
     # UMA vez no início; miss → on-the-fly + warm; falha → segue sem cache.
     text_cache = TextEmbedsCache(output, cache_text_embeddings)
+    should_unload = ENABLE_TEXT_ENCODER_UNLOAD and epoch_offset == 0
     if cache_text_embeddings:
         with torch.no_grad():
-            _precompute_text_cache(
-                text_cache,
-                [c for _, c in dataset.samples]
-                + ([c for _, c in control_dataset.samples] if control_dataset else []),
-                lambda caps: {
-                    "hidden": text_encoder(
-                        tokenizer(
-                            caps,
-                            padding="max_length",
-                            max_length=tokenizer.model_max_length,
-                            truncation=True,
-                            return_tensors="pt",
-                        ).input_ids.to(device)
-                    )[0].to(dtype=target_dtype)
-                },
-            )
-
+            if should_unload:
+                _precompute_text_cache_with_cleanup(
+                    text_cache,
+                    [c for _, c in dataset.samples]
+                    + ([c for _, c in control_dataset.samples] if control_dataset else []),
+                    lambda caps: {
+                        "hidden": text_encoder(
+                            tokenizer(
+                                caps,
+                                padding="max_length",
+                                max_length=tokenizer.model_max_length,
+                                truncation=True,
+                                return_tensors="pt",
+                            ).input_ids.to(device)
+                        )[0].to(dtype=target_dtype)
+                    },
+                    metrics_path=metrics_path,
+                    unload_encoders=True,
+                    encoders=[text_encoder],
+                )
+            else:
+                _precompute_text_cache(
+                    text_cache,
+                    [c for _, c in dataset.samples]
+                    + ([c for _, c in control_dataset.samples] if control_dataset else []),
+                    lambda caps: {
+                        "hidden": text_encoder(
+                            tokenizer(
+                                caps,
+                                padding="max_length",
+                                max_length=tokenizer.model_max_length,
+                                truncation=True,
+                                return_tensors="pt",
+                            ).input_ids.to(device)
+                        )[0].to(dtype=target_dtype)
+                    },
+                    metrics_path=metrics_path,
+                )
     _emit_metric(
         metrics_path,
         epoch=0,
@@ -411,15 +367,26 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
             seed=sample_seed,
             metrics_path=metrics_path,
             epoch=0,
+            sample_embeds=sample_embeds,
         )
-        _emit_metric(
-            metrics_path,
-            epoch=0,
-            step=6,
-            progress=0.10,
-            phase="baseline_ready",
-            message="Amostra baseline gerada com sucesso (Época 0).",
-        )
+        if sample_baseline_file.exists():
+            _emit_metric(
+                metrics_path,
+                epoch=0,
+                step=6,
+                progress=0.10,
+                phase="baseline_ready",
+                message="Amostra baseline gerada com sucesso (Época 0).",
+            )
+        else:
+            _emit_metric(
+                metrics_path,
+                epoch=0,
+                step=6,
+                progress=0.10,
+                phase="baseline_failed",
+                message="Falha ao gerar amostra baseline pré-treino.",
+            )
 
     _emit_metric(
         metrics_path,
@@ -478,9 +445,13 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
             ).long()
             noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
-            encoder_hidden_states = _cached_encode(captions, _encode_sd15, text_cache)["hidden"].to(
-                device, dtype=target_dtype
-            )
+            encoder_hidden_states = _cached_encode(
+                captions,
+                _encode_sd15,
+                text_cache,
+                encoders=[text_encoder],
+                device=device,
+            )["hidden"].to(device, dtype=target_dtype)
 
             model_pred = unet(
                 noisy_latents,
@@ -576,11 +547,11 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         # Salva checkpoint da época respeitando checkpoint_interval
         if epoch_idx % checkpoint_interval == 0 or epoch_idx == epochs:
             checkpoints_dir = output / "checkpoints"
-            checkpoints_dir.mkdir(parents=True, exist_ok=True)
-            ckpt_file = checkpoints_dir / f"{base_name}_epoch_{epoch:03d}.safetensors"
-            _save_lora_safetensors(
+            save_adapter_checkpoint(
                 unet,
-                ckpt_file,
+                checkpoints_dir,
+                base_name,
+                epoch,
                 metadata={
                     "format": "pt",
                     "framework": "diffusers",
@@ -621,17 +592,26 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
                 seed=sample_seed,
                 metrics_path=metrics_path,
                 epoch=epoch,
+                sample_embeds=sample_embeds,
             )
-            _emit_metric(
-                metrics_path,
-                epoch=epoch,
-                phase="sample_ready",
-                message=f"Amostra visual da Época {epoch} pronta.",
-                telemetry_only=True,
-            )
+            if sample_file.exists():
+                _emit_metric(
+                    metrics_path,
+                    epoch=epoch,
+                    phase="sample_ready",
+                    message=f"Amostra visual da Época {epoch} pronta.",
+                    telemetry_only=True,
+                )
+            else:
+                _emit_metric(
+                    metrics_path,
+                    epoch=epoch,
+                    phase="sample_failed",
+                    message=f"Falha ao gerar amostra visual da Época {epoch}.",
+                    telemetry_only=True,
+                )
 
     # Salva adapter final com nome semântico configurado
-    final_adapter_file = output / f"{base_name}.safetensors"
     metadata = {
         "format": "pt",
         "framework": "diffusers",
@@ -642,9 +622,7 @@ def _real_train_sd15(cfg: dict[str, Any], output: Path) -> None:
         "trigger_word": trigger_word,
         "quantization": quantization,
     }
-    _save_lora_safetensors(unet, final_adapter_file, metadata)
-    if base_name != "adapter":
-        shutil.copy2(final_adapter_file, output / "adapter.safetensors")
+    final_adapter_file = save_final_adapter(unet, output, base_name, metadata)
 
     _emit_metric(
         metrics_path,

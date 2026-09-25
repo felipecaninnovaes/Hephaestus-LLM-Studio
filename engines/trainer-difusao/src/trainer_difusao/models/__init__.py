@@ -8,6 +8,7 @@ from trainer_difusao.models.flux import FluxTrainer
 from trainer_difusao.models.mock import MockTrainer
 from trainer_difusao.models.sd15 import SD15Trainer
 from trainer_difusao.models.sdxl import SDXLTrainer
+from trainer_difusao.models.qwen_image import QwenImageTrainer
 
 
 def get_trainer(model_name: str, is_mock: bool = False) -> BaseModelTrainer:
@@ -22,6 +23,8 @@ def get_trainer(model_name: str, is_mock: bool = False) -> BaseModelTrainer:
         return SDXLTrainer()
     if canonical == "sd15":
         return SD15Trainer()
+    if "qwen" in canonical:
+        return QwenImageTrainer()
 
     _die(f"Modelo base de difusão desconhecido ou não suportado: '{model_name}'")
     raise ValueError(f"Modelo não suportado: {model_name}")
@@ -33,5 +36,6 @@ __all__ = [
     "MockTrainer",
     "SD15Trainer",
     "SDXLTrainer",
+    "QwenImageTrainer",
     "get_trainer",
 ]

@@ -3,7 +3,7 @@ import type { DiffusionOptimizer } from "@/types/studio";
 export const DIFFUSION_EPOCHS_MIN = 1;
 export const DIFFUSION_EPOCHS_MAX = 100;
 
-export type DiffusionBaseModel = "sdxl" | "flux" | "sd15";
+export type DiffusionBaseModel = "sdxl" | "flux" | "sd15" | "qwen-image-2.1";
 
 export interface DiffusionHyperparametersValues {
   baseModel: DiffusionBaseModel;
@@ -17,7 +17,7 @@ export interface DiffusionHyperparametersValues {
 
 /**
  * Estimativa preditiva de VRAM em GB para treino de difusão LoRA.
- * Base: SD1.5 (8 GB), SDXL (12 GB), Flux (16 GB).
+ * Base: SD1.5 (8 GB), SDXL (12 GB), Flux (16 GB), Qwen-Image-2.1 (16 GB).
  * Fator de Batch, Rank, Resolução e Otimizador adicionam overhead ou economia.
  */
 export function estimateDiffusionVramGb(
@@ -63,6 +63,17 @@ export function estimateDiffusionVramGb(
             : quantization === "8bit"
               ? 12.5
               : 20.0;
+  } else if (baseModel === "qwen-image-2.1") {
+    baseGb =
+      quantization === "2bit"
+        ? 8.0
+        : quantization === "4bit"
+          ? 9.5
+          : quantization === "6bit"
+            ? 11.5
+            : quantization === "8bit"
+              ? 13.5
+              : 18.0;
   }
 
   // Ajuste por resolução relativa a 1024
@@ -74,7 +85,7 @@ export function estimateDiffusionVramGb(
 
   const batchMemory =
     (batchSize - 1) *
-    (baseModel === "flux" ? 1.8 : baseModel === "sdxl" ? 2.0 : 1.2);
+    (baseModel === "flux" || baseModel === "qwen-image-2.1" ? 1.8 : baseModel === "sdxl" ? 2.0 : 1.2);
   const rankMemory = (rank / 64) * 0.8;
   const optimMemory =
     optimizer === "paged_adamw8bit"

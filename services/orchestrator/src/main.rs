@@ -147,12 +147,22 @@ async fn main() {
             "TORCH_HOME".to_string(),
             "/data/outputs/.cache/torch".to_string(),
         ));
+        daemon_env.push(("HF_HUB_DISABLE_XET".to_string(), "1".to_string()));
+        daemon_env.push(("HF_HUB_ENABLE_HF_TRANSFER".to_string(), "0".to_string()));
         if let Some(token) = cfg.daemon.hf_token.clone() {
             daemon_env.push(("HF_TOKEN".to_string(), token.clone()));
             daemon_env.push(("HUGGING_FACE_HUB_TOKEN".to_string(), token));
         }
         if let Some(model_id) = cfg.daemon.flux_model_id.clone() {
             daemon_env.push(("FLUX_MODEL_ID".to_string(), model_id));
+        }
+        if let Ok(v) = std::env::var("ENABLE_TEXT_ENCODER_UNLOAD") {
+            if !v.trim().is_empty() {
+                daemon_env.push((
+                    "ENABLE_TEXT_ENCODER_UNLOAD".to_string(),
+                    v.trim().to_string(),
+                ));
+            }
         }
 
         let launcher: Arc<dyn orchestrator::daemon::DaemonLauncher> =

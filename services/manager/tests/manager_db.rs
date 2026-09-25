@@ -7203,6 +7203,57 @@ async fn abort_em_preparing_vira_cancelling() {
     assert_eq!(job.status, "cancelling");
 }
 
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn prepare_cancel_transicao_sucesso_e_conflict() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+
+    // 1. Cria job em preparing via create_job.
+    let resp = manager::create_job(&p, test_prepare_job_request(ds_id))
+        .await
+        .expect("create prepare");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+    assert_eq!(resp.status, "preparing");
+
+    // 2. Executa prepare_cancel(&p, job_id). Deve retornar Ok(()) e status == "cancelled".
+    manager::prepare_cancel(&p, job_id)
+        .await
+        .expect("prepare_cancel");
+    let job = manager::get_job(&p, job_id).await.expect("get job");
+    assert_eq!(job.status, "cancelled");
+
+    // 3. Nova chamada com job já cancelado deve retornar Ok(()) (idempotência).
+    manager::prepare_cancel(&p, job_id)
+        .await
+        .expect("prepare_cancel idempotente");
+
+    // 4. Chamada para UUID inexistente deve retornar Err(ManagerError::NotFound).
+    let fake_id = uuid::Uuid::new_v4();
+    let err = manager::prepare_cancel(&p, fake_id)
+        .await
+        .expect_err("not found");
+    assert!(matches!(err, ManagerError::NotFound));
+
+    // 5. Chamada para job que está em running deve retornar Err(ManagerError::Conflict("job_not_cancelling")).
+    let running_job = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create running");
+    let running_id: uuid::Uuid = running_job.job_id.parse().unwrap();
+    sqlx::query("UPDATE jobs SET status = 'running' WHERE id = $1")
+        .bind(running_id)
+        .execute(&p)
+        .await
+        .unwrap();
+
+    let err = manager::prepare_cancel(&p, running_id)
+        .await
+        .expect_err("conflict");
+    assert!(matches!(&err, ManagerError::Conflict(msg) if msg == "job_not_cancelling"));
+}
+
 /// (f) watchdog: `preparing` com created_at > 60min → `failed/prepare_timeout`;
 /// fresca permanece `preparing`.
 #[tokio::test]

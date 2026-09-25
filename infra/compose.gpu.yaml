@@ -26,7 +26,7 @@ services:
       context: ..
       dockerfile: services/orchestrator/Dockerfile
     ports:
-      - '8082:8082'
+      - "8082:8082"
     logging: *default-logging
     environment:
       MANAGER_URL: "${MANAGER_URL:?Defina MANAGER_URL no env.gpu (ex: http://10.15.10.3:8081)}"
@@ -44,7 +44,14 @@ services:
       HF_TOKEN: ${HF_TOKEN:-}
       HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
       HF_HOME: /data/models/huggingface
+      HF_HUB_DISABLE_XET: "1"
+      HF_HUB_ENABLE_HF_TRANSFER: "0"
       FLUX_MODEL_ID: ${FLUX_MODEL_ID:-}
+      # Imagem do daemon de difusão (D1 — ADR-0023): o launcher do daemon usa o
+      # env PRÓPRIO do orquestrador, não o dispatch.image do manager. Sem isto
+      # caía no default `:local`, inexistente no nó (build do profile gpu é `:gpu`)
+      # → "docker run daemon failed (exit 125)".
+      DIFFUSION_TRAINER_IMAGE: ${DIFFUSION_TRAINER_IMAGE:-hephaestus/trainer-difusao:gpu}
       DIFFUSION_DAEMON_ENABLED: ${DIFFUSION_DAEMON_ENABLED:-0}
       DIFFUSION_DAEMON_PORT: ${DIFFUSION_DAEMON_PORT:-8766}
       DIFFUSION_DAEMON_IDLE_TTL_S: ${DIFFUSION_DAEMON_IDLE_TTL_S:-600}
@@ -52,7 +59,9 @@ services:
       DIFFUSION_DAEMON_NETWORK: ${DIFFUSION_DAEMON_NETWORK:-${COMPOSE_PROJECT_NAME:-gpu}_default}
       ENGINE_NETWORK: ${ENGINE_NETWORK:-${COMPOSE_PROJECT_NAME:-gpu}_default}
       EXEC_MODE: docker
-      PORT: '8082'
+      ENGINE_USER: "0:0"
+      PORT: "8082"
+      ENABLE_TEXT_ENCODER_UNLOAD: ${ENABLE_TEXT_ENCODER_UNLOAD:-0}
       TRAINER_TIMEOUT_SECS: ${TRAINER_TIMEOUT_SECS:-7200}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -69,7 +78,11 @@ services:
               count: all
               capabilities: [gpu]
     healthcheck:
-      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8082 && echo -e \"GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && grep -q 200 <&3'"]
+      test:
+        [
+          "CMD-SHELL",
+          "bash -c 'exec 3<>/dev/tcp/localhost/8082 && echo -e \"GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && grep -q 200 <&3'",
+        ]
       interval: 10s
       timeout: 5s
       retries: 5

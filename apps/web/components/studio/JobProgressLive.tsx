@@ -1,6 +1,9 @@
 "use client";
 
-import React from "react";
+import { useRef } from "react";
+import { formatDurationMs } from "@/lib/format";
+import { estimateTrainingEtaMs } from "@/lib/jobMetrics";
+import type { JobTelemetryEvent } from "@/types/studio";
 
 /**
  * Contadores de IMAGENS do batch de geração: `step` é 0-based da engine
@@ -30,6 +33,8 @@ const PHASE_LABELS: Record<string, string> = {
   packaging_dataset: "Empacotando Dataset",
   downloading_dataset: "Sincronizando Dataset",
   extracting_dataset: "Extraindo Dataset",
+  preparing_dataset: "Preparando Dataset",
+  preparing_cache: "Pré-computando Cache",
   downloading: "Download de Pesos",
   downloading_weights: "Download de Pesos",
   starting_container: "Iniciando Nó GPU",
@@ -86,6 +91,45 @@ export function JobProgressLive({
         ? "Gerando Imagem"
         : PHASE_LABELS[rawPhase] || rawPhase.replace(/_/g, " ").toUpperCase();
   const isError = rawPhase === "error" || rawPhase === "failed";
+
+  const isRunning = isLive && !isFinished;
+  /* F1 — janela rolante p/ ETA: o componente recebe snapshots, não o stream;
+     acumula amostras (step/totalSteps/phase + wall-clock) num buffer limitado.
+     Step retrocedendo = job novo reutilizando o card → zera o buffer. */
+  const samplesRef = useRef<JobTelemetryEvent[]>([]);
+  if (
+    isRunning &&
+    typeof phase === "string" &&
+    typeof step === "number" &&
+    Number.isFinite(step) &&
+    typeof totalSteps === "number" &&
+    Number.isFinite(totalSteps) &&
+    totalSteps > 0
+  ) {
+    const buf = samplesRef.current;
+    const prev = buf.length > 0 ? buf[buf.length - 1] : undefined;
+    if (!prev || prev.step !== step || prev.phase !== phase) {
+      if (prev && typeof prev.step === "number" && step < prev.step)
+        buf.length = 0;
+      buf.push({
+        timestamp: new Date().toISOString(),
+        phase,
+        phaseMessage: phaseMessage ?? null,
+        progress: normProgress,
+        step,
+        totalSteps,
+        epoch: epoch ?? null,
+        totalEpochs: totalEpochs ?? null,
+      });
+      if (buf.length > 64) buf.splice(0, buf.length - 64);
+    }
+  }
+  const etaMs = isRunning ? estimateTrainingEtaMs(samplesRef.current) : null;
+  const showEta =
+    etaMs !== null &&
+    typeof step === "number" &&
+    typeof totalSteps === "number" &&
+    step < totalSteps;
   if (compact) {
     return (
       <div className={`space-y-1.5 ${className}`}>
@@ -106,7 +150,14 @@ export function JobProgressLive({
               </span>
             )}
           </div>
-          <span className="font-mono text-zinc-300 font-semibold">{percent}%</span>
+          <span className="flex items-baseline gap-1.5">
+            {showEta && etaMs !== null && (
+              <span className="font-mono text-3xs text-zinc-500 tabular-nums">
+                ETA ~{formatDurationMs(etaMs)}
+              </span>
+            )}
+            <span className="font-mono text-zinc-300 font-semibold">{percent}%</span>
+          </span>
         </div>
 
         <div className="relative h-1.5 w-full bg-zinc-900/80 rounded-full overflow-hidden border border-white/5">
@@ -188,9 +239,19 @@ export function JobProgressLive({
           )}
         </div>
 
-        {/* Progress Percentage */}
-        <div className="font-mono text-sm font-bold text-white tabular-nums">
-          {percent}%
+        {/* Progress Percentage + ETA */}
+        <div className="flex items-baseline gap-2">
+          {showEta && etaMs !== null && (
+            <span
+              className="font-mono text-2xs font-medium text-zinc-400 tabular-nums"
+              title="Tempo estimado restante de treino"
+            >
+              ETA ~{formatDurationMs(etaMs)}
+            </span>
+          )}
+          <div className="font-mono text-sm font-bold text-white tabular-nums">
+            {percent}%
+          </div>
         </div>
       </div>
 

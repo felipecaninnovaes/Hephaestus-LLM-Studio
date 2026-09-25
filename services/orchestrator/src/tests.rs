@@ -4740,3 +4740,33 @@ async fn test_stage_cached_weight_md5_mismatch_fails() {
         "dest não deve ser criado em caso de mismatch"
     );
 }
+
+// -- permissões cross-uid em volumes compartilhados engine↔orquestrador --
+
+/// Engines GPU rodam como uid 1000 (`USER studio` na imagem) enquanto o
+/// orquestrador roda como root: mkdir de root com umask 022 nasce 0755 e o
+/// engine morre em EACCES ao gravar telemetria/artefatos no próprio diretório
+/// de job. `create_dir_all_open` é o invariante que impede a regressão.
+#[cfg(unix)]
+#[tokio::test]
+async fn create_dir_all_open_grants_world_write() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let job_dir = tmp.path().join("outputs").join("job-perm-test");
+
+    crate::storage::create_dir_all_open(&job_dir)
+        .await
+        .expect("criação de dir de job deve ter sucesso");
+
+    let mode = tokio::fs::metadata(&job_dir)
+        .await
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(
+        mode & 0o777,
+        0o777,
+        "dir compartilhado deve aceitar escrita de qualquer uid de engine (obtido {:o})",
+        mode & 0o777
+    );
+}

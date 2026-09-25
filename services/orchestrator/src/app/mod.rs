@@ -18,14 +18,14 @@ use crate::ports::executor::TrainerExecutor;
 use crate::ports::reporter::ReportClient;
 use crate::ports::storage::S3Port;
 use crate::storage::{
-    compute_file_md5, init_image_ext, put_with_retry, scoped_init_image_key, scoped_key,
-    unzip_safe, S3Scope,
+    compute_file_md5, create_dir_all_open, init_image_ext, put_with_retry, scoped_init_image_key,
+    scoped_key, unzip_safe, S3Scope,
 };
 use crate::{tail_jsonl_lines, telemetry_report_for_line};
 
 use stages::collector::{
     collect_diffusion_artifacts, read_final_metrics, read_generation_meta_content,
-    stream_metrics_and_samples,
+    stream_metrics_and_samples, upload_telemetry_snapshot,
 };
 use stages::config::{extract_epochs, replace_config_placeholders};
 use stages::execute::resolve_subcommand_args;
@@ -177,12 +177,8 @@ pub async fn run_job_inner(
     let outputs = job_workdir.join("outputs").join(job_id);
     let temp_dir = job_workdir.join("tmp").join(job_id);
     let weights_cache_dir = job_workdir.join("outputs").join(".weights-cache");
-    tokio::fs::create_dir_all(&datasets_cache)
-        .await
-        .map_err(|e| PipelineError::Other(format!("create datasets-cache: {e}")))?;
-    tokio::fs::create_dir_all(&outputs)
-        .await
-        .map_err(|e| PipelineError::Other(format!("create outputs: {e}")))?;
+    create_dir_all_open(&datasets_cache).await?;
+    create_dir_all_open(&outputs).await?;
     tokio::fs::create_dir_all(&temp_dir)
         .await
         .map_err(|e| PipelineError::Other(format!("create temp: {e}")))?;
@@ -361,9 +357,7 @@ pub async fn run_job_inner(
         })?;
 
         let weights_dir = outputs.join("weights");
-        tokio::fs::create_dir_all(&weights_dir)
-            .await
-            .map_err(|e| PipelineError::Other(format!("create weights dir: {e}")))?;
+        create_dir_all_open(&weights_dir).await?;
 
         let weights_file = weights_dir.join(filename);
         let on_w = make_progress_reporter(
@@ -391,9 +385,7 @@ pub async fn run_job_inner(
     let mut lora_staged_paths: Vec<String> = Vec::new();
     let weights_dir = outputs.join("weights");
     if !dispatch.loras.is_empty() {
-        tokio::fs::create_dir_all(&weights_dir)
-            .await
-            .map_err(|e| PipelineError::Other(format!("create weights dir: {e}")))?;
+        create_dir_all_open(&weights_dir).await?;
     }
     for (i, lora) in dispatch.loras.iter().enumerate() {
         let lora_file = weights_dir.join(format!("lora_{i}.safetensors"));
@@ -413,9 +405,7 @@ pub async fn run_job_inner(
     //     Pesos ficam em outputs/<job_id>/weights/custom.safetensors
     let mut custom_staged_path: Option<String> = None;
     if let Some(custom) = dispatch.custom_checkpoint.as_ref() {
-        tokio::fs::create_dir_all(&weights_dir)
-            .await
-            .map_err(|e| PipelineError::Other(format!("create weights dir: {e}")))?;
+        create_dir_all_open(&weights_dir).await?;
         let custom_file = weights_dir.join("custom.safetensors");
         let on_c = make_progress_reporter(
             &report_client,
@@ -442,9 +432,7 @@ pub async fn run_job_inner(
     //     falha honesta em qualquer etapa — nunca fallback silencioso p/ o oficial).
     let mut text_encoder_staged_path: Option<String> = None;
     if let Some(encoder) = dispatch.text_encoder.as_ref() {
-        tokio::fs::create_dir_all(&weights_dir)
-            .await
-            .map_err(|e| PipelineError::Other(format!("create weights dir: {e}")))?;
+        create_dir_all_open(&weights_dir).await?;
         let encoder_file = weights_dir.join("text_encoder.safetensors");
         resolve_and_stage_weight(
             &s3,
@@ -469,9 +457,7 @@ pub async fn run_job_inner(
         let scoped_ikey = scoped_init_image_key(&init.s3_key)
             .map_err(|e| PipelineError::S3Download(format!("invalid init_image_ref key: {e}")))?;
         let inputs_dir = outputs.join("inputs");
-        tokio::fs::create_dir_all(&inputs_dir)
-            .await
-            .map_err(|e| PipelineError::Other(format!("create inputs dir: {e}")))?;
+        create_dir_all_open(&inputs_dir).await?;
         let ext = init_image_ext(&init.s3_key);
         let init_file = inputs_dir.join(format!("init.{ext}"));
         s3.get_to_file(&scoped_ikey, &init_file)
@@ -519,9 +505,7 @@ pub async fn run_job_inner(
             });
         }
         let control_dir = datasets_cache.join("control");
-        tokio::fs::create_dir_all(&control_dir)
-            .await
-            .map_err(|e| PipelineError::Other(format!("create control dir: {e}")))?;
+        create_dir_all_open(&control_dir).await?;
         unzip_safe(&control_zip, &control_dir)?;
         control_staged_path = Some(format!("/datasets/datasets-cache/{job_id}/control"));
     }
@@ -697,9 +681,16 @@ pub async fn run_job_inner(
         let telemetry_report_client = Arc::clone(&report_client);
         let telemetry_path_clone = telemetry_abs.clone();
         let telemetry_job_id = job_id.clone();
+        // C2a: upload periódico do snapshot de logs também no caminho daemon
+        // (a cada ~5s de ticks de 500ms, só quando o arquivo cresce; o report
+        // do artefato é anunciado uma única vez — dedupe por path no manager).
+        let telemetry_s3 = Arc::clone(&s3);
         let telemetry_handle = tokio::spawn(async move {
             let mut lines_read: usize = 0;
             let mut interval = tokio::time::interval(Duration::from_millis(500));
+            let mut upload_ticks: u32 = 0;
+            let mut telemetry_uploaded_bytes: i64 = 0;
+            let mut telemetry_artifact_reported = false;
             loop {
                 interval.tick().await;
                 let (new_lines, new_offset) = tail_jsonl_lines(&telemetry_path_clone, lines_read);
@@ -709,6 +700,44 @@ pub async fn run_job_inner(
                     let _ = telemetry_report_client
                         .report(&telemetry_job_id, &body)
                         .await;
+                }
+                upload_ticks += 1;
+                if upload_ticks >= 10 {
+                    upload_ticks = 0;
+                    if let Ok(meta) = std::fs::metadata(&telemetry_path_clone) {
+                        let size = meta.len() as i64;
+                        if size > telemetry_uploaded_bytes {
+                            if let Some(rep) = upload_telemetry_snapshot(
+                                &telemetry_s3,
+                                &telemetry_job_id,
+                                &telemetry_path_clone,
+                            )
+                            .await
+                            {
+                                telemetry_uploaded_bytes = size;
+                                if !telemetry_artifact_reported {
+                                    telemetry_artifact_reported = true;
+                                    let _ = telemetry_report_client
+                                        .report(
+                                            &telemetry_job_id,
+                                            &ReportBody {
+                                                status: "running".to_string(),
+                                                progress: None,
+                                                epoch: None,
+                                                step: None,
+                                                metrics: None,
+                                                error: None,
+                                                artifacts: Some(vec![rep]),
+                                                meta_content: None,
+                                                phase: None,
+                                                message: None,
+                                            },
+                                        )
+                                        .await;
+                                }
+                            }
+                        }
+                    }
                 }
             }
         });
@@ -756,7 +785,14 @@ pub async fn run_job_inner(
         }
 
         // (d) Coleta artefatos do output_dir igual one-shot (glob unificado — P0-4)
-        let (artifacts, upload_errors) = collect_diffusion_artifacts(&s3, job_id, &outputs).await;
+        let (mut artifacts, upload_errors) =
+            collect_diffusion_artifacts(&s3, job_id, &outputs).await;
+
+        // C2a: snapshot final dos logs (cobre o intervalo desde o último tick
+        // periódico; best-effort, não entra no gate de upload_errors).
+        if let Some(rep) = upload_telemetry_snapshot(&s3, job_id, &telemetry_abs).await {
+            artifacts.push(rep);
+        }
 
         // Incidente galeria vazia: upload persistente falhou → o job falhou do
         // ponto de vista do usuário; reportar done seria mentira.
@@ -850,6 +886,16 @@ pub async fn run_job_inner(
             "TORCH_HOME".to_string(),
             "/outputs/.cache/torch".to_string(),
         ));
+        exec_env.push(("HF_HUB_DISABLE_XET".to_string(), "1".to_string()));
+        exec_env.push(("HF_HUB_ENABLE_HF_TRANSFER".to_string(), "0".to_string()));
+        if let Ok(v) = std::env::var("ENABLE_TEXT_ENCODER_UNLOAD") {
+            if !v.trim().is_empty() {
+                exec_env.push((
+                    "ENABLE_TEXT_ENCODER_UNLOAD".to_string(),
+                    v.trim().to_string(),
+                ));
+            }
+        }
     }
 
     // Repassa token do Hugging Face para download de modelos restritos/gated
@@ -1217,6 +1263,15 @@ pub async fn run_job_inner(
             "upload de artefatos falhou: {}",
             upload_errors.join("; ")
         )));
+    }
+
+    // C2a: snapshot final dos logs no caminho one-shot (o loop live pode ter
+    // parado com o tick no meio; best-effort).
+    let telemetry_oneshot = metrics_path.with_file_name("telemetry.jsonl");
+    if telemetry_oneshot.is_file() {
+        if let Some(rep) = upload_telemetry_snapshot(&s3, job_id, &telemetry_oneshot).await {
+            artifacts.push(rep);
+        }
     }
 
     // 10. Lê métricas finais para o report done

@@ -35,6 +35,8 @@ def _canonical_model_name(raw_model: str) -> str:
         return "sdxl"
     if norm in ("sd15", "sd-1.5", "stable-diffusion-v1-5"):
         return "sd15"
+    if norm in ("qwen", "qwen-image", "qwen-image-2.1", "qwen2.1", "qwen_image", "qwen-image-2-1"):
+        return "qwen-image-2.1"
     return norm
 
 

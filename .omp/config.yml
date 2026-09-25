@@ -2,19 +2,9 @@
 # Agentes vivem em .omp/agents/*.md; este arquivo resolve modelos e guard-rails.
 
 modelRoles:
-  # hephaestus (coordenador / sessão principal)
-  # openrouter/qwen/qwen3.8-flash trava sem entregar token (testado 2026-09-17);
-  # mesmo modelo via gateway opencode-go responde.
-  default: "o1pencode-go/muse-spark-1.3-contributor:high"
-  #default: "google-antigravity/gemini-3.8-flash:medium"
-  # agente "plan" do opencode (modo plan)
-  plan: "openrouter/qwen/qwen3.8-flash:high"
-  # workers (implementadores, revisores, fixer, docs-sync, explore, ui-designer, visao)
-  worker: "opencode-go/muse-spark-1.3-contributor"
-  # workers com variant high do opencode (architect, reviewer, guardian, ui-designer)
-  worker-high: "opencode-go/muse-spark-1.3-contributor:high"
-  # reviewer-max (escalada) — sem sufixo: o modelo não expõe níveis de effort
-  max: "openrouter/qwen/qwen3.8-max"
+  default:  "google-antigravity/gemini-3.8-flash:high" # MODELO CARO
+  plan: "google-antigravity/gemini-3.8-flash:medium" # MODELO INTERMEDIARIO
+  worker: "google-antigravity/gemini-3.8-flash:low" # MODELO BARATO
 
 bash:
   patterns:
@@ -25,7 +15,5 @@ bash:
       approval: prompt
     - match: "git merge*"
       approval: prompt
-    # Subagentes não cometem (AGENTS.md §3.2); coordenador confirma cada commit.
-    # Remova esta regra se a confirmação por commit for indesejada.
     - match: "git commit*"
       approval: prompt

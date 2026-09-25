@@ -1250,6 +1250,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/jobs/{id}/logs": {
+        parameters: {
+            query?: {
+                /** @description Nº de linhas RAW do jsonl já consumidas (paginação por linha). */
+                offset?: number;
+                /** @description Linhas por página (máx 2000). */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description PK do job. UUID inválido ⇒ 404 `not_found` (D8). */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Histórico persistido de logs do job (C2a)
+         * @description Páginas o artefato de log do job — `logs/telemetry.jsonl` (snapshot
+         *     incremental reenviado pelo orquestrador durante a execução), com
+         *     fallback legado para `metrics.jsonl` (job antigo) e para `telemetry.jsonl`
+         *     em qualquer path. Linhas do wire espelham o jsonl por linha (camelCase);
+         *     linha malformada vira `message` bruta com demais campos nulos (nunca drop).
+         *     Job sem artefato de log ⇒ 200 `{lines: [], eof: true}` (ausência de log
+         *     é estado válido). Storage fora ⇒ 503 `storage_unavailable`.
+         */
+        get: operations["getJobLogs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{id}/artifacts/zip": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description PK do job. UUID inválido ⇒ 404 `not_found` (D8). */
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * ZIP de todos os artefatos do job (F2)
+         * @description ZIP `stored` (sem compressão — safetensors/png já comprimem) de todos os
+         *     artefatos reportados do job, incluindo `logs/telemetry.jsonl` sob
+         *     `logs/`. Padrão de produção do zip de gerações (ADR-0006): spool por
+         *     objeto via StoragePort (um por vez), `ZipWriter` em spawn_blocking,
+         *     streaming no body. Nome do download: `params.outputName` sanitizado +
+         *     `-artifacts.zip` (fallback `job-<id>.zip`). Artefato órfão (row sem
+         *     objeto) é ignorado com aviso — o zip segue com o resto. Job sem
+         *     artefatos ⇒ 404.
+         */
+        get: operations["downloadJobArtifactsZip"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/telemetry": {
         parameters: {
             query?: never;
@@ -1354,6 +1418,28 @@ export interface paths {
          *     StoragePort com headers de cache. ID inexistente ⇒ 404.
          */
         get: operations["getGenerationData"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/generations/{id}/thumb": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Proxy binário da miniatura (thumbnail) da imagem gerada
+         * @description Retorna a miniatura otimizada da imagem gerada (ADR-0023 D5). Se o
+         *     objeto de thumbnail existir no storage, serve diretamente; senão, gera
+         *     sob demanda a partir do objeto principal com cache imutável.
+         */
+        get: operations["getGenerationThumb"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1897,7 +1983,7 @@ export interface components {
              * @default sdxl
              * @enum {string|null}
              */
-            baseModel: "sdxl" | "flux" | "sd15" | "flux-2-klein-4b" | null;
+            baseModel: "sdxl" | "flux" | "sd15" | "flux-2-klein-4b" | "qwen-image-2.1" | null;
             /**
              * Format: uuid
              * @description UUID de checkpoint customizado (tabela `models`, kind=checkpoint) como base do treino. XOR com baseModel; inexistente ou kind≠checkpoint ⇒ 400/404.
@@ -2037,7 +2123,7 @@ export interface components {
              * @default flux-2-klein-4b
              * @enum {string}
              */
-            baseModel: "sdxl" | "flux" | "sd15" | "flux-2-klein-4b";
+            baseModel: "sdxl" | "flux" | "sd15" | "flux-2-klein-4b" | "qwen-image-2.1";
             /** @description Prompt textual descritivo para geração da imagem. */
             prompt: string;
             /** @description Prompt negativo para exclusão de características (aplicável a SDXL e SD 1.5). */
@@ -2171,9 +2257,9 @@ export interface components {
             jobId: string | null;
             /** @description Nome do arquivo na galeria. */
             filename: string;
-            /** @description URL presigned GET (null sem S3_PUBLIC_ENDPOINT_URL). */
+            /** @description URL da imagem (presigned GET direto quando S3_PUBLIC_ENDPOINT_URL estiver configurado, ou proxy `/api/generations/{id}/data`). */
             url?: string | null;
-            /** @description URL presigned GET da miniatura (null sem S3_PUBLIC_ENDPOINT_URL). */
+            /** @description URL da miniatura otimizada (presigned GET direto quando S3_PUBLIC_ENDPOINT_URL estiver configurado, ou proxy `/api/generations/{id}/thumb`). */
             thumbUrl?: string | null;
             /** @description Largura da imagem em pixels. */
             width: number;
@@ -2970,6 +3056,35 @@ export interface components {
         ArtifactList: {
             items: components["schemas"]["JobArtifact"][];
         };
+        /** @description Uma linha persistida do jsonl de telemetria (C2a); campos ausentes na linha vêm null; linha malformada chega como `message` bruta. */
+        JobLogLine: {
+            /**
+             * Format: date-time
+             * @description ISO-8601 do evento, quando presente.
+             */
+            timestamp?: string | null;
+            /** @description Fase do engine-kit (training, preparing_dataset, ...). */
+            phase?: string | null;
+            /** @description `message` canônica, fallback `phaseMessage`, senão a linha bruta. */
+            message?: string | null;
+            /** @description Progresso 0–1 da linha, quando presente. */
+            progress?: number | null;
+            /** Format: int64 */
+            epoch?: number | null;
+            /** Format: int64 */
+            step?: number | null;
+        };
+        /** @description Página de logs do job; `offset` do pedido conta LINHAS RAW do jsonl consumidas. */
+        JobLogPage: {
+            lines: components["schemas"]["JobLogLine"][];
+            /**
+             * Format: int64
+             * @description Offset a usar no próximo pedido.
+             */
+            nextOffset: number;
+            /** @description true quando não há mais linhas no artefato. */
+            eof: boolean;
+        };
         /** @description Telemetria do sistema (ADR-0007 D9). */
         Telemetry: {
             /** @description true se VRAM é medível (false no mock sem GPU). */
@@ -3082,7 +3197,7 @@ export interface components {
              * @description Hint diffusion; sniff do servidor é autoritativo.
              * @enum {string}
              */
-            arch?: "flux-2-klein-4b" | "sdxl" | "sd15";
+            arch?: "flux-2-klein-4b" | "sdxl" | "sd15" | "qwen-image-2.1";
             /**
              * Format: int64
              * @description Tamanho total do arquivo em bytes (≤ 8 GiB).
@@ -3178,7 +3293,7 @@ export interface components {
              * @description Arquitetura do modelo (ADR-0023 D4). Null para engines não-difusão.
              * @enum {string|null}
              */
-            arch?: "flux-2-klein-4b" | "sdxl" | "sd15" | null;
+            arch?: "flux-2-klein-4b" | "sdxl" | "sd15" | "qwen-image-2.1" | null;
         };
         /** @description Uso de storage (ADR-0009 D3 / ADR-0012 D8). */
         StorageUsage: {
@@ -5969,6 +6084,111 @@ export interface operations {
             };
         };
     };
+    getJobLogs: {
+        parameters: {
+            query?: {
+                /** @description Nº de linhas RAW do jsonl já consumidas (paginação por linha). */
+                offset?: number;
+                /** @description Linhas por página (máx 2000). */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description PK do job. UUID inválido ⇒ 404 `not_found` (D8). */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Página de linhas de log persistidas. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobLogPage"];
+                };
+            };
+            /** @description Sem sessão válida (`code: unauthorized`). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Job inexistente ou id não-UUID (`code: not_found`). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Manager ou storage indisponível (`code: queue_unavailable` ou `storage_unavailable`). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    downloadJobArtifactsZip: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description PK do job. UUID inválido ⇒ 404 `not_found` (D8). */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description ZIP dos artefatos (Content-Disposition attachment). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/zip": string;
+                };
+            };
+            /** @description Sem sessão válida (`code: unauthorized`). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Job inexistente, id não-UUID, ou job sem artefatos (`code: not_found`). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Manager ou storage indisponível (`code: queue_unavailable` ou `storage_unavailable`). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     getTelemetry: {
         parameters: {
             query?: never;
@@ -6168,6 +6388,57 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
+                    "application/octet-stream": string;
+                };
+            };
+            /** @description Sem sessão válida (`code: unauthorized`). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Geração inexistente (`code: not_found`). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Manager indisponível (`code: queue_unavailable`). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    getGenerationThumb: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Miniatura binária (image/jpeg ou image/webp). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/jpeg": string;
+                    "image/webp": string;
                     "application/octet-stream": string;
                 };
             };
@@ -6481,7 +6752,7 @@ export interface operations {
                      * @description Hint: arquitetura do modelo diffusion. Sniff do servidor é autoritativo.
                      * @enum {string}
                      */
-                    arch?: "flux-2-klein-4b" | "sdxl" | "sd15";
+                    arch?: "flux-2-klein-4b" | "sdxl" | "sd15" | "qwen-image-2.1";
                 };
             };
         };

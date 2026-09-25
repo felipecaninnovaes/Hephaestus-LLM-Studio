@@ -13,10 +13,13 @@ from trainer_difusao.common_pkg.runtime import (
     _prune_checkpoints,
     _cleanup_cuda,
     _setup_cache_dir,
+    _ensure_qwen_diffusers_compat,
 )
 from trainer_difusao.common_pkg.lora_io import (
     _save_lora_safetensors,
     _load_lora_weights,
+    save_adapter_checkpoint,
+    save_final_adapter,
 )
 from trainer_difusao.common_pkg.train_config import (
     _TRAIN_QUANT_LEVELS,
@@ -31,9 +34,17 @@ from trainer_difusao.common_pkg.train_config import (
     _build_intx_torchao_config,
 )
 from trainer_difusao.common_pkg.text_embeds import (
+    ENABLE_TEXT_ENCODER_UNLOAD,
     TextEmbedsCache,
-    _precompute_text_cache,
     _cached_encode,
+    _cleanup_encoders,
+    _offload_encoders_to_cpu,
+    _precompute_sample_embeds_flux,
+    _precompute_sample_embeds_sd15,
+    _precompute_sample_embeds_sdxl,
+    _precompute_text_cache,
+    _precompute_text_cache_with_cleanup,
+    _temporary_device_encoders,
 )
 from trainer_difusao.common_pkg.encoder_merge import (
     TEXT_ENCODER_CUSTOM_CACHE_ENV,
@@ -64,8 +75,11 @@ __all__ = [
     "_prune_checkpoints",
     "_cleanup_cuda",
     "_setup_cache_dir",
+    "_ensure_qwen_diffusers_compat",
     "_save_lora_safetensors",
     "_load_lora_weights",
+    "save_adapter_checkpoint",
+    "save_final_adapter",
     "_TRAIN_QUANT_LEVELS",
     "_TRAIN_QUANT_ALIASES",
     "_CONTROL_RATIO_DEFAULT",
@@ -76,9 +90,17 @@ __all__ = [
     "_cycling_batches",
     "_caption_cache_key",
     "_build_intx_torchao_config",
+    "ENABLE_TEXT_ENCODER_UNLOAD",
     "TextEmbedsCache",
     "_precompute_text_cache",
+    "_precompute_text_cache_with_cleanup",
+    "_cleanup_encoders",
+    "_offload_encoders_to_cpu",
+    "_temporary_device_encoders",
     "_cached_encode",
+    "_precompute_sample_embeds_sd15",
+    "_precompute_sample_embeds_sdxl",
+    "_precompute_sample_embeds_flux",
     "TEXT_ENCODER_CUSTOM_CACHE_ENV",
     "_TEXT_ENCODER_CUSTOM_CACHE_DEFAULT",
     "_custom_text_encoder_merge_dir",

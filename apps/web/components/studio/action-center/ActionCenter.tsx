@@ -25,6 +25,11 @@ import {
   getTelemetry,
   listJobs,
 } from "@/lib/jobs";
+import {
+  buildDiffusionRerun,
+  buildDiffusionResume,
+  buildYoloRerun,
+} from "@/lib/paramsToPreset";
 import type {
   Job,
   JobArtifact,
@@ -175,106 +180,41 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
   }, [expandedId]);
 
   function handleResume(job: Job, art: JobArtifact) {
-    const checkpointName =
-      art.path.split("/").pop() || "checkpoint.safetensors";
-    const match = art.path.match(/epoch_(\d+)/);
-    const epochOffset = match ? parseInt(match[1], 10) : (job.epoch ?? 0);
-
-    const resumeData = {
-      resumeCheckpoint: {
-        id: art.id,
-        name: checkpointName,
-        path: art.path,
-        epoch: epochOffset,
-      },
-      datasetId: job.datasetId,
-      epochOffset,
-      initialPreset: job.params
-        ? (() => {
-            const p = job.params as Record<string, unknown>;
-            return {
-              name: `${job.model} (Retomada Ep.${epochOffset})`,
-              baseModel: p.baseModel ?? p.base_model ?? "flux",
-              triggerWord: p.triggerWord ?? p.trigger_word ?? "",
-              epochs: p.epochs ?? 10,
-              batchSize: p.batchSize ?? p.batch_size ?? 1,
-              learningRate: String(p.learningRate ?? p.learning_rate ?? "1e-4"),
-              rank: p.rank ?? 16,
-              alpha: p.alpha ?? 16,
-              resolution: p.resolution ?? 512,
-              gradientAccumulationSteps: p.gradientAccumulationSteps ?? p.gradient_accumulation_steps ?? 1,
-              optimizer: p.optimizer ?? "adamw8bit",
-              mixedPrecision: p.mixedPrecision ?? p.mixed_precision ?? "fp16",
-              quantization: p.quantization ?? "none",
-            };
-          })()
-        : undefined,
-    };
+    const resumeData = buildDiffusionResume(job, art);
 
     try {
-      sessionStorage.setItem("heph_resume_job", JSON.stringify(resumeData));
+      sessionStorage.setItem(
+        "hephaestus_diffusion_resume",
+        JSON.stringify(resumeData),
+      );
     } catch {
       // Best-effort
     }
 
     onClose();
-    router.push(
-      `/difusao?resume=1&checkpointId=${art.id}&epochOffset=${epochOffset}`,
-    );
+    router.push("/difusao");
   }
 
   function handleRerun(job: Job) {
     if (job.engine === "diffusion") {
-      const resumeData = {
-        datasetId: job.datasetId,
-        epochOffset: 0,
-        initialPreset: job.params
-          ? (() => {
-              const p = job.params as Record<string, unknown>;
-              return {
-                name: `${job.model} (Repetir)`,
-                baseModel: p.baseModel ?? p.base_model ?? "flux",
-                triggerWord: p.triggerWord ?? p.trigger_word ?? "",
-                epochs: p.epochs ?? 10,
-                batchSize: p.batchSize ?? p.batch_size ?? 1,
-                learningRate: String(p.learningRate ?? p.learning_rate ?? "1e-4"),
-                rank: p.rank ?? 16,
-                alpha: p.alpha ?? 16,
-                resolution: p.resolution ?? 512,
-                gradientAccumulationSteps: p.gradientAccumulationSteps ?? p.gradient_accumulation_steps ?? 1,
-                optimizer: p.optimizer ?? "adamw8bit",
-                mixedPrecision: p.mixedPrecision ?? p.mixed_precision ?? "fp16",
-                quantization: p.quantization ?? "none",
-              };
-            })()
-          : undefined,
-      };
+      const resumeData = buildDiffusionRerun(job);
 
       try {
-        sessionStorage.setItem("heph_resume_job", JSON.stringify(resumeData));
+        sessionStorage.setItem(
+          "hephaestus_diffusion_resume",
+          JSON.stringify(resumeData),
+        );
       } catch {
         // Best-effort
       }
 
       onClose();
-      router.push("/difusao?rerun=1");
+      router.push("/difusao");
       return;
     }
 
     if (job.engine === "yolo") {
-      const p = (job.params as Record<string, unknown>) ?? {};
-      const rerunParams = {
-        datasetId: job.datasetId,
-        model: p.model ?? job.model,
-        batch: p.batch ?? 16,
-        imgsz: p.imgsz ?? 640,
-        optimizer: p.optimizer ?? "auto",
-        epochs: p.epochs ?? 100,
-        lr0: p.lr0 ?? 0.01,
-        lrf: p.lrf ?? 0.01,
-        mosaic: Boolean((p.augment as Record<string, boolean> | undefined)?.mosaic ?? true),
-        mixupFlip: Boolean((p.augment as Record<string, boolean> | undefined)?.mixupFlip ?? false),
-      };
+      const rerunParams = buildYoloRerun(job);
 
       try {
         sessionStorage.setItem("heph_rerun_yolo", JSON.stringify(rerunParams));
@@ -283,7 +223,7 @@ export function ActionCenter({ open, onClose }: ActionCenterProps) {
       }
 
       onClose();
-      router.push("/treino?rerun=1");
+      router.push("/treino");
     }
   }
 

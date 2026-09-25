@@ -43,7 +43,11 @@ import { DiffusionVramForecast } from "./DiffusionVramForecast";
 
 export interface ForjaDifusaoSetupProps {
   onJobCreated?: (jobId: string) => void;
-  initialPreset?: Partial<DiffusionPreset>;
+  /** Preset camelCase da Forja; `weights`/`outputName` vêm do rerun via paramsToPreset. */
+  initialPreset?: Partial<DiffusionPreset> & {
+    weights?: string | null;
+    outputName?: string | null;
+  };
   initialDatasetId?: string;
   resumeCheckpoint?: { id: string; name: string; epoch?: number } | null;
   epochOffset?: number;
@@ -97,9 +101,10 @@ export function ForjaDifusaoSetup({
     rank: initialPreset?.rank ?? 16,
     alpha: initialPreset?.alpha ?? 16,
   });
-
   // Nome do modelo/adaptador sugerido (outputName)
-  const [outputName, setOutputName] = useState<string>("");
+  const [outputName, setOutputName] = useState<string>(
+    typeof initialPreset?.outputName === "string" ? initialPreset.outputName : "",
+  );
 
   // Advanced options
   const [resolution, setResolution] = useState<number>(
@@ -148,14 +153,43 @@ export function ForjaDifusaoSetup({
   const [sampleSeed, setSampleSeed] = useState<string>(
     initialPreset?.sampleSeed ? String(initialPreset.sampleSeed) : "",
   );
-
   const [busy, setBusy] = useState(false);
   const [topError, setTopError] = useState<string | null>(null);
+
+  // A página /difusao lê `hephaestus_diffusion_resume` e injeta o preset via
+  // props — mas o componente monta antes dos valores chegarem. Esta flag
+  // aplica o preset da primeira navegação (resume/rerun) uma única vez,
+  // sem sobrescrever edições posteriores do usuário.
+  const presetAppliedRef = useRef(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: aplicação one-shot do preset de resume/rerun — applyPreset é recriada por render; incluí-la re-aplicaria o preset sobre edições do usuário
+  useEffect(() => {
+    if (presetAppliedRef.current) return;
+    const hasResume =
+      initialPreset !== undefined ||
+      (initialDatasetId ?? "") !== "" ||
+      resumeCheckpoint != null ||
+      propEpochOffset > 0;
+    if (!hasResume) return;
+    presetAppliedRef.current = true;
+    applyPreset({ name: "Resume", ...(initialPreset ?? {}) });
+    if (initialDatasetId) setSelectedDatasetId(initialDatasetId);
+    if (resumeCheckpoint) {
+      setCurrentResumeCheckpoint(resumeCheckpoint);
+      setSelectedWeightId(resumeCheckpoint.id);
+    }
+    if (propEpochOffset > 0) setEpochOffset(propEpochOffset);
+  }, [initialPreset, initialDatasetId, resumeCheckpoint, propEpochOffset]);
 
   // Telemetria de hardware e VRAM do nó
   const { nodeVramTotalGb, deviceLabel } = useHardwareTelemetry();
 
-  function applyPreset(preset: Partial<DiffusionPreset> & { name: string }) {
+  function applyPreset(
+    preset: Partial<DiffusionPreset> & {
+      name: string;
+      weights?: string | null;
+      outputName?: string | null;
+    },
+  ) {
     if (preset.baseModel) {
       setParams((p) => ({ ...p, baseModel: preset.baseModel as DiffusionBaseModel }));
       setCustomModelId("");
@@ -175,6 +209,8 @@ export function ForjaDifusaoSetup({
         rank: preset.rank ?? 16,
         alpha: preset.alpha ?? preset.rank ?? 16,
       }));
+    } else if (preset.alpha !== undefined) {
+      setParams((p) => ({ ...p, alpha: preset.alpha ?? 16 }));
     }
     if (preset.resolution !== undefined) setResolution(preset.resolution);
     if (preset.gradientAccumulationSteps !== undefined) {
@@ -203,6 +239,11 @@ export function ForjaDifusaoSetup({
       setSampleInterval(preset.sampleInterval);
     if (preset.sampleSeed !== undefined)
       setSampleSeed(String(preset.sampleSeed));
+    // Rerun via paramsToPreset: UUID de pesos (fine-tune) e nome do adaptador.
+    if (preset.weights !== undefined)
+      setSelectedWeightId(preset.weights ?? "");
+    if (preset.outputName !== undefined)
+      setOutputName(preset.outputName ?? "");
 
     showToast(`Preset aplicado: "${preset.name}"`, "info");
   }
@@ -260,12 +301,18 @@ export function ForjaDifusaoSetup({
         const text = event.target?.result as string;
         const parsed = JSON.parse(text) as Record<string, unknown>;
 
+        // Aceita presets camelCase da Forja E o training_config.json real da
+        // engine (YAML convertido: snake_case, `lora:` aninhado, `model:` como
+        // string de arch, `output_name`/`checkpoint_interval`/`epoch_offset` no
+        // topo, `samples:` opcional).
         if (
           !parsed.baseModel &&
           !parsed.epochs &&
           !parsed.rank &&
           !parsed.lora &&
-          !parsed.model
+          !parsed.model &&
+          !parsed.output_name &&
+          !parsed.data
         ) {
           showToast(
             "Arquivo JSON não é um preset válido do Hephaestus.",
@@ -277,8 +324,28 @@ export function ForjaDifusaoSetup({
         const lora = (parsed.lora as Record<string, unknown> | undefined) || {};
         const samples =
           (parsed.samples as Record<string, unknown> | undefined) || {};
-        const model =
-          (parsed.model as Record<string, unknown> | undefined) || {};
+        // Na config da engine, `model:` é string de arch ("sdxl",
+        // "flux-2-klein-4b"→"flux", "sd15"); presets futuros podem usar objeto.
+        // `output_name`/`checkpoint_interval`/`epoch_offset` vivem no topo;
+        // `data:` percorrida como fallback aninhado (shape "sem lora/data").
+        const modelNode =
+          typeof parsed.model === "object" && parsed.model !== null
+            ? (parsed.model as Record<string, unknown>)
+            : {};
+        const rawArch =
+          typeof parsed.model === "string" ? parsed.model : modelNode.base;
+        const engineBaseModel =
+          typeof rawArch === "string"
+            ? rawArch === "flux-2-klein-4b"
+              ? "flux"
+              : rawArch
+            : undefined;
+        const dataSection =
+          typeof parsed.data === "object" && parsed.data !== null
+            ? (parsed.data as Record<string, unknown>)
+            : undefined;
+        const engineOutputName =
+          typeof parsed.output_name === "string" ? parsed.output_name : undefined;
 
         applyPreset({
           name:
@@ -286,15 +353,17 @@ export function ForjaDifusaoSetup({
               ? parsed.name
               : file.name.replace(".json", ""),
           baseModel: (parsed.baseModel ||
-            model.base ||
+            engineBaseModel ||
             parsed.base_model ||
             params.baseModel) as DiffusionBaseModel,
           triggerWord:
-            typeof parsed.triggerWord === "string"
-              ? parsed.triggerWord
-              : typeof parsed.trigger_word === "string"
-                ? parsed.trigger_word
-                : params.triggerWord,
+            typeof lora.trigger_word === "string"
+              ? lora.trigger_word
+              : typeof parsed.triggerWord === "string"
+                ? parsed.triggerWord
+                : typeof parsed.trigger_word === "string"
+                  ? parsed.trigger_word
+                  : params.triggerWord,
           epochs:
             typeof lora.epochs === "number"
               ? lora.epochs
@@ -308,7 +377,11 @@ export function ForjaDifusaoSetup({
                 ? parsed.batchSize
                 : typeof parsed.batch_size === "number"
                   ? parsed.batch_size
-                  : params.batchSize,
+                  : typeof parsed.train_batch_size === "number"
+                    ? parsed.train_batch_size
+                    : typeof dataSection?.batch_size === "number"
+                      ? dataSection.batch_size
+                      : params.batchSize,
           learningRate:
             lora.learning_rate != null
               ? String(lora.learning_rate)
@@ -437,7 +510,22 @@ export function ForjaDifusaoSetup({
                 : parsed.sample_seed != null
                   ? String(parsed.sample_seed)
                   : sampleSeed,
+          // A config da engine não tem UUID de pesos — só o nome do artefato.
+          // Nunca sobrescreve a seleção de fine-tune atual com vazio.
+          ...(engineOutputName ? { outputName: engineOutputName } : {}),
         });
+        if (typeof parsed.epoch_offset === "number") {
+          showToast(
+            `Config da engine importada (epoch_offset ${parsed.epoch_offset} aplicado).`,
+            "info",
+          );
+        }
+        if (parsed.custom_checkpoint_path != null) {
+          showToast(
+            "Config da engine referencia checkpoint custom de staging — modelo base mantido.",
+            "info",
+          );
+        }
       } catch {
         showToast("Erro ao processar o arquivo JSON de preset.", "error");
       } finally {
@@ -615,7 +703,7 @@ export function ForjaDifusaoSetup({
       estimateDiffusionVramGb(
         trainEffectiveArch === "flux-2-klein-4b"
           ? "flux"
-          : trainEffectiveArch === "sdxl" || trainEffectiveArch === "sd15"
+          : trainEffectiveArch === "sdxl" || trainEffectiveArch === "sd15" || trainEffectiveArch === "qwen-image-2.1"
             ? trainEffectiveArch
             : params.baseModel,
         params.batchSize,
@@ -655,6 +743,11 @@ export function ForjaDifusaoSetup({
         value: "preset:sd15",
         label: "SD 1.5 (oficial)",
         description: "Leve p/ GPUs menores",
+      },
+      {
+        value: "preset:qwen-image-2.1",
+        label: "Qwen-Image-2.1 (oficial)",
+        description: "7B Single-Stream DiT · 1024/2048px",
       },
     ];
     const byArch: Record<string, Model[]> = {};
@@ -960,7 +1053,12 @@ export function ForjaDifusaoSetup({
             if (val.startsWith("preset:")) {
               const base = val.replace("preset:", "") as DiffusionBaseModel;
               setCustomModelId("");
-              setParams((p) => ({ ...p, baseModel: base }));
+              if (base === "qwen-image-2.1") {
+                setParams((p) => ({ ...p, baseModel: base, learningRate: "0.0002" }));
+                setResolution(1024);
+              } else {
+                setParams((p) => ({ ...p, baseModel: base }));
+              }
               if (base !== "flux") setTextEncoderModelId("");
             } else {
               setCustomModelId(val);

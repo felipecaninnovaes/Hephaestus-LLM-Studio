@@ -16,9 +16,5 @@
       "url": "https://mcp.getrunpod.io/",
       "auth": { "type": "oauth" }
     },
-    "runpod-docs": {
-      "type": "http",
-      "url": "https://docs.runpod.io/mcp"
-    }
   }
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Job, JobArtifact, JobMetrics } from "@/types/studio";
 import {
   IconCheck,
@@ -11,6 +11,12 @@ import {
 } from "@/components/icons";
 import { SegmentedControl } from "@/components/ui";
 import { copyToClipboard } from "@/lib/clipboard";
+import {
+  fetchJobLogs,
+  formatJobLogTimestamp,
+  jobLogLineText,
+  type JobLogLine,
+} from "@/lib/jobLogs";
 
 interface JobLogViewerProps {
   job: Job;
@@ -31,6 +37,35 @@ interface LogLine {
   text: string;
   isError?: boolean;
   syntheticTime?: boolean;
+}
+
+/** Linha persistida do wire (C2a) → LogLine do terminal. */
+function toPersistedLogLine(l: JobLogLine, key: string): LogLine {
+  const ts = formatJobLogTimestamp(l.timestamp);
+  const phase = l.phase ?? "";
+  const tag: LogLine["tag"] =
+    phase === "error" || phase === "failed"
+      ? "STDERR"
+      : phase.includes("dataset") ||
+          phase.includes("weights") ||
+          phase.includes("container") ||
+          phase.includes("download") ||
+          phase.includes("packaging") ||
+          phase.includes("preparing")
+        ? "ORCH"
+        : phase.includes("sample") || phase === "generating"
+          ? "DIFFUSION"
+          : phase === "training" || phase.includes("epoch")
+            ? "TRAIN"
+            : "ENGINE";
+  return {
+    id: `hist-${key}`,
+    timestamp: ts.text,
+    syntheticTime: ts.synthetic,
+    tag,
+    text: jobLogLineText(l),
+    isError: tag === "STDERR",
+  };
 }
 
 export function JobLogViewer({
@@ -103,6 +138,55 @@ export function JobLogViewer({
       lastMsgRef.current = null;
     }
   }, [jobId]);
+
+  // C2a: histórico persistido (GET /api/jobs/:id/logs) — sobrevive a refresh.
+  const [historyLines, setHistoryLines] = useState<LogLine[]>([]);
+  const [historyOffset, setHistoryOffset] = useState(0);
+  const [historyEof, setHistoryEof] = useState(true);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyFailed, setHistoryFailed] = useState(false);
+  const historyLoadedFor = useRef<string | null>(null);
+
+  const loadHistory = useCallback(
+    async (offset: number) => {
+      if (!jobId || historyLoading) return;
+      setHistoryLoading(true);
+      try {
+        const page = await fetchJobLogs(jobId, offset);
+        const mapped = page.lines
+          .map((l, i) => toPersistedLogLine(l, `${offset + i}`))
+          .filter((l) => l.text.length > 0);
+        setHistoryLines((prev) => (offset === 0 ? mapped : [...prev, ...mapped]));
+        setHistoryOffset(page.nextOffset);
+        setHistoryEof(page.eof);
+        setHistoryFailed(false);
+      } catch {
+        // Endpoint ainda não deployado (janela segura) ou BFF fora: o viewer
+        // segue com as linhas sintetizadas de sempre — nunca quebra a tela.
+        setHistoryFailed(true);
+      } finally {
+        setHistoryLoading(false);
+      }
+    },
+    [jobId, historyLoading],
+  );
+
+  // Primeira página quando o painel abre (e apenas uma vez por job).
+  useEffect(() => {
+    if (!jobId || !isOpen || historyLoadedFor.current === jobId) return;
+    historyLoadedFor.current = jobId;
+    void loadHistory(0);
+  }, [jobId, isOpen, loadHistory]);
+
+  // Troca de job: zera o histórico para não vazar linhas do job anterior.
+  useEffect(() => {
+    if (!jobId) return;
+    setHistoryLines([]);
+    setHistoryOffset(0);
+    setHistoryEof(true);
+    setHistoryFailed(false);
+    historyLoadedFor.current = null;
+  }, [jobId]);
   // Sintetiza e formata as linhas reais de log e telemetria do orquestrador
   const lines = useMemo<LogLine[]>(() => {
     const list: LogLine[] = [];
@@ -117,8 +201,21 @@ export function JobLogViewer({
       text: `Job submetido · kind=${job.kind} · engine=${job.engine ?? "—"} · nó=${nodeName}`,
     });
 
-    // 2. Telemetria / Progresso
-    if (metrics && metrics.length > 0) {
+    // 1.5 C2a: histórico persistido do jsonl do engine, dedupe por texto com
+    //     o que já foi sintetizado. Só quando existe — jobs antigos ou janela
+    //     pré-deploy caem no comportamento sintetizado de sempre.
+    if (historyLines.length > 0) {
+      const seen = new Set(list.map((l) => l.text));
+      for (const h of historyLines) {
+        if (!seen.has(h.text)) {
+          list.push(h);
+          seen.add(h.text);
+        }
+      }
+    }
+
+    // 2. Telemetria / Progresso (suprimido quando o log persistido já cobre)
+    if (metrics && metrics.length > 0 && historyLines.length === 0) {
       metrics.forEach((m, idx) => {
         if (job.kind === "autolabel" || job.engine === "autolabel") {
           const totalExpected = job.step || m.step || undefined;
@@ -264,7 +361,7 @@ export function JobLogViewer({
     }
 
     return list;
-  }, [job, metrics, artifacts, liveLogEntries]);
+  }, [job, metrics, artifacts, liveLogEntries, historyLines]);
 
   const filteredLines = useMemo(() => {
     if (filter === "stdout") {
@@ -446,6 +543,23 @@ export function JobLogViewer({
                 </div>
               );
             })
+          )}
+
+          {/* C2a: paginação do histórico persistido */}
+          {historyFailed && (
+            <div className="pt-1 text-amber-400/80 text-3xs">
+              Histórico persistido indisponível — exibindo eventos desta sessão.
+            </div>
+          )}
+          {!historyFailed && !historyEof && (
+            <button
+              type="button"
+              onClick={() => void loadHistory(historyOffset)}
+              disabled={historyLoading}
+              className="mt-1 inline-flex items-center gap-1.5 rounded border border-zinc-800 bg-zinc-900/60 px-2 py-1 font-mono text-3xs text-zinc-400 hover:text-zinc-200 transition disabled:opacity-50 cursor-pointer"
+            >
+              {historyLoading ? "Carregando…" : "Carregar mais linhas"}
+            </button>
           )}
 
           {/* Cursor pulsante no fim se ativo */}

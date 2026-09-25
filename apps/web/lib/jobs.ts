@@ -42,7 +42,7 @@ export function startYoloJob(params: {
 /** POST /api/jobs/diffusion — cria job de treino de difusão LoRA. Retorna 202 (preparing|queued). */
 export function startDiffusionJob(params: {
   datasetId: string;
-  baseModel?: "sdxl" | "flux" | "sd15" | null;
+  baseModel?: "sdxl" | "flux" | "sd15" | "qwen-image-2.1" | null;
   customModelId?: string | null;
   textEncoderModelId?: string | null;
   triggerWord?: string;
@@ -172,6 +172,52 @@ export async function downloadArtifact(
       targetFilename = match[1].trim();
     }
   }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = targetFilename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+}
+
+/** Extrai o filename do header Content-Disposition (fallback para o padrão). */
+export function filenameFromDisposition(
+  disposition: string | null,
+  fallback: string,
+): string {
+  if (disposition) {
+    const match = disposition.match(/filename="?([^";]+)"?/i);
+    if (match?.[1]) {
+      const name = match[1].trim();
+      if (name) return name;
+    }
+  }
+  return fallback;
+}
+
+/**
+ * GET /api/jobs/:id/artifacts/zip — baixa todos os artefatos do job como ZIP (F2).
+ * Streaming sem timeout client-side agressivo: o ZIP é `stored` (sem compressão)
+ * e jobs grandes podem levar minutos. Zero artefatos → o BFF responde 404.
+ */
+export async function downloadJobArtifactsZip(jobId: string): Promise<void> {
+  const fallback = `${jobId}-artifacts.zip`;
+  const res = await fetch(`/api/jobs/${jobId}/artifacts/zip`, {
+    credentials: "same-origin",
+  });
+  if (!res.ok) {
+    throw new Error(`Falha ao baixar ZIP de artefatos: ${res.status}`);
+  }
+  const targetFilename = filenameFromDisposition(
+    res.headers.get("content-disposition"),
+    fallback,
+  );
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   try {

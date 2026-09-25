@@ -42,6 +42,11 @@ export const BASE_MODEL_OPTIONS: SelectOption<string>[] = [
     label: "Stable Diffusion 1.5",
     description: "Arquitetura Clássica Leve · 512x512",
   },
+  {
+    value: "qwen-image-2.1",
+    label: "Qwen-Image-2.1",
+    description: "7B DiT · Flow Matching · Transparência & 2K",
+  },
 ];
 
 export const SQUARE_RESOLUTION_OPTIONS = [

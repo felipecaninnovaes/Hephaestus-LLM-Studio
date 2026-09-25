@@ -34,6 +34,13 @@ Consolidação única de pendências e melhorias prioritárias. Rotas canônicas
 - **Segurança & Credenciais de Nós:**
   - Adicionar credenciais dedicadas por nó (`heph_o_*`), rotação de tokens e rate-limit de pareamento.
 
+- **Sensores Avançados de GPU & Seleção Multi-GPU (Prioridade Média-Alta):**
+  - Coleta granular de sensores por GPU física: potência (W), utilização (%) e temperatura (°C) via `nvidia-smi` com fallback resiliente para ambientes sem suporte.
+  - Seleção de GPU alvo (`gpuDevice` / `gpu_device`) nos fluxos de submissão de jobs (`/treino`, `/difusao`, autolabel, autotracker, geração img2img).
+  - Mitigação definitiva do **Pitfall D9** (swap de índice pós-reboot) via identificação por GPU UUID de hardware no Docker executor (`--gpus "device=GPU-..."`).
+  - Coexistência de isolamento do daemon de difusão (`DIFFUSION_DAEMON_GPU_DEVICE`) com treinos efêmeros em nós multi-GPU.
+  - Componentes de UI: `MultiGpuRack`, alertas térmicos escalonados e `GpuDeviceSelect` integrado às telas do Studio.
+  - Spec completa: `tasks/specs/multi-gpu-sensores-selecao.md`.
 - **Observabilidade & Reprodutibilidade do Treino (fatia `fix/treino-observabilidade` — código completo 2026-09-20; deploy orquestrator/manager/BFF/engines na próxima janela segura):**
   - [x] C2b (regressão, P0): `parse_metrics_line` do orchestrator não achata `v["metrics"]` do `telemetry.jsonl` (coletor prioriza esse arquivo desde RD-022/ADR-0023) → `loss`/`lr` nunca persistam em `jobs.metrics` → gráfico de loss vazio em runtime e pós-refresh. (Quitado 2026-09-20 `fix/treino-observabilidade` commit fbb58e8; deploy na próxima janela segura do orchestrator.)
   - [x] C1: "Repetir Treino"/"Retomar" do ActionCenter gravam chaves sessionStorage órfãs (`heph_resume_job`/`heph_rerun_yolo` — zero consumidores); `training_config.json` (snake_case aninhado em `lora:`) é incompatível com o importador de preset da Forja. (Quitado 2026-09-20 commit 615ed65: mapper único `lib/paramsToPreset.ts`, consumidor YOLO real em `/treino`, import snake→preset, fallback de download rotulado `_source`.)

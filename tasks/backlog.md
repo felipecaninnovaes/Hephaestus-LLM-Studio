@@ -64,10 +64,10 @@ Consolidação única de pendências e melhorias prioritárias. Rotas canônicas
 - **Acessibilidade & Modais:**
   - [x] Focus-trap, scroll lock e restauração de foco nos diálogos base (`useFocusTrap`/`useBodyScrollLock` em `Modal`/`Drawer`/`ConfirmDialog`; shims antigos removidos).
 - **Acessibilidade — hit-area:**
-  - Ajuste de hit-area mínima em `SegmentedControl` (WCAG 2.5.8).
+  - [x] Ajuste de hit-area mínima em `SegmentedControl` (WCAG 2.5.8) (Quitado: fatia `feat/web-ui-modularizacao-a11y`).
 - **Refinamento de Estado:**
-  - Eliminar duplicação da lógica `canTrain`/`trainDisabledReason` na galeria de datasets.
-  - Desativar polling de telemetria da sidebar quando o drawer estiver fechado.
+  - [x] Eliminar duplicação da lógica `canTrain`/`trainDisabledReason` na galeria de datasets (Quitado: unificado em `lib/datasets.ts`).
+  - [x] Desativar polling de telemetria da sidebar quando o drawer estiver fechado ou aba oculta (Quitado: listener de visibilidade e estado do drawer em `Sidebar.tsx`).
   - Push-down de paginação/filtro de quantização no BFF/manager para evitar degradação em memória.
 
 ---

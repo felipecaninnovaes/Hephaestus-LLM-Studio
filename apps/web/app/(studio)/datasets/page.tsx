@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Button,
@@ -20,7 +20,6 @@ import {
   IconDatabase,
   IconGrid,
   IconList,
-  IconPlay,
   IconPlus,
   IconUpload,
 } from "@/components/icons";
@@ -80,6 +79,14 @@ export default function DatasetsPage() {
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [menu, setMenu] = useState<{ dataset: Dataset; x: number; y: number } | null>(null);
   const [trainDataset, setTrainDataset] = useState<Dataset | null>(null);
+
+  const handleTrain = (dataset: Dataset) => {
+    if (dataset.category === "difusao" || (dataset.category as string) === "diffusion") {
+      router.push(`/difusao?datasetId=${dataset.id}`);
+      return;
+    }
+    setTrainDataset(dataset);
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -365,7 +372,7 @@ export default function DatasetsPage() {
       ) : viewMode === "grid" ? (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 2xl:grid-cols-4">
           {filtered.map((d) => (
-            <DatasetCard key={d.id} dataset={d} onContextMenu={handleContextMenu} onTrain={(d) => setTrainDataset(d)} />
+            <DatasetCard key={d.id} dataset={d} onContextMenu={handleContextMenu} onTrain={handleTrain} />
           ))}
         </div>
       ) : (
@@ -413,7 +420,7 @@ export default function DatasetsPage() {
           y={menu.y}
           onClose={() => setMenu(null)}
           onDelete={(d) => setDeleting(d)}
-          onTrain={(d) => setTrainDataset(d)}
+          onTrain={handleTrain}
         />
       )}
       {trainDataset && (

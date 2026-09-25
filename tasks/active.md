@@ -1,9 +1,9 @@
 # Memória Ativa — Hephaestus LLM Studio
 
-- **Branch atual:** `refactor/modularizacao-engines` (aberta de `develop`)
-- **Fatia em andamento:** Otimização e Modularização das Engines (Redução de Tamanho de Arquivos & Desacoplamento Arquitetural).
-  Foco: Desacoplar god procedures (`flux.py` 1400L, `runner.py` 719L, `sdxl.py` 799L, `sd15.py` 734L, `qwen_image.py` 635L) em loaders e estratégias dedicadas, elevar VRAM context ao `engine-kit` e otimizar `.dockerignore`.
-  Spec: `tasks/specs/engines-modularizacao.md`.
+- **Branch atual:** `develop`
+- **Fatia em andamento:** Validação com conta RunPod real / Próxima fatia de produto.
+- **Última fatia integrada:** Otimização e Modularização das Engines (`refactor/modularizacao-engines` mergeada com sucesso em `develop`).
+  Auditado e aprovado pelo `@reviewer`, CI 100% verde (Rust, Web, Compose e Python com 227 testes de difusão e suites de todas as engines).
 - **HOTFIX permissões nó GPU (2026-09-22):** engines uid 1000 não escreviam em
   dir de job root:0755 (EACCES pós-geração). Bridge NO NÓ: `ENGINE_USER: "0:0"`
   em `infra/compose.gpu.yaml` (+`.bak-perms`). Fix permanente na branch

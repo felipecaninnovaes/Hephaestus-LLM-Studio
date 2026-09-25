@@ -361,6 +361,15 @@ def _real_generate(
         else:
             _die(f"Modelo não suportado para geração real: {base_model}")
 
+    if pipeline is not None and hasattr(pipe, "unload_lora_weights"):
+        try:
+            pipe.unload_lora_weights()
+        except Exception as exc:
+            print(
+                f"[DIFFUSION-GEN] [AVISO] Falha ao descarregar LoRA residual do pipeline em cache: {exc}",
+                flush=True,
+            )
+
     if loras_effective:
         emitter.emit(
             phase="injecting_lora",

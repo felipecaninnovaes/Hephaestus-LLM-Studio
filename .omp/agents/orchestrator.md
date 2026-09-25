@@ -50,6 +50,7 @@ Você coordena, define contratos e integra. Não implemente tudo na sessão prin
 
 ## 5. Regras de Ouro
 
+- **Node com GPU**: O servidor com GPU RTX 3060 de 12Gb fica no SSH: dockeruser@10.15.1.2 no caminho `~/Hephaestus-LLM-Studio`
 - **Contratos antes de código:** defina tipos/endpoints no `context` antes de paralelizar.
 - **Regra das Duas Correções:** 2 falhas no mesmo erro = pare, isole a causa raiz e replaneje.
 - **Sem drive-by:** mudanças estritamente dentro da fatia ativa.

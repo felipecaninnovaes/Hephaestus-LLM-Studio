@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import nullcontext
 import math
 import os
 from pathlib import Path
@@ -70,7 +71,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
     epoch_offset = max(0, int(cfg.get("epoch_offset") or lora_cfg.get("epoch_offset") or 0))
     grad_accum = max(1, int(lora_cfg.get("gradient_accumulation_steps", 1)))
     batch_size = max(1, int(lora_cfg.get("batch_size", 1)))
-    resolution = int(cfg.get("resolution", 1024))
+    resolution = int(cfg.get("resolution") or lora_cfg.get("resolution") or 1024)
 
     raw_dataset_path = cfg.get("dataset_path")
     if not raw_dataset_path:
@@ -313,8 +314,8 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             if pv.ndim == 4:
                 pv = pv.unsqueeze(2)
             if pv.shape[1] == 3:
-                alpha = torch.ones((1, 1, *pv.shape[2:]), device=device, dtype=pv.dtype)
-                pv = torch.cat([pv, alpha], dim=1)
+                alpha_channel = torch.ones((1, 1, *pv.shape[2:]), device=device, dtype=pv.dtype)
+                pv = torch.cat([pv, alpha_channel], dim=1)
             l = vae.encode(pv.float()).latent_dist.sample().to(dtype=target_dtype)
             if latents_mean is not None and latents_std is not None:
                 l = (l - latents_mean) * latents_std
@@ -483,8 +484,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 phase="baseline_failed",
                 message="Falha ao gerar amostra baseline pré-treino.",
             )
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    release_memory()
 
     # 7. Loop de Treino Real
     for epoch_idx in range(1, epochs + 1):
@@ -511,12 +511,12 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 if pixel_values.ndim == 4:
                     pixel_values = pixel_values.unsqueeze(2)
                 if pixel_values.shape[1] == 3:
-                    alpha = torch.ones(
+                    alpha_channel = torch.ones(
                         (pixel_values.shape[0], 1, *pixel_values.shape[2:]),
                         device=device,
                         dtype=pixel_values.dtype,
                     )
-                    pixel_values = torch.cat([pixel_values, alpha], dim=1)
+                    pixel_values = torch.cat([pixel_values, alpha_channel], dim=1)
                 with torch.no_grad():
                     vae_dev = vae.to(device) if getattr(vae, "device", None) != torch.device(device) else vae
                     latents = vae_dev.encode(pixel_values.float()).latent_dist.sample()
@@ -596,8 +596,9 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             else:
                 trans_kwargs["img_shapes"] = [(1, latent_h // 2, latent_w // 2)] * bsz
 
-            # Forward pass no Transformer
-            pred = transformer(**trans_kwargs)[0]
+            # Forward pass no Transformer sob autocast para economizar VRAM no backward pass
+            with torch.cuda.amp.autocast(dtype=target_dtype) if device == "cuda" else nullcontext():
+                pred = transformer(**trans_kwargs)[0]
 
             # O transformer opera sobre a sequência conjunta (texto + imagem).
             # Isola exclusivamente os tokens da imagem do target no final da sequência se saída for conjunta.

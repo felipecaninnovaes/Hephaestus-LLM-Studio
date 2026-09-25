@@ -405,6 +405,52 @@ class TestQwenImage(unittest.TestCase):
         self.assertEqual(first_mask.shape, (1, 16))
         self.assertEqual(first_ipm.shape, (1, 16))
 
+    def test_qwen_lora_alpha_not_shadowed_by_image_alpha(self):
+        """Garante que a variável de canal alpha da imagem não sobrescreve o lora_alpha escalar."""
+        import inspect
+        from trainer_difusao.models import qwen_image
+        src = inspect.getsource(qwen_image._real_train_qwen_image)
+        # Não deve haver 'alpha = torch.ones' (deve ser 'alpha_channel = torch.ones')
+        self.assertNotIn("alpha = torch.ones", src)
+        self.assertIn("alpha_channel = torch.ones", src)
+
+    def test_qwen_sample_does_not_pass_image_pad_mask_when_unsupported(self):
+        """Garante que _generate_sample_qwen não injeta image_pad_mask se o pipeline não o aceita."""
+        from unittest.mock import MagicMock
+        from trainer_difusao.models.qwen_pkg.sample import _generate_sample_qwen
+        import torch
+
+        mock_pipe_instance = MagicMock()
+        # __call__ sem image_pad_mask nos argumentos
+        def fake_call(prompt=None, height=512, width=512, generator=None, num_inference_steps=20, true_cfg_scale=3.5, prompt_embeds=None, callback_on_step_end=None):
+            res = MagicMock()
+            img = MagicMock()
+            res.images = [img]
+            return res
+        mock_pipe_instance.__call__ = fake_call
+
+        mock_pipe_cls = MagicMock(return_value=mock_pipe_instance)
+
+        sample_embeds = {
+            "prompt_embeds": torch.randn(1, 16, 4096),
+            "prompt_embeds_mask": torch.ones(1, 16, dtype=torch.bool),
+            "image_pad_mask": torch.zeros(1, 16, dtype=torch.bool),
+        }
+
+        from unittest.mock import patch
+        with patch("diffusers.QwenImage21Pipeline", mock_pipe_cls, create=True), \
+             patch("trainer_difusao.models.qwen_pkg.sample.os.replace"):
+            out_file = self.tmp_path / "sample_test.png"
+            _generate_sample_qwen(
+                transformer=MagicMock(),
+                vae=MagicMock(),
+                scheduler=MagicMock(),
+                prompt="test prompt",
+                output_path=out_file,
+                resolution=1024,
+                sample_embeds=sample_embeds,
+            )
+            self.assertTrue(mock_pipe_cls.called)
 
 if __name__ == "__main__":
     unittest.main()

@@ -171,11 +171,12 @@ def _generate_sample_qwen(
                         pipe_kwargs["prompt_embeds_mask"] = (
                             pem.to(device) if hasattr(pem, "to") else pem
                         )
-                    ipm = sample_embeds.get("image_pad_mask")
-                    if ipm is not None:
-                        pipe_kwargs["image_pad_mask"] = (
-                            ipm.to(device) if hasattr(ipm, "to") else ipm
-                        )
+                    if "image_pad_mask" in call_params:
+                        ipm = sample_embeds.get("image_pad_mask")
+                        if ipm is not None:
+                            pipe_kwargs["image_pad_mask"] = (
+                                ipm.to(device) if hasattr(ipm, "to") else ipm
+                            )
                 else:
                     print(
                         f"[WARN] Amostra de validação cancelada: sample_embeds ausente para '{prompt[:40]}'.",

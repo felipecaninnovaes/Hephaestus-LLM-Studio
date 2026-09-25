@@ -19,11 +19,11 @@ Consolidação única de pendências e melhorias prioritárias. Rotas canônicas
   - Ancorar watchdog de `preparing` no `updated_at` (heartbeat do worker) para builds longos (>60min).
   - Spec: `tasks/specs/backend-autonomia.md`.
 - **Modularização e Autonomia do Orchestrator (P0–P3):**
-  - Decomposição do monólito `lib.rs` (7.9k LOC) em Clean Architecture (`domain/`, `ports/`, `adapters/`, `app/`, `server/`, `daemon/`, `testkit/`).
-  - Autonomia do nó: spool outbox local durável para reports, heartbeat com backoff/jitter, reaper periódico de containers órfãos e GC por watermark.
+  - [x] Decomposição do monólito `lib.rs` (7.9k LOC) em Clean Architecture (`domain/`, `ports/`, `adapters/`, `app/`, `server/`, `daemon/`, `testkit/`). (Quitado: fatia `refactor/orchestrator-modularization`).
+  - [x] Autonomia do nó: spool outbox local durável para reports (P0-2), heartbeat com backoff/jitter (P2-1), reaper periódico de containers órfãos (P2-2), admissão atômica sem TOCTOU (P0-3) e graceful shutdown coordenado (P2-5). (Quitado: fatia `feat/orchestrator-autonomia`).
   - [x] Eliminação de duplicidades de DTOs espelho entre orchestrator/manager via `heph-contracts` (Quitado: Wave 1 `RD-010`).
   - [x] Despacho íntegro de `control_package_ref` no `dispatch_next` (Quitado: Wave 2 `RD-020`).
-  - Spec: `tasks/specs/orchestrator-modularization.md`.
+  - Specs: `tasks/specs/orchestrator-modularization.md` e `tasks/specs/backend-autonomia.md`.
 - **Packaging & Reuso:**
   - Assinar `build_package_diffusion` com `fingerprint` para permitir reuso de pacotes em treinos de difusão.
   - Marcar `dataset_versions` como `complete` apenas pós-upload confirmado para evitar reuso de versões órfãs.

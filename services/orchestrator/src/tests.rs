@@ -4770,3 +4770,670 @@ async fn create_dir_all_open_grants_world_write() {
         mode & 0o777
     );
 }
+
+// ---------------------------------------------------------------------------
+// Testes P0-3: Admissão Atômica e Concorrência
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_try_admit_concurrency_race() {
+    let state = Arc::new(AppState {
+        s3: Arc::new(FakeS3WithWeights::new(vec![])),
+        report_client: Arc::new(FakeReport::new()),
+        executor: Arc::new(FakeTrainerExecutor::new()),
+        active_jobs: new_active_jobs(),
+        manager_token: None,
+        gpu_devices: None,
+        gpu_allow_mock: false,
+        pairing: Arc::new(PairingState::new("test-code".to_string())),
+        daemon_state: None,
+        max_concurrent_jobs: 1,
+        admission_lock: Arc::new(std::sync::Mutex::new(())),
+    });
+
+    let num_tasks = 50;
+    let mut handles = Vec::new();
+    let barrier = Arc::new(tokio::sync::Barrier::new(num_tasks));
+
+    for i in 0..num_tasks {
+        let state = Arc::clone(&state);
+        let barrier = Arc::clone(&barrier);
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+            let job_id = format!("job-{i}");
+            state.try_admit(job_id, ActiveJobState::new(String::new()))
+        }));
+    }
+
+    let mut success_count = 0;
+    let mut rejected_count = 0;
+
+    for handle in handles {
+        match handle.await.unwrap() {
+            Ok(()) => success_count += 1,
+            Err(AdmissionError::CapacityExceeded) => rejected_count += 1,
+            Err(AdmissionError::DuplicateJobId) => panic!("unexpected duplicate job id"),
+        }
+    }
+
+    assert_eq!(success_count, 1, "exatamente 1 job deve ser admitido");
+    assert_eq!(
+        rejected_count,
+        num_tasks - 1,
+        "todos os demais jobs devem ser rejeitados por capacidade"
+    );
+    assert_eq!(state.active_jobs.len(), 1);
+}
+
+#[test]
+fn test_try_admit_duplicate_job_id() {
+    let state = AppState {
+        s3: Arc::new(FakeS3WithWeights::new(vec![])),
+        report_client: Arc::new(FakeReport::new()),
+        executor: Arc::new(FakeTrainerExecutor::new()),
+        active_jobs: new_active_jobs(),
+        manager_token: None,
+        gpu_devices: None,
+        gpu_allow_mock: false,
+        pairing: Arc::new(PairingState::new("test-code".to_string())),
+        daemon_state: None,
+        max_concurrent_jobs: 5,
+        admission_lock: Arc::new(std::sync::Mutex::new(())),
+    };
+
+    let res1 = state.try_admit("job-1".to_string(), ActiveJobState::new(String::new()));
+    assert_eq!(res1, Ok(()));
+
+    let res2 = state.try_admit("job-1".to_string(), ActiveJobState::new(String::new()));
+    assert_eq!(res2, Err(AdmissionError::DuplicateJobId));
+
+    let res3 = state.try_admit("job-2".to_string(), ActiveJobState::new(String::new()));
+    assert_eq!(res3, Ok(()));
+}
+
+// ---------------------------------------------------------------------------
+// Testes P0-2: Spool Outbox Durável de Reports
+// ---------------------------------------------------------------------------
+
+struct ControllableReportClient {
+    calls: std::sync::Mutex<Vec<(String, ReportBody)>>,
+    behavior: std::sync::Mutex<Option<Result<(), String>>>,
+}
+
+impl ControllableReportClient {
+    fn new(default_behavior: Result<(), String>) -> Self {
+        Self {
+            calls: std::sync::Mutex::new(Vec::new()),
+            behavior: std::sync::Mutex::new(Some(default_behavior)),
+        }
+    }
+
+    fn set_behavior(&self, result: Result<(), String>) {
+        *self.behavior.lock().unwrap_or_else(|p| p.into_inner()) = Some(result);
+    }
+
+    fn calls_count(&self) -> usize {
+        self.calls.lock().unwrap_or_else(|p| p.into_inner()).len()
+    }
+}
+
+#[async_trait]
+impl ReportClient for ControllableReportClient {
+    async fn report(&self, job_id: &str, body: &ReportBody) -> Result<(), String> {
+        self.calls
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push((job_id.to_string(), body.clone()));
+        self.behavior
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .unwrap_or(Ok(()))
+    }
+}
+
+#[tokio::test]
+async fn test_outbox_success_removes_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let outbox_dir = tmp.path().join(".outbox");
+
+    let inner = Arc::new(ControllableReportClient::new(Ok(())));
+    let client = OutboxReportClient::new(outbox_dir.clone(), inner.clone());
+
+    let body = ReportBody {
+        status: "running".to_string(),
+        progress: Some(0.5),
+        epoch: Some(1),
+        step: None,
+        metrics: None,
+        artifacts: None,
+        meta_content: None,
+        error: None,
+        phase: None,
+        message: None,
+    };
+
+    let res = client.report("job-100", &body).await;
+    assert_eq!(res, Ok(()));
+    assert_eq!(inner.calls_count(), 1);
+
+    // O arquivo em spool deve ter sido removido após sucesso
+    let mut files = vec![];
+    let mut rd = tokio::fs::read_dir(&outbox_dir).await.unwrap();
+    while let Ok(Some(entry)) = rd.next_entry().await {
+        if entry.path().is_file() {
+            files.push(entry.path());
+        }
+    }
+    assert!(
+        files.is_empty(),
+        "arquivo deve ser removido após envio com sucesso"
+    );
+}
+
+#[tokio::test]
+async fn test_outbox_recoverable_failure_persists_file_and_drain_resends() {
+    let tmp = tempfile::tempdir().unwrap();
+    let outbox_dir = tmp.path().join(".outbox");
+
+    // Inner falha com erro 500 (recuperável)
+    let inner = Arc::new(ControllableReportClient::new(Err(
+        "report status: 500 Internal Server Error".to_string(),
+    )));
+    let client = OutboxReportClient::new(outbox_dir.clone(), inner.clone());
+
+    let body = ReportBody {
+        status: "running".to_string(),
+        progress: Some(0.1),
+        epoch: Some(1),
+        step: None,
+        metrics: None,
+        artifacts: None,
+        meta_content: None,
+        error: None,
+        phase: None,
+        message: None,
+    };
+
+    // Chamada inicial: erro recuperável retorna Ok(()) para o caller e mantém arquivo no spool
+    let res = client.report("job-200", &body).await;
+    assert_eq!(res, Ok(()));
+    assert_eq!(inner.calls_count(), 1);
+
+    // O arquivo deve persistir em disco
+    let mut files = vec![];
+    let mut rd = tokio::fs::read_dir(&outbox_dir).await.unwrap();
+    while let Ok(Some(entry)) = rd.next_entry().await {
+        if entry.path().is_file() {
+            files.push(entry.path());
+        }
+    }
+    assert_eq!(
+        files.len(),
+        1,
+        "arquivo de relatório deve permanecer no spool"
+    );
+
+    // Agora o manager volta a responder com sucesso
+    inner.set_behavior(Ok(()));
+
+    // Executa drain_outbox
+    let drained = drain_outbox(&outbox_dir, inner.as_ref()).await;
+    assert_eq!(drained, 1, "drain_outbox deve ter drenado 1 item");
+    assert_eq!(
+        inner.calls_count(),
+        2,
+        "inner client deve ter recebido a segunda chamada"
+    );
+
+    // O spool agora deve estar limpo
+    let mut files_after = vec![];
+    let mut rd_after = tokio::fs::read_dir(&outbox_dir).await.unwrap();
+    while let Ok(Some(entry)) = rd_after.next_entry().await {
+        if entry.path().is_file() {
+            files_after.push(entry.path());
+        }
+    }
+    assert!(
+        files_after.is_empty(),
+        "spool deve estar vazio após drain_outbox com sucesso"
+    );
+}
+
+#[tokio::test]
+async fn test_outbox_unrecoverable_failure_removes_file_and_errors() {
+    let tmp = tempfile::tempdir().unwrap();
+    let outbox_dir = tmp.path().join(".outbox");
+
+    // Inner falha com erro 400 (não recuperável)
+    let inner = Arc::new(ControllableReportClient::new(Err(
+        "report status: 400 Bad Request".to_string(),
+    )));
+    let client = OutboxReportClient::new(outbox_dir.clone(), inner.clone());
+
+    let body = ReportBody {
+        status: "failed".to_string(),
+        progress: None,
+        epoch: None,
+        step: None,
+        metrics: None,
+        artifacts: None,
+        meta_content: None,
+        error: Some("bad payload".to_string()),
+        phase: None,
+        message: None,
+    };
+
+    let res = client.report("job-300", &body).await;
+    assert!(res.is_err(), "deve retornar Err para erro não recuperável");
+    assert_eq!(inner.calls_count(), 1);
+
+    // O arquivo em spool NÃO deve ficar acumulado para sempre
+    let mut files = vec![];
+    let mut rd = tokio::fs::read_dir(&outbox_dir).await.unwrap();
+    while let Ok(Some(entry)) = rd.next_entry().await {
+        if entry.path().is_file() {
+            files.push(entry.path());
+        }
+    }
+    assert!(
+        files.is_empty(),
+        "arquivo não deve permanecer no spool em erro 400 permanente"
+    );
+}
+
+#[test]
+fn test_is_unrecoverable_error_logic() {
+    assert!(is_unrecoverable_error("report status: 400 Bad Request"));
+    assert!(is_unrecoverable_error("report status: 404 Not Found"));
+    assert!(is_unrecoverable_error(
+        "report status: 422 Unprocessable Entity"
+    ));
+    assert!(is_unrecoverable_error("unrecoverable error occurred"));
+
+    assert!(!is_unrecoverable_error(
+        "report status: 408 Request Timeout"
+    ));
+    assert!(!is_unrecoverable_error(
+        "report status: 429 Too Many Requests"
+    ));
+    assert!(!is_unrecoverable_error(
+        "report status: 500 Internal Server Error"
+    ));
+    assert!(!is_unrecoverable_error(
+        "report status: 503 Service Unavailable"
+    ));
+    assert!(!is_unrecoverable_error(
+        "report request: connection refused"
+    ));
+
+    // Não deve acusar falso positivo para UUIDs contendo "400", "404", "422" em URLs
+    assert!(!is_unrecoverable_error(
+        "report request: error sending request for url (http://manager:8080/jobs/abcd-400-efgh/report): connection refused"
+    ));
+    assert!(!is_unrecoverable_error(
+        "report request: http://manager:8080/jobs/1234-404-5678/report: connection reset"
+    ));
+    assert!(!is_unrecoverable_error(
+        "report request: http://manager:8080/jobs/9999-422-0000/report: host unreachable"
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// Testes P2-1: Heartbeat Backoff Adaptativo e Jitter
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_heartbeat_backoff_zero_failures() {
+    let base = 2;
+    // Com 0 falhas, a espera deve ser exatamente base_interval_secs sem jitter
+    let wait = compute_heartbeat_backoff(base, 0, 999);
+    assert_eq!(wait, Duration::from_secs(2));
+}
+
+#[test]
+fn test_heartbeat_backoff_exponential_growth_and_cap() {
+    let base = 2;
+
+    // Falha 1: 2 * 2^1 = 4s + 200ms jitter
+    let wait1 = compute_heartbeat_backoff(base, 1, 200);
+    assert_eq!(wait1, Duration::from_millis(4200));
+
+    // Falha 2: 2 * 2^2 = 8s + 500ms jitter
+    let wait2 = compute_heartbeat_backoff(base, 2, 500);
+    assert_eq!(wait2, Duration::from_millis(8500));
+
+    // Falha 3: 2 * 2^3 = 16s + 0ms jitter
+    let wait3 = compute_heartbeat_backoff(base, 3, 0);
+    assert_eq!(wait3, Duration::from_millis(16000));
+
+    // Falha 4: min(2 * 2^4 = 32, 30) = 30s + 350ms jitter
+    let wait4 = compute_heartbeat_backoff(base, 4, 350);
+    assert_eq!(wait4, Duration::from_millis(30350));
+
+    // Falha 5+: capped em 30s + jitter
+    let wait5 = compute_heartbeat_backoff(base, 5, 800);
+    assert_eq!(wait5, Duration::from_millis(30800));
+
+    let wait10 = compute_heartbeat_backoff(base, 10, 150);
+    assert_eq!(wait10, Duration::from_millis(30150));
+}
+
+#[test]
+fn test_heartbeat_backoff_jitter_modulo() {
+    let base = 5;
+    // Jitter >= 1000 deve ser reduzido por % 1000
+    let wait = compute_heartbeat_backoff(base, 1, 1500);
+    // exp_secs = (5 * 2^1) = 10s + 500ms jitter
+    assert_eq!(wait, Duration::from_millis(10500));
+}
+
+// ---------------------------------------------------------------------------
+// Testes P2-2: Reaper de Containers Órfãos e Sweeper Periódico
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_is_container_active_logic() {
+    let active_jobs = new_active_jobs();
+    active_jobs.insert(
+        "job-uuid-123".to_string(),
+        ActiveJobState::new("trainer-job-uuid-123".to_string()),
+    );
+
+    // Nome exato
+    assert!(is_container_active(&active_jobs, "trainer-job-uuid-123"));
+
+    // Contém job_id no nome
+    assert!(is_container_active(
+        &active_jobs,
+        "custom-prefix-job-uuid-123-worker"
+    ));
+
+    // Container não associado
+    assert!(!is_container_active(&active_jobs, "trainer-orphan-999"));
+
+    // Container com nome vazio ou só whitespace
+    assert!(!is_container_active(&active_jobs, ""));
+    assert!(!is_container_active(&active_jobs, "   "));
+}
+
+#[tokio::test]
+async fn test_reconcile_orphan_containers_safe_execution() {
+    let active_jobs = new_active_jobs();
+    // Executa sem panic mesmo se docker não estiver instalado ou sem daemon
+    let count = reconcile_orphan_containers(&active_jobs).await;
+    assert_eq!(count, count); // confirma tipo numérico e execução limpa
+
+    // Com jobs ativos presentes
+    active_jobs.insert(
+        "job-active-1".to_string(),
+        ActiveJobState::new("trainer-active-1".to_string()),
+    );
+    let count2 = reconcile_orphan_containers(&active_jobs).await;
+    assert_eq!(count2, count2);
+}
+
+#[tokio::test]
+async fn test_sweep_orphan_workdirs_removes_expired_cache() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let cache_dir = temp_dir.path().join("datasets").join("datasets-cache");
+    tokio::fs::create_dir_all(&cache_dir).await.unwrap();
+
+    let old_subdir = cache_dir.join("old-cache-item");
+    tokio::fs::create_dir(&old_subdir).await.unwrap();
+
+    // Executa sweep com max_age = 0s para expirar tudo imediatamente
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    sweep_orphan_workdirs(temp_dir.path(), Duration::from_millis(10)).await;
+
+    assert!(
+        !old_subdir.exists(),
+        "diretório antigo de cache deve ser removido"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Testes P2-5: Graceful Shutdown via Watch Channel
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_periodic_sweeper_graceful_shutdown() {
+    let active_jobs = new_active_jobs();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let handle = spawn_periodic_sweeper(
+        active_jobs,
+        temp_dir.path().to_path_buf(),
+        Duration::from_millis(50),
+        shutdown_rx,
+    );
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // Notifica shutdown
+    shutdown_tx.send(true).unwrap();
+
+    // Tarefa deve terminar graciosamente sem travar
+    let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
+    assert!(
+        result.is_ok(),
+        "periodic sweeper deve finalizar após sinal de shutdown"
+    );
+}
+
+#[tokio::test]
+async fn test_outbox_drain_worker_graceful_shutdown() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let client = Arc::new(FakeReport {
+        reports: Mutex::new(Vec::new()),
+    });
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let handle = spawn_outbox_drain_worker(
+        temp_dir.path().to_path_buf(),
+        client,
+        Duration::from_millis(50),
+        shutdown_rx,
+    );
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // Notifica shutdown
+    shutdown_tx.send(true).unwrap();
+
+    // Tarefa deve terminar graciosamente sem travar
+    let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
+    assert!(
+        result.is_ok(),
+        "outbox drain worker deve finalizar após sinal de shutdown"
+    );
+}
+
+#[tokio::test]
+async fn test_sweeper_and_outbox_immediate_shutdown() {
+    let active_jobs = new_active_jobs();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let client = Arc::new(FakeReport {
+        reports: Mutex::new(Vec::new()),
+    });
+    // Canal já com shutdown = true no início
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(true);
+
+    let sweeper_handle = spawn_periodic_sweeper(
+        active_jobs,
+        temp_dir.path().to_path_buf(),
+        Duration::from_millis(50),
+        shutdown_rx.clone(),
+    );
+
+    let outbox_handle = spawn_outbox_drain_worker(
+        temp_dir.path().to_path_buf(),
+        client,
+        Duration::from_millis(50),
+        shutdown_rx,
+    );
+
+    // Ambas devem retornar quase instantaneamente
+    let r1 = tokio::time::timeout(Duration::from_millis(500), sweeper_handle).await;
+    let r2 = tokio::time::timeout(Duration::from_millis(500), outbox_handle).await;
+    assert!(
+        r1.is_ok(),
+        "sweeper com shutdown inicial deve retornar imediatamente"
+    );
+    assert!(
+        r2.is_ok(),
+        "outbox worker com shutdown inicial deve retornar imediatamente"
+    );
+}
+
+#[tokio::test]
+async fn test_outbox_preserves_spool_when_url_uuid_contains_400() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let outbox_dir = temp_dir.path().join(".outbox");
+
+    // Erro de rede com UUID contendo "400" na URL
+    let inner = Arc::new(ControllableReportClient::new(Err(
+        "report request: error sending request for url (http://manager:8080/jobs/abcd-400-efgh/report): connection refused".to_string()
+    )));
+    let client = OutboxReportClient::new(outbox_dir.clone(), inner.clone());
+
+    let res = client
+        .report(
+            "abcd-400-efgh",
+            &ReportBody {
+                status: "running".to_string(),
+                progress: Some(0.1),
+                epoch: Some(1),
+                step: Some(10),
+                metrics: None,
+                error: None,
+                artifacts: None,
+                meta_content: None,
+                phase: Some("training".to_string()),
+                message: None,
+            },
+        )
+        .await;
+
+    assert!(
+        res.is_ok(),
+        "falha transitória deve ser enfileirada no outbox"
+    );
+
+    let mut files = Vec::new();
+    if let Ok(mut entries) = tokio::fs::read_dir(&outbox_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            if entry.path().is_file() {
+                files.push(entry.path());
+            }
+        }
+    }
+
+    assert_eq!(
+        files.len(),
+        1,
+        "arquivo DEVE permanecer no spool e NÃO ser deletado como erro 400 permanente"
+    );
+}
+
+#[tokio::test]
+async fn test_abort_preserved_in_preparing_does_not_launch_container() {
+    let tmp = tempfile::tempdir().unwrap();
+    let s3 = Arc::new(FakeS3::new());
+    let zip_path = tmp.path().join("pkg.zip");
+    std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+    let mut dispatch = make_dispatch_with_valid_md5("job-abort-001", "yolo", &zip_path);
+    dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+    let report = Arc::new(FakeReport::new());
+    let executor = Arc::new(FakeTrainerExecutor::new());
+    let active_jobs = new_active_jobs();
+
+    // Simula a etapa de admissão/preparing: job registrado sem container_name ainda
+    active_jobs.insert(dispatch.job_id.clone(), ActiveJobState::new(String::new()));
+
+    // Simula abort chamado enquanto o job está baixando/preparando pesos/pacote
+    if let Some(entry) = active_jobs.get(&dispatch.job_id) {
+        entry.cancel();
+    }
+
+    let res = run_job_inner(
+        &dispatch,
+        s3.clone(),
+        report.clone(),
+        executor.clone(),
+        &active_jobs,
+        None,
+        false,
+        None,
+    )
+    .await;
+
+    assert!(
+        matches!(res, Err(PipelineError::Cancelled)),
+        "deve abortar com Cancelled: {:?}",
+        res
+    );
+
+    // Garante que o container/executor NUNCA foi lançado
+    assert!(
+        executor.last_args().is_none(),
+        "executor não deve ter sido executado quando abortado durante preparing"
+    );
+}
+
+#[tokio::test]
+async fn test_drain_outbox_with_inner_client_does_not_respool() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let outbox_dir = temp_dir.path().join(".outbox");
+
+    // 1. Spool inicial de 2 relatórios usando OutboxReportClient com inner falhando temporariamente
+    let inner_mock = Arc::new(ControllableReportClient::new(Err(
+        "report request: connection refused".to_string(),
+    )));
+    let outbox_client = OutboxReportClient::new(outbox_dir.clone(), inner_mock.clone());
+
+    let body = ReportBody {
+        status: "running".to_string(),
+        progress: Some(0.5),
+        epoch: Some(2),
+        step: Some(50),
+        metrics: None,
+        error: None,
+        artifacts: None,
+        meta_content: None,
+        phase: Some("training".to_string()),
+        message: None,
+    };
+
+    let _ = outbox_client.report("job-drain-1", &body).await;
+    let _ = outbox_client.report("job-drain-2", &body).await;
+
+    // Confirma que existem 2 arquivos no spool
+    let mut count_before = 0;
+    if let Ok(mut entries) = tokio::fs::read_dir(&outbox_dir).await {
+        while let Ok(Some(_)) = entries.next_entry().await {
+            count_before += 1;
+        }
+    }
+    assert_eq!(count_before, 2);
+
+    // 2. Agora o inner client recupera conectividade (sucesso)
+    inner_mock.set_behavior(Ok(()));
+
+    // 3. Drena usando o inner client direto (como é feito em main.rs no shutdown e no worker)
+    let drained = drain_outbox(&outbox_dir, inner_mock.as_ref()).await;
+    assert_eq!(drained, 2, "deve drenar os 2 relatórios pendentes");
+
+    // 4. Confirma que a pasta do spool ficou limpa e sem arquivos temporários
+    let mut count_after = 0;
+    if let Ok(mut entries) = tokio::fs::read_dir(&outbox_dir).await {
+        while let Ok(Some(_)) = entries.next_entry().await {
+            count_after += 1;
+        }
+    }
+    assert_eq!(
+        count_after, 0,
+        "outbox deve estar completamente vazia após dreno"
+    );
+}

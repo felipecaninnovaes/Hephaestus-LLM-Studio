@@ -1,7 +1,7 @@
 # Memória Ativa — Hephaestus LLM Studio
 
-- **Branch atual:** `develop`
-- **Fatia em andamento:** Validação com conta RunPod real / Próxima fatia de produto.
+- **Branch atual:** `feat/orchestrator-autonomia`
+- **Fatia em andamento:** Autonomia e Resiliência do Orchestrator (P0-3 Admissão Atômica, P0-2 Spool Outbox de Reports, P2-1 Heartbeat Backoff/Jitter, P2-2 Sweeper Reaper, P2-5 Graceful Shutdown).
 - **Última fatia integrada:** Otimização e Modularização das Engines (`refactor/modularizacao-engines` mergeada com sucesso em `develop`).
   Auditado e aprovado pelo `@reviewer`, CI 100% verde (Rust, Web, Compose e Python com 227 testes de difusão e suites de todas as engines).
 - **HOTFIX permissões nó GPU (2026-09-22):** engines uid 1000 não escreviam em
@@ -17,12 +17,21 @@
   novo subagente dedicado `@docs`.
 
 ## Checklist Imediato da Sessão Ativa
-- [x] MCP RunPod em `.omp/mcp.json` (hosted OAuth + docs server)
-- [x] `infra/Dockerfile.runpod-worker` + entrypoint DinD (dockerd interno, rede `heph-engine`, nvidia runtime)
-- [x] Smoke test local do pod privilegiado (`/health` ok, runtime nvidia, rede criada)
-- [x] Runbook `docs/infra/runpod-worker.md` (template via MCP/REST/Console + conectividade)
-- [ ] Validar com conta RunPod real (tier privileged, pod de teste, adoção via UI)
+- [x] P0-3: Admissão Atômica no Dispatch (`server/handlers.rs` sem race condition TOCTOU)
+- [x] P0-2: Spool Outbox durável para reports em disco (`app/outbox.rs` com drain em background)
+- [x] P2-1: Heartbeat com backoff adaptativo e jitter após falhas (`adapters/heartbeat_http.rs`)
+- [x] P2-2: Reaper periódico de containers órfãos no sweeper (`adapters/sweeper.rs`)
+- [x] P2-5: Graceful shutdown via SIGTERM/SIGINT com drain e liberação de GPU
+- [x] Validação com suíte de testes do orchestrator e workspace
+- [x] Auditoria com @reviewer
 ## Entregas Concluídas Recentemente
+- [x] Autonomia e Resiliência do Orchestrator (`feat/orchestrator-autonomia`):
+  - **P0-3 (Admissão atômica no dispatch):** transição para `state.try_admit` sob Mutex eliminando janela de concorrência TOCTOU e rejeitando duplicidade de `job_id` com HTTP 409 Conflict.
+  - **P0-2 (Spool Outbox durável em disco):** persistência atômica (write temp + rename) em `$ORCH_WORKDIR/.outbox/` com drain periódico em background (5s) e flush no shutdown, garantindo entrega at-least-once de relatórios de conclusão/erro mesmo com o manager temporariamente fora do ar.
+  - **P2-1 (Heartbeat adaptativo com backoff/jitter):** intervalo base de 2s escalando exponencialmente até 30s (+jitter determinístico) após falhas consecutivas de rede/manager, prevenindo tempestades de reconexão.
+  - **P2-2 (Reaper periódico de containers órfãos em runtime):** loop a cada 60s reconciliando containers Docker `trainer-*` ativos com `active_jobs` em memória; tolerância de 300s de idade para evitar matar containers recém-spawnados; parada graciosa (`docker stop --time 5`) antes de `docker rm --force`.
+  - **P2-5 (Graceful shutdown):** interceptação coordenada de SIGTERM/SIGINT no Axum com `with_graceful_shutdown`; encerramento ordenado cancelando background loops, aguardando jobs ativos por até 10s, interrompendo containers residuais, desativando o daemon de difusão HTTP e drenando a outbox em disco antes da saída.
+  - Auditado e aprovado pelo `@reviewer` (124 testes unitários/integração passando sem regressões).
 - [x] Hotfix treino Qwen-Image-2.1: corrigido shadowing da variável `alpha` (LoRA) por tensor do canal alpha da imagem (`torch.ones((1,1,1,H,W))`) que causava `RuntimeError: The size of tensor a (4096) must match the size of tensor b (1024) at non-singleton dimension 4` no forward pass do LoRA; corrigida checagem de `image_pad_mask` em `_generate_sample_qwen` evitando `TypeError` no `QwenImage21Pipeline`; corrigido vazamento de VRAM do Text Encoder onde `pipe_kwargs["text_encoder"]` e referências internas em `text_pipeline.components` mantinham 6.3 GB presos na GPU (agora caindo para 0.01 GB); cobertura de resolução via `lora_cfg.resolution` e autocast bfloat16 adicionados. Validado com 227 testes em `trainer-difusao` e imagem `:gpu` reconstruída com `--no-cache` e smoke test de treino e amostra 100% aprovado no nó TrueNAS.
 - [x] Modularização e Otimização das Engines (`refactor/modularizacao-engines`): criação de `trainer_difusao/loaders/` (quant_cache, transformer_loader, text_encoder_loader), `trainer_difusao/models/sd_pkg/` (embeddings, sample), helpers atômicos em `lora_io`, context manager de VRAM em `engine-kit`, `.dockerignore` dedicado nas engines, spec `tasks/specs/engines-modularizacao.md`. 363 testes passando em todas as engines; auditado e aprovado pelo `@reviewer`.
 - [x] Suporte transversal ao Qwen-Image-2.1 (`packages/`, `engines/trainer-difusao`, `services/`, `apps/web`).

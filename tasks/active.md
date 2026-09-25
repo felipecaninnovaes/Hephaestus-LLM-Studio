@@ -1,9 +1,9 @@
 # Memória Ativa — Hephaestus LLM Studio
 
-- **Branch atual:** `feat/web-ui-modularizacao-a11y`
-- **Fatia em andamento:** Frontend UI: Acessibilidade (WCAG 2.5.8), Polling Resiliente e Desacoplamento de Select (`apps/web`).
-- **Última fatia integrada:** Consumo Canônico de `heph-contracts` no BFF `api-principal` & Modularização de `jobs/handlers` (`feat/api-principal-contracts-modularizacao` mergeada com sucesso em `develop`).
-  Auditado e aprovado pelo `@reviewer`, 786 testes unitários/contrato passando em todo o workspace Rust (10 novos testes).
+- **Branch atual:** `develop`
+- **Fatia em andamento:** Nenhuma (Aguardando definição da próxima fatia).
+- **Última fatia integrada:** Modularização, Acessibilidade e Polling Resiliente do Frontend (`feat/web-ui-modularizacao-a11y` mergeada com sucesso em `develop`).
+  Auditado e aprovado pelo `@reviewer`, 16 testes frontend passando, build Next.js 100% verde (14 rotas) e 786 testes no workspace Rust.
 - **HOTFIX permissões nó GPU (2026-09-22):** engines uid 1000 não escreviam em
   dir de job root:0755 (EACCES pós-geração). Bridge NO NÓ: `ENGINE_USER: "0:0"`
   em `infra/compose.gpu.yaml` (+`.bak-perms`). Fix permanente na branch

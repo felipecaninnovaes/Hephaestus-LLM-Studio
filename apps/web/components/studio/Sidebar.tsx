@@ -15,7 +15,6 @@ import {
   IconLogOut,
   IconNetwork,
   IconPin,
-  IconPlay,
   IconServer,
   IconSettings,
   IconShield,
@@ -127,6 +126,8 @@ export default function Sidebar({
 
   useEffect(() => {
     let active = true;
+    let interval: NodeJS.Timeout | number | null = null;
+
     const fetchTelem = async () => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") {
         return;
@@ -136,17 +137,38 @@ export default function Sidebar({
         if (active) setTelemetry(data);
       } catch {}
     };
-    fetchTelem();
-    const interval = setInterval(fetchTelem, 3000);
+
+    const startPolling = () => {
+      if (!interval) {
+        interval = setInterval(fetchTelem, 3000);
+      }
+    };
+
+    const stopPolling = () => {
+      if (interval) {
+        clearInterval(interval);
+        interval = null;
+      }
+    };
+
     const handleVisibilityChange = () => {
       if (typeof document !== "undefined" && document.visibilityState === "visible") {
         fetchTelem();
+        startPolling();
+      } else {
+        stopPolling();
       }
     };
+
+    if (typeof document === "undefined" || document.visibilityState === "visible") {
+      fetchTelem();
+      startPolling();
+    }
+
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       active = false;
-      clearInterval(interval);
+      stopPolling();
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);
@@ -161,6 +183,8 @@ export default function Sidebar({
   // Busca lista de orquestradores no mesmo tick da telemetria (rotas leves)
   useEffect(() => {
     let active = true;
+    let interval: NodeJS.Timeout | number | null = null;
+
     const fetchOrchs = async () => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       try {
@@ -168,17 +192,38 @@ export default function Sidebar({
         if (active) setOrchestrators(data.items);
       } catch {}
     };
-    fetchOrchs();
-    const interval = setInterval(fetchOrchs, 15000);
+
+    const startPolling = () => {
+      if (!interval) {
+        interval = setInterval(fetchOrchs, 15000);
+      }
+    };
+
+    const stopPolling = () => {
+      if (interval) {
+        clearInterval(interval);
+        interval = null;
+      }
+    };
+
     const handleVisibilityChange = () => {
       if (typeof document !== "undefined" && document.visibilityState === "visible") {
         fetchOrchs();
+        startPolling();
+      } else {
+        stopPolling();
       }
     };
+
+    if (typeof document === "undefined" || document.visibilityState === "visible") {
+      fetchOrchs();
+      startPolling();
+    }
+
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       active = false;
-      clearInterval(interval);
+      stopPolling();
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);

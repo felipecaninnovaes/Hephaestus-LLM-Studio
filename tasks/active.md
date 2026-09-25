@@ -1,7 +1,7 @@
 # Memória Ativa — Hephaestus LLM Studio
 
-- **Branch atual:** `develop`
-- **Fatia em andamento:** Nenhuma (Aguardando definição da próxima fatia).
+- **Branch atual:** `feat/web-ui-modularizacao-a11y`
+- **Fatia em andamento:** Frontend UI: Acessibilidade (WCAG 2.5.8), Polling Resiliente e Desacoplamento de Select (`apps/web`).
 - **Última fatia integrada:** Consumo Canônico de `heph-contracts` no BFF `api-principal` & Modularização de `jobs/handlers` (`feat/api-principal-contracts-modularizacao` mergeada com sucesso em `develop`).
   Auditado e aprovado pelo `@reviewer`, 786 testes unitários/contrato passando em todo o workspace Rust (10 novos testes).
 - **HOTFIX permissões nó GPU (2026-09-22):** engines uid 1000 não escreviam em
@@ -17,14 +17,21 @@
   novo subagente dedicado `@docs`.
 
 ## Checklist Imediato da Sessão Ativa
-- [x] Fase 1: Mapear e migrar `services/api-principal/src/jobs/manager_client.rs` para consumir structs canônicas de `crates/heph-contracts`
-- [x] Fase 1: Validação de compilação e testes de integração de `manager_client`
-- [x] Fase 2: Decomposição de `services/api-principal/src/jobs/handlers.rs` (5.800 linhas) em submódulos coesos (`submit`, `lifecycle`, `query`, `stream`, `artifacts`)
-- [x] Fase 2: Validação de compatibilidade com `packages/contracts/openapi.yaml` e 100% dos testes do BFF
-- [x] Fase 3: Auditoria com @reviewer (Gate Obrigatório)
-- [x] Fase 3: Sincronização de documentação com @docs
-
+- [x] Ajustar hit-area mínima em `SegmentedControl.tsx` para conformidade com WCAG 2.5.8
+- [x] Otimizar polling de telemetria em `Sidebar.tsx` (desativar em background / abas ocultas e desacelerar quando inativo)
+- [x] Unificar lógica `canTrainDataset` / `trainDisabledReason` em `lib/datasets.ts`, `DatasetCard.tsx` e `DatasetMenu.tsx`
+- [x] Extrair hooks `useFloatingPosition` e `useListboxNavigation` de `components/ui/Select.tsx` e tipar estritamente
+- [x] Validar `next build` e `bunx tsc --noEmit`
+- [x] Auditoria com @reviewer (Gate Obrigatório)
+- [x] Sincronização de documentação com @docs
 ## Entregas Concluídas Recentemente
+- [x] Modularização e Acessibilidade Frontend (`feat/web-ui-modularizacao-a11y`):
+  - **Acessibilidade WCAG 2.5.8:** Target size mínimo de 32x32px (`min-h-[32px] min-w-[32px]`) em botões de opção do `SegmentedControl`.
+  - **Polling inteligente de telemetria em `Sidebar.tsx`:** Listener de `visibilitychange` interrompendo `setInterval` quando em abas ocultas e retomando com fetch imediato ao voltar à aba visível.
+  - **Unificação de treino em `lib/datasets.ts`:** `canTrainDataset`, `trainDatasetDisabledReason` e `trainDatasetActionLabel` suportando datasets YOLO (modal in-place) e Difusão (redirecionamento para `/difusao?datasetId=`).
+  - **Desacoplamento e tipagem de `Select.tsx`:** Hooks reutilizáveis `useFloatingPosition.ts` (posicionamento portaled com flip e listeners) e `useListboxNavigation.ts` (navegação WAI-ARIA por teclado), com eliminação total de `SelectProps<any>` por generic `<T extends string | number>`.
+  - **Qualidade e testes:** 16 testes unitários no frontend passando, build Next.js 100% verde (14 rotas) e prova visual headless.
+  - **Auditoria:** Auditado e aprovado pelo `@reviewer`.
 - [x] Consumo Canônico de `heph-contracts` & Modularização de `jobs/` (`feat/api-principal-contracts-modularizacao`):
   - **Centralização de DTOs e Tipos Canônicos:** Centralização de DTOs e tipos de protocolo interno em `crates/heph-contracts` (`job_status.rs`, `jobs.rs`, `nodes.rs`, `models.rs`).
   - **Migração do Manager Client:** Migração de `services/api-principal/src/jobs/manager_client.rs` para consumir `heph-contracts`, eliminando ~260 linhas de DTOs `Internal*` duplicados manualmente.

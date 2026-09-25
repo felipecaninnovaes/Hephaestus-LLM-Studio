@@ -64,3 +64,36 @@ export function trainDiffusionDisabledReason(ds: Dataset): string {
   return "Iniciar treino de difusão LoRA";
 }
 
+/** Habilita Treino unificado (suporta YOLO com ≥1 classe e ≥1 img OU Difusão com ≥1 img). */
+export function canTrainDataset(ds: Dataset): boolean {
+  if (ds.category === "yolo") {
+    return ds.classes.length > 0 && ds.imagesCount > 0;
+  }
+  if (ds.category === "difusao" || (ds.category as string) === "diffusion") {
+    return ds.imagesCount > 0;
+  }
+  return false;
+}
+
+/** Motivo descritivo para title quando o botão de treino estiver desabilitado (contextual por categoria). */
+export function trainDatasetDisabledReason(ds: Dataset): string {
+  if (ds.category === "yolo") {
+    if (ds.classes.length === 0) return "Treino YOLO exige dataset com ≥1 classe.";
+    if (ds.imagesCount === 0) return "Treino YOLO exige dataset com ≥1 imagem.";
+    return "Abrir modal de treino YOLO";
+  }
+  if (ds.category === "difusao" || (ds.category as string) === "diffusion") {
+    if (ds.imagesCount === 0) return "Treino de difusão exige dataset com ≥1 imagem.";
+    return "Iniciar treino de difusão LoRA";
+  }
+  return "Treino disponível apenas para datasets YOLO e Difusão.";
+}
+
+/** Rótulo da ação de treino ("Treinar YOLO" vs "Treinar Difusão"). */
+export function trainDatasetActionLabel(ds: Dataset): string {
+  if (ds.category === "difusao" || (ds.category as string) === "diffusion") {
+    return "Treinar Difusão";
+  }
+  return "Treinar YOLO";
+}
+

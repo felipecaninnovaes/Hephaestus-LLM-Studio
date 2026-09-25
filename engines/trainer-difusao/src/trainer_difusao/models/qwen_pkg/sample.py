@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from engine_kit.vram import release_memory
 from trainer_difusao.common import _ensure_qwen_diffusers_compat
 
 
@@ -227,16 +228,38 @@ def _generate_sample_qwen(
                     except Exception:
                         pass
         finally:
-            if "pipe" in locals():
+            if "pipe_kwargs_init" in locals() and isinstance(pipe_kwargs_init, dict):
+                try:
+                    pipe_kwargs_init.clear()
+                except Exception:
+                    pass
+            if "pipe_kwargs" in locals() and isinstance(pipe_kwargs, dict):
+                try:
+                    pipe_kwargs.clear()
+                except Exception:
+                    pass
+            if "pipe" in locals() and pipe is not None:
+                try:
+                    for k in list(getattr(pipe, "components", {}).keys()):
+                        try:
+                            setattr(pipe, k, None)
+                        except Exception:
+                            pass
+                        if hasattr(pipe, "components") and isinstance(pipe.components, dict):
+                            try:
+                                pipe.components[k] = None
+                            except Exception:
+                                pass
+                    pipe.vae = None
+                    pipe.transformer = None
+                except Exception:
+                    pass
                 try:
                     del pipe
                 except Exception:
                     pass
-            import gc
-            import ctypes
-            gc.collect()
             try:
-                ctypes.CDLL("libc.so.6").malloc_trim(0)
+                release_memory()
             except Exception:
                 pass
             if hasattr(vae, "to") and orig_vae_dev is not None and str(orig_vae_dev) != str(device):
@@ -244,17 +267,24 @@ def _generate_sample_qwen(
                     vae.to(orig_vae_dev)
                 except Exception:
                     pass
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.ipc_collect()
             if (
                 orig_vae_dtype is not None
                 and getattr(vae, "dtype", None) != orig_vae_dtype
+                and hasattr(vae, "to")
             ):
                 try:
                     vae.to(dtype=orig_vae_dtype)
                 except Exception:
                     pass
+            try:
+                release_memory()
+            except Exception:
+                pass
+            import ctypes
+            try:
+                ctypes.CDLL("libc.so.6").malloc_trim(0)
+            except Exception:
+                pass
             if was_training:
                 transformer.train()
     except Exception as e:

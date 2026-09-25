@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from engine_kit.mock import is_mock
-from engine_kit.vram import release_memory
+from engine_kit.vram import cleanup_cuda, release_memory
 
 from trainer_difusao.common import (
     _die,
@@ -551,11 +551,18 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                     )
                     pixel_values = torch.cat([pixel_values, alpha_channel], dim=1)
                 with torch.no_grad():
-                    vae_dev = vae.to(device) if getattr(vae, "device", None) != torch.device(device) else vae
-                    latents = vae_dev.encode(pixel_values.float()).latent_dist.sample()
-                    latents = latents.to(dtype=target_dtype)
-                    if latents_mean is not None and latents_std is not None:
-                        latents = (latents - latents_mean) * latents_std
+                    vae_moved = False
+                    if hasattr(vae, "to") and getattr(vae, "device", None) != torch.device(device):
+                        vae.to(device)
+                        vae_moved = True
+                    try:
+                        latents = vae.encode(pixel_values.float()).latent_dist.sample()
+                        latents = latents.to(dtype=target_dtype)
+                        if latents_mean is not None and latents_std is not None:
+                            latents = (latents - latents_mean) * latents_std
+                    finally:
+                        if vae_moved and hasattr(vae, "to"):
+                            vae.to("cpu")
             # Flow matching noise scheduling
             noise = torch.randn_like(latents)
             u = torch.sigmoid(torch.randn(bsz, device=device))
@@ -656,6 +663,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             cur_loss_raw = loss.item()
             loss = loss / grad_accum
             loss.backward()
+            del pred, pred_img, packed_target, target, loss, trans_kwargs, batch_embeds, embed_list, mask_list, pad_mask_list
 
             steps_in_epoch += 1
             is_accum_step = (steps_in_epoch % grad_accum == 0 or steps_in_epoch == len(dataloader))
@@ -717,6 +725,24 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             f"[TRAIN] Época {epoch}/{epochs} concluída - Loss Média: {avg_loss}",
             flush=True,
         )
+
+        batch = None
+        captions = None
+        indices = None
+        idx_list = None
+        latents = None
+        noise = None
+        u = None
+        timesteps = None
+        sigmas = None
+        noisy_latents = None
+        packed_noisy = None
+        noisy_in = None
+        target_in = None
+        pixel_values = None
+        alpha_channel = None
+        batch_mask = None
+        cleanup_cuda()
 
         if sample_prompt and sample_interval > 0 and (epoch_idx % sample_interval == 0 or epoch_idx == epochs):
             _emit_metric(

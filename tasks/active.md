@@ -2,8 +2,8 @@
 
 - **Branch atual:** `develop`
 - **Fatia em andamento:** Nenhuma (Aguardando definição da próxima fatia).
-- **Última fatia integrada:** Hardening de Infraestrutura: Segmentação de Redes Docker em 3 Zonas (`feat/infra-redes-segmentadas` mergeada com sucesso em `develop`).
-  Auditado e aprovado pelo `@reviewer`, 4 perfis compose validados sintaticamente, 786 testes no workspace Rust e 16 testes no frontend.
+- **Última fatia integrada:** Eliminação de Vazamentos de Memória e Mitigação de VRAM/RAM no Qwen-Image-2.1 (`fix/qwen-image-memory-leaks` mergeada com sucesso em `develop`).
+  Auditado e aprovado pelo `@reviewer`, 229 testes verdes em `trainer-difusao`, purga incondicional de LoRA residual, desacoplamento de ciclos de pipeline diffusers e desalocação atômica pós-backward.
 - **HOTFIX permissões nó GPU (2026-09-22):** engines uid 1000 não escreviam em
   dir de job root:0755 (EACCES pós-geração). Bridge NO NÓ: `ENGINE_USER: "0:0"`
   em `infra/compose.gpu.yaml` (+`.bak-perms`). Fix permanente na branch
@@ -17,13 +17,23 @@
   novo subagente dedicado `@docs`.
 
 ## Checklist Imediato da Sessão Ativa
-- [x] Segmentar redes em `infra/compose.yaml` e `compose.prod.yaml` (`frontend_net`, `backend_net`, `engine_net`)
-- [x] Atualizar referências e defaults de `DIFFUSION_DAEMON_NETWORK` e `ENGINE_NETWORK` para `infra_engine_net`
-- [x] Validar compilação sintática de todos os perfis compose (`dev`, `prod`, `integ`, `gpu`)
-- [x] Validar testes do workspace Rust e frontend
-- [x] Auditoria com @reviewer (Gate Obrigatório)
-- [x] Sincronização de documentação com @docs
+- [x] Desacoplamento de ciclo de referências e limpeza de `pipe` em `qwen_pkg/sample.py`
+- [x] Desalocação atômica de tensores pós-backward no loop de treino em `models/qwen_image.py`
+- [x] Invocação periódica de `cleanup_cuda()` entre épocas para conter fragmentação no allocator PyTorch
+- [x] Descarregamento de LoRA residual (`unload_lora_weights`) no caminho quente do daemon em `generation/runner.py`
+- [x] Adição de testes unitários para os pontos de desalocação e limpeza de memória em `tests/test_qwen_image.py`
+- [x] Validação de suíte de testes em `engines/trainer-difusao` (`uv run pytest`)
+- [x] Auditoria com `@reviewer` (Gate Obrigatório)
+- [x] Sincronização de documentação com `@docs`
+
 ## Entregas Concluídas Recentemente
+- [x] Mitigação de Vazamentos de Memória e VRAM/RAM no Qwen-Image-2.1 (`fix/qwen-image-memory-leaks`):
+  - **Purga Incondicional de LoRA Residual no Daemon:** Invocação de `unload_lora_weights` incondicionalmente no pipeline em cache antes de avaliar e carregar novos adaptadores (`runner.py`), evitando poluição de inferências puras subsequentes e vazamento cumulativo de VRAM.
+  - **Desacoplamento de Referências no Pipeline de Amostragem:** Esvaziamento de dicionários locais (`pipe_kwargs.clear()`), anulação explícita dos componentes (`pipe.components[k] = None`, `pipe.vae = None`, `pipe.transformer = None`, `del pipe`) e dupla liberação com `release_memory()` e `malloc_trim(0)` em bloco `finally` (`sample.py`).
+  - **Desalocação Atômica Pós-Backward:** Destruição explícita de tensores intermediários (`pred`, `pred_img`, `packed_target`, `target`, `loss`, `trans_kwargs`, `batch_embeds`, etc.) logo após `loss.backward()` (`qwen_image.py`), prevenindo acúmulo de tensores antes da alocação de momentum/variância pelo AdamW.
+  - **Contenção de Fragmentação PyTorch:** Invocação periódica de `cleanup_cuda()` entre épocas de treino e anulação de batches de treino para desalocação no driver CUDA.
+  - **Testes Comportamentais:** Testes unitários em `tests/test_qwen_image.py` cobrindo ciclos de descarte de componentes, descarregamento de LoRA residual em inferência pura vs LoRA ativo, e limpeza de memória.
+  - **Auditoria:** Auditado e aprovado com veredito APROVA pelo `@reviewer`.
 - [x] Hardening de Infraestrutura & Segmentação de Redes Docker (`feat/infra-redes-segmentadas`):
   - **Segmentação em 3 Redes:** Fim da rede flat através da criação de `frontend_net`, `backend_net` e `engine_net` com escopos estritos.
   - **Isolamento Estrito de `web`:** Next.js isolado na `frontend_net`, sem acesso de rede ao banco de dados (`db`) nem ao S3 (`seaweedfs`).

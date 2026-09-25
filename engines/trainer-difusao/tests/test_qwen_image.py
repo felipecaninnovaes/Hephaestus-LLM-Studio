@@ -462,5 +462,150 @@ class TestQwenImage(unittest.TestCase):
             )
             self.assertTrue(mock_pipe_cls.called)
 
+    @unittest.skipUnless(HAS_TORCH, "requer torch")
+    def test_qwen_sample_cycle_breaking_and_memory_cleanup(self):
+        """Valida que _generate_sample_qwen quebra ciclos em pipe.components, anula vae/transformer e invoca release_memory."""
+        from unittest.mock import MagicMock, patch
+        from trainer_difusao.models.qwen_pkg.sample import _generate_sample_qwen
+        import torch
+        from PIL import Image
+
+        mock_vae = MagicMock()
+        mock_vae.device = torch.device("cpu")
+        mock_vae.dtype = torch.float32
+        mock_transformer = MagicMock()
+        mock_transformer.training = True
+        mock_transformer.dtype = torch.float16
+        mock_scheduler = MagicMock()
+
+        class DummyPipeline:
+            def __init__(self, **kwargs):
+                self.vae = kwargs.get("vae")
+                self.transformer = kwargs.get("transformer")
+                self.scheduler = kwargs.get("scheduler")
+                self.components = {
+                    "vae": self.vae,
+                    "transformer": self.transformer,
+                    "scheduler": self.scheduler,
+                }
+
+            def __call__(self, **kwargs):
+                res = MagicMock()
+                res.images = [Image.new("RGB", (64, 64))]
+                return res
+
+        captured_pipe = []
+
+        def dummy_pipe_factory(**kwargs):
+            p = DummyPipeline(**kwargs)
+            captured_pipe.append(p)
+            return p
+
+        out_file = self.tmp_path / "sample_cycle.png"
+        sample_embeds = {
+            "prompt_embeds": torch.randn(1, 16, 4096),
+            "prompt_embeds_mask": torch.ones(1, 16, dtype=torch.bool),
+        }
+
+        with patch("diffusers.QwenImage21Pipeline", side_effect=dummy_pipe_factory, create=True), \
+             patch("trainer_difusao.models.qwen_pkg.sample.release_memory") as mock_release_mem, \
+             patch("trainer_difusao.models.qwen_pkg.sample.os.replace"):
+            _generate_sample_qwen(
+                transformer=mock_transformer,
+                vae=mock_vae,
+                scheduler=mock_scheduler,
+                prompt="test prompt",
+                output_path=out_file,
+                resolution=512,
+                sample_embeds=sample_embeds,
+            )
+
+        self.assertEqual(len(captured_pipe), 1)
+        pipe = captured_pipe[0]
+        self.assertIsNone(pipe.vae)
+        self.assertIsNone(pipe.transformer)
+        self.assertIsNone(pipe.components["vae"])
+        self.assertIsNone(pipe.components["transformer"])
+        self.assertIsNone(pipe.components["scheduler"])
+        self.assertTrue(mock_release_mem.called)
+        self.assertTrue(mock_vae.to.called)
+        self.assertTrue(mock_transformer.train.called)
+
+    @unittest.skipUnless(HAS_TORCH, "requer torch")
+    def test_real_generate_unloads_residual_lora_when_reusing_cached_pipeline(self):
+        """Valida que _real_generate descarrega LoRA residual (unload_lora_weights) ao reaproveitar pipeline em cache com ou sem LoRA."""
+        from unittest.mock import MagicMock, patch
+        from trainer_difusao.generation.runner import _real_generate
+        from PIL import Image
+
+        call_order = []
+        mock_pipe = MagicMock()
+        mock_pipe.unload_lora_weights.side_effect = lambda: call_order.append("unload_lora_weights")
+        mock_pipe.load_lora_weights.side_effect = lambda *a, **kw: call_order.append("load_lora_weights")
+        mock_pipe.set_adapters = MagicMock()
+        mock_pipe.scheduler = MagicMock()
+        mock_pipe.scheduler.config = {}
+
+        class DummyOut:
+            images = [Image.new("RGB", (256, 256))]
+
+        mock_pipe.return_value = DummyOut()
+
+        lora_dir = self.tmp_path / "lora_test"
+        lora_dir.mkdir(parents=True)
+        lora_file = lora_dir / "adapter.safetensors"
+        lora_file.write_bytes(b"dummy")
+
+        # Cenário 1: Reuso com novos adaptadores LoRA (deve descarregar residuais antes de carregar os novos)
+        params_with_lora = load_and_validate_generate_config(
+            {
+                "job_id": "test-lora-unload-qwen-with-lora",
+                "generate": {
+                    "base_model": "qwen-image-2.1",
+                    "prompt": "a magical forge",
+                    "width": 256,
+                    "height": 256,
+                    "steps": 1,
+                    "seed": 42,
+                    "quantization": "none",
+                    "loras": [{"path": str(lora_file), "scale": 0.8}],
+                },
+            }
+        )
+
+        with patch("torch.cuda.is_available", return_value=False):
+            _real_generate(params_with_lora, self.tmp_path / "out1", pipeline=mock_pipe)
+
+        mock_pipe.unload_lora_weights.assert_called_once()
+        mock_pipe.load_lora_weights.assert_called_once()
+        self.assertEqual(call_order, ["unload_lora_weights", "load_lora_weights"])
+
+        # Cenário 2: Reuso sem adaptadores LoRA (deve descarregar residuais mesmo sem novos LoRAs)
+        call_order.clear()
+        mock_pipe.unload_lora_weights.reset_mock()
+        mock_pipe.load_lora_weights.reset_mock()
+
+        params_without_lora = load_and_validate_generate_config(
+            {
+                "job_id": "test-lora-unload-qwen-no-lora",
+                "generate": {
+                    "base_model": "qwen-image-2.1",
+                    "prompt": "a magical forge without lora",
+                    "width": 256,
+                    "height": 256,
+                    "steps": 1,
+                    "seed": 42,
+                    "quantization": "none",
+                },
+            }
+        )
+
+        with patch("torch.cuda.is_available", return_value=False):
+            _real_generate(params_without_lora, self.tmp_path / "out2", pipeline=mock_pipe)
+
+        mock_pipe.unload_lora_weights.assert_called_once()
+        mock_pipe.load_lora_weights.assert_not_called()
+        self.assertEqual(call_order, ["unload_lora_weights"])
+
 if __name__ == "__main__":
     unittest.main()

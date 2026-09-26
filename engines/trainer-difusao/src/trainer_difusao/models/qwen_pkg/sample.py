@@ -37,7 +37,7 @@ def _generate_sample_qwen(
         was_training = getattr(transformer, "training", False)
         transformer.eval()
 
-        total_sample_steps = 20
+        total_sample_steps = 8  # reduzido de 20: amostras de treino não precisam de qualidade máxima
 
         def step_callback(
             pipe_obj: Any, step_idx: int, timestep: Any, callback_kwargs: dict[str, Any]
@@ -134,7 +134,7 @@ def _generate_sample_qwen(
             if not isinstance(exec_dev, (str, torch.device)):
                 exec_dev = "cuda" if torch.cuda.is_available() else "cpu"
             generator = torch.Generator(device=exec_dev).manual_seed(seed)
-            sample_res = min(resolution, 512)
+            sample_res = min(resolution, 256)  # cap em 256 durante treino: economiza ~4× VRAM de ativações
             sample_res = max(16, (sample_res // 16) * 16)
             with torch.inference_mode():
                 pipe_kwargs: dict[str, Any] = {

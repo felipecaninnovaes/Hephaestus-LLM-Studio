@@ -51,6 +51,11 @@ def _unload_text_pipeline(pipe: Any | None, text_enc: Any | None = None) -> None
 
 def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
     """Pipeline real de treino LoRA para Qwen-Image-2.1 na GPU."""
+    # Elimina OOM por fragmentação de heap CUDA — permite ao allocator crescer
+    # segmentos virtuais contíguos em vez de falhar com blocos pequenos dispersos.
+    import os as _os
+    _os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
     output_path = Path(output)
     output_path.mkdir(parents=True, exist_ok=True)
     metrics_path = output_path / "metrics.jsonl"
@@ -488,48 +493,59 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         except Exception:
             noise_scheduler = None
 
-    # Amostra baseline Época 0 (se configurada e sem epoch_offset)
+    # Amostra baseline Época 0 — pula se VRAM livre < 1.5 GB para não fragmentar heap antes do treino.
     if sample_prompt and epoch_offset == 0:
-        _emit_metric(
-            metrics_path,
-            epoch=0,
-            step=0,
-            progress=0.04,
-            phase="generating_baseline_sample",
-            message=f"Gerando amostra baseline pré-treino (Época 0): '{sample_prompt[:40]}...'",
-        )
-        sample_baseline_file = output_path / "samples" / "sample_epoch_000.png"
-        _generate_sample_qwen(
-            transformer=transformer,
-            vae=vae,
-            scheduler=noise_scheduler,
-            prompt=sample_prompt,
-            output_path=sample_baseline_file,
-            seed=sample_seed,
-            resolution=resolution,
-            metrics_path=metrics_path,
-            epoch=0,
-            sample_embeds=sample_embeds,
-        )
-        if sample_baseline_file.exists():
+        _vram_free_gb = 0.0
+        try:
+            import torch as _tc
+            _p = _tc.cuda.get_device_properties(0)
+            _vram_free_gb = (_p.total_memory - _tc.cuda.memory_reserved(0)) / 1024 ** 3
+        except Exception:
+            pass
+        if _vram_free_gb < 1.5:
+            print(
+                f"[DIFFUSION] Amostra baseline pulada: VRAM livre insuficiente "
+                f"({_vram_free_gb:.2f} GB < 1.5 GB). Treino iniciará normalmente.",
+                flush=True,
+            )
             _emit_metric(
-                metrics_path,
-                epoch=0,
-                step=0,
-                progress=0.05,
-                phase="baseline_ready",
-                message="Amostra baseline gerada com sucesso (Época 0).",
+                metrics_path, epoch=0, step=0, progress=0.05,
+                phase="baseline_skipped",
+                message=f"Amostra baseline pulada — VRAM livre: {_vram_free_gb:.2f} GB.",
             )
         else:
             _emit_metric(
-                metrics_path,
-                epoch=0,
-                step=0,
-                progress=0.05,
-                phase="baseline_failed",
-                message="Falha ao gerar amostra baseline pré-treino.",
+                metrics_path, epoch=0, step=0, progress=0.04,
+                phase="generating_baseline_sample",
+                message=f"Gerando amostra baseline pré-treino (Época 0): '{sample_prompt[:40]}...'",
             )
-    release_memory()
+            sample_baseline_file = output_path / "samples" / "sample_epoch_000.png"
+            _generate_sample_qwen(
+                transformer=transformer,
+                vae=vae,
+                scheduler=noise_scheduler,
+                prompt=sample_prompt,
+                output_path=sample_baseline_file,
+                seed=sample_seed,
+                resolution=resolution,
+                metrics_path=metrics_path,
+                epoch=0,
+                sample_embeds=sample_embeds,
+            )
+            phase_b = "baseline_ready" if sample_baseline_file.exists() else "baseline_failed"
+            msg_b = ("Amostra baseline gerada com sucesso (Época 0)." if sample_baseline_file.exists()
+                     else "Falha ao gerar amostra baseline pré-treino.")
+            _emit_metric(metrics_path, epoch=0, step=0, progress=0.05, phase=phase_b, message=msg_b)
+
+    # Limpeza agressiva pós-amostra ou pós-OOM: desfragmenta heap CUDA antes do loop de treino.
+    import gc as _gc
+    _gc.collect()
+    try:
+        import torch as _tt
+        _tt.cuda.empty_cache()
+        _tt.cuda.ipc_collect()
+    except Exception:
+        pass
 
     avg_step_time: float | None = None
     loss_ema: float | None = None

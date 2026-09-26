@@ -8,6 +8,7 @@ Consolidação única de pendências e melhorias prioritárias. Rotas canônicas
 
 - [x] **QLoRA Difusão Canônico:** quantização 4-bit NF4 na UNet/Transformer + Paged Optimizers + gradient checkpointing nativo diffusers (Quitado 2026-09-20; spec arquivada em `docs/archive/specs/qlora-difusao.md`).
 - **Validação @gpu Difusão & Img2Img:** Validar carregamento com pesos reais (`ENGINE_MOCK=0`) para SDXL/Flux-2-Klein, multi-LoRA PEFT e geração sequencial em daemon quente (ADR-0023).
+- **Unificação dos 4 trainers de difusão (Template Method):** `sd15.py`/`sdxl.py`/`flux.py`/`qwen_image.py` reimplementam o mesmo laço de treino LoRA (similaridade textual medida: 71% sd15×sdxl, 38-41% vs flux); extrair `TrainingLoopRunner` + `ModelAdapter` compartilhados em `models/loop.py`, reduzindo ~1.200 linhas (-37%) e fechando #7/#8/#12 de `engines-auditoria-global.md`. 3 fases (SD-family → flux → qwen_image), cada uma com smoke real no nó GPU. Spec completa: `tasks/specs/trainer-difusao-unificacao-modelos.md`.
 - **AutoLabel v2:** Evoluir motor para modelos VLM reais (Florence-2 / Qwen-VL) com aceleração GPU (v1 atual é determinística mock).
 
 ---

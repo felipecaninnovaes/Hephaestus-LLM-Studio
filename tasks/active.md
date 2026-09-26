@@ -1,8 +1,8 @@
 # Memória Ativa — Hephaestus LLM Studio
 
-- **Branch atual:** `refactor/trainer-difusao-unificacao-fase-b`
-- **Fatia em andamento:** Unificação dos 4 trainers de difusão via Template Method — Fase B: `flux.py` (Flux.1 + Flux.2-Klein) (`refactor/trainer-difusao-unificacao-fase-b`). Spec: `tasks/specs/trainer-difusao-unificacao-modelos.md`.
-- **Última fatia integrada:** Fase A da unificação de trainers — `sd15.py`+`sdxl.py` via `TrainingLoopRunner` (`refactor/trainer-difusao-unificacao-fase-a` mergeada em `develop`, smoke real GPU aprovado).
+- **Branch atual:** `refactor/trainer-difusao-unificacao-fase-c`
+- **Fatia em andamento:** Unificação dos 4 trainers de difusão via Template Method — Fase C (reduzida): migração de `prompt_cache` (RAM) para `TextEmbedsCache` (disco) em `qwen_image.py` (`refactor/trainer-difusao-unificacao-fase-c`). Spec: `tasks/specs/trainer-difusao-unificacao-modelos.md`.
+- **Última fatia integrada:** Fase B da unificação de trainers — `flux.py` (Flux.1+Flux.2-Klein) via `TrainingLoopRunner` (`refactor/trainer-difusao-unificacao-fase-b` mergeada em `develop` commit `f94541c`, smoke real GPU aprovado com FLUX.2-Klein-4B real).
 - **HOTFIX permissões nó GPU (2026-09-22):** engines uid 1000 não escreviam em
   dir de job root:0755 (EACCES pós-geração). Bridge NO NÓ: `ENGINE_USER: "0:0"`
   em `infra/compose.gpu.yaml` (+`.bak-perms`). Fix permanente na branch
@@ -37,8 +37,17 @@
 - [x] Auditoria `@reviewer`: APROVA sem ressalvas (8 critérios, confirmou os 2 fixes aplicados)
 - [x] Commit `037d2c3` na branch `refactor/trainer-difusao-unificacao-fase-b`
 - [x] **Smoke real GPU concluído (2026-09-26):** FLUX.2-Klein-4B real (`black-forest-labs/FLUX.2-klein-base-4B`, público, sem HF_TOKEN necessário), quantização 4-bit NF4 real (transformer 1.9GB + text encoder Qwen3 persistidos em cache), 1 época real, `Exited (0)`, `metrics.jsonl` com as fases esperadas incluindo os callbacks de quantização (`quantizing_transformer→transformer_ready→quantizing_text_encoder→text_encoder_ready`), 3.440.640 parâmetros LoRA treináveis / 1.937.776.128 congelados, checkpoint metadata confirma AMBOS os fixes (`"quantization":"4bit"`, `"base_model":"flux-2-klein-4b"`, `"epoch":"1"` só no intermediário). Nó limpo pós-smoke.
-- [ ] Merge `refactor/trainer-difusao-unificacao-fase-b` → `develop`
-- [ ] Fase C (`qwen_image.py`) fica para depois — nova fatia (considerar investigar antes a causa das 3 regressões de teste que foram corrigidas, já que tocam a mesma área)
+- [x] Merge `refactor/trainer-difusao-unificacao-fase-b` → `develop` (commit `f94541c`)
+- [x] **Decisão de escopo pós-Fase-B (usuário, via `ask`):** Fase C completa (Template Method em `qwen_image.py`) avaliada e DESCARTADA — modelo flagship em produção, física própria domina as 920 linhas (VLM precompute em duas fases, latents pré-computados por índice, kwargs dinâmicos por introspecção de assinatura), ganho estrutural pequeno vs risco alto (2 bugs críticos já encontrados na Fase B, mais simples). Escopo reduzido ao item #12 de `engines-auditoria-global.md`.
+
+## Checklist Imediato — Fase C reduzida (prompt_cache → TextEmbedsCache em qwen_image.py)
+- [x] Único arquivo tocado: `models/qwen_image.py`. `prompt_cache: dict[str, tuple]` em RAM → `TextEmbedsCache` em disco (mesmo padrão já usado por sd15/sdxl/flux). Precompute loop (retry adaptativo de OOM, VLM 4-bit com fallback CPU, unload pós-precompute) preservado intocado — só o backend de armazenamento mudou. Payload nunca grava `None` (evita incompatibilidade com `torch.load(weights_only=True)`). Fallback de dummy-embed preservado.
+- [x] Suíte `uv run pytest` verde: 232 passed, zero regressão (confirmado 2x localmente)
+- [x] Auditoria `@reviewer`: APROVA COM RESSALVAS (ressalva é só falta de shell no ambiente do reviewer p/ rodar pytest — zero blocking findings nos 5 critérios)
+- [x] Commit `03e43ab` na branch `refactor/trainer-difusao-unificacao-fase-c`
+- [x] **Smoke real GPU concluído (2026-09-26):** Qwen-Image-2.1 real (7B DiT + VLM Qwen3 4-bit), 1 época real, `Exited (0)`. Loss variando naturalmente por step (0.336→0.263→0.185→0.397, EMA 0.32) — confirma que `text_cache.get()` retornou embeddings reais cacheados, não caiu no fallback dummy-zero. `text_embeds_cache/{hash}.pt` (116KB) criado em disco confirmando a migração RAM→disco funcionando end-to-end. Checkpoint safetensors válido (256 tensores LoRA, 4.194.304 treináveis / 3.561.762.816 congelados). Nó limpo pós-smoke.
+- [ ] Merge `refactor/trainer-difusao-unificacao-fase-c` → `develop`
+
 
 ## Checklist Concluído — Telemetria ETA/VRAM (fatia anterior, integrada)
 - [x] Definir contrato de campos preditivos (`etaSeconds`, `etaFormatted`, `stepTimeSeconds`, `vramReservedGb`) em `engine-kit` e `trainer-difusao`

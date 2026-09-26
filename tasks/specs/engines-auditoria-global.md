@@ -364,11 +364,11 @@ engines/
 
 ### Fase 2 — Alto (consistência e robustez)
 - [ ] `read_json_body` com limite 32 MB (#5)
-- [ ] `make_bnb_config()` centralizado em `common_pkg/core.py`, removido dos 4 trainers (#7)
-- [ ] `parse_lora_cfg()` em `common_pkg/train_config.py` cobrindo todos os campos comuns (#8)
+- [x] `make_bnb_config()` centralizado (#7) — Quitado como parte da unificação `sd15/sdxl/flux` em `models/loop.py`+adapters (spec `tasks/specs/trainer-difusao-unificacao-modelos.md`, 2026-09-26); `BitsAndBytesConfig` deixou de ser duplicada nos 4 trainers, cada adapter constrói o seu no `load_and_inject_lora`.
+- [x] `parse_lora_cfg()` cobrindo campos comuns (#8) — Quitado: `parse_lora_train_config()` em `models/loop.py` centraliza o parsing de epochs/rank/alpha/etc. para sd15/sdxl/flux (2026-09-26).
 - [ ] Scheduler fallback emite via `TelemetryEmitter.error()` e re-raise (#9)
 - [ ] Contrato `/health` de `trainer-clip` alinhado ao padrão `serve_pkg` (#11)
-- [ ] `qwen_image.py` migrado para `TextEmbedsCache` (#12)
+- [x] `qwen_image.py` migrado para `TextEmbedsCache` (#12) — Quitado 2026-09-26: `prompt_cache` (RAM) substituído por `TextEmbedsCache` (disco), smoke real GPU aprovado.
 
 ### Fase 3 — Menor (qualidade e manutenção)
 - [ ] `TelemetryEmitter.emit()` com `threading.Lock` (#13)

@@ -57,6 +57,22 @@ def _save_lora_safetensors(
     output_file.parent.mkdir(parents=True, exist_ok=True)
     tmp_file = output_file.parent / f".tmp_{output_file.name}"
     lora_state_dict = _normalize_lora_keys(get_peft_model_state_dict(model))
+
+    # Validação: garante que a injeção LoRA produziu tensores reais.
+    # Falha silenciosa (ex: add_adapter em modelo 4-bit) gera arquivo vazio/corrompido.
+    lora_a_keys = [k for k in lora_state_dict if k.endswith("lora_A.weight")]
+    if not lora_a_keys:
+        raise RuntimeError(
+            "[LORA-SAVE] get_peft_model_state_dict() retornou 0 tensores lora_A — "
+            "a LoRA não foi injetada corretamente no modelo. "
+            "Verifique se get_peft_model() foi usado (não add_adapter) em modelos quantizados."
+        )
+    _actual_rank = lora_state_dict[lora_a_keys[0]].shape[0]
+    print(
+        f"[LORA-SAVE] {len(lora_a_keys)} módulos lora_A salvos | rank efetivo={_actual_rank} "
+        f"| arquivo: {output_file.name}",
+        flush=True,
+    )
     safetensors.torch.save_file(lora_state_dict, str(tmp_file), metadata=metadata)
     os.replace(tmp_file, output_file)
 

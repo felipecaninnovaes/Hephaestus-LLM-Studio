@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-from contextlib import nullcontext
 import math
 import os
 import time
@@ -31,6 +30,23 @@ from trainer_difusao.models.mock import _mock_train
 from trainer_difusao.models.qwen_pkg import _generate_sample_qwen
 
 _release_system_memory = release_memory
+
+
+def _unload_text_pipeline(pipe: Any | None, text_enc: Any | None = None) -> None:
+    """Descarrega text pipeline e encoder da memória de forma uniforme."""
+    if pipe is not None:
+        for attr in ("text_encoder", "tokenizer", "processor"):
+            try:
+                setattr(pipe, attr, None)
+            except Exception:
+                pass
+        for k in list(getattr(pipe, "components", {}).keys()):
+            try:
+                setattr(pipe, k, None)
+            except Exception:
+                pass
+    if text_enc is not None:
+        del text_enc
 
 
 def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
@@ -175,7 +191,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 **pipe_kwargs,
             )
             encode_device = torch.device("cuda:0") if use_cuda else torch.device("cpu")
-            bs = 8 if use_cuda else 4
+            bs = 32 if use_cuda else 8
             done = 0
             with torch.no_grad():
                 i = 0
@@ -231,34 +247,10 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                         "image_pad_mask": sample_ipm[0:1].detach().cpu() if sample_ipm is not None else None,
                     }
 
-            if "pipe_kwargs" in locals() and isinstance(pipe_kwargs, dict):
-                pipe_kwargs.clear()
-                del pipe_kwargs
-            if "text_pipeline" in locals() and text_pipeline is not None:
-                if hasattr(text_pipeline, "text_encoder"):
-                    text_pipeline.text_encoder = None
-                if hasattr(text_pipeline, "tokenizer"):
-                    text_pipeline.tokenizer = None
-                if hasattr(text_pipeline, "processor"):
-                    text_pipeline.processor = None
-                for k in list(getattr(text_pipeline, "components", {}).keys()):
-                    try:
-                        setattr(text_pipeline, k, None)
-                    except Exception:
-                        pass
-                del text_pipeline
-            if text_enc is not None:
-                del text_enc
-            if "tokenizer" in locals() and tokenizer is not None:
-                del tokenizer
-            if "encoded" in locals():
-                del encoded
-            if "encoded_sample" in locals():
-                del encoded_sample
-            if "pes" in locals():
-                del pes
-            if "sample_pe" in locals():
-                del sample_pe
+            try:
+                _unload_text_pipeline(text_pipeline, text_enc if text_enc is not None else None)
+            except NameError:
+                pass
             release_memory()
             print(
                 f"[DIFFUSION] Embeddings pré-computados com sucesso ({len(prompt_cache)} prompts cacheados na {dev_desc}). Text encoder descarregado da memória (RAM/VRAM liberadas).",
@@ -274,20 +266,10 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             )
         except Exception as exc:
             print(f"[DIFFUSION-TRAIN] Aviso: falha na pré-computação de embeddings: {exc}. Criando fallbacks sintéticos.", flush=True)
-            if "pipe_kwargs" in locals() and isinstance(pipe_kwargs, dict):
-                pipe_kwargs.clear()
-                del pipe_kwargs
-            if "text_pipeline" in locals() and text_pipeline is not None:
-                if hasattr(text_pipeline, "text_encoder"):
-                    text_pipeline.text_encoder = None
-                for k in list(getattr(text_pipeline, "components", {}).keys()):
-                    try:
-                        setattr(text_pipeline, k, None)
-                    except Exception:
-                        pass
-                del text_pipeline
-            if text_enc is not None:
-                del text_enc
+            try:
+                _unload_text_pipeline(text_pipeline, text_enc if text_enc is not None else None)
+            except NameError:
+                pass
             release_memory()
     # 4. Carrega VAE
     print(f"[DIFFUSION-TRAIN] Carregando VAE de {model_repo}...", flush=True)
@@ -342,6 +324,9 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         message=f"Pré-computando latents na GPU (0/{total_dataset_samples})...",
         telemetry_only=True,
     )
+    # Cache de alpha channel constante: evita realocar torch.ones por imagem
+    _alpha_cache: dict[tuple, Any] = {}
+
     with torch.no_grad():
         for s_idx in range(total_dataset_samples):
             s_item = dataset[s_idx]
@@ -349,8 +334,10 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             if pv.ndim == 4:
                 pv = pv.unsqueeze(2)
             if pv.shape[1] == 3:
-                alpha_channel = torch.ones((1, 1, *pv.shape[2:]), device=device, dtype=pv.dtype)
-                pv = torch.cat([pv, alpha_channel], dim=1)
+                _ak = (pv.shape[2:], device, str(pv.dtype))
+                if _ak not in _alpha_cache:
+                    _alpha_cache[_ak] = torch.ones((1, 1, *pv.shape[2:]), device=device, dtype=pv.dtype)
+                pv = torch.cat([pv, _alpha_cache[_ak]], dim=1)
             l = vae.encode(pv.float()).latent_dist.sample().to(dtype=target_dtype)
             if latents_mean is not None and latents_std is not None:
                 l = (l - latents_mean) * latents_std
@@ -411,18 +398,34 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
     )
     release_memory()
 
+    from peft import get_peft_model
+
     lora_config = LoraConfig(
         r=rank,
         lora_alpha=alpha,
         init_lora_weights="gaussian",
         target_modules=["to_k", "to_q", "to_v", "to_out.0", "add_k_proj", "add_q_proj", "add_v_proj"],
     )
-    transformer.add_adapter(lora_config)
+    # get_peft_model é obrigatório para modelos BnB 4-bit — add_adapter() não injeta
+    # LoRA corretamente em módulos quantizados. NÃO chamar prepare_model_for_kbit_training:
+    # quebra SDPA em Diffusers (mesmo padrão do flux.py).
+    transformer = get_peft_model(transformer, lora_config)
+    trainable = sum(p.numel() for p in transformer.parameters() if p.requires_grad)
+    total_p   = sum(p.numel() for p in transformer.parameters())
+    print(
+        f"[LORA] Parâmetros treináveis: {trainable:,} / {total_p:,} "
+        f"({100.0 * trainable / max(1, total_p):.2f}%) | rank={rank}",
+        flush=True,
+    )
     try:
         transformer.enable_gradient_checkpointing()
     except Exception:
         pass
     transformer.train()
+
+    # Cache da assinatura do transformer — não recalcular a cada step do loop
+    import inspect as _inspect
+    _trans_sig_params: set[str] = set(_inspect.signature(transformer.forward).parameters)
 
     # 6. Otimizador e Scheduler
     from trainer_difusao.optimizers import _create_lr_scheduler, _create_optimizer
@@ -550,12 +553,13 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 if pixel_values.ndim == 4:
                     pixel_values = pixel_values.unsqueeze(2)
                 if pixel_values.shape[1] == 3:
-                    alpha_channel = torch.ones(
-                        (pixel_values.shape[0], 1, *pixel_values.shape[2:]),
-                        device=device,
-                        dtype=pixel_values.dtype,
-                    )
-                    pixel_values = torch.cat([pixel_values, alpha_channel], dim=1)
+                    _ak2 = (pixel_values.shape[2:], device, str(pixel_values.dtype))
+                    if _ak2 not in _alpha_cache:
+                        _alpha_cache[_ak2] = torch.ones(
+                            (1, 1, *pixel_values.shape[2:]), device=device, dtype=pixel_values.dtype,
+                        )
+                    _a = _alpha_cache[_ak2].expand(pixel_values.shape[0], -1, *pixel_values.shape[2:])
+                    pixel_values = torch.cat([pixel_values, _a], dim=1)
                 with torch.no_grad():
                     vae_moved = False
                     if hasattr(vae, "to") and getattr(vae, "device", None) != torch.device(device):
@@ -582,6 +586,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             img_shapes = [(1, latent_h // 2, latent_w // 2)] * bsz
 
             # Empacota latents se helper de packing estiver disponível
+            noisy_in = None
             if PipelineCls is not None and hasattr(PipelineCls, "_pack_latents"):
                 noisy_in = noisy_latents.permute(0, 2, 1, 3, 4)
                 packed_noisy = PipelineCls._pack_latents(
@@ -614,37 +619,43 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                     dummy_e = torch.zeros((1, 64, transformer.config.in_channels), device=device, dtype=target_dtype)
                     embed_list.append(dummy_e)
 
-            batch_embeds = torch.cat(embed_list, dim=0) if embed_list else None
-            batch_mask = torch.cat(mask_list, dim=0) if len(mask_list) == len(embed_list) else None
+            if len(embed_list) == 1:
+                batch_embeds = embed_list[0]
+            elif embed_list:
+                batch_embeds = torch.cat(embed_list, dim=0)
+            else:
+                batch_embeds = None
+            if len(mask_list) == len(embed_list) and mask_list:
+                batch_mask = mask_list[0] if len(mask_list) == 1 else torch.cat(mask_list, dim=0)
+            else:
+                batch_mask = None
 
             # Monta kwargs do transformer dinamicamente de acordo com a assinatura do diffusers
-            import inspect
-            trans_sig = inspect.signature(transformer.forward)
+
             trans_kwargs: dict[str, Any] = {
                 "hidden_states": packed_noisy,
                 "encoder_hidden_states": batch_embeds,
                 "timestep": timesteps / 1000.0,
                 "return_dict": False,
             }
-            if "encoder_hidden_states_mask" in trans_sig.parameters:
+            if "encoder_hidden_states_mask" in _trans_sig_params:
                 trans_kwargs["encoder_hidden_states_mask"] = batch_mask
 
-            if "img_mask" in trans_sig.parameters:
+            if "img_mask" in _trans_sig_params:
                 # QwenImage21Transformer2DModel consome unpatched latents e img_mask para sequência conjunta
                 trans_kwargs["img_shapes"] = [[(1, latent_h, latent_w)] for _ in range(bsz)]
                 num_target_slots = (latent_h * latent_w) // 4
                 if pad_mask_list and len(pad_mask_list) == len(embed_list):
                     base_pad_mask = torch.cat(pad_mask_list, dim=0)
                 else:
-                    base_pad_mask = torch.zeros((bsz, batch_embeds.shape[1]), device=device, dtype=torch.bool)
+                    base_pad_mask = torch.ones((bsz, batch_embeds.shape[1]), device=device, dtype=torch.bool)
                 target_slots = base_pad_mask.new_ones((bsz, num_target_slots), dtype=torch.bool)
                 trans_kwargs["img_mask"] = torch.cat([base_pad_mask, target_slots], dim=1)
             else:
                 trans_kwargs["img_shapes"] = [(1, latent_h // 2, latent_w // 2)] * bsz
 
-            # Forward pass no Transformer sob autocast para economizar VRAM no backward pass
-            with torch.cuda.amp.autocast(dtype=target_dtype) if device == "cuda" else nullcontext():
-                pred = transformer(**trans_kwargs)[0]
+            # Forward pass no Transformer (dtype estático — sem autocast overhead)
+            pred = transformer(**trans_kwargs)[0]
 
             # O transformer opera sobre a sequência conjunta (texto + imagem).
             # Isola exclusivamente os tokens da imagem do target no final da sequência se saída for conjunta.
@@ -670,6 +681,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             loss = loss / grad_accum
             loss.backward()
             del pred, pred_img, packed_target, target, loss, trans_kwargs, batch_embeds, embed_list, mask_list, pad_mask_list
+            del noise, noisy_latents, u, timesteps, sigmas, latents, noisy_in
 
             steps_in_epoch += 1
             micro_idx = ((steps_in_epoch - 1) % grad_accum) + 1
@@ -795,7 +807,6 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         noisy_in = None
         target_in = None
         pixel_values = None
-        alpha_channel = None
         batch_mask = None
         cleanup_cuda()
 

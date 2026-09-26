@@ -1,9 +1,8 @@
 # Memória Ativa — Hephaestus LLM Studio
 
-- **Branch atual:** `fix/telemetry-time-in-message-and-ui`
-- **Fatia em andamento:** Propagação de Tempo/Velocidade e ETA na String de Mensagem e Extração Resiliente no Frontend (`fix/telemetry-time-in-message-and-ui`).
-- **Última fatia integrada:** Telemetria ao Vivo com ETA Preditivo, Métricas de VRAM e Logs Vivos de Treino (`feat/engines-live-telemetry-eta` mergeada com sucesso em `develop`).
-  Auditado e aprovado pelo `@reviewer`, 261 testes unitários em Python, 30 testes no frontend, cálculo de ETA preditivo por EMA, telemetria de VRAM alocada/reservada e logs de micro-steps/steps adaptativos.
+- **Branch atual:** `refactor/trainer-difusao-unificacao-fase-a`
+- **Fatia em andamento:** Unificação dos 4 trainers de difusão via Template Method — Fase A: `sd15.py`+`sdxl.py` (`refactor/trainer-difusao-unificacao-fase-a`). Spec: `tasks/specs/trainer-difusao-unificacao-modelos.md`.
+- **Última fatia integrada:** Propagação de Tempo/Velocidade e ETA na String de Mensagem e Extração Resiliente no Frontend (`fix/telemetry-time-in-message-and-ui`, checklist 100% concluído).
 - **HOTFIX permissões nó GPU (2026-09-22):** engines uid 1000 não escreviam em
   dir de job root:0755 (EACCES pós-geração). Bridge NO NÓ: `ENGINE_USER: "0:0"`
   em `infra/compose.gpu.yaml` (+`.bak-perms`). Fix permanente na branch
@@ -16,7 +15,20 @@
   no role `worker` em `.omp/config.yml`. Arquitetura multi-agente reconfigurada com
   novo subagente dedicado `@docs`.
 
-## Checklist Imediato da Sessão Ativa
+
+## Checklist Imediato — Fase A (Unificação sd15/sdxl)
+- [x] Spec aprovada: `tasks/specs/trainer-difusao-unificacao-modelos.md` (evidência: 71% similaridade textual sd15×sdxl medida via `difflib`)
+- [x] `models/loop.py`: `LoraTrainConfig`, `parse_lora_train_config`, `ModelAdapter` (Protocol), `TrainingLoopRunner`
+- [x] `models/sd_family/adapter.py`: `SD15Adapter`, `SDXLAdapter`
+- [x] `sd15.py` (644→28L) e `sdxl.py` (666→32L) reduzidos a wrappers finos
+- [x] Suíte `uv run pytest` verde: 229 passed (3 falhas pré-existentes em `test_qwen_image.py`, fora de escopo, confirmadas idênticas em `develop` via `git stash`)
+- [x] Auditoria `@reviewer`: 1ª rodada REPROVA (duplicação de `emit_metric(setup_lora)`, `Protocol` incompleto, mensagens de erro genéricas) → 3 fixes aplicados → 2ª rodada APROVA sem ressalvas
+- [x] Commit `92fe327` na branch `refactor/trainer-difusao-unificacao-fase-a`
+- [ ] **BLOQUEADO:** smoke real (`ENGINE_MOCK=0`, 1 época SD15 + 1 época SDXL) no nó GPU `dockeruser@10.15.1.2` — RTX 3060 (12GB) ocupada com 8880 MiB em uso por job de produção em curso (`trainer-diffusion-733c1c18...`) no momento da implementação (2026-09-26). Retomar quando o nó estiver livre; comparar `metrics.jsonl` e checkpoint gerado contra baseline pré-refactor.
+- [ ] Merge em `develop` só após smoke aprovado
+- [ ] Fase B (flux.py) e Fase C (qwen_image.py) da spec ficam para depois do merge da Fase A
+
+## Checklist Concluído — Telemetria ETA/VRAM (fatia anterior, integrada)
 - [x] Definir contrato de campos preditivos (`etaSeconds`, `etaFormatted`, `stepTimeSeconds`, `vramReservedGb`) em `engine-kit` e `trainer-difusao`
 - [x] Implementar cálculo de ETA móvel (EMA), medição de tempo por step e telemetria enriquecida em `engine_kit/telemetry.py` e `common_pkg/metrics.py`
 - [x] Atualizar logs de terminal em `qwen_image.py`: micro-steps visíveis, intervalo adaptativo por tempo (emissão a cada passo para passos > 5s), barra de progresso e VRAM alocada/reservada

@@ -423,9 +423,16 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         pass
     transformer.train()
 
-    # Cache da assinatura do transformer — não recalcular a cada step do loop
+    # Cache da assinatura do transformer — inspeciona o modelo BASE (não o wrapper PEFT),
+    # porque get_peft_model() envolve o forward em *args/**kwargs sem expor os parâmetros.
     import inspect as _inspect
-    _trans_sig_params: set[str] = set(_inspect.signature(transformer.forward).parameters)
+    _base_fwd = (
+        transformer.base_model.model.forward
+        if hasattr(transformer, "base_model") and hasattr(transformer.base_model, "model")
+        else transformer.forward
+    )
+    _trans_sig_params: set[str] = set(_inspect.signature(_base_fwd).parameters)
+    print(f"[LORA] Parâmetros do transformer detectados: {sorted(_trans_sig_params)}", flush=True)
 
     # 6. Otimizador e Scheduler
     from trainer_difusao.optimizers import _create_lr_scheduler, _create_optimizer

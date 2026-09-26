@@ -64,19 +64,12 @@ def _generate_sample_qwen(
 
         orig_vae_dev = getattr(vae, "device", None)
         orig_vae_dtype = getattr(vae, "dtype", None)
-        target_dtype = getattr(transformer, "dtype", None)
-        if hasattr(vae, "to") and orig_vae_dev is not None and str(orig_vae_dev) != str(device):
+        # NÃO alterar dtype do VAE: Qwen-Image-2.1 VAE deve permanecer em float32.
+        # Converter para bfloat16 do transformer causa "CPUBFloat16Type vs CUDABFloat16Type"
+        # e corrupção de saída. Apenas mover device se necessário.
+        if hasattr(vae, "to") and orig_vae_dev is not None and str(orig_vae_dev) != device:
             try:
                 vae.to(device)
-            except Exception:
-                pass
-        if (
-            target_dtype is not None
-            and orig_vae_dtype is not None
-            and orig_vae_dtype != target_dtype
-        ):
-            try:
-                vae.to(dtype=target_dtype)
             except Exception:
                 pass
 
@@ -262,7 +255,7 @@ def _generate_sample_qwen(
                 release_memory()
             except Exception:
                 pass
-            if hasattr(vae, "to") and orig_vae_dev is not None and str(orig_vae_dev) != str(device):
+            if hasattr(vae, "to") and orig_vae_dev is not None and str(orig_vae_dev) != device:
                 try:
                     vae.to(orig_vae_dev)
                 except Exception:

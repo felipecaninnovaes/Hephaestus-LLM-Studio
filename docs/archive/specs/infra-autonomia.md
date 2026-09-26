@@ -1,5 +1,7 @@
 # Levantamento de Infraestrutura — Rumo à Autonomia e Independência
 
+> **Arquivado em 2026-09-26.** Itens ainda pendentes deste levantamento foram migrados para `tasks/specs/infra-pendencias.md`. Itens confirmados implementados no código nesta data (incluindo 1.3 segregação de redes, já quitado em `feat/infra-redes-segmentadas`) permanecem só como registro histórico abaixo.
+
 Documento de mapeamento e checklist de execução de todas as melhorias de infraestrutura do **Hephaestus LLM Studio**, visando estabilidade, segurança, escalabilidade e prontidão para operação autônoma e self-hosting.
 
 Data do levantamento: 2026-09-18.

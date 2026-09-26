@@ -376,10 +376,20 @@ engines/
 - [ ] `cmd_health` usa contrato unificado (#15)
 - [ ] `quant_cache` com LRU por tamanho (#16)
 - [ ] `prune_checkpoints` com `flock` (#17)
+- [ ] `uv.lock` sincronizado com `Dockerfile.gpu` (PyTorch version match) (#19)
+- [ ] SIGTERM handler do daemon sem deadlock em `ThreadingHTTPServer.shutdown()` (#20)
+- [ ] Fallbacks honestos: BitsAndBytes/prodigy/scheduler falham, nunca degradam silenciosamente (#21)
+- [ ] Crash de treino emite telemetria de erro antes de propagar (#22)
+- [ ] Mock YOLO escreve `metrics.jsonl` linha-a-linha com flush() (#23)
+- [ ] Dataset com imagem corrompida: `PIL.Image.verify()` pré-flight + skip com log, não aborta (#24)
+- [ ] GPU liveness check em heartbeat detecta Xid/ECC/throttling (#25)
+- [ ] Bootsrap password nunca logada em JSON estruturado (#26)
+- [ ] Container logs rotacionados via `logging.handlers.RotatingFileHandler` (#27)
+
 - [ ] Circuit breaker em `vision_api.py` (#18)
 - [ ] `release_memory` documentada ou renomeada (#6)
 
 ---
 
 ## Spec Relacionado
-- `tasks/specs/qwen-image-memory-audit.md` — achados específicos do pipeline qwen_image.py (7 itens adicionais)
+- `docs/archive/specs/qwen-image-memory-audit.md` — achados específicos do pipeline qwen_image.py (7 itens adicionais) (arquivado — 7/7 itens implementados)

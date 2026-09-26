@@ -1,5 +1,7 @@
 # Auditoria de Memória — `qwen_image.py`
 
+> **Arquivado em 2026-09-26.** Todos os 7 critérios de aceitação confirmados implementados em `qwen_image.py`/`dataset.py` (verificado file:line). Sem pendências ativas.
+
 **Arquivo:** `engines/trainer-difusao/src/trainer_difusao/models/qwen_image.py`  
 **Data:** 2026-09-25  
 **Status:** Pendente implementação

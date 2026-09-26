@@ -1,5 +1,7 @@
 # Diagnóstico — Arquivo LoRA do Qwen-Image-2.1 menor que o esperado
 
+> **Arquivado em 2026-09-26.** Fix#1 (get_peft_model, causa raiz) e Fix#3 (log de parâmetros) confirmados implementados em `qwen_image.py:423,424-430`. Sem pendências ativas.
+
 **Data:** 2026-09-25  
 **Sintoma:** Arquivo `.safetensors` do Qwen rank=128 fica menor que o esperado  
 **Veredicto:** Bug real — o rank configurado **não está sendo aplicado corretamente**

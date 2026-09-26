@@ -406,3 +406,61 @@ npm run build --workspace=web   # Next.js 16 — verificação final obrigatóri
 - **Don't** aninhar `overflow-y-auto` pai e filho em colunas flexíveis (evitar armadilha de rolagem em viewport menor).
 - **Don't** usar múltiplos botões com texto por extenso em toolbars móveis — colapsar para menu overflow "⋯".
 - **Don't** permitir que títulos de tela ou da sidebar quebrem em duas linhas — truncar com badge inline.
+
+## Convenções de Engenharia (Regras Inegociáveis)
+
+Este setor consolida as convenções arquiteturais críticas para a manutenção a longo prazo, autonomia de desenvolvimento e qualidade verificável do frontend. Originadas da auditoria técnica `tasks/specs/web-modularizacao-auditoria.md`.
+
+### O Que NÃO Mudar (Preservação de Invariantes)
+
+1. **Identidade Visual Arcane v2:** Não alterar o tom do acento brand `#8350f2`, as superfícies em vidro óptico (.glass-card, .glass-menu, .glass-modal), nem a tipografia Space Grotesk / JetBrains Mono. O objetivo é padronizar e modularizar, não redesign.
+
+2. **Rewrites Transparentes de Proxy:** Manter a mecânica do `next.config.ts` que encaminha `/api/*` para o BFF Rust (`api-principal` na porta `:8080`). O browser nunca deve chamar portas internas diretamente.
+
+3. **Mecânica de Upload de Grandes Volumes:** Preservar `proxyClientMaxBodySize: "8200mb"` e `proxyTimeout: 900_000`. O estúdio transaciona checkpoints de pesos de difusão de múltiplos gigabytes.
+
+4. **Convenção de Casing Wire:** Manter estritamente `camelCase` em todos os contratos com a API REST pública, respeitando o contrato OpenAPI.
+
+5. **Autonomia Local-First:** Não introduzir dependências de serviços de nuvem ou telemetria externa proprietária no frontend.
+
+### Riscos Mapeados & Estratégias de Mitigação
+
+- **Risco 1: Regressão no Canvas de Anotação YOLO (`annotate/[imageId]`):**
+  - *Perigo:* A conversão de coordenadas tela-para-normalizado (`x1, y1, x2, y2`) e zoom/pan pode quebrar durante a extração do hook.
+  - *Mitigação:* Isolar a matemática de coordenadas como funções puras desacopladas do React e testá-las de forma determinística antes de refatorar o componente visual.
+
+- **Risco 2: Quebra de Persistência no Formulário de Geração:**
+  - *Perigo:* Usuários perdem prompts longos e configurações ao navegar entre rotas.
+  - *Mitigação:* Manter a chave `localStorage` e a estrutura de dados existente em `lib/geracao-storage.ts`, garantindo retrocompatibilidade total com snapshots antigos.
+
+- **Risco 3: Conflito de Imports por quebra de `types/studio.ts`:**
+  - *Perigo:* Quebrar compilação de dezenas de arquivos ao mover tipos para subarquivos.
+  - *Mitigação:* `apps/web/types/index.ts` e `apps/web/types/studio.ts` devem re-exportar integralmente todos os tipos das novas fatias modulares.
+
+### Convenções de Engenharia de UI (`apps/web`)
+
+Estabelecem o padrão de desenvolvimento para qualquer desenvolvedor ou subagente criar ou alterar uma tela compondo primitivas e blocos sem duplicar código, sem violar camadas e mantendo os arquivos abaixo de 250 linhas.
+
+1. **Limite Estrito de Complexidade:** Nenhum componente, página ou hook deve exceder **250 linhas de código**. Ao atingir 200 linhas, fatie imediatamente em submódulos na pasta da feature.
+
+2. **Hierarquia de Componentes & Camadas:**
+   - `components/ui/`: Primitivas 100% agnósticas de domínio. Proibido importar de `studio/`, `types/` de domínio ou rotas. Named exports estritos (proibido `export default`).
+   - `components/composite/`: Blocos reutilizáveis multirrecursos (ex: `OrchestratorCard`, `JobMetricChips`).
+   - `components/studio/<feature>/`: Componentes específicos de negócio (treino, datasets, geração, jobs).
+   - `app/(studio)/*/page.tsx`: Páginas operam exclusivamente como composição de blocos e carregamento de dados (<150 linhas).
+
+3. **Separação de Preocupações:**
+   - Proibido inlining de polling (`setInterval`), manipulação de hardware/VRAM ou mutações de API dentro do JSX. Toda lógica reside em `hooks/` ou `lib/`.
+
+4. **The Brand-Only Rule:**
+   - Proibido uso de hexadecimais literais soltos no JSX (`#[0-9a-fA-F]`).
+   - Proibido uso de cores utilitárias fora da identidade (`rose-*`, `sky-*`, `blue-*`, `emerald-*`). Utilize unicamente tokens `@theme` (`brand-*`, `zinc-*`, `status-*`).
+
+5. **Acessibilidade Mandatória (WCAG 2.2 AA):**
+   - Modais e Drawers obrigatoriamente utilizam `useFocusTrap`, `useBodyScrollLock` e restauram o foco no fechamento.
+   - Diálogos de confirmação ou destrutivos exigem `role="alertdialog"`.
+   - Proibido remover anel de foco (`focus:outline-none` sem anel `ring-brand-500` visível).
+   - Elementos de clique interativo devem respeitar a área de toque mínima de 44x44px.
+
+6. **Contratos & Tipagem Estrita:**
+   - Proibido uso de `any` ou type casts inseguros `(job.params as any)`. Utilize as uniões tipadas canônicas de `types/`.

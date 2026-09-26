@@ -1,5 +1,7 @@
 # Auditoria Técnica e Plano de Modularização: `services/api-principal`
 
+> **Arquivado em 2026-09-26.** TASK-API-001 (heph-contracts) já quitada em `feat/api-principal-contracts-modularizacao`. 11 dos 32 achados (T-01 a T-11) eram cópia de `backend-autonomia.md`. Achados residuais verificados contra código real e migrados para `tasks/specs/consolidacao-auditoria-roadmap.md` (namespace RD-*) quando genuinamente abertos.
+
 **Projeto:** Hephaestus LLM Studio
 **Data:** 20 de Setembro de 2026
 **Escopo:** BFF `api-principal` (:8080) — Rust/Axum 0.7/SQLx 0.8; contrato público `packages/contracts/openapi.yaml` (63 paths), protocolo interno `crates/heph-contracts` + `/internal/*` do manager, Postgres compartilhado com manager

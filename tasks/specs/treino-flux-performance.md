@@ -126,3 +126,76 @@ Tudo contido em `engines/trainer-difusao` — **nenhum contrato toca
   `max_memory_allocated`, presença de `preparing_cache`/`training_started` com
   free-VRAM. Meta declarada: ≥1,5× throughput sem regressão de VRAM pico;
   loss curve comparável (mesma seed).
+
+---
+
+## Contexto Comparativo (Qwen-Image-2.1 7B vs Flux.2-Klein 2.8B)
+
+Esta seção documenta achados históricos da comparação de performance entre os pipelines de treino LoRA do Qwen-Image-2.1 (7B single-stream DiT) e Flux.2-Klein (2.8B), que revelou que a lentidão do Qwen não é apenas arquitetural, mas também por implementação subótima.
+
+### Tabela Comparativa por Dimensão
+
+| Dimensão | Flux.2 Klein | Qwen-Image-2.1 | Delta |
+|----------|-------------|----------------|-------|
+| **Parâmetros DiT** | ~2.8 B (Klein) | ~7 B | ~2.5× mais params |
+| **LoRA target_modules** | 12 módulos | 7 módulos | Flux tem mais targets |
+| **Seq len de atenção** | `txt_len + img_patches` (sem máscara bool) | `txt_len + img_patches` + `img_mask` bool | Similar |
+| **VAE no loop** | on-the-fly a cada step (GPU full-time) | pré-computado em RAM + VAE offload para CPU | Qwen é melhor aqui |
+| **Text embeds** | `TextEmbedsCache` em disco (.pt, bs=32) | `dict` em RAM, bs=8 GPU / bs=4 CPU | Flux usa bs 4× maior |
+| **`inspect.signature` por step** | ❌ nunca | ✅ toda iteração (**RESOLVIDO**) | Qwen tinha overhead puro |
+| **`autocast`** | ❌ (dtype estático) | ✅ `torch.cuda.amp.autocast` por step | Qwen tem wrapper extra |
+| **Gradient checkpointing** | ✅ `use_reentrant=False` | ✅ (mas via `try/except` genérico) | Ambos têm |
+| **Forward kwargs** | dict literal hardcoded | dict dinâmico + `inspect` cacheado (**RESOLVIDO**) | Qwen otimizado |
+| **`torch.cat` em embed_list** | n/a | por step com guard bs=1 (**RESOLVIDO**) | Qwen otimizado |
+| **`alpha_channel` torch.ones** | n/a | reutilizado por shape em cache (**RESOLVIDO**) | Overhead eliminado |
+| **DataLoader num_workers** | 0 | 0 | Ambos ruins |
+| **DataLoader pin_memory** | False | False | Ambos ruins |
+| **Pré-compute text bs=32** | ✅ | ✅ bs=8/4 (4-8× menor) | Qwen é mais lento |
+
+### Causa Raiz dos Overheads Implementação (não arquiteturais)
+
+Os problemas listados abaixo identificados em 2026-09-25 estão sendo endereçados no Qwen; alguns já foram resolvidos:
+
+1. **`inspect.signature` por step** — ~~5-15ms/step desperdiçado~~ **RESOLVIDO em L445**
+   - Qwen agora cacheou a assinatura fora do loop como `_trans_sig_params: set[str]`
+   - Flux nunca teve este overhead
+
+2. **Pré-computação de text embeddings 4-8× mais lenta** — Ainda ativo
+   - Flux: `TextEmbedsCache` com bs=32 em GPU
+   - Qwen: bs=8 em GPU (ou bs=4 em CPU se falhar 4-bit)
+   - Para 200 prompts únicos: Flux faz 7 batches, Qwen faz 25-50
+
+3. **VAE on-the-fly vs cache de latents** — Ponto positivo do Qwen
+   - Qwen pré-computa todos os latents em RAM e descarrega o VAE da GPU
+   - Flux roda `vae.encode()` em toda iteração de toda época
+   - Para 10 épocas com 100 imagens: Flux faz 1000 forward passes no VAE; Qwen faz 100 (1×)
+   - Porém, cache de latents do Qwen ocupa RAM (~800 MB para 100 imgs @ 1024px)
+
+4. **`torch.cuda.amp.autocast` no forward** — ~~Overhead de context manager~~ **Avaliado**
+   - Qwen entra/sai de um context manager de autocast por step
+   - Flux não usa `autocast` — opera em `bfloat16` estático
+   - Em GPU moderna com bfloat16 nativo, o autocast adiciona ~0.1ms de overhead de Python por step (menor)
+
+5. **DataLoader sem `num_workers` e sem `pin_memory`** — Ainda ativo (ambos)
+   - Sintoma: I/O de imagem bloqueante no main thread enquanto GPU espera o próximo batch
+   - Com `num_workers=2` e `pin_memory=True`, a GPU ficaria ocupada enquanto próximo batch é preparado
+   - Afeta todos os trainers igualmente, mas Qwen é mais sensível por forward pass mais pesado
+
+### Separando Arquitetural de Implementação
+
+**O que é genuinamente mais lento por arquitetura:**
+- **7B vs 2.8B params**: backward pass ~2.5× mais lento em FLOPs brutos
+- **Single-Stream DiT com sequência conjunta txt+img**: atenção cruzada sobre sequência maior que Flux.2 Klein
+- **Qwen3-VL como text encoder**: mais pesado que Qwen3 mini do Flux.2 Klein
+
+**O que é bug/subimplementação evitável (estimativas por epoch: 100 imgs, 10 epochs):**
+
+| Problema | Custo estimado | Status |
+|----------|-------|--------|
+| `inspect.signature` no loop | ~5-15s CPU | ✅ **RESOLVIDO** |
+| Text embed bs=8 vs bs=32 | ~3-4× mais lento na fase de pré-computação | Ativo |
+| `autocast` context manager | ~100ms/1000 steps (menor) | Avaliado |
+| `torch.cat([x])` sem guard bs=1 | ~10ms/1000 steps (menor) | ✅ **RESOLVIDO** |
+| `alpha_channel` realocado por imagem | ~20ms no pré-compute (menor) | ✅ **RESOLVIDO** |
+
+**Estimativa conservadora:** os itens de implementação somavam 20-40% de overhead evitável sobre o tempo total de treino, com `inspect.signature` e batch size de pré-computação sendo os mais impactantes. Com as resoluções aplicadas, Qwen tem performance melhorada mantendo sua vantagem de cache de latents.

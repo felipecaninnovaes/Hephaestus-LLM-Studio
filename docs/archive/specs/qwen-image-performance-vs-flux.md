@@ -1,5 +1,7 @@
 # Diagnóstico — Lentidão de Treino Qwen-Image-2.1 vs Flux.2 Klein
 
+> **Arquivado em 2026-09-26.** Contexto comparativo (Qwen-Image-2.1 7B vs Flux.2-Klein 2.8B) migrado para `tasks/specs/treino-flux-performance.md` § Contexto Comparativo. Item P0 (inspect.signature fora do loop) confirmado resolvido em `qwen_image.py:437-446`.
+
 **Data:** 2026-09-25  
 **Escopo:** Comparação de pipeline de treino LoRA entre `qwen_image.py` e `flux.py`
 

@@ -1,5 +1,7 @@
 # Levantamento de Backend, Orchestrator, Pipelines e Métricas — Rumo à Autonomia 24/7
 
+> **Arquivado em 2026-09-26.** Itens 1.1-1.11 (backend) e 2.1-2.9 (orchestrator) eram 80-100% duplicatas de `manager-modularizacao-auditoria.md`/`api-principal-modularizacao-auditoria.md`/`orchestrator-modularization.md`. Itens genuinamente novos migrados: 2.1-2.7 (orchestrator) → `consolidacao-auditoria-roadmap.md` RD-024 a RD-029 (RD-025/027 removidos após confirmar que já estavam implementados); 3.1-3.9 (engines) → `engines-auditoria-global.md` #19-27; 4.1-4.6 (telemetria) → RD-042/043; 5.1-5.4 (infra) → `infra-pendencias.md` (5.1/5.2/5.4 descartados por já implementados, só 5.5 permanece genuinamente aberto).
+
 Documento de mapeamento, auditoria e checklist de execução de todas as melhorias técnicas necessárias nos subsistemas de **Backend (`api-principal` e `manager`)**, **Orchestrator**, **Pipelines de IA (`engines/*`)**, **Métricas/Observabilidade** e **Resiliência/Autonomia Operacional** do **Hephaestus LLM Studio**.
 
 - **Objetivo:** Permitir que o Hephaestus opere 24/7 de forma contínua, estável, auto-recuperável e independente de intervenções manuais.

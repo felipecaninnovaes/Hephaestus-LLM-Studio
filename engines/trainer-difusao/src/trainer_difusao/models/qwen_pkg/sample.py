@@ -281,9 +281,16 @@ def _generate_sample_qwen(
             if was_training:
                 transformer.train()
     except Exception as e:
-        import traceback
-
+        import traceback, gc
         print(
             f"[WARN] Falha ao gerar amostra de validação Qwen-Image: {e}\n{traceback.format_exc()}",
             flush=True,
         )
+        # Limpeza pós-OOM: libera fragmentos antes de retornar ao loop de treino.
+        gc.collect()
+        try:
+            import torch as _t
+            _t.cuda.empty_cache()
+            _t.cuda.ipc_collect()
+        except Exception:
+            pass

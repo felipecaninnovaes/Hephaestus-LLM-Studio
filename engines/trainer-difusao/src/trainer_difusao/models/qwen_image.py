@@ -13,6 +13,7 @@ from engine_kit.mock import is_mock
 from engine_kit.vram import cleanup_cuda, release_memory, vram_allocated_gb, vram_reserved_gb
 
 from trainer_difusao.common import (
+    TextEmbedsCache,
     _die,
     _ensure_qwen_diffusers_compat,
     _emit_metric,
@@ -144,7 +145,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         _die("QwenImage21Transformer2DModel não está disponível no diffusers.")
 
     # 3. Pré-computação de Text Embeddings (Text Encoder descarregado em seguida para poupar VRAM)
-    prompt_cache: dict[str, tuple[torch.Tensor, torch.Tensor | None]] = {}
+    text_cache = TextEmbedsCache(output_path, enabled=True)
     unique_prompts = list({cap for _, cap in dataset.samples})
 
     if PipelineCls is not None:
@@ -224,7 +225,12 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                         pe_item = pes[idx : idx + 1].detach().cpu()
                         mask_item = pe_masks[idx : idx + 1].detach().cpu() if pe_masks is not None else None
                         ipm_item = ipms[idx : idx + 1].detach().cpu() if ipms is not None else None
-                        prompt_cache[p_text] = (pe_item, mask_item, ipm_item)
+                        payload: dict[str, Any] = {"prompt_embeds": pe_item}
+                        if mask_item is not None:
+                            payload["prompt_embeds_mask"] = mask_item
+                        if ipm_item is not None:
+                            payload["image_pad_mask"] = ipm_item
+                        text_cache.put(p_text, payload)
 
                     i += len(chunk)
                     done = min(i, total_prompts)
@@ -258,7 +264,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 pass
             release_memory()
             print(
-                f"[DIFFUSION] Embeddings pré-computados com sucesso ({len(prompt_cache)} prompts cacheados na {dev_desc}). Text encoder descarregado da memória (RAM/VRAM liberadas).",
+                f"[DIFFUSION] Embeddings pré-computados com sucesso ({total_prompts} prompts cacheados na {dev_desc}). Text encoder descarregado da memória (RAM/VRAM liberadas).",
                 flush=True,
             )
             _emit_metric(
@@ -267,7 +273,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 step=0,
                 progress=0.04,
                 phase="preparing_cache",
-                message=f"Embeddings pré-computados ({len(prompt_cache)} prompts). Text encoder descarregado.",
+                message=f"Embeddings pré-computados ({total_prompts} prompts). Text encoder descarregado.",
             )
         except Exception as exc:
             print(f"[DIFFUSION-TRAIN] Aviso: falha na pré-computação de embeddings: {exc}. Criando fallbacks sintéticos.", flush=True)
@@ -627,18 +633,18 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             mask_list = []
             pad_mask_list = []
             for cap in captions:
-                if cap in prompt_cache:
-                    cached_val = prompt_cache[cap]
-                    pe = cached_val[0]
-                    pm = cached_val[1]
-                    ipm = cached_val[2] if len(cached_val) > 2 else None
+                cached_val = text_cache.get(cap)
+                if cached_val is not None:
+                    pe = cached_val["prompt_embeds"]
+                    pm = cached_val.get("prompt_embeds_mask")
+                    ipm = cached_val.get("image_pad_mask")
                     embed_list.append(pe.to(device, dtype=target_dtype))
                     if pm is not None:
                         mask_list.append(pm.to(device))
                     if ipm is not None:
                         pad_mask_list.append(ipm.to(device))
                 else:
-                    # Dummy embed se prompt_cache não cobriu
+                    # Dummy embed se text_cache não cobriu
                     dummy_e = torch.zeros((1, 64, transformer.config.in_channels), device=device, dtype=target_dtype)
                     embed_list.append(dummy_e)
 

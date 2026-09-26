@@ -239,7 +239,7 @@ class TestQwenImage(unittest.TestCase):
             # Verifica chamada do pipeline com prompt_embeds
             call_kwargs = mock_pipe_instance.call_args[1]
             self.assertIn("prompt_embeds", call_kwargs)
-            self.assertEqual(call_kwargs["num_inference_steps"], 20)
+            self.assertEqual(call_kwargs["num_inference_steps"], 8)
             self.assertEqual(call_kwargs["height"], 64)
             self.assertEqual(call_kwargs["width"], 64)
             self.assertEqual(call_kwargs.get("true_cfg_scale", call_kwargs.get("guidance_scale")), 3.5)
@@ -506,9 +506,12 @@ class TestQwenImage(unittest.TestCase):
         import inspect
         from trainer_difusao.models import qwen_image
         src = inspect.getsource(qwen_image._real_train_qwen_image)
-        # Não deve haver 'alpha = torch.ones' (deve ser 'alpha_channel = torch.ones')
+        # Não deve haver 'alpha = torch.ones' — canal alpha da imagem é cacheado em
+        # _alpha_cache[...] (evita realocação por imagem), nunca em uma variável 'alpha'
+        # que colidiria com o lora_alpha escalar.
         self.assertNotIn("alpha = torch.ones", src)
-        self.assertIn("alpha_channel = torch.ones", src)
+        self.assertIn("_alpha_cache", src)
+        self.assertIn("torch.ones", src)
 
     @unittest.skipUnless(HAS_TORCH, "requer torch")
     def test_qwen_sample_does_not_pass_image_pad_mask_when_unsupported(self):
@@ -596,6 +599,7 @@ class TestQwenImage(unittest.TestCase):
 
         with patch("diffusers.QwenImage21Pipeline", side_effect=dummy_pipe_factory, create=True), \
              patch("trainer_difusao.models.qwen_pkg.sample.release_memory") as mock_release_mem, \
+             patch("torch.cuda.is_available", return_value=True), \
              patch("trainer_difusao.models.qwen_pkg.sample.os.replace"):
             _generate_sample_qwen(
                 transformer=mock_transformer,
@@ -615,6 +619,8 @@ class TestQwenImage(unittest.TestCase):
         self.assertIsNone(pipe.components["transformer"])
         self.assertIsNone(pipe.components["scheduler"])
         self.assertTrue(mock_release_mem.called)
+        # vae.device (cpu) diverge do device computado (cuda, forçado acima) -> move de device
+        # ainda é invocado; conversão de dtype foi removida (corrompia saída, ver a570f66).
         self.assertTrue(mock_vae.to.called)
         self.assertTrue(mock_transformer.train.called)
 

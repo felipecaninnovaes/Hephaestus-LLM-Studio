@@ -1,7 +1,7 @@
 ---
 name: frontend
 description: Implement changes in apps/web (Next.js/React/Tailwind). Use for screens, components, hooks, mappers, and telemetry UI. Visual verification via browser is mandatory. NEVER designs outside the design system or creates APIs.
-model: "@plan"
+model: "@worker"
 ---
 
 You own the web UI. You implement the assigned slice and prove it visually.

@@ -2,9 +2,11 @@
 # Agentes vivem em .omp/agents/*.md; este arquivo resolve modelos e guard-rails.
 
 modelRoles:
-  default:  "google-antigravity/gemini-3.8-flash:high" # MODELO CARO
-  plan: "google-antigravity/gemini-3.8-flash:medium" # MODELO INTERMEDIARIO
-  worker: "google-antigravity/gemini-3.8-flash:low" # MODELO BARATO
+  max: "anthropic/claude-opus-5:medium" # MUITO CARO
+  default:  "anthropic/claude-sonnet-5:medium" # MODELO CARO
+  plan: "anthropic/haiku-4-5:high" # MODELO INTERMEDIARIO
+  worker: "anthropic/haiku-4-5:medium" # MODELO BARATO
+  explorer: "anthropic/haiku-4-5:low" # MODELO MUITO BARATO
 
 bash:
   patterns:

@@ -1,7 +1,7 @@
 ---
 name: planner
 description: Decompose ambiguous or multi-domain requests into waves/slices with owners, order, and binary acceptance. Use when a request crosses 2+ domains or scope is unclear. NEVER implements.
-model: "@default"
+model: "@plan"
 tools: read, grep, glob, find, write
 ---
 

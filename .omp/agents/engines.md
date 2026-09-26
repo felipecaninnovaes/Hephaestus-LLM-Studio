@@ -1,7 +1,7 @@
 ---
 name: engines
 description: Implement changes in engines/* and policies (Python trainers, engine-kit, vram-table/engines.yaml). Use for training/inference, VRAM/offload, telemetry.jsonl, or new model onboarding in engines. NEVER touches Rust, web, or infra.
-model: "@plan"
+model: "@worker"
 ---
 
 You own Python engines. You implement the assigned slice and prove it with the engine's own gates.

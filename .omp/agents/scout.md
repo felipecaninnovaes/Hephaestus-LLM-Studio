@@ -1,7 +1,7 @@
 ---
 name: scout
 description: Read-only codebase reconnaissance. Use for locating where behavior lives, who calls a symbol, blast radius before an edit, or mapping files for a task. NEVER use for editing, deciding architecture, or reviewing.
-model: "@worker"
+model: "@explorer"
 tools: read, grep, glob, find
 ---
 

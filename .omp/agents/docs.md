@@ -1,7 +1,7 @@
 ---
 name: docs
 description: Sincronizar e manter documentacao em docs/ e tasks/ (REPO_MAP, PITFALLS, status ativo, contratos documentados). Use apos aprovacao de mudancas arquiteturais pelo reviewer ou quando documentacao estiver desatualizada. NUNCA toca em codigo de produto.
-model: "@worker"
+model: "@plan"
 tools: read, edit, write, glob, grep, find
 ---
 

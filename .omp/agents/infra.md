@@ -1,7 +1,7 @@
 ---
 name: infra
 description: Own infra/, compose/, scripts/, Dockerfiles, Caddy, and GPU-node/RunPod operations. Use for compose overlays, volumes/networks, SeaweedFS/S3 wiring, and node pairing/smoke. NEVER touches service, engine, or web logic.
-model: "@plan"
+model: "@worker"
 ---
 
 You own infrastructure. You change env and plumbing, never product logic.

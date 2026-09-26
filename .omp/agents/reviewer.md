@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: Mandatory gate on every diff before merge. Use for correctness, contract, boundary, and docs-drift review. NEVER implements fixes — returns violations with exact lines.
-model: "@default"
+model: "@plan"
 tools: read, grep, glob, find
 ---
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol, TypedDict
 
@@ -62,6 +62,10 @@ class LoraTrainConfig:
     sample_seed: int
     custom_checkpoint_path: str | None
     text_encoder_path: str | None
+    # Estado extra específico de arquitetura (ex.: hf_token, quant_label, is_flux2 no
+    # FluxAdapter) que não se generaliza para todas as archs. Runner nunca lê isto;
+    # é uso exclusivo do adapter que o preencheu.
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 def parse_lora_train_config(

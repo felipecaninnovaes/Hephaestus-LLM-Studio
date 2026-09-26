@@ -1,8 +1,8 @@
 # Memória Ativa — Hephaestus LLM Studio
 
-- **Branch atual:** `refactor/trainer-difusao-unificacao-fase-a`
-- **Fatia em andamento:** Unificação dos 4 trainers de difusão via Template Method — Fase A: `sd15.py`+`sdxl.py` (`refactor/trainer-difusao-unificacao-fase-a`). Spec: `tasks/specs/trainer-difusao-unificacao-modelos.md`.
-- **Última fatia integrada:** Propagação de Tempo/Velocidade e ETA na String de Mensagem e Extração Resiliente no Frontend (`fix/telemetry-time-in-message-and-ui`, checklist 100% concluído).
+- **Branch atual:** `refactor/trainer-difusao-unificacao-fase-b`
+- **Fatia em andamento:** Unificação dos 4 trainers de difusão via Template Method — Fase B: `flux.py` (Flux.1 + Flux.2-Klein) (`refactor/trainer-difusao-unificacao-fase-b`). Spec: `tasks/specs/trainer-difusao-unificacao-modelos.md`.
+- **Última fatia integrada:** Fase A da unificação de trainers — `sd15.py`+`sdxl.py` via `TrainingLoopRunner` (`refactor/trainer-difusao-unificacao-fase-a` mergeada em `develop`, smoke real GPU aprovado).
 - **HOTFIX permissões nó GPU (2026-09-22):** engines uid 1000 não escreviam em
   dir de job root:0755 (EACCES pós-geração). Bridge NO NÓ: `ENGINE_USER: "0:0"`
   em `infra/compose.gpu.yaml` (+`.bak-perms`). Fix permanente na branch
@@ -24,9 +24,21 @@
 - [x] Suíte `uv run pytest` verde: 229 passed (3 falhas pré-existentes em `test_qwen_image.py`, fora de escopo, confirmadas idênticas em `develop` via `git stash`)
 - [x] Auditoria `@reviewer`: 1ª rodada REPROVA (duplicação de `emit_metric(setup_lora)`, `Protocol` incompleto, mensagens de erro genéricas) → 3 fixes aplicados → 2ª rodada APROVA sem ressalvas
 - [x] Commit `92fe327` na branch `refactor/trainer-difusao-unificacao-fase-a`
-- [x] **Smoke real GPU concluído (2026-09-26):** nó `dockeruser@10.15.1.2` livre (RTX 3060 182 MiB em uso). Build da imagem `hephaestus/trainer-difusao:smoke-fase-a` (cache Docker reaproveitado, só o `COPY` do código mudou). Dataset sintético (4 imagens 512×512 + captions). 1 época real (`ENGINE_MOCK=0`, pesos HF reais baixados on-the-fly) para **SD15** e **SDXL**: ambos `Exited (0)`, `metrics.jsonl` com as 10 fases esperadas (`init→loading_models→setup_lora→dataset_ready→generating_baseline_sample→baseline_ready→training_started→training→epoch_complete→completed`), checkpoint por época + adapter final salvos como safetensors válidos (1120 tensores LoRA no SDXL, header `"epoch":"1"` no checkpoint intermediário e ausente no final — confirma o fix pós-review), amostras baseline/época geradas, VRAM liberada ao final (3 MiB residual). Nó limpo pós-smoke (containers/imagem/dataset removidos, `git checkout --` no worktree do nó).
-- [x] Merge `refactor/trainer-difusao-unificacao-fase-a` → `develop`
-- [ ] Fase B (flux.py) e Fase C (qwen_image.py) da spec ficam para depois — nova fatia
+- [x] **Smoke real GPU concluído (2026-09-26):** nó `dockeruser@10.15.1.2` livre (RTX 3060 182 MiB em uso). Build da imagem `hephaestus/trainer-difusao:smoke-fase-a` (cache Docker reaproveitado, só o `COPY` do código mudou). Dataset sintético (4 imagens 512×512 + captions). 1 época real (`ENGINE_MOCK=0`, pesos HF reais baixados on-the-fly) para **SD15** e **SDXL**: ambos `Exited (0)`, `metrics.jsonl` com as 10 fases esperadas (`init→loading_models→setup_lora→dataset_ready→generating_baseline_sample→baseline_ready→training_started→training→epoch_complete→completed`), checkpoint por época + adapter final salvos como safetensors válidos (1120 tensores LoRA no SDXL, header `"epoch":"1"` no checkpoint intermediário e ausente no final — confirma o fix pós-review), amostras baseline/época geradas, VRAM liberada ao final (3 MiB residual). Nó limpo pós-smoke.
+- [x] Merge `refactor/trainer-difusao-unificacao-fase-a` → `develop` (commit `d062c93`)
+- [x] **Fix colateral:** 3 testes desatualizados em `test_qwen_image.py` corrigidos (causa raiz: 2 commits legítimos e intencionais do próprio autor pré-sessão — `091b46c`/`a570f66`/`71ae71b` — mudaram comportamento sem atualizar os testes; NÃO era regressão da Fase A, `qwen_image.py` nunca tocado). 232 testes verdes (commit `754cb2d`).
+- [x] Campo `extra: dict[str, Any] = field(default_factory=dict)` adicionado em `LoraTrainConfig` (aditivo, commit `bea3efd`) para acomodar estado específico de arquitetura não generalizável (hf_token, quant_label, is_flux2 no Flux).
+
+## Checklist Imediato — Fase B (Unificação flux.py: Flux.1 + Flux.2-Klein)
+- [x] `models/flux_adapter.py` (798L): `FluxAdapter` implementando `ModelAdapter`, cobrindo as 2 famílias via branch interno `is_flux2` (packing de latents, normalização VAE, flow-matching, quantização 4/8/2/6-bit com cache em disco e callbacks de telemetria)
+- [x] `flux.py` (1026→54L) reduzido a wrapper fino
+- [x] **2 bugs críticos encontrados e corrigidos pelo orchestrator ANTES do gate:** (1) `forward_and_loss` chamava `_cached_encode(..., cached_encode.get("text_cache"), ...)` — `cached_encode` já é o dict resolvido, sem chave `"text_cache"` → `AttributeError: 'NoneType' object has no attribute 'enabled'` no 1º batch real; corrigido para consumir `cached_encode["hidden"]`/`["pooled"]` direto (mesmo padrão SD15/SDXL). (2) `checkpoint_metadata` lia `tcfg.quantization` (helper genérico, ignora env `FLUX_QUANTIZATION`) em vez da resolução local correta → metadata podia mentir sobre a quantização real; corrigido para `tcfg.extra["quantization"]`.
+- [x] Suíte `uv run pytest` verde: 232 passed, zero regressão
+- [x] Auditoria `@reviewer`: APROVA sem ressalvas (8 critérios, confirmou os 2 fixes aplicados)
+- [x] Commit `037d2c3` na branch `refactor/trainer-difusao-unificacao-fase-b`
+- [x] **Smoke real GPU concluído (2026-09-26):** FLUX.2-Klein-4B real (`black-forest-labs/FLUX.2-klein-base-4B`, público, sem HF_TOKEN necessário), quantização 4-bit NF4 real (transformer 1.9GB + text encoder Qwen3 persistidos em cache), 1 época real, `Exited (0)`, `metrics.jsonl` com as fases esperadas incluindo os callbacks de quantização (`quantizing_transformer→transformer_ready→quantizing_text_encoder→text_encoder_ready`), 3.440.640 parâmetros LoRA treináveis / 1.937.776.128 congelados, checkpoint metadata confirma AMBOS os fixes (`"quantization":"4bit"`, `"base_model":"flux-2-klein-4b"`, `"epoch":"1"` só no intermediário). Nó limpo pós-smoke.
+- [ ] Merge `refactor/trainer-difusao-unificacao-fase-b` → `develop`
+- [ ] Fase C (`qwen_image.py`) fica para depois — nova fatia (considerar investigar antes a causa das 3 regressões de teste que foram corrigidas, já que tocam a mesma área)
 
 ## Checklist Concluído — Telemetria ETA/VRAM (fatia anterior, integrada)
 - [x] Definir contrato de campos preditivos (`etaSeconds`, `etaFormatted`, `stepTimeSeconds`, `vramReservedGb`) em `engine-kit` e `trainer-difusao`

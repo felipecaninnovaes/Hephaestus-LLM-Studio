@@ -24,9 +24,9 @@
 - [x] Suíte `uv run pytest` verde: 229 passed (3 falhas pré-existentes em `test_qwen_image.py`, fora de escopo, confirmadas idênticas em `develop` via `git stash`)
 - [x] Auditoria `@reviewer`: 1ª rodada REPROVA (duplicação de `emit_metric(setup_lora)`, `Protocol` incompleto, mensagens de erro genéricas) → 3 fixes aplicados → 2ª rodada APROVA sem ressalvas
 - [x] Commit `92fe327` na branch `refactor/trainer-difusao-unificacao-fase-a`
-- [ ] **BLOQUEADO:** smoke real (`ENGINE_MOCK=0`, 1 época SD15 + 1 época SDXL) no nó GPU `dockeruser@10.15.1.2` — RTX 3060 (12GB) ocupada com 8880 MiB em uso por job de produção em curso (`trainer-diffusion-733c1c18...`) no momento da implementação (2026-09-26). Retomar quando o nó estiver livre; comparar `metrics.jsonl` e checkpoint gerado contra baseline pré-refactor.
-- [ ] Merge em `develop` só após smoke aprovado
-- [ ] Fase B (flux.py) e Fase C (qwen_image.py) da spec ficam para depois do merge da Fase A
+- [x] **Smoke real GPU concluído (2026-09-26):** nó `dockeruser@10.15.1.2` livre (RTX 3060 182 MiB em uso). Build da imagem `hephaestus/trainer-difusao:smoke-fase-a` (cache Docker reaproveitado, só o `COPY` do código mudou). Dataset sintético (4 imagens 512×512 + captions). 1 época real (`ENGINE_MOCK=0`, pesos HF reais baixados on-the-fly) para **SD15** e **SDXL**: ambos `Exited (0)`, `metrics.jsonl` com as 10 fases esperadas (`init→loading_models→setup_lora→dataset_ready→generating_baseline_sample→baseline_ready→training_started→training→epoch_complete→completed`), checkpoint por época + adapter final salvos como safetensors válidos (1120 tensores LoRA no SDXL, header `"epoch":"1"` no checkpoint intermediário e ausente no final — confirma o fix pós-review), amostras baseline/época geradas, VRAM liberada ao final (3 MiB residual). Nó limpo pós-smoke (containers/imagem/dataset removidos, `git checkout --` no worktree do nó).
+- [x] Merge `refactor/trainer-difusao-unificacao-fase-a` → `develop`
+- [ ] Fase B (flux.py) e Fase C (qwen_image.py) da spec ficam para depois — nova fatia
 
 ## Checklist Concluído — Telemetria ETA/VRAM (fatia anterior, integrada)
 - [x] Definir contrato de campos preditivos (`etaSeconds`, `etaFormatted`, `stepTimeSeconds`, `vramReservedGb`) em `engine-kit` e `trainer-difusao`

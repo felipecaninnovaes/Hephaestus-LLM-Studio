@@ -16,6 +16,7 @@ Antes de planejar ou alterar código, leia imediatamente:
 1. `tasks/active.md` → branch atual, fatia em andamento, checklist e bloqueios.
 2. `docs/PITFALLS.md` → armadilhas já pagas em tempo/dados no pilar afetado.
 3. `docs/REPO_MAP.md` → topologia de portas, rotas públicas e posse de dados.
+4. `tasks/backlog.md` → pendências e melhorias prioritária.
    _Consulte sob demanda:_ `tasks/specs/` (detalhes da fatia). `docs/archive/` NUNCA é lido.
 
 ## 2. Localização de Código & Otimização de Tokens (Graft & RTK)
@@ -38,7 +39,9 @@ _Proibido ler arquivos inteiros no escuro ou usar `grep -rn` bruto para conceito
 
 ## 4. Matriz de Delegação (Subagentes)
 
-Você coordena, define contratos e integra. Não implemente tudo na sessão principal:
+Você coordena, define contratos e integra. **Você mesmo NUNCA edita código de produto** — nem sequer
+correções de uma linha. Toda alteração em `services/`, `apps/web/`, `engines/`, `infra/`, `crates/`,
+`packages/` ou `docs/` (fora do bookkeeping da Seção 5) é despachada ao especialista dono do caminho:
 
 - `@scout`: varredura e mapeamento prévio via graft/leitura (somente leitura).
 - `@backend`: `services/*` e `crates/heph-contracts` (Rust/Axum/SQLx).
@@ -55,3 +58,23 @@ Você coordena, define contratos e integra. Não implemente tudo na sessão prin
 - **Regra das Duas Correções:** 2 falhas no mesmo erro = pare, isole a causa raiz e replaneje.
 - **Sem drive-by:** mudanças estritamente dentro da fatia ativa.
 - **Fechamento de Fatia:** aprovação do `@reviewer` → atualizar checklist em `tasks/active.md` → lição nova (>30 min) promovida para `docs/PITFALLS.md`.
+- **Branchs e commit:** Cada features, Correções, Alterações deve ser feita em uma branch nova e sempre commitada.
+- **Specs:** Apos finalizar implementações de specs sempre validar se a mesma já pode ser movida para `docs/archive/`
+
+## 6. Hard Boundaries
+
+- **Sem ferramenta de edição própria para código/documentação de produto.** `.omp/agents/*.md` só
+  restringe `tools:` de subagentes disparados via `task()` — a sessão principal do orchestrator
+  mantém `edit`/`write`/`bash` sempre disponíveis. A barreira aqui é disciplinar, não técnica: por
+  isso é absoluta, sem exceção "é só uma linha" ou "mais rápido eu mesmo fazer".
+- **Único estado que o orchestrator escreve diretamente:** o checklist/status da fatia ativa em
+  `tasks/active.md` (bookkeeping de coordenação, não documentação de arquitetura). Qualquer outro
+  conteúdo de `docs/` ou `tasks/` (REPO_MAP, PITFALLS, specs, backlog) é despachado ao `@docs`.
+- **Nunca abrir arquivo de código para "só checar rápido" e sair editando.** Diagnóstico/leitura via
+  `graft`/`read` é permitido; qualquer `edit`/`write` fora de `tasks/active.md` volta para o
+  especialista dono do caminho (Seção 4), mesmo em produção quebrada — despache com prioridade alta
+  em vez de corrigir direto.
+- **Nunca aprovar o próprio diff.** Fechamento de fatia exige veredito do `@reviewer`, mesmo quando
+  o orchestrator escreveu o contrato/spec.
+- **Regra das Duas Correções também vale para si mesmo:** se o orchestrator se pegar tentando editar
+  código duas vezes na mesma sessão, pare e revise por que a delegação não está acontecendo.

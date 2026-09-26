@@ -46,7 +46,7 @@
 - [x] Auditoria `@reviewer`: APROVA COM RESSALVAS (ressalva é só falta de shell no ambiente do reviewer p/ rodar pytest — zero blocking findings nos 5 critérios)
 - [x] Commit `03e43ab` na branch `refactor/trainer-difusao-unificacao-fase-c`
 - [x] **Smoke real GPU concluído (2026-09-26):** Qwen-Image-2.1 real (7B DiT + VLM Qwen3 4-bit), 1 época real, `Exited (0)`. Loss variando naturalmente por step (0.336→0.263→0.185→0.397, EMA 0.32) — confirma que `text_cache.get()` retornou embeddings reais cacheados, não caiu no fallback dummy-zero. `text_embeds_cache/{hash}.pt` (116KB) criado em disco confirmando a migração RAM→disco funcionando end-to-end. Checkpoint safetensors válido (256 tensores LoRA, 4.194.304 treináveis / 3.561.762.816 congelados). Nó limpo pós-smoke.
-- [ ] Merge `refactor/trainer-difusao-unificacao-fase-c` → `develop`
+- [x] Merge `refactor/trainer-difusao-unificacao-fase-c` → `develop` (commit `a61344b`)
 
 
 ## Checklist Concluído — Telemetria ETA/VRAM (fatia anterior, integrada)

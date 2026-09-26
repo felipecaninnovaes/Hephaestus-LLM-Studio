@@ -2,8 +2,8 @@
 
 **Escopo:** `engines/trainer-difusao/src/trainer_difusao/models/`
 **Data:** 2026-09-26
-**Status:** Pendente aprovação/implementação (spec-only, sem código ainda)
-**Supersede/estende:** `tasks/specs/engines-auditoria-global.md` Fase 2 #7 (`BitsAndBytesConfig` duplicada), #8 (boilerplate de `cfg` parsing duplicado) e #12 (`qwen_image` usa `prompt_cache` em RAM em vez de `TextEmbedsCache`) — esta spec resolve os três como efeito colateral de uma extração estrutural maior, em vez de 3 fixes pontuais.
+**Status:** ✅ CONCLUÍDO — Fase A (sd15+sdxl, commit d062c93) e Fase B (flux.1+flux.2-klein, commit f94541c) unificadas via `TrainingLoopRunner`/`ModelAdapter` em `models/loop.py` + adapters (-1.876 linhas líquidas); Fase C reduzida por decisão explícita (risco vs ganho reavaliado após achados críticos na Fase B) a só migrar `prompt_cache` de RAM para `TextEmbedsCache` em disco em `qwen_image.py` (item #12, commit a61344b), sem forçar Template Method completo. As 3 fases com smoke real GPU (SD15/SDXL/FLUX.2-Klein/Qwen-Image-2.1 reais, pesos HF on-the-fly) aprovados. Gate `@reviewer` quitado.
+**Supersede/estende:** `tasks/specs/engines-auditoria-global.md` Fase 2 #7 (`BitsAndBytesConfig` duplicada), #8 (boilerplate de `cfg` parsing duplicado) e #12 (`qwen_image` usa `prompt_cache` em RAM em vez de `TextEmbedsCache`) — esta spec resolveu os três como efeito colateral de uma extração estrutural maior, em vez de 3 fixes pontuais.
 
 ---
 

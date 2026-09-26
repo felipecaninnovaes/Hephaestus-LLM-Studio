@@ -86,6 +86,63 @@ class TestTelemetryEmitter(unittest.TestCase):
         self.assertEqual(lines[-1]["etaFormatted"], "3m 40s")
         self.assertEqual(lines[-1]["metrics"]["lossEma"], 0.38)
 
+    def test_emit_stdout_suffix_speed_and_eta(self):
+        import io
+        from unittest.mock import patch
+
+        emitter = TelemetryEmitter(self.tmp_dir)
+        capture = io.StringIO()
+        with patch("sys.stdout", capture):
+            emitter.emit(
+                phase="training",
+                message="Step 10/100",
+                progress=0.10,
+                step=10,
+                total_steps=100,
+                step_time_seconds=2.45,
+                eta_seconds=220,
+            )
+        out = capture.getvalue().strip()
+        self.assertIn("[TELEMETRY] [TRAINING] (10%) Step 10/100 · 2.5s/step · ETA: 3m 40s", out)
+
+    def test_emit_stdout_no_duplicate_suffix(self):
+        import io
+        from unittest.mock import patch
+
+        emitter = TelemetryEmitter(self.tmp_dir)
+        capture = io.StringIO()
+        with patch("sys.stdout", capture):
+            emitter.emit(
+                phase="training",
+                message="Época 1/5 · Step 10/100 · Loss: 0.35 · 2.5s/step · ETA: 3m 40s",
+                progress=0.10,
+                step_time_seconds=2.45,
+                eta_seconds=220,
+            )
+        out = capture.getvalue().strip()
+        self.assertEqual(
+            out,
+            "[TELEMETRY] [TRAINING] (10%) Época 1/5 · Step 10/100 · Loss: 0.35 · 2.5s/step · ETA: 3m 40s",
+        )
+
+    def test_emit_stdout_suffix_eta_only(self):
+        import io
+        from unittest.mock import patch
+
+        emitter = TelemetryEmitter(self.tmp_dir)
+        capture = io.StringIO()
+        with patch("sys.stdout", capture):
+            emitter.emit(
+                phase="epoch_complete",
+                message="Época 1/5 concluída - Loss Média: 0.3200",
+                progress=0.20,
+                eta_formatted="4m 8s",
+            )
+        out = capture.getvalue().strip()
+        self.assertEqual(
+            out,
+            "[TELEMETRY] [EPOCH_COMPLETE] (20%) Época 1/5 concluída - Loss Média: 0.3200 · ETA: 4m 8s",
+        )
     def test_format_eta(self):
         self.assertEqual(format_eta(None), "N/A")
         self.assertEqual(format_eta(-10), "N/A")

@@ -124,12 +124,18 @@ export function JobProgressLive({
           ? `VRAM: ${vramReservedGb?.toFixed(2)} GB reservada`
           : undefined;
 
-  const speedLabel = speed
+  let speedLabel = speed
     ? speed
     : typeof stepTimeSeconds === "number" && Number.isFinite(stepTimeSeconds) && stepTimeSeconds > 0
       ? `${stepTimeSeconds.toFixed(1)}s/step`
       : null;
 
+  if (!speedLabel && phaseMessage && /(\d+\.?\d*s\/step)/i.test(phaseMessage)) {
+    const m = phaseMessage.match(/(\d+\.?\d*s\/step)/i);
+    if (m) {
+      speedLabel = m[1].trim();
+    }
+  }
   /* F1 — janela rolante p/ ETA: o componente recebe snapshots, não o stream;
      acumula amostras (step/totalSteps/phase + wall-clock) num buffer limitado.
      Step retrocedendo = job novo reutilizando o card → zera o buffer. */
@@ -169,19 +175,27 @@ export function JobProgressLive({
   }
   const clientEtaMs = isRunning ? estimateTrainingEtaMs(samplesRef.current) : null;
   let displayEta: string | null = null;
-  if (isRunning) {
+  if (!isFinished) {
     if (etaFormatted && etaFormatted.trim().length > 0) {
       const clean = etaFormatted.trim();
       displayEta = clean.toLowerCase().startsWith("eta") ? clean : `ETA ~${clean}`;
     } else if (typeof etaSeconds === "number" && Number.isFinite(etaSeconds) && etaSeconds >= 0) {
       displayEta = `ETA ~${formatDurationMs(etaSeconds * 1000)}`;
     } else if (
+      isRunning &&
       clientEtaMs !== null &&
       typeof step === "number" &&
       typeof totalSteps === "number" &&
       step < totalSteps
     ) {
       displayEta = `ETA ~${formatDurationMs(clientEtaMs)}`;
+    }
+
+    if (!displayEta && phaseMessage && /ETA:\s*([^·\n]+)/i.test(phaseMessage)) {
+      const m = phaseMessage.match(/ETA:\s*([^·\n]+)/i);
+      if (m && m[1].trim() && m[1].trim().toUpperCase() !== "N/A") {
+        displayEta = `ETA ~${m[1].trim()}`;
+      }
     }
   }
   const showEta = displayEta !== null;

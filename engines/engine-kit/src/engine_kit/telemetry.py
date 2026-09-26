@@ -185,7 +185,23 @@ class TelemetryEmitter:
         # 3. Emite log limpo no stdout
         pct = int(self._last_progress * 100)
         vram_str = f" | VRAM: {vram_used_gb:.1f}GB" if vram_used_gb is not None else ""
-        print(f"[TELEMETRY] [{phase.upper()}] ({pct}%){vram_str} {message}", flush=True)
+
+        log_msg = message
+        extras: list[str] = []
+
+        eff_speed = event.get("speed")
+        if eff_speed and eff_speed not in message and "s/step" not in message and "it/s" not in message:
+            extras.append(eff_speed)
+
+        eff_eta = event.get("etaFormatted")
+        if eff_eta and eff_eta not in message and "ETA" not in message:
+            extras.append(f"ETA: {eff_eta}" if not eff_eta.startswith("ETA") else eff_eta)
+
+        if extras:
+            suffix = " · ".join(extras)
+            log_msg = f"{log_msg} · {suffix}" if log_msg else suffix
+
+        print(f"[TELEMETRY] [{phase.upper()}] ({pct}%){vram_str} {log_msg}", flush=True)
         return event
 
     def error(self, message: str, exc: Optional[BaseException] = None) -> dict[str, Any]:

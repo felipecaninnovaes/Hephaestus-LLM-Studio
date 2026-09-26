@@ -351,7 +351,7 @@ class TestQwenImage(unittest.TestCase):
             lr=2e-4,
             progress=0.11,
             phase="training",
-            message="Época 1/5 · Step 1/15 · Loss: 0.3456",
+            message="Época 1/5 · Step 1/15 · Loss: 0.3456 · 2.5s/step · ETA: 35s",
         )
         # Emite métrica de conclusão de época
         _emit_metric(
@@ -362,7 +362,7 @@ class TestQwenImage(unittest.TestCase):
             lr=2e-4,
             progress=0.23,
             phase="epoch_complete",
-            message="Época 1/5 concluída - Loss Média: 0.3200",
+            message="Época 1/5 concluída - Loss Média: 0.3200 · ETA: 25s",
         )
 
         self.assertTrue(metrics_file.exists())
@@ -380,7 +380,9 @@ class TestQwenImage(unittest.TestCase):
         self.assertEqual(t_lines[0]["phase"], "training")
         self.assertEqual(t_lines[0]["step"], 1)
         self.assertIn("Época 1/5 · Step 1/15", t_lines[0]["message"])
+        self.assertIn("2.5s/step · ETA: 35s", t_lines[0]["message"])
         self.assertEqual(t_lines[1]["phase"], "epoch_complete")
+        self.assertIn("Época 1/5 concluída - Loss Média: 0.3200 · ETA: 25s", t_lines[1]["message"])
     def test_format_eta_trainer_difusao(self):
         from trainer_difusao.common import _format_eta
         self.assertEqual(_format_eta(None), "N/A")
@@ -405,7 +407,7 @@ class TestQwenImage(unittest.TestCase):
             lr=1.5e-4,
             progress=0.20,
             phase="training",
-            message="Época 1/5 · Step 10/50 · Loss: 0.2541",
+            message="Época 1/5 · Step 10/50 · Loss: 0.2541 · 6.2s/step · ETA: 4m 8s",
             total_steps=50,
             total_epochs=5,
             step_time_s=6.2,
@@ -438,6 +440,9 @@ class TestQwenImage(unittest.TestCase):
         self.assertEqual(t_data["metrics"]["loss"], 0.2541)
         self.assertEqual(t_data["metrics"]["lossEma"], 0.26)
         self.assertEqual(t_data["metrics"]["lr"], 1.5e-4)
+        self.assertIn("6.2s/step · ETA: 4m 8s", m_data["message"])
+        self.assertIn("6.2s/step · ETA: 4m 8s", t_data["message"])
+        self.assertIn("6.2s/step · ETA: 4m 8s", t_data["phaseMessage"])
 
     def test_qwen_adaptive_emit_and_eta_logic(self):
         from trainer_difusao.common import _format_eta

@@ -1,7 +1,7 @@
 # Memória Ativa — Hephaestus LLM Studio
 
-- **Branch atual:** `develop`
-- **Fatia em andamento:** Nenhuma (Aguardando definição da próxima fatia).
+- **Branch atual:** `fix/telemetry-time-in-message-and-ui`
+- **Fatia em andamento:** Propagação de Tempo/Velocidade e ETA na String de Mensagem e Extração Resiliente no Frontend (`fix/telemetry-time-in-message-and-ui`).
 - **Última fatia integrada:** Telemetria ao Vivo com ETA Preditivo, Métricas de VRAM e Logs Vivos de Treino (`feat/engines-live-telemetry-eta` mergeada com sucesso em `develop`).
   Auditado e aprovado pelo `@reviewer`, 261 testes unitários em Python, 30 testes no frontend, cálculo de ETA preditivo por EMA, telemetria de VRAM alocada/reservada e logs de micro-steps/steps adaptativos.
 - **HOTFIX permissões nó GPU (2026-09-22):** engines uid 1000 não escreviam em

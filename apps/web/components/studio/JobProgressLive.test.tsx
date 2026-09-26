@@ -160,4 +160,72 @@ describe("JobProgressLive - Enriched Telemetry", () => {
 		expect(html).not.toContain("GB VRAM");
 		expect(html).not.toContain("ETA");
 	});
+
+	it("extracts speed and ETA from phaseMessage when explicit props are absent", () => {
+		const html = renderToString(
+			createElement(JobProgressLive, {
+				phaseMessage:
+					"Época 2/5 · Step 18/75 · Loss: 0.3617 · 36.0s/step · ETA: 33m 26s",
+			}),
+		);
+
+		expect(html).toContain("36.0s/step");
+		expect(html).toContain("ETA ~33m 26s");
+	});
+
+	it("extracts speed and ETA from phaseMessage in compact mode", () => {
+		const html = renderToString(
+			createElement(JobProgressLive, {
+				compact: true,
+				phaseMessage:
+					"Época 2/5 · Step 18/75 · Loss: 0.3617 · 36.0s/step · ETA: 33m 26s",
+			}),
+		);
+
+		expect(html).toContain("36.0s/step");
+		expect(html).toContain("ETA ~33m 26s");
+	});
+
+	it("ignores ETA: N/A in phaseMessage", () => {
+		const html = renderToString(
+			createElement(JobProgressLive, {
+				phaseMessage:
+					"Época 1/5 · Step 1/75 · 10.0s/step · ETA: N/A",
+			}),
+		);
+
+		expect(html).toContain("10.0s/step");
+		expect(html).not.toContain("ETA ~");
+		expect(html).not.toContain("Tempo estimado restante de treino");
+	});
+
+	it("prioritizes explicit speed and etaFormatted over phaseMessage", () => {
+		const html = renderToString(
+			createElement(JobProgressLive, {
+				speed: "1.5s/step",
+				etaFormatted: "05:00",
+				phaseMessage:
+					"Época 2/5 · Step 18/75 · Loss: 0.3617 · 36.0s/step · ETA: 33m 26s",
+			}),
+		);
+
+		expect(html).toContain("1.5s/step");
+		expect(html).toContain("ETA ~05:00");
+		expect(html).not.toContain("ETA ~33m 26s");
+		expect(html).not.toContain('title="Velocidade de processamento">36.0s/step');
+	});
+
+	it("does not display speed or ETA badges from phaseMessage when job isFinished", () => {
+		const html = renderToString(
+			createElement(JobProgressLive, {
+				isFinished: true,
+				phaseMessage:
+					"Época 5/5 · Step 75/75 · 36.0s/step · ETA: 00m 00s",
+			}),
+		);
+
+		expect(html).not.toContain("Velocidade de processamento");
+		expect(html).not.toContain("Tempo estimado restante de treino");
+		expect(html).not.toContain("ETA ~");
+	});
 });

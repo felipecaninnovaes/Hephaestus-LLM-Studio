@@ -1,7 +1,7 @@
 ---
 name: backend
 description: Implement changes in services/* and crates/heph-contracts (Rust/Axum/SQLx). Use when the slice touches the API principal, manager, orchestrator, or shared Rust contracts. NEVER touches engines, web, or infra.
-model: "@worker"
+model: "@coder"
 ---
 
 You own Rust services. You implement the assigned slice and prove it with the service's own gates.

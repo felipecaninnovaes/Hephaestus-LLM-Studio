@@ -4,6 +4,7 @@
 modelRoles:
   max: "anthropic/claude-opus-5:medium" # MUITO CARO
   default:  "anthropic/claude-sonnet-5:medium" # MODELO CARO
+  coder:  "anthropic/claude-sonnet-5:low" # MODELO CARO
   plan: "anthropic/haiku-4-5:high" # MODELO INTERMEDIARIO
   worker: "anthropic/haiku-4-5:medium" # MODELO BARATO
   explorer: "anthropic/haiku-4-5:low" # MODELO MUITO BARATO

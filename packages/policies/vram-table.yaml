@@ -12,13 +12,13 @@ entries:
   - { engine: diffusion, model: flux2-klein-9b-8bit, mode: infer, vram_min_gb: 16 }
   - { engine: diffusion, model: flux2-klein-9b, mode: train, vram_min_gb: 28 }
   - { engine: diffusion, model: sdxl-1.0, mode: train, vram_min_gb: 20 }
-  - { engine: diffusion, model: qwen-image-2.1, mode: train, vram_min_gb: 12, quantization: 4bit, note: "Qwen3-VL-8B text encoder 4-bit quantized, RTX 3060 12GB ceiling" }
+  - { engine: diffusion, model: qwen-image-2.1, mode: train, vram_min_gb: 12, quantization: 4bit, note: "Qwen3-VL-8B text encoder 4-bit quantized, RTX 3060 12GB ceiling. Sweep real medido (2026-09-27): maior config combinada estavel = resolution=768, batch_size=1, rank=32, pico ~11.4GiB (11691MiB, 95% de uma RTX 3060 12GB); dataset sintetico/uniforme de 8 imagens, margem real com dataset de producao pode ser menor." }
   # ── Difusão generate (ADR-0023 D8) — valores espelhados do handler ──
   - { engine: diffusion, model: flux-2-klein-4b, mode: generate, vram_min_gb: 8 }
   - { engine: diffusion, model: flux2-klein-4b, mode: generate, vram_min_gb: 8 }
   - { engine: diffusion, model: sdxl, mode: generate, vram_min_gb: 8 }
   - { engine: diffusion, model: sd15, mode: generate, vram_min_gb: 6 }
-  - { engine: diffusion, model: qwen-image-2.1, mode: generate, vram_min_gb: 8 }
+  - { engine: diffusion, model: qwen-image-2.1, mode: generate, vram_min_gb: 8, note: "OBSOLETO/enganoso: daemon de geracao quente esta desabilitado nesta versao (generation/runner.py retorna _die() explicito, commit 19b6e78; ver tasks/backlog.md 'Daemon de geracao Qwen-Image-2.1 nativo'). Linha mantida como registro para quando a fatia futura implementar geracao." }
   # ── YOLO train & predict ──
   - { engine: yolo, model: yolo11n, mode: train, vram_min_gb: 6 }
   - { engine: yolo, model: yolo11m, mode: train, vram_min_gb: 10 }

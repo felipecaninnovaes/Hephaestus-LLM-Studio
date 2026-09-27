@@ -1,9 +1,27 @@
 # Spec — Qwen-Image-2.1 Native Rewrite (cutover do fallback diffusers)
 
-**Status: em andamento.** Implementação sendo executada em paralelo por
-`@engines` na branch `feat/qwen-image-2-1-native`. Este documento apenas
-registra o contrato técnico aprovado pelo coordenador — não reflete estado
-final do código até o merge.
+**Status: caminho de treino concluído/verificado/mergeable; daemon de
+geração explicitamente fora de escopo nesta fatia.** Branch
+`feat/qwen-image-2-1-native`. `models/qwen_image.py` (treino nativo) está
+completo e verificado: `uv run pytest -q` dentro de `engines/trainer-difusao`
+com `ENGINE_MOCK=1` → 234 passed; smoke real em GPU (RTX 3060) completou 1
+época real de treino (`metrics.jsonl`: `epoch_complete`,
+`loss=0.026513001415878534, step=8, epoch=1`), checkpoint LoRA-only válido
+(256 tensores, 100% `lora` no nome, 67.139.000 bytes) e amostras
+`baseline.png`/`epoch1.png` (PNG RGB 512x512 válidos). O daemon quente de
+geração (`generation/runner.py`, branch `elif base_model ==
+"qwen-image-2.1":`) tinha um gap funcional achado pelo `@reviewer`: chamava
+`QwenImage21Pipeline.from_pretrained(...)` (classe que não existe com esse
+construtor) e, mesmo corrigido, o restante do `runner.py` downstream exige
+uma interface completa equivalente a `diffusers.DiffusionPipeline`
+(`.load_lora_weights()`/`.set_adapters()` multi-adapter hot-swap, dict
+`.components` para reconstrução de variante img2img, `.scheduler.config`,
+`pipe(**kwargs).images[0]` chamável) que o `QwenImage21Pipeline` vendorizado
+(sampler de preview de treino, ~30 linhas) não fornece. Este branch foi
+trocado por um erro explícito (`_die(...)`) em vez de ficar quebrado
+silenciosamente; a implementação completa do daemon de geração nativo foi
+movida para uma fatia futura separada rastreada em
+`tasks/backlog.md` ("Daemon de geração Qwen-Image-2.1 nativo").
 
 ---
 

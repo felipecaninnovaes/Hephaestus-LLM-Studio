@@ -76,6 +76,13 @@ def _emit_metric(
             payload["phase"] = phase
         if message is not None:
             payload["message"] = message
+        # Add VRAM metrics to metrics.jsonl (calculated once, used for both outputs)
+        vram_val = vram_allocated_gb()
+        vram_res = vram_reserved_gb if vram_reserved_gb is not None else _get_vram_reserved_gb()
+        if vram_val is not None:
+            payload["vramUsedGb"] = float(vram_val)
+        if vram_res is not None:
+            payload["vramReservedGb"] = float(vram_res)
         if not telemetry_only:
             with open(metrics_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(payload) + "\n")
@@ -92,8 +99,7 @@ def _emit_metric(
             )
             t_prog = progress if progress is not None else 0.0
 
-            vram_val = vram_allocated_gb()
-            vram_res = vram_reserved_gb if vram_reserved_gb is not None else _get_vram_reserved_gb()
+            # VRAM values already calculated above for metrics.jsonl
 
             t_payload: dict[str, Any] = {
                 "timestamp": now_iso,

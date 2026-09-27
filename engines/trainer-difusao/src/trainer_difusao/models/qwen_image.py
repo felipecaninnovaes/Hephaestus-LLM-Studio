@@ -95,7 +95,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
     epoch_offset = max(0, int(cfg.get("epoch_offset") or lora_cfg.get("epoch_offset") or 0))
     grad_accum = max(1, int(lora_cfg.get("gradient_accumulation_steps", 1)))
     batch_size = max(1, int(lora_cfg.get("batch_size", 1)))
-    resolution = int(cfg.get("resolution") or lora_cfg.get("resolution") or 1024)
+    resolution = int(cfg.get("resolution") or lora_cfg.get("resolution") or 768)
 
     raw_dataset_path = cfg.get("dataset_path")
     if not raw_dataset_path:
@@ -295,7 +295,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
     vae = VaeCls.from_pretrained(
         model_repo,
         subfolder="vae",
-        torch_dtype=torch.float32,
+        torch_dtype=target_dtype,
         cache_dir=hub_cache,
         token=hf_token,
     ).to(device)
@@ -349,7 +349,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 if _ak not in _alpha_cache:
                     _alpha_cache[_ak] = torch.ones((1, 1, *pv.shape[2:]), device=device, dtype=pv.dtype)
                 pv = torch.cat([pv, _alpha_cache[_ak]], dim=1)
-            l = vae.encode(pv.float()).latent_dist.sample().to(dtype=target_dtype)
+            l = vae.encode(pv.to(dtype=target_dtype)).latent_dist.sample().to(dtype=target_dtype)
             if latents_mean is not None and latents_std is not None:
                 l = (l - latents_mean) * latents_std
             latents_cache[s_idx] = l.cpu()
@@ -504,8 +504,11 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         _vram_free_gb = 0.0
         try:
             import torch as _tc
-            _p = _tc.cuda.get_device_properties(0)
-            _vram_free_gb = (_p.total_memory - _tc.cuda.memory_reserved(0)) / 1024 ** 3
+            # Use torch.cuda.mem_get_info() instead of memory_reserved() for REAL GPU free memory
+            # memory_reserved() = PyTorch caching allocator reservation, NOT actual GPU free memory
+            # mem_get_info() returns (free_bytes, total_bytes) directly from CUDA driver
+            _vram_free_bytes, _vram_total_bytes = _tc.cuda.mem_get_info(0)
+            _vram_free_gb = _vram_free_bytes / 1024 ** 3
         except Exception:
             pass
         if _vram_free_gb < 1.5:
@@ -595,7 +598,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                         vae.to(device)
                         vae_moved = True
                     try:
-                        latents = vae.encode(pixel_values.float()).latent_dist.sample()
+                        latents = vae.encode(pixel_values.to(dtype=target_dtype)).latent_dist.sample()
                         latents = latents.to(dtype=target_dtype)
                         if latents_mean is not None and latents_std is not None:
                             latents = (latents - latents_mean) * latents_std

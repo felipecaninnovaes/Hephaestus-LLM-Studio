@@ -64,14 +64,14 @@ def _generate_sample_qwen(
 
         orig_vae_dev = getattr(vae, "device", None)
         orig_vae_dtype = getattr(vae, "dtype", None)
-        # NÃO alterar dtype do VAE: Qwen-Image-2.1 VAE deve permanecer em float32.
-        # Converter para bfloat16 do transformer causa "CPUBFloat16Type vs CUDABFloat16Type"
-        # e corrupção de saída. Apenas mover device se necessário.
+        # VAE dtype conversion is now safe: qwen_image.py loads VAE in target_dtype (bf16)
+        # so no dtype mismatch between VAE and transformer embeddings
         if hasattr(vae, "to") and orig_vae_dev is not None and str(orig_vae_dev) != device:
             try:
                 vae.to(device)
             except Exception:
                 pass
+        # (No separate dtype conversion needed: VAE already in target_dtype from loading)
 
         if hasattr(transformer, "config") and not hasattr(transformer.config, "guidance_embeds"):
             try:

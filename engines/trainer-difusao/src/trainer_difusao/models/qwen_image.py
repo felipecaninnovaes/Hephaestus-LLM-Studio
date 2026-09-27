@@ -154,13 +154,11 @@ def _qwen_sample_native(
                 # Compute timestep in [0, 1]
                 t_float = t.float() / 1000.0 if t.is_floating_point() else t.float() / 1000.0
                 
-                # Pack latents for transformer
-                latents_packed = pack_latents(latents)
                 
-                # Run transformer
+                # Run transformer (it handles packing internally)
                 pred = run_transformer(
                     transformer,
-                    latents_packed,
+                    latents,
                     t_float.expand(1).to(device, dtype),
                     prompt_embeds,
                     prompt_mask,
@@ -645,13 +643,11 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                     model_with_lora.train()
                     transformer.to(device)
 
-                    # Pack latents: (B, C, H, W) -> (B, H*W, C)
-                    noisy_packed = pack_latents(noisy_latents)
 
-                    # Run transformer with proper embeddings and masks
+                    # Run transformer (it handles packing internally)
                     noise_pred = run_transformer(
                         transformer,
-                        noisy_packed,
+                        noisy_latents,
                         timesteps_flow,
                         prompt_embeds,
                         prompt_mask,
@@ -659,12 +655,10 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                     )
 
                     # Loss target: velocity = noise - latents (flow matching)
-                    # Note: target is already (noise - latents), run_transformer returns packed output
-                    # Unpack target to match transformer output format
-                    target_packed = pack_latents(target)
+                    # Note: target is already (noise - latents), run_transformer returns unpacked (B, C, H, W)
 
-                    # Compute loss using packed target
-                    loss = F.mse_loss(noise_pred.float(), target_packed.float())
+                    # Compute loss using unpacked target (run_transformer returns unpacked)
+                    loss = F.mse_loss(noise_pred.float(), target.float())
 
                     # Backward pass
                     optimizer.zero_grad()

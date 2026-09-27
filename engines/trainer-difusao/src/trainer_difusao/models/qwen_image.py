@@ -383,7 +383,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
 
         text_encoder.requires_grad_(False)
         text_encoder.eval()
-        processor = QwenImage21TextEncoder.load_processor(base_model_path, cache_dir=hub_cache, token=hf_token)
+        processor = QwenImage21TextEncoder.load_processor(base_model_path)
         cleanup_cuda()
 
         # Load VAE

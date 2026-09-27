@@ -133,9 +133,11 @@ def _qwen_sample_native(
         )
         
         # Sample initial latents with seed
+        # Get channel count from transformer config (64 for Qwen-Image-2.1)
+        channels = transformer.config.in_channels
         generator = torch.Generator(device=device).manual_seed(seed)
         latents = torch.randn(
-            (1, 16, latent_h, latent_w),
+            (1, channels, latent_h, latent_w),
             generator=generator,
             device=device,
             dtype=dtype,
@@ -178,13 +180,16 @@ def _qwen_sample_native(
             std = torch.tensor(vae.config.latents_std).view(1, -1, 1, 1).to(device, dtype=dtype)
             latents_denorm = latents * std + mean
             
+            # VAE expects 5D input for decode as well
+            latents_5d = latents_denorm.unsqueeze(2)  # (B, 64, H', W') -> (B, 64, 1, H', W')
+            
             # Enable tiling for large images
             if height > 1024 or width > 1024:
                 vae.enable_tiling()
             
             # Decode
-            image = vae.decode(latents_denorm).sample  # (B, C, H, W) in [0, 1]
-            
+            image = vae.decode(latents_5d).sample  # (B, C, 1, H, W) in [0, 1]
+            image = image.squeeze(2)  # Remove frame dim: (B, C, 1, H, W) -> (B, C, H, W)
             # Convert to PIL (RGB, stripping alpha if present)
             if image.shape[1] == 4:  # RGBA
                 image = image[:, :3]  # Strip alpha
@@ -600,11 +605,15 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 # Encode images to latents
                 with torch.no_grad():
                     vae.to(device)
-                    latents = vae.encode(images).latent_dist.sample()
+                    # VAE expects 5D input (B, C, T, H, W) with single-frame dim at dim=2
+                    images_5d = images.unsqueeze(2)  # (B, C, H, W) -> (B, C, 1, H, W)
+                    latents = vae.encode(images_5d).latent_dist.sample()  # (B, 64, 1, H', W')
                     # Normalize latents (ai-toolkit reference pattern)
                     mean = torch.tensor(vae.config.latents_mean).view(1, -1, 1, 1, 1).to(device, dtype=torch_dtype)
                     std = torch.tensor(vae.config.latents_std).view(1, -1, 1, 1, 1).to(device, dtype=torch_dtype)
                     latents = (latents - mean) / std
+                    # Remove frame dimension for downstream processing
+                    latents = latents.squeeze(2)  # (B, 64, 1, H', W') -> (B, 64, H', W')
                     vae.to("cpu")
 
                 # Pad prompt embeddings and masks into batch tensors

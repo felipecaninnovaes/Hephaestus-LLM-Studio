@@ -61,14 +61,15 @@ class QwenImage21TextEncoder(nn.Module):
         return AutoProcessor.from_pretrained(model_path, subfolder="processor", trust_remote_code=True)
 
     @classmethod
-    def load_model(cls, model_path: str, dtype=None, subfolder=None):
-        """Load the model from path and wrap it."""
+    def load_model(cls, model_path: str, dtype=None, subfolder=None, **kwargs):
+        """Load the model from path and wrap it, forwarding all kwargs to from_pretrained."""
         # Load the underlying Qwen3-VL model
         model = AutoModel.from_pretrained(
             model_path,
             subfolder=subfolder,
             trust_remote_code=True,
             torch_dtype=dtype if dtype else torch.bfloat16,
+            **kwargs,
         )
         return cls(model)
 

@@ -14,7 +14,7 @@ from typing import Any
 import yaml
 from engine_kit.mock import is_mock
 from trainer_difusao.common_pkg.core import _die
-from trainer_difusao.common import _ensure_qwen_diffusers_compat, _setup_cache_dir
+from trainer_difusao.common import _setup_cache_dir
 from trainer_difusao.generation.artifacts import (
     _build_generation_meta,
     _is_cancelled,
@@ -260,17 +260,8 @@ def _real_generate(
                 pipe.to(device)
 
         elif base_model == "qwen-image-2.1":
-            _ensure_qwen_diffusers_compat()
-            import diffusers
+            from trainer_difusao.models.qwen_pkg.qwen_image_2 import QwenImage21Pipeline
 
-            QwenPipelineCls = getattr(
-                diffusers, "QwenImage21Pipeline", getattr(diffusers, "QwenImagePipeline", None)
-            )
-            if QwenPipelineCls is None:
-                _die(
-                    "QwenImage21Pipeline não disponível na versão instalada do diffusers. "
-                    "Instale diffusers>=0.41.0.dev0 ou git+https://github.com/huggingface/diffusers.git"
-                )
             model_repo = os.environ.get("QWEN_IMAGE_MODEL_ID", "Qwen/Qwen-Image-2.1")
             print(f"[DIFFUSION-GEN] Carregando Qwen-Image-2.1: {model_repo}", flush=True)
             pipe_kwargs: dict[str, Any] = {
@@ -287,11 +278,8 @@ def _real_generate(
                 quant_base = resolve_quant_base_dir(
                     model_repo, quant, subfolder=f"qwen_image_2_1_{quant}"
                 )
-                TransformerCls = getattr(
-                    diffusers,
-                    "QwenImage21Transformer2DModel",
-                    getattr(diffusers, "QwenImageTransformer2DModel", None),
-                )
+                from trainer_difusao.models.qwen_pkg.qwen_image_2 import QwenImage21Transformer2DModel
+                TransformerCls = QwenImage21Transformer2DModel
                 if TransformerCls is not None:
                     try:
                         pipe_kwargs["transformer"] = load_or_quantize_transformer(
@@ -342,7 +330,7 @@ def _real_generate(
                         f"[DIFFUSION-GEN] Aviso ao carregar tokenizer de processor: {e}",
                         flush=True,
                     )
-            pipe = QwenPipelineCls.from_pretrained(
+            pipe = QwenImage21Pipeline.from_pretrained(
                 model_repo,
                 **pipe_kwargs,
             )

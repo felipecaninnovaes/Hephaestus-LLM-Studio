@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from engine_kit.vram import release_memory
-from trainer_difusao.common import _ensure_qwen_diffusers_compat
+from trainer_difusao.common import _setup_cache_dir
 
 
 def _generate_sample_qwen(
@@ -27,8 +27,8 @@ def _generate_sample_qwen(
     try:
         import torch
 
-        _ensure_qwen_diffusers_compat()
-        import diffusers
+        from trainer_difusao.models.qwen_pkg.qwen_image_2 import QwenImage21Pipeline
+
 
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -83,17 +83,7 @@ def _generate_sample_qwen(
                 pass
 
         try:
-            PipelineCls = getattr(
-                diffusers,
-                "QwenImage21Pipeline",
-                getattr(diffusers, "QwenImagePipeline", None),
-            )
-            if PipelineCls is None:
-                print(
-                    "[WARN] QwenImagePipeline não disponível no diffusers.",
-                    flush=True,
-                )
-                return
+            PipelineCls = QwenImage21Pipeline
 
             pipe_kwargs_init: dict[str, Any] = {
                 "scheduler": scheduler,

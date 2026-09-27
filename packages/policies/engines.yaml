@@ -6,4 +6,5 @@ engines:
 # Base: estável mais recente testado no build; registrar cuda/torch validados aqui.
 # Emenda G.7 (ADR-0010 D5): toolchain validada no smoke G.6 (TrueNAS, 2026-09-09).
 # Imagem GPU: hephaestus/trainer-yolo:gpu (Dockerfile.gpu, pytorch 2.6.0-cuda12.4-cudnn9 + ultralytics==8.3.253).
-toolchain: { cuda: 12.4, torch: 2.6.0, ultralytics: '8.3.253', validated_at: '2026-09-09' }
+# Qwen-Image-2.1: transformers>=4.57.0 for native Qwen3-VL-8B support (cutover from diffusers fallback)
+toolchain_extended: { transformers: '4.57.0', qwen-vl-utils: '0.0.14' }

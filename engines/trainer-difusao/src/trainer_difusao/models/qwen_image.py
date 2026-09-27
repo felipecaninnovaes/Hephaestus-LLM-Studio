@@ -605,6 +605,10 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                 # Encode images to latents
                 with torch.no_grad():
                     vae.to(device)
+                    # VAE nativo (RGBA) espera in_channels=4; dataset comum é RGB (3 canais)
+                    if images.shape[1] == 3:
+                        alpha_channel = torch.ones_like(images[:, :1])
+                        images = torch.cat([images, alpha_channel], dim=1)
                     # VAE expects 5D input (B, C, T, H, W) with single-frame dim at dim=2
                     images_5d = images.unsqueeze(2)  # (B, C, H, W) -> (B, C, 1, H, W)
                     latents = vae.encode(images_5d).latent_dist.sample()  # (B, 64, 1, H', W')

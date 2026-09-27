@@ -42,6 +42,7 @@ from trainer_difusao.models.qwen_pkg.qwen_image_2 import (
     QwenImage21TextEncoder,
     QwenImage21Transformer2DModel,
     calculate_shift,
+    pack_latents,
     pad_prompt_batch,
     run_transformer,
 )

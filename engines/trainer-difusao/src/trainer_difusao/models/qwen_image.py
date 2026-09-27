@@ -5,12 +5,14 @@ from __future__ import annotations
 import copy
 import math
 import os
+import shutil
 import time
 from pathlib import Path
 from typing import Any
 
 import torch
 import torch.nn.functional as F
+from huggingface_hub import hf_hub_download
 from peft import LoraConfig
 from safetensors.torch import save_file
 from transformers import AutoTokenizer
@@ -316,12 +318,21 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             phase="loading_models",
             message="Carregando transformer...",
         )
+        # Download and setup transformer with Comfy-Org weights
+        cfg_path = hf_hub_download(BASE_REPO, "transformer/config.json", cache_dir=hub_cache, token=hf_token)
+        comfy_file = hf_hub_download(COMFY_REPO, "diffusion_models/qwen_image_2.1_bf16.safetensors", cache_dir=hub_cache, token=hf_token)
+        
+        local_dir = Path(hub_cache) / "qwen_transformer_local"
+        local_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy(cfg_path, local_dir / "config.json")
+        target_weight = local_dir / "diffusion_pytorch_model.safetensors"
+        if not target_weight.exists():
+            os.symlink(comfy_file, target_weight)
+        
+        from transformers import BitsAndBytesConfig
+        bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch_dtype)
         transformer = QwenImage21Transformer2DModel.from_pretrained(
-            model_path,
-            subfolder="transformer",
-            torch_dtype=torch_dtype,
-            cache_dir=hub_cache,
-            token=hf_token,
+            str(local_dir), torch_dtype=torch_dtype, quantization_config=bnb_config,
         )
         transformer = transformer.to(device)
         transformer.train()

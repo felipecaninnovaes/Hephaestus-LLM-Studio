@@ -95,7 +95,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
     epoch_offset = max(0, int(cfg.get("epoch_offset") or lora_cfg.get("epoch_offset") or 0))
     grad_accum = max(1, int(lora_cfg.get("gradient_accumulation_steps", 1)))
     batch_size = max(1, int(lora_cfg.get("batch_size", 1)))
-    resolution = int(cfg.get("resolution") or lora_cfg.get("resolution") or 1024)
+    resolution = int(cfg.get("resolution") or lora_cfg.get("resolution") or 768)
 
     raw_dataset_path = cfg.get("dataset_path")
     if not raw_dataset_path:

@@ -320,12 +320,11 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             model_path,
             subfolder="transformer",
             torch_dtype=torch_dtype,
-            device_map=device,
             cache_dir=hub_cache,
             token=hf_token,
         )
+        transformer = transformer.to(device)
         transformer.train()
-        cleanup_cuda()
 
         # Load text encoder (4-bit on GPU, CPU fallback)
         _emit_metric(
@@ -391,10 +390,10 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             base_model_path,
             subfolder="vae",
             torch_dtype=torch_dtype,
-            device_map=device,
             cache_dir=hub_cache,
             token=hf_token,
         )
+        vae = vae.to(device)
         vae.requires_grad_(False)
         vae.eval()
         cleanup_cuda()

@@ -2,7 +2,7 @@
 name: scout
 description: Read-only codebase reconnaissance. Use for locating where behavior lives, who calls a symbol, blast radius before an edit, or mapping files for a task. NEVER use for editing, deciding architecture, or reviewing.
 model: "@explorer"
-tools: read, grep, glob, find
+tools: read, grep, glob, find, mcp__graft_find_code, mcp__graft_trace_calls, mcp__graft_find_all, mcp__graft_file_api, mcp__graft_repo_map, mcp__graft_check_freshness
 ---
 
 You are a read-only scout. You locate code and report paths. You NEVER edit, write, or decide.

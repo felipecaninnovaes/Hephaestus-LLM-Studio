@@ -10,6 +10,27 @@ Consolidação única de pendências e melhorias prioritárias. Rotas canônicas
 - **Validação @gpu Difusão & Img2Img:** Validar carregamento com pesos reais (`ENGINE_MOCK=0`) para SDXL/Flux-2-Klein, multi-LoRA PEFT e geração sequencial em daemon quente (ADR-0023).
 - [x] **Unificação dos 4 trainers de difusão (Template Method):** Fases A (sd15+sdxl) e B (flux.1+flux.2-klein) unificadas via `TrainingLoopRunner`/`ModelAdapter` em `models/loop.py` (-1.876 linhas líquidas em `sd15.py`/`sdxl.py`/`flux.py`); Fase C reduzida por decisão explícita (risco vs ganho reavaliado após 2 bugs críticos achados na Fase B) a só migrar `prompt_cache` de RAM para `TextEmbedsCache` em disco em `qwen_image.py` (item #12), sem forçar o Template Method completo no modelo flagship. Fecha #7/#8/#12 de `engines-auditoria-global.md`. As 3 fases com smoke real (SD15/SDXL/FLUX.2-Klein/Qwen-Image-2.1 reais, pesos HF baixados on-the-fly) no nó GPU e gate `@reviewer` aprovado (Quitado 2026-09-26; commits d062c93, f94541c, a61344b; spec arquivada em `docs/archive/specs/trainer-difusao-unificacao-modelos.md`).
 - **AutoLabel v2:** Evoluir motor para modelos VLM reais (Florence-2 / Qwen-VL) com aceleração GPU (v1 atual é determinística mock).
+- **Daemon de geração Qwen-Image-2.1 nativo (gap achado pelo @reviewer):** o
+  treino nativo (`models/qwen_image.py`) está completo/verificado
+  (`fix/qwen-image-2-1-native`, 234 pytest, smoke GPU real com
+  `epoch_complete loss=0.026513001415878534 step=8`, checkpoint LoRA-only
+  256 tensores válido). O caminho quente de geração do daemon
+  (`generation/runner.py`, branch `elif base_model == "qwen-image-2.1":`)
+  chamava `QwenImage21Pipeline.from_pretrained(...)`, que não existe — e
+  mesmo que existisse, o resto do `runner.py` downstream para esse `pipe`
+  exige uma interface completa equivalente a
+  `diffusers.DiffusionPipeline` (`.load_lora_weights()`/`.set_adapters()`
+  com hot-swap multi-adapter nomeado/escalado, dict `.components` usado
+  para reconstruir uma variante img2img via `_I2I(**pipe.components)`,
+  `.scheduler.config`, `pipe(**kwargs).images[0]` chamável) que o
+  `QwenImage21Pipeline` vendorizado (um sampler de preview de treino de
+  ~30 linhas em `qwen_pkg/sample.py`/`qwen_image_2/`) não fornece. Nesta
+  fatia o branch foi substituído por um erro explícito
+  (`_die(...)`) em vez de deixar o caminho quebrado silenciosamente.
+  Escopo desta fatia futura: implementar (ou adaptar) uma classe de
+  pipeline nativa Qwen-Image-2.1 com a interface completa acima, ou
+  reescrever o trecho relevante de `generation/runner.py` para não
+  depender dela. Spec de origem: `tasks/specs/qwen-image-2.1-native-rewrite.md`.
 
 ---
 

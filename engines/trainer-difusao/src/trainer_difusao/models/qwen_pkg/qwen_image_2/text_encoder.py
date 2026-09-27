@@ -82,6 +82,6 @@ class QwenImage21TextEncoder(nn.Module):
         if name.startswith('_'):
             return super().__getattribute__(name)
         try:
-            return super().__getattribute__(name)
+            return nn.Module.__getattr__(self, name)
         except AttributeError:
             return getattr(self.model, name)

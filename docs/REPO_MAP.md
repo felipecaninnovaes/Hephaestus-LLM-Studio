@@ -38,7 +38,7 @@ bind loopback (`127.0.0.1:`) em dev.
 | daemon difusão | `:8766` (interno) | Geração quente LoRA (Flux/SDXL/SD1.5), só via orchestrator |
 | `trainer-yolo` / `trainer-difusao` | nenhuma | Jobs efêmeros disparados pelo orchestrator |
 
-GPU real (TrueNAS): `infra/compose.gpu.yaml` / runbook `infra/README-gpu.md` / arquitetura em `docs/infra/gpu-nodes.md`.
+GPU real (VM dedicada `docker-04`, `10.15.50.114`, 60GB disco): `infra/compose.gpu.yaml` / runbook `infra/README-gpu.md` / arquitetura em `docs/infra/gpu-nodes.md`.
 
 ## 3. Posse de Dados (Postgres único, schema compartilhado)
 
@@ -155,7 +155,7 @@ checkpoint+encoder).
 
 - `overview.md` — perfis Compose (`compose.yaml`, `prod`, `gpu`, `integ`), topologia de rede, isolamento de engines e proxy Caddy.
 - `storage-and-persistence.md` — PostgreSQL 16 + pgvector, SeaweedFS S3 (ACLs e script SigV4 `s3-init`) e volumes de cache/staging.
-- `gpu-nodes.md` — arquitetura de nós remotos (TrueNAS), pareamento HMAC, telemetria de VRAM/GPUs e runbook operacional.
+- `gpu-nodes.md` — arquitetura de nós remotos (VM dedicada, `docker-04`), pareamento HMAC, telemetria de VRAM/GPUs e runbook operacional.
 ## 7. Pacotes e Bibliotecas Compartilhadas (`crates/`, `packages/`, `engines/engine-kit`)
 
 - `crates/heph-contracts` — DTOs wire e tipos de protocolo interno compartilhados entre microsserviços Rust (`job_status.rs`, `jobs.rs`, `nodes.rs`, `models.rs`, `telemetry.rs`, `dispatch.rs`, `report.rs`, `heartbeat.rs`, `artifacts.rs`).

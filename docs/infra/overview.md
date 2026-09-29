@@ -12,7 +12,7 @@ O ciclo de vida da infraestrutura é modularizado em overlays declarativos do Do
 | :--- | :--- | :--- | :--- |
 | **`infra/compose.yaml`** | **Desenvolvimento / Local-First** | `db`, `seaweedfs`, `s3-init`, `embedder`, `principal`, `manager`, `orchestrator-local`, `web` | Ambiente de desenvolvimento no dev host com mock ou Docker local. |
 | **`infra/compose.prod.yaml`** | **Produção / Ingress Unificado** | Overlay sobre `compose.yaml`: adiciona `ingress` (Caddy) e fecha portas diretas do host | Deploy exposto com proxy reverso unificado na porta 80/443 e TLS. |
-| **`infra/compose.gpu.yaml`** | **Nó GPU Dedicado / TrueNAS** | `orchestrator-gpu` (projeto `-p gpu`) | Worker remoto conectado via rede local (LAN) com aceleração NVIDIA CUDA. |
+| **`infra/compose.gpu.yaml`** | **Nó GPU Dedicado / VM Proxmox** | `orchestrator-gpu` (projeto `-p gpu`) | Worker remoto conectado via rede local (LAN) com aceleração NVIDIA CUDA. |
 | **`infra/compose.integ.yaml`** | **Integração / CI** | Overlay sobre `compose.yaml`: `ENGINE_MOCK=1`, credenciais de teste | Suíte de testes de integração e pipeline automatizado (Gitea/CI). |
 
 ---
@@ -64,7 +64,7 @@ A infraestrutura abandona o modelo de rede plana (*flat network*) e adota isolam
 ## 3. Conectividade de Nós Remotos e Exposição na LAN
 
 ### 3.1 O Problema do Bind Padrão (`127.0.0.1`)
-Por padrão, `manager:8081` e `seaweedfs:8333` possuem bind restrito em `127.0.0.1` (`${MANAGER_PUBLISH:-127.0.0.1}`, `${SEAWEED_PUBLISH:-127.0.0.1}`). Para que um nó GPU remoto (ex.: TrueNAS em `10.15.1.2`) consiga se conectar, o operador no dev host (`10.15.10.3`) precisa sobrescrever essas variáveis no arquivo `infra/.env`:
+Por padrão, `manager:8081` e `seaweedfs:8333` possuem bind restrito em `127.0.0.1` (`${MANAGER_PUBLISH:-127.0.0.1}`, `${SEAWEED_PUBLISH:-127.0.0.1}`). Para que um nó GPU remoto (ex.: VM dedicada `docker-04` em `10.15.50.114`) consiga se conectar, o operador no dev host (`10.15.10.3`) precisa sobrescrever essas variáveis no arquivo `infra/.env`:
 
 ```bash
 # infra/.env no dev host (10.15.10.3)
@@ -79,10 +79,10 @@ Ao abrir esses binds, dois serviços internos ficam expostos diretamente na rede
 2. **SeaweedFS (:8333):** Exposto em HTTP puro sem TLS. Embora protegido por credenciais S3 (SigV4), qualquer host da LAN pode tentar negociar requisições contra a porta S3.
 
 **Mitigações Obrigatórias em Ambientes Não-Confiáveis:**
-- **Firewall no Dev Host (UFW / iptables):** Restringir as portas `8081` e `8333` estritamente ao IP do nó worker (`10.15.1.2`), bloqueando qualquer outro tráfego da LAN:
+- **Firewall no Dev Host (UFW / iptables):** Restringir as portas `8081` e `8333` estritamente ao IP do nó worker (`10.15.50.114`), bloqueando qualquer outro tráfego da LAN:
   ```bash
-  sudo ufw allow from 10.15.1.2 to any port 8081 proto tcp
-  sudo ufw allow from 10.15.1.2 to any port 8333 proto tcp
+  sudo ufw allow from 10.15.50.114 to any port 8081 proto tcp
+  sudo ufw allow from 10.15.50.114 to any port 8333 proto tcp
   ```
 - **VPN Ponto-a-Ponto (WireGuard / Tailscale):** Encapsular o tráfego entre dev host e nó remoto em um túnel criptografado privado, mantendo os binds externos fechados na interface física.
 

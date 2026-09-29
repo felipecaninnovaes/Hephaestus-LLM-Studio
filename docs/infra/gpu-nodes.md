@@ -1,6 +1,6 @@
 # Infraestrutura: Nós de Execução e GPU Remota
 
-Guia sobre arquitetura de nós de execução, distribuição de imagens de motores, protocolo de pareamento, telemetria em tempo real, segurança de rede e operação de nós GPU dedicados (ex.: TrueNAS) no Hephaestus LLM Studio.
+Guia sobre arquitetura de nós de execução, distribuição de imagens de motores, protocolo de pareamento, telemetria em tempo real, segurança de rede e operação de nós GPU dedicados (ex.: VM Proxmox `docker-04`) no Hephaestus LLM Studio.
 
 ---
 
@@ -9,10 +9,10 @@ Guia sobre arquitetura de nós de execução, distribuição de imagens de motor
 O Hephaestus separa o plano de controle da execução computacional pesada:
 
 - **Control Plane (Dev Host — `10.15.10.3`):** Hospeda `api-principal` (BFF :8080), `manager` (:8081), `seaweedfs` (:8333), `db` (Postgres) e interface `web` (:3000).
-- **Data Plane (Nó GPU Remoto — `10.15.1.2` TrueNAS):** Hospeda o `orchestrator-gpu` (:8082) e executa containers efêmeros de treino com acesso direto às GPUs físicas (ex.: RTX 3060 12 GB e GTX 1660 Super 6 GB).
+- **Data Plane (Nó GPU Remoto — `10.15.50.114`, VM Proxmox dedicada `docker-04`, usuário `dockeruser` sem sudo):** Hospeda o `orchestrator-gpu` (:8082) e executa containers efêmeros de treino com acesso direto às GPUs físicas (RTX 3060 12 GB, device 0, default; GTX 1660 Super 6 GB, device 1, fallback). Disco: apenas 60 GB total (`/`), sem volumes extras montados — capacidade permanentemente restrita, exige build de uma imagem GPU por vez e prune agressivo entre builds.
 
 ```
-       [ DEV HOST (10.15.10.3) ]                     [ TRUENAS / GPU WORKER (10.15.1.2) ]
+       [ DEV HOST (10.15.10.3) ]                     [ VM GPU DEDICADA / docker-04 (10.15.50.114) ]
   +-----------------------------------+          +------------------------------------------+
   | - Postgres (:5432)                |          |                                          |
   | - SeaweedFS S3 (:8333) [LAN]      | <======= | - orchestrator-gpu (:8082)               |
@@ -26,7 +26,7 @@ O Hephaestus separa o plano de controle da execução computacional pesada:
 
 ## 2. Configuração de Rede do Dev Host e Riscos na LAN
 
-Para que o nó TrueNAS consiga registrar heartbeats e baixar/subir dados no S3, o operador deve ajustar o arquivo `infra/.env` no dev host (`10.15.10.3`):
+Para que o nó GPU remoto consiga registrar heartbeats e baixar/subir dados no S3, o operador deve ajustar o arquivo `infra/.env` no dev host (`10.15.10.3`):
 
 ```bash
 # infra/.env no dev host (10.15.10.3)
@@ -36,15 +36,15 @@ S3_PUBLIC_ENDPOINT_URL=http://10.15.10.3:8333 # Endereço anunciado para presign
 ```
 
 ### Vetores de Exposição e Mitigações
-- **Manager exposto em HTTP puro:** O manager valida chamadas via header `Authorization: Bearer <MANAGER_TOKEN>`. Sem criptografia TLS na LAN, esse token trafega em texto claro entre o TrueNAS e o dev host.
+- **Manager exposto em HTTP puro:** O manager valida chamadas via header `Authorization: Bearer <MANAGER_TOKEN>`. Sem criptografia TLS na LAN, esse token trafega em texto claro entre o nó GPU e o dev host.
 - **S3 em HTTP puro:** O tráfego de dados e imagens trafega aberto na rede local.
 - **Mitigação Recomendada:**
-  - Configurar regras de firewall (`ufw`) no dev host restringindo as portas `8081` e `8333` exclusivamente ao IP do TrueNAS (`10.15.1.2`):
+  - Configurar regras de firewall (`ufw`) no dev host restringindo as portas `8081` e `8333` exclusivamente ao IP do nó GPU (`10.15.50.114`):
     ```bash
-    sudo ufw allow from 10.15.1.2 to any port 8081 proto tcp
-    sudo ufw allow from 10.15.1.2 to any port 8333 proto tcp
+    sudo ufw allow from 10.15.50.114 to any port 8081 proto tcp
+    sudo ufw allow from 10.15.50.114 to any port 8333 proto tcp
     ```
-  - Em ambientes corporativos ou não-confiáveis, utilizar um túnel WireGuard ou Tailscale unindo o dev host ao nó TrueNAS.
+  - Em ambientes corporativos ou não-confiáveis, utilizar um túnel WireGuard ou Tailscale unindo o dev host ao nó remoto.
 
 ---
 
@@ -52,9 +52,9 @@ S3_PUBLIC_ENDPOINT_URL=http://10.15.10.3:8333 # Endereço anunciado para presign
 
 O `docker compose -f infra/compose.gpu.yaml up -d` sobe **apenas** o container do `orchestrator-gpu`. Ele **não** faz o download automático das imagens pesadas de treinamento (`trainer-yolo` e `trainer-difusao`).
 
-Como o projeto não possui um registry privado configurado por padrão:
-1. **Repositório Clonado no TrueNAS:** O código-fonte deve estar clonado diretamente no nó remoto (ex.: `/mnt/DADOS/home/dockeruser/Hephaestus-LLM-Studio`).
-2. **Build Local Obrigatório das Imagens GPU:** Antes de despachar jobs reais, as imagens devem ser construídas localmente no TrueNAS utilizando os profiles dedicados de build:
+Como o projeto não possui um registry privado configurado por padrão (os pacotes `ghcr.io` são privados e não há credencial disponível no nó):
+1. **Repositório Clonado no Nó GPU:** O código-fonte deve estar clonado diretamente no nó remoto (ex.: `~/Hephaestus-LLM-Studio`).
+2. **Build Local Obrigatório das Imagens GPU:** Antes de despachar jobs reais, as imagens devem ser construídas localmente no nó, **uma de cada vez** (o disco de 60 GB não comporta builds simultâneos), utilizando os profiles dedicados de build:
    ```bash
    # Build da imagem YOLO GPU (~8 GB)
    docker compose -p gpu --env-file infra/env.gpu -f infra/compose.gpu.yaml --profile build build trainer-gpu
@@ -78,11 +78,11 @@ Como o projeto não possui um registry privado configurado por padrão:
 ## 4. Protocolo de Pareamento e Heartbeat
 
 1. **Código de Pareamento de Uso Único (`ORCH_PAIRING_CODE`):**
-   - Definido no `infra/env.gpu` do TrueNAS (ou gerado dinamicamente no boot do orchestrator).
-   - O operador registra o nó na interface Web do Studio (ou via chamada POST ao manager) informando o código e o endereço anunciado (`ORCH_ADVERTISE_URL=http://10.15.1.2:8082`).
+   - Definido no `infra/env.gpu` do nó GPU (ou gerado dinamicamente no boot do orchestrator).
+   - O operador registra o nó na interface Web do Studio (ou via chamada POST ao manager) informando o código e o endereço anunciado (`ORCH_ADVERTISE_URL=http://10.15.50.114:8082`).
    - Após a validação do código, o manager cadastra o nó e estabelece a comunicação autenticada via HMAC/Bearer.
 2. **Telemetria de VRAM via Heartbeat:**
-   - A cada 5 segundos, o orchestrator executa o utilitário `nvidia-smi` no nó TrueNAS e envia ao manager:
+   - A cada 5 segundos, o orchestrator executa o utilitário `nvidia-smi` no nó GPU e envia ao manager:
      - Estado do nó (`idle` ou `busy`).
      - Lista de GPUs físicas, modelo, VRAM total (`max_gpu_mib`) e VRAM livre instantânea (`vram_free_mib`).
      - IDs dos jobs ativos.
@@ -105,44 +105,45 @@ O `orchestrator` utiliza a CLI do Docker diretamente via subprocessos em Rust (`
 
 ---
 
-## 6. Procedimento Operacional: Runbook TrueNAS (ADR-0010)
+## 6. Procedimento Operacional: Runbook do Nó GPU (ADR-0010)
 
-### 6.1 Pré-flight (Dev Host & TrueNAS)
+### 6.1 Pré-flight (Dev Host & Nó GPU)
 ```bash
 # 1. Verificar manager e S3 no Dev Host (10.15.10.3)
 curl -s http://10.15.10.3:8081/health
 curl -s http://10.15.10.3:8333/
 
-# 2. Verificar GPUs disponíveis no TrueNAS
-ssh dockeruser@10.15.1.2 'nvidia-smi --query-gpu=index,name,memory.used,memory.total --format=csv,noheader'
+# 2. Verificar GPUs disponíveis no nó (docker-04)
+ssh dockeruser@10.15.50.114 'nvidia-smi --query-gpu=index,name,memory.used,memory.total --format=csv,noheader'
 ```
 
-### 6.2 Preparar `infra/env.gpu` no TrueNAS
+### 6.2 Preparar `infra/env.gpu` no nó GPU
 ```bash
-ssh dockeruser@10.15.1.2 'cat > /mnt/DADOS/home/dockeruser/Hephaestus-LLM-Studio/infra/env.gpu <<EOF
+ssh dockeruser@10.15.50.114 'cat > ~/Hephaestus-LLM-Studio/infra/env.gpu <<EOF
 MANAGER_TOKEN=<token-do-.env-do-dev-host>
 S3_ORCH_ACCESS_KEY=<access-key>
 S3_ORCH_SECRET_KEY=<secret-key>
 S3_ORCH_BUCKET=heph-data
 ORCH_GPU_DEVICES=0
-ORCH_ADVERTISE_URL=http://10.15.1.2:8082
+ORCH_ADVERTISE_URL=http://10.15.50.114:8082
 ORCH_PAIRING_CODE=heph_p_$(openssl rand -hex 8)
 EOF'
 ```
 
 ### 6.3 Build das Imagens e Inicialização
+> **Nota de disco:** o nó tem só 60 GB de `/` — faça build de **uma imagem por vez** e rode `docker system prune -af` entre builds para evitar `no space left on device`.
 ```bash
 # Build das imagens de motor (caso ainda não tenham sido geradas no nó)
-ssh dockeruser@10.15.1.2 'cd /mnt/DADOS/home/dockeruser/Hephaestus-LLM-Studio && \
+ssh dockeruser@10.15.50.114 'cd ~/Hephaestus-LLM-Studio && \
   docker compose -p gpu --env-file infra/env.gpu -f infra/compose.gpu.yaml --profile build build trainer-gpu'
 
 # Iniciar o orchestrator-gpu
-ssh dockeruser@10.15.1.2 'cd /mnt/DADOS/home/dockeruser/Hephaestus-LLM-Studio && \
+ssh dockeruser@10.15.50.114 'cd ~/Hephaestus-LLM-Studio && \
   docker compose -p gpu --env-file infra/env.gpu -f infra/compose.gpu.yaml up -d'
 ```
 
 ### 6.4 Finalização da Sessão
 ```bash
-ssh dockeruser@10.15.1.2 'cd /mnt/DADOS/home/dockeruser/Hephaestus-LLM-Studio && \
+ssh dockeruser@10.15.50.114 'cd ~/Hephaestus-LLM-Studio && \
   docker compose -p gpu -f infra/compose.gpu.yaml down'
 ```

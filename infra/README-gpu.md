@@ -1,30 +1,31 @@
-# GPU Session Checklist — TrueNAS (ADR-0010)
+# GPU Session Checklist — Nó GPU Dedicado (VM Proxmox, ADR-0010)
 
-Checklist operacional para sessão de treino real com GPU no TrueNAS.
+Checklist operacional para sessão de treino real com GPU no nó GPU dedicado.
 **O G.6 (coordenador) é o primeiro usuário deste documento.**
 
 - **Dev host:** `10.15.10.3` (roda Postgres, manager, principal, seaweedfs, orchestrator-local)
-- **TrueNAS:** `10.15.1.2` (roda o orquestrador remoto com GPU — RTX 3060 + GTX 1660 Super)
-- **Repo clonado no TrueNAS:** `/mnt/DADOS/home/dockeruser/Hephaestus-LLM-Studio`
+- **Nó GPU dedicado:** `10.15.50.114` (hostname `docker-04`, VM Proxmox efêmera/descartável — roda o orquestrador remoto com GPU — RTX 3060 + GTX 1660 Super)
+- **Repo clonado no nó GPU dedicado:** `~/Hephaestus-LLM-Studio`
+- **Disco:** `/` é `/dev/loop4`, só **60GB total (~54GB livres)**, SEM volumes extras montados — ~80x menos que o TrueNAS antigo. Orçar builds com cuidado (prune agressivo, um build de imagem GPU por vez; conferir `df -h /` antes/depois).
 
-> ⚠️ Todos os comandos SSH no TrueNAS usam `ssh dockeruser@10.15.1.2`.
-> O TrueNAS **sem sudo**; containers rodam via grupo docker.
+> ⚠️ Todos os comandos SSH no nó GPU dedicado usam `ssh dockeruser@10.15.50.114`.
+> O nó GPU dedicado **sem sudo**; containers rodam via grupo docker.
 
 ---
 
 ## 1. Pre-flight (dev host)
 
-### 1.1 Conferir GPUs e VRAM no TrueNAS
+### 1.1 Conferir GPUs e VRAM no nó GPU dedicado
 
 ```bash
-ssh dockeruser@10.15.1.2 'nvidia-smi -L'
+ssh dockeruser@10.15.50.114 'nvidia-smi -L'
 # Esperado:
 # GPU 0: NVIDIA GeForce RTX 3060 (UUID: ...)
 # GPU 1: NVIDIA GeForce GTX 1660 SUPER (UUID: ...)
 ```
 
 ```bash
-ssh dockeruser@10.15.1.2 'nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv,noheader,nounits'
+ssh dockeruser@10.15.50.114 'nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv,noheader,nounits'
 # Exemplo saída:
 # 0, 0, 12288     ← 3060 livre (OK, default)
 # 1, 0, 6144      ← 1660S livre
@@ -41,22 +42,22 @@ curl -s http://10.15.10.3:8081/health
 # Esperado: HTTP 200
 ```
 
-### 1.3 Preparar `env.gpu` no TrueNAS
+### 1.3 Preparar `env.gpu` no nó GPU dedicado
 
 ```bash
-ssh dockeruser@10.15.1.2 \
-  'cat > /mnt/DADOS/home/dockeruser/Hephaestus-LLM-Studio/infra/env.gpu <<EOF
+ssh dockeruser@10.15.50.114 \
+  'cat > ~/Hephaestus-LLM-Studio/infra/env.gpu <<EOF
 MANAGER_TOKEN=<token-do-.env-do-dev-host>
 S3_ORCH_ACCESS_KEY=<access-key>
 S3_ORCH_SECRET_KEY=<secret-key>
 S3_ORCH_BUCKET=heph-data
 ORCH_GPU_DEVICES=0
-ORCH_ADVERTISE_URL=http://10.15.1.2:8082
+ORCH_ADVERTISE_URL=http://10.15.50.114:8082
 ORCH_PAIRING_CODE=<código-de-pareamento-escolhido>
 EOF'
 ```
 
-> `ORCH_ADVERTISE_URL` deve ser o IP/porta **públicos** do TrueNAS
+> `ORCH_ADVERTISE_URL` deve ser o IP/porta **públicos** do nó GPU dedicado
 > (não hostname local — o manager do dev host usa este endereço para
 > despachar jobs). `ORCH_PAIRING_CODE` é single-use e consumido pelo
 > adopt. O pairing code é exibido uma vez no log do orquestrador no boot
@@ -179,7 +180,7 @@ curl -X POST http://10.15.10.3:8080/api/orchestrators/adopt \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "orchestrator-gpu",
-    "endpoint": "http://10.15.1.2:8082",
+    "endpoint": "http://10.15.50.114:8082",
     "kind": "remoto",
     "pairingCode": "<código-do-env.gpu>"
   }'
@@ -190,43 +191,47 @@ Verificar:
 ```bash
 curl -s http://10.15.10.3:8080/api/orchestrators \
   | python3 -m json.tool
-# Esperado: 1 row, kind='remoto', endpoint='http://10.15.1.2:8082', status='online'
+# Esperado: 1 row, kind='remoto', endpoint='http://10.15.50.114:8082', status='online'
 ```
 
 ---
 
-## 3. TrueNAS — build e start
+## 3. nó GPU dedicado — build e start
 
 ### 3.1 Atualizar o repo
 
 ```bash
-ssh dockeruser@10.15.1.2 \
-  'cd /mnt/DADOS/home/dockeruser/Hephaestus-LLM-Studio && git pull'
+ssh dockeruser@10.15.50.114 \
+  'cd ~/Hephaestus-LLM-Studio && git pull'
 ```
 
 ### 3.2 Build da imagem do trainer GPU
 
 ```bash
-ssh dockeruser@10.15.1.2 \
-  'cd /mnt/DADOS/home/dockeruser/Hephaestus-LLM-Studio && \
+ssh dockeruser@10.15.50.114 \
+  'cd ~/Hephaestus-LLM-Studio && \
    docker compose -p gpu --env-file infra/env.gpu -f infra/compose.gpu.yaml --profile build build trainer-gpu'
 ```
 
 > Build ~8-10GB (PyTorch + CUDA + ultralytics + peso yolo11n baked).
 > Tempo estimado: 5-15min dependendo da rede.
+> **Disco limitado (54GB livres):** buildar UMA imagem por vez (`orchestrator-gpu`
+> primeiro, depois `trainer-gpu`/`trainer-difusao-gpu` se sobrar espaço); rodar
+> `docker system prune -f` entre builds se necessário; conferir `df -h /` antes
+> de cada build.
 
 ### 3.3 Subir o orquestrador GPU
 
 ```bash
-ssh dockeruser@10.15.1.2 \
-  'cd /mnt/DADOS/home/dockeruser/Hephaestus-LLM-Studio && \
+ssh dockeruser@10.15.50.114 \
+  'cd ~/Hephaestus-LLM-Studio && \
    docker compose -p gpu --env-file infra/env.gpu -f infra/compose.gpu.yaml up -d orchestrator-gpu'
 ```
 
 ### 3.4 Verificar saúde do orquestrador (do dev host)
 
 ```bash
-curl -s http://10.15.1.2:8082/health
+curl -s http://10.15.50.114:8082/health
 # Esperado: HTTP 200 com body {"status":"ok"}
 ```
 
@@ -306,16 +311,16 @@ ORDER BY j.created_at DESC LIMIT 1;
 
 ### Critério 2 — GPU correta foi usada
 
-No TrueNAS, durante o run:
+No nó GPU dedicado, durante o run:
 ```bash
-ssh dockeruser@10.15.1.2 'nvidia-smi'
+ssh dockeruser@10.15.50.114 'nvidia-smi'
 # Esperado: processo do trainer rodando na GPU escolhida (util>0),
 #            ~0 na outra
 ```
 
 No log do container (após done):
 ```bash
-ssh dockeruser@10.15.1.2 \
+ssh dockeruser@10.15.50.114 \
   'docker logs $(docker ps -q --filter "name=trainer-yolo-job" | head -1) 2>&1 | grep -i "using device"'
 # Esperado: "Using device 0" (ou 1, conforme pre-flight)
 ```
@@ -378,11 +383,11 @@ curl -s http://10.15.10.3:8080/api/telemetry | python3 -m json.tool
 
 ## 6. Teardown (restaurar dev host)
 
-### 6.1 Down do projeto GPU no TrueNAS
+### 6.1 Down do projeto GPU no nó GPU dedicado
 
 ```bash
-ssh dockeruser@10.15.1.2 \
-  'cd /mnt/DADOS/home/dockeruser/Hephaestus-LLM-Studio && \
+ssh dockeruser@10.15.50.114 \
+  'cd ~/Hephaestus-LLM-Studio && \
    docker compose -p gpu -f infra/compose.gpu.yaml down -v'
 ```
 
@@ -466,6 +471,6 @@ curl -s http://10.15.10.3:8080/api/orchestrators \
 - **Sessão GPU sem psql** (Fatia H, ADR-0011 D5/D8): revoke local + adopt remoto
   via API/UI. `AUTO_ADOPT_LOCAL=0` não é mais necessário (a guarda `revoked` fecha
   o ciclo). Teardown: revoke remoto + start local + adopt local (revive `revoked`).
-- **Portas no TrueNAS**: o orquestrador GPU usa `8082` (a mesma do local,
+- **Portas no nó GPU dedicado**: o orquestrador GPU usa `8082` (a mesma do local,
   mas em host diferente — sem conflito de porta cross-host).
-- **NÃO tocar nos 48 containers** do TrueNAS — o projeto `gpu` é isolado.
+- **NÃO há nenhum outro container** no nó GPU dedicado — o projeto `gpu` é isolado.

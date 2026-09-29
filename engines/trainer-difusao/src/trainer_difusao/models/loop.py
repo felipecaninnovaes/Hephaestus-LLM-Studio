@@ -17,6 +17,7 @@ from trainer_difusao.common import (
     _die,
     _emit_metric,
     _load_lora_weights,
+    _load_optimizer_state,
     _precompute_text_cache,
     _precompute_text_cache_with_cleanup,
     _prune_checkpoints,
@@ -55,6 +56,7 @@ class LoraTrainConfig:
     checkpoint_interval: int
     epoch_offset: int
     weights_path: str | None
+    optimizer_state_path: str | None
     mixed_precision: str
     quantization: str
     sample_prompt: str
@@ -116,6 +118,7 @@ def parse_lora_train_config(
         0, int(cfg.get("epoch_offset") or lora_cfg.get("epoch_offset") or 0)
     )
     weights_path = cfg.get("weights_path")
+    optimizer_state_path = cfg.get("optimizer_state_path")
 
     # custom_checkpoint_path: permite carregamento de UNet custom via from_single_file
     raw_custom_cp = cfg.get("custom_checkpoint_path")
@@ -164,6 +167,7 @@ def parse_lora_train_config(
         checkpoint_interval=checkpoint_interval,
         epoch_offset=epoch_offset,
         weights_path=weights_path,
+        optimizer_state_path=optimizer_state_path,
         mixed_precision=mixed_precision,
         quantization=quantization,
         sample_prompt=sample_prompt,
@@ -288,6 +292,8 @@ class TrainingLoopRunner:
 
         # Cria otimizador e scheduler
         optimizer = _create_optimizer(comp["trainable_module"], tcfg.optimizer_name, tcfg.learning_rate)
+        if tcfg.optimizer_state_path:
+            _load_optimizer_state(optimizer, tcfg.optimizer_state_path)
 
         # Dataset principal
         dataset = DiffusionDataset(
@@ -529,6 +535,7 @@ class TrainingLoopRunner:
                     tcfg.base_name,
                     epoch,
                     metadata=metadata,
+                    optimizer=optimizer,
                 )
                 _prune_checkpoints(checkpoints_dir, keep_last_n=2)
 
@@ -568,7 +575,7 @@ class TrainingLoopRunner:
 
         # Salva adapter final
         metadata = self.adapter.checkpoint_metadata(tcfg)
-        final_adapter_file = save_final_adapter(comp["trainable_module"], output, tcfg.base_name, metadata)
+        final_adapter_file = save_final_adapter(comp["trainable_module"], output, tcfg.base_name, metadata, optimizer=optimizer)
         _emit_metric(
             metrics_path,
             epoch=tcfg.epochs,

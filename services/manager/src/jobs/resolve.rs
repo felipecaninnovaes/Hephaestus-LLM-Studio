@@ -6,11 +6,22 @@ use uuid::Uuid;
 
 use crate::error::ManagerError;
 
+/// Referência resolvida de optimizer state (Adam) para continuidade de treino
+/// LoRA (fatia feat/difusao-resume-optimizer-state). Sibling do checkpoint,
+/// mesmo diretório/basename trocando `.safetensors` por `_optimizer.pt`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OptimizerStateRef {
+    pub s3_key: String,
+    pub md5: String,
+}
+
 /// Referência de pesos para fine-tune (ADR-0012 D5 — snake_case interno).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WeightsRef {
     pub s3_key: String,
     pub md5: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optimizer_state: Option<OptimizerStateRef>,
 }
 
 /// Referência resolvida de LoRA para o dispatch (D3).
@@ -53,43 +64,49 @@ pub async fn resolve_weights_ref(
 ) -> Result<(WeightsRef, String), ManagerError> {
     let mut resolved_model = req_model.to_string();
 
-    let row: Option<(String, String, String, Option<String>)> =
-        match sqlx::query_as("SELECT s3_key, hash, engine, model FROM models WHERE id = $1")
-            .bind(weights_id)
-            .fetch_optional(pool)
-            .await
-            .map_err(|e| ManagerError::Internal(format!("resolve weights from models: {e}")))?
-        {
-            Some(r) => Some(r),
-            None => {
-                // Fallback: busca em job_artifacts (ex.: checkpoints periódicos por época ou modelos intermediários)
-                let art_row: Option<(Uuid, String, String, String, String)> = sqlx::query_as(
-                    "SELECT a.job_id, a.path, a.md5, j.engine, j.model \
+    let row: Option<(
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<Uuid>,
+        Option<String>,
+    )> = match sqlx::query_as("SELECT s3_key, hash, engine, model FROM models WHERE id = $1")
+        .bind(weights_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("resolve weights from models: {e}")))?
+    {
+        Some((s3_key, hash, engine, model)) => Some((s3_key, hash, engine, model, None, None)),
+        None => {
+            // Fallback: busca em job_artifacts (ex.: checkpoints periódicos por época ou modelos intermediários)
+            let art_row: Option<(Uuid, String, String, String, String)> = sqlx::query_as(
+                "SELECT a.job_id, a.path, a.md5, j.engine, j.model \
                      FROM job_artifacts a \
                      JOIN jobs j ON j.id = a.job_id \
                      WHERE a.id = $1 AND a.kind IN ('checkpoint', 'model')",
-                )
-                .bind(weights_id)
-                .fetch_optional(pool)
-                .await
-                .map_err(|e| {
-                    ManagerError::Internal(format!("resolve weights from artifacts: {e}"))
-                })?;
+            )
+            .bind(weights_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| ManagerError::Internal(format!("resolve weights from artifacts: {e}")))?;
 
-                art_row.map(|(job_id, path, md5, engine, model)| {
-                    (
-                        format!("artifacts/{job_id}/{path}"),
-                        md5,
-                        engine,
-                        Some(model),
-                    )
-                })
-            }
-        };
+            art_row.map(|(job_id, path, md5, engine, model)| {
+                (
+                    format!("artifacts/{job_id}/{path}"),
+                    md5,
+                    engine,
+                    Some(model),
+                    Some(job_id),
+                    Some(path),
+                )
+            })
+        }
+    };
 
     match row {
         None => Err(ManagerError::NotFound),
-        Some((s3_key, hash, engine, variant)) => {
+        Some((s3_key, hash, engine, variant, job_id, raw_path)) => {
             if engine != "yolo" && engine != "world" && engine != "diffusion" {
                 return Err(ManagerError::InvalidRequest(format!(
                     "weights engine must be 'yolo', 'world', or 'diffusion', got '{engine}'"
@@ -108,7 +125,40 @@ pub async fn resolve_weights_ref(
                 )));
             }
 
-            let weights_ref = WeightsRef { s3_key, md5: hash };
+            // Sibling optimizer_state (Adam) — só quando resolvido via job_artifacts
+            // (fatia feat/difusao-resume-optimizer-state). Convenção: mesmo diretório
+            // e basename, trocando `.safetensors` por `_optimizer.pt`. Ausência do
+            // sibling é o caminho normal (checkpoints antigos) — nunca falha.
+            let mut optimizer_state: Option<OptimizerStateRef> = None;
+            if let (Some(jid), Some(path)) = (job_id, raw_path.as_deref()) {
+                if let Some(opt_path) = path
+                    .strip_suffix(".safetensors")
+                    .map(|base| format!("{base}_optimizer.pt"))
+                {
+                    let opt_row: Option<(String, String)> = sqlx::query_as(
+                        "SELECT path, md5 FROM job_artifacts \
+                         WHERE job_id = $1 AND kind = 'optimizer_state' AND path = $2",
+                    )
+                    .bind(jid)
+                    .bind(&opt_path)
+                    .fetch_optional(pool)
+                    .await
+                    .map_err(|e| {
+                        ManagerError::Internal(format!("resolve optimizer_state sibling: {e}"))
+                    })?;
+
+                    optimizer_state = opt_row.map(|(opt_path, opt_md5)| OptimizerStateRef {
+                        s3_key: format!("artifacts/{jid}/{opt_path}"),
+                        md5: opt_md5,
+                    });
+                }
+            }
+
+            let weights_ref = WeightsRef {
+                s3_key,
+                md5: hash,
+                optimizer_state,
+            };
 
             // ADR-0012 D5/I.2b: predict com variant → jobs.model = variante (ex.: yolo11m).
             if req_model == "predict" {

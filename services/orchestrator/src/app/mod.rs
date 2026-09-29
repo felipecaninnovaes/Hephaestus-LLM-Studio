@@ -381,6 +381,37 @@ pub async fn run_job_inner(
         weights_staged_path = Some(format!("/outputs/{job_id}/weights/{filename}"));
     }
 
+    // 5a2. Download e staging do optimizer state (Adam) sibling — continuidade
+    //      real de treino LoRA (fatia feat/difusao-resume-optimizer-state).
+    //      Best-effort/transparente: presente no dispatch apenas quando o
+    //      manager encontrou o sibling `_optimizer.pt`; ausência = comportamento
+    //      legado (optimizer sempre reinicia do zero).
+    let mut optimizer_state_staged_path: Option<String> = None;
+    if let Some(optimizer_state) = dispatch
+        .weights_ref
+        .as_ref()
+        .and_then(|w| w.optimizer_state.as_ref())
+    {
+        let filename = optimizer_state.s3_key.rsplit('/').next().ok_or_else(|| {
+            PipelineError::S3Download("optimizer_state key has no filename".to_string())
+        })?;
+
+        let weights_dir = outputs.join("weights");
+        create_dir_all_open(&weights_dir).await?;
+
+        let optimizer_file = weights_dir.join(filename);
+        resolve_and_stage_weight(
+            &s3,
+            &weights_cache_dir,
+            &optimizer_file,
+            &optimizer_state.s3_key,
+            &optimizer_state.md5,
+            None,
+        )
+        .await?;
+        optimizer_state_staged_path = Some(format!("/outputs/{job_id}/weights/{filename}"));
+    }
+
     // 5b. Download e staging de LoRAs multi-ref (D3 — ADR-0023)
     //     Pesos ficam em outputs/<job_id>/weights/lora_0.safetensors, lora_1.safetensors, ...
     let mut lora_staged_paths: Vec<String> = Vec::new();
@@ -533,6 +564,7 @@ pub async fn run_job_inner(
             init_staged_path.as_deref(),
             control_staged_path.as_deref(),
             text_encoder_staged_path.as_deref(),
+            optimizer_state_staged_path.as_deref(),
         );
 
         // O config exige init mas nenhum init_image_ref veio no dispatch:
@@ -637,6 +669,7 @@ pub async fn run_job_inner(
                     init_staged_path.as_deref(),
                     control_staged_path.as_deref(),
                     text_encoder_staged_path.as_deref(),
+                    optimizer_state_staged_path.as_deref(),
                 )
             })
             .unwrap_or_default();
@@ -1023,6 +1056,7 @@ pub async fn run_job_inner(
         ("diffusion", "generate") => vec![], // glob abaixo (D2 ADR-0023)
         ("diffusion", _) => vec![
             ("adapter.safetensors", "model"),
+            ("adapter_optimizer.pt", "optimizer_state"),
             (metrics_filename, "metrics"),
         ],
         // Já validado acima — seguro unreachable
@@ -1149,9 +1183,15 @@ pub async fn run_job_inner(
                                         || n.ends_with(".part")
                                 })
                                 .unwrap_or(false)
-                            && p.extension()
-                                .and_then(|e| e.to_str())
-                                .map(|ext| ext.eq_ignore_ascii_case("safetensors"))
+                            && p.file_name()
+                                .and_then(|n| n.to_str())
+                                .map(|n| {
+                                    n.ends_with("_optimizer.pt")
+                                        || p.extension()
+                                            .and_then(|e| e.to_str())
+                                            .map(|ext| ext.eq_ignore_ascii_case("safetensors"))
+                                            .unwrap_or(false)
+                                })
                                 .unwrap_or(false)
                     })
                     .collect();
@@ -1159,6 +1199,11 @@ pub async fn run_job_inner(
 
                 for c_path in ckpt_files {
                     if let Some(c_name) = c_path.file_name().and_then(|n| n.to_str()) {
+                        let kind = if c_name.ends_with("_optimizer.pt") {
+                            "optimizer_state"
+                        } else {
+                            "checkpoint"
+                        };
                         let rel_path = format!("checkpoints/{c_name}");
                         let art_key = format!("artifacts/{job_id}/{rel_path}");
                         match scoped_key(S3Scope::Artifacts, &art_key) {
@@ -1169,7 +1214,7 @@ pub async fn run_job_inner(
                                         .unwrap_or(0);
                                     match put_with_retry(s3.as_ref(), &scoped, &c_path).await {
                                         Ok(()) => artifacts.push(ArtifactReport {
-                                            kind: "checkpoint".to_string(),
+                                            kind: kind.to_string(),
                                             path: rel_path,
                                             md5,
                                             bytes,
@@ -1214,6 +1259,51 @@ pub async fn run_job_inner(
                                         match put_with_retry(s3.as_ref(), &scoped, &p).await {
                                             Ok(()) => artifacts.push(ArtifactReport {
                                                 kind: "model".to_string(),
+                                                path: f_name.to_string(),
+                                                md5,
+                                                bytes,
+                                            }),
+                                            Err(e) => upload_errors.push(format!("{f_name}: {e}")),
+                                        }
+                                    }
+                                    Err(e) => upload_errors.push(format!(
+                                        "{f_name}: falha ao preparar artefato (md5): {e}"
+                                    )),
+                                },
+                                Err(e) => upload_errors.push(format!(
+                                    "{f_name}: falha ao preparar artefato (key): {e}"
+                                )),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Escaneia qualquer outro *_optimizer.pt na raiz de outputs/ (sibling do
+        // *.safetensors semântico acima — fatia feat/difusao-resume-optimizer-state).
+        // adapter_optimizer.pt já é coberto por artifact_specs (canônico).
+        if let Ok(entries) = std::fs::read_dir(&outputs) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_file() {
+                    if let Some(f_name) = p.file_name().and_then(|n| n.to_str()) {
+                        if !f_name.starts_with('.')
+                            && !f_name.ends_with(".tmp")
+                            && !f_name.ends_with(".part")
+                            && f_name != "adapter_optimizer.pt"
+                            && f_name.ends_with("_optimizer.pt")
+                        {
+                            let art_key = format!("artifacts/{job_id}/{f_name}");
+                            match scoped_key(S3Scope::Artifacts, &art_key) {
+                                Ok(scoped) => match compute_file_md5(&p) {
+                                    Ok(md5) => {
+                                        let bytes = std::fs::metadata(&p)
+                                            .map(|m| m.len() as i64)
+                                            .unwrap_or(0);
+                                        match put_with_retry(s3.as_ref(), &scoped, &p).await {
+                                            Ok(()) => artifacts.push(ArtifactReport {
+                                                kind: "optimizer_state".to_string(),
                                                 path: f_name.to_string(),
                                                 md5,
                                                 bytes,

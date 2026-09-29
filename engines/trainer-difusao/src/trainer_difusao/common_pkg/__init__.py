@@ -18,6 +18,8 @@ from trainer_difusao.common_pkg.runtime import (
 from trainer_difusao.common_pkg.lora_io import (
     _save_lora_safetensors,
     _load_lora_weights,
+    _save_optimizer_state,
+    _load_optimizer_state,
     save_adapter_checkpoint,
     save_final_adapter,
 )
@@ -79,6 +81,8 @@ __all__ = [
     "_ensure_qwen_diffusers_compat",
     "_save_lora_safetensors",
     "_load_lora_weights",
+    "_save_optimizer_state",
+    "_load_optimizer_state",
     "save_adapter_checkpoint",
     "save_final_adapter",
     "_TRAIN_QUANT_LEVELS",

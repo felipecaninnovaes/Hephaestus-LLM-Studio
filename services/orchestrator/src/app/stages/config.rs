@@ -8,6 +8,8 @@
 /// Suporta:
 /// - `{dataset_path}`, `{output_path}` — sempre
 /// - `{weights_path}` — weights legado (fine-tune)
+/// - `{optimizer_state_path}` — optimizer state (Adam) sibling, continuidade
+///   real de treino LoRA (fatia feat/difusao-resume-optimizer-state)
 /// - `{lora_path_0}`...`{lora_path_N}` — LoRAs multi-ref (D3)
 /// - `{custom_checkpoint_path}` — checkpoint custom (D4)
 /// - `{text_encoder_path}` — text encoder custom (fatia feat/pesos-custom-flux2)
@@ -15,6 +17,7 @@
 /// - `{control_dataset_path}` — dataset de regularização/controle (treino difusão)
 ///
 /// Placeholders absentes no yaml são ignorados (no-op tolerante).
+#[allow(clippy::too_many_arguments)]
 pub fn replace_config_placeholders(
     config: &str,
     dataset_path: &str,
@@ -25,6 +28,7 @@ pub fn replace_config_placeholders(
     init_image_path: Option<&str>,
     control_dataset_path: Option<&str>,
     text_encoder_path: Option<&str>,
+    optimizer_state_path: Option<&str>,
 ) -> String {
     let mut result = config
         .replace("{dataset_path}", dataset_path)
@@ -33,6 +37,10 @@ pub fn replace_config_placeholders(
     match weights_path {
         Some(wp) => result = result.replace("{weights_path}", wp),
         None => {}
+    }
+
+    if let Some(op) = optimizer_state_path {
+        result = result.replace("{optimizer_state_path}", op);
     }
 
     for (i, path) in lora_paths.iter().enumerate() {
@@ -73,6 +81,7 @@ pub fn replace_config_placeholders_legacy(
         output_path,
         weights_path,
         &[],
+        None,
         None,
         None,
         None,

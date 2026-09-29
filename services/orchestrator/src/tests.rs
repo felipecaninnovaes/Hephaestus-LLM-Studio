@@ -159,6 +159,7 @@ fn replace_config_placeholders_basic() {
         None,
         None,
         None,
+        None,
     );
     assert_eq!(
         result,
@@ -176,6 +177,7 @@ fn replace_config_placeholders_yaml_parseable() {
         "/outputs/j1",
         None,
         &[],
+        None,
         None,
         None,
         None,
@@ -2279,6 +2281,7 @@ fn replace_config_placeholders_with_weights() {
         None,
         None,
         None,
+        None,
     );
     assert_eq!(
         result,
@@ -2295,6 +2298,7 @@ fn replace_config_placeholders_without_weights_keeps_literal() {
         "/outputs/j1",
         None,
         &[],
+        None,
         None,
         None,
         None,
@@ -2320,6 +2324,7 @@ fn replace_config_placeholders_with_init_image() {
         Some("/outputs/j1/inputs/init.png"),
         None,
         None,
+        None,
     );
     assert_eq!(
         result,
@@ -2336,6 +2341,7 @@ fn replace_config_placeholders_without_init_keeps_literal() {
         "/outputs/j1",
         None,
         &[],
+        None,
         None,
         None,
         None,
@@ -2359,6 +2365,7 @@ fn replace_config_placeholders_no_init_placeholder_noop() {
             init,
             None,
             None,
+            None,
         );
         assert_eq!(result, config);
     }
@@ -2377,6 +2384,7 @@ fn replace_config_placeholders_with_text_encoder() {
         None,
         None,
         Some("/outputs/j1/weights/text_encoder.safetensors"),
+        None,
     );
     assert_eq!(
         result,
@@ -2393,6 +2401,7 @@ fn replace_config_placeholders_without_text_encoder_keeps_literal() {
         "/outputs/j1",
         None,
         &[],
+        None,
         None,
         None,
         None,
@@ -2536,6 +2545,7 @@ async fn weights_ref_valid_stages_file_and_replaces_placeholder() {
     dispatch.weights_ref = Some(WeightsRef {
         s3_key: "models/yolo/abc-123/best.pt".to_string(),
         md5: weights_md5_hex,
+        optimizer_state: None,
     });
 
     let report = Arc::new(FakeReport::new());
@@ -2624,6 +2634,7 @@ async fn weights_ref_wrong_md5_fails_pipeline() {
     dispatch.weights_ref = Some(WeightsRef {
         s3_key: "models/yolo/abc-123/best.pt".to_string(),
         md5: "00000000000000000000000000000000".to_string(), // wrong hash
+        optimizer_state: None,
     });
 
     let report = Arc::new(FakeReport::new());
@@ -2732,6 +2743,7 @@ async fn weights_ref_artifacts_scope() {
     dispatch.weights_ref = Some(WeightsRef {
         s3_key: "artifacts/job-prev/best.pt".to_string(),
         md5: weights_md5,
+        optimizer_state: None,
     });
 
     let report = Arc::new(FakeReport::new());
@@ -2772,6 +2784,182 @@ async fn weights_ref_artifacts_scope() {
 }
 
 #[tokio::test]
+async fn weights_ref_com_optimizer_state_staged_config_e_upload() {
+    // fatia feat/difusao-resume-optimizer-state: quando o dispatch carrega
+    // weights_ref.optimizer_state, o orchestrator (1) baixa o sibling para
+    // outputs/<job_id>/weights/, (2) substitui {optimizer_state_path} no
+    // config.yaml e (3) sobe outputs/adapter_optimizer.pt (kind
+    // optimizer_state) junto do adapter.safetensors.
+    let tmp = tempfile::tempdir().unwrap();
+    let s3 = Arc::new(FakeS3::new());
+    let zip_path = tmp.path().join("pkg.zip");
+    std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+    let mut dispatch = make_dispatch_with_valid_md5("job-opt-001", "diffusion", &zip_path);
+    dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+    dispatch.config_yaml = Some(
+        "epochs: 1\ndataset_path: {dataset_path}\noutput_path: {output_path}\nweights_path: {weights_path}\noptimizer_state_path: {optimizer_state_path}"
+            .to_string(),
+    );
+
+    let weights_bytes = b"fake adapter weights";
+    let weights_md5 = compute_file_md5_bytes(weights_bytes);
+    let weights_s3 = Arc::new(FakeS3WithWeights::new(weights_bytes.to_vec()));
+
+    dispatch.weights_ref = Some(WeightsRef {
+        s3_key: "artifacts/job-prev/adapter.safetensors".to_string(),
+        md5: weights_md5.clone(),
+        optimizer_state: Some(OptimizerStateRef {
+            s3_key: "artifacts/job-prev/adapter_optimizer.pt".to_string(),
+            md5: weights_md5,
+        }),
+    });
+
+    let report = Arc::new(FakeReport::new());
+    let executor = Arc::new(FakeTrainerExecutor::new());
+    let active_jobs = new_active_jobs();
+
+    let mut output_files = HashMap::new();
+    output_files.insert(
+        "adapter.safetensors".to_string(),
+        b"fake safetensors bytes".to_vec(),
+    );
+    output_files.insert(
+        "adapter_optimizer.pt".to_string(),
+        b"fake pickled optimizer state".to_vec(),
+    );
+    output_files.insert(
+        "metrics.jsonl".to_string(),
+        br#"{"epoch":1,"step":10,"loss":0.42}"#.to_vec(),
+    );
+    create_fake_outputs(tmp.path(), "job-opt-001", &output_files);
+
+    let result = run_job_inner(
+        &dispatch,
+        weights_s3.clone(),
+        report.clone(),
+        executor.clone(),
+        &active_jobs,
+        None,
+        false,
+        None,
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "run_job_inner com optimizer_state deve suceder: {:?}",
+        result.err()
+    );
+
+    // 1. Sibling staged no diretório de weights.
+    let staged = tmp
+        .path()
+        .join("outputs/job-opt-001/weights/adapter_optimizer.pt");
+    assert!(staged.exists(), "optimizer_state deve ser staged");
+    assert_eq!(std::fs::read(&staged).unwrap(), weights_bytes);
+
+    // 2. Placeholder {optimizer_state_path} substituído no config.yaml real.
+    let config_content =
+        std::fs::read_to_string(tmp.path().join("outputs/job-opt-001/config.yaml")).unwrap();
+    assert!(
+        config_content
+            .contains("optimizer_state_path: /outputs/job-opt-001/weights/adapter_optimizer.pt"),
+        "config deve conter optimizer_state_path staged: {config_content}"
+    );
+    assert!(
+        !config_content.contains("{optimizer_state_path}"),
+        "placeholder não pode vazar: {config_content}"
+    );
+
+    // 3. Upload final inclui adapter_optimizer.pt com kind optimizer_state.
+    let artifacts = report.done_artifacts().unwrap();
+    let opt_art = artifacts
+        .iter()
+        .find(|a| a.path == "adapter_optimizer.pt")
+        .expect("adapter_optimizer.pt deve ser enviado como artefato");
+    assert_eq!(opt_art.kind, "optimizer_state");
+}
+
+#[tokio::test]
+async fn weights_ref_sem_optimizer_state_nao_gera_placeholder_nem_staging() {
+    // Retrocompat: checkpoint antigo sem sibling → weights_ref.optimizer_state
+    // ausente (None) → SEM staging extra, SEM placeholder no config.yaml —
+    // comportamento idêntico ao pré-existente `weights_ref_artifacts_scope`.
+    let tmp = tempfile::tempdir().unwrap();
+    let s3 = Arc::new(FakeS3::new());
+    let zip_path = tmp.path().join("pkg.zip");
+    std::fs::write(&zip_path, &s3.zip_bytes).unwrap();
+
+    let mut dispatch = make_dispatch_with_valid_md5("job-opt-002", "diffusion", &zip_path);
+    dispatch.workdir = tmp.path().to_str().unwrap().to_string();
+    dispatch.config_yaml = Some(
+        "epochs: 1\ndataset_path: {dataset_path}\noutput_path: {output_path}\nweights_path: {weights_path}\noptimizer_state_path: {optimizer_state_path}"
+            .to_string(),
+    );
+
+    let weights_bytes = b"fake adapter weights";
+    let weights_md5 = compute_file_md5_bytes(weights_bytes);
+    let weights_s3 = Arc::new(FakeS3WithWeights::new(weights_bytes.to_vec()));
+
+    dispatch.weights_ref = Some(WeightsRef {
+        s3_key: "artifacts/job-prev/adapter.safetensors".to_string(),
+        md5: weights_md5,
+        optimizer_state: None,
+    });
+
+    let report = Arc::new(FakeReport::new());
+    let executor = Arc::new(FakeTrainerExecutor::new());
+    let active_jobs = new_active_jobs();
+
+    let mut output_files = HashMap::new();
+    output_files.insert(
+        "adapter.safetensors".to_string(),
+        b"fake safetensors bytes".to_vec(),
+    );
+    output_files.insert(
+        "metrics.jsonl".to_string(),
+        br#"{"epoch":1,"step":10,"loss":0.42}"#.to_vec(),
+    );
+    create_fake_outputs(tmp.path(), "job-opt-002", &output_files);
+
+    let result = run_job_inner(
+        &dispatch,
+        weights_s3.clone(),
+        report.clone(),
+        executor.clone(),
+        &active_jobs,
+        None,
+        false,
+        None,
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "run_job_inner deve suceder: {:?}",
+        result.err()
+    );
+
+    let weights_dir = tmp.path().join("outputs/job-opt-002/weights");
+    assert!(
+        !weights_dir.join("adapter_optimizer.pt").exists(),
+        "sem optimizer_state no dispatch, nada deve ser staged"
+    );
+
+    let config_content =
+        std::fs::read_to_string(tmp.path().join("outputs/job-opt-002/config.yaml")).unwrap();
+    assert!(
+        config_content.contains("optimizer_state_path: {optimizer_state_path}"),
+        "placeholder deve permanecer literal (tolerante): {config_content}"
+    );
+
+    let artifacts = report.done_artifacts().unwrap();
+    assert!(
+        !artifacts.iter().any(|a| a.path == "adapter_optimizer.pt"),
+        "sem arquivo no disco, nenhum artefato optimizer_state deve ser enviado"
+    );
+}
+
+#[tokio::test]
 async fn weights_ref_unknown_prefix_fails() {
     // Key que não começa com models/ nem artifacts/ → falha
     let tmp = tempfile::tempdir().unwrap();
@@ -2785,6 +2973,7 @@ async fn weights_ref_unknown_prefix_fails() {
     dispatch.weights_ref = Some(WeightsRef {
         s3_key: "datasets/something/file.pt".to_string(),
         md5: "d41d8cd98f00b204e9800998ecf8427e".to_string(),
+        optimizer_state: None,
     });
 
     let report = Arc::new(FakeReport::new());
@@ -2865,6 +3054,7 @@ async fn autotracker_weights_ref_stages_and_replaces_config() {
     dispatch.weights_ref = Some(WeightsRef {
         s3_key: "models/world/abc-123/yolov8x-worldv2.pt".to_string(),
         md5: weights_md5,
+        optimizer_state: None,
     });
 
     let report = Arc::new(FakeReport::new());
@@ -2951,6 +3141,7 @@ async fn autotracker_weights_ref_only_boxes_json_skips_missing_metrics() {
     dispatch.weights_ref = Some(WeightsRef {
         s3_key: "models/world/def-456/yolov8x-worldv2.pt".to_string(),
         md5: weights_md5,
+        optimizer_state: None,
     });
 
     let report = Arc::new(FakeReport::new());
@@ -3032,6 +3223,7 @@ async fn autotracker_weights_ref_wrong_md5_fails() {
     dispatch.weights_ref = Some(WeightsRef {
         s3_key: "models/world/ghi-789/yolov8x-worldv2.pt".to_string(),
         md5: "00000000000000000000000000000000".to_string(), // wrong hash
+        optimizer_state: None,
     });
 
     let report = Arc::new(FakeReport::new());
@@ -3203,6 +3395,7 @@ async fn engine_yolo_predict_uses_predict_subcommand_and_predictions_artifact() 
     dispatch.weights_ref = Some(WeightsRef {
         s3_key: "models/yolo/abc-123/best.pt".to_string(),
         md5: weights_md5,
+        optimizer_state: None,
     });
 
     let s3w = Arc::new(FakeS3WithWeights::new(weights_bytes.to_vec()));
@@ -3373,6 +3566,7 @@ async fn predict_pipeline_done_without_metrics_file() {
     dispatch.weights_ref = Some(WeightsRef {
         s3_key: "models/yolo/abc/best.pt".to_string(),
         md5: weights_md5,
+        optimizer_state: None,
     });
     let s3w = Arc::new(FakeS3WithWeights::new(weights_bytes.to_vec()));
 

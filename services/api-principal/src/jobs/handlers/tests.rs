@@ -2057,6 +2057,87 @@ async fn submit_diffusion_train_encoder_sdxl_400() {
 }
 
 #[tokio::test]
+#[ignore]
+async fn submit_diffusion_train_weights_id_mirrors_top_level_for_resume() {
+    // Regressão: `weights` do request de treino precisa aparecer também em
+    // `manager_body["weights_id"]` (top-level) — é o único campo que o
+    // manager (`jobs::create::create_job`) lê para resolver `weights_ref` e
+    // staged o checkpoint/optimizer state do resume. Sem o espelho
+    // top-level, o resume treinava do zero (bug pré-existente, corrigido aqui).
+    let (mut state, ds_id) = db_state_with_dataset(MockManager::default()).await;
+    let mut mock = MockManager::default();
+    mock.create_job_result = Some(CreateJobResponse {
+        job_id: "550e8400-e29b-41d4-a716-446655440888".into(),
+        status: "queued".into(),
+        queue_position: None,
+    });
+    let mock_arc = std::sync::Arc::new(mock);
+    let mock_ref = std::sync::Arc::clone(&mock_arc);
+    state.manager = mock_arc;
+
+    let weights_id = "550e8400-e29b-41d4-a716-446655440777";
+    let body_json = serde_json::json!({
+        "datasetId": ds_id,
+        "baseModel": "flux",
+        "weights": weights_id,
+        "epochOffset": 1
+    });
+    let resp = submit_diffusion_job(
+        axum::extract::State(state),
+        Ok(axum::body::Bytes::from(
+            serde_json::to_string(&body_json).unwrap(),
+        )),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+    let body = mock_ref.last_create_job_body();
+    let body = body.expect("create_job body captured");
+    assert_eq!(
+        body["weights_id"],
+        serde_json::json!(weights_id),
+        "weights_id top-level ausente — manager não resolve weights_ref, resume treina do zero"
+    );
+    // params.weights (legado, exibição no frontend) permanece intacto.
+    assert_eq!(body["params"]["weights"], serde_json::json!(weights_id));
+}
+
+#[tokio::test]
+#[ignore]
+async fn submit_diffusion_train_weights_id_absent_without_weights() {
+    // Sem `weights` no request (treino inicial) — `weights_id` ausente do
+    // manager_body; comportamento pré-existente preservado (resolução
+    // opcional no manager).
+    let (mut state, ds_id) = db_state_with_dataset(MockManager::default()).await;
+    let mut mock = MockManager::default();
+    mock.create_job_result = Some(CreateJobResponse {
+        job_id: "550e8400-e29b-41d4-a716-446655440999".into(),
+        status: "queued".into(),
+        queue_position: None,
+    });
+    let mock_arc = std::sync::Arc::new(mock);
+    let mock_ref = std::sync::Arc::clone(&mock_arc);
+    state.manager = mock_arc;
+
+    let body_json = serde_json::json!({
+        "datasetId": ds_id,
+        "baseModel": "flux"
+    });
+    let resp = submit_diffusion_job(
+        axum::extract::State(state),
+        Ok(axum::body::Bytes::from(
+            serde_json::to_string(&body_json).unwrap(),
+        )),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+    let body = mock_ref.last_create_job_body();
+    let body = body.expect("create_job body captured");
+    assert!(body.get("weights_id").is_none());
+}
+
+#[tokio::test]
 async fn delete_job_503_manager_offline() {
     let mut mock = MockManager::default();
     mock.fail = true;

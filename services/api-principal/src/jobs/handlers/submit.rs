@@ -948,6 +948,11 @@ pub async fn submit_diffusion_job(
         },
         "vram_min_gb": vram_min,
     });
+    // D5: insere weights_id no body quando presente (manager resolve weights_ref
+    // para stage do checkpoint/resume — espelha params.weights top-level).
+    if let Some(w_id) = &req.weights {
+        manager_body["weights_id"] = serde_json::json!(w_id);
+    }
     if let Some(control_ref) = control_package_ref {
         manager_body["params"]["control_package_ref"] = control_ref;
     }

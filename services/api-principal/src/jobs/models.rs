@@ -1071,6 +1071,11 @@ pub fn generate_diffusion_config_yaml(
     } else {
         String::new()
     };
+    let optimizer_state_line = if req.weights.is_some() {
+        "optimizer_state_path: \"{optimizer_state_path}\"\n".to_string()
+    } else {
+        String::new()
+    };
     // Pesos custom: root-level, placeholder literal para staging do orchestrator.
     let custom_checkpoint_line = if custom_arch.is_some() {
         "custom_checkpoint_path: \"{custom_checkpoint_path}\"\n".to_string()
@@ -1134,7 +1139,7 @@ pub fn generate_diffusion_config_yaml(
 job_id: "{job_id}"
 engine: "diffusion"
 model: "{base_model}"
-{output_name_line}{weights_line}{custom_checkpoint_line}{text_encoder_line}{epoch_offset_line}mode: "train"
+{output_name_line}{weights_line}{optimizer_state_line}{custom_checkpoint_line}{text_encoder_line}{epoch_offset_line}mode: "train"
 dataset_path: "{{dataset_path}}"
 {control_dataset_line}output_path: "{{output_path}}"
 seed: 42
@@ -1157,6 +1162,7 @@ checkpoint_interval: {checkpoint_interval}
         base_model = effective_model,
         output_name_line = output_name_line,
         weights_line = weights_line,
+        optimizer_state_line = optimizer_state_line,
         custom_checkpoint_line = custom_checkpoint_line,
         text_encoder_line = text_encoder_line,
         epoch_offset_line = epoch_offset_line,
@@ -2858,8 +2864,18 @@ mod tests {
 
         let yaml = generate_diffusion_config_yaml("job-resume-1", &validated, None);
         assert!(yaml.contains(r#"weights_path: "{weights_path}""#));
+        assert!(yaml.contains(r#"optimizer_state_path: "{optimizer_state_path}""#));
         assert!(yaml.contains("checkpoint_interval: 5"));
         assert!(yaml.contains("epoch_offset: 10"));
+
+        // Treino inicial (sem weights) não deve emitir nenhuma das duas linhas.
+        let no_resume_json = r#"{"datasetId":"550e8400-e29b-41d4-a716-446655440001"}"#;
+        let no_resume_req: DiffusionJobRequest =
+            serde_json::from_str(no_resume_json).expect("should parse json");
+        let no_resume_v = validate_diffusion_request(no_resume_req).expect("should validate");
+        let no_resume_yaml = generate_diffusion_config_yaml("job-initial", &no_resume_v, None);
+        assert!(!no_resume_yaml.contains("weights_path:"));
+        assert!(!no_resume_yaml.contains("optimizer_state_path:"));
 
         // Intervalo inválido (0 ou > 100) deve falhar
         let bad_json =

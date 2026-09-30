@@ -22,19 +22,43 @@ Ao receber um job de treinamento, o orchestrator instancia as engines especializ
 - **Isolamento de Volumes:**
   - Monta diretórios dedicados de trabalho em `/data` (`/data/datasets`, `/data/models`, `/data/outputs`), permitindo reutilização de caches locais e persistência segura dos artefatos.
 
-## Varredura de Containers Órfãos no Boot (Sweep)
+## Varredura e Limpeza de Containers Órfãos (Sweep & Reaper)
 
 Reinicializações inesperadas da máquina host, falhas de energia ou crashes do orquestrador podem deixar containers de treino em execução descontrolada consumindo 100% da GPU.
 
-Para eliminar esse cenário, o `orchestrator` implementa rotinas de higienização no boot:
+O `orchestrator` implementa rotinas ativas de higienização tanto no boot quanto em runtime:
 
-1. **Sweep de Containers (`sweep_orphan_trainer_containers`):**
+1. **Sweep no Boot (`sweep_orphan_trainer_containers`):**
    - Na inicialização do processo, antes de aceitar qualquer requisição, executa uma varredura via Docker socket (`docker ps -q --filter name=trainer-`).
    - Todos os containers remanescentes com prefixo de treino são imediatamente encerrados e removidos.
-2. **Sweep de Caches em Disco (`sweep_orphan_workdirs`):**
+2. **Reaper Periódico em Runtime (`adapters/sweeper.rs`):**
+   - Loop assíncrono em background executado a cada 60 segundos.
+   - Reconcilia containers Docker ativos (`trainer-*`) contra o estado em memória (`active_jobs`).
+   - Containers que não constam em `active_jobs` e possuem idade superior à tolerância de 300 segundos são considerados órfãos.
+   - A parada é realizada graciosamente (`docker stop --time 5`) antes da remoção forçada (`docker rm --force`), prevenindo corrupção de artefatos em disco.
+3. **Sweep de Caches em Disco (`sweep_orphan_workdirs`):**
    - Inspeciona os subdiretórios de cache de datasets no diretório de trabalho (`workdir`).
    - Apaga dados temporários com mais de 24 horas de inatividade para prevenir esgotamento de espaço em disco no nó.
 
+## Spool Outbox Durável de Reports
+
+Para garantir a entrega confiável de relatórios de conclusão, falha ou cancelamento de jobs mesmo durante indisponibilidades do manager ou interrupções de rede:
+
+- **Persistência em Disco:** Reports de terminalidade são salvos atômica e confiavelmente em `$ORCH_WORKDIR/.outbox/<job_id>.json` (gravação temporária + `atomic rename`).
+- **Drain em Background:** Uma task dedicada em background processa a pasta a cada 5 segundos, enviando relatórios pendentes para `POST /internal/report` do manager.
+- **Semântica At-Least-Once:** Arquivos são removidos da outbox apenas após confirmação HTTP de sucesso (status 2xx) ou erro irrecuperável de cliente (4xx). Falhas de conexão (5xx, timeouts) mantêm os itens no spool para retry automático.
+- **Flush no Shutdown:** Durante o encerramento do orchestrator, um flush final síncrono é disparado para descarregar o spool antes da saída.
+
+## Encerramento Gracioso (Graceful Shutdown)
+
+O serviço intercepta sinais `SIGTERM` e `SIGINT` (Ctrl+C) através de `with_graceful_shutdown` no servidor Axum, executando uma sequência ordenada de teardown:
+
+1. **Parada de Ingress:** O servidor HTTP deixa de aceitar novas conexões e requisições no endpoint de dispatch.
+2. **Cancelamento de Tasks em Background:** Disparo de sinal de cancelamento (`broadcast::Sender`) para loops de heartbeat, outbox drain e reaper periódico.
+3. **Drenagem de Jobs Ativos:** Concede janela de tolerância de até 10 segundos para que jobs em execução concluam ou realizem checkpoints.
+4. **Parada Segura de Containers:** Containers residuais recebem sinal de parada controlada (`docker stop`).
+5. **Desligamento do Daemon de Difusão:** Encerramento explícito do subprocesso daemon Python, liberando imediatamente a memória VRAM.
+6. **Flush Final da Outbox:** Drenagem de relatórios pendentes em disco antes do encerramento do processo.
 ## Daemon de Difusão HTTP e Confiabilidade de Processos
 
 Para possibilitar geração rápida e interativa de imagens via playground sem incorrer na latência de recarregar gigabytes de pesos na GPU a cada prompt:

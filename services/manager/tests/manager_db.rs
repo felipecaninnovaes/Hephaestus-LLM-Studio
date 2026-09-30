@@ -2424,6 +2424,194 @@ async fn create_job_com_weights_dispatch_contem_weights_ref() {
 }
 
 // ===========================================================================
+// feat/difusao-resume-optimizer-state — sibling optimizer_state (Adam)
+// ===========================================================================
+
+/// weights_id resolvido via job_artifacts (checkpoint) COM sibling
+/// `kind='optimizer_state'` casando o path derivado (`.safetensors` →
+/// `_optimizer.pt`) → params.weights_ref.optimizer_state presente.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_job_weights_via_artifact_com_optimizer_state_sibling() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+
+    // Job anterior "prev" com checkpoint + optimizer_state sibling.
+    let prev_job_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO jobs (id, kind, engine, model, mode, dataset_id, status) \
+         VALUES ($1, 'diffusion_train', 'diffusion', 'flux-2-klein-4b', 'train', $2, 'done')",
+    )
+    .bind(prev_job_id)
+    .bind(ds_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let ckpt_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO job_artifacts (id, job_id, kind, path, md5, bytes) \
+         VALUES ($1, $2, 'checkpoint', 'checkpoints/adapter_epoch_003.safetensors', \
+         'd41d8cd98f00b204e9800998ecf8427e', 100)",
+    )
+    .bind(ckpt_id)
+    .bind(prev_job_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO job_artifacts (id, job_id, kind, path, md5, bytes) \
+         VALUES ($1, $2, 'optimizer_state', 'checkpoints/adapter_epoch_003_optimizer.pt', \
+         'e41d8cd98f00b204e9800998ecf8427e', 200)",
+    )
+    .bind(uuid::Uuid::new_v4())
+    .bind(prev_job_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let mut req = test_job_request(ds_id);
+    req.engine = "diffusion".into();
+    req.mode = "train".into();
+    req.model = "flux-2-klein-4b".into();
+    req.weights_id = Some(ckpt_id);
+
+    let resp = manager::create_job(&p, req)
+        .await
+        .expect("create com weights via artifact");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    let row: (serde_json::Value,) = sqlx::query_as("SELECT params FROM jobs WHERE id = $1")
+        .bind(job_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    let wr = row.0.get("weights_ref").expect("weights_ref presente");
+    assert_eq!(
+        wr["s3_key"],
+        format!("artifacts/{prev_job_id}/checkpoints/adapter_epoch_003.safetensors")
+    );
+    let opt = wr
+        .get("optimizer_state")
+        .expect("optimizer_state presente quando sibling existe");
+    assert_eq!(
+        opt["s3_key"],
+        format!("artifacts/{prev_job_id}/checkpoints/adapter_epoch_003_optimizer.pt")
+    );
+    assert_eq!(opt["md5"], "e41d8cd98f00b204e9800998ecf8427e");
+    let _ = orch;
+}
+
+/// weights_id resolvido via job_artifacts (checkpoint) SEM sibling
+/// `optimizer_state` (checkpoint antigo, retrocompat) → optimizer_state
+/// ausente, resolução idêntica ao comportamento legado.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_job_weights_via_artifact_sem_optimizer_state_sibling() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+
+    let prev_job_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO jobs (id, kind, engine, model, mode, dataset_id, status) \
+         VALUES ($1, 'diffusion_train', 'diffusion', 'flux-2-klein-4b', 'train', $2, 'done')",
+    )
+    .bind(prev_job_id)
+    .bind(ds_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let ckpt_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO job_artifacts (id, job_id, kind, path, md5, bytes) \
+         VALUES ($1, $2, 'checkpoint', 'checkpoints/adapter_epoch_003.safetensors', \
+         'd41d8cd98f00b204e9800998ecf8427e', 100)",
+    )
+    .bind(ckpt_id)
+    .bind(prev_job_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let mut req = test_job_request(ds_id);
+    req.engine = "diffusion".into();
+    req.mode = "train".into();
+    req.model = "flux-2-klein-4b".into();
+    req.weights_id = Some(ckpt_id);
+
+    let resp = manager::create_job(&p, req)
+        .await
+        .expect("create com weights via artifact");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    let row: (serde_json::Value,) = sqlx::query_as("SELECT params FROM jobs WHERE id = $1")
+        .bind(job_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    let wr = row.0.get("weights_ref").expect("weights_ref presente");
+    assert!(
+        wr.get("optimizer_state").is_none(),
+        "checkpoint antigo sem sibling não deve ter optimizer_state"
+    );
+    let _ = orch;
+}
+
+/// weights_id resolvido via `models` (registrado) → optimizer_state SEMPRE
+/// ausente (fora de escopo: resume de modelo registrado não carrega optimizer).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn create_job_weights_via_models_optimizer_state_sempre_ausente() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+
+    let model_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO models (id, engine, name, model, s3_key, source, hash, bytes) \
+         VALUES ($1, 'yolo', 'best.pt', 'yolo11m', 'models/yolo/registered/best.pt', \
+         'upload', 'd41d8cd98f00b204e9800998ecf8427e', 1024)",
+    )
+    .bind(model_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let mut req = test_job_request(ds_id);
+    req.weights_id = Some(model_id);
+
+    let resp = manager::create_job(&p, req)
+        .await
+        .expect("create com weights via models");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    let row: (serde_json::Value,) = sqlx::query_as("SELECT params FROM jobs WHERE id = $1")
+        .bind(job_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    let wr = row.0.get("weights_ref").expect("weights_ref presente");
+    assert!(
+        wr.get("optimizer_state").is_none(),
+        "resolução via models nunca carrega optimizer_state"
+    );
+    let _ = orch;
+}
+
+// ===========================================================================
 // H.2 — Identidade do heartbeat + cache por nó + lista enriquecida + agregação
 // ===========================================================================
 

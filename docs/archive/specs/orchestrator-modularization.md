@@ -1,5 +1,7 @@
 # Especificação Técnica: Modularização, Desacoplamento e Autonomia do Orchestrator
 
+> **Arquivado em 2026-09-26.** Fatias 0-5 já quitadas (`feat/orchestrator-autonomia`, commits `d062c93`/`f94541c`/`a61344b`). Itens residuais genuinamente abertos (P3-1, P3-2, P3-3) migrados para `tasks/specs/consolidacao-auditoria-roadmap.md` como RD-042/043/044. Duplicações confirmadas com `backend-autonomia.md` (itens 2.1-2.9) descartadas — verificar RD-024/026/028/029 no roadmap canônico.
+
 **Status:** Especificação / Levantamento Aprovado (Read-Only, sem alteração de código ou restart de serviços)  
 **Data:** 2026-09-18  
 **Autor:** Hephaestus Architecture & Coordination  

@@ -15,11 +15,22 @@ pub struct WeightRef {
     pub md5: String,
 }
 
+/// Referência resolvida de optimizer state (Adam) — sibling do checkpoint
+/// (fatia feat/difusao-resume-optimizer-state). Ausente = comportamento
+/// legado (optimizer sempre reinicia do zero).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OptimizerStateRef {
+    pub s3_key: String,
+    pub md5: String,
+}
+
 /// Referência legada de pesos para fine-tune.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WeightsRef {
     pub s3_key: String,
     pub md5: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optimizer_state: Option<OptimizerStateRef>,
 }
 
 /// Referência de imagem inicial para pipelines img2img.

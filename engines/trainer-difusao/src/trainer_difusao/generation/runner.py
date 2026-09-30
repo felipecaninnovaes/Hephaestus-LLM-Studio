@@ -14,7 +14,7 @@ from typing import Any
 import yaml
 from engine_kit.mock import is_mock
 from trainer_difusao.common_pkg.core import _die
-from trainer_difusao.common import _ensure_qwen_diffusers_compat, _setup_cache_dir
+from trainer_difusao.common import _setup_cache_dir
 from trainer_difusao.generation.artifacts import (
     _build_generation_meta,
     _is_cancelled,
@@ -260,106 +260,22 @@ def _real_generate(
                 pipe.to(device)
 
         elif base_model == "qwen-image-2.1":
-            _ensure_qwen_diffusers_compat()
-            import diffusers
-
-            QwenPipelineCls = getattr(
-                diffusers, "QwenImage21Pipeline", getattr(diffusers, "QwenImagePipeline", None)
+            _die(
+                "Geração via daemon quente para qwen-image-2.1 (arquitetura nativa) ainda não "
+                "implementada — apenas treino é suportado nesta versão. Ver tasks/backlog.md "
+                "'Daemon de geração Qwen-Image-2.1 nativo'."
             )
-            if QwenPipelineCls is None:
-                _die(
-                    "QwenImage21Pipeline não disponível na versão instalada do diffusers. "
-                    "Instale diffusers>=0.41.0.dev0 ou git+https://github.com/huggingface/diffusers.git"
-                )
-            model_repo = os.environ.get("QWEN_IMAGE_MODEL_ID", "Qwen/Qwen-Image-2.1")
-            print(f"[DIFFUSION-GEN] Carregando Qwen-Image-2.1: {model_repo}", flush=True)
-            pipe_kwargs: dict[str, Any] = {
-                "torch_dtype": pipe_dtype,
-                "cache_dir": hub_cache,
-            }
-            if quantization_config is not None and device == "cuda":
-                from trainer_difusao.loaders import (
-                    load_or_quantize_text_encoder,
-                    load_or_quantize_transformer,
-                    resolve_quant_base_dir,
-                )
-
-                quant_base = resolve_quant_base_dir(
-                    model_repo, quant, subfolder=f"qwen_image_2_1_{quant}"
-                )
-                TransformerCls = getattr(
-                    diffusers,
-                    "QwenImage21Transformer2DModel",
-                    getattr(diffusers, "QwenImageTransformer2DModel", None),
-                )
-                if TransformerCls is not None:
-                    try:
-                        pipe_kwargs["transformer"] = load_or_quantize_transformer(
-                            model_id=model_repo,
-                            transformer_cls=TransformerCls,
-                            subfolder="transformer",
-                            target_dtype=pipe_dtype,
-                            quant_format=quant,
-                            quantization_config=quantization_config,
-                            quant_base=quant_base,
-                            transformer_cache_dir=quant_base / "transformer",
-                            hub_cache=hub_cache,
-                        )
-                    except Exception as e:
-                        print(f"[WARN] Falha ao quantizar/salvar transformer ({e}).", flush=True)
-
-                try:
-                    from transformers import Qwen3VLForConditionalGeneration
-
-                    pipe_kwargs["text_encoder"] = load_or_quantize_text_encoder(
-                        model_id=model_repo,
-                        encoder_cls=Qwen3VLForConditionalGeneration,
-                        encoder_type="qwen3-vl",
-                        subfolder="text_encoder",
-                        target_dtype=pipe_dtype,
-                        quant_format=quant,
-                        quantization_config=quantization_config,
-                        quant_base=quant_base,
-                        text_encoder_cache_dir=quant_base / "text_encoder",
-                        hub_cache=hub_cache,
-                    )
-                except Exception as e:
-                    print(f"[WARN] Falha ao quantizar/salvar text_encoder ({e}).", flush=True)
-            if "tokenizer" not in pipe_kwargs:
-                from transformers import AutoTokenizer
-
-                try:
-                    hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
-                    tok = AutoTokenizer.from_pretrained(
-                        model_repo,
-                        subfolder="processor",
-                        cache_dir=hub_cache,
-                        token=hf_token,
-                    )
-                    pipe_kwargs["tokenizer"] = tok
-                except Exception as e:
-                    print(
-                        f"[DIFFUSION-GEN] Aviso ao carregar tokenizer de processor: {e}",
-                        flush=True,
-                    )
-            pipe = QwenPipelineCls.from_pretrained(
-                model_repo,
-                **pipe_kwargs,
-            )
-            if device == "cuda":
-                if quantization_config is None:
-                    try:
-                        pipe.enable_model_cpu_offload()
-                    except Exception:
-                        pipe.to(device)
-                else:
-                    pipe.enable_model_cpu_offload()
-            try:
-                pipe.enable_vae_slicing()
-            except Exception:
-                pass
         else:
             _die(f"Modelo não suportado para geração real: {base_model}")
+
+    if pipeline is not None and hasattr(pipe, "unload_lora_weights"):
+        try:
+            pipe.unload_lora_weights()
+        except Exception as exc:
+            print(
+                f"[DIFFUSION-GEN] [AVISO] Falha ao descarregar LoRA residual do pipeline em cache: {exc}",
+                flush=True,
+            )
 
     if loras_effective:
         emitter.emit(

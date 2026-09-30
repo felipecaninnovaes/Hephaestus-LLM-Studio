@@ -1,4 +1,6 @@
 # Auditoria Técnica e Plano de Modularização: `apps/web`
+
+> **Arquivado em 2026-09-26.** As 16 tarefas TASK-WEB-001..016 estão todas implementadas (confirmado file:line no código atual). Convenções de engenharia (§7/§8) promovidas para `docs/DESIGN.md` § Convenções de Engenharia (Regras Inegociáveis). Sem pendências ativas.
 **Projeto:** Hephaestus LLM Studio  
 **Data:** 18 de Setembro de 2026  
 **Escopo:** Frontend unificado (`apps/web` — Next.js 16.3.4, React 19.2.8, Tailwind v4.3.3, Biome 2.5.14, TypeScript strict)  

@@ -9,7 +9,8 @@
     "lint": "biome lint .",
     "check": "biome check .",
     "format": "biome format .",
-    "codegen:contracts": "openapi-typescript ../../packages/contracts/openapi.yaml -o types/api-generated.ts"
+    "codegen:contracts": "openapi-typescript ../../packages/contracts/openapi.yaml -o types/api-generated.ts",
+    "test": "bun test"
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.3.3",

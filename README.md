@@ -12,7 +12,7 @@
 
 [Quickstart](#-quickstart-rápido) •
 [Modelos de Deploy](#-os-4-modelos-de-deploy) •
-[Nós GPU Remotos](#-conectar-um-nó-gpu-remoto-ex-truenas) •
+[Nós GPU Remotos](#-conectar-um-nó-gpu-remoto-ex-vm-dedicada) •
 [Arquitetura](#-arquitetura-do-sistema) •
 [CLI Operacional](#-cli-operacional-scriptshephsh)
 
@@ -72,11 +72,11 @@ O Hephaestus LLM Studio possui 4 modelos declarativos prontos para uso em `compo
 | **`local-sem-node.yaml`** | **Servidor Central / Control Plane** *(Recomendado para VPS / Mini PC sem GPU)* | Ingress (Caddy :80), Web UI, BFF API, Manager (porta 8081 na LAN), S3 SeaweedFS (porta 8333 na LAN), DB Postgres + pgvector, Embedder CLIP | 4 GB+ RAM, CPU x86_64 |
 | **`local-com-local-node-gpu.yaml`** | **Tudo-em-Um com GPU NVIDIA** *(Desktop gamer ou workstation única)* | Todos os serviços do Control Plane + Orquestrador Local com aceleração CUDA | 16 GB+ RAM, GPU NVIDIA (RTX 3060 12GB+) |
 | **`local-com-local-node.yaml`** | **Máquina única CPU / Mock** *(Testes e desenvolvimento de interface)* | Todos os serviços locais com execução simulada (`mock`) | 8 GB+ RAM, CPU x86_64 |
-| **`remote-node.yaml`** | **Worker Remoto de Execução GPU** *(TrueNAS SCALE, servidor GPU ou RunPod)* | Apenas o Orquestrador GPU conectado ao Docker Socket do host worker | GPU NVIDIA dedicada com drivers e nvidia-container-toolkit |
+| **`remote-node.yaml`** | **Worker Remoto de Execução GPU** *(VM dedicada, servidor GPU ou RunPod)* | Apenas o Orquestrador GPU conectado ao Docker Socket do host worker | GPU NVIDIA dedicada com drivers e nvidia-container-toolkit |
 
 ---
 
-## 🌐 Conectar um Nó GPU Remoto (ex: TrueNAS)
+## 🌐 Conectar um Nó GPU Remoto (ex: VM Dedicada)
 
 O Hephaestus separa o **Plano de Controle** (interface, banco, storage S3 e fila de jobs) do **Plano de Dados** (computação pesada na GPU).
 
@@ -92,31 +92,33 @@ O Hephaestus separa o **Plano de Controle** (interface, banco, storage S3 e fila
               ▲
               │ Heartbeat (:8081) / Upload de Artefatos (S3 :8333)
               ▼
-   [ WORKER GPU / TRUENAS (ex: 10.15.1.2) ]
+   [ WORKER GPU / VM DEDICADA (ex: 10.15.50.114) ]
    ├── Orchestrator GPU (:8082)
    ├── Telemetria VRAM em tempo real (nvidia-smi)
    └── Containers efêmeros de treino e difusão (FLUX.2 / YOLO)
 ```
+
+> **Restrição de disco conhecida:** VMs dedicadas efêmeras costumam ter disco local pequeno (ex.: 60 GB total, sem volumes extras). Faça build de **uma imagem GPU por vez**, prune agressivo entre builds (`docker system prune -af`) e nunca dependa de pull de registry — as imagens `ghcr.io` são privadas; o build é sempre local no nó via `--profile build`.
 
 ### Passo 1: Exportar a Configuração no Servidor Central
 No host do Control Plane, execute:
 ```bash
 ./scripts/heph.sh export-worker-env <IP_CONTROL_PLANE> <IP_DO_WORKER>
 ```
-*Exemplo:* `./scripts/heph.sh export-worker-env 10.15.30.118 10.15.1.2`
+*Exemplo:* `./scripts/heph.sh export-worker-env 10.15.30.118 10.15.50.114`
 
 ### Passo 2: Iniciar o Worker no Nó GPU
-Copie o conteúdo gerado para o nó worker (TrueNAS) em `compose/.env` ou `infra/env.gpu` e suba o orquestrador:
+Copie o conteúdo gerado para o nó worker (VM dedicada) em `compose/.env` ou `infra/env.gpu` e suba o orquestrador:
 ```bash
 docker compose -f compose/remote-node.yaml up -d
-# ou no TrueNAS:
+# ou no nó GPU:
 docker compose -p gpu -f infra/compose.gpu.yaml --env-file infra/env.gpu up -d orchestrator-gpu
 ```
 
 ### Passo 3: Adotar o Nó na Web UI
 1. Abra o Studio no navegador: `http://<IP_DO_CONTROL_PLANE>/environments`
 2. Clique em **Adotar Orquestrador**.
-3. Preencha o Endpoint (ex: `http://10.15.1.2:8082`), selecione **Remoto** e cole o `Código de Nó` gerado no Passo 1.
+3. Preencha o Endpoint (ex: `http://10.15.50.114:8082`), selecione **Remoto** e cole o `Código de Nó` gerado no Passo 1.
 4. O nó conecta instantaneamente e reporta a VRAM em tempo real!
 
 ---
@@ -145,7 +147,7 @@ O repositório inclui a CLI unificada para gestão do ambiente:
 # Estado atual dos containers
 ./scripts/heph.sh status
 
-# Exportar variáveis de pareamento para nós remotos (TrueNAS)
+# Exportar variáveis de pareamento para nós remotos (VM GPU dedicada)
 ./scripts/heph.sh export-worker-env [IP_CONTROL_PLANE] [IP_WORKER]
 
 # Diagnóstico pré-voo de portas e dependências

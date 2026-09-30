@@ -334,20 +334,29 @@ pub async fn stream_metrics_and_samples(
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.is_file() {
+                        let fname_opt = path.file_name().and_then(|n| n.to_str());
                         let is_ckpt = path
                             .extension()
                             .and_then(|e| e.to_str())
                             .map(|ext| ext.eq_ignore_ascii_case("safetensors"))
-                            .unwrap_or(false);
+                            .unwrap_or(false)
+                            || fname_opt
+                                .map(|n| n.ends_with("_optimizer.pt"))
+                                .unwrap_or(false);
 
                         if is_ckpt {
-                            if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
+                            if let Some(fname) = fname_opt {
                                 if fname.starts_with('.')
                                     || fname.ends_with(".tmp")
                                     || fname.ends_with(".part")
                                 {
                                     continue;
                                 }
+                                let kind = if fname.ends_with("_optimizer.pt") {
+                                    "optimizer_state"
+                                } else {
+                                    "checkpoint"
+                                };
                                 if !uploaded_checkpoints.contains(fname) {
                                     let bytes = std::fs::metadata(&path)
                                         .map(|m| m.len() as i64)
@@ -365,7 +374,7 @@ pub async fn stream_metrics_and_samples(
                                                         uploaded_checkpoints
                                                             .insert(fname.to_string());
                                                         new_live_artifacts.push(ArtifactReport {
-                                                            kind: "checkpoint".to_string(),
+                                                            kind: kind.to_string(),
                                                             path: rel_path,
                                                             md5,
                                                             bytes,

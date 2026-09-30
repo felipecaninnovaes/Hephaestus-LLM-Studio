@@ -40,10 +40,8 @@ pub async fn create_job(
     if let Some(weights_id) = req.weights_id {
         let (weights_ref, model) =
             resolve_weights_ref(pool, weights_id, &req.engine, &req.mode, &req.model).await?;
-        params["weights_ref"] = serde_json::json!({
-            "s3_key": weights_ref.s3_key,
-            "md5": weights_ref.md5,
-        });
+        params["weights_ref"] =
+            serde_json::to_value(&weights_ref).unwrap_or_else(|_| serde_json::json!({}));
         resolved_model = model;
     }
 

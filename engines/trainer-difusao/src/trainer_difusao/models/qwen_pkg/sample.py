@@ -7,7 +7,8 @@ import os
 from pathlib import Path
 from typing import Any
 
-from trainer_difusao.common import _ensure_qwen_diffusers_compat
+from engine_kit.vram import release_memory
+from trainer_difusao.common import _setup_cache_dir
 
 
 def _generate_sample_qwen(
@@ -26,8 +27,8 @@ def _generate_sample_qwen(
     try:
         import torch
 
-        _ensure_qwen_diffusers_compat()
-        import diffusers
+        from trainer_difusao.models.qwen_pkg.qwen_image_2 import QwenImage21Pipeline
+
 
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -36,7 +37,7 @@ def _generate_sample_qwen(
         was_training = getattr(transformer, "training", False)
         transformer.eval()
 
-        total_sample_steps = 20
+        total_sample_steps = 8  # reduzido de 20: amostras de treino não precisam de qualidade máxima
 
         def step_callback(
             pipe_obj: Any, step_idx: int, timestep: Any, callback_kwargs: dict[str, Any]
@@ -63,21 +64,14 @@ def _generate_sample_qwen(
 
         orig_vae_dev = getattr(vae, "device", None)
         orig_vae_dtype = getattr(vae, "dtype", None)
-        target_dtype = getattr(transformer, "dtype", None)
-        if hasattr(vae, "to") and orig_vae_dev is not None and str(orig_vae_dev) != str(device):
+        # VAE dtype conversion is now safe: qwen_image.py loads VAE in target_dtype (bf16)
+        # so no dtype mismatch between VAE and transformer embeddings
+        if hasattr(vae, "to") and orig_vae_dev is not None and str(orig_vae_dev) != device:
             try:
                 vae.to(device)
             except Exception:
                 pass
-        if (
-            target_dtype is not None
-            and orig_vae_dtype is not None
-            and orig_vae_dtype != target_dtype
-        ):
-            try:
-                vae.to(dtype=target_dtype)
-            except Exception:
-                pass
+        # (No separate dtype conversion needed: VAE already in target_dtype from loading)
 
         if hasattr(transformer, "config") and not hasattr(transformer.config, "guidance_embeds"):
             try:
@@ -89,17 +83,7 @@ def _generate_sample_qwen(
                 pass
 
         try:
-            PipelineCls = getattr(
-                diffusers,
-                "QwenImage21Pipeline",
-                getattr(diffusers, "QwenImagePipeline", None),
-            )
-            if PipelineCls is None:
-                print(
-                    "[WARN] QwenImagePipeline não disponível no diffusers.",
-                    flush=True,
-                )
-                return
+            PipelineCls = QwenImage21Pipeline
 
             pipe_kwargs_init: dict[str, Any] = {
                 "scheduler": scheduler,
@@ -140,7 +124,7 @@ def _generate_sample_qwen(
             if not isinstance(exec_dev, (str, torch.device)):
                 exec_dev = "cuda" if torch.cuda.is_available() else "cpu"
             generator = torch.Generator(device=exec_dev).manual_seed(seed)
-            sample_res = min(resolution, 512)
+            sample_res = min(resolution, 256)  # cap em 256 durante treino: economiza ~4× VRAM de ativações
             sample_res = max(16, (sample_res // 16) * 16)
             with torch.inference_mode():
                 pipe_kwargs: dict[str, Any] = {
@@ -227,40 +211,76 @@ def _generate_sample_qwen(
                     except Exception:
                         pass
         finally:
-            if "pipe" in locals():
+            if "pipe_kwargs_init" in locals() and isinstance(pipe_kwargs_init, dict):
+                try:
+                    pipe_kwargs_init.clear()
+                except Exception:
+                    pass
+            if "pipe_kwargs" in locals() and isinstance(pipe_kwargs, dict):
+                try:
+                    pipe_kwargs.clear()
+                except Exception:
+                    pass
+            if "pipe" in locals() and pipe is not None:
+                try:
+                    for k in list(getattr(pipe, "components", {}).keys()):
+                        try:
+                            setattr(pipe, k, None)
+                        except Exception:
+                            pass
+                        if hasattr(pipe, "components") and isinstance(pipe.components, dict):
+                            try:
+                                pipe.components[k] = None
+                            except Exception:
+                                pass
+                    pipe.vae = None
+                    pipe.transformer = None
+                except Exception:
+                    pass
                 try:
                     del pipe
                 except Exception:
                     pass
-            import gc
-            import ctypes
-            gc.collect()
             try:
-                ctypes.CDLL("libc.so.6").malloc_trim(0)
+                release_memory()
             except Exception:
                 pass
-            if hasattr(vae, "to") and orig_vae_dev is not None and str(orig_vae_dev) != str(device):
+            if hasattr(vae, "to") and orig_vae_dev is not None and str(orig_vae_dev) != device:
                 try:
                     vae.to(orig_vae_dev)
                 except Exception:
                     pass
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.ipc_collect()
             if (
                 orig_vae_dtype is not None
                 and getattr(vae, "dtype", None) != orig_vae_dtype
+                and hasattr(vae, "to")
             ):
                 try:
                     vae.to(dtype=orig_vae_dtype)
                 except Exception:
                     pass
+            try:
+                release_memory()
+            except Exception:
+                pass
+            import ctypes
+            try:
+                ctypes.CDLL("libc.so.6").malloc_trim(0)
+            except Exception:
+                pass
             if was_training:
                 transformer.train()
     except Exception as e:
-        import traceback
-
+        import traceback, gc
         print(
             f"[WARN] Falha ao gerar amostra de validação Qwen-Image: {e}\n{traceback.format_exc()}",
             flush=True,
         )
+        # Limpeza pós-OOM: libera fragmentos antes de retornar ao loop de treino.
+        gc.collect()
+        try:
+            import torch as _t
+            _t.cuda.empty_cache()
+            _t.cuda.ipc_collect()
+        except Exception:
+            pass

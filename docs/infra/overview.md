@@ -12,33 +12,51 @@ O ciclo de vida da infraestrutura é modularizado em overlays declarativos do Do
 | :--- | :--- | :--- | :--- |
 | **`infra/compose.yaml`** | **Desenvolvimento / Local-First** | `db`, `seaweedfs`, `s3-init`, `embedder`, `principal`, `manager`, `orchestrator-local`, `web` | Ambiente de desenvolvimento no dev host com mock ou Docker local. |
 | **`infra/compose.prod.yaml`** | **Produção / Ingress Unificado** | Overlay sobre `compose.yaml`: adiciona `ingress` (Caddy) e fecha portas diretas do host | Deploy exposto com proxy reverso unificado na porta 80/443 e TLS. |
-| **`infra/compose.gpu.yaml`** | **Nó GPU Dedicado / TrueNAS** | `orchestrator-gpu` (projeto `-p gpu`) | Worker remoto conectado via rede local (LAN) com aceleração NVIDIA CUDA. |
+| **`infra/compose.gpu.yaml`** | **Nó GPU Dedicado / VM Proxmox** | `orchestrator-gpu` (projeto `-p gpu`) | Worker remoto conectado via rede local (LAN) com aceleração NVIDIA CUDA. |
 | **`infra/compose.integ.yaml`** | **Integração / CI** | Overlay sobre `compose.yaml`: `ENGINE_MOCK=1`, credenciais de teste | Suíte de testes de integração e pipeline automatizado (Gitea/CI). |
 
 ---
 
-## 2. Topologia de Rede e Comunicação
+## 2. Topologia de Rede e Segmentação em Zonas
 
-Todos os serviços locais comunicam-se através de uma rede bridge Docker isolada (`infra_default`):
+A infraestrutura abandona o modelo de rede plana (*flat network*) e adota isolamento estrito segmentado em 3 redes bridge Docker (`frontend_net`, `backend_net` e `engine_net`):
+
+1. **`frontend_net` (`${COMPOSE_PROJECT_NAME:-infra}_frontend_net`):**
+   - **Integrantes:** `ingress` (Caddy, em prod), `web` (Next.js) e `principal` (BFF Axum).
+   - **Finalidade:** Tráfego de borda e SSR. O container `web` tem isolamento estrito: **não tem acesso direto ao banco de dados (`db`) nem ao S3 (`seaweedfs`)**. Qualquer requisição para dados passa pelo proxy `/api/*` encaminhado ao `principal`.
+2. **`backend_net` (`${COMPOSE_PROJECT_NAME:-infra}_backend_net`):**
+   - **Integrantes:** `principal`, `manager`, `db` (Postgres + pgvector), `seaweedfs`, `s3-init`, `embedder` (CLIP) e `orchestrator-local`.
+   - **Finalidade:** Comunicação e persistência interna de dados, orquestração e gerenciamento de jobs.
+3. **`engine_net` (`${COMPOSE_PROJECT_NAME:-infra}_engine_net`):**
+   - **Integrantes:** `orchestrator-local`, `seaweedfs` e containers de treinamento/inferência das engines (`trainer-yolo`, `trainer-difusao`, `diffusion-daemon`).
+   - **Finalidade:** Isolamento de execução de workloads de IA. `seaweedfs` e `orchestrator-local` atuam como ponte segura (*dual-homed*), permitindo que os containers de treino façam download/upload de artefatos no S3 sem acesso ao banco de dados ou aos serviços de frontend.
 
 ```
-                                  [ Caddy (Ingress :80/:443) ]  (Overlay Prod)
-                                                |
-                               +----------------+----------------+
-                               |                                 |
-                               v (Proxy /api/*)                  v (Proxy /*)
-                     [ api-principal :8080 ]               [ web :3000 ]
-                               |
-                   +-----------+-----------+
-                   |                       |
-                   v                       v
-          [ manager :8081 ]       [ seaweedfs :8333 ] <----+ [ s3-init ] (Run-once)
-                   |                       ^
-                   v                       |
-       [ orchestrator-local :8082 ] -------+
-                   | (Docker Socket /var/run/docker.sock)
-                   v
-       [ trainer-yolo / difusao ] (Containers efêmeros sem porta)
+  [ Borda / Ingress ]
+          |
+          v
+   ( frontend_net ) --------------------------------------------+
+          |                                                     |
+          v                                                     v
+    [ web :3000 ]                                     [ api-principal :8080 ]
+  (Next.js / SSR)                                       (BFF / Gateway)
+                                                                |
+   ( backend_net ) <--------------------------------------------+
+          |
+          +-------------------+--------------------+--------------------+
+          |                   |                    |                    |
+          v                   v                    v                    v
+     [ db :5432 ]      [ manager :8081 ]    [ embedder :8083 ]   [ seaweedfs :8333 ] <---+ [ s3-init ]
+   (Postgres/pgvector)   (Job Manager)        (CLIP Embeddings)    (S3 Storage)
+                              |                                         ^
+                              v                                         |
+                 [ orchestrator-local :8082 ] --------------------------+
+                              |
+   ( engine_net ) <-----------+ (Docker Socket /var/run/docker.sock)
+          |
+          v
+   [ trainer-yolo / difusao / diffusion-daemon ]
+   (Containers efêmeros sem porta exposta)
 ```
 
 ---
@@ -46,7 +64,7 @@ Todos os serviços locais comunicam-se através de uma rede bridge Docker isolad
 ## 3. Conectividade de Nós Remotos e Exposição na LAN
 
 ### 3.1 O Problema do Bind Padrão (`127.0.0.1`)
-Por padrão, `manager:8081` e `seaweedfs:8333` possuem bind restrito em `127.0.0.1` (`${MANAGER_PUBLISH:-127.0.0.1}`, `${SEAWEED_PUBLISH:-127.0.0.1}`). Para que um nó GPU remoto (ex.: TrueNAS em `10.15.1.2`) consiga se conectar, o operador no dev host (`10.15.10.3`) precisa sobrescrever essas variáveis no arquivo `infra/.env`:
+Por padrão, `manager:8081` e `seaweedfs:8333` possuem bind restrito em `127.0.0.1` (`${MANAGER_PUBLISH:-127.0.0.1}`, `${SEAWEED_PUBLISH:-127.0.0.1}`). Para que um nó GPU remoto (ex.: VM dedicada `docker-04` em `10.15.50.114`) consiga se conectar, o operador no dev host (`10.15.10.3`) precisa sobrescrever essas variáveis no arquivo `infra/.env`:
 
 ```bash
 # infra/.env no dev host (10.15.10.3)
@@ -61,10 +79,10 @@ Ao abrir esses binds, dois serviços internos ficam expostos diretamente na rede
 2. **SeaweedFS (:8333):** Exposto em HTTP puro sem TLS. Embora protegido por credenciais S3 (SigV4), qualquer host da LAN pode tentar negociar requisições contra a porta S3.
 
 **Mitigações Obrigatórias em Ambientes Não-Confiáveis:**
-- **Firewall no Dev Host (UFW / iptables):** Restringir as portas `8081` e `8333` estritamente ao IP do nó worker (`10.15.1.2`), bloqueando qualquer outro tráfego da LAN:
+- **Firewall no Dev Host (UFW / iptables):** Restringir as portas `8081` e `8333` estritamente ao IP do nó worker (`10.15.50.114`), bloqueando qualquer outro tráfego da LAN:
   ```bash
-  sudo ufw allow from 10.15.1.2 to any port 8081 proto tcp
-  sudo ufw allow from 10.15.1.2 to any port 8333 proto tcp
+  sudo ufw allow from 10.15.50.114 to any port 8081 proto tcp
+  sudo ufw allow from 10.15.50.114 to any port 8333 proto tcp
   ```
 - **VPN Ponto-a-Ponto (WireGuard / Tailscale):** Encapsular o tráfego entre dev host e nó remoto em um túnel criptografado privado, mantendo os binds externos fechados na interface física.
 

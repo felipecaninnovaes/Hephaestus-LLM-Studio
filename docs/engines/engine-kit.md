@@ -11,7 +11,8 @@ Projetado com filosofia *stdlib-first*, não impõe dependências externas pesad
 ### 1. `telemetry`
 Responsável pela emissão atômica de eventos em tempo real para monitoramento de jobs pelo orchestrator e web UI:
 - **`TelemetryEmitter`**: Classe canônica para gerar eventos estruturados em `telemetry.jsonl` (com espelhamento retrocompatível em `metrics.jsonl`).
-- Rastreia fases (`phase`), mensagens operacionais, progresso normalizado (`0.0` a `1.0`), passos (`step`/`total_steps`), épocas (`epoch`/`total_epochs`), métricas numéricas arbitrárias e telemetria de VRAM.
+- Suporta campos preditivos e métricas de hardware: progresso (`progress`), passos (`step`/`total_steps`), épocas (`epoch`/`total_epochs`), VRAM alocada e reservada (`vram_used_gb`, `vram_reserved_gb`), tempo por passo (`step_time_seconds`), velocidade de processamento (`speed`) e estimativa de término (`eta_seconds`, `eta_formatted`).
+- **`format_eta(seconds)`**: Formata intervalos de segundos de forma ergonômica e compacta (ex.: `<1s`, `02m 45s`, `01h 12m`).
 - Flush imediato em cada evento emitido para streaming via Server-Sent Events (SSE).
 
 ### 2. `mock`

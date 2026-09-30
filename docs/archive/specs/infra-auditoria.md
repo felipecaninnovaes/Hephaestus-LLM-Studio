@@ -1,5 +1,7 @@
 # Auditoria de Infraestrutura — Hephaestus LLM Studio
 
+> **Arquivado em 2026-09-26.** Itens ainda pendentes desta auditoria foram migrados para `tasks/specs/infra-pendencias.md` (INFRA-03, 2.2/2.4/2.5/3.2/3.3/3.4/5.3). Itens confirmados implementados no código nesta data permanecem só como registro histórico abaixo.
+
 > **Data:** 2026-09-19  
 > **Status:** Concluído (Somente Leitura)  
 > **Arquivos Auditados:** `infra/compose.yaml`, `infra/compose.prod.yaml`, `infra/compose.gpu.yaml`, `infra/compose.integ.yaml`, `infra/Caddyfile`, `infra/seaweedfs-s3.json`, `infra/scripts/ensure-bucket.sh`, `infra/.env.example`, `infra/env.gpu.example`, `infra/README-gpu.md`, `.gitea/workflows/ci.yml`, `.gitea/workflows/release.yml`, Dockerfiles (`services/*`, `apps/*`, `engines/*`), `scripts/*.sh`.  

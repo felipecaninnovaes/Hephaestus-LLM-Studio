@@ -27,7 +27,7 @@ services:
       - web
       - principal
     networks:
-      - default
+      - frontend_net
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:80/health || exit 1"]
       interval: 10s

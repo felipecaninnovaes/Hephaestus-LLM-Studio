@@ -10,7 +10,7 @@ import {
 } from "@/components/icons";
 import { formatBytes, formatPercent, formatRelativeTime } from "@/lib/format";
 import { listImages, getImage } from "@/lib/images";
-import { canTrainYolo, trainDisabledReason } from "@/lib/datasets";
+import { canTrainDataset, trainDatasetDisabledReason, trainDatasetActionLabel } from "@/lib/datasets";
 import { Badge } from "@/components/ui/Badge";
 import {
   STATUS_LABELS,
@@ -263,8 +263,8 @@ export default function DatasetCard({
   const visibleClasses = dataset.classes.slice(0, 4);
   const extra = dataset.classes.length - visibleClasses.length;
   const categoryLabel = CATEGORY_LABELS[dataset.category] ?? dataset.category;
-  const trainEnabled = canTrainYolo(dataset);
-  const trainTitle = trainEnabled ? "Abrir modal de treino YOLO" : trainDisabledReason(dataset);
+  const trainEnabled = canTrainDataset(dataset);
+  const trainTitle = trainEnabled ? trainDatasetActionLabel(dataset) : trainDatasetDisabledReason(dataset);
 
   return (
     <div

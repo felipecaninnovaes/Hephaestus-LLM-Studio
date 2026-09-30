@@ -323,6 +323,57 @@ A evolução arquitetural do monorepo não pode ocorrer de forma caótica ou com
 - **Risco & Rollout:** Médio (pode exigir ajustes em permissões de volumes existentes em ambientes dev).
 - **Esforço & Subagente:** `M` — `@infra-dev`
 
+#### [RD-024] Semáforo Local de GPU/VRAM e Rejeição de Overcommit
+- **Camadas:** `Services`
+- **Origem:** `tasks/specs/backend-autonomia.md:2.1`
+- **Pré-requisitos:** `RD-010`
+- **Proposta:**
+  1. Orquestrador mantém semáforo local por GPU (identificada por index): máximo 1 job por GPU no mesmo instante.
+  2. `dispatch_handler` verifica semáforo antes de aceitar POST `/internal/dispatch`; retorna 503 `node_busy` se GPU já ocupada.
+  3. Semáforo é atualizado atomicamente: acquired no dispatch, released em report `done/failed/cancelled`.
+- **Critério de Aceite:** Teste injectando 2 dispatch concorrentes → primeiro accepted (202), segundo retorna 503; GPU nunca roda 2 jobs simultaneamente.
+- **Risco & Rollout:** Médio (rejeição de dispatch exige retry no manager).
+- **Esforço & Subagente:** `M` — `@rust-dev`
+
+
+#### [RD-026] Verificação de `is_cancelled()` em Todas as Fases de I/O
+- **Camadas:** `Services`
+- **Origem:** `tasks/specs/backend-autonomia.md:2.3`
+- **Pré-requisitos:** `RD-010`
+- **Proposta:**
+  1. Flag `is_cancelled` consultada em **cada chunk de S3 download** (`stages/download_pkg.rs`), **unzip** e **cada chunk de upload** (`stages/upload_output.rs`).
+  2. Se `is_cancelled()` retorna true durante I/O, parar e retornar `Err("job_cancelled")`.
+  3. Garantir cleanup de tmp e containers antes de finalizar com cancel.
+- **Critério de Aceite:** Abort durante S3 download de 1GB dataset para imediatamente; sem download completo sem necessidade.
+- **Risco & Rollout:** Baixo.
+- **Esforço & Subagente:** `M` — `@rust-dev`
+
+
+#### [RD-028] Streaming de Logs via Arquivo Rotativo (Não Acumulado em RAM)
+- **Camadas:** `Services`
+- **Origem:** `tasks/specs/backend-autonomia.md:2.6`
+- **Pré-requisitos:** `RD-010`
+- **Proposta:**
+  1. Stdout/Stderr do container redireciona para arquivo em disco (`/data/logs/{job_id}.log`).
+  2. Arquivo gravado linha-a-linha com flush automático para visualização em tempo real.
+  3. Apenas últimas N linhas (~100) retidas em memória para inclusão em relatório final.
+- **Critério de Aceite:** Treino de 24h não consome >100 MB de RAM com logs; arquivo disponível para download parcial via API.
+- **Risco & Rollout:** Baixo.
+- **Esforço & Subagente:** `M` — `@rust-dev`
+
+#### [RD-029] Garbage Collection de Disco com Watermark
+- **Camadas:** `Services`
+- **Origem:** `tasks/specs/backend-autonomia.md:2.7`
+- **Pré-requisitos:** `RD-010`
+- **Proposta:**
+  1. GC de `.weights-cache/` não baseado apenas em age, mas em **watermark de espaço livre** mínimo (ex.: 20 GB).
+  2. Se `df` reporta free <20GB, aplicar LRU no cache de pesos e `tmp/` antigos.
+  3. Logs de cada deletion para auditoria.
+- **Critério de Aceite:** Cache decresce automaticamente sob pressão; disco nunca fica <5GB livre durante operação normal.
+- **Risco & Rollout:** Baixo.
+- **Esforço & Subagente:** `M` — `@rust-dev`
+
+
 ---
 
 ### Wave 3 — Borda e Serviços de Aplicação (BFF e Domínio)
@@ -431,6 +482,47 @@ A evolução arquitetural do monorepo não pode ocorrer de forma caótica ou com
   3. Registrar o encerramento do roadmap no `tasks/backlog.md` e na memória ativa `tasks/active.md`.
 - **Critério de Aceite:** `graft check_freshness` sincronizado; zero referências quebradas ou código zumbi no repositório.
 - **Risco & Rollout:** Baixo.
+
+#### [RD-042] Remoção de Bypasses Silenciosos de Autenticação no Orchestrator
+- **Camadas:** `Services`
+- **Origem:** `tasks/specs/orchestrator-modularization.md:P3-1` (Achado T-orch-P3-1)
+- **Pré-requisitos:** `RD-010`
+- **Proposta:**
+  1. No middleware de autenticação do orchestrator (`services/orchestrator/src/server/middleware.rs`), se `MANAGER_TOKEN` estiver ausente (nil ou vazio), falhar no boot com mensagem explícita em vez de permitir modo de contorno silencioso.
+  2. Validar que sem token obrigatório, nenhuma rota `/internal/*` se torna acessível.
+  3. Documentar que `MANAGER_TOKEN=false` ou defaults inseguros causam falha de boot imediata.
+- **Critério de Aceite:** Boot sem `MANAGER_TOKEN` explicitamente definido resulta em `panic!` com mensagem registrada em logs; testes de integração verificam negação de 401 em `/internal/dispatch`.
+- **Risco & Rollout:** Baixo (melhoria de segurança, não altera wire).
+- **Esforço & Subagente:** `P` — `@rust-dev`
+
+#### [RD-043] Métricas Prometheus Enriquecidas no Orchestrator
+- **Camadas:** `Services`
+- **Origem:** `tasks/specs/orchestrator-modularization.md:P3-2` (Achado T-orch-P3-2)
+- **Pré-requisitos:** `RD-010`
+- **Proposta:**
+  1. Adicionar ao endpoint `/metrics` do orchestrator (já existe como stub) métricas sobre:
+     - Taxa de acerto/erro no cache de pesos (`cache_hits_total`, `cache_misses_total`, `cache_bytes`).
+     - Duração de jobs por fase (staging, execução, upload) via `histogram` com buckets 1s/10s/1m/10m.
+     - Fila de outbox (items pending retry, oldest pending timestamp).
+     - Estado do daemon de difusão (uptime, VRAM used, inference latency).
+  2. Exportar via `metrics::register_*` e `prometheus-client` ou similar (decidir com `@rust-dev`).
+- **Critério de Aceite:** `curl http://localhost:8082/metrics` retorna métricas com `# HELP` e `# TYPE`; Grafana consegue scrape e visualizar.
+- **Risco & Rollout:** Baixo.
+- **Esforço & Subagente:** `M` — `@rust-dev`
+
+#### [RD-044] Unificação de Variáveis de Rede (`ENGINE_NETWORK` e `DIFFUSION_DAEMON_NETWORK`)
+- **Camadas:** `Services`, `Infra`
+- **Origem:** `tasks/specs/orchestrator-modularization.md:P3-3` (Achado T-orch-P3-3)
+- **Pré-requisitos:** `RD-003`
+- **Proposta:**
+  1. Remover duplicação de variáveis de rede:
+     - `ENGINE_NETWORK` (padrão `hephaestus-engines`) e `DIFFUSION_DAEMON_NETWORK` (fallback diferente) consolidados em `HEPHAESTUS_INTERNAL_NETWORK` único.
+  2. Padronizar em compose via `HEPHAESTUS_INTERNAL_NETWORK: ${HEPHAESTUS_INTERNAL_NETWORK:-hephaestus-internal}`.
+  3. Documentar valor canônico único no `docs/infra/network.md`.
+- **Critério de Aceite:** `docker network ls` mostra apenas 1 rede interna de containers; `compose config` expande para valor único.
+- **Risco & Rollout:** Baixo (refatoração interna).
+- **Esforço & Subagente:** `P` — `@infra-dev`
+
 - **Esforço & Subagente:** `P` — `@docs-sync`
 
 ---

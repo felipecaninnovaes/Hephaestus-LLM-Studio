@@ -10,11 +10,10 @@ import {
   IconDownload,
   IconLayers,
   IconPlay,
-  IconTarget,
   IconTrash,
 } from "@/components/icons";
 
-import { canTrainYolo, trainDisabledReason } from "@/lib/datasets";
+import { canTrainDataset, trainDatasetDisabledReason, trainDatasetActionLabel } from "@/lib/datasets";
 
 interface Props {
   dataset: Dataset;
@@ -48,8 +47,8 @@ export default function DatasetMenu({ dataset, x, y, onClose, onDelete, onTrain 
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const trainEnabled = canTrainYolo(dataset);
-  const trainTitle = trainEnabled ? "Abrir modal de treino YOLO" : trainDisabledReason(dataset);
+  const trainEnabled = canTrainDataset(dataset);
+  const trainTitle = trainEnabled ? trainDatasetActionLabel(dataset) : trainDatasetDisabledReason(dataset);
 
   return (
     <>

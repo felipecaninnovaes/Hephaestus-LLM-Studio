@@ -11,6 +11,8 @@ from typing import Any
 __all__ = [
     "_save_lora_safetensors",
     "_load_lora_weights",
+    "_save_optimizer_state",
+    "_load_optimizer_state",
     "save_adapter_checkpoint",
     "save_final_adapter",
 ]
@@ -57,6 +59,22 @@ def _save_lora_safetensors(
     output_file.parent.mkdir(parents=True, exist_ok=True)
     tmp_file = output_file.parent / f".tmp_{output_file.name}"
     lora_state_dict = _normalize_lora_keys(get_peft_model_state_dict(model))
+
+    # Validação: garante que a injeção LoRA produziu tensores reais.
+    # Falha silenciosa (ex: add_adapter em modelo 4-bit) gera arquivo vazio/corrompido.
+    lora_a_keys = [k for k in lora_state_dict if k.endswith("lora_A.weight")]
+    if not lora_a_keys:
+        raise RuntimeError(
+            "[LORA-SAVE] get_peft_model_state_dict() retornou 0 tensores lora_A — "
+            "a LoRA não foi injetada corretamente no modelo. "
+            "Verifique se get_peft_model() foi usado (não add_adapter) em modelos quantizados."
+        )
+    _actual_rank = lora_state_dict[lora_a_keys[0]].shape[0]
+    print(
+        f"[LORA-SAVE] {len(lora_a_keys)} módulos lora_A salvos | rank efetivo={_actual_rank} "
+        f"| arquivo: {output_file.name}",
+        flush=True,
+    )
     safetensors.torch.save_file(lora_state_dict, str(tmp_file), metadata=metadata)
     os.replace(tmp_file, output_file)
 
@@ -77,18 +95,64 @@ def _load_lora_weights(model: Any, weights_path: Path | str) -> None:
     print("[INFO] Pesos LoRA injetados com sucesso no modelo para continuação de treino.", flush=True)
 
 
+def _save_optimizer_state(optimizer: Any, path: Path) -> None:
+    """Salva o state_dict do optimizer (momentum/variância Adam) de forma atômica via torch.save."""
+    import torch
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_file = path.parent / f".tmp_{path.name}"
+    torch.save(optimizer.state_dict(), str(tmp_file))
+    os.replace(tmp_file, path)
+    print(f"[INFO] Estado do optimizer salvo em: {path}", flush=True)
+
+
+def _load_optimizer_state(optimizer: Any, path: Path | str) -> bool:
+    """Carrega o state_dict de um optimizer prévio. Nunca levanta exceção: retorna
+    True/False conforme sucesso e loga warning em caso de arquivo ausente ou
+    incompatibilidade (ex.: param_groups diferentes entre retomada e treino original)."""
+    import torch
+
+    path = Path(path)
+    if not path.exists():
+        print(f"[WARN] Arquivo de estado do optimizer não encontrado: {path}", flush=True)
+        return False
+
+    try:
+        state_dict = torch.load(str(path), map_location="cpu")
+        optimizer.load_state_dict(state_dict)
+    except Exception as exc:
+        print(
+            f"[WARN] Falha ao carregar estado do optimizer de {path}: {exc} "
+            "(prosseguindo com optimizer novo)",
+            flush=True,
+        )
+        return False
+
+    print(f"[INFO] Estado do optimizer restaurado com sucesso de: {path}", flush=True)
+    return True
+
+
 def save_adapter_checkpoint(
     model: Any,
     checkpoints_dir: Path,
     base_name: str,
     epoch: int,
     metadata: dict[str, str],
+    optimizer: Any = None,
 ) -> Path:
-    """Cria checkpoints_dir, grava {base_name}_epoch_{epoch:03d}.safetensors via _save_lora_safetensors e retorna o Path."""
+    """Cria checkpoints_dir, grava {base_name}_epoch_{epoch:03d}.safetensors via _save_lora_safetensors e retorna o Path.
+
+    Se `optimizer` for fornecido, salva também o state_dict do optimizer em
+    {base_name}_epoch_{epoch:03d}_optimizer.pt no mesmo diretório (continuidade real
+    de momentum/variância Adam em retomadas de treino)."""
     checkpoints_dir = Path(checkpoints_dir)
     checkpoints_dir.mkdir(parents=True, exist_ok=True)
     ckpt_file = checkpoints_dir / f"{base_name}_epoch_{epoch:03d}.safetensors"
     _save_lora_safetensors(model, ckpt_file, metadata)
+    if optimizer is not None:
+        optimizer_file = checkpoints_dir / f"{base_name}_epoch_{epoch:03d}_optimizer.pt"
+        _save_optimizer_state(optimizer, optimizer_file)
     return ckpt_file
 
 
@@ -97,8 +161,13 @@ def save_final_adapter(
     output_dir: Path,
     base_name: str,
     metadata: dict[str, str],
+    optimizer: Any = None,
 ) -> Path:
-    """Salva atomicamente {base_name}.safetensors via _save_lora_safetensors, e se base_name != 'adapter', copia para adapter.safetensors. Retorna o Path final."""
+    """Salva atomicamente {base_name}.safetensors via _save_lora_safetensors, e se base_name != 'adapter', copia para adapter.safetensors. Retorna o Path final.
+
+    Se `optimizer` for fornecido, salva também {base_name}_optimizer.pt em output_dir,
+    e se base_name != 'adapter', copia (atomicamente) para adapter_optimizer.pt,
+    espelhando a cópia canônica do safetensors."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     final_adapter_file = output_dir / f"{base_name}.safetensors"
@@ -108,4 +177,12 @@ def save_final_adapter(
         tmp_canonical = output_dir / f".tmp_{canonical_file.name}"
         shutil.copy2(final_adapter_file, tmp_canonical)
         os.replace(tmp_canonical, canonical_file)
+    if optimizer is not None:
+        optimizer_file = output_dir / f"{base_name}_optimizer.pt"
+        _save_optimizer_state(optimizer, optimizer_file)
+        if base_name != "adapter":
+            canonical_optimizer_file = output_dir / "adapter_optimizer.pt"
+            tmp_canonical_optimizer = output_dir / f".tmp_{canonical_optimizer_file.name}"
+            shutil.copy2(optimizer_file, tmp_canonical_optimizer)
+            os.replace(tmp_canonical_optimizer, canonical_optimizer_file)
     return final_adapter_file

@@ -43,176 +43,27 @@ impl std::fmt::Display for ManagerError {
 
 impl std::error::Error for ManagerError {}
 
+pub use heph_contracts::{
+    AbortJobResponse, ArtifactRow, CreateJobResponse, GenerationItem, GenerationRow, JobRow,
+    ModelItem, ModelResponse, OrchestratorItem, QueueItem, StorageUsageResponse, TelemetryResponse,
+};
+
 /// Job retornado pelo manager (snake_case interno).
-/// O handler do principal re-mapeia para camelCase no wire.
-#[derive(Debug, Clone, Deserialize)]
-pub struct InternalJob {
-    pub id: String,
-    pub kind: String,
-    pub engine: String,
-    pub model: String,
-    pub mode: String,
-    pub dataset_id: Option<String>,
-    pub status: String,
-    pub queue_reason: Option<String>,
-    pub queue_position: Option<i32>,
-    pub progress: Option<f64>,
-    pub epoch: Option<i32>,
-    pub step: Option<i32>,
-    pub metrics: Option<serde_json::Value>,
-    pub vram_min_gb: Option<i32>,
-    pub orchestrator_id: Option<String>,
-    pub orchestrator_name: Option<String>,
-    pub orchestrator_kind: Option<String>,
-    #[serde(default)]
-    pub orchestrator_fallback: bool,
-    pub created_at: String,
-    pub finished_at: Option<String>,
-    #[serde(default)]
-    pub error: Option<String>,
-    #[serde(default)]
-    pub params: Option<serde_json::Value>,
-    /// AC-006-A D3: último status de fase do job (coluna jobs.phase).
-    #[serde(default)]
-    pub phase: Option<String>,
-    /// AC-006-A D3: última mensagem de status do job (coluna jobs.message).
-    #[serde(default)]
-    pub message: Option<String>,
-}
-
+pub type InternalJob = heph_contracts::JobRow;
 /// Item da fila (snake_case interno do manager).
-#[derive(Debug, Clone, Deserialize)]
-pub struct InternalQueueItem {
-    pub job_id: String,
-    pub position: i32,
-    pub queue_reason: Option<String>,
-}
-
+pub type InternalQueueItem = heph_contracts::QueueItem;
 /// Artefato (snake_case interno do manager).
-#[derive(Debug, Clone, Deserialize)]
-pub struct InternalArtifact {
-    pub id: String,
-    pub kind: String,
-    pub path: String,
-    pub md5: String,
-    pub bytes: i64,
-}
-
+pub type InternalArtifact = heph_contracts::ArtifactRow;
 /// Telemetria (camelCase direto do manager — D9).
-#[derive(Debug, Clone, Deserialize)]
-pub struct InternalTelemetry {
-    pub measured: bool,
-    pub vram_used: Option<i64>,
-    pub vram_total: Option<i64>,
-    pub cpu: Option<f64>,
-    pub ram: Option<i64>,
-    #[serde(default)]
-    pub ram_total: Option<i64>,
-    pub gpus: Vec<String>,
-    pub jobs_active: i32,
-}
-
+pub type InternalTelemetry = heph_contracts::TelemetryResponse;
 /// Orquestrador retornado pelo manager (snake_case interno).
-#[derive(Debug, Clone, Deserialize)]
-pub struct InternalOrchestrator {
-    pub id: String,
-    pub name: String,
-    pub kind: String,
-    pub endpoint: String,
-    pub status: String,
-    pub last_heartbeat: Option<String>,
-    /// Telemetria por nó (H.4 — ADR-0011 D2).
-    #[serde(default)]
-    pub measured: bool,
-    #[serde(default)]
-    pub cpu: Option<f64>,
-    #[serde(default)]
-    pub ram: Option<i64>,
-    #[serde(default)]
-    pub ram_total: Option<i64>,
-    #[serde(default)]
-    pub vram_used: Option<i64>,
-    #[serde(default)]
-    pub vram_total: Option<i64>,
-    #[serde(default)]
-    pub vram_total_gb: Option<i32>,
-    #[serde(default)]
-    pub gpus: Vec<String>,
-    #[serde(default)]
-    pub jobs_active: i32,
-}
-
+pub type InternalOrchestrator = heph_contracts::OrchestratorItem;
 /// Peso/modelo retornado pelo manager (snake_case interno).
-/// Shape = `ModelItem` do manager (tabela `models` — ADR-0012 D2, ADR-0023 D4).
-#[derive(Debug, Clone, Deserialize)]
-pub struct InternalModel {
-    pub id: String,
-    pub name: String,
-    pub engine: String,
-    #[serde(default)]
-    pub model: Option<String>,
-    pub source: String,
-    #[serde(rename = "hash")]
-    pub md5: String,
-    pub bytes: i64,
-    pub path: String,
-    #[serde(default)]
-    pub job_id: Option<String>,
-    pub created_at: String,
-    #[serde(default)]
-    pub kind: Option<String>,
-    #[serde(default)]
-    pub arch: Option<String>,
-}
-
+pub type InternalModel = heph_contracts::ModelItem;
 /// Uso de storage retornado pelo manager (snake_case interno).
-#[derive(Debug, Clone, Deserialize)]
-pub struct InternalStorageUsage {
-    pub artifacts_bytes: i64,
-    #[serde(default)]
-    pub models_bytes: i64,
-}
-
+pub type InternalStorageUsage = heph_contracts::StorageUsageResponse;
 /// Modelo público retornado pelo manager (camelCase wire — D6 ADR-0012, ADR-0023 D4).
-///
-/// O manager serializa `ModelItem` com o campo `hash` (nome da coluna no DB).
-/// `InternalModel` (list_models) já tem `#[serde(rename = "hash")]`; este
-/// struct é usado para o response do POST /internal/models (create_model).
-#[derive(Debug, Clone, Deserialize)]
-pub struct InternalModelResponse {
-    pub id: String,
-    pub name: String,
-    pub engine: String,
-    #[serde(default)]
-    pub model: Option<String>,
-    pub source: String,
-    pub bytes: i64,
-    #[serde(rename = "hash")]
-    pub md5: String,
-    #[serde(default)]
-    pub url: Option<String>,
-    #[serde(default)]
-    pub job_id: Option<String>,
-    pub created_at: String,
-    #[serde(default)]
-    pub kind: Option<String>,
-    #[serde(default)]
-    pub arch: Option<String>,
-}
-
-/// Resposta do manager ao criar job (snake_case interno).
-#[derive(Debug, Clone, Deserialize)]
-pub struct CreateJobResponse {
-    pub job_id: String,
-    pub status: String,
-    pub queue_position: Option<i32>,
-}
-
-/// Resposta do manager ao abortar job (snake_case interno).
-#[derive(Debug, Clone, Deserialize)]
-pub struct AbortJobResponse {
-    pub status: String,
-}
+pub type InternalModelResponse = heph_contracts::ModelResponse;
 
 /// Trait do client do manager (mockable).
 #[async_trait]
@@ -346,28 +197,7 @@ pub trait ManagerPort: Send + Sync {
 }
 
 /// Generation retornada pelo manager (snake_case interno).
-#[derive(Debug, Clone, Deserialize)]
-pub struct InternalGeneration {
-    pub id: String,
-    /// `None` quando o job de origem foi expurgado (AC-003: galeria sobrevive).
-    #[serde(default)]
-    pub job_id: Option<String>,
-    pub s3_key: String,
-    #[serde(default)]
-    pub thumb_s3_key: Option<String>,
-    pub filename: String,
-    pub seed: i64,
-    pub prompt: String,
-    #[serde(default)]
-    pub negative_prompt: Option<String>,
-    pub width: i32,
-    pub height: i32,
-    #[serde(default)]
-    pub params: serde_json::Value,
-    pub created_at: String,
-    #[serde(default)]
-    pub deleted_at: Option<String>,
-}
+pub type InternalGeneration = heph_contracts::GenerationItem;
 
 /// Implementação HTTP real do manager client.
 pub struct HttpManager {

@@ -1,5 +1,7 @@
 # Auditoria Técnica e Plano de Modularização: `services/manager`
 
+> **Arquivado em 2026-09-26.** ~70% dos 29 achados (T-M01 a T-M13) eram cópia de `backend-autonomia.md`. Achados residuais (T-M14 a T-M29) verificados contra código real; genuinamente abertos e não-cobertos foram migrados para `tasks/specs/consolidacao-auditoria-roadmap.md` (namespace RD-*).
+
 **Projeto:** Hephaestus LLM Studio
 **Data:** 20 de Setembro de 2026
 **Escopo:** `services/manager` (:8081) — fila/estado de jobs, nós GPU, telemetria, watchdogs, dispatch. Somente leitura; precedentes: `tasks/specs/api-principal-modularizacao-auditoria.md` e `tasks/specs/orchestrator-modularization.md`.

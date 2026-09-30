@@ -95,6 +95,32 @@ export function estimateTrainingEtaMs(
       break;
     }
   }
+  if (totalSteps === null && events) {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const ev = events[i];
+      if (!ev) continue;
+      let text: string | null = null;
+      if (typeof ev.phaseMessage === "string") {
+        text = ev.phaseMessage;
+      } else if (
+        typeof ev === "object" &&
+        "message" in ev &&
+        typeof ev.message === "string"
+      ) {
+        text = ev.message;
+      }
+      if (text) {
+        const m = text.match(/Step\s+\d+\s*\/\s*(\d+)/i);
+        if (m) {
+          const parsed = Number.parseInt(m[1], 10);
+          if (Number.isFinite(parsed) && parsed > 0) {
+            totalSteps = parsed;
+            break;
+          }
+        }
+      }
+    }
+  }
   if (totalSteps === null) return null;
 
   const remaining = totalSteps - points[points.length - 1].step;

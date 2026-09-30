@@ -33,7 +33,7 @@ cmd_help() {
     echo "  backup                     Cria snapshot seguro do Postgres"
     echo "  doctor                     Executa diagnóstico pré-voo de ambiente"
     echo "  status                     Exibe estado atual dos containers"
-    echo "  export-worker-env [IP]     Exporta configuração para nó worker GPU (TrueNAS)"
+    echo "  export-worker-env [IP]     Exporta configuração para nó worker GPU (VM Proxmox dedicada, docker-04)"
 
 }
 
@@ -49,8 +49,8 @@ cmd_up() {
             compose up -d
             ;;
         --gpu)
-            echo "Iniciando nó GPU no TrueNAS..."
-            bash "$ROOT_DIR/scripts/start-truenas.sh"
+            echo "Iniciando nó GPU dedicado..."
+            bash "$ROOT_DIR/scripts/start-gpu-node.sh"
             ;;
         --prod)
             echo "Iniciando Hephaestus Studio em modo PROD (overlay infra/compose.prod.yaml)..."
@@ -166,7 +166,7 @@ cmd_export_worker_env() {
     local worker_ip="${2:-<IP_DO_WORKER>}"
 
     echo "# =============================================================================="
-    echo "# Configuração para Nó Worker Remoto (TrueNAS / Servidor GPU)"
+    echo "# Configuração para Nó Worker Remoto (VM Proxmox dedicada / Servidor GPU)"
     echo "# Gerado automaticamente pelo Hephaestus Control Plane em $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
     echo "# =============================================================================="
     echo "# Cole este conteúdo no arquivo infra/env.gpu ou compose/.env do nó worker com GPU."
@@ -189,7 +189,7 @@ cmd_export_worker_env() {
     echo "ENGINE_NETWORK=gpu_default"
     echo "DIFFUSION_DAEMON_NETWORK=gpu_default"
     echo ""
-    echo "# Para iniciar o worker no nó GPU (TrueNAS):"
+    echo "# Para iniciar o worker no nó GPU (VM Proxmox dedicada, docker-04):"
     echo "#   docker compose -p gpu -f infra/compose.gpu.yaml --env-file infra/env.gpu up -d"
     echo "# ou"
     echo "#   docker compose -f compose/remote-node.yaml up -d"

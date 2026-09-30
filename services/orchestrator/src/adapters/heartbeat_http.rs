@@ -44,3 +44,20 @@ impl HeartbeatClient for HttpHeartbeatClient {
         Ok(())
     }
 }
+
+/// Calcula o tempo de espera do próximo heartbeat com backoff adaptativo e jitter (§P2-1).
+///
+/// - Se `consecutive_failures == 0`: retorna `Duration::from_secs(base_interval_secs)`.
+/// - Se `consecutive_failures > 0`: calcula backoff exponencial `(base * 2^failures).min(30s)` + jitter (0..1000ms).
+pub fn compute_heartbeat_backoff(
+    base_interval_secs: u64,
+    consecutive_failures: u32,
+    jitter_ms: u64,
+) -> Duration {
+    if consecutive_failures == 0 {
+        Duration::from_secs(base_interval_secs)
+    } else {
+        let exp_secs = (base_interval_secs * 2u64.pow(consecutive_failures.min(4))).min(30);
+        Duration::from_millis(exp_secs * 1000 + (jitter_ms % 1000))
+    }
+}

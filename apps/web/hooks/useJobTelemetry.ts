@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { getJob } from "@/lib/jobs";
-import type { Job, JobTelemetryEvent } from "@/types/studio";
+import type { JobTelemetryEvent } from "@/types/studio";
 
 export interface UseJobTelemetryOptions {
   enabled?: boolean;
@@ -15,6 +15,11 @@ export interface UseJobTelemetryReturn {
   phaseMessage: string | null;
   progress: number;
   vramUsedGb: number | null;
+  vramReservedGb: number | null;
+  stepTimeSeconds: number | null;
+  speed: string | null;
+  etaSeconds: number | null;
+  etaFormatted: string | null;
   step: number | null;
   totalSteps: number | null;
   epoch: number | null;
@@ -41,6 +46,11 @@ export function useJobTelemetry(
   const [phaseMessage, setPhaseMessage] = useState<string | null>(null);
   const [progress, setProgress] = useState<number>(0);
   const [vramUsedGb, setVramUsedGb] = useState<number | null>(null);
+  const [vramReservedGb, setVramReservedGb] = useState<number | null>(null);
+  const [stepTimeSeconds, setStepTimeSeconds] = useState<number | null>(null);
+  const [speed, setSpeed] = useState<string | null>(null);
+  const [etaSeconds, setEtaSeconds] = useState<number | null>(null);
+  const [etaFormatted, setEtaFormatted] = useState<string | null>(null);
   const [step, setStep] = useState<number | null>(null);
   const [totalSteps, setTotalSteps] = useState<number | null>(null);
   const [epoch, setEpoch] = useState<number | null>(null);
@@ -72,6 +82,11 @@ export function useJobTelemetry(
     setPhaseMessage(null);
     setProgress(0);
     setVramUsedGb(null);
+    setVramReservedGb(null);
+    setStepTimeSeconds(null);
+    setSpeed(null);
+    setEtaSeconds(null);
+    setEtaFormatted(null);
     setStep(null);
     setTotalSteps(null);
     setEpoch(null);
@@ -91,6 +106,11 @@ export function useJobTelemetry(
       if (ev.phaseMessage !== undefined) setPhaseMessage(ev.phaseMessage);
       if (typeof ev.progress === "number") setProgress(ev.progress);
       if (ev.vramUsedGb !== undefined) setVramUsedGb(ev.vramUsedGb);
+      if (ev.vramReservedGb !== undefined) setVramReservedGb(ev.vramReservedGb);
+      if (ev.stepTimeSeconds !== undefined) setStepTimeSeconds(ev.stepTimeSeconds);
+      if (ev.speed !== undefined) setSpeed(ev.speed);
+      if (ev.etaSeconds !== undefined) setEtaSeconds(ev.etaSeconds);
+      if (ev.etaFormatted !== undefined) setEtaFormatted(ev.etaFormatted);
       if (ev.step !== undefined) setStep(ev.step);
       if (ev.totalSteps !== undefined) setTotalSteps(ev.totalSteps);
       if (ev.epoch !== undefined) setEpoch(ev.epoch);
@@ -134,6 +154,7 @@ export function useJobTelemetry(
             ...(j.step != null ? { step: j.step } : {}),
             ...(j.epoch != null ? { epoch: j.epoch } : {}),
             ...(j.vramUsedGb != null ? { vramUsedGb: j.vramUsedGb } : {}),
+            ...(j.vramReservedGb != null ? { vramReservedGb: j.vramReservedGb } : {}),
           } as JobTelemetryEvent;
           applyEvent(ev, isTerm);
           if (isTerm) {
@@ -224,6 +245,11 @@ export function useJobTelemetry(
     phaseMessage,
     progress,
     vramUsedGb,
+    vramReservedGb,
+    stepTimeSeconds,
+    speed,
+    etaSeconds,
+    etaFormatted,
     step,
     totalSteps,
     epoch,

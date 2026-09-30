@@ -1,3 +1,10 @@
+## Fechado — Fix CI trainer-difusao (ModuleNotFoundError torch)
+- **Causa:** `models/__init__.py` importava `QwenImageTrainer` no topo do módulo; `qwen_image.py` (e módulos vendorizados `qwen_pkg/qwen_image_2/*`) importam `torch`/`peft` no topo — diferente de flux/sd15/sdxl (lazy-import interno). CI (`uv run --extra test pytest`, sem extra `train`) quebrava com `ModuleNotFoundError: No module named 'torch'` em 5 arquivos de teste na fase de coleta.
+- **Fix (2 arquivos):** `models/__init__.py` — import de `QwenImageTrainer` em `try/except ImportError` (`None` quando torch ausente) + `_die()` claro em `get_trainer()` se alguém pedir "qwen" sem torch. `tests/test_qwen_image.py` — `@unittest.skipIf(not HAS_TORCH, ...)` faltante em `test_mock_train_uses_mock_function` (único teste sem o guard, exposto pelo fix acima).
+- **Verificação:** sem torch → 173 passed/60 skipped/0 failed (antes: 5 erros de coleção); com torch → 240 passed, zero regressão (baseline idêntico).
+- **Auditoria:** `@reviewer` APROVA sem ressalvas (7/7 critérios).
+- **Branch:** `fix/ci-trainer-difusao-torch-import`, commit `842ad5a`. Pendente: push + PR para `develop`.
+
 # Memória Ativa — Hephaestus LLM Studio
 
 - **Branch atual:** `develop`

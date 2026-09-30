@@ -8,7 +8,11 @@ from trainer_difusao.models.flux import FluxTrainer
 from trainer_difusao.models.mock import MockTrainer
 from trainer_difusao.models.sd15 import SD15Trainer
 from trainer_difusao.models.sdxl import SDXLTrainer
-from trainer_difusao.models.qwen_image import QwenImageTrainer
+# torch/peft ausentes = extra `train` opcional não instalada (ex.: CI leve sem GPU).
+try:
+    from trainer_difusao.models.qwen_image import QwenImageTrainer
+except ImportError:
+    QwenImageTrainer = None
 
 
 def get_trainer(model_name: str, is_mock: bool = False) -> BaseModelTrainer:
@@ -24,6 +28,11 @@ def get_trainer(model_name: str, is_mock: bool = False) -> BaseModelTrainer:
     if canonical == "sd15":
         return SD15Trainer()
     if "qwen" in canonical:
+        if QwenImageTrainer is None:
+            _die(
+                f"Treino de Qwen-Image ('{model_name}') requer a extra 'train' "
+                "(torch/peft) instalada; ambiente atual não possui essas dependências."
+            )
         return QwenImageTrainer()
 
     _die(f"Modelo base de difusão desconhecido ou não suportado: '{model_name}'")

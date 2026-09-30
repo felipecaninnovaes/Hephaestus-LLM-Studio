@@ -282,6 +282,7 @@ class TestQwenImageMockMode(unittest.TestCase):
     """Test mock mode training does not require GPU."""
 
     @mock.patch('engine_kit.mock.is_mock', return_value=True)
+    @unittest.skipIf(not HAS_TORCH, "torch not available")
     def test_mock_train_uses_mock_function(self, mock_is_mock):
         """Verify mock training dispatches to mock function."""
         from trainer_difusao.models import QwenImageTrainer

@@ -5989,7 +5989,7 @@ async fn text_embeds_cache_eviction_stays_under_budget() {
     }
     // Total = 10 MiB; orçamento = 5 MiB → deve evictar até caber.
     let max_gb = 5.0 / 1024.0;
-    evict_text_embeds_cache(&outputs_root, max_gb).await;
+    evict_text_embeds_cache(&outputs_root, max_gb, None).await;
 
     let mut total = 0u64;
     let mut stack = vec![outputs_root.join(".text_embeds_cache")];
@@ -6008,6 +6008,81 @@ async fn text_embeds_cache_eviction_stays_under_budget() {
     assert!(
         total <= (max_gb * 1024.0 * 1024.0 * 1024.0) as u64,
         "total pós-eviction ({total} bytes) deve ficar sob o orçamento"
+    );
+}
+
+#[tokio::test]
+async fn text_embeds_cache_eviction_protects_active_job_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let outputs_root = tmp.path().to_path_buf();
+    let ns_dir = outputs_root.join(".text_embeds_cache").join("ns1");
+    tokio::fs::create_dir_all(&ns_dir).await.unwrap();
+
+    let now = std::time::SystemTime::now();
+    // Job ativo iniciou em `job_start`; arquivos com mtime >= job_start - 60s
+    // devem sobreviver mesmo estourando o orçamento.
+    let job_start = now - Duration::from_secs(200);
+    let cutoff = job_start - Duration::from_secs(60);
+
+    // Arquivos antigos (não protegidos): devem ser evictados por LRU.
+    for i in 0..3 {
+        let path = ns_dir.join(format!("old-{i}.pt"));
+        std::fs::write(&path, vec![0u8; 2 * 1024 * 1024]).unwrap(); // 2 MiB
+        let t = now - Duration::from_secs(1000 - i * 10);
+        std::fs::File::open(&path).unwrap().set_modified(t).unwrap();
+    }
+    // Arquivos protegidos: mtime >= job_start (precompute do job ativo).
+    for i in 0..3 {
+        let path = ns_dir.join(format!("new-{i}.pt"));
+        std::fs::write(&path, vec![0u8; 2 * 1024 * 1024]).unwrap(); // 2 MiB
+        let t = job_start + Duration::from_secs(i * 5);
+        std::fs::File::open(&path).unwrap().set_modified(t).unwrap();
+    }
+
+    // Total = 12 MiB; orçamento = 5 MiB → só os `old-*` (não protegidos)
+    // podem ser evictados; os `new-*` sobrevivem mesmo sobre o orçamento.
+    let max_gb = 5.0 / 1024.0;
+    evict_text_embeds_cache(&outputs_root, max_gb, Some(cutoff)).await;
+
+    for i in 0..3 {
+        assert!(
+            !ns_dir.join(format!("old-{i}.pt")).exists(),
+            "old-{i}.pt (fora da janela do job ativo) deveria ter sido evictado"
+        );
+    }
+    for i in 0..3 {
+        assert!(
+            ns_dir.join(format!("new-{i}.pt")).exists(),
+            "new-{i}.pt (mtime >= início do job ativo - slack) deve sobreviver"
+        );
+    }
+}
+
+#[tokio::test]
+async fn text_embeds_cache_eviction_no_active_jobs_is_plain_lru() {
+    let tmp = tempfile::tempdir().unwrap();
+    let outputs_root = tmp.path().to_path_buf();
+    let ns_dir = outputs_root.join(".text_embeds_cache").join("ns1");
+    tokio::fs::create_dir_all(&ns_dir).await.unwrap();
+
+    for i in 0..5 {
+        let path = ns_dir.join(format!("{i}.pt"));
+        std::fs::write(&path, vec![0u8; 2 * 1024 * 1024]).unwrap(); // 2 MiB cada
+        let t = std::time::SystemTime::now() - Duration::from_secs((5 - i) * 100);
+        std::fs::File::open(&path).unwrap().set_modified(t).unwrap();
+    }
+    // Sem job ativo (cutoff = None) → LRU simples, igual ao comportamento
+    // existente.
+    let max_gb = 5.0 / 1024.0;
+    evict_text_embeds_cache(&outputs_root, max_gb, None).await;
+
+    assert!(
+        !ns_dir.join("0.pt").exists(),
+        "entrada mais antiga deveria ter sido evictada pela LRU simples"
+    );
+    assert!(
+        ns_dir.join("4.pt").exists(),
+        "entrada mais recente deveria sobreviver à LRU simples"
     );
 }
 

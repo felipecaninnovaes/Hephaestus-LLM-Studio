@@ -7,6 +7,7 @@
 //! roda a eviction LRU por orçamento aqui.
 
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 fn embeds_root(outputs_root: &Path) -> PathBuf {
     outputs_root.join(".text_embeds_cache")
@@ -44,7 +45,20 @@ async fn collect_pt_files(root: &Path) -> Vec<(PathBuf, std::time::SystemTime, u
 /// o total exceder `max_gb`. Remove o diretório de namespace quando ele fica
 /// vazio após a remoção (preserva `namespace.json` enquanto houver qualquer
 /// `.pt` no namespace). Retorna a quantidade de arquivos removidos.
-pub async fn evict_text_embeds_cache(outputs_root: &Path, max_gb: f64) -> usize {
+///
+/// `protect_mtime_after`, quando `Some(cutoff)`, protege da eviction todo
+/// `.pt` com `mtime >= cutoff` — o sweeper passa o início do job ativo mais
+/// antigo menos 60s de slack, pois as engines escrevem/tocam (`os.utime`)
+/// cada `.pt` que usam durante o precompute no início do treino; sem isso a
+/// LRU pode apagar embeds de um job RUNNING (ver
+/// `tasks/specs/no-gpu-reuso-dataset-embeds.md`). Se o orçamento continuar
+/// estourado só com arquivos protegidos restantes, interrompe sem apagá-los
+/// e emite `tracing::warn!`.
+pub async fn evict_text_embeds_cache(
+    outputs_root: &Path,
+    max_gb: f64,
+    protect_mtime_after: Option<SystemTime>,
+) -> usize {
     let root = embeds_root(outputs_root);
     let mut files = collect_pt_files(&root).await;
     if files.is_empty() {
@@ -61,9 +75,16 @@ pub async fn evict_text_embeds_cache(outputs_root: &Path, max_gb: f64) -> usize 
 
     let mut removed = 0usize;
     let mut touched_dirs: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-    for (path, _, size) in files {
+    let mut protected_skipped = false;
+    for (path, mtime, size) in files {
         if total <= max_bytes {
             break;
+        }
+        if let Some(cutoff) = protect_mtime_after {
+            if mtime >= cutoff {
+                protected_skipped = true;
+                continue;
+            }
         }
         if let Some(parent) = path.parent() {
             touched_dirs.insert(parent.to_path_buf());
@@ -73,6 +94,14 @@ pub async fn evict_text_embeds_cache(outputs_root: &Path, max_gb: f64) -> usize 
             removed += 1;
             tracing::info!(path = %path.display(), "text embeds cache entry evicted (LRU)");
         }
+    }
+
+    if total > max_bytes && protected_skipped {
+        tracing::warn!(
+            total_bytes = total,
+            max_bytes,
+            "text embeds cache over budget but remaining entries are protected by an active job; skipping further eviction"
+        );
     }
 
     // Remove diretórios de namespace que ficaram vazios (sem nenhum .pt

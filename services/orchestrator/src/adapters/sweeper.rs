@@ -171,10 +171,23 @@ pub fn spawn_periodic_sweeper(
                     crate::storage::evict_dataset_cache(&workdir, dataset_cache_max_gb, &active_md5s)
                         .await;
 
-                    // Pilar B: LRU de outputs/.text_embeds_cache/ por orçamento.
+                    // Pilar B: LRU de outputs/.text_embeds_cache/ por orçamento,
+                    // protegendo .pt com mtime >= (início do job ativo mais
+                    // antigo - 60s de slack) — a engine escreve/toca cada .pt
+                    // que usa durante o precompute no início do treino.
+                    let embeds_cutoff: Option<SystemTime> = active_jobs
+                        .iter()
+                        .map(|entry| entry.value().started_at())
+                        .min()
+                        .map(|earliest| {
+                            earliest
+                                .checked_sub(Duration::from_secs(60))
+                                .unwrap_or(earliest)
+                        });
                     crate::storage::evict_text_embeds_cache(
                         &workdir.join("outputs"),
                         text_embeds_cache_max_gb,
+                        embeds_cutoff,
                     )
                     .await;
 

@@ -46,6 +46,11 @@ pub struct ActiveJobState {
     /// consultado pelo sweeper (Pilar A) para nunca evictar uma entrada
     /// `datasets-dedup/<md5>/` em uso por um job ativo.
     pub dataset_md5: StdMutex<Option<String>>,
+    /// Instante de criação deste estado (aproxima o início do precompute de
+    /// text-embeds pela engine) — consultado pelo sweeper (Pilar B) para
+    /// nunca evictar um `.pt` com `mtime` posterior ao início do job ativo
+    /// mais antigo menos slack; ver `evict_text_embeds_cache`.
+    pub started_at: std::time::SystemTime,
 }
 
 impl ActiveJobState {
@@ -54,6 +59,7 @@ impl ActiveJobState {
             container_name,
             cancelled: AtomicBool::new(false),
             dataset_md5: StdMutex::new(None),
+            started_at: std::time::SystemTime::now(),
         }
     }
 
@@ -71,6 +77,10 @@ impl ActiveJobState {
 
     pub fn dataset_md5(&self) -> Option<String> {
         self.dataset_md5.lock().clone()
+    }
+
+    pub fn started_at(&self) -> std::time::SystemTime {
+        self.started_at
     }
 }
 

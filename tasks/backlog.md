@@ -85,6 +85,12 @@ Consolidação única de pendências e melhorias prioritárias. Rotas canônicas
   - Permitir inspeção, edição e aprovação individual ou em lote das legendas geradas antes de aplicar ao dataset.
 - **Reconciliação Storage:**
   - Auditoria periódica de divergências bucket S3 vs Postgres (`datasets.size_bytes` vs `ListObjectsV2`).
+- **Reaproveitar dataset e text-embeds entre jobs do mesmo dataset no nó GPU** (Média; donos `@backend` orchestrator + `@engines` text cache + `@infra` volumes; medido 2026-10-01 em `docker-04`):
+  - Pacote S3 já é reusado por fingerprint (`try_reuse_package`, `services/api-principal/src/jobs/prepare.rs:578`); sem re-upload ao SeaweedFS. O desperdício está no nó.
+  - (1) `run_job_inner` (`services/orchestrator/src/app/mod.rs`) baixa `dataset.zip` (3.7 GB) num `temp_dir` por job e extrai em `datasets/datasets-cache/<job_id>/`; sem cache por `md5_zip` (diferente de `storage/cache.rs`, MD5 dedupe + hardlink); só `sweep_orphan_workdirs` limpa após 24h.
+  - (2) `outputs/<job_id>/` nunca é limpo (só `temp_dir`, `mod.rs:1414`): 39 GB em `/data/outputs` com 12 jobs; `0962380c` = 9.2 GB, sendo **7.3 GB de `text_embeds_cache`**; resume cancelado `a65f012e` +8.7 GB (7.3 GB de text_embeds idênticos).
+  - (3) No resume o `text_embeds_cache` é recalculado do zero (mesmo dataset + encoder): custo de tempo e disco.
+  - Proposta (especificar como fatia): (a) cache local de dataset por `md5_zip` no padrão de `storage/cache.rs` (promoção atômica + hardlink/bind no job) com retenção LRU/por tamanho; (b) `text_embeds_cache` compartilhado por (fingerprint do dataset, encoder, quantização) fora de `outputs/<job>`; (c) retenção de `outputs/<job>` após confirmar upload dos artefatos ao S3 (purgar `text_embeds_cache` e checkpoints locais).
 
 ---
 

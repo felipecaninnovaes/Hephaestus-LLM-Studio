@@ -91,6 +91,7 @@ Consolidação única de pendências e melhorias prioritárias. Rotas canônicas
   - (2) `outputs/<job_id>/` nunca é limpo (só `temp_dir`, `mod.rs:1414`): 39 GB em `/data/outputs` com 12 jobs; `0962380c` = 9.2 GB, sendo **7.3 GB de `text_embeds_cache`**; resume cancelado `a65f012e` +8.7 GB (7.3 GB de text_embeds idênticos).
   - (3) No resume o `text_embeds_cache` é recalculado do zero (mesmo dataset + encoder): custo de tempo e disco.
   - Proposta (especificar como fatia): (a) cache local de dataset por `md5_zip` no padrão de `storage/cache.rs` (promoção atômica + hardlink/bind no job) com retenção LRU/por tamanho; (b) `text_embeds_cache` compartilhado por (fingerprint do dataset, encoder, quantização) fora de `outputs/<job>`; (c) retenção de `outputs/<job>` após confirmar upload dos artefatos ao S3 (purgar `text_embeds_cache` e checkpoints locais).
+  - Spec: `tasks/specs/no-gpu-reuso-dataset-embeds.md` (fatia `feat/no-gpu-reuso-dataset-embeds`, em andamento).
 
 ---
 

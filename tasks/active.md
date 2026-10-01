@@ -1,3 +1,14 @@
+## Em andamento — Reuso de dataset e text-embeds no nó GPU
+- **Branch:** `feat/no-gpu-reuso-dataset-embeds` (a partir de `develop` `e8ca50b`)
+- **Spec:** `tasks/specs/no-gpu-reuso-dataset-embeds.md` (origem `tasks/backlog.md:88-93`)
+- **Decisões do usuário (2026-10-01):** pilares A+B+C juntos; `DATASET_CACHE_MAX_GB=15`; purga de `outputs/<job>` por sweeper TTL 24h pós-terminal, só arquivos com upload confirmado; limpeza única do legado no docker-04 pelo `@infra` após conferir S3.
+- **Correções do orchestrator ao plano do `@planner`:** sem lock/refcount em arquivo (mutex in-process + `active_jobs`); visão por job via `cp -al` (ultralytics grava `labels.cache` no dataset); jobs cancelados TÊM checkpoints no S3 (`save_intermediate_artifacts`), purga guiada por manifesto de upload; sem migration/endpoint no manager; sem mecanismo de emergência 85%.
+- [ ] Spec escrita e commitada (`@docs`)
+- [ ] W1 `@backend` orchestrator: cache A, env/mount B, sweeper C + manifesto
+- [ ] W1 `@engines`: `TEXT_EMBEDS_CACHE_DIR`, chave por namespace (encoder/quant/seq len/dtype), escrita atômica
+- [ ] W2 `@infra`: env/compose GPU, rebuild no docker-04, limpeza do legado
+- [ ] W3 smoke GPU real (logs brutos no nó) + `@reviewer` + `@docs` (PITFALLS/REPO_MAP/storage)
+
 ## Em andamento — Fix retomada de treino LoRA (pesos descartados silenciosamente)
 - **Branch:** `fix/difusao-resume-lora-weights` (a partir de `develop` `0b07c8f`)
 - **Causa raiz (provada via script com peft 0.20.0 do lock):** `_save_lora_safetensors` remove o prefixo `base_model.model.` (`_normalize_lora_keys`); `_load_lora_weights` usa `set_peft_model_state_dict` num `PeftModel` (chaves `base_model.model.*.lora_A.default.weight`) com `strict=False` → 100% das chaves `unexpected`, nada carregado, log "injetados com sucesso" incondicional. Resume SD15/SDXL/Flux treina do zero com momentos Adam antigos aplicados a pesos novos.

@@ -16,9 +16,13 @@
 -- objeto) ou um valor numérico fora da faixa de `double precision` aborta a
 -- migration inteira (erro de cast não é recuperável em SQL puro). Adicionamos:
 -- (1) guardas `jsonb_typeof(...) = 'number'` antes de cada cast de step/epoch,
--- com fallback (`step` default 0, `epoch` NULL); (2) `jsonb_each` só roda sobre
--- `item` quando `jsonb_typeof(item) = 'object'` (array com elemento não-objeto
--- vira conjunto vazio, não erro); (3) uma função auxiliar `safe_jsonb_to_double`
+-- com fallback (`step` default 0, `epoch` NULL), E uma guarda extra via
+-- `numeric`/`trunc`/`abs` (ao invés de `::INTEGER`/`::BIGINT` direto) porque
+-- `'1.0'::INTEGER` e `'2.5'::BIGINT` também abortam a migration — valores JSON
+-- não-inteiros (`1.0`, `3e2`) ou fora da faixa de int32/int64 caem no fallback
+-- em vez de abortar; (2) `jsonb_each` só roda sobre `item` quando
+-- `jsonb_typeof(item) = 'object'` (array com elemento não-objeto vira
+-- conjunto vazio, não erro); (3) uma função auxiliar `safe_jsonb_to_double`
 -- com `EXCEPTION WHEN OTHERS` para absorver overflow de double precision,
 -- descartando (não abortando) o ponto malformado. A função é removida ao fim
 -- desta mesma migration — não fica residual no schema.
@@ -34,9 +38,13 @@ $$ LANGUAGE plpgsql IMMUTABLE;
 WITH exploded AS (
     SELECT j.id AS job_id,
            CASE WHEN jsonb_typeof(item->'epoch') = 'number'
-                THEN (item->>'epoch')::INTEGER ELSE NULL END AS epoch,
+                     AND (item->>'epoch')::numeric = trunc((item->>'epoch')::numeric)
+                     AND abs((item->>'epoch')::numeric) <= 2147483647
+                THEN (item->>'epoch')::numeric::integer ELSE NULL END AS epoch,
            CASE WHEN jsonb_typeof(item->'step') = 'number'
-                THEN (item->>'step')::BIGINT ELSE 0 END AS step,
+                     AND (item->>'step')::numeric = trunc((item->>'step')::numeric)
+                     AND abs((item->>'step')::numeric) <= 9223372036854775807
+                THEN (item->>'step')::numeric::bigint ELSE 0 END AS step,
            kv.key,
            pg_temp_safe_jsonb_to_double(kv.value) AS value
     FROM jobs j

@@ -11,14 +11,29 @@ from engine_kit.vram import cleanup_cuda as _cleanup_cuda_impl
 
 
 def _prune_checkpoints(checkpoints_dir: Path, keep_last_n: int = 2) -> None:
-    """Mantém apenas os últimos keep_last_n checkpoints de época para não esgotar o disco."""
+    """Mantém apenas os últimos keep_last_n checkpoints de época para não esgotar o disco.
+
+    Ao podar um {base}_epoch_NNN.safetensors, remove também o
+    {base}_epoch_NNN_optimizer.pt irmão (se existir), para não deixar .pt órfão.
+    Checkpoints mantidos (dentro de keep_last_n ou em keep_files) preservam seu
+    .pt irmão intacto."""
     try:
-        _prune_checkpoints_impl(
+        removed = _prune_checkpoints_impl(
             checkpoints_dir,
             keep_last_n=keep_last_n,
             suffix=".safetensors",
             keep_files={"best.safetensors"},
         )
+        for removed_file in removed:
+            sibling_optimizer = removed_file.parent / f"{removed_file.stem}_optimizer.pt"
+            if sibling_optimizer.exists():
+                try:
+                    sibling_optimizer.unlink()
+                except OSError as e:
+                    print(
+                        f"[CHECKPOINT] Aviso: falha ao remover .pt órfão {sibling_optimizer}: {e}",
+                        flush=True,
+                    )
     except Exception as e:
         print(f"[CHECKPOINT] Aviso: falha ao podar checkpoints antigos: {e}", flush=True)
 

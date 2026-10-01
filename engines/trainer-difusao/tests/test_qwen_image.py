@@ -342,5 +342,25 @@ class TestQwenImageConfigAndSpecs(unittest.TestCase):
             self.assertTrue("transformers" in content or "Qwen3-VL" in content)
 
 
+@unittest.skipIf(not HAS_TORCH, "torch not available")
+class TestQwenImageResumeEpochNumbering(unittest.TestCase):
+    """Regressão: retomada de treino Qwen-Image-2.1 deve numerar as épocas
+    ADICIONAIS a partir de epoch_offset+1, não recomeçar de 1 (contrato item 7).
+    Exercita a mesma função usada por _real_train_qwen_image."""
+
+    def test_epoch_offset_3_epochs_2_yields_epochs_4_and_5(self):
+        from trainer_difusao.models.qwen_image import _resume_epoch_range
+
+        self.assertEqual(_resume_epoch_range(epoch_offset=3, epochs=2), [(1, 4), (2, 5)])
+
+    def test_no_offset_reproduces_original_1_based_numbering(self):
+        from trainer_difusao.models.qwen_image import _resume_epoch_range
+
+        self.assertEqual(
+            _resume_epoch_range(epoch_offset=0, epochs=5),
+            [(1, 1), (2, 2), (3, 3), (4, 4), (5, 5)],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -25,6 +25,9 @@ from trainer_difusao.common import (
     _die,
     _emit_metric,
     _format_eta,
+    _load_lora_weights,
+    _load_optimizer_state,
+    _override_optimizer_lr,
     _normalize_train_quantization,
     _resolve_output_name,
     _setup_cache_dir,
@@ -215,6 +218,20 @@ def _qwen_sample_native(
         traceback.print_exc()
         return None
 
+def _resume_epoch_range(epoch_offset: int, epochs: int) -> list[tuple[int, int]]:
+    """Gera os pares (local_epoch_idx, epoch_absoluto) do treino.
+
+    `epochs` é sempre o número de épocas ADICIONAIS desta execução, numeradas
+    de `epoch_offset + 1` até `epoch_offset + epochs` (epoch_offset=0 reproduz
+    a numeração original 1..epochs). `local_epoch_idx` é 1-based relativo a
+    esta execução (usado para checkpoint_interval/sample_interval/progress);
+    `epoch` é o número absoluto de época (usado em métricas/nomes de arquivo).
+    """
+    return list(
+        enumerate(range(epoch_offset + 1, epoch_offset + epochs + 1), start=1)
+    )
+
+
 def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
     """Pipeline real de treino LoRA para Qwen-Image-2.1 na GPU (nativo)."""
     # Elimina OOM por fragmentação de heap CUDA
@@ -251,6 +268,8 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
 
     checkpoint_interval = max(1, int(cfg.get("checkpoint_interval") or lora_cfg.get("checkpoint_interval") or 1))
     epoch_offset = max(0, int(cfg.get("epoch_offset") or lora_cfg.get("epoch_offset") or 0))
+    weights_path = cfg.get("weights_path")
+    optimizer_state_path = cfg.get("optimizer_state_path")
     grad_accum = max(1, int(lora_cfg.get("gradient_accumulation_steps", 1)))
     batch_size = max(1, int(lora_cfg.get("batch_size", 1)))
     resolution = int(cfg.get("resolution") or lora_cfg.get("resolution") or 768)
@@ -534,12 +553,20 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         model_with_lora = get_peft_model(transformer, lora_config)
     except Exception as e:
         _die(f"Erro ao configurar LoRA: {e}")
+    if weights_path:
+        _load_lora_weights(model_with_lora, weights_path)
     # 5. Setup optimizer
     optimizer = AdamW8bit(
         model_with_lora.parameters(),
         lr=learning_rate,
         betas=(0.9, 0.999),
     )
+    if optimizer_state_path:
+        _load_optimizer_state(optimizer, optimizer_state_path)
+        # O LR da nova requisição (learning_rate) sempre prevalece sobre o
+        # persistido no optimizer state restaurado; o scheduler (se houver)
+        # recomeça do zero sobre os steps desta execução.
+        _override_optimizer_lr(optimizer, learning_rate)
 
     # 6. Training loop
     num_train_samples = len(dataset)
@@ -571,11 +598,16 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         lr=learning_rate,
         progress=0.45,
         phase="training_started",
-        message=f"Iniciando treino por {epochs} epochs",
+        message=(
+            f"Iniciando treino por {epochs} épocas adicionais (offset={epoch_offset}), "
+            f"numeradas de {epoch_offset + 1} a {epoch_offset + epochs}"
+        ),
     )
 
     try:
-        for epoch in range(epoch_offset, epochs):
+        # `epochs` épocas ADICIONAIS, numeradas de epoch_offset+1 até
+        # epoch_offset+epochs (epoch_offset=0 reproduz a numeração original 1..epochs).
+        for local_epoch_idx, epoch in _resume_epoch_range(epoch_offset, epochs):
             epoch_loss = 0.0
             num_batches = 0
 
@@ -703,7 +735,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                             lr=learning_rate,
                             progress=progress,
                             phase="training",
-                            message=f"Epoch {epoch + 1}/{epochs}, step {global_step}, loss={avg_loss:.4f}",
+                            message=f"Epoch {epoch}/{epoch_offset + epochs}, step {global_step}, loss={avg_loss:.4f}",
                             etaSeconds=eta_seconds,
                             stepTimeSeconds=time_per_step,
                             vramReservedGb=vram_used,
@@ -719,15 +751,16 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                             "format": "pt",
                             "model_type": "lora",
                             "base_model": "qwen-image-2.1",
-                            "epoch": str(epoch + 1),
+                            "epoch": str(epoch),
                             "step": str(global_step),
                         }
                         ckpt_path = save_adapter_checkpoint(
                             model_with_lora,
                             checkpoints_dir,
                             base_name,
-                            epoch + 1,
+                            epoch,
                             metadata,
+                            optimizer=optimizer,
                         )
                         print(f"[CHECKPOINT] Salvo em {ckpt_path}", flush=True)
                     except Exception as e:
@@ -737,17 +770,17 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
             avg_epoch_loss = epoch_loss / max(1, num_batches)
             _emit_metric(
                 metrics_path,
-                epoch=epoch + 1,
+                epoch=epoch,
                 step=global_step,
                 loss=avg_epoch_loss,
                 lr=learning_rate,
-                progress=0.45 + (epoch + 1) / epochs * 0.50,
+                progress=0.45 + local_epoch_idx / epochs * 0.50,
                 phase="epoch_complete",
-                message=f"Epoch {epoch + 1} completo, loss médio={avg_epoch_loss:.4f}",
+                message=f"Epoch {epoch} completo, loss médio={avg_epoch_loss:.4f}",
             )
 
             # Sample during training (reduced resolution)
-            if sample_prompt and sample_interval > 0 and (epoch + 1) % sample_interval == 0:
+            if sample_prompt and sample_interval > 0 and local_epoch_idx % sample_interval == 0:
                 try:
                     sample_res = min(resolution, 512)
                     _qwen_sample_native(
@@ -761,10 +794,10 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                         seed=sample_seed,
                         device=device,
                         dtype=torch_dtype,
-                        output_path=output_path / f"epoch{epoch + 1}.png",
+                        output_path=output_path / f"epoch{epoch}.png",
                     )
                 except Exception as e:
-                    print(f"[WARN] Erro ao gerar amostra epoch {epoch + 1}: {e}", flush=True)
+                    print(f"[WARN] Erro ao gerar amostra epoch {epoch}: {e}", flush=True)
 
     except Exception as e:
         print(f"[ERROR] Erro durante treino: {e}", flush=True)
@@ -776,7 +809,7 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
     # 7. Salva adaptador final
     _emit_metric(
         metrics_path,
-        epoch=epochs,
+        epoch=epoch_offset + epochs,
         step=global_step,
         loss=0.0,
         lr=learning_rate,
@@ -795,11 +828,12 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         output_path,
         base_name,
         metadata,
+        optimizer=optimizer,
     )
 
     _emit_metric(
         metrics_path,
-        epoch=epochs,
+        epoch=epoch_offset + epochs,
         step=global_step,
         loss=0.0,
         lr=learning_rate,

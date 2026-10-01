@@ -20,6 +20,7 @@ from trainer_difusao.common_pkg.lora_io import (
     _load_lora_weights,
     _save_optimizer_state,
     _load_optimizer_state,
+    _override_optimizer_lr,
     save_adapter_checkpoint,
     save_final_adapter,
 )
@@ -83,6 +84,7 @@ __all__ = [
     "_load_lora_weights",
     "_save_optimizer_state",
     "_load_optimizer_state",
+    "_override_optimizer_lr",
     "save_adapter_checkpoint",
     "save_final_adapter",
     "_TRAIN_QUANT_LEVELS",

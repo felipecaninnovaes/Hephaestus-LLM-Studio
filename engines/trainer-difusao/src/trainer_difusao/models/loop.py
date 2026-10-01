@@ -18,6 +18,7 @@ from trainer_difusao.common import (
     _emit_metric,
     _load_lora_weights,
     _load_optimizer_state,
+    _override_optimizer_lr,
     _precompute_text_cache,
     _precompute_text_cache_with_cleanup,
     _prune_checkpoints,
@@ -294,6 +295,10 @@ class TrainingLoopRunner:
         optimizer = _create_optimizer(comp["trainable_module"], tcfg.optimizer_name, tcfg.learning_rate)
         if tcfg.optimizer_state_path:
             _load_optimizer_state(optimizer, tcfg.optimizer_state_path)
+            # O LR da nova requisição (tcfg.learning_rate) sempre prevalece sobre o
+            # persistido no optimizer state restaurado; o scheduler da retomada
+            # recomeça do zero sobre os steps desta execução (não é persistido).
+            _override_optimizer_lr(optimizer, tcfg.learning_rate)
 
         # Dataset principal
         dataset = DiffusionDataset(
@@ -578,7 +583,7 @@ class TrainingLoopRunner:
         final_adapter_file = save_final_adapter(comp["trainable_module"], output, tcfg.base_name, metadata, optimizer=optimizer)
         _emit_metric(
             metrics_path,
-            epoch=tcfg.epochs,
+            epoch=tcfg.epochs + tcfg.epoch_offset,
             step=global_step,
             loss=safe_avg_loss,
             lr=effective_lr,

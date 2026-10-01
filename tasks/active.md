@@ -6,7 +6,7 @@
 - [x] `@engines`: fix load (remap chaves + `_die` em unexpected/missing/shape), `_override_optimizer_lr`, check de shape do optimizer por chaves param-shaped (`exp_avg/exp_avg_sq/state1/state2/s/p0` — 1ª versão só cobria Adam puro, no-op no default `adamw8bit`), `completed` com offset, prune do par `.pt`, resume completo no Qwen (`_resume_epoch_range`). 253 passed com torch (baseline 240), 175 passed/71 skipped sem torch.
 - [ ] **BLOQUEADO** Smoke GPU real: RTX 3060 do `docker-04` ocupada (100%, 11.7GB) por job de usuário `trainer-diffusion-a65f012e…` rodando há 13h — não interromper. Refazer: SD15 1 época → resume `weights_path`+`optimizer_state_path`+`epoch_offset=1` +1 época; provar linha "N tensores carregados", sem [WARN], loss inicial ≈ loss final do treino 1. Merge em `develop` só após o smoke.
 - [x] `@reviewer`: 1ª rodada APROVA sem evidência (perdeu gap do bnb — orchestrator detectou); 2ª rodada APROVA com evidência file:line nos critérios (a)–(g).
-- [ ] Lição em `docs/PITFALLS.md` via `@docs`
+- [x] Lição em `docs/PITFALLS.md:34` via `@docs`
 
 ## Fechado — Fix CI trainer-difusao (ModuleNotFoundError torch)
 - **Causa:** `models/__init__.py` importava `QwenImageTrainer` no topo do módulo; `qwen_image.py` (e módulos vendorizados `qwen_pkg/qwen_image_2/*`) importam `torch`/`peft` no topo — diferente de flux/sd15/sdxl (lazy-import interno). CI (`uv run --extra test pytest`, sem extra `train`) quebrava com `ModuleNotFoundError: No module named 'torch'` em 5 arquivos de teste na fase de coleta.

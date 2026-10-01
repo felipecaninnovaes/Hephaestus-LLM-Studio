@@ -20,7 +20,7 @@ pub fn resolve_daemon_diffusion_image(env_value: Option<&str>) -> String {
 
 /// Configuração completa do orchestrator, lida uma vez no boot via
 /// [`OrchestratorConfig::from_env`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct OrchestratorConfig {
     /// `S3_ORCH_ENDPOINT_URL` — obrigatório.
     pub s3_endpoint: String,
@@ -52,6 +52,15 @@ pub struct OrchestratorConfig {
     pub gpu_allow_mock: bool,
     /// Sub-config do daemon de difusão (D1 — ADR-0023).
     pub daemon: DaemonConfig,
+    /// `DATASET_CACHE_MAX_GB` — orçamento LRU de `datasets/datasets-dedup/`
+    /// (Pilar A — no-gpu-reuso-dataset-embeds). Default 15.0; inválido cai no default.
+    pub dataset_cache_max_gb: f64,
+    /// `TEXT_EMBEDS_CACHE_MAX_GB` — orçamento LRU de `outputs/.text_embeds_cache/`
+    /// (Pilar B). Default 10.0; inválido cai no default.
+    pub text_embeds_cache_max_gb: f64,
+    /// `OUTPUT_PURGE_TTL_SECS` — TTL pós-terminal para purga de
+    /// `outputs/<job_id>/` (Pilar C). Default 86400; inválido cai no default.
+    pub output_purge_ttl_secs: u64,
 }
 
 /// Configuração do daemon de difusão (long-lived, GPU).
@@ -133,6 +142,15 @@ impl OrchestratorConfig {
             gpu_devices: get_present(get, "ORCH_GPU_DEVICES"),
             gpu_allow_mock: get("ORCH_GPU_ALLOW_MOCK").as_deref() == Some("1"),
             daemon: DaemonConfig::from_get(get),
+            dataset_cache_max_gb: get("DATASET_CACHE_MAX_GB")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(15.0),
+            text_embeds_cache_max_gb: get("TEXT_EMBEDS_CACHE_MAX_GB")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10.0),
+            output_purge_ttl_secs: get("OUTPUT_PURGE_TTL_SECS")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(86400),
         })
     }
 }
@@ -243,6 +261,9 @@ mod tests {
         assert_eq!(cfg.daemon.hf_token, None);
         assert_eq!(cfg.daemon.flux_model_id, None);
         assert_eq!(cfg.daemon.network, None);
+        assert_eq!(cfg.dataset_cache_max_gb, 15.0);
+        assert_eq!(cfg.text_embeds_cache_max_gb, 10.0);
+        assert_eq!(cfg.output_purge_ttl_secs, 86400);
     }
 
     #[test]
@@ -272,6 +293,9 @@ mod tests {
             ("HF_TOKEN", "hf"),
             ("FLUX_MODEL_ID", "flux"),
             ("DIFFUSION_DAEMON_NETWORK", "net"),
+            ("DATASET_CACHE_MAX_GB", "25"),
+            ("TEXT_EMBEDS_CACHE_MAX_GB", "5"),
+            ("OUTPUT_PURGE_TTL_SECS", "3600"),
         ]);
         let cfg = load(&map);
         assert_eq!(cfg.s3_bucket, "bkt");
@@ -295,6 +319,9 @@ mod tests {
         assert_eq!(cfg.daemon.hf_token.as_deref(), Some("hf"));
         assert_eq!(cfg.daemon.flux_model_id.as_deref(), Some("flux"));
         assert_eq!(cfg.daemon.network.as_deref(), Some("net"));
+        assert_eq!(cfg.dataset_cache_max_gb, 25.0);
+        assert_eq!(cfg.text_embeds_cache_max_gb, 5.0);
+        assert_eq!(cfg.output_purge_ttl_secs, 3600);
     }
 
     #[test]

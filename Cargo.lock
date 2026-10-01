@@ -2214,6 +2214,7 @@ dependencies = [
  "hex",
  "http-body-util",
  "md-5 0.10.6",
+ "parking_lot",
  "rand 0.8.8",
  "reqwest",
  "serde",

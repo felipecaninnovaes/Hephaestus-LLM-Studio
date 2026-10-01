@@ -12,6 +12,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use parking_lot::Mutex as StdMutex;
+
 use crate::daemon;
 use crate::domain::errors::PipelineError;
 use crate::domain::models::{ArtifactReport, DispatchRequest, ReportBody};
@@ -19,8 +21,9 @@ use crate::ports::executor::TrainerExecutor;
 use crate::ports::reporter::ReportClient;
 use crate::ports::storage::S3Port;
 use crate::storage::{
-    compute_file_md5, create_dir_all_open, init_image_ext, put_with_retry, scoped_init_image_key,
-    scoped_key, unzip_safe, S3Scope,
+    append_manifest, build_job_view, compute_file_md5, create_dir_all_open, ensure_dataset_cached,
+    init_image_ext, put_with_retry, scoped_init_image_key, scoped_key, unzip_safe,
+    write_terminal_marker, S3Scope,
 };
 use crate::{tail_jsonl_lines, telemetry_report_for_line};
 
@@ -39,6 +42,10 @@ use stages::weights::resolve_and_stage_weight;
 pub struct ActiveJobState {
     pub container_name: String,
     pub cancelled: AtomicBool,
+    /// `md5_zip` do dataset deste job, quando houver `package_ref` —
+    /// consultado pelo sweeper (Pilar A) para nunca evictar uma entrada
+    /// `datasets-dedup/<md5>/` em uso por um job ativo.
+    pub dataset_md5: StdMutex<Option<String>>,
 }
 
 impl ActiveJobState {
@@ -46,6 +53,7 @@ impl ActiveJobState {
         Self {
             container_name,
             cancelled: AtomicBool::new(false),
+            dataset_md5: StdMutex::new(None),
         }
     }
 
@@ -55,6 +63,14 @@ impl ActiveJobState {
 
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::SeqCst)
+    }
+
+    pub fn set_dataset_md5(&self, md5: String) {
+        *self.dataset_md5.lock() = Some(md5);
+    }
+
+    pub fn dataset_md5(&self) -> Option<String> {
+        self.dataset_md5.lock().clone()
     }
 }
 
@@ -140,8 +156,14 @@ pub async fn run_job(
         }
     }
 
-    // Cleanup pós-job do cache do dataset descompactado:
+    // Pilar C: marcador terminal — job atingiu estado terminal neste nó
+    // (done/failed/cancelled), incluindo caminhos de erro. Gravado ANTES da
+    // limpeza para que o sweeper só purgue após o TTL contado daqui.
     let job_workdir = std::path::PathBuf::from(&dispatch.workdir);
+    let job_outputs_dir = job_workdir.join("outputs").join(&job_id);
+    write_terminal_marker(&job_outputs_dir).await;
+
+    // Cleanup pós-job da visão de dataset do job (a entrada dedup persiste):
     let dataset_dir = job_workdir
         .join("datasets")
         .join("datasets-cache")
@@ -279,11 +301,23 @@ pub async fn run_job_inner(
         }
     }
 
-    // 2. Download package.zip via S3 (scoped — D2 barreira principal) se presente
+    // 2-4. Dataset cache deduplicado por md5_zip (Pilar A —
+    //      no-gpu-reuso-dataset-embeds §3A): single-flight em processo por
+    //      md5, promoção atômica para datasets-dedup/<md5>/, visão por job
+    //      via hardlinks em datasets-cache/<job_id>/ (container continua
+    //      recebendo exatamente esse path, sem mudança de contrato).
     if let Some(pr) = dispatch.package_ref.as_ref() {
-        let zip_path = temp_dir.join("dataset.zip");
         let key = scoped_key(S3Scope::Packages, &pr.key)
             .map_err(|e| PipelineError::S3Download(format!("invalid package key: {e}")))?;
+
+        // Registra o md5 em uso em active_jobs ANTES do download/extração —
+        // o sweeper nunca evicta uma entrada dedup usada por job ativo.
+        active_jobs
+            .entry(job_id.to_string())
+            .or_insert_with(|| ActiveJobState::new(String::new()));
+        if let Some(entry) = active_jobs.get(job_id) {
+            entry.set_dataset_md5(pr.md5_zip.clone());
+        }
 
         let on_dl = make_progress_reporter(
             &report_client,
@@ -293,40 +327,19 @@ pub async fn run_job_inner(
             0.01,
             0.05,
         );
-        tracing::info!(job_id = %job_id, key = %key, "Iniciando download do dataset...");
-        s3.get_to_file_with_progress(&key, &zip_path, Some(&on_dl))
-            .await
-            .map_err(|e| PipelineError::S3Download(format!("download package: {e}")))?;
+        tracing::info!(job_id = %job_id, key = %key, md5 = %pr.md5_zip, "Resolvendo dataset no cache dedup do nó...");
+        let dedup_entry = ensure_dataset_cached(
+            crate::storage::dataset_cache::global_locks(),
+            &s3,
+            &job_workdir,
+            &key,
+            &pr.md5_zip,
+            job_id,
+            &temp_dir,
+            Some(&on_dl),
+        )
+        .await?;
 
-        // 3. Verify MD5 (crash do job se divergir — D4)
-        let _ = report_client
-            .report(
-                job_id,
-                &ReportBody {
-                    status: "running".to_string(),
-                    progress: Some(0.06),
-                    epoch: None,
-                    step: None,
-                    metrics: None,
-                    error: None,
-                    artifacts: None,
-                    meta_content: None,
-                    phase: Some("downloading_dataset".to_string()),
-                    message: Some("Validando integridade do dataset (MD5)...".to_string()),
-                },
-            )
-            .await;
-        let actual_md5 = compute_file_md5(&zip_path)
-            .map_err(|e| PipelineError::S3Download(format!("compute md5: {e}")))?;
-        if actual_md5 != pr.md5_zip {
-            return Err(PipelineError::Md5Mismatch {
-                expected: pr.md5_zip.clone(),
-                actual: actual_md5,
-            });
-        }
-        tracing::info!(job_id = %job_id, md5 = %actual_md5, "Integridade do dataset validada com sucesso");
-
-        // 4. Unzip (zip-slip safe, padrão import 3e)
         let _ = report_client
             .report(
                 job_id,
@@ -340,12 +353,12 @@ pub async fn run_job_inner(
                     artifacts: None,
                     meta_content: None,
                     phase: Some("extracting_dataset".to_string()),
-                    message: Some("Descompactando dataset no cache do nó...".to_string()),
+                    message: Some("Montando visão do dataset para o job...".to_string()),
                 },
             )
             .await;
-        tracing::info!(job_id = %job_id, "Descompactando dataset no cache do nó...");
-        unzip_safe(&zip_path, &datasets_cache)?;
+        tracing::info!(job_id = %job_id, "Montando visão do dataset (hardlinks) para o job...");
+        build_job_view(&dedup_entry, &datasets_cache).await?;
     }
 
     // 5. Download e staging de pesos (fine-tune — ADR-0012 D5)
@@ -719,6 +732,7 @@ pub async fn run_job_inner(
         // (a cada ~5s de ticks de 500ms, só quando o arquivo cresce; o report
         // do artefato é anunciado uma única vez — dedupe por path no manager).
         let telemetry_s3 = Arc::clone(&s3);
+        let telemetry_outputs = outputs.clone();
         let telemetry_handle = tokio::spawn(async move {
             let mut lines_read: usize = 0;
             let mut interval = tokio::time::interval(Duration::from_millis(500));
@@ -745,6 +759,7 @@ pub async fn run_job_inner(
                                 &telemetry_s3,
                                 &telemetry_job_id,
                                 &telemetry_path_clone,
+                                &telemetry_outputs,
                             )
                             .await
                             {
@@ -824,7 +839,7 @@ pub async fn run_job_inner(
 
         // C2a: snapshot final dos logs (cobre o intervalo desde o último tick
         // periódico; best-effort, não entra no gate de upload_errors).
-        if let Some(rep) = upload_telemetry_snapshot(&s3, job_id, &telemetry_abs).await {
+        if let Some(rep) = upload_telemetry_snapshot(&s3, job_id, &telemetry_abs, &outputs).await {
             artifacts.push(rep);
         }
 
@@ -903,6 +918,14 @@ pub async fn run_job_inner(
     if gpu_devices.is_some() {
         exec_env.push(("ENGINE_MOCK".to_string(), "0".to_string()));
     }
+    // Pilar B (no-gpu-reuso-dataset-embeds): cache compartilhado de
+    // text-embeds entre jobs no volume outputs — repassado a TODO container
+    // de engine trainer lançado pelo orquestrador (contrato fixo com a
+    // engine; engines que não leem a env ignoram-na sem efeito).
+    exec_env.push((
+        "TEXT_EMBEDS_CACHE_DIR".to_string(),
+        "/outputs/.text_embeds_cache".to_string(),
+    ));
     // Persistência de cache de modelos (Hugging Face / PyTorch) no volume montado /outputs/.cache
     if dispatch.engine == "diffusion" {
         // Reduz fragmentação de VRAM (OOM de alocções grandes com modelo 4-bit
@@ -1083,6 +1106,7 @@ pub async fn run_job_inner(
             put_with_retry(s3.as_ref(), &art_key, &file_path)
                 .await
                 .map_err(|e| PipelineError::ArtifactUpload(format!("upload {filename}: {e}")))?;
+            append_manifest(&outputs, filename).await;
 
             artifacts.push(ArtifactReport {
                 kind: kind.to_string(),
@@ -1144,12 +1168,15 @@ pub async fn run_job_inner(
                                         .map(|m| m.len() as i64)
                                         .unwrap_or(0);
                                     match put_with_retry(s3.as_ref(), &scoped, &s_path).await {
-                                        Ok(()) => artifacts.push(ArtifactReport {
-                                            kind: "sample".to_string(),
-                                            path: rel_path,
-                                            md5,
-                                            bytes,
-                                        }),
+                                        Ok(()) => {
+                                            append_manifest(&outputs, &rel_path).await;
+                                            artifacts.push(ArtifactReport {
+                                                kind: "sample".to_string(),
+                                                path: rel_path,
+                                                md5,
+                                                bytes,
+                                            });
+                                        }
                                         Err(e) => upload_errors.push(format!("{rel_path}: {e}")),
                                     }
                                 }
@@ -1213,12 +1240,15 @@ pub async fn run_job_inner(
                                         .map(|m| m.len() as i64)
                                         .unwrap_or(0);
                                     match put_with_retry(s3.as_ref(), &scoped, &c_path).await {
-                                        Ok(()) => artifacts.push(ArtifactReport {
-                                            kind: kind.to_string(),
-                                            path: rel_path,
-                                            md5,
-                                            bytes,
-                                        }),
+                                        Ok(()) => {
+                                            append_manifest(&outputs, &rel_path).await;
+                                            artifacts.push(ArtifactReport {
+                                                kind: kind.to_string(),
+                                                path: rel_path,
+                                                md5,
+                                                bytes,
+                                            });
+                                        }
                                         Err(e) => upload_errors.push(format!("{rel_path}: {e}")),
                                     }
                                 }
@@ -1257,12 +1287,15 @@ pub async fn run_job_inner(
                                             .map(|m| m.len() as i64)
                                             .unwrap_or(0);
                                         match put_with_retry(s3.as_ref(), &scoped, &p).await {
-                                            Ok(()) => artifacts.push(ArtifactReport {
-                                                kind: "model".to_string(),
-                                                path: f_name.to_string(),
-                                                md5,
-                                                bytes,
-                                            }),
+                                            Ok(()) => {
+                                                append_manifest(&outputs, f_name).await;
+                                                artifacts.push(ArtifactReport {
+                                                    kind: "model".to_string(),
+                                                    path: f_name.to_string(),
+                                                    md5,
+                                                    bytes,
+                                                });
+                                            }
                                             Err(e) => upload_errors.push(format!("{f_name}: {e}")),
                                         }
                                     }
@@ -1302,12 +1335,15 @@ pub async fn run_job_inner(
                                             .map(|m| m.len() as i64)
                                             .unwrap_or(0);
                                         match put_with_retry(s3.as_ref(), &scoped, &p).await {
-                                            Ok(()) => artifacts.push(ArtifactReport {
-                                                kind: "optimizer_state".to_string(),
-                                                path: f_name.to_string(),
-                                                md5,
-                                                bytes,
-                                            }),
+                                            Ok(()) => {
+                                                append_manifest(&outputs, f_name).await;
+                                                artifacts.push(ArtifactReport {
+                                                    kind: "optimizer_state".to_string(),
+                                                    path: f_name.to_string(),
+                                                    md5,
+                                                    bytes,
+                                                });
+                                            }
                                             Err(e) => upload_errors.push(format!("{f_name}: {e}")),
                                         }
                                     }
@@ -1338,12 +1374,15 @@ pub async fn run_job_inner(
                             .map(|m| m.len() as i64)
                             .unwrap_or(0);
                         match put_with_retry(s3.as_ref(), &scoped, &training_config_path).await {
-                            Ok(()) => artifacts.push(ArtifactReport {
-                                kind: "config".to_string(),
-                                path: "training_config.json".to_string(),
-                                md5,
-                                bytes,
-                            }),
+                            Ok(()) => {
+                                append_manifest(&outputs, "training_config.json").await;
+                                artifacts.push(ArtifactReport {
+                                    kind: "config".to_string(),
+                                    path: "training_config.json".to_string(),
+                                    md5,
+                                    bytes,
+                                });
+                            }
                             Err(e) => upload_errors.push(format!("training_config.json: {e}")),
                         }
                     }
@@ -1371,7 +1410,9 @@ pub async fn run_job_inner(
     // parado com o tick no meio; best-effort).
     let telemetry_oneshot = metrics_path.with_file_name("telemetry.jsonl");
     if telemetry_oneshot.is_file() {
-        if let Some(rep) = upload_telemetry_snapshot(&s3, job_id, &telemetry_oneshot).await {
+        if let Some(rep) =
+            upload_telemetry_snapshot(&s3, job_id, &telemetry_oneshot, &outputs).await
+        {
             artifacts.push(rep);
         }
     }

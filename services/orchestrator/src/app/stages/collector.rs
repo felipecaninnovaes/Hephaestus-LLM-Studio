@@ -68,6 +68,7 @@ async fn upload_one(
     rel: String,
     path: &Path,
     kind: &str,
+    outputs: &Path,
 ) -> Result<ArtifactReport, String> {
     let bytes = std::fs::metadata(path).map(|m| m.len() as i64).unwrap_or(0);
     if bytes <= 0 {
@@ -81,6 +82,7 @@ async fn upload_one(
     put_with_retry(s3.as_ref(), &scoped, path)
         .await
         .map_err(|e| format!("{rel}: {e}"))?;
+    crate::storage::append_manifest(outputs, &rel).await;
     Ok(ArtifactReport {
         kind: kind.to_string(),
         path: rel,
@@ -101,6 +103,7 @@ pub async fn upload_telemetry_snapshot(
     s3: &Arc<dyn S3Port>,
     job_id: &str,
     telemetry_path: &Path,
+    outputs: &Path,
 ) -> Option<ArtifactReport> {
     let size = std::fs::metadata(telemetry_path)
         .map(|m| m.len())
@@ -114,6 +117,7 @@ pub async fn upload_telemetry_snapshot(
         "logs/telemetry.jsonl".to_string(),
         telemetry_path,
         "logs",
+        outputs,
     )
     .await
     {
@@ -157,7 +161,7 @@ pub async fn collect_diffusion_artifacts(
             None => continue,
         };
         if let Some(kind) = classify_diffusion_file(&fname, has_numbered) {
-            match upload_one(s3, job_id, fname.clone(), path, kind).await {
+            match upload_one(s3, job_id, fname.clone(), path, kind, outputs).await {
                 Ok(rep) => artifacts.push(rep),
                 Err(e) => {
                     // Arquivo vazio é skip silencioso do original — preserva sem erro.
@@ -247,6 +251,10 @@ pub async fn stream_metrics_and_samples(
     use crate::domain::models::ReportBody;
 
     let metrics_path_clone = metrics_path.clone();
+    let outputs_dir = metrics_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default();
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
     let mut lines_read: usize = 0;
     let mut uploaded_samples = std::collections::HashSet::<String>::new();
@@ -299,6 +307,11 @@ pub async fn stream_metrics_and_samples(
                                                 {
                                                     Ok(()) => {
                                                         uploaded_samples.insert(fname.to_string());
+                                                        crate::storage::append_manifest(
+                                                            &outputs_dir,
+                                                            &rel_path,
+                                                        )
+                                                        .await;
                                                         new_live_artifacts.push(ArtifactReport {
                                                             kind: "sample".to_string(),
                                                             path: rel_path,
@@ -373,6 +386,11 @@ pub async fn stream_metrics_and_samples(
                                                     Ok(()) => {
                                                         uploaded_checkpoints
                                                             .insert(fname.to_string());
+                                                        crate::storage::append_manifest(
+                                                            &outputs_dir,
+                                                            &rel_path,
+                                                        )
+                                                        .await;
                                                         new_live_artifacts.push(ArtifactReport {
                                                             kind: kind.to_string(),
                                                             path: rel_path,
@@ -420,7 +438,9 @@ pub async fn stream_metrics_and_samples(
             if let Ok(size) = std::fs::metadata(active_path) {
                 let size = size.len() as i64;
                 if size > telemetry_uploaded_bytes {
-                    if let Some(rep) = upload_telemetry_snapshot(&s3, &job_id, active_path).await {
+                    if let Some(rep) =
+                        upload_telemetry_snapshot(&s3, &job_id, active_path, &outputs_dir).await
+                    {
                         telemetry_uploaded_bytes = size;
                         new_live_artifacts.push(rep);
                     }

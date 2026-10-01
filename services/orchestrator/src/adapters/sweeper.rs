@@ -136,12 +136,19 @@ pub async fn reconcile_orphan_containers(active_jobs: &ActiveJobs) -> usize {
     removed_count
 }
 
-/// Spawna um sweeper periódico para reconciliar containers órfãos e limpar workdirs antigos (§P2-2).
+/// Spawna um sweeper periódico para reconciliar containers órfãos, limpar
+/// workdirs antigos (§P2-2), evictar o cache de dataset dedup (Pilar A),
+/// evictar o cache compartilhado de text-embeds (Pilar B) e purgar
+/// `outputs/<job_id>/` pós-TTL terminal (Pilar C).
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_periodic_sweeper(
     active_jobs: ActiveJobs,
     workdir: PathBuf,
     interval: Duration,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    dataset_cache_max_gb: f64,
+    text_embeds_cache_max_gb: f64,
+    output_purge_ttl: Duration,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         if *shutdown_rx.borrow() {
@@ -155,6 +162,24 @@ pub fn spawn_periodic_sweeper(
                 _ = ticker.tick() => {
                     let _ = reconcile_orphan_containers(&active_jobs).await;
                     sweep_orphan_workdirs(&workdir, Duration::from_secs(24 * 3600)).await;
+
+                    // Pilar A: LRU de datasets-dedup/<md5>/, pulando md5 em uso.
+                    let active_md5s: std::collections::HashSet<String> = active_jobs
+                        .iter()
+                        .filter_map(|entry| entry.value().dataset_md5())
+                        .collect();
+                    crate::storage::evict_dataset_cache(&workdir, dataset_cache_max_gb, &active_md5s)
+                        .await;
+
+                    // Pilar B: LRU de outputs/.text_embeds_cache/ por orçamento.
+                    crate::storage::evict_text_embeds_cache(
+                        &workdir.join("outputs"),
+                        text_embeds_cache_max_gb,
+                    )
+                    .await;
+
+                    // Pilar C: purga outputs/<job_id>/ pós-TTL terminal.
+                    crate::storage::sweep_output_purge(&workdir, output_purge_ttl).await;
                 }
                 res = shutdown_rx.changed() => {
                     if res.is_err() || *shutdown_rx.borrow() {

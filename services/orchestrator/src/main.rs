@@ -141,6 +141,12 @@ async fn main() {
         if cfg.gpu_devices.is_some() {
             daemon_env.push(("ENGINE_MOCK".to_string(), "0".to_string()));
         }
+        // Pilar B (no-gpu-reuso-dataset-embeds): mesmo contrato do one-shot,
+        // path namespaced ao mount do daemon (/data/outputs).
+        daemon_env.push((
+            "TEXT_EMBEDS_CACHE_DIR".to_string(),
+            "/data/outputs/.text_embeds_cache".to_string(),
+        ));
         // HF cache paths para diffusion (igual one-shot L1473-1493)
         daemon_env.push((
             "HF_HOME".to_string(),
@@ -254,6 +260,19 @@ async fn main() {
     )
     .await;
 
+    // Pilar A: varre `.tmp-*` remanescentes de crash/kill no meio de uma
+    // promoção de dataset dedup (no-gpu-reuso-dataset-embeds §3A).
+    orchestrator::sweep_dataset_cache_tmp(&std::path::PathBuf::from(&cfg.workdir)).await;
+
+    // Pilar B: cria a raiz do cache compartilhado de text-embeds no boot —
+    // mesmo volume outputs, 0o777 (PITFALLS:51 — engine roda uid 1000).
+    let text_embeds_root = std::path::PathBuf::from(&cfg.workdir)
+        .join("outputs")
+        .join(".text_embeds_cache");
+    if let Err(e) = orchestrator::storage::create_dir_all_open(&text_embeds_root).await {
+        tracing::warn!(error = %e, "falha ao criar raiz do cache de text-embeds no boot");
+    }
+
     // Periodic sweeper de containers órfãos e workdirs antigos (§P2-2)
     let sweeper_interval_secs: u64 = std::env::var("ORCH_SWEEPER_INTERVAL_SECS")
         .ok()
@@ -264,6 +283,9 @@ async fn main() {
         std::path::PathBuf::from(&cfg.workdir),
         std::time::Duration::from_secs(sweeper_interval_secs),
         shutdown_rx.clone(),
+        cfg.dataset_cache_max_gb,
+        cfg.text_embeds_cache_max_gb,
+        std::time::Duration::from_secs(cfg.output_purge_ttl_secs),
     );
 
     // Heartbeat loop com backoff exponencial e jitter (§P2-1)

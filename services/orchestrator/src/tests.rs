@@ -5401,6 +5401,9 @@ async fn test_periodic_sweeper_graceful_shutdown() {
         temp_dir.path().to_path_buf(),
         Duration::from_millis(50),
         shutdown_rx,
+        15.0,
+        10.0,
+        Duration::from_secs(86400),
     );
 
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -5459,6 +5462,9 @@ async fn test_sweeper_and_outbox_immediate_shutdown() {
         temp_dir.path().to_path_buf(),
         Duration::from_millis(50),
         shutdown_rx.clone(),
+        15.0,
+        10.0,
+        Duration::from_secs(86400),
     );
 
     let outbox_handle = spawn_outbox_drain_worker(
@@ -5629,5 +5635,502 @@ async fn test_drain_outbox_with_inner_client_does_not_respool() {
     assert_eq!(
         count_after, 0,
         "outbox deve estar completamente vazia após dreno"
+    );
+}
+
+// =========================================================================
+// Pilar A — cache de dataset deduplicado por md5_zip
+// (tasks/specs/no-gpu-reuso-dataset-embeds.md §3A)
+// =========================================================================
+
+/// S3 fake que conta downloads e aceita delay artificial — usado para provar
+/// single-flight (N jobs concorrentes, uma extração) e hit/miss (segunda
+/// chamada não invoca o downloader).
+struct FakeS3Counting {
+    zip_bytes: Vec<u8>,
+    download_count: std::sync::atomic::AtomicUsize,
+    delay_ms: u64,
+}
+
+impl FakeS3Counting {
+    fn new(zip_bytes: Vec<u8>, delay_ms: u64) -> Self {
+        Self {
+            zip_bytes,
+            download_count: std::sync::atomic::AtomicUsize::new(0),
+            delay_ms,
+        }
+    }
+}
+
+#[async_trait]
+impl S3Port for FakeS3Counting {
+    async fn get_to_file(&self, _key: &str, path: &std::path::Path) -> Result<(), String> {
+        self.download_count.fetch_add(1, Ordering::SeqCst);
+        if self.delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
+        }
+        std::fs::write(path, &self.zip_bytes).map_err(|e| format!("write zip: {e}"))
+    }
+
+    async fn put(&self, _key: &str, _path: &std::path::Path) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn ping(&self) -> bool {
+        true
+    }
+}
+
+fn test_zip_bytes() -> Vec<u8> {
+    let mut buf = std::io::Cursor::new(Vec::new());
+    {
+        let mut zip = zip::ZipWriter::new(&mut buf);
+        let opts = zip::write::SimpleFileOptions::default();
+        zip.start_file("dataset.yaml", opts).unwrap();
+        zip.write_all(b"classes: []\n").unwrap();
+        zip.finish().unwrap();
+    }
+    buf.into_inner()
+}
+
+fn md5_hex(bytes: &[u8]) -> String {
+    use md5::Digest;
+    hex::encode(md5::Md5::digest(bytes))
+}
+
+#[tokio::test]
+async fn dataset_cache_miss_then_hit_no_second_download() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workdir = tmp.path().to_path_buf();
+    let temp_dir = workdir.join("tmp-job");
+    tokio::fs::create_dir_all(&temp_dir).await.unwrap();
+
+    let zip_bytes = test_zip_bytes();
+    let md5 = md5_hex(&zip_bytes);
+    let s3_concrete = Arc::new(FakeS3Counting::new(zip_bytes, 0));
+    let s3: Arc<dyn S3Port> = s3_concrete.clone();
+    let locks = DatasetCacheLocks::new();
+
+    let entry1 = ensure_dataset_cached(
+        &locks,
+        &s3,
+        &workdir,
+        "packages/x/dataset.zip",
+        &md5,
+        "job-1",
+        &temp_dir,
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(entry1.is_dir());
+    assert_eq!(s3_concrete.download_count.load(Ordering::SeqCst), 1);
+
+    // Hit: mesmo md5, segundo job — não deve baixar de novo.
+    let entry2 = ensure_dataset_cached(
+        &locks,
+        &s3,
+        &workdir,
+        "packages/x/dataset.zip",
+        &md5,
+        "job-2",
+        &temp_dir,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(entry1, entry2, "hit deve retornar a mesma entrada dedup");
+    assert_eq!(
+        s3_concrete.download_count.load(Ordering::SeqCst),
+        1,
+        "cache hit NÃO deve invocar o downloader de novo"
+    );
+}
+
+/// Integração: dois `run_job_inner` consecutivos com o MESMO `md5_zip` (jobs
+/// diferentes) não devem baixar o dataset duas vezes — prova o mecanismo de
+/// dedup fim-a-fim (não só a função isolada `ensure_dataset_cached`).
+#[tokio::test]
+async fn run_job_inner_reuses_dataset_cache_across_jobs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workdir = tmp.path().to_path_buf();
+
+    let zip_bytes = test_zip_bytes();
+    let md5 = md5_hex(&zip_bytes);
+    let s3_concrete = Arc::new(FakeS3Counting::new(zip_bytes, 0));
+    let s3: Arc<dyn S3Port> = s3_concrete.clone();
+    let report = Arc::new(FakeReport::new());
+    let executor = Arc::new(FakeTrainerExecutor::new());
+
+    let mut output_files = HashMap::new();
+    output_files.insert("best.pt".to_string(), b"fake model".to_vec());
+    output_files.insert("last.pt".to_string(), b"fake model".to_vec());
+    output_files.insert(
+        "metrics.jsonl".to_string(),
+        br#"{"box_loss":0.5,"cls_loss":0.3,"dfl_loss":0.2,"mAP50":0.8,"mAP50-95":0.6,"epoch":1}"#
+            .to_vec(),
+    );
+
+    for job_id in ["job-dedup-1", "job-dedup-2"] {
+        let mut dispatch = make_dispatch(job_id, "yolo");
+        if let Some(pr) = &mut dispatch.package_ref {
+            pr.md5_zip = md5.clone();
+        }
+        dispatch.workdir = workdir.to_str().unwrap().to_string();
+        let active_jobs = new_active_jobs();
+        create_fake_outputs(&workdir, job_id, &output_files);
+
+        let result = run_job_inner(
+            &dispatch,
+            s3.clone(),
+            report.clone(),
+            executor.clone(),
+            &active_jobs,
+            None,
+            false,
+            None,
+        )
+        .await;
+        assert!(result.is_ok(), "job {job_id} deve completar: {result:?}");
+    }
+
+    assert_eq!(
+        s3_concrete.download_count.load(Ordering::SeqCst),
+        1,
+        "dois jobs com o mesmo md5_zip devem baixar o dataset UMA única vez"
+    );
+    assert!(
+        workdir
+            .join("datasets")
+            .join("datasets-dedup")
+            .join(&md5)
+            .is_dir(),
+        "entrada dedup compartilhada deve existir"
+    );
+}
+
+#[tokio::test]
+async fn dataset_cache_single_flight_concurrent_one_extraction() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workdir = tmp.path().to_path_buf();
+
+    let zip_bytes = test_zip_bytes();
+    let md5 = md5_hex(&zip_bytes);
+    let s3_concrete = Arc::new(FakeS3Counting::new(zip_bytes, 50));
+    let s3: Arc<dyn S3Port> = s3_concrete.clone();
+    let locks = Arc::new(DatasetCacheLocks::new());
+
+    let mut handles = Vec::new();
+    for i in 0..8 {
+        let locks = Arc::clone(&locks);
+        let s3 = s3.clone();
+        let workdir = workdir.clone();
+        let md5 = md5.clone();
+        handles.push(tokio::spawn(async move {
+            let temp_dir = workdir.join(format!("tmp-job-{i}"));
+            tokio::fs::create_dir_all(&temp_dir).await.unwrap();
+            ensure_dataset_cached(
+                &locks,
+                &s3,
+                &workdir,
+                "packages/x/dataset.zip",
+                &md5,
+                &format!("job-{i}"),
+                &temp_dir,
+                None,
+            )
+            .await
+        }));
+    }
+
+    let mut entries = Vec::new();
+    for h in handles {
+        entries.push(h.await.unwrap().unwrap());
+    }
+    assert!(
+        entries.windows(2).all(|w| w[0] == w[1]),
+        "todos os N jobs devem resolver para a mesma entrada dedup"
+    );
+    assert_eq!(
+        s3_concrete.download_count.load(Ordering::SeqCst),
+        1,
+        "N jobs concorrentes pelo mesmo md5 devem resultar em UMA extração"
+    );
+}
+
+#[tokio::test]
+async fn dataset_cache_eviction_lru_skips_active_md5() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workdir = tmp.path().to_path_buf();
+    let dedup_root = workdir.join("datasets").join("datasets-dedup");
+    tokio::fs::create_dir_all(&dedup_root).await.unwrap();
+
+    // Entrada antiga (mais LRU) — 6 MiB, ativa (não pode ser evictada).
+    let active_md5 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let active_dir = dedup_root.join(active_md5);
+    tokio::fs::create_dir_all(&active_dir).await.unwrap();
+    std::fs::write(active_dir.join("data.bin"), vec![0u8; 6 * 1024 * 1024]).unwrap();
+    let old_time = std::time::SystemTime::now() - Duration::from_secs(3600);
+    std::fs::File::open(&active_dir)
+        .unwrap()
+        .set_modified(old_time)
+        .unwrap();
+
+    // Entrada antiga inativa — 6 MiB, mais antiga ainda — deve ser evictada.
+    let lru_md5 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let lru_dir = dedup_root.join(lru_md5);
+    tokio::fs::create_dir_all(&lru_dir).await.unwrap();
+    std::fs::write(lru_dir.join("data.bin"), vec![0u8; 6 * 1024 * 1024]).unwrap();
+    let older_time = std::time::SystemTime::now() - Duration::from_secs(7200);
+    std::fs::File::open(&lru_dir)
+        .unwrap()
+        .set_modified(older_time)
+        .unwrap();
+
+    let mut active = std::collections::HashSet::new();
+    active.insert(active_md5.to_string());
+
+    // Orçamento 10 MiB (~0.0095 GB*1024... usar GB fracionário pequeno): total
+    // 12 MiB > orçamento → evicta a LRU inativa, preserva a ativa mesmo sendo
+    // mais antiga que o orçamento permite.
+    let max_gb = 10.0 / 1024.0; // 10 MiB em GB
+    let removed = evict_dataset_cache(&workdir, max_gb, &active).await;
+
+    assert_eq!(removed, 1, "deve evictar exatamente a entrada LRU inativa");
+    assert!(!lru_dir.exists(), "entrada LRU inativa deve ser removida");
+    assert!(
+        active_dir.exists(),
+        "entrada em uso NUNCA é evictada, mesmo sendo a mais antiga"
+    );
+}
+
+#[tokio::test]
+async fn dataset_cache_job_view_hardlinks_and_isolation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workdir = tmp.path().to_path_buf();
+    let dedup_entry = workdir
+        .join("datasets")
+        .join("datasets-dedup")
+        .join("cccccccccccccccccccccccccccccccc");
+    tokio::fs::create_dir_all(dedup_entry.join("images"))
+        .await
+        .unwrap();
+    std::fs::write(dedup_entry.join("dataset.yaml"), b"classes: []\n").unwrap();
+    std::fs::write(dedup_entry.join("images").join("a.png"), b"fake-png").unwrap();
+
+    let job_view = workdir
+        .join("datasets")
+        .join("datasets-cache")
+        .join("job-view-test");
+    build_job_view(&dedup_entry, &job_view).await.unwrap();
+
+    // Arquivos na visão por job são hardlinks (mesmo inode) da entrada dedup.
+    use std::os::unix::fs::MetadataExt;
+    let dedup_ino = std::fs::metadata(dedup_entry.join("dataset.yaml"))
+        .unwrap()
+        .ino();
+    let view_ino = std::fs::metadata(job_view.join("dataset.yaml"))
+        .unwrap()
+        .ino();
+    assert_eq!(dedup_ino, view_ino, "arquivo da visão deve ser hardlink");
+
+    let dedup_img_ino = std::fs::metadata(dedup_entry.join("images").join("a.png"))
+        .unwrap()
+        .ino();
+    let view_img_ino = std::fs::metadata(job_view.join("images").join("a.png"))
+        .unwrap()
+        .ino();
+    assert_eq!(dedup_img_ino, view_img_ino);
+
+    // Engine pode CRIAR arquivo novo na visão (ex.: labels.cache do YOLO) sem
+    // que ele vaze para a entrada dedup compartilhada.
+    std::fs::write(job_view.join("images").join("labels.cache"), b"cache").unwrap();
+    assert!(
+        !dedup_entry.join("images").join("labels.cache").exists(),
+        "arquivo novo criado na visão do job NUNCA aparece na entrada dedup"
+    );
+}
+
+#[tokio::test]
+async fn dataset_cache_boot_sweep_removes_tmp_dirs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workdir = tmp.path().to_path_buf();
+    let dedup_root = workdir.join("datasets").join("datasets-dedup");
+    let tmp_entry = dedup_root.join(".tmp-leftover-from-crash");
+    tokio::fs::create_dir_all(&tmp_entry).await.unwrap();
+    std::fs::write(tmp_entry.join("partial.bin"), b"partial").unwrap();
+
+    let real_entry = dedup_root.join("ddddddddddddddddddddddddddddddd");
+    tokio::fs::create_dir_all(&real_entry).await.unwrap();
+
+    sweep_dataset_cache_tmp(&workdir).await;
+
+    assert!(!tmp_entry.exists(), ".tmp-* deve ser removido no boot");
+    assert!(real_entry.exists(), "entrada promovida não deve ser tocada");
+}
+
+// =========================================================================
+// Pilar B — eviction LRU do cache compartilhado de text-embeds
+// (tasks/specs/no-gpu-reuso-dataset-embeds.md §3B)
+// =========================================================================
+
+#[tokio::test]
+async fn text_embeds_cache_eviction_stays_under_budget() {
+    let tmp = tempfile::tempdir().unwrap();
+    let outputs_root = tmp.path().to_path_buf();
+    let ns_dir = outputs_root.join(".text_embeds_cache").join("ns1");
+    tokio::fs::create_dir_all(&ns_dir).await.unwrap();
+
+    for i in 0..5 {
+        let path = ns_dir.join(format!("{i}.pt"));
+        std::fs::write(&path, vec![0u8; 2 * 1024 * 1024]).unwrap(); // 2 MiB cada
+        let t = std::time::SystemTime::now() - Duration::from_secs((5 - i) * 100);
+        std::fs::File::open(&path).unwrap().set_modified(t).unwrap();
+    }
+    // Total = 10 MiB; orçamento = 5 MiB → deve evictar até caber.
+    let max_gb = 5.0 / 1024.0;
+    evict_text_embeds_cache(&outputs_root, max_gb).await;
+
+    let mut total = 0u64;
+    let mut stack = vec![outputs_root.join(".text_embeds_cache")];
+    while let Some(dir) = stack.pop() {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if let Ok(m) = p.metadata() {
+                    total += m.len();
+                }
+            }
+        }
+    }
+    assert!(
+        total <= (max_gb * 1024.0 * 1024.0 * 1024.0) as u64,
+        "total pós-eviction ({total} bytes) deve ficar sob o orçamento"
+    );
+}
+
+// =========================================================================
+// Pilar C — manifesto de upload e purga de outputs/<job_id>/
+// (tasks/specs/no-gpu-reuso-dataset-embeds.md §3C)
+// =========================================================================
+
+#[test]
+fn output_purge_rejects_unsafe_manifest_paths() {
+    assert!(!crate::storage::output_purge::is_safe_relative_for_test(
+        "../escape.txt"
+    ));
+    assert!(!crate::storage::output_purge::is_safe_relative_for_test(
+        "/abs/path"
+    ));
+    assert!(!crate::storage::output_purge::is_safe_relative_for_test(""));
+    assert!(crate::storage::output_purge::is_safe_relative_for_test(
+        "samples/a.png"
+    ));
+}
+
+#[tokio::test]
+async fn output_purge_manifest_rejects_dotdot_entry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let job_dir = tmp.path().join("outputs").join("job-x");
+    tokio::fs::create_dir_all(&job_dir).await.unwrap();
+
+    append_manifest(&job_dir, "../../etc/passwd").await;
+
+    let manifest_path = job_dir.join(MANIFEST_FILENAME);
+    // Path inseguro nunca deve ser gravado no manifesto.
+    let content = tokio::fs::read_to_string(&manifest_path)
+        .await
+        .unwrap_or_default();
+    assert!(
+        !content.contains(".."),
+        "manifesto nunca deve conter path com .. : {content:?}"
+    );
+}
+
+#[tokio::test]
+async fn output_purge_sweeps_due_jobs_keeps_keepers_and_unlisted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workdir = tmp.path().to_path_buf();
+    let outputs_root = workdir.join("outputs");
+
+    // Job A: terminal há muito tempo (purga devida).
+    let job_a = outputs_root.join("job-a");
+    tokio::fs::create_dir_all(job_a.join("weights"))
+        .await
+        .unwrap();
+    tokio::fs::create_dir_all(job_a.join("text_embeds_cache"))
+        .await
+        .unwrap();
+    tokio::fs::create_dir_all(job_a.join("logs")).await.unwrap();
+    std::fs::write(job_a.join("config.yaml"), b"cfg").unwrap();
+    std::fs::write(job_a.join("metrics.jsonl"), b"{}").unwrap();
+    std::fs::write(job_a.join("logs").join("telemetry.jsonl"), b"{}").unwrap();
+    std::fs::write(job_a.join("adapter.safetensors"), b"weights").unwrap();
+    std::fs::write(job_a.join("weights").join("lora_0.safetensors"), b"w").unwrap();
+    std::fs::write(job_a.join("text_embeds_cache").join("x.pt"), b"embed").unwrap();
+    std::fs::write(job_a.join("unlisted_extra.txt"), b"nunca enviado ao S3").unwrap();
+    append_manifest(&job_a, "adapter.safetensors").await;
+    write_terminal_marker(&job_a).await;
+    let old_marker_time = std::time::SystemTime::now() - Duration::from_secs(90_000);
+    std::fs::File::open(job_a.join(TERMINAL_MARKER_FILENAME))
+        .unwrap()
+        .set_modified(old_marker_time)
+        .unwrap();
+
+    // Job B: terminal recente, dentro do TTL — NÃO deve ser purgado ainda.
+    let job_b = outputs_root.join("job-b");
+    tokio::fs::create_dir_all(&job_b).await.unwrap();
+    std::fs::write(job_b.join("adapter.safetensors"), b"weights").unwrap();
+    append_manifest(&job_b, "adapter.safetensors").await;
+    write_terminal_marker(&job_b).await;
+
+    // Job C: sem marcador terminal — NUNCA deve ser purgado.
+    let job_c = outputs_root.join("job-c");
+    tokio::fs::create_dir_all(&job_c).await.unwrap();
+    std::fs::write(job_c.join("adapter.safetensors"), b"weights").unwrap();
+    append_manifest(&job_c, "adapter.safetensors").await;
+
+    let purged = sweep_output_purge(&workdir, Duration::from_secs(86400)).await;
+    assert_eq!(purged, 1, "apenas job-a passou do TTL terminal");
+
+    // Job A: manifesto purgado, staging removido, keepers e não-listado mantidos.
+    assert!(
+        !job_a.join("adapter.safetensors").exists(),
+        "arquivo listado no manifesto deve ser removido pós-TTL"
+    );
+    assert!(
+        !job_a.join("weights").exists(),
+        "weights/ sempre removido na purga"
+    );
+    assert!(
+        !job_a.join("text_embeds_cache").exists(),
+        "text_embeds_cache/ sempre removido na purga"
+    );
+    assert!(job_a.join("config.yaml").exists(), "config.yaml é keeper");
+    assert!(
+        job_a.join("metrics.jsonl").exists(),
+        "metrics.jsonl é keeper"
+    );
+    assert!(
+        job_a.join("logs").join("telemetry.jsonl").exists(),
+        "logs/telemetry.jsonl é keeper"
+    );
+    assert!(
+        job_a.join("unlisted_extra.txt").exists(),
+        "arquivo nunca listado no manifesto nunca é purgado"
+    );
+
+    // Job B: dentro do TTL, nada tocado.
+    assert!(
+        job_b.join("adapter.safetensors").exists(),
+        "job dentro do TTL não deve ser purgado"
+    );
+
+    // Job C: sem marcador terminal, nada tocado.
+    assert!(
+        job_c.join("adapter.safetensors").exists(),
+        "job sem marcador terminal nunca é purgado"
     );
 }

@@ -5,6 +5,9 @@
 
 pub mod archive;
 pub mod cache;
+pub mod dataset_cache;
+pub mod embeds_cache;
+pub mod output_purge;
 pub mod s3;
 pub mod scope;
 
@@ -35,5 +38,8 @@ pub async fn create_dir_all_open(path: &Path) -> Result<(), PipelineError> {
 
 pub use archive::*;
 pub use cache::*;
+pub use dataset_cache::*;
+pub use embeds_cache::*;
+pub use output_purge::*;
 pub use s3::*;
 pub use scope::*;

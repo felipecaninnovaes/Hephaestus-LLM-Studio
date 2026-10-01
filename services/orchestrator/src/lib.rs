@@ -37,8 +37,13 @@ pub use ports::storage::S3Port;
 pub use security::*;
 pub use server::{build_router, AdmissionError, AppState};
 pub use storage::{
-    compute_file_md5, init_image_ext, put_with_retry, scoped_init_image_key, scoped_key,
-    stage_cached_weight, stage_cached_weight_with_progress, unzip_safe, S3Client, S3Scope,
+    append_manifest, build_job_view, ensure_dataset_cached, write_terminal_marker,
+    MANIFEST_FILENAME, TERMINAL_MARKER_FILENAME,
+};
+pub use storage::{
+    compute_file_md5, evict_dataset_cache, evict_text_embeds_cache, init_image_ext, put_with_retry,
+    scoped_init_image_key, scoped_key, stage_cached_weight, stage_cached_weight_with_progress,
+    sweep_dataset_cache_tmp, sweep_output_purge, unzip_safe, DatasetCacheLocks, S3Client, S3Scope,
 };
 pub use telemetry::*;
 

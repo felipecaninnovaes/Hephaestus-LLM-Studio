@@ -3,7 +3,7 @@
 - **Spec:** `tasks/specs/no-gpu-reuso-dataset-embeds.md` (origem `tasks/backlog.md:88-93`)
 - **Decisões do usuário (2026-10-01):** pilares A+B+C juntos; `DATASET_CACHE_MAX_GB=15`; purga de `outputs/<job>` por sweeper TTL 24h pós-terminal, só arquivos com upload confirmado; limpeza única do legado no docker-04 pelo `@infra` após conferir S3.
 - **Correções do orchestrator ao plano do `@planner`:** sem lock/refcount em arquivo (mutex in-process + `active_jobs`); visão por job via `cp -al` (ultralytics grava `labels.cache` no dataset); jobs cancelados TÊM checkpoints no S3 (`save_intermediate_artifacts`), purga guiada por manifesto de upload; sem migration/endpoint no manager; sem mecanismo de emergência 85%.
-- [ ] Spec escrita e commitada (`@docs`)
+- [x] Spec escrita e commitada (`@docs`, commit `da8e3d8`)
 - [ ] W1 `@backend` orchestrator: cache A, env/mount B, sweeper C + manifesto
 - [ ] W1 `@engines`: `TEXT_EMBEDS_CACHE_DIR`, chave por namespace (encoder/quant/seq len/dtype), escrita atômica
 - [ ] W2 `@infra`: env/compose GPU, rebuild no docker-04, limpeza do legado

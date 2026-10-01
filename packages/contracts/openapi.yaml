@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hephaestus Studio API
-  version: 0.29.0
+  version: 0.30.0
   summary: Contrato público do backend principal (api-principal :8080)
   description: |
     Fatia 2 (auth single-user) + Fatia 3a (datasets núcleo) + `/health`.
@@ -4762,6 +4762,18 @@ components:
         vramUsedGb:
           type: [number, "null"]
           description: "Uso de VRAM medido na GPU em GB."
+        vramReservedGb:
+          type: [number, "null"]
+          description: "VRAM reservada pelo processo (PyTorch), em GB — pode exceder vramUsedGb."
+        stepTimeSeconds:
+          type: [number, "null"]
+          description: "Duração do último passo/step em segundos."
+        etaSeconds:
+          type: [integer, "null"]
+          description: "Tempo estimado restante para conclusão, em segundos."
+        etaFormatted:
+          type: [string, "null"]
+          description: "Tempo estimado restante formatado para exibição (ex.: \"1m 50s\")."
         metrics:
           type: [object, "null"]
           additionalProperties: { type: [number, string, boolean, "null"] }

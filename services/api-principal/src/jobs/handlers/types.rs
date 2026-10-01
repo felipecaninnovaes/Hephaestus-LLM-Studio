@@ -96,6 +96,15 @@ impl JobTelemetryEventExt for JobTelemetryEvent {
             epoch: job.epoch,
             total_epochs: job.total_epochs,
             vram_used_gb: job.vram_used_gb,
+            // 0a: sem fonte em JobResponse/MetricsItem hoje (nenhuma coluna
+            // persiste VRAM reservada/step-time/ETA do último evento) — o
+            // engine-kit só emite esses campos no stream SSE direto do
+            // orchestrator, que já carrega o JobTelemetryEvent original sem
+            // passar por este fallback. Ver relatório da fatia 0a.
+            vram_reserved_gb: None,
+            step_time_seconds: None,
+            eta_seconds: None,
+            eta_formatted: None,
             metrics,
         }
     }

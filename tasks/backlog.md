@@ -71,6 +71,9 @@ Consolidação única de pendências e melhorias prioritárias. Rotas canônicas
   - [x] F2: ZIP de artefatos pós-treino — streaming no BFF (zip stored) + rota nova + bump de openapi. (Quitado 2026-09-20 commits 7366c9b/9863021 — `GET /api/jobs/:id/artifacts/zip` no padrão ADR-0006 + botões em /jobs e ActionCenter.)
   - Spec completa com linhas exatas e sequência de execução arquivada em: `docs/archive/specs/treino-observabilidade.md`.
 
+- **Telemetria, Logs & Observabilidade (escopo completo, ondas 0–5, 17 fatias):** séries em `job_metric_points` + pub-sub `pg_notify`/SSE delta, captura `run.log`, propagação `x-request-id`/`traceparent` + OTel + Loki/Tempo/Grafana (porta 4000), sensores/diagnóstico de difusão, alertas só UI, uPlot/comparação, galeria/linhagem/export. Spec: `tasks/specs/telemetria-observabilidade.md`.
+  - Futuro (fora da spec): alertas via webhook (ntfy/Discord).
+
 ---
 
 ## 3. Storage, Dados & Curadoria (Prioridade Média)
@@ -110,7 +113,7 @@ Consolidação única de pendências e melhorias prioritárias. Rotas canônicas
 
 ## 5. Resíduos de Specs (verificação item-a-item 2026-09-20)
 
-- **`backend-autonomia.md` (FICAR):** cache/ETag ou pub-sub no SSE (1.10); streaming no `get_artifact_data` (1.11); watchdog por job `running` sem telemetria (5.3); agendar `cleanup_jobs` no worker do manager (5.5); forward de `x-request-id`/`traceparent` na malha (4.2); `/ready` com checagens profundas (4.3); mascarar senha de bootstrap no log (4.4). Já tem dono acima: 1.12 (`updated_at`), 5.7 (Reconciliação Storage).
+- **`backend-autonomia.md` (FICAR):** cache/ETag ou pub-sub no SSE (1.10 — absorvido pela fatia 1b de `tasks/specs/telemetria-observabilidade.md`); streaming no `get_artifact_data` (1.11); watchdog por job `running` sem telemetria (5.3 — absorvido pela regra `telemetry_stale` da fatia 3c da mesma spec); agendar `cleanup_jobs` no worker do manager (5.5); forward de `x-request-id`/`traceparent` na malha (4.2 — absorvido pela fatia 2b da mesma spec); `/ready` com checagens profundas (4.3); mascarar senha de bootstrap no log (4.4). Já tem dono acima: 1.12 (`updated_at`), 5.7 (Reconciliação Storage).
 - **`orchestrator-modularization.md` (FICAR):** §5 Autonomia 0/5 — além da linha 23, faltam admissão atômica no dispatch (P0-3, `server/handlers.rs:106-123`), `testkit/`+`tests/` fora do `src` (P1-6), `/ready` com Docker/disco (P2-3), docker_args unificado executor×daemon (P0-5), bypass de auth sem token (P3-1) e SIGTERM/graceful shutdown.
 - **`consolidacao-auditoria-roadmap.md` (FICAR):** api-principal consumir `heph-contracts` + dispatch tipado no manager (RD-010 — 0× no BFF, `manager/lib.rs:3958`); eliminar duplicatas `flux2-klein-4b`/linha `difusao` em `packages/policies/{vram-table,engines}.yaml` (RD-002); `--user` default no `docker run` sem opt-in via env (RD-023); E2E hermético mock no CI (RD-050).
 - **`web-modularizacao-auditoria.md` (FICAR):** `ui/Select.tsx` 643L (extrair `useFloatingPosition`/`useListboxNavigation` e consumir `FormField` — TASK-WEB-009); `jobs/page.tsx` 1114L; `datasets/[id]/page.tsx` 392L > teto (busca CLIP não extraída); eliminar ~40 `as any` de fallback snake_case (RD-040) e boundaries per-rota (015).

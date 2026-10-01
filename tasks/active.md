@@ -1,3 +1,15 @@
+## Em andamento — Telemetria, logs e observabilidade (ondas 0–5)
+- **Spec:** `tasks/specs/telemetria-observabilidade.md` (plano-base do `@planner` revisado pelo orchestrator com 13 correções, ex.: pub-sub via `pg_notify`+`PgListener` porque manager e BFF são processos distintos).
+- **Decisões do usuário (2026-10-01):** escopo completo (ondas 0–5, 17 fatias); Loki+Tempo+Grafana; alertas só na UI; retenção indefinida de `run.log`/`telemetry.jsonl` como artefato do job no S3 (Loki/Tempo com default 30d por env — interpretação do orchestrator, a confirmar).
+- **Sequenciamento:** cutover do orchestrator-gpu concluído (fatia de reuso fechada) → deploy no nó liberado.
+- [x] Spec commitada (`@docs`). Ajustes do `@docs` aceitos: `UNIQUE NULLS NOT DISTINCT (job_id,key,epoch,step)` + PK `(job_id,seq)`; `seq` vem de `jobs.metric_seq` (`UPDATE … RETURNING`, o lock da linha resolve o lost update); um canal `pg_notify` só (`job_metrics`); GPU util/power/temp vêm só da spec multi-GPU; limites de alerta configuráveis por env.
+- [ ] Onda 0: contrato v2 (`heph-contracts`/openapi) + `job_metric_points` com backfill
+- [ ] Onda 1: inserts append-only + fix `collector.rs:464,498` + SSE pub-sub + captura de `run.log`
+- [ ] Onda 2: x-request-id/traceparent → OTel collector → Loki/Tempo/Grafana
+- [ ] Onda 3: sensores de sistema, diagnóstico de treino (difusão), alertas na UI
+- [ ] Onda 4: uPlot + busca multi-run + comparação de runs
+- [ ] Onda 5: galeria por step, linhagem, export CSV/Parquet
+
 ## Fechado — Reuso de dataset e text-embeds no nó GPU
 - **Branch:** `feat/no-gpu-reuso-dataset-embeds` (a partir de `develop` `e8ca50b`), mergeada fast-forward (commit `55ac16b`). Fix de fingerprint em branch própria `fix/diffusion-package-fingerprint-reuso`, mergeada fast-forward (commit `9753a12`, push confirmado `origin/develop`).
 - **Spec:** `docs/archive/specs/no-gpu-reuso-dataset-embeds.md` (aprovada, arquivada)

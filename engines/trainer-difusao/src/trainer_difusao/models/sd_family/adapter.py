@@ -191,6 +191,19 @@ class SD15Adapter:
         """Return list of text encoders for offload/cleanup."""
         return [comp["extra"]["text_encoder"]]
 
+    def text_cache_namespace_fields(self, comp: ModelComponents, tcfg: LoraTrainConfig) -> dict[str, Any]:
+        """Campos que afetam o embedding SD 1.5: text encoder sempre vem de
+        `tcfg.model_id` (custom_checkpoint_path/quantization só afetam o UNet,
+        não o text encoder aqui), então a chave é model id + dtype + max_length
+        do tokenizer CLIP único."""
+        tokenizer = comp["extra"]["tokenizer"]
+        return {
+            "arch": "sd15",
+            "model_id": tcfg.model_id,
+            "dtype": str(comp["dtype"]),
+            "max_sequence_length": tokenizer.model_max_length,
+        }
+
     def precompute_sample_embeds(self, comp: ModelComponents, tcfg: LoraTrainConfig) -> Any | None:
         """Precompute embeddings for sample prompt."""
         if not tcfg.sample_prompt:
@@ -484,6 +497,20 @@ class SDXLAdapter:
     def text_cache_encoders(self, comp: ModelComponents) -> list[Any]:
         """Return list of text encoders for offload/cleanup."""
         return [comp["extra"]["text_encoder_one"], comp["extra"]["text_encoder_two"]]
+
+    def text_cache_namespace_fields(self, comp: ModelComponents, tcfg: LoraTrainConfig) -> dict[str, Any]:
+        """Campos que afetam o embedding SDXL: ambos text encoders vêm de
+        `tcfg.model_id` (sem quantização própria), então a chave é model id +
+        dtype + max_length de cada tokenizer CLIP."""
+        tokenizer_one = comp["extra"]["tokenizer_one"]
+        tokenizer_two = comp["extra"]["tokenizer_two"]
+        return {
+            "arch": "sdxl",
+            "model_id": tcfg.model_id,
+            "dtype": str(comp["dtype"]),
+            "max_sequence_length_one": tokenizer_one.model_max_length,
+            "max_sequence_length_two": tokenizer_two.model_max_length,
+        }
 
     def precompute_sample_embeds(self, comp: ModelComponents, tcfg: LoraTrainConfig) -> Any | None:
         """Precompute embeddings for sample prompt."""

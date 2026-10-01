@@ -35,6 +35,8 @@ from trainer_difusao.common_pkg.train_config import (
     _cycling_batches,
     _caption_cache_key,
     _build_intx_torchao_config,
+    EMBEDS_NAMESPACE_SCHEMA_VERSION,
+    _embeds_namespace_key,
 )
 from trainer_difusao.common_pkg.text_embeds import (
     ENABLE_TEXT_ENCODER_UNLOAD,
@@ -97,6 +99,8 @@ __all__ = [
     "_cycling_batches",
     "_caption_cache_key",
     "_build_intx_torchao_config",
+    "EMBEDS_NAMESPACE_SCHEMA_VERSION",
+    "_embeds_namespace_key",
     "ENABLE_TEXT_ENCODER_UNLOAD",
     "TextEmbedsCache",
     "_precompute_text_cache",

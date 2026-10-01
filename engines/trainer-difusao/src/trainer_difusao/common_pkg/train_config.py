@@ -4,6 +4,7 @@ Validação e normalização de parâmetros auxiliares de treino e quantização
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -124,6 +125,22 @@ def _cycling_batches(loader: Any) -> Any:
 def _caption_cache_key(caption: str) -> str:
     """Chave de invalidação natural do cache: sha256(caption)[:16]."""
     return hashlib.sha256(caption.encode("utf-8")).hexdigest()[:16]
+
+
+# Versão do schema do namespace de text-embeds: incrementar invalida todo o
+# cache compartilhado ao mudar os campos considerados ou o layout do payload.
+EMBEDS_NAMESPACE_SCHEMA_VERSION = 1
+
+
+def _embeds_namespace_key(fields: dict[str, Any]) -> str:
+    """Chave de namespace de embeds: sha256(JSON canônico dos campos)[:16].
+
+    `fields` deve conter tudo que muda o tensor armazenado (model id,
+    identidade de text-encoder custom, quantização, seq len/dtype etc);
+    chaves ausentes/None são normalizadas para garantir determinismo.
+    """
+    canonical = json.dumps(fields, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
 def _build_intx_torchao_config(quantization: str) -> Any:

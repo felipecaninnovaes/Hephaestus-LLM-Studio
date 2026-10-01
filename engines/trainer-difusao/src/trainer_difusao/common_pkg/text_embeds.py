@@ -2,23 +2,79 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 from pathlib import Path
 from typing import Any
 from trainer_difusao.common_pkg.metrics import _emit_metric
-from trainer_difusao.common_pkg.train_config import _caption_cache_key
+from trainer_difusao.common_pkg.train_config import (
+    EMBEDS_NAMESPACE_SCHEMA_VERSION,
+    _caption_cache_key,
+    _embeds_namespace_key,
+)
 
 # Flag de performance para descarregar text encoders após pré-compute (adr-difusao-vram).
 ENABLE_TEXT_ENCODER_UNLOAD = os.environ.get("ENABLE_TEXT_ENCODER_UNLOAD", "false").lower() in ("true", "1", "yes")
 
+# Contrato orchestrator↔engine: quando setada, embeds vivem em
+# $TEXT_EMBEDS_CACHE_DIR/<namespace>/<sha256(caption)[:16]>.pt (compartilhado
+# entre jobs/containers no mesmo nó). Sem a env, fallback para
+# {output}/text_embeds_cache/<key>.pt (comportamento legado, por job).
+TEXT_EMBEDS_CACHE_DIR_ENV = "TEXT_EMBEDS_CACHE_DIR"
+
 
 class TextEmbedsCache:
-    """Cache em disco dos prompt embeddings: ``{output}/text_embeds_cache/{sha256(caption)[:16]}.pt``."""\
+    """Cache em disco dos prompt embeddings.
 
-    def __init__(self, output: Path, enabled: bool):
+    Sem ``TEXT_EMBEDS_CACHE_DIR``: ``{output}/text_embeds_cache/{sha256(caption)[:16]}.pt``
+    (fallback legado, por job).
+    Com ``TEXT_EMBEDS_CACHE_DIR``: ``$TEXT_EMBEDS_CACHE_DIR/<namespace>/{sha256(caption)[:16]}.pt``,
+    onde ``<namespace> = sha256(json(sorted(namespace_fields)))[:16]`` — compartilhado
+    entre jobs com o mesmo modelo/encoder/quantização/seq-len/dtype.
+    """
+
+    def __init__(
+        self,
+        output: Path,
+        enabled: bool,
+        *,
+        namespace_fields: dict[str, Any] | None = None,
+    ):
         self.enabled = bool(enabled)
-        self.dir = Path(output) / "text_embeds_cache"
         self._broken = False
+        env_dir = os.environ.get(TEXT_EMBEDS_CACHE_DIR_ENV)
+        if env_dir:
+            fields = dict(namespace_fields or {})
+            fields["_schema_version"] = EMBEDS_NAMESPACE_SCHEMA_VERSION
+            self._namespace_fields = fields
+            namespace = _embeds_namespace_key(fields)
+            self.dir = Path(env_dir) / namespace
+            self._namespaced = True
+        else:
+            self.dir = Path(output) / "text_embeds_cache"
+            self._namespace_fields = None
+            self._namespaced = False
+        self._namespace_ready = False
+
+    def _ensure_namespace_dir(self) -> None:
+        """Cria o diretório do namespace (0o777, compartilhado entre uid 1000 de
+        containers distintos — PITFALLS:51) e grava `namespace.json` uma vez."""
+        self.dir.mkdir(parents=True, exist_ok=True)
+        if self._namespaced:
+            try:
+                os.chmod(self.dir, 0o777)
+            except OSError:
+                pass
+            if self._namespace_ready:
+                return
+            meta_path = self.dir / "namespace.json"
+            if not meta_path.exists():
+                tmp = self.dir / ".tmp_namespace.json"
+                tmp.write_text(json.dumps(self._namespace_fields, sort_keys=True, indent=2), encoding="utf-8")
+                os.replace(tmp, meta_path)
+            self._namespace_ready = True
+        else:
+            self._namespace_ready = True
 
     def get(self, caption: str) -> dict[str, Any] | None:
         """Retorna o payload em CPU ou None (miss)."""
@@ -31,8 +87,16 @@ class TextEmbedsCache:
             import torch
 
             data = torch.load(str(path), map_location="cpu", weights_only=True)
-            return data if isinstance(data, dict) else None
+            if not isinstance(data, dict):
+                return None
+            try:
+                os.utime(path, None)
+            except OSError:
+                pass
+            return data
         except Exception:
+            # Arquivo corrompido (ex.: escrita concorrente nunca commitada via
+            # rename, truncamento) é tratado como miss; put() reescreve.
             return None
 
     def put(self, caption: str, payload: dict[str, Any]) -> None:
@@ -42,7 +106,7 @@ class TextEmbedsCache:
         try:
             import torch
 
-            self.dir.mkdir(parents=True, exist_ok=True)
+            self._ensure_namespace_dir()
             cpu_payload = {
                 k: (v.cpu() if hasattr(v, "cpu") else v) for k, v in payload.items()
             }
@@ -55,7 +119,6 @@ class TextEmbedsCache:
                 f"[WARN] Cache de text embeddings desabilitado (falha de escrita): {e}",
                 flush=True,
             )
-
 
 def _precompute_text_cache(
     cache: TextEmbedsCache,

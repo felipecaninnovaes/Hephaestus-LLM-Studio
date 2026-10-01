@@ -606,6 +606,29 @@ class FluxAdapter:
             encoders.append(text_encoder_two)
         return encoders
 
+    def text_cache_namespace_fields(self, comp: ModelComponents, tcfg: LoraTrainConfig) -> dict[str, Any]:
+        """Campos que afetam o embedding FLUX: model id, variante (Flux1 CLIP+T5
+        vs Flux2 Qwen3), quantização do text encoder, dtype, identidade do
+        checkpoint/encoder custom (md5 quando arquivo, path quando dir) e o
+        max_sequence_length fixo de cada variante (77/512 CLIP+T5, 512 Qwen3)."""
+        is_flux2 = comp["extra"]["is_flux2"]
+        text_encoder_identity = _custom_checkpoint_identity(tcfg.text_encoder_path)
+        fields: dict[str, Any] = {
+            "arch": "flux",
+            "model_id": tcfg.extra["model_id"],
+            "is_flux2": is_flux2,
+            "quant_format": tcfg.extra["quant_format"],
+            "dtype": str(tcfg.extra["target_dtype"]),
+            "custom_checkpoint_identity": tcfg.extra["custom_identity"],
+            "text_encoder_identity": text_encoder_identity,
+        }
+        if is_flux2:
+            fields["max_sequence_length"] = 512
+        else:
+            fields["max_sequence_length_clip"] = 77
+            fields["max_sequence_length_t5"] = 512
+        return fields
+
     def precompute_sample_embeds(self, comp: ModelComponents, tcfg: LoraTrainConfig) -> Any | None:
         """Precompute sample embeds if sample_prompt provided."""
         if not tcfg.sample_prompt:

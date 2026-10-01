@@ -210,6 +210,11 @@ class ModelAdapter(Protocol):
         """Retorna lista de encoders de texto para offload/cleanup."""
         ...
 
+    def text_cache_namespace_fields(self, comp: ModelComponents, tcfg: LoraTrainConfig) -> dict[str, Any]:
+        """Campos que afetam o tensor de embedding (model id, encoder custom, quant,
+        seq len/dtype) — usados para derivar o namespace do cache compartilhado."""
+        ...
+
     def precompute_sample_embeds(self, comp: ModelComponents, tcfg: LoraTrainConfig) -> Any | None:
         """Pré-computa embeddings da amostra se sample_prompt fornecido."""
         ...
@@ -344,7 +349,11 @@ class TrainingLoopRunner:
         sample_embeds = self.adapter.precompute_sample_embeds(comp, tcfg)
 
         # Cache de text embeddings
-        text_cache = TextEmbedsCache(output, cache_text_embeddings)
+        text_cache = TextEmbedsCache(
+            output,
+            cache_text_embeddings,
+            namespace_fields=self.adapter.text_cache_namespace_fields(comp, tcfg),
+        )
         encode_fn = self.adapter.build_text_cache_encode_fn(comp)
         text_cache_encoders = self.adapter.text_cache_encoders(comp)
 

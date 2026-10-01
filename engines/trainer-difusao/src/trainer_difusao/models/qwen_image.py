@@ -446,7 +446,16 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
         _die(f"Erro ao carregar modelos: {e}")
 
     # 3. Pré-computação de Text Embeddings via cache
-    text_cache = TextEmbedsCache(output_path, enabled=True)
+    text_cache = TextEmbedsCache(
+        output_path,
+        enabled=True,
+        namespace_fields={
+            "arch": "qwen_image_2_1",
+            "model_id": base_model_path,
+            "text_encoder_quant": "4bit-nf4-bnb" if device == "cuda" else "full",
+            "dtype": str(torch_dtype),
+        },
+    )
     unique_prompts = list({cap for _, cap in dataset.samples})
 
     _emit_metric(

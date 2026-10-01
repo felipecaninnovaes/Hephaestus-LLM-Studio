@@ -580,10 +580,16 @@ pub async fn build_package_filtered(
 
 /// Materializa pacote para treino de difusão LoRA:
 /// imagens + arquivos de legenda .txt + dataset.yaml indexando o conjunto.
+///
+/// `fingerprint`: dedup/idempotência do worker em background (P4b/ADR-0025) —
+/// gravado como chave de topo `fingerprint` no `manifest_json` (JSONB em
+/// `dataset_versions`) e no manifest de transporte (`manifest.json`), igual a
+/// `build_package_filtered`. `None` = sem impressão digital (rota síncrona).
 pub async fn build_package_diffusion(
     state: &AppState,
     ds_id: Uuid,
     trigger_word: Option<&str>,
+    fingerprint: Option<&str>,
 ) -> Result<PackageBuildResult, Response> {
     // 1. Dataset existe?
     let ds: Option<(Uuid, String, String, String, String)> = match sqlx::query_as(
@@ -805,14 +811,45 @@ pub async fn build_package_diffusion(
         ));
     }
 
-    // 9. INSERT em dataset_versions
-    let manifest_json = serde_json::json!({
-        "dataset_id": ds_id,
-        "engine": "diffusion",
-        "images_count": image_rows.len(),
-        "captions_count": captions_count,
-        "trigger_word": trigger_word,
-    });
+    // 9. PUT manifest.json de transporte (P4b: necessário p/ `try_reuse_package`
+    //    ler `md5_zip`/`bytes` no hit de reuso — igual a `build_package_filtered`).
+    let transport_manifest = diffusion_transport_manifest(ds_id, &zip_md5, zip_len, fingerprint);
+    let manifest_key = format!("packages/{version_id}/manifest.json");
+    let manifest_path = tmp.path().join("manifest.json");
+    if let Err(e) = tokio::fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&transport_manifest).unwrap_or_else(|_| "{}".to_string()),
+    )
+    .await
+    {
+        tracing::error!("package diffusion: write manifest.json local falhou: {e}");
+        let _ = state
+            .storage
+            .delete_prefix(&format!("packages/{version_id}/"))
+            .await;
+        return Err(internal());
+    }
+    if let Err(e) = state.storage.put(&manifest_key, &manifest_path).await {
+        tracing::error!("package diffusion: PUT {manifest_key} falhou: {e}");
+        let _ = state
+            .storage
+            .delete_prefix(&format!("packages/{version_id}/"))
+            .await;
+        return Err(err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "storage_unavailable",
+            MSG_STORAGE_UNAVAILABLE,
+        ));
+    }
+
+    // 10. INSERT em dataset_versions
+    let manifest_json = diffusion_manifest_json_with_fingerprint(
+        ds_id,
+        image_rows.len(),
+        captions_count,
+        trigger_word,
+        fingerprint,
+    );
 
     let insert_res = sqlx::query(
         "INSERT INTO dataset_versions (id, dataset_id, manifest, created_at) \
@@ -989,6 +1026,45 @@ fn snapshot_json_with_fingerprint(
     v
 }
 
+/// Monta o `manifest_json` JSONB (`dataset_versions.manifest`) do pacote
+/// diffusion, com `fingerprint` como chave de topo — espelha
+/// `snapshot_json_with_fingerprint` para o shape de diffusion (P4b fix:
+/// gap do reuso diffusion, ver `try_reuse_package`).
+fn diffusion_manifest_json_with_fingerprint(
+    ds_id: Uuid,
+    images_count: usize,
+    captions_count: usize,
+    trigger_word: Option<&str>,
+    fingerprint: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "dataset_id": ds_id,
+        "engine": "diffusion",
+        "images_count": images_count,
+        "captions_count": captions_count,
+        "trigger_word": trigger_word,
+        "fingerprint": fingerprint,
+    })
+}
+
+/// Monta o manifest de transporte (`packages/<vid>/manifest.json`) do pacote
+/// diffusion — espelha o shape lido por `try_reuse_package` no hit
+/// (`md5_zip`/`bytes`/`fingerprint`).
+fn diffusion_transport_manifest(
+    ds_id: Uuid,
+    zip_md5: &str,
+    zip_len: i64,
+    fingerprint: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "dataset_id": ds_id.to_string(),
+        "engine": "diffusion",
+        "fingerprint": fingerprint,
+        "md5_zip": zip_md5,
+        "bytes": zip_len,
+    })
+}
+
 /// MD5 + tamanho de um arquivo em streaming, chunks de 1 MiB (P4b).
 /// Pico de RAM O(1) no tamanho do arquivo; o hash é o md5 do conteúdo
 /// integral — idêntico a `md5::Md5::digest(&bytes)` do buffer em RAM.
@@ -1124,7 +1200,7 @@ pub async fn package_dataset(
     let result = if req.engine == "yolo" {
         build_package(&state, ds_id).await
     } else if req.engine == "diffusion" {
-        build_package_diffusion(&state, ds_id, None).await
+        build_package_diffusion(&state, ds_id, None, None).await
     } else {
         return err(
             StatusCode::BAD_REQUEST,
@@ -1313,6 +1389,43 @@ mod tests {
         let v_none = snapshot_json_with_fingerprint(&snap, None);
         assert!(v_none["fingerprint"].is_null());
         assert!(v_none["dataset"].is_object());
+    }
+
+    #[test]
+    fn fingerprint_no_topo_do_manifest_json_diffusion() {
+        // Espelha `fingerprint_no_topo_do_manifest_json` para o shape de
+        // diffusion (fix do gap: `build_package_diffusion` agora grava
+        // `fingerprint` igual a `build_package_filtered`).
+        let ds_id = Uuid::nil();
+        let v = diffusion_manifest_json_with_fingerprint(
+            ds_id,
+            3,
+            2,
+            Some("sks dog"),
+            Some("fp-diffusion-123"),
+        );
+        assert_eq!(v["fingerprint"], "fp-diffusion-123");
+        assert_eq!(v["engine"], "diffusion");
+        assert_eq!(v["images_count"], 3);
+        assert_eq!(v["captions_count"], 2);
+        assert_eq!(v["trigger_word"], "sks dog");
+        // None ⇒ chave presente com null (forma estável p/ `manifest->>'fingerprint'`).
+        let v_none = diffusion_manifest_json_with_fingerprint(ds_id, 0, 0, None, None);
+        assert!(v_none["fingerprint"].is_null());
+        assert!(v_none["trigger_word"].is_null());
+    }
+
+    #[test]
+    fn fingerprint_no_manifest_transporte_diffusion() {
+        // `try_reuse_package` lê `md5_zip`/`bytes` do manifest.json de
+        // transporte no storage — precisa conter `fingerprint` também.
+        let ds_id = Uuid::nil();
+        let v = diffusion_transport_manifest(ds_id, "abc123", 456, Some("fp-xyz"));
+        assert_eq!(v["fingerprint"], "fp-xyz");
+        assert_eq!(v["md5_zip"], "abc123");
+        assert_eq!(v["bytes"], 456);
+        let v_none = diffusion_transport_manifest(ds_id, "abc123", 456, None);
+        assert!(v_none["fingerprint"].is_null());
     }
 
     #[tokio::test]

@@ -885,6 +885,7 @@ pub async fn submit_diffusion_job(
                 &state,
                 control_id,
                 req.trigger_word.as_deref(),
+                None,
             )
             .await
             {
@@ -962,9 +963,9 @@ pub async fn submit_diffusion_job(
     }
 
     // 9. Aceite assíncrono: dedupe → create → insert → spawn → 202.
-    //    NOTA P4a+P4b: `build_package_diffusion` ainda não grava fingerprint
-    //    no manifest — o reuso por versão fica para a fusão; o dedupe por
-    //    `job_prepares` (30min) já vale.
+    //    `build_package_diffusion` grava `fingerprint` no manifest (igual a
+    //    `build_package_filtered`): o worker (`build_for_spec`) reusa a
+    //    versão quando o dataset principal não mudou entre submits.
     let spec = crate::jobs::prepare::PrepareSpec {
         kind: "diffusion_train".to_string(),
         dataset_id: ds_id,

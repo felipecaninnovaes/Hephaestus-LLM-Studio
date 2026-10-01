@@ -570,11 +570,11 @@ async fn fail_prepare(
 /// Tenta reuso de `dataset_versions` pelo fingerprint do manifest.
 ///
 /// A P4b grava `fingerprint` como chave de topo do manifest (JSONB e
-/// `manifest.json` de transporte) na `build_package_filtered`; no hit,
+/// `manifest.json` de transporte) em `build_package_filtered` E
+/// `build_package_diffusion` (fix do gap descoberto no smoke P4a+P4b: 3
+/// submits consecutivos sem edição geravam 3 `md5_zip` diferentes); no hit,
 /// `md5_zip`/`bytes` vêm do `manifest.json` no storage
 /// (`packages/<vid>/manifest.json`). Se a leitura falhar, trata como miss.
-/// (`build_package_diffusion` ainda não grava fingerprint — diffusion sempre
-/// constrói; ver `build_for_spec`.)
 async fn try_reuse_package(state: &AppState, spec: &PrepareSpec) -> Option<ResolvedPackage> {
     let vid: Uuid = sqlx::query_scalar(
         "SELECT id FROM dataset_versions \
@@ -607,9 +607,9 @@ async fn try_reuse_package(state: &AppState, spec: &PrepareSpec) -> Option<Resol
 }
 
 /// Constrói o pacote conforme o kind (interface congelada da P4b: o 4º
-/// argumento `fingerprint: Option<&str>` é gravado no manifest pela
-/// `build_package_filtered`; `build_package_diffusion` ainda não recebe
-/// fingerprint — reuso diffusion fica para a fusão P4a+P4b).
+/// argumento `fingerprint: Option<&str>` é gravado no manifest por todas as
+/// variantes de build, incluindo `build_package_diffusion` — reuso por
+/// fingerprint vale para `diffusion_train` também).
 /// `Err(code)` = código `prepare_fail` (`storage_unavailable` se o build
 /// respondeu 503, senão `build_error`).
 async fn build_for_spec(
@@ -640,6 +640,7 @@ async fn build_for_spec(
                 state,
                 spec.dataset_id,
                 spec.trigger_word.as_deref(),
+                Some(&spec.fingerprint),
             )
             .await
         }

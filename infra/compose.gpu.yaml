@@ -63,6 +63,9 @@ services:
       PORT: "8082"
       ENABLE_TEXT_ENCODER_UNLOAD: ${ENABLE_TEXT_ENCODER_UNLOAD:-0}
       TRAINER_TIMEOUT_SECS: ${TRAINER_TIMEOUT_SECS:-7200}
+      DATASET_CACHE_MAX_GB: ${DATASET_CACHE_MAX_GB:-15}
+      OUTPUT_PURGE_TTL_SECS: ${OUTPUT_PURGE_TTL_SECS:-86400}
+      TEXT_EMBEDS_CACHE_MAX_GB: ${TEXT_EMBEDS_CACHE_MAX_GB:-10}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - gpu_datasets:/data/datasets

@@ -2,6 +2,8 @@
 
 **Fatia/branch:** `feat/no-gpu-reuso-dataset-embeds` · **Origem:** `tasks/backlog.md` (seção 3, item "Reaproveitar dataset e text-embeds") · **Nó:** `docker-04` (60 GB; `/data/outputs` com 39 GB em 12 jobs, medido 2026-10-01).
 
+**Status:** Aprovada e fechada — veredito do `@reviewer`: APROVA, zero bloqueadores (commits `3f81b8f`/`c685cbc`/`f53583e`/`ce6a524`/`9753a12`, todos em `develop`). Arquivada por já ter sido entregue e mesclada.
+
 ## 1. Contexto / Evidência
 
 O pacote S3 já é reusado por fingerprint (`services/api-principal/src/jobs/prepare.rs:578`, `try_reuse_package`). O desperdício está no nó GPU.

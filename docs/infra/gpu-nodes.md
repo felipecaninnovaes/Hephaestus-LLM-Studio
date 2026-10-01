@@ -147,3 +147,14 @@ ssh dockeruser@10.15.50.114 'cd ~/Hephaestus-LLM-Studio && \
 ssh dockeruser@10.15.50.114 'cd ~/Hephaestus-LLM-Studio && \
   docker compose -p gpu -f infra/compose.gpu.yaml down'
 ```
+
+### 6.5 Dívida da Migração TrueNAS→docker-04: `trainer-yolo:gpu` Ausente
+Na migração do antigo NAS TrueNAS para a VM dedicada `docker-04`, a imagem
+`hephaestus/trainer-yolo:gpu` não foi reconstruída no nó novo (só
+`trainer-difusao:gpu` havia sido migrada) — dívida órfã não documentada até
+a fatia `feat/no-gpu-reuso-dataset-embeds`, onde travava o smoke de
+invariante YOLO (item 3 do §6 da spec). Buildada nessa sessão via
+`--profile build build trainer-gpu` (§6.3). Tags vigentes no nó após o
+cutover `:reuso-cache` (W2 da mesma fatia): `gpu-orchestrator-gpu:latest`,
+`hephaestus/trainer-difusao:gpu`, `hephaestus/trainer-yolo:gpu`; backups de
+rollback preservados com sufixo `:pre-reuso-cutover` para as três imagens.

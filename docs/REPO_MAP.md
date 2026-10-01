@@ -14,7 +14,7 @@ responsabilidades sem abrir código; aprofunde com `graft ask --source`.
         ↓ HTTP interno
 [services/manager :8081] — fila de jobs, VRAM (packages/policies/vram-table.yaml), heartbeat
         ↓ dispatch HTTP interno
-[services/orchestrator :8082] — Docker API / subprocess; daemon difusão :8766 (cache VRAM quente)
+[services/orchestrator :8082] — Docker API / subprocess; daemon difusão :8766 (cache VRAM quente); cache de dataset por `md5_zip` (`datasets/datasets-dedup/<md5_zip>/` + visão por job `datasets/datasets-cache/<job_id>/` via hardlink) e text-embeds compartilhado (`outputs/.text_embeds_cache/<namespace>/`), envs `DATASET_CACHE_MAX_GB`/`TEXT_EMBEDS_CACHE_MAX_GB`/`OUTPUT_PURGE_TTL_SECS`
         ↓
 [engines/*] trainer-yolo · trainer-difusao · trainer-clip (Python 3.11+, uv; dev com ENGINE_MOCK=1)
 ```
@@ -78,7 +78,9 @@ Fonte: tabela de contrato em `services/api-principal/src/auth/routes.rs`
   em <1s com 202 `{jobId,status: preparing|queued}` (ADR-0025, spec 0.29.0 —
   erro assíncrono `prepare_failed:<code>:<msg>` lido via `GET /jobs/:id`);
   previews `POST /jobs/:id/autolabel|autotracker/preview` + `/apply`;
-  telemetria `GET /api/telemetry`; geração `POST /jobs/diffusion/generate`.
+  telemetria `GET /api/telemetry`; geração `POST /jobs/diffusion/generate`;
+  `POST /jobs/diffusion` aceita `cacheTextEmbeddings` (opcional, bool) para
+  reuso de text-embeds entre jobs via cache compartilhado do nó GPU.
 - **Modelos/pesos:** `GET /api/models[/:id]`, `POST /api/models/upload|download`
   (multipart único, ≤ 96 MiB na prática); chunked (proxy Next bufferiza
   multipart grande em RAM → OOM; partes cruas `application/octet-stream`

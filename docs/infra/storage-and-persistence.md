@@ -117,6 +117,22 @@ volumes:
 ### Staging com Hash MD5
 Ao descarregar ou resolver pesos de modelos (ex.: FLUX.2 Klein, SD 1.5, CLIP), o `orchestrator` realiza verificação de integridade via checksum MD5/SHA256 e armazena os artefatos no volume compartilhado `models`, evitando downloads redundantes a cada novo job.
 
+### 4.1 Cache de Dataset e Text-Embeds no Nó GPU (orchestrator)
+Dentro do volume `datasets`, o `orchestrator-gpu` mantém `datasets/datasets-dedup/<md5_zip>/`
+(entrada única por hash do zip do dataset) e promove visões por job via
+hardlink (`cp -al`) em `datasets/datasets-cache/<job_id>/`, evitando baixar e
+extrair o mesmo dataset repetidamente entre jobs consecutivos. Eviction LRU
+por orçamento `DATASET_CACHE_MAX_GB` (default 15), nunca remove entrada em
+uso por job ativo. No volume `outputs`, `.text_embeds_cache/<namespace>/`
+é compartilhado entre jobs de difusão (chave de namespace inclui
+modelo/text-encoder, quantização, seq length e dtype), com eviction LRU por
+`TEXT_EMBEDS_CACHE_MAX_GB` (default 10) e escrita atômica (tmp+rename).
+Outputs de job em estado terminal são purgados após `OUTPUT_PURGE_TTL_SECS`
+(default 86400), mantendo apenas arquivos já confirmados no S3 e os
+artefatos leves (`config.yaml`, `metrics.jsonl`, `telemetry.jsonl`). Detalhe
+completo do mecanismo: `docs/archive/specs/no-gpu-reuso-dataset-embeds.md`.
+
+
 ---
 
 ## 5. Resiliência, Backups e Prevenção de Desastres

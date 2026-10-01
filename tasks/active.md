@@ -4,9 +4,15 @@
 - **Decisões do usuário (2026-10-01):** pilares A+B+C juntos; `DATASET_CACHE_MAX_GB=15`; purga de `outputs/<job>` por sweeper TTL 24h pós-terminal, só arquivos com upload confirmado; limpeza única do legado no docker-04 pelo `@infra` após conferir S3.
 - **Correções do orchestrator ao plano do `@planner`:** sem lock/refcount em arquivo (mutex in-process + `active_jobs`); visão por job via `cp -al` (ultralytics grava `labels.cache` no dataset); jobs cancelados TÊM checkpoints no S3 (`save_intermediate_artifacts`), purga guiada por manifesto de upload; sem migration/endpoint no manager; sem mecanismo de emergência 85%.
 - [x] Spec escrita e commitada (`@docs`, commit `da8e3d8`)
-- [ ] W1 `@backend` orchestrator: cache A, env/mount B, sweeper C + manifesto
-- [ ] W1 `@engines`: `TEXT_EMBEDS_CACHE_DIR`, chave por namespace (encoder/quant/seq len/dtype), escrita atômica
+- [x] W1 `@backend` orchestrator (commit `3f81b8f`): `storage/{dataset_cache,embeds_cache,output_purge}.rs`, 195→205 testes, clippy sem warning novo. Log de hit: `dataset cache hit` (md5, job_id).
+- [x] W1 `@engines` (commit `c685cbc`): namespace por família (sd15/sdxl/flux/qwen), `EMBEDS_NAMESPACE_SCHEMA_VERSION=1`, 253→259 testes com torch.
+- [x] Fix `f53583e` (achado do orchestrator, não do reviewer): eviction de embeds apagava `.pt` de job ativo (encoder já descarregado; Qwen pula amostra em silêncio, `qwen_image.py:632-642`) → protege `mtime >= min(started_at ativos) - 60s`. 207 testes.
+- [x] `@reviewer` W1: APROVA após 2 rodadas (1ª com 3 bloqueantes falsos refutados com file:line). Fix `f53583e`: APROVA após refutação do falso bloqueante sobre `started_at`. Testes rodados pelo orchestrator: 205/207 Rust, 259 Python.
 - [ ] W2 `@infra`: env/compose GPU, rebuild no docker-04, limpeza do legado
+  - [x] Prep (commit `ce6a524`): envs em `compose.gpu.yaml`/`compose.yaml`/`env.gpu.example`, `config -q` ok. `/data/datasets` e `/data/outputs` no mesmo device (hardlink ok). Disco real do nó: 158G, 55% (não 60GB).
+  - Auditoria legado (`local://legacy-audit.md`, sem deleção): 28.6 GB liberáveis (23.3 GB text_embeds). **`a65f012e` tem 0 artefatos no S3/`job_artifacts`** → checkpoints epoch 6-8 + samples ficam. **`3ea78a5c` ainda rodando** → nada de deploy/restart/limpeza no nó até terminar.
+  - [x] Prebuild no nó (branch pushada, nó em `f53583e`): `gpu-orchestrator-gpu:reuso-cache` (`1cf51834b797`) e `hephaestus/trainer-difusao:reuso-cache` (`b58876296ab9`, contém o fix de resume `a3e8736`). Nada em execução alterado. Runbook de cutover/rollback/limpeza: `local://cutover-runbook.md` (não executado).
+  - [ ] **BLOQUEADO:** cutover (retag `:gpu`, recriar só `orchestrator-gpu`) + limpeza legada aguardam o fim do job `3ea78a5c` (época 6/10 em 2026-10-01). Depois: reclassificar arquivos do `3ea78a5c` contra S3.
 - [ ] W3 smoke GPU real (logs brutos no nó) + `@reviewer` + `@docs` (PITFALLS/REPO_MAP/storage)
 
 ## Em andamento — Fix retomada de treino LoRA (pesos descartados silenciosamente)

@@ -1,4 +1,5 @@
-import type { JobMetrics, JobTelemetryEvent } from "@/types/studio";
+import { getJobMetricPoints } from "@/lib/jobs";
+import type { JobMetrics, JobTelemetryEvent, MetricPointWithKey } from "@/types/studio";
 
 /**
  * Predicado de métrica de treino (espelha `is_training_metric` do orquestrador,
@@ -144,4 +145,51 @@ export function estimateTrainingEtaMs(
       : (msPerStep[mid - 1] + msPerStep[mid]) / 2;
   const eta = median * remaining;
   return Number.isFinite(eta) ? Math.round(eta) : null;
+}
+
+/* ── Fatia 4b: busca de métricas multi-run ── */
+
+export interface JobMetricsFetchResult {
+  jobId: string;
+  points: MetricPointWithKey[];
+  maxSeq: number;
+  downsampled: boolean;
+  error: string | null;
+}
+
+/**
+ * Busca `GET /api/jobs/:id/metrics` de vários jobs EM PARALELO (uma promise
+ * por job, nenhum encadeamento sequencial) — base da comparação de runs
+ * (fatia 4c). Falha isolada de um job não derruba os demais.
+ */
+export function fetchJobsMetricPoints(
+  jobIds: readonly string[],
+  options: { keys?: string[]; maxPoints?: number; signal?: AbortSignal } = {},
+): Promise<JobMetricsFetchResult[]> {
+  return Promise.all(
+    jobIds.map(async (jobId): Promise<JobMetricsFetchResult> => {
+      try {
+        const res = await getJobMetricPoints(jobId, {
+          keys: options.keys,
+          maxPoints: options.maxPoints,
+          signal: options.signal,
+        });
+        return {
+          jobId,
+          points: res.items ?? [],
+          maxSeq: res.maxSeq ?? 0,
+          downsampled: res.downsampled ?? false,
+          error: null,
+        };
+      } catch (err) {
+        return {
+          jobId,
+          points: [],
+          maxSeq: 0,
+          downsampled: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }),
+  );
 }

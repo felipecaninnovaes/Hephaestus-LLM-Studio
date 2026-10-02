@@ -103,6 +103,15 @@ pub async fn job_metric_points_handler(
     JobId(uuid): JobId,
     Query(q): Query<JobMetricPointsQuery>,
 ) -> Response {
+    if let Some(mp) = q.max_points {
+        if !(1..=10_000).contains(&mp) {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_max_points",
+                "maxPoints deve estar entre 1 e 10000",
+            );
+        }
+    }
     let keys: Option<Vec<String>> = q
         .keys
         .as_deref()

@@ -306,6 +306,60 @@ async fn get_job_metrics_200_with_data() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
+/// maxPoints fora de [1,10000] ⇒ 400 invalid_max_points (0, negativo, 10001).
+#[tokio::test]
+async fn get_job_metrics_max_points_fora_da_faixa_400() {
+    for bad in [0_i64, -1, 10_001] {
+        let mut mock = MockManager::default();
+        mock.get_job_result = Some(mock_job());
+        let state = test_state(mock);
+        let resp = get_job_metrics(
+            axum::extract::State(state),
+            Path("550e8400-e29b-41d4-a716-446655440000".to_string()),
+            axum::extract::Query(JobMetricsQuery {
+                after_seq: None,
+                max_points: Some(bad),
+                keys: None,
+            }),
+        )
+        .await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "maxPoints={bad} deveria ser 400"
+        );
+    }
+}
+
+/// maxPoints no limite (1 e 10000) ⇒ aceito, proxy para o manager.
+#[tokio::test]
+async fn get_job_metrics_max_points_limites_aceitos() {
+    for ok in [1_i64, 10_000] {
+        let mut mock = MockManager::default();
+        mock.metric_points_result = Some(heph_contracts::telemetry::MetricPointsResponse {
+            items: vec![],
+            max_seq: 0,
+            downsampled: false,
+        });
+        let state = test_state(mock);
+        let resp = get_job_metrics(
+            axum::extract::State(state),
+            Path("550e8400-e29b-41d4-a716-446655440000".to_string()),
+            axum::extract::Query(JobMetricsQuery {
+                after_seq: None,
+                max_points: Some(ok),
+                keys: None,
+            }),
+        )
+        .await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "maxPoints={ok} deveria ser 200"
+        );
+    }
+}
+
 #[tokio::test]
 async fn list_artifacts_handler_200() {
     let mut mock = MockManager::default();

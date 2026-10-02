@@ -97,7 +97,7 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
     ("GET", "/api/jobs/queue", &[200, 401, 503]),
     ("GET", "/api/jobs/:id", &[200, 401, 404, 503]),
     ("GET", "/api/jobs/:id/events", &[200, 401, 404, 503]),
-    ("GET", "/api/jobs/:id/metrics", &[200, 401, 404, 503]),
+    ("GET", "/api/jobs/:id/metrics", &[200, 400, 401, 404, 503]),
     ("GET", "/api/jobs/:id/artifacts", &[200, 401, 404, 503]),
     ("GET", "/api/jobs/:id/logs", &[200, 401, 404, 503]),
     (

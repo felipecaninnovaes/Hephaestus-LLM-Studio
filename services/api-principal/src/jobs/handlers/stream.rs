@@ -10,8 +10,14 @@ use serde::Deserialize;
 
 use super::helpers::{not_found, parse_uuid, queue_unavailable, remap_metrics, to_job_response};
 use super::types::{JobTelemetryEvent, JobTelemetryEventExt, TelemetryResponse};
+use crate::error::err;
 use crate::jobs::manager_client::ManagerError;
 use crate::state::AppState;
+
+/// Faixa válida de `maxPoints` (fatia 1a §3.4) — fora disso ⇒ 400
+/// `invalid_max_points`. 10000 é um teto honesto contra downsampling
+/// absurdo (sem benefício real acima disso para um gráfico).
+const MAX_POINTS_RANGE: std::ops::RangeInclusive<i64> = 1..=10_000;
 
 /// Query de `GET /api/jobs/:id/metrics` (fatia 1a §3.4). Sem NENHUM destes
 /// parâmetros, a rota preserva o shape legado (`{items: MetricsItem[]}`,
@@ -152,6 +158,15 @@ pub async fn get_job_metrics(
 ) -> Response {
     if parse_uuid(&id).is_none() {
         return not_found();
+    }
+    if let Some(mp) = q.max_points {
+        if !MAX_POINTS_RANGE.contains(&mp) {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "invalid_max_points",
+                "maxPoints deve estar entre 1 e 10000",
+            );
+        }
     }
     let has_points_params = q.after_seq.is_some() || q.max_points.is_some() || q.keys.is_some();
     if has_points_params {

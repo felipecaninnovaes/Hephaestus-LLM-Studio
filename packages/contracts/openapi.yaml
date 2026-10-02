@@ -2125,8 +2125,8 @@ paths:
         - name: maxPoints
           in: query
           required: false
-          schema: { type: integer, minimum: 1 }
-          description: "Downsampling min/max por bucket, por key. Ativa o shape de pontos brutos."
+          schema: { type: integer, minimum: 1, maximum: 10000 }
+          description: "Downsampling min/max por bucket, por key. Ativa o shape de pontos brutos. Fora de [1,10000] ⇒ 400 invalid_max_points."
         - name: keys
           in: query
           required: false
@@ -2141,6 +2141,11 @@ paths:
                 oneOf:
                   - $ref: "#/components/schemas/JobMetrics"
                   - $ref: "#/components/schemas/MetricPointsResponse"
+        "400":
+          description: "`maxPoints` fora de [1,10000] (`code: invalid_max_points`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "401":
           description: "Sem sessão válida (`code: unauthorized`)."
           content:

@@ -8,6 +8,7 @@
 //! ANTES de conectar.
 
 use async_trait::async_trait;
+use axum::http::StatusCode;
 use manager::{
     self, ArtifactItem, CreateJobRequest, CreateModelRequest, HeartbeatRequest, ManagerError,
     PackageRef, ReportRequest, VramTable,
@@ -1553,6 +1554,65 @@ async fn f_max_points_downsample_10k_pontos() {
         resp.max_seq, 10_000,
         "max_seq reflete o contador do job, não os filtrados"
     );
+}
+
+/// Monta um `AppState`/router real para testar o handler HTTP
+/// (`GET /internal/jobs/:id/metrics`) de ponta a ponta — o manager não tem
+/// mock de pool, então estes testes também exigem Postgres.
+fn test_app_state(pool: PgPool) -> manager::http::state::AppState {
+    manager::http::state::AppState {
+        pool,
+        token: "test-token".to_string(),
+        telemetry_cache: manager::new_telemetry_cache(),
+        orch_client: std::sync::Arc::new(FakeOrchestratorClient::new()),
+        exec_mode: "docker".to_string(),
+        orch_workdir: "/data".to_string(),
+        trainer_image: "img".to_string(),
+        vram_table: test_vram_table(),
+    }
+}
+
+/// maxPoints fora de [1,10000] no handler HTTP interno ⇒ 400 invalid_max_points
+/// (0, negativo, 10001); dentro da faixa ⇒ 200.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn job_metric_points_handler_valida_max_points() {
+    use tower::ServiceExt;
+
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create");
+    let job_id = resp.job_id;
+
+    let state = test_app_state(p);
+    let router = manager::http::routes::build_router(state);
+
+    for (max_points, expected) in [
+        ("0", StatusCode::BAD_REQUEST),
+        ("-1", StatusCode::BAD_REQUEST),
+        ("10001", StatusCode::BAD_REQUEST),
+        ("1", StatusCode::OK),
+        ("10000", StatusCode::OK),
+    ] {
+        let req = axum::http::Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/internal/jobs/{job_id}/metrics?maxPoints={max_points}"
+            ))
+            .header("authorization", "Bearer test-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            expected,
+            "maxPoints={max_points} deveria ser {expected}"
+        );
+    }
 }
 
 // ===========================================================================

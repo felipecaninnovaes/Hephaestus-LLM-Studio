@@ -1,0 +1,24 @@
+{
+  "title": "Jobs",
+  "uid": "jobs-min",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Logs — manager",
+      "type": "logs",
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{service=\"manager\"}",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

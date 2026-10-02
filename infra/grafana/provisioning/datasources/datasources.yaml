@@ -1,0 +1,40 @@
+# infra/grafana/provisioning/datasources/datasources.yaml — Fatia 2c
+#
+# Provisionamento automático: Loki + Tempo, com "trace to logs" (Tempo→Loki
+# por trace_id) e "logs to trace" (Loki→Tempo via derivedField na linha
+# crua do log — o otel-collector achata `span.trace_id` para a raiz do JSON,
+# ver otel-collector.yaml).
+
+apiVersion: 1
+
+datasources:
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    jsonData:
+      maxLines: 1000
+      derivedFields:
+        - datasourceUid: tempo
+          matcherRegex: '"trace_id"\s*:\s*"(\w+)"'
+          name: TraceID
+          url: '$${__value.raw}'
+
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: "-5m"
+        spanEndTimeShift: "5m"
+        filterByTraceID: true
+        filterBySpanID: false
+        tags:
+          - key: service.name
+            value: service
+      serviceMap:
+        datasourceUid: tempo

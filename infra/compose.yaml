@@ -3,6 +3,12 @@ x-logging: &default-logging
   options:
     max-size: "10m"
     max-file: "3"
+    # Fatia 2c (telemetria-observabilidade): embute o label
+    # `com.docker.compose.service` (setado automaticamente pelo Compose em
+    # todo container) no campo `attrs` de cada linha json-file — é assim
+    # que o otel-collector (`filelog`) sabe de qual serviço veio o log sem
+    # falar com a API do Docker (ver infra/otel-collector.yaml).
+    labels: "com.docker.compose.service"
 
 services:
   db:
@@ -172,17 +178,26 @@ services:
       - backend_net
 
   # OTel Collector (fatia 2a — telemetria-observabilidade §4 Onda 2):
-  # recebe OTLP gRPC/HTTP dos 3 serviços Rust e exporta via `debug` (a 2c
-  # troca por Tempo/Loki). Imagem upstream é "distroless" (sem shell/wget) —
-  # Dockerfile.otel-collector reempacota o binário numa base Alpine só para
-  # o healthcheck funcionar. Sem publicar fora do loopback: tráfego interno
-  # da rede backend_net; debug local via OTEL_COLLECTOR_PUBLISH se precisar.
+  # recebe OTLP gRPC/HTTP dos 3 serviços Rust. A 2c troca o exporter de
+  # traces pelo Tempo e adiciona o pipeline de logs (filelog → Loki) —
+  # ver infra/otel-collector.yaml. Imagem upstream é "distroless" (sem
+  # shell/wget) — Dockerfile.otel-collector reempacota o binário numa base
+  # Alpine só para o healthcheck funcionar. Sem publicar fora do loopback:
+  # tráfego interno da rede backend_net; debug local via
+  # OTEL_COLLECTOR_PUBLISH se precisar.
   otel-collector:
     build:
       context: .
       dockerfile: Dockerfile.otel-collector
+    # Fatia 2c: `user: root` é necessário para o receiver `filelog` ler
+    # /var/lib/docker/containers (dono root:root, modo 0640 no host) — a
+    # imagem upstream roda non-root (USER 10001) só para o healthcheck
+    # (wget); aqui sobrescrevemos para o processo conseguir tailar os logs.
+    # Mount READ-ONLY: o collector nunca escreve no diretório do Docker.
+    user: "0:0"
     volumes:
       - ./otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
     ports:
       - '${OTEL_COLLECTOR_PUBLISH:-127.0.0.1}:4317:4317'
       - '${OTEL_COLLECTOR_PUBLISH:-127.0.0.1}:4318:4318'
@@ -199,6 +214,109 @@ services:
       timeout: 3s
       retries: 6
       start_period: 5s
+    networks:
+      - backend_net
+    depends_on:
+      loki:
+        condition: service_healthy
+      tempo:
+        condition: service_healthy
+
+  # Tempo (fatia 2c — telemetria-observabilidade §4 2c): armazena traces
+  # recebidos do otel-collector. Disco local (homelab, sem backend S3
+  # dedicado — fora de escopo §7 "Archive de Loki/Tempo para S3").
+  # Sem publicar fora do loopback: só o Grafana/otel-collector consultam,
+  # via backend_net; debug local opcional via TEMPO_PUBLISH.
+  tempo:
+    image: grafana/tempo:2.6.1@sha256:ef4384fce6e8ad22b95b243d8fc165628cda655376fd50e7850536ad89d71d50
+    command: ["-config.file=/etc/tempo/tempo.yaml", "-config.expand-env=true"]
+    environment:
+      TEMPO_RETENTION: ${TEMPO_RETENTION:-720h}
+    volumes:
+      - ./tempo-config.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo_data:/var/tempo
+    ports:
+      - '${TEMPO_PUBLISH:-127.0.0.1}:3200:3200'
+    restart: unless-stopped
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3200/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    networks:
+      - backend_net
+
+  # Loki (fatia 2c): índice operacional de logs via ingestão OTLP nativa
+  # (`/otlp/v1/logs`) do otel-collector. Disco local; retenção por env
+  # (default 30d — §2.1 da spec, "interpretação do orchestrator").
+  loki:
+    image: grafana/loki:3.3.2@sha256:8af2de1abbdd7aa92b27c9bcc96f0f4140c9096b507c77921ffddf1c6ad6c48f
+    command: ["-config.file=/etc/loki/loki.yaml", "-config.expand-env=true"]
+    environment:
+      LOKI_RETENTION: ${LOKI_RETENTION:-720h}
+    volumes:
+      - ./loki-config.yaml:/etc/loki/loki.yaml:ro
+      - loki_data:/loki
+    ports:
+      - '${LOKI_PUBLISH:-127.0.0.1}:3100:3100'
+    restart: unless-stopped
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3100/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    networks:
+      - backend_net
+
+  # Grafana (fatia 2c): porta 4000 — 3000 é do `web` (decisão do usuário).
+  # Login via env (`GRAFANA_ADMIN_PASSWORD`, default de dev `changeme` —
+  # mesmo convencionado no resto do compose). Datasources/dashboard
+  # provisionados por arquivo (`infra/grafana/provisioning/`); sem UI setup
+  # manual. Publicado só em loopback por padrão (`*_PUBLISH`).
+  grafana:
+    image: grafana/grafana:11.3.1@sha256:fa801ab6e1ae035135309580891e09f7eb94d1abdbd2106bdc288030b028158c
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-changeme}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - '${GRAFANA_PUBLISH:-127.0.0.1}:4000:3000'
+    depends_on:
+      loki:
+        condition: service_healthy
+      tempo:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 384M
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
     networks:
       - backend_net
 
@@ -350,6 +468,9 @@ volumes:
   datasets:
   models:
   outputs:
+  tempo_data:
+  loki_data:
+  grafana_data:
 
 networks:
   frontend_net:

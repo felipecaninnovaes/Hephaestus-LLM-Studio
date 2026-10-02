@@ -1,0 +1,66 @@
+# infra/loki-config.yaml — Fatia 2c (telemetria-observabilidade §4 2c)
+#
+# Loki de nó único (homelab), ingestão nativa OTLP (`/otlp/v1/logs`) vinda do
+# otel-collector via `filelog` (logs dos containers, ver otel-collector.yaml).
+# Retenção configurável por env (default 30d = 720h) via `-config.expand-env`
+# (comando no compose.yaml); sem isso ${LOKI_RETENTION} ficaria literal.
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: warn
+
+common:
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  # Mapeia o atributo de recurso `service` (setado pelo otel-collector a
+  # partir do label `com.docker.compose.service` do Docker) para label de
+  # índice — a spec exige consulta `{service="manager"}` (R: nome do label
+  # literal "service", não o `service.name` semconv que viraria
+  # `service_name` na conversão default do Loki).
+  otlp_config:
+    resource_attributes:
+      attributes_config:
+        - action: index_label
+          attributes:
+            - service
+  allow_structured_metadata: true
+  retention_period: ${LOKI_RETENTION:-720h}
+  max_query_lookback: ${LOKI_RETENTION:-720h}
+
+compactor:
+  working_directory: /loki/compactor
+  compaction_interval: 10m
+  retention_enabled: true
+  retention_delete_delay: 2h
+  delete_request_store: filesystem
+
+ruler:
+  storage:
+    type: local
+    local:
+      directory: /loki/rules
+  rule_path: /loki/rules-temp
+  alertmanager_url: ""
+  enable_alertmanager_discovery: false

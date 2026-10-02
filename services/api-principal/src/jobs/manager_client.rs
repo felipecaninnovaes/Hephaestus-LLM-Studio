@@ -1000,6 +1000,9 @@ pub struct MockManager {
     pub report_calls: std::sync::Mutex<Vec<serde_json::Value>>,
     /// Se `true`, `prepare_complete` retorna `Conflict` (job fora de `preparing`).
     pub prepare_complete_conflict: bool,
+    /// Contador de chamadas a `get_job_metric_points` (fatia 1b — prova de
+    /// coalescência: rajada de notices deve gerar 1 busca, não N).
+    pub metric_points_calls: std::sync::Mutex<u32>,
 }
 
 impl MockManager {
@@ -1102,6 +1105,7 @@ impl Default for MockManager {
             report_calls: std::sync::Mutex::new(Vec::new()),
             prepare_cancel_calls: std::sync::Mutex::new(Vec::new()),
             prepare_complete_conflict: false,
+            metric_points_calls: std::sync::Mutex::new(0),
         }
     }
 }
@@ -1155,6 +1159,7 @@ impl ManagerPort for MockManager {
         _max_points: Option<i64>,
         _keys: Option<&str>,
     ) -> Result<heph_contracts::telemetry::MetricPointsResponse, ManagerError> {
+        *self.metric_points_calls.lock().unwrap() += 1;
         if self.fail {
             return Err(ManagerError::Unavailable("mock fail".into()));
         }

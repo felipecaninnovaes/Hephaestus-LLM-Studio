@@ -1711,6 +1711,71 @@ fn parse_nvidia_smi_csv_single_gpu_max_equals_total() {
     // 1 GPU: max = total (capacidade de 1 job = a única GPU)
     assert_eq!(t.max_gpu_mib, 12288);
 }
+#[test]
+fn parse_nvidia_smi_csv_eight_columns_real_fixture() {
+    let csv = "\
+0, GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17, NVIDIA GeForce RTX 3060, 12288, 6961, 18.03, 0, 50
+1, GPU-c83cc056-07f7-d31e-cc98-7486ddac0296, NVIDIA GeForce GTX 1660 SUPER, 6144, 1063, 42.78, 12, 51
+";
+    let t = parse_nvidia_smi_csv(csv).expect("should parse real fixture");
+    assert_eq!(t.devices.len(), 2);
+    assert_eq!(t.gpus.len(), 2);
+    assert_eq!(t.vram_total, 18432);
+    assert_eq!(t.vram_used, 8024);
+    assert_eq!(t.max_gpu_mib, 12288);
+
+    let dev0 = &t.devices[0];
+    assert_eq!(dev0.index, 0);
+    assert_eq!(dev0.uuid, "GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17");
+    assert_eq!(dev0.name, "NVIDIA GeForce RTX 3060");
+    assert_eq!(dev0.vram_total, 12288);
+    assert_eq!(dev0.vram_used, 6961);
+    assert_eq!(dev0.power_watts, Some(18.03));
+    assert_eq!(dev0.gpu_utilization_pct, Some(0.0));
+    assert_eq!(dev0.temperature_c, Some(50));
+
+    let dev1 = &t.devices[1];
+    assert_eq!(dev1.index, 1);
+    assert_eq!(dev1.uuid, "GPU-c83cc056-07f7-d31e-cc98-7486ddac0296");
+    assert_eq!(dev1.name, "NVIDIA GeForce GTX 1660 SUPER");
+    assert_eq!(dev1.vram_total, 6144);
+    assert_eq!(dev1.vram_used, 1063);
+    assert_eq!(dev1.power_watts, Some(42.78));
+    assert_eq!(dev1.gpu_utilization_pct, Some(12.0));
+    assert_eq!(dev1.temperature_c, Some(51));
+}
+
+#[test]
+fn parse_nvidia_smi_csv_tolerant_na_and_not_supported() {
+    let csv = "\
+0, GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17, NVIDIA GeForce RTX 3060, 12288, 6961, [N/A], [Not Supported], 50
+1, GPU-c83cc056-07f7-d31e-cc98-7486ddac0296, NVIDIA GeForce GTX 1660 SUPER, 6144, 1063, 42.78, 12, [N/A]
+";
+    let t = parse_nvidia_smi_csv(csv).expect("should parse tolerant CSV");
+    assert_eq!(t.devices.len(), 2);
+    assert_eq!(t.devices[0].power_watts, None);
+    assert_eq!(t.devices[0].gpu_utilization_pct, None);
+    assert_eq!(t.devices[0].temperature_c, Some(50));
+    assert_eq!(t.devices[1].temperature_c, None);
+    assert_eq!(t.devices[1].power_watts, Some(42.78));
+}
+
+#[test]
+fn parse_nvidia_smi_csv_invalid_uuid_skips_only_that_line() {
+    let csv = "\
+0, INVALID-UUID, NVIDIA GeForce RTX 3060, 12288, 6961, 18.03, 0, 50
+1, GPU-c83cc056-07f7-d31e-cc98-7486ddac0296, NVIDIA GeForce GTX 1660 SUPER, 6144, 1063, 42.78, 12, 51
+";
+    let t = parse_nvidia_smi_csv(csv).expect("should keep valid line");
+    assert_eq!(t.devices.len(), 1);
+    assert_eq!(t.gpus.len(), 1);
+    assert_eq!(
+        t.devices[0].uuid,
+        "GPU-c83cc056-07f7-d31e-cc98-7486ddac0296"
+    );
+    assert_eq!(t.vram_total, 6144);
+    assert_eq!(t.max_gpu_mib, 6144);
+}
 
 // =========================================================================
 // G.2 — DockerExecutor GPU args tests
@@ -2038,6 +2103,7 @@ fn heartbeat_body_serializes_endpoint() {
     let body = HeartbeatBody {
         endpoint: "http://orchestrator-local:8082".to_string(),
         gpus: vec!["NVIDIA GeForce RTX 3060".to_string()],
+        gpu_devices: vec![],
         vram_total: Some(12288),
         vram_used: Some(1024),
         cpu: Some(42.5),
@@ -4994,6 +5060,7 @@ async fn test_try_admit_concurrency_race() {
         daemon_state: None,
         max_concurrent_jobs: 1,
         admission_lock: Arc::new(std::sync::Mutex::new(())),
+        gpu_sampler: crate::telemetry::gpu::GpuSampler::new(),
     });
 
     let num_tasks = 50;
@@ -5044,6 +5111,7 @@ fn test_try_admit_duplicate_job_id() {
         daemon_state: None,
         max_concurrent_jobs: 5,
         admission_lock: Arc::new(std::sync::Mutex::new(())),
+        gpu_sampler: crate::telemetry::gpu::GpuSampler::new(),
     };
 
     let res1 = state.try_admit("job-1".to_string(), ActiveJobState::new(String::new()));

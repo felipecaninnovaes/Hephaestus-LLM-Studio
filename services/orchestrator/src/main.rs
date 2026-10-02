@@ -218,6 +218,7 @@ async fn main() {
         tracing::info!("diffusion daemon desabilitado (DIFFUSION_DAEMON_ENABLED=0) — one-shot");
         None
     };
+    let gpu_sampler = orchestrator::telemetry::gpu::GpuSampler::new();
 
     let state = AppState {
         s3: Arc::clone(&s3),
@@ -231,6 +232,7 @@ async fn main() {
         daemon_state,
         max_concurrent_jobs: cfg.max_concurrent_jobs,
         admission_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
+        gpu_sampler: gpu_sampler.clone(),
     };
 
     // Heartbeat loop (~2s, D4/D9).
@@ -238,7 +240,7 @@ async fn main() {
     let heartbeat_advertise_url = cfg.advertise_url.clone();
 
     // GPU telemetry: tenta nvidia-smi no boot; se falhar, warn único e fallback.
-    let gpu_telemetry_boot = orchestrator::try_nvidia_smi().await;
+    let gpu_telemetry_boot = gpu_sampler.sample().await;
     if gpu_telemetry_boot.is_some() {
         tracing::info!("nvidia-smi disponível — telemetria GPU habilitada");
     } else {
@@ -297,15 +299,16 @@ async fn main() {
             tokio::select! {
                 _ = tokio::time::sleep(next_wait) => {
                     // Tenta nvidia-smi a cada tick; fallback silencioso.
-                    let (gpus, vram_total, vram_used, max_gpu_mib) =
-                        match orchestrator::try_nvidia_smi().await {
+                    let (gpus, gpu_devices, vram_total, vram_used, max_gpu_mib) =
+                        match gpu_sampler.sample().await {
                             Some(telemetry) => (
                                 telemetry.gpus,
+                                telemetry.devices,
                                 Some(telemetry.vram_total),
                                 Some(telemetry.vram_used),
                                 Some(telemetry.max_gpu_mib),
                             ),
-                            None => (vec![], None, None, None),
+                            None => (vec![], vec![], None, None, None),
                         };
 
                     let (disk_total_gb, disk_used_gb) =
@@ -314,6 +317,7 @@ async fn main() {
                     let body = HeartbeatBody {
                         endpoint: heartbeat_advertise_url.clone(),
                         gpus,
+                        gpu_devices,
                         vram_total,
                         vram_used,
                         cpu: Some(orchestrator::read_cpu()),

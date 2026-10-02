@@ -35,6 +35,7 @@ pub struct AppState {
     pub daemon_state: Option<std::sync::Arc<crate::daemon::DaemonState>>,
     pub max_concurrent_jobs: usize,
     pub admission_lock: std::sync::Arc<std::sync::Mutex<()>>,
+    pub gpu_sampler: crate::telemetry::gpu::GpuSampler,
 }
 
 impl AppState {

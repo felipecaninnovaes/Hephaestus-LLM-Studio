@@ -55,30 +55,36 @@ pub struct ArtifactRow {
     pub bytes: i64,
 }
 
-/// Nó do grafo de linhagem (snake_case interno; fatia 5b).
+/// Nó do grafo de linhagem (fatia 5b) — wire camelCase direto, sem DTO
+/// espelho no manager nem no BFF: uma fonte só, igual a `MetricPointsResponse`/
+/// `PrepareCompleteRequest`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LineageNode {
     pub id: String,
     pub kind: String,
     pub label: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub epoch: Option<i32>,
 }
 
-/// Aresta do grafo de linhagem (snake_case interno; fatia 5b).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Aresta do grafo de linhagem (fatia 5b) — wire camelCase direto (ver `LineageNode`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LineageEdge {
     pub from: String,
     pub to: String,
     pub kind: String,
 }
 
-/// Resposta do manager para `GET /internal/jobs/:id/lineage` (snake_case interno).
+/// `GET /internal/jobs/:id/lineage` (manager) e `GET /api/jobs/:id/lineage`
+/// (BFF, repassado direto) — wire camelCase direto (ver `LineageNode`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct LineageResponse {
     pub nodes: Vec<LineageNode>,
     pub edges: Vec<LineageEdge>,

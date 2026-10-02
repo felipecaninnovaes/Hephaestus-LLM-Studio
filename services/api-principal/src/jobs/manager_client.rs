@@ -59,7 +59,7 @@ pub type InternalJob = heph_contracts::JobRow;
 pub type InternalQueueItem = heph_contracts::QueueItem;
 /// Artefato (snake_case interno do manager).
 pub type InternalArtifact = heph_contracts::ArtifactRow;
-/// Linhagem de um job (snake_case interno do manager; fatia 5b).
+/// Linhagem de um job (camelCase direto — wire do manager já é o wire público, fatia 5b).
 pub type InternalLineage = heph_contracts::LineageResponse;
 /// Telemetria (camelCase direto do manager — D9).
 pub type InternalTelemetry = heph_contracts::TelemetryResponse;

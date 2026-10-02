@@ -1,4 +1,6 @@
-//! Handler de linhagem do job (fatia 5b): proxy camelCase do grafo calculado pelo manager.
+//! Handler de linhagem do job (fatia 5b): repassa o grafo calculado pelo
+//! manager. Sem DTO espelho — `heph_contracts::LineageResponse` já é
+//! camelCase (wire público = wire interno, como `MetricPointsResponse`).
 
 use axum::{
     extract::{Path, State},
@@ -8,7 +10,6 @@ use axum::{
 };
 
 use super::helpers::{not_found, parse_uuid, queue_unavailable};
-use super::types::{LineageEdgeResponse, LineageGraphResponse, LineageNodeResponse};
 use crate::jobs::manager_client::ManagerError;
 use crate::state::AppState;
 
@@ -17,32 +18,10 @@ pub async fn get_job_lineage(State(state): State<AppState>, Path(id): Path<Strin
     if parse_uuid(&id).is_none() {
         return not_found();
     }
-    let graph = match state.manager.get_lineage(&id).await {
-        Ok(g) => g,
-        Err(ManagerError::NotFound) => return not_found(),
-        Err(ManagerError::Unavailable(_)) => return queue_unavailable(),
-        Err(_) => return queue_unavailable(),
-    };
-    let nodes = graph
-        .nodes
-        .into_iter()
-        .map(|n| LineageNodeResponse {
-            id: n.id,
-            kind: n.kind,
-            label: n.label,
-            status: n.status,
-            created_at: n.created_at,
-            epoch: n.epoch,
-        })
-        .collect();
-    let edges = graph
-        .edges
-        .into_iter()
-        .map(|e| LineageEdgeResponse {
-            from: e.from,
-            to: e.to,
-            kind: e.kind,
-        })
-        .collect();
-    (StatusCode::OK, Json(LineageGraphResponse { nodes, edges })).into_response()
+    match state.manager.get_lineage(&id).await {
+        Ok(graph) => (StatusCode::OK, Json(graph)).into_response(),
+        Err(ManagerError::NotFound) => not_found(),
+        Err(ManagerError::Unavailable(_)) => queue_unavailable(),
+        Err(_) => queue_unavailable(),
+    }
 }

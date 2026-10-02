@@ -3853,6 +3853,9 @@ components:
           type: [string, "null"]
           format: uuid
           description: "ID do orquestrador preferencial para execução (ADR-0015 D2). Opcional."
+        gpuDevice:
+          type: [string, "null"]
+          description: "Identificador opcional da GPU (UUID ou índice). Exige orchestratorId. Opcional; ausente ou null = Automático."
         initImageId:
           type: [string, "null"]
           format: uuid

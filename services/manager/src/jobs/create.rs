@@ -21,6 +21,18 @@ pub async fn create_job(
     pool: &PgPool,
     req: CreateJobRequest,
 ) -> Result<CreateJobResponse, ManagerError> {
+    let telemetry_cache = crate::nodes::new_telemetry_cache();
+    let vram_table = crate::policy::VramTable::load_or_default(None)
+        .unwrap_or_else(|_| crate::policy::VramTable::parse("").unwrap());
+    create_job_with_context(pool, &telemetry_cache, &vram_table, req).await
+}
+
+pub async fn create_job_with_context(
+    pool: &PgPool,
+    telemetry_cache: &crate::nodes::TelemetryCache,
+    vram_table: &crate::policy::VramTable,
+    req: CreateJobRequest,
+) -> Result<CreateJobResponse, ManagerError> {
     let job_id = Uuid::new_v4();
     let dataset_id: Option<Uuid> = req.dataset_id.as_deref().and_then(|s| s.parse().ok());
 
@@ -46,9 +58,67 @@ pub async fn create_job(
     }
 
     // Validação de orchestrator_hint (ADR-0015 D2).
+    let mut resolved_hint_uuid = None;
     if let Some(ref hint_str) = req.orchestrator_hint {
         let hint_uuid = resolve_orchestrator_hint(pool, hint_str).await?;
         params["orchestrator_hint"] = serde_json::json!(hint_uuid.to_string());
+        resolved_hint_uuid = Some(hint_uuid);
+    }
+
+    // Resolução e validação de GPU manual (fatia B2)
+    let mut resolved_gpu_uuid: Option<String> = None;
+    if let Some(ref dev_str) = req.gpu_device {
+        let orch_id = resolved_hint_uuid.ok_or_else(|| {
+            ManagerError::InvalidRequest("gpu_device_requires_orchestrator".into())
+        })?;
+
+        // Procura no TelemetryCache primeiro, depois no banco (fallback se cache vazio)
+        let cache_devices = {
+            let c = telemetry_cache.read().await;
+            c.get(&orch_id).map(|s| s.gpu_devices.clone())
+        };
+        let devices = match cache_devices {
+            Some(devs) if !devs.is_empty() => devs,
+            _ => {
+                let db_row: Option<(Option<serde_json::Value>,)> =
+                    sqlx::query_as("SELECT gpu_devices FROM orchestrators WHERE id = $1")
+                        .bind(orch_id)
+                        .fetch_optional(pool)
+                        .await
+                        .map_err(|e| {
+                            ManagerError::Internal(format!("fetch orch gpu_devices: {e}"))
+                        })?;
+                db_row
+                    .and_then(|r| r.0)
+                    .and_then(|val| serde_json::from_value(val).ok())
+                    .unwrap_or_default()
+            }
+        };
+
+        let is_index = dev_str.chars().all(|c| c.is_ascii_digit());
+        let matched = if is_index {
+            let idx: u32 = dev_str
+                .parse()
+                .map_err(|_| ManagerError::InvalidRequest("invalid_gpu_device".into()))?;
+            devices.iter().find(|d| d.index == idx)
+        } else {
+            devices.iter().find(|d| d.uuid == *dev_str)
+        };
+
+        let target_device =
+            matched.ok_or_else(|| ManagerError::InvalidRequest("unknown_gpu_device".into()))?;
+
+        // Checagem de VRAM mínima da vram-table
+        let required_gb = vram_table.resolve_required_gb(&req.engine, &req.model, &req.mode);
+        if let Some(req_gb) = required_gb {
+            let vram_mib = target_device.vram_total;
+            let vram_gb = (vram_mib as f64) / 1024.0;
+            if vram_gb < (req_gb as f64) {
+                return Err(ManagerError::InvalidRequest("insufficient_gpu_vram".into()));
+            }
+        }
+
+        resolved_gpu_uuid = Some(target_device.uuid.clone());
     }
 
     // Resolução multi-LoRA + custom checkpoint + text encoder + init_image (ADR-0023, S4)
@@ -121,8 +191,8 @@ pub async fn create_job(
     };
 
     sqlx::query(
-        "INSERT INTO jobs (id, kind, engine, model, mode, dataset_id, params, config_yaml, vram_min_gb, status, queue_reason) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL)",
+        "INSERT INTO jobs (id, kind, engine, model, mode, dataset_id, params, config_yaml, vram_min_gb, status, queue_reason, gpu_device) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL, $11)",
     )
     .bind(job_id)
     .bind(&req.kind)
@@ -134,6 +204,7 @@ pub async fn create_job(
     .bind(&req.config_yaml)
     .bind(req.vram_min_gb)
     .bind(initial_status)
+    .bind(resolved_gpu_uuid)
     .execute(pool)
     .await
     .map_err(|e| ManagerError::Internal(format!("insert job: {e}")))?;

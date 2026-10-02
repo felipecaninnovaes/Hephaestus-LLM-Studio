@@ -54,7 +54,8 @@ pub async fn watchdog_tick(pool: &PgPool) -> Result<(), ManagerError> {
                AND (last_heartbeat IS NULL OR last_heartbeat < now() - make_interval(secs => $1::float)) \
              RETURNING id \
          ) \
-         UPDATE jobs SET status = 'queued', queue_reason = 'recovered', orchestrator_id = NULL \
+         UPDATE jobs SET status = 'queued', queue_reason = 'recovered', orchestrator_id = NULL, \
+         gpu_device = CASE WHEN params->>'orchestrator_hint' IS NOT NULL THEN gpu_device ELSE NULL END \
          WHERE orchestrator_id IN (SELECT id FROM morto) \
            AND status IN ('dispatched','running')",
     )

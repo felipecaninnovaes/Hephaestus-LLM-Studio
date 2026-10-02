@@ -12,7 +12,7 @@ use crate::error::ManagerError;
 pub const SELECT_JOB_FIELDS: &str =
     "SELECT j.id, j.kind, j.engine, j.model, j.mode, j.dataset_id, j.status, j.queue_reason, \
      j.progress, j.epoch, j.step, j.vram_min_gb, j.orchestrator_id, j.created_at, j.finished_at, j.params, \
-     j.phase, j.message, \
+     j.phase, j.message, j.gpu_device, \
      o.name AS orchestrator_name, o.kind AS orchestrator_kind, \
      COALESCE((j.params->>'orchestrator_fallback') = 'true', false) AS orchestrator_fallback, \
      j.params->>'error' AS error \
@@ -69,6 +69,7 @@ pub fn row_to_job_row(r: &PgRow, pos_map: &HashMap<String, i32>) -> JobRow {
         orchestrator_name: r.get("orchestrator_name"),
         orchestrator_kind: r.get("orchestrator_kind"),
         orchestrator_fallback: r.get("orchestrator_fallback"),
+        gpu_device: r.get("gpu_device"),
         created_at: created_at.to_rfc3339(),
         finished_at: finished_at.map(|t| t.to_rfc3339()),
         error: r.get("error"),

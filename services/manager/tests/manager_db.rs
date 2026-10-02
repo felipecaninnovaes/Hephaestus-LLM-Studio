@@ -228,6 +228,7 @@ fn test_job_request(dataset_id: uuid::Uuid) -> CreateJobRequest {
         vram_min_gb: None,
         weights_id: None,
         orchestrator_hint: None,
+        gpu_device: None,
     }
 }
 
@@ -3758,6 +3759,7 @@ async fn roteamento_2_nos_requisito_8_vai_para_12gb() {
             vram_min_gb: None,
             weights_id: None,
             orchestrator_hint: None,
+            gpu_device: None,
         },
     )
     .await
@@ -3825,6 +3827,7 @@ async fn roteamento_sem_requisito_null_elegivel_order_by_nome() {
             vram_min_gb: None,
             weights_id: None,
             orchestrator_hint: None,
+            gpu_device: None,
         },
     )
     .await
@@ -3906,6 +3909,7 @@ async fn roteamento_no_com_job_excluido() {
             vram_min_gb: None,
             weights_id: None,
             orchestrator_hint: None,
+            gpu_device: None,
         },
     )
     .await
@@ -3962,6 +3966,7 @@ async fn roteamento_requisito_12_so_6gb_waiting_vram() {
             vram_min_gb: None,
             weights_id: None,
             orchestrator_hint: None,
+            gpu_device: None,
         },
     )
     .await
@@ -4005,6 +4010,7 @@ async fn roteamento_sem_requisito_nenhum_online_waiting_slot() {
             vram_min_gb: None,
             weights_id: None,
             orchestrator_hint: None,
+            gpu_device: None,
         },
     )
     .await
@@ -4489,6 +4495,7 @@ fn predict_job_request(dataset_id: uuid::Uuid) -> CreateJobRequest {
         vram_min_gb: None,
         weights_id: None,
         orchestrator_hint: None,
+        gpu_device: None,
     }
 }
 
@@ -4817,6 +4824,7 @@ fn autotracker_job_request(dataset_id: uuid::Uuid) -> CreateJobRequest {
         vram_min_gb: None,
         weights_id: None,
         orchestrator_hint: None,
+        gpu_device: None,
     }
 }
 
@@ -5539,6 +5547,7 @@ async fn autolabel_job_lifecycle_and_dispatch() {
         vram_min_gb: None,
         weights_id: None,
         orchestrator_hint: None,
+        gpu_device: None,
     };
 
     let res = manager::create_job(&p, req)
@@ -5612,6 +5621,7 @@ fn diffusion_generate_request() -> CreateJobRequest {
         vram_min_gb: None,
         weights_id: None,
         orchestrator_hint: None,
+        gpu_device: None,
     }
 }
 
@@ -7526,6 +7536,7 @@ fn diffusion_train_request(dataset_id: uuid::Uuid, base_model: &str) -> CreateJo
         vram_min_gb: Some(12),
         weights_id: None,
         orchestrator_hint: None,
+        gpu_device: None,
     }
 }
 
@@ -7687,6 +7698,7 @@ fn test_prepare_job_request(dataset_id: uuid::Uuid) -> CreateJobRequest {
         vram_min_gb: None,
         weights_id: None,
         orchestrator_hint: None,
+        gpu_device: None,
     }
 }
 
@@ -7705,6 +7717,7 @@ fn test_bare_job_request(dataset_id: uuid::Uuid) -> CreateJobRequest {
         vram_min_gb: None,
         weights_id: None,
         orchestrator_hint: None,
+        gpu_device: None,
     }
 }
 
@@ -9302,4 +9315,404 @@ async fn alert_disk_high_warning_critical_resolution_and_legacy() {
         .expect("found node");
     assert_eq!(node.disk_total_gb, Some(100.0));
     assert_eq!(node.disk_used_gb, Some(96.0));
+}
+
+// ---------------------------------------------------------------------------
+// Suíte de testes B2: Seleção Multi-GPU, Eleição, Resolução índice->UUID, Requeue
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn b2_resolve_gpu_device_index_to_uuid_e_manual_insufficient_vram() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let orch_id = uuid::Uuid::new_v4();
+    let gpu0_uuid = "GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17";
+    let gpu1_uuid = "GPU-c83cc056-07f7-d31e-cc98-7486ddac0296";
+
+    // Nó com 2 GPUs: GPU0 = RTX 3060 (12288 MiB), GPU1 = GTX 1660S (6144 MiB)
+    let gpu_devices = serde_json::json!([
+        { "index": 0, "uuid": gpu0_uuid, "name": "NVIDIA GeForce RTX 3060", "vram_total": 12288, "vram_used": 1024 },
+        { "index": 1, "uuid": gpu1_uuid, "name": "NVIDIA GeForce GTX 1660 SUPER", "vram_total": 6144, "vram_used": 512 }
+    ]);
+
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status, vram_total_gb, gpu_devices) \
+         VALUES ($1, 'docker-04', 'http://10.15.50.114:8082', 'remoto', 'online', 12, $2)",
+    )
+    .bind(orch_id)
+    .bind(&gpu_devices)
+    .execute(&p)
+    .await
+    .expect("insert orch");
+
+    let cache = manager::new_telemetry_cache();
+    let vram_table = manager::VramTable::parse("defaults:\n  headroom_gb: 2\nentries:\n  - { engine: yolo, model: yolo11n, mode: train, vram_min_gb: 4 }\n  - { engine: yolo, model: yolo11x, mode: train, vram_min_gb: 8 }\n").unwrap();
+
+    let ds_id = insert_test_dataset(&p).await;
+
+    // 1. Resolução índice -> UUID: envia índice "1", deve gravar UUID da 1660S
+    let req = manager::CreateJobRequest {
+        kind: "yolo_train".into(),
+        engine: "yolo".into(),
+        model: "yolo11n".into(),
+        mode: "train".into(),
+        dataset_id: Some(ds_id.to_string()),
+        dataset_version_id: None,
+        package_ref: None,
+        config_yaml: None,
+        params: None,
+        vram_min_gb: None,
+        weights_id: None,
+        orchestrator_hint: Some(orch_id.to_string()),
+        gpu_device: Some("1".to_string()),
+    };
+    let resp = manager::create_job_with_context(&p, &cache, &vram_table, req)
+        .await
+        .expect("create job idx 1");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    let row: (Option<String>,) = sqlx::query_as("SELECT gpu_device FROM jobs WHERE id = $1")
+        .bind(job_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(
+        row.0.as_deref(),
+        Some(gpu1_uuid),
+        "Índice '1' deve resolver para UUID da 1660S"
+    );
+
+    // 2. GPU manual inexistente no nó -> 400 unknown_gpu_device
+    let req_unknown = manager::CreateJobRequest {
+        kind: "yolo_train".into(),
+        engine: "yolo".into(),
+        model: "yolo11n".into(),
+        mode: "train".into(),
+        dataset_id: Some(ds_id.to_string()),
+        dataset_version_id: None,
+        package_ref: None,
+        config_yaml: None,
+        params: None,
+        vram_min_gb: None,
+        weights_id: None,
+        orchestrator_hint: Some(orch_id.to_string()),
+        gpu_device: Some("5".to_string()),
+    };
+    let err = manager::create_job_with_context(&p, &cache, &vram_table, req_unknown)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err,
+        manager::ManagerError::InvalidRequest("unknown_gpu_device".into())
+    );
+
+    // 3. GPU manual com VRAM insuficiente (yolo11x exige 8GB; 1660S tem 6GB) -> 400 insufficient_gpu_vram
+    let req_insufficient = manager::CreateJobRequest {
+        kind: "yolo_train".into(),
+        engine: "yolo".into(),
+        model: "yolo11x".into(),
+        mode: "train".into(),
+        dataset_id: Some(ds_id.to_string()),
+        dataset_version_id: None,
+        package_ref: None,
+        config_yaml: None,
+        params: None,
+        vram_min_gb: None,
+        weights_id: None,
+        orchestrator_hint: Some(orch_id.to_string()),
+        gpu_device: Some("1".to_string()), // 1660S 6GB < 8GB
+    };
+    let err = manager::create_job_with_context(&p, &cache, &vram_table, req_insufficient)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err,
+        manager::ManagerError::InvalidRequest("insufficient_gpu_vram".into())
+    );
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn b2_election_automatic_chooses_smallest_fitting_gpu_and_fallback() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let orch_id = uuid::Uuid::new_v4();
+    let gpu0_3060 = "GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17";
+    let gpu1_1660s = "GPU-c83cc056-07f7-d31e-cc98-7486ddac0296";
+
+    let gpu_devices = serde_json::json!([
+        { "index": 0, "uuid": gpu0_3060, "name": "NVIDIA GeForce RTX 3060", "vram_total": 12288, "vram_used": 2048 },
+        { "index": 1, "uuid": gpu1_1660s, "name": "NVIDIA GeForce GTX 1660 SUPER", "vram_total": 6144, "vram_used": 1024 }
+    ]);
+
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status, vram_total_gb, gpu_devices) \
+         VALUES ($1, 'docker-04', 'http://10.15.50.114:8082', 'remoto', 'online', 12, $2)",
+    )
+    .bind(orch_id)
+    .bind(&gpu_devices)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let cache = manager::new_telemetry_cache();
+    let vram_table = manager::VramTable::parse("defaults:\n  headroom_gb: 2\nentries:\n  - { engine: yolo, model: yolo11n, mode: train, vram_min_gb: 4 }\n  - { engine: yolo, model: yolo11x, mode: train, vram_min_gb: 8 }\n").unwrap();
+    let ds_id = insert_test_dataset(&p).await;
+
+    // Caso A: required 4GB (yolo11n) -> deve escolher 1660S (6144 MiB, menor placa >= 4GB)
+    let resp4 = manager::create_job_with_context(
+        &p,
+        &cache,
+        &vram_table,
+        manager::CreateJobRequest {
+            kind: "yolo_train".into(),
+            engine: "yolo".into(),
+            model: "yolo11n".into(),
+            mode: "train".into(),
+            dataset_id: Some(ds_id.to_string()),
+            dataset_version_id: None,
+            package_ref: None,
+            config_yaml: None,
+            params: None,
+            vram_min_gb: None,
+            weights_id: None,
+            orchestrator_hint: None,
+            gpu_device: None,
+        },
+    )
+    .await
+    .unwrap();
+    let j4_id: uuid::Uuid = resp4.job_id.parse().unwrap();
+
+    let mut orch = FakeOrchestratorClient::new();
+    let disp4 =
+        manager::dispatch_next_with_cache(&p, &orch, "docker", "/data", "img", &vram_table, &cache)
+            .await
+            .unwrap();
+    assert!(disp4);
+
+    let row4: (Option<String>,) = sqlx::query_as("SELECT gpu_device FROM jobs WHERE id = $1")
+        .bind(j4_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(
+        row4.0.as_deref(),
+        Some(gpu1_1660s),
+        "Job de 4GB deve cair na 1660S"
+    );
+
+    // Libera o nó (job done) para manter 1 job por nó
+    sqlx::query("UPDATE jobs SET status = 'done' WHERE id = $1")
+        .bind(j4_id)
+        .execute(&p)
+        .await
+        .unwrap();
+
+    // Caso B: required 8GB (yolo11x) -> deve escolher 3060 (12288 MiB)
+    let resp8 = manager::create_job_with_context(
+        &p,
+        &cache,
+        &vram_table,
+        manager::CreateJobRequest {
+            kind: "yolo_train".into(),
+            engine: "yolo".into(),
+            model: "yolo11x".into(),
+            mode: "train".into(),
+            dataset_id: Some(ds_id.to_string()),
+            dataset_version_id: None,
+            package_ref: None,
+            config_yaml: None,
+            params: None,
+            vram_min_gb: None,
+            weights_id: None,
+            orchestrator_hint: None,
+            gpu_device: None,
+        },
+    )
+    .await
+    .unwrap();
+    let j8_id: uuid::Uuid = resp8.job_id.parse().unwrap();
+
+    let disp8 =
+        manager::dispatch_next_with_cache(&p, &orch, "docker", "/data", "img", &vram_table, &cache)
+            .await
+            .unwrap();
+    assert!(disp8);
+
+    let row8: (Option<String>,) = sqlx::query_as("SELECT gpu_device FROM jobs WHERE id = $1")
+        .bind(j8_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(
+        row8.0.as_deref(),
+        Some(gpu0_3060),
+        "Job de 8GB deve cair na 3060"
+    );
+
+    sqlx::query("UPDATE jobs SET status = 'done' WHERE id = $1")
+        .bind(j8_id)
+        .execute(&p)
+        .await
+        .unwrap();
+
+    // Caso C: required desconhecido -> maior placa (3060)
+    let resp_unk = manager::create_job_with_context(
+        &p,
+        &cache,
+        &vram_table,
+        manager::CreateJobRequest {
+            kind: "yolo_train".into(),
+            engine: "custom_engine".into(),
+            model: "unknown_model".into(),
+            mode: "train".into(),
+            dataset_id: Some(ds_id.to_string()),
+            dataset_version_id: None,
+            package_ref: None,
+            config_yaml: None,
+            params: None,
+            vram_min_gb: None,
+            weights_id: None,
+            orchestrator_hint: None,
+            gpu_device: None,
+        },
+    )
+    .await
+    .unwrap();
+    let junk_id: uuid::Uuid = resp_unk.job_id.parse().unwrap();
+
+    let disp_unk =
+        manager::dispatch_next_with_cache(&p, &orch, "docker", "/data", "img", &vram_table, &cache)
+            .await
+            .unwrap();
+    assert!(disp_unk);
+
+    let row_unk: (Option<String>,) = sqlx::query_as("SELECT gpu_device FROM jobs WHERE id = $1")
+        .bind(junk_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(
+        row_unk.0.as_deref(),
+        Some(gpu0_3060),
+        "Job com required desconhecido deve cair na maior placa"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn b2_requeue_recovery_preserves_manual_and_clears_automatic() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let orch_id = uuid::Uuid::new_v4();
+    let gpu_uuid = "GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17";
+    let ds_id = insert_test_dataset(&p).await;
+
+    let cache = manager::new_telemetry_cache();
+    let vram_table =
+        manager::VramTable::parse("defaults:\n  headroom_gb: 2\nentries: []\n").unwrap();
+
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status, vram_total_gb) \
+         VALUES ($1, 'docker-04', 'http://10.15.50.114:8082', 'remoto', 'online', 12)",
+    )
+    .bind(orch_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    // 1. Job Manual (com orchestrator_hint em params)
+    let resp_man = manager::create_job_with_context(
+        &p,
+        &cache,
+        &vram_table,
+        manager::CreateJobRequest {
+            kind: "yolo_train".into(),
+            engine: "yolo".into(),
+            model: "yolo11n".into(),
+            mode: "train".into(),
+            dataset_id: Some(ds_id.to_string()),
+            dataset_version_id: None,
+            package_ref: None,
+            config_yaml: None,
+            params: Some(serde_json::json!({"orchestrator_hint": orch_id.to_string()})),
+            vram_min_gb: None,
+            weights_id: None,
+            orchestrator_hint: Some(orch_id.to_string()),
+            gpu_device: None,
+        },
+    )
+    .await
+    .unwrap();
+    let j_man: uuid::Uuid = resp_man.job_id.parse().unwrap();
+    sqlx::query("UPDATE jobs SET status = 'running', gpu_device = $2 WHERE id = $1")
+        .bind(j_man)
+        .bind(gpu_uuid)
+        .execute(&p)
+        .await
+        .unwrap();
+
+    // 2. Job Automático (sem orchestrator_hint)
+    let resp_auto = manager::create_job_with_context(
+        &p,
+        &cache,
+        &vram_table,
+        manager::CreateJobRequest {
+            kind: "yolo_train".into(),
+            engine: "yolo".into(),
+            model: "yolo11n".into(),
+            mode: "train".into(),
+            dataset_id: Some(ds_id.to_string()),
+            dataset_version_id: None,
+            package_ref: None,
+            config_yaml: None,
+            params: None,
+            vram_min_gb: None,
+            weights_id: None,
+            orchestrator_hint: None,
+            gpu_device: None,
+        },
+    )
+    .await
+    .unwrap();
+    let j_auto: uuid::Uuid = resp_auto.job_id.parse().unwrap();
+    sqlx::query("UPDATE jobs SET status = 'running', gpu_device = $2 WHERE id = $1")
+        .bind(j_auto)
+        .bind(gpu_uuid)
+        .execute(&p)
+        .await
+        .unwrap();
+
+    // 3. Executa recovery_jobs (requeue)
+    let recovered = manager::recover_jobs(&p).await.unwrap();
+    assert_eq!(recovered, 2);
+
+    let row_man: (Option<String>,) = sqlx::query_as("SELECT gpu_device FROM jobs WHERE id = $1")
+        .bind(j_man)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(
+        row_man.0.as_deref(),
+        Some(gpu_uuid),
+        "Requeue deve manter gpu_device manual"
+    );
+
+    let row_auto: (Option<String>,) = sqlx::query_as("SELECT gpu_device FROM jobs WHERE id = $1")
+        .bind(j_auto)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(
+        row_auto.0, None,
+        "Requeue deve limpar gpu_device de eleição automática"
+    );
 }

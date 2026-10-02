@@ -111,6 +111,16 @@ export function computeGlobalSteps(
 }
 
 /**
+ * Prepara uma série para escala log: valores ≤ 0 ou não finitos viram `null`
+ * (lacuna), pois log(≤0) quebra o auto-range do uPlot.
+ */
+export function sanitizeForLog(
+	values: (number | null | undefined)[],
+): (number | null)[] {
+	return values.map((v) => (v != null && Number.isFinite(v) && v > 0 ? v : null));
+}
+
+/**
  * Calcula Média Móvel Exponencial (EMA) sobre uma série de números (podendo conter nulls).
  * alpha = 1 - smoothing (onde smoothing varia de 0 a 0.99).
  */

@@ -6,6 +6,7 @@ import { IconActivity, IconTrendingUp } from "@/components/icons";
 import {
 	calculateEMA,
 	pivotMetricPoints,
+	sanitizeForLog,
 	type XAxisMode,
 } from "@/lib/metricMath";
 import type { MetricPointWithKey } from "@/types/jobs";
@@ -230,17 +231,21 @@ export function ConvergenceChart({
 
 		for (const key of activeKeys) {
 			const rawValues = pivoted.seriesData[key] ?? [];
+			// Escala log no eixo esquerdo: valores ≤ 0 viram lacuna (senão quebram o auto-range)
+			const isLeft = (SERIES_PALETTE[key]?.axis ?? "y") === "y";
+			const fit = (v: (number | null)[]) =>
+				logScaleY && isLeft ? sanitizeForLog(v) : v;
 			// Se EMA > 0 e a chave não for LR (LR já é suave e em escala logarítmica)
 			if (emaSmoothing > 0 && key !== "lr") {
-				dataRows.push(rawValues); // raw
-				dataRows.push(calculateEMA(rawValues, emaSmoothing)); // ema
+				dataRows.push(fit(rawValues)); // raw
+				dataRows.push(fit(calculateEMA(rawValues, emaSmoothing))); // ema
 			} else {
-				dataRows.push(rawValues);
+				dataRows.push(fit(rawValues));
 			}
 		}
 
 		return dataRows as uPlot.AlignedData;
-	}, [pivoted, activeKeys, emaSmoothing]);
+	}, [pivoted, activeKeys, emaSmoothing, logScaleY]);
 
 	// Construção das Options do uPlot
 	const uPlotOptions = useMemo<uPlot.Options>(() => {
@@ -283,7 +288,7 @@ export function ConvergenceChart({
 				ticks: { stroke: "#3e3749", width: 1 },
 				values: (_self, splits) =>
 					splits.map((v) =>
-						v < 0.01 && v > 0 ? v.toExponential(1) : v.toFixed(3),
+						v == null ? "" : v < 0.01 && v > 0 ? v.toExponential(1) : v.toFixed(3),
 					),
 			},
 		];
@@ -297,7 +302,7 @@ export function ConvergenceChart({
 				ticks: { stroke: "#38bdf8", width: 1 },
 				values: (_self, splits) =>
 					splits.map((v) =>
-						v < 0.01 && v > 0 ? v.toExponential(1) : v.toFixed(2),
+						v == null ? "" : v < 0.01 && v > 0 ? v.toExponential(1) : v.toFixed(2),
 					),
 			});
 		}

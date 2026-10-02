@@ -1,7 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { renderToString } from "react-dom/server";
-import { useJobTelemetry, type UseJobTelemetryReturn } from "./useJobTelemetry";
+import {
+	SSE_MAX_CONSECUTIVE_ERRORS,
+	sseErrorAction,
+	useJobTelemetry,
+	type UseJobTelemetryReturn,
+} from "./useJobTelemetry";
 import type { JobTelemetryEvent } from "@/types/studio";
 
 describe("useJobTelemetry - Contract & Initial State", () => {
@@ -60,4 +65,23 @@ describe("useJobTelemetry - Contract & Initial State", () => {
 		expect(event.etaSeconds).toBe(198);
 		expect(event.etaFormatted).toBe("03:18");
 	});
+});
+
+
+describe("sseErrorAction", () => {
+  const CONNECTING = 0;
+  const CLOSED = 2;
+
+  it("lets EventSource reconnect natively while CONNECTING below the limit", () => {
+    expect(sseErrorAction(CONNECTING, 1)).toBe("reconnect");
+    expect(sseErrorAction(CONNECTING, SSE_MAX_CONSECUTIVE_ERRORS - 1)).toBe("reconnect");
+  });
+
+  it("falls back to polling after N consecutive errors", () => {
+    expect(sseErrorAction(CONNECTING, SSE_MAX_CONSECUTIVE_ERRORS)).toBe("fallback");
+  });
+
+  it("falls back immediately when the stream is CLOSED", () => {
+    expect(sseErrorAction(CLOSED, 1)).toBe("fallback");
+  });
 });

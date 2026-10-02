@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useReducer } from "react";
 import { getJobMetricPoints } from "@/lib/jobs";
 import { mergeMetricPoints } from "@/lib/metricMath";
 import type { MetricPointWithKey } from "@/types/jobs";
@@ -9,8 +9,6 @@ export interface UseJobMetricSeriesOptions {
 	enabled?: boolean;
 	maxPoints?: number;
 	keys?: string[];
-	/** Se fornecido, faz append inicial ou sincronização */
-	initialPoints?: MetricPointWithKey[];
 }
 
 export interface UseJobMetricSeriesReturn {
@@ -23,6 +21,79 @@ export interface UseJobMetricSeriesReturn {
 	reset: () => void;
 }
 
+export interface MetricSeriesState {
+	jobId: string | null;
+	points: MetricPointWithKey[];
+	maxSeq: number;
+	isLoading: boolean;
+	isDownsampled: boolean;
+	error: string | null;
+}
+
+export type MetricSeriesAction =
+	| { type: "start"; jobId: string | null; loading: boolean }
+	| { type: "append"; points: MetricPointWithKey[]; maxSeq?: number }
+	| {
+			type: "loaded";
+			jobId: string;
+			points: MetricPointWithKey[];
+			maxSeq: number;
+			downsampled: boolean;
+	  }
+	| { type: "failed"; jobId: string; error: string };
+
+export const initialMetricSeriesState: MetricSeriesState = {
+	jobId: null,
+	points: [],
+	maxSeq: 0,
+	isLoading: false,
+	isDownsampled: false,
+	error: null,
+};
+
+/**
+ * Estado da série de métricas (fatia 4a).
+ * - `start` zera tudo para o job novo (nada do job anterior vaza).
+ * - `loaded` faz merge com os deltas SSE recebidos durante o GET inicial e é
+ *   descartado se pertence a outro job.
+ */
+export function metricSeriesReducer(
+	state: MetricSeriesState,
+	action: MetricSeriesAction,
+): MetricSeriesState {
+	switch (action.type) {
+		case "start":
+			return {
+				...initialMetricSeriesState,
+				jobId: action.jobId,
+				isLoading: action.loading,
+			};
+		case "append": {
+			if (action.points.length === 0) return state;
+			const batchMax =
+				action.maxSeq ??
+				Math.max(...action.points.map((p) => Number(p.seq)));
+			return {
+				...state,
+				points: mergeMetricPoints(state.points, action.points),
+				maxSeq: Math.max(state.maxSeq, batchMax),
+			};
+		}
+		case "loaded":
+			if (action.jobId !== state.jobId) return state;
+			return {
+				...state,
+				points: mergeMetricPoints(action.points, state.points),
+				maxSeq: Math.max(state.maxSeq, action.maxSeq),
+				isDownsampled: action.downsampled,
+				isLoading: false,
+			};
+		case "failed":
+			if (action.jobId !== state.jobId) return state;
+			return { ...state, isLoading: false, error: action.error };
+	}
+}
+
 /**
  * Hook para carregar série de métricas brutas e receber atualizações incrementais via SSE (fatia 4a).
  * - Carga inicial via GET /api/jobs/:id/metrics?maxPoints=...&keys=...
@@ -33,78 +104,65 @@ export function useJobMetricSeries(
 	jobId: string | null | undefined,
 	options: UseJobMetricSeriesOptions = {},
 ): UseJobMetricSeriesReturn {
-	const { enabled = true, maxPoints = 2000, keys, initialPoints } = options;
-
-	const [points, setPoints] = useState<MetricPointWithKey[]>(
-		initialPoints ?? [],
+	const { enabled = true, maxPoints = 2000, keys } = options;
+	const [state, dispatch] = useReducer(
+		metricSeriesReducer,
+		initialMetricSeriesState,
 	);
-	const [maxSeq, setMaxSeq] = useState<number>(0);
-	const [isLoading, setIsLoading] = useState<boolean>(false);
-	const [isDownsampled, setIsDownsampled] = useState<boolean>(false);
-	const [error, setError] = useState<string | null>(null);
 
 	const keysString = keys?.slice().sort().join(",");
 
 	const appendPoints = useCallback(
 		(newPoints: MetricPointWithKey[], newMaxSeq?: number) => {
 			if (!newPoints || newPoints.length === 0) return;
-			setPoints((prev) => mergeMetricPoints(prev, newPoints));
-			if (newMaxSeq != null) {
-				setMaxSeq((prev) => Math.max(prev, newMaxSeq));
-			} else {
-				const batchMax = Math.max(...newPoints.map((p) => Number(p.seq)));
-				setMaxSeq((prev) => Math.max(prev, batchMax));
-			}
+			dispatch({ type: "append", points: newPoints, maxSeq: newMaxSeq });
 		},
 		[],
 	);
 
 	const reset = useCallback(() => {
-		setPoints([]);
-		setMaxSeq(0);
-		setError(null);
-		setIsDownsampled(false);
+		dispatch({ type: "start", jobId: null, loading: false });
 	}, []);
 
 	useEffect(() => {
-		if (!jobId || !enabled) {
-			return;
-		}
+		const active = !!jobId && enabled;
+		dispatch({ type: "start", jobId: jobId ?? null, loading: active });
+		if (!jobId || !active) return;
 
-		let isCancelled = false;
-		setIsLoading(true);
-		setError(null);
-
-		const keysArr = keysString ? keysString.split(",") : undefined;
-
+		const controller = new AbortController();
 		getJobMetricPoints(jobId, {
 			maxPoints,
-			keys: keysArr,
+			keys: keysString ? keysString.split(",") : undefined,
+			signal: controller.signal,
 		})
 			.then((res) => {
-				if (isCancelled) return;
-				setPoints(res.items ?? []);
-				setMaxSeq(res.maxSeq ?? 0);
-				setIsDownsampled(res.downsampled ?? false);
-				setIsLoading(false);
+				if (controller.signal.aborted) return;
+				dispatch({
+					type: "loaded",
+					jobId,
+					points: res.items ?? [],
+					maxSeq: res.maxSeq ?? 0,
+					downsampled: res.downsampled ?? false,
+				});
 			})
 			.catch((err) => {
-				if (isCancelled) return;
-				setIsLoading(false);
-				setError(err instanceof Error ? err.message : String(err));
+				if (controller.signal.aborted) return;
+				dispatch({
+					type: "failed",
+					jobId,
+					error: err instanceof Error ? err.message : String(err),
+				});
 			});
 
-		return () => {
-			isCancelled = true;
-		};
+		return () => controller.abort();
 	}, [jobId, enabled, maxPoints, keysString]);
 
 	return {
-		points,
-		maxSeq,
-		isLoading,
-		isDownsampled,
-		error,
+		points: state.points,
+		maxSeq: state.maxSeq,
+		isLoading: state.isLoading,
+		isDownsampled: state.isDownsampled,
+		error: state.error,
 		appendPoints,
 		reset,
 	};

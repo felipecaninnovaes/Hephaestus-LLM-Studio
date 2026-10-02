@@ -125,9 +125,6 @@ function JobsPageContent() {
 	const [pendingArtifactFocus, setPendingArtifactFocus] = useState<
 		string | null
 	>(null);
-	const [metricPoints, setMetricPoints] = useState<
-		Record<string, MetricPointWithKey[]>
-	>({});
 	const [zipBusy, setZipBusy] = useState(false);
 	const [cleanupOpen, setCleanupOpen] = useState(false);
 	const {
@@ -313,31 +310,27 @@ function JobsPageContent() {
 		[isYoloSelected],
 	);
 
-	const { points: currentJobPoints, appendPoints: appendCurrentJobPoints } =
-		useJobMetricSeries(selectedJob?.id, {
-			enabled: !!selectedJob,
-			maxPoints: 2500, // ~2x largura em px
-			keys: requestedKeys,
-		});
-
-	// Sincroniza pontos do hook para o mapa de cache por jobId
-	useEffect(() => {
-		if (!selectedJob?.id) return;
-		setMetricPoints((prev) => ({
-			...prev,
-			[selectedJob.id]: currentJobPoints,
-		}));
-	}, [selectedJob?.id, currentJobPoints]);
+	const {
+		points: currentJobPoints,
+		maxSeq: currentJobMaxSeq,
+		appendPoints: appendCurrentJobPoints,
+	} = useJobMetricSeries(selectedJob?.id, {
+		enabled: !!selectedJob,
+		maxPoints: 2500, // ~2x largura em px
+		keys: requestedKeys,
+	});
 
 	// SSE via useJobTelemetry: conecta ao stream e faz append de deltas sem refetch
+	// (no polling de fallback busca o delta via GET /metrics?afterSeq=)
 	const telemetry = useJobTelemetry(isSelectedActive ? selectedJob?.id : null, {
 		onMetricPoints: useCallback(
-			(pts: MetricPointWithKey[]) => {
-				if (!selectedJob?.id) return;
-				appendCurrentJobPoints(pts);
+			(pts: MetricPointWithKey[], maxSeq: number) => {
+				appendCurrentJobPoints(pts, maxSeq || undefined);
 			},
-			[selectedJob?.id, appendCurrentJobPoints],
+			[appendCurrentJobPoints],
 		),
+		metricAfterSeq: currentJobMaxSeq,
+		metricKeys: requestedKeys,
 	});
 	// AC-006-B: pontos reais de métrica de treino do job selecionado
 	// (linhas de status/boot do engine ficam só no log, nunca no gráfico/chips)
@@ -716,9 +709,7 @@ function JobsPageContent() {
 										selectedTrainingMetrics.length > 0 && (
 											<div className="space-y-4 pt-3 border-t border-white/10">
 												<ConvergenceChart
-													points={
-														metricPoints[selectedJob.id] ?? currentJobPoints
-													}
+													points={currentJobPoints}
 													metrics={selectedTrainingMetrics}
 													jobKind={selectedJob.kind}
 													totalEpochs={selectedJob.epoch || 100}

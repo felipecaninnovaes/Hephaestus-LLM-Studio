@@ -81,6 +81,10 @@ export function UPlotChart({
 					}
 				} catch {
 					// Medição opcional
+				} finally {
+					performance.clearMarks("uplot-mount-start");
+					performance.clearMarks("uplot-draw-end");
+					performance.clearMeasures("uplot-initial-render");
 				}
 			}
 		});

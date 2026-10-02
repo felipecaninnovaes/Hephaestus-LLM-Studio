@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { getJob } from "@/lib/jobs";
+import { getJob, getJobMetricPoints } from "@/lib/jobs";
 import type { MetricPointWithKey } from "@/types/jobs";
 import type { JobTelemetryEvent } from "@/types/studio";
 
@@ -10,6 +10,30 @@ export interface UseJobTelemetryOptions {
 	onFinished?: (event: JobTelemetryEvent | null) => void;
 	onError?: (err: Error) => void;
 	onMetricPoints?: (points: MetricPointWithKey[], maxSeq: number) => void;
+	/** Último seq de métrica já carregado (delta no polling de fallback) */
+	metricAfterSeq?: number;
+	/** Chaves de métrica pedidas no polling de fallback */
+	metricKeys?: string[];
+}
+
+/** Erros SSE consecutivos (sem `open` entre eles) antes de cair no polling. */
+export const SSE_MAX_CONSECUTIVE_ERRORS = 3;
+const EVENT_SOURCE_CLOSED = 2;
+
+/**
+ * Decide o que fazer num `onerror` do EventSource. Enquanto o navegador está
+ * reconectando (CONNECTING), deixa a reconexão nativa agir — ela reenvia
+ * `Last-Event-ID` e o servidor manda o delta. Cai no polling só se o stream
+ * foi fechado de vez (CLOSED) ou após N falhas consecutivas.
+ */
+export function sseErrorAction(
+	readyState: number,
+	consecutiveErrors: number,
+): "reconnect" | "fallback" {
+	if (readyState === EVENT_SOURCE_CLOSED) return "fallback";
+	return consecutiveErrors >= SSE_MAX_CONSECUTIVE_ERRORS
+		? "fallback"
+		: "reconnect";
 }
 
 export interface UseJobTelemetryReturn {
@@ -72,6 +96,13 @@ export function useJobTelemetry(
 	onErrorRef.current = onError;
 	const onMetricPointsRef = useRef(options.onMetricPoints);
 	onMetricPointsRef.current = options.onMetricPoints;
+	const metricSeqRef = useRef(0);
+	metricSeqRef.current = Math.max(
+		metricSeqRef.current,
+		options.metricAfterSeq ?? 0,
+	);
+	const metricKeysRef = useRef(options.metricKeys);
+	metricKeysRef.current = options.metricKeys;
 
 	useEffect(() => {
 		if (!jobId || !enabled) {
@@ -101,6 +132,8 @@ export function useJobTelemetry(
 		setIsFinished(false);
 		setError(null);
 		setLastEvent(null);
+		// Seq do job anterior não vale aqui; o render seguinte reaplica metricAfterSeq
+		metricSeqRef.current = 0;
 
 		let isClosed = false;
 
@@ -135,9 +168,22 @@ export function useJobTelemetry(
 			if (isClosed || pollTimerRef.current) return;
 			setIsLive(false);
 
+			const pollMetrics = async () => {
+				const onPoints = onMetricPointsRef.current;
+				if (!onPoints) return;
+				const res = await getJobMetricPoints(jobId as string, {
+					afterSeq: metricSeqRef.current,
+					keys: metricKeysRef.current,
+				});
+				if (isClosed || !res.items || res.items.length === 0) return;
+				metricSeqRef.current = Math.max(metricSeqRef.current, res.maxSeq ?? 0);
+				onPoints(res.items, res.maxSeq ?? 0);
+			};
+
 			const poll = async () => {
 				if (isClosed) return;
 				try {
+					await pollMetrics();
 					const j = await getJob(jobId as string);
 					setStatus(j.status);
 					/* Polling (fallback sem SSE): propaga só o que o job informa.
@@ -187,7 +233,9 @@ export function useJobTelemetry(
 			const es = new EventSource(url);
 			eventSourceRef.current = es;
 
+			let consecutiveErrors = 0;
 			es.onopen = () => {
+				consecutiveErrors = 0;
 				if (!isClosed) setIsLive(true);
 			};
 
@@ -216,6 +264,10 @@ export function useJobTelemetry(
 				try {
 					const data = JSON.parse(e.data);
 					if (data && Array.isArray(data.items) && onMetricPointsRef.current) {
+						metricSeqRef.current = Math.max(
+							metricSeqRef.current,
+							data.maxSeq ?? 0,
+						);
 						onMetricPointsRef.current(data.items, data.maxSeq ?? 0);
 					}
 				} catch {
@@ -237,7 +289,11 @@ export function useJobTelemetry(
 
 			es.onerror = () => {
 				if (isClosed) return;
-				// Se SSE falhar, faz fallback transparente para polling HTTP
+				consecutiveErrors += 1;
+				if (sseErrorAction(es.readyState, consecutiveErrors) === "reconnect") {
+					setIsLive(false);
+					return;
+				}
 				es.close();
 				eventSourceRef.current = null;
 				startPollingFallback();

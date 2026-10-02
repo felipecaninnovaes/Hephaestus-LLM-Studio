@@ -8,7 +8,21 @@ import {
 	mergeMetricPoints,
 	nextXRange,
 	pivotMetricPoints,
+	sanitizeForLog,
 } from "./metricMath";
+
+describe("sanitizeForLog", () => {
+	it("turns non-positive and non-finite values into gaps, keeps positives", () => {
+		expect(sanitizeForLog([0.5, 0, -1, null, Number.NaN, 2e-6])).toEqual([
+			0.5,
+			null,
+			null,
+			null,
+			null,
+			2e-6,
+		]);
+	});
+});
 
 describe("metricMath - pure functions", () => {
 	describe("dedupeMetricPoints & mergeMetricPoints", () => {

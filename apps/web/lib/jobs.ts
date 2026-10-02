@@ -159,6 +159,7 @@ export function getJobMetricPoints(
 		afterSeq?: number;
 		maxPoints?: number;
 		keys?: string[];
+		signal?: AbortSignal;
 	} = {},
 ): Promise<MetricPointsResponse> {
 	const q = new URLSearchParams();
@@ -169,6 +170,7 @@ export function getJobMetricPoints(
 	const queryStr = q.toString();
 	return apiFetch(
 		`/api/jobs/${jobId}/metrics${queryStr ? `?${queryStr}` : ""}`,
+		{ signal: params.signal },
 	);
 }
 

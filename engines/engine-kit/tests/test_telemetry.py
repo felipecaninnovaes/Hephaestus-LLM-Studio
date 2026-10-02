@@ -85,6 +85,41 @@ class TestTelemetryEmitter(unittest.TestCase):
         self.assertEqual(lines[-1]["etaSeconds"], 220)
         self.assertEqual(lines[-1]["etaFormatted"], "3m 40s")
         self.assertEqual(lines[-1]["metrics"]["lossEma"], 0.38)
+    def test_emit_diagnostics_camel_case_and_safe_failure(self):
+        emitter = TelemetryEmitter(self.tmp_dir)
+        diag_payload = {
+            "grad_norm_l2": 1.234,
+            "nan_count": 0,
+            "inf_count": 0,
+            "lr_per_group": [1e-4, 2e-4],
+            "lora_norms": {"block_0": 0.5, "block_1": 0.8},
+        }
+        ev = emitter.emit(
+            phase="training",
+            message="Step 10",
+            progress=0.1,
+            step=10,
+            diagnostics=diag_payload,
+        )
+        self.assertIn("diagnostics", ev)
+        diag = ev["diagnostics"]
+        self.assertEqual(diag["gradNormL2"], 1.234)
+        self.assertEqual(diag["nanCount"], 0)
+        self.assertEqual(diag["infCount"], 0)
+        self.assertEqual(diag["lrPerGroup"], [1e-4, 2e-4])
+        self.assertEqual(diag["loraNorms"], {"block_0": 0.5, "block_1": 0.8})
+
+        # Verifica tolerância a falha / tipo malformado
+        bad_diag = {"gradNormL2": "not-a-float-and-cannot-convert"}
+        ev_bad = emitter.emit(
+            phase="training",
+            message="Step 11",
+            progress=0.11,
+            step=11,
+            diagnostics=bad_diag,
+        )
+        # Não lança exceção e evento continua emitido
+        self.assertEqual(ev_bad["step"], 11)
 
     def test_emit_stdout_suffix_speed_and_eta(self):
         import io

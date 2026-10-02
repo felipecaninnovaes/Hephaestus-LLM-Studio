@@ -28,6 +28,10 @@ from trainer_difusao.common import (
     save_final_adapter,
     _validate_train_aux,
 )
+from trainer_difusao.common_pkg.diagnostics import (
+    DiagnosticsTracker,
+    compute_grad_norm_l2,
+)
 from trainer_difusao.dataset import DiffusionDataset, build_dataloader
 from trainer_difusao.optimizers import _create_lr_scheduler, _create_optimizer
 
@@ -442,6 +446,8 @@ class TrainingLoopRunner:
 
         global_step = 0
         safe_avg_loss = None
+        diag_tracker = DiagnosticsTracker(lora_interval_steps=max(1, total_train_steps // max(1, tcfg.epochs)))
+        last_grad_norm: float = 0.0
 
         # Loop principal de treino
         for epoch_idx in range(1, tcfg.epochs + 1):
@@ -474,13 +480,21 @@ class TrainingLoopRunner:
                 steps_in_epoch += 1
 
                 if steps_in_epoch % tcfg.grad_accum == 0 or steps_in_epoch == len(dataloader):
-                    torch.nn.utils.clip_grad_norm_(comp["trainable_module"].parameters(), 1.0)
+                    grad_norm_raw = torch.nn.utils.clip_grad_norm_(comp["trainable_module"].parameters(), 1.0)
+                    if hasattr(grad_norm_raw, "item"):
+                        last_grad_norm = float(grad_norm_raw.item())
+                    elif grad_norm_raw is not None:
+                        last_grad_norm = float(grad_norm_raw)
+                    else:
+                        last_grad_norm = compute_grad_norm_l2(comp["trainable_module"].parameters())
+                    diag_tracker.observe_step(cur_loss_raw, last_grad_norm)
                     optimizer.step()
                     if lr_scheduler is not None:
                         lr_scheduler.step()
                     optimizer.zero_grad()
                     global_step += 1
-
+                else:
+                    diag_tracker.observe_step(cur_loss_raw, None)
                 if not math.isnan(cur_loss_raw) and not math.isinf(cur_loss_raw):
                     epoch_loss += cur_loss_raw
 
@@ -500,12 +514,21 @@ class TrainingLoopRunner:
                     current_progress = round(
                         min(0.99, max(0.10, 0.10 + 0.89 * (global_step / max(1, total_train_steps)))), 4
                     )
+                    diagnostics_payload = diag_tracker.build_diagnostics(
+                        grad_norm_l2=last_grad_norm,
+                        optimizer=optimizer,
+                        default_lr=effective_lr,
+                        model=comp.get("trainable_module"),
+                        step=global_step,
+                    )
                     _emit_metric(
                         metrics_path,
                         epoch=epoch,
                         step=global_step,
                         loss=safe_loss,
                         lr=effective_lr,
+                        grad_norm=last_grad_norm,
+                        diagnostics=diagnostics_payload,
                         progress=current_progress,
                         phase="training",
                         message=f"Época {epoch}/{tcfg.epochs + tcfg.epoch_offset} · Step {global_step}/{total_train_steps} · Loss: {safe_loss}",
@@ -524,12 +547,22 @@ class TrainingLoopRunner:
             epoch_progress = round(
                 min(0.99, max(0.10, 0.10 + 0.89 * (epoch_idx / tcfg.epochs))), 4
             )
+            epoch_diag = diag_tracker.build_diagnostics(
+                grad_norm_l2=last_grad_norm,
+                optimizer=optimizer,
+                default_lr=effective_lr,
+                model=comp.get("trainable_module"),
+                step=global_step,
+                force_lora=True,
+            )
             _emit_metric(
                 metrics_path,
                 epoch=epoch,
                 step=global_step,
                 loss=safe_avg_loss,
                 lr=effective_lr,
+                grad_norm=last_grad_norm,
+                diagnostics=epoch_diag,
                 progress=epoch_progress,
                 phase="epoch_complete",
                 message=f"Época {epoch}/{tcfg.epochs + tcfg.epoch_offset} concluída · Loss Médio: {safe_avg_loss}",

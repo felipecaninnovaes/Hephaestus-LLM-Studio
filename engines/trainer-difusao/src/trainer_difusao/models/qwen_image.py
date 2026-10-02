@@ -38,6 +38,10 @@ from trainer_difusao.common import (
 from trainer_difusao.dataset import DiffusionDataset, build_dataloader
 from trainer_difusao.models.base import BaseModelTrainer
 from trainer_difusao.models.mock import _mock_train
+from trainer_difusao.common_pkg.diagnostics import (
+    DiagnosticsTracker,
+    compute_grad_norm_l2,
+)
 from trainer_difusao.models.qwen_pkg.qwen_image_2 import (
     AutoencoderKLQwenImage21,
     QwenImage21Pipeline,
@@ -598,7 +602,8 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
     start_time = time.time()
     global_step = 0
     running_loss = 0.0
-
+    diag_tracker = DiagnosticsTracker(lora_interval_steps=max(1, total_progress_steps // max(1, epochs)))
+    last_grad_norm: float = 0.0
     _emit_metric(
         metrics_path,
         epoch=epoch_offset,
@@ -717,14 +722,21 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
                     # Backward pass
                     optimizer.zero_grad()
                     loss.backward()
-                    torch.nn.utils.clip_grad_norm_(model_with_lora.parameters(), 1.0)
+                    grad_norm_raw = torch.nn.utils.clip_grad_norm_(model_with_lora.parameters(), 1.0)
+                    if hasattr(grad_norm_raw, "item"):
+                        last_grad_norm = float(grad_norm_raw.item())
+                    elif grad_norm_raw is not None:
+                        last_grad_norm = float(grad_norm_raw)
+                    else:
+                        last_grad_norm = compute_grad_norm_l2(model_with_lora.parameters())
+                    cur_loss_item = float(loss.item())
+                    diag_tracker.observe_step(cur_loss_item, last_grad_norm)
                     optimizer.step()
 
-                    running_loss += loss.item()
-                    epoch_loss += loss.item()
+                    running_loss += cur_loss_item
+                    epoch_loss += cur_loss_item
                     num_batches += 1
                     global_step += 1
-
                     # Metrics
                     if global_step % 10 == 0:
                         avg_loss = running_loss / 10
@@ -735,19 +747,27 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
 
                         progress = min(0.99, 0.45 + (global_step / total_progress_steps) * 0.50)
                         vram_used = vram_allocated_gb()
-
+                        diag_payload = diag_tracker.build_diagnostics(
+                            grad_norm_l2=last_grad_norm,
+                            optimizer=optimizer,
+                            default_lr=learning_rate,
+                            model=model_with_lora,
+                            step=global_step,
+                        )
                         _emit_metric(
                             metrics_path,
                             epoch=epoch,
                             step=global_step,
                             loss=avg_loss,
                             lr=learning_rate,
+                            grad_norm=last_grad_norm,
+                            diagnostics=diag_payload,
                             progress=progress,
                             phase="training",
                             message=f"Epoch {epoch}/{epoch_offset + epochs}, step {global_step}, loss={avg_loss:.4f}",
-                            etaSeconds=eta_seconds,
-                            stepTimeSeconds=time_per_step,
-                            vramReservedGb=vram_used,
+                            eta_s=int(eta_seconds) if eta_seconds is not None else None,
+                            step_time_s=time_per_step,
+                            vram_reserved_gb=vram_used,
                         )
                         running_loss = 0.0
 
@@ -777,17 +797,26 @@ def _real_train_qwen_image(cfg: dict[str, Any], output: Path | str) -> None:
 
             # End of epoch
             avg_epoch_loss = epoch_loss / max(1, num_batches)
+            epoch_diag = diag_tracker.build_diagnostics(
+                grad_norm_l2=last_grad_norm,
+                optimizer=optimizer,
+                default_lr=learning_rate,
+                model=model_with_lora,
+                step=global_step,
+                force_lora=True,
+            )
             _emit_metric(
                 metrics_path,
                 epoch=epoch,
                 step=global_step,
                 loss=avg_epoch_loss,
                 lr=learning_rate,
+                grad_norm=last_grad_norm,
+                diagnostics=epoch_diag,
                 progress=0.45 + local_epoch_idx / epochs * 0.50,
                 phase="epoch_complete",
                 message=f"Epoch {epoch} completo, loss médio={avg_epoch_loss:.4f}",
             )
-
             # Sample during training (reduced resolution)
             if sample_prompt and sample_interval > 0 and local_epoch_idx % sample_interval == 0:
                 try:

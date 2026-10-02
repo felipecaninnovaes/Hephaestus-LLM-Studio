@@ -45,6 +45,8 @@ def _emit_metric(
     vram_reserved_gb: float | None = None,
     loss_ema: float | None = None,
     speed: str | None = None,
+    grad_norm: float | None = None,
+    diagnostics: dict[str, Any] | None = None,
 ) -> None:
     try:
         metrics_path.parent.mkdir(parents=True, exist_ok=True)
@@ -58,6 +60,8 @@ def _emit_metric(
             payload["loss_ema"] = loss_ema
         if lr is not None:
             payload["lr"] = lr
+        if grad_norm is not None:
+            payload["grad_norm"] = grad_norm
         if progress is not None:
             payload["progress"] = progress
         if total_steps is not None:
@@ -138,8 +142,36 @@ def _emit_metric(
                 m_dict["lossEma"] = loss_ema
             if lr is not None:
                 m_dict["lr"] = lr
+            if grad_norm is not None:
+                m_dict["grad_norm"] = grad_norm
             if m_dict:
                 t_payload["metrics"] = m_dict
+            if diagnostics is not None:
+                try:
+                    clean_diag: dict[str, Any] = {}
+                    for k, v in diagnostics.items():
+                        if v is None:
+                            continue
+                        if k in ("grad_norm_l2", "gradNormL2"):
+                            clean_diag["gradNormL2"] = float(v)
+                        elif k in ("nan_count", "nanCount"):
+                            clean_diag["nanCount"] = int(v)
+                        elif k in ("inf_count", "infCount"):
+                            clean_diag["infCount"] = int(v)
+                        elif k in ("lr_per_group", "lrPerGroup"):
+                            clean_diag["lrPerGroup"] = [float(x) for x in v]
+                        elif k in ("lora_norms", "loraNorms"):
+                            clean_diag["loraNorms"] = {str(lk): float(lv) for lk, lv in v.items()}
+                        else:
+                            clean_diag[k] = v
+                    if clean_diag:
+                        t_payload["diagnostics"] = clean_diag
+                except Exception as diag_err:
+                    print(
+                        f"[WARN] Falha ao processar diagnostics na emissão de métrica: {diag_err}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
             with open(telemetry_path, "a", encoding="utf-8") as tf:
                 tf.write(json.dumps(t_payload) + "\n")
                 tf.flush()

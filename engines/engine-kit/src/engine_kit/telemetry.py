@@ -81,6 +81,7 @@ class TelemetryEmitter:
         speed: Optional[str] = None,
         eta_seconds: Optional[int] = None,
         eta_formatted: Optional[str] = None,
+        diagnostics: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Emite um evento estruturado de telemetria com flush imediato."""
         self._current_phase = phase
@@ -151,6 +152,32 @@ class TelemetryEmitter:
                 else:
                     clean_metrics[k] = v
             event["metrics"] = clean_metrics
+        if diagnostics is not None:
+            try:
+                clean_diag: dict[str, Any] = {}
+                for k, v in diagnostics.items():
+                    if v is None:
+                        continue
+                    if k in ("grad_norm_l2", "gradNormL2"):
+                        clean_diag["gradNormL2"] = float(v)
+                    elif k in ("nan_count", "nanCount"):
+                        clean_diag["nanCount"] = int(v)
+                    elif k in ("inf_count", "infCount"):
+                        clean_diag["infCount"] = int(v)
+                    elif k in ("lr_per_group", "lrPerGroup"):
+                        clean_diag["lrPerGroup"] = [float(x) for x in v]
+                    elif k in ("lora_norms", "loraNorms"):
+                        clean_diag["loraNorms"] = {str(lk): float(lv) for lk, lv in v.items()}
+                    else:
+                        clean_diag[k] = v
+                if clean_diag:
+                    event["diagnostics"] = clean_diag
+            except Exception as e:
+                print(
+                    f"[WARN] Falha ao processar diagnostics na telemetria: {e}",
+                    file=sys.stderr,
+                    flush=True,
+                )
         line = json.dumps(event) + "\n"
 
         # 1. Grava no telemetry.jsonl canônico

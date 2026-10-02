@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import struct
 import time
@@ -250,9 +251,19 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
     checkpoints_dir = output / "checkpoints"
     checkpoints_dir.mkdir(parents=True, exist_ok=True)
 
+    diag_nan_count = 0
+    diag_inf_count = 0
     for ep_idx in range(1, epochs + 1):
         ep = ep_idx + epoch_offset
-        loss = _synthetic_loss(seed, ep, epochs + epoch_offset)
+        raw_loss = _synthetic_loss(seed, ep, epochs + epoch_offset)
+        # Suporte a injeção de teste para NaN/Inf via env var MOCK_INJECT_NAN
+        inject_nan = os.environ.get("MOCK_INJECT_NAN") == "1"
+        if inject_nan and ep_idx == 1:
+            loss = float("nan")
+            diag_nan_count += 1
+        else:
+            loss = raw_loss
+
         progress = round(ep_idx / epochs, 4)
         suffix = (
             f" · control_dataset_images={control_n} · "
@@ -260,17 +271,29 @@ def _mock_train(cfg: dict[str, Any], output: Path) -> None:
             if ep_idx == 1 and (control_n or cache_text_embeddings)
             else ""
         )
+        mock_grad_norm = round(0.5 + 0.1 * (seed % 10), 4)
+        mock_diagnostics = {
+            "gradNormL2": mock_grad_norm,
+            "nanCount": diag_nan_count,
+            "infCount": diag_inf_count,
+            "lrPerGroup": [learning_rate],
+            "loraNorms": {
+                "single_transformer_blocks": 0.42,
+                "transformer_blocks": 0.35,
+            },
+        }
         _emit_metric(
             metrics_path,
             epoch=ep,
             step=ep_idx * 10,
-            loss=loss,
+            loss=None if math.isnan(loss) or math.isinf(loss) else loss,
             lr=learning_rate,
+            grad_norm=mock_grad_norm,
+            diagnostics=mock_diagnostics,
             progress=progress,
             phase="training",
             message=f"Época {ep}/{epochs + epoch_offset} concluída · Loss: {loss}{suffix}",
         )
-
         # Salva checkpoint da época respeitando checkpoint_interval
         if ep_idx % checkpoint_interval == 0 or ep_idx == epochs:
             ckpt_file = checkpoints_dir / f"{base_name}_epoch_{ep:03d}.safetensors"

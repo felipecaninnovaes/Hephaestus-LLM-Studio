@@ -2174,8 +2174,25 @@ paths:
       tags: [jobs]
       summary: Stream de eventos de telemetria em tempo real (SSE)
       description: |
-        Canal Server-Sent Events (ADR-0021 D3) transmitindo eventos de telemetria em tempo real
-        conforme são emitidos pelo motor de execução.
+        Canal Server-Sent Events (ADR-0021 D3) transmitindo eventos de telemetria em tempo real.
+
+        Fatia 1b (`telemetria-observabilidade.md` §3.2/§3.3): o BFF não mais faz polling de
+        300ms por cliente — um único `PgListener` ouve `pg_notify('job_events', …)` emitido
+        pelo manager (mesma transação da escrita) e distribui o resultado via fan-out
+        in-process. Eventos SSE:
+        - `snapshot`: estado inicial ao conectar (sempre o 1º evento).
+        - `telemetry`: atualização de progress/phase/step/epoch/vram.
+        - `metrics`: novos pontos de `job_metric_points` — `id:` SSE é o `seq` máximo do
+          lote (`data: {"items":[{seq,epoch,step,key,value,ts}],"maxSeq":N}`).
+        - `finished`: status terminal (`done`/`failed`/`cancelled`) — último evento, a conexão
+          encerra em seguida.
+
+        Reconexão: enviar o header `Last-Event-ID` com o `seq` do último evento `metrics`
+        recebido — o servidor busca o delta (`afterSeq`) antes de reassinar o fan-out, sem
+        perder pontos publicados durante a desconexão. Se o `PgListener` do BFF cair, os
+        clientes seguem recebendo atualizações via poll de 5s compartilhado (não por
+        cliente) até a reconexão automática do listener.
+
       responses:
         "200":
           description: Stream SSE com eventos de telemetria.
@@ -2183,7 +2200,7 @@ paths:
             text/event-stream:
               schema:
                 type: string
-                description: "Linhas formatadas em SSE contendo data: {...JobTelemetryEvent...}"
+                description: "Linhas formatadas em SSE (`event:`/`id:`/`data:`) — eventos snapshot/telemetry/metrics/finished."
         "401":
           description: "Sem sessão válida (`code: unauthorized`)."
           content:

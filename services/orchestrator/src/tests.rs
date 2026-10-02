@@ -6233,6 +6233,7 @@ async fn stream_metrics_and_samples_retries_apos_falha_de_report() {
     .unwrap();
     let samples_dir = tmp.path().join("samples");
     let checkpoints_dir = tmp.path().join("checkpoints");
+    let run_log_path = tmp.path().join("run.log");
 
     let report_client = Arc::new(ControllableReportClient::new(Err(
         "report request: connection refused".to_string(),
@@ -6248,6 +6249,7 @@ async fn stream_metrics_and_samples_retries_apos_falha_de_report() {
         checkpoints_dir,
         10,
         false,
+        run_log_path,
     ));
 
     // 1º tick (dispara quase imediatamente — tokio::interval tica no t=0):

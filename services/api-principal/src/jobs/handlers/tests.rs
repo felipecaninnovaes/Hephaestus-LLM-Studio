@@ -2389,3 +2389,86 @@ async fn get_job_logs_source_invalid_400_never_falls_back_to_telemetry() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["code"], "invalid_source");
 }
+
+// ---------------------------------------------------------------------------
+// Fatia 5b — GET /api/jobs/:id/lineage
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn get_job_lineage_handler_200() {
+    use crate::jobs::manager_client::InternalLineage;
+    use heph_contracts::{LineageEdge, LineageNode};
+
+    let job_id = "550e8400-e29b-41d4-a716-446655440000";
+    let parent_id = "550e8400-e29b-41d4-a716-446655440001";
+    let mut mock = MockManager::default();
+    mock.lineage_by_id.insert(
+        job_id.to_string(),
+        InternalLineage {
+            nodes: vec![
+                LineageNode {
+                    id: format!("job:{job_id}"),
+                    kind: "job".into(),
+                    label: "train flux".into(),
+                    status: Some("done".into()),
+                    created_at: Some("2026-10-01T00:00:00Z".into()),
+                    epoch: None,
+                },
+                LineageNode {
+                    id: format!("job:{parent_id}"),
+                    kind: "job".into(),
+                    label: "train flux".into(),
+                    status: Some("done".into()),
+                    created_at: Some("2026-09-01T00:00:00Z".into()),
+                    epoch: None,
+                },
+            ],
+            edges: vec![LineageEdge {
+                from: format!("job:{job_id}"),
+                to: format!("job:{parent_id}"),
+                kind: "resumed_from".into(),
+            }],
+        },
+    );
+    let state = test_state(mock);
+    let resp = get_job_lineage(axum::extract::State(state), Path(job_id.to_string())).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["nodes"].as_array().unwrap().len(), 2);
+    assert_eq!(json["edges"][0]["from"], format!("job:{job_id}"));
+    assert_eq!(json["edges"][0]["to"], format!("job:{parent_id}"));
+    assert_eq!(json["edges"][0]["kind"], "resumed_from");
+    // Wire camelCase: createdAt, nunca created_at.
+    assert_eq!(json["nodes"][0]["createdAt"], "2026-10-01T00:00:00Z");
+    assert!(json["nodes"][0].get("created_at").is_none());
+}
+
+#[tokio::test]
+async fn get_job_lineage_handler_404_job_inexistente() {
+    let job_id = "550e8400-e29b-41d4-a716-446655440000";
+    let mock = MockManager::default(); // lineage_by_id vazio ⇒ NotFound.
+    let state = test_state(mock);
+    let resp = get_job_lineage(axum::extract::State(state), Path(job_id.to_string())).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn get_job_lineage_handler_404_id_nao_uuid() {
+    let mock = MockManager::default();
+    let state = test_state(mock);
+    let resp = get_job_lineage(axum::extract::State(state), Path("not-a-uuid".to_string())).await;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn get_job_lineage_handler_503_manager_offline() {
+    let job_id = "550e8400-e29b-41d4-a716-446655440000";
+    let mut mock = MockManager::default();
+    mock.fail = true;
+    let state = test_state(mock);
+    let resp = get_job_lineage(axum::extract::State(state), Path(job_id.to_string())).await;
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+}

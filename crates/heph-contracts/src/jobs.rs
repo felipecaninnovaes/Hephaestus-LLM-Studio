@@ -55,6 +55,35 @@ pub struct ArtifactRow {
     pub bytes: i64,
 }
 
+/// Nó do grafo de linhagem (snake_case interno; fatia 5b).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LineageNode {
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub epoch: Option<i32>,
+}
+
+/// Aresta do grafo de linhagem (snake_case interno; fatia 5b).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LineageEdge {
+    pub from: String,
+    pub to: String,
+    pub kind: String,
+}
+
+/// Resposta do manager para `GET /internal/jobs/:id/lineage` (snake_case interno).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct LineageResponse {
+    pub nodes: Vec<LineageNode>,
+    pub edges: Vec<LineageEdge>,
+}
+
 /// Resposta do manager ao criar job (snake_case interno).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CreateJobResponse {

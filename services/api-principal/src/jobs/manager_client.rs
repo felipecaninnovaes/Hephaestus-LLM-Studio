@@ -59,6 +59,8 @@ pub type InternalJob = heph_contracts::JobRow;
 pub type InternalQueueItem = heph_contracts::QueueItem;
 /// Artefato (snake_case interno do manager).
 pub type InternalArtifact = heph_contracts::ArtifactRow;
+/// Linhagem de um job (snake_case interno do manager; fatia 5b).
+pub type InternalLineage = heph_contracts::LineageResponse;
 /// Telemetria (camelCase direto do manager — D9).
 pub type InternalTelemetry = heph_contracts::TelemetryResponse;
 /// Orquestrador retornado pelo manager (snake_case interno).
@@ -98,6 +100,9 @@ pub trait ManagerPort: Send + Sync {
         max_points: Option<i64>,
         keys: Option<&str>,
     ) -> Result<heph_contracts::telemetry::MetricPointsResponse, ManagerError>;
+
+    /// Linhagem de um job: ancestrais (cadeia de resumes) + descendentes diretos (fatia 5b).
+    async fn get_lineage(&self, job_id: &str) -> Result<InternalLineage, ManagerError>;
 
     /// Telemetria do manager (cache de heartbeat).
     async fn get_telemetry(&self) -> Result<InternalTelemetry, ManagerError>;
@@ -376,6 +381,11 @@ impl ManagerPort for HttpManager {
             .get_json(&format!("/internal/jobs/{job_id}/artifacts"))
             .await?;
         Ok(body.items)
+    }
+
+    async fn get_lineage(&self, job_id: &str) -> Result<InternalLineage, ManagerError> {
+        self.get_json(&format!("/internal/jobs/{job_id}/lineage"))
+            .await
     }
 
     async fn get_telemetry(&self) -> Result<InternalTelemetry, ManagerError> {
@@ -968,6 +978,8 @@ pub struct MockManager {
     /// Artefatos indexados por job_id — `list_artifacts` consulta aqui antes do
     /// resultado fixo.
     pub artifacts_by_id: std::collections::HashMap<String, Vec<InternalArtifact>>,
+    /// Linhagem indexada por job_id (fatia 5b) — resultado fixo se ausente.
+    pub lineage_by_id: std::collections::HashMap<String, InternalLineage>,
     // --- Generations (G.6b) ---
     /// Generations indexadas por ID — `get_generation` e `delete_generations` consultam aqui.
     pub generations_by_id: std::sync::RwLock<std::collections::HashMap<String, InternalGeneration>>,
@@ -1080,6 +1092,7 @@ impl Default for MockManager {
             last_create_job_body: std::sync::Mutex::new(None),
             jobs_by_id: std::collections::HashMap::new(),
             artifacts_by_id: std::collections::HashMap::new(),
+            lineage_by_id: std::collections::HashMap::new(),
             generations_by_id: std::sync::RwLock::new(std::collections::HashMap::new()),
             fail_list_generations: false,
             get_generation_not_found: false,
@@ -1147,6 +1160,16 @@ impl ManagerPort for MockManager {
         }
         self.metric_points_result
             .clone()
+            .ok_or(ManagerError::NotFound)
+    }
+
+    async fn get_lineage(&self, job_id: &str) -> Result<InternalLineage, ManagerError> {
+        if self.fail {
+            return Err(ManagerError::Unavailable("mock fail".into()));
+        }
+        self.lineage_by_id
+            .get(job_id)
+            .cloned()
             .ok_or(ManagerError::NotFound)
     }
 

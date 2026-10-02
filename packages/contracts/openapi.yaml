@@ -2379,6 +2379,47 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/jobs/{id}/lineage:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: "PK do job. UUID inválido ⇒ 404 `not_found` (D8)."
+    get:
+      operationId: getJobLineage
+      tags: [jobs]
+      summary: Linhagem dataset→job→checkpoint→resume→geração (fatia 5b)
+      description: |
+        Grafo calculado pelo manager a partir de `jobs.params.weights` (cadeia
+        de resume/geração), `job_artifacts`/`models` (checkpoints produzidos)
+        e `generations` (saídas de jobs `mode=generate`). Ancestrais completos
+        (sobe a cadeia de resumes até a raiz, com guarda de ciclo) + descendentes
+        diretos (jobs que retomaram/geraram a partir de um checkpoint deste job,
+        e as gerações desses). Referência quebrada (pai/dataset apagado) ⇒ nó
+        omitido, sem erro. Manager indisponível ⇒ 503 `queue_unavailable`.
+      responses:
+        "200":
+          description: Grafo de linhagem.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LineageGraph" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Job inexistente ou id não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/telemetry:
     get:
       operationId: getTelemetry
@@ -4985,6 +5026,57 @@ components:
         items:
           type: array
           items: { $ref: "#/components/schemas/JobArtifact" }
+
+    LineageNode:
+      type: object
+      required: [id, kind, label]
+      additionalProperties: false
+      description: "Nó do grafo de linhagem (fatia 5b)."
+      properties:
+        id:
+          type: string
+          description: "Id estável por kind (ex.: `job:<uuid>`, `checkpoint:<uuid>`, `dataset:<uuid>`, `generation:<uuid>`)."
+        kind:
+          type: string
+          enum: [dataset, job, checkpoint, generation]
+        label:
+          type: string
+          description: "Rótulo legível (título do dataset, `<mode> <model>` do job, nome/arquivo do checkpoint, prompt truncado da geração)."
+        status:
+          type: [string, "null"]
+          description: "Status do job, quando `kind: job`."
+        createdAt:
+          type: [string, "null"]
+          format: date-time
+        epoch:
+          type: [integer, "null"]
+          description: "Época do checkpoint, quando extraível do nome do arquivo."
+
+    LineageEdge:
+      type: object
+      required: [from, to, kind]
+      additionalProperties: false
+      description: "Aresta do grafo de linhagem (fatia 5b)."
+      properties:
+        from: { type: string, description: "Id de nó de origem." }
+        to: { type: string, description: "Id de nó de destino." }
+        kind:
+          type: string
+          enum: [trained_on, produced, resumed_from, generated_with]
+          description: "trained_on: dataset→job. produced: job→checkpoint|generation. resumed_from: checkpoint→job ou job→job (treino que retomou pesos). generated_with: checkpoint→job ou job→job (geração que usou o checkpoint)."
+
+    LineageGraph:
+      type: object
+      required: [nodes, edges]
+      additionalProperties: false
+      description: "Linhagem dataset→job→checkpoint→resume→geração de um job (fatia 5b)."
+      properties:
+        nodes:
+          type: array
+          items: { $ref: "#/components/schemas/LineageNode" }
+        edges:
+          type: array
+          items: { $ref: "#/components/schemas/LineageEdge" }
 
     JobLogLine:
       type: object

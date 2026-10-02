@@ -263,3 +263,13 @@ pub async fn prepare_cancel_handler(State(state): State<AppState>, JobId(uuid): 
         Err(e) => internal_error(&e.to_string()),
     }
 }
+
+/// GET /internal/jobs/:id/lineage — cadeia dataset→job→checkpoint→resume→geração (fatia 5b).
+pub async fn lineage_handler(State(state): State<AppState>, JobId(uuid): JobId) -> Response {
+    match crate::get_job_lineage(&state.pool, uuid).await {
+        Ok(graph) => (StatusCode::OK, Json(graph)).into_response(),
+        Err(ManagerError::NotFound) => not_found(),
+        Err(ManagerError::Internal(e)) => internal_error(&e),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}

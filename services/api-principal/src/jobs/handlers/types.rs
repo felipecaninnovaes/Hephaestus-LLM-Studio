@@ -280,3 +280,32 @@ pub struct JobMetricsResponse {
 pub type ListJobsResponse = JobListResponse;
 pub type ArtifactItem = ArtifactResponse;
 pub type ListArtifactsResponse = ArtifactListResponse;
+
+/// Nó do grafo de linhagem (wire camelCase; fatia 5b).
+#[derive(Debug, Serialize)]
+pub struct LineageNodeResponse {
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<i32>,
+}
+
+/// Aresta do grafo de linhagem (wire camelCase; fatia 5b).
+#[derive(Debug, Serialize)]
+pub struct LineageEdgeResponse {
+    pub from: String,
+    pub to: String,
+    pub kind: String,
+}
+
+/// `GET /api/jobs/:id/lineage` — grafo de linhagem (fatia 5b).
+#[derive(Debug, Serialize)]
+pub struct LineageGraphResponse {
+    pub nodes: Vec<LineageNodeResponse>,
+    pub edges: Vec<LineageEdgeResponse>,
+}

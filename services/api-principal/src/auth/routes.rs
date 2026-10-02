@@ -106,6 +106,7 @@ pub const PROTECTED_ROUTES: &[(&str, &str, &[u16])] = &[
         &[200, 401, 404, 503],
     ),
     ("GET", "/api/jobs/:id/artifacts/zip", &[200, 401, 404, 503]),
+    ("GET", "/api/jobs/:id/lineage", &[200, 401, 404, 503]),
     ("GET", "/api/telemetry", &[200, 401, 503]),
     ("POST", "/api/jobs/yolo", &[202, 400, 401, 404, 409, 503]),
     (
@@ -490,6 +491,10 @@ pub fn build(state: AppState) -> axum::Router {
         .route(
             "/api/jobs/:id/artifacts/zip",
             get(jobs::handlers::download_artifacts_zip),
+        )
+        .route(
+            "/api/jobs/:id/lineage",
+            get(jobs::handlers::get_job_lineage),
         )
         .route("/api/telemetry", get(jobs::handlers::get_telemetry))
         .route("/api/jobs/yolo", post(jobs::handlers::submit_yolo_job))

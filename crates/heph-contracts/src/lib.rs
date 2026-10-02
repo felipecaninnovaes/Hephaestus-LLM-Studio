@@ -19,8 +19,8 @@ pub use dispatch::{
 pub use heartbeat::{HeartbeatBody, HeartbeatRequest};
 pub use job_status::JobStatus;
 pub use jobs::{
-    AbortJobResponse, ArtifactRow, CreateJobResponse, JobRow, PrepareCompleteRequest,
-    PrepareFailRequest, PreparePackageRef, QueueItem,
+    AbortJobResponse, ArtifactRow, CreateJobResponse, JobRow, LineageEdge, LineageNode,
+    LineageResponse, PrepareCompleteRequest, PrepareFailRequest, PreparePackageRef, QueueItem,
 };
 pub use models::{GenerationItem, GenerationRow, ModelItem, ModelResponse, StorageUsageResponse};
 pub use nodes::{OrchestratorItem, TelemetryResponse};

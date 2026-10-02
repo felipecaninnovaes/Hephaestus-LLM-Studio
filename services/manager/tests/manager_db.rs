@@ -8003,3 +8003,223 @@ async fn prepare_complete_renova_created_at_da_versao() {
     .unwrap();
     assert!(renewed, "touch no complete renova created_at da versão");
 }
+
+// ===========================================================================
+// Fatia 5b — GET /internal/jobs/:id/lineage (manager::get_job_lineage)
+// ===========================================================================
+
+/// Insere um job de difusão direto via SQL (sem passar por `create_job` —
+/// testa `get_job_lineage` isoladamente, controlando `params.weights`).
+async fn insert_diffusion_job(
+    pool: &PgPool,
+    dataset_id: Option<uuid::Uuid>,
+    mode: &str,
+    weights: Option<uuid::Uuid>,
+) -> uuid::Uuid {
+    let id = uuid::Uuid::new_v4();
+    let params = match weights {
+        Some(w) => serde_json::json!({"weights": w.to_string()}),
+        None => serde_json::json!({}),
+    };
+    sqlx::query(
+        "INSERT INTO jobs (id, kind, engine, model, mode, dataset_id, status, params) \
+         VALUES ($1, 'diffusion_train', 'diffusion', 'flux', $2, $3, 'done', $4)",
+    )
+    .bind(id)
+    .bind(mode)
+    .bind(dataset_id)
+    .bind(&params)
+    .execute(pool)
+    .await
+    .expect("insert diffusion job");
+    id
+}
+
+/// Insere um checkpoint (`job_artifacts kind='checkpoint'`) para um job e
+/// retorna o id do artefato (usado como `weights` do job filho).
+async fn insert_checkpoint(pool: &PgPool, job_id: uuid::Uuid, epoch: u32) -> uuid::Uuid {
+    let id = uuid::Uuid::new_v4();
+    let path = format!("checkpoints/adapter_epoch_{epoch:03}.safetensors");
+    sqlx::query(
+        "INSERT INTO job_artifacts (id, job_id, kind, path, md5, bytes) \
+         VALUES ($1, $2, 'checkpoint', $3, 'd41d8cd98f00b204e9800998ecf8427e', 100)",
+    )
+    .bind(id)
+    .bind(job_id)
+    .bind(&path)
+    .execute(pool)
+    .await
+    .expect("insert checkpoint artifact");
+    id
+}
+
+/// Cadeia raiz → resume → resume (generate) com gerações; asserções sobre
+/// nós/arestas do grafo de linhagem (aceite 5b).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn lineage_cadeia_resume_resume_com_geracao() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let ds_id = insert_test_dataset(&p).await;
+
+    // root (train) → checkpoint A.
+    let root = insert_diffusion_job(&p, Some(ds_id), "train", None).await;
+    let ckpt_a = insert_checkpoint(&p, root, 1).await;
+
+    // resume1 (train, weights=A) → checkpoint B.
+    let resume1 = insert_diffusion_job(&p, Some(ds_id), "train", Some(ckpt_a)).await;
+    let ckpt_b = insert_checkpoint(&p, resume1, 2).await;
+
+    // resume2 (generate, weights=B) com 2 gerações.
+    let resume2 = insert_diffusion_job(&p, None, "generate", Some(ckpt_b)).await;
+    for i in 0..2 {
+        sqlx::query(
+            "INSERT INTO generations (id, job_id, s3_key, filename, seed, prompt, width, height) \
+             VALUES ($1, $2, $3, $4, 1, 'a cat', 512, 512)",
+        )
+        .bind(uuid::Uuid::new_v4())
+        .bind(resume2)
+        .bind(format!("generations/test-{i}.png"))
+        .bind(format!("test-{i}.png"))
+        .execute(&p)
+        .await
+        .expect("insert generation");
+    }
+
+    let graph = manager::get_job_lineage(&p, resume2)
+        .await
+        .expect("lineage de resume2");
+
+    let job_node = |id: uuid::Uuid| format!("job:{id}");
+    let ckpt_node = |id: uuid::Uuid| format!("checkpoint:{id}");
+
+    let node_ids: std::collections::HashSet<_> = graph.nodes.iter().map(|n| n.id.clone()).collect();
+    assert!(node_ids.contains(&job_node(root)), "nó do job raiz ausente");
+    assert!(
+        node_ids.contains(&job_node(resume1)),
+        "nó do job resume1 ausente"
+    );
+    assert!(
+        node_ids.contains(&job_node(resume2)),
+        "nó do job resume2 (consultado) ausente"
+    );
+    assert!(
+        node_ids.contains(&ckpt_node(ckpt_a)),
+        "nó do checkpoint A ausente"
+    );
+    assert!(
+        node_ids.contains(&ckpt_node(ckpt_b)),
+        "nó do checkpoint B ausente"
+    );
+    let dataset_nodes: Vec<_> = graph.nodes.iter().filter(|n| n.kind == "dataset").collect();
+    assert_eq!(dataset_nodes.len(), 1, "dataset do job raiz deve aparecer");
+
+    let generation_nodes: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter(|n| n.kind == "generation")
+        .collect();
+    assert_eq!(
+        generation_nodes.len(),
+        2,
+        "as 2 gerações de resume2 devem aparecer"
+    );
+
+    // Arestas: resumed_from (job resume1 → job root), generated_with
+    // (job resume2 → job resume1, já que resume2 é mode=generate).
+    assert!(
+        graph.edges.iter().any(|e| e.from == job_node(resume1)
+            && e.to == job_node(root)
+            && e.kind == "resumed_from"),
+        "aresta resumed_from resume1→root ausente: {:?}",
+        graph.edges
+    );
+    assert!(
+        graph.edges.iter().any(|e| e.from == job_node(resume2)
+            && e.to == job_node(resume1)
+            && e.kind == "generated_with"),
+        "aresta generated_with resume2→resume1 ausente: {:?}",
+        graph.edges
+    );
+    assert!(
+        graph
+            .edges
+            .iter()
+            .any(|e| e.from == job_node(resume2) && e.kind == "produced"),
+        "arestas produced de resume2→geração ausentes: {:?}",
+        graph.edges
+    );
+}
+
+/// Referência quebrada (checkpoint apontado por `weights` não existe mais) →
+/// nó/aresta correspondente omitido, sem erro.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn lineage_referencia_quebrada_nao_falha() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let fake_weights = uuid::Uuid::new_v4();
+    let job = insert_diffusion_job(&p, None, "train", Some(fake_weights)).await;
+
+    let graph = manager::get_job_lineage(&p, job)
+        .await
+        .expect("lineage não deve falhar com referência quebrada");
+    assert_eq!(graph.nodes.len(), 1, "só o nó do próprio job deve aparecer");
+    assert!(graph.edges.is_empty());
+}
+
+/// Job inexistente → `ManagerError::NotFound`.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn lineage_job_inexistente_not_found() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let result = manager::get_job_lineage(&p, uuid::Uuid::new_v4()).await;
+    assert!(matches!(result, Err(ManagerError::NotFound)));
+}
+
+/// Ciclo artificial (A retoma de checkpoint de B, B retoma de checkpoint de
+/// A) nunca trava — a guarda de visitados corta a subida.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn lineage_ciclo_artificial_nao_trava() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let job_a = insert_diffusion_job(&p, None, "train", None).await;
+    let job_b = insert_diffusion_job(&p, None, "train", None).await;
+    let ckpt_a = insert_checkpoint(&p, job_a, 1).await;
+    let ckpt_b = insert_checkpoint(&p, job_b, 1).await;
+    sqlx::query("UPDATE jobs SET params = jsonb_build_object('weights', $2::text) WHERE id = $1")
+        .bind(job_a)
+        .bind(ckpt_b.to_string())
+        .execute(&p)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE jobs SET params = jsonb_build_object('weights', $2::text) WHERE id = $1")
+        .bind(job_b)
+        .bind(ckpt_a.to_string())
+        .execute(&p)
+        .await
+        .unwrap();
+
+    let graph = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        manager::get_job_lineage(&p, job_a),
+    )
+    .await
+    .expect("lineage não deve travar em ciclo")
+    .expect("lineage de job_a com ciclo");
+
+    let job_node = |id: uuid::Uuid| format!("job:{id}");
+    let node_ids: std::collections::HashSet<_> = graph.nodes.iter().map(|n| n.id.clone()).collect();
+    assert!(node_ids.contains(&job_node(job_a)));
+    assert!(node_ids.contains(&job_node(job_b)));
+}

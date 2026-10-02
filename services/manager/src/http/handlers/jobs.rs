@@ -132,6 +132,16 @@ pub async fn job_metric_points_handler(
     }
 }
 
+/// GET /internal/jobs/:id/alerts — lista alertas de um job (fatia 3c).
+pub async fn get_job_alerts_handler(State(state): State<AppState>, JobId(uuid): JobId) -> Response {
+    match crate::alerts::get_job_alerts(&state.pool, uuid).await {
+        Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
+        Err(ManagerError::NotFound) => not_found(),
+        Err(ManagerError::Internal(e)) => internal_error(&e),
+        Err(e) => internal_error(&e.to_string()),
+    }
+}
+
 /// POST /internal/jobs/:id/abort — aborta um job.
 pub async fn abort_job_handler(State(state): State<AppState>, JobId(uuid): JobId) -> Response {
     match crate::abort_job(&state.pool, uuid, state.orch_client.as_ref()).await {

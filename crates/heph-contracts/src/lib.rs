@@ -1,5 +1,6 @@
 //! heph-contracts: Contratos, DTOs e tipos de protocolo compartilhados do Hephaestus LLM Studio.
 
+pub mod alerts;
 pub mod artifacts;
 pub mod dispatch;
 pub mod heartbeat;
@@ -12,6 +13,7 @@ pub mod otel;
 pub mod report;
 pub mod request_context;
 pub mod telemetry;
+pub use alerts::{JobAlert, JobAlertsResponse};
 pub use artifacts::{ArtifactItem, ArtifactReport};
 pub use dispatch::{
     DispatchRequest, InitImageRef, LoraRefStage, PackageRef, WeightRef, WeightsRef,
@@ -26,4 +28,4 @@ pub use models::{GenerationItem, GenerationRow, ModelItem, ModelResponse, Storag
 pub use nodes::{OrchestratorItem, TelemetryResponse};
 pub use report::{ReportBody, ReportRequest};
 pub use request_context::RequestContext;
-pub use telemetry::{JobTelemetryEvent, MetricsItem};
+pub use telemetry::{JobTelemetryEvent, MetricsItem, TrainingDiagnostics};

@@ -2229,6 +2229,40 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/jobs/{id}/alerts:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+        description: "PK do job. UUID inválido ⇒ 404 `not_found`."
+    get:
+      operationId: getJobAlerts
+      tags: [jobs]
+      summary: Lista alertas disparados e histórico recente de um job
+      description: |
+        Retorna alertas ativos e resolvidos associados ao job (fatia 3c).
+      responses:
+        "200":
+          description: Lista de alertas do job.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobAlertsResponse" }
+        "401":
+          description: "Sem sessão válida (`code: unauthorized`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "Job inexistente ou id não-UUID (`code: not_found`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: "Manager indisponível (`code: queue_unavailable`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   /api/jobs/{id}/events:
     parameters:
       - name: id
@@ -2251,6 +2285,7 @@ paths:
         - `telemetry`: atualização de progress/phase/step/epoch/vram.
         - `metrics`: novos pontos de `job_metric_points` — `id:` SSE é o `seq` máximo do
           lote (`data: {"items":[{seq,epoch,step,key,value,ts}],"maxSeq":N}`).
+        - `alert`: alerta de treinamento ativo ou resolvido (`data: JobAlert`, fatia 3c).
         - `finished`: status terminal (`done`/`failed`/`cancelled`) — último evento, a conexão
           encerra em seguida.
 
@@ -2267,7 +2302,7 @@ paths:
             text/event-stream:
               schema:
                 type: string
-                description: "Linhas formatadas em SSE (`event:`/`id:`/`data:`) — eventos snapshot/telemetry/metrics/finished."
+                description: "Linhas formatadas em SSE (`event:`/`id:`/`data:`) — eventos snapshot/telemetry/metrics/alert/finished."
         "401":
           description: "Sem sessão válida (`code: unauthorized`)."
           content:
@@ -4945,6 +4980,70 @@ components:
           type: [object, "null"]
           additionalProperties: { type: [number, string, boolean, "null"] }
           description: "Dicionário flexível com métricas adicionais instantâneas (loss, it_s, lr, etc.)."
+        diagnostics:
+          type: [object, "null"]
+          $ref: "#/components/schemas/TrainingDiagnostics"
+          description: "Diagnósticos adicionais de treinamento (fatia 3b/3c)."
+
+    TrainingDiagnostics:
+      type: object
+      additionalProperties: false
+      description: "Diagnósticos de treino emitidos pelo engine (fatia 3b/3c)."
+      properties:
+        gradNormL2:
+          type: [number, "null"]
+          description: "Norma L2 global dos gradientes."
+        nanCount:
+          type: [integer, "null"]
+          description: "Contagem de tensores/valores NaN detectados no step."
+        infCount:
+          type: [integer, "null"]
+          description: "Contagem de valores infinitos detectados no step."
+        lrPerGroup:
+          type: array
+          items: { type: [number, "null"] }
+          description: "Taxas de aprendizado ativas por grupo de parâmetros."
+        loraNorms:
+          type: object
+          additionalProperties: { type: [number, "null"] }
+          description: "Normas dos pesos/gradientes dos adaptadores LoRA."
+
+    JobAlert:
+      type: object
+      required: [id, jobId, ruleId, severity, message, firedAt]
+      additionalProperties: false
+      description: "Alerta associado à execução de um job (fatia 3c)."
+      properties:
+        id:
+          type: string
+          format: uuid
+        jobId:
+          type: string
+          format: uuid
+        ruleId:
+          type: string
+          enum: [nan_detected, vram_high, disk_high, telemetry_stale]
+        severity:
+          type: string
+          enum: [warning, critical]
+        message:
+          type: string
+        firedAt:
+          type: string
+          format: date-time
+        resolvedAt:
+          type: [string, "null"]
+          format: date-time
+
+    JobAlertsResponse:
+      type: object
+      required: [items]
+      additionalProperties: false
+      description: "Lista de alertas do job."
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/JobAlert" }
 
     JobList:
       type: object

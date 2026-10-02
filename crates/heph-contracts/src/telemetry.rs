@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-
+use std::collections::BTreeMap;
 /// Evento estruturado de telemetria emitido durante a execução de um job (ADR-0021).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,6 +29,24 @@ pub struct JobTelemetryEvent {
     pub eta_formatted: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metrics: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<TrainingDiagnostics>,
+}
+
+/// Diagnósticos de treino emitidos pelo engine (fatia 3b/3c, spec §3.5).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrainingDiagnostics {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grad_norm_l2: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nan_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inf_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lr_per_group: Vec<Option<f64>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lora_norms: BTreeMap<String, Option<f64>>,
 }
 
 /// Métrica individual por epoch (camelCase wire; mAP50-95 → map5095).
@@ -147,5 +165,29 @@ mod tests {
 
         let round_tripped: JobTelemetryEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(round_tripped, event);
+    }
+
+    #[test]
+    fn test_job_telemetry_event_diagnostics_round_trip() {
+        let raw = r#"{
+            "timestamp": "2026-10-02T12:00:00Z",
+            "phase": "training",
+            "progress": 0.5,
+            "diagnostics": {
+                "gradNormL2": 1.45,
+                "nanCount": 2,
+                "infCount": 0,
+                "lrPerGroup": [0.0001, null],
+                "loraNorms": { "layer1": 0.5 }
+            }
+        }"#;
+        let event: JobTelemetryEvent = serde_json::from_str(raw).unwrap();
+        assert!(event.diagnostics.is_some());
+        let diag = event.diagnostics.unwrap();
+        assert_eq!(diag.nan_count, Some(2));
+        assert_eq!(diag.inf_count, Some(0));
+        assert_eq!(diag.grad_norm_l2, Some(1.45));
+        assert_eq!(diag.lr_per_group.len(), 2);
+        assert_eq!(diag.lora_norms.get("layer1"), Some(&Some(0.5)));
     }
 }

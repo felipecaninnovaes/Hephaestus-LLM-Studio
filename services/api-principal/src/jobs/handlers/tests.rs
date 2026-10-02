@@ -2574,7 +2574,7 @@ async fn stream_job_events_handles_lagged_receiver_with_delta_refetch() {
     j.phase = Some("training".into());
     mock.get_job_result = Some(j);
     let dynamic_cb = std::sync::Arc::clone(&mock.dynamic_metric_points);
-    *dynamic_cb.lock().unwrap() = Some(Box::new(|after| {
+    *dynamic_cb.lock().unwrap() = Some(Box::new(|_after| {
         // Ao receber lagged, busca delta a partir do seq conhecido
         Ok(heph_contracts::telemetry::MetricPointsResponse {
             items: vec![heph_contracts::telemetry::MetricPointWithKey {
@@ -3150,4 +3150,58 @@ async fn export_job_metrics_handler_paginacao_pagina_intermediaria_menor() {
     let mut reader = reader_builder.build().unwrap();
     let batch = reader.next().unwrap().unwrap();
     assert_eq!(batch.num_rows(), 5);
+}
+
+#[tokio::test]
+async fn get_job_alerts_returns_camel_case() {
+    let mut mock = MockManager::default();
+    let job_id = "11111111-1111-1111-1111-111111111111";
+    mock.alerts_result = Some(heph_contracts::alerts::JobAlertsResponse {
+        items: vec![heph_contracts::alerts::JobAlert {
+            id: "22222222-2222-2222-2222-222222222222".into(),
+            job_id: job_id.into(),
+            rule_id: "nan_detected".into(),
+            severity: "critical".into(),
+            message: "NaN ou Inf detectado".into(),
+            fired_at: "2026-10-02T12:00:00Z".into(),
+            resolved_at: None,
+        }],
+    });
+    let state = test_state(mock);
+
+    let resp = get_job_alerts(axum::extract::State(state), Path(job_id.to_string())).await;
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["items"][0]["ruleId"], "nan_detected");
+    assert_eq!(json["items"][0]["severity"], "critical");
+    assert_eq!(json["items"][0]["message"], "NaN ou Inf detectado");
+    assert_eq!(json["items"][0]["firedAt"], "2026-10-02T12:00:00Z");
+    assert!(json["items"][0].get("resolvedAt").is_none());
+}
+
+#[tokio::test]
+async fn get_job_alerts_not_found() {
+    let mut mock = MockManager::default();
+    mock.alerts_result = None;
+    let state = test_state(mock);
+
+    let resp = get_job_alerts(
+        axum::extract::State(state),
+        Path("11111111-1111-1111-1111-111111111111".to_string()),
+    )
+    .await;
+
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // Invalid UUID
+    let resp2 = get_job_alerts(
+        axum::extract::State(test_state(MockManager::default())),
+        Path("invalid-uuid".to_string()),
+    )
+    .await;
+    assert_eq!(resp2.status(), StatusCode::NOT_FOUND);
 }

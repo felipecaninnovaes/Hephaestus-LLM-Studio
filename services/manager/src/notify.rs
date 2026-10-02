@@ -6,7 +6,8 @@
 //! status). Payload ponteiro — NUNCA o dado em si (o BFF refaz uma busca por
 //! job ao receber o notice):
 //! - `{"jobId":"<uuid>","seq":<maxSeq>}` para novos pontos de métricas;
-//! - `{"jobId":"<uuid>","status":true}` quando status/phase/progress mudou.
+//! - `{"jobId":"<uuid>","status":true}` quando status/phase/progress mudou;
+//! - `{"jobId":"<uuid>","alert":true}` quando novos alertas foram disparados ou resolvidos (fatia 3c).
 //!
 //! Todo chamador MUST emitir dentro da MESMA transação da escrita que
 //! motivou o evento — `pg_notify` só é visível a listeners após o COMMIT, e
@@ -46,5 +47,19 @@ where
         .execute(exec)
         .await
         .map_err(|e| ManagerError::Internal(format!("pg_notify status: {e}")))?;
+    Ok(())
+}
+
+/// Notifica evento de alerta (`{"jobId":"<uuid>","alert":true}`) no canal `job_events` (fatia 3c).
+pub async fn notify_alert<'e, E>(exec: E, job_id: Uuid) -> Result<(), ManagerError>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    let payload = serde_json::json!({"jobId": job_id.to_string(), "alert": true}).to_string();
+    sqlx::query("SELECT pg_notify('job_events', $1)")
+        .bind(payload)
+        .execute(exec)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("pg_notify alert: {e}")))?;
     Ok(())
 }

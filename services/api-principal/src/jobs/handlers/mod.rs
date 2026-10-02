@@ -3,6 +3,7 @@
 //! O principal NÃO lê tabelas jobs/orchestrators/job_artifacts — dono é o
 //! manager (ADR-0007 D1/D3/D8). Todas as respostas são camelCase.
 
+pub mod alerts;
 pub mod apply;
 pub mod artifacts;
 pub mod export;
@@ -17,6 +18,7 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
+pub use alerts::*;
 pub use apply::*;
 pub use artifacts::*;
 pub use export::*;

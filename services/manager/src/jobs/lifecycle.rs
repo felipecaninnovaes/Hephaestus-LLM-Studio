@@ -269,6 +269,10 @@ pub async fn prepare_fail(
         }
         return Err(ManagerError::Conflict("job_not_preparing".into()));
     }
+    let resolved = crate::alerts::resolve_alerts(&mut tx, id, None).await?;
+    if resolved > 0 {
+        crate::notify::notify_alert(&mut *tx, id).await?;
+    }
     crate::notify::notify_status_change(&mut *tx, id).await?;
     tx.commit()
         .await

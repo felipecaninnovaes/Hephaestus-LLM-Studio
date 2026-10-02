@@ -7946,6 +7946,15 @@ impl api_principal::jobs::manager_client::ManagerPort for RaceManager {
             .get_job_metric_points(job_id, after_seq, max_points, keys)
             .await
     }
+    async fn get_job_alerts(
+        &self,
+        job_id: &str,
+    ) -> Result<
+        heph_contracts::alerts::JobAlertsResponse,
+        api_principal::jobs::manager_client::ManagerError,
+    > {
+        self.inner.get_job_alerts(job_id).await
+    }
     async fn get_lineage(
         &self,
         job_id: &str,

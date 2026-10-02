@@ -8438,3 +8438,277 @@ async fn lineage_ciclo_artificial_nao_trava() {
     assert!(node_ids.contains(&job_node(job_a)));
     assert!(node_ids.contains(&job_node(job_b)));
 }
+
+// ===========================================================================
+// Fatia 3c (alertas de treinamento) — testes de integração Postgres
+// ===========================================================================
+
+/// (a) report com ponto `nan_count=2` → alerta `nan_detected` ativo e notice `{"jobId":...,"alert":true}` emitido
+/// (b) reavaliar não cria segundo ativo
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn alert_nan_detected_active_dedupe_and_notice() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+
+    let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| TEST_DB_URL.into());
+    let mut listener = sqlx::postgres::PgListener::connect(&db_url)
+        .await
+        .expect("listener connect");
+    listener.listen("job_events").await.expect("listen");
+
+    // 1. Report com ponto contendo nan_count=2
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "running".into(),
+            progress: Some(0.1),
+            epoch: Some(1),
+            step: Some(10),
+            metrics: Some(serde_json::json!({
+                "epoch": 1,
+                "step": 10,
+                "loss": 0.5,
+                "nan_count": 2
+            })),
+            error: None,
+            artifacts: None,
+            meta_content: None,
+            phase: Some("training".into()),
+            message: None,
+        },
+    )
+    .await
+    .expect("report job with nan_count");
+
+    // Verifica que notice com "alert": true foi recebido
+    let mut saw_alert_notice = false;
+    for _ in 0..5 {
+        let notice = tokio::time::timeout(std::time::Duration::from_secs(2), listener.recv())
+            .await
+            .expect("timeout esperando notice")
+            .expect("recv notice");
+        let payload: serde_json::Value =
+            serde_json::from_str(notice.payload()).expect("payload json");
+        if payload["jobId"] == job_id.to_string()
+            && payload.get("alert") == Some(&serde_json::json!(true))
+        {
+            saw_alert_notice = true;
+            break;
+        }
+    }
+    assert!(saw_alert_notice, "deve emitir notice com alert: true");
+
+    // Consulta alertas via get_job_alerts
+    let alerts = manager::get_job_alerts(&p, job_id)
+        .await
+        .expect("get job alerts");
+    assert_eq!(alerts.items.len(), 1);
+    assert_eq!(alerts.items[0].rule_id, "nan_detected");
+    assert_eq!(alerts.items[0].severity, "critical");
+    assert!(alerts.items[0].resolved_at.is_none());
+
+    // (b) Reavaliar: novo report com nan_count=3 NÃO deve criar segundo alerta ativo
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "running".into(),
+            progress: Some(0.2),
+            epoch: Some(1),
+            step: Some(20),
+            metrics: Some(serde_json::json!({
+                "epoch": 1,
+                "step": 20,
+                "loss": 0.4,
+                "nan_count": 3
+            })),
+            error: None,
+            artifacts: None,
+            meta_content: None,
+            phase: Some("training".into()),
+            message: None,
+        },
+    )
+    .await
+    .expect("second report");
+
+    let alerts2 = manager::get_job_alerts(&p, job_id)
+        .await
+        .expect("get job alerts 2");
+    assert_eq!(
+        alerts2.items.len(),
+        1,
+        "dedupe pelo índice parcial não cria segundo ativo"
+    );
+}
+
+/// (c) job running sem pontos por > limiar → `telemetry_stale`; novo ponto → `resolved_at` preenchido
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn alert_telemetry_stale_and_recovery() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+
+    // Move job para running e ajusta created_at para 1000 segundos no passado
+    sqlx::query("UPDATE jobs SET status = 'running', created_at = now() - interval '1000 seconds' WHERE id = $1")
+        .bind(job_id)
+        .execute(&p)
+        .await
+        .unwrap();
+
+    // Avalia alertas periódicos (stale_secs padrão = 300)
+    manager::evaluate_periodic_alerts(&p)
+        .await
+        .expect("evaluate alerts");
+
+    let alerts = manager::get_job_alerts(&p, job_id)
+        .await
+        .expect("get alerts");
+    assert_eq!(alerts.items.len(), 1);
+    assert_eq!(alerts.items[0].rule_id, "telemetry_stale");
+    assert_eq!(alerts.items[0].severity, "warning");
+    assert!(alerts.items[0].resolved_at.is_none());
+
+    // Novo ponto chega no report → telemetry_stale é resolvido
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "running".into(),
+            progress: Some(0.3),
+            epoch: Some(1),
+            step: Some(30),
+            metrics: Some(serde_json::json!({
+                "epoch": 1,
+                "step": 30,
+                "loss": 0.35
+            })),
+            error: None,
+            artifacts: None,
+            meta_content: None,
+            phase: Some("training".into()),
+            message: None,
+        },
+    )
+    .await
+    .expect("report recovery");
+
+    let alerts_after = manager::get_job_alerts(&p, job_id)
+        .await
+        .expect("get alerts after recovery");
+    assert_eq!(alerts_after.items.len(), 1);
+    assert_eq!(alerts_after.items[0].rule_id, "telemetry_stale");
+    assert!(
+        alerts_after.items[0].resolved_at.is_some(),
+        "alerta stale resolvido ao chegar nova métrica"
+    );
+}
+
+/// (d) job termina → alertas ativos resolvidos
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn alert_resolved_when_job_terminates() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+
+    // Dispara alerta manualmente ou via report nan_count
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "running".into(),
+            progress: Some(0.1),
+            epoch: Some(1),
+            step: Some(1),
+            metrics: Some(serde_json::json!({
+                "epoch": 1,
+                "step": 1,
+                "loss": 0.5,
+                "nan_count": 1
+            })),
+            error: None,
+            artifacts: None,
+            meta_content: None,
+            phase: Some("training".into()),
+            message: None,
+        },
+    )
+    .await
+    .expect("report running");
+
+    let alerts_pre = manager::get_job_alerts(&p, job_id)
+        .await
+        .expect("get alerts pre");
+    assert_eq!(alerts_pre.items.len(), 1);
+    assert!(alerts_pre.items[0].resolved_at.is_none());
+
+    // Job falha (ou é cancelado)
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "failed".into(),
+            progress: None,
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: Some("divergence".into()),
+            artifacts: None,
+            meta_content: None,
+            phase: Some("failed".into()),
+            message: None,
+        },
+    )
+    .await
+    .expect("report failed");
+
+    let alerts_post = manager::get_job_alerts(&p, job_id)
+        .await
+        .expect("get alerts post");
+    assert_eq!(alerts_post.items.len(), 1);
+    assert!(
+        alerts_post.items[0].resolved_at.is_some(),
+        "alertas ativos são resolvidos quando o job encerra"
+    );
+}

@@ -34,6 +34,10 @@ pub struct MetricsLine {
     pub message: Option<String>,
     #[serde(default)]
     pub vram_used_gb: Option<f64>,
+    #[serde(default)]
+    pub nan_count: Option<i64>,
+    #[serde(default)]
+    pub inf_count: Option<i64>,
 }
 
 impl MetricsLine {
@@ -49,6 +53,8 @@ impl MetricsLine {
             || matches!(self.dfl_loss, x if x != 0.0 && x.is_finite())
             || matches!(self.map50, x if x != 0.0 && x.is_finite())
             || matches!(self.map50_95, x if x != 0.0 && x.is_finite())
+            || matches!(self.nan_count, Some(n) if n > 0)
+            || matches!(self.inf_count, Some(n) if n > 0)
     }
 
     pub fn to_report_json(&self) -> serde_json::Value {
@@ -81,6 +87,12 @@ impl MetricsLine {
         if let Some(vram) = self.vram_used_gb {
             obj["vram_used_gb"] = serde_json::json!(vram);
         }
+        if let Some(nan_count) = self.nan_count {
+            obj["nan_count"] = serde_json::json!(nan_count);
+        }
+        if let Some(inf_count) = self.inf_count {
+            obj["inf_count"] = serde_json::json!(inf_count);
+        }
         obj
     }
 }
@@ -106,6 +118,7 @@ pub fn parse_metrics_line(line: &str) -> Option<MetricsLine> {
     // (engine-kit/telemetry.py, trainer-difusao/common_pkg/metrics.py); só o
     // espelho legado metrics.jsonl achata no topo. Topo vence; aninhado é fallback.
     let nested = v.get("metrics");
+    let diag = v.get("diagnostics");
     let num = |key: &str| -> Option<f64> {
         v.get(key)
             .and_then(|x| x.as_f64())
@@ -115,6 +128,12 @@ pub fn parse_metrics_line(line: &str) -> Option<MetricsLine> {
         v.get(key)
             .and_then(|x| x.as_i64())
             .or_else(|| nested.and_then(|m| m.get(key)).and_then(|x| x.as_i64()))
+    };
+    let diag_int = |key_camel: &str, key_snake: &str| -> Option<i64> {
+        diag.and_then(|d| d.get(key_camel).or_else(|| d.get(key_snake)))
+            .and_then(|x| x.as_i64())
+            .or_else(|| int(key_snake))
+            .or_else(|| int(key_camel))
     };
     let epoch = int("epoch").or_else(|| {
         if v.get("phase").is_some() || v.get("progress").is_some() {
@@ -150,6 +169,8 @@ pub fn parse_metrics_line(line: &str) -> Option<MetricsLine> {
         phase,
         message,
         vram_used_gb,
+        nan_count: diag_int("nanCount", "nan_count"),
+        inf_count: diag_int("infCount", "inf_count"),
     })
 }
 
@@ -274,5 +295,29 @@ mod tests {
         assert!(!m.is_training_metric());
         let report = telemetry_report_for_line(&m, 10);
         assert!(report.metrics.is_none());
+    }
+
+    #[test]
+    fn parse_diagnostics_nan_and_inf_flattening() {
+        let line =
+            r#"{"epoch":1,"step":10,"diagnostics":{"nanCount":3,"infCount":1,"gradNormL2":null}}"#;
+        let m = parse_metrics_line(line).expect("diagnostics line should parse");
+        assert_eq!(m.nan_count, Some(3));
+        assert_eq!(m.inf_count, Some(1));
+        assert!(m.is_training_metric());
+        let json = m.to_report_json();
+        assert_eq!(json["nan_count"], 3);
+        assert_eq!(json["inf_count"], 1);
+    }
+
+    #[test]
+    fn parse_diagnostics_absent_or_null_does_not_break() {
+        let line = r#"{"epoch":1,"step":10,"loss":0.5,"diagnostics":null}"#;
+        let m = parse_metrics_line(line).expect("line with null diagnostics should parse");
+        assert_eq!(m.nan_count, None);
+        assert_eq!(m.inf_count, None);
+        assert_eq!(m.loss, Some(0.5));
+        let json = m.to_report_json();
+        assert!(json.get("nan_count").is_none());
     }
 }

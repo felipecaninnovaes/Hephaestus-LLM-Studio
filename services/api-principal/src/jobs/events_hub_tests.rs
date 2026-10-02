@@ -36,7 +36,7 @@ async fn fan_out_broadcasts_same_event_to_all_subscribers() {
     let mock = mock_with_one_point(7);
     let manager: StdArc<dyn ManagerPort> = StdArc::new(mock);
 
-    process_job(&hub, manager.as_ref(), job_id, true, false).await;
+    process_job(&hub, manager.as_ref(), job_id, true, false, false).await;
 
     let e1 = rx1.recv().await.expect("rx1 recebe");
     let e2 = rx2.recv().await.expect("rx2 recebe");
@@ -64,6 +64,7 @@ async fn burst_of_notices_coalesces_into_one_fetch() {
             StdArc::clone(&manager),
             job_id.clone(),
             true,
+            false,
             false,
         )
         .await;
@@ -133,7 +134,7 @@ async fn reconnect_refetches_delta_and_status_for_subscribers() {
         downsampled: false,
     });
     let manager: StdArc<dyn ManagerPort> = StdArc::new(mock);
-    process_job(&hub, manager.as_ref(), job_id, true, false).await;
+    process_job(&hub, manager.as_ref(), job_id, true, false, false).await;
 
     let ev1 = rx.recv().await.expect("recebe seq 5");
     assert_eq!(ev1.id.as_deref(), Some("5"));
@@ -173,4 +174,36 @@ async fn reconnect_refetches_delta_and_status_for_subscribers() {
     assert_eq!(ev2.event, "metrics");
     assert_eq!(ev2.id.as_deref(), Some("7"));
     assert_eq!(hub.known_seq(job_id).await, Some(7));
+}
+
+/// Notice de alerta (`{"jobId":...,"alert":true}`) → evento SSE `alert` para os assinantes (fatia 3c).
+#[tokio::test]
+async fn alert_notice_dispatches_sse_alert_event() {
+    let hub = JobEventsHub::new();
+    let job_id = "33333333-3333-3333-3333-333333333333";
+    let mut rx = hub.subscribe(job_id).await;
+
+    let mut mock = MockManager::default();
+    mock.alerts_result = Some(heph_contracts::alerts::JobAlertsResponse {
+        items: vec![heph_contracts::alerts::JobAlert {
+            id: "44444444-4444-4444-4444-444444444444".into(),
+            job_id: job_id.into(),
+            rule_id: "nan_detected".into(),
+            severity: "critical".into(),
+            message: "NaN ou Inf detectado nos gradientes/loss do modelo".into(),
+            fired_at: "2026-10-02T12:00:00Z".into(),
+            resolved_at: None,
+        }],
+    });
+    let manager: StdArc<dyn ManagerPort> = StdArc::new(mock);
+
+    process_job(&hub, manager.as_ref(), job_id, false, false, true).await;
+
+    let ev = rx.recv().await.expect("recebe alert event");
+    assert_eq!(ev.event, "alert");
+    assert_eq!(ev.id, None);
+    let alert: heph_contracts::alerts::JobAlert =
+        serde_json::from_str(&ev.data).expect("parse alert payload");
+    assert_eq!(alert.rule_id, "nan_detected");
+    assert_eq!(alert.severity, "critical");
 }

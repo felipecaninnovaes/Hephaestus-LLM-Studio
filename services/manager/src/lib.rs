@@ -14,6 +14,7 @@
 //! - `policy`: resolução de VRAM e headroom
 //! - `watchdog`: timeout de preparação, recovery no boot, tick de offline e GC
 
+pub mod alerts;
 pub mod config;
 pub mod constants;
 pub mod dispatch;
@@ -29,6 +30,7 @@ pub mod policy;
 pub mod reporting;
 pub mod watchdog;
 
+pub use alerts::*;
 pub use config::*;
 pub use constants::*;
 pub use dispatch::*;

@@ -98,8 +98,20 @@ pub async fn report_job(
 
             if let Some(metrics) = &report.metrics {
                 insert_metrics_points_conn(&mut tx, id, metrics).await?;
+                // Resolve telemetry_stale quando chegam novas métricas
+                let resolved_stale = crate::alerts::resolve_alerts(
+                    &mut tx,
+                    id,
+                    Some(crate::alerts::RULE_TELEMETRY_STALE),
+                )
+                .await?;
+                // Avalia nan_detected
+                let fired_nan =
+                    crate::alerts::check_nan_detected_on_metrics(&mut tx, id, metrics).await?;
+                if fired_nan || resolved_stale > 0 {
+                    crate::notify::notify_alert(&mut *tx, id).await?;
+                }
             }
-
             tx.commit()
                 .await
                 .map_err(|e| ManagerError::Internal(format!("commit running/preparing tx: {e}")))?;
@@ -186,8 +198,12 @@ pub async fn report_job(
             .await
             .map_err(|e| ManagerError::Internal(format!("set done: {e}")))?;
 
-            notify_status_change(&mut *tx, id).await?;
+            let resolved = crate::alerts::resolve_alerts(&mut tx, id, None).await?;
+            if resolved > 0 {
+                crate::notify::notify_alert(&mut *tx, id).await?;
+            }
 
+            notify_status_change(&mut *tx, id).await?;
             tx.commit()
                 .await
                 .map_err(|e| ManagerError::Internal(format!("commit done tx: {e}")))?;
@@ -218,8 +234,12 @@ pub async fn report_job(
                 .await
                 .map_err(|e| ManagerError::Internal(format!("set failed: {e}")))?;
 
-            notify_status_change(&mut *tx, id).await?;
+            let resolved = crate::alerts::resolve_alerts(&mut tx, id, None).await?;
+            if resolved > 0 {
+                crate::notify::notify_alert(&mut *tx, id).await?;
+            }
 
+            notify_status_change(&mut *tx, id).await?;
             tx.commit()
                 .await
                 .map_err(|e| ManagerError::Internal(format!("commit report failed tx: {e}")))?;
@@ -250,8 +270,12 @@ pub async fn report_job(
                 .await
                 .map_err(|e| ManagerError::Internal(format!("set cancelled: {e}")))?;
 
-            notify_status_change(&mut *tx, id).await?;
+            let resolved = crate::alerts::resolve_alerts(&mut tx, id, None).await?;
+            if resolved > 0 {
+                crate::notify::notify_alert(&mut *tx, id).await?;
+            }
 
+            notify_status_change(&mut *tx, id).await?;
             tx.commit()
                 .await
                 .map_err(|e| ManagerError::Internal(format!("commit report cancelled tx: {e}")))?;

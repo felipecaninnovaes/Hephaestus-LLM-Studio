@@ -101,6 +101,12 @@ pub trait ManagerPort: Send + Sync {
         keys: Option<&str>,
     ) -> Result<heph_contracts::telemetry::MetricPointsResponse, ManagerError>;
 
+    /// Lista alertas de um job (fatia 3c).
+    async fn get_job_alerts(
+        &self,
+        job_id: &str,
+    ) -> Result<heph_contracts::alerts::JobAlertsResponse, ManagerError>;
+
     /// Linhagem de um job: ancestrais (cadeia de resumes) + descendentes diretos (fatia 5b).
     async fn get_lineage(&self, job_id: &str) -> Result<InternalLineage, ManagerError>;
 
@@ -381,6 +387,14 @@ impl ManagerPort for HttpManager {
             .get_json(&format!("/internal/jobs/{job_id}/artifacts"))
             .await?;
         Ok(body.items)
+    }
+
+    async fn get_job_alerts(
+        &self,
+        job_id: &str,
+    ) -> Result<heph_contracts::alerts::JobAlertsResponse, ManagerError> {
+        self.get_json(&format!("/internal/jobs/{job_id}/alerts"))
+            .await
     }
 
     async fn get_lineage(&self, job_id: &str) -> Result<InternalLineage, ManagerError> {
@@ -926,6 +940,8 @@ pub struct MockManager {
     pub get_job_result: Option<InternalJob>,
     pub list_artifacts_result: Option<Vec<InternalArtifact>>,
     /// Resultado de `get_job_metric_points` (fatia 1a).
+    /// Resultado de `get_job_alerts` (fatia 3c).
+    pub alerts_result: Option<heph_contracts::alerts::JobAlertsResponse>,
     pub metric_points_result: Option<heph_contracts::telemetry::MetricPointsResponse>,
     /// Resposta dinâmica thread-safe para testes de refetch/lagged.
     #[allow(clippy::type_complexity)]
@@ -1085,6 +1101,7 @@ impl Default for MockManager {
             get_job_result: None,
             list_artifacts_result: Some(vec![]),
             metric_points_result: None,
+            alerts_result: None,
             dynamic_metric_points: std::sync::Arc::new(std::sync::Mutex::new(None)),
             metric_points_all: None,
             get_telemetry_result: None,
@@ -1205,6 +1222,15 @@ impl ManagerPort for MockManager {
         self.metric_points_result
             .clone()
             .ok_or(ManagerError::NotFound)
+    }
+    async fn get_job_alerts(
+        &self,
+        _job_id: &str,
+    ) -> Result<heph_contracts::alerts::JobAlertsResponse, ManagerError> {
+        if self.fail {
+            return Err(ManagerError::Unavailable("mock fail".into()));
+        }
+        self.alerts_result.clone().ok_or(ManagerError::NotFound)
     }
     async fn get_lineage(&self, job_id: &str) -> Result<InternalLineage, ManagerError> {
         if self.fail {

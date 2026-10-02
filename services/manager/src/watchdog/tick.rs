@@ -83,5 +83,10 @@ pub async fn watchdog_tick(pool: &PgPool) -> Result<(), ManagerError> {
         Err(e) => tracing::warn!("gc dataset_versions error: {e}"),
     }
 
+    // Avaliação periódica de alertas (fatia 3c): telemetry_stale
+    if let Err(e) = crate::alerts::evaluate_periodic_alerts(pool).await {
+        tracing::warn!("watchdog alerts evaluation error: {e}");
+    }
+
     Ok(())
 }

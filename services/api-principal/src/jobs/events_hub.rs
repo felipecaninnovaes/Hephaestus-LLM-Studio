@@ -51,12 +51,15 @@ struct RawPayload {
     seq: Option<i64>,
     #[serde(default)]
     status: bool,
+    #[serde(default)]
+    alert: bool,
 }
 
 #[derive(Default)]
 struct PendingState {
     metrics: bool,
     status: bool,
+    alert: bool,
     scheduled: bool,
 }
 
@@ -156,7 +159,7 @@ impl JobEventsHub {
     /// de silêncio/queda.
     pub async fn refetch_subscribed_jobs(&self, manager: &dyn ManagerPort) {
         for job_id in self.subscribed_job_ids().await {
-            process_job(self, manager, &job_id, true, true).await;
+            process_job(self, manager, &job_id, true, true, true).await;
         }
     }
 
@@ -198,11 +201,13 @@ async fn schedule(
     job_id: String,
     is_metrics: bool,
     is_status: bool,
+    is_alert: bool,
 ) {
     let mut pending = hub.pending.lock().await;
     let entry = pending.entry(job_id.clone()).or_default();
     entry.metrics |= is_metrics;
     entry.status |= is_status;
+    entry.alert |= is_alert;
     if entry.scheduled {
         return;
     }
@@ -213,14 +218,22 @@ async fn schedule(
     let manager2 = Arc::clone(&manager);
     tokio::spawn(async move {
         tokio::time::sleep(DEBOUNCE).await;
-        let (do_metrics, do_status) = {
+        let (do_metrics, do_status, do_alert) = {
             let mut pending = hub2.pending.lock().await;
             match pending.remove(&job_id) {
-                Some(p) => (p.metrics, p.status),
-                None => (false, false),
+                Some(p) => (p.metrics, p.status, p.alert),
+                None => (false, false, false),
             }
         };
-        process_job(&hub2, manager2.as_ref(), &job_id, do_metrics, do_status).await;
+        process_job(
+            &hub2,
+            manager2.as_ref(),
+            &job_id,
+            do_metrics,
+            do_status,
+            do_alert,
+        )
+        .await;
     });
 }
 
@@ -232,9 +245,25 @@ async fn process_job(
     job_id: &str,
     do_metrics: bool,
     do_status: bool,
+    do_alert: bool,
 ) {
     if !hub.has_subscribers(job_id).await {
         return;
+    }
+
+    if do_alert {
+        if let Ok(resp) = manager.get_job_alerts(job_id).await {
+            for alert in resp.items {
+                let data = serde_json::to_string(&alert).unwrap_or_default();
+                let event = JobEvent {
+                    event: "alert",
+                    id: None,
+                    data,
+                };
+                let channels = hub.channels.lock().await;
+                JobEventsHub::dispatch_sync(&channels, job_id, event);
+            }
+        }
     }
 
     if do_metrics {
@@ -336,6 +365,7 @@ pub async fn run_job_events_listener(
                                         payload.job_id,
                                         payload.seq.is_some(),
                                         payload.status,
+                                        payload.alert,
                                     )
                                     .await;
                                 }
@@ -380,7 +410,7 @@ pub async fn run_fallback_poller(hub: Arc<JobEventsHub>, manager: Arc<dyn Manage
             continue;
         }
         for job_id in hub.subscribed_job_ids().await {
-            process_job(&hub, manager.as_ref(), &job_id, true, true).await;
+            process_job(&hub, manager.as_ref(), &job_id, true, true, false).await;
         }
     }
 }

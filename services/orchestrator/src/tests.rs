@@ -291,6 +291,7 @@ fn compute_progress_basic() {
         phase: None,
         message: None,
         vram_used_gb: None,
+        ..Default::default()
     };
     assert!((compute_progress(&m, 100) - 0.05).abs() < 1e-6);
 }
@@ -311,6 +312,7 @@ fn compute_progress_zero_epochs() {
         phase: None,
         message: None,
         vram_used_gb: None,
+        ..Default::default()
     };
     assert!((compute_progress(&m, 0) - 0.0).abs() < 1e-6);
 }
@@ -331,6 +333,7 @@ fn compute_progress_full() {
         phase: None,
         message: None,
         vram_used_gb: None,
+        ..Default::default()
     };
     assert!((compute_progress(&m, 100) - 1.0).abs() < 1e-6);
 }
@@ -351,6 +354,7 @@ fn compute_progress_explicit() {
         phase: None,
         message: None,
         vram_used_gb: None,
+        ..Default::default()
     };
     assert!((compute_progress(&m, 100) - 0.65).abs() < 1e-6);
 }
@@ -4577,6 +4581,7 @@ fn is_training_metric_phase_only_is_false() {
         phase: Some("loading_model".to_string()),
         message: Some("Carregando FLUX".to_string()),
         vram_used_gb: None,
+        ..Default::default()
     };
     assert!(
         !m.is_training_metric(),
@@ -4614,6 +4619,7 @@ fn is_training_metric_autolabel_zeros_is_false() {
         phase: None,
         message: None,
         vram_used_gb: None,
+        ..Default::default()
     };
     assert!(
         !m.is_training_metric(),

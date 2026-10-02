@@ -35,6 +35,10 @@ pub async fn abort_job(
                 .execute(&mut *tx)
                 .await
                 .map_err(|e| ManagerError::Internal(format!("cancel job: {e}")))?;
+            let resolved = crate::alerts::resolve_alerts(&mut tx, id, None).await?;
+            if resolved > 0 {
+                crate::notify::notify_alert(&mut *tx, id).await?;
+            }
             crate::notify::notify_status_change(&mut *tx, id).await?;
             tx.commit()
                 .await

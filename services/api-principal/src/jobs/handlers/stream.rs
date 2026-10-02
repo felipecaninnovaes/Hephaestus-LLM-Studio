@@ -2,7 +2,7 @@
 
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -33,8 +33,38 @@ pub struct JobMetricsQuery {
     pub keys: Option<String>,
 }
 
-/// GET /api/jobs/:id/events — stream SSE de telemetria em tempo real (ADR-0021 D3).
-pub async fn stream_job_events(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+/// Dessassina do hub de fan-out quando o stream termina (fim normal,
+/// desconexão do cliente, ou drop por qualquer motivo) — único jeito
+/// confiável de saber "0 assinantes" já que `broadcast::Sender` nunca
+/// fecha sozinho. `Drop` não pode ser `async`: dispara um spawn
+/// fire-and-forget, best-effort (perder essa limpeza só deixa uma entrada
+/// vazia no mapa até o próximo notice do job, sem vazamento de memória
+/// sem limite: o run_fallback_poller ignora jobs sem assinante).
+struct UnsubscribeGuard {
+    hub: std::sync::Arc<crate::jobs::events_hub::JobEventsHub>,
+    job_id: String,
+}
+
+impl Drop for UnsubscribeGuard {
+    fn drop(&mut self) {
+        let hub = std::sync::Arc::clone(&self.hub);
+        let job_id = self.job_id.clone();
+        tokio::spawn(async move {
+            hub.unsubscribe_if_empty(&job_id).await;
+        });
+    }
+}
+
+/// GET /api/jobs/:id/events — stream SSE de telemetria em tempo real
+/// (ADR-0021 D3). Fatia 1b: pub-sub via `pg_notify('job_events', …)` + hub
+/// de fan-out in-process (`AppState.job_events`) — NÃO mais polling de
+/// 300 ms por cliente. Reconexão com `Last-Event-ID` (seq do último
+/// `metrics` recebido) busca o delta ANTES de entrar no fan-out.
+pub async fn stream_job_events(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
     if parse_uuid(&id).is_none() {
         return not_found();
     }
@@ -45,103 +75,100 @@ pub async fn stream_job_events(State(state): State<AppState>, Path(id): Path<Str
         Err(_) => return queue_unavailable(),
     };
 
-    struct StreamContext {
-        id: String,
-        manager: std::sync::Arc<dyn crate::jobs::manager_client::ManagerPort>,
-        first_event_sent: bool,
-        initial_event: JobTelemetryEvent,
-        terminal_sent: bool,
-        last_progress: f64,
-        last_phase: String,
-        last_message: Option<String>,
-        last_step: Option<i64>,
-        last_epoch: Option<i32>,
-        last_vram: Option<f64>,
-    }
-
     let initial_telemetry = JobTelemetryEvent::from_job_response(&initial_job);
     let initial_terminal = matches!(initial_job.status.as_str(), "done" | "failed" | "cancelled");
 
-    let ctx = StreamContext {
-        id: id.clone(),
-        manager: std::sync::Arc::clone(&state.manager),
-        first_event_sent: false,
-        initial_event: initial_telemetry.clone(),
-        terminal_sent: false,
-        last_progress: initial_telemetry.progress,
-        last_phase: initial_telemetry.phase.clone(),
-        last_message: initial_telemetry.phase_message.clone(),
-        last_step: initial_telemetry.step,
-        last_epoch: initial_telemetry.epoch,
-        last_vram: initial_telemetry.vram_used_gb,
+    let first_type = if initial_terminal {
+        "finished"
+    } else {
+        "snapshot"
+    };
+    let first_data = serde_json::to_string(&initial_telemetry).unwrap_or_default();
+    let mut initial_events = vec![axum::response::sse::Event::default()
+        .event(first_type)
+        .data(first_data)];
+
+    // Reconexão: `Last-Event-ID` é o seq do último ponto de métrica
+    // recebido pelo cliente — busca só o delta antes de assinar o hub.
+    let last_event_id: Option<i64> = headers
+        .get("last-event-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<i64>().ok());
+
+    if !initial_terminal {
+        if let Some(after) = last_event_id {
+            if let Ok(resp) = state
+                .manager
+                .get_job_metric_points(&id, Some(after), None, None)
+                .await
+            {
+                if !resp.items.is_empty() {
+                    state.job_events.set_known_seq(&id, resp.max_seq).await;
+                    let data = serde_json::json!({
+                        "items": resp.items,
+                        "maxSeq": resp.max_seq,
+                    })
+                    .to_string();
+                    initial_events.push(
+                        axum::response::sse::Event::default()
+                            .event("metrics")
+                            .id(resp.max_seq.to_string())
+                            .data(data),
+                    );
+                }
+            }
+        }
+    }
+
+    let initial_stream = futures_util::stream::iter(
+        initial_events
+            .into_iter()
+            .map(Ok::<_, std::convert::Infallible>),
+    );
+
+    if initial_terminal {
+        return axum::response::sse::Sse::new(initial_stream)
+            .keep_alive(axum::response::sse::KeepAlive::default())
+            .into_response();
+    }
+
+    let rx = state.job_events.subscribe(&id).await;
+    let guard = UnsubscribeGuard {
+        hub: std::sync::Arc::clone(&state.job_events),
+        job_id: id.clone(),
     };
 
-    let sse_stream = futures_util::stream::unfold(ctx, move |mut c| async move {
-        if c.terminal_sent {
-            return None;
-        }
-
-        if !c.first_event_sent {
-            c.first_event_sent = true;
-            let event_type = if initial_terminal {
-                "finished"
-            } else {
-                "snapshot"
-            };
-            if initial_terminal {
-                c.terminal_sent = true;
+    let fanout_stream = futures_util::stream::unfold(
+        (rx, guard, false),
+        move |(mut rx, guard, done)| async move {
+            if done {
+                return None;
             }
-            let data = serde_json::to_string(&c.initial_event).unwrap_or_default();
-            let event = axum::response::sse::Event::default()
-                .event(event_type)
-                .data(data);
-            return Some((Ok::<_, std::convert::Infallible>(event), c));
-        }
-
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-
-            let current_job = match c.manager.get_job(&c.id).await {
-                Ok(v) => to_job_response(v),
-                Err(_) => {
-                    continue;
+            loop {
+                match rx.recv().await {
+                    Ok(ev) => {
+                        let mut sse = axum::response::sse::Event::default()
+                            .event(ev.event)
+                            .data(ev.data);
+                        if let Some(sid) = ev.id {
+                            sse = sse.id(sid);
+                        }
+                        let finished = ev.event == "finished";
+                        return Some((
+                            Ok::<_, std::convert::Infallible>(sse),
+                            (rx, guard, finished),
+                        ));
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
                 }
-            };
-
-            let telemetry = JobTelemetryEvent::from_job_response(&current_job);
-            let is_terminal =
-                matches!(current_job.status.as_str(), "done" | "failed" | "cancelled");
-
-            let has_changed = (telemetry.progress - c.last_progress).abs() > 0.0001
-                || telemetry.phase != c.last_phase
-                || telemetry.phase_message != c.last_message
-                || telemetry.step != c.last_step
-                || telemetry.epoch != c.last_epoch
-                || (telemetry.vram_used_gb.unwrap_or(0.0) - c.last_vram.unwrap_or(0.0)).abs()
-                    > 0.05
-                || is_terminal;
-
-            if has_changed {
-                c.last_progress = telemetry.progress;
-                c.last_phase = telemetry.phase.clone();
-                c.last_message = telemetry.phase_message.clone();
-                c.last_step = telemetry.step;
-                c.last_epoch = telemetry.epoch;
-                c.last_vram = telemetry.vram_used_gb;
-                let event_type = if is_terminal { "finished" } else { "telemetry" };
-                if is_terminal {
-                    c.terminal_sent = true;
-                }
-                let data = serde_json::to_string(&telemetry).unwrap_or_default();
-                let event = axum::response::sse::Event::default()
-                    .event(event_type)
-                    .data(data);
-                return Some((Ok(event), c));
             }
-        }
-    });
+        },
+    );
 
-    axum::response::sse::Sse::new(sse_stream)
+    let combined = futures_util::StreamExt::chain(initial_stream, fanout_stream);
+
+    axum::response::sse::Sse::new(combined)
         .keep_alive(axum::response::sse::KeepAlive::default())
         .into_response()
 }

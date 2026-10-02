@@ -215,6 +215,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let manager: Arc<dyn ManagerPort> = Arc::new(HttpManager::new(manager_url, manager_token));
     tracing::info!(url = %std::env::var("MANAGER_URL").unwrap_or_else(|_| "http://manager:8081".to_string()), "manager client configured");
 
+    let job_events = api_principal::jobs::events_hub::JobEventsHub::new();
+
     let state = AppState {
         pool,
         jwt_secret,
@@ -226,7 +228,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         embedding_model,
         manager,
         model_download_allowed_hosts: load_download_allowed_hosts(),
+        job_events: job_events.clone(),
     };
+
+    // 7b. Listener único de `job_events` (pg_notify, fatia 1b) + poller de
+    //     fallback de 5s compartilhado (cobre quedas do listener).
+    {
+        let hub = job_events.clone();
+        let manager = state.manager.clone();
+        let db_url = database_url.clone();
+        tokio::spawn(api_principal::jobs::events_hub::run_job_events_listener(
+            db_url, hub, manager,
+        ));
+    }
+    {
+        let hub = job_events.clone();
+        let manager = state.manager.clone();
+        tokio::spawn(api_principal::jobs::events_hub::run_fallback_poller(
+            hub, manager,
+        ));
+    }
 
     // 8. Recovery de preparações órfãs (ADR-0025 D3 — espelha `recover_jobs`
     //    do manager): `job_prepares` em `preparing` com `updated_at` > 10min

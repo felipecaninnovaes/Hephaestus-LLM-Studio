@@ -23,4 +23,9 @@ pub struct AppState {
     /// Allow-list de hosts para download por URL (E1 — ADR-0012 D4).
     /// Carregada no boot; vazia = download desabilitado (fail-closed).
     pub model_download_allowed_hosts: Vec<String>,
+    /// Hub de fan-out de eventos SSE via `pg_notify('job_events', …)`
+    /// (fatia 1b) — compartilhado entre conexões; populado por uma única
+    /// task de fundo (`jobs::events_hub::run_job_events_listener`), nunca
+    /// construído por handler.
+    pub job_events: std::sync::Arc<crate::jobs::events_hub::JobEventsHub>,
 }

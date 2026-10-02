@@ -233,7 +233,10 @@ pub fn build_docker_run_args(
         cmd_args.push(format!("{host}:{container}"));
     }
 
-    // GPU flags (D4/D7): só quando gpu_devices está setado.
+    // GPU flags (D4/D7 / fatia B2): só quando gpu_devices está setado.
+    // Mantém --gpus "device=..." E NVIDIA_VISIBLE_DEVICES explícito porque as imagens
+    // base CUDA trazem NVIDIA_VISIBLE_DEVICES=all por padrão; a env explícita impede
+    // que todas as placas fiquem expostas se o runtime padrão do Docker host for nvidia.
     if let Some(devices) = gpu_devices {
         cmd_args.push("--gpus".to_string());
         cmd_args.push(format!("device={devices}"));

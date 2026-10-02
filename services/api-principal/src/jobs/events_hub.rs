@@ -151,8 +151,17 @@ impl JobEventsHub {
             .map(|(id, _)| id.clone())
             .collect()
     }
+    /// Faz refetch de status + métricas (com afterSeq=last_seq) para TODOS os jobs
+    /// atualmente com assinantes. Usado na reconexão do listener para cobrir a janela
+    /// de silêncio/queda.
+    pub async fn refetch_subscribed_jobs(&self, manager: &dyn ManagerPort) {
+        for job_id in self.subscribed_job_ids().await {
+            process_job(self, manager, &job_id, true, true).await;
+        }
+    }
 
-    fn dispatch_sync(
+    /// Despacha um evento diretamente aos canais (público para o hub e testes).
+    pub fn dispatch_sync(
         channels: &HashMap<String, broadcast::Sender<JobEvent>>,
         job_id: &str,
         event: JobEvent,
@@ -160,6 +169,13 @@ impl JobEventsHub {
         if let Some(tx) = channels.get(job_id) {
             let _ = tx.send(event);
         }
+    }
+
+    /// Helper para testes: envia evento para os assinantes de um job.
+    #[cfg(test)]
+    pub async fn emit_test_event(&self, job_id: &str, event: JobEvent) {
+        let channels = self.channels.lock().await;
+        Self::dispatch_sync(&channels, job_id, event);
     }
 
     /// `afterSeq` conhecido pelo hub pra um job (usado na reconexão com
@@ -304,12 +320,13 @@ pub async fn run_job_events_listener(
                     hub.listening.store(false, Ordering::SeqCst);
                 } else {
                     tracing::info!("PgListener conectado — LISTEN {CHANNEL} ativo");
+                    hub.refetch_subscribed_jobs(manager.as_ref()).await;
                     hub.listening.store(true, Ordering::SeqCst);
                     backoff = Duration::from_secs(1);
 
                     loop {
-                        match listener.recv().await {
-                            Ok(notice) => {
+                        match listener.try_recv().await {
+                            Ok(Some(notice)) => {
                                 if let Ok(payload) =
                                     serde_json::from_str::<RawPayload>(notice.payload())
                                 {
@@ -323,8 +340,18 @@ pub async fn run_job_events_listener(
                                     .await;
                                 }
                             }
+                            Ok(None) => {
+                                // Conexão caiu e o sqlx reconectou (ou está reconectando).
+                                tracing::warn!(
+                                    "PgListener detectou desconexão (try_recv retornou Ok(None))"
+                                );
+                                hub.listening.store(false, Ordering::SeqCst);
+                                // Ao voltar a receber/reconectar, refaz status + delta de todos os jobs com assinantes
+                                hub.refetch_subscribed_jobs(manager.as_ref()).await;
+                                hub.listening.store(true, Ordering::SeqCst);
+                            }
                             Err(e) => {
-                                tracing::warn!("PgListener desconectado: {e}");
+                                tracing::warn!("PgListener desconectado com erro: {e}");
                                 hub.listening.store(false, Ordering::SeqCst);
                                 break;
                             }

@@ -68,6 +68,16 @@ pub async fn stream_job_events(
     if parse_uuid(&id).is_none() {
         return not_found();
     }
+
+    // 1. Assina no hub PRIMEIRO para não perder nenhum evento que chegue
+    // durante o snapshot/delta.
+    let rx = state.job_events.subscribe(&id).await;
+    let guard = UnsubscribeGuard {
+        hub: std::sync::Arc::clone(&state.job_events),
+        job_id: id.clone(),
+    };
+
+    // 2. Snapshot do job
     let initial_job = match state.manager.get_job(&id).await {
         Ok(v) => to_job_response(v),
         Err(ManagerError::NotFound) => return not_found(),
@@ -89,11 +99,13 @@ pub async fn stream_job_events(
         .data(first_data)];
 
     // Reconexão: `Last-Event-ID` é o seq do último ponto de métrica
-    // recebido pelo cliente — busca só o delta antes de assinar o hub.
+    // recebido pelo cliente — busca o delta.
     let last_event_id: Option<i64> = headers
         .get("last-event-id")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<i64>().ok());
+
+    let mut last_sent_seq = last_event_id;
 
     if !initial_terminal {
         if let Some(after) = last_event_id {
@@ -103,6 +115,7 @@ pub async fn stream_job_events(
                 .await
             {
                 if !resp.items.is_empty() {
+                    last_sent_seq = Some(resp.max_seq);
                     state.job_events.set_known_seq(&id, resp.max_seq).await;
                     let data = serde_json::json!({
                         "items": resp.items,
@@ -132,39 +145,112 @@ pub async fn stream_job_events(
             .into_response();
     }
 
-    let rx = state.job_events.subscribe(&id).await;
-    let guard = UnsubscribeGuard {
-        hub: std::sync::Arc::clone(&state.job_events),
-        job_id: id.clone(),
+    // 3. Drena o receiver descartando métricas com seq <= último enviado,
+    // e faz refetch do delta caso receba RecvError::Lagged.
+    let manager = std::sync::Arc::clone(&state.manager);
+    let job_id_clone = id.clone();
+
+    struct FanoutState {
+        rx: tokio::sync::broadcast::Receiver<crate::jobs::events_hub::JobEvent>,
+        #[allow(dead_code)]
+        guard: UnsubscribeGuard,
+        done: bool,
+        last_sent_seq: Option<i64>,
+        manager: std::sync::Arc<dyn crate::jobs::manager_client::ManagerPort>,
+        job_id: String,
+        pending_events: std::collections::VecDeque<axum::response::sse::Event>,
+    }
+
+    let state_unfold = FanoutState {
+        rx,
+        guard,
+        done: false,
+        last_sent_seq,
+        manager,
+        job_id: job_id_clone,
+        pending_events: std::collections::VecDeque::new(),
     };
 
-    let fanout_stream = futures_util::stream::unfold(
-        (rx, guard, false),
-        move |(mut rx, guard, done)| async move {
-            if done {
+    let fanout_stream = futures_util::stream::unfold(state_unfold, move |mut st| async move {
+        if st.done && st.pending_events.is_empty() {
+            return None;
+        }
+
+        loop {
+            if let Some(event) = st.pending_events.pop_front() {
+                return Some((Ok::<_, std::convert::Infallible>(event), st));
+            }
+
+            if st.done {
                 return None;
             }
-            loop {
-                match rx.recv().await {
-                    Ok(ev) => {
-                        let mut sse = axum::response::sse::Event::default()
-                            .event(ev.event)
-                            .data(ev.data);
-                        if let Some(sid) = ev.id {
-                            sse = sse.id(sid);
+
+            match st.rx.recv().await {
+                Ok(ev) => {
+                    let ev_id_parsed = ev.id.as_deref().and_then(|s| s.parse::<i64>().ok());
+                    if ev.event == "metrics" {
+                        if let (Some(ev_seq), Some(last_seq)) = (ev_id_parsed, st.last_sent_seq) {
+                            if ev_seq <= last_seq {
+                                // Descarta métricas com seq <= último enviado
+                                continue;
+                            }
                         }
-                        let finished = ev.event == "finished";
-                        return Some((
-                            Ok::<_, std::convert::Infallible>(sse),
-                            (rx, guard, finished),
-                        ));
+                        if let Some(ev_seq) = ev_id_parsed {
+                            st.last_sent_seq = Some(ev_seq);
+                        }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+
+                    let mut sse = axum::response::sse::Event::default()
+                        .event(ev.event)
+                        .data(ev.data);
+                    if let Some(sid) = ev.id {
+                        sse = sse.id(sid);
+                    }
+                    if ev.event == "finished" {
+                        st.done = true;
+                    }
+                    return Some((Ok::<_, std::convert::Infallible>(sse), st));
                 }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    // Cliente lento: faz refetch do delta a partir do seu último seq conhecido
+                    if let Ok(resp) = st
+                        .manager
+                        .get_job_metric_points(&st.job_id, st.last_sent_seq, None, None)
+                        .await
+                    {
+                        if !resp.items.is_empty() {
+                            st.last_sent_seq = Some(resp.max_seq);
+                            let data = serde_json::json!({
+                                "items": resp.items,
+                                "maxSeq": resp.max_seq,
+                            })
+                            .to_string();
+                            let sse = axum::response::sse::Event::default()
+                                .event("metrics")
+                                .id(resp.max_seq.to_string())
+                                .data(data);
+                            st.pending_events.push_back(sse);
+                        }
+                    }
+                    // Checa também status atual em caso de término durante o lag
+                    if let Ok(job) = st.manager.get_job(&st.job_id).await {
+                        let jr = to_job_response(job);
+                        if matches!(jr.status.as_str(), "done" | "failed" | "cancelled") {
+                            let telemetry = JobTelemetryEvent::from_job_response(&jr);
+                            let data = serde_json::to_string(&telemetry).unwrap_or_default();
+                            let sse = axum::response::sse::Event::default()
+                                .event("finished")
+                                .data(data);
+                            st.pending_events.push_back(sse);
+                            st.done = true;
+                        }
+                    }
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
             }
-        },
-    );
+        }
+    });
 
     let combined = futures_util::StreamExt::chain(initial_stream, fanout_stream);
 

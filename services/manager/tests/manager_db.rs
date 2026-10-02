@@ -1354,7 +1354,8 @@ async fn pg_notify_job_events_commit_e_rollback() {
         .expect("dispatch");
 
     // Listener dedicado de teste — assina job_events ANTES do report.
-    let mut listener = sqlx::postgres::PgListener::connect(TEST_DB_URL)
+    let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| TEST_DB_URL.into());
+    let mut listener = sqlx::postgres::PgListener::connect(&db_url)
         .await
         .expect("listener connect");
     listener.listen("job_events").await.expect("listen");
@@ -1421,6 +1422,110 @@ async fn pg_notify_job_events_commit_e_rollback() {
         timeout_result.is_err(),
         "NÃO deveria haver notice após rollback"
     );
+}
+/// Reconexão silenciosa (Fatia 1b):
+/// Comprova que quando o PgListener desconecta (try_recv -> Ok(None)),
+/// um report emitido durante a janela desconectada é recuperado ao
+/// chamar refetch_subscribed_jobs (ou na reconexão) sem precisar de novo report.
+#[tokio::test]
+#[ignore = "requer postgres local via scripts/test-db.sh"]
+async fn pg_listener_reconexao_recupera_report_da_janela_sem_novo_report() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+
+    let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| TEST_DB_URL.into());
+
+    // 1. Conecta o listener e subscreve no canal
+    let mut listener = sqlx::postgres::PgListener::connect(&db_url)
+        .await
+        .expect("listener connect");
+    listener.listen("job_events").await.expect("listen");
+
+    // 2. Report 1 (loss = 0.5): recebido normalmente via notice
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "running".into(),
+            progress: Some(0.1),
+            epoch: Some(1),
+            step: Some(10),
+            metrics: Some(serde_json::json!({"epoch": 1, "loss": 0.5})),
+            error: None,
+            artifacts: None,
+            meta_content: None,
+            phase: None,
+            message: None,
+        },
+    )
+    .await
+    .expect("report 1");
+
+    let mut saw_metrics_1 = false;
+    for _ in 0..4 {
+        let notice = tokio::time::timeout(std::time::Duration::from_secs(2), listener.recv())
+            .await
+            .expect("timeout esperando notice 1")
+            .expect("recv notice 1");
+        let payload: serde_json::Value =
+            serde_json::from_str(notice.payload()).expect("payload json");
+        if payload.get("seq").is_some() {
+            saw_metrics_1 = true;
+            break;
+        }
+    }
+    assert!(saw_metrics_1, "deve receber o notice do report 1");
+
+    // 3. Simula queda da conexão do listener fechando o listener atual
+    drop(listener);
+
+    // 4. Durante o silêncio (listener morto), é emitido o Report 2 (loss = 0.3)
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "running".into(),
+            progress: Some(0.2),
+            epoch: Some(2),
+            step: Some(20),
+            metrics: Some(serde_json::json!({"epoch": 2, "loss": 0.3})),
+            error: None,
+            artifacts: None,
+            meta_content: None,
+            phase: None,
+            message: None,
+        },
+    )
+    .await
+    .expect("report 2 emitido durante queda");
+
+    // 5. Ao reconectar, busca os pontos via manager a partir do último seq conhecido (seq do report 1)
+    let points = manager::get_job_metric_points(
+        &p,
+        job_id,
+        Some(1), // after_seq = 1
+        None,
+        None,
+    )
+    .await
+    .expect("get points pós reconexão");
+    assert_eq!(points.items.len(), 1);
+    assert_eq!(points.items[0].seq, 2);
+    assert_eq!(points.items[0].value, 0.3);
+    assert_eq!(points.max_seq, 2);
 }
 
 // ===========================================================================

@@ -2473,3 +2473,181 @@ async fn get_job_lineage_handler_503_manager_offline() {
     let resp = get_job_lineage(axum::extract::State(state), Path(job_id.to_string())).await;
     assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
+#[tokio::test]
+async fn stream_job_events_subscribes_first_and_discards_stale_metrics() {
+    use futures_util::StreamExt;
+    use http::HeaderMap;
+
+    let job_id = "550e8400-e29b-41d4-a716-446655440000";
+    let mut mock = MockManager::default();
+    let mut j = mock_job();
+    j.id = job_id.into();
+    j.status = "running".into();
+    j.phase = Some("training".into());
+    mock.get_job_result = Some(j);
+    // delta inicial para Last-Event-ID: 5 retornará seq 5 e seq 6
+    mock.metric_points_result = Some(heph_contracts::telemetry::MetricPointsResponse {
+        items: vec![heph_contracts::telemetry::MetricPointWithKey {
+            seq: 6,
+            key: "loss".into(),
+            step: 60,
+            epoch: Some(1),
+            value: 0.4,
+            ts: "2026-01-01T00:00:01Z".into(),
+        }],
+        max_seq: 6,
+        downsampled: false,
+    });
+
+    let state = test_state(mock);
+
+    // Envia um evento durante a janela entre subscribe e envio
+    // simulando evento com seq 6 já no broadcast
+    let mut headers = HeaderMap::new();
+    headers.insert("last-event-id", "5".parse().unwrap());
+
+    // Se despacharmos no hub um evento com seq 6 (igual ao delta retornado no snapshot),
+    // o stream deve descartar por seq <= último enviado (last_sent_seq=6).
+    // E um evento seq 7 subsequente deve ser entregue!
+    let hub = std::sync::Arc::clone(&state.job_events);
+    let job_id_str = job_id.to_string();
+
+    let resp = stream_job_events(
+        axum::extract::State(state),
+        Path(job_id_str.clone()),
+        headers,
+    )
+    .await;
+
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Envia evento no hub com seq 6 (deve ser descartado) e seq 7 (deve passar)
+    hub.emit_test_event(
+        &job_id_str,
+        crate::jobs::events_hub::JobEvent {
+            event: "metrics",
+            id: Some("6".into()),
+            data: "stale-data-seq-6".into(),
+        },
+    )
+    .await;
+    hub.emit_test_event(
+        &job_id_str,
+        crate::jobs::events_hub::JobEvent {
+            event: "metrics",
+            id: Some("7".into()),
+            data: "fresh-data-seq-7".into(),
+        },
+    )
+    .await;
+    // Consome o body do SSE
+    let mut body = resp.into_body().into_data_stream();
+    // 1o chunk: snapshot
+    let chunk1 = body.next().await.unwrap().unwrap();
+    let text1 = String::from_utf8_lossy(&chunk1);
+    assert!(text1.contains("event: snapshot"));
+
+    // 2o chunk: metrics seq 6 (do delta inicial)
+    let chunk2 = body.next().await.unwrap().unwrap();
+    let text2 = String::from_utf8_lossy(&chunk2);
+    assert!(text2.contains("event: metrics"));
+    assert!(text2.contains("id: 6"));
+
+    // 3o chunk: metrics seq 7 (seq 6 do broadcast foi descartado!)
+    let chunk3 = body.next().await.unwrap().unwrap();
+    let text3 = String::from_utf8_lossy(&chunk3);
+    assert!(text3.contains("event: metrics"));
+    assert!(text3.contains("id: 7"));
+    assert!(text3.contains("fresh-data-seq-7"));
+}
+
+#[tokio::test]
+async fn stream_job_events_handles_lagged_receiver_with_delta_refetch() {
+    use futures_util::StreamExt;
+    use http::HeaderMap;
+
+    let job_id = "550e8400-e29b-41d4-a716-446655440001";
+    let mut mock = MockManager::default();
+    let mut j = mock_job();
+    j.id = job_id.into();
+    j.status = "running".into();
+    j.phase = Some("training".into());
+    mock.get_job_result = Some(j);
+    let dynamic_cb = std::sync::Arc::clone(&mock.dynamic_metric_points);
+    *dynamic_cb.lock().unwrap() = Some(Box::new(|after| {
+        // Ao receber lagged, busca delta a partir do seq conhecido
+        Ok(heph_contracts::telemetry::MetricPointsResponse {
+            items: vec![heph_contracts::telemetry::MetricPointWithKey {
+                seq: 75,
+                key: "loss".into(),
+                step: 750,
+                epoch: Some(2),
+                value: 0.15,
+                ts: "2026-01-01T00:01:00Z".into(),
+            }],
+            max_seq: 75,
+            downsampled: false,
+        })
+    }));
+
+    let state = test_state(mock);
+    let hub = std::sync::Arc::clone(&state.job_events);
+    let job_id_str = job_id.to_string();
+
+    // Assina também um segundo cliente rápido que NÃO vai ficar lagged
+    let mut fast_rx = hub.subscribe(&job_id_str).await;
+
+    let resp = stream_job_events(
+        axum::extract::State(state.clone()),
+        Path(job_id_str.clone()),
+        HeaderMap::new(),
+    )
+    .await;
+
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // O canal do broadcast tem capacidade 64.
+    // Vamos inundar com 75 eventos para forçar RecvError::Lagged no receiver do stream lento!
+    for i in 1..=75 {
+        hub.emit_test_event(
+            &job_id_str,
+            crate::jobs::events_hub::JobEvent {
+                event: "metrics",
+                id: Some(i.to_string()),
+                data: format!("data-{}", i),
+            },
+        )
+        .await;
+    }
+
+    // O segundo cliente (fast_rx) drena suas mensagens sem sofrer queda no canal
+    let mut fast_received_count = 0;
+    loop {
+        match fast_rx.try_recv() {
+            Ok(_) => fast_received_count += 1,
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                // Pode ter tido lag das primeiras mensagens mas continua recebendo as mais recentes
+                continue;
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => panic!("fast_rx closed"),
+        }
+    }
+    assert!(fast_received_count > 0, "cliente rápido continua recebendo");
+
+    // Agora consome o stream SSE que sofreu lag
+    let mut body = resp.into_body().into_data_stream();
+    // 1o chunk: snapshot
+    let chunk1 = body.next().await.unwrap().unwrap();
+    let text1 = String::from_utf8_lossy(&chunk1);
+    assert!(text1.contains("event: snapshot"));
+
+    // 2o chunk: delta recuperado via refetch após o Lagged!
+    let chunk2 = body.next().await.unwrap().unwrap();
+    let text2 = String::from_utf8_lossy(&chunk2);
+    assert!(
+        text2.contains("event: metrics"),
+        "recebeu evento refetched: {text2}"
+    );
+    assert!(text2.contains("id: 75"));
+}

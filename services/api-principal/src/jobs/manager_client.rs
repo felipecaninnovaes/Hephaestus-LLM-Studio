@@ -927,6 +927,22 @@ pub struct MockManager {
     pub list_artifacts_result: Option<Vec<InternalArtifact>>,
     /// Resultado de `get_job_metric_points` (fatia 1a).
     pub metric_points_result: Option<heph_contracts::telemetry::MetricPointsResponse>,
+    /// Resposta dinâmica thread-safe para testes de refetch/lagged.
+    #[allow(clippy::type_complexity)]
+    pub dynamic_metric_points: std::sync::Arc<
+        std::sync::Mutex<
+            Option<
+                Box<
+                    dyn Fn(
+                            Option<i64>,
+                        )
+                            -> Result<heph_contracts::telemetry::MetricPointsResponse, ManagerError>
+                        + Send
+                        + Sync,
+                >,
+            >,
+        >,
+    >,
     pub get_telemetry_result: Option<InternalTelemetry>,
     pub create_job_result: Option<CreateJobResponse>,
     pub abort_job_result: Option<AbortJobResponse>,
@@ -1067,6 +1083,7 @@ impl Default for MockManager {
             get_job_result: None,
             list_artifacts_result: Some(vec![]),
             metric_points_result: None,
+            dynamic_metric_points: std::sync::Arc::new(std::sync::Mutex::new(None)),
             get_telemetry_result: None,
             create_job_result: None,
             abort_job_result: None,
@@ -1163,11 +1180,13 @@ impl ManagerPort for MockManager {
         if self.fail {
             return Err(ManagerError::Unavailable("mock fail".into()));
         }
+        if let Some(cb) = &*self.dynamic_metric_points.lock().unwrap() {
+            return cb(_after_seq);
+        }
         self.metric_points_result
             .clone()
             .ok_or(ManagerError::NotFound)
     }
-
     async fn get_lineage(&self, job_id: &str) -> Result<InternalLineage, ManagerError> {
         if self.fail {
             return Err(ManagerError::Unavailable("mock fail".into()));

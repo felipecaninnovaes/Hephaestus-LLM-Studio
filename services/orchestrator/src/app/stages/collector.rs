@@ -133,6 +133,45 @@ pub async fn upload_telemetry_snapshot(
     }
 }
 
+/// Fatia 1c: sobe (ou ressobe, overwrite) o snapshot atual de `logs/run.log`
+/// (stdout+stderr do container, gravado em streaming pelo executor) como
+/// artefato `logs/run.log` (kind `logs`). Mesmo padrão growth-gated/mutável
+/// de `upload_telemetry_snapshot` (C2a); best-effort: falha loga warn e não
+/// abate o job.
+pub async fn upload_run_log_snapshot(
+    s3: &Arc<dyn S3Port>,
+    job_id: &str,
+    run_log_path: &Path,
+    outputs: &Path,
+) -> Option<ArtifactReport> {
+    let size = std::fs::metadata(run_log_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    if size == 0 {
+        return None;
+    }
+    match upload_one(
+        s3,
+        job_id,
+        "logs/run.log".to_string(),
+        run_log_path,
+        "logs",
+        outputs,
+    )
+    .await
+    {
+        Ok(rep) => Some(rep),
+        Err(e) => {
+            tracing::warn!(
+                job_id = %job_id,
+                error = %e,
+                "falha best-effort no upload live de run.log (Fatia 1c)"
+            );
+            None
+        }
+    }
+}
+
 /// Coleta os artefatos de geração de difusão (`generated_*`, `thumb_*`,
 /// `generation_meta.json`, `generated.png` legado) com upload via
 /// `put_with_retry`.
@@ -246,6 +285,7 @@ pub async fn stream_metrics_and_samples(
     checkpoints_dir: PathBuf,
     total_epochs: i32,
     is_diffusion: bool,
+    run_log_path: PathBuf,
 ) {
     use crate::compute_progress;
     use crate::domain::models::ReportBody;
@@ -261,6 +301,8 @@ pub async fn stream_metrics_and_samples(
     let mut uploaded_checkpoints = std::collections::HashSet::<String>::new();
     // C2a: bytes do último snapshot de telemetry.jsonl enviado (growth-gate).
     let mut telemetry_uploaded_bytes: i64 = 0;
+    // Fatia 1c: idem para logs/run.log.
+    let mut run_log_uploaded_bytes: i64 = 0;
     loop {
         interval.tick().await;
 
@@ -444,6 +486,20 @@ pub async fn stream_metrics_and_samples(
                         telemetry_uploaded_bytes = size;
                         new_live_artifacts.push(rep);
                     }
+                }
+            }
+        }
+
+        // Fatia 1c: re-upload do snapshot de logs/run.log quando ele cresce —
+        // mesmo growth-gate de telemetry.jsonl acima.
+        if let Ok(size) = std::fs::metadata(&run_log_path) {
+            let size = size.len() as i64;
+            if size > run_log_uploaded_bytes {
+                if let Some(rep) =
+                    upload_run_log_snapshot(&s3, &job_id, &run_log_path, &outputs_dir).await
+                {
+                    run_log_uploaded_bytes = size;
+                    new_live_artifacts.push(rep);
                 }
             }
         }

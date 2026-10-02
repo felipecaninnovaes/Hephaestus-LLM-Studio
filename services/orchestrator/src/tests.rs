@@ -383,6 +383,7 @@ impl TrainerExecutor for FakeExecutor {
         args: &[String],
         _env: &[(String, String)],
         _gpu_devices: Option<&str>,
+        _run_log_path: &std::path::Path,
     ) -> (i32, String) {
         *self.last_args.lock().unwrap() = Some(args.to_vec());
         (0, "ok".to_string())
@@ -418,6 +419,7 @@ async fn run_job_inner_passes_correct_args() {
             &expected_args,
             &[],
             None,
+            std::path::Path::new("/tmp/run-job-inner-passes-correct-args.log"),
         )
         .await;
 
@@ -670,6 +672,7 @@ impl TrainerExecutor for FakeTrainerExecutor {
         args: &[String],
         _env: &[(String, String)],
         _gpu_devices: Option<&str>,
+        _run_log_path: &std::path::Path,
     ) -> (i32, String) {
         *self.last_args.lock().unwrap() = Some(args.to_vec());
         (0, "ok".to_string())

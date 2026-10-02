@@ -1,8 +1,125 @@
+use std::collections::VecDeque;
+use std::path::Path;
+use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use parking_lot::Mutex as StdMutex;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::ports::executor::TrainerExecutor;
+
+/// Nº de linhas finais mantidas em memória para o `logs_tail` do erro
+/// (`app/mod.rs:1062`): o output completo já vai para `run.log` em
+/// streaming, então não precisamos mais acumular o processo inteiro em RAM.
+const TAIL_LINES: usize = 20;
+
+/// Teto de bytes de `run.log` por job (Fatia 1c/§6: "truncagem com marcador
+/// acima de 1 GiB por job" — default conservador de 256 MiB, `RUN_LOG_MAX_BYTES`
+/// sobrescreve). Acima do teto, o escritor para de gravar linhas novas e grava
+/// UMA linha marcador; os pipes continuam sendo drenados (nunca pausar leitura,
+/// ou o processo trava em write() quando o pipe do SO enche).
+fn run_log_max_bytes() -> u64 {
+    std::env::var("RUN_LOG_MAX_BYTES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(256 * 1024 * 1024)
+}
+
+/// Escritor incremental de `run.log`: epoch-millis (sem dependência de
+/// crate de data/hora — nenhuma já existe no Cargo.toml do orchestrator) +
+/// nome da stream (`stdout`/`stderr`) + linha, uma por escrita. Falha de
+/// escrita (disco cheio, permissão) vira WARN e desliga a persistência para
+/// o resto do job — nunca aborta a execução do trainer (§2/regra do coordenador).
+struct RunLogWriter {
+    file: Option<tokio::fs::File>,
+    bytes_written: u64,
+    max_bytes: u64,
+    truncated: bool,
+    path: std::path::PathBuf,
+}
+
+impl RunLogWriter {
+    async fn open(path: &Path) -> Self {
+        let file = match tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .await
+        {
+            Ok(f) => Some(f),
+            Err(e) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "falha ao abrir run.log para escrita — log do job não será persistido (WARN, job segue)"
+                );
+                None
+            }
+        };
+        Self {
+            file,
+            bytes_written: 0,
+            max_bytes: run_log_max_bytes(),
+            truncated: false,
+            path: path.to_path_buf(),
+        }
+    }
+
+    async fn write_line(&mut self, stream_name: &str, line: &str) {
+        let Some(file) = self.file.as_mut() else {
+            return;
+        };
+        if self.truncated {
+            return;
+        }
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let rendered = format!("{ts} {stream_name} {line}\n");
+        if self.bytes_written + rendered.len() as u64 > self.max_bytes {
+            self.truncated = true;
+            let marker = format!("[run.log truncado em {} bytes]\n", self.bytes_written);
+            if let Err(e) = file.write_all(marker.as_bytes()).await {
+                tracing::warn!(path = %self.path.display(), error = %e, "falha ao gravar marcador de truncamento em run.log");
+            }
+            let _ = file.flush().await;
+            return;
+        }
+        if let Err(e) = file.write_all(rendered.as_bytes()).await {
+            tracing::warn!(path = %self.path.display(), error = %e, "falha ao gravar linha em run.log — persistência desligada para o resto do job (WARN)");
+            self.file = None;
+            return;
+        }
+        self.bytes_written += rendered.len() as u64;
+    }
+}
+
+/// Drena uma stream (`stdout`/`stderr`) do container linha a linha,
+/// alimentando o `run.log` compartilhado e o ring buffer das últimas
+/// `TAIL_LINES` para o `logs_tail` do erro.
+async fn pump_stream<R>(
+    reader: R,
+    stream_name: &'static str,
+    writer: Arc<tokio::sync::Mutex<RunLogWriter>>,
+    tail: Arc<StdMutex<VecDeque<String>>>,
+) where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    let mut lines = BufReader::new(reader).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        {
+            let mut t = tail.lock();
+            if t.len() == TAIL_LINES {
+                t.pop_front();
+            }
+            t.push_back(line.clone());
+        }
+        writer.lock().await.write_line(stream_name, &line).await;
+    }
+}
 
 /// Executor real via CLI docker (EXEC_MODE=docker, default).
 pub struct DockerExecutor;
@@ -75,6 +192,7 @@ impl TrainerExecutor for DockerExecutor {
         args: &[String],
         env: &[(String, String)],
         gpu_devices: Option<&str>,
+        run_log_path: &Path,
     ) -> (i32, String) {
         let cmd_args =
             build_docker_run_args(image, container_name, volumes, args, env, gpu_devices);
@@ -82,6 +200,8 @@ impl TrainerExecutor for DockerExecutor {
         let mut cmd = tokio::process::Command::new("docker");
         cmd.args(&cmd_args);
         cmd.kill_on_drop(true);
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
 
         let timeout_secs: u64 = std::env::var("TRAINER_TIMEOUT_SECS")
             .ok()
@@ -89,14 +209,49 @@ impl TrainerExecutor for DockerExecutor {
             .unwrap_or(7200);
         let timeout_duration = Duration::from_secs(timeout_secs);
 
-        match tokio::time::timeout(timeout_duration, cmd.output()).await {
-            Ok(Ok(o)) => {
-                let exit_code = o.status.code().unwrap_or(-1);
-                let stdout = String::from_utf8_lossy(&o.stdout).to_string();
-                let stderr = String::from_utf8_lossy(&o.stderr).to_string();
-                let logs = format!("{stdout}\n{stderr}");
-                (exit_code, logs)
-            }
+        let run_log_path = run_log_path.to_path_buf();
+        let run_fut = async move {
+            let mut child = cmd
+                .spawn()
+                .map_err(|e| format!("docker spawn error: {e}"))?;
+            let stdout = child.stdout.take().expect("stdout piped at spawn");
+            let stderr = child.stderr.take().expect("stderr piped at spawn");
+
+            // RunLogWriter abre (cria) o arquivo ANTES de qualquer linha
+            // chegar: `run.log` existe desde o início do container, mesmo
+            // que ele morra no import/segfault antes de emitir uma linha.
+            let writer = Arc::new(tokio::sync::Mutex::new(
+                RunLogWriter::open(&run_log_path).await,
+            ));
+            let tail = Arc::new(StdMutex::new(VecDeque::<String>::with_capacity(
+                TAIL_LINES + 1,
+            )));
+
+            let out_task = tokio::spawn(pump_stream(
+                stdout,
+                "stdout",
+                Arc::clone(&writer),
+                Arc::clone(&tail),
+            ));
+            let err_task = tokio::spawn(pump_stream(
+                stderr,
+                "stderr",
+                Arc::clone(&writer),
+                Arc::clone(&tail),
+            ));
+            let _ = tokio::join!(out_task, err_task);
+
+            let status = child
+                .wait()
+                .await
+                .map_err(|e| format!("docker wait error: {e}"))?;
+            let exit_code = status.code().unwrap_or(-1);
+            let tail_lines = tail.lock().iter().cloned().collect::<Vec<_>>().join("\n");
+            Ok::<(i32, String), String>((exit_code, tail_lines))
+        };
+
+        match tokio::time::timeout(timeout_duration, run_fut).await {
+            Ok(Ok((exit_code, logs))) => (exit_code, logs),
             Ok(Err(e)) => (-1, format!("docker exec error: {e}")),
             Err(_) => {
                 let _ = self.stop(container_name).await;

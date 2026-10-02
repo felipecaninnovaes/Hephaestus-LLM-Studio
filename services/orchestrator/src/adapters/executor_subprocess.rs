@@ -15,6 +15,7 @@ impl TrainerExecutor for SubprocessExecutor {
         _args: &[String],
         _env: &[(String, String)],
         _gpu_devices: Option<&str>,
+        _run_log_path: &std::path::Path,
     ) -> (i32, String) {
         // Subprocess mode: tenta rodar o trainer diretamente.
         // Não é o caminho de aceite — falha honestamente se o pacote não estiver instalado.

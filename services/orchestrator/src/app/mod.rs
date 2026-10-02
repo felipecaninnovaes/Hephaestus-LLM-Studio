@@ -995,6 +995,17 @@ pub async fn run_job_inner(
 
     // Spawn metrics collector & sample streamer (estágio unificado — collector.rs)
     let metrics_path = outputs.join("metrics.jsonl");
+    // Fatia 1c: dir de logs com permissão aberta (mesmo padrão de outputs/ —
+    // PITFALLS:52) + caminho de run.log (stdout+stderr intercalados).
+    let logs_dir = outputs.join("logs");
+    if let Err(e) = create_dir_all_open(&logs_dir).await {
+        tracing::warn!(
+            job_id = %job_id,
+            error = %e,
+            "falha ao criar outputs/logs — run.log não será persistido (WARN, job segue)"
+        );
+    }
+    let run_log_path = logs_dir.join("run.log");
     let metrics_report_client = Arc::clone(&report_client);
     let metrics_s3 = Arc::clone(&s3);
     let metrics_handle = tokio::spawn(stream_metrics_and_samples(
@@ -1006,6 +1017,7 @@ pub async fn run_job_inner(
         outputs.join("checkpoints"),
         total_epochs,
         dispatch.engine == "diffusion",
+        run_log_path.clone(),
     ));
 
     // Ramifica subcomando e artefatos por (engine, mode) — ADR-0013 D6 (estágio execute.rs)
@@ -1042,6 +1054,7 @@ pub async fn run_job_inner(
             &subcommand_args,
             &exec_env,
             gpu_devices,
+            &run_log_path,
         )
         .await;
 
@@ -1053,6 +1066,13 @@ pub async fn run_job_inner(
         .map(|e| e.is_cancelled())
         .unwrap_or(false);
     active_jobs.remove(job_id);
+
+    // Fatia 1c: snapshot final de run.log — cobre o intervalo desde o último
+    // tick do collector e garante presença em S3 mesmo em crash/import
+    // failure (exit_code != 0) ou cancelamento; best-effort, nunca abate o
+    // job (quem reporta done/failed/cancelled é o caminho abaixo).
+    let final_run_log_artifact =
+        stages::collector::upload_run_log_snapshot(&s3, job_id, &run_log_path, &outputs).await;
 
     if was_cancelled {
         return Err(PipelineError::Cancelled);
@@ -1097,6 +1117,9 @@ pub async fn run_job_inner(
     };
 
     let mut artifacts = Vec::new();
+    if let Some(rep) = final_run_log_artifact {
+        artifacts.push(rep);
+    }
     // Uploads com retry; falhas persistentes viram failed no gate abaixo
     // (incidente galeria vazia) — sem abortar o resto do loop.
     let mut upload_errors: Vec<String> = Vec::new();

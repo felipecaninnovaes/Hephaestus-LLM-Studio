@@ -2,7 +2,7 @@
 
 **Data da especificação:** 2026-10-01  
 **Autor:** @orchestrator (plano base do @planner revisado com 13 correções; redação @docs)  
-**Status:** Aprovada — escopo COMPLETO (ondas 0–5, 17 fatias)  
+**Status:** Aprovada — escopo COMPLETO (ondas 0–5, 17 fatias). Implementado em `develop` (`8b6e442`): 0a, 0b, 1a, 1b, 1c, 2a, 2b, 2c, 3b, 3c (backend), 5a, 5b, 5c. Abertos: 3a, 3c (UI), 4a, 4b, 4c.
 **Branches:** uma por fatia, a partir de `develop` (tabela §8)
 
 Restrições: single-user/homelab; nó GPU 10.15.50.114 (RTX 3060 12GB + GTX 1660S 6GB, 158G disco); topologia fixa BFF (`api-principal`) → `manager` → `orchestrator` → engines. Wire público camelCase (`packages/contracts/openapi.yaml`); Rust/Postgres snake_case (`crates/heph-contracts`). Contract ≡ router: toda rota/campo novo entra no openapi na mesma fatia.
@@ -114,12 +114,13 @@ UPDATE jobs j SET metric_seq = s.max_seq
 FROM (SELECT job_id, MAX(seq) AS max_seq FROM job_metric_points GROUP BY job_id) s
 WHERE j.id = s.job_id;
 ```
-O formato aceito espelha `normalize_metrics_to_array` (`metrics.rs:11-22`: array, `{"items":[...]}` ou objeto único).
+O formato aceito espelha `normalize_metrics_to_array` (`metrics.rs:11-22`: array, `{"items":[...]}` ou objeto único). O SQL acima é ilustrativo: casts diretos (`(item->>'epoch')::INTEGER` com `1.0`) abortariam o boot via `sqlx::migrate!` — a 0021 real guarda com `jsonb_typeof` + `numeric`/`trunc` e cai no fallback (`epoch` NULL, `step` 0).
 
 ```sql
--- migration posterior (gate manual após contagem legado == tabela)
+-- migration posterior (gate manual após contagem legado == tabela) — PENDENTE
 ALTER TABLE jobs DROP COLUMN metrics;
 ```
+Estado atual: `jobs.metrics` está **congelada** — nenhum código lê ou escreve a coluna; o drop aguarda o gate.
 
 ```sql
 -- 0022_job_alerts.sql (fatia 3c)
@@ -138,43 +139,51 @@ CREATE UNIQUE INDEX job_alerts_active_uniq
     ON job_alerts (job_id, rule_id) WHERE resolved_at IS NULL;
 
 CREATE INDEX job_alerts_job_fired_idx ON job_alerts (job_id, fired_at DESC);
+
+-- jobs.started_at (1º report running): referência de telemetry_stale sem pontos
+ALTER TABLE jobs ADD COLUMN started_at TIMESTAMPTZ;
 ```
+O CHECK aceita `vram_high`/`disk_high`, mas essas regras **não estão implementadas** (heartbeat sem disco e sem VRAM por job) — dependem da 3a / spec multi-GPU.
 
-### 3.2. `pg_notify`
+### 3.2. `pg_notify` (implementado)
 
-- Canal único `job_metrics` (não um canal por job — permite um `PgListener` só no BFF).
+- Canal único `job_events` (não um canal por job) — o BFF mantém **um** `PgListener` com fan-out in-process por job.
 - Emitido pelo manager **na mesma transação** do insert (entregue no commit).
-- Payload (ponteiro, nunca valores): `{"jobId":"<uuid>","seq":<maxSeq do batch>}`.
-- Alertas (3c) usam o canal `job_alerts` com payload `{"jobId":"<uuid>","alertId":"<uuid>"}`.
+- Payloads (ponteiro, nunca valores): métricas `{"jobId","seq"}`; mudança de status `{"jobId","status":true}`; alertas `{"jobId","alert":true}`.
+- `PgListener::recv()` reconecta silenciosamente perdendo notificações → o BFF trata a reconexão com refetch; `Lagged` no broadcast in-process refaz o delta.
 
-### 3.3. Eventos SSE (`GET /api/jobs/:id/stream`)
+### 3.3. Eventos SSE (`GET /api/jobs/:id/events` — rota existente, não `/stream`)
 
 | `event:` | `id:` | `data:` |
 |---|---|---|
-| `metrics` | `<seq>` (último do lote) | `{"items":[{"seq","epoch","step","key","value","ts"}],"maxSeq":N}` — delta `seq > lastSeq` |
-| `status` | — | snapshot de status do job (comportamento atual) |
-| `alert` | — | objeto `JobAlert` (3c) |
+| `snapshot` / `telemetry` / `finished` | — | eventos pré-existentes (status/telemetria do job) |
+| `metrics` | `<maxSeq>` | `{"items":[{"seq","epoch","step","key","value","ts"}],"maxSeq":N}` — delta `seq > lastSeq` |
+| `alerts` | — | snapshot `JobAlertsResponse` (3c) |
 
-Reconexão: cliente envia `Last-Event-ID: <seq>`; BFF responde com delta `afterSeq=<seq>` antes de voltar ao fan-out. Listener caído → poll lento de 5s por job (só delta), retorna ao listener quando reconectar.
+Reconexão: cliente envia `Last-Event-ID: <seq>`; BFF responde com delta `afterSeq=<seq>` antes de voltar ao fan-out.
 
 ### 3.4. Rotas (openapi, camelCase)
 
 | Rota | Fatia | Contrato |
 |---|---|---|
-| `GET /api/jobs/:id/metrics?afterSeq=<int>&maxPoints=<int>&keys=<csv>` | 1a | `{"items":[{"seq","epoch","step","key","value","ts"}],"maxSeq":N,"downsampled":bool}`; com `maxPoints`, min/max por bucket de `step` por `key` |
-| `GET /api/jobs/:id/logs` | 1c | rota existente (`services/api-principal/src/jobs/handlers/artifacts.rs:186-231`), passa a ler `logs/run.log` |
-| `GET /api/jobs/:id/alerts` | 3c | `{"items":[JobAlert]}` ativos + resolvidos recentes; `JobAlert = {id, jobId, ruleId, severity, message, firedAt, resolvedAt?}` |
-| `GET /api/jobs/:id/lineage` | 5b | `{"nodes":[{id, kind: dataset|job|checkpoint|generation, label}],"edges":[{from,to,kind}]}` |
-| `GET /api/jobs/:id/export?format=csv|parquet` | 5c | stream `text/csv` ou `application/vnd.apache.parquet` (colunas `seq,epoch,step,key,value,ts`) |
+| `GET /api/jobs/:id/metrics` | 1a | sem params = shape legado pivotado (montado a partir de `job_metric_points`); com `afterSeq`/`keys`/`maxPoints` = `{"items":[{"seq","epoch","step","key","value","ts"}],"maxSeq":N,"downsampled":bool}`; `maxPoints` 1..10000 (fora → 400 `invalid_max_points`); min/max por bucket de `step` por `key` |
+| `GET /api/jobs/:id/logs?source=telemetry\|run` | 1c | `run` lê `logs/run.log`; `source` inválido → 400 |
+| `GET /api/jobs/:id/alerts` | 3c | `JobAlertsResponse {"items":[JobAlert]}`; `JobAlert = {id, jobId, ruleId, severity, message, firedAt, resolvedAt?}` |
+| `GET /api/jobs/:id/lineage` | 5b | `{"nodes":[...],"edges":[{from,to,kind}]}`; `kind ∈ trains\|produced\|resumed_by\|used_by`, sempre origem→consumidor, sem aresta job→job |
+| `GET /api/jobs/:id/export?format=csv\|parquet` | 5c | stream `text/csv` ou `application/vnd.apache.parquet` (colunas `seq,epoch,step,key,value,ts`); acima de 2M pontos → 413 |
 
-Header: `x-request-id` (UUID) e `traceparent` (W3C) em toda resposta e chamada interna (2b).
+`run.log` (1c): capturado pelos pipes do `DockerExecutor`, teto `RUN_LOG_MAX_BYTES` (256 MiB), 64 KiB por linha, `\r` colapsado (barras de progresso); o daemon de difusão (geração quente) não gera `run.log`.
+
+Alertas (3c, manager): `nan_detected` usa `nan_count`/`inf_count` achatados de `diagnostics` pelo orchestrator; `telemetry_stale` usa `ALERT_STALE_SECS` (default 300) com referência `COALESCE(last_ts, started_at, created_at)`.
+
+Header: `x-request-id` (UUID) e `traceparent` (W3C) em toda resposta e chamada interna (2b), via `heph_contracts::request_context`. OTel atrás da feature `otel` (2a); collector OTLP 4317/4318 em loopback; Loki 3100, Tempo 3200, Grafana `127.0.0.1:4000` (2c), retenção `LOKI_RETENTION`/`TEMPO_RETENTION` default 720h; `filelog` filtrado por `com.docker.compose.project`. Nó GPU sem export OTel.
 
 ### 3.5. `heph-contracts` (`crates/heph-contracts/src/telemetry.rs`, snake_case + `#[serde(rename_all = "camelCase")]`)
 
 `JobTelemetryEvent` ganha (todos `Option`, `skip_serializing_if`):
 - 0a: `vram_reserved_gb: f64`, `step_time_seconds: f64`, `eta_seconds: i64`, `eta_formatted: String`.
 - 3a: `system_metrics: SystemMetrics { cpu_pct, ram_used_gb, disk_read_mb_s, disk_write_mb_s }` (GPU vem do `GpuDeviceTelemetry` da spec multi-GPU, não daqui).
-- 3b: `diagnostics: TrainingDiagnostics { grad_norm_l2: f64, nan_count: u32, inf_count: u32, lr_per_group: Vec<f64>, lora_norms: BTreeMap<String, f64> }`.
+- 3b: `diagnostics: TrainingDiagnostics { grad_norm_l2: f64, nan_count: u32, inf_count: u32, lr_per_group: Vec<f64>, lora_norms: BTreeMap<String, f64> }` (implementado; engine-kit serializa JSON estrito — NaN/Inf → `null`).
 
 ### 3.6. `TelemetryEmitter` (`engines/engine-kit/src/engine_kit/telemetry.py`)
 
@@ -192,63 +201,63 @@ Formato: dono · branch · arquivos · depende de · aceite (binário; smoke rea
 
 **0a — Contrato `JobTelemetryEvent` v2**  
 @backend · `feat/telemetry-contract-v2` · `crates/heph-contracts/src/telemetry.rs`, `packages/contracts/openapi.yaml` · depende: —  
-- [ ] Os 4 campos de §3.5/0a existem no crate e no openapi (camelCase).
-- [ ] Teste de round-trip desserializa uma linha real de `telemetry.jsonl` emitida pelo engine-kit (mock) com os 4 campos preenchidos.
+- [x] Os 4 campos de §3.5/0a existem no crate e no openapi (camelCase).
+- [x] Teste de round-trip desserializa uma linha real de `telemetry.jsonl` emitida pelo engine-kit (mock) com os 4 campos preenchidos.
 
 **0b — `job_metric_points` + backfill único**  
 @backend · `feat/job-metrics-migration-sql` · `services/api-principal/migrations/0020_job_metric_points.sql`, `0021_backfill_job_metric_points.sql` · depende: —  
-- [ ] Migrations aplicam numa cópia do banco de dev sem erro.
-- [ ] Para cada job, `COUNT(*)` em `job_metric_points` == nº de pares numéricos (fora `epoch`/`step`) no JSONB legado (query de verificação anexada ao PR).
-- [ ] Rodar o backfill duas vezes não altera a contagem.
-- [ ] `DELETE FROM jobs WHERE id=<job teste>` remove seus pontos (CASCADE).
+- [x] Migrations aplicam numa cópia do banco de dev sem erro.
+- [x] Para cada job, `COUNT(*)` em `job_metric_points` == nº de pares numéricos (fora `epoch`/`step`) no JSONB legado (query de verificação anexada ao PR).
+- [x] Rodar o backfill duas vezes não altera a contagem.
+- [x] `DELETE FROM jobs WHERE id=<job teste>` remove seus pontos (CASCADE).
 
 ### Onda 1 — Camada de dados, pub-sub, captura de log
 
 **1a — Insert append-only + downsampling + fix do descarte silencioso**  
 @backend · `feat/metrics-append-only` · `services/manager/src/reporting/metrics.rs` (troca `upsert_metrics_conn` por insert em lote com alocação de `seq`), handler de métricas em `services/api-principal/src/jobs/handlers/stream.rs` (`get_job_metrics`), `services/orchestrator/src/app/stages/collector.rs:464,498`, `packages/contracts/openapi.yaml` · depende: 0a, 0b  
-- [ ] Dois reports concorrentes (5 pontos cada) no mesmo job → 10 linhas, `seq` 1..10 sem buraco/duplicata.
-- [ ] Ponto sem `epoch` é persistido (`epoch IS NULL`).
-- [ ] `GET /api/jobs/:id/metrics?maxPoints=100` num job com ≥10k pontos devolve ≤100 buckets por key, `downsampled:true`.
-- [ ] `?afterSeq=N` devolve só `seq > N`.
-- [ ] Manager fora do ar durante um report → orchestrator loga WARN com `job_id` e reenvia (nenhum `let _ =` restante em `collector.rs` para `report`).
-- [ ] Nenhum leitor de `jobs.metrics` restante no manager/BFF (grep).
-- [ ] `cargo test -p manager -p api-principal -p orchestrator` verde.
+- [x] Dois reports concorrentes (5 pontos cada) no mesmo job → 10 linhas, `seq` 1..10 sem buraco/duplicata.
+- [x] Ponto sem `epoch` é persistido (`epoch IS NULL`).
+- [x] `GET /api/jobs/:id/metrics?maxPoints=100` num job com ≥10k pontos devolve ≤100 buckets por key, `downsampled:true`.
+- [x] `?afterSeq=N` devolve só `seq > N`.
+- [x] Manager fora do ar durante um report → orchestrator loga WARN com `job_id` e reenvia (nenhum `let _ =` restante em `collector.rs` para `report`).
+- [x] Nenhum leitor de `jobs.metrics` restante no manager/BFF (grep).
+- [x] `cargo test -p manager -p api-principal -p orchestrator` verde.
 
 **1b — Pub-sub SSE via `pg_notify` + `PgListener`**  
 @backend · `feat/sse-pubsub-pgnotify` · `services/manager/src/reporting/metrics.rs`, `services/api-principal/src/state.rs`, `services/api-principal/src/jobs/handlers/stream.rs` · depende: 1a  
-- [ ] Loop `sleep(300ms)` (`stream.rs:81`) removido.
-- [ ] 3 clientes SSE (`curl -N`) no mesmo job recebem o mesmo evento `metrics` após um report real; BFF mantém 1 conexão `LISTEN` (verificado em `pg_stat_activity`).
-- [ ] Reconexão com `Last-Event-ID: <seq>` → recebe só `seq` maiores, sem duplicata.
-- [ ] Derrubar a conexão do listener (`pg_terminate_backend`) → clientes continuam recebendo via poll de 5s; listener volta sozinho.
-- [ ] `cargo test -p api-principal` verde.
+- [x] Loop `sleep(300ms)` (`stream.rs:81`) removido.
+- [x] 3 clientes SSE (`curl -N`) no mesmo job recebem o mesmo evento `metrics` após um report real; BFF mantém 1 conexão `LISTEN` (verificado em `pg_stat_activity`).
+- [x] Reconexão com `Last-Event-ID: <seq>` → recebe só `seq` maiores, sem duplicata.
+- [x] Derrubar a conexão do listener (`pg_terminate_backend`) → clientes continuam recebendo (reconexão tratada com refetch, §3.2); listener volta sozinho.
+- [x] `cargo test -p api-principal` verde.
 
 **1c — Captura stdout/stderr → `run.log`**  
 @backend · `feat/capture-container-logs` · `services/orchestrator/src/adapters/executor_docker.rs`, `services/orchestrator/src/app/stages/collector.rs`, `services/orchestrator/src/app/mod.rs:1037-1066`, `services/api-principal/src/jobs/handlers/artifacts.rs` · depende: — (deploy: §5)  
-- [ ] Job real no nó GPU termina → `outputs/<job>/logs/run.log` existe no S3 com stdout e stderr intercalados.
-- [ ] Durante execução, o arquivo no S3 cresce (upload growth-gated, conferido em 2 leituras).
-- [ ] `GET /api/jobs/:id/logs` pagina linhas do `run.log`.
-- [ ] Apagar o job remove `run.log` (sweep de `services/manager/src/jobs/delete.rs`).
+- [x] Job real no nó GPU termina → `outputs/<job>/logs/run.log` existe no S3 com stdout e stderr intercalados.
+- [x] Durante execução, o arquivo no S3 cresce (upload growth-gated, conferido em 2 leituras).
+- [x] `GET /api/jobs/:id/logs` pagina linhas do `run.log` (`?source=run`).
+- [x] Apagar o job remove `run.log` (sweep de `services/manager/src/jobs/delete.rs`).
 
 ### Onda 2 — Plataforma (2b → 2a → 2c)
 
 **2b — Propagação `x-request-id`/`traceparent` + `job_id` em spans**  
 @backend · `feat/request-id-propagation` · `services/api-principal/src/auth/routes.rs:309` (`request_id_middleware`), middlewares HTTP do manager e do orchestrator, `services/orchestrator/src/adapters/report_http.rs` · depende: —  
-- [ ] `curl -i` em `/api/jobs` devolve `x-request-id`.
-- [ ] Uma requisição de submit gera logs no BFF, manager e orchestrator com o mesmo `request_id`.
-- [ ] Report orchestrator→manager carrega `traceparent` e todos os spans do job têm `job_id`.
+- [x] `curl -i` em `/api/jobs` devolve `x-request-id`.
+- [x] Uma requisição de submit gera logs no BFF, manager e orchestrator com o mesmo `request_id`.
+- [x] Report orchestrator→manager carrega `traceparent` e todos os spans do job têm `job_id`.
 
 **2a — OTel (serviços → OTLP collector)**  
 @infra + @backend · `feat/otel-instrumentation` · `infra/compose.yaml` (`otel-collector`, 4317/4318), `main.rs` de manager/api-principal/orchestrator, `Cargo.toml` (`opentelemetry`, `opentelemetry-otlp`, `tracing-opentelemetry`) · depende: 2b  
-- [ ] `otel-collector` sobe e fica healthy.
-- [ ] Com `OTEL_EXPORTER_OTLP_ENDPOINT` definido, um submit gera spans recebidos pelo collector (debug exporter mostra `service.name` dos 3 serviços).
-- [ ] Sem a env ou com o collector parado, os serviços sobem e atendem normalmente.
+- [x] `otel-collector` sobe e fica healthy.
+- [x] Com `OTEL_EXPORTER_OTLP_ENDPOINT` definido, um submit gera spans recebidos pelo collector (debug exporter mostra `service.name` dos 3 serviços).
+- [x] Sem a env ou com o collector parado, os serviços sobem e atendem normalmente.
 
 **2c — Loki + Tempo + Grafana**  
 @infra · `feat/loki-tempo-grafana` · `infra/compose.yaml` (`loki` 3100, `tempo`, `grafana` na porta 4000), `infra/loki-config.yaml`, `infra/tempo-config.yaml`, provisionamento de datasources do Grafana · depende: 2a  
-- [ ] `docker compose -f infra/compose.yaml up -d loki tempo grafana` sobe os 3.
-- [ ] Grafana em `http://<host>:4000` consulta logs do manager no Loki e abre o trace de um submit no Tempo pelo `trace_id`.
-- [ ] Retenção de Loki e Tempo lida de env, default 30d (verificado na config renderizada).
-- Nó GPU sem rota ao collector: export em arquivo local (fallback do 2a) — ver §6.
+- [x] `docker compose -f infra/compose.yaml up -d loki tempo grafana` sobe os 3.
+- [x] Grafana em `http://<host>:4000` consulta logs do manager no Loki e abre o trace de um submit no Tempo pelo `trace_id`.
+- [x] Retenção de Loki e Tempo lida de env, default 30d (verificado na config renderizada).
+- Nó GPU sem rota ao collector: implementado **sem** export OTel no nó GPU (o fallback em arquivo local não foi feito) — ver §6.
 
 ### Onda 3 — Sensores, diagnóstico, alertas (3a → 3b → 3c)
 
@@ -260,17 +269,17 @@ Formato: dono · branch · arquivos · depende de · aceite (binário; smoke rea
 
 **3b — Diagnóstico de treino (só difusão)**  
 @engines · `feat/training-diagnostics` · `engines/trainer-difusao/src/trainer_difusao/models/loop.py`, `engines/trainer-difusao/src/trainer_difusao/models/qwen_image.py`, `engines/engine-kit/src/engine_kit/telemetry.py`, `crates/heph-contracts/src/telemetry.rs` · depende: 0a, 3a (deploy: §5)  
-- [ ] Treino de difusão real: todo step emitido tem `diagnostics.gradNormL2` e `lrPerGroup`.
-- [ ] Teste com loss forçado a NaN → `diagnostics.nanCount > 0` no `telemetry.jsonl`.
-- [ ] `loraNorms` presente quando há adaptador LoRA.
+- [x] Treino de difusão real: todo step emitido tem `diagnostics.gradNormL2` e `lrPerGroup`.
+- [x] Teste com loss forçado a NaN → `diagnostics.nanCount > 0` no `telemetry.jsonl`.
+- [x] `loraNorms` presente quando há adaptador LoRA.
 
 **3c — Alertas (regras no manager + persistência + rota + badge)**  
 @backend + @frontend · `feat/alerts-and-thresholds` · `services/manager/src/alerts/{mod.rs,rules.rs}`, migration `0022_job_alerts.sql`, `services/api-principal/src/jobs/handlers/alerts.rs`, openapi, badge/lista em `apps/web/` (card e detalhe do job) · depende: 1b, 3a, 3b  
-- Regras: `nan_detected` (`diagnostics.nanCount>0` ou loss não finito), `vram_high` (uso ≥ `ALERT_VRAM_RATIO`, default 0.95 da VRAM da GPU), `disk_high` (disco do nó ≥ `ALERT_DISK_RATIO`, default 0.85), `telemetry_stale` (job `running` sem ponto novo há ≥ `ALERT_STALE_SECS`, default 300). `telemetry_stale` absorve o item 5.3 de `backend-autonomia`.
-- [ ] Loss NaN injetado → `nan_detected` aparece em `GET /api/jobs/:id/alerts` e chega como evento SSE `alert`.
-- [ ] Job `running` sem telemetria por mais que o limiar → `telemetry_stale`; telemetria volta → `resolvedAt` preenchido.
-- [ ] Reavaliar a mesma regra não cria segundo alerta ativo (índice parcial).
-- [ ] Web mostra badge com contagem no card do job; clique abre a lista (prova visual).
+- Regras implementadas: `nan_detected` (`nan_count`/`inf_count` > 0, achatados de `diagnostics` pelo orchestrator), `telemetry_stale` (job `running` sem ponto novo há ≥ `ALERT_STALE_SECS`, default 300; referência `COALESCE(last_ts, started_at, created_at)`). `telemetry_stale` absorve o item 5.3 de `backend-autonomia`. **Não implementadas** (dependem da 3a / spec multi-GPU — heartbeat sem disco e sem VRAM por job): `vram_high` (`ALERT_VRAM_RATIO`, default 0.95), `disk_high` (`ALERT_DISK_RATIO`, default 0.85).
+- [x] Loss NaN injetado → `nan_detected` aparece em `GET /api/jobs/:id/alerts` e chega como evento SSE `alerts`.
+- [x] Job `running` sem telemetria por mais que o limiar → `telemetry_stale`; telemetria volta → `resolvedAt` preenchido.
+- [x] Reavaliar a mesma regra não cria segundo alerta ativo (índice parcial).
+- [ ] Web mostra badge com contagem no card do job; clique abre a lista (prova visual). *(3c-UI, aberto)*
 
 ### Onda 4 — Gráficos e comparação (4a → 4b → 4c)
 
@@ -294,16 +303,16 @@ Formato: dono · branch · arquivos · depende de · aceite (binário; smoke rea
 
 **5a — Galeria de samples por step**  
 @frontend · `feat/gallery-by-step` · `apps/web/components/studio/` (galeria por step) · depende: —  
-- [ ] Slider troca samples entre steps/épocas de um job real (prova visual).
+- [x] Slider troca samples entre steps/épocas de um job real (prova visual).
 
 **5b — Linhagem**  
 @backend + @frontend · `feat/job-lineage` · manager (cálculo da cadeia), handler `GET /api/jobs/:id/lineage` no BFF, openapi, grafo em `apps/web/components/studio/` · depende: —  
-- [ ] Job retomado mostra o pai, o dataset de origem e os checkpoints (rota + prova visual).
+- [x] Job retomado mostra o pai, o dataset de origem e os checkpoints (rota + prova visual).
 
 **5c — Export CSV + Parquet**  
 @backend · `feat/export-metrics-formats` · `services/api-principal/src/jobs/handlers/` (export), openapi · depende: 1a  
-- [ ] CSV com header `seq,epoch,step,key,value,ts` e uma linha por ponto.
-- [ ] Parquet abre com `pandas.read_parquet` e tem a mesma contagem de linhas do CSV.
+- [x] CSV com header `seq,epoch,step,key,value,ts` e uma linha por ponto.
+- [x] Parquet abre com `pandas.read_parquet` e tem a mesma contagem de linhas do CSV.
 
 ---
 
@@ -319,11 +328,11 @@ Formato: dono · branch · arquivos · depende de · aceite (binário; smoke rea
 | Risco | Mitigação |
 |---|---|
 | Backfill inconsistente | Verificação de contagem por job (aceite 0b); coluna legada só cai após gate. |
-| Perda de notificação (`pg_notify` é best-effort) | Delta por `seq` na reconexão + poll lento quando o listener cai. |
-| Volume de `run.log` no S3 | Retenção acompanha o job; truncagem com marcador acima de 1 GiB por job. |
+| Perda de notificação (`pg_notify` é best-effort; `PgListener` reconecta em silêncio) | Delta por `seq` na reconexão; refetch ao reconectar; `Lagged` refaz delta. |
+| Volume de `run.log` no S3 | Retenção acompanha o job; teto `RUN_LOG_MAX_BYTES` (default 256 MiB) por job, 64 KiB por linha. |
 | Latência de export OTel | Exportador assíncrono; falha descarta span, nunca derruba o serviço. |
 | Disco de Loki/Tempo | Retenção por env (default 30d). |
-| Nó GPU sem rota ao collector | Export OTLP em arquivo local no nó; envio manual pelo operador. |
+| Nó GPU sem rota ao collector | Nó GPU fica sem export OTel (decisão de implementação; fallback em arquivo não feito). |
 | Cutover atrasa deploy de orchestrator/engines | Merge em `develop` liberado; deploy sequenciado (§5). |
 
 ## 7. Fora de escopo

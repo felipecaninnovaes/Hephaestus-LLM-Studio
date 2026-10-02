@@ -174,6 +174,13 @@ x-logging: &default-logging
 - O endpoint `/metrics` exposto pelo `api-principal` agrega telemetria dos serviços internos.
 - No Caddy, a rota `/metrics` é protegida e exposta para scrapers externos (Prometheus / VictoriaMetrics).
 
+### 8.3 Stack OTel / Loki / Tempo / Grafana (`infra/compose.yaml`)
+- `otel-collector` (`infra/otel-collector.yaml`, `Dockerfile.otel-collector`): recebe OTLP em `4317`/`4318` (bind `${OTEL_COLLECTOR_PUBLISH:-127.0.0.1}`) dos 3 serviços Rust — exporter ativo só com `OTEL_EXPORTER_OTLP_ENDPOINT` e feature `otel`; sem a env, o serviço sobe normal. Traces → Tempo; logs via receiver `filelog` (`/var/lib/docker/containers`, roda como root) → Loki.
+- O `filelog` filtra pelo label `com.docker.compose.project` (`COMPOSE_PROJECT_NAME`, default `infra`); por isso a âncora `x-logging` exporta `labels: "com.docker.compose.service,com.docker.compose.project"`. Sem o filtro, logs de outros stacks do host (com segredos como `HF_TOKEN`) vazariam para o Loki.
+- `loki` (`127.0.0.1:3100`) e `tempo` (`127.0.0.1:3200`): retenção por env `LOKI_RETENTION`/`TEMPO_RETENTION`, default `720h` (30d). São índice operacional; dados canônicos (`run.log`/`telemetry.jsonl` no S3, `job_metric_points` no Postgres) não expiram.
+- `grafana`: `${GRAFANA_PUBLISH:-127.0.0.1}:4000` (porta 3000 é do web), senha `GRAFANA_ADMIN_PASSWORD`.
+- `x-request-id`/`traceparent` são propagados BFF→manager→orchestrator. O nó GPU não exporta OTel.
+
 ---
 
 ## 9. Otimização de Imagens e Performance de Build

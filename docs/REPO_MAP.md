@@ -37,12 +37,17 @@ bind loopback (`127.0.0.1:`) em dev.
 | `embedder` (trainer-clip) | `127.0.0.1:8090` | Vetores OpenCLIP 512d |
 | daemon difusão | `:8766` (interno) | Geração quente LoRA (Flux/SDXL/SD1.5), só via orchestrator |
 | `trainer-yolo` / `trainer-difusao` | nenhuma | Jobs efêmeros disparados pelo orchestrator |
+| `otel-collector` | `127.0.0.1:4317` / `:4318` | OTLP gRPC/HTTP dos 3 serviços Rust (feature `otel`); `filelog` → Loki filtrado por `com.docker.compose.project` |
+| `loki` / `tempo` | `127.0.0.1:3100` / `127.0.0.1:3200` | Logs / traces; retenção `LOKI_RETENTION`/`TEMPO_RETENTION` (default 720h) |
+| `grafana` | `127.0.0.1:4000` | Painel de observabilidade (datasources Loki/Tempo provisionados) |
+
+Nó GPU não exporta OTel. `x-request-id`/`traceparent` propagados BFF→manager→orchestrator (`heph_contracts::request_context`).
 
 GPU real (VM dedicada `docker-04`, `10.15.50.114`, 60GB disco): `infra/compose.gpu.yaml` / runbook `infra/README-gpu.md` / arquitetura em `docs/infra/gpu-nodes.md`.
 
 ## 3. Posse de Dados (Postgres único, schema compartilhado)
 
-Migrations canônicas: `services/api-principal/migrations/0001..0018.sql`.
+Migrations canônicas: `services/api-principal/migrations/0001..0022.sql`.
 - **Domínio aplicação/dados (escrita: api-principal):** `users`, `auth_state`,
   `datasets`, `dataset_versions`, `job_prepares` (aceite assíncrono ADR-0025 —
   0015 tabela, 0016 índice único parcial `state='preparing'`), `images`,
@@ -51,8 +56,13 @@ Migrations canônicas: `services/api-principal/migrations/0001..0018.sql`.
   `generations`, `generation_inputs` (img2img — 0017 tabela efêmera
   de inputs avulsos, sem GC; `used_at` marca consumo, linhas permanecem p/ auditoria).
 - **Domínio execução (escrita: manager/orchestrator):** `jobs` (status inclui
-  `preparing`/`dispatched` + `phase`/`message` — ADR-0024/ADR-0025),
-  `job_artifacts`, `orchestrators`.
+  `preparing`/`dispatched` + `phase`/`message` — ADR-0024/ADR-0025;
+  `metric_seq` — 0020; `started_at` — 0022; coluna `metrics` JSONB congelada,
+  drop pendente), `job_metric_points` (séries append-only, `seq` por job,
+  `ON DELETE CASCADE` — 0020, backfill 0021), `job_alerts` (0022; regras
+  `nan_detected`/`telemetry_stale`), `job_artifacts`, `orchestrators`.
+  Manager emite `pg_notify('job_events', {jobId,seq|status|alert})`; BFF tem um
+  `PgListener` com fan-out para o SSE.
 - Políticas de hardware/engines: `packages/policies/vram-table.yaml`,
   `packages/policies/engines.yaml`. Contratos: `packages/contracts/openapi.yaml` (HTTP público),
   `crates/heph-contracts` (protocolo interno Rust), `apps/web/types/api-generated.ts` (TypeScript gerado).
@@ -74,7 +84,10 @@ Fonte: tabela de contrato em `services/api-principal/src/auth/routes.rs`
 - **Jobs/treino:** `GET /api/jobs`, `/jobs/queue`; `POST /jobs/yolo`,
   `/jobs/diffusion`, `/jobs/predict`, `/jobs/autolabel`, `/jobs/autotracker`,
   `/jobs/cleanup`, `/jobs/:id/abort` (abort em `preparing` ⇒ `cancelling`);
-  `GET /jobs/:id[/artifacts|/metrics|/events]`; submits com dataset aceitam
+  `GET /jobs/:id[/artifacts|/metrics|/events|/logs|/alerts|/lineage|/export]`
+  (`/metrics?afterSeq&keys&maxPoints` 1..10000; `/events` SSE com `metrics`
+  `id: maxSeq` + `alerts` e `Last-Event-ID`; `/logs?source=telemetry|run`;
+  `/export?format=csv|parquet`, >2M pontos → 413); submits com dataset aceitam
   em <1s com 202 `{jobId,status: preparing|queued}` (ADR-0025, spec 0.29.0 —
   erro assíncrono `prepare_failed:<code>:<msg>` lido via `GET /jobs/:id`);
   previews `POST /jobs/:id/autolabel|autotracker/preview` + `/apply`;

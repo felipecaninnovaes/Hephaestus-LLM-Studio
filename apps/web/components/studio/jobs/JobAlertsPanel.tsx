@@ -5,20 +5,15 @@ import { IconAlertTriangle, IconCheck } from "@/components/icons";
 import { Badge } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Modal";
 import { formatRelativeTime } from "@/lib/format";
-import type { JobAlert, JobAlertRuleId } from "@/types/jobs";
+import {
+	alertSeverityLabel,
+	countActiveAlerts,
+	RULE_LABEL,
+	sortAlertsByFiredAt,
+} from "@/lib/jobAlerts";
+import type { JobAlert } from "@/types/jobs";
 
-const RULE_LABEL: Record<JobAlertRuleId, string> = {
-	nan_detected: "NaN/Inf detectado",
-	vram_high: "VRAM elevada",
-	disk_high: "Disco elevado",
-	telemetry_stale: "Telemetria parada",
-};
-
-/** Alertas ativos = sem `resolvedAt`. */
-export function countActiveAlerts(alerts: JobAlert[] | null | undefined): number {
-	if (!alerts) return 0;
-	return alerts.filter((a) => !a.resolvedAt).length;
-}
+export { countActiveAlerts } from "@/lib/jobAlerts";
 
 export interface JobAlertsBadgeProps {
 	alerts: JobAlert[] | null | undefined;
@@ -69,10 +64,7 @@ export function JobAlertsModal({
 	alerts,
 	isLoading = false,
 }: JobAlertsModalProps) {
-	const items = alerts ?? [];
-	const sorted = [...items].sort(
-		(a, b) => new Date(b.firedAt).getTime() - new Date(a.firedAt).getTime(),
-	);
+	const sorted = sortAlertsByFiredAt(alerts);
 
 	return (
 		<Modal
@@ -106,7 +98,7 @@ export function JobAlertsModal({
 							>
 								<div className="flex flex-wrap items-center gap-2">
 									<Badge variant={alert.severity === "critical" ? "danger" : "alert"}>
-										{alert.severity === "critical" ? "Crítico" : "Aviso"}
+										{alertSeverityLabel(alert.severity)}
 									</Badge>
 									<span className="font-mono text-2xs font-semibold text-zinc-200">
 										{RULE_LABEL[alert.ruleId] ?? alert.ruleId}

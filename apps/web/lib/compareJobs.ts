@@ -5,6 +5,92 @@ import {
 } from "@/lib/metricMath";
 import type { Job, MetricPointWithKey } from "@/types/jobs";
 
+export const COMPARE_MIN_JOBS = 2;
+export const COMPARE_MAX_JOBS = 4;
+
+const UUID_REGEX =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/** Verifica se a string é um UUID válido (RFC 4122). */
+export function isValidJobUuid(id: string): boolean {
+	return UUID_REGEX.test(id.trim());
+}
+
+export type CompareIdsValidationResult =
+	| { valid: true; jobIds: string[] }
+	| {
+			valid: false;
+			reason:
+				| "too_few"
+				| "too_many"
+				| "invalid_uuid"
+				| "duplicate_ids";
+			message: string;
+	  };
+
+/**
+ * Valida o parâmetro `?ids=` da página de comparação de runs (fatia 4c).
+ * Regras:
+ * - Aceita 2 a 4 UUIDs válidos e únicos.
+ * - Rejeita menos de 2 (<2 ou 1).
+ * - Rejeita mais de 4 (5+).
+ * - Rejeita tokens que não sejam UUIDs válidos.
+ * - Rejeita IDs duplicados.
+ */
+export function parseCompareJobIds(
+	idsParam: string | null | undefined,
+): CompareIdsValidationResult {
+	if (!idsParam) {
+		return {
+			valid: false,
+			reason: "too_few",
+			message: `Selecione pelo menos ${COMPARE_MIN_JOBS} jobs para comparar.`,
+		};
+	}
+
+	const tokens = idsParam
+		.split(",")
+		.map((s) => s.trim())
+		.filter(Boolean);
+
+	// Checagem de UUIDs inválidos
+	const invalidToken = tokens.find((t) => !isValidJobUuid(t));
+	if (invalidToken !== undefined) {
+		return {
+			valid: false,
+			reason: "invalid_uuid",
+			message: `ID inválido: "${invalidToken}" não é um UUID válido.`,
+		};
+	}
+
+	// Checagem de duplicatas
+	const unique = new Set(tokens);
+	if (unique.size !== tokens.length) {
+		return {
+			valid: false,
+			reason: "duplicate_ids",
+			message: "IDs duplicados encontrados na seleção de comparação.",
+		};
+	}
+
+	if (tokens.length < COMPARE_MIN_JOBS) {
+		return {
+			valid: false,
+			reason: "too_few",
+			message: `Selecione pelo menos ${COMPARE_MIN_JOBS} jobs para comparar.`,
+		};
+	}
+
+	if (tokens.length > COMPARE_MAX_JOBS) {
+		return {
+			valid: false,
+			reason: "too_many",
+			message: `Máximo de ${COMPARE_MAX_JOBS} jobs permitidos para comparação.`,
+		};
+	}
+
+	return { valid: true, jobIds: tokens };
+}
 export interface ComparisonSeriesResult {
 	/** Grade de X compartilhada (união ordenada de todos os runs). */
 	xValues: number[];

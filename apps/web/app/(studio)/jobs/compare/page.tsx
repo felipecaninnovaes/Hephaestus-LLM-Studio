@@ -14,31 +14,20 @@ import { Slider } from "@/components/ui/Slider";
 import { Spinner } from "@/components/ui/Spinner";
 import { useJobsMetricsCompare } from "@/hooks/useJobsMetricsCompare";
 import { getJob } from "@/lib/jobs";
+import { parseCompareJobIds } from "@/lib/compareJobs";
 import type { XAxisMode } from "@/lib/metricMath";
 import type { Job } from "@/types/jobs";
-
-const COMPARE_MIN_JOBS = 2;
-const COMPARE_MAX_JOBS = 4;
-
 const DIFFUSION_KEYS = ["loss", "lr", "grad_norm"];
 const YOLO_KEYS = ["box_loss", "cls_loss", "dfl_loss", "mAP50", "mAP50-95"];
 
 function CompareContent() {
 	const searchParams = useSearchParams();
 	const idsParam = searchParams.get("ids") ?? "";
+	const validation = useMemo(() => parseCompareJobIds(idsParam), [idsParam]);
 	const jobIds = useMemo(
-		() =>
-			Array.from(
-				new Set(
-					idsParam
-						.split(",")
-						.map((s) => s.trim())
-						.filter(Boolean),
-				),
-			).slice(0, COMPARE_MAX_JOBS),
-		[idsParam],
+		() => (validation.valid ? validation.jobIds : []),
+		[validation],
 	);
-
 	const [jobs, setJobs] = useState<Job[]>([]);
 	const [loadError, setLoadError] = useState<string | null>(null);
 	const [loadingJobs, setLoadingJobs] = useState(true);
@@ -121,13 +110,16 @@ function CompareContent() {
 					<Spinner className="size-4" />
 					Carregando jobs…
 				</div>
-			) : jobIds.length < COMPARE_MIN_JOBS ? (
+			) : !validation.valid ? (
 				<div className="glass-card rounded-xl border border-white/10 p-8 text-center font-mono text-xs text-zinc-400">
-					Selecione pelo menos {COMPARE_MIN_JOBS} jobs em{" "}
-					<Link href="/jobs" className="text-brand-400 underline underline-offset-2">
-						/jobs
-					</Link>{" "}
-					para comparar.
+					<p className="text-zinc-300">{validation.message}</p>
+					<p className="mt-2">
+						Selecione de 2 a 4 jobs em{" "}
+						<Link href="/jobs" className="text-brand-400 underline underline-offset-2">
+							/jobs
+						</Link>{" "}
+						para comparar.
+					</p>
 				</div>
 			) : (
 				<div className="space-y-5">

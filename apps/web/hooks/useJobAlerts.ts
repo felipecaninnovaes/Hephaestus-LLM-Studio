@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { applyAlertsSnapshot } from "@/lib/jobAlerts";
 import { getJobAlerts } from "@/lib/jobs";
 import type { JobAlert } from "@/types/jobs";
 
@@ -51,7 +52,7 @@ export function useJobAlerts(
 	}, [jobId]);
 
 	const applySnapshot = useCallback((items: JobAlert[]) => {
-		setAlerts(items);
+		setAlerts((prev) => applyAlertsSnapshot(prev, items));
 	}, []);
 
 	return { alerts, isLoading, error, applySnapshot };

@@ -22,8 +22,15 @@ export interface UseJobsMetricsCompareReturn {
 const CACHE_TTL_MS = 5000;
 const cache = new Map<string, { data: JobMetricsFetchResult; ts: number }>();
 
-function cacheKey(jobId: string, keysKey: string, maxPoints: number): string {
-	return `${jobId}|${keysKey}|${maxPoints}`;
+export function buildCompareCacheKey(
+	jobId: string,
+	keysKey: string | readonly string[] | undefined,
+	maxPoints: number,
+): string {
+	const normalizedKeys = Array.isArray(keysKey)
+		? keysKey.slice().sort().join(",")
+		: keysKey ?? "";
+	return `${jobId}|${normalizedKeys}|${maxPoints}`;
 }
 
 /**
@@ -56,7 +63,7 @@ export function useJobsMetricsCompare(
 		const toFetch: string[] = [];
 		const cached: Record<string, JobMetricsFetchResult> = {};
 		for (const jobId of jobIds) {
-			const hit = cache.get(cacheKey(jobId, keysKey, maxPoints));
+			const hit = cache.get(buildCompareCacheKey(jobId, keysKey, maxPoints));
 			if (hit && now - hit.ts < CACHE_TTL_MS) {
 				cached[jobId] = hit.data;
 			} else {
@@ -84,7 +91,7 @@ export function useJobsMetricsCompare(
 				const next: Record<string, JobMetricsFetchResult> = {};
 				for (const r of results) {
 					next[r.jobId] = r;
-					cache.set(cacheKey(r.jobId, keysKey, maxPoints), {
+					cache.set(buildCompareCacheKey(r.jobId, keysKey, maxPoints), {
 						data: r,
 						ts: Date.now(),
 					});

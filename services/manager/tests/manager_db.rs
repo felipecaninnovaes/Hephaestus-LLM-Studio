@@ -1324,6 +1324,106 @@ async fn metrics_append_e_dedup_por_epoch() {
 }
 
 // ===========================================================================
+// Fatia 1b (pub-sub pg_notify) — canal job_events
+// ===========================================================================
+
+/// `report_job` (running, com métricas) deve emitir pg_notify no canal
+/// `job_events` DENTRO da mesma transação da escrita: um `PgListener` de
+/// teste dedicado recebe `{"jobId":...,"seq":N}` (métricas) e
+/// `{"jobId":...,"status":true}` (status/phase/progress). Um insert de
+/// pontos feito numa transação que sofre ROLLBACK (sem passar por
+/// `report_job`) NÃO deve gerar notice — prova que `pg_notify` só é visível
+/// após commit (garantia nativa do Postgres, exercida aqui ponta a ponta).
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn pg_notify_job_events_commit_e_rollback() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+
+    // Listener dedicado de teste — assina job_events ANTES do report.
+    let mut listener = sqlx::postgres::PgListener::connect(TEST_DB_URL)
+        .await
+        .expect("listener connect");
+    listener.listen("job_events").await.expect("listen");
+
+    // 1. Report running com métricas: commita e notifica (status + metrics).
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "running".into(),
+            progress: Some(0.1),
+            epoch: Some(1),
+            step: None,
+            metrics: Some(serde_json::json!({"epoch": 1, "loss": 0.5})),
+            error: None,
+            artifacts: None,
+            meta_content: None,
+            phase: None,
+            message: None,
+        },
+    )
+    .await
+    .expect("report running");
+
+    let mut saw_metrics = false;
+    let mut saw_status = false;
+    for _ in 0..4 {
+        let notice = tokio::time::timeout(std::time::Duration::from_secs(2), listener.recv())
+            .await
+            .expect("timeout esperando notice")
+            .expect("recv notice");
+        let payload: serde_json::Value =
+            serde_json::from_str(notice.payload()).expect("payload json");
+        assert_eq!(payload["jobId"], job_id.to_string());
+        if payload.get("seq").is_some() {
+            saw_metrics = true;
+            assert!(payload["seq"].as_i64().unwrap() >= 1, "seq deve ser >=1");
+        }
+        if payload.get("status").is_some() {
+            saw_status = true;
+        }
+        if saw_metrics && saw_status {
+            break;
+        }
+    }
+    assert!(saw_metrics, "deve ter recebido notice de metrics");
+    assert!(saw_status, "deve ter recebido notice de status");
+
+    // 2. Rollback: insere pontos numa transação manual que NUNCA comita —
+    //    nenhum notice novo deve chegar.
+    let mut tx = p.begin().await.expect("begin rollback tx");
+    manager::insert_metrics_points_conn(
+        &mut tx,
+        job_id,
+        &serde_json::json!({"epoch": 2, "loss": 0.1}),
+    )
+    .await
+    .expect("insert points (não comitado)");
+    tx.rollback().await.expect("rollback");
+
+    let timeout_result =
+        tokio::time::timeout(std::time::Duration::from_millis(500), listener.recv()).await;
+    assert!(
+        timeout_result.is_err(),
+        "NÃO deveria haver notice após rollback"
+    );
+}
+
+// ===========================================================================
 // Fatia 1a (telemetria append-only) — job_metric_points
 // ===========================================================================
 

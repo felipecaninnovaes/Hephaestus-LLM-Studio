@@ -5,6 +5,7 @@ use serde::Serialize;
 use sqlx::PgPool;
 
 use super::cache::{node_stale_timeout_secs, TelemetryCache};
+pub use heph_contracts::GpuDeviceTelemetry;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TelemetryResponse {
@@ -15,6 +16,8 @@ pub struct TelemetryResponse {
     pub ram: Option<i64>,
     pub ram_total: Option<i64>,
     pub gpus: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gpu_devices: Vec<GpuDeviceTelemetry>,
     pub jobs_active: i32,
 }
 
@@ -40,6 +43,7 @@ pub async fn get_telemetry(pool: &PgPool, cache: &TelemetryCache) -> TelemetryRe
             ram: None,
             ram_total: None,
             gpus: vec![],
+            gpu_devices: vec![],
             jobs_active: jobs_active.0 as i32,
         };
     }
@@ -67,6 +71,7 @@ pub async fn get_telemetry(pool: &PgPool, cache: &TelemetryCache) -> TelemetryRe
                 ram: None,
                 ram_total: None,
                 gpus: vec![],
+                gpu_devices: vec![],
                 jobs_active: jobs_active.0 as i32,
             };
         }
@@ -78,6 +83,7 @@ pub async fn get_telemetry(pool: &PgPool, cache: &TelemetryCache) -> TelemetryRe
             ram: state.ram,
             ram_total: state.ram_total,
             gpus: state.gpus.clone(),
+            gpu_devices: state.gpu_devices.clone(),
             jobs_active: state.jobs_active,
         };
     }
@@ -88,6 +94,7 @@ pub async fn get_telemetry(pool: &PgPool, cache: &TelemetryCache) -> TelemetryRe
     let mut vram_used_sum: Option<i64> = Some(0);
     let mut vram_total_sum: Option<i64> = Some(0);
     let mut gpus: Vec<String> = Vec::new();
+    let mut gpu_devices: Vec<GpuDeviceTelemetry> = Vec::new();
     let mut jobs_active_sum: i32 = 0;
     let mut measured = false;
 
@@ -119,6 +126,13 @@ pub async fn get_telemetry(pool: &PgPool, cache: &TelemetryCache) -> TelemetryRe
                 }
             }
 
+            // gpu_devices: união por UUID
+            for dev in &state.gpu_devices {
+                if !gpu_devices.iter().any(|d| d.uuid == dev.uuid) {
+                    gpu_devices.push(dev.clone());
+                }
+            }
+
             // jobs_active: soma.
             jobs_active_sum += state.jobs_active;
         }
@@ -141,6 +155,7 @@ pub async fn get_telemetry(pool: &PgPool, cache: &TelemetryCache) -> TelemetryRe
             ram: None,
             ram_total: None,
             gpus: vec![],
+            gpu_devices: vec![],
             jobs_active: jobs_active.0 as i32,
         };
     }
@@ -153,6 +168,7 @@ pub async fn get_telemetry(pool: &PgPool, cache: &TelemetryCache) -> TelemetryRe
         ram: None,       // Sem soma de RAM multi-nó na v1.
         ram_total: None, // Sem soma de RAM total multi-nó na v1.
         gpus,
+        gpu_devices,
         jobs_active: jobs_active_sum,
     }
 }

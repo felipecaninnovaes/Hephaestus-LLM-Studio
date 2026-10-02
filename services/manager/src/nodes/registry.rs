@@ -9,26 +9,7 @@ use super::cache::TelemetryCache;
 use crate::error::ManagerError;
 use crate::orchestrator::OrchestratorClient;
 
-#[derive(Debug, Clone, Serialize)]
-pub struct OrchestratorItem {
-    pub id: String,
-    pub name: String,
-    pub kind: String,
-    pub endpoint: String,
-    pub status: String,
-    pub last_heartbeat: Option<String>,
-    pub vram_total_gb: Option<i32>,
-    pub measured: bool,
-    pub cpu: Option<f64>,
-    pub ram: Option<i64>,
-    pub ram_total: Option<i64>,
-    pub vram_used: Option<i64>,
-    pub vram_total: Option<i64>,
-    pub gpus: Vec<String>,
-    pub jobs_active: i32,
-    pub disk_total_gb: Option<f64>,
-    pub disk_used_gb: Option<f64>,
-}
+pub use heph_contracts::OrchestratorItem;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct OrchestratorsResponse {
@@ -85,6 +66,7 @@ type OrchestratorDbRow = (
     String,
     Option<DateTime<Utc>>,
     Option<i32>,
+    Option<serde_json::Value>,
 );
 
 /// Lista todos os orquestradores com telemetria por nó.
@@ -93,7 +75,7 @@ pub async fn list_orchestrators(
     cache: &TelemetryCache,
 ) -> Result<OrchestratorsResponse, ManagerError> {
     let rows: Vec<OrchestratorDbRow> = sqlx::query_as(
-        "SELECT id, name, kind, endpoint, status, last_heartbeat, vram_total_gb \
+        "SELECT id, name, kind, endpoint, status, last_heartbeat, vram_total_gb, gpu_devices \
              FROM orchestrators ORDER BY name",
     )
     .fetch_all(pool)
@@ -116,6 +98,7 @@ pub async fn list_orchestrators(
                 vram_used,
                 vram_total,
                 gpus,
+                gpu_devices,
                 jobs_active,
                 disk_total_gb,
                 disk_used_gb,
@@ -133,14 +116,41 @@ pub async fn list_orchestrators(
                         state.vram_used,
                         state.vram_total,
                         state.gpus.clone(),
+                        state.gpu_devices.clone(),
                         state.jobs_active,
                         state.disk_total_gb,
                         state.disk_used_gb,
                     )
                 }
-                None => (false, None, None, None, None, None, vec![], 0, None, None),
+                None => {
+                    let db_gpu_devices: Vec<heph_contracts::GpuDeviceTelemetry> =
+                        r.7.as_ref()
+                            .and_then(|val| serde_json::from_value(val.clone()).ok())
+                            .unwrap_or_default();
+                    (
+                        false,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        vec![],
+                        db_gpu_devices,
+                        0,
+                        None,
+                        None,
+                    )
+                }
             };
 
+            // Se o cache não tinha gpu_devices mas o banco tem, usa o do banco como fallback
+            let effective_gpu_devices = if gpu_devices.is_empty() {
+                r.7.as_ref()
+                    .and_then(|val| serde_json::from_value(val.clone()).ok())
+                    .unwrap_or_default()
+            } else {
+                gpu_devices
+            };
             OrchestratorItem {
                 id: orch_id.to_string(),
                 name: r.1,
@@ -156,6 +166,7 @@ pub async fn list_orchestrators(
                 vram_used,
                 vram_total,
                 gpus,
+                gpu_devices: effective_gpu_devices,
                 jobs_active,
                 disk_total_gb,
                 disk_used_gb,
@@ -248,6 +259,7 @@ pub async fn adopt_internal(
         vram_used: None,
         vram_total: None,
         gpus: vec![],
+        gpu_devices: vec![],
         jobs_active: 0,
         disk_total_gb: None,
         disk_used_gb: None,

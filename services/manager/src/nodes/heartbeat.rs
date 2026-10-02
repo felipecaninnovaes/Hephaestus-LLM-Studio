@@ -52,26 +52,49 @@ pub async fn receive_heartbeat(
         );
         return Ok(());
     }
-
-    // 3. Grava gpus/vram_total_gb quando heartbeat carrega VRAM e gpus não-vazio.
+    // 3. Grava gpus/vram_total_gb/gpu_devices quando heartbeat carrega VRAM e gpus não-vazio.
     //    vram_total_gb = maior GPU individual (round(max_gpu_mib/1024)) — 1 job = 1 GPU.
     //    Fallback: heartbeat sem max_gpu_mib (orquestrador legado) usa a soma (vram_total).
+    //    Nó sem GPUs (ex.: mock sem GPU) não sobrescreve colunas com vazio/NULL.
     if !req.gpus.is_empty() {
         let effective_vram_mib = req.max_gpu_mib.or(req.vram_total);
         if let Some(vram_mib) = effective_vram_mib {
             let vram_total_gb = ((vram_mib as f64) / 1024.0).round() as i32;
             let gpus_json = serde_json::to_value(&req.gpus)
                 .map_err(|e| ManagerError::Internal(format!("serialize gpus: {e}")))?;
-            sqlx::query("UPDATE orchestrators SET gpus = $1, vram_total_gb = $2 WHERE id = $3")
+            let gpu_devices_json =
+                if !req.gpu_devices.is_empty() {
+                    Some(serde_json::to_value(&req.gpu_devices).map_err(|e| {
+                        ManagerError::Internal(format!("serialize gpu_devices: {e}"))
+                    })?)
+                } else {
+                    None
+                };
+
+            if let Some(devices_val) = gpu_devices_json {
+                sqlx::query(
+                    "UPDATE orchestrators SET gpus = $1, vram_total_gb = $2, gpu_devices = $3 WHERE id = $4",
+                )
                 .bind(gpus_json)
                 .bind(vram_total_gb)
+                .bind(devices_val)
                 .bind(orch_id)
                 .execute(pool)
                 .await
                 .map_err(|e| ManagerError::Internal(format!("update orchestrator gpus: {e}")))?;
+            } else {
+                sqlx::query("UPDATE orchestrators SET gpus = $1, vram_total_gb = $2 WHERE id = $3")
+                    .bind(gpus_json)
+                    .bind(vram_total_gb)
+                    .bind(orch_id)
+                    .execute(pool)
+                    .await
+                    .map_err(|e| {
+                        ManagerError::Internal(format!("update orchestrator gpus: {e}"))
+                    })?;
+            }
         }
     }
-
     // 4. Atualiza cache por nó.
     let mut cache = cache.write().await;
     let state = cache.entry(orch_id).or_default();
@@ -83,6 +106,7 @@ pub async fn receive_heartbeat(
     state.ram = req.ram;
     state.ram_total = req.ram_total;
     state.gpus = req.gpus;
+    state.gpu_devices = req.gpu_devices;
     state.jobs_active = req.jobs_active;
     state.last_heartbeat = Some(Utc::now());
     state.disk_total_gb = req.disk_total_gb;

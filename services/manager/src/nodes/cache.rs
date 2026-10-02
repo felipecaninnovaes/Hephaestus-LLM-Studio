@@ -16,6 +16,7 @@ pub struct TelemetryState {
     pub ram: Option<i64>,
     pub ram_total: Option<i64>,
     pub gpus: Vec<String>,
+    pub gpu_devices: Vec<heph_contracts::GpuDeviceTelemetry>,
     pub jobs_active: i32,
     pub last_heartbeat: Option<DateTime<Utc>>,
     pub disk_total_gb: Option<f64>,

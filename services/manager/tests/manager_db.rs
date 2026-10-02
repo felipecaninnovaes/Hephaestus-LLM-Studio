@@ -959,6 +959,7 @@ async fn telemetry_com_heartbeat() {
     let hb = HeartbeatRequest {
         endpoint: "http://orchestrator-local:8082".into(),
         gpus: vec!["NVIDIA RTX 3090".into()],
+        gpu_devices: vec![],
         vram_total: Some(24000),
         vram_used: Some(8000),
         cpu: Some(0.45),
@@ -1881,6 +1882,7 @@ async fn list_orchestrators_heartbeat_atualiza_last() {
     let hb = HeartbeatRequest {
         endpoint: "http://orchestrator-local:8082".into(),
         gpus: vec![],
+        gpu_devices: vec![],
         vram_total: None,
         vram_used: None,
         cpu: Some(0.1),
@@ -3150,6 +3152,7 @@ async fn heartbeat_2_nos_atualiza_só_linha_correta() {
     let hb = HeartbeatRequest {
         endpoint: "http://local:8082".into(),
         gpus: vec![],
+        gpu_devices: vec![],
         vram_total: None,
         vram_used: None,
         cpu: Some(0.5),
@@ -3194,6 +3197,7 @@ async fn heartbeat_endpoint_inexistente_nada_gravado() {
     let hb = HeartbeatRequest {
         endpoint: "http://fantasma:9999".into(),
         gpus: vec![],
+        gpu_devices: vec![],
         vram_total: None,
         vram_used: None,
         cpu: None,
@@ -3254,6 +3258,7 @@ async fn heartbeat_revive_offline_nao_revive_revoked() {
     let hb = HeartbeatRequest {
         endpoint: "http://offline:8082".into(),
         gpus: vec![],
+        gpu_devices: vec![],
         vram_total: None,
         vram_used: None,
         cpu: None,
@@ -3308,6 +3313,7 @@ async fn heartbeat_grava_vram_total_gb_e_gpus() {
     let hb = HeartbeatRequest {
         endpoint: "http://gpu:8082".into(),
         gpus: vec!["NVIDIA RTX 3060".into(), "NVIDIA GTX 1660S".into()],
+        gpu_devices: vec![],
         vram_total: Some(18432), // 12288 + 6144 MiB (soma — VRAM instalada)
         vram_used: Some(5000),
         cpu: Some(0.3),
@@ -3358,6 +3364,7 @@ async fn heartbeat_fallback_vram_total_sem_max_gpu_mib() {
     let hb = HeartbeatRequest {
         endpoint: "http://old:8082".into(),
         gpus: vec!["NVIDIA RTX 3060".into()],
+        gpu_devices: vec![],
         vram_total: Some(12288),
         vram_used: Some(4096),
         cpu: Some(0.5),
@@ -3380,6 +3387,88 @@ async fn heartbeat_fallback_vram_total_sem_max_gpu_mib() {
             .await
             .unwrap();
     assert_eq!(row.0, Some(12), "fallback: round(12288/1024) = 12");
+}
+/// (d.3) Heartbeat com gpu_devices -> gravado no banco como JSONB e retornado na list_orchestrators.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn heartbeat_grava_gpu_devices_e_lista_exibe() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+
+    let orch_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO orchestrators (id, name, endpoint, kind, status) \
+         VALUES ($1, 'multi-gpu-orch', 'http://multi:8082', 'remoto', 'online')",
+    )
+    .bind(orch_id)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    let cache = manager::new_telemetry_cache();
+    let dev0 = heph_contracts::GpuDeviceTelemetry {
+        index: 0,
+        uuid: "GPU-1c1e01c2-4192-8f38-1a8a-33fb78b06f17".into(),
+        name: "NVIDIA GeForce RTX 3060".into(),
+        vram_total: 12288,
+        vram_used: 6961,
+        power_watts: Some(18.03),
+        gpu_utilization_pct: Some(0.0),
+        temperature_c: Some(50),
+    };
+    let dev1 = heph_contracts::GpuDeviceTelemetry {
+        index: 1,
+        uuid: "GPU-c83cc056-07f7-d31e-cc98-7486ddac0296".into(),
+        name: "NVIDIA GeForce GTX 1660 SUPER".into(),
+        vram_total: 6144,
+        vram_used: 1063,
+        power_watts: Some(42.78),
+        gpu_utilization_pct: Some(12.0),
+        temperature_c: Some(51),
+    };
+
+    let hb = HeartbeatRequest {
+        endpoint: "http://multi:8082".into(),
+        gpus: vec![
+            "NVIDIA GeForce RTX 3060".into(),
+            "NVIDIA GeForce GTX 1660 SUPER".into(),
+        ],
+        gpu_devices: vec![dev0.clone(), dev1.clone()],
+        vram_total: Some(18432),
+        vram_used: Some(8024),
+        cpu: Some(0.2),
+        ram: Some(8192),
+        ram_total: Some(16384),
+        jobs_active: 0,
+        max_gpu_mib: Some(12288),
+        disk_total_gb: Some(100.0),
+        disk_used_gb: Some(30.0),
+    };
+
+    manager::receive_heartbeat(&p, &cache, hb)
+        .await
+        .expect("receive heartbeat");
+
+    // Verifica persistência na coluna gpu_devices
+    let row: (Option<serde_json::Value>,) =
+        sqlx::query_as("SELECT gpu_devices FROM orchestrators WHERE id = $1")
+            .bind(orch_id)
+            .fetch_one(&p)
+            .await
+            .unwrap();
+    assert!(row.0.is_some());
+    let saved_devs: Vec<heph_contracts::GpuDeviceTelemetry> =
+        serde_json::from_value(row.0.unwrap()).unwrap();
+    assert_eq!(saved_devs.len(), 2);
+    assert_eq!(saved_devs[0].uuid, dev0.uuid);
+    assert_eq!(saved_devs[1].uuid, dev1.uuid);
+
+    // Verifica list_orchestrators
+    let resp = manager::list_orchestrators(&p, &cache).await.unwrap();
+    assert_eq!(resp.items.len(), 1);
+    assert_eq!(resp.items[0].gpu_devices.len(), 2);
+    assert_eq!(resp.items[0].gpu_devices[0].uuid, dev0.uuid);
 }
 
 /// (e.1) Agregação: 2 nós com cache → soma+união+cpu/ram null.
@@ -3415,6 +3504,7 @@ async fn agregacao_2_nos_soma_uniao() {
     let hb1 = HeartbeatRequest {
         endpoint: "http://n1:8082".into(),
         gpus: vec!["RTX 3060".into()],
+        gpu_devices: vec![],
         vram_total: Some(12000),
         vram_used: Some(3000),
         cpu: Some(0.4),
@@ -3433,6 +3523,7 @@ async fn agregacao_2_nos_soma_uniao() {
     let hb2 = HeartbeatRequest {
         endpoint: "http://n2:8082".into(),
         gpus: vec!["GTX 1660S".into(), "RTX 3060".into()],
+        gpu_devices: vec![],
         vram_total: Some(6000),
         vram_used: Some(2000),
         cpu: Some(0.6),
@@ -3483,6 +3574,7 @@ async fn agregacao_1_no_compat() {
     let hb = HeartbeatRequest {
         endpoint: "http://local:8082".into(),
         gpus: vec!["RTX 3090".into()],
+        gpu_devices: vec![],
         vram_total: Some(24000),
         vram_used: Some(8000),
         cpu: Some(0.45),
@@ -3552,6 +3644,7 @@ fn agregacao_pura_2_nos() {
             ram: Some(4096),
             ram_total: Some(8192),
             gpus: vec!["RTX 3060".into()],
+            gpu_devices: vec![],
             jobs_active: 1,
             last_heartbeat: Some(now),
             disk_total_gb: None,
@@ -3569,6 +3662,7 @@ fn agregacao_pura_2_nos() {
             ram: Some(8192),
             ram_total: Some(16384),
             gpus: vec!["GTX 1660S".into(), "RTX 3060".into()],
+            gpu_devices: vec![],
             jobs_active: 2,
             last_heartbeat: Some(now),
             disk_total_gb: None,
@@ -8839,6 +8933,7 @@ async fn alert_disk_high_warning_critical_resolution_and_legacy() {
         HeartbeatRequest {
             endpoint: "http://orchestrator-local:8082".into(),
             gpus: vec![],
+            gpu_devices: vec![],
             vram_total: None,
             vram_used: None,
             cpu: Some(10.0),
@@ -8871,6 +8966,7 @@ async fn alert_disk_high_warning_critical_resolution_and_legacy() {
         HeartbeatRequest {
             endpoint: "http://orchestrator-local:8082".into(),
             gpus: vec![],
+            gpu_devices: vec![],
             vram_total: None,
             vram_used: None,
             cpu: Some(10.0),
@@ -8905,6 +9001,7 @@ async fn alert_disk_high_warning_critical_resolution_and_legacy() {
         HeartbeatRequest {
             endpoint: "http://orchestrator-local:8082".into(),
             gpus: vec![],
+            gpu_devices: vec![],
             vram_total: None,
             vram_used: None,
             cpu: Some(10.0),
@@ -8938,6 +9035,7 @@ async fn alert_disk_high_warning_critical_resolution_and_legacy() {
         HeartbeatRequest {
             endpoint: "http://orchestrator-local:8082".into(),
             gpus: vec![],
+            gpu_devices: vec![],
             vram_total: None,
             vram_used: None,
             cpu: Some(10.0),
@@ -8985,6 +9083,7 @@ async fn alert_disk_high_warning_critical_resolution_and_legacy() {
         HeartbeatRequest {
             endpoint: "http://orchestrator-local:8082".into(),
             gpus: vec![],
+            gpu_devices: vec![],
             vram_total: None,
             vram_used: None,
             cpu: Some(10.0),
@@ -9030,6 +9129,7 @@ async fn alert_disk_high_warning_critical_resolution_and_legacy() {
         HeartbeatRequest {
             endpoint: "http://orchestrator-local:8082".into(),
             gpus: vec![],
+            gpu_devices: vec![],
             vram_total: None,
             vram_used: None,
             cpu: Some(10.0),
@@ -9067,6 +9167,7 @@ async fn alert_disk_high_warning_critical_resolution_and_legacy() {
         HeartbeatRequest {
             endpoint: "http://orchestrator-local:8082".into(),
             gpus: vec![],
+            gpu_devices: vec![],
             vram_total: None,
             vram_used: None,
             cpu: Some(10.0),
@@ -9101,6 +9202,7 @@ async fn alert_disk_high_warning_critical_resolution_and_legacy() {
         HeartbeatRequest {
             endpoint: "http://orchestrator-local:8082".into(),
             gpus: vec![],
+            gpu_devices: vec![],
             vram_total: None,
             vram_used: None,
             cpu: Some(10.0),
@@ -9133,6 +9235,7 @@ async fn alert_disk_high_warning_critical_resolution_and_legacy() {
         HeartbeatRequest {
             endpoint: "http://orchestrator-local:8082".into(),
             gpus: vec![],
+            gpu_devices: vec![],
             vram_total: None,
             vram_used: None,
             cpu: Some(10.0),

@@ -8577,8 +8577,8 @@ async fn alert_telemetry_stale_and_recovery() {
         .await
         .expect("dispatch");
 
-    // Move job para running e ajusta created_at para 1000 segundos no passado
-    sqlx::query("UPDATE jobs SET status = 'running', created_at = now() - interval '1000 seconds' WHERE id = $1")
+    // Job running cuja execução começou há 1000s (started_at) sem nenhum ponto
+    sqlx::query("UPDATE jobs SET status = 'running', started_at = now() - interval '1000 seconds' WHERE id = $1")
         .bind(job_id)
         .execute(&p)
         .await
@@ -8629,6 +8629,64 @@ async fn alert_telemetry_stale_and_recovery() {
     assert!(
         alerts_after.items[0].resolved_at.is_some(),
         "alerta stale resolvido ao chegar nova métrica"
+    );
+}
+
+/// Regressão: job que ficou muito tempo na fila (created_at antigo) e acabou de
+/// virar running NÃO dispara telemetry_stale — a referência é started_at.
+#[tokio::test]
+#[ignore = "requer Postgres (bash scripts/test-db.sh)"]
+async fn alert_stale_nao_dispara_apos_fila_longa() {
+    let _guard = SERIAL.lock().await;
+    let p = pool().await;
+    cleanup(&p).await;
+    let ds_id = insert_test_dataset(&p).await;
+    let orch = FakeOrchestratorClient::new();
+
+    manager::adopt_orchestrator(&p).await.expect("adopt");
+    let resp = manager::create_job(&p, test_job_request(ds_id))
+        .await
+        .expect("create");
+    let job_id: uuid::Uuid = resp.job_id.parse().unwrap();
+    manager::dispatch_next(&p, &orch, "docker", "/data", "img", &test_vram_table())
+        .await
+        .expect("dispatch");
+
+    sqlx::query("UPDATE jobs SET created_at = now() - interval '1000 seconds' WHERE id = $1")
+        .bind(job_id)
+        .execute(&p)
+        .await
+        .unwrap();
+
+    manager::report_job(
+        &p,
+        job_id,
+        ReportRequest {
+            status: "running".into(),
+            progress: Some(0.0),
+            epoch: None,
+            step: None,
+            metrics: None,
+            error: None,
+            artifacts: None,
+            meta_content: None,
+            phase: Some("training".into()),
+            message: None,
+        },
+    )
+    .await
+    .expect("report running");
+
+    manager::evaluate_periodic_alerts(&p)
+        .await
+        .expect("evaluate alerts");
+
+    let alerts = manager::get_job_alerts(&p, job_id)
+        .await
+        .expect("get alerts");
+    assert!(
+        alerts.items.is_empty(),
+        "sem stale logo após a fila: {alerts:?}"
     );
 }
 

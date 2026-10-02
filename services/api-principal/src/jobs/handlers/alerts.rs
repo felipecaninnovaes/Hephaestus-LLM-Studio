@@ -28,7 +28,6 @@ pub async fn get_job_alerts(State(state): State<AppState>, Path(id): Path<String
     match state.manager.get_job_alerts(&id).await {
         Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
         Err(ManagerError::NotFound) => not_found(),
-        Err(ManagerError::Unavailable(_)) => queue_unavailable(),
         Err(_) => queue_unavailable(),
     }
 }

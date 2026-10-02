@@ -2285,7 +2285,8 @@ paths:
         - `telemetry`: atualização de progress/phase/step/epoch/vram.
         - `metrics`: novos pontos de `job_metric_points` — `id:` SSE é o `seq` máximo do
           lote (`data: {"items":[{seq,epoch,step,key,value,ts}],"maxSeq":N}`).
-        - `alert`: alerta de treinamento ativo ou resolvido (`data: JobAlert`, fatia 3c).
+        - `alerts`: snapshot completo dos alertas do job, ativos e resolvidos (`data: JobAlertsResponse`,
+          fatia 3c) — idempotente: o cliente substitui a lista inteira a cada evento.
         - `finished`: status terminal (`done`/`failed`/`cancelled`) — último evento, a conexão
           encerra em seguida.
 
@@ -2302,7 +2303,7 @@ paths:
             text/event-stream:
               schema:
                 type: string
-                description: "Linhas formatadas em SSE (`event:`/`id:`/`data:`) — eventos snapshot/telemetry/metrics/alert/finished."
+                description: "Linhas formatadas em SSE (`event:`/`id:`/`data:`) — eventos snapshot/telemetry/metrics/alerts/finished."
         "401":
           description: "Sem sessão válida (`code: unauthorized`)."
           content:
@@ -4981,8 +4982,9 @@ components:
           additionalProperties: { type: [number, string, boolean, "null"] }
           description: "Dicionário flexível com métricas adicionais instantâneas (loss, it_s, lr, etc.)."
         diagnostics:
-          type: [object, "null"]
-          $ref: "#/components/schemas/TrainingDiagnostics"
+          anyOf:
+            - $ref: "#/components/schemas/TrainingDiagnostics"
+            - type: "null"
           description: "Diagnósticos adicionais de treinamento (fatia 3b/3c)."
 
     TrainingDiagnostics:

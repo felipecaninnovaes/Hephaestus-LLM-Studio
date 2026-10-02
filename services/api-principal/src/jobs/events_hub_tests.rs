@@ -176,34 +176,48 @@ async fn reconnect_refetches_delta_and_status_for_subscribers() {
     assert_eq!(hub.known_seq(job_id).await, Some(7));
 }
 
-/// Notice de alerta (`{"jobId":...,"alert":true}`) → evento SSE `alert` para os assinantes (fatia 3c).
+/// Notice de alerta (`{"jobId":...,"alert":true}`) → UM evento SSE `alerts` com o snapshot
+/// completo `JobAlertsResponse` (fatia 3c).
 #[tokio::test]
-async fn alert_notice_dispatches_sse_alert_event() {
+async fn alert_notice_dispatches_single_sse_alerts_snapshot() {
     let hub = JobEventsHub::new();
     let job_id = "33333333-3333-3333-3333-333333333333";
     let mut rx = hub.subscribe(job_id).await;
 
     let mut mock = MockManager::default();
     mock.alerts_result = Some(heph_contracts::alerts::JobAlertsResponse {
-        items: vec![heph_contracts::alerts::JobAlert {
-            id: "44444444-4444-4444-4444-444444444444".into(),
-            job_id: job_id.into(),
-            rule_id: "nan_detected".into(),
-            severity: "critical".into(),
-            message: "NaN ou Inf detectado nos gradientes/loss do modelo".into(),
-            fired_at: "2026-10-02T12:00:00Z".into(),
-            resolved_at: None,
-        }],
+        items: vec![
+            heph_contracts::alerts::JobAlert {
+                id: "44444444-4444-4444-4444-444444444444".into(),
+                job_id: job_id.into(),
+                rule_id: "nan_detected".into(),
+                severity: "critical".into(),
+                message: "NaN ou Inf detectado nos gradientes/loss do modelo".into(),
+                fired_at: "2026-10-02T12:00:00Z".into(),
+                resolved_at: None,
+            },
+            heph_contracts::alerts::JobAlert {
+                id: "55555555-5555-5555-5555-555555555555".into(),
+                job_id: job_id.into(),
+                rule_id: "telemetry_stale".into(),
+                severity: "warning".into(),
+                message: "stale".into(),
+                fired_at: "2026-10-02T11:00:00Z".into(),
+                resolved_at: Some("2026-10-02T11:30:00Z".into()),
+            },
+        ],
     });
     let manager: StdArc<dyn ManagerPort> = StdArc::new(mock);
 
     process_job(&hub, manager.as_ref(), job_id, false, false, true).await;
 
-    let ev = rx.recv().await.expect("recebe alert event");
-    assert_eq!(ev.event, "alert");
+    let ev = rx.recv().await.expect("recebe alerts event");
+    assert_eq!(ev.event, "alerts");
     assert_eq!(ev.id, None);
-    let alert: heph_contracts::alerts::JobAlert =
-        serde_json::from_str(&ev.data).expect("parse alert payload");
-    assert_eq!(alert.rule_id, "nan_detected");
-    assert_eq!(alert.severity, "critical");
+    let snapshot: heph_contracts::alerts::JobAlertsResponse =
+        serde_json::from_str(&ev.data).expect("parse alerts payload");
+    assert_eq!(snapshot.items.len(), 2);
+    assert_eq!(snapshot.items[0].rule_id, "nan_detected");
+    assert_eq!(snapshot.items[1].rule_id, "telemetry_stale");
+    assert!(rx.try_recv().is_err(), "um único evento por notice");
 }

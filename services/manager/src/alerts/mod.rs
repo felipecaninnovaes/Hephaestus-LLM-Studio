@@ -68,15 +68,15 @@ pub async fn get_job_alerts(
 pub async fn evaluate_periodic_alerts(pool: &PgPool) -> Result<(), ManagerError> {
     let stale_secs = get_alert_stale_secs();
 
-    // 1. Encontra jobs 'running' cuja última telemetria (MAX(ts) em job_metric_points, ou created_at de jobs)
-    //    tem idade >= stale_secs.
+    // 1. Encontra jobs 'running' cuja última telemetria (MAX(ts) em job_metric_points,
+    //    senão started_at, senão created_at) tem idade >= stale_secs.
     let stale_jobs = sqlx::query_as::<_, (Uuid,)>(
         "SELECT j.id FROM jobs j \
          LEFT JOIN LATERAL ( \
              SELECT MAX(ts) AS last_ts FROM job_metric_points WHERE job_id = j.id \
          ) m ON true \
          WHERE j.status = 'running' \
-           AND COALESCE(m.last_ts, j.created_at) < now() - make_interval(secs => $1::float)",
+           AND COALESCE(m.last_ts, j.started_at, j.created_at) < now() - make_interval(secs => $1::float)",
     )
     .bind(stale_secs as f64)
     .fetch_all(pool)

@@ -253,16 +253,13 @@ async fn process_job(
 
     if do_alert {
         if let Ok(resp) = manager.get_job_alerts(job_id).await {
-            for alert in resp.items {
-                let data = serde_json::to_string(&alert).unwrap_or_default();
-                let event = JobEvent {
-                    event: "alert",
-                    id: None,
-                    data,
-                };
-                let channels = hub.channels.lock().await;
-                JobEventsHub::dispatch_sync(&channels, job_id, event);
-            }
+            let event = JobEvent {
+                event: "alerts",
+                id: None,
+                data: serde_json::to_string(&resp).unwrap_or_default(),
+            };
+            let channels = hub.channels.lock().await;
+            JobEventsHub::dispatch_sync(&channels, job_id, event);
         }
     }
 

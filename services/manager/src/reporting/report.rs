@@ -81,7 +81,7 @@ pub async fn report_job(
                 .map_err(|e| ManagerError::Internal(format!("begin running/preparing tx: {e}")))?;
 
             sqlx::query(
-                "UPDATE jobs SET status = $2, progress = COALESCE($3, progress), epoch = COALESCE($4, epoch), step = COALESCE($5, step), phase = COALESCE($6, phase), message = COALESCE($7, message) WHERE id = $1",
+                "UPDATE jobs SET status = $2, progress = COALESCE($3, progress), epoch = COALESCE($4, epoch), step = COALESCE($5, step), phase = COALESCE($6, phase), message = COALESCE($7, message), started_at = CASE WHEN $2 = 'running' THEN COALESCE(started_at, now()) ELSE started_at END WHERE id = $1",
             )
             .bind(id)
             .bind(&report.status)

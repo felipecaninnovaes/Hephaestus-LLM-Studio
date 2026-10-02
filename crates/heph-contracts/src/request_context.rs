@@ -103,12 +103,21 @@ pub fn current_or_generate() -> Arc<RequestContext> {
 
 /// Pares de header (`x-request-id`, `traceparent`) para anexar numa chamada
 /// de saída, usando o contexto corrente (ou um gerado, se não houver request
-/// de entrada — ex.: dispatch loop, heartbeat).
+/// de entrada — ex.: dispatch loop, heartbeat). Com `feature = "otel"` e
+/// provider ativo, o `span_id` do `traceparent` é o do span OTel corrente
+/// (não o sintético da 2b) — o próximo hop vira filho correto na árvore de
+/// spans exportada (fatia 2a).
 pub fn outbound_headers() -> [(&'static str, String); 2] {
     let ctx = current_or_generate();
+    #[cfg(feature = "otel")]
+    let traceparent = crate::otel::current_span_id_hex()
+        .map(|span_id| format!("00-{}-{}-01", ctx.trace_id, span_id))
+        .unwrap_or_else(|| ctx.traceparent());
+    #[cfg(not(feature = "otel"))]
+    let traceparent = ctx.traceparent();
     [
         ("x-request-id", ctx.request_id.clone()),
-        ("traceparent", ctx.traceparent()),
+        ("traceparent", traceparent),
     ]
 }
 
@@ -313,6 +322,34 @@ fn parse_traceparent_trace_id(traceparent: &str) -> Option<String> {
         return None;
     }
     Some(trace_id.to_ascii_lowercase())
+}
+
+/// Mesmo parsing/validação de [`parse_traceparent_trace_id`], mas retorna o
+/// `span-id` (parent-id) do `traceparent` — usado só pela integração OTel
+/// (`feature = "otel"`, `crate::otel::set_request_parent`) para linkar o
+/// span raiz deste hop ao span real do upstream, quando presente.
+pub(crate) fn parse_traceparent_span_id(traceparent: &str) -> Option<String> {
+    let mut parts = traceparent.split('-');
+    let version = parts.next()?;
+    let trace_id = parts.next()?;
+    let span_id = parts.next()?;
+    let flags = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    if version != "00" {
+        return None;
+    }
+    if !is_non_zero_hex(trace_id, 32) {
+        return None;
+    }
+    if !is_non_zero_hex(span_id, 16) {
+        return None;
+    }
+    if flags.len() != 2 || !flags.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(span_id.to_ascii_lowercase())
 }
 
 fn is_non_zero_hex(s: &str, expected_len: usize) -> bool {

@@ -112,14 +112,9 @@ fn needs_bootstrap_password(env_present: bool, user_exists: bool) -> bool {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 0. Tracing subscriber (D11 — formatter JSON).
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .json()
-        .init();
+    // 0. Tracing subscriber (D11 — formatter JSON) + OTel opcional (fatia 2a):
+    //    sem OTEL_EXPORTER_OTLP_ENDPOINT, subscriber idêntico ao de antes.
+    let otel_guard = heph_contracts::otel::init_tracing("info");
     tracing::info!("api-principal booting");
 
     let database_url = std::env::var("DATABASE_URL")
@@ -275,6 +270,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, app)
         .await
         .map_err(|e| format!("serve: {e}"))?;
+    otel_guard.shutdown();
     Ok(())
 }
 

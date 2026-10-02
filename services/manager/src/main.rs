@@ -14,14 +14,9 @@ use manager::policy::VramTable;
 
 #[tokio::main]
 async fn main() {
-    // Tracing.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "manager=info,tower_http=info".into()),
-        )
-        .json()
-        .init();
+    // Tracing (JSON + EnvFilter) + OTel opcional (fatia 2a): sem
+    // OTEL_EXPORTER_OTLP_ENDPOINT, subscriber idêntico ao de antes.
+    let otel_guard = heph_contracts::otel::init_tracing("manager=info,tower_http=info");
 
     // Configuração estruturada.
     let config = ManagerConfig::from_env().unwrap_or_else(|e| panic!("config error: {e}"));
@@ -125,6 +120,7 @@ async fn main() {
         .expect("bind");
     tracing::info!("manager ouvindo em 0.0.0.0:{port}");
     axum::serve(listener, app).await.unwrap();
+    otel_guard.shutdown();
 }
 
 // ---------------------------------------------------------------------------

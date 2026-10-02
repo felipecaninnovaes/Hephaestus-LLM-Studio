@@ -5,8 +5,25 @@ edition = "2021"
 description = "Contratos e DTOs compartilhados do Hephaestus LLM Studio"
 
 [dependencies]
+opentelemetry = { version = "0.33", optional = true }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["grpc-tonic", "trace"], optional = true }
+opentelemetry_sdk = { version = "0.33", features = ["rt-tokio"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "macros"] }
 tracing = "0.1"
+tracing-opentelemetry = { version = "0.34", optional = true }
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"], optional = true }
 uuid = { version = "1", features = ["v4", "serde"] }
+
+[features]
+otel = [
+    "dep:opentelemetry",
+    "dep:opentelemetry-otlp",
+    "dep:opentelemetry_sdk",
+    "dep:tracing-opentelemetry",
+    "dep:tracing-subscriber",
+]
+
+[dev-dependencies]
+opentelemetry_sdk = { version = "0.33", features = ["testing", "rt-tokio"] }

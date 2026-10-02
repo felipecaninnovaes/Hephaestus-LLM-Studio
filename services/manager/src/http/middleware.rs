@@ -41,6 +41,7 @@ pub async fn request_id_middleware(
         path = %uri,
         job_id = tracing::field::Empty,
     );
+    heph_contracts::otel::set_request_parent(&span, &ctx, incoming_traceparent);
 
     let request_id = ctx.request_id.clone();
     let traceparent = ctx.traceparent();

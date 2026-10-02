@@ -22,14 +22,9 @@ use std::sync::Arc;
 pub(crate) use orchestrator::config::resolve_daemon_diffusion_image;
 #[tokio::main]
 async fn main() {
-    // Tracing (JSON + env filter, padrão manager).
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "orchestrator=info,tower_http=info".into()),
-        )
-        .json()
-        .init();
+    // Tracing (JSON + EnvFilter, padrão manager) + OTel opcional (fatia 2a):
+    // sem OTEL_EXPORTER_OTLP_ENDPOINT, subscriber idêntico ao de antes.
+    let otel_guard = heph_contracts::otel::init_tracing("orchestrator=info,tower_http=info");
 
     // Config tipada — fail-fast sem ecoar valor (config::OrchestratorConfig).
     let cfg = OrchestratorConfig::from_env().unwrap_or_else(|e| panic!("{e}"));
@@ -422,7 +417,9 @@ async fn main() {
 
     // 4. Flush final da outbox com o client HTTP direto
     orchestrator::drain_outbox(&outbox_dir, http_report_client.as_ref()).await;
-    // 5. Loga conclusão limpa
+    // 5. Flush final dos spans OTel pendentes (fatia 2a).
+    otel_guard.shutdown();
+    // 6. Loga conclusão limpa
     tracing::info!("orchestrator encerrado com sucesso.");
 }
 

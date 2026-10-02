@@ -7,10 +7,11 @@ pub mod job_status;
 pub mod jobs;
 pub mod models;
 pub mod nodes;
+#[cfg(feature = "otel")]
+pub mod otel;
 pub mod report;
 pub mod request_context;
 pub mod telemetry;
-
 pub use artifacts::{ArtifactItem, ArtifactReport};
 pub use dispatch::{
     DispatchRequest, InitImageRef, LoraRefStage, PackageRef, WeightRef, WeightsRef,

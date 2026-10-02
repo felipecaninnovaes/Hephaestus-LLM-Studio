@@ -10,7 +10,11 @@ import {
 } from "@/components/icons";
 import { Badge, jobStatusToBadgeVariant } from "@/components/ui/Badge";
 import { Spinner } from "@/components/ui/Spinner";
-import { buildLineageLayout } from "@/lib/jobLineage";
+import {
+  type CheckpointInfo,
+  type JobGroup,
+  buildLineageLayout,
+} from "@/lib/jobLineage";
 import { getJobLineage } from "@/lib/jobs";
 import type { JobStatus, LineageGraph, LineageNode } from "@/types/studio";
 
@@ -39,145 +43,266 @@ function idSuffix(id: string): string {
   return uuid.slice(0, 8);
 }
 
-interface NodeButtonProps {
-  node: LineageNode;
-  isCurrent: boolean;
-  /** Id (sem prefixo) do job que produziu este nó, quando `kind: checkpoint`. */
-  ownerJobId: string | null;
+function stripPrefix(id: string): string {
+  return id.includes(":") ? id.split(":").slice(1).join(":") : id;
+}
+
+interface CheckpointItemProps {
+  info: CheckpointInfo;
+  ownerJobId: string;
   loadedArtifactJobIds: Set<string>;
   onSelectJob: (jobId: string) => void;
-  onSelectDataset: (datasetId: string) => void;
   onFocusArtifact: (jobId: string, artifactId: string) => void;
 }
 
-function NodeButton({
-  node,
-  isCurrent,
+function CheckpointItem({
+  info,
   ownerJobId,
   loadedArtifactJobIds,
   onSelectJob,
-  onSelectDataset,
   onFocusArtifact,
-}: NodeButtonProps) {
-  const rawId = node.id.includes(":") ? node.id.split(":").slice(1).join(":") : node.id;
+}: CheckpointItemProps) {
+  const { node, resumedByJobId, usedByJobId } = info;
+  const rawId = stripPrefix(node.id);
+  const canFocus = loadedArtifactJobIds.has(ownerJobId);
 
-  const baseClasses =
-    "group flex min-h-[32px] w-full flex-col items-start gap-0.5 rounded-xl border px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400/60";
+  const meta: string[] = [];
+  if (node.epoch != null) meta.push(`época ${node.epoch}`);
+  meta.push(`#${idSuffix(node.id)}`);
 
-  const toneClasses = isCurrent
-    ? "border-brand-400/60 bg-brand-500/10"
-    : "border-white/10 bg-white/[0.02] hover:bg-white/[0.05] hover:border-white/20";
+  return (
+    <div className="rounded-lg border border-white/5 bg-white/[0.02] p-2 space-y-1.5 transition-colors hover:border-white/15">
+      <div className="flex items-center justify-between gap-2">
+        {canFocus ? (
+          <button
+            type="button"
+            onClick={() => onFocusArtifact(ownerJobId, rawId)}
+            className="truncate text-left text-xs font-medium text-zinc-200 hover:text-brand-300 focus-visible:outline-none focus-visible:underline"
+            title="Rolar até o artefato"
+          >
+            {node.label}
+          </button>
+        ) : (
+          <span className="truncate text-xs font-medium text-zinc-300">
+            {node.label}
+          </span>
+        )}
+        <span className="shrink-0 font-mono text-3xs text-zinc-400">
+          {meta.join(" · ")}
+        </span>
+      </div>
 
-  const header = (
-    <div className="flex w-full items-center justify-between gap-2">
-      <span className="truncate text-xs font-semibold text-zinc-100">
-        {node.label}
-      </span>
-      {isCurrent && (
-        <Badge variant="brand" className="shrink-0">
-          atual
-        </Badge>
+      {resumedByJobId && (
+        <div className="flex items-center gap-1.5 pt-0.5 border-t border-white/5">
+          <span className="text-3xs text-brand-300 font-mono">↳ retomado por</span>
+          <button
+            type="button"
+            onClick={() => onSelectJob(resumedByJobId)}
+            className="font-mono text-3xs text-brand-400 hover:underline focus-visible:outline-none"
+            title={`Abrir job ${resumedByJobId}`}
+          >
+            #{resumedByJobId.slice(0, 8)}
+          </button>
+        </div>
+      )}
+
+      {usedByJobId && (
+        <div className="flex items-center gap-1.5 pt-0.5 border-t border-white/5">
+          <span className="text-3xs text-amber-300 font-mono">↳ usado por</span>
+          <button
+            type="button"
+            onClick={() => onSelectJob(usedByJobId)}
+            className="font-mono text-3xs text-amber-400 hover:underline focus-visible:outline-none"
+            title={`Abrir job/geração ${usedByJobId}`}
+          >
+            #{usedByJobId.slice(0, 8)}
+          </button>
+        </div>
       )}
     </div>
   );
+}
 
-  const meta: string[] = [];
-  if (node.kind === "checkpoint" && node.epoch != null) {
-    meta.push(`época ${node.epoch}`);
-  }
-  if (node.createdAt) {
-    meta.push(new Date(node.createdAt).toLocaleString("pt-BR"));
-  }
-  if (node.kind !== "dataset") {
-    meta.push(`#${idSuffix(node.id)}`);
-  }
+interface JobGroupCardProps {
+  group: JobGroup;
+  currentJobId: string;
+  loadedArtifactJobIds: Set<string>;
+  onSelectJob: (jobId: string) => void;
+  onFocusArtifact: (jobId: string, artifactId: string) => void;
+}
 
-  const metaRow = meta.length > 0 && (
-    <span className="font-mono text-3xs text-zinc-400">{meta.join(" · ")}</span>
-  );
+function JobGroupCard({
+  group,
+  currentJobId,
+  loadedArtifactJobIds,
+  onSelectJob,
+  onFocusArtifact,
+}: JobGroupCardProps) {
+  const { job, checkpoints, generations, resumedFrom, usedFrom } = group;
+  const rawJobId = stripPrefix(job.id);
+  const isCurrent = rawJobId === currentJobId;
+  const [expanded, setExpanded] = useState(false);
 
-  if (node.kind === "job") {
-    return (
-      <button
-        type="button"
-        onClick={() => onSelectJob(rawId)}
-        className={`${baseClasses} ${toneClasses}`}
-        title={`Abrir job ${rawId}`}
-      >
-        {header}
-        <div className="flex items-center gap-2">
-          {node.status && (
-            <Badge
-              variant={jobStatusToBadgeVariant(node.status as JobStatus)}
-              className="shrink-0"
-            >
-              {STATUS_LABEL[node.status as JobStatus] ?? node.status}
-            </Badge>
-          )}
-          {metaRow}
-        </div>
-      </button>
-    );
-  }
+  const displayedCheckpoints =
+    checkpoints.length > 5 && !expanded ? checkpoints.slice(0, 5) : checkpoints;
 
-  if (node.kind === "dataset") {
-    return (
-      <button
-        type="button"
-        onClick={() => onSelectDataset(rawId)}
-        className={`${baseClasses} ${toneClasses}`}
-        title={`Abrir dataset ${node.label}`}
-      >
-        <div className="flex w-full items-center gap-1.5">
-          <IconDatabase className="size-3.5 text-brand-300 shrink-0" />
-          {header}
-        </div>
-      </button>
-    );
-  }
-
-  if (node.kind === "checkpoint") {
-    const canFocus = !!ownerJobId && loadedArtifactJobIds.has(ownerJobId);
-    if (canFocus && ownerJobId) {
-      return (
-        <button
-          type="button"
-          onClick={() => onFocusArtifact(ownerJobId, rawId)}
-          className={`${baseClasses} ${toneClasses}`}
-          title="Rolar até o artefato"
-        >
-          {header}
-          {metaRow}
-        </button>
-      );
-    }
-    return (
-      <div
-        className={`${baseClasses} border-white/10 bg-white/[0.02] opacity-80`}
-        aria-disabled="true"
-      >
-        {header}
-        {metaRow}
-      </div>
-    );
-  }
-
-  // generation: sem rota própria no app ainda — exibido como informativo.
   return (
-    <div className={`${baseClasses} border-white/10 bg-white/[0.02] opacity-80`}>
-      <div className="flex w-full items-center gap-1.5">
-        <IconSparkles className="size-3.5 text-zinc-400 shrink-0" />
-        {header}
+    <div
+      className={`rounded-xl border p-3 space-y-3 transition-colors ${
+        isCurrent
+          ? "border-brand-400/60 bg-brand-500/[0.07]"
+          : "border-white/10 bg-white/[0.02]"
+      }`}
+    >
+      {/* Cabeçalho do Job */}
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 space-y-1">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => onSelectJob(rawJobId)}
+              className="truncate text-xs font-semibold text-zinc-100 hover:text-brand-300 focus-visible:outline-none focus-visible:underline"
+              title={`Abrir job ${rawJobId}`}
+            >
+              {job.label}
+            </button>
+            {isCurrent && (
+              <Badge variant="brand" className="shrink-0">
+                atual
+              </Badge>
+            )}
+          </div>
+          <div className="flex items-center gap-2 flex-wrap font-mono text-3xs text-zinc-400">
+            {job.status && (
+              <Badge
+                variant={jobStatusToBadgeVariant(job.status as JobStatus)}
+                className="shrink-0"
+              >
+                {STATUS_LABEL[job.status as JobStatus] ?? job.status}
+              </Badge>
+            )}
+            {job.createdAt && (
+              <span>{new Date(job.createdAt).toLocaleString("pt-BR")}</span>
+            )}
+            <span>#{idSuffix(job.id)}</span>
+          </div>
+        </div>
       </div>
-      {metaRow}
+
+      {/* Relação de origem: retomado de um checkpoint de outro job */}
+      {resumedFrom && (
+        <div className="rounded-lg border border-brand-400/30 bg-brand-500/10 p-2 text-2xs space-y-0.5">
+          <span className="font-mono text-3xs uppercase tracking-caps text-brand-300">
+            Retomado de
+          </span>
+          <div className="flex items-center gap-1.5 flex-wrap text-zinc-200">
+            <span className="font-medium truncate max-w-[200px]" title={resumedFrom.checkpointLabel}>
+              {resumedFrom.checkpointLabel}
+            </span>
+            {resumedFrom.parentJobId && (
+              <>
+                <span className="text-zinc-500">·</span>
+                <button
+                  type="button"
+                  onClick={() => onSelectJob(resumedFrom.parentJobId!)}
+                  className="font-mono text-3xs text-brand-300 hover:underline focus-visible:outline-none"
+                  title={`Ir para job pai ${resumedFrom.parentJobId}`}
+                >
+                  #{resumedFrom.parentJobId.slice(0, 8)}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Relação de uso: geração a partir de um checkpoint */}
+      {usedFrom && (
+        <div className="rounded-lg border border-amber-400/30 bg-amber-500/10 p-2 text-2xs space-y-0.5">
+          <span className="font-mono text-3xs uppercase tracking-caps text-amber-300">
+            Usou modelo
+          </span>
+          <div className="flex items-center gap-1.5 flex-wrap text-zinc-200">
+            <span className="font-medium truncate max-w-[200px]" title={usedFrom.checkpointLabel}>
+              {usedFrom.checkpointLabel}
+            </span>
+            {usedFrom.parentJobId && (
+              <>
+                <span className="text-zinc-500">·</span>
+                <button
+                  type="button"
+                  onClick={() => onSelectJob(usedFrom.parentJobId!)}
+                  className="font-mono text-3xs text-amber-300 hover:underline focus-visible:outline-none"
+                  title={`Ir para job pai ${usedFrom.parentJobId}`}
+                >
+                  #{usedFrom.parentJobId.slice(0, 8)}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Checkpoints produzidos por este job */}
+      {checkpoints.length > 0 && (
+        <div className="space-y-2 pt-2 border-t border-white/5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-mono text-3xs uppercase tracking-caps text-zinc-400">
+              Checkpoints produzidos ({checkpoints.length})
+            </span>
+            {checkpoints.length > 5 && (
+              <button
+                type="button"
+                onClick={() => setExpanded((v) => !v)}
+                className="font-mono text-3xs text-brand-400 hover:underline focus-visible:outline-none"
+              >
+                {expanded ? "recolher" : `+${checkpoints.length - 5} mais`}
+              </button>
+            )}
+          </div>
+
+          <div className="space-y-1.5">
+            {displayedCheckpoints.map((cp) => (
+              <CheckpointItem
+                key={cp.node.id}
+                info={cp}
+                ownerJobId={rawJobId}
+                loadedArtifactJobIds={loadedArtifactJobIds}
+                onSelectJob={onSelectJob}
+                onFocusArtifact={onFocusArtifact}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Gerações produzidas por este job */}
+      {generations.length > 0 && (
+        <div className="space-y-2 pt-2 border-t border-white/5">
+          <span className="font-mono text-3xs uppercase tracking-caps text-zinc-400">
+            Gerações ({generations.length})
+          </span>
+          <div className="space-y-1.5">
+            {generations.map((gen) => (
+              <div
+                key={gen.id}
+                className="flex items-center gap-1.5 rounded-lg border border-white/5 bg-white/[0.02] p-2 text-2xs text-zinc-300"
+              >
+                <IconSparkles className="size-3.5 text-zinc-400 shrink-0" />
+                <span className="truncate">{gen.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 /**
  * Seção recolhível de linhagem do job (fatia 5b): dataset de origem, cadeia
- * de jobs ancestrais/descendentes (pai via checkpoint), checkpoints com
- * época e gerações, em colunas cronológicas.
+ * cronológica de jobs com seus checkpoints produzidos agrupados, conexões de
+ * resume explicitadas em ambos os lados e gerações associadas.
  */
 export function JobLineage({
   jobId,
@@ -211,28 +336,20 @@ export function JobLineage({
     };
   }, [open, jobId]);
 
-  const currentNodeId = `job:${jobId}`;
   const layout = graph ? buildLineageLayout(graph) : null;
+  const currentNodeId = `job:${jobId}`;
+
   const isEmpty =
     !!layout &&
-    layout.columns.every(
-      (col) =>
-        col.nodes.length === 0 ||
-        (col.nodes.length === 1 && col.nodes[0].id === currentNodeId),
-    );
-
-  // checkpoint id -> id (sem prefixo) do job que o produziu (aresta "produced").
-  const checkpointOwner = new Map<string, string>();
-  if (graph) {
-    for (const edge of graph.edges) {
-      if (edge.kind === "produced" && edge.to.startsWith("checkpoint:")) {
-        const owner = edge.from.startsWith("job:")
-          ? edge.from.slice("job:".length)
-          : edge.from;
-        checkpointOwner.set(edge.to, owner);
-      }
-    }
-  }
+    layout.datasets.length === 0 &&
+    (layout.jobGroups.length === 0 ||
+      (layout.jobGroups.length === 1 &&
+        layout.jobGroups[0].job.id === currentNodeId &&
+        layout.jobGroups[0].checkpoints.length === 0 &&
+        layout.jobGroups[0].generations.length === 0 &&
+        !layout.jobGroups[0].resumedFrom)) &&
+    layout.orphanCheckpoints.length === 0 &&
+    layout.orphanGenerations.length === 0;
 
   return (
     <div className="space-y-3 pt-3 border-t border-white/10">
@@ -253,7 +370,7 @@ export function JobLineage({
       </button>
 
       {open && (
-        <div id={`job-lineage-${jobId}`} className="space-y-3">
+        <div id={`job-lineage-${jobId}`} className="space-y-4">
           {loading && (
             <div className="flex items-center gap-2 text-2xs text-zinc-400 px-1">
               <Spinner className="size-3.5" />
@@ -275,28 +392,71 @@ export function JobLineage({
           )}
 
           {!loading && !error && layout && !isEmpty && (
-            <div className="flex gap-3 overflow-x-auto pb-1">
-              {layout.columns.map((col) => (
-                <div key={col.kind} className="min-w-[180px] flex-1 space-y-2">
+            <div className="space-y-4">
+              {/* Datasets de Origem */}
+              {layout.datasets.length > 0 && (
+                <div className="space-y-2">
                   <h4 className="font-mono text-3xs font-semibold uppercase tracking-caps text-zinc-500">
-                    {col.title}
+                    Dataset de Origem
                   </h4>
-                  <div className="space-y-2">
-                    {col.nodes.map((node) => (
-                      <NodeButton
-                        key={node.id}
-                        node={node}
-                        isCurrent={node.id === currentNodeId}
-                        ownerJobId={checkpointOwner.get(node.id) ?? null}
+                  <div className="flex flex-wrap gap-2">
+                    {layout.datasets.map((ds) => (
+                      <button
+                        key={ds.id}
+                        type="button"
+                        onClick={() => onSelectDataset(stripPrefix(ds.id))}
+                        className="group flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2 text-left transition-colors hover:border-white/20 hover:bg-white/[0.05] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400/60"
+                        title={`Abrir dataset ${ds.label}`}
+                      >
+                        <IconDatabase className="size-3.5 text-brand-300 shrink-0" />
+                        <span className="text-xs font-semibold text-zinc-100">
+                          {ds.label}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Cadeia de Treinos / Execuções */}
+              {layout.jobGroups.length > 0 && (
+                <div className="space-y-3">
+                  <h4 className="font-mono text-3xs font-semibold uppercase tracking-caps text-zinc-500">
+                    Cadeia de Treinos & Modelos
+                  </h4>
+                  <div className="space-y-3">
+                    {layout.jobGroups.map((group) => (
+                      <JobGroupCard
+                        key={group.job.id}
+                        group={group}
+                        currentJobId={jobId}
                         loadedArtifactJobIds={loadedArtifactJobIds}
                         onSelectJob={onSelectJob}
-                        onSelectDataset={onSelectDataset}
                         onFocusArtifact={onFocusArtifact}
                       />
                     ))}
                   </div>
                 </div>
-              ))}
+              )}
+
+              {/* Checkpoints ou gerações órfãos */}
+              {layout.orphanCheckpoints.length > 0 && (
+                <div className="space-y-2 pt-2 border-t border-white/5">
+                  <h4 className="font-mono text-3xs font-semibold uppercase tracking-caps text-zinc-500">
+                    Outros Checkpoints
+                  </h4>
+                  <div className="space-y-1.5">
+                    {layout.orphanCheckpoints.map((cp) => (
+                      <div
+                        key={cp.node.id}
+                        className="rounded-lg border border-white/5 bg-white/[0.02] p-2 text-xs text-zinc-300"
+                      >
+                        {cp.node.label}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

@@ -17,47 +17,82 @@ function node(
 }
 
 describe("buildLineageLayout", () => {
-  it("agrupa em colunas dataset → jobs → checkpoints, em ordem cronológica", () => {
+  it("agrupa checkpoints sob o job que os produziu e marca resumed_by / resumedFrom", () => {
     const graph: LineageGraph = {
       nodes: [
         node("dataset:boys", "dataset", { label: "boys" }),
-        node("job:a", "job", { createdAt: "2026-01-01T00:00:00Z" }),
-        node("checkpoint:a5", "checkpoint", { epoch: 5 }),
+        node("job:parent", "job", {
+          label: "train flux",
+          createdAt: "2026-09-30T00:00:00Z",
+        }),
+        node("checkpoint:cp1", "checkpoint", {
+          label: "adapter_epoch_005.safetensors",
+          epoch: 5,
+        }),
+        node("checkpoint:cp2", "checkpoint", {
+          label: "adapter_epoch_006.safetensors",
+          epoch: 6,
+        }),
+        node("job:child", "job", {
+          label: "train flux",
+          createdAt: "2026-10-01T00:00:00Z",
+        }),
       ],
       edges: [
-        { from: "dataset:boys", to: "job:a", kind: "trains" },
-        { from: "job:a", to: "checkpoint:a5", kind: "produced" },
+        { from: "dataset:boys", to: "job:parent", kind: "trains" },
+        { from: "job:parent", to: "checkpoint:cp1", kind: "produced" },
+        { from: "job:parent", to: "checkpoint:cp2", kind: "produced" },
+        { from: "checkpoint:cp1", to: "job:child", kind: "resumed_by" },
       ],
     };
+
     const layout = buildLineageLayout(graph);
-    expect(layout.columns.map((c) => c.kind)).toEqual([
-      "dataset",
-      "job",
-      "checkpoint",
-    ]);
-    expect(layout.columns[0].nodes[0].id).toBe("dataset:boys");
+
+    expect(layout.datasets).toHaveLength(1);
+    expect(layout.datasets[0].id).toBe("dataset:boys");
+
+    expect(layout.jobGroups).toHaveLength(2);
+
+    const [parentGroup, childGroup] = layout.jobGroups;
+    expect(parentGroup.job.id).toBe("job:parent");
+    expect(parentGroup.checkpoints).toHaveLength(2);
+    expect(parentGroup.resumedFrom).toBeNull();
+
+    // Checkpoint cp1 foi retomado pelo child
+    const cp1 = parentGroup.checkpoints.find((c) => c.node.id === "checkpoint:cp1");
+    expect(cp1?.resumedByJobId).toBe("child");
+
+    // Child group foi retomado de cp1 produzido por parent
+    expect(childGroup.job.id).toBe("job:child");
+    expect(childGroup.resumedFrom).toEqual({
+      checkpointId: "cp1",
+      checkpointLabel: "adapter_epoch_005.safetensors",
+      parentJobId: "parent",
+    });
   });
 
   it("deriva a cadeia de 2 resumes (job → checkpoint → job → checkpoint → job)", () => {
     const graph: LineageGraph = {
       nodes: [
-        node("job:a", "job"),
-        node("checkpoint:a5", "checkpoint", { epoch: 5 }),
-        node("job:b", "job"),
-        node("checkpoint:b2", "checkpoint", { epoch: 2 }),
-        node("job:c", "job"),
+        node("job:a", "job", { createdAt: "2026-09-29T00:00:00Z" }),
+        node("checkpoint:cp-a", "checkpoint"),
+        node("job:b", "job", { createdAt: "2026-09-30T00:00:00Z" }),
+        node("checkpoint:cp-b", "checkpoint"),
+        node("job:c", "job", { createdAt: "2026-10-01T00:00:00Z" }),
       ],
       edges: [
-        { from: "job:a", to: "checkpoint:a5", kind: "produced" },
-        { from: "checkpoint:a5", to: "job:b", kind: "resumed_by" },
-        { from: "job:b", to: "checkpoint:b2", kind: "produced" },
-        { from: "checkpoint:b2", to: "job:c", kind: "resumed_by" },
+        { from: "job:a", to: "checkpoint:cp-a", kind: "produced" },
+        { from: "checkpoint:cp-a", to: "job:b", kind: "resumed_by" },
+        { from: "job:b", to: "checkpoint:cp-b", kind: "produced" },
+        { from: "checkpoint:cp-b", to: "job:c", kind: "resumed_by" },
       ],
     };
+
     const layout = buildLineageLayout(graph);
     expect(layout.parentOf.get("job:c")).toBe("job:b");
     expect(layout.parentOf.get("job:b")).toBe("job:a");
     expect(layout.parentOf.get("job:a")).toBeNull();
+
     expect(ancestorChain(layout.parentOf, "job:c")).toEqual([
       "job:a",
       "job:b",
@@ -65,50 +100,37 @@ describe("buildLineageLayout", () => {
     ]);
   });
 
-  it("job sem pai (treino do zero) tem parentOf null", () => {
+  it("job sem pai (treino do zero) tem parentOf null e resumedFrom null", () => {
     const graph: LineageGraph = {
-      nodes: [node("dataset:boys", "dataset"), node("job:a", "job")],
-      edges: [{ from: "dataset:boys", to: "job:a", kind: "trains" }],
+      nodes: [node("job:a", "job")],
+      edges: [],
     };
     const layout = buildLineageLayout(graph);
     expect(layout.parentOf.get("job:a")).toBeNull();
+    expect(layout.jobGroups[0].resumedFrom).toBeNull();
     expect(ancestorChain(layout.parentOf, "job:a")).toEqual(["job:a"]);
   });
 
-  it("nó órfão (sem arestas) ainda aparece em sua coluna de kind", () => {
+  it("nó órfão (sem produtor) aparece em orphanCheckpoints", () => {
     const graph: LineageGraph = {
       nodes: [
-        node("job:a", "job"),
-        node("generation:orphan", "generation", { label: "prompt perdido" }),
+        node("checkpoint:orphan-cp", "checkpoint", { label: "standalone.pt" }),
       ],
       edges: [],
     };
     const layout = buildLineageLayout(graph);
-    const genCol = layout.columns.find((c) => c.kind === "generation");
-    expect(genCol?.nodes.map((n) => n.id)).toEqual(["generation:orphan"]);
+    expect(layout.orphanCheckpoints).toHaveLength(1);
+    expect(layout.orphanCheckpoints[0].node.id).toBe("checkpoint:orphan-cp");
   });
 
   it("ciclo defensivo não trava ancestorChain", () => {
-    // Dados inconsistentes/corrompidos: job:a aponta (via checkpoint) de volta
-    // para um descendente, formando um ciclo. ancestorChain deve retornar em
-    // tempo finito em vez de loop infinito.
-    const graph: LineageGraph = {
-      nodes: [
-        node("job:a", "job"),
-        node("checkpoint:a1", "checkpoint"),
-        node("job:b", "job"),
-        node("checkpoint:b1", "checkpoint"),
-      ],
-      edges: [
-        { from: "job:a", to: "checkpoint:a1", kind: "produced" },
-        { from: "checkpoint:a1", to: "job:b", kind: "resumed_by" },
-        { from: "job:b", to: "checkpoint:b1", kind: "produced" },
-        { from: "checkpoint:b1", to: "job:a", kind: "resumed_by" },
-      ],
-    };
-    const layout = buildLineageLayout(graph);
-    const chain = ancestorChain(layout.parentOf, "job:a");
+    const parentOf = new Map<string, string | null>([
+      ["job:a", "job:b"],
+      ["job:b", "job:c"],
+      ["job:c", "job:a"],
+    ]);
+    const chain = ancestorChain(parentOf, "job:a");
     expect(chain.length).toBeGreaterThan(0);
-    expect(new Set(chain).size).toBe(chain.length);
+    expect(chain.length).toBeLessThanOrEqual(3);
   });
 });

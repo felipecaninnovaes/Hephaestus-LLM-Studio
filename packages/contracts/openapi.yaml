@@ -4913,14 +4913,13 @@ components:
       additionalProperties: false
       description: "Uma linha persistida do jsonl de telemetria (C2a) ou de `logs/run.log` (`source=run`, Fatia 1c); campos ausentes na linha vêm null; linha malformada chega como `message` bruta."
       properties:
-        timestamp: { type: [string, "null"], description: "ISO-8601 do evento (telemetria) ou epoch-millis em string (`source=run`), quando presente." }
+        timestamp: { type: [string, "null"], format: date-time, description: "ISO-8601/RFC3339 do evento, quando presente (mesmo formato para ambas as fontes — `source=run` converte o epoch-millis gravado no arquivo)." }
         phase: { type: [string, "null"], description: "Fase do engine-kit (training, preparing_dataset, ...). Sempre null em `source=run`." }
         message: { type: [string, "null"], description: "`message` canônica, fallback `phaseMessage`, senão a linha bruta." }
         progress: { type: [number, "null"], description: "Progresso 0–1 da linha, quando presente. Sempre null em `source=run`." }
         epoch: { type: [integer, "null"], format: int64 }
         step: { type: [integer, "null"], format: int64 }
-        level: { type: [string, "null"], description: "Só em `source=run`: `info` (stdout) ou `error` (stderr)." }
-        stream: { type: [string, "null"], description: "Só em `source=run`: `stdout` ou `stderr`." }
+        stream: { type: [string, "null"], description: "Só em `source=run`: `stdout` ou `stderr`. Não há `level`: stdout/stderr não é nível de log real (logging/tqdm/warnings do Python escrevem em stderr por convenção)." }
 
     JobLogPage:
       type: object

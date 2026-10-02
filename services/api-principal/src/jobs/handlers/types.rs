@@ -244,8 +244,11 @@ pub struct JobLogsQuery {
 
 /// Linha de log persistida (wire `JobLogLine`, camelCase). Linhas malformadas
 /// do jsonl chegam com `message` = linha bruta e demais campos nulos.
-/// `level`/`stream` (Fatia 1c): só preenchidos para `source=run` (stdout→info,
-/// stderr→error); ausentes (omitidos do wire) para `source=telemetry`.
+/// `stream` (Fatia 1c): só preenchido para `source=run` (`stdout`/`stderr`);
+/// ausente (omitido do wire) para `source=telemetry`. Não há `level`:
+/// stdout/stderr não é nível de log real (logging/tqdm/warnings do Python
+/// escrevem em stderr por convenção) — inferir `error` a partir do stream
+/// seria enganoso.
 #[derive(Debug, Serialize, Clone)]
 pub struct JobLogLine {
     pub timestamp: Option<String>,
@@ -254,8 +257,6 @@ pub struct JobLogLine {
     pub progress: Option<f64>,
     pub epoch: Option<i64>,
     pub step: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub level: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<String>,
 }

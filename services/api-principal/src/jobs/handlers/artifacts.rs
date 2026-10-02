@@ -138,7 +138,6 @@ pub fn parse_job_log_line(line: &str) -> JobLogLine {
                 progress: v.get("progress").and_then(|x| x.as_f64()),
                 epoch: v.get("epoch").and_then(|x| x.as_i64()),
                 step: v.get("step").and_then(|x| x.as_i64()),
-                level: None,
                 stream: None,
             }
         }
@@ -149,7 +148,6 @@ pub fn parse_job_log_line(line: &str) -> JobLogLine {
             progress: None,
             epoch: None,
             step: None,
-            level: None,
             stream: None,
         },
     }
@@ -157,9 +155,16 @@ pub fn parse_job_log_line(line: &str) -> JobLogLine {
 
 /// Parse de uma linha de `logs/run.log` (Fatia 1c): formato gravado pelo
 /// `DockerExecutor` em streaming — `<epoch_millis> <stream> <texto>`, onde
-/// `stream` é `stdout` ou `stderr`. Linha sem esse prefixo (ex.: marcador de
-/// truncamento `[run.log truncado em N bytes]`) vira mensagem bruta — mesmo
-/// fallback honesto de `parse_job_log_line`, nunca descartada.
+/// `stream` é `stdout` ou `stderr`. `timestamp` é convertido para RFC3339
+/// (mesmo formato de `source=telemetry` — o wire não muda forma conforme a
+/// fonte). Linha sem esse prefixo (ex.: marcador de truncamento
+/// `[run.log truncado em N bytes]`) vira mensagem bruta — mesmo fallback
+/// honesto de `parse_job_log_line`, nunca descartada.
+///
+/// `level` NÃO é emitido para `source=run`: stdout/stderr não é nível de
+/// log real (logging/tqdm/warnings do Python escrevem em stderr por
+/// convenção) — inferir `error` a partir do stream seria enganoso. Só
+/// `stream` (`stdout`/`stderr`) é exposto.
 pub fn parse_run_log_line(line: &str) -> JobLogLine {
     let mut parts = line.splitn(3, ' ');
     let (ts, stream, rest) = (parts.next(), parts.next(), parts.next());
@@ -167,14 +172,18 @@ pub fn parse_run_log_line(line: &str) -> JobLogLine {
         (Some(ts), Some(stream @ ("stdout" | "stderr")), Some(msg))
             if !ts.is_empty() && ts.chars().all(|c| c.is_ascii_digit()) =>
         {
+            let timestamp = ts
+                .parse::<i64>()
+                .ok()
+                .and_then(chrono::DateTime::from_timestamp_millis)
+                .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
             JobLogLine {
-                timestamp: Some(ts.to_string()),
+                timestamp,
                 phase: None,
                 message: Some(msg.to_string()),
                 progress: None,
                 epoch: None,
                 step: None,
-                level: Some(if stream == "stderr" { "error" } else { "info" }.to_string()),
                 stream: Some(stream.to_string()),
             }
         }
@@ -185,7 +194,6 @@ pub fn parse_run_log_line(line: &str) -> JobLogLine {
             progress: None,
             epoch: None,
             step: None,
-            level: None,
             stream: None,
         },
     }
@@ -504,15 +512,13 @@ mod job_logs_zip_tests {
     #[test]
     fn parses_run_log_stdout_and_stderr_lines() {
         let out = parse_run_log_line("1790899086122 stdout Época 1/10 · Step 30");
-        assert_eq!(out.timestamp.as_deref(), Some("1790899086122"));
+        assert_eq!(out.timestamp.as_deref(), Some("2026-10-01T23:58:06.122Z"));
         assert_eq!(out.stream.as_deref(), Some("stdout"));
-        assert_eq!(out.level.as_deref(), Some("info"));
         assert_eq!(out.message.as_deref(), Some("Época 1/10 · Step 30"));
         assert!(out.phase.is_none() && out.epoch.is_none());
 
         let err = parse_run_log_line("1790899086123 stderr Traceback (most recent call last):");
         assert_eq!(err.stream.as_deref(), Some("stderr"));
-        assert_eq!(err.level.as_deref(), Some("error"));
         assert_eq!(
             err.message.as_deref(),
             Some("Traceback (most recent call last):")
@@ -523,7 +529,7 @@ mod job_logs_zip_tests {
     fn run_log_truncation_marker_kept_as_raw_message() {
         let l = parse_run_log_line("[run.log truncado em 50 bytes]");
         assert_eq!(l.message.as_deref(), Some("[run.log truncado em 50 bytes]"));
-        assert!(l.stream.is_none() && l.level.is_none() && l.timestamp.is_none());
+        assert!(l.stream.is_none() && l.timestamp.is_none());
     }
 
     #[test]

@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use parking_lot::Mutex as StdMutex;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::ports::executor::TrainerExecutor;
 
@@ -97,27 +97,86 @@ impl RunLogWriter {
     }
 }
 
-/// Drena uma stream (`stdout`/`stderr`) do container linha a linha,
-/// alimentando o `run.log` compartilhado e o ring buffer das últimas
-/// `TAIL_LINES` para o `logs_tail` do erro.
+/// Divide bytes crus do container em linhas completas, tratando `\r`
+/// (carriage-return "nu", padrão de barra de progresso tqdm/Rich) como um
+/// reset da linha corrente: só o trecho após o ÚLTIMO `\r` antes do próximo
+/// `\n` é mantido — sem isso, `BufReader::lines` (que só quebra em `\n`)
+/// acumularia uma única linha gigante com a barra de progresso reescrita
+/// centenas de vezes por segundo. `\n` sempre fecha e emite a linha
+/// corrente (separador real).
+#[derive(Default)]
+struct CrCollapsingSplitter {
+    pending: Vec<u8>,
+}
+
+impl CrCollapsingSplitter {
+    fn feed(&mut self, chunk: &[u8]) -> Vec<String> {
+        let mut out = Vec::new();
+        for &b in chunk {
+            match b {
+                b'\n' => {
+                    out.push(String::from_utf8_lossy(&self.pending).into_owned());
+                    self.pending.clear();
+                }
+                b'\r' => self.pending.clear(),
+                _ => self.pending.push(b),
+            }
+        }
+        out
+    }
+
+    /// Flush final: EOF sem `\n` à direita — mesma convenção de
+    /// `tokio::io::Lines`, que devolve o resto pendente como última linha.
+    fn finish(mut self) -> Option<String> {
+        if self.pending.is_empty() {
+            None
+        } else {
+            Some(String::from_utf8_lossy(&std::mem::take(&mut self.pending)).into_owned())
+        }
+    }
+}
+
+async fn emit_line(
+    line: String,
+    stream_name: &'static str,
+    writer: &Arc<tokio::sync::Mutex<RunLogWriter>>,
+    tail: &Arc<StdMutex<VecDeque<String>>>,
+) {
+    {
+        let mut t = tail.lock();
+        if t.len() == TAIL_LINES {
+            t.pop_front();
+        }
+        t.push_back(line.clone());
+    }
+    writer.lock().await.write_line(stream_name, &line).await;
+}
+
+/// Drena uma stream (`stdout`/`stderr`) do container linha a linha (com
+/// colapso de `\r`, ver `CrCollapsingSplitter`), alimentando o `run.log`
+/// compartilhado e o ring buffer das últimas `TAIL_LINES` para o
+/// `logs_tail` do erro.
 async fn pump_stream<R>(
-    reader: R,
+    mut reader: R,
     stream_name: &'static str,
     writer: Arc<tokio::sync::Mutex<RunLogWriter>>,
     tail: Arc<StdMutex<VecDeque<String>>>,
 ) where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
-    let mut lines = BufReader::new(reader).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        {
-            let mut t = tail.lock();
-            if t.len() == TAIL_LINES {
-                t.pop_front();
-            }
-            t.push_back(line.clone());
+    let mut splitter = CrCollapsingSplitter::default();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = match reader.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        for line in splitter.feed(&buf[..n]) {
+            emit_line(line, stream_name, &writer, &tail).await;
         }
-        writer.lock().await.write_line(stream_name, &line).await;
+    }
+    if let Some(line) = splitter.finish() {
+        emit_line(line, stream_name, &writer, &tail).await;
     }
 }
 
@@ -278,5 +337,41 @@ impl TrainerExecutor for DockerExecutor {
                 String::from_utf8_lossy(&output.stderr)
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod cr_collapsing_splitter_tests {
+    use super::CrCollapsingSplitter;
+
+    #[test]
+    fn collapses_tqdm_style_carriage_returns_keeping_last_segment() {
+        let mut s = CrCollapsingSplitter::default();
+        let lines = s.feed(b"a\rb\rc\n");
+        assert_eq!(lines, vec!["c".to_string()]);
+        assert!(s.finish().is_none());
+    }
+
+    #[test]
+    fn plain_newlines_still_split_normally() {
+        let mut s = CrCollapsingSplitter::default();
+        let lines = s.feed(b"line1\nline2\n");
+        assert_eq!(lines, vec!["line1".to_string(), "line2".to_string()]);
+    }
+
+    #[test]
+    fn trailing_partial_line_without_newline_flushed_at_eof() {
+        let mut s = CrCollapsingSplitter::default();
+        let lines = s.feed(b"partial");
+        assert!(lines.is_empty());
+        assert_eq!(s.finish(), Some("partial".to_string()));
+    }
+
+    #[test]
+    fn cr_progress_bar_across_multiple_feed_calls() {
+        let mut s = CrCollapsingSplitter::default();
+        assert!(s.feed(b"10%\r").is_empty());
+        assert!(s.feed(b"55%\r").is_empty());
+        assert_eq!(s.feed(b"100%\n"), vec!["100%".to_string()]);
     }
 }

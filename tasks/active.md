@@ -3,7 +3,7 @@
 - **Decisões do usuário (2026-10-01):** escopo completo (ondas 0–5, 17 fatias); Loki+Tempo+Grafana; alertas só na UI; retenção indefinida de `run.log`/`telemetry.jsonl` como artefato do job no S3 (Loki/Tempo com default 30d por env — interpretação do orchestrator, a confirmar).
 - **Sequenciamento:** cutover do orchestrator-gpu concluído (fatia de reuso fechada) → deploy no nó liberado.
 - [x] Spec commitada (`@docs`). Ajustes do `@docs` aceitos: `UNIQUE NULLS NOT DISTINCT (job_id,key,epoch,step)` + PK `(job_id,seq)`; `seq` vem de `jobs.metric_seq` (`UPDATE … RETURNING`, o lock da linha resolve o lost update); um canal `pg_notify` só (`job_metrics`); GPU util/power/temp vêm só da spec multi-GPU; limites de alerta configuráveis por env.
-- [ ] Onda 0: contrato v2 (`heph-contracts`/openapi) + `job_metric_points` com backfill
+- [x] Onda 0: 0a (`aa9008a`, mergeada em develop, `@reviewer` APROVA) + 0b (`11c7515`, branch `feat/job-metrics-migration-sql`; `@reviewer` APROVA). Prova do orchestrator numa cópia real do banco de dev: 15 jobs, 4365 pontos, legado == tabela == `metric_seq` em todos, rerun dá `INSERT 0 0`, CASCADE ok. **Deploy de 0b acoplado ao de 1a** (senão reports novos vão só para `jobs.metrics`); 0b entra em develop junto com a 1a. Achado do orchestrator: `(item->>'epoch')::INTEGER` aborta com `1.0` e derrubaria o boot → fix na branch da 1a.
 - [ ] Onda 1: inserts append-only + fix `collector.rs:464,498` + SSE pub-sub + captura de `run.log`
 - [ ] Onda 2: x-request-id/traceparent → OTel collector → Loki/Tempo/Grafana
 - [ ] Onda 3: sensores de sistema, diagnóstico de treino (difusão), alertas na UI

@@ -8,7 +8,7 @@
 - [ ] Onda 2: x-request-id/traceparent → OTel collector → Loki/Tempo/Grafana
 - [ ] Onda 3: sensores de sistema, diagnóstico de treino (difusão), alertas na UI
 - [ ] Onda 4: uPlot + busca multi-run + comparação de runs
-- [ ] Onda 5: galeria por step, linhagem, export CSV/Parquet
+- [ ] Onda 5: linhagem, export CSV/Parquet. [x] 5a galeria por step mergeada (`ff640fe`): slider com teclado + Comparar A/B. `@reviewer` APROVA. Prova visual do orchestrator no job real 0962380c, com 2 ajustes pedidos depois dela (aria-label nos sliders, tamanho do tile).
 
 ## Fechado — Reuso de dataset e text-embeds no nó GPU
 - **Branch:** `feat/no-gpu-reuso-dataset-embeds` (a partir de `develop` `e8ca50b`), mergeada fast-forward (commit `55ac16b`). Fix de fingerprint em branch própria `fix/diffusion-package-fingerprint-reuso`, mergeada fast-forward (commit `9753a12`, push confirmado `origin/develop`).

@@ -10,6 +10,7 @@ import type {
   JobListResponse,
   JobMetricsResponse,
   LineageGraph,
+  MetricPointsResponse,
   SubmitJobResponse,
   Telemetry,
   YoloAugment,
@@ -17,140 +18,163 @@ import type {
 
 /** POST /api/jobs/yolo — cria job de treino YOLO. Retorna 202 (preparing|queued). */
 export function startYoloJob(params: {
-  datasetId: string;
-  model: string;
-  epochs: number;
-  batch: number;
-  imgsz: number;
-  lr0: number;
-  optimizer: string;
-  augment: YoloAugment;
-  weights?: string | null;
-  orchestratorId?: string | null;
-  outputName?: string | null;
+	datasetId: string;
+	model: string;
+	epochs: number;
+	batch: number;
+	imgsz: number;
+	lr0: number;
+	optimizer: string;
+	augment: YoloAugment;
+	weights?: string | null;
+	orchestratorId?: string | null;
+	outputName?: string | null;
 }): Promise<SubmitJobResponse> {
-  const { weights, orchestratorId, outputName, ...rest } = params;
-  const body: Record<string, unknown> = { ...rest };
-  if (weights) body.weights = weights;
-  if (orchestratorId) body.orchestratorId = orchestratorId;
-  if (outputName?.trim()) body.outputName = outputName.trim();
-  return apiFetch("/api/jobs/yolo", {
-    method: "POST",
-    body,
-  });
+	const { weights, orchestratorId, outputName, ...rest } = params;
+	const body: Record<string, unknown> = { ...rest };
+	if (weights) body.weights = weights;
+	if (orchestratorId) body.orchestratorId = orchestratorId;
+	if (outputName?.trim()) body.outputName = outputName.trim();
+	return apiFetch("/api/jobs/yolo", {
+		method: "POST",
+		body,
+	});
 }
 
 /** POST /api/jobs/diffusion — cria job de treino de difusão LoRA. Retorna 202 (preparing|queued). */
 export function startDiffusionJob(params: {
-  datasetId: string;
-  baseModel?: "sdxl" | "flux" | "sd15" | "qwen-image-2.1" | null;
-  customModelId?: string | null;
-  textEncoderModelId?: string | null;
-  triggerWord?: string;
-  epochs?: number;
-  batchSize?: number;
-  learningRate?: number;
-  rank?: number;
-  alpha?: number;
-  weights?: string | null;
-  orchestratorId?: string | null;
-  outputName?: string | null;
-  samplePrompt?: string;
-  sampleInterval?: number;
-  sampleSeed?: number;
-  resolution?: number;
-  gradientAccumulationSteps?: number;
-  optimizer?: DiffusionOptimizer;
-  lrScheduler?: "cosine" | "linear" | "constant" | "constant_with_warmup";
-  lrWarmupSteps?: number;
-  mixedPrecision?: "fp16" | "bf16" | "no";
-  quantization?: "none" | "2bit" | "4bit" | "6bit" | "8bit";
-  controlDatasetId?: string | null;
-  cacheTextEmbeddings?: boolean;
-  enableBucket?: boolean;
-  checkpointInterval?: number;
-  epochOffset?: number;
+	datasetId: string;
+	baseModel?: "sdxl" | "flux" | "sd15" | "qwen-image-2.1" | null;
+	customModelId?: string | null;
+	textEncoderModelId?: string | null;
+	triggerWord?: string;
+	epochs?: number;
+	batchSize?: number;
+	learningRate?: number;
+	rank?: number;
+	alpha?: number;
+	weights?: string | null;
+	orchestratorId?: string | null;
+	outputName?: string | null;
+	samplePrompt?: string;
+	sampleInterval?: number;
+	sampleSeed?: number;
+	resolution?: number;
+	gradientAccumulationSteps?: number;
+	optimizer?: DiffusionOptimizer;
+	lrScheduler?: "cosine" | "linear" | "constant" | "constant_with_warmup";
+	lrWarmupSteps?: number;
+	mixedPrecision?: "fp16" | "bf16" | "no";
+	quantization?: "none" | "2bit" | "4bit" | "6bit" | "8bit";
+	controlDatasetId?: string | null;
+	cacheTextEmbeddings?: boolean;
+	enableBucket?: boolean;
+	checkpointInterval?: number;
+	epochOffset?: number;
 }): Promise<SubmitJobResponse> {
-  const {
-    weights,
-    orchestratorId,
-    outputName,
-    triggerWord,
-    samplePrompt,
-    sampleInterval,
-    sampleSeed,
-    resolution,
-    gradientAccumulationSteps,
-    optimizer,
-    lrScheduler,
-    lrWarmupSteps,
-    mixedPrecision,
-    quantization,
-    enableBucket,
-    checkpointInterval,
-    epochOffset,
-    controlDatasetId,
-    cacheTextEmbeddings,
-    ...rest
-  } = params;
-  const body: Record<string, unknown> = { ...rest };
-  /* XOR baseModel/customModelId (fatia pesos-custom-flux2): custom vence;
+	const {
+		weights,
+		orchestratorId,
+		outputName,
+		triggerWord,
+		samplePrompt,
+		sampleInterval,
+		sampleSeed,
+		resolution,
+		gradientAccumulationSteps,
+		optimizer,
+		lrScheduler,
+		lrWarmupSteps,
+		mixedPrecision,
+		quantization,
+		enableBucket,
+		checkpointInterval,
+		epochOffset,
+		controlDatasetId,
+		cacheTextEmbeddings,
+		...rest
+	} = params;
+	const body: Record<string, unknown> = { ...rest };
+	/* XOR baseModel/customModelId (fatia pesos-custom-flux2): custom vence;
      ambos ausentes ⇒ body sem nenhum (backend assume "sdxl"). NENHUM outro
      campo muda — a lista de whitelists abaixo é intocada. */
-  if (params.customModelId) {
-    body.customModelId = params.customModelId;
-    delete body.baseModel;
-  } else if (params.baseModel) {
-    body.baseModel = params.baseModel;
-  } else {
-    delete body.baseModel;
-  }
-  if (params.textEncoderModelId) body.textEncoderModelId = params.textEncoderModelId;
-  if (outputName?.trim()) body.outputName = outputName.trim();
-  if (triggerWord?.trim()) body.triggerWord = triggerWord.trim();
-  if (weights) body.weights = weights;
-  if (orchestratorId) body.orchestratorId = orchestratorId;
-  if (resolution) body.resolution = resolution;
-  if (gradientAccumulationSteps != null) body.gradientAccumulationSteps = gradientAccumulationSteps;
-  if (optimizer) body.optimizer = optimizer;
-  if (lrScheduler) body.lrScheduler = lrScheduler;
-  if (lrWarmupSteps != null) body.lrWarmupSteps = lrWarmupSteps;
-  if (epochOffset != null) body.epochOffset = epochOffset;
-  if (mixedPrecision) body.mixedPrecision = mixedPrecision;
-  if (quantization) body.quantization = quantization;
-  if (enableBucket != null) body.enableBucket = enableBucket;
-  if (controlDatasetId) body.controlDatasetId = controlDatasetId;
-  if (cacheTextEmbeddings != null) body.cacheTextEmbeddings = cacheTextEmbeddings;
-  if (checkpointInterval != null) body.checkpointInterval = checkpointInterval;
-  if (samplePrompt?.trim()) {
-    body.samplePrompt = samplePrompt.trim();
-    if (sampleInterval != null) body.sampleInterval = sampleInterval;
-    if (sampleSeed != null) body.sampleSeed = sampleSeed;
-  }
-  return apiFetch("/api/jobs/diffusion", {
-    method: "POST",
-    body,
-  });
+	if (params.customModelId) {
+		body.customModelId = params.customModelId;
+		delete body.baseModel;
+	} else if (params.baseModel) {
+		body.baseModel = params.baseModel;
+	} else {
+		delete body.baseModel;
+	}
+	if (params.textEncoderModelId)
+		body.textEncoderModelId = params.textEncoderModelId;
+	if (outputName?.trim()) body.outputName = outputName.trim();
+	if (triggerWord?.trim()) body.triggerWord = triggerWord.trim();
+	if (weights) body.weights = weights;
+	if (orchestratorId) body.orchestratorId = orchestratorId;
+	if (resolution) body.resolution = resolution;
+	if (gradientAccumulationSteps != null)
+		body.gradientAccumulationSteps = gradientAccumulationSteps;
+	if (optimizer) body.optimizer = optimizer;
+	if (lrScheduler) body.lrScheduler = lrScheduler;
+	if (lrWarmupSteps != null) body.lrWarmupSteps = lrWarmupSteps;
+	if (epochOffset != null) body.epochOffset = epochOffset;
+	if (mixedPrecision) body.mixedPrecision = mixedPrecision;
+	if (quantization) body.quantization = quantization;
+	if (enableBucket != null) body.enableBucket = enableBucket;
+	if (controlDatasetId) body.controlDatasetId = controlDatasetId;
+	if (cacheTextEmbeddings != null)
+		body.cacheTextEmbeddings = cacheTextEmbeddings;
+	if (checkpointInterval != null) body.checkpointInterval = checkpointInterval;
+	if (samplePrompt?.trim()) {
+		body.samplePrompt = samplePrompt.trim();
+		if (sampleInterval != null) body.sampleInterval = sampleInterval;
+		if (sampleSeed != null) body.sampleSeed = sampleSeed;
+	}
+	return apiFetch("/api/jobs/diffusion", {
+		method: "POST",
+		body,
+	});
 }
 
 /** GET /api/jobs — lista todos os jobs com status/progress. */
 export function listJobs(): Promise<JobListResponse> {
-  return apiFetch("/api/jobs");
+	return apiFetch("/api/jobs");
 }
 
 /** GET /api/jobs/:id — detalhe de um job específico. */
 export function getJob(jobId: string): Promise<Job> {
-  return apiFetch(`/api/jobs/${jobId}`);
+	return apiFetch(`/api/jobs/${jobId}`);
 }
 
 /** GET /api/jobs/:id/metrics — série de métricas por epoch. */
 export function getJobMetrics(jobId: string): Promise<JobMetricsResponse> {
-  return apiFetch(`/api/jobs/${jobId}/metrics`);
+	return apiFetch(`/api/jobs/${jobId}/metrics`);
+}
+
+/** GET /api/jobs/:id/metrics com query params — retorna série de pontos brutos (fatia 1a/4a). */
+export function getJobMetricPoints(
+	jobId: string,
+	params: {
+		afterSeq?: number;
+		maxPoints?: number;
+		keys?: string[];
+	} = {},
+): Promise<MetricPointsResponse> {
+	const q = new URLSearchParams();
+	if (params.afterSeq != null) q.set("afterSeq", String(params.afterSeq));
+	if (params.maxPoints != null) q.set("maxPoints", String(params.maxPoints));
+	if (params.keys && params.keys.length > 0)
+		q.set("keys", params.keys.join(","));
+	const queryStr = q.toString();
+	return apiFetch(
+		`/api/jobs/${jobId}/metrics${queryStr ? `?${queryStr}` : ""}`,
+	);
 }
 
 /** GET /api/jobs/:id/artifacts — lista de artefatos do job. */
 export function getJobArtifacts(jobId: string): Promise<JobArtifactsResponse> {
-  return apiFetch(`/api/jobs/${jobId}/artifacts`);
+	return apiFetch(`/api/jobs/${jobId}/artifacts`);
 }
 
 /** GET /api/jobs/:id/lineage — grafo dataset→job→checkpoint→resume→geração (fatia 5b). */
@@ -163,51 +187,51 @@ export function getJobLineage(
 
 /** GET /api/jobs/:id/artifacts/:artifactId/data — download de artefato via blob. */
 export async function downloadArtifact(
-  jobId: string,
-  artifactId: string,
-  filename: string,
+	jobId: string,
+	artifactId: string,
+	filename: string,
 ): Promise<void> {
-  const res = await fetch(`/api/jobs/${jobId}/artifacts/${artifactId}/data`, {
-    credentials: "same-origin",
-  });
-  if (!res.ok) {
-    throw new Error(`Falha ao baixar artefato: ${res.status}`);
-  }
-  const disposition = res.headers.get("content-disposition");
-  let targetFilename = filename;
-  if (disposition) {
-    const match = disposition.match(/filename="?([^";]+)"?/i);
-    if (match && match[1]) {
-      targetFilename = match[1].trim();
-    }
-  }
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  try {
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = targetFilename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  } finally {
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
+	const res = await fetch(`/api/jobs/${jobId}/artifacts/${artifactId}/data`, {
+		credentials: "same-origin",
+	});
+	if (!res.ok) {
+		throw new Error(`Falha ao baixar artefato: ${res.status}`);
+	}
+	const disposition = res.headers.get("content-disposition");
+	let targetFilename = filename;
+	if (disposition) {
+		const match = disposition.match(/filename="?([^";]+)"?/i);
+		if (match && match[1]) {
+			targetFilename = match[1].trim();
+		}
+	}
+	const blob = await res.blob();
+	const url = URL.createObjectURL(blob);
+	try {
+		const a = document.createElement("a");
+		a.href = url;
+		a.download = targetFilename;
+		document.body.appendChild(a);
+		a.click();
+		a.remove();
+	} finally {
+		setTimeout(() => URL.revokeObjectURL(url), 1000);
+	}
 }
 
 /** Extrai o filename do header Content-Disposition (fallback para o padrão). */
 export function filenameFromDisposition(
-  disposition: string | null,
-  fallback: string,
+	disposition: string | null,
+	fallback: string,
 ): string {
-  if (disposition) {
-    const match = disposition.match(/filename="?([^";]+)"?/i);
-    if (match?.[1]) {
-      const name = match[1].trim();
-      if (name) return name;
-    }
-  }
-  return fallback;
+	if (disposition) {
+		const match = disposition.match(/filename="?([^";]+)"?/i);
+		if (match?.[1]) {
+			const name = match[1].trim();
+			if (name) return name;
+		}
+	}
+	return fallback;
 }
 
 /**
@@ -216,47 +240,49 @@ export function filenameFromDisposition(
  * e jobs grandes podem levar minutos. Zero artefatos → o BFF responde 404.
  */
 export async function downloadJobArtifactsZip(jobId: string): Promise<void> {
-  const fallback = `${jobId}-artifacts.zip`;
-  const res = await fetch(`/api/jobs/${jobId}/artifacts/zip`, {
-    credentials: "same-origin",
-  });
-  if (!res.ok) {
-    throw new Error(`Falha ao baixar ZIP de artefatos: ${res.status}`);
-  }
-  const targetFilename = filenameFromDisposition(
-    res.headers.get("content-disposition"),
-    fallback,
-  );
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  try {
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = targetFilename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  } finally {
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
+	const fallback = `${jobId}-artifacts.zip`;
+	const res = await fetch(`/api/jobs/${jobId}/artifacts/zip`, {
+		credentials: "same-origin",
+	});
+	if (!res.ok) {
+		throw new Error(`Falha ao baixar ZIP de artefatos: ${res.status}`);
+	}
+	const targetFilename = filenameFromDisposition(
+		res.headers.get("content-disposition"),
+		fallback,
+	);
+	const blob = await res.blob();
+	const url = URL.createObjectURL(blob);
+	try {
+		const a = document.createElement("a");
+		a.href = url;
+		a.download = targetFilename;
+		document.body.appendChild(a);
+		a.click();
+		a.remove();
+	} finally {
+		setTimeout(() => URL.revokeObjectURL(url), 1000);
+	}
 }
 
 /** POST /api/jobs/:id/abort — cancela um job. */
 export function abortJob(jobId: string): Promise<void> {
-  return apiFetch(`/api/jobs/${jobId}/abort`, { method: "POST" });
+	return apiFetch(`/api/jobs/${jobId}/abort`, { method: "POST" });
 }
 
 /** DELETE /api/jobs/:id — exclui um job terminal (AC-003). */
 export function deleteJob(jobId: string): Promise<JobDeletedResponse> {
-  return apiFetch(`/api/jobs/${jobId}`, { method: "DELETE" });
+	return apiFetch(`/api/jobs/${jobId}`, { method: "DELETE" });
 }
 
 /** POST /api/jobs/cleanup — limpeza em lote de jobs terminais (AC-003). */
-export function cleanupJobs(req: JobCleanupRequest): Promise<JobCleanupResponse> {
-  return apiFetch("/api/jobs/cleanup", { method: "POST", body: req });
+export function cleanupJobs(
+	req: JobCleanupRequest,
+): Promise<JobCleanupResponse> {
+	return apiFetch("/api/jobs/cleanup", { method: "POST", body: req });
 }
 
 /** GET /api/telemetry — telemetria do nó (CPU/RAM/VRAM/GPUs). */
 export function getTelemetry(): Promise<Telemetry> {
-  return apiFetch("/api/telemetry");
+	return apiFetch("/api/telemetry");
 }

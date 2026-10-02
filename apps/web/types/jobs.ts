@@ -55,6 +55,21 @@ export interface JobMetricsResponse {
   items: JobMetrics[];
 }
 
+export interface MetricPointWithKey {
+  seq: number;
+  epoch: number | null;
+  step: number;
+  key: string;
+  value: number;
+  ts: string;
+}
+
+export interface MetricPointsResponse {
+  items: MetricPointWithKey[];
+  maxSeq: number;
+  downsampled: boolean;
+}
+
 export interface JobArtifact {
   id: string;
   kind: string;

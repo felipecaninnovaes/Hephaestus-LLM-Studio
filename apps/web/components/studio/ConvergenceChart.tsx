@@ -3,8 +3,8 @@
  * O componente foi modularizado em `components/studio/charts/*`:
  * - MetricSparkline.tsx
  * - chartMath.ts
- * - ConvergenceChartCanvas.tsx
  * - ConvergenceMetricCards.tsx
+ * - UPlotChart.tsx
  * - ConvergenceChart.tsx
  */
 export * from "./charts";

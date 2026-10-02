@@ -25,7 +25,6 @@ import {
 } from "@/components/icons";
 import { AutolabelReviewModal } from "@/components/studio/AutolabelReviewModal";
 import { AutotrackerReviewModal } from "@/components/studio/AutotrackerReviewModal";
-import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import {
 	ConvergenceChart,
 	MetricSparkline,
@@ -36,19 +35,21 @@ import { JobLogViewer } from "@/components/studio/JobLogViewer";
 import { JobProgressLive } from "@/components/studio/JobProgressLive";
 import { JobSamplesGallery } from "@/components/studio/JobSamplesGallery";
 import {
-	JobsHeader,
-	JobsSidebar,
-	JobHeroHeader,
 	JobArtifactsList,
+	JobHeroHeader,
 	JobLineage,
 	JobMetricsChips,
+	JobsHeader,
+	JobsSidebar,
 } from "@/components/studio/jobs";
-import { showToast } from "@/components/ui/Toast";
 import { Badge, jobStatusToBadgeVariant } from "@/components/ui/Badge";
 import { Button, getButtonClasses } from "@/components/ui/Button";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { Spinner } from "@/components/ui/Spinner";
-import { useJobTelemetry } from "@/hooks/useJobTelemetry";
+import { showToast } from "@/components/ui/Toast";
 import { useJobLifecycle } from "@/hooks/useJobLifecycle";
+import { useJobMetricSeries } from "@/hooks/useJobMetricSeries";
+import { useJobTelemetry } from "@/hooks/useJobTelemetry";
 import { ApiError } from "@/lib/api";
 import { openActionCenter } from "@/lib/events";
 import { formatBytes, formatDuration } from "@/lib/format";
@@ -61,8 +62,8 @@ import {
 	listJobs,
 } from "@/lib/jobs";
 import {
-	buildDiffusionResume,
 	buildDiffusionRerun,
+	buildDiffusionResume,
 	buildYoloRerun,
 } from "@/lib/paramsToPreset";
 import type {
@@ -70,8 +71,8 @@ import type {
 	JobArtifact,
 	JobMetrics as JobMetricsType,
 	JobStatus,
+	MetricPointWithKey,
 } from "@/types/studio";
-import { autolabelErrorMessage, autotrackerErrorMessage } from "@/types/studio";
 
 const POLL_INTERVAL = 3000;
 
@@ -124,6 +125,9 @@ function JobsPageContent() {
 	const [pendingArtifactFocus, setPendingArtifactFocus] = useState<
 		string | null
 	>(null);
+	const [metricPoints, setMetricPoints] = useState<
+		Record<string, MetricPointWithKey[]>
+	>({});
 	const [zipBusy, setZipBusy] = useState(false);
 	const [cleanupOpen, setCleanupOpen] = useState(false);
 	const {
@@ -298,8 +302,33 @@ function JobsPageContent() {
 	}, [jobs, selectedJobId, activeJobs, terminalJobs]);
 
 	const isSelectedActive = selectedJob ? isActive(selectedJob.status) : false;
-	const telemetry = useJobTelemetry(isSelectedActive ? selectedJob?.id : null);
 
+	// Hook de séries brutas (fatia 4a) com carga inicial
+	const { points: currentJobPoints, appendPoints: appendCurrentJobPoints } =
+		useJobMetricSeries(selectedJob?.id, {
+			enabled: !!selectedJob,
+			maxPoints: 3000,
+		});
+
+	// Sincroniza pontos do hook para o mapa de cache por jobId
+	useEffect(() => {
+		if (!selectedJob?.id) return;
+		setMetricPoints((prev) => ({
+			...prev,
+			[selectedJob.id]: currentJobPoints,
+		}));
+	}, [selectedJob?.id, currentJobPoints]);
+
+	// SSE via useJobTelemetry: conecta ao stream e faz append de deltas sem refetch
+	const telemetry = useJobTelemetry(isSelectedActive ? selectedJob?.id : null, {
+		onMetricPoints: useCallback(
+			(pts: MetricPointWithKey[]) => {
+				if (!selectedJob?.id) return;
+				appendCurrentJobPoints(pts);
+			},
+			[selectedJob?.id, appendCurrentJobPoints],
+		),
+	});
 	// AC-006-B: pontos reais de métrica de treino do job selecionado
 	// (linhas de status/boot do engine ficam só no log, nunca no gráfico/chips)
 	const selectedTrainingMetrics = useMemo(
@@ -422,7 +451,10 @@ function JobsPageContent() {
 		} else if (job.engine === "yolo") {
 			// Rerun YOLO: mesma chave do ActionCenter, consumida por /treino.
 			try {
-				sessionStorage.setItem("heph_rerun_yolo", JSON.stringify(buildYoloRerun(job)));
+				sessionStorage.setItem(
+					"heph_rerun_yolo",
+					JSON.stringify(buildYoloRerun(job)),
+				);
 			} catch {
 				// Best-effort
 			}
@@ -440,7 +472,9 @@ function JobsPageContent() {
 			await downloadJobArtifactsZip(job.id);
 		} catch (e) {
 			showToast(
-				e instanceof Error ? `Falha ao baixar ZIP: ${e.message}` : "Falha ao baixar ZIP",
+				e instanceof Error
+					? `Falha ao baixar ZIP: ${e.message}`
+					: "Falha ao baixar ZIP",
 				"error",
 			);
 		} finally {
@@ -653,9 +687,13 @@ function JobsPageContent() {
 												etaSeconds={telemetry.etaSeconds}
 												etaFormatted={telemetry.etaFormatted}
 												step={telemetry.step ?? selectedJob.step}
-												totalSteps={telemetry.totalSteps ?? selectedJob.totalSteps}
+												totalSteps={
+													telemetry.totalSteps ?? selectedJob.totalSteps
+												}
 												epoch={telemetry.epoch ?? selectedJob.epoch}
-												totalEpochs={telemetry.totalEpochs ?? selectedJob.totalEpochs}
+												totalEpochs={
+													telemetry.totalEpochs ?? selectedJob.totalEpochs
+												}
 												isLive={telemetry.isLive}
 												isFinished={telemetry.isFinished}
 											/>
@@ -668,6 +706,9 @@ function JobsPageContent() {
 										selectedTrainingMetrics.length > 0 && (
 											<div className="space-y-4 pt-3 border-t border-white/10">
 												<ConvergenceChart
+													points={
+														metricPoints[selectedJob.id] ?? currentJobPoints
+													}
 													metrics={selectedTrainingMetrics}
 													totalEpochs={selectedJob.epoch || 100}
 													isJobActive={selectedJob.status === "running"}
@@ -852,11 +893,17 @@ function JobsPageContent() {
 													variant="secondary"
 													size="sm"
 													disabled={zipBusy}
-													onClick={() => void handleDownloadArtifactsZip(selectedJob)}
+													onClick={() =>
+														void handleDownloadArtifactsZip(selectedJob)
+													}
 													title="Baixar todos os artefatos do job (modelo, config, métricas, amostras e logs) em um único ZIP"
 												>
 													<IconDownload className="size-3.5 text-zinc-400" />
-													<span>{zipBusy ? "Montando ZIP…" : "Baixar artefatos (.zip)"}</span>
+													<span>
+														{zipBusy
+															? "Montando ZIP…"
+															: "Baixar artefatos (.zip)"}
+													</span>
 												</Button>
 											)}
 

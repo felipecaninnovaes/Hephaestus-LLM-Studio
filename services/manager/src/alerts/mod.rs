@@ -112,18 +112,23 @@ pub async fn evaluate_periodic_alerts(pool: &PgPool) -> Result<(), ManagerError>
 
 /// Avalia alertas de disco (`disk_high`) para jobs em status `running`.
 ///
-/// Para cada job running cujo nó tem disk_used/disk_total >= ALERT_DISK_RATIO:
-/// * `>= 0.95`: critical
-/// * `>= ALERT_DISK_RATIO` (0.85): warning
+/// Dispara em `>= ALERT_DISK_RATIO` (default 0.85) com warning.
+/// Sobe para critical em `>= 0.95`.
+/// Com histerese (ALERT_DISK_HYSTERESIS, default 0.05):
+/// * Só volta de critical para warning abaixo de `0.95 - hysteresis` (0.90).
+/// * Só resolve abaixo de `ALERT_DISK_RATIO - hysteresis` (0.80).
 ///
-/// Se o alerta ativo já existe com a mesma severidade: no-op.
-/// Se mudou de severidade: resolve o antigo e cria novo.
-/// Se o uso caiu abaixo do limiar: resolve alerta disk_high ativo.
+/// Quando `ratio` é None (nó sem heartbeat recente, cache vazio após restart, nó antigo):
+/// no-op, sem disparar nem resolver. Só resolve com medição válida abaixo do limiar de resolução,
+/// ou no término do job.
 pub async fn evaluate_disk_alerts(
     pool: &PgPool,
     cache: &crate::nodes::TelemetryCache,
 ) -> Result<(), ManagerError> {
     let threshold_ratio = get_alert_disk_ratio();
+    let hysteresis = get_alert_disk_hysteresis();
+    let warning_resolve_ratio = threshold_ratio - hysteresis;
+    let critical_downgrade_ratio = CRITICAL_ALERT_DISK_RATIO - hysteresis;
 
     // Busca todos os jobs running e seus nós
     let running_jobs = sqlx::query_as::<_, (Uuid, Option<Uuid>)>(
@@ -147,90 +152,119 @@ pub async fn evaluate_disk_alerts(
             _ => None,
         };
 
-        if let Some(r) = ratio {
-            if r >= threshold_ratio {
-                let severity = if r >= CRITICAL_ALERT_DISK_RATIO {
-                    SEVERITY_CRITICAL
-                } else {
-                    SEVERITY_WARNING
-                };
+        // Quando ratio é None: no-op absoluto (não dispara nem resolve)
+        let Some(r) = ratio else {
+            continue;
+        };
 
-                let pct = (r * 100.0).round() as i64;
-                let message = format!(
-                    "Uso de disco no nó ({node_endpoint}) em {pct}% (>= {}%)",
-                    (threshold_ratio * 100.0).round() as i64
-                );
+        let active_alert = sqlx::query_as::<_, (Uuid, String)>(
+            "SELECT id, severity FROM job_alerts WHERE job_id = $1 AND rule_id = $2 AND resolved_at IS NULL",
+        )
+        .bind(job_id)
+        .bind(RULE_DISK_HIGH)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| ManagerError::Internal(format!("fetch active disk alert: {e}")))?;
 
-                let active_alert = sqlx::query_as::<_, (Uuid, String)>(
-                    "SELECT id, severity FROM job_alerts WHERE job_id = $1 AND rule_id = $2 AND resolved_at IS NULL",
-                )
-                .bind(job_id)
-                .bind(RULE_DISK_HIGH)
-                .fetch_optional(pool)
-                .await
-                .map_err(|e| ManagerError::Internal(format!("fetch active disk alert: {e}")))?;
+        match active_alert {
+            None => {
+                // Sem alerta ativo: dispara se r >= threshold_ratio
+                if r >= threshold_ratio {
+                    let severity = if r >= CRITICAL_ALERT_DISK_RATIO {
+                        SEVERITY_CRITICAL
+                    } else {
+                        SEVERITY_WARNING
+                    };
+                    let pct = (r * 100.0).round() as i64;
+                    let message = format!(
+                        "Uso de disco no nó ({node_endpoint}) em {pct}% (>= {}%)",
+                        (threshold_ratio * 100.0).round() as i64
+                    );
 
-                match active_alert {
-                    Some((_id, current_sev)) if current_sev == severity => {
-                        // Mesma severidade: mantém
-                    }
-                    Some((_id, _current_sev)) => {
-                        // Mudança de severidade (ex.: warning -> critical ou critical -> warning):
-                        // resolve anterior e dispara novo com a nova severidade
-                        let mut tx = pool
-                            .begin()
-                            .await
-                            .map_err(|e| ManagerError::Internal(format!("tx begin: {e}")))?;
-                        resolve_alerts(&mut tx, job_id, Some(RULE_DISK_HIGH)).await?;
+                    let mut tx = pool
+                        .begin()
+                        .await
+                        .map_err(|e| ManagerError::Internal(format!("tx begin: {e}")))?;
+                    let fired =
                         fire_alert(&mut tx, job_id, RULE_DISK_HIGH, severity, &message).await?;
+                    if fired {
                         crate::notify::notify_alert(&mut *tx, job_id).await?;
-                        tx.commit()
-                            .await
-                            .map_err(|e| ManagerError::Internal(format!("tx commit: {e}")))?;
                     }
-                    None => {
-                        // Nenhum alerta ativo: dispara novo
-                        let mut tx = pool
-                            .begin()
-                            .await
-                            .map_err(|e| ManagerError::Internal(format!("tx begin: {e}")))?;
-                        let fired =
-                            fire_alert(&mut tx, job_id, RULE_DISK_HIGH, severity, &message).await?;
-                        if fired {
-                            crate::notify::notify_alert(&mut *tx, job_id).await?;
-                        }
-                        tx.commit()
-                            .await
-                            .map_err(|e| ManagerError::Internal(format!("tx commit: {e}")))?;
-                    }
+                    tx.commit()
+                        .await
+                        .map_err(|e| ManagerError::Internal(format!("tx commit: {e}")))?;
                 }
-            } else {
-                // Abaixo do limiar: resolve se houver alerta ativo
-                let mut tx = pool
-                    .begin()
-                    .await
-                    .map_err(|e| ManagerError::Internal(format!("tx begin: {e}")))?;
-                let resolved = resolve_alerts(&mut tx, job_id, Some(RULE_DISK_HIGH)).await?;
-                if resolved > 0 {
+            }
+            Some((_id, current_sev)) if current_sev == SEVERITY_WARNING => {
+                if r >= CRITICAL_ALERT_DISK_RATIO {
+                    // Sobe para critical
+                    let pct = (r * 100.0).round() as i64;
+                    let message = format!(
+                        "Uso de disco no nó ({node_endpoint}) em {pct}% (>= {}%)",
+                        (CRITICAL_ALERT_DISK_RATIO * 100.0).round() as i64
+                    );
+                    let mut tx = pool
+                        .begin()
+                        .await
+                        .map_err(|e| ManagerError::Internal(format!("tx begin: {e}")))?;
+                    resolve_alerts(&mut tx, job_id, Some(RULE_DISK_HIGH)).await?;
+                    fire_alert(&mut tx, job_id, RULE_DISK_HIGH, SEVERITY_CRITICAL, &message)
+                        .await?;
                     crate::notify::notify_alert(&mut *tx, job_id).await?;
+                    tx.commit()
+                        .await
+                        .map_err(|e| ManagerError::Internal(format!("tx commit: {e}")))?;
+                } else if r < warning_resolve_ratio {
+                    // Resolve com histerese (< threshold_ratio - hysteresis)
+                    let mut tx = pool
+                        .begin()
+                        .await
+                        .map_err(|e| ManagerError::Internal(format!("tx begin: {e}")))?;
+                    let resolved = resolve_alerts(&mut tx, job_id, Some(RULE_DISK_HIGH)).await?;
+                    if resolved > 0 {
+                        crate::notify::notify_alert(&mut *tx, job_id).await?;
+                    }
+                    tx.commit()
+                        .await
+                        .map_err(|e| ManagerError::Internal(format!("tx commit: {e}")))?;
                 }
-                tx.commit()
-                    .await
-                    .map_err(|e| ManagerError::Internal(format!("tx commit: {e}")))?;
+                // Se warning_resolve_ratio <= r < CRITICAL_ALERT_DISK_RATIO: mantém warning sem mexer
             }
-        } else {
-            // Sem métricas de disco: se houver alerta ativo, resolve
-            let mut tx = pool
-                .begin()
-                .await
-                .map_err(|e| ManagerError::Internal(format!("tx begin: {e}")))?;
-            let resolved = resolve_alerts(&mut tx, job_id, Some(RULE_DISK_HIGH)).await?;
-            if resolved > 0 {
-                crate::notify::notify_alert(&mut *tx, job_id).await?;
+            Some((_id, _current_sev)) => {
+                // current_sev == SEVERITY_CRITICAL
+                if r < warning_resolve_ratio {
+                    // Resolve completamente se caiu abaixo do limiar de resolução geral
+                    let mut tx = pool
+                        .begin()
+                        .await
+                        .map_err(|e| ManagerError::Internal(format!("tx begin: {e}")))?;
+                    let resolved = resolve_alerts(&mut tx, job_id, Some(RULE_DISK_HIGH)).await?;
+                    if resolved > 0 {
+                        crate::notify::notify_alert(&mut *tx, job_id).await?;
+                    }
+                    tx.commit()
+                        .await
+                        .map_err(|e| ManagerError::Internal(format!("tx commit: {e}")))?;
+                } else if r < critical_downgrade_ratio {
+                    // Volta para warning só abaixo de 0.95 - hysteresis (0.90)
+                    let pct = (r * 100.0).round() as i64;
+                    let message = format!(
+                        "Uso de disco no nó ({node_endpoint}) em {pct}% (>= {}%)",
+                        (threshold_ratio * 100.0).round() as i64
+                    );
+                    let mut tx = pool
+                        .begin()
+                        .await
+                        .map_err(|e| ManagerError::Internal(format!("tx begin: {e}")))?;
+                    resolve_alerts(&mut tx, job_id, Some(RULE_DISK_HIGH)).await?;
+                    fire_alert(&mut tx, job_id, RULE_DISK_HIGH, SEVERITY_WARNING, &message).await?;
+                    crate::notify::notify_alert(&mut *tx, job_id).await?;
+                    tx.commit()
+                        .await
+                        .map_err(|e| ManagerError::Internal(format!("tx commit: {e}")))?;
+                }
+                // Se r >= critical_downgrade_ratio: mantém critical
             }
-            tx.commit()
-                .await
-                .map_err(|e| ManagerError::Internal(format!("tx commit: {e}")))?;
         }
     }
 

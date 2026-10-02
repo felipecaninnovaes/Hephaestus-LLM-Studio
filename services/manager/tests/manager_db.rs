@@ -8798,7 +8798,8 @@ async fn alert_resolved_when_job_terminates() {
 /// Testes Fatia 3a:
 /// (b) heartbeat com disco 90% e job running nesse nó -> disk_high warning;
 ///     96% -> severity critical (alerta anterior resolvido + novo crítico criado);
-///     abaixo de 85% -> resolvido; job terminal -> resolvido;
+///     histerese: oscilação 0.849 <-> 0.851 não gera novos alertas; descida para 0.79 resolve;
+///     cache vazio / nó sem telemetria não resolve alerta ativo;
 /// (c) heartbeat sem campos de disco (nó antigo) não quebra e não dispara;
 /// (d) /api/orchestrators expõe diskTotalGb/diskUsedGb (via manager list_orchestrators).
 #[tokio::test]
@@ -8894,6 +8895,88 @@ async fn alert_disk_high_warning_critical_resolution_and_legacy() {
     assert_eq!(alerts.items[0].rule_id, "disk_high");
     assert_eq!(alerts.items[0].severity, "warning");
     assert!(alerts.items[0].resolved_at.is_none());
+    let original_warning_id = alerts.items[0].id.clone();
+
+    // 2.1 Histerese na faixa do warning: oscilação 0.849 <-> 0.851 não gera novos alertas nem resolve
+    // 84.9% (0.849) >= 0.80 (0.85 - 0.05), então o alerta continua ativo!
+    manager::receive_heartbeat(
+        &p,
+        &cache,
+        HeartbeatRequest {
+            endpoint: "http://orchestrator-local:8082".into(),
+            gpus: vec![],
+            vram_total: None,
+            vram_used: None,
+            cpu: Some(10.0),
+            ram: Some(1024),
+            ram_total: Some(4096),
+            jobs_active: 1,
+            max_gpu_mib: None,
+            disk_total_gb: Some(1000.0),
+            disk_used_gb: Some(849.0),
+        },
+    )
+    .await
+    .expect("heartbeat 84.9%");
+
+    manager::evaluate_disk_alerts(&p, &cache)
+        .await
+        .expect("eval disk 84.9%");
+    let alerts_849 = manager::get_job_alerts(&p, job_id)
+        .await
+        .expect("get alerts 84.9%");
+    assert_eq!(alerts_849.items.len(), 1);
+    assert_eq!(
+        alerts_849.items[0].id, original_warning_id,
+        "alerta continua ativo graças à histerese"
+    );
+
+    // Sobe para 85.1% -> já existe warning ativo, não duplica
+    manager::receive_heartbeat(
+        &p,
+        &cache,
+        HeartbeatRequest {
+            endpoint: "http://orchestrator-local:8082".into(),
+            gpus: vec![],
+            vram_total: None,
+            vram_used: None,
+            cpu: Some(10.0),
+            ram: Some(1024),
+            ram_total: Some(4096),
+            jobs_active: 1,
+            max_gpu_mib: None,
+            disk_total_gb: Some(1000.0),
+            disk_used_gb: Some(851.0),
+        },
+    )
+    .await
+    .expect("heartbeat 85.1%");
+
+    manager::evaluate_disk_alerts(&p, &cache)
+        .await
+        .expect("eval disk 85.1%");
+    let alerts_851 = manager::get_job_alerts(&p, job_id)
+        .await
+        .expect("get alerts 85.1%");
+    assert_eq!(alerts_851.items.len(), 1);
+    assert_eq!(
+        alerts_851.items[0].id, original_warning_id,
+        "nenhum novo alerta criado em oscilação"
+    );
+
+    // 2.2 Requisito 1: Alerta ativo + cache vazio / nó sem telemetria -> alerta continua ativo
+    let empty_cache = manager::new_telemetry_cache();
+    manager::evaluate_disk_alerts(&p, &empty_cache)
+        .await
+        .expect("eval disk empty cache");
+    let alerts_empty = manager::get_job_alerts(&p, job_id)
+        .await
+        .expect("get alerts empty cache");
+    assert_eq!(alerts_empty.items.len(), 1);
+    assert!(
+        alerts_empty.items[0].resolved_at.is_none(),
+        "cache vazio não resolve alerta ativo"
+    );
 
     // 3. Heartbeat com 96% (96/100 GB) -> severity critical
     manager::receive_heartbeat(
@@ -8940,7 +9023,7 @@ async fn alert_disk_high_warning_critical_resolution_and_legacy() {
         .expect("resolved alert");
     assert_eq!(resolved.severity, "warning");
 
-    // 4. Disco cai para 80% (< 85%) -> resolvido
+    // 3.1 Histerese do critical: descendo para 92% (>= 0.90) continua critical
     manager::receive_heartbeat(
         &p,
         &cache,
@@ -8955,22 +9038,92 @@ async fn alert_disk_high_warning_critical_resolution_and_legacy() {
             jobs_active: 1,
             max_gpu_mib: None,
             disk_total_gb: Some(100.0),
-            disk_used_gb: Some(80.0),
+            disk_used_gb: Some(92.0),
         },
     )
     .await
-    .expect("heartbeat 80%");
+    .expect("heartbeat 92%");
 
     manager::evaluate_disk_alerts(&p, &cache)
         .await
-        .expect("eval disk 80%");
+        .expect("eval disk 92%");
+    let alerts_92 = manager::get_job_alerts(&p, job_id)
+        .await
+        .expect("get alerts 92%");
+    let active_92 = alerts_92
+        .items
+        .iter()
+        .find(|a| a.resolved_at.is_none())
+        .expect("active alert 92%");
+    assert_eq!(
+        active_92.severity, "critical",
+        "92% continua critical por estar acima de 90%"
+    );
+
+    // 3.2 Descendo para 88% (< 0.90 mas >= 0.80): volta para warning
+    manager::receive_heartbeat(
+        &p,
+        &cache,
+        HeartbeatRequest {
+            endpoint: "http://orchestrator-local:8082".into(),
+            gpus: vec![],
+            vram_total: None,
+            vram_used: None,
+            cpu: Some(10.0),
+            ram: Some(1024),
+            ram_total: Some(4096),
+            jobs_active: 1,
+            max_gpu_mib: None,
+            disk_total_gb: Some(100.0),
+            disk_used_gb: Some(88.0),
+        },
+    )
+    .await
+    .expect("heartbeat 88%");
+
+    manager::evaluate_disk_alerts(&p, &cache)
+        .await
+        .expect("eval disk 88%");
+    let alerts_88 = manager::get_job_alerts(&p, job_id)
+        .await
+        .expect("get alerts 88%");
+    let active_88 = alerts_88
+        .items
+        .iter()
+        .find(|a| a.resolved_at.is_none())
+        .expect("active alert 88%");
+    assert_eq!(active_88.severity, "warning", "88% rebaixa para warning");
+
+    // 4. Disco cai para 79% (< 80%) -> resolvido
+    manager::receive_heartbeat(
+        &p,
+        &cache,
+        HeartbeatRequest {
+            endpoint: "http://orchestrator-local:8082".into(),
+            gpus: vec![],
+            vram_total: None,
+            vram_used: None,
+            cpu: Some(10.0),
+            ram: Some(1024),
+            ram_total: Some(4096),
+            jobs_active: 1,
+            max_gpu_mib: None,
+            disk_total_gb: Some(100.0),
+            disk_used_gb: Some(79.0),
+        },
+    )
+    .await
+    .expect("heartbeat 79%");
+
+    manager::evaluate_disk_alerts(&p, &cache)
+        .await
+        .expect("eval disk 79%");
     let alerts = manager::get_job_alerts(&p, job_id)
         .await
-        .expect("get alerts 80%");
-    assert_eq!(alerts.items.len(), 2);
+        .expect("get alerts 79%");
     assert!(
         alerts.items.iter().all(|a| a.resolved_at.is_some()),
-        "todos alertas devem estar resolvidos"
+        "descida para 79% deve resolver todos os alertas ativos"
     );
 
     // 5. Novo alerta crítico e depois job encerra -> resolvido

@@ -21,6 +21,16 @@ pub const DEFAULT_ALERT_DISK_RATIO: f64 = 0.85;
 /// Limiar de uso de disco para critical.
 pub const CRITICAL_ALERT_DISK_RATIO: f64 = 0.95;
 
+/// Histerese padrão para resolução de alertas de disco (ALERT_DISK_HYSTERESIS).
+pub const DEFAULT_ALERT_DISK_HYSTERESIS: f64 = 0.05;
+
+pub fn get_alert_disk_hysteresis() -> f64 {
+    std::env::var("ALERT_DISK_HYSTERESIS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_ALERT_DISK_HYSTERESIS)
+}
+
 pub fn get_alert_disk_ratio() -> f64 {
     std::env::var("ALERT_DISK_RATIO")
         .ok()

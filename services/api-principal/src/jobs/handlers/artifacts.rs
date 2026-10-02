@@ -241,6 +241,8 @@ fn empty_log_page() -> Response {
 /// legado); `source=run` lê `logs/run.log` (stdout+stderr do container,
 /// Fatia 1c). Ambas via StoragePort. Job/fonte sem artefato → 200
 /// `{lines:[], eof:true}` (não 404 — ausência de log é estado válido).
+/// `source` fora de `{telemetry, run}` (omitido conta como `telemetry`) ⇒
+/// 400 `invalid_source` — nunca cai em `telemetry` por engano.
 pub async fn get_job_logs(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -249,6 +251,17 @@ pub async fn get_job_logs(
     if parse_uuid(&id).is_none() {
         return not_found();
     }
+    let is_run_source = match q.source.as_deref() {
+        None | Some("telemetry") => false,
+        Some("run") => true,
+        Some(_) => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "invalid_source",
+                "source deve ser 'telemetry' ou 'run'",
+            );
+        }
+    };
     match state.manager.get_job(&id).await {
         Ok(_) => {}
         Err(ManagerError::NotFound) => return not_found(),
@@ -260,7 +273,6 @@ pub async fn get_job_logs(
         Err(ManagerError::NotFound) => return not_found(),
         Err(_) => return queue_unavailable(),
     };
-    let is_run_source = q.source.as_deref() == Some("run");
     let art = if is_run_source {
         pick_run_log_artifact(&arts)
     } else {

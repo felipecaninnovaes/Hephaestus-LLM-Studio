@@ -2249,3 +2249,87 @@ async fn cleanup_jobs_503_manager_offline() {
     let resp = cleanup_jobs(axum::extract::State(state), Ok(Json(serde_json::json!({})))).await;
     assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
+
+#[tokio::test]
+async fn get_job_logs_source_omitted_defaults_to_telemetry() {
+    let mut mock = MockManager::default();
+    mock.get_job_result = Some(mock_job());
+    mock.list_artifacts_result = Some(vec![]);
+    let state = test_state(mock);
+    let resp = get_job_logs(
+        axum::extract::State(state),
+        Path("550e8400-e29b-41d4-a716-446655440000".to_string()),
+        Query(JobLogsQuery {
+            offset: None,
+            limit: None,
+            source: None,
+        }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn get_job_logs_source_telemetry_explicit() {
+    let mut mock = MockManager::default();
+    mock.get_job_result = Some(mock_job());
+    mock.list_artifacts_result = Some(vec![]);
+    let state = test_state(mock);
+    let resp = get_job_logs(
+        axum::extract::State(state),
+        Path("550e8400-e29b-41d4-a716-446655440000".to_string()),
+        Query(JobLogsQuery {
+            offset: None,
+            limit: None,
+            source: Some("telemetry".to_string()),
+        }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn get_job_logs_source_run() {
+    let mut mock = MockManager::default();
+    mock.get_job_result = Some(mock_job());
+    mock.list_artifacts_result = Some(vec![]);
+    let state = test_state(mock);
+    let resp = get_job_logs(
+        axum::extract::State(state),
+        Path("550e8400-e29b-41d4-a716-446655440000".to_string()),
+        Query(JobLogsQuery {
+            offset: None,
+            limit: None,
+            source: Some("run".to_string()),
+        }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn get_job_logs_source_invalid_400_never_falls_back_to_telemetry() {
+    // Nenhum mock de job/artifacts configurado — se a validação de source
+    // caísse por engano no default `telemetry`, o teste ainda passaria por
+    // acidente (get_job_result=None → 404); por isso a asserção é
+    // especificamente BAD_REQUEST com o código invalid_source, não só
+    // "não é 200".
+    let mock = MockManager::default();
+    let state = test_state(mock);
+    let resp = get_job_logs(
+        axum::extract::State(state),
+        Path("550e8400-e29b-41d4-a716-446655440000".to_string()),
+        Query(JobLogsQuery {
+            offset: None,
+            limit: None,
+            source: Some("bogus".to_string()),
+        }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["code"], "invalid_source");
+}

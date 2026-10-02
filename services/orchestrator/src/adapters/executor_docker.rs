@@ -104,6 +104,14 @@ impl RunLogWriter {
 /// acumularia uma única linha gigante com a barra de progresso reescrita
 /// centenas de vezes por segundo. `\n` sempre fecha e emite a linha
 /// corrente (separador real).
+///
+/// `MAX_PENDING_BYTES` evita crescimento sem limite em memória: uma linha
+/// sem `\n`/`\r` (ex.: engine com bug emitindo um `print` gigante sem
+/// quebra) excedendo o teto é emitida como um "pedaço" e o acúmulo
+/// recomeça do zero — o escritor segue, só a linha fica partida em vários
+/// registros no `run.log`.
+const MAX_PENDING_BYTES: usize = 64 * 1024;
+
 #[derive(Default)]
 struct CrCollapsingSplitter {
     pending: Vec<u8>,
@@ -119,7 +127,13 @@ impl CrCollapsingSplitter {
                     self.pending.clear();
                 }
                 b'\r' => self.pending.clear(),
-                _ => self.pending.push(b),
+                _ => {
+                    self.pending.push(b);
+                    if self.pending.len() >= MAX_PENDING_BYTES {
+                        out.push(String::from_utf8_lossy(&self.pending).into_owned());
+                        self.pending.clear();
+                    }
+                }
             }
         }
         out
@@ -373,5 +387,34 @@ mod cr_collapsing_splitter_tests {
         assert!(s.feed(b"10%\r").is_empty());
         assert!(s.feed(b"55%\r").is_empty());
         assert_eq!(s.feed(b"100%\n"), vec!["100%".to_string()]);
+    }
+
+    #[test]
+    fn overlong_line_without_newline_is_chunked_at_64kib_instead_of_growing_unbounded() {
+        // Engine sem bug emite `\n` normalmente — este caso simula um print
+        // gigante sem quebra de linha (ou um stream binário mal
+        // interpretado) para provar que `pending` nunca cresce acima do teto.
+        let mut s = CrCollapsingSplitter::default();
+        let huge = vec![b'x'; super::MAX_PENDING_BYTES + 100];
+        let lines = s.feed(&huge);
+        assert_eq!(
+            lines.len(),
+            1,
+            "deve emitir exatamente 1 pedaço ao atingir o teto"
+        );
+        assert_eq!(lines[0].len(), super::MAX_PENDING_BYTES);
+        // O restante (100 bytes) continua pendente, não foi descartado.
+        assert_eq!(s.finish(), Some("x".repeat(100)));
+    }
+
+    #[test]
+    fn multiple_overlong_chunks_split_into_multiple_lines() {
+        let mut s = CrCollapsingSplitter::default();
+        let huge = vec![b'y'; super::MAX_PENDING_BYTES * 2 + 5];
+        let lines = s.feed(&huge);
+        assert_eq!(lines.len(), 2, "duas linhas de MAX_PENDING_BYTES cada");
+        assert_eq!(lines[0].len(), super::MAX_PENDING_BYTES);
+        assert_eq!(lines[1].len(), super::MAX_PENDING_BYTES);
+        assert_eq!(s.finish(), Some("y".repeat(5)));
     }
 }

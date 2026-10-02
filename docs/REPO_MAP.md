@@ -110,7 +110,9 @@ Fonte: tabela de contrato em `services/api-principal/src/auth/routes.rs`
   `POST /jobs/diffusion/generate` com `initImageId` XOR `initGenerationId` +
   `initStrength` (0.05–0.95, default 0.6 aplicado no yaml e no engine; wire
   null quando ausente).
-- **Nós/monitoramento:** `GET /api/environments`, `/api/orchestrators`,
+- **Nós/monitoramento:** `GET /api/environments`, `/api/orchestrators` (inclui
+  `diskTotalGb`/`diskUsedGb` do heartbeat; alerta `disk_high` no manager via
+  `ALERT_DISK_RATIO`/`ALERT_DISK_HYSTERESIS`),
   `POST /api/environments/adopt`, `/orchestrators/adopt`, `/:id/revoke`,
   `GET /api/storage/usage`.
 
